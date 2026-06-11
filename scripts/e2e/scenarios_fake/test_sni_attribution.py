@@ -96,37 +96,60 @@ def _router_lan_ip() -> str:
     return ip or _DEFAULT_ROUTER_LAN_IP
 
 
+# Exact arg string used to launch the throwaway responder, so teardown can
+# pgrep it precisely without matching the block-page uhttpd instance.
+_LISTENER_CMD = "uhttpd -h /tmp -p 0.0.0.0:443"
+
+
+def _port_443_listening() -> bool:
+    """True iff something now accepts TCP connections on the router's :443."""
+    res = router_ssh(
+        "netstat -tln 2>/dev/null | grep -q ':443 ' && echo yes || true",
+        check=False, timeout=10,
+    )
+    return "yes" in (res.stdout or "")
+
+
 def _start_router_tcp443_listener():
-    """Stand up a throwaway TCP/443 listener on the router so the client's TLS
+    """Stand up a throwaway TCP/443 responder on the router so the client's TLS
     handshake to <ROUTER_LAN_IP>:443 completes and the ClientHello is emitted.
 
-    The listener speaks no TLS — it only needs to ACCEPT the TCP connection so
-    the handshake finishes and curl proceeds to send the ClientHello. We use
-    busybox `nc`; `-ll` keeps it listening across connections where supported,
-    falling back to a re-accepting shell loop. Best-effort: we don't fail the
-    test on listener-start quirks because the PRIMARY proof only needs the
-    ClientHello to cross br-lan, and even a single accept suffices.
+    The responder need not speak TLS — it only has to ACCEPT the TCP connection
+    so the client proceeds to send the ClientHello (the first application-data
+    packet after the TCP handshake), which is what sni-tail captures on br-lan.
+
+    Why uhttpd and not nc: OpenWRT's busybox `nc` is the CLIENT-ONLY applet
+    (`Usage: nc [IPADDR PORT]` — no `-l`/server mode compiled in), so an
+    `nc -l -p 443` listener never binds. With no other 443 responder in the
+    minimal image (uhttpd hosts the block page on loopback:8081 only), the
+    client's SYN is refused, no ClientHello is ever emitted, and the sidecar
+    correctly captures nothing — which is exactly how this scenario first went
+    red. `uhttpd` IS in the image (it is the block-page dependency) and does
+    listen, so we run a throwaway standalone instance on 0.0.0.0:443. It speaks
+    plain HTTP, not TLS, but that is irrelevant here: accepting the TCP
+    connection is all that is needed for the ClientHello to cross br-lan.
     """
-    # Probe what this image's nc supports (busybox nc flags vary).
-    router_ssh("which nc || true; nc --help 2>&1 | head -3 || true",
-               check=False, timeout=10)
-    # Re-accepting loop in the background, surviving each closed connection.
-    # `setsid` detaches it from the SSH session so it isn't reaped on logout.
-    router_ssh(
-        "setsid sh -c 'while true; do nc -l -p 443 >/dev/null 2>&1 || "
-        "nc -l 443 >/dev/null 2>&1 || sleep 1; done' >/dev/null 2>&1 &",
-        check=False, timeout=10,
+    router_ssh(f"{_LISTENER_CMD} >/dev/null 2>&1 &", check=False, timeout=10)
+    # Surface a listener-start failure HERE (clear message) rather than letting
+    # it masquerade as a downstream attribution timeout.
+    wait_until(
+        lambda: True if _port_443_listening() else None,
+        timeout_s=20,
+        interval_s=2,
+        description=(
+            "a TCP/443 responder (throwaway uhttpd) to bind on the router so "
+            "the client's TLS ClientHello is actually emitted onto br-lan"
+        ),
     )
 
 
 def _stop_router_tcp443_listener():
-    """Tear down the throwaway listener + its re-accept loop so it doesn't leak
-    into the next scenario (the function-scoped `router` fixture restores the VM
-    snapshot, but the listener is started post-restore in-test, so clean it up
-    explicitly)."""
+    """Tear down the throwaway responder so it doesn't leak into the next
+    scenario (the function-scoped `router` fixture restores the VM snapshot, but
+    the responder is started post-restore in-test, so clean it up explicitly).
+    Targets only our instance's arg string, never the block-page uhttpd."""
     router_ssh(
-        "kill $(pgrep -f 'nc -l') 2>/dev/null; "
-        "kill $(pgrep -f 'while true; do nc -l') 2>/dev/null; true",
+        f"kill $(pgrep -f '{_LISTENER_CMD}') 2>/dev/null; true",
         check=False, timeout=10,
     )
 
