@@ -114,6 +114,15 @@ in [#1561](https://github.com/wifihaven/wifihaven/issues/1561).
 - **`Clock` injected** — no direct `java.time` `now`. **ZIO effects** — no
   `throw`; typed sealed errors, not strings. **Config via `zio-config`** — no
   `sys.env` or hardcoded values.
+- **Every new router-agent write under `/tmp` is bounded.** `/tmp` is `tmpfs`
+  (RAM) on OpenWRT, so an unbounded append-writer is an OOM / router-wedge bug.
+  Any new log / spool / journal that grows with traffic, time, or events must
+  ship rotation in the SAME PR — joined to the existing
+  `wifihaven-rotate-dnsmasq-log` cron, using **copytruncate** (not rename) when
+  a long-lived process or `tail -F` follower holds the fd. Fixed-size snapshots
+  (atomic whole-file rewrite, e.g. `paths.dns_cache`) are already bounded and
+  exempt. BLOCKER if a grow-writer ships with no cap. See AGENTS.md
+  [§bounded-tmp-writes](../AGENTS.md#bounded-tmp-writes).
 
 ## 4. Backwards compatibility / wire contract
 
