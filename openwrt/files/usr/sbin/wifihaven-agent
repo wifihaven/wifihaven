@@ -15,6 +15,7 @@
 local uci        = require("uci")
 local policy     = require("wifihaven.policy")
 local blocklists = require("wifihaven.blocklists")
+local eb_refresh = require("wifihaven.eb_refresh")
 local metrics    = require("wifihaven.metrics")
 local usage      = require("wifihaven.usage")
 local conntrack  = require("wifihaven.conntrack")
@@ -73,6 +74,18 @@ local metrics_int   = tonumber(uci_get("metrics_report_interval", "60"))
 -- a list's content version changed; the agent re-applies the ruleset only when
 -- the loaded host set actually differs (blocklists.hosts_differ). Default 1 h.
 local blocklist_int = tonumber(uci_get("blocklist_refresh_interval", "3600"))
+-- #1658: eb_/bl_ ipset re-resolve cadence (seconds). The per-host eb_<host>
+-- and per-blocklist bl_<id> sets are declared `flags dynamic,timeout 1h`,
+-- populated one-shot at DNS resolve time via dnsmasq's `--nftset=` callback.
+-- iOS / iPadOS app DNS caches regularly outlive 1h, so a cached IP can age
+-- out of the kernel set under a still-connecting client and the per-MAC
+-- drop predicate silently misses — a confirmed prod leak (#1649). The
+-- agent periodically re-resolves the inventory of (extraBlocked, blocklist)
+-- hosts (collapsed across MACs — the sets are global) so each entry sees
+-- ≥1 refresh per ageing window. Default 1800 s = 30 min — strictly below
+-- the 1h kernel timeout, ~2 refreshes per window, ≈one `dig` per host every
+-- 30 min (negligible router load even at ~50 distinct hosts).
+local eb_refresh_int = tonumber(uci_get("eb_refresh_interval", "1800"))
 -- #1412 OOM guard: a single category list larger than this many BYTES is cached
 -- but NOT parsed/rendered. The prod agent OOM-killed (~700 MB RSS / 1 GB router)
 -- loading the StevenBlack "extended" lists (ads-extended ~1.6 MB / 83k hosts,
@@ -395,6 +408,7 @@ local last_policy_run     = 0
 local last_usage_run      = 0
 local last_metrics_run    = 0
 local last_blocklist_run  = 0  -- #1412: category blocklist refresh cadence
+local last_eb_refresh_run = 0  -- #1658: eb_/bl_ ipset re-resolve cadence
 local last_activity_sample = 0
 local last_nflog_run      = 0  -- #1126: nflog drop-spool drain cadence
 local activity_tracker     = usage.new_tracker()
@@ -474,6 +488,7 @@ do
   last_usage_run         = mono
   last_metrics_run       = mono
   last_blocklist_run     = mono
+  last_eb_refresh_run    = mono
   last_activity_sample   = mono
   last_nflog_run         = mono
 end
@@ -737,6 +752,46 @@ conntrack.watch({
                                eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac)
           log.info("blocklist timer: category lists changed, re-applied ruleset")
         end
+      end
+    end
+
+    -- eb_/bl_ ipset re-resolve timer (#1658). The per-host eb_<host> and
+    -- per-blocklist bl_<id> sets carry `flags dynamic,timeout 1h`; population
+    -- happens one-shot at DNS resolve time. If a client's app-level DNS cache
+    -- holds a resolved IP past 1h the kernel entry ages out under the client,
+    -- the per-MAC drop predicate misses, and traffic flows against an
+    -- explicitly-blocked host (the prod leak diagnosed in #1649). Walk the
+    -- per-MAC inventory `render.update_shared` rebuilt after the last apply,
+    -- collapse to distinct hosts (sets are global, not per-MAC), and re-resolve
+    -- each one via dig→dnsmasq, adding answers back into the destination
+    -- sets. Independent of the policy/blocklist timers — runs against the
+    -- last-applied snapshot so a stable (304-only) household still gets
+    -- refreshed. Skipped while we're in failover render: the failover chain
+    -- closes the world for those profiles already.
+    if last_snapshot and not in_failover_render
+       and (mono - last_eb_refresh_run) >= eb_refresh_int then
+      last_eb_refresh_run = mono
+      local inv = eb_refresh.collect_inventory(eb_hosts_by_mac, bl_hosts_by_mac)
+      if #inv.eb_hosts > 0 or #inv.bl_pairs > 0 then
+        local rt0 = clock.monotonic_seconds()
+        local stats = eb_refresh.refresh({
+          eb_hosts  = inv.eb_hosts,
+          bl_pairs  = inv.bl_pairs,
+          nft_table = "inet wifihaven",
+          resolver  = eb_refresh.default_resolver,
+          exec_fn   = os.execute,
+          log       = log,
+        })
+        local elapsed = clock.monotonic_seconds() - rt0
+        metrics.inc_counter(mreg, "eb_refresh_total", { result = "ok" },
+                            stats.resolves_ok)
+        if stats.resolves_err > 0 then
+          metrics.inc_counter(mreg, "eb_refresh_total", { result = "resolve_failed" },
+                              stats.resolves_err)
+        end
+        log.debug("eb_refresh timer: hosts=%d ok=%d err=%d adds=%d elapsed=%.2fs",
+                  stats.hosts, stats.resolves_ok, stats.resolves_err,
+                  stats.adds, elapsed)
       end
     end
 
