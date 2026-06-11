@@ -14,6 +14,7 @@ export function blockReasonText(r: BlockReason): string {
     case 'blocked':       return 'blocked'
     case 'extraAllowed':  return 'allowed (household)'
     case 'extraBlocked':  return 'blocked (household)'
+    case 'extraBlockedBy': return `blocked: matched ${r.host}` // #1645
     case 'noProfile':     return 'no profile'
     case 'unmanaged':     return 'unmanaged device'
     case 'paused':        return 'profile paused'

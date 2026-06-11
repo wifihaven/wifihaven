@@ -198,6 +198,7 @@ export type BlockReason =
   | { kind: 'blocked' }
   | { kind: 'extraAllowed' }
   | { kind: 'extraBlocked' }
+  | { kind: 'extraBlockedBy'; host: string } // #1645: names the matched eb_<host> rule
   | { kind: 'noProfile' }
   | { kind: 'unmanaged' }
   | { kind: 'paused' }
