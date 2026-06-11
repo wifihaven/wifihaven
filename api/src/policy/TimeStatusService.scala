@@ -38,7 +38,12 @@ final case class ProfileDayState(
 final case class AppDayState(
     label: String,
     domainPattern: String,
-    dailyLimitMinutes: Int,
+    // #1627: `None` means "no per-app limit configured" — distinct from a
+    // 0-minute cap. The per-app cap-exhaustion test (`appCapExhaustedHosts`)
+    // and the exempt carve-out gate (`exemptUnderCapHosts`) both read this
+    // field as Option-aware: no limit ⇒ never exhausted, exempt-with-no-limit
+    // ⇒ always carve.
+    dailyLimitMinutes: Option[Int],
     usedMinutes: Int,
     exemptFromDaily: Boolean,
     // #1505: the app's full host-set for this limit. `domainPattern` stays as a single
@@ -424,7 +429,7 @@ object TimeStatusService {
    */
   private[policy] def groupAppLimits(
       appLimits: List[AppTimeLimit],
-  ): List[(AppId, String, Int, Boolean, List[String], String)] =
+  ): List[(AppId, String, Option[Int], Boolean, List[String], String)] =
     ProfileAppDispositions.from(appLimits).capGroups.map { d =>
       val rep = d.hosts.minByOption(_.length).getOrElse(d.label)
       (d.appId, d.label, d.dailyMinutes, d.exemptFromDaily, d.hosts, rep)

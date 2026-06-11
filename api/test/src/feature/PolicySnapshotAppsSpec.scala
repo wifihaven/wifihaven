@@ -723,6 +723,107 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
         assertTrue(p1.pauseMode == PauseMode.Hard) &&
         assertTrue(p2.pauseMode == PauseMode.Soft)
     },
+    // ── #1627: exempt-from-daily app with NO per-app limit (daily_minutes=NULL) ──
+    // Repro of the Math Academy prod symptom (#1626 symptom 3). When a
+    // time_limited assignment carries exempt_from_daily=true and a NULL
+    // per-app daily_minutes, the exempt carve-out must still trigger across
+    // every whole-MAC block reason (TimeLimit/Schedule/Paused). The carve is
+    // reason-agnostic per `PolicyService.exemptUnderCapHosts` and a
+    // never-exhausted (no-limit) app must never be excluded.
+    test(
+      "#1627: exempt + no per-app limit (NULL) + cap exhausted → in extraAllowed (blocked=TimeLimit)",
+    ) {
+      val mac = "aa:bb:cc:dd:ee:27"
+      for {
+        _     <- cleanDb
+        pr    <- ZIO.service[ProfileRepo]
+        sr    <- ZIO.service[ScheduleRepo]
+        dr    <- ZIO.service[DeviceRepo]
+        tlr   <- ZIO.service[TimeLimitRepo]
+        ar    <- ZIO.service[AppRepo]
+        kid   <- TestLayers.seedKidsProfile(pr, sr)
+        _     <- tlr.upsert(kid, 30)
+        _     <- TestLayers.seedDevice(dr, mac, "kid-ipad", kid)
+        appId <- ar.create("Math", "math", None, None)
+        _     <- ar.setHosts(appId, List(Hostname.unsafe("mathacademy.com")))
+        _     <- ar.upsertAssignment(appId, kid, AppMode.TimeLimited, None, true)
+        rid   <- seedRouterRow
+        _     <- seedTraffic(rid, mac, "cnn.com", LocalDate.of(2025, 1, 6), 35)
+        svc   <- makePsAt(TestClock.schoolDayAfternoon)
+        snap  <- svc.snapshot
+        rules = snap.profiles(kid).rules
+        ea    = rules.extraAllowed.map(_.value).toSet
+      } yield assertTrue(rules.blocked) &&
+        assertTrue(rules.blockReason.contains(MacBlockReason.TimeLimit)) &&
+        assertTrue(ea.contains("mathacademy.com"))
+    },
+    test("#1627: exempt + no per-app limit (NULL) + profile paused → in extraAllowed") {
+      for {
+        _     <- cleanDb
+        pr    <- ZIO.service[ProfileRepo]
+        sr    <- ZIO.service[ScheduleRepo]
+        ar    <- ZIO.service[AppRepo]
+        kid   <- TestLayers.seedKidsProfile(pr, sr)
+        _     <- pr.setPaused(kid, true)
+        appId <- ar.create("Math", "math", None, None)
+        _     <- ar.setHosts(appId, List(Hostname.unsafe("mathacademy.com")))
+        _     <- ar.upsertAssignment(appId, kid, AppMode.TimeLimited, None, true)
+        svc   <- makePsAt(TestClock.schoolDayAfternoon)
+        snap  <- svc.snapshot
+        rules = snap.profiles(kid).rules
+        ea    = rules.extraAllowed.map(_.value).toSet
+      } yield assertTrue(rules.blocked) &&
+        assertTrue(rules.blockReason.contains(MacBlockReason.Paused)) &&
+        assertTrue(ea.contains("mathacademy.com"))
+    },
+    test("#1627: exempt + no per-app limit (NULL) + schedule active → in extraAllowed") {
+      for {
+        _     <- cleanDb
+        pr    <- ZIO.service[ProfileRepo]
+        sr    <- ZIO.service[ScheduleRepo]
+        ar    <- ZIO.service[AppRepo]
+        kid   <- TestLayers.seedKidsProfile(pr, sr)
+        appId <- ar.create("Math", "math", None, None)
+        _     <- ar.setHosts(appId, List(Hostname.unsafe("mathacademy.com")))
+        _     <- ar.upsertAssignment(appId, kid, AppMode.TimeLimited, None, true)
+        svc   <- makePsAt(TestClock.bedtime)
+        snap  <- svc.snapshot
+        rules = snap.profiles(kid).rules
+        ea    = rules.extraAllowed.map(_.value).toSet
+      } yield assertTrue(rules.blocked) &&
+        assertTrue(rules.blockReason.contains(MacBlockReason.Schedule)) &&
+        assertTrue(ea.contains("mathacademy.com"))
+    },
+    test(
+      "#1627: exempt + no per-app limit (NULL) + non-zero own usage → still carves (no cap to exhaust)",
+    ) {
+      val mac = "aa:bb:cc:dd:ee:28"
+      for {
+        _     <- cleanDb
+        pr    <- ZIO.service[ProfileRepo]
+        sr    <- ZIO.service[ScheduleRepo]
+        dr    <- ZIO.service[DeviceRepo]
+        tlr   <- ZIO.service[TimeLimitRepo]
+        ar    <- ZIO.service[AppRepo]
+        kid   <- TestLayers.seedKidsProfile(pr, sr)
+        _     <- tlr.upsert(kid, 30)
+        _     <- TestLayers.seedDevice(dr, mac, "kid-ipad", kid)
+        appId <- ar.create("Math", "math", None, None)
+        _     <- ar.setHosts(appId, List(Hostname.unsafe("mathacademy.com")))
+        _     <- ar.upsertAssignment(appId, kid, AppMode.TimeLimited, None, true)
+        rid   <- seedRouterRow
+        // Profile cap exhausted by an unrelated host AND the exempt app itself
+        // has logged usage today — with no per-app limit, the carve must still fire.
+        _     <- seedTraffic(rid, mac, "cnn.com", LocalDate.of(2025, 1, 6), 35)
+        _     <- seedTraffic(rid, mac, "mathacademy.com", LocalDate.of(2025, 1, 6), 25)
+        svc   <- makePsAt(TestClock.schoolDayAfternoon)
+        snap  <- svc.snapshot
+        rules = snap.profiles(kid).rules
+        ea    = rules.extraAllowed.map(_.value).toSet
+      } yield assertTrue(rules.blocked) &&
+        assertTrue(rules.blockReason.contains(MacBlockReason.TimeLimit)) &&
+        assertTrue(ea.contains("mathacademy.com"))
+    },
     test("#1105: same app assigned to two profiles with different exempt flags → independent") {
       for {
         _     <- cleanDb

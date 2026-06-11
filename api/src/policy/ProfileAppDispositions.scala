@@ -119,7 +119,12 @@ final case class AppDisposition(
     assignmentId: AppPolicyAssignmentId,
     mode: AppMode,
     exemptFromDaily: Boolean,
-    dailyMinutes: Int,
+    // #1627: `None` means "no per-app limit configured" — distinct from a 0-minute cap. Downstream
+    // consumers (`PolicyService.exemptUnderCapHosts`, `appCapExhaustedHosts`) treat `None` as
+    // never-exhausted, so an exempt-from-daily app with no own cap always carves around whole-MAC
+    // blocks; without this the repo's previous COALESCE(...,0) collapsed NULL → 0 and the carve
+    // gate (`usedMinutes < 0`) was always false.
+    dailyMinutes: Option[Int],
     label: String,
     hosts: List[String],
 )

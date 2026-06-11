@@ -108,7 +108,8 @@ export interface AppTimeLimit {
   id: number
   profileId: number
   domainPattern: string
-  dailyMinutes: number
+  // #1627: null means "no per-app limit configured" (distinct from a 0-minute cap).
+  dailyMinutes: number | null
   label: string
   exemptFromDaily: boolean
 }
@@ -308,9 +309,11 @@ export interface DeviceStats {
 export interface AppUsage {
   label: string
   domainPattern: string
-  limitMins: number
+  // #1627: null means "no per-app limit configured". `remainingMins` is null
+  // when `limitMins` is null — there is no remaining quantity without a cap.
+  limitMins: number | null
   usedMins: number
-  remainingMins: number
+  remainingMins: number | null
 }
 
 export interface DeviceTimeStatus {

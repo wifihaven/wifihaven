@@ -66,7 +66,7 @@ object PerAppScheduleSpec extends ZIOSpecDefault {
       assignmentId = a.id,
       mode = a.mode,
       exemptFromDaily = a.exemptFromDaily,
-      dailyMinutes = a.dailyMinutes.getOrElse(0),
+      dailyMinutes = a.dailyMinutes,
       label = s"app:${a.appId.value}",
       hosts = hostsByApp.getOrElse(a.appId, Nil).map(_.value),
     )
@@ -100,7 +100,7 @@ object PerAppScheduleSpec extends ZIOSpecDefault {
       assignmentId = AppPolicyAssignmentId(assignmentId),
       mode = mode,
       exemptFromDaily = exempt,
-      dailyMinutes = 0,
+      dailyMinutes = None,
       label = s"app:$appId",
       hosts = hosts,
     )

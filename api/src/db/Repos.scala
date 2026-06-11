@@ -1113,7 +1113,12 @@ class AppTimeLimitRepoLive(xa: Transactor[Task]) extends AppTimeLimitRepo {
   // `apa.id` (assignmentId) and `apa.mode` are also carried so the `ProfileAppDispositions`
   // collapse can route each (assignment × host) row to the right bucket without a second repo
   // read. The Postgres enum `app_mode` round-trips via doobie's string type-class.
-  private type R = (ProfileId, String, Int, String, Boolean, AppId, AppPolicyAssignmentId, String)
+  // #1627: `apa.daily_minutes` is projected as Option[Int] (not COALESCE(...,0)). `None` means
+  // "no per-app limit configured" and is treated as never-exhausted by the exempt carve-out gate
+  // in `PolicyService.exemptUnderCapHosts`; the COALESCE silently collapsed that case to 0 and
+  // made the exempt+no-limit carve unreachable.
+  private type R =
+    (ProfileId, String, Option[Int], String, Boolean, AppId, AppPolicyAssignmentId, String)
   private def toS(r: R) =
     AppTimeLimit(
       AppTimeLimitId(0L),
@@ -1129,7 +1134,7 @@ class AppTimeLimitRepoLive(xa: Transactor[Task]) extends AppTimeLimitRepo {
 
   def listForProfile(pid: ProfileId) =
     DbMetrics.timed("appTimeLimit.listForProfile")(
-      sql"""SELECT apa.profile_id, ah.host, COALESCE(apa.daily_minutes, 0), a.slug,
+      sql"""SELECT apa.profile_id, ah.host, apa.daily_minutes, a.slug,
                    apa.exempt_from_daily, a.id, apa.id, apa.mode::text
             FROM app_policy_assignments apa
             JOIN apps a       ON a.id = apa.app_id
@@ -1143,7 +1148,7 @@ class AppTimeLimitRepoLive(xa: Transactor[Task]) extends AppTimeLimitRepo {
     )
 
   def listAll =
-    sql"""SELECT apa.profile_id, ah.host, COALESCE(apa.daily_minutes, 0), a.slug,
+    sql"""SELECT apa.profile_id, ah.host, apa.daily_minutes, a.slug,
                  apa.exempt_from_daily, a.id, apa.id, apa.mode::text
             FROM app_policy_assignments apa
             JOIN apps a       ON a.id = apa.app_id
