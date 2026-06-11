@@ -702,7 +702,11 @@ object UsageRoutes {
         .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Profile not found")))
       all       <- deviceRepo.listAll.mapError(ApiError.Db(_))
       appLimits <- appTimeLimitRepo.listForProfile(pid).mapError(ApiError.Db(_))
-      exempt    = appLimits.filter(_.exemptFromDaily).map(_.domainPattern)
+      // #1630: read the canonical exempt-pattern primitive (`ProfileAppDispositions.exemptPatterns`)
+      // instead of re-deriving the filter inline — the same §single-source-of-truth shape the
+      // collapse exists to enforce. Both sides agree on the current input (the repo returns rows
+      // for every mode), so this is a structural cleanup rather than a behavior change.
+      exempt    = wifihaven.api.policy.ProfileAppDispositions.from(appLimits).exemptPatterns
       devices   = all.filter(_.profileId.contains(pid))
       macs      = devices.map(_.mac)
       nameByMac = devices.iterator.map(d => d.mac -> d.name).toMap

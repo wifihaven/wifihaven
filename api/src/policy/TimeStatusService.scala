@@ -411,27 +411,24 @@ object TimeStatusService {
   }
 
   /**
-   * #1505 + #1564: collapse the per-(assignment × host) [[AppTimeLimit]] rows into one group per
-   * app, keyed by the typed `apps.id` FK (the canonical identity carried straight from the repo
-   * join). `label` ("app:<slug>") stays alongside as display text for the SPA wire, but the cap /
-   * rollup surfaces compose on `appId`. `dailyMinutes` and `exemptFromDaily` are uniform across an
-   * app's synthesized rows, so we take them off any row. The representative `domainPattern` is the
-   * apex (shortest host) — used only for the wire/UI; the `hosts` list drives every per-app
-   * computation. Stable order (by label) for deterministic output.
+   * #1505 + #1564 + #1630: the per-app cap groups for this profile — one entry per
+   * `mode=TimeLimited` assignment, in the tuple shape downstream consumers still expect: `(appId,
+   * label, dailyMinutes, exemptFromDaily, hosts, representativeHost)`.
+   *
+   * Post-#1630 this is a thin adapter over the single fold [[ProfileAppDispositions.from]]: the
+   * case-on-mode that filters this list down to TimeLimited assignments lives in
+   * `ProfileAppDispositions.capGroups`. Keeping the tuple wrapper avoids churning every downstream
+   * callsite while removing the duplicated per-app collapse that — in its previous standalone form
+   * — drifted from `PolicyService.expandAppDispositions` (the defect behind #1630). Stable order by
+   * `label`.
    */
   private[policy] def groupAppLimits(
       appLimits: List[AppTimeLimit],
   ): List[(AppId, String, Int, Boolean, List[String], String)] =
-    appLimits
-      .groupBy(_.appId)
-      .toList
-      .map { case (appId, lims) =>
-        val label = lims.head.label
-        val hosts = lims.map(_.domainPattern).distinct
-        val rep   = hosts.minByOption(_.length).getOrElse(label)
-        (appId, label, lims.map(_.dailyMinutes).max, lims.exists(_.exemptFromDaily), hosts, rep)
-      }
-      .sortBy(_._2)
+    ProfileAppDispositions.from(appLimits).capGroups.map { d =>
+      val rep = d.hosts.minByOption(_.length).getOrElse(d.label)
+      (d.appId, d.label, d.dailyMinutes, d.exemptFromDaily, d.hosts, rep)
+    }
 
   /**
    * #1505 + #1504: per-app [[AppDayState]] list — one entry per app, with `usedMinutes` aggregated
@@ -546,20 +543,16 @@ object TimeStatusService {
    * tail stay exact across the watermark boundary.
    */
   /**
-   * #1531: the WHOLE host-set of every exempt-from-daily app — the patterns excluded from the daily
-   * total. Derived from the same per-app collapse (`groupAppLimits`) the per-app bars and
-   * `computeBlockRules` use, so the displayed `usedMinutes`, the snapshot's `blocked`, and the
-   * per-device summaries (#1546) all read ONE explicit host-set. The previous
-   * `appLimits.map(_.domainPattern)` happened to span the whole set only because `listForProfile`
-   * emits one row per host; reusing the collapse makes the whole-host-set exemption explicit rather
-   * than an implicit dependency on that row shape, which would silently regress to apex-only the
-   * moment those rows were ever de-duped upstream. Shared by [[usedSecondsForProfile]] and
-   * [[usedSecondsByMac]] so the two can never derive exempt patterns differently.
+   * #1531 + #1630: the WHOLE host-set of every `exemptFromDaily=true` assignment — the patterns
+   * excluded from the daily total. Post-#1630 this is a thin accessor on the single fold
+   * [[ProfileAppDispositions.from]]: the previous version filtered `groupAppLimits` for exempt
+   * rows, but `groupAppLimits` only saw `mode=TimeLimited` rows (the repo filter), so a
+   * `mode=Allowed, exemptFromDaily=true` assignment never reached this list and its traffic counted
+   * against the daily total. The collapse fixes that by making `ProfileAppDispositions` the single
+   * point of mode-case-analysis.
    */
   private[policy] def exemptPatterns(appLimits: List[AppTimeLimit]): List[String] =
-    groupAppLimits(appLimits).collect {
-      case (_, _, _, exempt, hosts, _) if exempt => hosts
-    }.flatten
+    ProfileAppDispositions.from(appLimits).exemptPatterns
 
   /**
    * #1516 + #1564: per-app engaged seconds for a profile, keyed by `apps.id`, derived from the
@@ -606,7 +599,7 @@ object TimeStatusService {
    * app's host is still excluded — it is simply no longer mis-classified as a heartbeat first.
    */
   private[policy] def appHostPatterns(appLimits: List[AppTimeLimit]): List[String] =
-    groupAppLimits(appLimits).flatMap(_._5)
+    ProfileAppDispositions.from(appLimits).appHostPatterns
 
   def usedSecondsForProfile(
       profile: Profile,

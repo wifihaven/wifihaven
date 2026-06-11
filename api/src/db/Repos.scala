@@ -195,10 +195,18 @@ trait TimeLimitRepo {
 }
 
 /**
- * Post-#764 the `site_time_limits` table is dropped. This repo now synthesizes the legacy
- * `AppTimeLimit` shape from `app_policy_assignments` rows with mode='time_limited', emitting one
- * row per (assignment × host) — mirroring the snapshot expansion in `PolicyService`. Synthetic ids
- * are 0L; callers that need stable ids should switch to AppRepo directly.
+ * Post-#764 the `site_time_limits` table is dropped. This repo now synthesizes the `AppTimeLimit`
+ * shape from `app_policy_assignments` rows — emitting one row per (assignment × host) — that the
+ * [[wifihaven.api.policy.ProfileAppDispositions]] collapse folds into every downstream per-app
+ * projection. Synthetic `id` is `0L`; the canonical assignment identity is the `assignmentId`
+ * field, carried from `app_policy_assignments.id`.
+ *
+ * Post-#1630 the SQL filter is dropped: rows for EVERY mode (Allowed, Blocked, TimeLimited) are
+ * returned, with `mode` carried on the row. The single fold case-analyzes on `mode` to route each
+ * disposition to the right bucket. Before #1630 the repo filtered `WHERE mode='time_limited'`,
+ * which hid `mode=Allowed, exemptFromDaily=true` assignments from the daily-usage path and let
+ * their traffic count against the daily total even though the SPA contract was that "Khan doesn't
+ * count". The collapse removes that structural seam.
  */
 trait AppTimeLimitRepo {
   def listForProfile(pid: ProfileId): Task[List[AppTimeLimit]]
@@ -1099,20 +1107,34 @@ class TimeLimitRepoLive(xa: Transactor[Task]) extends TimeLimitRepo {
 }
 
 class AppTimeLimitRepoLive(xa: Transactor[Task]) extends AppTimeLimitRepo {
-  // #1564: (profileId, host, dailyMinutes, slug, exemptFromDaily, appId) — the join already has
-  // `apps.id` in scope, so we carry it through as the canonical FK reference instead of throwing
-  // it away and re-resolving the slug downstream.
-  private type R = (ProfileId, String, Int, String, Boolean, AppId)
+  // #1564 + #1630: (profileId, host, dailyMinutes, slug, exemptFromDaily, appId, assignmentId,
+  // mode) — the join already has `apps.id` in scope, so we carry it through as the canonical FK
+  // reference instead of throwing it away and re-resolving the slug downstream. Post-#1630 the
+  // `apa.id` (assignmentId) and `apa.mode` are also carried so the `ProfileAppDispositions`
+  // collapse can route each (assignment × host) row to the right bucket without a second repo
+  // read. The Postgres enum `app_mode` round-trips via doobie's string type-class.
+  private type R = (ProfileId, String, Int, String, Boolean, AppId, AppPolicyAssignmentId, String)
   private def toS(r: R) =
-    AppTimeLimit(AppTimeLimitId(0L), r._1, r._2, r._3, s"app:${r._4}", r._5, r._6)
+    AppTimeLimit(
+      AppTimeLimitId(0L),
+      r._1,
+      r._2,
+      r._3,
+      s"app:${r._4}",
+      r._5,
+      r._6,
+      AppMode.parse(r._8).getOrElse(AppMode.TimeLimited),
+      r._7,
+    )
 
   def listForProfile(pid: ProfileId) =
     DbMetrics.timed("appTimeLimit.listForProfile")(
-      sql"""SELECT apa.profile_id, ah.host, COALESCE(apa.daily_minutes, 0), a.slug, apa.exempt_from_daily, a.id
+      sql"""SELECT apa.profile_id, ah.host, COALESCE(apa.daily_minutes, 0), a.slug,
+                   apa.exempt_from_daily, a.id, apa.id, apa.mode::text
             FROM app_policy_assignments apa
             JOIN apps a       ON a.id = apa.app_id
             JOIN app_hosts ah ON ah.app_id = apa.app_id
-           WHERE apa.profile_id = $pid AND apa.mode = 'time_limited'
+           WHERE apa.profile_id = $pid
            ORDER BY apa.id, ah.host"""
         .query[R]
         .map(toS)
@@ -1121,11 +1143,11 @@ class AppTimeLimitRepoLive(xa: Transactor[Task]) extends AppTimeLimitRepo {
     )
 
   def listAll =
-    sql"""SELECT apa.profile_id, ah.host, COALESCE(apa.daily_minutes, 0), a.slug, apa.exempt_from_daily, a.id
+    sql"""SELECT apa.profile_id, ah.host, COALESCE(apa.daily_minutes, 0), a.slug,
+                 apa.exempt_from_daily, a.id, apa.id, apa.mode::text
             FROM app_policy_assignments apa
             JOIN apps a       ON a.id = apa.app_id
             JOIN app_hosts ah ON ah.app_id = apa.app_id
-           WHERE apa.mode = 'time_limited'
            ORDER BY apa.id, ah.host"""
       .query[R]
       .map(toS)
