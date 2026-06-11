@@ -133,15 +133,16 @@ object BlockedRoutes {
       reason: String,
       blocklistRepo: BlocklistRepo,
   ): Task[(String, Option[String])] = BlockReason.fromWire(reason) match {
-    case MacBlockReason.Paused       => ZIO.succeed(("paused", None))
-    case MacBlockReason.Schedule     => ZIO.succeed(("schedule", None))
-    case MacBlockReason.TimeLimit    => ZIO.succeed(("time_limit", None))
-    case BlockReason.ExtraBlocked    => ZIO.succeed(("extra_blocked", None))
-    case BlockReason.AppTimeLimit(_) =>
+    case MacBlockReason.Paused         => ZIO.succeed(("paused", None))
+    case MacBlockReason.Schedule       => ZIO.succeed(("schedule", None))
+    case MacBlockReason.TimeLimit      => ZIO.succeed(("time_limit", None))
+    case BlockReason.ExtraBlocked      => ZIO.succeed(("extra_blocked", None))
+    case BlockReason.ExtraBlockedBy(_) => ZIO.succeed(("extra_blocked", None)) // #1645
+    case BlockReason.AppTimeLimit(_)   =>
       // #1518: rename `site_time_limit` → `app_time_limit`. SPA-API surface,
       // updated atomically with the SPA in the same PR.
       ZIO.succeed(("app_time_limit", None))
-    case BlockReason.Category(id)    =>
+    case BlockReason.Category(id)      =>
       blocklistRepo
         .findMeta(id)
         .map(meta => ("category", meta.map(_.name)))

@@ -1725,33 +1725,40 @@ object MacBlockReason {
 // the event-table form without re-encoding (their wire form is unchanged in
 // the snapshot JSON — only the event-DB encoding becomes kind-tagged).
 object BlockReason {
-  case object Allow                      extends BlockReason {
+  case object Allow                         extends BlockReason {
     val jsonKind = "allow"; val wireKind = "allow"
   }
-  case object Blocked                    extends BlockReason {
+  case object Blocked                       extends BlockReason {
     val jsonKind = "blocked"; val wireKind = "blocked"
   }
-  case object ExtraAllowed               extends BlockReason {
+  case object ExtraAllowed                  extends BlockReason {
     val jsonKind = "extraAllowed"; val wireKind = "extra_allowed"
   }
-  case object ExtraBlocked               extends BlockReason {
+  case object ExtraBlocked                  extends BlockReason {
     val jsonKind = "extraBlocked"; val wireKind = "extra_blocked"
   }
-  case object NoProfile                  extends BlockReason {
+  case object NoProfile                     extends BlockReason {
     val jsonKind = "noProfile"; val wireKind = "no_profile"
   }
-  case class Category(slug: BlocklistId) extends BlockReason {
+  case class Category(slug: BlocklistId)    extends BlockReason {
     val jsonKind = "category"; val wireKind = "category"
   }
-  case class AppTimeLimit(label: String) extends BlockReason {
+  case class AppTimeLimit(label: String)    extends BlockReason {
     // #1518 rename; the legacy `siteTimeLimit` jsonKind is still ACCEPTED by
     // the decoder below for V40-migrated DB rows, but never emitted.
     val jsonKind = "appTimeLimit"; val wireKind = "app_time_limit"
   }
-  case class AppBlocked(appId: String)   extends BlockReason {
+  case class AppBlocked(appId: String)      extends BlockReason {
     val jsonKind = "appBlocked"; val wireKind = "app"
   }
-  case class Unknown(raw: String)        extends BlockReason {
+  // #1645: labels a per-host extraBlocked drop with the matched eb_<host>
+  // rule so triage can see *which* extraBlocked entry fired. Wire form is
+  // `host:<host>`; the legacy bare `host` alias below still parses as the
+  // anonymous `ExtraBlocked` for pre-rollout routers.
+  case class ExtraBlockedBy(host: Hostname) extends BlockReason {
+    val jsonKind = "extraBlockedBy"; val wireKind = "host"
+  }
+  case class Unknown(raw: String)           extends BlockReason {
     // `wireKind` here is informational only; `asWire(Unknown(raw))` emits
     // `raw` verbatim, not via this field, so a non-categorizable wire string
     // round-trips through `fromWire`.
@@ -1827,6 +1834,14 @@ object BlockReason {
         AppTimeLimit(s.stripPrefix("app_time_limit:"))
       else if (s.startsWith("app:"))
         AppBlocked(s.stripPrefix("app:"))
+      else if (s.startsWith("host:"))
+        // #1645: `host:<host>` names the matched eb_<host> rule. Bare `host`
+        // (no colon) is still handled by the LegacyWireAliases lookup above
+        // and resolves to the anonymous ExtraBlocked.
+        Hostname
+          .parse(s.stripPrefix("host:"))
+          .map(ExtraBlockedBy(_))
+          .getOrElse(Unknown(s))
       else
         Unknown(s)
     }
@@ -1852,6 +1867,7 @@ object BlockReason {
     case AppTimeLimit(label) =>
       s"app_time_limit:$label" // #1518 rename; routers echo back what they receive, no legacy parse needed
     case AppBlocked(appId)   => s"app:$appId"
+    case ExtraBlockedBy(h)   => s"host:${h.value}" // #1645
     case Unknown(raw)        => raw
     case r                   => r.wireKind
   }
@@ -1871,6 +1887,8 @@ object BlockReason {
     // for V40-migrated DB rows and any older SPA build that pattern-matches on it.
     case AppBlocked(appId)   =>
       Json.Obj("kind" -> Json.Str("appBlocked"), "appId" -> Json.Str(appId))
+    case ExtraBlockedBy(h)   =>
+      Json.Obj("kind" -> Json.Str("extraBlockedBy"), "host" -> Json.Str(h.value))
     case Unknown(raw)        =>
       Json.Obj("kind" -> Json.Str("unknown"), "raw" -> Json.Str(raw))
     case r                   =>
@@ -1907,6 +1925,11 @@ object BlockReason {
                 // (written before that PR) still decode.
                 field("label").map(AppTimeLimit(_))
               case "appBlocked"                     => field("appId").map(AppBlocked(_))
+              case "extraBlockedBy"                 =>
+                // #1645
+                field("host").flatMap(s =>
+                  Hostname.parse(s).left.map(e => s"invalid host: $e").map(ExtraBlockedBy(_)),
+                )
               case "unknown"                        => field("raw").map(Unknown(_))
               case other                            => Left(s"BlockReason: unknown kind '$other'")
             }
