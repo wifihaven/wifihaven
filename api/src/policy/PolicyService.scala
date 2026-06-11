@@ -6,9 +6,11 @@ import wifihaven.api.metrics.AppMetrics
 import wifihaven.shared.{Schedule as DbSchedule, *}
 import wifihaven.shared.types.*
 import zio.{Clock as _, *}
+import zio.json.*
 
 import java.security.MessageDigest
 import java.time.{DayOfWeek, Instant, LocalDate}
+import java.util.concurrent.atomic.AtomicReference
 
 trait PolicyService {
   def snapshot: Task[PolicySnapshot]
@@ -120,6 +122,16 @@ class PolicyServiceLive(
   // hosts when assembling the global section. (#1321 moved the curated
   // `infraAllowHosts` onto the same global path, retiring its per-profile copy.)
   private val uiGlobalAllow: List[Hostname] = uiAllowedHosts
+
+  // #1641: process-local last-seen-etag for snapshot-change INFO logging. On every `snapshot`
+  // call we atomically compare-and-set the latest etag here; only the winner of the swap emits
+  // the `event=snapshot_changed` INFO log carrying the full snapshot JSON. One line per ETag
+  // transition (NOT per poll) so volume is bounded by how often policy actually changes.
+  // Render retains stdout for ~7 days, giving roughly a week of snapshot history for free —
+  // long enough to investigate most incidents (the #1640 motivation). Not a metric (cardinality
+  // fence; snapshot JSON is not metric data).
+  private val lastSnapshotEtag: AtomicReference[Option[ETag]] =
+    new AtomicReference(Option.empty[ETag])
 
   // #1069/#1482: per-host /decision fallback must see the same schedule downtime as the snapshot —
   // the windows of every block-mode named schedule attached to the profile (as synthetic
@@ -267,8 +279,29 @@ class PolicyServiceLive(
       // #1318: surface the global-section size + default-deny profile count for operators.
       AppMetrics
         .setGlobalPolicy(snap.global.extraAllowed.size, defaultDenyProfiles)
+        .zipRight(logSnapshotChanged(snap))
         .as(snap)
     }
+
+  /**
+   * #1641: emit an INFO log line carrying the full snapshot JSON the first time we see a given ETag
+   * in this process. Atomic compare-and-set against `lastSnapshotEtag` — only the caller who
+   * swapped a new etag in logs, so concurrent pollers cannot duplicate the line. One line per ETag
+   * transition (not per poll), bounded by how often policy actually changes.
+   */
+  private def logSnapshotChanged(snap: PolicySnapshot): UIO[Unit] = ZIO.suspendSucceed {
+    val prev    = lastSnapshotEtag.get()
+    val changed = !prev.contains(snap.etag) && lastSnapshotEtag.compareAndSet(prev, Some(snap.etag))
+    if (!changed) ZIO.unit
+    else {
+      val json = snap.toJson
+      ZIO.logInfo(
+        s"event=snapshot_changed etag=${snap.etag.value} " +
+          s"prevEtag=${prev.map(_.value).getOrElse("none")} " +
+          s"bytes=${json.length} snapshot=$json",
+      )
+    }
+  }
 
   def renderBlocklist(id: BlocklistId): Task[Option[(ETag, String)]] =
     for {
