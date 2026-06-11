@@ -120,6 +120,34 @@ describe("parse_client_hello", function()
                                      sni = "calendar.google.com" })
     assert.equal("calendar.google.com", sni.parse_client_hello(rec))
   end)
+
+  it("extracts SNI from a snaplen-clipped ClientHello when the server_name ext is in the captured prefix (#573)", function()
+    -- Regression for the prod-equivalent bug the Gate 2 e2e caught: real
+    -- OpenSSL/curl TLS 1.3 ClientHellos are padded past ~512 bytes, so under
+    -- the capture snaplen the tail (large key_share / padding) is clipped. The
+    -- server_name extension sits near the FRONT, so it is fully present in the
+    -- captured prefix — the parser must still return it instead of rejecting
+    -- the whole record because its declared length exceeds the buffer.
+    local sni_str = "example.com"
+    local entry   = u8(0) .. u16(#sni_str) .. sni_str
+    local list    = u16(#entry) .. entry
+    local sni_ext = u16(0x0000) .. u16(#list) .. list
+    -- SNI FIRST, then a large trailing extension that the snaplen clip removes.
+    local big_ext = u16(0x0033) .. u16(800) .. string.rep("\0", 800)
+    local exts    = sni_ext .. big_ext
+    local body =
+      u16(0x0303) .. string.rep("\0", 32) ..   -- legacy_version + random
+      u8(0) ..                                 -- empty session id
+      u16(2) .. bytes(0x13, 0x01) ..           -- one cipher suite
+      u8(1) .. u8(0) ..                        -- null compression
+      u16(#exts) .. exts                       -- extensions (declared full size)
+    local handshake = u8(0x01) .. u24(#body) .. body
+    local rec       = u8(0x16) .. u16(0x0303) .. u16(#handshake) .. handshake
+    -- Clip well past the SNI ext (~byte 80) but far short of the declared
+    -- ~880-byte record, exactly as a small snaplen would.
+    local clipped = rec:sub(1, 130)
+    assert.equal("example.com", sni.parse_client_hello(clipped))
+  end)
 end)
 
 -- ---------------------------------------------------------------------------
