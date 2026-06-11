@@ -4,11 +4,12 @@
 -- /www and is easy to miss.
 local M = {}
 
--- Block-page IPC (#437, #594): the agent writes after every policy apply,
--- the uhttpd lua handler reads on each request.
+-- Block-page IPC: the agent writes the API URL after every policy apply,
+-- the uhttpd lua handler reads it on each request. The per-MAC reason and
+-- per-(MAC, host) classifier files (#437 / #594) were removed in #1618 —
+-- post-#1615/#1617 the SPA derives the canonical reason from
+-- GET /api/blocked, so the on-disk IPC has no readers left.
 M.block_page_api_url  = "/var/run/wifihaven/api_url"
-M.block_page_reasons  = "/var/run/wifihaven/blocked_reasons"
-M.block_page_hosts    = "/var/run/wifihaven/blocked_hosts"
 
 -- ip → hostname cache (#259): wifihaven-dns-tail writes, wifihaven-agent reads.
 M.dns_cache = "/tmp/wifihaven-dns-cache.txt"

@@ -414,6 +414,7 @@ object Main extends ZIOAppDefault {
             clock,
           ) ++
           AppRoutes.routes(auth, appRepo, profileRepo, upRepo, templates) ++
+          AdminDebugRoutes.routes(auth, policy) ++
           DebugRoutes.routes(
             cfg.debugEnabled,
             deviceRepo,

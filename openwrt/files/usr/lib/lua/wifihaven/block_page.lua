@@ -3,9 +3,11 @@
 -- The static index.html previously served at /www/wifihaven/index.html cannot
 -- know which device requested it (the nft DNAT rewrites the destination only;
 -- the original URL is whatever the client typed). This module looks up the
--- client MAC from /proc/net/arp using REMOTE_ADDR and the policy reason from
--- the agent-written reasons file, then renders an HTML page that redirects to
--- the API's /blocked page with mac and reason populated.
+-- client MAC from /proc/net/arp using REMOTE_ADDR and renders an HTML page
+-- that redirects to the SPA's /blocked page carrying only mac and host — the
+-- SPA derives the canonical reason server-side from GET /api/blocked
+-- (PolicyService.decide), so the router no longer ships a reason through
+-- this path (#1615/#1617/#1618).
 
 local M = {}
 
@@ -23,41 +25,6 @@ function M.parse_arp(arp_content, ip)
        and fields[4]:match("^%x%x:%x%x:%x%x:%x%x:%x%x:%x%x$")
        and fields[4] ~= "00:00:00:00:00:00" then
       return fields[4]:lower()
-    end
-  end
-  return nil
-end
-
--- Parse the reasons file (lines of "<mac>\t<reason>") and return the reason
--- for `mac`, or nil. Mac comparison is case-insensitive.
-function M.parse_reasons(content, mac)
-  if not content or not mac then return nil end
-  local target = mac:lower()
-  for line in content:gmatch("[^\n]+") do
-    local m, r = line:match("^(%S+)%s+(%S+)$")
-    if m and m:lower() == target then return r end
-  end
-  return nil
-end
-
--- Parse the per-(MAC, host) classifier file (lines of "<mac>\t<host>\t<source>")
--- and return the source string for (mac, host), or nil. <source> is
--- "extra_blocked" or "category:<id>". Lookup uses dnsmasq nftset suffix-match
--- semantics: the file entry matches when host equals the request host or the
--- request host is a subdomain of the entry. MAC comparison is
--- case-insensitive; host comparison is lower-case. (#594)
-function M.parse_blocked_hosts(content, mac, host)
-  if not content or not mac or not host or host == "" then return nil end
-  local mac_target  = mac:lower()
-  local host_target = host:lower()
-  for line in content:gmatch("[^\n]+") do
-    local m, h, s = line:match("^(%S+)\t(%S+)\t(%S+)$")
-    if m and m:lower() == mac_target then
-      local h_lower = h:lower()
-      if host_target == h_lower
-         or host_target:sub(-(#h_lower + 1)) == "." .. h_lower then
-        return s
-      end
     end
   end
   return nil
@@ -104,28 +71,6 @@ function M.build_dest_url(base_url, host, mac)
   return base_url .. "/blocked"
       .. "?host=" .. url_encode(host)
       .. "&mac="  .. url_encode(mac or "")
-end
-
--- Inline copy used when API_URL is not (yet) configured. Mirrors the
--- BlockedPage.tsx mapping so the local fallback page still communicates the
--- reason instead of generic "blocked".
-local INLINE_COPY = {
-  Paused       = "This profile is paused.",
-  Schedule     = "This is scheduled quiet time.",
-  TimeLimit    = "Daily screen time limit reached.",
-  Manual       = "This device has been blocked by a parent.",
-  ExtraBlocked = "This site is blocked by the household.",
-}
-
-function M.inline_copy_for(reason)
-  reason = reason or ""
-  -- #594: category-blocklist hits arrive as "category:<id>"; surface the id in
-  -- the inline copy so the user can see which list matched.
-  local cat_id = reason:match("^category:(.+)$")
-  if cat_id then
-    return "Blocked category: " .. cat_id .. "."
-  end
-  return INLINE_COPY[reason] or "This site is blocked."
 end
 
 -- Render the HTML body for the block page. If base_url is set, returns a tiny

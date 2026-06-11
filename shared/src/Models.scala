@@ -273,6 +273,14 @@ case class AppTimeLimit(
     // SPA-facing display text only. Defaults to AppId(0L) so seed/test constructions that don't
     // care about the FK still compile during the rollout.
     appId: AppId = AppId(0L),
+    // #1630: the assignment's mode and id, carried straight from the listForProfile join. Before
+    // the #1630 collapse the repo filtered `WHERE mode='time_limited'` and these were implicit
+    // (every row was TimeLimited, every assignment unique). Post-collapse the repo returns every
+    // assignment's rows across every mode, so the projection needs both fields to identify the
+    // owning assignment and decide which downstream bucket the row contributes to. Default
+    // values keep legacy hand-built test constructions (single-app TimeLimited rows) compiling.
+    mode: AppMode = AppMode.TimeLimited,
+    assignmentId: AppPolicyAssignmentId = AppPolicyAssignmentId(0L),
 ) derives JsonCodec
 
 // #761: app concept. An App is a household-scoped named bundle of host

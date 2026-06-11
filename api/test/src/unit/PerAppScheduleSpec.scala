@@ -7,13 +7,13 @@ import zio.test.*
 import java.time.{Instant, LocalTime, ZoneId, ZonedDateTime}
 
 /**
- * #1379: per-app schedule evaluation — the pure server-side collapse of an app's (schedule, mode)
- * rules into the existing `extraAllowed` / `extraBlocked` host buckets. These unit tests pin the
- * schedule-boundary behaviour ([[PolicyService.windowActiveAt]] reuses the DST-correct
+ * #1379/#1630: per-app schedule evaluation — the pure server-side collapse of an app's (schedule,
+ * mode) rules into the existing `extraAllowed` / `extraBlocked` host buckets. These unit tests pin
+ * the schedule-boundary behaviour ([[PolicyService.windowActiveAt]] reuses the DST-correct
  * [[PolicyService.scheduleActiveAt]]), the effective-disposition resolution
- * ([[PolicyService.expandAppDispositions]] — window overrides base mode, allowed beats blocked),
- * and the daily-cap carve gate ([[PolicyService.dailyCapExhausted]]). No wire shape is touched —
- * the only outputs are the two host lists.
+ * ([[ProfileAppDispositions.enforcement]] — window overrides base mode, allowed beats blocked), and
+ * the daily-cap carve gate ([[PolicyService.dailyCapExhausted]]). No wire shape is touched — the
+ * only outputs are the two host lists.
  */
 object PerAppScheduleSpec extends ZIOSpecDefault {
 
@@ -61,13 +61,17 @@ object PerAppScheduleSpec extends ZIOSpecDefault {
       capExhausted: Boolean,
       now: Instant,
   ): (Set[String], Set[String]) = {
-    val (allowed, blocked) = PolicyService.expandAppDispositions(
-      assigns = List(a),
-      hostsByApp = hostsByApp,
-      schedWindows = Map(a.id -> rules),
-      capExhausted = capExhausted,
-      now = now,
+    val d                  = AppDisposition(
+      appId = a.appId,
+      assignmentId = a.id,
+      mode = a.mode,
+      exemptFromDaily = a.exemptFromDaily,
+      dailyMinutes = a.dailyMinutes,
+      label = s"app:${a.appId.value}",
+      hosts = hostsByApp.getOrElse(a.appId, Nil).map(_.value),
     )
+    val (allowed, blocked) =
+      ProfileAppDispositions(List(d)).enforcement(Map(a.id -> rules), capExhausted, now)
     (allowed.map(_.value).toSet, blocked.map(_.value).toSet)
   }
 
@@ -78,7 +82,80 @@ object PerAppScheduleSpec extends ZIOSpecDefault {
   // Wed 2026-05-13 12:00 UTC — outside bedtime.
   private val atNoon    = instantAt(2026, 5, 13, 12, 0, UTC)
 
+  // ── #1630: structural SSOT pin ─────────────────────────────────────────────
+  // The collapse's contract: the single fold consumes the same
+  // `List[AppPolicyAssignment]` -> ` ProfileAppDispositions` and every projection is read off
+  // that one value. The test below pins the invariant that fails the moment the
+  // `extraAllowed`/`extraBlocked` reader and the `exemptPatterns` reader diverge again — the
+  // exact shape of the #1630 defect.
+  private def disposition(
+      assignmentId: Long,
+      appId: Long,
+      mode: AppMode,
+      exempt: Boolean,
+      hosts: List[String],
+  ): AppDisposition =
+    AppDisposition(
+      appId = AppId(appId),
+      assignmentId = AppPolicyAssignmentId(assignmentId),
+      mode = mode,
+      exemptFromDaily = exempt,
+      dailyMinutes = None,
+      label = s"app:$appId",
+      hosts = hosts,
+    )
+
   def spec = suite("per-app schedules (#1379)")(
+    suite("#1630 collapse — single fold structural invariants")(
+      test("every host on extraAllowed sourced from an exempt assignment is on exemptPatterns") {
+        val ds           = ProfileAppDispositions(
+          List(
+            disposition(1L, 100L, AppMode.Allowed, exempt = true, List("khan.org")),
+            disposition(2L, 200L, AppMode.Allowed, exempt = false, List("wikipedia.org")),
+            disposition(3L, 300L, AppMode.Blocked, exempt = true, List("badhost.com")),
+            disposition(4L, 400L, AppMode.TimeLimited, exempt = false, List("youtube.com")),
+          ),
+        )
+        val (allowed, _) = ds.enforcement(Map.empty, capExhausted = false, now = Instant.EPOCH)
+        val exemptHosts  = ds.exemptPatterns.toSet
+        // Every host whose owning assignment is exempt AND that landed in extraAllowed must also
+        // be on exemptPatterns. This is the structural agreement that #1630 was missing.
+        val exemptAllowedHosts = allowed
+          .map(_.value)
+          .toSet
+          .intersect(
+            ds.perApp.filter(_.exemptFromDaily).flatMap(_.hosts).toSet,
+          )
+        assertTrue(exemptAllowedHosts.subsetOf(exemptHosts))
+      },
+      test(
+        "cap groups contain only mode=TimeLimited assignments; structural projections include all modes",
+      ) {
+        val ds = ProfileAppDispositions(
+          List(
+            disposition(1L, 100L, AppMode.Allowed, exempt = true, List("khan.org")),
+            disposition(2L, 200L, AppMode.Blocked, exempt = false, List("badhost.com")),
+            disposition(3L, 300L, AppMode.TimeLimited, exempt = false, List("youtube.com")),
+          ),
+        )
+        // capGroups: TimeLimited only.
+        assertTrue(ds.capGroups.map(_.appId) == List(AppId(300L))) &&
+        // appHostPatterns: mode-agnostic. Attribution should beat suppression for any host an
+        // assigned app names, regardless of its mode.
+        assertTrue(ds.appHostPatterns.toSet == Set("khan.org", "badhost.com", "youtube.com")) &&
+        // exemptPatterns: mode-agnostic, only filters on the exempt flag.
+        assertTrue(ds.exemptPatterns.toSet == Set("khan.org"))
+      },
+      test("Allowed-mode exempt app's hosts reach BOTH extraAllowed AND exemptPatterns") {
+        // The #1630 acceptance shape at the structural level.
+        val ds           = ProfileAppDispositions(
+          List(disposition(1L, 100L, AppMode.Allowed, exempt = true, List("khan.org"))),
+        )
+        val (allowed, _) = ds.enforcement(Map.empty, capExhausted = false, Instant.EPOCH)
+        assertTrue(allowed.map(_.value) == List("khan.org")) &&
+        assertTrue(ds.exemptPatterns == List("khan.org"))
+      },
+    ),
     suite("windowActiveAt — boundaries reuse scheduleActiveAt")(
       test("exact start is inclusive (active)") {
         val w = win(LocalTime.of(9, 0), LocalTime.of(17, 0))

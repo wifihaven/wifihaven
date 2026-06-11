@@ -6,9 +6,11 @@ import wifihaven.api.metrics.AppMetrics
 import wifihaven.shared.{Schedule as DbSchedule, *}
 import wifihaven.shared.types.*
 import zio.{Clock as _, *}
+import zio.json.*
 
 import java.security.MessageDigest
 import java.time.{DayOfWeek, Instant, LocalDate}
+import java.util.concurrent.atomic.AtomicReference
 
 trait PolicyService {
   def snapshot: Task[PolicySnapshot]
@@ -91,7 +93,12 @@ class PolicyServiceLive(
     // remain injected to feed the companion `apply` factory's TimeStatusServiceLive and to keep the
     // constructor arity ~40 test constructions depend on; the class body no longer reads them.
     @scala.annotation.unused timeLimitRepo: TimeLimitRepo,
-    @scala.annotation.unused appTimeLimitRepo: AppTimeLimitRepo,
+    // #1630: post-collapse this repo IS read by `snapshot` and `decide` — it now returns rows for
+    // every mode (`mode=Allowed`, `Blocked`, `TimeLimited`) so the [[ProfileAppDispositions]]
+    // single fold drives both the per-app enforcement (extraAllowed/extraBlocked) and the
+    // structural projections (exempt host-set / active-app host-set / cap groups) without a
+    // separate read off `appRepo.listAssignmentsForProfile`.
+    appTimeLimitRepo: AppTimeLimitRepo,
     deviceRepo: DeviceRepo,
     blocklistRepo: BlocklistRepo,
     @scala.annotation.unused trafficRepo: TrafficReportRepo,
@@ -115,6 +122,16 @@ class PolicyServiceLive(
   // hosts when assembling the global section. (#1321 moved the curated
   // `infraAllowHosts` onto the same global path, retiring its per-profile copy.)
   private val uiGlobalAllow: List[Hostname] = uiAllowedHosts
+
+  // #1641: process-local last-seen-etag for snapshot-change INFO logging. On every `snapshot`
+  // call we atomically compare-and-set the latest etag here; only the winner of the swap emits
+  // the `event=snapshot_changed` INFO log carrying the full snapshot JSON. One line per ETag
+  // transition (NOT per poll) so volume is bounded by how often policy actually changes.
+  // Render retains stdout for ~7 days, giving roughly a week of snapshot history for free —
+  // long enough to investigate most incidents (the #1640 motivation). Not a metric (cardinality
+  // fence; snapshot JSON is not metric data).
+  private val lastSnapshotEtag: AtomicReference[Option[ETag]] =
+    new AtomicReference(Option.empty[ETag])
 
   // #1069/#1482: per-host /decision fallback must see the same schedule downtime as the snapshot —
   // the windows of every block-mode named schedule attached to the profile (as synthetic
@@ -140,26 +157,27 @@ class PolicyServiceLive(
       today = PolicyService.householdLocalDate(now, settings)
       // #1104: today's cap/block state for every profile in one batched read. Same call the
       // /api/time/status/... endpoints use — keeps the snapshot and the UI in lockstep.
-      dayStates   <- timeStatusService.dayStateAll(now, today, settings)
-      profiles    <- profileRepo.listAll
-      devices     <- deviceRepo.listAll
-      cats        <- blocklistRepo.listCategories
-      catDomains  <- ZIO.foreach(cats)(c => blocklistRepo.loadCategory(c).map(c -> _))
-      // #763: load apps + per-app hosts + per-profile assignments so we can
-      // expand app modes into the per-profile BlockRules buckets below.
-      apps        <- appRepo.listAll
-      appHostsRaw <- ZIO.foreach(apps)(a => appRepo.getHosts(a.id).map(a.id -> _))
-      appAssigns  <- ZIO.foreach(profiles)(p =>
-        appRepo.listAssignmentsForProfile(p.id).map(p.id -> _),
+      dayStates          <- timeStatusService.dayStateAll(now, today, settings)
+      profiles           <- profileRepo.listAll
+      devices            <- deviceRepo.listAll
+      cats               <- blocklistRepo.listCategories
+      catDomains         <- ZIO.foreach(cats)(c => blocklistRepo.loadCategory(c).map(c -> _))
+      // #1630: every profile's per-app assignments — across all modes — as (assignment × host)
+      // rows. Replaces the prior `apps + appHostsRaw + appAssigns` fan-out: that path went
+      // through `appRepo.listAssignmentsForProfile` (all modes) AND `appTimeLimitRepo` (filtered
+      // to time_limited), so the two readers saw different rows and the projections drifted.
+      // Now both the per-app enforcement (extraAllowed/extraBlocked) and the structural
+      // projections downstream of `TimeStatusService` read the SAME rows through the same fold.
+      appLimitsByProfile <- ZIO.foreach(profiles)(p =>
+        appTimeLimitRepo.listForProfile(p.id).map(p.id -> _),
       )
       // #1379: per-app schedule rules, resolved to (mode, window) pairs per assignment.
       // Folded into the per-app effective disposition below, before app-mode bucketing.
-      appSched    <- ZIO.foreach(profiles)(p =>
+      appSched           <- ZIO.foreach(profiles)(p =>
         appRepo.appScheduleWindowsForProfile(p.id).map(p.id -> _),
       )
-      appHostsMap = appHostsRaw.toMap
-      appAssignsMap = appAssigns.toMap
-      appSchedMap   = appSched.toMap
+      appLimitsMap = appLimitsByProfile.toMap
+      appSchedMap = appSched.toMap
     } yield {
       val profilePolicies: Map[ProfileId, ProfilePolicy] = profiles.iterator.map { p =>
         // #1104: cap/block state comes from TimeStatusService — the same value the UI reads.
@@ -170,20 +188,18 @@ class PolicyServiceLive(
           ProfileDayState(p.id, today, None, 0, 0, None, blocked = false, None, Nil),
         )
 
-        // #763/#764/#1379: expand this profile's app assignments into wire-shape buckets.
-        // Each assignment's effective disposition at `now` folds its per-app schedule windows
-        // over its base mode (an active window overrides the base), then the AllowedDuring carve
-        // is gated by the daily cap unless the app is exemptFromDaily (design §4.1, §5). Post-#764,
-        // time_limited apps are surfaced via AppTimeLimitRepo, so they contribute nothing here.
-        val pAssigns                           = appAssignsMap.getOrElse(p.id, Nil)
-        val (appAllowedHosts, appBlockedHosts) =
-          PolicyService.expandAppDispositions(
-            assigns = pAssigns,
-            hostsByApp = appHostsMap,
-            schedWindows = appSchedMap.getOrElse(p.id, Map.empty),
-            capExhausted = PolicyService.dailyCapExhausted(state),
-            now = now,
-          )
+        // #763/#764/#1379/#1630: collapse this profile's app assignments into the per-MAC
+        // BlockRules buckets via the SINGLE fold `ProfileAppDispositions.enforcement`. Schedule
+        // windows fold over base mode (an active window overrides the base); the AllowedDuring
+        // carve is gated by the daily cap unless the app is exemptFromDaily (design §4.1, §5).
+        // `mode=TimeLimited` apps contribute nothing here — they surface via the per-app cap
+        // path (`appCapExhaustedHosts` reads `state.perApp`).
+        val dispositions = ProfileAppDispositions.from(appLimitsMap.getOrElse(p.id, Nil))
+        val (appAllowedHosts, appBlockedHosts) = dispositions.enforcement(
+          schedWindows = appSchedMap.getOrElse(p.id, Map.empty),
+          capExhausted = PolicyService.dailyCapExhausted(state),
+          now = now,
+        )
 
         val rules = PolicyService.computeBlockRules(
           profile = p,
@@ -263,8 +279,29 @@ class PolicyServiceLive(
       // #1318: surface the global-section size + default-deny profile count for operators.
       AppMetrics
         .setGlobalPolicy(snap.global.extraAllowed.size, defaultDenyProfiles)
+        .zipRight(logSnapshotChanged(snap))
         .as(snap)
     }
+
+  /**
+   * #1641: emit an INFO log line carrying the full snapshot JSON the first time we see a given ETag
+   * in this process. Atomic compare-and-set against `lastSnapshotEtag` — only the caller who
+   * swapped a new etag in logs, so concurrent pollers cannot duplicate the line. One line per ETag
+   * transition (not per poll), bounded by how often policy actually changes.
+   */
+  private def logSnapshotChanged(snap: PolicySnapshot): UIO[Unit] = ZIO.suspendSucceed {
+    val prev    = lastSnapshotEtag.get()
+    val changed = !prev.contains(snap.etag) && lastSnapshotEtag.compareAndSet(prev, Some(snap.etag))
+    if (!changed) ZIO.unit
+    else {
+      val json = snap.toJson
+      ZIO.logInfo(
+        s"event=snapshot_changed etag=${snap.etag.value} " +
+          s"prevEtag=${prev.map(_.value).getOrElse("none")} " +
+          s"bytes=${json.length} snapshot=$json",
+      )
+    }
+  }
 
   def renderBlocklist(id: BlocklistId): Task[Option[(ETag, String)]] =
     for {
@@ -322,14 +359,13 @@ class PolicyServiceLive(
             // `capExhausted` re-derivation) so the block-page reason and the snapshot's nftables
             // enforcement cannot drift. Only the genuinely per-HOST matching stays below.
             state           <- timeStatusService.todaysState(now, settings, pid)
-            // #764: post-migration, extraAllowed/extraBlocked are sourced
-            // exclusively from app_policy_assignments. Mirror the snapshot
-            // expansion (allowed/blocked modes) here so the per-host
-            // fallback agrees with the snapshot's precedence.
-            appAssigns      <- appRepo.listAssignmentsForProfile(pid)
-            appHostsByApp   <- ZIO
-              .foreach(appAssigns.map(_.appId).distinct)(aid => appRepo.getHosts(aid).map(aid -> _))
-              .map(_.toMap)
+            // #1630: read the unified `appTimeLimitRepo` rows (all modes) so the per-host
+            // /decision fallback shares the same fold as the snapshot via
+            // `ProfileAppDispositions.from`. Before #1630 this path fetched `appAssigns` +
+            // `appHostsByApp` and called the legacy `expandAppDispositions`, while
+            // `TimeStatusService` read a `mode='time_limited'`-filtered version of the same
+            // table — the divergence behind #1630.
+            appLimits       <- appTimeLimitRepo.listForProfile(pid)
             // #1379: per-app schedule windows for this profile's assignments, used to fold each
             // app's effective disposition + carve gate exactly as the snapshot does.
             appSchedWindows <- appRepo.appScheduleWindowsForProfile(pid)
@@ -358,17 +394,15 @@ class PolicyServiceLive(
                 // totals, so it agrees with the snapshot's gate by construction.
                 val capExhausted = PolicyService.dailyCapExhausted(dayState)
 
-                // #1379: fold each app's effective disposition (schedule windows over base mode) +
-                // the carve gate, exactly as the snapshot does. A non-exempt allowed_during app
-                // whose cap is exhausted is NOT carved, so it correctly falls through to the
-                // time_limit block below; an exempt one (or one under cap) is carved and beats it.
-                val (appAllowed, appBlocked) = PolicyService.expandAppDispositions(
-                  assigns = appAssigns,
-                  hostsByApp = appHostsByApp,
-                  schedWindows = appSchedWindows,
-                  capExhausted = capExhausted,
-                  now = now,
-                )
+                // #1379/#1630: fold each app's effective disposition (schedule windows over base
+                // mode) + the carve gate via the SINGLE fold `ProfileAppDispositions.enforcement`
+                // — exactly as the snapshot does. A non-exempt allowed_during app whose cap is
+                // exhausted is NOT carved, so it correctly falls through to the time_limit block
+                // below; an exempt one (or one under cap) is carved and beats it.
+                val (appAllowed, appBlocked) =
+                  ProfileAppDispositions
+                    .from(appLimits)
+                    .enforcement(appSchedWindows, capExhausted, now)
 
                 // #1515: the per-profile carve set the snapshot puts in `extraAllowed`, reproduced
                 // here so /decision agrees with what nftables enforces. It is the allowed/allowed_during
@@ -813,55 +847,6 @@ object PolicyService {
       ),
       now,
     )
-
-  /**
-   * #1379: collapse each app assignment into the `(extraAllowed, extraBlocked)` host buckets,
-   * folding its per-app schedule windows over its base mode (design §4.1):
-   *
-   *   - any `allowed_during` window active → AllowedDuring candidate (carve gate below);
-   *   - else any `blocked_during` window active → Blocked;
-   *   - else the assignment's base [[AppMode]].
-   *
-   * `allowed_during` beats `blocked_during` on simultaneous overlap (consistent with #421
-   * allow-beats-block). The AllowedDuring carve into `extraAllowed` is gated by the daily cap:
-   * `carve = NOT (capExhausted AND NOT exemptFromDaily)`. A non-exempt app whose cap is exhausted
-   * is therefore NOT carved — it stays subject to the whole-MAC block, so the daily limit still
-   * bites without any wire/router change (design §5 rows 9a–9c). An AllowedDuring candidate that
-   * fails the gate is added to neither bucket. `TimeLimited` base apps contribute nothing here
-   * (surfaced via the site-limit path, #764). Shared by `snapshot` and `decide` so they agree.
-   */
-  private[policy] def expandAppDispositions(
-      assigns: List[AppPolicyAssignment],
-      hostsByApp: Map[AppId, List[Hostname]],
-      schedWindows: Map[AppPolicyAssignmentId, List[(AppScheduleMode, ScheduleWindow)]],
-      capExhausted: Boolean,
-      now: Instant,
-  ): (List[Hostname], List[Hostname]) = {
-    val allowed = scala.collection.mutable.ListBuffer.empty[Hostname]
-    val blocked = scala.collection.mutable.ListBuffer.empty[Hostname]
-    assigns.foreach { a =>
-      val hosts         = hostsByApp.getOrElse(a.appId, Nil)
-      val pairs         = schedWindows.getOrElse(a.id, Nil)
-      val allowedActive = pairs.exists { case (m, w) =>
-        m == AppScheduleMode.AllowedDuring && windowActiveAt(w, now)
-      }
-      val blockedActive = pairs.exists { case (m, w) =>
-        m == AppScheduleMode.BlockedDuring && windowActiveAt(w, now)
-      }
-      if (allowedActive) {
-        // Carve gate: withhold the carve for a non-exempt app whose cap is exhausted.
-        if (!(capExhausted && !a.exemptFromDaily)) allowed ++= hosts
-      } else if (blockedActive) {
-        blocked ++= hosts
-      } else
-        a.mode match {
-          case AppMode.Allowed     => allowed ++= hosts
-          case AppMode.Blocked     => blocked ++= hosts
-          case AppMode.TimeLimited => () // site-limit path (#764)
-        }
-    }
-    (allowed.toList.distinct, blocked.toList.distinct)
-  }
 
   // ── #334: timezone-aware time math ────────────────────────────────────────
   //
