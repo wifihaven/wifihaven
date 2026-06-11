@@ -277,6 +277,88 @@ def wait_ea_set_populated(mac: str, host: str, *, timeout_s: float = 90) -> list
     )
 
 
+def sni_cache_rows() -> list[tuple[str, str]]:
+    """Return (ip, hostname) rows from the router's shared dns→host cache.
+
+    The cache file (paths.dns_cache = /tmp/wifihaven-dns-cache.txt) is written
+    by wifihaven-dns-tail in the format `<ip>\\t<hostname>\\t<ts>` per entry. For
+    SNI-derived attribution (#573) the sidecar feeds `(dst_ip, sni)` tuples
+    through cache.insert_sni → the SAME single-writer cache, so an SNI-only
+    hostname (one never DNS-resolved) appears here exactly as a DNS-derived one
+    would. Ignores the trailing timestamp column.
+    """
+    res = router_ssh(
+        "cat /tmp/wifihaven-dns-cache.txt 2>/dev/null || true",
+        check=False, timeout=10,
+    )
+    rows: list[tuple[str, str]] = []
+    for line in (res.stdout or "").splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 2 and parts[0].strip() and parts[1].strip():
+            rows.append((parts[0].strip(), parts[1].strip()))
+    return rows
+
+
+def sni_spool_lines() -> list[str]:
+    """Return raw lines from the router's SNI capture spool.
+
+    paths.sni_capture = /tmp/wifihaven-sni.log — the wifihaven-sni-tail sidecar
+    appends one `SNI\\t<dst_ip>\\t<src_mac>\\t<server_name>` line per parsed
+    ClientHello. Used as a secondary diagnostic: if a row is in the spool but
+    not yet in the dns-cache, the failure is in dns-tail's SNI ingest, not in
+    the sidecar's capture/parse.
+    """
+    res = router_ssh(
+        "cat /tmp/wifihaven-sni.log 2>/dev/null || true",
+        check=False, timeout=10,
+    )
+    return [l for l in (res.stdout or "").splitlines() if l.strip()]
+
+
+def wait_sni_attributed(ip: str, host: str, *, timeout_s: float = 120) -> tuple[str, str]:
+    """Block until the router's shared dns→host cache maps `ip → host` (#573).
+
+    This is THE proof that SNI is the sole attribution source: `host` is a name
+    the client never DNS-resolves, so the only way it can reach the router's
+    attribution cache is via the TLS ClientHello captured by wifihaven-sni-tail,
+    parsed in sni.lua, and routed through cache.insert_sni by wifihaven-dns-tail.
+    A DNS-derived entry for `host` is impossible because no `reply <host> is <ip>`
+    line ever existed.
+
+    Returns the matched (ip, hostname) cache row. Raises TimeoutError (surfacing
+    the current cache rows + SNI spool tail) if the mapping never appears.
+    """
+    want_ip = ip.strip()
+    want_host = host.strip().lower()
+
+    def probe():
+        for cip, chost in sni_cache_rows():
+            if cip == want_ip and chost.lower() == want_host:
+                return (cip, chost)
+        return None
+
+    try:
+        return wait_until(
+            probe, timeout_s=timeout_s, interval_s=3,
+            description=(
+                f"dns-cache row {want_ip} -> {host} attributed via SNI "
+                f"(host never DNS-resolved, so SNI is the only possible source)"
+            ),
+        )
+    except TimeoutError:
+        # Secondary diagnostic: did the sidecar capture the ClientHello at all?
+        spool = sni_spool_lines()
+        rows = sni_cache_rows()
+        raise TimeoutError(
+            f"SNI attribution {want_ip} -> {host} never landed in the dns-cache "
+            f"within {timeout_s}s.\n"
+            f"  dns-cache rows ({len(rows)}): {rows!r}\n"
+            f"  sni spool lines ({len(spool)}): {spool[-10:]!r}\n"
+            f"  (spool non-empty + cache miss => dns-tail SNI ingest broke; "
+            f"spool empty => sidecar capture/parse broke or no ClientHello crossed br-lan)"
+        )
+
+
 def wait_event_with_host_attribution(
     fake_api,
     mac: str,
