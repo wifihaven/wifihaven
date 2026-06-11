@@ -423,3 +423,234 @@ describe("parse_client_hello — minimum SNI length", function()
     assert.equal("a.b", sni.parse_client_hello(build_client_hello({ sni = "a.b" })))
   end)
 end)
+
+-- ---------------------------------------------------------------------------
+-- 9. pcap stream reader + full pcap→cache integration (#573)
+-- ---------------------------------------------------------------------------
+--
+-- The wifihaven-sni-tail sidecar reads tcpdump's `-w -` pcap stream: a 24-byte
+-- global header (magic 0xa1b2c3d4 / 0xd4c3b2a1 for the two byte orders) then a
+-- sequence of 16-byte record headers each followed by incl_len packet bytes.
+-- That stream reader used to live as inline local functions in the sidecar and
+-- was never exercised by a test. It now lives in sni.lua as injectable, pure
+-- functions backed by a read_fn(n) → bytes|nil cursor, so the assembled
+-- pipeline (pcap bytes → packets → parse_packet → SNI line → route_line →
+-- cache) can be driven in-process with zero router/tcpdump involvement.
+--
+--   sni.read_global_header(read_fn) → { swapped = bool } | nil
+--   sni.read_record(read_fn, swapped) → { data = <packet bytes> } | nil (EOF)
+--   sni.iter_pcap(read_fn) → function() returning successive packet payloads
+--                            (nil at EOF), after consuming the global header.
+
+-- A read_fn over an in-memory byte string: returns up to n bytes per call and
+-- nil at EOF, mirroring the io.popen handle:read(n) contract the sidecar uses.
+local function string_reader(s)
+  local pos = 1
+  return function(n)
+    if pos > #s then return nil end
+    local chunk = s:sub(pos, pos + n - 1)
+    pos = pos + #chunk
+    if #chunk == 0 then return nil end
+    return chunk
+  end
+end
+
+-- 32-bit little/big-endian encoders for pcap header fields.
+local function u32le(n)
+  return string.char(n % 256,
+                     math.floor(n / 256) % 256,
+                     math.floor(n / 65536) % 256,
+                     math.floor(n / 16777216) % 256)
+end
+local function u32be(n)
+  return string.char(math.floor(n / 16777216) % 256,
+                     math.floor(n / 65536) % 256,
+                     math.floor(n / 256) % 256,
+                     n % 256)
+end
+
+-- Build a 24-byte pcap global header. swapped=false → native magic
+-- 0xa1b2c3d4 written little-endian (byte 1 = 0xd4); swapped=true → the
+-- other-endian magic 0xd4c3b2a1 written little-endian (byte 1 = 0xa1).
+-- (We mirror tcpdump's on-the-wire convention: the magic is written in the
+-- writer's native byte order, so the first byte tells the reader the order.)
+local function pcap_global_header(swapped)
+  local magic
+  if swapped then
+    magic = string.char(0xd4, 0xc3, 0xb2, 0xa1) -- reader sees swapped byte order
+  else
+    magic = string.char(0xa1, 0xb2, 0xc3, 0xd4) -- reader sees native byte order
+  end
+  -- version_major(2) version_minor(2) thiszone(4) sigfigs(4) snaplen(4) net(4)
+  local rest = string.char(2, 0) .. string.char(4, 0) ..
+               string.rep("\0", 4) .. string.rep("\0", 4) ..
+               (swapped and u32be(600) or u32le(600)) ..
+               (swapped and u32be(1)   or u32le(1))     -- LINKTYPE_ETHERNET
+  return magic .. rest
+end
+
+-- Build a 16-byte pcap record header framing a packet of incl_len bytes, in
+-- the chosen byte order, followed by the packet bytes themselves.
+local function pcap_record(packet, swapped)
+  local enc = swapped and u32be or u32le
+  local ts_sec, ts_usec = 0, 0
+  local incl_len = #packet
+  local orig_len = #packet
+  local hdr = enc(ts_sec) .. enc(ts_usec) .. enc(incl_len) .. enc(orig_len)
+  return hdr .. packet
+end
+
+-- Assemble a full pcap stream from a list of Ethernet frames.
+local function pcap_stream(frames, swapped)
+  local parts = { pcap_global_header(swapped) }
+  for _, f in ipairs(frames) do
+    parts[#parts + 1] = pcap_record(f, swapped)
+  end
+  return table.concat(parts)
+end
+
+-- Drive the full pipeline assembled from the extracted module functions:
+--   read_fn → iter_pcap → parse_packet → format_sni_line → route_line → cache
+-- Returns the fake cache (ip→host) plus the count of records iterated.
+local function run_pipeline(stream)
+  local cache = {}
+  local insert_fn = function(ip, host) cache[ip] = host end
+  local next_pkt = sni.iter_pcap(string_reader(stream))
+  local records = 0
+  for pkt in next_pkt do
+    records = records + 1
+    local r = sni.parse_packet(pkt)
+    if r then
+      local line = sni.format_sni_line(r.dst_ip, r.src_mac, r.sni)
+      sni.route_line(line, { insert_fn = insert_fn })
+    end
+  end
+  return cache, records
+end
+
+describe("read_global_header — pcap magic / byte order", function()
+  it("detects the native (little-endian magic) byte order", function()
+    local gh = sni.read_global_header(string_reader(pcap_global_header(false)))
+    assert.is_not_nil(gh)
+    assert.is_false(gh.swapped)
+  end)
+
+  it("detects the swapped byte order", function()
+    local gh = sni.read_global_header(string_reader(pcap_global_header(true)))
+    assert.is_not_nil(gh)
+    assert.is_true(gh.swapped)
+  end)
+
+  it("returns nil when the stream is too short to hold a global header", function()
+    assert.is_nil(sni.read_global_header(string_reader("\xa1\xb2")))
+  end)
+end)
+
+describe("read_record — per-record framing", function()
+  it("reads incl_len bytes after the 16-byte header (native order)", function()
+    local packet = string.rep("P", 42)
+    local stream = pcap_record(packet, false)
+    local rec = sni.read_record(string_reader(stream), false)
+    assert.is_not_nil(rec)
+    assert.equal(packet, rec.data)
+  end)
+
+  it("honors the swapped byte order for incl_len", function()
+    local packet = string.rep("Q", 17)
+    local stream = pcap_record(packet, true)
+    local rec = sni.read_record(string_reader(stream), true)
+    assert.is_not_nil(rec)
+    assert.equal(packet, rec.data)
+  end)
+
+  it("returns nil at clean EOF (no record header present)", function()
+    assert.is_nil(sni.read_record(string_reader(""), false))
+  end)
+
+  it("returns nil on a truncated record header (partial 16-byte header)", function()
+    assert.is_nil(sni.read_record(string_reader(string.rep("\0", 8)), false))
+  end)
+
+  it("returns nil when incl_len overruns the available bytes", function()
+    -- 16-byte header claiming incl_len=100, but only 4 packet bytes follow.
+    local hdr = u32le(0) .. u32le(0) .. u32le(100) .. u32le(100)
+    assert.is_nil(sni.read_record(string_reader(hdr .. "abcd"), false))
+  end)
+end)
+
+describe("iter_pcap → parse_packet → route_line → cache (full pipeline)", function()
+  local function hello_packet(host, mac, ip)
+    return build_eth_ipv4_tcp({
+      payload = build_client_hello({ sni = host }),
+      src_mac = mac,
+      dst_ip  = ip,
+    })
+  end
+
+  it("attributes a single ClientHello's dst_ip to its SNI host (native order)", function()
+    local stream = pcap_stream({
+      hello_packet("calendar.google.com",
+                   { 0x76, 0x2d, 0x95, 0x47, 0xd1, 0x8e }, { 142, 250, 80, 46 }),
+    }, false)
+    local cache, records = run_pipeline(stream)
+    assert.equal(1, records)
+    assert.equal("calendar.google.com", cache["142.250.80.46"])
+  end)
+
+  it("attributes multiple ClientHellos across records", function()
+    local stream = pcap_stream({
+      hello_packet("calendar.google.com",
+                   { 0x76, 0x2d, 0x95, 0x47, 0xd1, 0x8e }, { 142, 250, 80, 46 }),
+      hello_packet("www.youtube.com",
+                   { 0xfa, 0x10, 0xcd, 0x84, 0x78, 0x22 }, { 142, 250, 72, 14 }),
+    }, false)
+    local cache = run_pipeline(stream)
+    assert.equal("calendar.google.com", cache["142.250.80.46"])
+    assert.equal("www.youtube.com",     cache["142.250.72.14"])
+  end)
+
+  it("parses identically under the swapped pcap byte order", function()
+    local frames = {
+      hello_packet("calendar.google.com",
+                   { 0x76, 0x2d, 0x95, 0x47, 0xd1, 0x8e }, { 142, 250, 80, 46 }),
+      hello_packet("www.youtube.com",
+                   { 0xfa, 0x10, 0xcd, 0x84, 0x78, 0x22 }, { 142, 250, 72, 14 }),
+    }
+    local native  = run_pipeline(pcap_stream(frames, false))
+    local swapped = run_pipeline(pcap_stream(frames, true))
+    assert.same(native, swapped)
+    assert.equal("calendar.google.com", swapped["142.250.80.46"])
+    assert.equal("www.youtube.com",     swapped["142.250.72.14"])
+  end)
+
+  it("skips a non-TLS packet without polluting the cache, still draining the stream", function()
+    local stream = pcap_stream({
+      build_eth_ipv4_tcp({ payload = string.rep("X", 64),       -- not a ClientHello
+                           dst_ip = { 10, 0, 0, 9 } }),
+      hello_packet("www.youtube.com",
+                   { 0xfa, 0x10, 0xcd, 0x84, 0x78, 0x22 }, { 142, 250, 72, 14 }),
+    }, false)
+    local cache, records = run_pipeline(stream)
+    assert.equal(2, records)                       -- both records iterated
+    assert.is_nil(cache["10.0.0.9"])               -- non-TLS not attributed
+    assert.equal("www.youtube.com", cache["142.250.72.14"])
+  end)
+
+  it("terminates cleanly on a truncated trailing record header (no Lua error)", function()
+    local good = pcap_stream({
+      hello_packet("calendar.google.com",
+                   { 0x76, 0x2d, 0x95, 0x47, 0xd1, 0x8e }, { 142, 250, 80, 46 }),
+    }, false)
+    -- Append a partial (8-byte) record header that snaplen/pipe-close could cut.
+    local stream = good .. string.rep("\0", 8)
+    local cache, records = run_pipeline(stream)
+    assert.equal(1, records)                       -- only the complete record
+    assert.equal("calendar.google.com", cache["142.250.80.46"])
+  end)
+
+  it("returns nil iterator state when the global header is absent/short", function()
+    -- iter_pcap with a stream too short for a global header yields nothing.
+    local next_pkt = sni.iter_pcap(string_reader("\xa1\xb2"))
+    assert.is_nil(next_pkt())
+  end)
+end)
