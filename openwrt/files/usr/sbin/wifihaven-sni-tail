@@ -48,12 +48,18 @@ local BPF_FILTER = "tcp dst port 443 and " ..
 -- so routers using a non-default bridge name (br0, multi-WAN) still get
 -- captured; falls back to br-lan. (#573 SHOULD-FIX #3.)
 local IFACE       = sni.lan_device(uci.cursor())
--- snaplen 600 covers the TLS record header (5) + handshake header (4) +
--- ClientHello header (38) + a typical SNI extension well within the bound.
--- Larger ClientHellos with long key_share / cipher lists may be truncated; the
--- parser returns nil on truncation and the flow is silently skipped (acceptable
--- for v1 — the dnsmasq path still covers the resolved case).
-local SNAPLEN     = 600
+-- snaplen sized to capture a full single-segment ClientHello. Real
+-- OpenSSL/curl TLS 1.3 ClientHellos are padded past ~512 bytes and grow with
+-- key_share / ALPN / supported_groups, routinely landing in the 512-1500B
+-- range — 600 truncated nearly all of them, so the parser saw a record whose
+-- declared length exceeded the captured bytes (the Gate 2 e2e caught this:
+-- every real ClientHello fell out as no_sni). 2048 comfortably covers a full
+-- single-TCP-segment ClientHello (bounded by the path MSS, typ. ~1460B) plus
+-- IP/TCP option headroom. The parser is also truncation-tolerant now (it finds
+-- the front-placed server_name extension even when the tail is clipped), so
+-- this bound is defense-in-depth rather than the sole guard. Multi-segment
+-- ClientHello reassembly remains out of v1 scope (#1653).
+local SNAPLEN     = 2048
 local CAPTURE_CMD = string.format(
   "tcpdump -i %s -s %d -U -w - -B 1024 -n %q 2>/dev/null",
   IFACE, SNAPLEN, BPF_FILTER)

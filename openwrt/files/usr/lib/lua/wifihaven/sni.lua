@@ -80,14 +80,22 @@ function M.parse_client_hello(payload)
   if content_type ~= 0x16 then return nil end -- not handshake
   local record_len = u16(payload, 4)
   if not record_len then return nil end
-  if 5 + record_len > #payload + 1 then return nil end -- truncated record
+  -- NB: we deliberately do NOT reject when the declared record length exceeds
+  -- the captured buffer. Real OpenSSL/curl TLS 1.3 ClientHellos are padded past
+  -- ~512 bytes, so under the capture snaplen the tail (large key_share /
+  -- padding extensions) is clipped — but the server_name extension sits near
+  -- the FRONT and is therefore fully present in the captured prefix. Rejecting
+  -- the whole record on declared-vs-captured length was the bug the Gate 2 e2e
+  -- caught (every real ClientHello fell out as "no_sni"). The extension walk
+  -- below is bounded by the actual buffer via the per-field u8/u16/slice reads
+  -- (each returns nil past end-of-buffer), so a SNI beyond the captured bytes
+  -- still yields nil — we just no longer discard one that IS present.
 
   -- Handshake header (inside the record)
   local hs_type = u8(payload, 6)
   if hs_type ~= 0x01 then return nil end -- not ClientHello
   local hs_len = u24(payload, 7)
   if not hs_len then return nil end
-  if 10 + hs_len > #payload + 1 then return nil end -- truncated handshake
 
   -- ClientHello body starts at offset 10
   local off = 10
