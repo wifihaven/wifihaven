@@ -138,6 +138,49 @@ object BlockReasonSpec extends ZIOSpecDefault {
           BlockReason.fromWire("category:UPPER!!!") == BlockReason.Unknown("category:UPPER!!!"),
         )
       },
+      // #1645: routers (post-rollout) emit `host:<host>` so a dropped eb_<host>
+      // flow names the matched rule. The legacy bare `host` alias above must
+      // still resolve to `ExtraBlocked` for pre-rollout routers.
+      test("host:<host> parses as ExtraBlockedBy and round-trips") {
+        val youtube = Hostname.parse("youtubei.googleapis.com").toOption.get
+        assertTrue(
+          BlockReason.fromWire("host:youtubei.googleapis.com") ==
+            BlockReason.ExtraBlockedBy(youtube),
+        ) &&
+        assertTrue(
+          BlockReason.asWire(BlockReason.ExtraBlockedBy(youtube)) ==
+            "host:youtubei.googleapis.com",
+        ) &&
+        assertTrue(
+          BlockReason.fromWire(
+            BlockReason.asWire(BlockReason.ExtraBlockedBy(youtube)),
+          ) == BlockReason.ExtraBlockedBy(youtube),
+        )
+      },
+      test("host:<host> with invalid hostname falls back to Unknown") {
+        assertTrue(
+          BlockReason.fromWire("host:NOT A HOST") == BlockReason.Unknown("host:NOT A HOST"),
+        )
+      },
+      test("legacy bare `host` still parses as ExtraBlocked (#1645 back-compat)") {
+        assertTrue(BlockReason.fromWire("host") == BlockReason.ExtraBlocked)
+      },
+      test("ExtraBlockedBy JSON round-trips with host field") {
+        val h: Hostname    = Hostname.parse("youtubei.googleapis.com").toOption.get
+        val r: BlockReason = BlockReason.ExtraBlockedBy(h)
+        assertTrue(
+          r.toJson ==
+            "{\"kind\":\"extraBlockedBy\",\"host\":\"youtubei.googleapis.com\"}",
+        ) &&
+        assertTrue(r.toJson.fromJson[BlockReason].contains(r))
+      },
+      test("legacy {kind:extraBlocked} JSON still decodes to ExtraBlocked (#1645)") {
+        assertTrue(
+          "{\"kind\":\"extraBlocked\"}"
+            .fromJson[BlockReason]
+            .contains(BlockReason.ExtraBlocked),
+        )
+      },
       // #1545: pin that every reason `PolicyService.decide` can emit survives a
       // `fromWire(asWire(r))` round-trip, so routing the emitter and the block-page
       // re-parser through the typed `BlockReason` cannot silently drop a case.
@@ -168,21 +211,22 @@ object BlockReasonSpec extends ZIOSpecDefault {
     // compile error, which is the operator's signal to also extend `allCases`.
     suite("BlockReason exhaustiveness (#1605)")({
       def shapeCheck(r: BlockReason): Unit = r match {
-        case BlockReason.Allow           => ()
-        case BlockReason.Blocked         => ()
-        case BlockReason.ExtraAllowed    => ()
-        case BlockReason.ExtraBlocked    => ()
-        case BlockReason.NoProfile       => ()
-        case MacBlockReason.Paused       => ()
-        case MacBlockReason.Schedule     => ()
-        case MacBlockReason.TimeLimit    => ()
-        case MacBlockReason.Manual       => ()
-        case MacBlockReason.Unmanaged    => ()
-        case MacBlockReason.DefaultDeny  => ()
-        case _: BlockReason.Category     => ()
-        case _: BlockReason.AppTimeLimit => ()
-        case _: BlockReason.AppBlocked   => ()
-        case _: BlockReason.Unknown      => ()
+        case BlockReason.Allow             => ()
+        case BlockReason.Blocked           => ()
+        case BlockReason.ExtraAllowed      => ()
+        case BlockReason.ExtraBlocked      => ()
+        case BlockReason.NoProfile         => ()
+        case MacBlockReason.Paused         => ()
+        case MacBlockReason.Schedule       => ()
+        case MacBlockReason.TimeLimit      => ()
+        case MacBlockReason.Manual         => ()
+        case MacBlockReason.Unmanaged      => ()
+        case MacBlockReason.DefaultDeny    => ()
+        case _: BlockReason.Category       => ()
+        case _: BlockReason.AppTimeLimit   => ()
+        case _: BlockReason.AppBlocked     => ()
+        case _: BlockReason.ExtraBlockedBy => ()
+        case _: BlockReason.Unknown        => ()
       }
       val allCases: List[BlockReason]      = List(
         BlockReason.Allow,
@@ -199,6 +243,7 @@ object BlockReasonSpec extends ZIOSpecDefault {
         BlockReason.Category(ads),
         BlockReason.AppTimeLimit("youtube"),
         BlockReason.AppBlocked("netflix"),
+        BlockReason.ExtraBlockedBy(Hostname.parse("youtubei.googleapis.com").toOption.get),
         BlockReason.Unknown("some-raw"),
       )
       // The shape-check is satisfied by `allCases` covering every variant;
