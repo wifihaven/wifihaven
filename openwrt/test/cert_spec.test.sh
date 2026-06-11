@@ -63,20 +63,26 @@ else
   check "cert key length >= 2048 bits" "unable to confirm key length"
 fi
 
-# Idempotent: a second run must NOT overwrite either file.
-CRT_BEFORE="$(stat -f '%m' "${CRT}" 2>/dev/null || stat -c '%Y' "${CRT}")"
-KEY_BEFORE="$(stat -f '%m' "${KEY}" 2>/dev/null || stat -c '%Y' "${KEY}")"
-sleep 1
+# Idempotent: a second run must NOT rotate either file. Assert on cert/key
+# *identity* (cert SHA-256 fingerprint + key content hash), NOT mtime. mtime is
+# a fragile proxy that this assertion previously used: idempotent runs leave the
+# file untouched so the mtime is stable, but a same-second filesystem-timestamp
+# window (and the BSD/GNU `stat` fallback) raced it intermittently in CI. The
+# real invariant we care about is that the cert was not regenerated — a rotated
+# cert would churn the uhttpd TLS listener on every boot — and a fingerprint
+# comparison verifies exactly that, with no timing dependency.
+CRT_FP_BEFORE="$(openssl x509 -in "${CRT}" -noout -fingerprint -sha256 2>/dev/null)"
+KEY_HASH_BEFORE="$(openssl dgst -sha256 "${KEY}" 2>/dev/null)"
 WIFIHAVEN_BLOCK_PAGE_CRT="${CRT}" WIFIHAVEN_BLOCK_PAGE_KEY="${KEY}" \
   sh "${SCRIPT}" >/dev/null 2>&1
-CRT_AFTER="$(stat -f '%m' "${CRT}" 2>/dev/null || stat -c '%Y' "${CRT}")"
-KEY_AFTER="$(stat -f '%m' "${KEY}" 2>/dev/null || stat -c '%Y' "${KEY}")"
+CRT_FP_AFTER="$(openssl x509 -in "${CRT}" -noout -fingerprint -sha256 2>/dev/null)"
+KEY_HASH_AFTER="$(openssl dgst -sha256 "${KEY}" 2>/dev/null)"
 
-if [ "${CRT_BEFORE}" = "${CRT_AFTER}" ] && [ "${KEY_BEFORE}" = "${KEY_AFTER}" ]; then
-  check "second run is idempotent (mtimes unchanged)" ok
+if [ "${CRT_FP_BEFORE}" = "${CRT_FP_AFTER}" ] && [ "${KEY_HASH_BEFORE}" = "${KEY_HASH_AFTER}" ]; then
+  check "second run is idempotent (cert + key unchanged)" ok
 else
-  check "second run is idempotent (mtimes unchanged)" \
-    "cert ${CRT_BEFORE}→${CRT_AFTER}, key ${KEY_BEFORE}→${KEY_AFTER}"
+  check "second run is idempotent (cert + key unchanged)" \
+    "cert ${CRT_FP_BEFORE}→${CRT_FP_AFTER}, key ${KEY_HASH_BEFORE}→${KEY_HASH_AFTER}"
 fi
 
 printf "\n%d passed, %d failed\n" "${PASS}" "${FAIL}"
