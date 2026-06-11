@@ -408,6 +408,70 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "SNI ClientHello rate by result",
+      "description": "sum by (result) (rate(sni_clienthellos_total[5m])) — result ∈ {parsed, truncated, no_sni, ipv6_skipped, not_tcp, malformed}. Emitted by the #573 SNI hostname-attribution sidecar (wifihaven-sni-tail), which classifies sniffed TCP ClientHello records and folds a cumulative per-result tally into the agent's metrics push. This attributes (dst_ip → SNI hostname) pairs for traffic where dnsmasq never saw the lookup (DoH / hard-coded IP), so it is the connection-layer complement to `dns_queries_total`, not a block signal. `parsed` is the healthy path; the failure classes are diagnosed below.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 48 },
+      "id": 13,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 20, "showPoints": "never", "lineWidth": 1, "stacking": { "mode": "normal", "group": "A" } }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (result) (rate(sni_clienthellos_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{result}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "SNI truncation / IPv6-skip ratio",
+      "description": "Share of SNI ClientHello captures lost to attribution gaps, as a fraction of all captures. `truncated` = the sniffed packet hit the capture snaplen before the SNI extension (raise snaplen — #1652); `ipv6_skipped` = the ClientHello rode an IPv6 flow the sidecar does not yet parse (v6 attribution gap — #1653). A sustained non-trivial ratio means a meaningful slice of DoH / hard-coded-IP traffic is going unattributed. clamp_min on the denominator avoids divide-by-zero when no ClientHellos are seen.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 48 },
+      "id": 14,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "percentunit",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(rate(sni_clienthellos_total{env=\"$env\", result=\"truncated\"}[5m])) / clamp_min(sum(rate(sni_clienthellos_total{env=\"$env\"}[5m])), 0.001)",
+          "legendFormat": "truncated",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(rate(sni_clienthellos_total{env=\"$env\", result=\"ipv6_skipped\"}[5m])) / clamp_min(sum(rate(sni_clienthellos_total{env=\"$env\"}[5m])), 0.001)",
+          "legendFormat": "ipv6_skipped",
+          "refId": "B"
+        }
+      ]
     }
   ],
   "refresh": "30s",
