@@ -168,18 +168,23 @@ end
 local function eb6_set_name(host)
   return "eb6_" .. sanitize(host)
 end
+M.eb_set_name  = eb_set_name
+M.eb6_set_name = eb6_set_name
 
 -- nft set names for a blocklist id (#352, #392). Replaces dots, colons, and
 -- hyphens with underscores (nftables set names allow only [a-zA-Z0-9_]).
 local function bl_sanitize(id)
   return (id:gsub("[%.%:%-%s]", "_"))
 end
+M.bl_sanitize = bl_sanitize
 local function bl_set_name(id)
   return "bl_" .. bl_sanitize(id)
 end
 local function bl6_set_name(id)
   return "bl6_" .. bl_sanitize(id)
 end
+M.bl_set_name  = bl_set_name
+M.bl6_set_name = bl6_set_name
 
 -- #353: per-MAC "resolved IP" sets. A device with BlockRules.blockIpOnly=true
 -- gets a forward-chain drop on any daddr NOT in its resolved_<mac> /

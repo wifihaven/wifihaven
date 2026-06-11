@@ -112,6 +112,17 @@ object MetricGuard {
     "dns_queries_total"                         -> Set("result", "router_id", "installation_id"),
     "blocklist_fetch_failures_total"            -> Set("status", "router_id", "installation_id"),
     "enforcement_drops_total"                   -> Set("reason", "router_id", "installation_id"),
+    // #1658 — eb_/bl_ ipset re-resolve heartbeat. Each fire of the agent's
+    // eb_refresh timer re-resolves the inventory of (extraBlocked, blocklist)
+    // hosts against the local dnsmasq and adds answered IPs back into the
+    // per-host eb_<host> / per-blocklist bl_<id> nftables sets ahead of their
+    // 1h `flags dynamic,timeout` aging out — closing the iOS-DNS-cache leak
+    // confirmed in prod for play.google.com (#1649). `result` is a small fixed
+    // enum: `ok` (resolver answered, IPs were added back to the set; counts
+    // resolved hosts not adds, so the rate is meaningful regardless of CDN
+    // fan-out) and `resolve_failed` (dig couldn't reach the local resolver, or
+    // the host failed the hermetic allow-list).
+    "eb_refresh_total"                          -> Set("result", "router_id", "installation_id"),
     // #1033 — usage-POST retry-queue health. Depth = buckets currently waiting for a backoff to
     // elapse; `usage_post_total{result}` tracks the immediate-post outcome (`ok` | `queued`) and
     // drain outcome (`drained` | `drain_failed`). Gives operators a first-class view of "are

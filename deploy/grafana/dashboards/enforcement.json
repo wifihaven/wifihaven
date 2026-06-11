@@ -278,6 +278,65 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "eb_/bl_ ipset refresh rate (#1658)",
+      "description": "sum by (result) (rate(eb_refresh_total[5m])) — hosts/sec the periodic re-resolve heartbeat processed. The eb_<host>/bl_<id> sets carry `flags dynamic,timeout 1h`; this timer (default cadence 1800s, strictly below the 1h timeout) re-resolves each extraBlocked / blocklist apex and adds answers back so the set stays populated under long-lived iOS app DNS caches. Steady non-zero `ok` is the healthy signal; a flat-zero in a household that has any extraBlocked / blocklist hosts means the timer isn't running. Sustained `resolve_failed` points at a dnsmasq problem.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 33 },
+      "id": 9,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "ops",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 15, "showPoints": "never", "lineWidth": 1 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (result) (rate(eb_refresh_total{env=\"$env\", router_id=~\"$router\"}[5m]))",
+          "legendFormat": "{{result}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "eb_/bl_ ipset refresh failure ratio (#1658)",
+      "description": "sum(rate(eb_refresh_total{result=\"resolve_failed\"})) / sum(rate(eb_refresh_total)) over 5m — fraction of re-resolves that failed (resolver unreachable / hermetic-allowlist reject). A spike above ~0.1 means the periodic heartbeat is no longer keeping the sets warm — the iOS-DNS-cache leak (#1649) returns when failures dominate.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 33 },
+      "id": 10,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "custom": { "drawStyle": "line", "fillOpacity": 15, "showPoints": "never", "lineWidth": 1 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(rate(eb_refresh_total{env=\"$env\", router_id=~\"$router\", result=\"resolve_failed\"}[5m])) / clamp_min(sum(rate(eb_refresh_total{env=\"$env\", router_id=~\"$router\"}[5m])), 1e-9)",
+          "legendFormat": "resolve_failed fraction",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",
