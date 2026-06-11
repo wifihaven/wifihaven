@@ -50,7 +50,11 @@ local WHOLE_MAC_REASONS = {
 -- comment_reason is the `<reason>` portion of `wh_drop:<mac>:<reason>`.
 function M.classify_reason(comment_reason)
   if type(comment_reason) ~= "string" then return "whole_mac" end
-  if comment_reason == "host" then
+  -- #1645: post-rollout per-host drops carry `host:<host>` so the matched
+  -- eb_<host> rule is named in events; the bare `host` legacy form (pre-
+  -- rollout routers) still folds into the same bounded bucket. The host
+  -- name itself never becomes a label — §4 cardinality firewall.
+  if comment_reason == "host" or comment_reason:match("^host:") then
     return "host_block"
   elseif comment_reason == "ip_only" then
     return "ip_only"

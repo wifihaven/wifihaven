@@ -1046,12 +1046,12 @@ function M.nft(snapshot, opts)
   for _, p in ipairs(eb_pairs) do
     ind2(string.format("ether saddr %s ip daddr @%s%s%s%s",
                        p.mac, eb_set_name(p.host), ea_suffix(p.mac, "ip"),
-                       ga_suffix("ip"), drop_suffix(p.mac, "host")))
+                       ga_suffix("ip"), drop_suffix(p.mac, "host:" .. p.host)))
   end
   for _, p in ipairs(eb_pairs) do
     ind2(string.format("ether saddr %s ip6 daddr @%s%s%s%s",
                        p.mac, eb6_set_name(p.host), ea_suffix(p.mac, "ip6"),
-                       ga_suffix("ip6"), drop_suffix(p.mac, "host")))
+                       ga_suffix("ip6"), drop_suffix(p.mac, "host:" .. p.host)))
   end
   for _, p in ipairs(bl_pairs) do
     ind2(string.format("ether saddr %s ip daddr @%s%s%s%s",

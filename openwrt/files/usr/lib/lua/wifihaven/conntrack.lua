@@ -711,7 +711,11 @@ function M.handle_flow(flow, ctx, batcher)
       end
       if eb_hit and not check_ea_carveout(eb_hit_host) then
         allowed = false
-        reason  = "host"
+        -- #1645: name the matched eb_<host> rule so triage can see which
+        -- extraBlocked entry fired (otherwise an IP-anycast overlap on a
+        -- shared CDN looks like an opaque "host" block). Symmetric with
+        -- the `category:<id>` reason for the bl_ path below.
+        reason  = "host:" .. eb_hit_host
       end
     end
   end
