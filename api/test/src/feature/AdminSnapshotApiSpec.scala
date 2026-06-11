@@ -91,16 +91,16 @@ object AdminSnapshotApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPost
         )
         body <- resp.body.asString
         snap <- ZIO.fromEither(body.fromJson[PolicySnapshot])
-        // ETag header should be present and match snap.etag (modulo quote stripping).
+        // The handler emits a strong ETag header carrying `snap.etag` modulo the wrapping
+        // quotes (Header.ETag.Strong appends them on render). Assert the round-trip equals
+        // the body's etag exactly after one normalize step — this is what pins the
+        // header-emission contract (the previous "both contain sha256:" check would pass
+        // against a hard-coded sentinel value).
         etagHeader = resp.headers.get(Header.ETag).map(_.renderedValue).getOrElse("")
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(snap.profiles.nonEmpty) &&
         assertTrue(etagHeader.nonEmpty) &&
-        // The router ships strong ETag headers without surrounding quotes in the typed form,
-        // but the rendered value contains quotes — the snap.etag has the quoted form, so
-        // we check the inner sha256 marker is present in both.
-        assertTrue(etagHeader.contains("sha256:")) &&
-        assertTrue(snap.etag.value.contains("sha256:"))
+        assertTrue(etagHeader == snap.etag.value)
     },
     test("GET /api/admin/snapshot with child (non-admin) token → 403") {
       for {

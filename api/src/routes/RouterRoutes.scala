@@ -165,7 +165,13 @@ object RouterRoutes {
         },
     )
 
-  private def stripQuotes(s: String): String =
+  // #1641: package-visible so [[AdminDebugRoutes]] (which emits the same router-shape ETag
+  // header on `GET /api/admin/snapshot`) can reuse this instead of hand-mirroring a copy.
+  // `Header.ETag.Strong` wants the bare token without surrounding quotes; our stored ETag
+  // value is the quoted form (`"sha256:..."`), so trim the wrapping quotes before constructing
+  // the header. Shared helper, not a "keep in sync" mirror (per AGENTS.md §Single source of
+  // truth).
+  private[routes] def stripQuotes(s: String): String =
     if s.startsWith("\"") && s.endsWith("\"") then s.drop(1).dropRight(1) else s
 
   // RFC 7232 §2.3.2: If-None-Match uses weak comparison; W/"x" matches "x".

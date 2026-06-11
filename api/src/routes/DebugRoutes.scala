@@ -230,14 +230,12 @@ object AdminDebugRoutes {
               snap <- policy.snapshot.mapError(ApiError.Db(_))
             } yield Response
               .json(snap.toJson)
-              .addHeader(Header.ETag.Strong(stripQuotedEtag(snap.etag.value)))
+              // #1641: shared with the router's GET /api/router/policy via
+              // RouterRoutes.stripQuotes — collapsed into one helper rather than
+              // hand-mirrored here, so the ETag header emission cannot drift between
+              // the two routes (AGENTS.md §Single source of truth).
+              .addHeader(Header.ETag.Strong(RouterRoutes.stripQuotes(snap.etag.value)))
           handle.mapError(ErrorMapper.errorToResponse)
         },
     )
-
-  // Mirror of `RouterRoutes.stripQuotes` — `Header.ETag.Strong` wants the bare token without
-  // surrounding quotes (zio-http renders them back on the wire). The stored ETag value is the
-  // quoted form (sha256:..."), so trim the wrapping quotes before constructing the header.
-  private def stripQuotedEtag(s: String): String =
-    if s.startsWith("\"") && s.endsWith("\"") then s.drop(1).dropRight(1) else s
 }
