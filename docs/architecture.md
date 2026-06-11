@@ -205,7 +205,7 @@ for usage attribution (§7.2). It is **never** the enforcement plane.
 > [#1648](https://github.com/wifihaven/wifihaven/issues/1648) audit split
 > shared-pool hosts into **Class 1** (vendor-API anycast pools like Google GFE
 > `*.googleapis.com` — collision near-certain, strip; only
-> `youtubei.googleapis.com` qualified, removed in Phase 0
+> `youtubei.googleapis.com` qualified, being removed in Phase 0
 > [#1660](https://github.com/wifihaven/wifihaven/issues/1660)) and **Class 2**
 > (branded per-app CDN edges like `discordapp.net`, `rbxcdn.com`,
 > `tiktokcdn.com`, `sc-cdn.net`, `jtvnw.net` / `ttvnw.net`, `kastatic.org` —

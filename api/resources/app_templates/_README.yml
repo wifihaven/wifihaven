@@ -67,7 +67,7 @@
 #     is NEAR-CERTAIN. STRIP THESE — they never carry app-specific bytes worth
 #     blocking; the dedicated-bytes host already does. Audit found exactly one
 #     across all 15 templates: `youtubei.googleapis.com` in youtube.yml,
-#     removed in Phase 0 (#1660).
+#     being removed in Phase 0 (#1660).
 #
 #   Class 2 — third-party cloud-CDN edge (branded per-app asset domains that
 #     happen to sit behind a multi-tenant CDN): `discordapp.net` (Cloudflare),
