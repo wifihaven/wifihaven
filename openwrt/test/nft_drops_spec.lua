@@ -7,6 +7,16 @@ describe("nft_drops.classify_reason", function()
     assert.equal("host_block", nft_drops.classify_reason("host"))
   end)
 
+  -- #1645: post-rollout the per-host drop comment is `host:<host>` so the
+  -- matched eb_<host> rule can be named. Both the legacy bare `host` and
+  -- the new `host:<host>` form fold into the same bounded `host_block`
+  -- metrics bucket — the host name itself is forbidden as a label per the
+  -- §4 cardinality firewall.
+  it("collapses host:<host> into host_block (#1645)", function()
+    assert.equal("host_block", nft_drops.classify_reason("host:youtubei.googleapis.com"))
+    assert.equal("host_block", nft_drops.classify_reason("host:tiktok.com"))
+  end)
+
   it("maps the blockIpOnly drop to ip_only", function()
     assert.equal("ip_only", nft_drops.classify_reason("ip_only"))
   end)
