@@ -776,3 +776,48 @@ describe("format_query_results / parse_query_results (#1302)", function()
     assert.same({}, dns_log.parse_query_results(nil))
   end)
 end)
+
+-- ---------------------------------------------------------------------------
+-- 5. cache:insert_sni (#573) — SNI-derived hostname injection.
+--
+-- The wifihaven-sni-tail sidecar parses TLS ClientHellos off the LAN bridge
+-- and the dns-tail loop calls cache.insert_sni(dst_ip, sni, now). insert_sni
+-- runs the SNI through the same resolve_head alias map dns ingest uses, then
+-- stores (ip → head) so cache.lookup attributes the flow back to the branded
+-- host. This closes the DoH/hard-coded-IP attribution gap (#573).
+-- ---------------------------------------------------------------------------
+
+describe("cache:insert_sni (#573)", function()
+  it("stores (ip → sni) so lookup returns the SNI hostname", function()
+    local c = dns_log.new()
+    c.insert_sni("1.2.3.4", "example.com", 1000)
+    assert.equal("example.com", c.lookup("1.2.3.4"))
+  end)
+
+  it("runs the SNI through the CNAME-alias map (resolve_head)", function()
+    local c = dns_log.new()
+    -- Seed alias edge via a normal DNS reply chain:
+    --   query[A] cdn.kastatic.org
+    --   reply    cdn.kastatic.org is <CNAME>
+    --   reply    prod.khan.map.fastly.net is 1.2.3.4
+    -- (#1344) — after which prod.khan.map.fastly.net is known to alias back to
+    -- cdn.kastatic.org.
+    c.ingest_line(
+      "1 192.168.1.42/54321 query[A] cdn.kastatic.org from 192.168.1.42")
+    c.ingest_line(
+      "1 192.168.1.42/54321 reply cdn.kastatic.org is <CNAME>")
+    c.ingest_line(
+      "1 192.168.1.42/54321 reply prod.khan.map.fastly.net is 1.2.3.4")
+    -- An SNI to the leaf CDN target attributes back to the branded head.
+    c.insert_sni("5.6.7.8", "prod.khan.map.fastly.net", 2000)
+    assert.equal("cdn.kastatic.org", c.lookup("5.6.7.8"))
+  end)
+
+  it("is a no-op on nil/empty input", function()
+    local c = dns_log.new()
+    c.insert_sni(nil, "example.com", 1000)
+    c.insert_sni("1.2.3.4", nil, 1000)
+    c.insert_sni("", "", 1000)
+    assert.equal(0, c.size())
+  end)
+end)
