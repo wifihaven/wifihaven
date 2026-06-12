@@ -932,6 +932,101 @@ describe("handle_flow", function()
     assert.equal(true, ev.allowed)
   end)
 
+  -- ── #1668: v6 conntrack labeling fallback ───────────────────────────────
+  --
+  -- The nft_eb_hit fallback was v4-only — it always queried `eb_<host>` and
+  -- never the parallel `eb6_<host>` set that render.lua emits for AAAA-
+  -- resolved IPs. The result was: a v6 dst_ip with no DNS attribution would
+  -- silently miss the eb_/bl_ lookup and the connection_event would record an
+  -- opaque ExtraBlocked / household block instead of `host:<host>` /
+  -- `category:<id>`. PR #1656 closed the v4 hole; this closes the v6 hole.
+  -- The pair is pinned side-by-side so future divergence is caught by CI.
+  local DST_IP6 = "2001:db8::1"
+
+  it("#1668: v6 hname=nil + dst_ip in eb6_ nft set → allowed=false reason=host:<host>", function()
+    local b = collecting_batcher()
+    local exec_calls = {}
+    local ctx = ctx_with({
+      reported_macs   = { [MAC] = true },
+      nft_sets        = {},
+      eb_hosts_by_mac = { [MAC] = { ["example.com"] = true } },
+      ea_hosts_by_mac = {},
+      exec_fn = function(cmd)
+        exec_calls[#exec_calls + 1] = cmd
+        -- v4 set must NOT match (kernel only has the v6 IP in eb6_).
+        if cmd:find("eb6_example_com") then return 0 end
+        return 1
+      end,
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP6 }, ctx, b)
+    local ev = b.events[#b.events]
+    assert.equal(false, ev.allowed,
+      "v6 extraBlocked IP with no DNS attribution must be logged as blocked")
+    assert.equal("host:example.com", ev.reason)
+    local saw_v6_set = false
+    for _, cmd in ipairs(exec_calls) do
+      if cmd:find("eb6_example_com") then saw_v6_set = true end
+    end
+    assert.is_true(saw_v6_set,
+      "exec_fn must have queried the eb6_<host> set for a v6 dst_ip")
+  end)
+
+  it("#1668: v4 sibling — hname=nil + dst_ip in eb_ nft set → reason=host:<host> (pinned to prevent divergence)", function()
+    local b = collecting_batcher()
+    local exec_calls = {}
+    local ctx = ctx_with({
+      reported_macs   = { [MAC] = true },
+      nft_sets        = {},
+      eb_hosts_by_mac = { [MAC] = { ["example.com"] = true } },
+      ea_hosts_by_mac = {},
+      exec_fn = function(cmd)
+        exec_calls[#exec_calls + 1] = cmd
+        -- v6 set must NOT match (kernel only has the v4 IP in eb_).
+        if cmd:find("eb6_") then return 1 end
+        if cmd:find("eb_example_com") then return 0 end
+        return 1
+      end,
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+    local ev = b.events[#b.events]
+    assert.equal(false, ev.allowed)
+    assert.equal("host:example.com", ev.reason)
+    local saw_v4_set = false
+    for _, cmd in ipairs(exec_calls) do
+      if cmd:find("eb_example_com") and not cmd:find("eb6_") then
+        saw_v4_set = true
+      end
+    end
+    assert.is_true(saw_v4_set,
+      "exec_fn must have queried the v4 eb_<host> set for a v4 dst_ip")
+  end)
+
+  it("#1668: v6 bl_ labeling fallback queries eb6_<host> set → reason=category:<id>", function()
+    -- bl_ labeling fallback (line ~750 in conntrack.lua) piggybacks on the
+    -- same nft_eb_hit helper — the comment there explicitly says it reuses
+    -- the eb_-style query because dnsmasq populates both indexing paths for
+    -- the same host. Pin that this piggyback works for v6 too.
+    local b = collecting_batcher()
+    local exec_calls = {}
+    local ctx = ctx_with({
+      reported_macs   = { [MAC] = true },
+      nft_sets        = {},
+      eb_hosts_by_mac = {},
+      ea_hosts_by_mac = {},
+      bl_hosts_by_mac = { [MAC] = { ["ad.doubleclick.net"] = "ads" } },
+      exec_fn = function(cmd)
+        exec_calls[#exec_calls + 1] = cmd
+        if cmd:find("eb6_ad_doubleclick_net") then return 0 end
+        return 1
+      end,
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP6 }, ctx, b)
+    local ev = b.events[#b.events]
+    assert.equal(false, ev.allowed,
+      "v6 blocklist IP with no DNS attribution must be logged as blocked")
+    assert.equal("category:ads", ev.reason)
+  end)
+
   it("does NOT interfere with blocked_macs block: MAC already blocked stays blocked with original reason when hname is nil", function()
     -- hname=nil → ea-override can't fire → flow stays blocked with MAC-level reason
     local b = collecting_batcher()
