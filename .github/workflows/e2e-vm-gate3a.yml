@@ -161,6 +161,14 @@ jobs:
           scripts/vm/router-down.sh || true
           scripts/vm/client-down.sh || true
 
+      # #1667: free this arm's deterministic test ports. Gate 3a does not
+      # spin up the fake API, but a leaked qemu from a prior cancelled run
+      # at the same WH_PORT_BASE would still hold the router-ssh /
+      # router-http / client-ssh host-forward ports — the existing
+      # router-down.sh / client-down.sh only touch *this* run's pidfile.
+      - name: Free leaked test ports for this WH_PORT_BASE
+        run: scripts/vm/lib/free-test-ports.sh --from-port-base
+
       - name: Run Gate 3a smoke against staging
         env:
           WH_ADMIN_PASS: ${{ secrets.WH_STAGING_ADMIN_PASS }}
