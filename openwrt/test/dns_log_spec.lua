@@ -86,6 +86,32 @@ describe("parse_reply_line", function()
     assert.is_nil(dns_log.parse_reply_line(line))
   end)
 
+  -- #1668: conntrack flows are NOT v4-only — the agent already maintains
+  -- parallel eb6_/bl6_/resolved6_ nft sets for v6 destinations, and
+  -- connection_events fire for v6 dst_ip exactly as they do for v4. The
+  -- attribution cache must therefore ingest AAAA answers too, otherwise
+  -- every v6 destination (blocked or allowed) shows up as a bare v6
+  -- literal in connection_events instead of an FQDN.
+  it("#1668: parses a `reply X is <ipv6>` line (AAAA answers must feed the cache)", function()
+    local line =
+      "Nov 12 10:00:01 dnsmasq[1234]: 7 192.168.1.42/54321 reply youtube.com is 2607:f8b0::1"
+    local r = dns_log.parse_reply_line(line)
+    assert.is_not_nil(r)
+    assert.equal("7",            r.qid)
+    assert.equal("youtube.com",  r.name)
+    assert.equal("2607:f8b0::1", r.ip)
+  end)
+
+  it("#1668: parses a `cached X is <ipv6>` line identically", function()
+    local line =
+      "Nov 12 10:00:01 dnsmasq[1234]: 8 192.168.1.42/54321 cached example.com is 2606:4700::6810:84e5"
+    local r = dns_log.parse_reply_line(line)
+    assert.is_not_nil(r)
+    assert.equal("8",                       r.qid)
+    assert.equal("example.com",             r.name)
+    assert.equal("2606:4700::6810:84e5",    r.ip)
+  end)
+
   -- dnsmasq emits `cached <name> is <ip>` instead of `reply ...` when answering
   -- from its own in-memory cache. dns-tail must parse those identically — see
   -- the verb-set comment in dns_log.lua (#480).
