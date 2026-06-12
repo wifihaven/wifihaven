@@ -80,12 +80,6 @@ describe("parse_reply_line", function()
     assert.is_nil(dns_log.parse_reply_line(""))
   end)
 
-  it("skips IPv6 replies (we only track v4 conntrack flows)", function()
-    local line =
-      "Nov 12 10:00:01 dnsmasq[1234]: 7 192.168.1.42/54321 reply youtube.com is 2607:f8b0::1"
-    assert.is_nil(dns_log.parse_reply_line(line))
-  end)
-
   -- #1668: conntrack flows are NOT v4-only — the agent already maintains
   -- parallel eb6_/bl6_/resolved6_ nft sets for v6 destinations, and
   -- connection_events fire for v6 dst_ip exactly as they do for v4. The
