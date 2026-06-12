@@ -1001,6 +1001,71 @@ describe("handle_flow", function()
       "exec_fn must have queried the v4 eb_<host> set for a v4 dst_ip")
   end)
 
+  -- ── #1668 host-attribution promotion ────────────────────────────────────
+  --
+  -- When the nft_eb_hit fallback identifies an eb_<host> / bl_<host> match
+  -- for an hname=nil flow, the matched host IS attribution — dnsmasq put
+  -- that IP into the set when it resolved <host> (or a subdomain). The
+  -- connection_event should therefore report the matched host as the event
+  -- `host` (FQDN), not the bare IPv6/IPv4 literal it fell through to before.
+  -- Coarser than the DNS-attributed path (we know the configured apex, not
+  -- the exact subdomain that resolved), but strictly better than the IP.
+  it("#1668: v6 nft eb_ fallback → ev.host carries the matched FQDN, not the bare v6 literal", function()
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      reported_macs   = { [MAC] = true },
+      nft_sets        = {},
+      eb_hosts_by_mac = { [MAC] = { ["example.com"] = true } },
+      ea_hosts_by_mac = {},
+      exec_fn = function(cmd)
+        if cmd:find("eb6_example_com") then return 0 end
+        return 1
+      end,
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP6 }, ctx, b)
+    local ev = b.events[#b.events]
+    assert.equal("fqdn", ev.host.type,
+      "matched eb_<host> must be promoted to FQDN host attribution")
+    assert.equal("example.com", ev.host.value)
+  end)
+
+  it("#1668: v6 nft bl_ fallback → ev.host carries the matched FQDN, not the bare v6 literal", function()
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      reported_macs   = { [MAC] = true },
+      nft_sets        = {},
+      eb_hosts_by_mac = {},
+      ea_hosts_by_mac = {},
+      bl_hosts_by_mac = { [MAC] = { ["ad.doubleclick.net"] = "ads" } },
+      exec_fn = function(cmd)
+        if cmd:find("eb6_ad_doubleclick_net") then return 0 end
+        return 1
+      end,
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP6 }, ctx, b)
+    local ev = b.events[#b.events]
+    assert.equal("fqdn",              ev.host.type)
+    assert.equal("ad.doubleclick.net", ev.host.value)
+  end)
+
+  it("#1668: v4 nft eb_ fallback → ev.host carries the matched FQDN (sibling pin)", function()
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      reported_macs   = { [MAC] = true },
+      nft_sets        = {},
+      eb_hosts_by_mac = { [MAC] = { ["example.com"] = true } },
+      ea_hosts_by_mac = {},
+      exec_fn = function(cmd)
+        if cmd:find("eb_example_com") and not cmd:find("eb6_") then return 0 end
+        return 1
+      end,
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+    local ev = b.events[#b.events]
+    assert.equal("fqdn",        ev.host.type)
+    assert.equal("example.com", ev.host.value)
+  end)
+
   it("#1668: v6 bl_ labeling fallback queries eb6_<host> set → reason=category:<id>", function()
     -- bl_ labeling fallback (line ~750 in conntrack.lua) piggybacks on the
     -- same nft_eb_hit helper — the comment there explicitly says it reuses
