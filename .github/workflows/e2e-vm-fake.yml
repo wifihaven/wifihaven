@@ -191,6 +191,15 @@ jobs:
           scripts/vm/router-down.sh || true
           scripts/vm/client-down.sh || true
 
+      # #1667: free this arm's deterministic test ports before the fake_api
+      # fixture tries to bind. router-down.sh / client-down.sh only catch
+      # qemu via pidfile + name-scoped pkill — they do not catch a leaked
+      # in-process fake_api python listener from a cancelled prior run, which
+      # holds WH_PORT_BASE+1000 and crashes scenarios_fake/conftest.py at
+      # _start_async with OSError(EADDRINUSE).
+      - name: Free leaked test ports for this WH_PORT_BASE
+        run: scripts/vm/lib/free-test-ports.sh --from-port-base
+
       # Fake mode runs the API as an in-process asyncio app inside pytest
       # (scripts/e2e/scenarios_fake/conftest.py), so no docker-compose
       # stack bring-up / teardown / log capture is needed here.
