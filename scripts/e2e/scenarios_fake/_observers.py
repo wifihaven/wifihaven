@@ -14,7 +14,7 @@ from __future__ import annotations
 import re
 
 from lib.traffic import dns_query, http_get
-from lib.vm import router_nft_set, router_ssh
+from lib.vm import client_exec, router_nft_set, router_ssh
 from lib.wait import wait_until
 
 
@@ -116,12 +116,34 @@ def wait_http_succeeds(client, *, host: str = "example.com", timeout_s: float = 
 
 
 _IPV4 = re.compile(r"^\d+\.\d+\.\d+\.\d+$")
+# Loose v6 literal recognizer: ≥2 colons, only hex/colons. Sufficient to
+# filter `dig +short AAAA` output, where the answer lines are always
+# canonical addresses (no zone-ids, no brackets).
+_IPV6 = re.compile(r"^[0-9a-fA-F:]+$")
 
 
 def dig_ipv4_answers(client, host: str) -> list[str]:
     res = dns_query(client, host, timeout_s=5)
     lines = [l.strip() for l in (res.stdout or "").splitlines() if l.strip()]
     return [l for l in lines if _IPV4.match(l)]
+
+
+def dig_ipv6_answers(client, host: str) -> list[str]:
+    """Return the IPv6 (AAAA) answer lines from `dig +short AAAA <host>`.
+
+    Counterpart to `dig_ipv4_answers`. Used by the v6 attribution Gate 2
+    scenario (#1677) to populate the dnsmasq → dns-tail → dns_log cache
+    with the (AAAA, hostname) mapping the router needs to attribute a v6
+    flow to its FQDN.
+    """
+    res = client_exec(
+        client,
+        ["dig", "+time=2", "+tries=1", "+short", "AAAA", host],
+        timeout=10,
+        check=False,
+    )
+    lines = [l.strip() for l in (res.stdout or "").splitlines() if l.strip()]
+    return [l for l in lines if _IPV6.match(l) and l.count(":") >= 2]
 
 
 def eb_set_name(host: str) -> str:
