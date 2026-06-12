@@ -38,6 +38,49 @@
 #              app's own dependency domains and are distinct from the
 #              device-level infra-allow list (#1337/#1411).
 #
+# ──────────────────────────────────────────────────────────────────────────
+# SHARED-POOL COLLATERAL — don't block a host you don't own the IPs of
+# ──────────────────────────────────────────────────────────────────────────
+#
+# Enforcement is IP-layer, not DNS (see AGENTS.md / docs/architecture.md §0.2).
+# A blocked host's *resolved IPs* go into a per-(MAC, host) `eb_<host>` nftables
+# drop set; the kernel then drops every flow to those dst_ips. So a host whose
+# IPs are SHARED with traffic we never meant to block drags that other traffic
+# into the drop. This was the root cause of #1636 (kids' iPads couldn't sign
+# into Google Drive when YouTube was blocked): `youtubei.googleapis.com`
+# resolves to the same Google GFE anycast pool as Drive/OAuth/Calendar, so the
+# YouTube `eb_` rule dropped every Google product API on that pool.
+#
+# THE RULE: Don't put a shared vendor-API / multi-tenant-CDN host into a block
+# host-set when a DEDICATED-BYTES host already carries the meaningful block.
+# Prefer the app's dedicated-bytes host — `googlevideo.com` for YouTube,
+# `nflxvideo.net` for Netflix — that's where the attention-heavy traffic lives
+# and it carries no collateral. `imessage.yml` is the worked example of a
+# collateral-aware host-set: it deliberately EXCLUDES the shared APNs push
+# channel and targets only the iMessage-specific `ess.apple.com` edge; read
+# its inline comments before authoring a new host-set on shared infra.
+#
+# Two classes of shared-pool host (from the #1648 audit):
+#
+#   Class 1 — vendor-API anycast pools (Google GFE `*.googleapis.com`, and any
+#     host that fronts a whole vendor's product APIs on one IP pool). Collision
+#     is NEAR-CERTAIN. STRIP THESE — they never carry app-specific bytes worth
+#     blocking; the dedicated-bytes host already does. Audit found exactly one
+#     across all 15 templates: `youtubei.googleapis.com` in youtube.yml,
+#     being removed in Phase 0 (#1660).
+#
+#   Class 2 — third-party cloud-CDN edge (branded per-app asset domains that
+#     happen to sit behind a multi-tenant CDN): `discordapp.net` (Cloudflare),
+#     `rbxcdn.com`, `tiktokcdn.com`, `sc-cdn.net`, `jtvnw.net` / `ttvnw.net`,
+#     `kastatic.org`, and similar across the set. These are LATENT risk only —
+#     they ARE where the app's own bytes live, so stripping them defeats the
+#     block. DO NOT mass-strip Class 2. They are a watch-list for the deferred
+#     Phase 3 evidence loop (#1663): only remove one if real traffic evidence
+#     shows it actually shares IPs with collateral we care about.
+#
+# When in doubt: block the dedicated-bytes host, leave the shared edge alone,
+# and file against #1663 rather than editing blind.
+#
 # File names beginning with `_` are reserved for documentation (this file) and
 # the manifest (`_index.yml`) and are ignored by the template loader.
 

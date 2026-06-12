@@ -189,6 +189,32 @@ dnsmasq's role is exclusively: forward DNS upstream, populate per-host
 nftables ipsets via `--ipset=`, and write a query log that `dns-tail` reads
 for usage attribution (§7.2). It is **never** the enforcement plane.
 
+> **Shared-pool collateral — `extraBlocked` host-sets must own their IPs.**
+> Because `extraBlocked` drops on the resolved `dst_ip`, a blocked host whose
+> IPs are *shared* with traffic we never meant to block drags that other
+> traffic into the drop. This was the root cause of
+> [#1636](https://github.com/wifihaven/wifihaven/issues/1636): kids' iPads
+> couldn't sign into Google Drive when YouTube was blocked because
+> `youtubei.googleapis.com` resolves to the same Google GFE anycast pool as
+> Drive / OAuth / Calendar, so the YouTube `eb_` rule dropped every Google
+> product API on that pool. The fix is an **authoring** rule, not a new
+> enforcement mechanism: prefer the app's **dedicated-bytes** host
+> (`googlevideo.com` for YouTube, `nflxvideo.net` for Netflix) — that's where
+> the attention-heavy traffic lives and it carries no collateral — and keep
+> shared vendor-API / multi-tenant-CDN hosts out of block host-sets. The
+> [#1648](https://github.com/wifihaven/wifihaven/issues/1648) audit split
+> shared-pool hosts into **Class 1** (vendor-API anycast pools like Google GFE
+> `*.googleapis.com` — collision near-certain, strip; only
+> `youtubei.googleapis.com` qualified, being removed in Phase 0
+> [#1660](https://github.com/wifihaven/wifihaven/issues/1660)) and **Class 2**
+> (branded per-app CDN edges like `discordapp.net`, `rbxcdn.com`,
+> `tiktokcdn.com`, `sc-cdn.net`, `jtvnw.net` / `ttvnw.net`, `kastatic.org` —
+> latent risk only, **do not strip**, watch-list for the deferred Phase 3
+> evidence loop [#1663](https://github.com/wifihaven/wifihaven/issues/1663)).
+> The full authoring rule and worked example (`imessage.yml`) live next to the
+> templates in
+> [`api/resources/app_templates/_README.yml`](../api/resources/app_templates/_README.yml).
+
 ### 0.3 The global policy layer (#1308)
 
 Fleet-wide policy is carried **once** in `snapshot.global`, not copied into
