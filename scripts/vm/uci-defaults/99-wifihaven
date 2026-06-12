@@ -14,6 +14,7 @@ uci batch <<EOF
 set wifihaven.@wifihaven[0]=wifihaven
 set wifihaven.@wifihaven[0].api_url='http://10.0.2.2:8080'
 set wifihaven.@wifihaven[0].lan_prefix='192.168.100.'
+set wifihaven.@wifihaven[0].lan_prefix_v6='fdaa:bbbb:cccc:'
 EOF
 uci commit wifihaven
 
@@ -148,6 +149,13 @@ cat >/etc/hotplug.d/iface/99-wifihaven-v6-default <<'EOH'
 #!/bin/sh
 [ "$ACTION" = "ifup" ] && [ "$INTERFACE" = "wan" ] && {
     ip -6 route replace default dev eth1 2>/dev/null || true
+    # #1688: belt-and-braces — make sure v6 forwarding is on for both br-lan
+    # and eth1 so the FORWARD chain actually sees the SYN. Stock OpenWRT
+    # usually enables this when fw4 sees a v6 zone, but the harness's stripped
+    # firewall config doesn't reliably hit that path.
+    echo 1 >/proc/sys/net/ipv6/conf/all/forwarding 2>/dev/null || true
+    echo 1 >/proc/sys/net/ipv6/conf/br-lan/forwarding 2>/dev/null || true
+    echo 1 >/proc/sys/net/ipv6/conf/eth1/forwarding 2>/dev/null || true
 }
 EOH
 chmod +x /etc/hotplug.d/iface/99-wifihaven-v6-default

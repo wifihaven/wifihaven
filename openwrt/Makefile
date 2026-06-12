@@ -28,7 +28,11 @@ define Package/wifihaven
   # recover hostname attribution when the client used DoH/DoT or a hardcoded
   # IP — the same shared dns_cache feeds eb_/ea_/bl_ enforcement, so this is
   # an additive, observability-style dependency.
-  DEPENDS:=+lua +libuci-lua +luci-lib-jsonc +conntrack +curl +uhttpd-mod-lua +kmod-nf-log +kmod-nf-log6 +libustream-mbedtls +openssl-util +tcpdump-mini
+  # #1688: kmod-nf-conntrack6 loads the v6 conntrack hooks (via nf_defrag_ipv6
+  # on modern kernels). Without it `conntrack -E -e NEW` sees 0 v6 flow events,
+  # so the agent never emits connection_events for v6 destinations and the
+  # Gate 2 v6 attribution suite (scripts/e2e/scenarios_fake/test_v6_*.py) fails.
+  DEPENDS:=+lua +libuci-lua +luci-lib-jsonc +conntrack +curl +uhttpd-mod-lua +kmod-nf-log +kmod-nf-log6 +kmod-nf-conntrack6 +libustream-mbedtls +openssl-util +tcpdump-mini
   PKGARCH:=all
 endef
 
