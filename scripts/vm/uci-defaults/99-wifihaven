@@ -112,7 +112,9 @@ uci commit uhttpd
 #
 # - ula_prefix:   deterministic so the orchestrator and tests can hard-code
 #                 the prefix. Anything in fd00::/8 is valid; this value
-#                 collides with nothing in the harness.
+#                 collides with nothing in the harness. The Python-side
+#                 mirror lives at scripts/e2e/lib/vm.py:ROUTER_ULA_PREFIX —
+#                 keep both in sync when changing the prefix.
 # - ip6assign:    LAN takes the first /60 of the ULA, which gives the
 #                 router fdaa:bbbb:cccc::1/60 and clients SLAAC into the
 #                 same /64 (default eui64 or stable-privacy).
