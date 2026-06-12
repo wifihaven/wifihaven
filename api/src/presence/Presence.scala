@@ -56,6 +56,20 @@ object Presence {
   /** Default idle gap `N` (seconds) for the session-stitch model; mirrors migration V52. */
   val DefaultContinuationSeconds: Int = 120
 
+  /**
+   * #1666: minimum bytes for a `traffic_reports` row to *anchor* a per-app session in
+   * [[appSpansForProfile]]. A TCP keepalive is ~60 bytes and an HTTP/2 PING is a few hundred at
+   * most, so 256 admits any substantive request (a 304, a JSON poll, an asset fetch) while a pure-
+   * keepalive cadence on an app's host produces no anchor and the session is dropped.
+   *
+   * The check is per-session — not per-row — so row-level attribution-beats-suppression (#1506) is
+   * preserved: an app-attributed low-byte row still contributes to a session anchored by another
+   * substantive row in the same session. Only sessions with NO anchor are dropped. This is the
+   * single surface the guard lives on (the canonical per-app primitive); the rollup, the cap and
+   * the per-app graph all inherit it (single-source-of-truth).
+   */
+  val AppSessionAnchorBytes: Long = 256L
+
   // ── Session-stitch primitive (#1464, design §4) ──────────────────────────────
   //
   // Presence is no longer "credit a bucket": that under-counts the request-driven
@@ -617,8 +631,30 @@ object Presence {
       val matching  = active.filter(r => matchesGroup(r, pats))
       // Per device, stitch the union of the app's hosts as ONE stream so a gap < N
       // between different hosts of the same app bridges (vs sessionSpans' per-(mac,host) split).
+      // #1666: drop sessions that contain NO anchor row (bytes >= AppSessionAnchorBytes). A pure-
+      // keepalive cadence on a real-app host would otherwise stitch into a continuous phantom span
+      // via the idle-gap bridge because attribution-beats-suppression (#1506) prevents the row-
+      // level byte-floor filter from catching it. The check is per-SESSION not per-row, so any
+      // session with at least one substantive request keeps its full bridged span.
       val perDevice =
-        matching.groupBy(_.mac).valuesIterator.map(ms => stitch(ms.map(spanOf), gap)).toList
+        matching
+          .groupBy(_.mac)
+          .valuesIterator
+          .map { rs =>
+            val sessions = stitch(rs.map(spanOf), gap)
+            if sessions.isEmpty then sessions
+            else
+              sessions.filter { s =>
+                rs.exists { r =>
+                  if r.bytes < AppSessionAnchorBytes then false
+                  else {
+                    val rs0 = spanOf(r)
+                    rs0.startEpoch <= s.endEpoch && rs0.endEpoch >= s.startEpoch
+                  }
+                }
+              }
+          }
+          .toList
       val spans     = overlap match {
         case CrossDeviceOverlapMode.Sum   => perDevice.flatten
         case CrossDeviceOverlapMode.Dedup => mergeSpans(perDevice.flatten)
