@@ -1,0 +1,178 @@
+#!/usr/bin/lua
+-- wifihaven-sni-tail — sidecar daemon that captures the first packet of every
+-- outbound TCP/443 flow off the LAN bridge and extracts the TLS ClientHello
+-- SNI server_name. The (dst_ip, src_mac, sni) tuple is appended as a single
+-- TSV line to paths.sni_capture; the wifihaven-dns-tail sidecar tails that
+-- file alongside the dnsmasq query log and calls cache.insert_sni so the
+-- shared ip→hostname cache (paths.dns_cache) stays single-writer.
+--
+-- This closes the DoH / hard-coded-IP ATTRIBUTION gap (#573): a client that
+-- bypasses the on-router DNS resolver still ends up with its destination IP
+-- mapped back to the branded hostname in the agent's flow-attribution cache,
+-- so connection-event fqdn emission and cache.lookup-based labeling work even
+-- when dnsmasq never saw the query. It does NOT close the ENFORCEMENT gap: the
+-- eb_/ea_/bl_ nft drop-set populators fire only on dnsmasq `reply` lines, and
+-- SNI is seen after the flow's first packet — too late to populate a drop set
+-- for that flow. Enforcement on hard-coded-IP traffic remains blockIpOnly's job.
+--
+-- v1 scope:
+--   - Single-segment TLS 1.2 / TLS 1.3 ClientHello on TCP/443.
+--   - Always-on (no UCI toggle).
+--   - IPv4 only (followup for IPv6).
+--   - ECH ClientHellos → nil SNI → silently skipped (followup).
+--
+-- We rely on tcpdump-mini (libpcap-userspace) to provide the capture: it
+-- already ships in OpenWRT's default feed and is the only piece of the design
+-- that adds an external dependency. Output is raw pcap on stdout (-w -),
+-- parsed inline by sni.parse_packet, which accepts Ethernet/IPv4/TCP frames.
+
+local uci     = require("uci")
+local sni     = require("wifihaven.sni")
+local log     = require("wifihaven.log")
+local paths   = require("wifihaven.paths")
+local dns_log = require("wifihaven.dns_log")
+
+-- BPF filter: TCP to dst port 443, ACK set, PSH set, payload starts with the
+-- TLS handshake/ClientHello signature 0x16 ... 0x01. This restricts capture to
+-- the first packet of new TLS flows so the sidecar's per-packet cost stays
+-- ~one parse per new flow rather than every TLS data segment. The byte-offset
+-- expression follows the libpcap convention used in countless tcpdump recipes
+-- (tcp[((tcp[12]&0xf0)>>2)] = 0x16 — first byte of TCP payload is handshake);
+-- if the on-router libpcap rejects the expression (per the #573 abort list)
+-- we'd fall back to the looser `tcp dst port 443` and live with ~10x packets.
+local BPF_FILTER = "tcp dst port 443 and " ..
+  "(tcp[((tcp[12]&0xf0)>>2)] = 0x16) and " ..
+  "(tcp[((tcp[12]&0xf0)>>2)+5] = 0x01)"
+
+-- Capture interface: probe the actual LAN bridge from UCI (network.lan.device)
+-- so routers using a non-default bridge name (br0, multi-WAN) still get
+-- captured; falls back to br-lan. (#573 SHOULD-FIX #3.)
+local IFACE       = sni.lan_device(uci.cursor())
+-- snaplen sized to capture a full single-segment ClientHello. Real
+-- OpenSSL/curl TLS 1.3 ClientHellos are padded past ~512 bytes and grow with
+-- key_share / ALPN / supported_groups, routinely landing in the 512-1500B
+-- range — 600 truncated nearly all of them, so the parser saw a record whose
+-- declared length exceeded the captured bytes (the Gate 2 e2e caught this:
+-- every real ClientHello fell out as no_sni). 2048 comfortably covers a full
+-- single-TCP-segment ClientHello (bounded by the path MSS, typ. ~1460B) plus
+-- IP/TCP option headroom. The parser is also truncation-tolerant now (it finds
+-- the front-placed server_name extension even when the tail is clipped), so
+-- this bound is defense-in-depth rather than the sole guard. Multi-segment
+-- ClientHello reassembly remains out of v1 scope (#1653).
+local SNAPLEN     = 2048
+local CAPTURE_CMD = string.format(
+  "tcpdump -i %s -s %d -U -w - -B 1024 -n %q 2>/dev/null",
+  IFACE, SNAPLEN, BPF_FILTER)
+
+log.init({ debug = "0" })
+log.info("sni-tail: starting iface=%s snaplen=%d spool=%s",
+         IFACE, SNAPLEN, paths.sni_capture)
+
+-- ---------------------------------------------------------------------------
+-- pcap stream reader. tcpdump -w - emits a global pcap file header (24 bytes)
+-- followed by record headers (16 bytes) + captured packet bytes. The framing
+-- logic lives in sni.lua (sni.read_global_header / sni.read_record /
+-- sni.iter_pcap) so it is exercised by the unit + integration suite; this
+-- sidecar is a thin driver that backs the reader's read_fn with the io.popen
+-- handle and feeds each captured packet to sni.parse_packet.
+-- ---------------------------------------------------------------------------
+
+local h = io.popen(CAPTURE_CMD, "r")
+if not h then
+  log.err("sni-tail: cannot start tcpdump (%s)", CAPTURE_CMD)
+  os.exit(1)
+end
+
+-- read_fn(n) → up to n bytes from the tcpdump pipe, nil at EOF. The pcap reader
+-- reassembles short reads into exact-length record/header reads internally.
+local function read_fn(n)
+  return h:read(n)
+end
+
+-- Consume the global header first so we can emit a clear diagnostic when
+-- tcpdump produced no pcap stream at all (the per-record loop below then reads
+-- successive packets against the detected byte order).
+local gh = sni.read_global_header(read_fn)
+if not gh then
+  log.err("sni-tail: tcpdump produced no pcap stream on iface=%s — is the " ..
+          "interface up and is the BPF filter accepted? (a wrong LAN bridge " ..
+          "name is the usual cause; set network.lan.device)", IFACE)
+  os.exit(1)
+end
+
+-- Open the spool in append mode. Each ClientHello → one fwrite + flush.
+local spool, err = io.open(paths.sni_capture, "a")
+if not spool then
+  log.err("sni-tail: open %s failed: %s", paths.sni_capture, tostring(err))
+  os.exit(1)
+end
+
+-- #573: cumulative per-result tally. result ∈ {parsed, truncated, no_sni,
+-- ipv6_skipped, not_tcp, malformed} — a small bounded enum. We mirror the
+-- #1302 dns_metrics IPC: reuse dns_log.format_query_results to serialise the
+-- tally to paths.sni_metrics on each flush, and the agent's metrics tick folds
+-- the deltas into sni_clienthellos_total{result}. The split also feeds the
+-- periodic log line so a fleet-wide truncation/ipv6-skip rate is visible from
+-- logread alone (was lumped into a single no_sni_total — SHOULD-FIX #4/#7).
+local results           = {}
+local parsed_total      = 0
+local since_stat_parsed = 0
+local last_stats_log    = os.time()
+local last_metrics_flush = os.time()
+
+local function bump(result)
+  results[result] = (results[result] or 0) + 1
+end
+
+-- Atomic publish of the result tally (per-path .tmp sibling + rename) so the
+-- agent never reads a half-written file.
+local function flush_metrics()
+  local tmp = paths.sni_metrics .. ".tmp"
+  local f = io.open(tmp, "w")
+  if not f then return end
+  f:write(dns_log.format_query_results(results))
+  f:close()
+  os.rename(tmp, paths.sni_metrics)
+end
+
+while true do
+  local rec = sni.read_record(read_fn, gh.swapped)
+  if not rec then
+    log.warn("sni-tail: pcap pipe closed or short read; exiting (procd will respawn)")
+    break
+  end
+  local pkt = rec.data
+
+  local r, reason = sni.parse_packet(pkt)
+  if r then
+    spool:write(sni.format_sni_line(r.dst_ip, r.src_mac, r.sni))
+    spool:flush()
+    parsed_total      = parsed_total + 1
+    since_stat_parsed = since_stat_parsed + 1
+    bump("parsed")
+  else
+    bump(reason or "no_sni")
+  end
+
+  local now = os.time()
+  -- Publish the result tally on the same cadence as the heartbeat. Cheap
+  -- (a few-row tmpfs write) and bounded by the result enum.
+  if (now - last_metrics_flush) >= 30 then
+    flush_metrics()
+    last_metrics_flush = now
+  end
+  if (now - last_stats_log) >= 60 then
+    log.info("sni-tail: parsed=%d (+%d in last %ds) truncated=%d no_sni=%d ipv6_skipped=%d not_tcp=%d malformed=%d",
+             parsed_total, since_stat_parsed, now - last_stats_log,
+             results.truncated or 0, results.no_sni or 0,
+             results.ipv6_skipped or 0, results.not_tcp or 0,
+             results.malformed or 0)
+    flush_metrics()
+    last_stats_log    = now
+    since_stat_parsed = 0
+  end
+end
+
+flush_metrics()
+spool:close()
+h:close()

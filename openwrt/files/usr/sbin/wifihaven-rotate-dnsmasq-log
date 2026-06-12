@@ -1,36 +1,42 @@
 #!/bin/sh
-# wifihaven-rotate-dnsmasq-log — cap /tmp/wifihaven-dnsmasq.log at 20 MB.
+# wifihaven-rotate-dnsmasq-log — cap the agent's tmpfs spool files at 20 MB.
 #
-# Run from cron every 10 minutes. When the log exceeds MAX_BYTES, it is
-# rotated in place: the previous rotation is discarded, the current file is
-# copied to *.1, and the original is truncated to zero.
+# Run from cron every 10 minutes. For each spooled log, when it exceeds
+# MAX_BYTES it is rotated in place: the previous rotation is discarded, the
+# current file is copied to *.1, and the original is truncated to zero.
+#
+# Files rotated:
+#   /tmp/wifihaven-dnsmasq.log  — dnsmasq query log (the writer is dnsmasq).
+#   /tmp/wifihaven-sni.log      — SNI capture spool (#573; writer is
+#                                 wifihaven-sni-tail, follower is dns-tail).
 #
 # Truncating the original (rather than renaming it) is the "copytruncate"
-# pattern. dnsmasq holds the log fd open for the lifetime of the process and
-# does not reopen it on SIGHUP when logfacility is a file path — so a rename
-# would leave dnsmasq writing to an invisible, unrotated inode. Truncating
-# leaves dnsmasq on the same inode; it continues writing from offset 0.
+# pattern. dnsmasq / sni-tail hold the log fd open for the lifetime of the
+# process and do not reopen it — so a rename would leave the writer writing to
+# an invisible, unrotated inode. Truncating leaves the writer on the same
+# inode; it continues writing from offset 0.
 #
 # wifihaven-dns-tail runs `tail -n 0 -F` (follow by name). BusyBox tail -F
 # polls the file by name and detects the truncation within its next stat
 # interval; it reseeks to the beginning and resumes from there. Lines written
-# by dnsmasq between the copy and the truncate are present in *.1 and will be
-# missed by the tailer — this is acceptable and bounded: at 10-minute cron
-# cadence, the window is tiny and the tailer's hostname cache fills back up
-# within seconds of the next resolved query.
+# between the copy and the truncate are present in *.1 and will be missed by
+# the tailer — this is acceptable and bounded: at 10-minute cron cadence, the
+# window is tiny and the tailer's hostname cache fills back up within seconds.
 
 set -eu
 
-LOG=/tmp/wifihaven-dnsmasq.log
-LOG_PREV="${LOG}.1"
 # 20 MB in bytes — two rotations consume at most ~40 MB + the live file's
-# headroom before the next rotation, so worst-case /tmp usage is ~60 MB.
+# headroom before the next rotation, so worst-case /tmp usage is ~60 MB/file.
 MAX_BYTES=20971520
 
-[ -f "$LOG" ] || exit 0
+rotate_if_big() {
+  log="$1"
+  [ -f "$log" ] || return 0
+  size=$(wc -c < "$log" 2>/dev/null) || return 0
+  [ "$size" -ge "$MAX_BYTES" ] || return 0
+  cp -f "$log" "${log}.1"
+  : > "$log"
+}
 
-size=$(wc -c < "$LOG" 2>/dev/null) || exit 0
-[ "$size" -ge "$MAX_BYTES" ] || exit 0
-
-cp -f "$LOG" "$LOG_PREV"
-: > "$LOG"
+rotate_if_big /tmp/wifihaven-dnsmasq.log
+rotate_if_big /tmp/wifihaven-sni.log

@@ -193,6 +193,23 @@ local function fold_dns_queries()
                         by_result, dns_results_baseline)
 end
 
+-- #573: SNI ClientHello result counters. The wifihaven-sni-tail sidecar writes
+-- a cumulative per-result tally (same <result>\t<count> format as dns_metrics)
+-- to paths.sni_metrics; sample + fold the deltas into
+-- sni_clienthellos_total{result}. result ∈ {parsed, truncated, no_sni,
+-- ipv6_skipped, not_tcp, malformed}. A sidecar restart re-bases from 0, which
+-- fold_external treats as a reset.
+local sni_results_baseline = {}
+local function fold_sni_metrics()
+  local f = io.open(paths.sni_metrics, "r")
+  if not f then return end
+  local text = f:read("*a") or ""
+  f:close()
+  local by_result = dns_log.parse_query_results(text)
+  metrics.fold_external(mreg, "sni_clienthellos_total", "result",
+                        by_result, sni_results_baseline)
+end
+
 -- activity_sample_int should evenly divide usage_report_interval, or the last
 -- partial bucket at report flush time is shorter than the others. Warn and
 -- continue — a misconfig here degrades activeSeconds accuracy slightly but
@@ -909,6 +926,7 @@ conntrack.watch({
       -- before the push so the batch carries their latest deltas.
       fold_enforcement_drops()
       fold_dns_queries()
+      fold_sni_metrics()  -- #573
       local sampled_at = os.date("!%Y-%m-%dT%H:%M:%SZ", wall)
       metrics.post(api_url, router_token, mreg, sampled_at, http_post, log)
     end

@@ -27,6 +27,26 @@ M.dns_metrics = "/tmp/wifihaven-dns-metrics.txt"
 -- wifihaven-dns-tail bl_ populator reads it on its set-refresh cadence.
 M.bl_member_index = "/tmp/wifihaven-bl-members.txt"
 
+-- SNI capture spool (#573): wifihaven-sni-tail parses the first packet of every
+-- outbound TCP/443 flow off the LAN bridge, extracts the TLS ClientHello SNI,
+-- and appends one "SNI\t<dst_ip>\t<src_mac>\t<server_name>" line per capture to
+-- this tmpfs file. wifihaven-dns-tail tails it alongside the dnsmasq query log
+-- and routes SNI-prefixed lines through cache.insert_sni, so the shared
+-- ip→hostname cache (paths.dns_cache) stays single-writer (dns-tail). This
+-- improves connection-event fqdn ATTRIBUTION only (cache.lookup); it does NOT
+-- feed the eb_/ea_/bl_ nft drop-set populators, which fire solely on dnsmasq
+-- `reply <name> is <ip>` lines — SNI is observed after the flow's first packet,
+-- too late to populate a drop set for that flow.
+M.sni_capture = "/tmp/wifihaven-sni.log"
+
+-- SNI capture result tally (#573): wifihaven-sni-tail writes cumulative
+-- per-result counts ("<result>\t<count>" lines, same format as dns_metrics) on
+-- each periodic flush; wifihaven-agent samples it on its metrics tick and folds
+-- the deltas into sni_clienthellos_total{result}. result ∈ {parsed, truncated,
+-- no_sni, ipv6_skipped, not_tcp, malformed}. Same tmpfs-IPC pattern as
+-- dns_metrics — the sidecar has no metrics registry of its own.
+M.sni_metrics = "/tmp/wifihaven-sni-metrics.txt"
+
 -- nflog drop spool (#1126): wifihaven-nflog-tail tails `logread -f`, greps the
 -- nft `log prefix "wh_drop:…"` forward-drop records, and appends them here; the
 -- main agent drains new complete lines from this tmpfs spool on its cooperative

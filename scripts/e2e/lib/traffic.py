@@ -64,6 +64,33 @@ def dns_query(client: Client, host: str, *, timeout_s: int = 5) -> Result:
     )
 
 
+def tls_clienthello(client: Client, sni: str, ip: str, *, timeout_s: int = 5) -> Result:
+    """Emit a TLS ClientHello carrying `sni` to `ip:443` from the client — WITHOUT
+    a DNS lookup for `sni` (#573).
+
+    `curl --resolve <sni>:443:<ip>` pins the connection to `ip` so curl never
+    queries dnsmasq for `sni`; the ClientHello with `server_name=sni` is sent on
+    br-lan immediately after the TCP handshake completes. `-k` ignores the bogus
+    cert and `--max-time` bounds the (expected-to-fail) request. The HTTPS request
+    will not return a real body — `ip` is a throwaway listener — but that does not
+    matter: the proof is that the ClientHello crossed br-lan, where the SNI sidecar
+    captures it. Success is NOT required; emission is. Returns the raw Result for
+    diagnostics.
+    """
+    url = f"https://{sni}/"
+    return client_exec(
+        client,
+        [
+            "sh", "-c",
+            f"curl -k -s --max-time {timeout_s} "
+            f"--resolve {shell_quote(f'{sni}:443:{ip}')} "
+            f"-o /dev/null {shell_quote(url)} || true",
+        ],
+        timeout=timeout_s + 10,
+        check=False,
+    )
+
+
 def shell_quote(s: str) -> str:
     import shlex
     return shlex.quote(s)
