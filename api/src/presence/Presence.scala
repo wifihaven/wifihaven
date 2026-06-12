@@ -354,8 +354,26 @@ object Presence {
       filter: HeartbeatFilter,
       appHostPatterns: List[String] = Nil,
   ): Boolean =
-    !isAppAttributed(row, appHostPatterns) &&
-      (isBackgroundHost(row) || (filter.enabled && row.bytes < filter.bytesThreshold))
+    suppressedAsBackground(row.host, appHostPatterns) ||
+      (!isAppAttributed(
+        row,
+        appHostPatterns,
+      ) && filter.enabled && row.bytes < filter.bytesThreshold)
+
+  /**
+   * #1559: host-keyed "drop unless app-attributed" predicate — the ranking-side analogue of
+   * [[isHeartbeat]]'s suppression branch, without the PresenceRow byte-floor. A host is suppressed
+   * as device-level background iff it is on the [[InfraHosts.isBackground]] list AND no active
+   * app's host-set claims it (attribution beats suppression, same #1506 contract every counting
+   * surface routes through). The SINGLE host-keyed entry point: `isHeartbeat` reuses this for its
+   * suppression branch and `DashboardNowRoutes.dropBackground` calls it directly, so the rule
+   * cannot diverge between counting and ranking (#1532).
+   *
+   * An empty `appHostPatterns` (no app context) reduces to plain `InfraHosts.isBackground` —
+   * preserves prior behavior for callers without app-attribution data.
+   */
+  def suppressedAsBackground(host: HostId, appHostPatterns: List[String]): Boolean =
+    InfraHosts.isBackground(host) && !HostMatch.matchesAny(host, appHostPatterns)
 
   /**
    * #1506: whether the row's FQDN is attributed to one of the active apps' host-sets — the
@@ -366,16 +384,6 @@ object Presence {
    */
   def isAppAttributed(row: PresenceRow, appHostPatterns: List[String]): Boolean =
     HostMatch.matchesAny(row.host, appHostPatterns)
-
-  /**
-   * #1503/#1525: whether the row's FQDN is device-level background infra
-   * ([[InfraHosts.isBackground]] \= allow+suppress canonical ∪ suppress-only). Keyed on host
-   * identity only — IP-literal hosts never match. #1560: thin alias for the canonical host-keyed
-   * predicate on [[InfraHosts]] — every presence/dashboard suppression call site routes through
-   * that one entry point so the rule cannot diverge between surfaces (#1532).
-   */
-  private def isBackgroundHost(row: PresenceRow): Boolean =
-    InfraHosts.isBackground(row.host)
 
   /**
    * #714: per-row heartbeat classification for the explain debug surface. Wraps each row with the

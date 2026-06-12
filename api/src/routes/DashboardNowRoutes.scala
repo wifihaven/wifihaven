@@ -2,6 +2,8 @@ package wifihaven.api.routes
 
 import wifihaven.api.auth.*
 import wifihaven.api.db.*
+import wifihaven.api.policy.ProfileAppDispositions
+import wifihaven.api.presence.Presence
 import wifihaven.shared.*
 import wifihaven.shared.types.*
 import zio.{Clock as _, *}
@@ -37,6 +39,7 @@ object DashboardNowRoutes {
       deviceRepo: DeviceRepo,
       profileRepo: ProfileRepo,
       userProfileRepo: UserProfileRepo,
+      appTimeLimitRepo: AppTimeLimitRepo,
       clock: Clock,
   ): Routes[Any, Response] =
     Routes(
@@ -58,8 +61,8 @@ object DashboardNowRoutes {
             // Both inputs in parallel.
             since       = now.minus(TopHostsWindow)
             connSince   = now.minus(RecentActivityWindow)
-            lastSeenF <- connRepo.lastSeenByMacSince(connSince).fork
-            rowsF     <- trafficRepo
+            lastSeenF  <- connRepo.lastSeenByMacSince(connSince).fork
+            rowsF      <- trafficRepo
               .listTrafficRollupRows(
                 TrafficRollupFilter(
                   macs = Some(visibleMacs),
@@ -69,14 +72,27 @@ object DashboardNowRoutes {
                 ),
               )
               .fork
-            lastSeen  <- lastSeenF.join.mapError(ApiError.Db(_))
-            rows      <- rowsF.join.mapError(ApiError.Db(_))
-            response = buildResponse(
+            // #1559: per-profile active-app host-set, fed into [[dropBackground]] so an
+            // app-attributed background-pattern host stays in the ranking (attribution beats
+            // suppression, same #1506 contract counting surfaces use). Read through the
+            // canonical [[ProfileAppDispositions]] fold so the dashboard cannot disagree
+            // with the counting paths on what "active app host" means (#1532 / #1560).
+            appLimitsF <- appTimeLimitRepo.listAll.fork
+            lastSeen   <- lastSeenF.join.mapError(ApiError.Db(_))
+            rows       <- rowsF.join.mapError(ApiError.Db(_))
+            appLimits  <- appLimitsF.join.mapError(ApiError.Db(_))
+            appHostPatternsByProfile = appLimits
+              .groupBy(_.profileId)
+              .view
+              .mapValues(ProfileAppDispositions.from(_).appHostPatterns)
+              .toMap
+            response                 = buildResponse(
               now = now,
               profiles = visibleProf,
               devices = visibleDevs,
               lastSeen = lastSeen,
               rows = rows,
+              appHostPatternsByProfile = appHostPatternsByProfile,
             )
           } yield Response.json(response.toJson)
           handle.mapError(ErrorMapper.errorToResponse)
@@ -99,6 +115,7 @@ object DashboardNowRoutes {
       devices: List[Device],
       lastSeen: Map[MacAddress, Instant],
       rows: List[TrafficRollupRow],
+      appHostPatternsByProfile: Map[ProfileId, List[String]] = Map.empty,
   ): DashboardNow = {
     val trafficCutoff                             = now.minus(TrafficActiveWindow)
     val rowsByMac                                 = rows.groupBy(_.mac)
@@ -108,8 +125,9 @@ object DashboardNowRoutes {
         .toMap
 
     val profile = profiles.sortBy(_.id).map { p =>
-      val devs   = devices.filter(_.profileId.contains(p.id))
-      val active = devs.flatMap { d =>
+      val devs            = devices.filter(_.profileId.contains(p.id))
+      val appHostPatterns = appHostPatternsByProfile.getOrElse(p.id, Nil)
+      val active          = devs.flatMap { d =>
         val connTs    = lastSeen.get(d.mac)
         val trafficTs = latestTrafficTs.get(d.mac).filter(_.isAfter(trafficCutoff))
         val activeTs  = (connTs, trafficTs) match {
@@ -124,8 +142,8 @@ object DashboardNowRoutes {
             name = d.name,
             mac = d.mac,
             lastSeenSeconds = lastSeenSeconds,
-            topHosts = topHostsFromRows(devRows),
-            nowActivity = nowActivityFromRows(devRows),
+            topHosts = topHostsFromRows(devRows, appHostPatterns),
+            nowActivity = nowActivityFromRows(devRows, appHostPatterns),
           )
         }
       }
@@ -145,8 +163,11 @@ object DashboardNowRoutes {
    * bucket and returns its top host. If earlier consecutive buckets share the same top host,
    * reports a `minutes` run (capped at 60); otherwise `minutes = None`. See #852.
    */
-  def nowActivityFromRows(rows: List[TrafficRollupRow]): Option[DashboardNowActivity] = {
-    val buckets = dropBackground(rows)
+  def nowActivityFromRows(
+      rows: List[TrafficRollupRow],
+      appHostPatterns: List[String] = Nil,
+  ): Option[DashboardNowActivity] = {
+    val buckets = dropBackground(rows, appHostPatterns)
       .groupBy(_.periodEnd)
       .toList
       .sortBy { case (end, _) => -end.getEpochSecond }
@@ -179,8 +200,11 @@ object DashboardNowRoutes {
       .headOption
       .map(_._1)
 
-  def topHostsFromRows(rows: List[TrafficRollupRow]): List[DashboardNowHost] =
-    dropBackground(rows)
+  def topHostsFromRows(
+      rows: List[TrafficRollupRow],
+      appHostPatterns: List[String] = Nil,
+  ): List[DashboardNowHost] =
+    dropBackground(rows, appHostPatterns)
       .groupBy(_.host)
       .view
       .mapValues(rs => rs.map(_.activeSeconds.toLong).sum)
@@ -196,7 +220,19 @@ object DashboardNowRoutes {
    * floor — so it cannot hide a genuine low-byte foreground request (the #1446 undercount
    * mechanism): a single chatty 60-byte keepalive looks identical to a real request-driven app at
    * the byte level, so only identity is safe here.
+   *
+   * #1559: ATTRIBUTION BEATS SUPPRESSION. `appHostPatterns` is the union of the profile's
+   * active-app host-sets (via [[ProfileAppDispositions.appHostPatterns]]). A row whose host matches
+   * an active app's host-set is attributed to that app and kept in the ranking — so an off-domain
+   * asset/CDN host an app genuinely depends on that also happens to be on the [[InfraHosts]]
+   * device-infra list (e.g. `beacons3.gvt2.com` when a "Google" app claims `gvt2.com`) surfaces in
+   * topHosts/nowActivity instead of being silently dropped. Routed through the single host-keyed
+   * [[Presence.suppressedAsBackground]] predicate — same rule the counting surfaces use, no second
+   * copy (#1532 / #1560).
    */
-  private def dropBackground(rows: List[TrafficRollupRow]): List[TrafficRollupRow] =
-    rows.filterNot(r => InfraHosts.isBackground(r.host))
+  private def dropBackground(
+      rows: List[TrafficRollupRow],
+      appHostPatterns: List[String],
+  ): List[TrafficRollupRow] =
+    rows.filterNot(r => Presence.suppressedAsBackground(r.host, appHostPatterns))
 }
