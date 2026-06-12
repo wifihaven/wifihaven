@@ -287,6 +287,7 @@ describe("handle_flow", function()
   local MAC      = "aa:bb:cc:11:22:33"
   local SRC_IP   = "192.168.1.42"
   local DST_IP   = "1.2.3.4"
+  local DST_IP6  = "2001:db8::1"  -- #1668 v6 labeling tests
 
   local function collecting_batcher()
     local events = {}
@@ -941,7 +942,6 @@ describe("handle_flow", function()
   -- opaque ExtraBlocked / household block instead of `host:<host>` /
   -- `category:<id>`. PR #1656 closed the v4 hole; this closes the v6 hole.
   -- The pair is pinned side-by-side so future divergence is caught by CI.
-  local DST_IP6 = "2001:db8::1"
 
   it("#1668: v6 hname=nil + dst_ip in eb6_ nft set → allowed=false reason=host:<host>", function()
     local b = collecting_batcher()
