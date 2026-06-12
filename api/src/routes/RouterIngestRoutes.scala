@@ -128,7 +128,7 @@ object RouterIngestRoutes {
             _      <- ZIO
               .fail(ApiError.BadRequest("router_id mismatch"))
               .when(rep.routerId != router.id)
-            _      <- ZIO.logInfo(
+            _      <- ZIO.logDebug(
               s"router events: router=${router.id} batchSize=${rep.events.size}",
             )
             _      <- ZIO.foreachDiscard(rep.events)(e =>
