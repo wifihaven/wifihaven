@@ -796,7 +796,7 @@ function M.parse_conntrack_line(line)
 end
 
 -- ---------------------------------------------------------------------------
--- is_wan_bound(flow, lan_prefix) -> bool
+-- is_wan_bound(flow, lan_prefix, lan_prefix_v6) -> bool
 --
 -- Returns true when the flow is an outbound WAN-destined flow: src_ip is on
 -- the LAN AND dst_ip is NOT on the LAN.  This filters out LAN-internal flows
@@ -804,18 +804,27 @@ end
 -- appear in connection_events — they are noise with no parental-control signal.
 -- (#575)
 --
--- lan_prefix example: "192.168.1."
+-- Family is detected from src_ip — a colon means IPv6, otherwise v4 — so a
+-- single helper handles both stacks (#1688). lan_prefix_v6 is the LAN v6 ULA
+-- prefix (e.g. "fdaa:bbbb:cccc:"); when empty/nil v6 flows are rejected so a
+-- prod router without an authored v6 LAN keeps today's behavior.
+--
+-- lan_prefix    example: "192.168.1."
+-- lan_prefix_v6 example: "fdaa:bbbb:cccc:"
 -- ---------------------------------------------------------------------------
-function M.is_wan_bound(flow, lan_prefix)
-  return flow.src_ip:sub(1, #lan_prefix) == lan_prefix
-     and flow.dst_ip:sub(1, #lan_prefix) ~= lan_prefix
+function M.is_wan_bound(flow, lan_prefix, lan_prefix_v6)
+  local is_v6 = flow.src_ip:find(":", 1, true) ~= nil
+  local prefix = is_v6 and lan_prefix_v6 or lan_prefix
+  if not prefix or prefix == "" then return false end
+  return flow.src_ip:sub(1, #prefix) == prefix
+     and flow.dst_ip:sub(1, #prefix) ~= prefix
 end
 
 -- is_outbound is kept as a backward-compatible alias so existing call sites
 -- outside the watch loop continue to work. New code should use is_wan_bound.
 -- @deprecated use is_wan_bound
-function M.is_outbound(flow, lan_prefix)
-  return M.is_wan_bound(flow, lan_prefix)
+function M.is_outbound(flow, lan_prefix, lan_prefix_v6)
+  return M.is_wan_bound(flow, lan_prefix, lan_prefix_v6)
 end
 
 -- ---------------------------------------------------------------------------
@@ -831,6 +840,8 @@ end
 --   eb_hosts_by_mac   table     shared ref: { mac -> { hostname -> true } }
 --   ea_hosts_by_mac   table     shared ref: { mac -> { hostname -> true } }
 --   lan_prefix     string    default "192.168.1."
+--   lan_prefix_v6  string    optional v6 LAN ULA prefix (e.g. "fdaa:bbbb:cccc:")
+--                            — when unset, v6 flows are filtered out (#1688).
 --   max_batch      int       default 50
 --   flush_interval int       default 10  (seconds)
 --   max_retries    int       default 3
@@ -850,9 +861,10 @@ end
 -- }
 -- ---------------------------------------------------------------------------
 function M.watch(cfg)
-  local log        = cfg.log            or default_log()
-  local lan_prefix = cfg.lan_prefix     or "192.168.1."
-  local max_batch  = cfg.max_batch      or 50
+  local log           = cfg.log            or default_log()
+  local lan_prefix    = cfg.lan_prefix     or "192.168.1."
+  local lan_prefix_v6 = cfg.lan_prefix_v6  or ""
+  local max_batch     = cfg.max_batch      or 50
   local flush_int  = cfg.flush_interval or 10
   local max_retry  = cfg.max_retries    or 3
   local base_delay = cfg.base_delay     or 2
@@ -905,8 +917,8 @@ function M.watch(cfg)
   -- then flush conntrack and nflog events together.
   if cfg.register_batcher then cfg.register_batcher(batcher) end
 
-  log.info("conntrack: starting watcher lan_prefix=%s max_batch=%d flush_interval=%ds",
-           lan_prefix, max_batch, flush_int)
+  log.info("conntrack: starting watcher lan_prefix=%s lan_prefix_v6=%q max_batch=%d flush_interval=%ds",
+           lan_prefix, lan_prefix_v6, max_batch, flush_int)
   local handle = io.popen("conntrack -E -e NEW 2>/dev/null", "r")
   if not handle then
     log.err("conntrack: cannot start conntrack -E -e NEW")
@@ -922,7 +934,7 @@ function M.watch(cfg)
     if not line then break end
 
     local flow = M.parse_conntrack_line(line)
-    if flow and M.is_wan_bound(flow, lan_prefix) then
+    if flow and M.is_wan_bound(flow, lan_prefix, lan_prefix_v6) then
       local arp = M.parse_arp_table()
       local mac_candidate = M.arp_lookup_mac(flow.src_ip, arp)
       -- Parse the lease file when (a) MAC is new, or (b) MAC is pending a

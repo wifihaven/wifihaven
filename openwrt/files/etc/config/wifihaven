@@ -21,6 +21,13 @@ config wifihaven 'wifihaven'
 	# LAN subnet prefix used to identify outbound (egress) flows
 	option lan_prefix '192.168.1.'
 
+	# Optional v6 LAN ULA prefix used to identify outbound v6 flows (#1688).
+	# Leave unset to filter all v6 flows out of connection_events (today's
+	# prod behaviour). Set to the router's LAN ULA prefix (e.g.
+	# 'fdaa:bbbb:cccc:') to let v6 traffic through the same is_wan_bound
+	# filter the v4 path uses.
+	# option lan_prefix_v6 'fdaa:bbbb:cccc:'
+
 	# How many connection_attempt events to accumulate before flushing
 	option event_batch_size '50'
 

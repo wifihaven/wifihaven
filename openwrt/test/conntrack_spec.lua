@@ -1632,6 +1632,36 @@ describe("is_wan_bound (#575)", function()
       conntrack.is_wan_bound({ src_ip = "192.168.1.42", dst_ip = "192.168.1.1" }, LAN),
       conntrack.is_outbound({ src_ip = "192.168.1.42", dst_ip = "192.168.1.1" }, LAN))
   end)
+
+  -- #1688: v6 attribution. Without a v6 LAN prefix, every v6 flow MUST be
+  -- rejected so production routers that never authored a v6 LAN keep today's
+  -- behavior (no v6 events). With one, the same src∈LAN ∧ dst∉LAN predicate
+  -- applies — the helper is family-aware off the src address.
+  local LAN6 = "fdaa:bbbb:cccc:"
+
+  it("rejects every v6 flow when no v6 LAN prefix is configured", function()
+    assert.is_false(conntrack.is_wan_bound(
+      { src_ip = "fdaa:bbbb:cccc::42", dst_ip = "2001:db8::10" }, LAN))
+    assert.is_false(conntrack.is_wan_bound(
+      { src_ip = "fdaa:bbbb:cccc::42", dst_ip = "2001:db8::10" }, LAN, ""))
+    assert.is_false(conntrack.is_wan_bound(
+      { src_ip = "fdaa:bbbb:cccc::42", dst_ip = "2001:db8::10" }, LAN, nil))
+  end)
+
+  it("accepts a v6 flow from LAN ULA src to a public v6 dst when v6 prefix set", function()
+    assert.is_true(conntrack.is_wan_bound(
+      { src_ip = "fdaa:bbbb:cccc::42", dst_ip = "2001:db8::10" }, LAN, LAN6))
+  end)
+
+  it("rejects a v6 flow from LAN ULA src to another LAN ULA peer", function()
+    assert.is_false(conntrack.is_wan_bound(
+      { src_ip = "fdaa:bbbb:cccc::42", dst_ip = "fdaa:bbbb:cccc::1" }, LAN, LAN6))
+  end)
+
+  it("rejects a v6 flow whose src is NOT in the LAN ULA", function()
+    assert.is_false(conntrack.is_wan_bound(
+      { src_ip = "2001:db8::99", dst_ip = "2001:db8::10" }, LAN, LAN6))
+  end)
 end)
 
 -- ---------------------------------------------------------------------------

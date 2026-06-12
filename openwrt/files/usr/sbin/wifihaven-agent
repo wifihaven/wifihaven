@@ -59,6 +59,11 @@ if lan_warn_msg then log.warn(lan_warn_msg) end
 local router_token  = uci_get("router_token",         "")
 local router_id     = uci_get("router_id",            "")
 local lan_prefix    = uci_get("lan_prefix",           "192.168.1.")
+-- #1688: optional v6 LAN ULA prefix (e.g. "fdaa:bbbb:cccc:"). When unset the
+-- conntrack watcher rejects v6 flows (preserving today's behaviour on prod
+-- routers that have not authored a v6 LAN). The qemu e2e harness seeds this
+-- to the test ULA prefix via scripts/vm/uci-defaults/99-wifihaven (#1680).
+local lan_prefix_v6 = uci_get("lan_prefix_v6",        "")
 local max_batch     = tonumber(uci_get("event_batch_size",        "50"))
 local flush_int     = tonumber(uci_get("event_flush_interval",    "10"))
 local policy_int    = tonumber(uci_get("policy_poll_interval",    "5"))
@@ -624,6 +629,7 @@ conntrack.watch({
   ea_hosts_by_mac   = ea_hosts_by_mac,
   bl_hosts_by_mac   = bl_hosts_by_mac,
   lan_prefix      = lan_prefix,
+  lan_prefix_v6   = lan_prefix_v6,
   max_batch       = max_batch,
   flush_interval  = flush_int,
   http_post       = http_post,
