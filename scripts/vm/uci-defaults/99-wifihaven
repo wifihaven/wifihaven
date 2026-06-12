@@ -103,4 +103,51 @@ uci commit uhttpd
 # times out (HTTPCODE:000) instead of receiving the page.
 [ -x /etc/init.d/uhttpd ] && /etc/init.d/uhttpd enable
 
+# ── IPv6 LAN bring-up (#1680, prep for #1677) ────────────────────────────
+# Bring up dual-stack on the qemu LAN bridge so the v6 attribution
+# scenario (#1677, the CD-tier follow-up to #1673/#1668) can fire a v6
+# SYN from the client and exercise the same conntrack→dns_log→snapshot
+# pipeline as v4. The qemu SLIRP WAN is v4-only, so upstream v6 is not
+# in scope — only LAN connectivity and a FORWARD-chain-traversing v6 SYN.
+#
+# - ula_prefix:   deterministic so the orchestrator and tests can hard-code
+#                 the prefix. Anything in fd00::/8 is valid; this value
+#                 collides with nothing in the harness. The Python-side
+#                 mirror lives at scripts/e2e/lib/vm.py:ROUTER_ULA_PREFIX —
+#                 keep both in sync when changing the prefix.
+# - ip6assign:    LAN takes the first /60 of the ULA, which gives the
+#                 router fdaa:bbbb:cccc::1/60 and clients SLAAC into the
+#                 same /64 (default eui64 or stable-privacy).
+# - dhcp.lan.ra / dhcpv6: enable odhcpd RAs + DHCPv6 on LAN. ra_default=1
+#                 makes the router advertise itself as the v6 default
+#                 even though it has no v6 upstream — required so the
+#                 client installs a default route via the router's LL.
+# The existing block-dns-leak fw rule omits `family`, which under fw4
+# means both ipv4 and ipv6 — no v6 sibling needed.
+uci set network.globals=globals
+uci set network.globals.ula_prefix='fdaa:bbbb:cccc::/48'
+uci set network.lan.ip6assign='60'
+uci commit network
+
+uci set dhcp.lan.ra='server'
+uci set dhcp.lan.dhcpv6='server'
+uci set dhcp.lan.ra_default='1'
+uci commit dhcp
+
+# Give the router a v6 default route on the WAN side so client→public-v6
+# SYNs cross the FORWARD chain (where conntrack NEW fires and where the
+# wifihaven nft drops live) before the kernel discovers the packet is
+# unroutable beyond SLIRP. The next-hop need not exist — the routing
+# decision picks this entry, the packet enters FORWARD, conntrack
+# emits a NEW event, and ND/NS for the bogus next-hop fails silently.
+#
+# Wired through hotplug because uci-defaults runs before WAN comes up.
+cat >/etc/hotplug.d/iface/99-wifihaven-v6-default <<'EOH'
+#!/bin/sh
+[ "$ACTION" = "ifup" ] && [ "$INTERFACE" = "wan" ] && {
+    ip -6 route replace default dev eth1 2>/dev/null || true
+}
+EOH
+chmod +x /etc/hotplug.d/iface/99-wifihaven-v6-default
+
 exit 0

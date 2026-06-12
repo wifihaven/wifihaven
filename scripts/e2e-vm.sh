@@ -109,10 +109,12 @@ case "${ONLY}" in
                 MARK="install_health" ;;
   sni-attribution|sni_attribution)
                 MARK="sni_attribution" ;;
+  v6-link-local|v6_link_local)
+                MARK="v6_link_local" ;;
   *) echo "unknown --only: ${ONLY}" >&2
      echo "valid: enrollment, allowed-browsing, blocked-domain, daily-limit, usage, blocked-page," >&2
      echo "       pause, extra-blocked, schedule, time-limit, reassignment, unknown-device," >&2
-     echo "       install-health, sni-attribution" >&2
+     echo "       install-health, sni-attribution, v6-link-local" >&2
      exit 2 ;;
 esac
 
