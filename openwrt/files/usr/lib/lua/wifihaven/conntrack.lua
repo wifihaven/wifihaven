@@ -917,8 +917,16 @@ function M.watch(cfg)
   -- then flush conntrack and nflog events together.
   if cfg.register_batcher then cfg.register_batcher(batcher) end
 
-  log.info("conntrack: starting watcher lan_prefix=%s lan_prefix_v6=%q max_batch=%d flush_interval=%ds",
+  log.info("conntrack: starting watcher lan_prefix=%s lan_prefix_v6=%s max_batch=%d flush_interval=%ds",
            lan_prefix, lan_prefix_v6, max_batch, flush_int)
+  -- #1688: NO `-f` family flag. conntrack(8) documents the default as ipv4,
+  -- but for `-E` (events) conntrack-tools opens the netlink socket with
+  -- NFCT_ALL_CT_GROUPS — a family-agnostic subscription — and the `-f` flag
+  -- only constrains table dumps (`-L`). So omitting `-f` is how we read BOTH
+  -- v4 and v6 NEW events from a single reader. This is load-bearing for the
+  -- v6 attribution path: the Gate 2 e2e suite (`test_v6_*.py`) verifies it
+  -- end-to-end, and `+kmod-nf-conntrack6` in the package DEPENDS ensures the
+  -- kernel-side v6 hooks the netlink stream pulls from are present.
   local handle = io.popen("conntrack -E -e NEW 2>/dev/null", "r")
   if not handle then
     log.err("conntrack: cannot start conntrack -E -e NEW")
