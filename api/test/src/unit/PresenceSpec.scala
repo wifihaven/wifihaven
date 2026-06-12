@@ -1267,6 +1267,8 @@ object PresenceSpec extends ZIOSpecDefault {
         // can be classified as heartbeats). With the guard: no row clears the
         // anchor → session has no anchor → dropped → 0 s.
         val group = "app:khan" -> List("khanacademy.org", "kastatic.org", "kasandbox.org")
+        // 80 bytes < AppSessionAnchorBytes (256) — no row anchors the session,
+        // pinned against future threshold tuning so a bump > 80 still proves the guard.
         val rows  = (0 until 160).toList.map(i =>
           appRow(
             mac1,
