@@ -732,6 +732,14 @@ function M.handle_flow(flow, ctx, batcher)
         -- semantics. The drop itself is unaffected (the kernel already
         -- matched at least one eb_ set); only the debug label can vary.
         reason  = "host:" .. eb_hit_host
+        -- #1668: when this hit came from the nft fallback (hname was nil),
+        -- promote the matched eb_<host> to FQDN attribution on the event
+        -- itself, not just the reason string. dnsmasq put dst_ip into
+        -- eb_<host> by resolving <host> (or a subdomain), so the matched
+        -- host IS the attribution — coarser than the dns_log cache (we
+        -- have the configured apex, not the exact resolved subdomain) but
+        -- strictly better than the bare IP literal previously emitted.
+        if not hname then hname = eb_hit_host end
       end
     end
   end
@@ -763,6 +771,10 @@ function M.handle_flow(flow, ctx, batcher)
       if bl_hit_host and not check_ea_carveout(bl_hit_host) then
         allowed = false
         reason  = "category:" .. tostring(bl_hit_id)
+        -- #1668: same FQDN-attribution promotion as the eb_ path above —
+        -- the matched bl_<host> is what dnsmasq resolved to populate the
+        -- set, so attribute the event to that host instead of the bare IP.
+        if not hname then hname = bl_hit_host end
       end
     end
   end
