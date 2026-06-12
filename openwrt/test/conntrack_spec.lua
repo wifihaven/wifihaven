@@ -382,6 +382,92 @@ describe("handle_flow", function()
     assert.equal("schedule", ev.reason)
   end)
 
+  -- #1668: end-to-end — a real dns_log cache fed an AAAA-bearing dnsmasq log
+  -- must let a v6 dst_ip flow attribute to its FQDN, not fall through to a
+  -- bare v6 literal. This wires the actual root-cause fix (parse_reply_line
+  -- accepting v6) through handle_flow in the same style as the #1344 test
+  -- above, so the full pipeline is pinned: dnsmasq line → dns_log.ingest_line
+  -- → cache.lookup → handle_flow → event.
+  --
+  -- Without parse_reply_line accepting AAAA, the cache never stored the v6
+  -- entry, attribute_hostname returned nil, and build_event emitted
+  -- host.type=ipv6 / host.value=<literal>. This test red-gates that
+  -- regression at the integration level — the unit tests in
+  -- dns_log_spec.lua and the handle_flow specs above cover the modules in
+  -- isolation.
+  local DST_IP6_E2E = "2607:f8b0:4004:c1b::71"
+
+  it("#1668 e2e: AAAA reply through real dns_log → v6 flow attributes to FQDN", function()
+    local cache = dns_log.new({ ttl_seconds = 3600 })
+    -- Dnsmasq emits both A and AAAA replies for a dual-stack host.
+    cache.ingest_line("12345 192.168.1.42/55001 query[A] example.com from 192.168.1.42")
+    cache.ingest_line("12345 192.168.1.42/55001 reply example.com is 93.184.216.34")
+    cache.ingest_line("12346 192.168.1.42/55001 query[AAAA] example.com from 192.168.1.42")
+    cache.ingest_line("12346 192.168.1.42/55001 reply example.com is " .. DST_IP6_E2E)
+
+    -- Sanity: the cache must have the v6 entry. Pre-fix this would be nil.
+    assert.equal("example.com", cache.lookup(DST_IP6_E2E),
+      "real dns_log cache must store the AAAA-resolved v6 → host mapping")
+
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      reported_macs   = { [MAC] = true },
+      lookup_hostname = cache.lookup,  -- REAL attribution path, no stub
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP6_E2E }, ctx, b)
+    local ev = b.events[#b.events]
+    assert.equal("connection_attempt", ev["type"])
+    assert.equal("fqdn",        ev.host.type,
+      "v6 connection_event must carry FQDN attribution after parse_reply_line AAAA fix")
+    assert.equal("example.com", ev.host.value)
+  end)
+
+  it("#1668 e2e: AAAA + extraBlocked → v6 flow blocked with FQDN attribution end-to-end", function()
+    -- Same pipeline, but the v6 destination is in eb_hosts_by_mac.
+    -- Proves the full path: dnsmasq AAAA log → cache → handle_flow → blocked
+    -- event carrying both reason=host:<host> AND host.type=fqdn / .value=<host>.
+    local cache = dns_log.new({ ttl_seconds = 3600 })
+    cache.ingest_line("22001 192.168.1.42/55002 query[AAAA] example.com from 192.168.1.42")
+    cache.ingest_line("22001 192.168.1.42/55002 reply example.com is " .. DST_IP6_E2E)
+
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      reported_macs   = { [MAC] = true },
+      lookup_hostname = cache.lookup,
+      eb_hosts_by_mac = { [MAC] = { ["example.com"] = true } },
+      ea_hosts_by_mac = {},
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP6_E2E }, ctx, b)
+    local ev = b.events[#b.events]
+    assert.equal(false,              ev.allowed)
+    assert.equal("host:example.com", ev.reason)
+    assert.equal("fqdn",             ev.host.type)
+    assert.equal("example.com",      ev.host.value)
+  end)
+
+  -- Regression sentinel pinning the pre-fix shape EXPLICITLY — if a future
+  -- change re-introduces the v4-only parse_reply_line (or any equivalent v6
+  -- DNS-attribution drop), this test will fail because ev.host.type flips
+  -- back to "ipv6". Distinct from the affirmative tests above because the
+  -- failure-mode assertion is what an operator triaging a v6 event would
+  -- actually look at.
+  it("#1668 e2e regression sentinel: v6 events never report host.type=ipv6 when DNS attribution exists", function()
+    local cache = dns_log.new({ ttl_seconds = 3600 })
+    cache.ingest_line("33001 192.168.1.42/55003 query[AAAA] youtube.com from 192.168.1.42")
+    cache.ingest_line("33001 192.168.1.42/55003 reply youtube.com is " .. DST_IP6_E2E)
+
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      reported_macs   = { [MAC] = true },
+      lookup_hostname = cache.lookup,
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP6_E2E }, ctx, b)
+    local ev = b.events[#b.events]
+    assert.not_equal("ipv6", ev.host.type,
+      "regression: v6 destinations with DNS attribution must never emit a bare v6 literal")
+    assert.not_equal(DST_IP6_E2E, ev.host.value)
+  end)
+
   it("does not re-emit first_seen_mac on subsequent flows from the same MAC", function()
     local b = collecting_batcher()
     local ctx = ctx_with({
