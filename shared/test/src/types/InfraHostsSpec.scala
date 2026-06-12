@@ -196,6 +196,29 @@ object InfraHostsSpec extends ZIOSpecDefault {
         iCloudTail.forall(h => !InfraHosts.isInfra(h)),
       )
     },
+    test(
+      "#1629 icloud.com apex collateral: user-facing iCloud surfaces are also suppressed today",
+    ) {
+      // The `icloud.com` apex is intentionally broad — necessary because the kid hosts
+      // are per-region-sharded (`p157-fmip` / `p192-fmf` / `p108-escrowproxy`) and the
+      // matcher has no `*-` infix wildcards. Pin the accepted trade-off explicitly so
+      // it's visible to whoever later adds an iCloud-anything app template: today
+      // these user-facing iCloud surfaces ARE suppressed from presence counting, and
+      // that's the trade-off — when an app template lands, #1506
+      // (`Presence.isAppAttributed`) makes app attribution win over suppression for
+      // hosts the template claims, identical to how `ess.apple.com` already coexists
+      // between this list and the iMessage template.
+      val collateral = List(
+        "www.icloud.com",  // iCloud webmail
+        "beta.icloud.com", // iCloud beta surfaces
+        "setup.icloud.com",// device setup flow
+      )
+      assertTrue(
+        collateral.forall(InfraHosts.isBackground),
+        // BOUNDARY still holds: collateral is suppress-only, never allow-carved.
+        collateral.forall(h => !InfraHosts.isInfra(h)),
+      )
+    },
     test("#1629 iCloud Private Relay second hop (apple-relay.cloudflare.com) is suppressed") {
       // The mask.icloud.com entry covers the first hop; the second hop is served from
       // Cloudflare under apple-relay.cloudflare.com. Same anti-filtering-tunnel reasoning

@@ -102,9 +102,6 @@ object InfraHosts {
     "time.apple.com",      // Apple time sync
     "gdmf.apple.com",      // Apple software-update metadata
     "pancake.apple.com",   // Apple Maps/infra
-    "mask.icloud.com",     // iCloud Private Relay — suppress, never allow (bypass)
-    "mask-h2.icloud.com",  // iCloud Private Relay (HTTP/2)
-    "mask-api.icloud.com", // iCloud Private Relay (API)
     "rcs.telephony.goog",  // RCS messaging infra (was *.rcs.telephony.goog)
     "mtalk.google.com",    // GCM/FCM push
     "ntp.org",             // NTP time sync (was *.ntp.org)
@@ -119,9 +116,11 @@ object InfraHosts {
     //    single largest contributor to the #1629 widened-scope inflation.
     //
     // App Store / iTunes Store background. Apex form matches all observed
-    // subdomains (p9-buy / p11-buy / p35-buy / init / ts / fpinit / auth /
-    // apps / configuration etc.). iMessage uses the distinct `ess.apple.com`
-    // apex, so this does not shadow it.
+    // subdomains (p9-buy / p11-buy / p35-buy / init / ts / fpinit / auth on
+    // `*.itunes.apple.com`). iMessage uses the distinct `ess.apple.com` apex,
+    // so this does not shadow it. Sibling apple.com namespaces like the
+    // device-config feed are listed separately below — they don't sit under
+    // `itunes.apple.com`.
     "itunes.apple.com",
     // Apple search backend (Spotlight / Siri suggestions). `smoot.apple.com`
     // apex matches `api-glb-*.smoot.apple.com` / `fbs.smoot.apple.com`.
@@ -151,26 +150,31 @@ object InfraHosts {
     // Apple Safe Browsing edge (the sibling of `safebrowsing.google.com`
     // already on canonical). gTLD `.apple` — exact-host match.
     "proxy.safebrowsing.apple",
-    // ── #1629 iCloud background sync / Find My / Keychain Escrow. Same suppress-only
-    //    reasoning as the existing `mask*.icloud.com` (Private Relay) entries above:
-    //    count nothing toward engagement, but DO NOT allow-carve under a block.
+    // ── #1629 iCloud — apex covers iCloud Private Relay first hop
+    //    (`mask*.icloud.com`), background sync / Find My / Keychain Escrow
+    //    (`p157-fmip.icloud.com`, `p192-fmf.icloud.com`,
+    //    `p108-escrowproxy.icloud.com` — the shard prefix drifts per region),
+    //    `gateway.icloud.com`, and any future similarly-sharded iCloud
+    //    background service in one entry. (Pre-#1629 we listed three narrower
+    //    `mask*.icloud.com` entries for Private Relay alone; this apex subsumes
+    //    those and the granular Find-My / Escrow / gateway hosts.)
     //
-    //    Apex `icloud.com` form is required because iCloud hosts the operator's kids
-    //    actually contact are sharded with a per-region prefix (`p157-fmip.icloud.com`,
-    //    `p192-fmf.icloud.com`, `p108-escrowproxy.icloud.com` — the shard ID drifts
-    //    over time). Apex match catches all shards in one entry and also subsumes
-    //    `gateway.icloud.com` and any future similarly-sharded background services.
+    //    SUPPRESS-ONLY, NEVER ALLOW-CARVE. This is the load-bearing reason
+    //    `mask*.icloud.com` lived in this tier from the start: iCloud Private
+    //    Relay is an encrypted relay tunnel — allow-carving it would punch an
+    //    anti-filtering bypass through every block. Same reasoning applies to
+    //    any other iCloud service: count nothing toward engagement, but do not
+    //    make iCloud reachable under a block.
     //
-    //    Safe because no `app_templates/*.yml` references `icloud.com`: today the
-    //    iCloud surfaces (Drive, Photos, Keychain, Backup) are not modelled as apps;
-    //    when they are, #1506 makes app attribution win over suppression here, the
-    //    same way `ess.apple.com` already coexists between this list and the iMessage
-    //    template. (The narrower existing `mask.icloud.com` / `mask-h2.icloud.com`
-    //    / `mask-api.icloud.com` entries above become redundant under this apex but
-    //    are retained for the load-bearing Private-Relay rationale documented inline.)
+    //    Apex-form trade-off: this also matches user-facing iCloud surfaces
+    //    that today aren't modelled as apps (`www.icloud.com` webmail,
+    //    `beta.icloud.com`, etc.). Pinned as accepted collateral in the spec.
+    //    When an iCloud-anything template lands, #1506 makes app attribution
+    //    win over suppression here — same way `ess.apple.com` already coexists
+    //    between this list and the iMessage template.
     "icloud.com",
-    // ── #1629 iCloud Private Relay second hop. The first hop (`mask*.icloud.com`) is
-    //    already suppressed above; the second hop runs on Cloudflare under
+    // ── #1629 iCloud Private Relay second hop. The first hop is the `icloud.com`
+    //    apex above; the second hop runs on Cloudflare under
     //    `apple-relay.cloudflare.com`. Same anti-filtering-tunnel reasoning —
     //    suppress, never allow-carve.
     "apple-relay.cloudflare.com",
