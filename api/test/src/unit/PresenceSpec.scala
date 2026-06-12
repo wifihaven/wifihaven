@@ -1244,5 +1244,111 @@ object PresenceSpec extends ZIOSpecDefault {
         )
       },
     ),
+    // ── #1666: phantom-engagement guard — per-app session activity anchor ─────
+    //
+    // A row whose host matches an active app's host-set attributes to that app
+    // and bypasses the byte-floor heartbeat suppression (#1506). That is correct
+    // at the ROW level (a real app's low-byte CDN poll must count when it's
+    // genuinely part of a session), but at the SESSION level it lets a sparse
+    // keepalive cadence — one ~80-byte poll every 60–90 s — stitch into a
+    // continuous synthetic span via gap-bridging. Prima iPad accumulated 21
+    // phantom Khan Academy minutes overnight this way (#1666). The fix:
+    // require each stitched per-(mac, app) session to contain at least one
+    // anchor row (bytes ≥ AppSessionAnchorBytes); pure-keepalive sessions are
+    // dropped without breaking real usage, which always has at least one
+    // substantive request above the anchor threshold.
+    suite("phantom-engagement guard (#1666)")(
+      test("4h of sparse low-byte polls on a real-app host produce ZERO credited seconds") {
+        // The #1666 fixture: a row every 90 s for 4 hours on khanacademy.org,
+        // each row 60 s wide and ~80 bytes (well below the 256-byte anchor).
+        // Without the guard: gap (30 s) < effectiveGap (120 s) → every adjacent
+        // pair bridges → one continuous span ≈ 14 400 s = 240 min (and even with
+        // the byte floor, attribution-beats-suppression means none of these rows
+        // can be classified as heartbeats). With the guard: no row clears the
+        // anchor → session has no anchor → dropped → 0 s.
+        val group = "app:khan" -> List("khanacademy.org", "kastatic.org", "kasandbox.org")
+        val rows  = (0 until 160).toList.map(i =>
+          appRow(
+            mac1,
+            i.toLong * 90L,
+            "www.khanacademy.org",
+            periodSeconds = 60,
+            bytes = 80L,
+          ),
+        )
+        assertTrue(
+          Presence.appSecondsForProfile(rows, List(group)) == Map.empty[String, Long],
+        ) &&
+        assertTrue(
+          Presence.appMinutesForProfile(rows, List(group)) == Map.empty[String, Int],
+        )
+      },
+      test("a legitimate 8-min sparse-but-real session still credits engagement") {
+        // Positive control: one anchor row (50 KB article load at offset 0)
+        // followed by sparse asset/poll rows of varying small byte counts every
+        // ~30 s for 8 minutes. The first row anchors the session; the rest sit
+        // within the idle gap of it and bridge correctly. The full span counts.
+        val group  = "app:khan" -> List("khanacademy.org", "kastatic.org", "kasandbox.org")
+        val anchor = appRow(mac1, 0L, "www.khanacademy.org", periodSeconds = 60, bytes = 50_000L)
+        val sparse =
+          (1 until 16).toList.map(i =>
+            // Alternate apex and asset hosts so we also exercise the
+            // cross-host bridge within the app's host-set.
+            appRow(
+              mac1,
+              i.toLong * 30L,
+              if (i % 2 == 0) "www.khanacademy.org" else "cdn.kastatic.org",
+              periodSeconds = 60,
+              bytes = 200L,
+            ),
+          )
+        val rows   = anchor :: sparse
+        // The stitched span runs [0, 30·15 + 60) = [0, 510): 510 s.
+        assertTrue(
+          Presence.appSecondsForProfile(rows, List(group)) == Map("app:khan" -> 510L),
+        ) &&
+        assertTrue(
+          Presence.appMinutesForProfile(rows, List(group)) == Map("app:khan" -> 8),
+        )
+      },
+      test("an anchored session retains the bridged low-byte tail (anchor is per-session)") {
+        // The anchor predicate is per-session: once a substantive row anchors a
+        // session, the surrounding low-byte rows within the gap still bridge.
+        // Two anchors at 0 s and 240 s with a low-byte poll between them at 120 s:
+        // the whole [0, 300) span counts as one session, not just the anchor windows.
+        val group = "app:khan" -> List("khanacademy.org")
+        val rows  = List(
+          appRow(mac1, 0L, "www.khanacademy.org", periodSeconds = 60, bytes = 20_000L),
+          appRow(mac1, 120L, "www.khanacademy.org", periodSeconds = 60, bytes = 80L),
+          appRow(mac1, 240L, "www.khanacademy.org", periodSeconds = 60, bytes = 20_000L),
+        )
+        assertTrue(
+          Presence.appSecondsForProfile(rows, List(group)) == Map("app:khan" -> 300L),
+        )
+      },
+      test("two phantom stretches separated by one anchor → only the anchored session counts") {
+        // Hour-long stretch of pure keepalives (00:00–01:00), then one anchor row
+        // at 01:30 (gap > effectiveGap so it is its own session), then another
+        // hour of pure keepalives (02:00–03:00, gap > effectiveGap from the anchor).
+        // Only the anchored session (1 row, 60 s) credits; the two phantom
+        // stretches are dropped.
+        val group   = "app:khan" -> List("khanacademy.org")
+        val phantom = (List.range(0, 60) ++ List.range(120, 180)).map(i =>
+          appRow(
+            mac1,
+            i.toLong * 60L,
+            "www.khanacademy.org",
+            periodSeconds = 60,
+            bytes = 80L,
+          ),
+        )
+        val anchor  =
+          appRow(mac1, 90L * 60L, "www.khanacademy.org", periodSeconds = 60, bytes = 50_000L)
+        val rows    = anchor :: phantom
+        assertTrue(
+          Presence.appSecondsForProfile(rows, List(group)) == Map("app:khan" -> 60L),
+        )
+      },
+    ),
   )
 }
