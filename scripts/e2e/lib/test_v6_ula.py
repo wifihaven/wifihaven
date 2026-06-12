@@ -34,34 +34,34 @@ def test_accepts_deterministic_ula_from_99_wifihaven():
     """The Gate 2 case: new router image, deterministic prefix from
     scripts/vm/uci-defaults/99-wifihaven."""
     out = _addr_output("fdaa:bbbb:cccc::1/64")
-    assert client_has_ula_address(out) is True
+    assert client_has_ula_address(out)
 
 
 def test_accepts_random_ula_from_last_published_router():
     """The Gate 3b case (#1687): older router image, OpenWRT-generated
     random ULA. Must still pass — any ULA is fine."""
     out = _addr_output("fdf8:cd30:bf17::1/64")
-    assert client_has_ula_address(out) is True
+    assert client_has_ula_address(out)
 
 
 def test_accepts_fc00_half_of_the_range():
     """fc00::/7 is fc00::/8 plus fd00::/8. The fd00 half is the only one
     in practical use today, but the check must not reject fc00 either."""
     out = _addr_output("fc12:3456:7890::1/64")
-    assert client_has_ula_address(out) is True
+    assert client_has_ula_address(out)
 
 
 def test_rejects_no_v6_at_all():
     """Preserve #1680's intent: a client with no v6 ULA must still fail
     the check (catches a genuine RA/SLAAC regression)."""
     out = "2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP>\n    inet6 fe80::1/64 scope link"
-    assert client_has_ula_address(out) is False
+    assert not client_has_ula_address(out)
 
 
 def test_rejects_only_link_local():
     """Link-local fe80::/10 is not a ULA — must not satisfy the check."""
     out = _addr_output()  # only the link-local line
-    assert client_has_ula_address(out) is False
+    assert not client_has_ula_address(out)
 
 
 def test_rejects_only_gua():
@@ -69,4 +69,4 @@ def test_rejects_only_gua():
     (In practice the qemu LAN bridge never sees a GUA, but the check
     should reject it cleanly rather than spuriously pass.)"""
     out = _addr_output("2001:db8::1/64")
-    assert client_has_ula_address(out) is False
+    assert not client_has_ula_address(out)
