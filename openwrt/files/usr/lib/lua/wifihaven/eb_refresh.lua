@@ -54,7 +54,7 @@
 -- `eb_set_name` / `eb6_set_name` / `bl_set_name` / `bl6_set_name` exports so
 -- the (host|id) → nft-set-name mapping has a single source of truth.
 
-local dns_tail_sets = require("dns_tail_sets")
+local dns_tail_sets = require("wifihaven.dns_tail_sets")
 local render        = require("wifihaven.render")
 
 local M = {}
