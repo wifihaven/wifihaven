@@ -279,6 +279,58 @@ object DashboardNowApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         dev.nowActivity.exists(_.topHost == HostId.Fqdn(Hostname.unsafe("youtube.com"))),
       )
     },
+    test(
+      "#1559 a background-pattern host attributed to an active app is kept in the now-widget ranking",
+    ) {
+      // Attribution beats suppression on the ranking path (#1559), the same way #1506 made it
+      // beat suppression on the counting paths. An off-domain asset/CDN host an app genuinely
+      // depends on that also happens to match the unified InfraHosts device-infra list must stay
+      // in topHosts / nowActivity instead of being silently dropped. A device-infra host with no
+      // app behind it (ocsp.digicert.com here) stays dropped.
+      //
+      // The app's host-set is built via app_policy_assignments + app_hosts, the same
+      // attribution data `Presence.appHostPatterns` reads — i.e. routed through the single
+      // canonical predicate, not a parallel one (#1532 / #1560).
+      for {
+        _        <- cleanDb
+        _        <- clearSeededProfiles
+        routerId <- seedRouter()
+        dr       <- ZIO.service[DeviceRepo]
+        pr       <- ZIO.service[ProfileRepo]
+        ar       <- ZIO.service[AppRepo]
+        kid      <- pr.create("Kids", Nil)
+        _        <- TestLayers.seedDevice(dr, mac1, "iPad", kid)
+        // Synthetic time-limited app whose host-set claims `gvt2.com` — the apex sits on
+        // InfraHosts.canonical, so any subdomain (`beacons3.gvt2.com`) would otherwise be
+        // dropped as background. With the #1559 app-aware predicate it is attributed to the
+        // app and kept.
+        _        <- TestLayers.seedAppAssignment(
+          ar,
+          kid,
+          host = "gvt2.com",
+          mode = AppMode.TimeLimited,
+          dailyMinutes = Some(60),
+          exemptFromDaily = false,
+        )
+        now0     <- Clock.instant
+        t0 = now0.minusSeconds(10 * 60)
+        // App-attributed background host — stays in ranking after the fix.
+        _      <- insertReport(routerId, mac1, "beacons3.gvt2.com", t0, activeSeconds = 300)
+        // Device infra with no app behind it — still dropped.
+        _      <- insertReport(routerId, mac1, "ocsp.digicert.com", t0, activeSeconds = 300)
+        _      <- insertConn(routerId, mac1, now0.minusSeconds(15))
+        auth   <- makeAuth
+        token  <- auth.login("admin", "changeme").map(_.token)
+        routes <- buildRoutes(auth)
+        resp   <- getJson(routes, "/api/dashboard/now", token)
+        body   <- resp.body.asString
+        parsed <- ZIO.fromEither(body.fromJson[DashboardNow])
+        dev = parsed.profiles.find(_.id == kid).get.activeDevices.head
+      } yield assertTrue(
+        dev.topHosts.map(_.host) == List(HostId.Fqdn(Hostname.unsafe("beacons3.gvt2.com"))),
+        dev.nowActivity.exists(_.topHost == HostId.Fqdn(Hostname.unsafe("beacons3.gvt2.com"))),
+      )
+    },
     test("nowActivity: consistent top host across 3 buckets → topHost + accurate minutes") {
       for {
         _        <- cleanDb
