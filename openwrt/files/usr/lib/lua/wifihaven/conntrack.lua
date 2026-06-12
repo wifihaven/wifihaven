@@ -40,7 +40,9 @@ end
 -- nft_eb_hit(dst_ip, eb_host, exec_fn) -> bool
 --
 -- Returns true when dst_ip is a current member of the nftables set
--- `eb_<san(eb_host)>` in the `inet wifihaven` table.
+-- `eb_<san(eb_host)>` (v4) or `eb6_<san(eb_host)>` (v6) in the `inet wifihaven`
+-- table. Family is detected from dst_ip — a colon means IPv6, otherwise v4 —
+-- matching the same idiom used in build_event below.
 --
 -- exec_fn(cmd) -> exit_code is injectable for tests (defaults to os.execute).
 -- A return value of 0 (success) means the IP is in the set; any other value
@@ -50,13 +52,19 @@ end
 -- Called only when DNS attribution (hname) is unavailable for a flow that
 -- targets a MAC with extraBlocked entries, so one nft query per eb_host per
 -- flow — acceptable because it is the slow-path (#579 logging correction).
+--
+-- The bl_ labeling fallback in handle_flow piggybacks on this same helper
+-- (the comment there explains why both paths share the eb_-style query), so
+-- branching family here fixes v6 attribution for category drops too (#1668).
 -- ---------------------------------------------------------------------------
 function M.nft_eb_hit(dst_ip, eb_host, exec_fn)
   exec_fn = exec_fn or os.execute
   local san  = M.eb_san(eb_host)
+  local family_v6 = dst_ip:find(":", 1, true) ~= nil
+  local set_prefix = family_v6 and "eb6_" or "eb_"
   local cmd  = string.format(
-    "nft get element inet wifihaven eb_%s '{ %s }' >/dev/null 2>&1",
-    san, dst_ip)
+    "nft get element inet wifihaven %s%s '{ %s }' >/dev/null 2>&1",
+    set_prefix, san, dst_ip)
   local ret = exec_fn(cmd)
   -- os.execute returns exit-code (number) on Lua 5.1/5.2, or a
   -- (bool,"exit",code) tuple on Lua 5.3+/LuaJIT.  Handle both.

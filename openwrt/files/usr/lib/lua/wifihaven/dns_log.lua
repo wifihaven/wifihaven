@@ -69,20 +69,6 @@ local function is_ipv4(s)
   return true
 end
 
-function M.parse_reply_line(line)
-  if type(line) ~= "string" or line == "" then return nil end
-  local qid, verb, name, value = line:match("(%d+)%s+%S+/%d+%s+(%a+)%s+(%S+)%s+is%s+(%S+)")
-  if not qid or (verb ~= "reply" and verb ~= "cached") then return nil end
-  if value == "<CNAME>" then
-    return { qid = qid, name = name, ip = nil }
-  end
-  if is_ipv4(value) then
-    return { qid = qid, name = name, ip = value }
-  end
-  -- NXDOMAIN, NODATA-IPvX, IPv6 literals, etc. — skip.
-  return nil
-end
-
 -- A lightweight check for an IPv6 literal as dnsmasq writes them in the log:
 -- one or more `:`-separated hex groups, possibly with `::` collapse. We don't
 -- attempt full RFC 5952 validation — dnsmasq emits canonical addresses, and
@@ -96,6 +82,25 @@ local function is_ipv6(s)
 end
 M._is_ipv6 = is_ipv6
 M._is_ipv4 = is_ipv4
+
+function M.parse_reply_line(line)
+  if type(line) ~= "string" or line == "" then return nil end
+  local qid, verb, name, value = line:match("(%d+)%s+%S+/%d+%s+(%a+)%s+(%S+)%s+is%s+(%S+)")
+  if not qid or (verb ~= "reply" and verb ~= "cached") then return nil end
+  if value == "<CNAME>" then
+    return { qid = qid, name = name, ip = nil }
+  end
+  -- #1668: ingest BOTH v4 and v6 answers. The cache is keyed by IP string and
+  -- conntrack flows can be v6 (the agent maintains parallel eb6_/bl6_/
+  -- resolved6_ sets for that exact reason). Dropping AAAA replies here was
+  -- the root cause of v6 destinations showing up as bare literals in
+  -- connection_events.
+  if is_ipv4(value) or is_ipv6(value) then
+    return { qid = qid, name = name, ip = value }
+  end
+  -- NXDOMAIN, NODATA-IPvX, etc. — skip.
+  return nil
+end
 
 -- classify_query_result(line) → bounded result enum string | nil   (#1302)
 --
@@ -144,10 +149,11 @@ end
 --     path is unreliable in the deployed build (the sets stayed empty
 --     under the e2e test that resolved the host through the LAN resolver).
 --
--- Unlike parse_reply_line (which feeds the hostname-attribution cache and
--- intentionally tracks v4 answers only because conntrack flows are v4),
--- this returns BOTH families: the resolved6_ / eb6_ sets must be populated
--- for AAAA answers, and v6 daddrs are filtered by the matching drop rules.
+-- Unlike parse_reply_line (which only returns qid + name + ip, since the
+-- attribution cache doesn't care about family), this returns the family
+-- explicitly so dns-tail can pick the right per-MAC resolved_ / resolved6_
+-- and eb_ / eb6_ set to populate. Both parsers ingest both families post
+-- #1668; the family tag here is for routing the side-effect, not gating it.
 -- `family` is "v4" or "v6".
 function M.parse_resolved_reply(line)
   if type(line) ~= "string" or line == "" then return nil end

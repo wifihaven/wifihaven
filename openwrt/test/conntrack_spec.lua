@@ -287,6 +287,7 @@ describe("handle_flow", function()
   local MAC      = "aa:bb:cc:11:22:33"
   local SRC_IP   = "192.168.1.42"
   local DST_IP   = "1.2.3.4"
+  local DST_IP6  = "2001:db8::1"  -- #1668 v6 labeling tests
 
   local function collecting_batcher()
     local events = {}
@@ -379,6 +380,92 @@ describe("handle_flow", function()
     local ev = b.events[#b.events]
     assert.equal(false,      ev.allowed)
     assert.equal("schedule", ev.reason)
+  end)
+
+  -- #1668: end-to-end — a real dns_log cache fed an AAAA-bearing dnsmasq log
+  -- must let a v6 dst_ip flow attribute to its FQDN, not fall through to a
+  -- bare v6 literal. This wires the actual root-cause fix (parse_reply_line
+  -- accepting v6) through handle_flow in the same style as the #1344 test
+  -- above, so the full pipeline is pinned: dnsmasq line → dns_log.ingest_line
+  -- → cache.lookup → handle_flow → event.
+  --
+  -- Without parse_reply_line accepting AAAA, the cache never stored the v6
+  -- entry, attribute_hostname returned nil, and build_event emitted
+  -- host.type=ipv6 / host.value=<literal>. This test red-gates that
+  -- regression at the integration level — the unit tests in
+  -- dns_log_spec.lua and the handle_flow specs above cover the modules in
+  -- isolation.
+  local DST_IP6_E2E = "2607:f8b0:4004:c1b::71"
+
+  it("#1668 e2e: AAAA reply through real dns_log → v6 flow attributes to FQDN", function()
+    local cache = dns_log.new({ ttl_seconds = 3600 })
+    -- Dnsmasq emits both A and AAAA replies for a dual-stack host.
+    cache.ingest_line("12345 192.168.1.42/55001 query[A] example.com from 192.168.1.42")
+    cache.ingest_line("12345 192.168.1.42/55001 reply example.com is 93.184.216.34")
+    cache.ingest_line("12346 192.168.1.42/55001 query[AAAA] example.com from 192.168.1.42")
+    cache.ingest_line("12346 192.168.1.42/55001 reply example.com is " .. DST_IP6_E2E)
+
+    -- Sanity: the cache must have the v6 entry. Pre-fix this would be nil.
+    assert.equal("example.com", cache.lookup(DST_IP6_E2E),
+      "real dns_log cache must store the AAAA-resolved v6 → host mapping")
+
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      reported_macs   = { [MAC] = true },
+      lookup_hostname = cache.lookup,  -- REAL attribution path, no stub
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP6_E2E }, ctx, b)
+    local ev = b.events[#b.events]
+    assert.equal("connection_attempt", ev["type"])
+    assert.equal("fqdn",        ev.host.type,
+      "v6 connection_event must carry FQDN attribution after parse_reply_line AAAA fix")
+    assert.equal("example.com", ev.host.value)
+  end)
+
+  it("#1668 e2e: AAAA + extraBlocked → v6 flow blocked with FQDN attribution end-to-end", function()
+    -- Same pipeline, but the v6 destination is in eb_hosts_by_mac.
+    -- Proves the full path: dnsmasq AAAA log → cache → handle_flow → blocked
+    -- event carrying both reason=host:<host> AND host.type=fqdn / .value=<host>.
+    local cache = dns_log.new({ ttl_seconds = 3600 })
+    cache.ingest_line("22001 192.168.1.42/55002 query[AAAA] example.com from 192.168.1.42")
+    cache.ingest_line("22001 192.168.1.42/55002 reply example.com is " .. DST_IP6_E2E)
+
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      reported_macs   = { [MAC] = true },
+      lookup_hostname = cache.lookup,
+      eb_hosts_by_mac = { [MAC] = { ["example.com"] = true } },
+      ea_hosts_by_mac = {},
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP6_E2E }, ctx, b)
+    local ev = b.events[#b.events]
+    assert.equal(false,              ev.allowed)
+    assert.equal("host:example.com", ev.reason)
+    assert.equal("fqdn",             ev.host.type)
+    assert.equal("example.com",      ev.host.value)
+  end)
+
+  -- Regression sentinel pinning the pre-fix shape EXPLICITLY — if a future
+  -- change re-introduces the v4-only parse_reply_line (or any equivalent v6
+  -- DNS-attribution drop), this test will fail because ev.host.type flips
+  -- back to "ipv6". Distinct from the affirmative tests above because the
+  -- failure-mode assertion is what an operator triaging a v6 event would
+  -- actually look at.
+  it("#1668 e2e regression sentinel: v6 events never report host.type=ipv6 when DNS attribution exists", function()
+    local cache = dns_log.new({ ttl_seconds = 3600 })
+    cache.ingest_line("33001 192.168.1.42/55003 query[AAAA] youtube.com from 192.168.1.42")
+    cache.ingest_line("33001 192.168.1.42/55003 reply youtube.com is " .. DST_IP6_E2E)
+
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      reported_macs   = { [MAC] = true },
+      lookup_hostname = cache.lookup,
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP6_E2E }, ctx, b)
+    local ev = b.events[#b.events]
+    assert.not_equal("ipv6", ev.host.type,
+      "regression: v6 destinations with DNS attribution must never emit a bare v6 literal")
+    assert.not_equal(DST_IP6_E2E, ev.host.value)
   end)
 
   it("does not re-emit first_seen_mac on subsequent flows from the same MAC", function()
@@ -930,6 +1017,100 @@ describe("handle_flow", function()
     conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
     local ev = b.events[#b.events]
     assert.equal(true, ev.allowed)
+  end)
+
+  -- ── #1668: v6 conntrack labeling fallback ───────────────────────────────
+  --
+  -- The nft_eb_hit fallback was v4-only — it always queried `eb_<host>` and
+  -- never the parallel `eb6_<host>` set that render.lua emits for AAAA-
+  -- resolved IPs. The result was: a v6 dst_ip with no DNS attribution would
+  -- silently miss the eb_/bl_ lookup and the connection_event would record an
+  -- opaque ExtraBlocked / household block instead of `host:<host>` /
+  -- `category:<id>`. PR #1656 closed the v4 hole; this closes the v6 hole.
+  -- The pair is pinned side-by-side so future divergence is caught by CI.
+
+  it("#1668: v6 hname=nil + dst_ip in eb6_ nft set → allowed=false reason=host:<host>", function()
+    local b = collecting_batcher()
+    local exec_calls = {}
+    local ctx = ctx_with({
+      reported_macs   = { [MAC] = true },
+      nft_sets        = {},
+      eb_hosts_by_mac = { [MAC] = { ["example.com"] = true } },
+      ea_hosts_by_mac = {},
+      exec_fn = function(cmd)
+        exec_calls[#exec_calls + 1] = cmd
+        -- v4 set must NOT match (kernel only has the v6 IP in eb6_).
+        if cmd:find("eb6_example_com") then return 0 end
+        return 1
+      end,
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP6 }, ctx, b)
+    local ev = b.events[#b.events]
+    assert.equal(false, ev.allowed,
+      "v6 extraBlocked IP with no DNS attribution must be logged as blocked")
+    assert.equal("host:example.com", ev.reason)
+    local saw_v6_set = false
+    for _, cmd in ipairs(exec_calls) do
+      if cmd:find("eb6_example_com") then saw_v6_set = true end
+    end
+    assert.is_true(saw_v6_set,
+      "exec_fn must have queried the eb6_<host> set for a v6 dst_ip")
+  end)
+
+  it("#1668: v4 sibling — hname=nil + dst_ip in eb_ nft set → reason=host:<host> (pinned to prevent divergence)", function()
+    local b = collecting_batcher()
+    local exec_calls = {}
+    local ctx = ctx_with({
+      reported_macs   = { [MAC] = true },
+      nft_sets        = {},
+      eb_hosts_by_mac = { [MAC] = { ["example.com"] = true } },
+      ea_hosts_by_mac = {},
+      exec_fn = function(cmd)
+        exec_calls[#exec_calls + 1] = cmd
+        -- v6 set must NOT match (kernel only has the v4 IP in eb_).
+        if cmd:find("eb6_") then return 1 end
+        if cmd:find("eb_example_com") then return 0 end
+        return 1
+      end,
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+    local ev = b.events[#b.events]
+    assert.equal(false, ev.allowed)
+    assert.equal("host:example.com", ev.reason)
+    local saw_v4_set = false
+    for _, cmd in ipairs(exec_calls) do
+      if cmd:find("eb_example_com") and not cmd:find("eb6_") then
+        saw_v4_set = true
+      end
+    end
+    assert.is_true(saw_v4_set,
+      "exec_fn must have queried the v4 eb_<host> set for a v4 dst_ip")
+  end)
+
+  it("#1668: v6 bl_ labeling fallback queries eb6_<host> set → reason=category:<id>", function()
+    -- bl_ labeling fallback (line ~750 in conntrack.lua) piggybacks on the
+    -- same nft_eb_hit helper — the comment there explicitly says it reuses
+    -- the eb_-style query because dnsmasq populates both indexing paths for
+    -- the same host. Pin that this piggyback works for v6 too.
+    local b = collecting_batcher()
+    local exec_calls = {}
+    local ctx = ctx_with({
+      reported_macs   = { [MAC] = true },
+      nft_sets        = {},
+      eb_hosts_by_mac = {},
+      ea_hosts_by_mac = {},
+      bl_hosts_by_mac = { [MAC] = { ["ad.doubleclick.net"] = "ads" } },
+      exec_fn = function(cmd)
+        exec_calls[#exec_calls + 1] = cmd
+        if cmd:find("eb6_ad_doubleclick_net") then return 0 end
+        return 1
+      end,
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP6 }, ctx, b)
+    local ev = b.events[#b.events]
+    assert.equal(false, ev.allowed,
+      "v6 blocklist IP with no DNS attribution must be logged as blocked")
+    assert.equal("category:ads", ev.reason)
   end)
 
   it("does NOT interfere with blocked_macs block: MAC already blocked stays blocked with original reason when hname is nil", function()
