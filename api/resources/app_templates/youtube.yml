@@ -3,9 +3,16 @@ name: YouTube
 # Emoji fallback: 📺
 icon: "https://icons.duckduckgo.com/ip3/youtube.com.ico"
 icon_type: url
+# youtubei.googleapis.com is deliberately EXCLUDED from this set. It rides
+# Google's shared *.googleapis.com GFE anycast pool (216.239.32-38.223) — the
+# SAME front-end IPs that serve oauthaccountmanager.googleapis.com and the
+# Drive / Calendar / Docs APIs. Because the block enforces at the IP layer
+# (nftables drop on dst_ip ∈ eb_<host>), blocking youtubei poisons that shared
+# pool and collateral-drops Google sign-in / Drive on the device (#1636).
+# googlevideo.com below is YouTube's dedicated video-bytes pool, so keeping it
+# in the set preserves the meaningful block (no video) without the collateral.
 hosts:
   - youtube.com
   - youtu.be
   - ytimg.com
   - googlevideo.com
-  - youtubei.googleapis.com

@@ -189,6 +189,23 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         assertTrue(hosts.forall(h => !h.contains("courier")))
       }
     },
+    test("youtube template keeps googlevideo but excludes the shared-pool youtubei host (#1636)") {
+      // youtubei.googleapis.com rides Google's shared *.googleapis.com GFE
+      // anycast pool — the same front-end IPs that serve OAuth / Drive / Docs.
+      // Because the block enforces at the IP layer, including it collateral-drops
+      // Google sign-in / Drive on the device (#1636). googlevideo.com is the
+      // dedicated video-bytes pool, so keeping it preserves the real block.
+      for {
+        templates <- AppTemplates.loadAll()
+      } yield {
+        val youtube = templates.find(_.slug == AppTemplateId.unsafe("youtube")).get
+        val hosts   = youtube.hosts.map(_.value).toSet
+        assertTrue(youtube.name == "YouTube") &&
+        assertTrue(hosts.contains("googlevideo.com")) &&
+        assertTrue(hosts.contains("youtube.com")) &&
+        assertTrue(hosts.forall(h => !h.contains("googleapis.com")))
+      }
+    },
     test("each template's hosts parse as apex hostnames") {
       for {
         templates <- AppTemplates.loadAll()
