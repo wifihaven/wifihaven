@@ -23,3 +23,9 @@ variable "e2e_edge_ip" {
   description = "Leaf A record IP for e2e-edge.wifihaven.net — used by the direct-requery CNAME e2e fixture (#1351). Default 192.0.2.10 is RFC 5737 TEST-NET-1, reserved-for-documentation and GUARANTEED never globally routed or reassigned (#1360). The previous value 93.184.216.34 (legacy IANA example.com) was decommissioned ~2025 and its HTTP/80 went dead, silently red-gating router releases. The block-path e2e tests (G1/G4) DNAT port 80 at prerouting before the dest is routed, so an unroutable leaf is fine; the allow-path tests (G2/G3) xfail when the leaf is unreachable rather than depending on a live third-party origin (no public IP reliably returns 2xx for an arbitrary Host header anymore). See scripts/e2e/scenarios_fake/test_cname_direct_requery.py."
   default     = "192.0.2.10"
 }
+
+variable "e2e_edge_ip6" {
+  type        = string
+  description = "Leaf AAAA record IP for e2e-edge.wifihaven.net — used by the v6 attribution Gate 2 scenario (#1677, CD-tier follow-up to PR #1673 / #1668). Default 2001:db8::10 is RFC 3849 documentation space (2001:db8::/32), reserved-for-documentation and GUARANTEED never globally routed. The attribution scenario only needs the LAN-side conntrack NEW event on the v6 SYN, which fires as the packet crosses the router's FORWARD chain — drops downstream of the WAN are irrelevant (qemu SLIRP is v4-only anyway). Pairing this AAAA with the existing A on e2e-edge produces the realistic dual-stack shape of a production host: one name returning both families, exercising dns_log's v6 path the same way the v4 fixture exercises its v4 path. See scripts/e2e/scenarios_fake/test_v6_attribution.py."
+  default     = "2001:db8::10"
+}

@@ -204,3 +204,21 @@ resource "cloudflare_record" "e2e_edge" {
   ttl     = 300
   comment = "e2e test fixture: leaf A record for direct-requery CNAME test (#1351)"
 }
+
+# AAAA sibling for the v6 hostname-attribution Gate 2 scenario (#1677,
+# CD-tier follow-up to PR #1673 / #1668). Pairing the AAAA with the
+# existing A above produces the realistic dual-stack shape of a production
+# host: one name returning both families. The address default is RFC 3849
+# documentation space (2001:db8::/32) — GUARANTEED never globally routed,
+# same safety guarantee as the v4 leaf's RFC 5737 TEST-NET-1. The
+# attribution scenario needs only the LAN-side conntrack NEW event on the
+# v6 SYN; the WAN-side drop is irrelevant (qemu SLIRP is v4-only).
+resource "cloudflare_record" "e2e_edge_aaaa" {
+  zone_id = var.zone_id
+  name    = "e2e-edge"
+  type    = "AAAA"
+  content = var.e2e_edge_ip6
+  proxied = false
+  ttl     = 300
+  comment = "e2e test fixture: leaf AAAA record for v6 attribution Gate 2 scenario (#1677)"
+}
