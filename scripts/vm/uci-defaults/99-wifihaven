@@ -110,11 +110,13 @@ uci commit uhttpd
 # pipeline as v4. The qemu SLIRP WAN is v4-only, so upstream v6 is not
 # in scope — only LAN connectivity and a FORWARD-chain-traversing v6 SYN.
 #
-# - ula_prefix:   deterministic so the orchestrator and tests can hard-code
-#                 the prefix. Anything in fd00::/8 is valid; this value
-#                 collides with nothing in the harness. The Python-side
-#                 mirror lives at scripts/e2e/lib/vm.py:ROUTER_ULA_PREFIX —
-#                 keep both in sync when changing the prefix.
+# - ula_prefix:   deterministic for reproducibility, but the harness no
+#                 longer pins this specific value — it accepts ANY ULA in
+#                 fc00::/7 (RFC 4193). Anything in fd00::/8 is valid; this
+#                 value collides with nothing in the harness. See #1687:
+#                 hardcoding the prefix in two places (here AND vm.py) broke
+#                 Gate 3b, which boots last-published router images that
+#                 predate this uci-default and use OpenWRT's random ULA.
 # - ip6assign:    LAN takes the first /60 of the ULA, which gives the
 #                 router fdaa:bbbb:cccc::1/60 and clients SLAAC into the
 #                 same /64 (default eui64 or stable-privacy).

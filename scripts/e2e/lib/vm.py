@@ -306,42 +306,57 @@ def _wait_for_client_lan(client: Client, *, timeout_s: float = 60, interval_s: f
     log.warning("client %s LAN/DNS not ready after %ss (last: %r)", client.name, timeout_s, last)
 
 
-# Router ULA, kept in sync with scripts/vm/uci-defaults/99-wifihaven (#1680).
-ROUTER_ULA_PREFIX = "fdaa:bbbb:cccc"
+# Harness assumptions about router state must be derived from the live
+# router or kept as broad as the functional requirement — never hardcoded
+# to a specific value the router happens to ship today. An earlier rev of
+# this check pinned the deterministic prefix from
+# scripts/vm/uci-defaults/99-wifihaven, which broke Gate 3b (last-published
+# router image, predates the uci-default, falls back to OpenWRT's random
+# ULA). See #1687.
+from .v6_ula import client_has_ula_address
 
 
 def _assert_v6_link_local_ready(client: Client, *, timeout_s: float = 30, interval_s: float = 2.0) -> None:
     """Regression gate (#1680): once the LAN is up, the client must also have
-    a v6 default route and a global-scope ULA address.
+    a v6 default route via eth0 AND at least one global-scope ULA address
+    (fc00::/7 per RFC 4193).
 
     If a future change strips RA/SLAAC (e.g. odhcpd disabled, ULA prefix
     cleared, accept_ra=0 on the client base), every Gate 2 scenario gets a
     clear, early failure here rather than a confusing late timeout in the
-    v6 attribution suite (#1677)."""
+    v6 attribution suite (#1677).
+
+    The ULA prefix is intentionally NOT pinned to a specific value — Gate 3b
+    boots the last-published router image, which uses OpenWRT's auto-generated
+    random ULA rather than the deterministic prefix newer images write via
+    scripts/vm/uci-defaults/99-wifihaven (#1687)."""
     import time as _time
     deadline = _time.monotonic() + timeout_s
-    probe_cmd = [
-        "sh", "-c",
-        "ip -6 route show default 2>/dev/null | grep -q 'dev eth0' && "
-        f"ip -6 addr show eth0 scope global 2>/dev/null | grep -q '{ROUTER_ULA_PREFIX}'",
-    ]
     last_v6_state = ""
     while _time.monotonic() < deadline:
-        res = client_exec(client, probe_cmd, timeout=10, check=False)
-        if res.returncode == 0:
-            return
-        diag = client_exec(
+        route_res = client_exec(
             client,
-            ["sh", "-c", "ip -6 route; echo ---; ip -6 addr show eth0"],
+            ["sh", "-c", "ip -6 route show default 2>/dev/null"],
             timeout=10, check=False,
         )
-        last_v6_state = (diag.stdout or "").strip()
+        addr_res = client_exec(
+            client,
+            ["sh", "-c", "ip -6 addr show eth0 2>/dev/null"],
+            timeout=10, check=False,
+        )
+        route_out = (route_res.stdout or "")
+        addr_out = (addr_res.stdout or "")
+        has_default = "dev eth0" in route_out
+        has_ula = client_has_ula_address(addr_out)
+        if has_default and has_ula:
+            return
+        last_v6_state = f"{addr_out}\n---\n{route_out}".strip()
         _time.sleep(interval_s)
     raise RuntimeError(
-        f"client {client.name} missing IPv6 default route or ULA address "
-        f"in {ROUTER_ULA_PREFIX}::/48 after {timeout_s}s. The qemu LAN bridge "
+        f"client {client.name} missing IPv6 default route or any ULA "
+        f"(fc00::/7) address after {timeout_s}s. The qemu LAN bridge "
         f"is not carrying RA/SLAAC — see scripts/vm/uci-defaults/99-wifihaven "
-        f"and #1680.\n"
+        f"and #1680/#1687.\n"
         f"--- client ip -6 addr/route ---\n{last_v6_state}"
     )
 

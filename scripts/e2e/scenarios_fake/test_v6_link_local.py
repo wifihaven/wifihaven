@@ -15,11 +15,9 @@ from __future__ import annotations
 
 import pytest
 
-from lib.vm import ROUTER_ULA_PREFIX, client_exec, router_ssh
+from lib.vm import client_exec, router_ssh
 
 pytestmark = pytest.mark.v6_link_local
-
-assert ROUTER_ULA_PREFIX  # silence unused-import lints; documents the contract
 
 
 def test_v6_syn_traverses_router_forward_chain(client):
