@@ -16,11 +16,14 @@
 # and Gate 3a (#1667). The existing workflow pre-flight kills qemu by name
 # scoped to *this* run's WH_RUN_ID, which does not catch the leaked python.
 #
-# Scope (safety): only TCP LISTEN sockets on 127.0.0.1:<port> are touched.
-# The production wifihaven-api docker container does not listen on those
-# loopback ports, so this script cannot affect production. We resolve the
-# owning pid via `ss -lntpH "sport = :<port>"` and SIGTERM, then SIGKILL as
-# a backstop if the port is still bound a few seconds later.
+# Scope (safety): only TCP LISTEN sockets on 127.0.0.1:<port> or ::1:<port>
+# are touched. The production wifihaven-api docker container does not listen
+# on those loopback ports, so this script cannot affect production — and we
+# *enforce* that scope in the ss filter (`src 127.0.0.1` / `src [::1]`)
+# rather than relying on it as a coincidence of the port ranges we currently
+# allocate. We resolve the owning pid via `ss -lntpH "sport = :<port> and
+# ( src 127.0.0.1 or src [::1] )"` and SIGTERM, then SIGKILL as a backstop
+# if the port is still bound a few seconds later.
 #
 # Usage
 # -----
@@ -36,7 +39,10 @@ log() { printf '[free-test-ports] %s\n' "$*" >&2; }
 
 pids_on_port() {
   local port="$1"
-  ss -lntpH "sport = :${port}" 2>/dev/null \
+  # Constrain to loopback (v4 + v6) so we cannot match a non-loopback
+  # listener that happens to share the port number — the docstring's
+  # "this cannot affect production" safety claim relies on this filter.
+  ss -lntpH "sport = :${port} and ( src 127.0.0.1 or src [::1] )" 2>/dev/null \
     | grep -oE 'pid=[0-9]+' \
     | awk -F= '{print $2}' \
     | sort -u
@@ -53,8 +59,7 @@ free_one_port() {
     log "SIGTERM pid=${pid} on tcp:${port}"
     kill -TERM "${pid}" 2>/dev/null || true
   done
-  local waited
-  for waited in 1 2 3 4 5 6; do
+  for _ in 1 2 3 4 5 6; do
     sleep 0.5
     local still
     still="$(pids_on_port "${port}" || true)"

@@ -38,7 +38,7 @@ trap cleanup EXIT
 
 assert_free() {
   local name="$1" port="$2"
-  if ss -lntH "sport = :${port}" 2>/dev/null | grep -q ":${port}"; then
+  if ss -lntH "sport = :${port}" 2>/dev/null | grep -qE ":${port}([^0-9]|$)"; then
     echo "  FAIL: ${name} — port ${port} still bound"
     FAIL=$((FAIL+1))
   else
@@ -49,7 +49,7 @@ assert_free() {
 
 assert_bound() {
   local name="$1" port="$2"
-  if ss -lntH "sport = :${port}" 2>/dev/null | grep -q ":${port}"; then
+  if ss -lntH "sport = :${port}" 2>/dev/null | grep -qE ":${port}([^0-9]|$)"; then
     echo "  ok: ${name}"
     PASS=$((PASS+1))
   else
@@ -72,7 +72,7 @@ time.sleep(120)
   cleanup_pids+=("${pid}")
   # Give the bind a moment to land in the kernel's listen list.
   for _ in 1 2 3 4 5 6 7 8 9 10; do
-    if ss -lntH "sport = :${port}" 2>/dev/null | grep -q ":${port}"; then
+    if ss -lntH "sport = :${port}" 2>/dev/null | grep -qE ":${port}([^0-9]|$)"; then
       echo "${pid}"
       return 0
     fi
