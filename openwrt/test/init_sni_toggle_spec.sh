@@ -97,10 +97,11 @@ else
   check "enabled=0: other sidecars still start" "missing=[$missing] OPENED=[$out]"
 fi
 
-# 4. Init script source must reference the toggle key so reviewers can grep it.
-grep -q 'sni.*enabled' "$INIT" \
-  && check "init script references wifihaven.sni.enabled" ok \
-  || check "init script references wifihaven.sni.enabled" "not found"
+# 4. Init script source must invoke the UCI read in the documented form so a
+# rename of the option key is caught by this test.
+grep -q 'config_get .* sni enabled' "$INIT" \
+  && check "init script reads wifihaven.sni.enabled via config_get" ok \
+  || check "init script reads wifihaven.sni.enabled via config_get" "not found"
 
 printf "\nResults: %d passed, %d failed\n" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

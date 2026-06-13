@@ -53,9 +53,12 @@ config wifihaven 'wifihaven'
 	# yields 6 samples per report). See docs/router-tuning.md.
 	option activity_sample_int '10'
 
-# SNI sidecar (wifihaven-sni-tail) toggle. The sidecar captures the first
-# packet of every outbound TCP/443 flow via tcpdump-mini to attribute
-# DoH / hard-coded-IP traffic to a hostname (#573). On constrained or
+# SNI sidecar (wifihaven-sni-tail) toggle. Lives in its own `config sni`
+# section, distinct from the `config wifihaven 'wifihaven'` anchor above —
+# the init script reads it as `wifihaven.sni.enabled` via
+# `config_get … sni enabled '1'`. The sidecar captures the first packet of
+# every outbound TCP/443 flow via tcpdump-mini to attribute DoH /
+# hard-coded-IP traffic to a hostname (#573). On constrained or
 # misconfigured hardware an operator can disable it per-router without
 # uninstalling: `uci set wifihaven.sni.enabled=0 && /etc/init.d/wifihaven
 # restart`. This is local agent config — NOT a policy-snapshot field.
