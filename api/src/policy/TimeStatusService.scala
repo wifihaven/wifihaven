@@ -592,20 +592,19 @@ object TimeStatusService {
       presence: List[PresenceRow],
       settings: HouseholdSettings,
   ): (Map[AppId, Long], Int) = {
-    val groups        = groupAppLimits(appLimits)
-    val labelToAppId  = groups.map(g => g._2 -> g._1).toMap
-    val (spans, drop) = Presence.appSpansForProfileWithDropCount(
+    val groups                 = groupAppLimits(appLimits)
+    val labelToAppId           = groups.map(g => g._2 -> g._1).toMap
+    val (secsByLabel, dropped) = Presence.appSecondsForProfileWithDropCount(
       presence,
       groups.map(g => g._2 -> g._5),
       profile.crossDeviceOverlapMode,
       settings.heartbeatFilter,
       settings.presenceContinuationSeconds,
     )
-    val secsByLabel   = spans.view.mapValues(_.iterator.map(_.seconds).sum).filter(_._2 > 0L).toMap
-    val byAppId       = secsByLabel.iterator.flatMap { case (label, secs) =>
+    val byAppId                = secsByLabel.iterator.flatMap { case (label, secs) =>
       labelToAppId.get(label).map(_ -> secs)
     }.toMap
-    (byAppId, drop)
+    (byAppId, dropped)
   }
 
   /**

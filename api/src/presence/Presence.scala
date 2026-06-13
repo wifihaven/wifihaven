@@ -712,10 +712,29 @@ object Presence {
       filter: HeartbeatFilter = HeartbeatFilter.Off,
       continuationSeconds: Int = DefaultContinuationSeconds,
   ): Map[String, Long] =
-    appSpansForProfile(rows, groups, overlap, filter, continuationSeconds).view
+    appSecondsForProfileWithDropCount(rows, groups, overlap, filter, continuationSeconds)._1
+
+  /**
+   * #1676: per-app engaged seconds + the count of per-(mac, app) sessions dropped by the #1666
+   * anchor-row guard. The canonical primitive — the no-count alias above projects to the map only.
+   * Per [[AGENTS.md §single-source-of-truth]] the span→seconds projection lives in exactly one
+   * place; consumers that want both numbers call this and never re-derive the seconds locally.
+   */
+  def appSecondsForProfileWithDropCount(
+      rows: List[PresenceRow],
+      groups: List[(String, List[String])],
+      overlap: CrossDeviceOverlapMode = CrossDeviceOverlapMode.Sum,
+      filter: HeartbeatFilter = HeartbeatFilter.Off,
+      continuationSeconds: Int = DefaultContinuationSeconds,
+  ): (Map[String, Long], Int) = {
+    val (spans, dropped) =
+      appSpansForProfileWithDropCount(rows, groups, overlap, filter, continuationSeconds)
+    val secs             = spans.view
       .mapValues(_.iterator.map(_.seconds).sum)
       .filter(_._2 > 0L)
       .toMap
+    (secs, dropped)
+  }
 
   /** Floor-divided minute view of [[appSecondsForProfile]] (per app host-set group). */
   def appMinutesForProfile(
