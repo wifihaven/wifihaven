@@ -229,6 +229,105 @@ object InfraHostsSpec extends ZIOSpecDefault {
         !InfraHosts.isInfra("apple-relay.cloudflare.com"),
       )
     },
+    test("#1672 Brave browser telemetry background hosts are suppressed") {
+      // Brave Shields telemetry / STAR randomness — clearly device-level telemetry,
+      // not user-initiated. Captured on profile 1 (Kids) in 2026-06-10..06-11 prod
+      // orphan tail at ~1491s + ~555s propSec. Suppress-only (no allow-carve role).
+      val brave = List(
+        "collector.bsg.brave.com",
+        "star-randsrv.bsg.brave.com",
+      )
+      assertTrue(
+        brave.forall(InfraHosts.isBackground),
+        brave.forall(h => !InfraHosts.isInfra(h)),
+      )
+    },
+    test("#1672 Google Play / client-services background hosts are suppressed") {
+      // Android Play Services / Google clients background polling captured on
+      // profile 1 (Kids) + profile 5 (Quintus) in 2026-06-10..06-11 prod orphan
+      // tail. Specific subdomains, NOT the `google.com` or `googleusercontent.com`
+      // apex — keeps real-app traffic on sibling subdomains attributing and counting
+      // (same seam as the existing `clientservices.googleapis.com` rather than the
+      // `googleapis.com` apex). Suppress-only.
+      val googleBg = List(
+        "clients4.google.com",
+        "android.clients.google.com",
+        "clients2.googleusercontent.com",
+      )
+      assertTrue(
+        googleBg.forall(InfraHosts.isBackground),
+        googleBg.forall(h => !InfraHosts.isInfra(h)),
+        // BOUNDARY: the apex must NOT be swept in. Sibling Google domains must
+        // still attribute to their real apps.
+        !InfraHosts.isBackground("www.google.com"),
+        !InfraHosts.isBackground("mail.google.com"),
+        !InfraHosts.isBackground("docs.google.com"),
+        !InfraHosts.isBackground("photos.googleusercontent.com"),
+        !InfraHosts.isBackground("lh3.googleusercontent.com"),
+      )
+    },
+    test("#1672 ad-mediation / ad-quality background hosts are suppressed") {
+      // OpenX / Unity / Google ad-quality mediation — these run in the background
+      // of ad-supported pages. The mediation traffic itself is not user-interactive
+      // engagement; the embedding page (if any) would attribute via its own app
+      // template. Captured on profile 5 + profile 6 in the 2026-06-10 orphan tail.
+      // Suppress-only.
+      val adMediation = List(
+        "oa.openxcdn.net",
+        "ep2.adtrafficquality.google",
+        "a-adq.mediation.unity3d.com",
+      )
+      assertTrue(
+        adMediation.forall(InfraHosts.isBackground),
+        adMediation.forall(h => !InfraHosts.isInfra(h)),
+        // BOUNDARY: don't sweep the apex. unity3d.com hosts a wide surface beyond
+        // the ad-mediation subdomain.
+        !InfraHosts.isBackground("unity3d.com"),
+        !InfraHosts.isBackground("www.unity3d.com"),
+      )
+    },
+    test("#1672 asset CDNs used by orphan pages are suppressed") {
+      // Webfont / image-thumbnail / user-content CDNs whose attribution "follows the
+      // embedding page" — if the embedding page is orphan, the CDN traffic is too.
+      // Specific subdomains (not apex `gstatic.com` / `googleusercontent.com`) so
+      // real apps that use sibling subdomains keep attributing.
+      //
+      // Safety w.r.t. real apps: #1506 (`Presence.isAppAttributed`) makes app
+      // attribution win over suppression — when an active app template claims
+      // one of these hosts, it counts toward the app, not the suppression list.
+      // These are suppress-only and never allow-carved.
+      val assetCdns = List(
+        "use.fontawesome.com",
+        "encrypted-tbn0.gstatic.com",
+        "ci3.googleusercontent.com",
+      )
+      assertTrue(
+        assetCdns.forall(InfraHosts.isBackground),
+        assetCdns.forall(h => !InfraHosts.isInfra(h)),
+        // BOUNDARY: the apex must NOT be on the list. The existing
+        // `connectivitycheck.gstatic.com` is the only `gstatic.com` entry — and
+        // adding `ssl.gstatic.com` / the `gstatic.com` apex is deliberately deferred
+        // (too broad — would absorb per-app static assets).
+        !InfraHosts.isBackground("ssl.gstatic.com"),
+        !InfraHosts.isBackground("fonts.gstatic.com"),
+        !InfraHosts.isBackground("gstatic.com"),
+        !InfraHosts.isBackground("googleusercontent.com"),
+      )
+    },
+    test("#1672 additions do not shadow non-Apple app template host-sets") {
+      // Defensive: the new hosts must not accidentally suppress real-app surfaces
+      // on neighbouring apexes (Google search/mail, YouTube, etc.).
+      val unrelated = List(
+        "www.google.com",
+        "mail.google.com",
+        "docs.google.com",
+        "www.youtube.com",
+        "khanacademy.org",
+        "www.mathacademy.com",
+        "firestore.googleapis.com",
+      )
+      assertTrue(unrelated.forall(h => !InfraHosts.isBackground(h)))
+    },
     test("#1629 additions do not shadow non-Apple app template host-sets") {
       // Defensive: none of the patterns added for #1629 should accidentally suppress
       // a real-app host on an unrelated apex (Khan, Math, etc. — their apexes don't
