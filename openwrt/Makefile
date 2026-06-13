@@ -32,7 +32,13 @@ define Package/wifihaven
   # on modern kernels). Without it `conntrack -E -e NEW` sees 0 v6 flow events,
   # so the agent never emits connection_events for v6 destinations and the
   # Gate 2 v6 attribution suite (scripts/e2e/scenarios_fake/test_v6_*.py) fails.
-  DEPENDS:=+lua +libuci-lua +luci-lib-jsonc +conntrack +curl +uhttpd-mod-lua +kmod-nf-log +kmod-nf-log6 +kmod-nf-conntrack6 +libustream-mbedtls +openssl-util +tcpdump-mini
+  # #1651: lua-openssl provides HMAC-SHA256 + AES-128-ECB + AES-128-GCM so the
+  # sni sidecar can extract the SNI from QUIC v1 Initial packets too (UDP/443),
+  # closing the HTTP/3 leg of the #573 attribution gap. RFC 9001 §5.2 keys are
+  # HKDF-derived from the destination connection ID + v1 salt; the payload is
+  # AEAD-encrypted with AES-128-GCM and the header bits are protected with an
+  # AES-128-ECB mask. ~464 KiB installed — additive, attribution-only.
+  DEPENDS:=+lua +libuci-lua +luci-lib-jsonc +conntrack +curl +uhttpd-mod-lua +kmod-nf-log +kmod-nf-log6 +kmod-nf-conntrack6 +libustream-mbedtls +openssl-util +tcpdump-mini +lua-openssl
   PKGARCH:=all
 endef
 

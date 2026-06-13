@@ -1,33 +1,41 @@
 #!/usr/bin/lua
 -- wifihaven-sni-tail — sidecar daemon that captures the first packet of every
--- outbound TCP/443 flow off the LAN bridge and extracts the TLS ClientHello
--- SNI server_name. The (dst_ip, src_mac, sni) tuple is appended as a single
--- TSV line to paths.sni_capture; the wifihaven-dns-tail sidecar tails that
--- file alongside the dnsmasq query log and calls cache.insert_sni so the
--- shared ip→hostname cache (paths.dns_cache) stays single-writer.
+-- outbound TCP/443 flow AND every QUIC v1 Initial packet on UDP/443 off the
+-- LAN bridge and extracts the TLS ClientHello SNI server_name. The
+-- (dst_ip, src_mac, sni) tuple is appended as a single TSV line to
+-- paths.sni_capture; the wifihaven-dns-tail sidecar tails that file alongside
+-- the dnsmasq query log and calls cache.insert_sni so the shared ip→hostname
+-- cache (paths.dns_cache) stays single-writer.
 --
--- This closes the DoH / hard-coded-IP ATTRIBUTION gap (#573): a client that
--- bypasses the on-router DNS resolver still ends up with its destination IP
--- mapped back to the branded hostname in the agent's flow-attribution cache,
--- so connection-event fqdn emission and cache.lookup-based labeling work even
--- when dnsmasq never saw the query. It does NOT close the ENFORCEMENT gap: the
--- eb_/ea_/bl_ nft drop-set populators fire only on dnsmasq `reply` lines, and
--- SNI is seen after the flow's first packet — too late to populate a drop set
--- for that flow. Enforcement on hard-coded-IP traffic remains blockIpOnly's job.
+-- This closes the DoH / hard-coded-IP ATTRIBUTION gap (#573 for TCP; #1651
+-- extends it to QUIC / HTTP/3): a client that bypasses the on-router DNS
+-- resolver still ends up with its destination IP mapped back to the branded
+-- hostname in the agent's flow-attribution cache, so connection-event fqdn
+-- emission and cache.lookup-based labeling work even when dnsmasq never saw
+-- the query and the client preferred QUIC. It does NOT close the ENFORCEMENT
+-- gap: the eb_/ea_/bl_ nft drop-set populators fire only on dnsmasq `reply`
+-- lines, and SNI is seen after the flow's first packet — too late to populate
+-- a drop set for that flow. Enforcement on hard-coded-IP / QUIC-only traffic
+-- remains blockIpOnly's job (#572).
 --
 -- v1 scope:
 --   - Single-segment TLS 1.2 / TLS 1.3 ClientHello on TCP/443.
+--   - QUIC v1 Initial (client) on UDP/443; AES-128-GCM AEAD (RFC 9001 §5.1
+--     mandates this cipher for all Initials regardless of negotiated suite).
 --   - Always-on (no UCI toggle).
 --   - IPv4 only (followup for IPv6).
 --   - ECH ClientHellos → nil SNI → silently skipped (followup).
 --
--- We rely on tcpdump-mini (libpcap-userspace) to provide the capture: it
--- already ships in OpenWRT's default feed and is the only piece of the design
--- that adds an external dependency. Output is raw pcap on stdout (-w -),
--- parsed inline by sni.parse_packet, which accepts Ethernet/IPv4/TCP frames.
+-- Capture: tcpdump-mini (libpcap-userspace) with a combined BPF filter for
+-- both TCP-443 first-segment-of-ClientHello AND UDP-443 long-header Initial
+-- packets (high nibble 0xc0 = header_form=1 + fixed=1 + type=Initial). Output
+-- is raw pcap on stdout (-w -), parsed inline by sni.parse_packet (TCP path)
+-- or quic.parse_initial (UDP path), dispatched by the IPv4 protocol byte.
 
 local uci     = require("uci")
+local openssl = require("openssl")
 local sni     = require("wifihaven.sni")
+local quic    = require("wifihaven.quic")
 local log     = require("wifihaven.log")
 local paths   = require("wifihaven.paths")
 local dns_log = require("wifihaven.dns_log")
@@ -40,9 +48,20 @@ local dns_log = require("wifihaven.dns_log")
 -- (tcp[((tcp[12]&0xf0)>>2)] = 0x16 — first byte of TCP payload is handshake);
 -- if the on-router libpcap rejects the expression (per the #573 abort list)
 -- we'd fall back to the looser `tcp dst port 443` and live with ~10x packets.
-local BPF_FILTER = "tcp dst port 443 and " ..
-  "(tcp[((tcp[12]&0xf0)>>2)] = 0x16) and " ..
-  "(tcp[((tcp[12]&0xf0)>>2)+5] = 0x01)"
+--
+-- The QUIC half (#1651): UDP to dst port 443 whose first payload byte has
+-- high nibble 0xc0 — that is, header_form=1 (long header), fixed_bit=1, and
+-- packet_type=0 (Initial). Per RFC 9001 §5.4.1, only the LOW 4 bits of the
+-- long-header first byte are header-protected, so the type bits are safe to
+-- match against in BPF. This drops every 1-RTT (short-header) packet — the
+-- vast majority of steady-state QUIC traffic — and every 0-RTT/Handshake/
+-- Retry from the capture entirely, keeping per-packet cost at "one parse per
+-- new QUIC flow" parity with the TCP path.
+local BPF_FILTER =
+  "(tcp dst port 443 and " ..
+    "(tcp[((tcp[12]&0xf0)>>2)] = 0x16) and " ..
+    "(tcp[((tcp[12]&0xf0)>>2)+5] = 0x01)) or " ..
+  "(udp dst port 443 and (udp[8] & 0xf0) = 0xc0)"
 
 -- Capture interface: probe the actual LAN bridge from UCI (network.lan.device)
 -- so routers using a non-default bridge name (br0, multi-WAN) still get
@@ -107,11 +126,52 @@ if not spool then
   os.exit(1)
 end
 
--- #573: cumulative per-result tally. result ∈ {parsed, truncated, no_sni,
--- ipv6_skipped, not_tcp, malformed} — a small bounded enum. We mirror the
--- #1302 dns_metrics IPC: reuse dns_log.format_query_results to serialise the
--- tally to paths.sni_metrics on each flush, and the agent's metrics tick folds
--- the deltas into sni_clienthellos_total{result}. The split also feeds the
+-- #1651: build the QUIC parser's crypto dependency once at startup. This
+-- keeps the per-packet hot path allocation-free w.r.t. cipher handles —
+-- openssl_crypto() looks up the AES-128-ECB / AES-128-GCM cipher tables and
+-- caches them inside the returned closure.
+local quic_crypto = quic.openssl_crypto(openssl)
+
+-- Dispatch on IPv4 protocol byte: TCP=6 → existing sni.parse_packet, UDP=17 →
+-- new quic.parse_initial. We bounce non-IPv4 to "ipv6_skipped" inline so we
+-- don't pay two parser attempts per non-matching frame. (Keep the inner
+-- parsers' enum strings disjoint so the metric label space stays unambiguous.)
+-- dispatch(pkt) → (result | nil, label)
+--
+-- `label` is the result-enum string the main loop folds into the per-result
+-- tally. On success: "parsed" (TCP path) or "quic_success" (QUIC v1 Initial).
+-- On skip/failure: the inner parser's bounded reason string. The QUIC and TCP
+-- enum spaces are disjoint by prefix ("quic_*") so the {result} label cardin-
+-- ality stays bounded and the operator can read fleet HTTP/3 vs HTTP/1+2 mix
+-- from the metric alone. The (dst_ip, src_mac, sni) tuple is identical-shape
+-- between the two parsers, so spool writes flow through the same path.
+local function dispatch(pkt)
+  if #pkt < 14 + 20 then return nil, "truncated" end
+  local ethertype = pkt:byte(13) * 256 + pkt:byte(14)
+  if ethertype ~= 0x0800 then return nil, "ipv6_skipped" end
+  local proto = pkt:byte(15 + 9)
+  if proto == 6 then
+    local r, reason = sni.parse_packet(pkt)
+    if r then return r, "parsed" end
+    return nil, reason
+  elseif proto == 17 then
+    local r, reason = quic.parse_initial(pkt, quic_crypto)
+    if r then return r, "quic_success" end
+    return nil, reason
+  end
+  -- BPF restricts to TCP/UDP, so anything else is unreachable in practice;
+  -- bounded enum label for defense-in-depth.
+  return nil, "malformed"
+end
+
+-- #573 / #1651: cumulative per-result tally. result ∈ {parsed, truncated,
+-- no_sni, ipv6_skipped, not_tcp, malformed,  quic_success, quic_short_header,
+-- quic_unsupported_version, quic_not_initial, quic_truncated, quic_malformed,
+-- quic_decrypt_failed, quic_no_crypto_frame, quic_no_sni, quic_ipv6_skipped,
+-- quic_not_udp, quic_not_443} — a small bounded enum. We mirror the #1302
+-- dns_metrics IPC: reuse dns_log.format_query_results to serialise the tally
+-- to paths.sni_metrics on each flush, and the agent's metrics tick folds the
+-- deltas into sni_clienthellos_total{result}. The split also feeds the
 -- periodic log line so a fleet-wide truncation/ipv6-skip rate is visible from
 -- logread alone (was lumped into a single no_sni_total — SHOULD-FIX #4/#7).
 local results           = {}
@@ -143,16 +203,14 @@ while true do
   end
   local pkt = rec.data
 
-  local r, reason = sni.parse_packet(pkt)
+  local r, label = dispatch(pkt)
   if r then
     spool:write(sni.format_sni_line(r.dst_ip, r.src_mac, r.sni))
     spool:flush()
     parsed_total      = parsed_total + 1
     since_stat_parsed = since_stat_parsed + 1
-    bump("parsed")
-  else
-    bump(reason or "no_sni")
   end
+  bump(label or "no_sni")
 
   local now = os.time()
   -- Publish the result tally on the same cadence as the heartbeat. Cheap
@@ -162,11 +220,21 @@ while true do
     last_metrics_flush = now
   end
   if (now - last_stats_log) >= 60 then
-    log.info("sni-tail: parsed=%d (+%d in last %ds) truncated=%d no_sni=%d ipv6_skipped=%d not_tcp=%d malformed=%d",
+    log.info("sni-tail: parsed=%d (+%d in last %ds) truncated=%d no_sni=%d " ..
+             "ipv6_skipped=%d not_tcp=%d malformed=%d " ..
+             "quic_success=%d quic_short_header=%d quic_not_initial=%d " ..
+             "quic_unsupported_version=%d quic_decrypt_failed=%d " ..
+             "quic_no_crypto_frame=%d quic_no_sni=%d",
              parsed_total, since_stat_parsed, now - last_stats_log,
              results.truncated or 0, results.no_sni or 0,
              results.ipv6_skipped or 0, results.not_tcp or 0,
-             results.malformed or 0)
+             results.malformed or 0,
+             results.quic_success or 0, results.quic_short_header or 0,
+             results.quic_not_initial or 0,
+             results.quic_unsupported_version or 0,
+             results.quic_decrypt_failed or 0,
+             results.quic_no_crypto_frame or 0,
+             results.quic_no_sni or 0)
     flush_metrics()
     last_stats_log    = now
     since_stat_parsed = 0
