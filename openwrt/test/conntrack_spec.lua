@@ -81,6 +81,112 @@ describe("arp_lookup_mac", function()
 end)
 
 -- ---------------------------------------------------------------------------
+-- 2b. parse_arp_table: combines /proc/net/arp (v4) AND `ip -6 neigh` (v6 NDP)
+--
+-- Regression for #1691 Bucket G: pre-fix, parse_arp_table only read
+-- /proc/net/arp (v4), so a v6 conntrack NEW with src=<lan-ula> resolved to
+-- mac=nil at handle_flow time, the emitted connection_attempt had a nil
+-- `mac` field, and the Gate 2 attribution suite (which asserts on
+-- mac == client.mac + host contains LEAF_HOST) timed out. The dns-cache
+-- lookup was fine; only the MAC half was missing.
+-- ---------------------------------------------------------------------------
+describe("parse_arp_table", function()
+  -- Helper to stub io.open + io.popen with canned line streams.
+  local function with_stubs(arp_lines, neigh_lines, body)
+    local function reader(lines)
+      local i = 0
+      return {
+        read = function(_, fmt)
+          if fmt == "*l" then i = i + 1; return lines[i] end
+          return nil
+        end,
+        lines = function()
+          return function()
+            i = i + 1
+            return lines[i]
+          end
+        end,
+        close = function() end,
+      }
+    end
+    local saved_open, saved_popen = io.open, io.popen
+    io.open = function(path, _)
+      if path == "/proc/net/arp" and arp_lines then return reader(arp_lines) end
+      return nil
+    end
+    io.popen = function(cmd)
+      if cmd:match("ip %-6 neigh") and neigh_lines then return reader(neigh_lines) end
+      return nil
+    end
+    local ok, err = pcall(body)
+    io.open, io.popen = saved_open, saved_popen
+    assert(ok, err)
+  end
+
+  it("populates v4 entries from /proc/net/arp", function()
+    with_stubs({
+      "IP address       HW type     Flags       HW address            Mask     Device",
+      "192.168.100.42   0x1         0x2         aa:bb:cc:11:22:33     *        br-lan",
+    }, {}, function()
+      local t = conntrack.parse_arp_table()
+      assert.equal("aa:bb:cc:11:22:33", t["192.168.100.42"])
+    end)
+  end)
+
+  it("populates v6 entries from `ip -6 neigh` lladdr tokens", function()
+    with_stubs({
+      "IP address       HW type     Flags       HW address            Mask     Device",
+    }, {
+      "fdaa:bbbb:cccc::147 dev br-lan lladdr 02:e2:fa:8e:c2:ce STALE",
+      "2001:db8::abcd dev br-lan lladdr aa:bb:cc:dd:ee:ff REACHABLE",
+    }, function()
+      local t = conntrack.parse_arp_table()
+      assert.equal("02:e2:fa:8e:c2:ce", t["fdaa:bbbb:cccc::147"])
+      assert.equal("aa:bb:cc:dd:ee:ff", t["2001:db8::abcd"])
+    end)
+  end)
+
+  it("skips v6 NDP entries in FAILED state (no lladdr token)", function()
+    with_stubs({
+      "IP address       HW type     Flags       HW address            Mask     Device",
+    }, {
+      "fe80::2 dev eth1  used 0/0/0 probes 6 FAILED",
+      "2001:db8::10 dev eth1 used 0/0/0 probes 6 FAILED",
+    }, function()
+      local t = conntrack.parse_arp_table()
+      assert.is_nil(t["fe80::2"])
+      assert.is_nil(t["2001:db8::10"])
+    end)
+  end)
+
+  it("merges v4 and v6 in a single lookup table (#1691)", function()
+    with_stubs({
+      "IP address       HW type     Flags       HW address            Mask     Device",
+      "192.168.100.42   0x1         0x2         02:e2:fa:8e:c2:ce     *        br-lan",
+    }, {
+      "fdaa:bbbb:cccc::147 dev br-lan lladdr 02:e2:fa:8e:c2:ce STALE",
+    }, function()
+      local t = conntrack.parse_arp_table()
+      assert.equal("02:e2:fa:8e:c2:ce", t["192.168.100.42"])
+      assert.equal("02:e2:fa:8e:c2:ce", t["fdaa:bbbb:cccc::147"])
+      -- arp_lookup_mac is unchanged — same call site finds either family.
+      assert.equal("02:e2:fa:8e:c2:ce",
+        conntrack.arp_lookup_mac("fdaa:bbbb:cccc::147", t))
+    end)
+  end)
+
+  it("tolerates the v6-neigh popen returning nothing", function()
+    with_stubs({
+      "IP address       HW type     Flags       HW address            Mask     Device",
+      "192.168.100.42   0x1         0x2         aa:bb:cc:11:22:33     *        br-lan",
+    }, nil, function()  -- io.popen returns nil
+      local t = conntrack.parse_arp_table()
+      assert.equal("aa:bb:cc:11:22:33", t["192.168.100.42"])
+    end)
+  end)
+end)
+
+-- ---------------------------------------------------------------------------
 -- 3. Event serialization
 -- ---------------------------------------------------------------------------
 
