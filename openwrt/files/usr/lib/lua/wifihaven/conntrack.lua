@@ -214,25 +214,51 @@ end
 -- ---------------------------------------------------------------------------
 -- parse_arp_table() -> { ip -> mac }
 --
--- Reads /proc/net/arp at call time.  Called per-event so the MAC table stays
--- fresh without a background refresh loop.
+-- Reads /proc/net/arp at call time (v4) AND `ip -6 neigh` (v6 NDP cache).
+-- The kernel exposes the v4 ARP table as a proc file but the v6 NDP cache
+-- only over netlink, so we shell out for the v6 half. Called per-event so
+-- the MAC table stays fresh without a background refresh loop.
+--
+-- v6 is load-bearing here: without it, the watch loop reaches a v6 conntrack
+-- NEW with `src=<lan-ula>`, asks parse_arp_table for the MAC of that v6
+-- src_ip, gets nil, and emits a connection_attempt event whose `mac` field
+-- is nil. The fake-API Gate 2 attribution suite (#1677) asserts on
+-- `mac == client.mac AND host.value contains LEAF_HOST` — a nil mac fails
+-- the assert and is_wan_bound's #1690 family-fork looks like it didn't
+-- close the loop. (#1691.)
 -- ---------------------------------------------------------------------------
 function M.parse_arp_table()
   local result = {}
+  -- /proc/net/arp columns: IP, HWtype, Flags, HWaddr, Mask, Device
   local f = io.open("/proc/net/arp", "r")
-  if not f then return result end
-  f:read("*l")  -- skip header
-  for line in f:lines() do
-    local ip, _, _, mac = line:match("^(%S+)%s+%S+%s+%S+%s+(%S+)%s+")
-    -- mac field is 4th column; re-match properly
-    local parts = {}
-    for w in line:gmatch("%S+") do parts[#parts + 1] = w end
-    -- /proc/net/arp columns: IP, HWtype, Flags, HWaddr, Mask, Device
-    if #parts >= 4 and parts[4] ~= "00:00:00:00:00:00" then
-      result[parts[1]] = parts[4]
+  if f then
+    f:read("*l")  -- skip header
+    for line in f:lines() do
+      local parts = {}
+      for w in line:gmatch("%S+") do parts[#parts + 1] = w end
+      if #parts >= 4 and parts[4] ~= "00:00:00:00:00:00" then
+        result[parts[1]] = parts[4]
+      end
     end
+    f:close()
   end
-  f:close()
+  -- v6 NDP cache. Format examples:
+  --   `2001:db8::1 dev br-lan lladdr 02:e2:fa:11:22:33 router REACHABLE`
+  --   `fdaa:bbbb:cccc::147 dev br-lan lladdr 02:e2:fa:8e:c2:ce STALE`
+  --   `fe80::2 dev eth1  used 0/0/0 probes 6 FAILED`   (no lladdr — skip)
+  -- The `lladdr <mac>` token is the load-bearing piece; entries in FAILED
+  -- state have no lladdr and we skip them naturally.
+  local pf = io.popen("ip -6 neigh show 2>/dev/null")
+  if pf then
+    for line in pf:lines() do
+      local ip = line:match("^(%S+)")
+      local mac = line:match("lladdr%s+(%S+)")
+      if ip and mac and mac ~= "00:00:00:00:00:00" then
+        result[ip] = mac
+      end
+    end
+    pf:close()
+  end
   return result
 end
 

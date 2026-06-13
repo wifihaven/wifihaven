@@ -42,11 +42,17 @@ def test_v6_syn_traverses_router_forward_chain(client):
     ct_pid = (start.stdout or "").strip().splitlines()[-1]
     assert ct_pid.isdigit(), f"failed to capture conntrack pid: {start.stdout!r}"
 
-    # nc returns immediately on SYN_SENT timeout. Doc-space 2001:db8::10
-    # is unreachable, which is the point — the SYN crossed FORWARD.
+    # curl -6 returns curl exit 28 on connect-timeout (RFC 3849 doc-space
+    # 2001:db8::10 is unreachable — the point is the SYN crossed FORWARD).
+    # NB: do NOT use `nc -6` here — the Alpine client's nc is BusyBox, which
+    # does not implement `-6` (the option is rejected with "unrecognized
+    # option: 6" and zero packets are emitted, so conntrack sees nothing and
+    # this whole test was a silent no-op pre-#1691). curl is in the client
+    # base image's package list (see scripts/vm/build-client-base.sh) and
+    # supports -6 natively.
     client_exec(
         client,
-        ["sh", "-c", "nc -6 -w 2 2001:db8::10 80 >/dev/null 2>&1; true"],
+        ["sh", "-c", "curl -6 -s -m 2 -o /dev/null http://[2001:db8::10]/ ; true"],
         check=False,
         timeout=10,
     )
