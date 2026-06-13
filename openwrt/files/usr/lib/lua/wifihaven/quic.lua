@@ -56,6 +56,13 @@
 --   quic_not_udp            -- parse_initial saw an IPv4 non-UDP packet
 --   quic_not_443            -- parse_initial saw a UDP packet not to port 443
 --
+-- NOTE: the last three are only reachable when callers invoke parse_initial
+-- directly (e.g. the unit tests). The production sidecar's dispatch() peeks
+-- at ethertype / IPv4 proto BEFORE calling parse_initial and short-circuits
+-- those cases under the TCP-path "ipv6_skipped" / generic "malformed"
+-- buckets, so they will not tick in the sni_clienthellos_total metric on
+-- fleet routers — the documented contract holds for direct API consumers.
+--
 -- A malformed/truncated packet returns (nil, reason) — never raises. The
 -- sidecar runs as a long-lived loop; a single bad packet must not kill it.
 
@@ -136,12 +143,12 @@ end
 -- Returns (value, byte_count) or (nil) if truncated.
 -- ---------------------------------------------------------------------------
 
+local VARINT_LEN = { [0] = 1, [1] = 2, [2] = 4, [3] = 8 }
+
 local function read_varint(buf, off)
   local first = u8(buf, off)
   if not first then return nil end
-  local prefix = math.floor(first / 64)
-  local len_table = { [0] = 1, [1] = 2, [2] = 4, [3] = 8 }
-  local len = len_table[prefix]
+  local len = VARINT_LEN[math.floor(first / 64)]
   if off + len - 1 > #buf then return nil end
   local val = first % 64
   for i = 1, len - 1 do
@@ -157,12 +164,14 @@ end
 -- malformed/truncated/non-Initial input. The result is everything we need to
 -- (a) compute the sample offset for header-protection removal and (b)
 -- reconstruct the AAD/nonce after HP removal:
---   version             : 4 raw bytes
 --   dcid                : raw bytes (used to derive the initial keys)
---   scid                : raw bytes (parsed but unused by the parser)
---   token               : raw bytes (parsed but unused)
 --   length              : the QUIC "length" field — PN + payload + tag bytes
 --   pn_offset           : 1-based index of first packet-number byte in `buf`
+--
+-- SCID and the token bytes ARE parsed (their varint-prefixed lengths drive
+-- where `pn_offset` lands) but we don't surface them on the returned table
+-- because no caller reads them — only the dcid drives key derivation and
+-- only `length` / `pn_offset` drive HP-removal / AEAD bookkeeping.
 -- ---------------------------------------------------------------------------
 
 local function parse_long_header(buf)
@@ -195,21 +204,17 @@ local function parse_long_header(buf)
   if not dcid then return nil, "quic_truncated" end
   off = off + dcid_len
 
-  -- SCID
+  -- SCID (length-prefixed; bytes themselves skipped, not surfaced)
   local scid_len = u8(buf, off); if not scid_len then return nil, "quic_truncated" end
   if scid_len > 20 then return nil, "quic_malformed" end
-  off = off + 1
-  local scid = slice(buf, off, scid_len)
-  if not scid then return nil, "quic_truncated" end
-  off = off + scid_len
+  off = off + 1 + scid_len
+  if off > #buf + 1 then return nil, "quic_truncated" end
 
-  -- Initial-only: token_length (varint) + token bytes
+  -- Initial-only: token_length (varint) + token bytes (skipped)
   local token_len, vlen = read_varint(buf, off)
   if not token_len then return nil, "quic_truncated" end
-  off = off + vlen
-  local token = slice(buf, off, token_len)
-  if not token then return nil, "quic_truncated" end
-  off = off + token_len
+  off = off + vlen + token_len
+  if off > #buf + 1 then return nil, "quic_truncated" end
 
   -- Length: bytes of PN + payload + 16-byte AEAD tag
   local length
@@ -224,11 +229,8 @@ local function parse_long_header(buf)
   if length < 17 then return nil, "quic_malformed" end
 
   return {
-    version  = version,
-    dcid     = dcid,
-    scid     = scid,
-    token    = token,
-    length   = length,
+    dcid      = dcid,
+    length    = length,
     pn_offset = off,
   }
 end
