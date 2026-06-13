@@ -406,6 +406,12 @@ class PolicyServiceLive(
                 // below; an exempt one (or one under cap) is carved and beats it.
                 // #1679: pass isScheduleBlock so apps with allowedDuringScheduleBlock=false are
                 // suppressed from the extraAllowed carve during an active schedule window.
+                // Note: this reads `scheduleBlock(scheds, now).nonEmpty` independently of
+                // `p.paused`, so a Paused+schedule-active profile gets isScheduleBlock=true
+                // here while the snapshot uses `state.blockReason.contains(Schedule)=false`
+                // (Paused outranks Schedule in the blockReason precedence). The divergence is
+                // benign: if the snapshot has the app in extraAllowed, nftables allows the
+                // connection and the block page / /decide endpoint is never reached.
                 val isScheduleBlock          = scheduleBlock(scheds, now).nonEmpty
                 val (appAllowed, appBlocked) =
                   ProfileAppDispositions

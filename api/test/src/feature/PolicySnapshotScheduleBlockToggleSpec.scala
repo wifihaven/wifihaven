@@ -10,7 +10,7 @@ import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 import zio.{Clock as _, *}
 import zio.test.*
 
-import java.time.{LocalDateTime, ZoneId}
+import java.time.LocalDateTime
 
 /**
  * #1679: `allowedDuringScheduleBlock` toggle on `app_policy_assignments`.
@@ -29,7 +29,6 @@ object PolicySnapshotScheduleBlockToggleSpec
     TestDatabase.layer ++ TestLayers.withClock(TestClock.schoolDayAfternoon)
 
   private val cleanDb = TestDatabase.cleanAndMigrate
-  private val UTC     = ZoneId.of("UTC")
 
   private def makePsAt(dt: LocalDateTime) =
     for {
