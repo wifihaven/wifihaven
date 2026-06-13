@@ -1352,5 +1352,64 @@ object PresenceSpec extends ZIOSpecDefault {
         )
       },
     ),
+    // ── #1676: phantom-suppression drop count observability ───────────────────
+    //
+    // The #1666 guard above silently drops un-anchored per-(mac, app) sessions.
+    // appSpansForProfileWithDropCount exposes the count of sessions dropped so
+    // an operator can rate-alert on threshold drift (#1676): too-aggressive ⇒
+    // real sessions vanish; too-lax ⇒ phantom inflation returns.
+    suite("appSpansForProfileWithDropCount (#1676)")(
+      test("counts each un-anchored per-(mac, app) session as a drop") {
+        // Two apps, one device:
+        // - app:khan has 4 hours of sparse 80-byte polls → one un-anchored
+        //   session → drop count 1, spans empty for that app.
+        // - app:legit has one substantive request → spans non-empty, drop 0
+        //   for that app.
+        // Total drop count = 1.
+        val groupKhan        = "app:khan"  -> List("khanacademy.org")
+        val groupLegit       = "app:legit" -> List("legit.example")
+        val phantom          = (0 until 160).toList.map(i =>
+          appRow(mac1, i.toLong * 90L, "www.khanacademy.org", periodSeconds = 60, bytes = 80L),
+        )
+        val anchored         =
+          appRow(mac1, 0L, "www.legit.example", periodSeconds = 60, bytes = 50_000L)
+        val rows             = anchored :: phantom
+        val (spans, dropped) =
+          Presence.appSpansForProfileWithDropCount(rows, List(groupKhan, groupLegit))
+        assertTrue(dropped == 1) &&
+        assertTrue(!spans.contains("app:khan")) &&
+        assertTrue(spans.get("app:legit").exists(_.nonEmpty))
+      },
+      test("an anchored session is not counted as a drop") {
+        val group            = "app:khan" -> List("khanacademy.org")
+        val rows             = List(
+          appRow(mac1, 0L, "www.khanacademy.org", periodSeconds = 60, bytes = 50_000L),
+        )
+        val (spans, dropped) = Presence.appSpansForProfileWithDropCount(rows, List(group))
+        assertTrue(dropped == 0) &&
+        assertTrue(spans.get("app:khan").exists(_.nonEmpty))
+      },
+      test("drop count is per-(mac, app): two devices each with one phantom session count twice") {
+        val group        = "app:khan" -> List("khanacademy.org")
+        val phantom      = (mac: MacAddress) =>
+          (0 until 160).toList.map(i =>
+            appRow(mac, i.toLong * 90L, "www.khanacademy.org", periodSeconds = 60, bytes = 80L),
+          )
+        val rows         = phantom(mac1) ++ phantom(mac2)
+        val (_, dropped) = Presence.appSpansForProfileWithDropCount(rows, List(group))
+        assertTrue(dropped == 2)
+      },
+      test("appSpansForProfile delegates to the with-drop-count sibling") {
+        // Single-source-of-truth: the no-drop-count alias is exactly the
+        // spans projection of the sibling.
+        val group      = "app:khan" -> List("khanacademy.org")
+        val rows       = List(
+          appRow(mac1, 0L, "www.khanacademy.org", periodSeconds = 60, bytes = 50_000L),
+        )
+        val (spans, _) = Presence.appSpansForProfileWithDropCount(rows, List(group))
+        val aliasSpans = Presence.appSpansForProfile(rows, List(group))
+        assertTrue(spans == aliasSpans)
+      },
+    ),
   )
 }
