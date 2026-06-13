@@ -626,7 +626,29 @@ object Presence {
       overlap: CrossDeviceOverlapMode = CrossDeviceOverlapMode.Sum,
       filter: HeartbeatFilter = HeartbeatFilter.Off,
       continuationSeconds: Int = DefaultContinuationSeconds,
-  ): Map[String, List[Span]] = {
+  ): Map[String, List[Span]] =
+    appSpansForProfileWithDropCount(rows, groups, overlap, filter, continuationSeconds)._1
+
+  /**
+   * #1676: span form of [[appSpansForProfile]] that ALSO returns the count of per-(mac, app)
+   * sessions silently dropped by the #1666 anchor-row requirement. The canonical primitive — the
+   * no-count alias above projects to the spans only. The count is the single observability surface
+   * for the phantom-suppression guard: a sustained rise means the threshold is too aggressive (real
+   * sessions vanishing); a flat zero while phantom inflation returns means the threshold is too
+   * lax. Consumers emit `presence_app_sessions_dropped_total` from this count (see
+   * `AppMetrics.recordAppSessionsDropped`).
+   *
+   * Drops are counted per-(mac, app, session) — one un-anchored stitched session on one device for
+   * one app is one drop. A session that survives the guard contributes zero to the count regardless
+   * of how many rows it spans.
+   */
+  def appSpansForProfileWithDropCount(
+      rows: List[PresenceRow],
+      groups: List[(String, List[String])],
+      overlap: CrossDeviceOverlapMode = CrossDeviceOverlapMode.Sum,
+      filter: HeartbeatFilter = HeartbeatFilter.Off,
+      continuationSeconds: Int = DefaultContinuationSeconds,
+  ): (Map[String, List[Span]], Int) = {
     // #1506: the active apps ARE these groups, so their union host-set is the app-attribution set —
     // a host on an app's host-set that also matches a background pattern (an off-domain asset / CDN
     // host, #1505) attributes to the app and counts here instead of being suppressed as infra.
@@ -635,7 +657,8 @@ object Presence {
     val gap             = effectiveGap(active, continuationSeconds)
     def matchesGroup(r: PresenceRow, pats: List[String]): Boolean =
       HostMatch.matchesAny(r.host, pats)
-    groups.iterator.flatMap { case (key, pats) =>
+    var droppedTotal                                              = 0
+    val out = groups.iterator.flatMap { case (key, pats) =>
       val matching  = active.filter(r => matchesGroup(r, pats))
       // Per device, stitch the union of the app's hosts as ONE stream so a gap < N
       // between different hosts of the same app bridges (vs sessionSpans' per-(mac,host) split).
@@ -651,8 +674,8 @@ object Presence {
           .map { rs =>
             val sessions = stitch(rs.map(spanOf), gap)
             if sessions.isEmpty then sessions
-            else
-              sessions.filter { s =>
+            else {
+              val kept = sessions.filter { s =>
                 rs.exists { r =>
                   if r.bytes < AppSessionAnchorBytes then false
                   else {
@@ -661,6 +684,9 @@ object Presence {
                   }
                 }
               }
+              droppedTotal += (sessions.size - kept.size)
+              kept
+            }
           }
           .toList
       val spans     = overlap match {
@@ -669,6 +695,7 @@ object Presence {
       }
       if spans.nonEmpty then Some(key -> spans) else None
     }.toMap
+    (out, droppedTotal)
   }
 
   /**

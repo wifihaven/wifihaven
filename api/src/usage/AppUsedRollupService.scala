@@ -1,6 +1,7 @@
 package wifihaven.api.usage
 
 import wifihaven.api.db.*
+import wifihaven.api.metrics.AppMetrics
 import wifihaven.api.policy.{PolicyService, TimeStatusService}
 import wifihaven.shared.HouseholdSettings
 import wifihaven.shared.types.{AppId, ProfileId}
@@ -148,15 +149,15 @@ class AppUsedRollupServiceLive(
               case Some(watermark) => trafficRepo.listPresenceRowsSince(macs, date, watermark)
               case None            => trafficRepo.listPresenceRows(macs, date)
             }
-          } yield {
-            val liveSecs = TimeStatusService.appSecondsByApp(p, atls, presence, settings)
-            (rolled.keySet ++ liveSecs.keySet).iterator.flatMap { id =>
-              val secs =
-                rolled.get(id).map(_.engagedSeconds).getOrElse(0L) + liveSecs.getOrElse(id, 0L)
-              val mins = (secs / 60L).toInt
-              if mins != 0 then Some(id -> mins) else None
-            }.toMap
-          }
+            (liveSecs, dropped) = TimeStatusService
+              .appSecondsByAppWithDropCount(p, atls, presence, settings)
+            _        <- AppMetrics.recordAppSessionsDropped(dropped)
+          } yield (rolled.keySet ++ liveSecs.keySet).iterator.flatMap { id =>
+            val secs =
+              rolled.get(id).map(_.engagedSeconds).getOrElse(0L) + liveSecs.getOrElse(id, 0L)
+            val mins = (secs / 60L).toInt
+            if mins != 0 then Some(id -> mins) else None
+          }.toMap
       }
     }
   }

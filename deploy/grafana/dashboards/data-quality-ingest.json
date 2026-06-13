@@ -3,7 +3,10 @@
     "list": [
       {
         "builtIn": 1,
-        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
         "enable": true,
         "hide": true,
         "iconColor": "rgba(0, 211, 255, 1)",
@@ -12,7 +15,7 @@
       }
     ]
   },
-  "description": "WifiHaven ingest health + data quality (#1281, follow-up to #1209). The router→API ingest pipeline (POST /api/router/{usage,events,metrics}) plus the #864 zero-byte traffic filter. Every panel targets a series actually emitted by AppMetrics/HttpMetrics in api/src (grep-verified, not the design-doc catalog): traffic_reports_filtered_zero_bytes_total (#864), http_requests_total / http_request_duration_seconds (#1204), router_metrics_batches_total (#1205), auth_failures_total (#1204), usage_records_rejected_total (#1569). The `route` label is the templated path (/api/router/usage), never a concrete id. See docs/design/metrics-observability.md §5.",
+  "description": "WifiHaven ingest health + data quality (#1281, follow-up to #1209). The router\u2192API ingest pipeline (POST /api/router/{usage,events,metrics}) plus the #864 zero-byte traffic filter. Every panel targets a series actually emitted by AppMetrics/HttpMetrics in api/src (grep-verified, not the design-doc catalog): traffic_reports_filtered_zero_bytes_total (#864), http_requests_total / http_request_duration_seconds (#1204), router_metrics_batches_total (#1205), auth_failures_total (#1204), usage_records_rejected_total (#1569). The `route` label is the templated path (/api/router/usage), never a concrete id. See docs/design/metrics-observability.md \u00a75.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -20,35 +23,69 @@
   "liveNow": false,
   "panels": [
     {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "title": "Zero-byte traffic rows filtered (#864)",
-      "description": "rate(traffic_reports_filtered_zero_bytes_total[5m]) — usage rows dropped at ingest in UsageTraffic.cleanRows for zero bytes AND zero active seconds. A sustained non-zero rate means the #858 agent regression (emitting empty rows) has returned. Series emitted by AppMetrics.recordZeroByteFiltered; no labels beyond the scrape-time env.",
+      "description": "rate(traffic_reports_filtered_zero_bytes_total[5m]) \u2014 usage rows dropped at ingest in UsageTraffic.cleanRows for zero bytes AND zero active seconds. A sustained non-zero rate means the #858 agent regression (emitting empty rows) has returned. Series emitted by AppMetrics.recordZeroByteFiltered; no labels beyond the scrape-time env.",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 0 },
+      "gridPos": {
+        "h": 8,
+        "w": 16,
+        "x": 0,
+        "y": 0
+      },
       "id": 1,
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "unit": "short",
           "min": 0,
-          "custom": { "drawStyle": "line", "fillOpacity": 20, "showPoints": "never", "lineWidth": 1 },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "showPoints": "never",
+            "lineWidth": 1
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 0.01 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.01
+              }
             ]
           }
         },
         "overrides": []
       },
       "options": {
-        "legend": { "displayMode": "list", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
-        "tooltip": { "mode": "single", "sort": "none" }
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
           "expr": "rate(traffic_reports_filtered_zero_bytes_total{env=\"$env\"}[5m])",
           "legendFormat": "filtered rows/s",
           "refId": "A"
@@ -56,24 +93,43 @@
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "title": "Zero-byte rows dropped (last 24h)",
-      "description": "increase(traffic_reports_filtered_zero_bytes_total[24h]) — total usage rows filtered as zero-bytes-zero-seconds over the trailing day. Steady state is 0; any sustained count is the #858 regression signal.",
+      "description": "increase(traffic_reports_filtered_zero_bytes_total[24h]) \u2014 total usage rows filtered as zero-bytes-zero-seconds over the trailing day. Steady state is 0; any sustained count is the #858 regression signal.",
       "type": "stat",
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 0 },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 0
+      },
       "id": 2,
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "unit": "short",
           "min": 0,
           "decimals": 0,
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 1 },
-              { "color": "red", "value": 1000 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 1000
+              }
             ]
           }
         },
@@ -84,12 +140,21 @@
         "graphMode": "area",
         "justifyMode": "auto",
         "orientation": "auto",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "textMode": "auto"
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
           "expr": "increase(traffic_reports_filtered_zero_bytes_total{env=\"$env\"}[24h])",
           "legendFormat": "rows (24h)",
           "refId": "A"
@@ -97,28 +162,56 @@
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "title": "Ingest request rate by endpoint",
-      "description": "sum by (route, status) (rate(http_requests_total{route=~\".*/router/(usage|events|metrics)\"}[5m])) — requests/sec on the three router→API ingest endpoints, split by HTTP status. From HttpMetrics.instrument; `route` is the templated path.",
+      "description": "sum by (route, status) (rate(http_requests_total{route=~\".*/router/(usage|events|metrics)\"}[5m])) \u2014 requests/sec on the three router\u2192API ingest endpoints, split by HTTP status. From HttpMetrics.instrument; `route` is the templated path.",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
       "id": 3,
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
+          "color": {
+            "mode": "palette-classic"
+          },
           "unit": "reqps",
           "min": 0,
-          "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1 }
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "lineWidth": 1
+          }
         },
         "overrides": []
       },
       "options": {
-        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
-        "tooltip": { "mode": "multi", "sort": "desc" }
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
           "expr": "sum by (route, status) (rate(http_requests_total{env=\"$env\", route=~\".*/router/(usage|events|metrics)\"}[5m]))",
           "legendFormat": "{{route}} {{status}}",
           "refId": "A"
@@ -126,35 +219,69 @@
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "title": "Ingest error rate by endpoint (4xx / 5xx)",
-      "description": "sum by (route, status) (rate(http_requests_total{route=~\".*/router/(usage|events|metrics)\", status=~\"4..|5..\"}[5m])) — rejected/errored ingest requests. A 4xx spike on /metrics is the malformed-batch signal (cross-check the success-ratio panel); a 5xx spike is an API-side ingest fault.",
+      "description": "sum by (route, status) (rate(http_requests_total{route=~\".*/router/(usage|events|metrics)\", status=~\"4..|5..\"}[5m])) \u2014 rejected/errored ingest requests. A 4xx spike on /metrics is the malformed-batch signal (cross-check the success-ratio panel); a 5xx spike is an API-side ingest fault.",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
       "id": 4,
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
+          "color": {
+            "mode": "palette-classic"
+          },
           "unit": "reqps",
           "min": 0,
-          "custom": { "drawStyle": "line", "fillOpacity": 20, "showPoints": "never", "lineWidth": 1 },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "showPoints": "never",
+            "lineWidth": 1
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 0.01 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.01
+              }
             ]
           }
         },
         "overrides": []
       },
       "options": {
-        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
-        "tooltip": { "mode": "multi", "sort": "desc" }
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
           "expr": "sum by (route, status) (rate(http_requests_total{env=\"$env\", route=~\".*/router/(usage|events|metrics)\", status=~\"4..|5..\"}[5m]))",
           "legendFormat": "{{route}} {{status}}",
           "refId": "A"
@@ -162,28 +289,56 @@
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "title": "Ingest p95 latency by endpoint",
-      "description": "histogram_quantile(0.95, sum by (le, route) (rate(http_request_duration_seconds_bucket{route=~\".*/router/(usage|events|metrics)\"}[5m]))) — tail latency of the ingest handlers. /api/router/usage bodies grow with mac_ip_tracking, so this is the leading indicator of an ingest-path slowdown. Buckets span 5ms → 5s (HttpDurationBoundaries).",
+      "description": "histogram_quantile(0.95, sum by (le, route) (rate(http_request_duration_seconds_bucket{route=~\".*/router/(usage|events|metrics)\"}[5m]))) \u2014 tail latency of the ingest handlers. /api/router/usage bodies grow with mac_ip_tracking, so this is the leading indicator of an ingest-path slowdown. Buckets span 5ms \u2192 5s (HttpDurationBoundaries).",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
       "id": 5,
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
+          "color": {
+            "mode": "palette-classic"
+          },
           "unit": "s",
           "min": 0,
-          "custom": { "drawStyle": "line", "fillOpacity": 0, "showPoints": "never", "lineWidth": 1 }
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "lineWidth": 1
+          }
         },
         "overrides": []
       },
       "options": {
-        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
-        "tooltip": { "mode": "multi", "sort": "desc" }
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
           "expr": "histogram_quantile(0.95, sum by (le, route) (rate(http_request_duration_seconds_bucket{env=\"$env\", route=~\".*/router/(usage|events|metrics)\"}[5m])))",
           "legendFormat": "{{route}}",
           "refId": "A"
@@ -191,35 +346,69 @@
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "title": "Ingest auth failures (bad_router_token)",
-      "description": "sum by (reason) (rate(auth_failures_total{reason=\"bad_router_token\"}[5m])) — router-token auth rejections on the ingest path. A spike means a fleet agent lost or never received its bearer token; from AppMetrics.recordAuthFailure. reason is a bounded enum.",
+      "description": "sum by (reason) (rate(auth_failures_total{reason=\"bad_router_token\"}[5m])) \u2014 router-token auth rejections on the ingest path. A spike means a fleet agent lost or never received its bearer token; from AppMetrics.recordAuthFailure. reason is a bounded enum.",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
       "id": 6,
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "unit": "short",
           "min": 0,
-          "custom": { "drawStyle": "line", "fillOpacity": 20, "showPoints": "never", "lineWidth": 1 },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "showPoints": "never",
+            "lineWidth": 1
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 0.01 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.01
+              }
             ]
           }
         },
         "overrides": []
       },
       "options": {
-        "legend": { "displayMode": "list", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
-        "tooltip": { "mode": "multi", "sort": "desc" }
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
           "expr": "sum by (reason) (rate(auth_failures_total{env=\"$env\", reason=\"bad_router_token\"}[5m]))",
           "legendFormat": "{{reason}}",
           "refId": "A"
@@ -227,28 +416,56 @@
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "title": "Router metrics batch ingest by status (#1205)",
-      "description": "sum by (status) (rate(router_metrics_batches_total[5m])) — POST /api/router/metrics outcomes. status ∈ {ok, malformed, router_mismatch}. `ok` tracks the live fleet push rate; a rising malformed/router_mismatch rate flags a misbehaving or misconfigured agent (e.g. the #1365 pre-#1365 agents that pushed malformed label arrays). From AppMetrics.recordRouterMetricsBatch.",
+      "description": "sum by (status) (rate(router_metrics_batches_total[5m])) \u2014 POST /api/router/metrics outcomes. status \u2208 {ok, malformed, router_mismatch}. `ok` tracks the live fleet push rate; a rising malformed/router_mismatch rate flags a misbehaving or misconfigured agent (e.g. the #1365 pre-#1365 agents that pushed malformed label arrays). From AppMetrics.recordRouterMetricsBatch.",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 24 },
+      "gridPos": {
+        "h": 8,
+        "w": 16,
+        "x": 0,
+        "y": 24
+      },
       "id": 7,
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
+          "color": {
+            "mode": "palette-classic"
+          },
           "unit": "short",
           "min": 0,
-          "custom": { "drawStyle": "line", "fillOpacity": 20, "showPoints": "never", "lineWidth": 1 }
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "showPoints": "never",
+            "lineWidth": 1
+          }
         },
         "overrides": []
       },
       "options": {
-        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
-        "tooltip": { "mode": "multi", "sort": "desc" }
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
           "expr": "sum by (status) (rate(router_metrics_batches_total{env=\"$env\"}[5m]))",
           "legendFormat": "{{status}}",
           "refId": "A"
@@ -256,15 +473,25 @@
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "title": "Router metrics ingest success ratio (#1368)",
-      "description": "(sum(rate(router_metrics_batches_total{status=\"ok\"}[10m])) or vector(0)) / sum(rate(router_metrics_batches_total[10m])) — fraction of POST /api/router/metrics batches accepted. Green ≥ 0.95, red below. The `or vector(0)` is load-bearing (#1383): when status=\"ok\" has NO series at all — a 100%-malformed outage, the #1365 case — sum(rate(...{status=\"ok\"})) is empty and empty/value = empty, so without the coercion the panel would show \"No data\" instead of red, masking the exact outage it exists to surface. With it, ok-absent-but-traffic-present → 0 → red; a truly idle window (no batches → vector(0)/empty) still shows No data, so a quiet env does not false-alarm. Passive panel — paging is the alerting thread (#1381).",
+      "description": "(sum(rate(router_metrics_batches_total{status=\"ok\"}[10m])) or vector(0)) / sum(rate(router_metrics_batches_total[10m])) \u2014 fraction of POST /api/router/metrics batches accepted. Green \u2265 0.95, red below. The `or vector(0)` is load-bearing (#1383): when status=\"ok\" has NO series at all \u2014 a 100%-malformed outage, the #1365 case \u2014 sum(rate(...{status=\"ok\"})) is empty and empty/value = empty, so without the coercion the panel would show \"No data\" instead of red, masking the exact outage it exists to surface. With it, ok-absent-but-traffic-present \u2192 0 \u2192 red; a truly idle window (no batches \u2192 vector(0)/empty) still shows No data, so a quiet env does not false-alarm. Passive panel \u2014 paging is the alerting thread (#1381).",
       "type": "stat",
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 24 },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 24
+      },
       "id": 8,
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "unit": "percentunit",
           "min": 0,
           "max": 1,
@@ -272,8 +499,14 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "red", "value": null },
-              { "color": "green", "value": 0.95 }
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0.95
+              }
             ]
           }
         },
@@ -284,12 +517,21 @@
         "graphMode": "area",
         "justifyMode": "auto",
         "orientation": "auto",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "textMode": "auto"
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
           "expr": "(sum(rate(router_metrics_batches_total{env=\"$env\",status=\"ok\"}[10m])) or vector(0)) / sum(rate(router_metrics_batches_total{env=\"$env\"}[10m]))",
           "legendFormat": "success ratio",
           "refId": "A"
@@ -297,35 +539,69 @@
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "title": "Usage records rejected at decode (#1569)",
-      "description": "sum by (reason) (rate(usage_records_rejected_total[5m])) — per-record usage-ingest rejections. A single malformed record (e.g. a host failing Hostname validation — a CDN CNAME target with underscores, #1572) is skipped + metered here instead of 400-ing the whole batch. A sustained non-zero rate means an agent/DNS source is emitting host values the API rejects; pair it with the server warn-log ('router usage: skipping malformed record') to see the offending field. `reason` is a bounded enum (decode_error today). From AppMetrics.recordUsageRecordsRejected.",
+      "description": "sum by (reason) (rate(usage_records_rejected_total[5m])) \u2014 per-record usage-ingest rejections. A single malformed record (e.g. a host failing Hostname validation \u2014 a CDN CNAME target with underscores, #1572) is skipped + metered here instead of 400-ing the whole batch. A sustained non-zero rate means an agent/DNS source is emitting host values the API rejects; pair it with the server warn-log ('router usage: skipping malformed record') to see the offending field. `reason` is a bounded enum (decode_error today). From AppMetrics.recordUsageRecordsRejected.",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 32 },
+      "gridPos": {
+        "h": 8,
+        "w": 16,
+        "x": 0,
+        "y": 32
+      },
       "id": 9,
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
+          "color": {
+            "mode": "palette-classic"
+          },
           "unit": "short",
           "min": 0,
-          "custom": { "drawStyle": "line", "fillOpacity": 20, "showPoints": "never", "lineWidth": 1 },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "showPoints": "never",
+            "lineWidth": 1
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 0.01 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.01
+              }
             ]
           }
         },
         "overrides": []
       },
       "options": {
-        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
-        "tooltip": { "mode": "multi", "sort": "desc" }
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
           "expr": "sum by (reason) (rate(usage_records_rejected_total{env=\"$env\"}[5m]))",
           "legendFormat": "{{reason}}",
           "refId": "A"
@@ -333,23 +609,39 @@
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "title": "Usage records rejected (last 24h)",
-      "description": "sum(increase(usage_records_rejected_total[24h])) — total usage records skipped at decode over the trailing day. Non-zero means valid sibling records were preserved (no longer dropped with the batch) but the offending host values still need a fix (#1572). From AppMetrics.recordUsageRecordsRejected.",
+      "description": "sum(increase(usage_records_rejected_total[24h])) \u2014 total usage records skipped at decode over the trailing day. Non-zero means valid sibling records were preserved (no longer dropped with the batch) but the offending host values still need a fix (#1572). From AppMetrics.recordUsageRecordsRejected.",
       "type": "stat",
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 32 },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 32
+      },
       "id": 10,
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "unit": "short",
           "min": 0,
           "decimals": 0,
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 1 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              }
             ]
           }
         },
@@ -360,12 +652,21 @@
         "graphMode": "area",
         "justifyMode": "auto",
         "orientation": "auto",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "textMode": "auto"
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
           "expr": "sum(increase(usage_records_rejected_total{env=\"$env\"}[24h]))",
           "legendFormat": "rejected (24h)",
           "refId": "A"
@@ -373,28 +674,56 @@
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "title": "Traffic_reports write-time FQDN backfill (#1585)",
-      "description": "sum by (result) (rate(traffic_reports_backfill_total[5m])) — per-UsageRecord ingest decision from RouterIngestRoutes.backfillRecord. `filled` = ipv4/ipv6 race-loser rewritten to a fqdn from a recent connection_event (the desired outcome); `miss` = candidate but no fqdn in the 5-min window (host stays ipv4/ipv6 — a sustained high miss share means destinations the router can't attribute, e.g. DoH or hard-coded IPs); `skip` = already a fqdn or no dest_ip (the bulk of healthy traffic). `result` is a fixed enum. From AppMetrics.recordTrafficBackfill.",
+      "description": "sum by (result) (rate(traffic_reports_backfill_total[5m])) \u2014 per-UsageRecord ingest decision from RouterIngestRoutes.backfillRecord. `filled` = ipv4/ipv6 race-loser rewritten to a fqdn from a recent connection_event (the desired outcome); `miss` = candidate but no fqdn in the 5-min window (host stays ipv4/ipv6 \u2014 a sustained high miss share means destinations the router can't attribute, e.g. DoH or hard-coded IPs); `skip` = already a fqdn or no dest_ip (the bulk of healthy traffic). `result` is a fixed enum. From AppMetrics.recordTrafficBackfill.",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 40 },
+      "gridPos": {
+        "h": 8,
+        "w": 16,
+        "x": 0,
+        "y": 40
+      },
       "id": 11,
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
+          "color": {
+            "mode": "palette-classic"
+          },
           "unit": "short",
           "min": 0,
-          "custom": { "drawStyle": "line", "fillOpacity": 20, "showPoints": "never", "lineWidth": 1 }
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "showPoints": "never",
+            "lineWidth": 1
+          }
         },
         "overrides": []
       },
       "options": {
-        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
-        "tooltip": { "mode": "multi", "sort": "desc" }
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
           "expr": "sum by (result) (rate(traffic_reports_backfill_total{env=\"$env\"}[5m]))",
           "legendFormat": "{{result}}",
           "refId": "A"
@@ -402,15 +731,25 @@
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "title": "Backfill miss share (#1585)",
-      "description": "miss / (filled + miss) over 1h — share of attributable-candidate UsageRecords (ipv4/ipv6 + dest_ip) for which no fqdn could be found in the backfill window. A rising share means more destinations are landing in traffic_reports under their IP literal instead of a hostname; investigate DNS attribution (DoH on devices, agent dnsmasq health, conntrack/dns-tail race). `skip` is excluded from the denominator — it counts records that were never backfill candidates.",
+      "description": "miss / (filled + miss) over 1h \u2014 share of attributable-candidate UsageRecords (ipv4/ipv6 + dest_ip) for which no fqdn could be found in the backfill window. A rising share means more destinations are landing in traffic_reports under their IP literal instead of a hostname; investigate DNS attribution (DoH on devices, agent dnsmasq health, conntrack/dns-tail race). `skip` is excluded from the denominator \u2014 it counts records that were never backfill candidates.",
       "type": "stat",
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 40 },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 40
+      },
       "id": 12,
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "unit": "percentunit",
           "min": 0,
           "max": 1,
@@ -418,9 +757,18 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 0.25 },
-              { "color": "red", "value": 0.5 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.25
+              },
+              {
+                "color": "red",
+                "value": 0.5
+              }
             ]
           }
         },
@@ -431,14 +779,158 @@
         "graphMode": "area",
         "justifyMode": "auto",
         "orientation": "auto",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "textMode": "auto"
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
           "expr": "sum(rate(traffic_reports_backfill_total{env=\"$env\",result=\"miss\"}[1h])) / clamp_min(sum(rate(traffic_reports_backfill_total{env=\"$env\",result=~\"filled|miss\"}[1h])), 1e-9)",
           "legendFormat": "miss share (1h)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "title": "Phantom app sessions dropped \u2014 rate (#1676)",
+      "description": "rate(presence_app_sessions_dropped_total[5m]) \u2014 per-(mac, app) presence sessions silently dropped by the #1666 anchor-row guard (no row in the session cleared `Presence.AppSessionAnchorBytes`). A sustained rise means the threshold is too aggressive (real sessions vanishing); a flat zero while phantom inflation returns (the original #1666 symptom) means it is too lax. Unlabelled counter; from AppMetrics.recordAppSessionsDropped, emitted by TimeUsedRollupJob each tick and by AppUsedRollupService on every read.",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 16,
+        "x": 0,
+        "y": 48
+      },
+      "id": 13,
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "showPoints": "never",
+            "lineWidth": 1
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "rate(presence_app_sessions_dropped_total{env=\"$env\"}[5m])",
+          "legendFormat": "dropped/s",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "title": "Phantom app sessions dropped (last 24h)",
+      "description": "sum(increase(presence_app_sessions_dropped_total[24h])) \u2014 trailing-day total of per-(mac, app) sessions dropped by the #1666 guard. From AppMetrics.recordAppSessionsDropped.",
+      "type": "stat",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 48
+      },
+      "id": 14,
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "short",
+          "min": 0,
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(increase(presence_app_sessions_dropped_total{env=\"$env\"}[24h]))",
+          "legendFormat": "dropped (24h)",
           "refId": "A"
         }
       ]
@@ -446,26 +938,46 @@
   ],
   "refresh": "30s",
   "schemaVersion": 39,
-  "tags": ["wifihaven", "api", "ingest"],
+  "tags": [
+    "wifihaven",
+    "api",
+    "ingest"
+  ],
   "templating": {
     "list": [
       {
-        "current": { "selected": true, "text": "prod", "value": "prod" },
+        "current": {
+          "selected": true,
+          "text": "prod",
+          "value": "prod"
+        },
         "hide": 0,
         "includeAll": false,
         "label": "Environment",
         "multi": false,
         "name": "env",
         "options": [
-          { "selected": true, "text": "prod", "value": "prod" },
-          { "selected": false, "text": "staging", "value": "staging" }
+          {
+            "selected": true,
+            "text": "prod",
+            "value": "prod"
+          },
+          {
+            "selected": false,
+            "text": "staging",
+            "value": "staging"
+          }
         ],
         "query": "prod,staging",
         "skipUrlSync": false,
         "type": "custom"
       },
       {
-        "current": { "selected": true, "text": "grafanacloud-wifihaven-prom", "value": "grafanacloud-prom" },
+        "current": {
+          "selected": true,
+          "text": "grafanacloud-wifihaven-prom",
+          "value": "grafanacloud-prom"
+        },
         "hide": 0,
         "includeAll": false,
         "label": "Datasource",
@@ -480,10 +992,13 @@
       }
     ]
   },
-  "time": { "from": "now-6h", "to": "now" },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
   "timepicker": {},
   "timezone": "",
-  "title": "WifiHaven — data quality & ingest",
+  "title": "WifiHaven \u2014 data quality & ingest",
   "uid": "wifihaven-data-quality-ingest",
   "version": 1,
   "weekStart": ""
