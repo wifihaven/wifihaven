@@ -18,7 +18,8 @@
 --   - Encrypted ClientHello (ECH) — parser returns nil.
 --   - QUIC / HTTP/3 Initial-packet SNI parsing.
 --   - TLS 1.2 fragmented ClientHello reassembly across TCP segments.
---   - IPv6 outer header (followup; first-pass keeps the byte-walk simple).
+--   - IPv6 fragment headers (44) — a fragmented v6 TLS ClientHello falls out
+--     as no_sni / malformed. Rare in practice (ClientHellos fit in one MTU).
 --
 -- Public API:
 --   sni.parse_client_hello(payload)   → server_name string | nil
@@ -235,7 +236,8 @@ end
 -- On failure returns (nil, reason) where reason is a bounded enum the sidecar
 -- folds into a result= counter (see SHOULD-FIX #4/#7 — split the lumped
 -- no_sni_total):
---   "truncated"    — frame too short to hold Ethernet+IPv4+TCP, or the TLS
+--   "truncated"    — frame too short to hold Ethernet+IP+TCP (v6 fixed-header
+--                    or extension-chain runs past EOF too), or the TLS
 --                    record/handshake length runs past the captured bytes
 --                    (the common snaplen-cut case).
 --   "not_ip"       — non-IP ethertype (ARP, VLAN, etc.). Bounded catch-all.
