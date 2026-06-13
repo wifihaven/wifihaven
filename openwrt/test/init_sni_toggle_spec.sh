@@ -84,10 +84,18 @@ case " $out " in
   *" sni-tail "*) check "enabled=0: sni-tail skipped" "OPENED=[$out]" ;;
   *) check "enabled=0: sni-tail skipped" ok ;;
 esac
-case " $out " in
-  *" agent "*" dns-tail "*" nflog-tail "*) check "enabled=0: other sidecars still start" ok ;;
-  *) check "enabled=0: other sidecars still start" "OPENED=[$out]" ;;
-esac
+missing=""
+for inst in agent dns-tail nflog-tail; do
+  case " $out " in
+    *" $inst "*) : ;;
+    *) missing="$missing $inst" ;;
+  esac
+done
+if [ -z "$missing" ]; then
+  check "enabled=0: other sidecars still start" ok
+else
+  check "enabled=0: other sidecars still start" "missing=[$missing] OPENED=[$out]"
+fi
 
 # 4. Init script source must reference the toggle key so reviewers can grep it.
 grep -q 'sni.*enabled' "$INIT" \
