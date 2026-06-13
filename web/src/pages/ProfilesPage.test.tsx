@@ -1100,6 +1100,65 @@ describe('ProfilesPage — apps section (#767)', () => {
     expect(screen.queryByTestId('app-row-51-counts-toward-daily')).not.toBeInTheDocument()
   })
 
+  // #1679 — block-during-schedule toggle (only for Allowed-mode apps).
+  it('#1679: allowed-mode app shows block-during-schedule checkbox, defaulted unchecked (allowedDuringScheduleBlock=true)', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtube])
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
+    const cb = await screen.findByTestId('app-row-50-block-during-schedule') as HTMLInputElement
+    // default allowedDuringScheduleBlock=true → checkbox is NOT checked (not blocking during schedule)
+    expect(cb.checked).toBe(false)
+  })
+
+  it('#1679: allowed-mode app with allowedDuringScheduleBlock=false shows checkbox checked', async () => {
+    const youtubeBlockDuring = {
+      ...youtube,
+      assignments: [{ ...youtube.assignments[0], allowedDuringScheduleBlock: false }],
+    }
+    ;(api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtubeBlockDuring])
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
+    const cb = await screen.findByTestId('app-row-50-block-during-schedule') as HTMLInputElement
+    expect(cb.checked).toBe(true)
+  })
+
+  it('#1679: checking block-during-schedule calls setPolicy with allowedDuringScheduleBlock=false', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtube])
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
+    const cb = await screen.findByTestId('app-row-50-block-during-schedule')
+    await user.click(cb)
+    // current.exemptFromDaily=true is preserved; allowedDuringScheduleBlock flips to false.
+    await waitFor(() =>
+      expect(api.apps.setPolicy).toHaveBeenCalledWith(50, 1, {
+        mode: 'allowed',
+        dailyMinutes: null,
+        exemptFromDaily: true,
+        allowedDuringScheduleBlock: false,
+      }),
+    )
+  })
+
+  it('#1679: block-during-schedule checkbox NOT rendered for blocked-mode app', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([tiktok])
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
+    await screen.findByTestId('app-row-51')
+    expect(screen.queryByTestId('app-row-51-block-during-schedule')).not.toBeInTheDocument()
+  })
+
   it('clicking block calls setPolicy with mode=blocked', async () => {
     (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtube])
     const user = userEvent.setup()
@@ -1121,8 +1180,9 @@ describe('ProfilesPage — apps section (#767)', () => {
     await expand(1, user)
     await user.click(screen.getByTestId('profile-apps-toggle-1'))
     await user.click(await screen.findByTestId('app-row-50-allow'))
+    // #1679: allowedDuringScheduleBlock is always included for mode='allowed' (defaults true).
     await waitFor(() =>
-      expect(api.apps.setPolicy).toHaveBeenCalledWith(50, 1, { mode: 'allowed', dailyMinutes: null }),
+      expect(api.apps.setPolicy).toHaveBeenCalledWith(50, 1, { mode: 'allowed', dailyMinutes: null, allowedDuringScheduleBlock: true }),
     )
   })
 
@@ -1188,8 +1248,9 @@ describe('ProfilesPage — apps section (#767)', () => {
     expect(input.value).toBe('60')
     await user.clear(input)
     await user.tab()
+    // #1679: allowedDuringScheduleBlock is always included for mode='allowed' (defaults true).
     await waitFor(() =>
-      expect(api.apps.setPolicy).toHaveBeenCalledWith(60, 1, { mode: 'allowed', dailyMinutes: null }),
+      expect(api.apps.setPolicy).toHaveBeenCalledWith(60, 1, { mode: 'allowed', dailyMinutes: null, allowedDuringScheduleBlock: true }),
     )
   })
 
@@ -1267,12 +1328,14 @@ describe('ProfilesPage — per-app schedule rules (#1380)', () => {
     await user.selectOptions(screen.getByTestId('app-row-50-schedule-picker-select'), '10')
     await user.click(screen.getByTestId('app-row-50-schedule-mode-allowed_during'))
     await user.click(screen.getByTestId('app-row-50-schedule-add'))
+    // #1679: allowedDuringScheduleBlock is always included for mode='allowed'.
     await waitFor(() =>
       expect(api.apps.setPolicy).toHaveBeenCalledWith(50, 1, {
         mode: 'allowed',
         dailyMinutes: null,
         exemptFromDaily: true,
         scheduleRules: [{ scheduleId: 10, mode: 'allowed_during' }],
+        allowedDuringScheduleBlock: true,
       }),
     )
   })
@@ -1285,12 +1348,14 @@ describe('ProfilesPage — per-app schedule rules (#1380)', () => {
     await user.selectOptions(screen.getByTestId('app-row-50-schedule-picker-select'), '11')
     await user.click(screen.getByTestId('app-row-50-schedule-mode-blocked_during'))
     await user.click(screen.getByTestId('app-row-50-schedule-add'))
+    // #1679: allowedDuringScheduleBlock is always included for mode='allowed'.
     await waitFor(() =>
       expect(api.apps.setPolicy).toHaveBeenCalledWith(50, 1, {
         mode: 'allowed',
         dailyMinutes: null,
         exemptFromDaily: true,
         scheduleRules: [{ scheduleId: 11, mode: 'blocked_during' }],
+        allowedDuringScheduleBlock: true,
       }),
     )
   })
@@ -1303,8 +1368,8 @@ describe('ProfilesPage — per-app schedule rules (#1380)', () => {
     await user.click(await screen.findByTestId('app-row-50-schedule-rule-10-allowed_during-remove'))
     await waitFor(() =>
       // empty rule set → scheduleRules omitted from the additive payload;
-      // the assignment's exemptFromDaily flag is preserved across the replace.
-      expect(api.apps.setPolicy).toHaveBeenCalledWith(50, 1, { mode: 'allowed', dailyMinutes: null, exemptFromDaily: true }),
+      // the assignment's exemptFromDaily and allowedDuringScheduleBlock flags are preserved.
+      expect(api.apps.setPolicy).toHaveBeenCalledWith(50, 1, { mode: 'allowed', dailyMinutes: null, exemptFromDaily: true, allowedDuringScheduleBlock: true }),
     )
   })
 

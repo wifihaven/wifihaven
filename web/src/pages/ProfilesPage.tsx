@@ -1866,17 +1866,22 @@ function AppRow({ app, profileId, onChanged, usedMins }: {
     allowedDuringScheduleBlock?: boolean,
   ) {
     const effectiveRules = rules ?? scheduleRules
-    // #1679: always include allowedDuringScheduleBlock so it isn't silently reset
-    // to the server default (true) on unrelated edits (mode switches, etc.).
-    const effectiveScheduleBlock = allowedDuringScheduleBlock
-      ?? current?.allowedDuringScheduleBlock
-      ?? true
+    // #1679: allowedDuringScheduleBlock is only meaningful for 'allowed' mode (it controls
+    // whether the extraAllowed carve-out survives a Schedule block). Only include it in the
+    // request when submitting an 'allowed' assignment so it:
+    //   - is preserved across exemptFromDaily toggles and schedule-rule edits on an Allowed app;
+    //   - is NOT inadvertently included when switching to 'blocked' or 'time_limited' (where it
+    //     has no effect and would break the existing setPolicy call assertions in the test suite).
+    const effectiveScheduleBlock =
+      mode === 'allowed'
+        ? allowedDuringScheduleBlock ?? current?.allowedDuringScheduleBlock ?? true
+        : undefined
     const req: UpsertAppAssignmentRequest = {
       mode,
       dailyMinutes,
       ...(exemptFromDaily !== undefined ? { exemptFromDaily } : {}),
       ...(effectiveRules.length > 0 ? { scheduleRules: effectiveRules } : {}),
-      allowedDuringScheduleBlock: effectiveScheduleBlock,
+      ...(effectiveScheduleBlock !== undefined ? { allowedDuringScheduleBlock: effectiveScheduleBlock } : {}),
     }
     setBusy(true)
     setLocalError(null)
@@ -1937,10 +1942,10 @@ function AppRow({ app, profileId, onChanged, usedMins }: {
   }
 
   // #1679: toggle "block during scheduled downtime" for Allowed-mode apps.
-  async function toggleScheduleBlock(nextBlocked: boolean) {
+  // nextAllowed = !checkbox.checked (checkbox is "block during schedule", NOT "allow during schedule").
+  async function toggleScheduleBlock(nextAllowed: boolean) {
     if (mode == null) return
-    await apply(mode, current?.dailyMinutes ?? null, current?.exemptFromDaily, undefined,
-      !nextBlocked)
+    await apply(mode, current?.dailyMinutes ?? null, current?.exemptFromDaily, undefined, nextAllowed)
   }
 
   // Operator feedback: the old UX made you type minutes AND click a
