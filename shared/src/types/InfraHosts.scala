@@ -178,6 +178,41 @@ object InfraHosts {
     //    `apple-relay.cloudflare.com`. Same anti-filtering-tunnel reasoning —
     //    suppress, never allow-carve.
     "apple-relay.cloudflare.com",
+    // ── #1672 Bucket A residual after #1669 — non-Apple orphan tail captured
+    //    from `/api/profiles/<id>/usage-by-app` on kid profiles 1 (Kids), 5
+    //    (Quintus), 6 in the 2026-06-10..06-11 prod orphan window. Each
+    //    sub-section is suppress-only (no allow-carve role); specific
+    //    subdomains rather than apexes where the apex would absorb legitimate
+    //    per-app traffic on sibling subdomains. Per #1506 `Presence.isAppAttributed`,
+    //    if a future app template claims one of these hosts, app attribution wins
+    //    over suppression — the entries are a fallback.
+    //
+    // Brave browser telemetry (profile 1): Shields telemetry collector + STAR
+    // randomness service. Background, not user-initiated.
+    "collector.bsg.brave.com",
+    "star-randsrv.bsg.brave.com",
+    // Google Play / client-services background polling (profile 1, profile 5).
+    // Specific hosts — the `google.com` and `googleusercontent.com` apexes are
+    // deliberately NOT swept in (same seam as the existing
+    // `clientservices.googleapis.com` vs. the broader `googleapis.com` apex).
+    "clients4.google.com",
+    "android.clients.google.com",
+    "clients2.googleusercontent.com",
+    // Ad-mediation / ad-quality signals (profile 5, profile 6). Mediation
+    // traffic is not user engagement; if an ad-supported app page is in scope,
+    // its template attributes the visible activity, not these background calls.
+    "oa.openxcdn.net",
+    "ep2.adtrafficquality.google",
+    "a-adq.mediation.unity3d.com",
+    // Asset CDNs whose attribution follows the embedding page — if the page is
+    // an orphan, the asset fetch is too. Specific subdomains so real apps that
+    // use sibling subdomains of `gstatic.com` / `googleusercontent.com` keep
+    // attributing. (The `ssl.gstatic.com` host is deliberately NOT added: the
+    // gstatic apex is too broad and `ssl.gstatic.com` itself fans out across
+    // many app surfaces — flagged in the PR body for operator decision.)
+    "use.fontawesome.com",
+    "encrypted-tbn0.gstatic.com",
+    "ci3.googleusercontent.com",
   )
 
   /** All hosts suppressed from presence counting: allow+suppress plus suppress-only (#1525). */
