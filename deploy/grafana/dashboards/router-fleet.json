@@ -412,7 +412,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "SNI ClientHello rate by result",
-      "description": "sum by (result) (rate(sni_clienthellos_total[5m])) — result ∈ {parsed, truncated, no_sni, ipv6_skipped, not_tcp, malformed}. Emitted by the #573 SNI hostname-attribution sidecar (wifihaven-sni-tail), which classifies sniffed TCP ClientHello records and folds a cumulative per-result tally into the agent's metrics push. This attributes (dst_ip → SNI hostname) pairs for traffic where dnsmasq never saw the lookup (DoH / hard-coded IP), so it is the connection-layer complement to `dns_queries_total`, not a block signal. `parsed` is the healthy path; the failure classes are diagnosed below.",
+      "description": "sum by (result) (rate(sni_clienthellos_total[5m])) — result ∈ {parsed, truncated, no_sni, ipv6_skipped, not_tcp, malformed} on the TCP path, plus {quic_success, quic_short_header, quic_unsupported_version, quic_not_initial, quic_truncated, quic_malformed, quic_decrypt_failed, quic_no_crypto_frame, quic_no_sni, quic_ipv6_skipped, quic_not_udp, quic_not_443} on the QUIC v1 Initial path (#1651). Emitted by the SNI hostname-attribution sidecar (wifihaven-sni-tail), which classifies sniffed TLS ClientHellos on TCP/443 AND TLS ClientHellos extracted from QUIC v1 Initial packets on UDP/443 (#573 / #1651). The (dst_ip → SNI) pairs feed the same cache.insert_sni writer, so this attributes flows where dnsmasq never saw the lookup (DoH / hard-coded IP) regardless of transport. `parsed` (TCP) and `quic_success` (QUIC) are the healthy paths; the failure classes are diagnosed in the panels below.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 48 },
       "id": 13,
@@ -470,6 +470,36 @@
           "expr": "sum(rate(sni_clienthellos_total{env=\"$env\", result=\"ipv6_skipped\"}[5m])) / clamp_min(sum(rate(sni_clienthellos_total{env=\"$env\"}[5m])), 0.001)",
           "legendFormat": "ipv6_skipped",
           "refId": "B"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "SNI success share: TCP vs QUIC (#1651)",
+      "description": "Fraction of successful SNI extractions coming from QUIC v1 Initial packets vs TCP TLS ClientHello records. Computed as sum(rate(sni_clienthellos_total{result=\"quic_success\"}[5m])) / sum(rate(sni_clienthellos_total{result=~\"parsed|quic_success\"}[5m])). Operator reading: rising → HTTP/3 share of the fleet is growing; flat zero with non-zero TCP `parsed` → QUIC capture branch is unreachable (BPF rejected? sidecar restarted? lua-openssl missing?). The absolute rate of each is in the per-result panel above. Sustained quic_decrypt_failed in that panel would indicate a key-derivation or HP-mask regression; sustained quic_no_crypto_frame would mean Initials are arriving but carry no CRYPTO (probably ACK-only).",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 56 },
+      "id": 15,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "custom": { "drawStyle": "line", "fillOpacity": 20, "showPoints": "never", "lineWidth": 2 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "mean"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(rate(sni_clienthellos_total{env=\"$env\", result=\"quic_success\"}[5m])) / clamp_min(sum(rate(sni_clienthellos_total{env=\"$env\", result=~\"parsed|quic_success\"}[5m])), 0.001)",
+          "legendFormat": "QUIC share",
+          "refId": "A"
         }
       ]
     }

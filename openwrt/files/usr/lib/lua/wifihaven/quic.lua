@@ -435,8 +435,12 @@ end
 
 local function parse_tls_handshake(handshake_bytes)
   -- Lazy require so unit tests that don't exercise the success path don't
-  -- need sni.lua on the search path.
-  local sni = require("sni")
+  -- need sni.lua on the search path. Try the production-namespaced form
+  -- first and fall back to the bare module name the test harness puts on
+  -- LUA_PATH (./files/usr/lib/lua/wifihaven/?.lua) so the same file works
+  -- in both environments.
+  local ok, sni = pcall(require, "wifihaven.sni")
+  if not ok then sni = require("sni") end
   if #handshake_bytes < 4 then return nil end
   -- Synthetic record header: ContentType=0x16, Version=0x0303, Length.
   local rec_len = #handshake_bytes
