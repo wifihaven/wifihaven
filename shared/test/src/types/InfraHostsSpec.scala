@@ -267,7 +267,6 @@ object InfraHostsSpec extends ZIOSpecDefault {
         // Third-party telemetry / crash reporting SaaS
         "o4505093097586688.ingest.us.sentry.io", // subdomain match via sentry.io apex
         "sessions.bugsnag.com",                  // subdomain match via bugsnag.com apex
-        "telemetry.1passwordservices.com",       // subdomain match via 1passwordservices.com apex
         // Plex pubsub keepalive (exact host only — plex.tv apex is left available for the
         // Plex client app to attribute against)
         "pubsub.plex.tv",
@@ -287,24 +286,24 @@ object InfraHostsSpec extends ZIOSpecDefault {
         !InfraHosts.isBackground("tinkercad.com"),
       )
     },
-    test("#1694 sentry/bugsnag/1password apex form does not shadow primary product domains") {
-      // sentry.io / bugsnag.com / 1passwordservices.com are dedicated telemetry / SaaS
-      // ingest apexes — the company's user-facing products live elsewhere (sentry.io is
-      // its own dashboard URL though, so the apex IS the product UI). To stay safe:
-      // the iPad kid profile would never use these as a "product"; they only appear via
-      // SDK telemetry beacons embedded in other apps. Pin the apex behavior here so a
-      // future reader sees the deliberate choice.
+    test("#1694 sentry/bugsnag apex form covers SDK ingest beacons") {
+      // sentry.io / bugsnag.com are dedicated telemetry / SaaS ingest apexes — these
+      // ride embedded SDKs and aren't user-initiated. The apex form also covers the
+      // vendors' own product UIs (sentry.io itself is Sentry's dashboard; app.bugsnag.com
+      // is Bugsnag's), which is the deliberate trade-off documented at the source: a
+      // kid profile won't visit a crash-reporting dashboard, and enumerating every
+      // per-vendor SDK ingest host re-opens the gap each new project ID.
       assertTrue(
         InfraHosts.isBackground("sentry.io"),
         InfraHosts.isBackground("anything.ingest.us.sentry.io"),
         InfraHosts.isBackground("bugsnag.com"),
         InfraHosts.isBackground("notify.bugsnag.com"),
-        InfraHosts.isBackground("1passwordservices.com"),
-        InfraHosts.isBackground("telemetry.1passwordservices.com"),
-        // 1password.com (the consumer product apex) is intentionally NOT on the list —
-        // the user can browse my.1password.com / start.1password.com as the product UI.
+        // 1passwordservices.com is intentionally NOT here — the operator-authored
+        // 1Password app already covers it as a member host, so it attributes to that
+        // app (allowed + exempt-from-daily) under #1506 instead of being suppressed.
+        !InfraHosts.isBackground("1passwordservices.com"),
+        !InfraHosts.isBackground("telemetry.1passwordservices.com"),
         !InfraHosts.isBackground("1password.com"),
-        !InfraHosts.isBackground("my.1password.com"),
       )
     },
     test("#1629 additions do not shadow non-Apple app template host-sets") {

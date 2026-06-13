@@ -214,7 +214,7 @@ object InfraHosts {
     // Third-party telemetry / crash-reporting SaaS embedded in apps via SDK.
     // Apex form so any tenant subdomain matches (the per-app subdomain
     // prefix varies, e.g. `o45050….ingest.us.sentry.io`,
-    // `sessions.bugsnag.com`, `telemetry.1passwordservices.com`).
+    // `sessions.bugsnag.com`).
     //
     // `sentry.io` and `bugsnag.com` apex form suppresses the vendors' own
     // product UIs too (`sentry.io` is Sentry's dashboard URL, `app.bugsnag.com`
@@ -223,12 +223,15 @@ object InfraHosts {
     // host per vendor — re-opens the gap each new project ID. Same shape as
     // the iCloud apex collateral pinned for #1629.
     //
-    // `1passwordservices.com` is the dedicated telemetry apex — the consumer
-    // product UI lives at `1password.com`, which stays available for real-app
-    // attribution. The defensive test below pins this distinction.
+    // 1Password telemetry (`1passwordservices.com`) is NOT on this list: the
+    // operator-authored 1Password app already covers it as a member host, so
+    // it attributes to that app (which is `allowed` + `exemptFromDaily` for
+    // every assigned profile) instead of being suppressed. Putting it here
+    // would be redundant given #1506 (app attribution wins over suppression),
+    // and the app-attribution path is the canonical model when a user-allowed
+    // app exists.
     "sentry.io",
     "bugsnag.com",
-    "1passwordservices.com",
     // Plex pubsub keepalive — the long-poll notification channel runs
     // independent of any Plex client activity. Narrow host (NOT the
     // `plex.tv` apex): leaving the apex unmatched preserves real Plex client

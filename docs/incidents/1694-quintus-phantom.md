@@ -69,9 +69,18 @@ attribution still works.
 ## Operator follow-ups
 
 - `app.mocpilot.com` / `doc.mocpilot.com` (590 s combined, the single largest
-  phantom contributor) — what is this? If it's a background service the kid
-  doesn't use, the apex should join InfraHosts; if it's a school/research tool
-  the kid uses, model it as an app instead. Filing a separate issue.
+  phantom contributor) — operator confirmed it is an app and created a
+  `MOC Pilot` app (id 20) in prod on 2026-06-12. Once profile assignments land,
+  its hosts attribute to that app instead of flowing through the un-attributed
+  path. Nothing to do here.
+- `telemetry.1passwordservices.com` — initially proposed as an InfraHosts apex
+  entry. Operator decision: add it to the existing `1Password` app (id 17)
+  host-set instead, since that app is already `allowed` + `exempt-from-daily`
+  for every kid profile. Member-host attribution carries the same effect
+  (allowed traffic, doesn't inflate daily-engaged minutes) AND keeps the
+  authoring model consistent. Applied in prod via
+  `PUT /api/apps/17/hosts ["1password.com","1passwordservices.com"]`. Removed
+  from `InfraHosts.suppressOnly` in this PR.
 - `plex.tv` / `www.nytimes.com` — modest contributors, plausibly real; leaving
   for now.
 - LAN IP literals (`172.17.0.1`, `172.18.0.1`, `10.0.0.250`) in
