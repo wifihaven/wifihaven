@@ -76,11 +76,17 @@ final case class ProfileAppDispositions(
    * so the daily limit still bites without any wire/router change (design §5 rows 9a–9c).
    * `TimeLimited` base apps contribute nothing here — they surface via the per-app cap path
    * (`PolicyService.appCapExhaustedHosts`).
+   *
+   * #1679: `isScheduleBlock` suppresses the `extraAllowed` carve for apps whose
+   * `allowedDuringScheduleBlock = false`. Only passes true when the profile's whole-MAC block
+   * reason is `Schedule`; Paused/TimeLimit/Manual leave this false so the toggle has no effect on
+   * those paths. Default `false` keeps existing call sites (unit tests, legacy paths) correct.
    */
   def enforcement(
       schedWindows: Map[AppPolicyAssignmentId, List[(AppScheduleMode, ScheduleWindow)]],
       capExhausted: Boolean,
       now: Instant,
+      isScheduleBlock: Boolean = false,
   ): (List[Hostname], List[Hostname]) = {
     val allowed = scala.collection.mutable.ListBuffer.empty[Hostname]
     val blocked = scala.collection.mutable.ListBuffer.empty[Hostname]
@@ -127,6 +133,8 @@ final case class AppDisposition(
     dailyMinutes: Option[Int],
     label: String,
     hosts: List[String],
+    // #1679: when false, suppress this app's extraAllowed carve-out during Schedule-reason blocks.
+    allowedDuringScheduleBlock: Boolean = true,
 )
 
 object ProfileAppDispositions {
@@ -154,14 +162,15 @@ object ProfileAppDispositions {
           appId = first.appId,
           assignmentId = assignmentId,
           mode = first.mode,
-          // `exemptFromDaily` and `dailyMinutes` are uniform across an assignment's synthesized
-          // rows by construction (one assignment row × N host rows from the `app_hosts` join), so
-          // any row's value is the assignment's value. Reading off `first` makes that invariant
-          // explicit at the call site.
+          // `exemptFromDaily`, `dailyMinutes`, and `allowedDuringScheduleBlock` are uniform across
+          // an assignment's synthesized rows by construction (one assignment row × N host rows from
+          // the `app_hosts` join), so any row's value is the assignment's value. Reading off
+          // `first` makes that invariant explicit at the call site.
           exemptFromDaily = first.exemptFromDaily,
           dailyMinutes = first.dailyMinutes,
           label = first.label,
           hosts = rows.map(_.domainPattern).distinct,
+          allowedDuringScheduleBlock = first.allowedDuringScheduleBlock,
         )
       }
       .sortBy(_.label)

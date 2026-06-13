@@ -891,6 +891,9 @@ export interface AppPolicyAssignment {
   // #1380 — attached per-app schedule rules. Optional/back-compat: omitted by
   // an API that predates #1379 (defaults to no rules).
   scheduleRules?: AppScheduleRule[]
+  // #1679 — when false, this app's extraAllowed carve-out is suppressed during
+  // Schedule-reason blocks. Optional/back-compat: omitted by older APIs → treat as true.
+  allowedDuringScheduleBlock?: boolean
 }
 
 export interface AppDetail {
@@ -944,6 +947,8 @@ export interface UpsertAppAssignmentRequest {
   // #1380 — additive (default Nil server-side). The full desired rule set for
   // this assignment (replace semantics, like SetProfileSchedulesRequest's ids).
   scheduleRules?: AppScheduleRule[]
+  // #1679 — omit to keep current behavior (server defaults to true).
+  allowedDuringScheduleBlock?: boolean
 }
 
 // #958: BlocklistSummary as returned by GET /api/blocklists.

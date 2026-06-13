@@ -239,6 +239,8 @@ object AppRoutes {
                 ar.mode,
                 ar.dailyMinutes,
                 ar.exemptFromDaily.getOrElse(true),
+                // #1679: omitted by existing clients → defaults to true (preserve current behavior).
+                ar.allowedDuringScheduleBlock.getOrElse(true),
               )
               .mapError(ApiError.Db(_))
             // #1379: replace this assignment's per-app schedule rules with the

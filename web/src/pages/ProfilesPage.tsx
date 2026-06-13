@@ -1861,13 +1861,22 @@ function AppRow({ app, profileId, onChanged, usedMins }: {
     dailyMinutes: number | null,
     exemptFromDaily?: boolean,
     rules?: AppScheduleRule[],
+    // #1679: when omitted, preserves the current assignment's value (defaulting to
+    // true). Callers that don't change this dimension leave it undefined.
+    allowedDuringScheduleBlock?: boolean,
   ) {
     const effectiveRules = rules ?? scheduleRules
+    // #1679: always include allowedDuringScheduleBlock so it isn't silently reset
+    // to the server default (true) on unrelated edits (mode switches, etc.).
+    const effectiveScheduleBlock = allowedDuringScheduleBlock
+      ?? current?.allowedDuringScheduleBlock
+      ?? true
     const req: UpsertAppAssignmentRequest = {
       mode,
       dailyMinutes,
       ...(exemptFromDaily !== undefined ? { exemptFromDaily } : {}),
       ...(effectiveRules.length > 0 ? { scheduleRules: effectiveRules } : {}),
+      allowedDuringScheduleBlock: effectiveScheduleBlock,
     }
     setBusy(true)
     setLocalError(null)
@@ -1925,6 +1934,13 @@ function AppRow({ app, profileId, onChanged, usedMins }: {
   async function setScheduleExempt(nextExempt: boolean) {
     if (mode == null) return
     await apply(mode, current?.dailyMinutes ?? null, nextExempt)
+  }
+
+  // #1679: toggle "block during scheduled downtime" for Allowed-mode apps.
+  async function toggleScheduleBlock(nextBlocked: boolean) {
+    if (mode == null) return
+    await apply(mode, current?.dailyMinutes ?? null, current?.exemptFromDaily, undefined,
+      !nextBlocked)
   }
 
   // Operator feedback: the old UX made you type minutes AND click a
@@ -2082,6 +2098,21 @@ function AppRow({ app, profileId, onChanged, usedMins }: {
               <span className="ml-1 text-amber-700">(usage reduces overall remaining time)</span>
             )}
           </span>
+        </label>
+      )}
+      {/* #1679: block-during-schedule toggle — only shown for Allowed-mode apps,
+          where the extraAllowed carve-out is the relevant enforcement path. */}
+      {mode === 'allowed' && (
+        <label className="flex items-center gap-2 text-xs text-brand-text cursor-pointer select-none">
+          <input
+            type="checkbox"
+            data-testid={`app-row-${app.app.id}-block-during-schedule`}
+            checked={!(current?.allowedDuringScheduleBlock ?? true)}
+            disabled={busy}
+            onChange={e => toggleScheduleBlock(!e.target.checked)}
+            className="w-3.5 h-3.5 accent-amber-500"
+          />
+          <span>Block during scheduled downtime</span>
         </label>
       )}
       {mode != null && (

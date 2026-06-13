@@ -281,6 +281,10 @@ case class AppTimeLimit(
     // values keep legacy hand-built test constructions (single-app TimeLimited rows) compiling.
     mode: AppMode = AppMode.TimeLimited,
     assignmentId: AppPolicyAssignmentId = AppPolicyAssignmentId(0L),
+    // #1679: when false, this app's hosts are suppressed from the snapshot's per-MAC extraAllowed
+    // during a Schedule-reason whole-MAC block. Only applies to Schedule; Paused/TimeLimit/Manual
+    // are not affected. Default true preserves current behavior (extraAllowed beats every block).
+    allowedDuringScheduleBlock: Boolean = true,
 ) derives JsonCodec
 
 // #761: app concept. An App is a household-scoped named bundle of host
@@ -355,6 +359,8 @@ case class AppPolicyAssignment(
     mode: AppMode,
     dailyMinutes: Option[Int],
     exemptFromDaily: Boolean = true,
+    // #1679: toggle — false suppresses this app's extraAllowed carve-out during Schedule blocks.
+    allowedDuringScheduleBlock: Boolean = true,
 ) derives JsonCodec
 
 // #762: HTTP request/response shapes for the apps CRUD endpoints. Hosts are
@@ -424,6 +430,8 @@ case class UpsertAppAssignmentRequest(
     // #1379: additive — the full desired set of per-app schedule rules (replace
     // semantics, like SetAppHostsRequest.hosts). Existing clients omit it (`Nil`).
     scheduleRules: List[AppScheduleRule] = Nil,
+    // #1679: omitted by existing clients decodes as None → server defaults to true.
+    allowedDuringScheduleBlock: Option[Boolean] = None,
 ) derives JsonCodec
 
 case class AppDetail(
