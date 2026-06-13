@@ -103,7 +103,7 @@ def _fire_v6_syn(client) -> None:
     """
     client_exec(
         client,
-        ["sh", "-c", f"curl -6 -s -m 2 -o /dev/null http://[{LEAF_HOST}]/ ; true"],
+        ["sh", "-c", f"curl -6 -s -m 2 -o /dev/null http://{LEAF_HOST}/ ; true"],
         check=False,
         timeout=10,
     )
