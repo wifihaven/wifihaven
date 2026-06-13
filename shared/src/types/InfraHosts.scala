@@ -178,6 +178,67 @@ object InfraHosts {
     //    `apple-relay.cloudflare.com`. Same anti-filtering-tunnel reasoning —
     //    suppress, never allow-carve.
     "apple-relay.cloudflare.com",
+    // ── #1694 third iteration of the kid-away phantom-engagement bug class
+    //    (#1629 → #1669 → #1675 → this). Captured 2026-06-12 13:00–19:00 UTC
+    //    on Quintus iPad (26:74:fc:f9:4e:9e) during the 09:00–15:00 ET
+    //    kid-at-school window: 52 min of phantom engagement from device-level
+    //    background services NOT covered by the prior iterations. Same
+    //    suppress-only reasoning as #1629 — these are background, not user-
+    //    initiated, but we do not allow-carve them through the block.
+    //
+    // Apple first-party widget / OS backends — periodic widget feed polls
+    // (Weather, News), Game Center profile background, Apple ID device
+    // attestation, Siri command backend (only background when no Siri use),
+    // and the iOS asset/update CDN. Each is a sibling subdomain of apple.com
+    // and is listed explicitly to avoid suppressing the apex (which would
+    // shadow real user-facing Apple surfaces).
+    "weather-edge.apple.com",
+    "news-edge.apple.com",
+    "profile.gc.apple.com",
+    "static.gc.apple.com",
+    "aidc.apple.com",
+    "guzzoni.apple.com",
+    "sequoia.cdn-apple.com",
+    // Google background services that run on iOS too (the Google app,
+    // Chrome, Gmail, and YouTube all use this control plane). Listed
+    // explicitly as sibling subdomains rather than as the `google.com`
+    // apex — the apex would absorb the kid's real Google product traffic.
+    // `android.clients.google.com` runs on iOS despite the name.
+    "android.clients.google.com",
+    "clients1.google.com",
+    "clients2.google.com",
+    "clients3.google.com",
+    "clients4.google.com",
+    "clients5.google.com",
+    "clients6.google.com",
+    // Third-party telemetry / crash-reporting SaaS embedded in apps via SDK.
+    // Apex form so any tenant subdomain matches (the per-app subdomain
+    // prefix varies, e.g. `o45050….ingest.us.sentry.io`,
+    // `sessions.bugsnag.com`).
+    //
+    // `sentry.io` and `bugsnag.com` apex form suppresses the vendors' own
+    // product UIs too (`sentry.io` is Sentry's dashboard URL, `app.bugsnag.com`
+    // is Bugsnag's). Deliberate trade-off: a kid profile won't visit a crash-
+    // reporting dashboard, and the alternative — enumerating every SDK ingest
+    // host per vendor — re-opens the gap each new project ID. Same shape as
+    // the iCloud apex collateral pinned for #1629.
+    //
+    // 1Password telemetry (`1passwordservices.com`) is NOT on this list: the
+    // operator-authored 1Password app already covers it as a member host, so
+    // it attributes to that app (which is `allowed` + `exemptFromDaily` for
+    // every assigned profile) instead of being suppressed. Putting it here
+    // would be redundant given #1506 (app attribution wins over suppression),
+    // and the app-attribution path is the canonical model when a user-allowed
+    // app exists.
+    "sentry.io",
+    "bugsnag.com",
+    // Plex pubsub keepalive — the long-poll notification channel runs
+    // independent of any Plex client activity. Narrow host (NOT the
+    // `plex.tv` apex): leaving the apex unmatched preserves real Plex client
+    // attribution for media playback. The matcher is suffix-based, so
+    // `*.pubsub.plex.tv` would also match, but Plex doesn't publish any
+    // such subdomain — this entry effectively pins `pubsub.plex.tv`.
+    "pubsub.plex.tv",
   )
 
   /** All hosts suppressed from presence counting: allow+suppress plus suppress-only (#1525). */

@@ -229,6 +229,83 @@ object InfraHostsSpec extends ZIOSpecDefault {
         !InfraHosts.isInfra("apple-relay.cloudflare.com"),
       )
     },
+    test("#1694 Quintus-iPad phantom-engagement window: observed background hosts suppressed") {
+      // Captured 2026-06-12 13:00–19:00 UTC (09:00–15:00 ET, kid-at-school) from
+      // /api/usage/traffic for Quintus iPad (26:74:fc:f9:4e:9e). Top phantom-engagement
+      // contributors NOT covered by the pre-#1694 list:
+      //
+      //   - Apple first-party widget / app backends: weather-edge, news-edge, profile.gc,
+      //     aidc, guzzoni (Siri), sequoia.cdn — device-level background polling, not
+      //     user-initiated.
+      //   - Google background services: clients1..6.google.com + android.clients.google.com
+      //     (Play check-ins / safebrowsing / update probes; appear on iPad too because the
+      //     Google app and Chrome poll them).
+      //   - Third-party crash/telemetry SaaS: sentry.io, bugsnag.com, 1passwordservices.com
+      //     telemetry endpoint.
+      //   - Plex pubsub keepalive: pubsub.plex.tv (the long-poll notification channel;
+      //     NOT plex.tv apex, which carries real Plex client usage).
+      //
+      // Conservative additions: sibling subdomains listed explicitly, no broad apexes that
+      // would shadow real-app surfaces.
+      val phantomBackground = List(
+        // Apple background widgets / OS services
+        "weather-edge.apple.com",
+        "news-edge.apple.com",
+        "profile.gc.apple.com",
+        "static.gc.apple.com",
+        "aidc.apple.com",
+        "guzzoni.apple.com",
+        "sequoia.cdn-apple.com",
+        // Google background services on iPad
+        "android.clients.google.com",
+        "clients1.google.com",
+        "clients2.google.com",
+        "clients3.google.com",
+        "clients4.google.com",
+        "clients5.google.com",
+        "clients6.google.com",
+        // Third-party telemetry / crash reporting SaaS
+        "o4505093097586688.ingest.us.sentry.io", // subdomain match via sentry.io apex
+        "sessions.bugsnag.com",                  // subdomain match via bugsnag.com apex
+        // Plex pubsub keepalive (exact host only — plex.tv apex is left available for the
+        // Plex client app to attribute against)
+        "pubsub.plex.tv",
+      )
+      assertTrue(
+        phantomBackground.forall(InfraHosts.isBackground),
+        // Suppress-only tier: these must NOT be allow-carved through the block.
+        phantomBackground.forall(h => !InfraHosts.isInfra(h)),
+        // Defensive: plex.tv apex is NOT background — the Plex client app needs it to
+        // attribute, and #1506 lets app attribution win over suppression even when entries
+        // overlap. Verifying the absence here prevents over-fitting to this incident.
+        !InfraHosts.isBackground("plex.tv"),
+        !InfraHosts.isBackground("www.plex.tv"),
+        // Defensive: kid-real-app apexes seen in the same window stay unsuppressed.
+        !InfraHosts.isBackground("duolingo.com"),
+        !InfraHosts.isBackground("ios-api-cf.duolingo.com"),
+        !InfraHosts.isBackground("tinkercad.com"),
+      )
+    },
+    test("#1694 sentry/bugsnag apex form covers SDK ingest beacons") {
+      // sentry.io / bugsnag.com are dedicated telemetry / SaaS ingest apexes — these
+      // ride embedded SDKs and aren't user-initiated. The apex form also covers the
+      // vendors' own product UIs (sentry.io itself is Sentry's dashboard; app.bugsnag.com
+      // is Bugsnag's), which is the deliberate trade-off documented at the source: a
+      // kid profile won't visit a crash-reporting dashboard, and enumerating every
+      // per-vendor SDK ingest host re-opens the gap each new project ID.
+      assertTrue(
+        InfraHosts.isBackground("sentry.io"),
+        InfraHosts.isBackground("anything.ingest.us.sentry.io"),
+        InfraHosts.isBackground("bugsnag.com"),
+        InfraHosts.isBackground("notify.bugsnag.com"),
+        // 1passwordservices.com is intentionally NOT here — the operator-authored
+        // 1Password app already covers it as a member host, so it attributes to that
+        // app (allowed + exempt-from-daily) under #1506 instead of being suppressed.
+        !InfraHosts.isBackground("1passwordservices.com"),
+        !InfraHosts.isBackground("telemetry.1passwordservices.com"),
+        !InfraHosts.isBackground("1password.com"),
+      )
+    },
     test("#1629 additions do not shadow non-Apple app template host-sets") {
       // Defensive: none of the patterns added for #1629 should accidentally suppress
       // a real-app host on an unrelated apex (Khan, Math, etc. — their apexes don't
