@@ -194,11 +194,16 @@ class PolicyServiceLive(
         // carve is gated by the daily cap unless the app is exemptFromDaily (design §4.1, §5).
         // `mode=TimeLimited` apps contribute nothing here — they surface via the per-app cap
         // path (`appCapExhaustedHosts` reads `state.perApp`).
-        val dispositions = ProfileAppDispositions.from(appLimitsMap.getOrElse(p.id, Nil))
+        val dispositions    = ProfileAppDispositions.from(appLimitsMap.getOrElse(p.id, Nil))
+        // #1679: suppress extraAllowed carve for apps with allowedDuringScheduleBlock=false when
+        // the profile's whole-MAC block reason is Schedule. Other reasons leave isScheduleBlock
+        // false so the toggle has no effect on Paused/TimeLimit/Manual blocks.
+        val isScheduleBlock = state.blockReason.contains(MacBlockReason.Schedule)
         val (appAllowedHosts, appBlockedHosts) = dispositions.enforcement(
           schedWindows = appSchedMap.getOrElse(p.id, Map.empty),
           capExhausted = PolicyService.dailyCapExhausted(state),
           now = now,
+          isScheduleBlock = isScheduleBlock,
         )
 
         val rules = PolicyService.computeBlockRules(
@@ -399,10 +404,13 @@ class PolicyServiceLive(
                 // — exactly as the snapshot does. A non-exempt allowed_during app whose cap is
                 // exhausted is NOT carved, so it correctly falls through to the time_limit block
                 // below; an exempt one (or one under cap) is carved and beats it.
+                // #1679: pass isScheduleBlock so apps with allowedDuringScheduleBlock=false are
+                // suppressed from the extraAllowed carve during an active schedule window.
+                val isScheduleBlock          = scheduleBlock(scheds, now).nonEmpty
                 val (appAllowed, appBlocked) =
                   ProfileAppDispositions
                     .from(appLimits)
-                    .enforcement(appSchedWindows, capExhausted, now)
+                    .enforcement(appSchedWindows, capExhausted, now, isScheduleBlock)
 
                 // #1515: the per-profile carve set the snapshot puts in `extraAllowed`, reproduced
                 // here so /decision agrees with what nftables enforces. It is the allowed/allowed_during

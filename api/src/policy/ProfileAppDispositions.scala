@@ -91,21 +91,26 @@ final case class ProfileAppDispositions(
     val allowed = scala.collection.mutable.ListBuffer.empty[Hostname]
     val blocked = scala.collection.mutable.ListBuffer.empty[Hostname]
     perApp.foreach { d =>
-      val hosts         = d.hosts.map(Hostname.unsafe)
-      val pairs         = schedWindows.getOrElse(d.assignmentId, Nil)
-      val allowedActive = pairs.exists { case (m, w) =>
+      val hosts                      = d.hosts.map(Hostname.unsafe)
+      val pairs                      = schedWindows.getOrElse(d.assignmentId, Nil)
+      val allowedActive              = pairs.exists { case (m, w) =>
         m == AppScheduleMode.AllowedDuring && PolicyService.windowActiveAt(w, now)
       }
-      val blockedActive = pairs.exists { case (m, w) =>
+      val blockedActive              = pairs.exists { case (m, w) =>
         m == AppScheduleMode.BlockedDuring && PolicyService.windowActiveAt(w, now)
       }
+      // #1679: suppress extraAllowed carve for this app if we're in a Schedule block and the
+      // assignment opts out of the "allowed during bedtime" behaviour.
+      val suppressedByScheduleToggle = isScheduleBlock && !d.allowedDuringScheduleBlock
       if (allowedActive) {
-        if (!(capExhausted && !d.exemptFromDaily)) allowed ++= hosts
+        if (!(capExhausted && !d.exemptFromDaily) && !suppressedByScheduleToggle)
+          allowed ++= hosts
       } else if (blockedActive) {
         blocked ++= hosts
       } else
         d.mode match {
-          case AppMode.Allowed     => allowed ++= hosts
+          case AppMode.Allowed     =>
+            if (!suppressedByScheduleToggle) allowed ++= hosts
           case AppMode.Blocked     => blocked ++= hosts
           case AppMode.TimeLimited => () // surfaces via the per-app cap path
         }
