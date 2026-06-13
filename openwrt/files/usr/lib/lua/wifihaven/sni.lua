@@ -171,14 +171,63 @@ function M.parse_client_hello(payload)
 end
 
 -- ---------------------------------------------------------------------------
--- Ethernet / IPv4 / TCP framing.
+-- Ethernet / IP / TCP framing.
 --
--- v1 handles untagged IPv4 over Ethernet, no VLAN, no IP options beyond the
--- standard 20-byte header (we honor IHL though). IPv6 is a followup.
+-- Handles untagged IPv4 and IPv6 over Ethernet (no VLAN tag). IPv4 honors IHL
+-- for header options; IPv6 walks the RFC 8200 extension-header chain past the
+-- 40-byte fixed header (Hop-by-Hop, Routing, Destination-Options, etc.) to
+-- find the TCP header. Fragment headers (44) are not followed — a fragmented
+-- TLS ClientHello will fall out as no_sni / malformed (rare in practice
+-- because TLS ClientHellos comfortably fit in a single MTU).
 -- ---------------------------------------------------------------------------
 
 local function format_mac(a, b, c, d, e, f)
   return string.format("%02x:%02x:%02x:%02x:%02x:%02x", a, b, c, d, e, f)
+end
+
+-- format_ipv6(buf, off) → RFC 5952 canonical lowercase textual address.
+--
+-- Reads 16 bytes starting at `off` (1-based) and renders them as eight
+-- colon-separated lowercase hex groups with leading zeros stripped, then
+-- compresses the LONGEST run of consecutive all-zero groups (length >= 2) to
+-- `::`. Only one `::` collapse per address (RFC 5952 §4.2.2). Matches the
+-- textual form dnsmasq writes to its query log and `nft add element` accepts.
+local function format_ipv6(buf, off)
+  local groups = {}
+  for i = 0, 7 do
+    local hi = buf:byte(off + i * 2)
+    local lo = buf:byte(off + i * 2 + 1)
+    groups[i + 1] = hi * 256 + lo
+  end
+  -- Find longest run of zero groups (length >= 2). On ties, take the first.
+  local best_start, best_len = 0, 0
+  local cur_start, cur_len = 0, 0
+  for i = 1, 8 do
+    if groups[i] == 0 then
+      if cur_len == 0 then cur_start = i end
+      cur_len = cur_len + 1
+      if cur_len > best_len then
+        best_start, best_len = cur_start, cur_len
+      end
+    else
+      cur_len = 0
+    end
+  end
+  if best_len < 2 then best_start, best_len = 0, 0 end
+  local parts = {}
+  local i = 1
+  while i <= 8 do
+    if i == best_start then
+      parts[#parts + 1] = ""
+      if best_start == 1 then parts[#parts + 1] = "" end
+      i = i + best_len
+      if i > 8 then parts[#parts + 1] = "" end
+    else
+      parts[#parts + 1] = string.format("%x", groups[i])
+      i = i + 1
+    end
+  end
+  return table.concat(parts, ":")
 end
 
 -- parse_packet(eth_frame) → { dst_ip, src_mac, sni } | nil, reason
@@ -189,11 +238,13 @@ end
 --   "truncated"    — frame too short to hold Ethernet+IPv4+TCP, or the TLS
 --                    record/handshake length runs past the captured bytes
 --                    (the common snaplen-cut case).
---   "ipv6_skipped" — non-IPv4 ethertype (v1 is IPv4-only; counts the dual-
---                    stack traffic we're missing).
---   "not_tcp"      — IPv4 but not TCP (shouldn't happen given the BPF, but
---                    bounded and cheap to distinguish).
---   "malformed"    — structurally invalid IPv4/TCP framing.
+--   "not_ip"       — non-IP ethertype (ARP, VLAN, etc.). Bounded catch-all.
+--                    (Was "ipv6_skipped" before #1652 — renamed when IPv6
+--                    became a first-class parse path; the v6 bucket should
+--                    now stay near zero in fleet metrics.)
+--   "not_tcp"      — IPv4/IPv6 but not TCP (shouldn't happen given the BPF,
+--                    but bounded and cheap to distinguish).
+--   "malformed"    — structurally invalid IP/TCP framing.
 --   "no_sni"       — well-formed packet but the ClientHello carried no usable
 --                    host_name (no SNI extension, ECH, or a name we rejected).
 function M.parse_packet(eth_frame)
@@ -203,26 +254,61 @@ function M.parse_packet(eth_frame)
 
   -- Ethernet header: dst (6), src (6), ethertype (2)
   local ethertype = u16(eth_frame, 13)
-  if ethertype ~= 0x0800 then return nil, "ipv6_skipped" end -- IPv4 only in v1
   local sa, sb, sc, sd, se, sf = eth_frame:byte(7, 12)
   local src_mac = format_mac(sa, sb, sc, sd, se, sf)
 
-  -- IPv4 header
-  local ip_off = 15 -- 1-based, after 14-byte Ethernet
-  local ver_ihl = u8(eth_frame, ip_off)
-  if not ver_ihl then return nil, "malformed" end
-  if math.floor(ver_ihl / 16) ~= 4 then return nil, "malformed" end
-  local ihl = (ver_ihl % 16) * 4
-  if ihl < 20 then return nil, "malformed" end
-  if ip_off + ihl - 1 > #eth_frame then return nil, "truncated" end
-  local proto = u8(eth_frame, ip_off + 9)
-  if proto ~= 6 then return nil, "not_tcp" end -- TCP only
-  local da, db, dc, dd = eth_frame:byte(ip_off + 16, ip_off + 19)
-  if not da then return nil, "malformed" end
-  local dst_ip = string.format("%d.%d.%d.%d", da, db, dc, dd)
+  local dst_ip, tcp_off
+  if ethertype == 0x0800 then
+    -- IPv4 header
+    local ip_off = 15 -- 1-based, after 14-byte Ethernet
+    local ver_ihl = u8(eth_frame, ip_off)
+    if not ver_ihl then return nil, "malformed" end
+    if math.floor(ver_ihl / 16) ~= 4 then return nil, "malformed" end
+    local ihl = (ver_ihl % 16) * 4
+    if ihl < 20 then return nil, "malformed" end
+    if ip_off + ihl - 1 > #eth_frame then return nil, "truncated" end
+    local proto = u8(eth_frame, ip_off + 9)
+    if proto ~= 6 then return nil, "not_tcp" end
+    local da, db, dc, dd = eth_frame:byte(ip_off + 16, ip_off + 19)
+    if not da then return nil, "malformed" end
+    dst_ip = string.format("%d.%d.%d.%d", da, db, dc, dd)
+    tcp_off = ip_off + ihl
+  elseif ethertype == 0x86dd then
+    -- IPv6 fixed header (40 bytes): version+TC+flow(4), payload_len(2),
+    -- next_header(1), hop_limit(1), src(16), dst(16). Walk RFC 8200
+    -- extension headers (Hop-by-Hop=0, Routing=43, Dest-Opts=60) past the
+    -- fixed header to land on the TCP header. Fragment (44), AH (51), ESP
+    -- (50) are not followed — they fall out as malformed / no_sni and are
+    -- vanishingly rare for TLS ClientHellos (which fit in one MTU).
+    local ip_off = 15
+    if ip_off + 40 - 1 > #eth_frame then return nil, "truncated" end
+    local ver = math.floor(u8(eth_frame, ip_off) / 16)
+    if ver ~= 6 then return nil, "malformed" end
+    local nh = u8(eth_frame, ip_off + 6)
+    dst_ip = format_ipv6(eth_frame, ip_off + 24)
+    local hdr_off = ip_off + 40
+    -- Bounded extension-header walk. RFC 8200 imposes no hard cap; 8 hops is
+    -- well past any realistic legitimate chain and stops a malicious packet
+    -- from looping us.
+    local hops = 0
+    while nh == 0 or nh == 43 or nh == 60 do
+      if hops >= 8 then return nil, "malformed" end
+      hops = hops + 1
+      if hdr_off + 1 > #eth_frame then return nil, "truncated" end
+      local next_nh = u8(eth_frame, hdr_off)
+      local hdr_ext_len = u8(eth_frame, hdr_off + 1)
+      if not next_nh or not hdr_ext_len then return nil, "malformed" end
+      local ext_bytes = (hdr_ext_len + 1) * 8
+      hdr_off = hdr_off + ext_bytes
+      nh = next_nh
+    end
+    if nh ~= 6 then return nil, "not_tcp" end
+    tcp_off = hdr_off
+  else
+    return nil, "not_ip"
+  end
 
-  -- TCP header
-  local tcp_off = ip_off + ihl
+  -- TCP header (common to v4/v6)
   if tcp_off + 20 - 1 > #eth_frame then return nil, "truncated" end
   local data_off_byte = u8(eth_frame, tcp_off + 12)
   if not data_off_byte then return nil, "malformed" end
