@@ -215,16 +215,26 @@ object InfraHosts {
     // Apex form so any tenant subdomain matches (the per-app subdomain
     // prefix varies, e.g. `o45050….ingest.us.sentry.io`,
     // `sessions.bugsnag.com`, `telemetry.1passwordservices.com`).
-    // `1passwordservices.com` is the dedicated telemetry apex — the
-    // consumer product UI lives at `1password.com`, which stays available
-    // for real-app attribution.
+    //
+    // `sentry.io` and `bugsnag.com` apex form suppresses the vendors' own
+    // product UIs too (`sentry.io` is Sentry's dashboard URL, `app.bugsnag.com`
+    // is Bugsnag's). Deliberate trade-off: a kid profile won't visit a crash-
+    // reporting dashboard, and the alternative — enumerating every SDK ingest
+    // host per vendor — re-opens the gap each new project ID. Same shape as
+    // the iCloud apex collateral pinned for #1629.
+    //
+    // `1passwordservices.com` is the dedicated telemetry apex — the consumer
+    // product UI lives at `1password.com`, which stays available for real-app
+    // attribution. The defensive test below pins this distinction.
     "sentry.io",
     "bugsnag.com",
     "1passwordservices.com",
     // Plex pubsub keepalive — the long-poll notification channel runs
-    // independent of any Plex client activity. EXACT host only: leave
-    // `plex.tv` apex available so the Plex client app (a kid-real app) can
-    // still attribute real media playback.
+    // independent of any Plex client activity. Narrow host (NOT the
+    // `plex.tv` apex): leaving the apex unmatched preserves real Plex client
+    // attribution for media playback. The matcher is suffix-based, so
+    // `*.pubsub.plex.tv` would also match, but Plex doesn't publish any
+    // such subdomain — this entry effectively pins `pubsub.plex.tv`.
     "pubsub.plex.tv",
   )
 
