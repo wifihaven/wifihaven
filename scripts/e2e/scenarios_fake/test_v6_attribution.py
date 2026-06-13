@@ -90,14 +90,20 @@ def _fire_v6_syn(client) -> None:
     The destination is RFC 3849 doc-space so the SYN will RST or timeout on
     the WAN side — that does not matter. The conntrack NEW event on the
     router fires as the packet crosses the FORWARD chain, which is what
-    `handle_flow` consumes to emit the connection_event. `nc -6 -w 2` does
-    a SYN-then-bail with a 2-second timeout, returning immediately. Tail
-    `|| true` so a non-zero exit (the expected timeout) doesn't fail the
-    client_exec call.
+    `handle_flow` consumes to emit the connection_event.
+
+    NB: do NOT use `nc -6` here — the Alpine client's nc is BusyBox, which
+    does not implement `-6` (the option is rejected with "unrecognized
+    option: 6" and zero packets leave the client, so this whole test was a
+    silent no-op pre-#1691). curl is in the client base image's package
+    list (see scripts/vm/build-client-base.sh) and supports -6 natively;
+    `-s -m 2` does a SYN-then-bail with a 2-second timeout, returning
+    immediately. `|| true` swallows the expected connect-timeout (curl
+    exit 28) so client_exec doesn't fail.
     """
     client_exec(
         client,
-        ["sh", "-c", f"nc -6 -w 2 {LEAF_HOST} 80 >/dev/null 2>&1; true"],
+        ["sh", "-c", f"curl -6 -s -m 2 -o /dev/null http://[{LEAF_HOST}]/ ; true"],
         check=False,
         timeout=10,
     )
