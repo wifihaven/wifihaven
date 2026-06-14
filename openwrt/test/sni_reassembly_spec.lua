@@ -69,6 +69,68 @@ local function key_of(src_ip, src_port, dst_ip, dst_port)
 end
 
 -- ---------------------------------------------------------------------------
+-- parse_framing — carves out the 5-tuple so the buffer can key on TCP flows.
+-- ---------------------------------------------------------------------------
+
+describe("sni.parse_framing (#1653)", function()
+  local function build_eth_ipv4_tcp(payload, src_port)
+    local eth = string.rep("\0", 6) ..
+                string.char(0x76, 0x2d, 0x95, 0x47, 0xd1, 0x8e) ..
+                u16(0x0800)
+    local tcp =
+        u16(src_port or 54321) .. u16(443) ..
+        string.rep("\0", 4) .. string.rep("\0", 4) ..
+        string.char(0x50, 0x18) .. u16(0) .. u16(0) .. u16(0) ..
+        payload
+    local total_len = 20 + #tcp
+    local ip =
+        string.char(0x45) .. string.char(0) .. u16(total_len) ..
+        u16(0) .. u16(0) .. string.char(64) .. string.char(6) ..
+        u16(0) ..
+        string.char(192, 168, 1, 100) ..
+        string.char(142, 250, 80, 46)
+    return eth .. ip .. tcp
+  end
+
+  it("returns the 5-tuple + payload for an IPv4/TCP frame", function()
+    local payload = string.rep("X", 64)
+    local pkt = build_eth_ipv4_tcp(payload, 50001)
+    local f = sni.parse_framing(pkt)
+    assert.is_not_nil(f)
+    assert.equal("76:2d:95:47:d1:8e", f.src_mac)
+    assert.equal("192.168.1.100",      f.src_ip)
+    assert.equal("142.250.80.46",      f.dst_ip)
+    assert.equal(50001,                 f.src_port)
+    assert.equal(443,                   f.dst_port)
+    assert.equal(payload,               f.payload)
+  end)
+
+  it("returns nil, reason='not_ip' for ARP", function()
+    local frame = string.rep("\0", 6) ..
+                  string.char(0x76, 0x2d, 0x95, 0x47, 0xd1, 0x8e) ..
+                  string.char(0x08, 0x06) .. string.rep("\0", 60)
+    local f, reason = sni.parse_framing(frame)
+    assert.is_nil(f)
+    assert.equal("not_ip", reason)
+  end)
+
+  it("returns nil, reason='truncated' for a too-short frame", function()
+    local f, reason = sni.parse_framing(string.rep("\0", 30))
+    assert.is_nil(f)
+    assert.equal("truncated", reason)
+  end)
+end)
+
+describe("sni.flow_key (#1653)", function()
+  it("is stable and disjoint across distinct 4-tuples", function()
+    local f1 = { src_ip = "10.0.0.1", src_port = 1, dst_ip = "1.1.1.1", dst_port = 443 }
+    local f2 = { src_ip = "10.0.0.1", src_port = 2, dst_ip = "1.1.1.1", dst_port = 443 }
+    assert.equal("10.0.0.1:1-1.1.1.1:443", sni.flow_key(f1))
+    assert.not_equal(sni.flow_key(f1), sni.flow_key(f2))
+  end)
+end)
+
+-- ---------------------------------------------------------------------------
 -- parse_client_hello — incomplete-vs-no_sni reason distinction (precondition
 -- for reassembly: the caller must know which kind of nil to retry).
 -- ---------------------------------------------------------------------------

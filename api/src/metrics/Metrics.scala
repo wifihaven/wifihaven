@@ -118,10 +118,14 @@ object MetricGuard {
     "agent_uptime_seconds"                      -> Set("router_id", "installation_id"),
     "agent_version"                             -> Set("version", "router_id", "installation_id"),
     "dns_queries_total"                         -> Set("result", "router_id", "installation_id"),
-    // #573 — TLS ClientHello SNI capture outcomes from the wifihaven-sni-tail sidecar.
-    // `result` ∈ {parsed, truncated, no_sni, not_ip, not_tcp, malformed} — a small bounded
-    // enum that lets an operator see the fleet-wide SNI capture / truncation / non-IP rate.
-    // (Pre-#1652 agents also emit `ipv6_skipped`; the bucket ages out as the fleet rolls forward.)
+    // #573 / #1653 — TLS ClientHello SNI capture outcomes from the wifihaven-sni-tail sidecar.
+    // `result` ∈ {parsed, reassembled, incomplete, dropped_byte_cap, not_handshake,
+    // truncated, no_sni, not_ip, not_tcp, malformed} plus QUIC buckets (quic_*) — a small
+    // bounded enum that lets an operator see the fleet-wide SNI capture / truncation /
+    // reassembly rate. #1653 added `reassembled` (multi-segment CH stitched + parsed) so the
+    // lift from per-flow buffering is visible directly; `incomplete` / `dropped_byte_cap` /
+    // `not_handshake` are the corresponding buffer-state buckets. (Pre-#1652 agents also
+    // emit `ipv6_skipped`; the bucket ages out as the fleet rolls forward.)
     "sni_clienthellos_total"                    -> Set("result", "router_id", "installation_id"),
     "blocklist_fetch_failures_total"            -> Set("status", "router_id", "installation_id"),
     "enforcement_drops_total"                   -> Set("reason", "router_id", "installation_id"),
