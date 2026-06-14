@@ -445,6 +445,13 @@ local usage_queue          = usage.new_queue()  -- retry queue for failed POSTs 
 -- netfilter event wakes all subscribers, and CPU + load climb. Prod #1716:
 -- 24-day uptime → 16 orphans → agent CPU 22-24%, load 3.2; SIGTERMing them
 -- dropped agent CPU to 0%. Sweep before spawning our own.
+--
+-- Startup sweep bounds the orphan count at ~1 per restart cycle but doesn't
+-- prevent the orphan from being created in the first place. The proper
+-- complement — an explicit SIGTERM handler that kills the conntrack child on
+-- agent shutdown — is tracked in #1723. Fleet-level metric tracking (so an
+-- operator can see if any router is still spawning orphans after this fix
+-- ships) is tracked in #1722.
 do
   local killed = conntrack.kill_orphan_watchers()
   if killed > 0 then

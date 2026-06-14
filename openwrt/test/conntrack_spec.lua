@@ -1898,7 +1898,9 @@ describe("kill_orphan_watchers (#1716)", function()
   it("ignores processes whose cmdline does not match the agent's conntrack invocation", function()
     -- Avoid stomping unrelated `conntrack -L`, `conntrack -F`, etc. running
     -- under cron or a transient operator shell. We match the exact agent
-    -- invocation only.
+    -- invocation only — also rejecting whitespace variants so a future
+    -- agent that opens conntrack differently can't be silently swept by this
+    -- one (would be a different invocation, deserves its own sweeper).
     local killed = {}
     conntrack.kill_orphan_watchers({
       list_procs_fn = fake_list_procs({
@@ -1906,6 +1908,7 @@ describe("kill_orphan_watchers (#1716)", function()
         { pid = 101, ppid = 1, cmdline = "conntrack -F" },
         { pid = 102, ppid = 1, cmdline = "conntrack -E -e NEW -p tcp" }, -- different flags
         { pid = 103, ppid = 1, cmdline = "grep conntrack -E -e NEW" },
+        { pid = 105, ppid = 1, cmdline = "conntrack  -E -e NEW" },        -- extra-whitespace
         { pid = 104, ppid = 1, cmdline = "conntrack -E -e NEW" },         -- match
       }),
       kill_fn = function(pid) killed[#killed + 1] = pid; return true end,

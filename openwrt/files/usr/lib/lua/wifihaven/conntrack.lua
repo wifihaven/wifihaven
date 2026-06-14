@@ -114,7 +114,10 @@ function M.kill_orphan_watchers(opts)
   opts = opts or {}
   local list = opts.list_procs_fn or default_list_procs
   local kill = opts.kill_fn or function(pid)
-    return os.execute("kill " .. tostring(pid) .. " 2>/dev/null") == 0
+    -- os.execute return shape varies by Lua version: int exit-code on 5.1/5.2,
+    -- boolean true on 5.3+ for a clean exit. Mirror nft_eb_hit's normalisation.
+    local ret = os.execute("kill " .. tostring(pid) .. " 2>/dev/null")
+    return ret == 0 or ret == true
   end
   local killed = 0
   for _, p in ipairs(list()) do
