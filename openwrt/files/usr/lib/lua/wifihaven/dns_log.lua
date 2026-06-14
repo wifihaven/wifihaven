@@ -424,6 +424,47 @@ function M.new(opts)
     store(dst_ip, head, now)
   end
 
+  -- Serialise the live CNAME-alias map to a single newline-delimited string
+  -- (#1572). Format: "<target>\t<head>\t<ts>\n" per non-expired alias edge.
+  -- Persisted alongside dump_text() so a wifihaven-dns-tail restart can reseed
+  -- the alias map and recover the queried brand for a directly-queried CDN
+  -- target whose branded chain was last observed before the restart — the
+  -- failure mode that left ~33 traffic_reports / time_usage rows attributed
+  -- to opaque CDN edge names in #1572's recon.
+  function self.dump_aliases_text()
+    local now = now_fn()
+    local lines = {}
+    for target, a in pairs(aliases) do
+      if (now - a.ts) <= ttl then
+        lines[#lines + 1] = string.format("%s\t%s\t%d", target, a.head, a.ts)
+      end
+    end
+    return table.concat(lines, "\n") .. (#lines > 0 and "\n" or "")
+  end
+
+  -- seed_aliases(tbl, now) — pre-load `target → head` edges learned by a
+  -- previous wifihaven-dns-tail process (#1572). `tbl` is a plain
+  -- `{[target]=head}` table (the output of dns_log.load_aliases_table). Each
+  -- edge is inserted with the given timestamp (default: now) so it ages out
+  -- under the same TTL the in-process learned edges do. Existing edges are not
+  -- overwritten by a stale seed, so a sidecar that has already relearned the
+  -- chain wins over its own old snapshot.
+  function self.seed_aliases(tbl, now)
+    if type(tbl) ~= "table" then return end
+    now = now or now_fn()
+    for target, head in pairs(tbl) do
+      if type(target) == "string" and type(head) == "string"
+         and target ~= "" and head ~= "" and target ~= head
+         and aliases[target] == nil then
+        if alias_count >= max_aliases then
+          evict_oldest_alias()
+        end
+        alias_count = alias_count + 1
+        aliases[target] = { head = head, ts = now, seq = next_seq() }
+      end
+    end
+  end
+
   -- Serialise the live cache to a single newline-delimited string.
   -- Format: "<ip>\t<hostname>\t<ts>\n" per non-expired entry.
   function self.dump_text()
@@ -510,6 +551,26 @@ function M.populate_bl(reply, member_index, resolve_head_fn, add_fn)
     name = name:sub(dot + 1)
   end
   return matched
+end
+
+-- Parses the output of an instance's `dump_aliases_text()` and returns a
+-- plain `{target → head}` table with edges older than `ttl_seconds` (relative
+-- to `now`) filtered out (#1572). Inverse of dump_aliases_text; the
+-- wifihaven-dns-tail sidecar reads this snapshot on startup and hands it to
+-- cache.seed_aliases() so the in-memory CNAME-alias map survives a restart.
+function M.load_aliases_table(text, ttl_seconds, now)
+  local out = {}
+  if type(text) ~= "string" or text == "" then return out end
+  for line in text:gmatch("[^\n]+") do
+    local target, head, ts = line:match("^(%S+)\t(%S+)\t(%d+)$")
+    if target and head and ts then
+      local ts_n = tonumber(ts)
+      if ts_n and (now - ts_n) <= ttl_seconds then
+        out[target] = head
+      end
+    end
+  end
+  return out
 end
 
 -- Parses the output of an instance's `dump_text()` and returns a plain
