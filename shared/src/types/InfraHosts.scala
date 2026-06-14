@@ -239,6 +239,44 @@ object InfraHosts {
     // `*.pubsub.plex.tv` would also match, but Plex doesn't publish any
     // such subdomain — this entry effectively pins `pubsub.plex.tv`.
     "pubsub.plex.tv",
+    // ── #1672 Bucket A residual after #1669 — non-Apple orphan tail captured
+    //    from `/api/profiles/<id>/usage-by-app` on kid profiles 1 (Kids), 5
+    //    (Quintus), 6 in the 2026-06-10..06-11 prod orphan window. Each
+    //    sub-section is suppress-only (no allow-carve role); specific
+    //    subdomains rather than apexes where the apex would absorb legitimate
+    //    per-app traffic on sibling subdomains. Per #1506 `Presence.isAppAttributed`,
+    //    if a future app template claims one of these hosts, app attribution wins
+    //    over suppression — the entries are a fallback.
+    //
+    //    Note: `clients4.google.com` and `android.clients.google.com` from the
+    //    original #1672 evidence list are already covered by the #1694
+    //    `clients{1..6}.google.com` + `android.clients.google.com` block above,
+    //    so they are not re-listed here.
+    //
+    // Brave browser telemetry (profile 1): Shields telemetry collector + STAR
+    // randomness service. Background, not user-initiated.
+    "collector.bsg.brave.com",
+    "star-randsrv.bsg.brave.com",
+    // Google user-content background polling. Sibling-subdomain seam — the
+    // `googleusercontent.com` apex is deliberately NOT swept in, so app-owned
+    // subdomains (e.g. `lh3.googleusercontent.com`, `photos.googleusercontent.com`)
+    // keep attributing to their apps.
+    "clients2.googleusercontent.com",
+    // Ad-mediation / ad-quality signals (profile 5, profile 6). Mediation
+    // traffic is not user engagement; if an ad-supported app page is in scope,
+    // its template attributes the visible activity, not these background calls.
+    "oa.openxcdn.net",
+    "ep2.adtrafficquality.google",
+    "a-adq.mediation.unity3d.com",
+    // Asset CDNs whose attribution follows the embedding page — if the page is
+    // an orphan, the asset fetch is too. Specific subdomains so real apps that
+    // use sibling subdomains of `gstatic.com` / `googleusercontent.com` keep
+    // attributing. (The `ssl.gstatic.com` host is deliberately NOT added: the
+    // gstatic apex is too broad and `ssl.gstatic.com` itself fans out across
+    // many app surfaces — flagged in the PR body for operator decision.)
+    "use.fontawesome.com",
+    "encrypted-tbn0.gstatic.com",
+    "ci3.googleusercontent.com",
   )
 
   /** All hosts suppressed from presence counting: allow+suppress plus suppress-only (#1525). */
