@@ -62,14 +62,13 @@ object AlertApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
       alertRepo <- ZIO.service[AlertRepo]
       dRepo     <- ZIO.service[DeviceRepo]
       pRepo     <- ZIO.service[ProfileRepo]
-      sRepo     <- ZIO.service[ScheduleRepo]
       extRepo   <- ZIO.service[TimeExtensionRepo]
       appRepo   <- ZIO.service[AppRepo]
       hsRepo    <- ZIO.service[HouseholdSettingsRepo]
       auth      <- makeAuth
       clock     <- ZIO.service[Clock]
       _         <- hsRepo.ensureDefault(java.time.ZoneId.of("UTC"))
-      kidsPid   <- TestLayers.seedKidsProfile(pRepo, sRepo)
+      kidsPid   <- TestLayers.seedKidsProfile(pRepo)
       _         <- dRepo.upsert(mac1, "kid-laptop", Some(kidsPid), "")
       routes = AlertRoutes.routes(
         auth,

@@ -30,7 +30,6 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
   private def makePsAt(dt: LocalDateTime) =
     for {
       pr     <- ZIO.service[ProfileRepo]
-      sr     <- ZIO.service[ScheduleRepo]
       hsr    <- ZIO.service[HouseholdSettingsRepo]
       tlr    <- ZIO.service[TimeLimitRepo]
       atlr   <- ZIO.service[AppTimeLimitRepo]
@@ -45,7 +44,6 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
     } yield (
       PolicyServiceLive(
         pr,
-        sr,
         hsr,
         tlr,
         atlr,
@@ -63,13 +61,12 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
   private def makeTimeStatus =
     for {
       pr   <- ZIO.service[ProfileRepo]
-      sr   <- ZIO.service[ScheduleRepo]
       tlr  <- ZIO.service[TimeLimitRepo]
       atlr <- ZIO.service[AppTimeLimitRepo]
       dr   <- ZIO.service[DeviceRepo]
       trr  <- ZIO.service[TrafficReportRepo]
       er   <- ZIO.service[TimeExtensionRepo]
-    } yield new TimeStatusServiceLive(pr, sr, tlr, atlr, dr, trr, er): TimeStatusService
+    } yield new TimeStatusServiceLive(pr, tlr, atlr, dr, trr, er): TimeStatusService
 
   private def seedRouter: ZIO[RouterRepo, Throwable, RouterId] =
     ZIO.serviceWithZIO[RouterRepo] { rr =>
@@ -144,10 +141,9 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
       for {
         _     <- cleanDb
         pr    <- ZIO.service[ProfileRepo]
-        sr    <- ZIO.service[ScheduleRepo]
         dr    <- ZIO.service[DeviceRepo]
         blr   <- ZIO.service[BlocklistRepo]
-        kid   <- TestLayers.seedKidsProfile(pr, sr)
+        kid   <- TestLayers.seedKidsProfile(pr)
         _     <- pr.setPaused(kid, true)
         _     <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
         psClk <- makePsAt(TestClock.schoolDayAfternoon)
@@ -165,10 +161,9 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
       for {
         _     <- cleanDb
         pr    <- ZIO.service[ProfileRepo]
-        sr    <- ZIO.service[ScheduleRepo]
         dr    <- ZIO.service[DeviceRepo]
         blr   <- ZIO.service[BlocklistRepo]
-        kid   <- TestLayers.seedKidsProfile(pr, sr)
+        kid   <- TestLayers.seedKidsProfile(pr)
         _     <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
         psClk <- makePsAt(TestClock.bedtime)
         (ps, clk) = psClk
@@ -198,7 +193,6 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
       for {
         _      <- cleanDb
         pr     <- ZIO.service[ProfileRepo]
-        sr     <- ZIO.service[ScheduleRepo]
         dr     <- ZIO.service[DeviceRepo]
         blr    <- ZIO.service[BlocklistRepo]
         adults <- TestLayers.seedAdultsProfile(pr)
@@ -250,11 +244,10 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
       for {
         _   <- cleanDb
         pr  <- ZIO.service[ProfileRepo]
-        sr  <- ZIO.service[ScheduleRepo]
         dr  <- ZIO.service[DeviceRepo]
         blr <- ZIO.service[BlocklistRepo]
         tlr <- ZIO.service[TimeLimitRepo]
-        kid <- TestLayers.seedKidsProfile(pr, sr)
+        kid <- TestLayers.seedKidsProfile(pr)
         _   <- tlr.upsert(kid, 120)
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:44", "kid-ipad", kid)
         rid <- seedRouter

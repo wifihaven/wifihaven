@@ -49,7 +49,6 @@ object PolicySnapshotBlockIpOnlySpec
       for {
         _      <- cleanDb
         pr     <- ZIO.service[ProfileRepo]
-        sr     <- ZIO.service[ScheduleRepo]
         tlr    <- ZIO.service[TimeLimitRepo]
         atlr   <- ZIO.service[AppTimeLimitRepo]
         dr     <- ZIO.service[DeviceRepo]
@@ -59,7 +58,7 @@ object PolicySnapshotBlockIpOnlySpec
         hsr    <- ZIO.service[HouseholdSettingsRepo]
         ar     <- ZIO.service[AppRepo]
         clock  <- ZIO.service[Clock]
-        svc = PolicyServiceLive(pr, sr, hsr, tlr, atlr, dr, blr, trRepo, er, ar, clock)
+        svc = PolicyServiceLive(pr, hsr, tlr, atlr, dr, blr, trRepo, er, ar, clock)
         profiles0 <- pr.listAll
         kidsId   = profiles0.find(_.name == "Kids").get.id
         adultsId = profiles0.find(_.name == "Adults").get.id
@@ -73,7 +72,6 @@ object PolicySnapshotBlockIpOnlySpec
       for {
         _      <- cleanDb
         pr     <- ZIO.service[ProfileRepo]
-        sr     <- ZIO.service[ScheduleRepo]
         tlr    <- ZIO.service[TimeLimitRepo]
         atlr   <- ZIO.service[AppTimeLimitRepo]
         dr     <- ZIO.service[DeviceRepo]
@@ -83,7 +81,7 @@ object PolicySnapshotBlockIpOnlySpec
         hsr    <- ZIO.service[HouseholdSettingsRepo]
         ar     <- ZIO.service[AppRepo]
         clock  <- ZIO.service[Clock]
-        svc = PolicyServiceLive(pr, sr, hsr, tlr, atlr, dr, blr, trRepo, er, ar, clock)
+        svc = PolicyServiceLive(pr, hsr, tlr, atlr, dr, blr, trRepo, er, ar, clock)
         profiles0 <- pr.listAll
         kids = profiles0.find(_.name == "Kids").get
         _     <- pr.update(kids.copy(blockIpOnly = false))
@@ -96,7 +94,6 @@ object PolicySnapshotBlockIpOnlySpec
       for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
-        schedRepo   <- ZIO.service[ScheduleRepo]
         tlRepo      <- ZIO.service[TimeLimitRepo]
         auth        <- makeAuth
         token       <- auth.login("admin", "changeme").map(_.token.value)
@@ -107,7 +104,6 @@ object PolicySnapshotBlockIpOnlySpec
         routes = ProfileRoutes.routes(
           auth,
           profileRepo,
-          schedRepo,
           tlRepo,
           userProfileRepo,
           userRepoSvc,
@@ -148,7 +144,6 @@ object PolicySnapshotBlockIpOnlySpec
       for {
         _               <- cleanDb
         profileRepo     <- ZIO.service[ProfileRepo]
-        schedRepo       <- ZIO.service[ScheduleRepo]
         tlRepo          <- ZIO.service[TimeLimitRepo]
         auth            <- makeAuth
         token           <- auth.login("admin", "changeme").map(_.token.value)
@@ -157,7 +152,6 @@ object PolicySnapshotBlockIpOnlySpec
         routes = ProfileRoutes.routes(
           auth,
           profileRepo,
-          schedRepo,
           tlRepo,
           userProfileRepo,
           userRepoSvc,

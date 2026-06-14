@@ -40,7 +40,6 @@ object PolicySnapshotNamedScheduleSpec
   private def makePsAt(dt: LocalDateTime) =
     for {
       pr     <- ZIO.service[ProfileRepo]
-      sr     <- ZIO.service[ScheduleRepo]
       nsr    <- ZIO.service[NamedScheduleRepo]
       hsr    <- ZIO.service[HouseholdSettingsRepo]
       tlr    <- ZIO.service[TimeLimitRepo]
@@ -54,7 +53,6 @@ object PolicySnapshotNamedScheduleSpec
       clk = new Clock.TestClock(ref)
       tss = new TimeStatusServiceLive(
         pr,
-        sr,
         tlr,
         atlr,
         dr,
@@ -65,7 +63,6 @@ object PolicySnapshotNamedScheduleSpec
       )
     } yield new PolicyServiceLive(
       pr,
-      sr,
       hsr,
       tlr,
       atlr,

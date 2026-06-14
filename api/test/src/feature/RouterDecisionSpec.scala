@@ -26,7 +26,6 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
   private def makePsAt(dt: LocalDateTime) =
     for {
       pr     <- ZIO.service[ProfileRepo]
-      sr     <- ZIO.service[ScheduleRepo]
       hsr    <- ZIO.service[HouseholdSettingsRepo]
       tlr    <- ZIO.service[TimeLimitRepo]
       atlr   <- ZIO.service[AppTimeLimitRepo]
@@ -40,7 +39,6 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
       clk = new Clock.TestClock(ref)
     } yield PolicyServiceLive(
       pr,
-      sr,
       hsr,
       tlr,
       atlr,
@@ -212,9 +210,8 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         rr  <- ZIO.service[RouterRepo]
         pr  <- ZIO.service[ProfileRepo]
         dr  <- ZIO.service[DeviceRepo]
-        sr  <- ZIO.service[ScheduleRepo]
         ber <- ZIO.service[BlockEventRepo]
-        kid <- TestLayers.seedKidsProfile(pr, sr)
+        kid <- TestLayers.seedKidsProfile(pr)
         _   <- pr.setPaused(kid, true)
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
         ps  <- makePsDefault
@@ -253,10 +250,9 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         rr    <- ZIO.service[RouterRepo]
         pr    <- ZIO.service[ProfileRepo]
         dr    <- ZIO.service[DeviceRepo]
-        sr    <- ZIO.service[ScheduleRepo]
         ar    <- ZIO.service[AppRepo]
         ber   <- ZIO.service[BlockEventRepo]
-        kid   <- TestLayers.seedKidsProfile(pr, sr)
+        kid   <- TestLayers.seedKidsProfile(pr)
         _     <- pr.setPaused(kid, true)
         _     <- TestLayers.seedDevice(dr, mac, "kid-mac", kid)
         appId <- ar.create("Math Academy", "math-academy", None, None)
@@ -299,9 +295,8 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         rr  <- ZIO.service[RouterRepo]
         pr  <- ZIO.service[ProfileRepo]
         dr  <- ZIO.service[DeviceRepo]
-        sr  <- ZIO.service[ScheduleRepo]
         ber <- ZIO.service[BlockEventRepo]
-        kid <- TestLayers.seedKidsProfile(pr, sr)
+        kid <- TestLayers.seedKidsProfile(pr)
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
         ps  <- makePsAt(TestClock.bedtime) // Monday 21:30
         routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
@@ -324,9 +319,8 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         rr  <- ZIO.service[RouterRepo]
         pr  <- ZIO.service[ProfileRepo]
         dr  <- ZIO.service[DeviceRepo]
-        sr  <- ZIO.service[ScheduleRepo]
         ber <- ZIO.service[BlockEventRepo]
-        kid <- TestLayers.seedKidsProfile(pr, sr)
+        kid <- TestLayers.seedKidsProfile(pr)
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
         ps  <- makePsAt(TestClock.earlyMorning) // Monday 06:00
         routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
@@ -345,10 +339,9 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         rr  <- ZIO.service[RouterRepo]
         pr  <- ZIO.service[ProfileRepo]
         dr  <- ZIO.service[DeviceRepo]
-        sr  <- ZIO.service[ScheduleRepo]
         tlr <- ZIO.service[TimeLimitRepo]
         ber <- ZIO.service[BlockEventRepo]
-        kid <- TestLayers.seedKidsProfile(pr, sr)
+        kid <- TestLayers.seedKidsProfile(pr)
         _   <- tlr.upsert(kid, 120)
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
         rid <- seedRouterRow
@@ -372,11 +365,10 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         rr  <- ZIO.service[RouterRepo]
         pr  <- ZIO.service[ProfileRepo]
         dr  <- ZIO.service[DeviceRepo]
-        sr  <- ZIO.service[ScheduleRepo]
         tlr <- ZIO.service[TimeLimitRepo]
         er  <- ZIO.service[TimeExtensionRepo]
         ber <- ZIO.service[BlockEventRepo]
-        kid <- TestLayers.seedKidsProfile(pr, sr)
+        kid <- TestLayers.seedKidsProfile(pr)
         _   <- tlr.upsert(kid, 120)
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
         rid <- seedRouterRow
@@ -396,7 +388,6 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         rr  <- ZIO.service[RouterRepo]
         pr  <- ZIO.service[ProfileRepo]
         dr  <- ZIO.service[DeviceRepo]
-        sr  <- ZIO.service[ScheduleRepo]
         blr <- ZIO.service[BlocklistRepo]
         ber <- ZIO.service[BlockEventRepo]
         kid <- pr.create("Kids", List(BlocklistId.unsafe("ads"), BlocklistId.unsafe("gambling")))
@@ -420,7 +411,6 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         rr  <- ZIO.service[RouterRepo]
         pr  <- ZIO.service[ProfileRepo]
         dr  <- ZIO.service[DeviceRepo]
-        sr  <- ZIO.service[ScheduleRepo]
         blr <- ZIO.service[BlocklistRepo]
         ber <- ZIO.service[BlockEventRepo]
         kid <- pr.create("Kids", List(BlocklistId.unsafe("ads")))
@@ -441,9 +431,8 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         rr  <- ZIO.service[RouterRepo]
         pr  <- ZIO.service[ProfileRepo]
         dr  <- ZIO.service[DeviceRepo]
-        sr  <- ZIO.service[ScheduleRepo]
         ber <- ZIO.service[BlockEventRepo]
-        kid <- TestLayers.seedKidsProfile(pr, sr)
+        kid <- TestLayers.seedKidsProfile(pr)
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
         ps  <- makePsDefault // 14:00, no schedule active
         routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
@@ -462,7 +451,6 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         rr  <- ZIO.service[RouterRepo]
         pr  <- ZIO.service[ProfileRepo]
         dr  <- ZIO.service[DeviceRepo]
-        sr  <- ZIO.service[ScheduleRepo]
         ar  <- ZIO.service[AppRepo]
         ber <- ZIO.service[BlockEventRepo]
         kid <- pr.create("Kids", List.empty)
@@ -483,9 +471,8 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         rr  <- ZIO.service[RouterRepo]
         pr  <- ZIO.service[ProfileRepo]
         dr  <- ZIO.service[DeviceRepo]
-        sr  <- ZIO.service[ScheduleRepo]
         ber <- ZIO.service[BlockEventRepo]
-        kid <- TestLayers.seedKidsProfile(pr, sr)
+        kid <- TestLayers.seedKidsProfile(pr)
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
         ps  <- makePsDefault
         routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
@@ -504,11 +491,10 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         rr  <- ZIO.service[RouterRepo]
         pr  <- ZIO.service[ProfileRepo]
         dr  <- ZIO.service[DeviceRepo]
-        sr  <- ZIO.service[ScheduleRepo]
         tlr <- ZIO.service[TimeLimitRepo]
         ber <- ZIO.service[BlockEventRepo]
         ar  <- ZIO.service[AppRepo]
-        kid <- TestLayers.seedKidsProfile(pr, sr)
+        kid <- TestLayers.seedKidsProfile(pr)
         _   <- tlr.upsert(kid, 120)
         _   <- TestLayers.seedAppAssignment(
           ar,
@@ -540,11 +526,10 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         rr  <- ZIO.service[RouterRepo]
         pr  <- ZIO.service[ProfileRepo]
         dr  <- ZIO.service[DeviceRepo]
-        sr  <- ZIO.service[ScheduleRepo]
         tlr <- ZIO.service[TimeLimitRepo]
         ber <- ZIO.service[BlockEventRepo]
         ar  <- ZIO.service[AppRepo]
-        kid <- TestLayers.seedKidsProfile(pr, sr)
+        kid <- TestLayers.seedKidsProfile(pr)
         _   <- tlr.upsert(kid, 120)
         _   <- TestLayers.seedAppAssignment(
           ar,
@@ -579,10 +564,9 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
       for
         _    <- cleanDb
         pr   <- ZIO.service[ProfileRepo]
-        sr   <- ZIO.service[ScheduleRepo]
         dr   <- ZIO.service[DeviceRepo]
         ar   <- ZIO.service[AppRepo]
-        kid  <- TestLayers.seedKidsProfile(pr, sr)
+        kid  <- TestLayers.seedKidsProfile(pr)
         _    <- TestLayers.seedDevice(dr, mac, "kid-ipad", kid)
         app  <- ar.create("YouTube", "youtube", None, None)
         _    <- ar.setHosts(app, List(Hostname.unsafe("youtube.com"), Hostname.unsafe("ytimg.com")))
@@ -614,10 +598,9 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
       for
         _    <- cleanDb
         pr   <- ZIO.service[ProfileRepo]
-        sr   <- ZIO.service[ScheduleRepo]
         dr   <- ZIO.service[DeviceRepo]
         ar   <- ZIO.service[AppRepo]
-        kid  <- TestLayers.seedKidsProfile(pr, sr)
+        kid  <- TestLayers.seedKidsProfile(pr)
         _    <- pr.setPaused(kid, true)
         _    <- TestLayers.seedDevice(dr, mac, "kid-ipad", kid)
         app  <- ar.create("Khan", "khan", None, None)
@@ -655,11 +638,10 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
       for
         _    <- cleanDb
         pr   <- ZIO.service[ProfileRepo]
-        sr   <- ZIO.service[ScheduleRepo]
         dr   <- ZIO.service[DeviceRepo]
         tlr  <- ZIO.service[TimeLimitRepo]
         ar   <- ZIO.service[AppRepo]
-        kid  <- TestLayers.seedKidsProfile(pr, sr)
+        kid  <- TestLayers.seedKidsProfile(pr)
         _    <- tlr.upsert(kid, 30)
         _    <- TestLayers.seedDevice(dr, mac, "kid-ipad", kid)
         app  <- ar.create("Khan", "khan", None, None)

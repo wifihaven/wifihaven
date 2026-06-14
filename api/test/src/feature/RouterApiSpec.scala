@@ -36,7 +36,6 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
   private def makePolicyService =
     for {
       pr     <- ZIO.service[ProfileRepo]
-      sr     <- ZIO.service[ScheduleRepo]
       hsr    <- ZIO.service[HouseholdSettingsRepo]
       tlr    <- ZIO.service[TimeLimitRepo]
       atlr   <- ZIO.service[AppTimeLimitRepo]
@@ -48,7 +47,6 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
       clock  <- ZIO.service[Clock]
     } yield PolicyServiceLive(
       pr,
-      sr,
       hsr,
       tlr,
       atlr,
@@ -207,13 +205,12 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
       for {
         _         <- cleanDb
         pr        <- ZIO.service[ProfileRepo]
-        sr        <- ZIO.service[ScheduleRepo]
         tlr       <- ZIO.service[TimeLimitRepo]
         dr        <- ZIO.service[DeviceRepo]
         blr       <- ZIO.service[BlocklistRepo]
         rr        <- ZIO.service[RouterRepo]
         ar        <- ZIO.service[AppRepo]
-        kid       <- TestLayers.seedKidsProfile(pr, sr)
+        kid       <- TestLayers.seedKidsProfile(pr)
         _         <- tlr.upsert(kid, 120)
         _         <- TestLayers.seedAppAssignment(
           ar,
@@ -264,10 +261,9 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
       for {
         _       <- cleanDb
         pr      <- ZIO.service[ProfileRepo]
-        sr      <- ZIO.service[ScheduleRepo]
         rr      <- ZIO.service[RouterRepo]
         ber     <- ZIO.service[BlockEventRepo]
-        kid     <- TestLayers.seedKidsProfile(pr, sr)
+        kid     <- TestLayers.seedKidsProfile(pr)
         ps      <- makePolicyService
         (_, et) <- seedRouter("gw")
         routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
@@ -438,10 +434,9 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
       for {
         _       <- cleanDb
         pr      <- ZIO.service[ProfileRepo]
-        sr      <- ZIO.service[ScheduleRepo]
         dr      <- ZIO.service[DeviceRepo]
         rr      <- ZIO.service[RouterRepo]
-        kid     <- TestLayers.seedKidsProfile(pr, sr)
+        kid     <- TestLayers.seedKidsProfile(pr)
         _       <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
         _       <- dr.upsertUnknown(
           MacAddress.unsafe("ff:ff:ff:aa:bb:cc"),
@@ -483,12 +478,11 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
       for {
         _        <- cleanDb
         pr       <- ZIO.service[ProfileRepo]
-        sr       <- ZIO.service[ScheduleRepo]
         dr       <- ZIO.service[DeviceRepo]
         rr       <- ZIO.service[RouterRepo]
         hsr      <- ZIO.service[HouseholdSettingsRepo]
         ber      <- ZIO.service[BlockEventRepo]
-        kid      <- TestLayers.seedKidsProfile(pr, sr)
+        kid      <- TestLayers.seedKidsProfile(pr)
         _        <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
         _        <- dr.upsertUnknown(
           MacAddress.unsafe("ff:ff:ff:aa:bb:cc"),
@@ -718,11 +712,10 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
       for {
         _       <- cleanDb
         pr      <- ZIO.service[ProfileRepo]
-        sr      <- ZIO.service[ScheduleRepo]
         rr      <- ZIO.service[RouterRepo]
         blr     <- ZIO.service[BlocklistRepo]
         ber     <- ZIO.service[BlockEventRepo]
-        _       <- TestLayers.seedKidsProfile(pr, sr)
+        _       <- TestLayers.seedKidsProfile(pr)
         _       <- blr.insertBatch(List(("doubleclick.net", "test_ads")))
         ps      <- makePolicyService
         (_, et) <- seedRouter("gw-etag")

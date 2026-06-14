@@ -150,9 +150,8 @@ object RecentApexesApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
       for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
-        schedRepo   <- ZIO.service[ScheduleRepo]
         deviceRepo  <- ZIO.service[DeviceRepo]
-        kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+        kidsId      <- TestLayers.seedKidsProfile(profileRepo)
         _           <- TestLayers.seedDevice(deviceRepo, kidsMac, "iPad", kidsId)
         routerId    <- seedRouter
         today = TestClock.schoolDayAfternoon.toLocalDate
@@ -196,9 +195,8 @@ object RecentApexesApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
       for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
-        schedRepo   <- ZIO.service[ScheduleRepo]
         deviceRepo  <- ZIO.service[DeviceRepo]
-        kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+        kidsId      <- TestLayers.seedKidsProfile(profileRepo)
         _           <- TestLayers.seedDevice(deviceRepo, kidsMac, "iPad", kidsId)
         routerId    <- seedRouter
         today = TestClock.schoolDayAfternoon.toLocalDate
@@ -220,9 +218,8 @@ object RecentApexesApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
       for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
-        schedRepo   <- ZIO.service[ScheduleRepo]
         deviceRepo  <- ZIO.service[DeviceRepo]
-        kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+        kidsId      <- TestLayers.seedKidsProfile(profileRepo)
         _           <- TestLayers.seedDevice(deviceRepo, kidsMac, "iPad", kidsId)
         routerId    <- seedRouter
         today = TestClock.schoolDayAfternoon.toLocalDate
@@ -259,9 +256,8 @@ object RecentApexesApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         userRepo    <- ZIO.service[UserRepo]
         upRepo      <- ZIO.service[UserProfileRepo]
         profileRepo <- ZIO.service[ProfileRepo]
-        schedRepo   <- ZIO.service[ScheduleRepo]
         deviceRepo  <- ZIO.service[DeviceRepo]
-        kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+        kidsId      <- TestLayers.seedKidsProfile(profileRepo)
         adultsId    <- TestLayers.seedAdultsProfile(profileRepo)
         // The child is linked to Kids only; the device lives on Adults.
         _           <- TestLayers.seedDevice(deviceRepo, adultsMac, "Dad's phone", adultsId)

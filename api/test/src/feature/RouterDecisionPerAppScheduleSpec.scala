@@ -33,7 +33,6 @@ object RouterDecisionPerAppScheduleSpec
   private def makePsAt(dt: LocalDateTime) =
     for {
       pr     <- ZIO.service[ProfileRepo]
-      sr     <- ZIO.service[ScheduleRepo]
       hsr    <- ZIO.service[HouseholdSettingsRepo]
       tlr    <- ZIO.service[TimeLimitRepo]
       atlr   <- ZIO.service[AppTimeLimitRepo]
@@ -47,7 +46,6 @@ object RouterDecisionPerAppScheduleSpec
       clk = new Clock.TestClock(ref)
     } yield PolicyServiceLive(
       pr,
-      sr,
       hsr,
       tlr,
       atlr,
@@ -113,11 +111,10 @@ object RouterDecisionPerAppScheduleSpec
       for {
         _   <- cleanDb
         pr  <- ZIO.service[ProfileRepo]
-        sr  <- ZIO.service[ScheduleRepo]
         dr  <- ZIO.service[DeviceRepo]
         ar  <- ZIO.service[AppRepo]
         nsr <- ZIO.service[NamedScheduleRepo]
-        kid <- TestLayers.seedKidsProfile(pr, sr)
+        kid <- TestLayers.seedKidsProfile(pr)
         _   <- TestLayers.seedDevice(dr, mac, "kid-ipad", kid)
         _   <- seedScheduledApp(
           ar,
@@ -139,11 +136,10 @@ object RouterDecisionPerAppScheduleSpec
       for {
         _   <- cleanDb
         pr  <- ZIO.service[ProfileRepo]
-        sr  <- ZIO.service[ScheduleRepo]
         dr  <- ZIO.service[DeviceRepo]
         ar  <- ZIO.service[AppRepo]
         nsr <- ZIO.service[NamedScheduleRepo]
-        kid <- TestLayers.seedKidsProfile(pr, sr)
+        kid <- TestLayers.seedKidsProfile(pr)
         _   <- TestLayers.seedDevice(dr, mac, "kid-ipad", kid)
         _   <- seedScheduledApp(
           ar,
@@ -165,12 +161,11 @@ object RouterDecisionPerAppScheduleSpec
       for {
         _   <- cleanDb
         pr  <- ZIO.service[ProfileRepo]
-        sr  <- ZIO.service[ScheduleRepo]
         dr  <- ZIO.service[DeviceRepo]
         tlr <- ZIO.service[TimeLimitRepo]
         ar  <- ZIO.service[AppRepo]
         nsr <- ZIO.service[NamedScheduleRepo]
-        kid <- TestLayers.seedKidsProfile(pr, sr)
+        kid <- TestLayers.seedKidsProfile(pr)
         _   <- tlr.upsert(kid, 30)
         _   <- TestLayers.seedDevice(dr, mac, "kid-ipad", kid)
         _   <- seedScheduledApp(
@@ -195,12 +190,11 @@ object RouterDecisionPerAppScheduleSpec
       for {
         _   <- cleanDb
         pr  <- ZIO.service[ProfileRepo]
-        sr  <- ZIO.service[ScheduleRepo]
         dr  <- ZIO.service[DeviceRepo]
         tlr <- ZIO.service[TimeLimitRepo]
         ar  <- ZIO.service[AppRepo]
         nsr <- ZIO.service[NamedScheduleRepo]
-        kid <- TestLayers.seedKidsProfile(pr, sr)
+        kid <- TestLayers.seedKidsProfile(pr)
         _   <- tlr.upsert(kid, 30)
         _   <- TestLayers.seedDevice(dr, mac, "kid-ipad", kid)
         _   <- seedScheduledApp(

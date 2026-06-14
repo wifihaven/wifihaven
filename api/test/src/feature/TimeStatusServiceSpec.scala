@@ -23,20 +23,19 @@ object TimeStatusServiceSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
   private val cleanDb = TestDatabase.cleanAndMigrate
 
   private def makeService: ZIO[
-    ProfileRepo & ScheduleRepo & TimeLimitRepo & AppTimeLimitRepo & DeviceRepo & TrafficReportRepo &
+    ProfileRepo & TimeLimitRepo & AppTimeLimitRepo & DeviceRepo & TrafficReportRepo &
       TimeExtensionRepo,
     Nothing,
     TimeStatusService,
   ] =
     for {
       pr   <- ZIO.service[ProfileRepo]
-      sr   <- ZIO.service[ScheduleRepo]
       tlr  <- ZIO.service[TimeLimitRepo]
       atlr <- ZIO.service[AppTimeLimitRepo]
       dr   <- ZIO.service[DeviceRepo]
       trr  <- ZIO.service[TrafficReportRepo]
       er   <- ZIO.service[TimeExtensionRepo]
-    } yield new TimeStatusServiceLive(pr, sr, tlr, atlr, dr, trr, er)
+    } yield new TimeStatusServiceLive(pr, tlr, atlr, dr, trr, er)
 
   private def seedRouterRow: ZIO[RouterRepo, Throwable, RouterId] =
     ZIO.serviceWithZIO[RouterRepo](_.create("gw-tss", Sha256Hex.unsafe("t" * 64)))
@@ -126,10 +125,9 @@ object TimeStatusServiceSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         _   <- cleanDb
         hsr <- ZIO.service[HouseholdSettingsRepo]
         pr  <- ZIO.service[ProfileRepo]
-        sr  <- ZIO.service[ScheduleRepo]
         dr  <- ZIO.service[DeviceRepo]
         s   <- settingsWithTz(hsr, "America/Denver")
-        kid <- TestLayers.seedKidsProfile(pr, sr)
+        kid <- TestLayers.seedKidsProfile(pr)
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:dd:ee:01", "kid-ipad", kid)
         svc <- makeService
         now = LocalDateTime.of(2026, 5, 26, 22, 46, 0).toInstant(ZoneOffset.UTC)
@@ -144,9 +142,8 @@ object TimeStatusServiceSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         _   <- cleanDb
         hsr <- ZIO.service[HouseholdSettingsRepo]
         pr  <- ZIO.service[ProfileRepo]
-        sr  <- ZIO.service[ScheduleRepo]
         s   <- settingsWithTz(hsr, "Asia/Tokyo")
-        kid <- TestLayers.seedKidsProfile(pr, sr)
+        kid <- TestLayers.seedKidsProfile(pr)
         svc <- makeService
         now = LocalDateTime.of(2026, 5, 26, 13, 0, 0).toInstant(ZoneOffset.UTC)
         stOpt <- svc.todaysState(now, s, kid)
@@ -158,9 +155,8 @@ object TimeStatusServiceSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         _   <- cleanDb
         hsr <- ZIO.service[HouseholdSettingsRepo]
         pr  <- ZIO.service[ProfileRepo]
-        sr  <- ZIO.service[ScheduleRepo]
         s   <- settingsWithTz(hsr, "America/Denver")
-        kid <- TestLayers.seedKidsProfile(pr, sr)
+        kid <- TestLayers.seedKidsProfile(pr)
         svc <- makeService
         now = LocalDateTime.of(2026, 5, 27, 0, 30, 0).toInstant(ZoneOffset.UTC)
         stOpt <- svc.todaysState(now, s, kid)
@@ -173,9 +169,8 @@ object TimeStatusServiceSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         _   <- cleanDb
         hsr <- ZIO.service[HouseholdSettingsRepo]
         pr  <- ZIO.service[ProfileRepo]
-        sr  <- ZIO.service[ScheduleRepo]
         s   <- settingsWithTz(hsr, "America/Denver")
-        kid <- TestLayers.seedKidsProfile(pr, sr)
+        kid <- TestLayers.seedKidsProfile(pr)
         svc <- makeService
         now = LocalDateTime.of(2025, 3, 9, 8, 0, 0).toInstant(ZoneOffset.UTC)
         stOpt <- svc.todaysState(now, s, kid)
@@ -186,11 +181,10 @@ object TimeStatusServiceSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         _   <- cleanDb
         hsr <- ZIO.service[HouseholdSettingsRepo]
         pr  <- ZIO.service[ProfileRepo]
-        sr  <- ZIO.service[ScheduleRepo]
         dr  <- ZIO.service[DeviceRepo]
         tlr <- ZIO.service[TimeLimitRepo]
         s   <- settingsWithTz(hsr, "UTC")
-        kid <- TestLayers.seedKidsProfile(pr, sr)
+        kid <- TestLayers.seedKidsProfile(pr)
         _   <- tlr.upsert(kid, 30)
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:dd:ee:02", "kid-ipad", kid)
         rid <- seedRouterRow
@@ -208,12 +202,11 @@ object TimeStatusServiceSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         _   <- cleanDb
         hsr <- ZIO.service[HouseholdSettingsRepo]
         pr  <- ZIO.service[ProfileRepo]
-        sr  <- ZIO.service[ScheduleRepo]
         dr  <- ZIO.service[DeviceRepo]
         tlr <- ZIO.service[TimeLimitRepo]
         er  <- ZIO.service[TimeExtensionRepo]
         s   <- settingsWithTz(hsr, "UTC")
-        kid <- TestLayers.seedKidsProfile(pr, sr)
+        kid <- TestLayers.seedKidsProfile(pr)
         _   <- tlr.upsert(kid, 30)
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:dd:ee:03", "kid-ipad", kid)
         rid <- seedRouterRow
@@ -231,10 +224,9 @@ object TimeStatusServiceSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         _   <- cleanDb
         hsr <- ZIO.service[HouseholdSettingsRepo]
         pr  <- ZIO.service[ProfileRepo]
-        sr  <- ZIO.service[ScheduleRepo]
         dr  <- ZIO.service[DeviceRepo]
         s   <- settingsWithTz(hsr, "UTC")
-        kid <- TestLayers.seedKidsProfile(pr, sr)
+        kid <- TestLayers.seedKidsProfile(pr)
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:dd:ee:04", "ipadA", kid)
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:dd:ee:05", "ipadB", kid)
         rid <- seedRouterRow
@@ -259,11 +251,10 @@ object TimeStatusServiceSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         _   <- cleanDb
         hsr <- ZIO.service[HouseholdSettingsRepo]
         pr  <- ZIO.service[ProfileRepo]
-        sr  <- ZIO.service[ScheduleRepo]
         dr  <- ZIO.service[DeviceRepo]
         ar  <- ZIO.service[AppRepo]
         s   <- settingsWithTz(hsr, "UTC")
-        kid <- TestLayers.seedKidsProfile(pr, sr)
+        kid <- TestLayers.seedKidsProfile(pr)
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:dd:ee:06", "kid-ipad", kid)
         _   <- TestLayers.seedAppAssignment(
           ar,
@@ -293,11 +284,10 @@ object TimeStatusServiceSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         _   <- cleanDb
         hsr <- ZIO.service[HouseholdSettingsRepo]
         pr  <- ZIO.service[ProfileRepo]
-        sr  <- ZIO.service[ScheduleRepo]
         dr  <- ZIO.service[DeviceRepo]
         ar  <- ZIO.service[AppRepo]
         s   <- settingsWithTz(hsr, "UTC")
-        kid <- TestLayers.seedKidsProfile(pr, sr)
+        kid <- TestLayers.seedKidsProfile(pr)
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:dd:ee:07", "kid-ipad", kid)
         _   <- TestLayers.seedAppAssignment(
           ar,

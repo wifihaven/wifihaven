@@ -34,7 +34,6 @@ object PolicySnapshotScheduleBlockToggleSpec
   private def makePsAt(dt: LocalDateTime) =
     for {
       pr     <- ZIO.service[ProfileRepo]
-      sr     <- ZIO.service[ScheduleRepo]
       hsr    <- ZIO.service[HouseholdSettingsRepo]
       tlr    <- ZIO.service[TimeLimitRepo]
       atlr   <- ZIO.service[AppTimeLimitRepo]
@@ -48,7 +47,6 @@ object PolicySnapshotScheduleBlockToggleSpec
       clk = new Clock.TestClock(ref)
     } yield PolicyServiceLive(
       pr,
-      sr,
       hsr,
       tlr,
       atlr,
@@ -70,9 +68,8 @@ object PolicySnapshotScheduleBlockToggleSpec
       for {
         _     <- cleanDb
         pr    <- ZIO.service[ProfileRepo]
-        sr    <- ZIO.service[ScheduleRepo]
         ar    <- ZIO.service[AppRepo]
-        kid   <- TestLayers.seedKidsProfile(pr, sr)
+        kid   <- TestLayers.seedKidsProfile(pr)
         appId <- ar.create("AlwaysAllowed", "always-allowed", None, None)
         _     <- ar.setHosts(appId, List(Hostname.unsafe("always.example.com")))
         // allowedDuringScheduleBlock=true (default) — carve-out survives schedule block
@@ -100,9 +97,8 @@ object PolicySnapshotScheduleBlockToggleSpec
       for {
         _     <- cleanDb
         pr    <- ZIO.service[ProfileRepo]
-        sr    <- ZIO.service[ScheduleRepo]
         ar    <- ZIO.service[AppRepo]
-        kid   <- TestLayers.seedKidsProfile(pr, sr)
+        kid   <- TestLayers.seedKidsProfile(pr)
         appId <- ar.create("ScheduleRespect", "schedule-respect", None, None)
         _     <- ar.setHosts(appId, List(Hostname.unsafe("schedule-respect.example.com")))
         // allowedDuringScheduleBlock=false — carve-out suppressed during schedule block
@@ -130,9 +126,8 @@ object PolicySnapshotScheduleBlockToggleSpec
       for {
         _      <- cleanDb
         pr     <- ZIO.service[ProfileRepo]
-        sr     <- ZIO.service[ScheduleRepo]
         ar     <- ZIO.service[AppRepo]
-        kid    <- TestLayers.seedKidsProfile(pr, sr)
+        kid    <- TestLayers.seedKidsProfile(pr)
         keepId <- ar.create("Keep", "keep-app", None, None)
         _      <- ar.setHosts(keepId, List(Hostname.unsafe("keep.example.com")))
         _      <- ar.upsertAssignment(
@@ -170,9 +165,8 @@ object PolicySnapshotScheduleBlockToggleSpec
       for {
         _     <- cleanDb
         pr    <- ZIO.service[ProfileRepo]
-        sr    <- ZIO.service[ScheduleRepo]
         ar    <- ZIO.service[AppRepo]
-        kid   <- TestLayers.seedKidsProfile(pr, sr)
+        kid   <- TestLayers.seedKidsProfile(pr)
         appId <- ar.create("ScheduleRespect2", "schedule-respect2", None, None)
         _     <- ar.setHosts(appId, List(Hostname.unsafe("sr2.example.com")))
         _     <- ar.upsertAssignment(
@@ -198,9 +192,8 @@ object PolicySnapshotScheduleBlockToggleSpec
       for {
         _     <- cleanDb
         pr    <- ZIO.service[ProfileRepo]
-        sr    <- ZIO.service[ScheduleRepo]
         ar    <- ZIO.service[AppRepo]
-        kid   <- TestLayers.seedKidsProfile(pr, sr)
+        kid   <- TestLayers.seedKidsProfile(pr)
         // Pause the profile
         _     <- pr.setPaused(kid, paused = true)
         appId <- ar.create("PauseIgnored", "pause-ignored", None, None)

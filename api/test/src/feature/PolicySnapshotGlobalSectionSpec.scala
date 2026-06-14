@@ -31,7 +31,6 @@ object PolicySnapshotGlobalSectionSpec
   private def makePs =
     for {
       pr     <- ZIO.service[ProfileRepo]
-      sr     <- ZIO.service[ScheduleRepo]
       hsr    <- ZIO.service[HouseholdSettingsRepo]
       tlr    <- ZIO.service[TimeLimitRepo]
       atlr   <- ZIO.service[AppTimeLimitRepo]
@@ -44,7 +43,6 @@ object PolicySnapshotGlobalSectionSpec
       clock  <- ZIO.service[Clock]
     } yield PolicyServiceLive(
       pr,
-      sr,
       hsr,
       tlr,
       atlr,

@@ -43,7 +43,6 @@ object AdminSnapshotApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPost
   private def makePolicyService =
     for {
       pr     <- ZIO.service[ProfileRepo]
-      sr     <- ZIO.service[ScheduleRepo]
       hsr    <- ZIO.service[HouseholdSettingsRepo]
       tlr    <- ZIO.service[TimeLimitRepo]
       atlr   <- ZIO.service[AppTimeLimitRepo]
@@ -55,7 +54,6 @@ object AdminSnapshotApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPost
       clock  <- ZIO.service[Clock]
     } yield PolicyServiceLive(
       pr,
-      sr,
       hsr,
       tlr,
       atlr,
@@ -77,9 +75,8 @@ object AdminSnapshotApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPost
       for {
         _          <- cleanDb
         pr         <- ZIO.service[ProfileRepo]
-        sr         <- ZIO.service[ScheduleRepo]
         dr         <- ZIO.service[DeviceRepo]
-        _          <- TestLayers.seedKidsProfile(pr, sr)
+        _          <- TestLayers.seedKidsProfile(pr)
         auth       <- makeAuth
         ps         <- makePolicyService
         adminLogin <- auth.login("admin", "changeme")
@@ -136,8 +133,7 @@ object AdminSnapshotApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPost
       (for {
         _    <- cleanDb
         pr   <- ZIO.service[ProfileRepo]
-        sr   <- ZIO.service[ScheduleRepo]
-        kid  <- TestLayers.seedKidsProfile(pr, sr)
+        kid  <- TestLayers.seedKidsProfile(pr)
         ps   <- makePolicyService
         // First snapshot: should log once (None -> Some(etag1)).
         s1   <- ps.snapshot

@@ -60,7 +60,6 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
       for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
-        schedRepo   <- ZIO.service[ScheduleRepo]
         tlRepo      <- ZIO.service[TimeLimitRepo]
         userRepo    <- ZIO.service[UserRepo]
         upRepo      <- ZIO.service[UserProfileRepo]
@@ -72,7 +71,6 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         routes = ProfileRoutes.routes(
           auth,
           profileRepo,
-          schedRepo,
           tlRepo,
           upRepo,
           userRepo,
@@ -91,7 +89,6 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
       for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
-        schedRepo   <- ZIO.service[ScheduleRepo]
         tlRepo      <- ZIO.service[TimeLimitRepo]
         userRepo    <- ZIO.service[UserRepo]
         upRepo      <- ZIO.service[UserProfileRepo]
@@ -104,7 +101,6 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         routes = ProfileRoutes.routes(
           auth,
           profileRepo,
-          schedRepo,
           tlRepo,
           upRepo,
           userRepo,
@@ -119,7 +115,6 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
       for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
-        schedRepo   <- ZIO.service[ScheduleRepo]
         tlRepo      <- ZIO.service[TimeLimitRepo]
         userRepo    <- ZIO.service[UserRepo]
         upRepo      <- ZIO.service[UserProfileRepo]
@@ -131,7 +126,6 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         routes = ProfileRoutes.routes(
           auth,
           profileRepo,
-          schedRepo,
           tlRepo,
           upRepo,
           userRepo,
@@ -148,7 +142,6 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
       for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
-        schedRepo   <- ZIO.service[ScheduleRepo]
         tlRepo      <- ZIO.service[TimeLimitRepo]
         userRepo    <- ZIO.service[UserRepo]
         upRepo      <- ZIO.service[UserProfileRepo]
@@ -168,7 +161,6 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         routes = ProfileRoutes.routes(
           auth,
           profileRepo,
-          schedRepo,
           tlRepo,
           upRepo,
           userRepo,
@@ -192,7 +184,6 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
       for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
-        schedRepo   <- ZIO.service[ScheduleRepo]
         tlRepo      <- ZIO.service[TimeLimitRepo]
         userRepo    <- ZIO.service[UserRepo]
         upRepo      <- ZIO.service[UserProfileRepo]
@@ -205,7 +196,6 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         routes = ProfileRoutes.routes(
           auth,
           profileRepo,
-          schedRepo,
           tlRepo,
           upRepo,
           userRepo,
@@ -227,7 +217,6 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
       for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
-        schedRepo   <- ZIO.service[ScheduleRepo]
         tlRepo      <- ZIO.service[TimeLimitRepo]
         userRepo    <- ZIO.service[UserRepo]
         upRepo      <- ZIO.service[UserProfileRepo]
@@ -237,7 +226,6 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         routes = ProfileRoutes.routes(
           auth,
           profileRepo,
-          schedRepo,
           tlRepo,
           upRepo,
           userRepo,
@@ -269,7 +257,6 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
       for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
-        schedRepo   <- ZIO.service[ScheduleRepo]
         tlRepo      <- ZIO.service[TimeLimitRepo]
         userRepo    <- ZIO.service[UserRepo]
         upRepo      <- ZIO.service[UserProfileRepo]
@@ -294,7 +281,6 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         profRoutes = ProfileRoutes.routes(
           auth,
           profileRepo,
-          schedRepo,
           tlRepo,
           upRepo,
           userRepo,
@@ -372,7 +358,6 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
       for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
-        schedRepo   <- ZIO.service[ScheduleRepo]
         tlRepo      <- ZIO.service[TimeLimitRepo]
         userRepo    <- ZIO.service[UserRepo]
         upRepo      <- ZIO.service[UserProfileRepo]
@@ -384,7 +369,6 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         routes = ProfileRoutes.routes(
           auth,
           profileRepo,
-          schedRepo,
           tlRepo,
           upRepo,
           userRepo,
@@ -402,7 +386,6 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
       for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
-        schedRepo   <- ZIO.service[ScheduleRepo]
         tlRepo      <- ZIO.service[TimeLimitRepo]
         userRepo    <- ZIO.service[UserRepo]
         upRepo      <- ZIO.service[UserProfileRepo]
@@ -415,7 +398,6 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         routes = ProfileRoutes.routes(
           auth,
           profileRepo,
-          schedRepo,
           tlRepo,
           upRepo,
           userRepo,

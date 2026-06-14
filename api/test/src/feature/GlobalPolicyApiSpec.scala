@@ -230,13 +230,12 @@ object GlobalPolicyApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         _    <- cleanDb
         auth <- makeAuth
         pr   <- ZIO.service[ProfileRepo]
-        sr   <- ZIO.service[ScheduleRepo]
         tlr  <- ZIO.service[TimeLimitRepo]
         upr  <- ZIO.service[UserProfileRepo]
         ur   <- ZIO.service[UserRepo]
         tk   <- auth.login("admin", "changeme").map(_.token.value)
         pid  <- pr.create("kids", Nil)
-        routes = ProfileRoutes.routes(auth, pr, sr, tlr, upr, ur)
+        routes = ProfileRoutes.routes(auth, pr, tlr, upr, ur)
         resp   <- send(
           routes,
           Request.put(

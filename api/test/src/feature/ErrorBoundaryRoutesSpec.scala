@@ -59,12 +59,11 @@ object ErrorBoundaryRoutesSpec
   private def profileRoutes =
     for {
       pr   <- ZIO.service[ProfileRepo]
-      sr   <- ZIO.service[ScheduleRepo]
       tlr  <- ZIO.service[TimeLimitRepo]
       up   <- ZIO.service[UserProfileRepo]
       ur   <- ZIO.service[UserRepo]
       auth <- makeAuth
-    } yield ErrorBoundary.observe(ProfileRoutes.routes(auth, pr, sr, tlr, up, ur))
+    } yield ErrorBoundary.observe(ProfileRoutes.routes(auth, pr, tlr, up, ur))
 
   private def url(p: String) = URL.decode(p).toOption.get
   private def get(rs: Routes[Any, Response], path: String, token: String) =
