@@ -54,6 +54,26 @@ object HostIdSpec extends ZIOSpecDefault {
         val json = """{"type":"fqdn","value":"192.0.2.1"}"""
         assertTrue(json.fromJson[HostId].isLeft)
       },
+      // #1708: distinct `label` variant so static IP-range labels (apple-push,
+      // google-dns, cloudflare-dns) don't masquerade as FQDNs on the wire.
+      test("encodes Label as {type:label,value:...,source:static-ip-range}") {
+        val h    = HostId.Label("apple-push"): HostId
+        val json = h.toJson
+        assertTrue(json == """{"type":"label","value":"apple-push","source":"static-ip-range"}""")
+      },
+      test("round-trips Label with source") {
+        val h    = HostId.Label("apple-push"): HostId
+        val json = h.toJson
+        assertTrue(json.fromJson[HostId].contains(h))
+      },
+      test("decodes Label without source (forward-compat for future label sources)") {
+        val json = """{"type":"label","value":"google-dns"}"""
+        assertTrue(json.fromJson[HostId].contains(HostId.Label("google-dns"): HostId))
+      },
+      test("decodes Label with an unknown source verbatim (forward-compat)") {
+        val json = """{"type":"label","value":"future-label","source":"asn-map"}"""
+        assertTrue(json.fromJson[HostId].contains(HostId.Label("future-label"): HostId))
+      },
     ),
     suite("extensions")(
       test("value returns underlying string for all variants") {
@@ -82,6 +102,15 @@ object HostIdSpec extends ZIOSpecDefault {
         val v4 = HostId.IPv4(IpAddress.parse("1.2.3.4").toOption.get): HostId
         assertTrue(f.asFqdn.exists(_.value == "a.example")) &&
         assertTrue(v4.asFqdn.isEmpty)
+      },
+      test("#1708: Label.value/kind/isFqdn/asFqdn") {
+        val l: HostId = HostId.Label("apple-push")
+        assertTrue(
+          l.value == "apple-push",
+          l.kind == "label",
+          !l.isFqdn,
+          l.asFqdn.isEmpty,
+        )
       },
     ),
   )

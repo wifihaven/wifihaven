@@ -177,11 +177,18 @@ export interface ApproveAlertRequest {
 // Tagged-union host identifier (#391). Wire shape carried by every endpoint
 // that surfaces a "what host did the device contact" field. FQDN is a
 // resolved hostname; ipv4/ipv6 are raw IP literals emitted when DNS
-// attribution missed (DoH, Apple Private Relay, direct-IP).
+// attribution missed (DoH, Apple Private Relay, direct-IP). `label` (#1708)
+// is a synthetic name attached because the destination IP fell inside a
+// hardcoded operator-curated range (e.g. apple-push / google-dns /
+// cloudflare-dns) — NOT a hostname the agent observed at the resolver.
 export type HostId =
   | { type: 'fqdn'; value: string }
   | { type: 'ipv4'; value: string }
   | { type: 'ipv6'; value: string }
+  // `source` is open-ended (forward-compat for a future ASN map etc.); today
+  // the only emitted value is 'static-ip-range'. Kept as plain string per
+  // eslint @typescript-eslint/ban-types (rules out the literal+string trick).
+  | { type: 'label'; value: string; source?: string }
 
 export function hostDisplay(h: HostId): string {
   return h.value

@@ -21,8 +21,12 @@ export function HostCell({ host, className = '' }: { host: HostId; className?: s
       </span>
     )
   }
+  // #1708: Label rows render with the same italic + tag treatment as IP literals
+  // so a synthetic name (apple-push) doesn't visually masquerade as a resolved
+  // FQDN. Tooltip carries the source where present for inspectability.
+  const title = host.type === 'label' && host.source ? `${host.value} (${host.source})` : host.value
   return (
-    <span className={`font-mono italic text-brand-text ${className}`.trim()} title={host.value}>
+    <span className={`font-mono italic text-brand-text ${className}`.trim()} title={title}>
       {host.value}
       {' '}
       <span className="text-[10px] uppercase tracking-wide text-brand-text-muted">
