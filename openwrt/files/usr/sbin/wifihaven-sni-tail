@@ -155,7 +155,12 @@ local function dispatch(pkt)
   -- the right bucket (not_tcp is the TCP-path's "not a TCP segment" label).
   if ethertype == 0x86dd then
     local r, reason = sni.parse_packet(pkt)
-    if r then return r, "parsed" end
+    -- On a successful parse, sni.parse_packet may also return reason="ech"
+    -- (#1650) when the outer ClientHello carried the Encrypted ClientHello
+    -- extension. The result still attributes via the outer/public SNI, but
+    -- the metric bucket is `ech` rather than `parsed` so operators see the
+    -- ECH-attributed fraction distinctly.
+    if r then return r, reason or "parsed" end
     return nil, reason
   end
   if ethertype ~= 0x0800 then return nil, "not_ip" end
@@ -163,11 +168,13 @@ local function dispatch(pkt)
   local proto = pkt:byte(15 + 9)
   if proto == 6 then
     local r, reason = sni.parse_packet(pkt)
-    if r then return r, "parsed" end
+    if r then return r, reason or "parsed" end
     return nil, reason
   elseif proto == 17 then
     local r, reason = quic.parse_initial(pkt, quic_crypto)
-    if r then return r, "quic_success" end
+    -- ECH on the QUIC path (#1650) — propagate the "quic_ech" reason as the
+    -- result label so operators see ECH share split out from quic_success.
+    if r then return r, reason or "quic_success" end
     return nil, reason
   end
   -- BPF restricts to TCP/UDP, so anything else is unreachable in practice;
@@ -175,11 +182,11 @@ local function dispatch(pkt)
   return nil, "malformed"
 end
 
--- #573 / #1651 / #1652: cumulative per-result tally. result ∈ {parsed,
--- truncated, no_sni, not_ip, not_tcp, malformed, quic_success,
+-- #573 / #1650 / #1651 / #1652: cumulative per-result tally. result ∈ {parsed,
+-- truncated, no_sni, not_ip, not_tcp, malformed, ech, quic_success,
 -- quic_short_header, quic_unsupported_version, quic_not_initial,
 -- quic_truncated, quic_malformed, quic_decrypt_failed, quic_no_crypto_frame,
--- quic_no_sni, quic_not_ip, quic_not_udp, quic_not_443} — a small bounded
+-- quic_no_sni, quic_ech, quic_not_ip, quic_not_udp, quic_not_443} — a small bounded
 -- enum. The TCP-path "not_ip" replaced "ipv6_skipped" when sni.parse_packet
 -- gained IPv6 outer-header parsing in #1652. We mirror the #1302
 -- dns_metrics IPC: reuse dns_log.format_query_results to serialise the tally

@@ -119,8 +119,11 @@ object MetricGuard {
     "agent_version"                             -> Set("version", "router_id", "installation_id"),
     "dns_queries_total"                         -> Set("result", "router_id", "installation_id"),
     // #573 — TLS ClientHello SNI capture outcomes from the wifihaven-sni-tail sidecar.
-    // `result` ∈ {parsed, truncated, no_sni, not_ip, not_tcp, malformed} — a small bounded
-    // enum that lets an operator see the fleet-wide SNI capture / truncation / non-IP rate.
+    // `result` ∈ {parsed, truncated, no_sni, not_ip, not_tcp, malformed, ech (#1650)} — a
+    // small bounded enum that lets an operator see the fleet-wide SNI capture / truncation
+    // / non-IP rate. `ech` (TCP) and `quic_ech` (QUIC) are the share of ClientHellos using
+    // Encrypted ClientHello (the real server_name is encrypted; we attribute via the
+    // outer/public SNI when present).
     // (Pre-#1652 agents also emit `ipv6_skipped`; the bucket ages out as the fleet rolls forward.)
     "sni_clienthellos_total"                    -> Set("result", "router_id", "installation_id"),
     "blocklist_fetch_failures_total"            -> Set("status", "router_id", "installation_id"),

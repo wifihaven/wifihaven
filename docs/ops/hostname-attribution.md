@@ -94,7 +94,32 @@ uci commit wifihaven
 This is local agent config, not a policy-snapshot field — the API and
 other routers are unaffected. ([#1654](https://github.com/wifihaven/wifihaven/issues/1654))
 
-### 4. Connection-reuse / QUIC sessions
+### 4. Encrypted ClientHello (ECH)
+
+When a client negotiates TLS with Encrypted ClientHello (RFC
+draft-ietf-tls-esni, extension type `0xfe0d`), the real `server_name`
+travels inside the encrypted **inner** ClientHello and the sidecar
+cannot recover it. We do not — and will not — attempt to defeat ECH.
+
+What the sidecar does instead ([#1650](https://github.com/wifihaven/wifihaven/issues/1650)):
+
+- Detects the ECH extension in the outer ClientHello and buckets the
+  capture as `sni_clienthellos_total{result="ech"}` so an operator can
+  see the ECH-attributed fraction of the fleet's TCP/443 flows.
+- Returns the **outer/public** `server_name` when present — the
+  gateway hostname (e.g. `cloudflare-ech.com`, `use.tls-ech.dev`) the
+  TLS server uses to terminate the outer handshake. That is the most
+  honest attribution we can offer: it correctly names the gateway the
+  flow is bound to, even though it does not name the inner host the
+  user actually requested.
+- When the outer ClientHello carries no `server_name` extension at
+  all, the counter still ticks under `result="ech"` but no hostname is
+  attributed.
+
+The ECH share is visible in the `SNI ClientHello rate by result` panel
+on the router-fleet Grafana dashboard.
+
+### 5. Connection-reuse / QUIC sessions
 
 HTTP/3 (QUIC) maintains a single UDP "connection" that the app reuses
 across multiple host fetches without re-resolving DNS. If the first

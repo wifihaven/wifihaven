@@ -271,6 +271,98 @@ describe("quic", function()
     end)
   end)
 
+  -- ECH (Encrypted ClientHello, #1650) on the QUIC path. The detection itself
+  -- lives in sni.parse_client_hello (single-source-of-truth); these tests pin
+  -- the QUIC-side wiring — that parse_quic_packet and parse_initial propagate
+  -- the second-return label as "quic_ech" so the sni-tail sidecar buckets it
+  -- distinctly from plain quic_success.
+  describe("parse_quic_packet — ECH detection (#1650)", function()
+    -- Build a TLS handshake (no outer record header — QUIC carries the bare
+    -- handshake inside CRYPTO frames) for a ClientHello carrying ECH.
+    local function u16be(n) return string.char(math.floor(n / 256) % 256, n % 256) end
+    local function u24be(n)
+      return string.char(math.floor(n / 65536) % 256,
+                         math.floor(n / 256) % 256,
+                         n % 256)
+    end
+
+    local function build_handshake(opts)
+      opts = opts or {}
+      local random       = string.rep("\0", 32)
+      local session_id   = "\0"
+      local cipher_suites = u16be(2) .. "\x13\x01"
+      local compression  = "\x01\x00"
+      local exts = ""
+      if opts.sni then
+        local sn = "\0" .. u16be(#opts.sni) .. opts.sni
+        local sn_list = u16be(#sn) .. sn
+        exts = exts .. u16be(0x0000) .. u16be(#sn_list) .. sn_list
+      end
+      if opts.ech then
+        local body = string.rep("\0", 32)
+        exts = exts .. u16be(0xfe0d) .. u16be(#body) .. body
+      end
+      local ext_block = u16be(#exts) .. exts
+      local body = u16be(0x0303) .. random .. session_id ..
+                   cipher_suites .. compression .. ext_block
+      return "\x01" .. u24be(#body) .. body
+    end
+
+    -- Wrap handshake bytes in a single CRYPTO frame (type 0x06, offset 0, len)
+    -- and pad to ≥1162 bytes — the QUIC v1 spec requires client Initials to be
+    -- ≥1200 wire bytes, but parse_quic_packet's only constraint here is that
+    -- the CRYPTO frame sits at offset 0 in the plaintext.
+    local function crypto_frame_payload(handshake_bytes)
+      local hs_len = #handshake_bytes
+      -- 2-byte varint for length: 0x4000 | len when len ≤ 16383.
+      local len_varint = string.char(0x40 + math.floor(hs_len / 256), hs_len % 256)
+      local frame = "\x06" .. "\x00" .. len_varint .. handshake_bytes
+      local pad = math.max(0, 1162 - #frame)
+      return frame .. string.rep("\0", pad)
+    end
+
+    -- Stub crypto whose aes128_gcm_decrypt returns a chosen plaintext (the
+    -- caller's CRYPTO frame). All other RFC vector assertions stay in place,
+    -- so the HP / nonce / AAD construction is still exercised end-to-end.
+    local function stub_crypto_with_plaintext(plaintext)
+      local s = stub_crypto()
+      s.aes128_gcm_decrypt = function(_, _, _, _) return plaintext end
+      return s
+    end
+
+    it("returns (outer_sni, quic_ech) when the outer ClientHello has ECH + a public SNI", function()
+      local hs = build_handshake({ sni = "cloudflare-ech.com", ech = true })
+      local sni, reason = quic.parse_quic_packet(
+        RFC_PROTECTED_PACKET,
+        stub_crypto_with_plaintext(crypto_frame_payload(hs)))
+      assert.are.equal("cloudflare-ech.com", sni)
+      assert.are.equal("quic_ech", reason)
+    end)
+
+    it("returns (nil, quic_ech) when the outer ClientHello has ECH but no public SNI", function()
+      local hs = build_handshake({ ech = true })
+      local sni, reason = quic.parse_quic_packet(
+        RFC_PROTECTED_PACKET,
+        stub_crypto_with_plaintext(crypto_frame_payload(hs)))
+      assert.is_nil(sni)
+      assert.are.equal("quic_ech", reason)
+    end)
+
+    it("parse_initial propagates quic_ech with the eth/ipv4/udp framing", function()
+      local hs = build_handshake({ sni = "use.tls-ech.dev", ech = true })
+      local mac = string.char(0xfa, 0x10, 0xcd, 0x84, 0x78, 0x22)
+      local ip  = string.char(104, 16, 132, 229)
+      local frame = build_eth_ipv4_udp(mac, ip, RFC_PROTECTED_PACKET)
+      local r, reason = quic.parse_initial(
+        frame, stub_crypto_with_plaintext(crypto_frame_payload(hs)))
+      assert.is_not_nil(r)
+      assert.are.equal("104.16.132.229",  r.dst_ip)
+      assert.are.equal("fa:10:cd:84:78:22", r.src_mac)
+      assert.are.equal("use.tls-ech.dev", r.sni)
+      assert.are.equal("quic_ech", reason)
+    end)
+  end)
+
   describe("parse_initial (full eth/ipv4/udp frame)", function()
     it("extracts dst_ip, src_mac, sni from a wire-format frame", function()
       local mac = string.char(0xfa, 0x10, 0xcd, 0x84, 0x78, 0x22)
