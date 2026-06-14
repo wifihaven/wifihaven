@@ -119,12 +119,46 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         assertTrue(templates.map(_.slug).distinct.size == templates.size)
       }
     },
-    test("every starter template has icon_type=url with a non-empty URL (#1041)") {
+    test("every starter template has a non-empty icon of a valid type (#1041, #1705)") {
+      // Originally (#1041) every template had to be icon_type=url. #1705 relaxes
+      // that: the operator picked emoji icons for math-academy and whatsapp in
+      // prod and the templates now match prod. The invariant kept is that
+      // every template ships a non-empty icon of a recognised type, and that
+      // every url-typed icon is an http(s) URL. ALL new templates (#1705
+      // additions) must remain url-typed — that part is asserted by the
+      // dedicated test below.
       for {
         templates <- AppTemplates.loadAll()
-      } yield assertTrue(templates.forall(_.iconType == IconType.Url)) &&
-        assertTrue(templates.forall(_.icon.exists(_.startsWith("http")))) &&
-        assertTrue(templates.forall(_.icon.exists(_.nonEmpty)))
+      } yield assertTrue(templates.forall(_.icon.exists(_.nonEmpty))) &&
+        assertTrue(templates.forall { t =>
+          t.iconType match {
+            case IconType.Url   => t.icon.exists(_.startsWith("http"))
+            case IconType.Emoji => t.icon.exists(_.nonEmpty)
+            case _              => true
+          }
+        })
+    },
+    test("#1705 new templates use favicon URLs, never emoji") {
+      // The 7 templates added by #1705 must all be icon_type=url with a
+      // ddg ip3 favicon — the operator explicitly asked for favicons on new
+      // templates so the new-app rollout looks consistent in the SPA.
+      val newSlugs = Set(
+        "tinkercad",
+        "duolingo",
+        "brave",
+        "plex",
+        "crazygames",
+        "poki",
+        "thingiverse",
+      )
+      for {
+        templates <- AppTemplates.loadAll()
+      } yield {
+        val newTemplates = templates.filter(t => newSlugs.contains(t.slug.value))
+        assertTrue(newTemplates.size == newSlugs.size) &&
+        assertTrue(newTemplates.forall(_.iconType == IconType.Url)) &&
+        assertTrue(newTemplates.forall(_.icon.exists(_.startsWith("https://"))))
+      }
     },
     test("seeded apps round-trip icon_type=url through the DB (#1041)") {
       for {
@@ -138,7 +172,10 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
       } yield assertTrue(yt.iconType == IconType.Url) &&
         assertTrue(yt.icon.exists(_.startsWith("http")))
     },
-    test("backfill seeds favicon icons when no apps exist for the slug (#1041)") {
+    test("backfill seeds icons matching the template's icon_type (#1041, #1705)") {
+      // Pre-#1705 every seeded row was icon_type=url; now math-academy and
+      // whatsapp ship as emoji. The seeder preserves whatever the template
+      // declares — assertion relaxed to match.
       for {
         _         <- cleanDb
         appRepo   <- ZIO.service[AppRepo]
@@ -146,8 +183,14 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         _         <- AppTemplates.seed(appRepo, templates)
         seeded    <- appRepo.listAll
       } yield assertTrue(seeded.nonEmpty) &&
-        assertTrue(seeded.forall(_.iconType == IconType.Url)) &&
-        assertTrue(seeded.forall(_.icon.exists(_.startsWith("http"))))
+        assertTrue(seeded.forall(_.icon.exists(_.nonEmpty))) &&
+        assertTrue(seeded.forall { a =>
+          a.iconType match {
+            case IconType.Url   => a.icon.exists(_.startsWith("http"))
+            case IconType.Emoji => a.icon.exists(_.nonEmpty)
+            case _              => true
+          }
+        })
     },
     test("backfill preserves operator's existing emoji icon (#1041)") {
       for {

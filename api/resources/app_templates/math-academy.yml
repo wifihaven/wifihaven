@@ -1,7 +1,8 @@
 slug: math-academy
 name: Math Academy
-# Emoji fallback: 🧮
-icon: "https://icons.duckduckgo.com/ip3/mathacademy.com.ico"
-icon_type: url
+# #1705: operator picked the abacus emoji in prod over the favicon; match
+# prod so fresh installs ship with the same default.
+icon: "🧮"
+icon_type: emoji
 hosts:
   - mathacademy.com

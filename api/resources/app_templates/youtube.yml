@@ -1,7 +1,7 @@
 slug: youtube
 name: YouTube
 # Emoji fallback: 📺
-icon: "https://icons.duckduckgo.com/ip3/youtube.com.ico"
+icon: "https://icons.duckduckgo.com/ip3/youtu.be.ico"
 icon_type: url
 # youtubei.googleapis.com is deliberately EXCLUDED from this set. It rides
 # Google's shared *.googleapis.com GFE anycast pool (216.239.32-38.223) — the
