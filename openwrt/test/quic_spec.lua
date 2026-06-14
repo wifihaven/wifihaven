@@ -289,10 +289,15 @@ describe("quic", function()
       assert.are.equal("quic_truncated", reason)
     end)
 
-    it("returns ipv6_skipped on a non-IPv4 ethertype", function()
+    it("returns not_ip on a non-IPv4 ethertype (QUIC is v4-only in v1)", function()
+      -- IPv6 ethertype here — sni.parse_packet (#1652) parses v6 itself, but
+      -- the QUIC outer-header path is IPv4-only and bounces v6 frames out as
+      -- quic_not_ip. The sidecar's dispatch() will route v6 frames to the
+      -- TCP path instead of calling parse_initial in practice, so this label
+      -- only ticks from direct API callers.
       local f = string.rep("\0", 12) .. "\x86\xdd" .. string.rep("\0", 100)
       local _, reason = quic.parse_initial(f, stub_crypto())
-      assert.are.equal("quic_ipv6_skipped", reason)
+      assert.are.equal("quic_not_ip", reason)
     end)
 
     it("returns not_udp on a TCP IPv4 packet", function()

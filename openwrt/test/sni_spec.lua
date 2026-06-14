@@ -296,6 +296,167 @@ describe("parse_packet (Ethernet/IPv4/TCP)", function()
 end)
 
 -- ---------------------------------------------------------------------------
+-- 3b. parse_packet — Ethernet / IPv6 / TCP framing (#1652)
+-- ---------------------------------------------------------------------------
+--
+-- Dual-stack clients reaching CDNs over IPv6 must attribute by SNI just like
+-- v4. The downstream cache/conntrack path already keys by string IP and has
+-- parallel eb6_/bl6_/resolved6_ sets for v6 (#1668), so parse_packet just
+-- needs to parse the v6 outer header (fixed 40 bytes + extension-header chain
+-- per RFC 8200) and emit the canonical RFC 5952 textual destination.
+
+local function u16str(n) return string.char(math.floor(n / 256) % 256, n % 256) end
+
+-- Build an Ethernet+IPv6+TCP frame carrying `payload`. `ext_chain` is an
+-- optional list of { next_header = u8, body = <bytes (must include the
+-- hdr_ext_len byte and pad to multiples of 8)> } extension headers inserted
+-- between the fixed v6 header and the TCP header. The fixed header's
+-- next_header is the first ext_chain entry's type, or TCP (6) if no chain.
+local function build_eth_ipv6_tcp(opts)
+  opts = opts or {}
+  local src_mac = opts.src_mac or { 0x76, 0x2d, 0x95, 0x47, 0xd1, 0x8e }
+  -- dst_ip is 16 raw bytes; default = 2607:f8b0:4004:0c08:0000:0000:0000:200e
+  local dst_ip  = opts.dst_ip  or {
+    0x26, 0x07, 0xf8, 0xb0, 0x40, 0x04, 0x0c, 0x08,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x20, 0x0e,
+  }
+  local src_ip  = opts.src_ip  or {
+    0xfd, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+  }
+  local payload = opts.payload or ""
+  local ext_chain = opts.ext_chain or {}
+
+  local eth = string.char(0,0,0,0,0,0) ..
+              string.char(src_mac[1], src_mac[2], src_mac[3],
+                          src_mac[4], src_mac[5], src_mac[6]) ..
+              u16str(0x86dd)
+
+  -- TCP header (20 bytes) + payload.
+  local tcp =
+      u16str(54321) .. u16str(443) ..
+      string.rep("\0", 4) ..       -- seq
+      string.rep("\0", 4) ..       -- ack
+      string.char(0x50, 0x18) ..   -- data offset 20, PSH+ACK
+      u16str(0) .. u16str(0) .. u16str(0) ..
+      payload
+
+  -- Build extension-header chain, walking back-to-front so each header points
+  -- to the next. The final extension's next_header is TCP (6).
+  local ext_bytes = ""
+  local first_nh = 6 -- TCP if no extensions
+  if #ext_chain > 0 then
+    for i = #ext_chain, 1, -1 do
+      local nh
+      if i == #ext_chain then nh = 6 else nh = ext_chain[i + 1].next_header end
+      ext_bytes = string.char(nh) .. ext_chain[i].body .. ext_bytes
+    end
+    first_nh = ext_chain[1].next_header
+  end
+
+  local payload_len = #ext_bytes + #tcp
+  -- IPv6 fixed header: ver(4)/tc(8)/flow(20) = 4 bytes, payload_len(2),
+  -- next_header(1), hop_limit(1), src(16), dst(16) = 40 bytes total.
+  local ipv6 =
+      string.char(0x60, 0, 0, 0) ..
+      u16str(payload_len) ..
+      string.char(first_nh) ..
+      string.char(64) ..
+      string.char(src_ip[1], src_ip[2], src_ip[3], src_ip[4],
+                  src_ip[5], src_ip[6], src_ip[7], src_ip[8],
+                  src_ip[9], src_ip[10], src_ip[11], src_ip[12],
+                  src_ip[13], src_ip[14], src_ip[15], src_ip[16]) ..
+      string.char(dst_ip[1], dst_ip[2], dst_ip[3], dst_ip[4],
+                  dst_ip[5], dst_ip[6], dst_ip[7], dst_ip[8],
+                  dst_ip[9], dst_ip[10], dst_ip[11], dst_ip[12],
+                  dst_ip[13], dst_ip[14], dst_ip[15], dst_ip[16])
+
+  return eth .. ipv6 .. ext_bytes .. tcp
+end
+
+describe("parse_packet (Ethernet/IPv6/TCP) — #1652", function()
+  it("attributes a plain IPv6 ClientHello (no extension headers)", function()
+    local hello = build_client_hello({ sni = "www.youtube.com" })
+    local pkt = build_eth_ipv6_tcp({
+      payload = hello,
+      src_mac = { 0x76, 0x2d, 0x95, 0x47, 0xd1, 0x8e },
+      dst_ip  = {
+        0x26, 0x07, 0xf8, 0xb0, 0x40, 0x04, 0x0c, 0x08,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x20, 0x0e,
+      },
+    })
+    local r, reason = sni.parse_packet(pkt)
+    assert.is_nil(reason)
+    assert.is_not_nil(r)
+    assert.equal("2607:f8b0:4004:c08::200e", r.dst_ip)
+    assert.equal("76:2d:95:47:d1:8e",        r.src_mac)
+    assert.equal("www.youtube.com",          r.sni)
+  end)
+
+  it("walks past a Hop-by-Hop extension header to find the TCP payload", function()
+    -- Hop-by-Hop options: next_header(1) + hdr_ext_len(1) + 6 bytes of options
+    -- = one 8-byte block. hdr_ext_len encodes (total_octets/8 - 1) = 0.
+    local hbh = { next_header = 0, body = string.char(0) .. string.rep("\0", 6) }
+    local hello = build_client_hello({ sni = "calendar.google.com" })
+    local pkt = build_eth_ipv6_tcp({ payload = hello, ext_chain = { hbh },
+                                     dst_ip = {
+                                       0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0,
+                                       0, 0, 0, 0, 0, 0, 0x00, 0x42,
+                                     } })
+    local r, reason = sni.parse_packet(pkt)
+    assert.is_nil(reason)
+    assert.is_not_nil(r)
+    assert.equal("2001:db8::42",         r.dst_ip)
+    assert.equal("calendar.google.com",  r.sni)
+  end)
+
+  it("walks past chained Hop-by-Hop + Routing extension headers", function()
+    -- Two 8-byte extension headers chained: HBH (0) → Routing (43) → TCP.
+    local hbh    = { next_header = 0,  body = string.char(0) .. string.rep("\0", 6) }
+    local route  = { next_header = 43, body = string.char(0) .. string.rep("\0", 6) }
+    local pkt = build_eth_ipv6_tcp({
+      payload = build_client_hello({ sni = "www.example.com" }),
+      ext_chain = { hbh, route },
+    })
+    local r, reason = sni.parse_packet(pkt)
+    assert.is_nil(reason)
+    assert.is_not_nil(r)
+    assert.equal("www.example.com", r.sni)
+  end)
+
+  it("formats a fully-populated v6 address in RFC 5952 canonical form", function()
+    -- No all-zero runs ⇒ no `::` compression, just trimmed leading zeros.
+    local pkt = build_eth_ipv6_tcp({
+      payload = build_client_hello({ sni = "a.b" }),
+      dst_ip  = {
+        0x20, 0x01, 0x0d, 0xb8, 0x85, 0xa3, 0x00, 0x00,
+        0x00, 0x00, 0x8a, 0x2e, 0x03, 0x70, 0x73, 0x34,
+      },
+    })
+    local r = sni.parse_packet(pkt)
+    assert.is_not_nil(r)
+    assert.equal("2001:db8:85a3::8a2e:370:7334", r.dst_ip)
+  end)
+
+  it("no longer returns reason=ipv6_skipped for a v6 ClientHello", function()
+    local pkt = build_eth_ipv6_tcp({ payload = build_client_hello({ sni = "example.com" }) })
+    local r, reason = sni.parse_packet(pkt)
+    assert.is_not_nil(r)
+    assert.is_nil(reason)
+    assert.are_not.equal("ipv6_skipped", reason)
+  end)
+
+  it("returns reason=truncated for a v6 frame too short for the fixed header", function()
+    local frame = string.rep("\0", 6) ..
+                  string.char(0x76, 0x2d, 0x95, 0x47, 0xd1, 0x8e) ..
+                  string.char(0x86, 0xdd) .. string.rep("\0", 20)
+    local r, reason = sni.parse_packet(frame)
+    assert.is_nil(r)
+    assert.equal("truncated", reason)
+  end)
+end)
+
+-- ---------------------------------------------------------------------------
 -- 4. format_sni_line / parse_sni_line — IPC line format between sidecars
 -- ---------------------------------------------------------------------------
 --
@@ -376,15 +537,15 @@ end)
 -- failure modes (truncated / no_sni / malformed / ipv6_skipped). The reason
 -- enum is small and fixed; it feeds the result= IPC metrics file.
 describe("parse_packet — failure reason (second return value)", function()
-  it("returns reason=ipv6_skipped for a non-0x0800 ethertype frame", function()
-    -- Ethernet dst(6) src(6) ethertype=0x86dd (IPv6) + enough bytes for the
-    -- length guard. parse_packet must reject before IP parsing.
+  it("returns reason=not_ip for a non-IP ethertype frame (e.g. ARP) — #1652", function()
+    -- 0x86dd (IPv6) is no longer skipped (see §3b). ARP (0x0806) and other
+    -- non-IP ethertypes still fall out into the bounded catch-all bucket.
     local frame = string.rep("\0", 6) ..
                   string.char(0x76, 0x2d, 0x95, 0x47, 0xd1, 0x8e) ..
-                  string.char(0x86, 0xdd) .. string.rep("\0", 60)
+                  string.char(0x08, 0x06) .. string.rep("\0", 60)
     local r, reason = sni.parse_packet(frame)
     assert.is_nil(r)
-    assert.equal("ipv6_skipped", reason)
+    assert.equal("not_ip", reason)
   end)
 
   it("returns reason=truncated for a too-short frame", function()

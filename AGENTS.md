@@ -69,7 +69,12 @@ where `BlockRules` is:
   via nftables drop on `(mac, dst ip ∈ ipset(host))`, where the ipset is
   populated by dnsmasq's `--ipset=` callback at resolution time.
 - `extraAllowed: List[Hostname]` — hosts allowed for this MAC, including
-  as a carve-out when `blocked = true`.
+  as a carve-out when `blocked = true`. An Allowed-mode app's host-set
+  normally lands here; when the app's `allowedDuringScheduleBlock = false`
+  (`app_policy_assignments.allowed_during_schedule_block`, V56, #1679) and
+  the profile's block reason is `Schedule`, `PolicyService` omits those
+  hosts so the schedule drop applies. Paused/TimeLimit/Manual blocks are
+  unaffected (Schedule scope only per #1679).
 - `blocklistIds: List[BlocklistId]` — category lists that apply to this
   MAC. Enforced via nftables ipset drop, **not** via RPZ or any DNS-layer
   mechanism. The agent fetches each blocklist by URL (cached by version)

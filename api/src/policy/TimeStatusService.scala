@@ -577,20 +577,34 @@ object TimeStatusService {
       appLimits: List[AppTimeLimit],
       presence: List[PresenceRow],
       settings: HouseholdSettings,
-  ): Map[AppId, Long] = {
-    val groups       = groupAppLimits(appLimits)
-    val labelToAppId = groups.map(g => g._2 -> g._1).toMap
-    Presence
-      .appSecondsForProfile(
-        presence,
-        groups.map(g => g._2 -> g._5),
-        profile.crossDeviceOverlapMode,
-        settings.heartbeatFilter,
-        settings.presenceContinuationSeconds,
-      )
-      .iterator
-      .flatMap { case (label, secs) => labelToAppId.get(label).map(_ -> secs) }
-      .toMap
+  ): Map[AppId, Long] =
+    appSecondsByAppWithDropCount(profile, appLimits, presence, settings)._1
+
+  /**
+   * #1676: sibling that also returns the count of per-(mac, app) sessions silently dropped by the
+   * #1666 phantom-suppression anchor-row guard inside Presence.appSpansForProfile. The pure
+   * [[appSecondsByApp]] alias above projects to the map only; consumers that want the observability
+   * counter call this and feed the count into [[AppMetrics.recordAppSessionsDropped]].
+   */
+  def appSecondsByAppWithDropCount(
+      profile: Profile,
+      appLimits: List[AppTimeLimit],
+      presence: List[PresenceRow],
+      settings: HouseholdSettings,
+  ): (Map[AppId, Long], Int) = {
+    val groups                 = groupAppLimits(appLimits)
+    val labelToAppId           = groups.map(g => g._2 -> g._1).toMap
+    val (secsByLabel, dropped) = Presence.appSecondsForProfileWithDropCount(
+      presence,
+      groups.map(g => g._2 -> g._5),
+      profile.crossDeviceOverlapMode,
+      settings.heartbeatFilter,
+      settings.presenceContinuationSeconds,
+    )
+    val byAppId                = secsByLabel.iterator.flatMap { case (label, secs) =>
+      labelToAppId.get(label).map(_ -> secs)
+    }.toMap
+    (byAppId, dropped)
   }
 
   /**

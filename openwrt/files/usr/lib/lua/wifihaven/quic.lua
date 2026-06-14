@@ -52,16 +52,19 @@
 --                              (e.g. ACK-only Initial)
 --   quic_no_sni             -- ClientHello reassembled but no usable host_name
 --                              (e.g. ECH)
---   quic_ipv6_skipped       -- parse_initial saw a non-IPv4 ethertype
+--   quic_not_ip             -- parse_initial saw a non-IPv4 ethertype (QUIC
+--                              outer header is IPv4-only in v1 — v6 QUIC
+--                              Initials would land here even though sni.lua
+--                              gained v6 support in #1652)
 --   quic_not_udp            -- parse_initial saw an IPv4 non-UDP packet
 --   quic_not_443            -- parse_initial saw a UDP packet not to port 443
 --
 -- NOTE: the last three are only reachable when callers invoke parse_initial
 -- directly (e.g. the unit tests). The production sidecar's dispatch() peeks
 -- at ethertype / IPv4 proto BEFORE calling parse_initial and short-circuits
--- those cases under the TCP-path "ipv6_skipped" / generic "malformed"
--- buckets, so they will not tick in the sni_clienthellos_total metric on
--- fleet routers — the documented contract holds for direct API consumers.
+-- those cases under the TCP-path "not_ip" / generic "malformed" buckets, so
+-- they will not tick in the sni_clienthellos_total metric on fleet routers —
+-- the documented contract holds for direct API consumers.
 --
 -- A malformed/truncated packet returns (nil, reason) — never raises. The
 -- sidecar runs as a long-lived loop; a single bad packet must not kill it.
@@ -508,7 +511,7 @@ function M.parse_initial(eth_frame, crypto)
   end
 
   local ethertype = u16(eth_frame, 13)
-  if ethertype ~= 0x0800 then return nil, "quic_ipv6_skipped" end
+  if ethertype ~= 0x0800 then return nil, "quic_not_ip" end
   local sa, sb, sc, sd, se, sf = eth_frame:byte(7, 12)
   local src_mac = format_mac(sa, sb, sc, sd, se, sf)
 

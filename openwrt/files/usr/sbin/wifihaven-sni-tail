@@ -148,7 +148,18 @@ local quic_crypto = quic.openssl_crypto(openssl)
 local function dispatch(pkt)
   if #pkt < 14 + 20 then return nil, "truncated" end
   local ethertype = pkt:byte(13) * 256 + pkt:byte(14)
-  if ethertype ~= 0x0800 then return nil, "ipv6_skipped" end
+
+  -- IPv6 (#1652): sni.parse_packet handles the v6 outer header itself, so we
+  -- forward v6 frames to it directly. The QUIC v1 parser is IPv4-only — v6
+  -- QUIC Initials would fall out as "not_tcp" via sni.parse_packet, which is
+  -- the right bucket (not_tcp is the TCP-path's "not a TCP segment" label).
+  if ethertype == 0x86dd then
+    local r, reason = sni.parse_packet(pkt)
+    if r then return r, "parsed" end
+    return nil, reason
+  end
+  if ethertype ~= 0x0800 then return nil, "not_ip" end
+
   local proto = pkt:byte(15 + 9)
   if proto == 6 then
     local r, reason = sni.parse_packet(pkt)
@@ -164,11 +175,13 @@ local function dispatch(pkt)
   return nil, "malformed"
 end
 
--- #573 / #1651: cumulative per-result tally. result ∈ {parsed, truncated,
--- no_sni, ipv6_skipped, not_tcp, malformed,  quic_success, quic_short_header,
--- quic_unsupported_version, quic_not_initial, quic_truncated, quic_malformed,
--- quic_decrypt_failed, quic_no_crypto_frame, quic_no_sni, quic_ipv6_skipped,
--- quic_not_udp, quic_not_443} — a small bounded enum. We mirror the #1302
+-- #573 / #1651 / #1652: cumulative per-result tally. result ∈ {parsed,
+-- truncated, no_sni, not_ip, not_tcp, malformed, quic_success,
+-- quic_short_header, quic_unsupported_version, quic_not_initial,
+-- quic_truncated, quic_malformed, quic_decrypt_failed, quic_no_crypto_frame,
+-- quic_no_sni, quic_not_ip, quic_not_udp, quic_not_443} — a small bounded
+-- enum. The TCP-path "not_ip" replaced "ipv6_skipped" when sni.parse_packet
+-- gained IPv6 outer-header parsing in #1652. We mirror the #1302
 -- dns_metrics IPC: reuse dns_log.format_query_results to serialise the tally
 -- to paths.sni_metrics on each flush, and the agent's metrics tick folds the
 -- deltas into sni_clienthellos_total{result}. The split also feeds the
@@ -225,13 +238,13 @@ while true do
     -- same. Was named `parsed` in the original (#573) log line; renamed for
     -- honesty post-#1651 so a fleet reader can't double-count the QUIC half.
     log.info("sni-tail: success=%d (+%d in last %ds) truncated=%d no_sni=%d " ..
-             "ipv6_skipped=%d not_tcp=%d malformed=%d " ..
+             "not_ip=%d not_tcp=%d malformed=%d " ..
              "quic_success=%d quic_short_header=%d quic_not_initial=%d " ..
              "quic_unsupported_version=%d quic_decrypt_failed=%d " ..
              "quic_no_crypto_frame=%d quic_no_sni=%d",
              success_total, since_stat_parsed, now - last_stats_log,
              results.truncated or 0, results.no_sni or 0,
-             results.ipv6_skipped or 0, results.not_tcp or 0,
+             results.not_ip or 0, results.not_tcp or 0,
              results.malformed or 0,
              results.quic_success or 0, results.quic_short_header or 0,
              results.quic_not_initial or 0,

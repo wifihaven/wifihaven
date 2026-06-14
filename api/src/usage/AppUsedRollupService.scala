@@ -149,6 +149,11 @@ class AppUsedRollupServiceLive(
               case None            => trafficRepo.listPresenceRows(macs, date)
             }
           } yield {
+            // #1676: the dropped-session counter is emitted from the
+            // periodic TimeUsedRollupJob tick (one clean cadence), NOT from
+            // this hot read path — re-emitting on every status read would
+            // inflate the series with read frequency instead of reflecting
+            // data state, defeating rate-alerting.
             val liveSecs = TimeStatusService.appSecondsByApp(p, atls, presence, settings)
             (rolled.keySet ++ liveSecs.keySet).iterator.flatMap { id =>
               val secs =
