@@ -1,0 +1,12 @@
+slug: eaglercraft
+name: Eaglercraft
+icon: "https://icons.duckduckgo.com/ip3/eaglercraft.dev.ico"
+icon_type: url
+# Added from prod evidence (#1705): kid-discovered Minecraft-in-browser
+# clone. eaglercraft.dev is the marketing/launcher apex; the account-scoped
+# workers.dev subdomain is the actual game runtime — included specifically
+# because it's account-scoped (NOT the shared workers.dev apex, which would
+# be a #1661 violation).
+hosts:
+  - eaglercraft.dev
+  - eaglercraft-99f.workers.dev

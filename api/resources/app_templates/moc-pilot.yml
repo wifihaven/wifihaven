@@ -1,0 +1,8 @@
+slug: moc-pilot
+name: MOC Pilot
+icon: "https://icons.duckduckgo.com/ip3/mocpilot.com.ico"
+icon_type: url
+# Added from prod evidence (#1705): operator-created in prod. LEGO MOC
+# (My Own Creation) build catalog — single brand-specific apex.
+hosts:
+  - mocpilot.com

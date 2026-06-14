@@ -111,6 +111,14 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
           "crazygames",
           "poki",
           "thingiverse",
+          // #1705: ported in from operator-created prod apps
+          "1password",
+          "eaglercraft",
+          "giphy",
+          "google-play",
+          "moc-pilot",
+          "wifihaven",
+          "x",
         )
         val slugs    = templates.map(_.slug.value).toSet
         assertTrue(slugs == expected) &&
@@ -150,6 +158,13 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         "crazygames",
         "poki",
         "thingiverse",
+        "1password",
+        "eaglercraft",
+        "giphy",
+        "google-play",
+        "moc-pilot",
+        "wifihaven",
+        "x",
       )
       for {
         templates <- AppTemplates.loadAll()

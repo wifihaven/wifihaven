@@ -1,0 +1,13 @@
+slug: x
+name: X
+icon: "https://icons.duckduckgo.com/ip3/x.com.ico"
+icon_type: url
+# Added from prod evidence (#1705): operator-created in prod. Twitter/X — the
+# x.com apex covers the app's own surfaces. Image / video CDN bytes ride
+# twimg.com (a separate top-50 apex in the kids' traffic at 346 MB / 337
+# active min, predominantly on adult devices) — adding twimg.com here would
+# be defensible from a coverage standpoint, but the operator's prod app only
+# lists x.com. Stick with prod's shape and let a follow-up add twimg.com
+# if attribution evidence justifies it.
+hosts:
+  - x.com

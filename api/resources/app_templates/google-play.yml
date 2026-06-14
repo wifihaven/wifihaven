@@ -1,0 +1,12 @@
+slug: google-play
+name: Google Play
+icon: "https://icons.duckduckgo.com/ip3/play.google.com.ico"
+icon_type: url
+# Added from prod evidence (#1705): operator-created in prod with the
+# subdomain `play.google.com` — deliberately NOT the `google.com` apex
+# (which is a shared-platform host and would pull in Search, Drive, every
+# Google product per #1661). dnsmasq's nftset= suffix-matches every
+# *.play.google.com subdomain (apps, content delivery) without touching
+# any other google.com surface.
+hosts:
+  - play.google.com
