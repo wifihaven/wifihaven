@@ -400,6 +400,103 @@ object ProfileRoutes {
               ZIO.succeed(Response.ok)
           handle.mapError(ErrorMapper.errorToResponse)
         },
+      // #423: field-scoped partial update. Body is a subset of the writable
+      // Profile shape — every field optional, omitted fields preserve their
+      // current value. `timeLimit` is the only nullable field and accepts
+      // explicit null to clear; non-nullable fields reject null with 400.
+      // Race-safe vs the PUT clobber pattern that motivated #423 — the SPA
+      // can post `{"paused":true}` without first reading and re-shipping the
+      // rest of the profile. Schedules / users still live on their own
+      // sub-routes by design (#1494, #406) and are not patchable here.
+      Method.PATCH / "api" / "profiles" / long("id")             ->
+        handler { (id: Long, req: Request) =>
+          val pid                                  = ProfileId(id)
+          val handle: ZIO[Any, ApiError, Response] = for {
+            claims    <- requireWriter(req, auth).mapError(ApiError.Wrapped(_))
+            _         <- requireProfileAccess(claims, pid, userProfileRepo)
+              .mapError(ApiError.Wrapped(_))
+            body      <- req.body.asString.orElseFail(ApiError.BadRequest(""))
+            obj       <- ZIO.fromEither(FieldPatch.parseObj(body)).mapError(ApiError.BadRequest(_))
+            p         <- profileRepo
+              .findById(pid)
+              .mapError(ApiError.Db(_))
+              .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Profile not found")))
+            namePatch <- ZIO
+              .fromEither(FieldPatch.from[String](obj, "name"))
+              .mapError(ApiError.BadRequest(_))
+            blockedCategoriesPatch  <- ZIO
+              .fromEither(FieldPatch.from[List[BlocklistId]](obj, "blockedCategories"))
+              .mapError(ApiError.BadRequest(_))
+            pausedPatch             <- ZIO
+              .fromEither(FieldPatch.from[Boolean](obj, "paused"))
+              .mapError(ApiError.BadRequest(_))
+            failureModePatch        <- ZIO
+              .fromEither(FieldPatch.from[FailureMode](obj, "failureMode"))
+              .mapError(ApiError.BadRequest(_))
+            blockIpOnlyPatch        <- ZIO
+              .fromEither(FieldPatch.from[Boolean](obj, "blockIpOnly"))
+              .mapError(ApiError.BadRequest(_))
+            crossDeviceOverlapPatch <- ZIO
+              .fromEither(FieldPatch.from[CrossDeviceOverlapMode](obj, "crossDeviceOverlapMode"))
+              .mapError(ApiError.BadRequest(_))
+            pauseModePatch          <- ZIO
+              .fromEither(FieldPatch.from[PauseMode](obj, "pauseMode"))
+              .mapError(ApiError.BadRequest(_))
+            defaultDenyPatch        <- ZIO
+              .fromEither(FieldPatch.from[Boolean](obj, "defaultDeny"))
+              .mapError(ApiError.BadRequest(_))
+            timeLimitPatch          <- ZIO
+              .fromEither(FieldPatch.from[Int](obj, "timeLimit"))
+              .mapError(ApiError.BadRequest(_))
+            // Reject `field: null` for non-nullable fields — only `timeLimit`
+            // accepts an explicit clear. Mirrors the device PATCH convention.
+            _                       <- ZIO
+              .foreachDiscard(
+                List(
+                  "name"                   -> namePatch,
+                  "blockedCategories"      -> blockedCategoriesPatch,
+                  "paused"                 -> pausedPatch,
+                  "failureMode"            -> failureModePatch,
+                  "blockIpOnly"            -> blockIpOnlyPatch,
+                  "crossDeviceOverlapMode" -> crossDeviceOverlapPatch,
+                  "pauseMode"              -> pauseModePatch,
+                  "defaultDeny"            -> defaultDenyPatch,
+                ),
+              ) { case (k, fp) =>
+                fp match {
+                  case FieldPatch.Cleared => ZIO.fail(ApiError.BadRequest(s"$k cannot be cleared"))
+                  case _                  => ZIO.unit
+                }
+              }
+            updated = p.copy(
+              name = namePatch.applyTo(p.name),
+              blockedCategories = blockedCategoriesPatch.applyTo(p.blockedCategories),
+              paused = pausedPatch.applyTo(p.paused),
+              failureMode = failureModePatch.applyTo(p.failureMode),
+              blockIpOnly = blockIpOnlyPatch.applyTo(p.blockIpOnly),
+              crossDeviceOverlapMode = crossDeviceOverlapPatch.applyTo(p.crossDeviceOverlapMode),
+              pauseMode = pauseModePatch.applyTo(p.pauseMode),
+              defaultDeny = defaultDenyPatch.applyTo(p.defaultDeny),
+            )
+            _                       <- profileRepo.update(updated).mapError(ApiError.Db(_))
+            _                       <- timeLimitPatch match {
+              case FieldPatch.Absent  => ZIO.unit
+              case FieldPatch.Cleared => timeLimitRepo.delete(pid).mapError(ApiError.Db(_))
+              case FieldPatch.Set(m)  => timeLimitRepo.upsert(pid, m).mapError(ApiError.Db(_))
+            }
+            // #1538: paused / timeLimit changes affect ProfileTimeStatus, so
+            // bust the per-profile cache the same way schedule attach/detach
+            // and /api/time/extend do — otherwise a freshly-patched pause
+            // wouldn't reach the dashboard until the today-TTL expired.
+            _                       <- ZIO.when(
+              pausedPatch != FieldPatch.Absent || timeLimitPatch != FieldPatch.Absent,
+            )(cache.invalidateProfile(pid))
+            _                       <- ZIO.logInfo(
+              s"profile patched: id=${pid.value} keys=${obj.fields.map(_._1).mkString(",")}",
+            )
+          } yield Response.ok
+          handle.mapError(ErrorMapper.errorToResponse)
+        },
       Method.GET / "api" / "profiles" / long("id") / "users"     ->
         handler { (id: Long, req: Request) =>
           val pid                                  = ProfileId(id)

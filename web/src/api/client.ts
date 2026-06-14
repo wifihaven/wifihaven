@@ -9,7 +9,7 @@ import type {
   NamedSchedule, NamedScheduleRequest,
   RecentApexesResponse, RouterSummary, SetUserProfilesRequest, TimeExtension,
   TrafficUsageBucket, TrafficUsageGroupBy, TrafficUsageResponse,
-  PatchDeviceRequest,
+  PatchDeviceRequest, PatchProfileRequest,
   UpsertAppAssignmentRequest, UpsertDeviceRequest, UpsertProfileRequest, GrantExtensionRequest,
   UsageSeriesBatchResponse, UsageSeriesResponse, User,
 } from '@/types/api'
@@ -153,6 +153,12 @@ export const api = {
       req<{ id: number }>('POST', '/profiles', data),
     update: (id: number, data: UpsertProfileRequest) =>
       req<void>('PUT', `/profiles/${id}`, data),
+    // #423 / #995 — field-scoped partial update. Race-safe alternative to
+    // `update`: only the supplied fields change. `timeLimit: null` clears the
+    // daily limit; non-nullable fields cannot be null. PUT stays for callers
+    // that want full-shape replace.
+    patch: (id: number, data: PatchProfileRequest) =>
+      req<void>('PATCH', `/profiles/${id}`, data),
     delete: (id: number) => req<void>('DELETE', `/profiles/${id}`),
     // #1494 / #1069 — replace the set of #1069 household named schedules
     // attached to this profile as BLOCK schedules (downtime while active).

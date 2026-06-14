@@ -128,7 +128,7 @@ object ProfilePatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         after.paused,
         after.blockIpOnly,
         after.defaultDeny,
-        afterTl.contains(45),
+        afterTl.map(_.dailyMinutes).contains(45),
       )
     },
     test("empty patch preserves every field") {
@@ -140,7 +140,11 @@ object ProfilePatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         resp         <- patch(routes, tk, kids.id, "{}")
         after        <- profileRepo.findById(kids.id).someOrFailException
         afterTl      <- tlRepo.findForProfile(kids.id)
-      } yield assertTrue(resp.status == Status.Ok, after == kids, afterTl.contains(90))
+      } yield assertTrue(
+        resp.status == Status.Ok,
+        after == kids,
+        afterTl.map(_.dailyMinutes).contains(90),
+      )
     },
     test("null on nullable `timeLimit` clears the row") {
       for {
@@ -158,7 +162,7 @@ object ProfilePatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         tlRepo       <- ZIO.service[TimeLimitRepo]
         resp         <- patch(routes, tk, kids.id, """{"timeLimit":75}""")
         afterTl      <- tlRepo.findForProfile(kids.id)
-      } yield assertTrue(resp.status == Status.Ok, afterTl.contains(75))
+      } yield assertTrue(resp.status == Status.Ok, afterTl.map(_.dailyMinutes).contains(75))
     },
     test("null on non-nullable `name` returns 400") {
       for {

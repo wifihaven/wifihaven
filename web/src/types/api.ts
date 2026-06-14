@@ -820,6 +820,21 @@ export interface PatchDeviceRequest {
   profileId?: number | null
 }
 
+// #423: PATCH /api/profiles/:id — field-scoped partial update. Omitted fields
+// preserve their current value; `timeLimit` is the only nullable field and
+// accepts an explicit `null` to clear. Non-nullable fields cannot be `null`.
+export interface PatchProfileRequest {
+  name?: string
+  blockedCategories?: string[]
+  paused?: boolean
+  failureMode?: FailureMode
+  blockIpOnly?: boolean
+  crossDeviceOverlapMode?: CrossDeviceOverlapMode
+  pauseMode?: PauseMode
+  defaultDeny?: boolean
+  timeLimit?: number | null
+}
+
 export interface GrantExtensionRequest {
   profileId: number
   extraMinutes: number
