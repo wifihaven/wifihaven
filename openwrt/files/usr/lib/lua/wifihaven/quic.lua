@@ -51,7 +51,10 @@
 --   quic_no_crypto_frame    -- decrypted payload has no CRYPTO frame at offset 0
 --                              (e.g. ACK-only Initial)
 --   quic_no_sni             -- ClientHello reassembled but no usable host_name
---                              (e.g. ECH)
+--   quic_ech                -- Encrypted ClientHello (#1650, ext type 0xfe0d):
+--                              sni_str (when returned) is the OUTER/public
+--                              server_name (best-effort gateway attribution);
+--                              when nil, the outer ClientHello had no SNI.
 --   quic_not_ip             -- parse_initial saw a non-IPv4 ethertype (QUIC
 --                              outer header is IPv4-only in v1 — v6 QUIC
 --                              Initials would land here even though sni.lua
@@ -488,9 +491,19 @@ function M.parse_quic_packet(udp_payload, crypto)
   local tls_bytes = reassemble_crypto(plaintext)
   if not tls_bytes then return nil, "quic_no_crypto_frame" end
 
-  local sni_str = parse_tls_handshake(tls_bytes)
-  if not sni_str then return nil, "quic_no_sni" end
-
+  local sni_str, ech = parse_tls_handshake(tls_bytes)
+  if not sni_str then
+    -- ECH on the QUIC path (#1650): the outer ClientHello carries the ECH
+    -- extension but no outer/public server_name, so we have no hostname to
+    -- attribute. Bucket distinctly from the generic quic_no_sni so the
+    -- ECH share is visible across both TCP and QUIC paths.
+    if ech then return nil, "quic_ech" end
+    return nil, "quic_no_sni"
+  end
+  -- ECH with an outer/public server_name: return the gateway hostname (best
+  -- honest attribution) and label the capture quic_ech so the metric splits
+  -- ECH from plain quic_success.
+  if ech then return sni_str, "quic_ech" end
   return sni_str
 end
 
@@ -541,6 +554,12 @@ function M.parse_initial(eth_frame, crypto)
 
   local sni_str, reason = M.parse_quic_packet(udp_payload, crypto)
   if not sni_str then return nil, reason end
+  -- reason == "quic_ech" when the outer ClientHello carried Encrypted
+  -- ClientHello with a usable outer SNI (#1650); propagate the label up so
+  -- the sidecar buckets the capture distinctly from plain quic_success.
+  if reason then
+    return { dst_ip = dst_ip, src_mac = src_mac, sni = sni_str }, reason
+  end
   return { dst_ip = dst_ip, src_mac = src_mac, sni = sni_str }
 end
 

@@ -15,7 +15,11 @@
 --   - server_name extension type 0x0000, name_type 0x00 (host_name).
 --
 -- Explicitly out of scope (followups, see #573 PR body):
---   - Encrypted ClientHello (ECH) — parser returns nil.
+--   - Encrypted ClientHello (ECH) — detected (#1650): the parser returns the
+--     outer/public server_name when present (best-effort attribution to the
+--     gateway hostname) and labels the result "ech" via the second return
+--     value; the real inner server_name remains encrypted and is not
+--     recovered. We do NOT attempt to defeat ECH.
 --   - QUIC / HTTP/3 Initial-packet SNI parsing.
 --   - TLS 1.2 fragmented ClientHello reassembly across TCP segments.
 --   - IPv6 fragment headers (44) — a fragmented v6 TLS ClientHello falls out
@@ -67,12 +71,22 @@ end
 -- TLS ClientHello parser.
 -- ---------------------------------------------------------------------------
 
--- parse_client_hello(payload) → server_name string | nil
+-- parse_client_hello(payload) → server_name|nil, ech_label|nil
 --
 -- payload is the raw bytes of the TCP segment starting at the TLS record.
 -- Returns the server_name from the SNI extension when present, or nil for
 -- any of: non-handshake content type, non-ClientHello handshake, no SNI
 -- extension, malformed/truncated record, name_type != host_name (0x00).
+--
+-- Second return value is "ech" when the ClientHello carries the Encrypted
+-- ClientHello extension (type 0xfe0d, RFC draft-ietf-tls-esni) and nil
+-- otherwise (#1650). ECH is observability + best-effort only — when present,
+-- the real server_name is inside the encrypted inner ClientHello; any
+-- server_name on the outer ClientHello is the public/outer name (the
+-- gateway hostname, e.g. cloudflare-ech.com) and is the most honest
+-- attribution we can offer. The sni-tail sidecar buckets these captures
+-- under sni_clienthellos_total{result=ech} so operators can track the
+-- ECH-attributed fraction independently of the regular `parsed` bucket.
 function M.parse_client_hello(payload)
   if type(payload) ~= "string" or #payload < 5 then return nil end
 
@@ -127,7 +141,14 @@ function M.parse_client_hello(payload)
   local ext_end = off + ext_total
   if ext_end > end_off then return nil end
 
-  -- Walk extension records
+  -- Walk extension records.
+  --
+  -- We can't early-return on the first server_name hit because we also need
+  -- to detect ECH (0xfe0d), which may appear before OR after server_name in
+  -- the extension list. Stash both findings and decide at the end. The list
+  -- is short (a few dozen extensions at most) so the full walk is cheap.
+  local found_sni
+  local has_ech = false
   while off + 4 <= ext_end do
     local ext_type = u16(payload, off);     if not ext_type then return nil end
     local ext_len  = u16(payload, off + 2); if not ext_len  then return nil end
@@ -135,7 +156,7 @@ function M.parse_client_hello(payload)
     local ext_body_end = ext_body_off + ext_len
     if ext_body_end > ext_end then return nil end
 
-    if ext_type == 0x0000 then -- server_name
+    if ext_type == 0x0000 and not found_sni then -- server_name (first hit only)
       -- ServerNameList: u16 list length + entries
       if ext_body_off + 2 > ext_body_end then return nil end
       local sn_list_len = u16(payload, ext_body_off)
@@ -157,18 +178,20 @@ function M.parse_client_hello(payload)
           -- A real SNI is a domain; the shortest plausible one is "a.b" (3
           -- chars). Anything shorter is malformed — reject it (the value is
           -- only ever used as a cache key, but we don't want junk keys).
-          if sn and #sn >= 3 then return sn end
-          return nil
+          if sn and #sn >= 3 then found_sni = sn end
+          break
         end
         list_off = sn_off + sn_len
       end
-      return nil -- SNI extension present but no host_name entry
+    elseif ext_type == 0xfe0d then -- Encrypted ClientHello (#1650)
+      has_ech = true
     end
 
     off = ext_body_end
   end
 
-  return nil
+  if has_ech then return found_sni, "ech" end
+  return found_sni
 end
 
 -- ---------------------------------------------------------------------------
@@ -248,7 +271,13 @@ end
 --                    but bounded and cheap to distinguish).
 --   "malformed"    — structurally invalid IP/TCP framing.
 --   "no_sni"       — well-formed packet but the ClientHello carried no usable
---                    host_name (no SNI extension, ECH, or a name we rejected).
+--                    host_name (no SNI extension, or a name we rejected).
+--   "ech"          — ClientHello carried the Encrypted ClientHello extension
+--                    (#1650, type 0xfe0d). Real server_name is encrypted; if
+--                    the outer ClientHello had a public/outer SNI, that's
+--                    returned in the result (best honest attribution) — the
+--                    reason still labels the capture as ECH so operators
+--                    can see the ECH-attributed fraction in the metric.
 function M.parse_packet(eth_frame)
   if type(eth_frame) ~= "string" or #eth_frame < 14 + 20 + 20 then
     return nil, "truncated"
@@ -320,8 +349,14 @@ function M.parse_packet(eth_frame)
   if payload_off > #eth_frame then return nil, "truncated" end
   local payload = eth_frame:sub(payload_off)
 
-  local sni = M.parse_client_hello(payload)
-  if not sni then return nil, "no_sni" end
+  local sni, ech = M.parse_client_hello(payload)
+  if not sni then
+    if ech then return nil, "ech" end
+    return nil, "no_sni"
+  end
+  if ech then
+    return { dst_ip = dst_ip, src_mac = src_mac, sni = sni }, "ech"
+  end
   return { dst_ip = dst_ip, src_mac = src_mac, sni = sni }
 end
 
