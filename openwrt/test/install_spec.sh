@@ -214,22 +214,23 @@ grep -q "95-wifihaven-uhttpd" "$ROOT/Makefile" \
   || check "legacy static index.html has been removed" \
            "openwrt/files/www/wifihaven/index.html still present"
 
-# #528: build-ipk.sh and build-apk.sh both hardcode the package's depends
-# line (the OpenWRT Image Builder reads the package metadata, not the
-# Makefile, when assembling the router image). Both must include
+# #528 (post-#1717 collapse): the wifihaven package's DEPENDS must include
 # uhttpd-mod-lua so the lua_handler wired in just above actually runs —
 # without the module uhttpd silently ignores lua_handler, falls back to
 # static-file serving, and 404s every request (the legacy index.html was
 # removed alongside the handler).
-grep -q "uhttpd-mod-lua" "$ROOT/build-ipk.sh" \
-  && check "build-ipk.sh Depends pulls in uhttpd-mod-lua" ok \
-  || check "build-ipk.sh Depends pulls in uhttpd-mod-lua" \
-           "missing uhttpd-mod-lua dep in build-ipk.sh"
-
-grep -q "uhttpd-mod-lua" "$ROOT/build-apk.sh" \
-  && check "build-apk.sh depends pulls in uhttpd-mod-lua" ok \
-  || check "build-apk.sh depends pulls in uhttpd-mod-lua" \
-           "missing uhttpd-mod-lua dep in build-apk.sh"
+#
+# Pre-#1717 this was checked by grepping uhttpd-mod-lua out of build-ipk.sh
+# and build-apk.sh, which kept their own hard-coded Depends strings. #1717
+# collapsed that drift: the canonical DEPENDS lives in openwrt/Makefile and
+# both builders derive their control-file Depends from it via
+# openwrt/depends-list.sh (pinned by build_depends_sync_spec.test.sh). So
+# checking openwrt/Makefile is the right place to enforce the
+# uhttpd-mod-lua invariant — both .ipk and .apk inherit it automatically.
+grep -q '^[[:space:]]*DEPENDS:=.*+uhttpd-mod-lua\b' "$ROOT/Makefile" \
+  && check "Makefile DEPENDS pulls in uhttpd-mod-lua" ok \
+  || check "Makefile DEPENDS pulls in uhttpd-mod-lua" \
+           "missing +uhttpd-mod-lua in openwrt/Makefile DEPENDS"
 
 # #1278: luci-app-wifihaven is a classic Lua/CBI LuCI app. On modern OpenWRT
 # (23.05+, apk-based 24.10) luci-base is the ucode/JS framework; the server-
