@@ -4,7 +4,9 @@
 -- /proc/meminfo, /proc/sys/net/netfilter/nf_conntrack_count,
 -- /sys/class/net/<iface>/statistics/{rx,tx}_bytes — and the `iw dev <iface>
 -- station dump` output, and folds them into the existing metrics registry
--- under the names the API allowlisted in #1718 PR 1:
+-- under the names the API allowlisted in #1718 PR 1. (Channel / TX-power
+-- from `iw dev <iface> info` are out of scope for v1; add when an operator
+-- needs to alert on radio config drift.)
 --
 --   gauges
 --     router_host_load_m1 / _m5 / _m15
@@ -132,7 +134,9 @@ end
 local function count_stations(dump)
   if not dump or dump == "" then return 0 end
   local n = 0
-  for _ in dump:gmatch("\nStation ") do n = n + 1 end
+  -- Match `[\r\n]Station ` so a future `iw` variant emitting CRLF doesn't
+  -- silently zero the count.
+  for _ in dump:gmatch("[\r\n]Station ") do n = n + 1 end
   -- Count a leading "Station " too (no preceding newline).
   if dump:sub(1, 8) == "Station " then n = n + 1 end
   return n

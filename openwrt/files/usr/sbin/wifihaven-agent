@@ -244,7 +244,11 @@ end
 local function iw_station_dump(iface)
   local safe = safe_iface(iface)
   if not safe then return "" end
-  local f = io.popen("iw dev " .. safe .. " station dump 2>/dev/null")
+  -- `timeout 5` bounds a wedged wifi driver — observed on mt76 in the wild,
+  -- where `iw` can hang waiting on the kernel rather than returning. Five
+  -- seconds is plenty for a healthy station dump and keeps the 60 s metrics
+  -- tick from stalling per-iface.
+  local f = io.popen("timeout 5 iw dev " .. safe .. " station dump 2>/dev/null")
   if not f then return "" end
   local out = f:read("*a") or ""
   f:close()
