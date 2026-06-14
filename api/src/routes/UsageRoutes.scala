@@ -356,7 +356,7 @@ object UsageRoutes {
       settings: HouseholdSettings,
   ): IO[ApiError, UsageSeriesBatchResponse] =
     for {
-      _ <- ZIO.foreachDiscard(pids)(pid => requireProfileReadAccess(claims, pid, userProfileRepo), )
+      _ <- ZIO.foreachDiscard(pids)(pid => requireProfileReadAccess(claims, pid, userProfileRepo))
       profiles    <- ZIO.foreach(pids) { pid =>
         profileRepo
           .findById(pid)
