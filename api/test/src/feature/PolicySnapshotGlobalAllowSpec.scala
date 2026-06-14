@@ -38,7 +38,6 @@ object PolicySnapshotGlobalAllowSpec
   private def makePs =
     for {
       pr     <- ZIO.service[ProfileRepo]
-      sr     <- ZIO.service[ScheduleRepo]
       hsr    <- ZIO.service[HouseholdSettingsRepo]
       tlr    <- ZIO.service[TimeLimitRepo]
       atlr   <- ZIO.service[AppTimeLimitRepo]
@@ -51,7 +50,6 @@ object PolicySnapshotGlobalAllowSpec
       clock  <- ZIO.service[Clock]
     } yield PolicyServiceLive(
       pr,
-      sr,
       hsr,
       tlr,
       atlr,
@@ -74,7 +72,6 @@ object PolicySnapshotGlobalAllowSpec
       for {
         _    <- cleanDb
         pr   <- ZIO.service[ProfileRepo]
-        sr   <- ZIO.service[ScheduleRepo]
         hsr  <- ZIO.service[HouseholdSettingsRepo]
         tlr  <- ZIO.service[TimeLimitRepo]
         atlr <- ZIO.service[AppTimeLimitRepo]
@@ -90,7 +87,6 @@ object PolicySnapshotGlobalAllowSpec
         _ <- TestLayers.seedAppAssignment(ar, kids.id, "user.example", AppMode.Allowed)
         svc = PolicyServiceLive(
           pr,
-          sr,
           hsr,
           tlr,
           atlr,

@@ -218,8 +218,7 @@ quota system continues to write `time_usage` exactly as it does today.
 
 ## 9. Operationalization
 
-- **Scheduling:** ZIO fiber forked from `Main.scala` next to the existing
-  `ScheduleRepo` wiring. Three fibers: `RollupHourlyJob` (every 5 min),
+- **Scheduling:** ZIO fiber forked from `Main.scala`. Three fibers: `RollupHourlyJob` (every 5 min),
   `RollupDailyJob` (every 1 h — checks each tick whether 00:15 local has passed for
   any router and not yet been rolled), `RetentionSweepJob` (every 1 h — runs once
   per local day at 03:00).

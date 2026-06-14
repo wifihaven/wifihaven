@@ -123,10 +123,9 @@ object UsageSeriesPerfSpec
       for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
-        schedRepo   <- ZIO.service[ScheduleRepo]
         deviceRepo  <- ZIO.service[DeviceRepo]
         trafficRepo <- ZIO.service[TrafficReportRepo]
-        kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+        kidsId      <- TestLayers.seedKidsProfile(profileRepo)
         _           <- TestLayers.seedDevice(deviceRepo, mac, "iPad", kidsId)
         routerId    <- seedRouter
         localMid = date.atStartOfDay(zone).toInstant
@@ -160,9 +159,8 @@ object UsageSeriesPerfSpec
       for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
-        schedRepo   <- ZIO.service[ScheduleRepo]
         deviceRepo  <- ZIO.service[DeviceRepo]
-        kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+        kidsId      <- TestLayers.seedKidsProfile(profileRepo)
         adultsId    <- TestLayers.seedAdultsProfile(profileRepo)
         _           <- TestLayers.seedDevice(deviceRepo, macA, "iPad-A", kidsId)
         _           <- TestLayers.seedDevice(deviceRepo, macB, "iPad-B", adultsId)

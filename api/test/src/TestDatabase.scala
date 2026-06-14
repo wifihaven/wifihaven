@@ -178,10 +178,10 @@ object TestDatabase {
    * bootstrap layer always provides it.
    */
   type AllRepos =
-    TestDb & UserRepo & UserProfileRepo & ProfileRepo & ScheduleRepo & NamedScheduleRepo &
-      HouseholdSettingsRepo & GlobalPolicyRepo & TimeLimitRepo & AppTimeLimitRepo & DeviceRepo &
-      BlocklistRepo & TimeUsageRepo & TimeExtensionRepo & RouterRepo & TrafficReportRepo &
-      BlockEventRepo & ConnectionEventRepo & AlertRepo & AppRepo & RollupRepo & TimeUsedRollupRepo &
+    TestDb & UserRepo & UserProfileRepo & ProfileRepo & NamedScheduleRepo & HouseholdSettingsRepo &
+      GlobalPolicyRepo & TimeLimitRepo & AppTimeLimitRepo & DeviceRepo & BlocklistRepo &
+      TimeUsageRepo & TimeExtensionRepo & RouterRepo & TrafficReportRepo & BlockEventRepo &
+      ConnectionEventRepo & AlertRepo & AppRepo & RollupRepo & TimeUsedRollupRepo &
       AppUsedRollupRepo
 
   val layer: ZLayer[Any, Throwable, EmbeddedPostgres & TestDb & Transactor[Task] & AllRepos] = {
@@ -210,15 +210,11 @@ object TestLayers {
       java.time.ZoneId.of("UTC"),
     )
 
-  // #1482: enforcement now reads schedule downtime exclusively from the named-schedule model
-  // (`named_schedules` / `profile_schedule_rules`), so the Kids fixture attaches its Bedtime window
-  // there. The legacy `schedules` row is still written (it backs the legacy profile-CRUD/display
-  // surface until that table is dropped), mirroring the post-boot-migration production shape where
-  // both representations coexist. Requires a `NamedScheduleRepo` in the environment — every test
-  // runs under `TestDatabase.layer`, which provides it, so call sites are unchanged.
+  // #1709: the legacy `schedules` row write has been removed; named-schedule model is the sole
+  // source of truth for schedule enforcement. Requires a `NamedScheduleRepo` in the environment —
+  // every test runs under `TestDatabase.layer`, which provides it, so call sites are unchanged.
   def seedKidsProfile(
       profileRepo: ProfileRepo,
-      scheduleRepo: ScheduleRepo,
   ): ZIO[NamedScheduleRepo, Throwable, ProfileId] =
     for {
       id  <- profileRepo.create(
@@ -227,18 +223,6 @@ object TestLayers {
           BlocklistId.unsafe("adult"),
           BlocklistId.unsafe("gambling"),
           BlocklistId.unsafe("social_media"),
-        ),
-      )
-      _   <- scheduleRepo.replaceForProfile(
-        id,
-        List(
-          wifihaven.shared.ScheduleRequest(
-            "Bedtime",
-            kidsBedtimeWindow.days,
-            kidsBedtimeWindow.startLocal,
-            kidsBedtimeWindow.endLocal,
-            kidsBedtimeWindow.tz,
-          ),
         ),
       )
       nsr <- ZIO.service[NamedScheduleRepo]

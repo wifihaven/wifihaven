@@ -42,7 +42,6 @@ object PolicySnapshotBlockedMacsSpec
   private def makePsAt(dt: LocalDateTime) =
     for {
       pr     <- ZIO.service[ProfileRepo]
-      sr     <- ZIO.service[ScheduleRepo]
       hsr    <- ZIO.service[HouseholdSettingsRepo]
       tlr    <- ZIO.service[TimeLimitRepo]
       atlr   <- ZIO.service[AppTimeLimitRepo]
@@ -56,7 +55,6 @@ object PolicySnapshotBlockedMacsSpec
       clk = new Clock.TestClock(ref)
     } yield PolicyServiceLive(
       pr,
-      sr,
       hsr,
       tlr,
       atlr,
@@ -107,9 +105,8 @@ object PolicySnapshotBlockedMacsSpec
       for {
         _    <- cleanDb
         pr   <- ZIO.service[ProfileRepo]
-        sr   <- ZIO.service[ScheduleRepo]
         dr   <- ZIO.service[DeviceRepo]
-        kid  <- TestLayers.seedKidsProfile(pr, sr)
+        kid  <- TestLayers.seedKidsProfile(pr)
         _    <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
         ps   <- makePsAt(TestClock.schoolDayAfternoon)
         snap <- ps.snapshot
@@ -119,9 +116,8 @@ object PolicySnapshotBlockedMacsSpec
       for {
         _    <- cleanDb
         pr   <- ZIO.service[ProfileRepo]
-        sr   <- ZIO.service[ScheduleRepo]
         dr   <- ZIO.service[DeviceRepo]
-        kid  <- TestLayers.seedKidsProfile(pr, sr)
+        kid  <- TestLayers.seedKidsProfile(pr)
         _    <- pr.setPaused(kid, true)
         _    <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
         _    <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:44", "kid-phone", kid)
@@ -138,9 +134,8 @@ object PolicySnapshotBlockedMacsSpec
       for {
         _    <- cleanDb
         pr   <- ZIO.service[ProfileRepo]
-        sr   <- ZIO.service[ScheduleRepo]
         dr   <- ZIO.service[DeviceRepo]
-        kid  <- TestLayers.seedKidsProfile(pr, sr)
+        kid  <- TestLayers.seedKidsProfile(pr)
         _    <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
         ps   <- makePsAt(TestClock.bedtime)
         snap <- ps.snapshot
@@ -150,9 +145,8 @@ object PolicySnapshotBlockedMacsSpec
       for {
         _    <- cleanDb
         pr   <- ZIO.service[ProfileRepo]
-        sr   <- ZIO.service[ScheduleRepo]
         dr   <- ZIO.service[DeviceRepo]
-        kid  <- TestLayers.seedKidsProfile(pr, sr)
+        kid  <- TestLayers.seedKidsProfile(pr)
         _    <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
         ps   <- makePsAt(TestClock.earlyMorning)
         snap <- ps.snapshot
@@ -162,10 +156,9 @@ object PolicySnapshotBlockedMacsSpec
       for {
         _    <- cleanDb
         pr   <- ZIO.service[ProfileRepo]
-        sr   <- ZIO.service[ScheduleRepo]
         dr   <- ZIO.service[DeviceRepo]
         tlr  <- ZIO.service[TimeLimitRepo]
-        kid  <- TestLayers.seedKidsProfile(pr, sr)
+        kid  <- TestLayers.seedKidsProfile(pr)
         _    <- tlr.upsert(kid, 120)
         _    <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
         rid  <- seedRouterRow
@@ -178,9 +171,8 @@ object PolicySnapshotBlockedMacsSpec
       for {
         _    <- cleanDb
         pr   <- ZIO.service[ProfileRepo]
-        sr   <- ZIO.service[ScheduleRepo]
         dr   <- ZIO.service[DeviceRepo]
-        kid  <- TestLayers.seedKidsProfile(pr, sr)
+        kid  <- TestLayers.seedKidsProfile(pr)
         _    <- pr.setPaused(kid, true)
         _    <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
         ps   <- makePsAt(TestClock.bedtime)
@@ -191,10 +183,9 @@ object PolicySnapshotBlockedMacsSpec
       for {
         _    <- cleanDb
         pr   <- ZIO.service[ProfileRepo]
-        sr   <- ZIO.service[ScheduleRepo]
         dr   <- ZIO.service[DeviceRepo]
         tlr  <- ZIO.service[TimeLimitRepo]
-        kid  <- TestLayers.seedKidsProfile(pr, sr)
+        kid  <- TestLayers.seedKidsProfile(pr)
         _    <- tlr.upsert(kid, 120)
         _    <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
         rid  <- seedRouterRow
@@ -207,9 +198,8 @@ object PolicySnapshotBlockedMacsSpec
       for {
         _    <- cleanDb
         pr   <- ZIO.service[ProfileRepo]
-        sr   <- ZIO.service[ScheduleRepo]
         dr   <- ZIO.service[DeviceRepo]
-        kid  <- TestLayers.seedKidsProfile(pr, sr)
+        kid  <- TestLayers.seedKidsProfile(pr)
         _    <- pr.setPaused(kid, true)
         _    <- dr.upsertUnknown(
           MacAddress.unsafe("ff:ff:ff:aa:bb:cc"),
@@ -225,10 +215,9 @@ object PolicySnapshotBlockedMacsSpec
       for {
         _        <- cleanDb
         pr       <- ZIO.service[ProfileRepo]
-        sr       <- ZIO.service[ScheduleRepo]
         dr       <- ZIO.service[DeviceRepo]
         hsr      <- ZIO.service[HouseholdSettingsRepo]
-        kid      <- TestLayers.seedKidsProfile(pr, sr)
+        kid      <- TestLayers.seedKidsProfile(pr)
         _        <- pr.setPaused(kid, true)
         _        <- dr.upsertUnknown(
           MacAddress.unsafe("ff:ff:ff:aa:bb:cc"),
@@ -248,9 +237,8 @@ object PolicySnapshotBlockedMacsSpec
       for {
         _        <- cleanDb
         pr       <- ZIO.service[ProfileRepo]
-        sr       <- ZIO.service[ScheduleRepo]
         dr       <- ZIO.service[DeviceRepo]
-        kid      <- TestLayers.seedKidsProfile(pr, sr)
+        kid      <- TestLayers.seedKidsProfile(pr)
         _        <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
         psBefore <- makePsAt(TestClock.schoolDayAfternoon)
         psAfter  <- makePsAt(TestClock.bedtime)

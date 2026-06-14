@@ -29,7 +29,6 @@ object PolicySnapshotFailureModeSpec
       for {
         _      <- cleanDb
         pr     <- ZIO.service[ProfileRepo]
-        sr     <- ZIO.service[ScheduleRepo]
         hsr    <- ZIO.service[HouseholdSettingsRepo]
         tlr    <- ZIO.service[TimeLimitRepo]
         atlr   <- ZIO.service[AppTimeLimitRepo]
@@ -39,7 +38,7 @@ object PolicySnapshotFailureModeSpec
         er     <- ZIO.service[TimeExtensionRepo]
         ar     <- ZIO.service[AppRepo]
         clock  <- ZIO.service[Clock]
-        svc = PolicyServiceLive(pr, sr, hsr, tlr, atlr, dr, blr, trRepo, er, ar, clock)
+        svc = PolicyServiceLive(pr, hsr, tlr, atlr, dr, blr, trRepo, er, ar, clock)
         profiles0 <- pr.listAll
         kidsId   = profiles0.find(_.name == "Kids").get.id
         adultsId = profiles0.find(_.name == "Adults").get.id
@@ -62,7 +61,6 @@ object PolicySnapshotFailureModeSpec
       for {
         _      <- cleanDb
         pr     <- ZIO.service[ProfileRepo]
-        sr     <- ZIO.service[ScheduleRepo]
         hsr    <- ZIO.service[HouseholdSettingsRepo]
         tlr    <- ZIO.service[TimeLimitRepo]
         atlr   <- ZIO.service[AppTimeLimitRepo]
@@ -72,7 +70,7 @@ object PolicySnapshotFailureModeSpec
         er     <- ZIO.service[TimeExtensionRepo]
         ar     <- ZIO.service[AppRepo]
         clock  <- ZIO.service[Clock]
-        svc = PolicyServiceLive(pr, sr, hsr, tlr, atlr, dr, blr, trRepo, er, ar, clock)
+        svc = PolicyServiceLive(pr, hsr, tlr, atlr, dr, blr, trRepo, er, ar, clock)
         profiles0 <- pr.listAll
         _         <- pr.update(
           profiles0.find(_.name == "Kids").get.copy(failureMode = FailureMode.BlockAll),
@@ -89,7 +87,6 @@ object PolicySnapshotFailureModeSpec
       for {
         _      <- cleanDb
         pr     <- ZIO.service[ProfileRepo]
-        sr     <- ZIO.service[ScheduleRepo]
         hsr    <- ZIO.service[HouseholdSettingsRepo]
         tlr    <- ZIO.service[TimeLimitRepo]
         atlr   <- ZIO.service[AppTimeLimitRepo]
@@ -99,7 +96,7 @@ object PolicySnapshotFailureModeSpec
         er     <- ZIO.service[TimeExtensionRepo]
         ar     <- ZIO.service[AppRepo]
         clock  <- ZIO.service[Clock]
-        svc = PolicyServiceLive(pr, sr, hsr, tlr, atlr, dr, blr, trRepo, er, ar, clock)
+        svc = PolicyServiceLive(pr, hsr, tlr, atlr, dr, blr, trRepo, er, ar, clock)
         profiles0 <- pr.listAll
         _         <- pr.update(
           profiles0.find(_.name == "Kids").get.copy(failureMode = FailureMode.BlockAll),

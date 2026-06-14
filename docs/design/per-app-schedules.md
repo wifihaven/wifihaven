@@ -136,10 +136,10 @@ created directly — no deferred-constraint dance.
 > profile-CRUD/display surface and keeps the pre-migration image enforcing on a
 > rollback — but it is no longer an enforcement source. Retiring it is staged as
 > **two** further PRs, honouring the migration-isolation rule: first a code/test
-> PR that removes the now-dead legacy `ScheduleRepo` (its repo, the
-> profile-upsert `schedules` write/read, the `@unused` injection retained here
-> for arity, and the fixtures that seed it), then a migration-only PR that drops
-> the table — done once the named path has fully rolled out.
+> PR (#1709) that removed the now-dead legacy `ScheduleRepo` (its repo, the
+> profile-upsert `schedules` write/read, the `@unused` injection, and the
+> fixtures that seeded it), then a migration-only PR (#1485) that drops
+> the table.
 >
 > **Profiles reference schedules through a `(profile, schedule, mode)` join
 > table — `profile_schedule_rules` — NOT a single `profiles.schedule_id`

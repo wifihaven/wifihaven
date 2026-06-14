@@ -229,9 +229,8 @@ object PresenceDefaultsPinSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
       for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
-        schedRepo   <- ZIO.service[ScheduleRepo]
         deviceRepo  <- ZIO.service[DeviceRepo]
-        kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+        kidsId      <- TestLayers.seedKidsProfile(profileRepo)
         _           <- TestLayers.seedDevice(deviceRepo, macCoarse, "iPad-coarse", kidsId)
         _           <- TestLayers.seedDevice(deviceRepo, macFine, "iPad-fine", kidsId)
         routerId    <- seedRouter

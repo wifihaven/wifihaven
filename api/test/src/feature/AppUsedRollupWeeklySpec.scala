@@ -69,10 +69,9 @@ object AppUsedRollupWeeklySpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
       for {
         _      <- cleanDb
         pr     <- ZIO.service[ProfileRepo]
-        sr     <- ZIO.service[ScheduleRepo]
         ar     <- ZIO.service[AppRepo]
         aru    <- ZIO.service[AppUsedRollupRepo]
-        kid    <- TestLayers.seedKidsProfile(pr, sr)
+        kid    <- TestLayers.seedKidsProfile(pr)
         adults <- TestLayers.seedAdultsProfile(pr)
         ytApp  <- seedApp(ar, "yt", List("youtube.com"))
         d0 = LocalDate.of(2025, 1, 1)
@@ -97,10 +96,9 @@ object AppUsedRollupWeeklySpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
       for {
         _         <- cleanDb
         pr        <- ZIO.service[ProfileRepo]
-        sr        <- ZIO.service[ScheduleRepo]
         ar        <- ZIO.service[AppRepo]
         aru       <- ZIO.service[AppUsedRollupRepo]
-        kid       <- TestLayers.seedKidsProfile(pr, sr)
+        kid       <- TestLayers.seedKidsProfile(pr)
         ytApp     <- seedApp(ar, "yt", List("youtube.com"))
         socialApp <- seedApp(ar, "social", List("social.com"))
         w1Start = LocalDate.of(2025, 1, 1)
@@ -176,10 +174,9 @@ object AppUsedRollupWeeklySpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
       for {
         _         <- cleanDb
         pr        <- ZIO.service[ProfileRepo]
-        sr        <- ZIO.service[ScheduleRepo]
         ar        <- ZIO.service[AppRepo]
         aru       <- ZIO.service[AppUsedRollupRepo]
-        kid       <- TestLayers.seedKidsProfile(pr, sr)
+        kid       <- TestLayers.seedKidsProfile(pr)
         ytApp     <- seedApp(ar, "yt", List("youtube.com"))
         socialApp <- seedApp(ar, "social", List("social.com"))
         w1Start = LocalDate.of(2025, 1, 1)

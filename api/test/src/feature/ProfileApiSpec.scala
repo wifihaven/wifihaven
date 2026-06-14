@@ -14,7 +14,6 @@ import zio.http.*
 import zio.json.*
 import zio.test.*
 import zio.test.Assertion.*
-import java.time.{LocalTime, ZoneId}
 
 /**
  * Feature tests for the Profile API.
@@ -43,14 +42,13 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
   private def mkRoutes =
     for {
       profileRepo     <- ZIO.service[ProfileRepo]
-      schedRepo       <- ZIO.service[ScheduleRepo]
       tlRepo          <- ZIO.service[TimeLimitRepo]
       auth            <- makeAuth
       userProfileRepo <- ZIO.service[UserProfileRepo]
       userRepoSvc     <- ZIO.service[UserRepo]
     } yield (
       auth,
-      ProfileRoutes.routes(auth, profileRepo, schedRepo, tlRepo, userProfileRepo, userRepoSvc),
+      ProfileRoutes.routes(auth, profileRepo, tlRepo, userProfileRepo, userRepoSvc),
     )
 
   def spec = suite("Profile API")(
@@ -82,27 +80,15 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
       // Enforcement reads named_schedules / profile_schedule_rules
       // (#1482/#1490), the upsert no longer writes the V1 table (#1494), and
       // no client surface reads `pd.schedules`. Assert the JSON body omits
-      // the key entirely even when a stale legacy row exists — a regression
-      // that re-adds the field will fail this raw-string check.
+      // the key entirely — a regression that re-adds the field will fail this raw-string check.
+      // #1709: the legacy `scheduleRepo.replaceForProfile` setup was removed; the check still
+      // verifies the API JSON shape does not include a `schedules` key.
       test("GET /api/profiles JSON omits the legacy `schedules` key (#1547)") {
         for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           profiles    <- profileRepo.listAll
           kids = profiles.find(_.name == "Kids").get
-          _              <- schedRepo.replaceForProfile(
-            kids.id,
-            List(
-              ScheduleRequest(
-                name = "stale-legacy",
-                days = List("mon", "tue"),
-                startLocal = LocalTime.of(21, 0),
-                endLocal = LocalTime.of(7, 0),
-                tz = ZoneId.of("UTC"),
-              ),
-            ),
-          )
           (auth, routes) <- mkRoutes
           token          <- auth.login("admin", "changeme").map(_.token.value)
           listResp       <- routes.runZIO(
@@ -119,10 +105,8 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           singleBody     <- singleResp.body.asString
         } yield assertTrue(listResp.status == Status.Ok) &&
           assertTrue(!listBody.contains("\"schedules\"")) &&
-          assertTrue(!listBody.contains("stale-legacy")) &&
           assertTrue(singleResp.status == Status.Ok) &&
-          assertTrue(!singleBody.contains("\"schedules\"")) &&
-          assertTrue(!singleBody.contains("stale-legacy"))
+          assertTrue(!singleBody.contains("\"schedules\""))
       },
     ),
     suite("POST /api/profiles")(
@@ -159,11 +143,11 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
       // profile_schedule_rules (#1482/#1490). The profile upsert must therefore
       // STOP writing the dead V1 `schedules` table — an inline `schedules`
       // array on the request body is ignored, never persisted.
+      // #1709: ScheduleRepo is removed; the test now verifies the upsert succeeds
+      // (the write path no longer exists so there is nothing to pollute).
       test("profile upsert does not write the legacy schedules table (#1494)") {
         for {
           _              <- cleanDb
-          profileRepo    <- ZIO.service[ProfileRepo]
-          schedRepo      <- ZIO.service[ScheduleRepo]
           (auth, routes) <- mkRoutes
           token          <- auth.login("admin", "changeme").map(_.token.value)
           // Raw JSON deliberately carries a legacy inline `schedules` array; a
@@ -177,13 +161,8 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
             .post(URL.decode("/api/profiles").toOption.get, Body.fromString(body))
             .addHeader(Header.Authorization.Bearer(token))
             .addHeader(Header.ContentType(MediaType.application.json))
-          resp     <- routes.runZIO(req)
-          profiles <- profileRepo.listAll
-          created  <- ZIO
-            .fromOption(profiles.find(_.name == "NoLegacy"))
-            .orElseFail(new Exception("Profile not found"))
-          scheds   <- schedRepo.listForProfile(created.id)
-        } yield assertTrue(resp.status == Status.Ok) && assertTrue(scheds.isEmpty)
+          resp <- routes.runZIO(req)
+        } yield assertTrue(resp.status == Status.Ok)
       },
       test("failureMode defaults to LastKnownGood when omitted from create request (#385)") {
         for {

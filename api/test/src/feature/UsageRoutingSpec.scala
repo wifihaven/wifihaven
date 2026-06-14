@@ -120,9 +120,8 @@ object UsageRoutingSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
       for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
-        schedRepo   <- ZIO.service[ScheduleRepo]
         deviceRepo  <- ZIO.service[DeviceRepo]
-        kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+        kidsId      <- TestLayers.seedKidsProfile(profileRepo)
         _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
         routerId    <- seedRouter
         // Seed 6 hours of raw rows on day -3, then trigger the hourly roll.
@@ -157,9 +156,8 @@ object UsageRoutingSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
       for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
-        schedRepo   <- ZIO.service[ScheduleRepo]
         deviceRepo  <- ZIO.service[DeviceRepo]
-        kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+        kidsId      <- TestLayers.seedKidsProfile(profileRepo)
         _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
         routerId    <- seedRouter
         seedStart = today.minusDays(20).atStartOfDay(ZoneOffset.UTC).toInstant
@@ -197,9 +195,8 @@ object UsageRoutingSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
       for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
-        schedRepo   <- ZIO.service[ScheduleRepo]
         deviceRepo  <- ZIO.service[DeviceRepo]
-        kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+        kidsId      <- TestLayers.seedKidsProfile(profileRepo)
         _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
         routerId    <- seedRouter
         // 1h of 5-min raw rows on day -5, inside the 30-day window.

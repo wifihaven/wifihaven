@@ -42,7 +42,6 @@ object RouterDecisionConsolidationSpec
   private def makePsAt(dt: LocalDateTime) =
     for {
       pr     <- ZIO.service[ProfileRepo]
-      sr     <- ZIO.service[ScheduleRepo]
       hsr    <- ZIO.service[HouseholdSettingsRepo]
       tlr    <- ZIO.service[TimeLimitRepo]
       atlr   <- ZIO.service[AppTimeLimitRepo]
@@ -56,7 +55,6 @@ object RouterDecisionConsolidationSpec
       clk = new Clock.TestClock(ref)
     } yield PolicyServiceLive(
       pr,
-      sr,
       hsr,
       tlr,
       atlr,
@@ -113,9 +111,8 @@ object RouterDecisionConsolidationSpec
       for {
         _    <- cleanDb
         pr   <- ZIO.service[ProfileRepo]
-        sr   <- ZIO.service[ScheduleRepo]
         dr   <- ZIO.service[DeviceRepo]
-        kid  <- TestLayers.seedKidsProfile(pr, sr)
+        kid  <- TestLayers.seedKidsProfile(pr)
         _    <- pr.setPaused(kid, true)
         _    <- TestLayers.seedDevice(dr, mac, "kid", kid)
         ps   <- makePsAt(TestClock.schoolDayAfternoon)
@@ -134,11 +131,10 @@ object RouterDecisionConsolidationSpec
       for {
         _    <- cleanDb
         pr   <- ZIO.service[ProfileRepo]
-        sr   <- ZIO.service[ScheduleRepo]
         dr   <- ZIO.service[DeviceRepo]
-        kid  <- TestLayers.seedKidsProfile(pr, sr) // Bedtime 21:00–07:00
+        kid  <- TestLayers.seedKidsProfile(pr) // Bedtime 21:00–07:00
         _    <- TestLayers.seedDevice(dr, mac, "kid", kid)
-        ps   <- makePsAt(TestClock.bedtime)        // Monday 21:30 → schedule active
+        ps   <- makePsAt(TestClock.bedtime)    // Monday 21:30 → schedule active
         d    <- ps.decide(mac, "example.com")
         snap <- ps.snapshot
         rules = snap.profiles(kid).rules
@@ -154,10 +150,9 @@ object RouterDecisionConsolidationSpec
       for {
         _    <- cleanDb
         pr   <- ZIO.service[ProfileRepo]
-        sr   <- ZIO.service[ScheduleRepo]
         dr   <- ZIO.service[DeviceRepo]
         tlr  <- ZIO.service[TimeLimitRepo]
-        kid  <- TestLayers.seedKidsProfile(pr, sr)
+        kid  <- TestLayers.seedKidsProfile(pr)
         _    <- tlr.upsert(kid, 120)
         _    <- TestLayers.seedDevice(dr, mac, "kid", kid)
         rid  <- seedRouterRow
@@ -178,10 +173,9 @@ object RouterDecisionConsolidationSpec
       for {
         _    <- cleanDb
         pr   <- ZIO.service[ProfileRepo]
-        sr   <- ZIO.service[ScheduleRepo]
         dr   <- ZIO.service[DeviceRepo]
         ar   <- ZIO.service[AppRepo]
-        kid  <- TestLayers.seedKidsProfile(pr, sr)
+        kid  <- TestLayers.seedKidsProfile(pr)
         // Site cap 30, non-exempt (counts to daily, but no daily cap set), usage 35 → site hit.
         _    <- TestLayers.seedAppAssignment(
           ar,
@@ -210,11 +204,10 @@ object RouterDecisionConsolidationSpec
       for {
         _          <- cleanDb
         pr         <- ZIO.service[ProfileRepo]
-        sr         <- ZIO.service[ScheduleRepo]
         dr         <- ZIO.service[DeviceRepo]
         tlr        <- ZIO.service[TimeLimitRepo]
         ar         <- ZIO.service[AppRepo]
-        kid        <- TestLayers.seedKidsProfile(pr, sr)
+        kid        <- TestLayers.seedKidsProfile(pr)
         _          <- tlr.upsert(kid, 30) // daily cap 30
         // Khan is exempt from the daily cap with plenty of per-site budget.
         _          <- TestLayers.seedAppAssignment(

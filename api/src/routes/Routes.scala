@@ -208,7 +208,6 @@ object ProfileRoutes {
   def routes(
       auth: AuthService,
       profileRepo: ProfileRepo,
-      scheduleRepo: ScheduleRepo,
       timeLimitRepo: TimeLimitRepo,
       userProfileRepo: UserProfileRepo,
       userRepo: UserRepo,

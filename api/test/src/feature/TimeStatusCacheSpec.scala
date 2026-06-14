@@ -90,13 +90,11 @@ object TimeStatusCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
       trafficRepo <- ZIO.service[TrafficReportRepo]
       extRepo     <- ZIO.service[TimeExtensionRepo]
       profileRepo <- ZIO.service[ProfileRepo]
-      schedRepo   <- ZIO.service[ScheduleRepo]
       upRepo      <- ZIO.service[UserProfileRepo]
       hsRepo      <- ZIO.service[HouseholdSettingsRepo]
       clock       <- ZIO.service[Clock]
       tss = new wifihaven.api.policy.TimeStatusServiceLive(
         profileRepo,
-        schedRepo,
         tlRepo,
         atlRepo,
         deviceRepo,
@@ -131,11 +129,10 @@ object TimeStatusCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
         tlRepo      <- ZIO.service[TimeLimitRepo]
-        schedRepo   <- ZIO.service[ScheduleRepo]
         deviceRepo  <- ZIO.service[DeviceRepo]
         auth        <- makeAuth
         token       <- auth.login("admin", "changeme").map(_.token.value)
-        kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+        kidsId      <- TestLayers.seedKidsProfile(profileRepo)
         _           <- tlRepo.upsert(kidsId, 120)
         _           <- TestLayers.seedDevice(deviceRepo, macKid, "iPad-Kid", kidsId)
         routerId    <- seedRouter
@@ -163,11 +160,10 @@ object TimeStatusCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
         tlRepo      <- ZIO.service[TimeLimitRepo]
-        schedRepo   <- ZIO.service[ScheduleRepo]
         deviceRepo  <- ZIO.service[DeviceRepo]
         auth        <- makeAuth
         token       <- auth.login("admin", "changeme").map(_.token.value)
-        kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+        kidsId      <- TestLayers.seedKidsProfile(profileRepo)
         adultsId    <- TestLayers.seedAdultsProfile(profileRepo)
         _           <- tlRepo.upsert(kidsId, 120)
         _           <- TestLayers.seedDevice(deviceRepo, macKid, "iPad-Kid", kidsId)
@@ -200,12 +196,11 @@ object TimeStatusCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
         tlRepo      <- ZIO.service[TimeLimitRepo]
-        schedRepo   <- ZIO.service[ScheduleRepo]
         deviceRepo  <- ZIO.service[DeviceRepo]
         trafficRepo <- ZIO.service[TrafficReportRepo]
         auth        <- makeAuth
         token       <- auth.login("admin", "changeme").map(_.token.value)
-        kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+        kidsId      <- TestLayers.seedKidsProfile(profileRepo)
         _           <- tlRepo.upsert(kidsId, 120)
         _           <- TestLayers.seedDevice(deviceRepo, macKid, "iPad-Kid", kidsId)
         routerId    <- seedRouter
@@ -234,12 +229,11 @@ object TimeStatusCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
         tlRepo      <- ZIO.service[TimeLimitRepo]
-        schedRepo   <- ZIO.service[ScheduleRepo]
         deviceRepo  <- ZIO.service[DeviceRepo]
         trafficRepo <- ZIO.service[TrafficReportRepo]
         auth        <- makeAuth
         token       <- auth.login("admin", "changeme").map(_.token.value)
-        kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+        kidsId      <- TestLayers.seedKidsProfile(profileRepo)
         adultsId    <- TestLayers.seedAdultsProfile(profileRepo)
         _ <- tlRepo.upsert(kidsId, 30) // tight cap so the kid is over limit at 25m used + buffer
         _ <- tlRepo.upsert(adultsId, 120)
@@ -292,11 +286,10 @@ object TimeStatusCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
         tlRepo      <- ZIO.service[TimeLimitRepo]
-        schedRepo   <- ZIO.service[ScheduleRepo]
         deviceRepo  <- ZIO.service[DeviceRepo]
         auth        <- makeAuth
         token       <- auth.login("admin", "changeme").map(_.token.value)
-        kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+        kidsId      <- TestLayers.seedKidsProfile(profileRepo)
         _           <- tlRepo.upsert(kidsId, 60)
         _           <- TestLayers.seedDevice(deviceRepo, macKid, "iPad-Kid", kidsId)
         cache       <- TimeStatusCache.make()

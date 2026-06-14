@@ -141,7 +141,6 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
       _           <- cleanDb
       hsr         <- ZIO.service[HouseholdSettingsRepo]
       profileRepo <- ZIO.service[ProfileRepo]
-      schedRepo   <- ZIO.service[ScheduleRepo]
       deviceRepo  <- ZIO.service[DeviceRepo]
       trafficRepo <- ZIO.service[TrafficReportRepo]
       appRepo     <- ZIO.service[AppRepo]
@@ -154,7 +153,7 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
       cur         <- hsr.get
       settings = cur.copy(dailyResetTz = ZoneOffset.UTC)
       _        <- hsr.update(settings)
-      kidsId   <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+      kidsId   <- TestLayers.seedKidsProfile(profileRepo)
       _        <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
       routerId <- seedRouter
       appId    <- appRepo.create(appName, appSlug, None, Some("💬"))
@@ -188,7 +187,6 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
       // Per-app cap aggregate (AppDayState.usedMinutes).
       tsvc = new TimeStatusServiceLive(
         profileRepo,
-        schedRepo,
         timeLimRepo,
         atlRepo,
         deviceRepo,
@@ -259,9 +257,8 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           rb          <- buildRoutes
           (routes, auth) = rb
@@ -282,10 +279,9 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           routerId    <- seedRouter
           today = TestClock.schoolDayAfternoon.toLocalDate
@@ -323,9 +319,8 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           routerId    <- seedRouter
           today = TestClock.schoolDayAfternoon.toLocalDate
@@ -353,9 +348,8 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           routerId    <- seedRouter
           today = TestClock.schoolDayAfternoon.toLocalDate
@@ -387,9 +381,8 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           routerId    <- seedRouter
           today = TestClock.schoolDayAfternoon.toLocalDate
@@ -427,9 +420,8 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           routerId    <- seedRouter
           today = TestClock.schoolDayAfternoon.toLocalDate
@@ -492,9 +484,8 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- TestLayers.seedDevice(deviceRepo, macA, "iPad-A", kidsId)
           _           <- TestLayers.seedDevice(deviceRepo, macB, "iPad-B", kidsId)
           routerId    <- seedRouter
@@ -555,8 +546,7 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           rb          <- buildRoutes
           (routes, auth) = rb
           token <- auth.login("admin", "changeme").map(_.token.value)
@@ -577,10 +567,9 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           appRepo     <- ZIO.service[AppRepo]
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           routerId    <- seedRouter
           // Two apps each owning one host.
@@ -660,9 +649,8 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           routerId    <- seedRouter
           today = TestClock.schoolDayAfternoon.toLocalDate
@@ -695,12 +683,11 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
           hsRepo      <- ZIO.service[wifihaven.api.db.HouseholdSettingsRepo]
           appRepo     <- ZIO.service[AppRepo]
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           routerId    <- seedRouter
           ytId        <- appRepo.create("YouTube", "youtube", None, Some("📺"))
@@ -865,9 +852,8 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           routerId    <- seedRouter
           _           <- insertRow(routerId, testMac, "youtube.com", today, 14, 0)
@@ -903,10 +889,9 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           routerId    <- seedRouter
           // Two youtube rows in hour 14 (5m + 5m = 10m, 600s active), 1 google row.
@@ -1013,10 +998,9 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           routerId    <- seedRouter
           start = today.atStartOfDay(ZoneOffset.UTC).toInstant.plusSeconds(14 * 3600L)
@@ -1096,10 +1080,9 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- TestLayers.seedDevice(deviceRepo, macA, "iPad-A", kidsId)
           _           <- TestLayers.seedDevice(deviceRepo, macB, "iPad-B", kidsId)
           routerId    <- seedRouter
@@ -1178,10 +1161,9 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- TestLayers.seedDevice(deviceRepo, macA, "iPad-A", kidsId)
           _           <- TestLayers.seedDevice(deviceRepo, macB, "iPad-B", kidsId)
           routerId    <- seedRouter
@@ -1259,9 +1241,8 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           adultsId    <- profileRepo.create("Adults", List.empty)
           macAStr = "aa:bb:cc:dd:ee:01"
           macBStr = "aa:bb:cc:dd:ee:02"
@@ -1333,10 +1314,9 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           routerId    <- seedRouter
           start = today.atStartOfDay(ZoneOffset.UTC).toInstant.plusSeconds(14 * 3600L)
@@ -1408,11 +1388,10 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
           appRepo     <- ZIO.service[AppRepo]
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           routerId    <- seedRouter
           // App "YouTube" owns youtube.com + ytimg.com; google.com is not in any app.
@@ -1507,11 +1486,10 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
           appRepo     <- ZIO.service[AppRepo]
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           routerId    <- seedRouter
           ytId        <- appRepo.create("YouTube", "youtube", None, None)
@@ -1564,11 +1542,10 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
           appRepo     <- ZIO.service[AppRepo]
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           routerId    <- seedRouter
           // App "YouTube" owns apex youtube.com + ytimg.com; traffic arrives
@@ -1680,9 +1657,8 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           routerId    <- seedRouter
           _           <- insertRow(routerId, testMac, "youtube.com", today, 14, 0)
@@ -1707,9 +1683,8 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           routerId    <- seedRouter
           // 7 rows in distinct 5-min slots, single domain to make ordering deterministic.
@@ -1765,9 +1740,8 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           _           <- seedRouter
           rb          <- buildRoutes
@@ -1789,9 +1763,8 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           routerId    <- seedRouter
           // 5 rows in 5 different hours so 1h bucket yields 5 windows.
@@ -1840,11 +1813,10 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
           appRepo     <- ZIO.service[AppRepo]
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           routerId    <- seedRouter
           ytId        <- appRepo.create("YouTube", "youtube", None, Some("📺"))
@@ -1938,11 +1910,10 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
           appRepo     <- ZIO.service[AppRepo]
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           routerId    <- seedRouter
           ytId        <- appRepo.create("YouTube", "youtube", None, Some("📺"))
@@ -1996,11 +1967,10 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
           appRepo     <- ZIO.service[AppRepo]
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           routerId    <- seedRouter
           kaId        <- appRepo.create("KhanAcademy", "khan", None, Some("🎓"))
@@ -2051,11 +2021,10 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
           appRepo     <- ZIO.service[AppRepo]
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           routerId    <- seedRouter
           ytId        <- appRepo.create("YouTube", "youtube", None, None)
@@ -2128,11 +2097,10 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
           appRepo     <- ZIO.service[AppRepo]
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           routerId    <- seedRouter
           ytId        <- appRepo.create("YouTube", "youtube", None, Some("📺"))

@@ -76,10 +76,9 @@ object DebugApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
       for {
         _      <- cleanDb
         pRepo  <- ZIO.service[ProfileRepo]
-        sRepo  <- ZIO.service[ScheduleRepo]
         dRepo  <- ZIO.service[DeviceRepo]
         routes <- buildRoutes(enabled = true)
-        kid    <- TestLayers.seedKidsProfile(pRepo, sRepo)
+        kid    <- TestLayers.seedKidsProfile(pRepo)
         _      <- TestLayers.seedDevice(dRepo, "aa:bb:cc:11:22:33", "kid-ipad", kid)
         resp   <- routes.runZIO(get("/api/debug/devices"))
         body   <- resp.body.asString

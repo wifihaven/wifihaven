@@ -121,12 +121,6 @@ trait TimeStatusService {
 
 class TimeStatusServiceLive(
     profileRepo: ProfileRepo,
-    // #1482: the legacy per-profile `schedules` table is no longer an enforcement source —
-    // `named_schedules` / `profile_schedule_rules` is now the single source of truth (existing
-    // rows were folded in by the boot-time `ScheduleSeeder`). The repo stays injected but unused
-    // here to preserve the constructor arity that ~40 test constructions depend on; it is removed
-    // wholesale when the legacy table is dropped (the future two-phase destructive PR).
-    @scala.annotation.unused scheduleRepo: ScheduleRepo,
     timeLimitRepo: TimeLimitRepo,
     appTimeLimitRepo: AppTimeLimitRepo,
     deviceRepo: DeviceRepo,
@@ -396,14 +390,13 @@ class TimeStatusServiceLive(
 object TimeStatusService {
 
   val layer: ZLayer[
-    ProfileRepo & ScheduleRepo & TimeLimitRepo & AppTimeLimitRepo & DeviceRepo & TrafficReportRepo &
+    ProfileRepo & TimeLimitRepo & AppTimeLimitRepo & DeviceRepo & TrafficReportRepo &
       TimeExtensionRepo & TimeUsedRollupRepo & NamedScheduleRepo & AppUsedRollupService,
     Nothing,
     TimeStatusService,
   ] = ZLayer.fromFunction {
     (
         pr: ProfileRepo,
-        sr: ScheduleRepo,
         tlr: TimeLimitRepo,
         atlr: AppTimeLimitRepo,
         dr: DeviceRepo,
@@ -412,7 +405,7 @@ object TimeStatusService {
         ru: TimeUsedRollupRepo,
         nsr: NamedScheduleRepo,
         aur: AppUsedRollupService,
-    ) => new TimeStatusServiceLive(pr, sr, tlr, atlr, dr, trr, er, ru, nsr, aur)
+    ) => new TimeStatusServiceLive(pr, tlr, atlr, dr, trr, er, ru, nsr, aur)
   }
 
   /**

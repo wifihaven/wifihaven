@@ -27,7 +27,6 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
   private def makePs =
     for {
       pr     <- ZIO.service[ProfileRepo]
-      sr     <- ZIO.service[ScheduleRepo]
       hsr    <- ZIO.service[HouseholdSettingsRepo]
       tlr    <- ZIO.service[TimeLimitRepo]
       atlr   <- ZIO.service[AppTimeLimitRepo]
@@ -39,7 +38,6 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
       clock  <- ZIO.service[Clock]
     } yield PolicyServiceLive(
       pr,
-      sr,
       hsr,
       tlr,
       atlr,
@@ -54,7 +52,6 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
   private def makePsAt(dt: LocalDateTime) =
     for {
       pr     <- ZIO.service[ProfileRepo]
-      sr     <- ZIO.service[ScheduleRepo]
       hsr    <- ZIO.service[HouseholdSettingsRepo]
       tlr    <- ZIO.service[TimeLimitRepo]
       atlr   <- ZIO.service[AppTimeLimitRepo]
@@ -68,7 +65,6 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
       clk = new Clock.TestClock(ref)
     } yield PolicyServiceLive(
       pr,
-      sr,
       hsr,
       tlr,
       atlr,
@@ -88,7 +84,6 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
   private def makePsRollup =
     for {
       pr   <- ZIO.service[ProfileRepo]
-      sr   <- ZIO.service[ScheduleRepo]
       hsr  <- ZIO.service[HouseholdSettingsRepo]
       tlr  <- ZIO.service[TimeLimitRepo]
       atlr <- ZIO.service[AppTimeLimitRepo]
@@ -102,10 +97,9 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
       aru  <- ZIO.service[AppUsedRollupRepo]
       clk  <- ZIO.service[Clock]
       aus = new AppUsedRollupServiceLive(pr, dr, atlr, trr, aru)
-      tss = new TimeStatusServiceLive(pr, sr, tlr, atlr, dr, trr, er, ru, nsr, aus)
+      tss = new TimeStatusServiceLive(pr, tlr, atlr, dr, trr, er, ru, nsr, aus)
     } yield new PolicyServiceLive(
       pr,
-      sr,
       hsr,
       tlr,
       atlr,
@@ -372,11 +366,10 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
       for {
         _     <- cleanDb
         pr    <- ZIO.service[ProfileRepo]
-        sr    <- ZIO.service[ScheduleRepo]
         dr    <- ZIO.service[DeviceRepo]
         tlr   <- ZIO.service[TimeLimitRepo]
         ar    <- ZIO.service[AppRepo]
-        kid   <- TestLayers.seedKidsProfile(pr, sr)
+        kid   <- TestLayers.seedKidsProfile(pr)
         _     <- tlr.upsert(kid, 30)
         _     <- TestLayers.seedDevice(dr, mac, "kid-ipad", kid)
         appId <- ar.create("Khan", "khan", None, None)
@@ -400,10 +393,9 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
       for {
         _     <- cleanDb
         pr    <- ZIO.service[ProfileRepo]
-        sr    <- ZIO.service[ScheduleRepo]
         dr    <- ZIO.service[DeviceRepo]
         ar    <- ZIO.service[AppRepo]
-        kid   <- TestLayers.seedKidsProfile(pr, sr)
+        kid   <- TestLayers.seedKidsProfile(pr)
         _     <- TestLayers.seedDevice(dr, mac, "kid-ipad", kid)
         appId <- ar.create("Khan", "khan", None, None)
         _     <- ar.setHosts(appId, List(Hostname.unsafe("khanacademy.org")))
@@ -422,9 +414,8 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
       for {
         _     <- cleanDb
         pr    <- ZIO.service[ProfileRepo]
-        sr    <- ZIO.service[ScheduleRepo]
         ar    <- ZIO.service[AppRepo]
-        kid   <- TestLayers.seedKidsProfile(pr, sr)
+        kid   <- TestLayers.seedKidsProfile(pr)
         _     <- pr.setPaused(kid, true)
         appId <- ar.create("Khan", "khan", None, None)
         _     <- ar.setHosts(appId, List(Hostname.unsafe("khanacademy.org")))
@@ -442,9 +433,8 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
       for {
         _     <- cleanDb
         pr    <- ZIO.service[ProfileRepo]
-        sr    <- ZIO.service[ScheduleRepo]
         ar    <- ZIO.service[AppRepo]
-        kid   <- TestLayers.seedKidsProfile(pr, sr)
+        kid   <- TestLayers.seedKidsProfile(pr)
         appId <- ar.create("Khan", "khan", None, None)
         _     <- ar.setHosts(appId, List(Hostname.unsafe("khanacademy.org")))
         _     <- ar.upsertAssignment(appId, kid, AppMode.TimeLimited, Some(60), true)
@@ -463,11 +453,10 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
       for {
         _     <- cleanDb
         pr    <- ZIO.service[ProfileRepo]
-        sr    <- ZIO.service[ScheduleRepo]
         dr    <- ZIO.service[DeviceRepo]
         tlr   <- ZIO.service[TimeLimitRepo]
         ar    <- ZIO.service[AppRepo]
-        kid   <- TestLayers.seedKidsProfile(pr, sr)
+        kid   <- TestLayers.seedKidsProfile(pr)
         _     <- tlr.upsert(kid, 30)
         _     <- TestLayers.seedDevice(dr, mac, "kid-ipad", kid)
         appId <- ar.create("YouTube", "youtube", None, None)
@@ -495,11 +484,10 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
       for {
         _     <- cleanDb
         pr    <- ZIO.service[ProfileRepo]
-        sr    <- ZIO.service[ScheduleRepo]
         dr    <- ZIO.service[DeviceRepo]
         tlr   <- ZIO.service[TimeLimitRepo]
         ar    <- ZIO.service[AppRepo]
-        kid   <- TestLayers.seedKidsProfile(pr, sr)
+        kid   <- TestLayers.seedKidsProfile(pr)
         _     <- tlr.upsert(kid, 30)
         _     <- TestLayers.seedDevice(dr, mac, "kid-mac", kid)
         appId <- ar.create("Math Academy", "math-academy", None, None)
@@ -530,10 +518,9 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
       for {
         _     <- cleanDb
         pr    <- ZIO.service[ProfileRepo]
-        sr    <- ZIO.service[ScheduleRepo]
         dr    <- ZIO.service[DeviceRepo]
         ar    <- ZIO.service[AppRepo]
-        kid   <- TestLayers.seedKidsProfile(pr, sr)
+        kid   <- TestLayers.seedKidsProfile(pr)
         _     <- pr.setPaused(kid, true)
         _     <- TestLayers.seedDevice(dr, mac, "kid-mac", kid)
         appId <- ar.create("Math Academy", "math-academy", None, None)
@@ -563,10 +550,9 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
       for {
         _    <- cleanDb
         pr   <- ZIO.service[ProfileRepo]
-        sr   <- ZIO.service[ScheduleRepo]
         dr   <- ZIO.service[DeviceRepo]
         tlr  <- ZIO.service[TimeLimitRepo]
-        kid  <- TestLayers.seedKidsProfile(pr, sr)
+        kid  <- TestLayers.seedKidsProfile(pr)
         _    <- tlr.upsert(kid, 30)
         _    <- TestLayers.seedDevice(dr, mac, "kid-mac", kid)
         rid  <- seedRouterRow
@@ -599,9 +585,8 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
       for {
         _     <- cleanDb
         pr    <- ZIO.service[ProfileRepo]
-        sr    <- ZIO.service[ScheduleRepo]
         ar    <- ZIO.service[AppRepo]
-        kid   <- TestLayers.seedKidsProfile(pr, sr)
+        kid   <- TestLayers.seedKidsProfile(pr)
         appId <- ar.create("Khan", "khan", None, None)
         _     <- ar.setHosts(appId, List(Hostname.unsafe("khanacademy.org")))
         _     <- ar.upsertAssignment(appId, kid, AppMode.Allowed, None, true)
@@ -629,9 +614,8 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
       for {
         _     <- cleanDb
         pr    <- ZIO.service[ProfileRepo]
-        sr    <- ZIO.service[ScheduleRepo]
         ar    <- ZIO.service[AppRepo]
-        kid   <- TestLayers.seedKidsProfile(pr, sr)
+        kid   <- TestLayers.seedKidsProfile(pr)
         appId <- ar.create("Khan", "khan", None, None)
         _     <- ar.setHosts(appId, List(Hostname.unsafe("khanacademy.org")))
         _     <- ar.upsertAssignment(appId, kid, AppMode.Allowed, None, true)
@@ -663,7 +647,6 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
       for {
         _     <- cleanDb
         pr    <- ZIO.service[ProfileRepo]
-        sr    <- ZIO.service[ScheduleRepo]
         hsr   <- ZIO.service[HouseholdSettingsRepo]
         tlr   <- ZIO.service[TimeLimitRepo]
         atlr  <- ZIO.service[AppTimeLimitRepo]
@@ -673,7 +656,7 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
         er    <- ZIO.service[TimeExtensionRepo]
         ar    <- ZIO.service[AppRepo]
         clk   <- ZIO.service[Clock]
-        kid   <- TestLayers.seedKidsProfile(pr, sr)
+        kid   <- TestLayers.seedKidsProfile(pr)
         appId <- ar.create("Khan", "khan", None, None)
         _     <- ar.setHosts(appId, List(Hostname.unsafe("khanacademy.org")))
         _     <- ar.upsertAssignment(appId, kid, AppMode.Allowed, None, true)
@@ -682,7 +665,6 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
         svc =
           PolicyServiceLive(
             pr,
-            sr,
             hsr,
             tlr,
             atlr,
@@ -712,8 +694,7 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
       for {
         _   <- cleanDb
         pr  <- ZIO.service[ProfileRepo]
-        sr  <- ZIO.service[ScheduleRepo]
-        kid <- TestLayers.seedKidsProfile(pr, sr)
+        kid <- TestLayers.seedKidsProfile(pr)
         p0  <- pr.findById(kid).map(_.get)
         _   <- pr.update(p0.copy(pauseMode = PauseMode.Hard))
         p1  <- pr.findById(kid).map(_.get)
@@ -737,11 +718,10 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
       for {
         _     <- cleanDb
         pr    <- ZIO.service[ProfileRepo]
-        sr    <- ZIO.service[ScheduleRepo]
         dr    <- ZIO.service[DeviceRepo]
         tlr   <- ZIO.service[TimeLimitRepo]
         ar    <- ZIO.service[AppRepo]
-        kid   <- TestLayers.seedKidsProfile(pr, sr)
+        kid   <- TestLayers.seedKidsProfile(pr)
         _     <- tlr.upsert(kid, 30)
         _     <- TestLayers.seedDevice(dr, mac, "kid-ipad", kid)
         appId <- ar.create("Math", "math", None, None)
@@ -761,9 +741,8 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
       for {
         _     <- cleanDb
         pr    <- ZIO.service[ProfileRepo]
-        sr    <- ZIO.service[ScheduleRepo]
         ar    <- ZIO.service[AppRepo]
-        kid   <- TestLayers.seedKidsProfile(pr, sr)
+        kid   <- TestLayers.seedKidsProfile(pr)
         _     <- pr.setPaused(kid, true)
         appId <- ar.create("Math", "math", None, None)
         _     <- ar.setHosts(appId, List(Hostname.unsafe("mathacademy.com")))
@@ -780,9 +759,8 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
       for {
         _     <- cleanDb
         pr    <- ZIO.service[ProfileRepo]
-        sr    <- ZIO.service[ScheduleRepo]
         ar    <- ZIO.service[AppRepo]
-        kid   <- TestLayers.seedKidsProfile(pr, sr)
+        kid   <- TestLayers.seedKidsProfile(pr)
         appId <- ar.create("Math", "math", None, None)
         _     <- ar.setHosts(appId, List(Hostname.unsafe("mathacademy.com")))
         _     <- ar.upsertAssignment(appId, kid, AppMode.TimeLimited, None, true)
@@ -801,11 +779,10 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
       for {
         _     <- cleanDb
         pr    <- ZIO.service[ProfileRepo]
-        sr    <- ZIO.service[ScheduleRepo]
         dr    <- ZIO.service[DeviceRepo]
         tlr   <- ZIO.service[TimeLimitRepo]
         ar    <- ZIO.service[AppRepo]
-        kid   <- TestLayers.seedKidsProfile(pr, sr)
+        kid   <- TestLayers.seedKidsProfile(pr)
         _     <- tlr.upsert(kid, 30)
         _     <- TestLayers.seedDevice(dr, mac, "kid-ipad", kid)
         appId <- ar.create("Math", "math", None, None)
@@ -828,9 +805,8 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
       for {
         _     <- cleanDb
         pr    <- ZIO.service[ProfileRepo]
-        sr    <- ZIO.service[ScheduleRepo]
         ar    <- ZIO.service[AppRepo]
-        kid   <- TestLayers.seedKidsProfile(pr, sr)
+        kid   <- TestLayers.seedKidsProfile(pr)
         adult <- TestLayers.seedAdultsProfile(pr)
         appId <- ar.create("Khan", "khan", None, None)
         _     <- ar.setHosts(appId, List(Hostname.unsafe("khanacademy.org")))

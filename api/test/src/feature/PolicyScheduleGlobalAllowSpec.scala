@@ -40,7 +40,6 @@ object PolicyScheduleGlobalAllowSpec
   private def makePsAt(dt: LocalDateTime) =
     for {
       pr   <- ZIO.service[ProfileRepo]
-      sr   <- ZIO.service[ScheduleRepo]
       nsr  <- ZIO.service[NamedScheduleRepo]
       hsr  <- ZIO.service[HouseholdSettingsRepo]
       tlr  <- ZIO.service[TimeLimitRepo]
@@ -54,7 +53,6 @@ object PolicyScheduleGlobalAllowSpec
       clk = new Clock.TestClock(ref)
     } yield PolicyServiceLive(
       pr,
-      sr,
       hsr,
       tlr,
       atlr,

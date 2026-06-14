@@ -47,21 +47,20 @@ object AppUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
     } yield new AppUsedRollupServiceLive(pr, dr, stl, trr, aru)
 
   private def makeTimeService: ZIO[
-    ProfileRepo & ScheduleRepo & TimeLimitRepo & AppTimeLimitRepo & DeviceRepo & TrafficReportRepo &
+    ProfileRepo & TimeLimitRepo & AppTimeLimitRepo & DeviceRepo & TrafficReportRepo &
       TimeExtensionRepo & TimeUsedRollupRepo,
     Nothing,
     TimeStatusService,
   ] =
     for {
       pr   <- ZIO.service[ProfileRepo]
-      sr   <- ZIO.service[ScheduleRepo]
       tlr  <- ZIO.service[TimeLimitRepo]
       atlr <- ZIO.service[AppTimeLimitRepo]
       dr   <- ZIO.service[DeviceRepo]
       trr  <- ZIO.service[TrafficReportRepo]
       er   <- ZIO.service[TimeExtensionRepo]
       ru   <- ZIO.service[TimeUsedRollupRepo]
-    } yield new TimeStatusServiceLive(pr, sr, tlr, atlr, dr, trr, er, ru)
+    } yield new TimeStatusServiceLive(pr, tlr, atlr, dr, trr, er, ru)
 
   private def seedRouterRow: ZIO[RouterRepo, Throwable, RouterId] =
     ZIO.serviceWithZIO[RouterRepo](_.create("gw-app", Sha256Hex.unsafe("a" * 64)))
@@ -136,7 +135,6 @@ object AppUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
         _   <- cleanDb
         hsr <- ZIO.service[HouseholdSettingsRepo]
         pr  <- ZIO.service[ProfileRepo]
-        sr  <- ZIO.service[ScheduleRepo]
         dr  <- ZIO.service[DeviceRepo]
         ar  <- ZIO.service[AppRepo]
         ru  <- ZIO.service[TimeUsedRollupRepo]
@@ -144,7 +142,7 @@ object AppUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
         stl <- ZIO.service[AppTimeLimitRepo]
         trr <- ZIO.service[TrafficReportRepo]
         s   <- setTz(hsr, "UTC")
-        kid <- TestLayers.seedKidsProfile(pr, sr)
+        kid <- TestLayers.seedKidsProfile(pr)
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:dd:ee:60", "kid", kid)
         app <- seedApp(ar, kid, "social", List("social.com", "cdn.social.net"), 60)
         rid <- seedRouterRow
@@ -169,13 +167,12 @@ object AppUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
         _   <- cleanDb
         hsr <- ZIO.service[HouseholdSettingsRepo]
         pr  <- ZIO.service[ProfileRepo]
-        sr  <- ZIO.service[ScheduleRepo]
         dr  <- ZIO.service[DeviceRepo]
         ar  <- ZIO.service[AppRepo]
         aru <- ZIO.service[AppUsedRollupRepo]
         trr <- ZIO.service[TrafficReportRepo]
         s   <- setTz(hsr, "UTC")
-        kid <- TestLayers.seedKidsProfile(pr, sr)
+        kid <- TestLayers.seedKidsProfile(pr)
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:dd:ee:61", "kid", kid)
         app <- seedApp(ar, kid, "yt", List("youtube.com"), 240)
         rid <- seedRouterRow
@@ -201,7 +198,6 @@ object AppUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
         _   <- cleanDb
         hsr <- ZIO.service[HouseholdSettingsRepo]
         pr  <- ZIO.service[ProfileRepo]
-        sr  <- ZIO.service[ScheduleRepo]
         dr  <- ZIO.service[DeviceRepo]
         ar  <- ZIO.service[AppRepo]
         ru  <- ZIO.service[TimeUsedRollupRepo]
@@ -209,7 +205,7 @@ object AppUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
         stl <- ZIO.service[AppTimeLimitRepo]
         trr <- ZIO.service[TrafficReportRepo]
         _   <- setTz(hsr, "UTC")
-        kid <- TestLayers.seedKidsProfile(pr, sr)
+        kid <- TestLayers.seedKidsProfile(pr)
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:dd:ee:62", "kid", kid)
         _   <- seedApp(ar, kid, "a", List("a.com"), 60)
         _   <- seedApp(ar, kid, "b", List("b.com"), 60)
@@ -237,13 +233,12 @@ object AppUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
         _   <- cleanDb
         hsr <- ZIO.service[HouseholdSettingsRepo]
         pr  <- ZIO.service[ProfileRepo]
-        sr  <- ZIO.service[ScheduleRepo]
         dr  <- ZIO.service[DeviceRepo]
         ar  <- ZIO.service[AppRepo]
         stl <- ZIO.service[AppTimeLimitRepo]
         trr <- ZIO.service[TrafficReportRepo]
         s   <- setTz(hsr, "UTC")
-        kid <- TestLayers.seedKidsProfile(pr, sr)
+        kid <- TestLayers.seedKidsProfile(pr)
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:dd:ee:64", "kid", kid)
         app <- seedApp(ar, kid, "fkapp", List("fkapp.com"), 60)
         rid <- seedRouterRow
@@ -266,7 +261,6 @@ object AppUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
         _   <- cleanDb
         hsr <- ZIO.service[HouseholdSettingsRepo]
         pr  <- ZIO.service[ProfileRepo]
-        sr  <- ZIO.service[ScheduleRepo]
         dr  <- ZIO.service[DeviceRepo]
         ar  <- ZIO.service[AppRepo]
         ru  <- ZIO.service[TimeUsedRollupRepo]
@@ -274,7 +268,7 @@ object AppUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
         stl <- ZIO.service[AppTimeLimitRepo]
         trr <- ZIO.service[TrafficReportRepo]
         _   <- setTz(hsr, "UTC")
-        kid <- TestLayers.seedKidsProfile(pr, sr)
+        kid <- TestLayers.seedKidsProfile(pr)
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:dd:ee:63", "kid", kid)
         _   <- seedApp(ar, kid, "yt", List("youtube.com"), 240)
         rid <- seedRouterRow

@@ -27,21 +27,20 @@ object TimeUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
   private val cleanDb = TestDatabase.cleanAndMigrate
 
   private def makeService: ZIO[
-    ProfileRepo & ScheduleRepo & TimeLimitRepo & AppTimeLimitRepo & DeviceRepo & TrafficReportRepo &
+    ProfileRepo & TimeLimitRepo & AppTimeLimitRepo & DeviceRepo & TrafficReportRepo &
       TimeExtensionRepo & TimeUsedRollupRepo & HouseholdSettingsRepo,
     Nothing,
     TimeStatusService,
   ] =
     for {
       pr   <- ZIO.service[ProfileRepo]
-      sr   <- ZIO.service[ScheduleRepo]
       tlr  <- ZIO.service[TimeLimitRepo]
       atlr <- ZIO.service[AppTimeLimitRepo]
       dr   <- ZIO.service[DeviceRepo]
       trr  <- ZIO.service[TrafficReportRepo]
       er   <- ZIO.service[TimeExtensionRepo]
       ru   <- ZIO.service[TimeUsedRollupRepo]
-    } yield new TimeStatusServiceLive(pr, sr, tlr, atlr, dr, trr, er, ru)
+    } yield new TimeStatusServiceLive(pr, tlr, atlr, dr, trr, er, ru)
 
   private def seedRouterRow: ZIO[RouterRepo, Throwable, RouterId] =
     ZIO.serviceWithZIO[RouterRepo](_.create("gw-tur", Sha256Hex.unsafe("t" * 64)))
@@ -93,13 +92,12 @@ object TimeUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         _   <- cleanDb
         hsr <- ZIO.service[HouseholdSettingsRepo]
         pr  <- ZIO.service[ProfileRepo]
-        sr  <- ZIO.service[ScheduleRepo]
         dr  <- ZIO.service[DeviceRepo]
         tlr <- ZIO.service[TimeLimitRepo]
         ru  <- ZIO.service[TimeUsedRollupRepo]
         trr <- ZIO.service[TrafficReportRepo]
         s   <- setTz(hsr, "UTC")
-        kid <- TestLayers.seedKidsProfile(pr, sr)
+        kid <- TestLayers.seedKidsProfile(pr)
         _   <- tlr.upsert(kid, 240)
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:dd:ee:10", "kid-a", kid)
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:dd:ee:11", "kid-b", kid)
@@ -145,7 +143,6 @@ object TimeUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         _   <- cleanDb
         hsr <- ZIO.service[HouseholdSettingsRepo]
         pr  <- ZIO.service[ProfileRepo]
-        sr  <- ZIO.service[ScheduleRepo]
         dr  <- ZIO.service[DeviceRepo]
         ru  <- ZIO.service[TimeUsedRollupRepo]
         aru <- ZIO.service[AppUsedRollupRepo]
@@ -153,7 +150,7 @@ object TimeUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         trr <- ZIO.service[TrafficReportRepo]
         stl <- ZIO.service[AppTimeLimitRepo]
         s   <- setTz(hsr, "UTC")
-        kid <- TestLayers.seedKidsProfile(pr, sr)
+        kid <- TestLayers.seedKidsProfile(pr)
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:dd:ee:20", "kid-a", kid)
         rid <- seedRouterRow
         today = LocalDate.of(2025, 1, 6)
@@ -171,10 +168,9 @@ object TimeUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         _   <- cleanDb
         hsr <- ZIO.service[HouseholdSettingsRepo]
         pr  <- ZIO.service[ProfileRepo]
-        sr  <- ZIO.service[ScheduleRepo]
         dr  <- ZIO.service[DeviceRepo]
         s   <- setTz(hsr, "UTC")
-        kid <- TestLayers.seedKidsProfile(pr, sr)
+        kid <- TestLayers.seedKidsProfile(pr)
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:dd:ee:25", "kid-a", kid)
         rid <- seedRouterRow
         today = LocalDate.of(2025, 1, 6)
@@ -191,11 +187,10 @@ object TimeUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         _   <- cleanDb
         hsr <- ZIO.service[HouseholdSettingsRepo]
         pr  <- ZIO.service[ProfileRepo]
-        sr  <- ZIO.service[ScheduleRepo]
         dr  <- ZIO.service[DeviceRepo]
         ru  <- ZIO.service[TimeUsedRollupRepo]
         s   <- setTz(hsr, "UTC")
-        kid <- TestLayers.seedKidsProfile(pr, sr)
+        kid <- TestLayers.seedKidsProfile(pr)
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:dd:ee:30", "kid-a", kid)
         pastDate = LocalDate.of(2025, 1, 5)
         bogus    = Instant.parse("2025-01-05T23:59:59Z")
@@ -210,11 +205,10 @@ object TimeUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         _   <- cleanDb
         hsr <- ZIO.service[HouseholdSettingsRepo]
         pr  <- ZIO.service[ProfileRepo]
-        sr  <- ZIO.service[ScheduleRepo]
         dr  <- ZIO.service[DeviceRepo]
         ru  <- ZIO.service[TimeUsedRollupRepo]
         _   <- setTz(hsr, "UTC")
-        kid <- TestLayers.seedKidsProfile(pr, sr)
+        kid <- TestLayers.seedKidsProfile(pr)
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:dd:ee:40", "kid", kid)
         today = LocalDate.of(2025, 1, 6)
         _   <- ru.upsertDay(kid, today, RolledDay(50L * 60L, Instant.parse("2025-01-06T09:00:00Z")))
@@ -233,7 +227,6 @@ object TimeUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         _   <- cleanDb
         hsr <- ZIO.service[HouseholdSettingsRepo]
         pr  <- ZIO.service[ProfileRepo]
-        sr  <- ZIO.service[ScheduleRepo]
         dr  <- ZIO.service[DeviceRepo]
         ru  <- ZIO.service[TimeUsedRollupRepo]
         aru <- ZIO.service[AppUsedRollupRepo]
@@ -241,7 +234,7 @@ object TimeUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         trr <- ZIO.service[TrafficReportRepo]
         stl <- ZIO.service[AppTimeLimitRepo]
         _   <- setTz(hsr, "UTC")
-        kid <- TestLayers.seedKidsProfile(pr, sr)
+        kid <- TestLayers.seedKidsProfile(pr)
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:dd:ee:50", "kid", kid)
         rid <- seedRouterRow
         today = LocalDate.of(2025, 1, 6)
@@ -269,10 +262,9 @@ object TimeUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         _   <- cleanDb
         hsr <- ZIO.service[HouseholdSettingsRepo]
         pr  <- ZIO.service[ProfileRepo]
-        sr  <- ZIO.service[ScheduleRepo]
         ru  <- ZIO.service[TimeUsedRollupRepo]
         _   <- setTz(hsr, "UTC")
-        kid <- TestLayers.seedKidsProfile(pr, sr)
+        kid <- TestLayers.seedKidsProfile(pr)
         today = LocalDate.of(2025, 1, 6)
         _   <- ru.upsertDay(kid, today, RolledDay(42L * 60L, Instant.parse("2025-01-06T09:00:00Z")))
         pre <- ru.getDayMap(today)

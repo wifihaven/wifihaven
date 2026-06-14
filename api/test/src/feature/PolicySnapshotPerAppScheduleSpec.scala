@@ -40,7 +40,6 @@ object PolicySnapshotPerAppScheduleSpec
   private def makePsAt(dt: LocalDateTime) =
     for {
       pr     <- ZIO.service[ProfileRepo]
-      sr     <- ZIO.service[ScheduleRepo]
       hsr    <- ZIO.service[HouseholdSettingsRepo]
       tlr    <- ZIO.service[TimeLimitRepo]
       atlr   <- ZIO.service[AppTimeLimitRepo]
@@ -54,7 +53,6 @@ object PolicySnapshotPerAppScheduleSpec
       clk = new Clock.TestClock(ref)
     } yield PolicyServiceLive(
       pr,
-      sr,
       hsr,
       tlr,
       atlr,
@@ -133,10 +131,9 @@ object PolicySnapshotPerAppScheduleSpec
       for {
         _    <- cleanDb
         pr   <- ZIO.service[ProfileRepo]
-        sr   <- ZIO.service[ScheduleRepo]
         ar   <- ZIO.service[AppRepo]
         nsr  <- ZIO.service[NamedScheduleRepo]
-        kid  <- TestLayers.seedKidsProfile(pr, sr)
+        kid  <- TestLayers.seedKidsProfile(pr)
         host <- seedScheduledApp(
           ar,
           nsr,
@@ -163,10 +160,9 @@ object PolicySnapshotPerAppScheduleSpec
       for {
         _    <- cleanDb
         pr   <- ZIO.service[ProfileRepo]
-        sr   <- ZIO.service[ScheduleRepo]
         ar   <- ZIO.service[AppRepo]
         nsr  <- ZIO.service[NamedScheduleRepo]
-        kid  <- TestLayers.seedKidsProfile(pr, sr)
+        kid  <- TestLayers.seedKidsProfile(pr)
         host <- seedScheduledApp(
           ar,
           nsr,
@@ -190,12 +186,11 @@ object PolicySnapshotPerAppScheduleSpec
       for {
         _    <- cleanDb
         pr   <- ZIO.service[ProfileRepo]
-        sr   <- ZIO.service[ScheduleRepo]
         dr   <- ZIO.service[DeviceRepo]
         tlr  <- ZIO.service[TimeLimitRepo]
         ar   <- ZIO.service[AppRepo]
         nsr  <- ZIO.service[NamedScheduleRepo]
-        kid  <- TestLayers.seedKidsProfile(pr, sr)
+        kid  <- TestLayers.seedKidsProfile(pr)
         _    <- tlr.upsert(kid, 30)
         _    <- TestLayers.seedDevice(dr, mac, "kid-ipad", kid)
         host <- seedScheduledApp(
@@ -227,12 +222,11 @@ object PolicySnapshotPerAppScheduleSpec
       for {
         _    <- cleanDb
         pr   <- ZIO.service[ProfileRepo]
-        sr   <- ZIO.service[ScheduleRepo]
         dr   <- ZIO.service[DeviceRepo]
         tlr  <- ZIO.service[TimeLimitRepo]
         ar   <- ZIO.service[AppRepo]
         nsr  <- ZIO.service[NamedScheduleRepo]
-        kid  <- TestLayers.seedKidsProfile(pr, sr)
+        kid  <- TestLayers.seedKidsProfile(pr)
         _    <- tlr.upsert(kid, 30)
         _    <- TestLayers.seedDevice(dr, mac, "kid-ipad", kid)
         host <- seedScheduledApp(
@@ -269,12 +263,11 @@ object PolicySnapshotPerAppScheduleSpec
       for {
         _    <- cleanDb
         pr   <- ZIO.service[ProfileRepo]
-        sr   <- ZIO.service[ScheduleRepo]
         dr   <- ZIO.service[DeviceRepo]
         tlr  <- ZIO.service[TimeLimitRepo]
         ar   <- ZIO.service[AppRepo]
         nsr  <- ZIO.service[NamedScheduleRepo]
-        kid  <- TestLayers.seedKidsProfile(pr, sr)
+        kid  <- TestLayers.seedKidsProfile(pr)
         _    <- tlr.upsert(kid, 30)
         _    <- TestLayers.seedDevice(dr, mac, "kid-ipad", kid)
         host <- seedScheduledApp(
@@ -305,10 +298,9 @@ object PolicySnapshotPerAppScheduleSpec
       for {
         _    <- cleanDb
         pr   <- ZIO.service[ProfileRepo]
-        sr   <- ZIO.service[ScheduleRepo]
         ar   <- ZIO.service[AppRepo]
         nsr  <- ZIO.service[NamedScheduleRepo]
-        kid  <- TestLayers.seedKidsProfile(pr, sr)
+        kid  <- TestLayers.seedKidsProfile(pr)
         host <- seedScheduledApp(
           ar,
           nsr,
@@ -335,10 +327,9 @@ object PolicySnapshotPerAppScheduleSpec
       for {
         _   <- cleanDb
         pr  <- ZIO.service[ProfileRepo]
-        sr  <- ZIO.service[ScheduleRepo]
         ar  <- ZIO.service[AppRepo]
         nsr <- ZIO.service[NamedScheduleRepo]
-        kid <- TestLayers.seedKidsProfile(pr, sr)
+        kid <- TestLayers.seedKidsProfile(pr)
         _   <- seedScheduledApp(
           ar,
           nsr,

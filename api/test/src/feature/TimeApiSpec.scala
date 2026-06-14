@@ -94,13 +94,12 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           profileRepo     <- ZIO.service[ProfileRepo]
           tlRepo          <- ZIO.service[TimeLimitRepo]
           atlRepo         <- ZIO.service[AppTimeLimitRepo]
-          schedRepo       <- ZIO.service[ScheduleRepo]
           deviceRepo      <- ZIO.service[DeviceRepo]
           trafficRepo     <- ZIO.service[TrafficReportRepo]
           extRepo         <- ZIO.service[TimeExtensionRepo]
           auth            <- makeAuth
           token           <- auth.login("admin", "changeme").map(_.token.value)
-          kidsId          <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId          <- TestLayers.seedKidsProfile(profileRepo)
           _               <- tlRepo.upsert(kidsId, 120)
           _               <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           userProfileRepo <- ZIO.service[UserProfileRepo]
@@ -108,7 +107,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           clock           <- ZIO.service[Clock]
           tss    = new wifihaven.api.policy.TimeStatusServiceLive(
             profileRepo,
-            schedRepo,
             tlRepo,
             atlRepo,
             deviceRepo,
@@ -146,13 +144,12 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
           atlRepo     <- ZIO.service[AppTimeLimitRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           auth        <- makeAuth
           token       <- auth.login("admin", "changeme").map(_.token.value)
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- tlRepo.upsert(kidsId, 120)
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           routerId    <- seedRouter
@@ -164,7 +161,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           clock           <- ZIO.service[Clock]
           tss    = new wifihaven.api.policy.TimeStatusServiceLive(
             profileRepo,
-            schedRepo,
             tlRepo,
             atlRepo,
             deviceRepo,
@@ -199,13 +195,12 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
           atlRepo     <- ZIO.service[AppTimeLimitRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           auth        <- makeAuth
           token       <- auth.login("admin", "changeme").map(_.token.value)
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- tlRepo.upsert(kidsId, 120)
           appRepo     <- ZIO.service[AppRepo]
           _           <- TestLayers.seedAppAssignment(
@@ -227,7 +222,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           clock           <- ZIO.service[Clock]
           tss    = new wifihaven.api.policy.TimeStatusServiceLive(
             profileRepo,
-            schedRepo,
             tlRepo,
             atlRepo,
             deviceRepo,
@@ -267,13 +261,12 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
           atlRepo     <- ZIO.service[AppTimeLimitRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           auth        <- makeAuth
           token       <- auth.login("admin", "changeme").map(_.token.value)
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- tlRepo.upsert(kidsId, 120)
           appRepo     <- ZIO.service[AppRepo]
           _           <- TestLayers.seedAppAssignment(
@@ -294,7 +287,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           clock           <- ZIO.service[Clock]
           tss    = new wifihaven.api.policy.TimeStatusServiceLive(
             profileRepo,
-            schedRepo,
             tlRepo,
             atlRepo,
             deviceRepo,
@@ -336,13 +328,12 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
           atlRepo     <- ZIO.service[AppTimeLimitRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           auth        <- makeAuth
           token       <- auth.login("admin", "changeme").map(_.token.value)
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- tlRepo.upsert(kidsId, 120)
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           routerId    <- seedRouter
@@ -353,7 +344,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           clock           <- ZIO.service[Clock]
           tss     = new wifihaven.api.policy.TimeStatusServiceLive(
             profileRepo,
-            schedRepo,
             tlRepo,
             atlRepo,
             deviceRepo,
@@ -395,13 +385,12 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           profileRepo     <- ZIO.service[ProfileRepo]
           tlRepo          <- ZIO.service[TimeLimitRepo]
           atlRepo         <- ZIO.service[AppTimeLimitRepo]
-          schedRepo       <- ZIO.service[ScheduleRepo]
           deviceRepo      <- ZIO.service[DeviceRepo]
           trafficRepo     <- ZIO.service[TrafficReportRepo]
           extRepo         <- ZIO.service[TimeExtensionRepo]
           auth            <- makeAuth
           token           <- auth.login("admin", "changeme").map(_.token.value)
-          kidsId          <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId          <- TestLayers.seedKidsProfile(profileRepo)
           _               <- tlRepo.upsert(kidsId, 60)
           _               <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           userProfileRepo <- ZIO.service[UserProfileRepo]
@@ -409,7 +398,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           clock           <- ZIO.service[Clock]
           tss    = new wifihaven.api.policy.TimeStatusServiceLive(
             profileRepo,
-            schedRepo,
             tlRepo,
             atlRepo,
             deviceRepo,
@@ -447,7 +435,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           profileRepo     <- ZIO.service[ProfileRepo]
           tlRepo          <- ZIO.service[TimeLimitRepo]
           atlRepo         <- ZIO.service[AppTimeLimitRepo]
-          schedRepo       <- ZIO.service[ScheduleRepo]
           deviceRepo      <- ZIO.service[DeviceRepo]
           trafficRepo     <- ZIO.service[TrafficReportRepo]
           extRepo         <- ZIO.service[TimeExtensionRepo]
@@ -456,14 +443,13 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           hash            <- auth.hashPassword("pass")
           _               <- userRepo.create("kidview", hash, "child")
           token           <- auth.login("kidview", "pass").map(_.token.value)
-          kidsId          <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId          <- TestLayers.seedKidsProfile(profileRepo)
           _               <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           userProfileRepo <- ZIO.service[UserProfileRepo]
           hsRepo          <- ZIO.service[HouseholdSettingsRepo]
           clock           <- ZIO.service[Clock]
           tss    = new wifihaven.api.policy.TimeStatusServiceLive(
             profileRepo,
-            schedRepo,
             tlRepo,
             atlRepo,
             deviceRepo,
@@ -496,13 +482,12 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           profileRepo     <- ZIO.service[ProfileRepo]
           tlRepo          <- ZIO.service[TimeLimitRepo]
           atlRepo         <- ZIO.service[AppTimeLimitRepo]
-          schedRepo       <- ZIO.service[ScheduleRepo]
           deviceRepo      <- ZIO.service[DeviceRepo]
           trafficRepo     <- ZIO.service[TrafficReportRepo]
           extRepo         <- ZIO.service[TimeExtensionRepo]
           auth            <- makeAuth
           token           <- auth.login("admin", "changeme").map(_.token.value)
-          kidsId          <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId          <- TestLayers.seedKidsProfile(profileRepo)
           _               <- tlRepo.upsert(kidsId, 60)
           _               <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           userProfileRepo <- ZIO.service[UserProfileRepo]
@@ -510,7 +495,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           clock           <- ZIO.service[Clock]
           tss    = new wifihaven.api.policy.TimeStatusServiceLive(
             profileRepo,
-            schedRepo,
             tlRepo,
             atlRepo,
             deviceRepo,
@@ -559,13 +543,12 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
           atlRepo     <- ZIO.service[AppTimeLimitRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           auth        <- makeAuth
           token       <- auth.login("admin", "changeme").map(_.token.value)
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- tlRepo.upsert(kidsId, 120)
           _           <- TestLayers.seedDevice(deviceRepo, "aa:bb:cc:dd:ee:01", "iPad", kidsId)
           _           <- TestLayers.seedDevice(deviceRepo, "aa:bb:cc:dd:ee:02", "iPhone", kidsId)
@@ -574,7 +557,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           clock           <- ZIO.service[Clock]
           tss    = new wifihaven.api.policy.TimeStatusServiceLive(
             profileRepo,
-            schedRepo,
             tlRepo,
             atlRepo,
             deviceRepo,
@@ -626,13 +608,12 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
           atlRepo     <- ZIO.service[AppTimeLimitRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           auth        <- makeAuth
           token       <- auth.login("admin", "changeme").map(_.token.value)
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- tlRepo.upsert(kidsId, 120)
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           routerId    <- seedRouter
@@ -646,7 +627,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           clock           <- ZIO.service[Clock]
           tss    = new wifihaven.api.policy.TimeStatusServiceLive(
             profileRepo,
-            schedRepo,
             tlRepo,
             atlRepo,
             deviceRepo,
@@ -695,13 +675,12 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
           atlRepo     <- ZIO.service[AppTimeLimitRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           auth        <- makeAuth
           token       <- auth.login("admin", "changeme").map(_.token.value)
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           adultsId    <- profileRepo
             .create("Adults", Nil)
             .flatMap(pid =>
@@ -726,7 +705,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           clock           <- ZIO.service[Clock]
           tss    = new wifihaven.api.policy.TimeStatusServiceLive(
             profileRepo,
-            schedRepo,
             tlRepo,
             atlRepo,
             deviceRepo,
@@ -770,13 +748,12 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
           atlRepo     <- ZIO.service[AppTimeLimitRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           auth        <- makeAuth
           token       <- auth.login("admin", "changeme").map(_.token.value)
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- tlRepo.upsert(kidsId, 60)
           mac1 = "aa:bb:cc:dd:ee:01"
           mac2 = "aa:bb:cc:dd:ee:02"
@@ -792,7 +769,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           clock           <- ZIO.service[Clock]
           tss    = new wifihaven.api.policy.TimeStatusServiceLive(
             profileRepo,
-            schedRepo,
             tlRepo,
             atlRepo,
             deviceRepo,
@@ -836,13 +812,12 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
           atlRepo     <- ZIO.service[AppTimeLimitRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           auth        <- makeAuth
           token       <- auth.login("admin", "changeme").map(_.token.value)
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- tlRepo.upsert(kidsId, 60)
           mac1 = "aa:bb:cc:dd:ee:01"
           mac2 = "aa:bb:cc:dd:ee:02"
@@ -858,7 +833,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           clock           <- ZIO.service[Clock]
           tss    = new wifihaven.api.policy.TimeStatusServiceLive(
             profileRepo,
-            schedRepo,
             tlRepo,
             atlRepo,
             deviceRepo,
@@ -894,13 +868,12 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
           atlRepo     <- ZIO.service[AppTimeLimitRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           auth        <- makeAuth
           token       <- auth.login("admin", "changeme").map(_.token.value)
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           // Flip the profile to Dedup mode.
           _           <- profileRepo.findById(kidsId).flatMap { opt =>
             ZIO.foreachDiscard(opt)(p =>
@@ -922,7 +895,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           clock           <- ZIO.service[Clock]
           tss    = new wifihaven.api.policy.TimeStatusServiceLive(
             profileRepo,
-            schedRepo,
             tlRepo,
             atlRepo,
             deviceRepo,
@@ -958,13 +930,12 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
           atlRepo     <- ZIO.service[AppTimeLimitRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           auth        <- makeAuth
           token       <- auth.login("admin", "changeme").map(_.token.value)
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- profileRepo.findById(kidsId).flatMap { opt =>
             ZIO.foreachDiscard(opt)(p =>
               profileRepo.update(p.copy(crossDeviceOverlapMode = CrossDeviceOverlapMode.Dedup)),
@@ -985,7 +956,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           clock           <- ZIO.service[Clock]
           tss    = new wifihaven.api.policy.TimeStatusServiceLive(
             profileRepo,
-            schedRepo,
             tlRepo,
             atlRepo,
             deviceRepo,
@@ -1021,13 +991,12 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
           atlRepo     <- ZIO.service[AppTimeLimitRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           auth        <- makeAuth
           token       <- auth.login("admin", "changeme").map(_.token.value)
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- tlRepo.upsert(kidsId, 120)
           appRepo     <- ZIO.service[AppRepo]
           _           <- TestLayers.seedAppAssignment(
@@ -1052,7 +1021,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           clock           <- ZIO.service[Clock]
           tss    = new wifihaven.api.policy.TimeStatusServiceLive(
             profileRepo,
-            schedRepo,
             tlRepo,
             atlRepo,
             deviceRepo,
@@ -1094,13 +1062,12 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
           atlRepo     <- ZIO.service[AppTimeLimitRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           auth        <- makeAuth
           token       <- auth.login("admin", "changeme").map(_.token.value)
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo) // default overlap = Sum
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo) // default overlap = Sum
           _           <- tlRepo.upsert(kidsId, 120)
           mac1 = "aa:bb:cc:dd:ee:01"
           mac2 = "aa:bb:cc:dd:ee:02"
@@ -1116,7 +1083,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           clock           <- ZIO.service[Clock]
           tss    = new wifihaven.api.policy.TimeStatusServiceLive(
             profileRepo,
-            schedRepo,
             tlRepo,
             atlRepo,
             deviceRepo,
@@ -1158,13 +1124,12 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
           atlRepo     <- ZIO.service[AppTimeLimitRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           auth        <- makeAuth
           token       <- auth.login("admin", "changeme").map(_.token.value)
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- profileRepo.findById(kidsId).flatMap { opt =>
             ZIO.foreachDiscard(opt)(p =>
               profileRepo.update(p.copy(crossDeviceOverlapMode = CrossDeviceOverlapMode.Dedup)),
@@ -1186,7 +1151,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           clock           <- ZIO.service[Clock]
           tss    = new wifihaven.api.policy.TimeStatusServiceLive(
             profileRepo,
-            schedRepo,
             tlRepo,
             atlRepo,
             deviceRepo,
@@ -1230,14 +1194,13 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
           atlRepo     <- ZIO.service[AppTimeLimitRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           appRepo     <- ZIO.service[AppRepo]
           auth        <- makeAuth
           token       <- auth.login("admin", "changeme").map(_.token.value)
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- tlRepo.upsert(kidsId, 120)
           _           <- TestLayers.seedAppAssignment(
             appRepo,
@@ -1259,7 +1222,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           clock           <- ZIO.service[Clock]
           tss    = new wifihaven.api.policy.TimeStatusServiceLive(
             profileRepo,
-            schedRepo,
             tlRepo,
             atlRepo,
             deviceRepo,
@@ -1314,13 +1276,12 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
           atlRepo     <- ZIO.service[AppTimeLimitRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           auth        <- makeAuth
           token       <- auth.login("admin", "changeme").map(_.token.value)
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- tlRepo.upsert(kidsId, 240)
           mac = "aa:bb:cc:dd:ee:01"
           _        <- TestLayers.seedDevice(deviceRepo, mac, "iPad", kidsId)
@@ -1367,7 +1328,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           clock           <- ZIO.service[Clock]
           tss    = new wifihaven.api.policy.TimeStatusServiceLive(
             profileRepo,
-            schedRepo,
             tlRepo,
             atlRepo,
             deviceRepo,
@@ -1416,13 +1376,12 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
           atlRepo     <- ZIO.service[AppTimeLimitRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           auth        <- makeAuth
           token       <- auth.login("admin", "changeme").map(_.token.value)
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- tlRepo.upsert(kidsId, 120)
           mac1 = "aa:bb:cc:dd:ee:01"
           mac2 = "aa:bb:cc:dd:ee:02"
@@ -1440,7 +1399,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           clock           <- ZIO.service[Clock]
           tss    = new wifihaven.api.policy.TimeStatusServiceLive(
             profileRepo,
-            schedRepo,
             tlRepo,
             atlRepo,
             deviceRepo,
@@ -1484,13 +1442,12 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
           atlRepo     <- ZIO.service[AppTimeLimitRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           auth        <- makeAuth
           token       <- auth.login("admin", "changeme").map(_.token.value)
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- tlRepo.upsert(kidsId, 240)
           mac = "aa:bb:cc:dd:ee:01"
           _        <- TestLayers.seedDevice(deviceRepo, mac, "iPad", kidsId)
@@ -1506,7 +1463,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           clock           <- ZIO.service[Clock]
           tss    = new wifihaven.api.policy.TimeStatusServiceLive(
             profileRepo,
-            schedRepo,
             tlRepo,
             atlRepo,
             deviceRepo,
@@ -1547,13 +1503,12 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
           atlRepo     <- ZIO.service[AppTimeLimitRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           auth        <- makeAuth
           token       <- auth.login("admin", "changeme").map(_.token.value)
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- tlRepo.upsert(kidsId, 60)
           mac1 = "aa:bb:cc:dd:ee:01"
           mac2 = "aa:bb:cc:dd:ee:02"
@@ -1570,7 +1525,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           clock         <- ZIO.service[Clock]
           policyService = PolicyServiceLive(
             profileRepo,
-            schedRepo,
             hsRepo,
             tlRepo,
             atlRepo,
@@ -1597,14 +1551,13 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
           atlRepo     <- ZIO.service[AppTimeLimitRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           hsRepoSvc   <- ZIO.service[HouseholdSettingsRepo]
           auth        <- makeAuth
           token       <- auth.login("admin", "changeme").map(_.token.value)
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           routerId    <- seedRouter
           today  = TestClock.schoolDayAfternoon.toLocalDate
@@ -1653,7 +1606,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           clock           <- ZIO.service[Clock]
           tss    = new wifihaven.api.policy.TimeStatusServiceLive(
             profileRepo,
-            schedRepo,
             tlRepo,
             atlRepo,
             deviceRepo,
@@ -1699,13 +1651,12 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
           atlRepo     <- ZIO.service[AppTimeLimitRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           auth        <- makeAuth
           token       <- auth.login("admin", "changeme").map(_.token.value)
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           adultsId    <- profileRepo
             .create("Adults", Nil)
             .flatMap(pid =>
@@ -1741,7 +1692,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           clock           <- ZIO.service[Clock]
           tss    = new wifihaven.api.policy.TimeStatusServiceLive(
             profileRepo,
-            schedRepo,
             tlRepo,
             atlRepo,
             deviceRepo,
@@ -1789,13 +1739,12 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
           atlRepo     <- ZIO.service[AppTimeLimitRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           auth        <- makeAuth
           token       <- auth.login("admin", "changeme").map(_.token.value)
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- tlRepo.upsert(kidsId, 120)
           mac1 = "aa:bb:cc:dd:ee:01"
           _        <- TestLayers.seedDevice(deviceRepo, mac1, "iPad", kidsId)
@@ -1808,7 +1757,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           clock           <- ZIO.service[Clock]
           tss    = new wifihaven.api.policy.TimeStatusServiceLive(
             profileRepo,
-            schedRepo,
             tlRepo,
             atlRepo,
             deviceRepo,
@@ -1852,13 +1800,12 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
           atlRepo     <- ZIO.service[AppTimeLimitRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           auth        <- makeAuth
           token       <- auth.login("admin", "changeme").map(_.token.value)
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- tlRepo.upsert(kidsId, 120)
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           routerId    <- seedRouter
@@ -1873,7 +1820,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           clock           <- ZIO.service[Clock]
           tss    = new wifihaven.api.policy.TimeStatusServiceLive(
             profileRepo,
-            schedRepo,
             tlRepo,
             atlRepo,
             deviceRepo,
@@ -1926,13 +1872,12 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
           atlRepo     <- ZIO.service[AppTimeLimitRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           auth        <- makeAuth
           token       <- auth.login("admin", "changeme").map(_.token.value)
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           adultsId    <- profileRepo
             .create("Adults", Nil)
             .flatMap(pid =>
@@ -1956,7 +1901,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           clock           <- ZIO.service[Clock]
           tss    = new wifihaven.api.policy.TimeStatusServiceLive(
             profileRepo,
-            schedRepo,
             tlRepo,
             atlRepo,
             deviceRepo,
@@ -1997,13 +1941,12 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
           atlRepo     <- ZIO.service[AppTimeLimitRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           auth        <- makeAuth
           token       <- auth.login("admin", "changeme").map(_.token.value)
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- tlRepo.upsert(kidsId, 120)
           mac1 = "aa:bb:cc:dd:ee:01"
           mac2 = "aa:bb:cc:dd:ee:02"
@@ -2022,7 +1965,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           clock           <- ZIO.service[Clock]
           tss    = new wifihaven.api.policy.TimeStatusServiceLive(
             profileRepo,
-            schedRepo,
             tlRepo,
             atlRepo,
             deviceRepo,
@@ -2065,13 +2007,12 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
           atlRepo     <- ZIO.service[AppTimeLimitRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           auth        <- makeAuth
           token       <- auth.login("admin", "changeme").map(_.token.value)
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           routerId    <- seedRouter
           today  = TestClock.schoolDayAfternoon.toLocalDate
@@ -2082,7 +2023,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           clock           <- ZIO.service[Clock]
           tss    = new wifihaven.api.policy.TimeStatusServiceLive(
             profileRepo,
-            schedRepo,
             tlRepo,
             atlRepo,
             deviceRepo,
@@ -2139,14 +2079,13 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
           atlRepo     <- ZIO.service[AppTimeLimitRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           hsRepo      <- ZIO.service[HouseholdSettingsRepo]
           auth        <- makeAuth
           token       <- auth.login("admin", "changeme").map(_.token.value)
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           routerId    <- seedRouter
           today = TestClock.schoolDayAfternoon.toLocalDate
@@ -2157,7 +2096,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           clock           <- ZIO.service[Clock]
           tss        = new wifihaven.api.policy.TimeStatusServiceLive(
             profileRepo,
-            schedRepo,
             tlRepo,
             atlRepo,
             deviceRepo,
@@ -2211,7 +2149,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
         for {
           _               <- cleanDb
           profileRepo     <- ZIO.service[ProfileRepo]
-          schedRepo       <- ZIO.service[ScheduleRepo]
           tlRepo          <- ZIO.service[TimeLimitRepo]
           atlRepo         <- ZIO.service[AppTimeLimitRepo]
           deviceRepo      <- ZIO.service[DeviceRepo]
@@ -2224,7 +2161,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           clock           <- ZIO.service[Clock]
           tss    = new wifihaven.api.policy.TimeStatusServiceLive(
             profileRepo,
-            schedRepo,
             tlRepo,
             atlRepo,
             deviceRepo,
@@ -2261,13 +2197,12 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
           atlRepo     <- ZIO.service[AppTimeLimitRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           auth        <- makeAuth
           token       <- auth.login("admin", "changeme").map(_.token.value)
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- tlRepo.upsert(kidsId, 120)
           mac1 = testMac
           mac2 = "aa:bb:cc:dd:ee:02"
@@ -2285,7 +2220,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           clock           <- ZIO.service[Clock]
           tss    = new wifihaven.api.policy.TimeStatusServiceLive(
             profileRepo,
-            schedRepo,
             tlRepo,
             atlRepo,
             deviceRepo,
@@ -2332,7 +2266,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
         for {
           _               <- cleanDb
           profileRepo     <- ZIO.service[ProfileRepo]
-          schedRepo       <- ZIO.service[ScheduleRepo]
           tlRepo          <- ZIO.service[TimeLimitRepo]
           atlRepo         <- ZIO.service[AppTimeLimitRepo]
           deviceRepo      <- ZIO.service[DeviceRepo]
@@ -2345,7 +2278,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           clock           <- ZIO.service[Clock]
           tss    = new wifihaven.api.policy.TimeStatusServiceLive(
             profileRepo,
-            schedRepo,
             tlRepo,
             atlRepo,
             deviceRepo,
@@ -2387,14 +2319,13 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
           atlRepo     <- ZIO.service[AppTimeLimitRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           appRepo     <- ZIO.service[AppRepo]
           auth        <- makeAuth
           token       <- auth.login("admin", "changeme").map(_.token.value)
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- tlRepo.upsert(kidsId, 30)
           // One exempt-from-daily app ("Math Academy") with a TWO-host set. The apex (shortest host)
           // is `a.example`; `b.example` is an equally-named off-domain asset host. An apex-only
@@ -2420,7 +2351,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           now             <- clock.instant
           tss    = new wifihaven.api.policy.TimeStatusServiceLive(
             profileRepo,
-            schedRepo,
             tlRepo,
             atlRepo,
             deviceRepo,
@@ -2463,14 +2393,13 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
           atlRepo     <- ZIO.service[AppTimeLimitRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           appRepo     <- ZIO.service[AppRepo]
           auth        <- makeAuth
           token       <- auth.login("admin", "changeme").map(_.token.value)
-          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
           _           <- tlRepo.upsert(kidsId, 30)
           appId       <- appRepo.create("Math Academy", "mathacademy", None, None)
           _           <- appRepo.setHosts(
@@ -2492,7 +2421,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           now             <- clock.instant
           tss    = new wifihaven.api.policy.TimeStatusServiceLive(
             profileRepo,
-            schedRepo,
             tlRepo,
             atlRepo,
             deviceRepo,

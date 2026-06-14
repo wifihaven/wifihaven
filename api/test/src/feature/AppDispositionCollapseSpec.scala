@@ -66,15 +66,13 @@ object AppDispositionCollapseSpec extends ZIOSpec[TestDatabase.AllRepos & Embedd
   private def buildPs(
       now: LocalDateTime,
   ): ZIO[
-    ProfileRepo & ScheduleRepo & HouseholdSettingsRepo & TimeLimitRepo & AppTimeLimitRepo &
-      DeviceRepo & BlocklistRepo & TrafficReportRepo & TimeExtensionRepo & AppRepo &
-      NamedScheduleRepo,
+    ProfileRepo & HouseholdSettingsRepo & TimeLimitRepo & AppTimeLimitRepo & DeviceRepo &
+      BlocklistRepo & TrafficReportRepo & TimeExtensionRepo & AppRepo & NamedScheduleRepo,
     Nothing,
     PolicyService,
   ] =
     for {
       pr   <- ZIO.service[ProfileRepo]
-      sr   <- ZIO.service[ScheduleRepo]
       hsr  <- ZIO.service[HouseholdSettingsRepo]
       tlr  <- ZIO.service[TimeLimitRepo]
       atlr <- ZIO.service[AppTimeLimitRepo]
@@ -88,7 +86,6 @@ object AppDispositionCollapseSpec extends ZIOSpec[TestDatabase.AllRepos & Embedd
       clk = new Clock.TestClock(ref)
     } yield PolicyServiceLive(
       pr,
-      sr,
       hsr,
       tlr,
       atlr,
@@ -104,20 +101,19 @@ object AppDispositionCollapseSpec extends ZIOSpec[TestDatabase.AllRepos & Embedd
     )
 
   private def buildTss: ZIO[
-    ProfileRepo & ScheduleRepo & TimeLimitRepo & AppTimeLimitRepo & DeviceRepo & TrafficReportRepo &
+    ProfileRepo & TimeLimitRepo & AppTimeLimitRepo & DeviceRepo & TrafficReportRepo &
       TimeExtensionRepo,
     Nothing,
     TimeStatusService,
   ] =
     for {
       pr   <- ZIO.service[ProfileRepo]
-      sr   <- ZIO.service[ScheduleRepo]
       tlr  <- ZIO.service[TimeLimitRepo]
       atlr <- ZIO.service[AppTimeLimitRepo]
       dr   <- ZIO.service[DeviceRepo]
       trr  <- ZIO.service[TrafficReportRepo]
       er   <- ZIO.service[TimeExtensionRepo]
-    } yield new TimeStatusServiceLive(pr, sr, tlr, atlr, dr, trr, er)
+    } yield new TimeStatusServiceLive(pr, tlr, atlr, dr, trr, er)
 
   // Use the seeded Adults profile (no schedules, no blocklists) so the test isolates the per-app
   // disposition behavior — the Kids profile carries a 21:00-07:00 schedule + blocklists that would

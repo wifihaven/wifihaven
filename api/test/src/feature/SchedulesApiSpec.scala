@@ -45,26 +45,24 @@ object SchedulesApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
   private def profileRoutes =
     for {
       pr   <- ZIO.service[ProfileRepo]
-      sr   <- ZIO.service[ScheduleRepo]
       tlr  <- ZIO.service[TimeLimitRepo]
       up   <- ZIO.service[UserProfileRepo]
       ur   <- ZIO.service[UserRepo]
       nsr  <- ZIO.service[NamedScheduleRepo]
       auth <- makeAuth
-    } yield ProfileRoutes.routes(auth, pr, sr, tlr, up, ur, nsr)
+    } yield ProfileRoutes.routes(auth, pr, tlr, up, ur, nsr)
 
   // #1538: same as `profileRoutes`, but wires a caller-supplied cache so a test can observe that
   // the schedule-attach/detach PUT busts the shared per-profile time-status entry.
   private def profileRoutesWithCache(cache: TimeStatusCache) =
     for {
       pr   <- ZIO.service[ProfileRepo]
-      sr   <- ZIO.service[ScheduleRepo]
       tlr  <- ZIO.service[TimeLimitRepo]
       up   <- ZIO.service[UserProfileRepo]
       ur   <- ZIO.service[UserRepo]
       nsr  <- ZIO.service[NamedScheduleRepo]
       auth <- makeAuth
-    } yield ProfileRoutes.routes(auth, pr, sr, tlr, up, ur, nsr, cache)
+    } yield ProfileRoutes.routes(auth, pr, tlr, up, ur, nsr, cache)
 
   private def sentinel(pid: ProfileId, date: LocalDate, usedMins: Int) =
     ProfileTimeStatus(pid, "Kids", date.toString, None, usedMins, 0, None, Nil, Nil, Nil)

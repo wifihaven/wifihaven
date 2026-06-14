@@ -77,7 +77,6 @@ object PolicySnapshotConsolidationSpec extends ZIOSpec[TestDatabase.AllRepos & E
   ] =
     for {
       pr   <- ZIO.service[ProfileRepo]
-      sr   <- ZIO.service[ScheduleRepo]
       hsr  <- ZIO.service[HouseholdSettingsRepo]
       tlr  <- ZIO.service[TimeLimitRepo]
       atlr <- ZIO.service[AppTimeLimitRepo]
@@ -88,22 +87,21 @@ object PolicySnapshotConsolidationSpec extends ZIOSpec[TestDatabase.AllRepos & E
       ar   <- ZIO.service[AppRepo]
       ref  <- Ref.make(now)
       clk = new Clock.TestClock(ref)
-    } yield PolicyServiceLive(pr, sr, hsr, tlr, atlr, dr, blr, trr, er, ar, clk)
+    } yield PolicyServiceLive(pr, hsr, tlr, atlr, dr, blr, trr, er, ar, clk)
 
   private def buildTss: ZIO[AllReposLite, Nothing, TimeStatusService] =
     for {
       pr   <- ZIO.service[ProfileRepo]
-      sr   <- ZIO.service[ScheduleRepo]
       tlr  <- ZIO.service[TimeLimitRepo]
       atlr <- ZIO.service[AppTimeLimitRepo]
       dr   <- ZIO.service[DeviceRepo]
       trr  <- ZIO.service[TrafficReportRepo]
       er   <- ZIO.service[TimeExtensionRepo]
-    } yield new TimeStatusServiceLive(pr, sr, tlr, atlr, dr, trr, er)
+    } yield new TimeStatusServiceLive(pr, tlr, atlr, dr, trr, er)
 
   private type AllReposLite =
-    ProfileRepo & ScheduleRepo & HouseholdSettingsRepo & TimeLimitRepo & AppTimeLimitRepo &
-      DeviceRepo & BlocklistRepo & TrafficReportRepo & TimeExtensionRepo & AppRepo
+    ProfileRepo & HouseholdSettingsRepo & TimeLimitRepo & AppTimeLimitRepo & DeviceRepo &
+      BlocklistRepo & TrafficReportRepo & TimeExtensionRepo & AppRepo
 
   /** One fixture row → the spec runs the equalities against every row. */
   private final case class Fixture(
@@ -198,17 +196,17 @@ object PolicySnapshotConsolidationSpec extends ZIOSpec[TestDatabase.AllRepos & E
         _    <- cleanDb
         hsr  <- ZIO.service[HouseholdSettingsRepo]
         pr   <- ZIO.service[ProfileRepo]
-        sr   <- ZIO.service[ScheduleRepo]
         dr   <- ZIO.service[DeviceRepo]
         tlr  <- ZIO.service[TimeLimitRepo]
         er   <- ZIO.service[TimeExtensionRepo]
         s    <- settingsTz(hsr, f.tz)
-        kid  <- TestLayers.seedKidsProfile(pr, sr)
+        kid  <- TestLayers.seedKidsProfile(pr)
         prof <- pr.findById(kid).map(_.get)
         // Set overlap mode + paused=false (default)
         _    <- pr.update(prof.copy(crossDeviceOverlapMode = f.overlap))
-        // Replace seeded "bedtime" schedule with empty so it doesn't interfere with our cap-only assertions
-        _    <- sr.replaceForProfile(kid, Nil)
+        // #1709: ScheduleRepo removed; named schedules are not wired into buildPs/buildTss here
+        // (NoopNamedScheduleRepo default), so the seeded Bedtime named schedule has no effect on
+        // these cap-only assertions.
         _    <- ZIO.foreachDiscard(f.load.zipWithIndex) { case ((mac, _), i) =>
           TestLayers.seedDevice(dr, mac, s"d$i", kid)
         }

@@ -96,14 +96,13 @@ object AppHostSetAttributionSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
         profileRepo <- ZIO.service[ProfileRepo]
         tlRepo      <- ZIO.service[TimeLimitRepo]
         atlRepo     <- ZIO.service[AppTimeLimitRepo]
-        schedRepo   <- ZIO.service[ScheduleRepo]
         deviceRepo  <- ZIO.service[DeviceRepo]
         trafficRepo <- ZIO.service[TrafficReportRepo]
         extRepo     <- ZIO.service[TimeExtensionRepo]
         appRepo     <- ZIO.service[AppRepo]
         auth        <- makeAuth
         token       <- auth.login("admin", "changeme").map(_.token.value)
-        kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+        kidsId      <- TestLayers.seedKidsProfile(profileRepo)
         _           <- tlRepo.upsert(kidsId, 120)
         // Math Academy with apex + an off-domain CDN host, time-limited to 30 m, exempt from daily.
         appId       <- appRepo.create("Math Academy", appSlug, None, None)
@@ -124,7 +123,6 @@ object AppHostSetAttributionSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
         clock           <- ZIO.service[Clock]
         tss    = new wifihaven.api.policy.TimeStatusServiceLive(
           profileRepo,
-          schedRepo,
           tlRepo,
           atlRepo,
           deviceRepo,
