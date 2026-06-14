@@ -1,74 +1,79 @@
 #!/usr/bin/env bash
-# Asserts that the package DEPENDS list is single-sourced from openwrt/Makefile
-# and reproduced identically in the local builder scripts that produce the
-# shipped .ipk and .apk (#1717).
+# Asserts the wifihaven package DEPENDS list is single-sourced from
+# openwrt/Makefile and that the local builder scripts that ship the .ipk
+# / .apk use the shared helper rather than a hard-coded copy (#1717).
 #
-# Why: build-ipk.sh and build-apk.sh wrote a hard-coded Depends string of their
-# own that drifted from Makefile DEPENDS. When #1702 added lua-openssl to the
-# Makefile DEPENDS for the SNI sidecar's QUIC path, neither script picked it
-# up — the shipped .ipk was missing lua-openssl, the on-router sni-tail's
-# `require("openssl")` crashed the sidecar in a procd respawn loop, and the
-# Gate 2 v4-TCP SNI attribution test timed out waiting for a dns-cache row.
-# The runtime symptom traced back to a duplicated decision (the DEPENDS list)
-# living in three places. This pins the equivalence so the next addition can't
-# regress the same way.
+# Why: build-ipk.sh and build-apk.sh used to embed a literal Depends string
+# of their own. When #1702 added lua-openssl to openwrt/Makefile for the SNI
+# sidecar's QUIC path, neither script picked it up — the shipped .ipk was
+# missing lua-openssl, the on-router sni-tail's `require("openssl")` crashed
+# the sidecar in a procd respawn loop, and the Gate 2 v4-TCP SNI attribution
+# test timed out (master-router-cd red for two days; prod router.lan stuck on
+# 24-day-old code per #1716 because no openwrt-latest could publish).
+#
+# Gate: fail if either builder script
+#   (a) stops calling openwrt/depends-list.sh, OR
+#   (b) re-introduces a literal hard-coded Depends list, OR
+#   (c) the helper itself loses one of the regression-pinned packages.
 
 set -euo pipefail
 OPENWRT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+HELPER="$OPENWRT_DIR/depends-list.sh"
 
-# Parse the +-prefixed DEPENDS line from the OpenWRT Makefile into a sorted,
-# normalized package list (one per line, no leading +).
-parse_makefile_depends() {
-    grep -E '^[[:space:]]*DEPENDS:=' "$OPENWRT_DIR/Makefile" \
-        | head -n1 \
-        | sed -E 's/^[[:space:]]*DEPENDS:=//' \
-        | tr ' \t' '\n' \
-        | sed -E 's/^\+//' \
-        | grep -v '^$' \
-        | LC_ALL=C sort -u
-}
+if [ ! -x "$HELPER" ]; then
+    echo "FAIL: $HELPER missing or not executable (single source for wifihaven DEPENDS)" >&2
+    exit 1
+fi
 
-# Pull the Depends string out of build-ipk.sh's control-file heredoc and
-# normalize it the same way.
-parse_ipk_depends() {
-    grep -E '^Depends:' "$OPENWRT_DIR/build-ipk.sh" \
-        | head -n1 \
-        | sed -E 's/^Depends:[[:space:]]*//' \
-        | tr ',' '\n' \
-        | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' \
-        | grep -v '^$' \
-        | LC_ALL=C sort -u
-}
-
-# Pull the apk depends list out of build-apk.sh's --info line.
-parse_apk_depends() {
-    grep -E '^[[:space:]]*--info "depends:' "$OPENWRT_DIR/build-apk.sh" \
-        | head -n1 \
-        | sed -E 's/.*--info "depends://; s/"[[:space:]]*\\?$//' \
-        | tr ' ' '\n' \
-        | grep -v '^$' \
-        | LC_ALL=C sort -u
-}
-
-makefile=$(parse_makefile_depends)
-ipk=$(parse_ipk_depends)
-apk=$(parse_apk_depends)
+# (c) Regression pins. lua-openssl was the live #1717 miss; kmod-nf-conntrack6
+# was its #1690 sibling that also escaped the stale builders.
+lines=$("$HELPER" lines || true)
+if [ -z "$lines" ]; then
+    echo "FAIL: depends-list.sh emitted nothing — openwrt/Makefile DEPENDS unparsable?" >&2
+    exit 1
+fi
+for required in lua-openssl kmod-nf-conntrack6 tcpdump-mini; do
+    if ! printf '%s\n' "$lines" | grep -qx "$required"; then
+        echo "FAIL: canonical DEPENDS missing $required (regression-pinned by #1717)" >&2
+        echo "  current list:" >&2
+        printf '%s\n' "$lines" | sed 's/^/    /' >&2
+        exit 1
+    fi
+done
 
 fail=0
 
-if [ "$makefile" != "$ipk" ]; then
-    echo "FAIL: build-ipk.sh Depends drift from openwrt/Makefile DEPENDS" >&2
-    (diff <(echo "$makefile") <(echo "$ipk") | sed 's/^/  /' >&2) || true
-    fail=1
-fi
+# (a) + (b): each builder script must call depends-list.sh AND have its
+# control line reference ${DEPENDS_LIST}; a literal `Depends: lua, libuci-lua…`
+# / `--info "depends:lua libuci-lua…"` line is forbidden because that is
+# the failure mode this rule guards.
+check_builder() {
+    label="$1"; script="$2"; helper_arg="$3"; control_pattern="$4"
+    if ! grep -qE "DEPENDS_LIST=.*depends-list\\.sh.* ${helper_arg}" "$script"; then
+        echo "FAIL: $label does not assign DEPENDS_LIST=\$(.../depends-list.sh ${helper_arg})" >&2
+        return 1
+    fi
+    if ! grep -qE -- "$control_pattern" "$script"; then
+        echo "FAIL: $label control line does not expand \${DEPENDS_LIST} (re-hardcoded?)" >&2
+        return 1
+    fi
+    # Reject any literal Depends/--info depends: line whose value is a real
+    # package name rather than the ${DEPENDS_LIST} reference.
+    if grep -nE '^(Depends:|[[:space:]]*--info "depends:)[[:space:]]*[a-z]' "$script" \
+        | grep -vF '${DEPENDS_LIST}' >/dev/null; then
+        echo "FAIL: $label contains a literal Depends list (must reference \${DEPENDS_LIST})" >&2
+        grep -nE '^(Depends:|[[:space:]]*--info "depends:)[[:space:]]*[a-z]' "$script" >&2
+        return 1
+    fi
+}
 
-if [ "$makefile" != "$apk" ]; then
-    echo "FAIL: build-apk.sh --info depends drift from openwrt/Makefile DEPENDS" >&2
-    (diff <(echo "$makefile") <(echo "$apk") | sed 's/^/  /' >&2) || true
-    fail=1
-fi
+check_builder "build-ipk.sh" "$OPENWRT_DIR/build-ipk.sh" \
+    ipk 'Depends: \$\{DEPENDS_LIST\}' || fail=1
+
+check_builder "build-apk.sh" "$OPENWRT_DIR/build-apk.sh" \
+    apk '--info "depends:\$\{DEPENDS_LIST\}"' || fail=1
 
 if [ "$fail" = 0 ]; then
-    echo "ok: openwrt/Makefile DEPENDS == build-ipk.sh Depends == build-apk.sh --info depends"
+    echo "ok: openwrt/Makefile DEPENDS is the single source for build-ipk.sh and build-apk.sh"
 fi
 exit "$fail"

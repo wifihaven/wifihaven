@@ -13,6 +13,13 @@ PKG_VERSION="${PKG_VERSION:-$(grep '^PKG_VERSION:=' "$SCRIPT_DIR/Makefile" | cut
 PKG_RELEASE="${PKG_RELEASE:-$(grep '^PKG_RELEASE:=' "$SCRIPT_DIR/Makefile" | cut -d= -f2)}"
 OUT_IPK="$SCRIPT_DIR/wifihaven_${PKG_VERSION}-${PKG_RELEASE}_all.ipk"
 
+# Derive the package Depends list from the canonical openwrt/Makefile DEPENDS
+# line via the shared helper (single-source-of-truth, #1717). A hard-coded
+# copy here drifted from the Makefile when #1702 added lua-openssl, shipping
+# an .ipk that crash-looped sni-tail's require('openssl') in production.
+# build_depends_sync_spec.test.sh pins the equivalence in CI.
+DEPENDS_LIST=$("$SCRIPT_DIR/depends-list.sh" ipk)
+
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -25,7 +32,7 @@ mkdir "$WORK/ctrl"
 cat > "$WORK/ctrl/control" <<EOF
 Package: wifihaven
 Version: ${PKG_VERSION}-${PKG_RELEASE}
-Depends: lua, libuci-lua, luci-lib-jsonc, conntrack, curl, uhttpd-mod-lua, kmod-nf-log, kmod-nf-log6, libustream-mbedtls, openssl-util, tcpdump-mini
+Depends: ${DEPENDS_LIST}
 Architecture: all
 Maintainer: WifiHaven <noreply@example.com>
 Description: Agent daemon for WifiHaven. Enforces per-device DNS filtering
