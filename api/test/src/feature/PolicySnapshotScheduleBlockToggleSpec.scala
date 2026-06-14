@@ -9,6 +9,7 @@ import wifihaven.testinfra.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 import zio.{Clock as _, *}
 import zio.test.*
+import zio.test.TestAspect
 
 import java.time.LocalDateTime
 
@@ -222,5 +223,5 @@ object PolicySnapshotScheduleBlockToggleSpec
         assertTrue(rules.blockReason.map(MacBlockReason.asString).contains("Paused")) &&
         assertTrue(ea.contains("pause-ignored.example.com"))
     },
-  )
+  ) @@ TestAspect.sequential
 }
