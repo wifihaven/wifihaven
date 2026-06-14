@@ -701,6 +701,58 @@ describe("handle_flow", function()
     assert.equal("legacy.example", b.events[2].host.value)
   end)
 
+  -- #1655: static IP-range → label map. When DNS and ipset attribution both
+  -- miss, attribute the flow via the in-repo static map (last-resort, labels
+  -- only — never an enforcement input).
+  it("#1655: falls back to static IP-range label when DNS and nft_sets both miss", function()
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      leases          = { [MAC] = { ip = "192.168.1.42", hostname = "laptop" } },
+      lookup_hostname = function(_ip) return nil end,
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = "17.188.166.41" }, ctx, b)
+    assert.equal("fqdn",       b.events[2].host.type)
+    assert.equal("apple-push", b.events[2].host.value)
+  end)
+
+  it("#1655: leaves host as IP literal when DNS, nft_sets, AND static map all miss", function()
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      leases          = { [MAC] = { ip = "192.168.1.42", hostname = "laptop" } },
+      lookup_hostname = function(_ip) return nil end,
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = "203.0.113.7" }, ctx, b)
+    assert.equal("ipv4",        b.events[2].host.type)
+    assert.equal("203.0.113.7", b.events[2].host.value)
+  end)
+
+  it("#1655: DNS attribution wins over the static map", function()
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      leases          = { [MAC] = { ip = "192.168.1.42", hostname = "laptop" } },
+      -- dst_ip is in 17/8, but the DNS cache attributes it to a hostname.
+      lookup_hostname = function(ip)
+        if ip == "17.1.2.3" then return "icloud.com" end
+        return nil
+      end,
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = "17.1.2.3" }, ctx, b)
+    assert.equal("fqdn",       b.events[2].host.type)
+    assert.equal("icloud.com", b.events[2].host.value)
+  end)
+
+  it("#1655: ipset (SNI/dns_log) attribution wins over the static map", function()
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      leases          = { [MAC] = { ip = "192.168.1.42", hostname = "laptop" } },
+      nft_sets        = { ["push.apple.com"] = { ["17.1.2.3"] = true } },
+      lookup_hostname = function(_ip) return nil end,
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = "17.1.2.3" }, ctx, b)
+    assert.equal("fqdn",           b.events[2].host.type)
+    assert.equal("push.apple.com", b.events[2].host.value)
+  end)
+
   -- #583: dns-tail race fix. When the first lookup misses but the reply is
   -- about to land, handle_flow should sleep briefly and retry the lookup
   -- before falling through to host.type=ipv4.
