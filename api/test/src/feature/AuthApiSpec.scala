@@ -118,7 +118,7 @@ object AuthApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
         cpResp   <- ZIO.fromEither(respBody.fromJson[ChangePasswordResponse])
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(respBody.nonEmpty) &&
-        assertTrue(cpResp.mustChangePassword == false)
+        assertTrue(!cpResp.mustChangePassword)
     },
     test("POST /api/auth/login via HTTP handler") {
       for {
