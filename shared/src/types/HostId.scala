@@ -19,6 +19,12 @@ enum HostId {
   case Fqdn(name: Hostname)
   case IPv4(addr: IpAddress)
   case IPv6(addr: IpAddress)
+  // #1708: A synthetic name attached by the agent because the destination IP fell
+  // inside a hardcoded operator-curated range (apple-push, google-dns, cloudflare-dns;
+  // see openwrt static_ip_labels). NOT a hostname the agent ever observed at the
+  // resolver — it cannot be pattern-matched against `*.example.com` and `asFqdn`
+  // returns None, the same as IP literals.
+  case Label(name: String)
 }
 
 object HostId {
@@ -34,30 +40,47 @@ object HostId {
   def ip(addr: IpAddress): HostId =
     if addr.value.contains(':') then IPv6(addr) else IPv4(addr)
 
-  // ── Wire form: {"type":"fqdn"|"ipv4"|"ipv6","value":"..."} ─────────────
+  // ── Wire form: {"type":"fqdn"|"ipv4"|"ipv6"|"label","value":"...","source":"..."?} ──
+  //
+  // #1708: `label`-typed hosts carry an optional `source` field naming the
+  // attribution path that produced the label (today: `static-ip-range`). The
+  // decoder is tolerant of source's absence so a future label source (e.g. an
+  // ASN-based map) can ship without a wire break; the encoder always emits the
+  // source for forward observability.
 
-  private case class Wire(`type`: String, value: String) derives JsonCodec
+  private case class Wire(
+      `type`: String,
+      value: String,
+      source: Option[String] = None,
+  ) derives JsonCodec
+
+  /** The single label source today — see openwrt `static_ip_labels.lua` (#1655). */
+  val LabelSourceStaticIpRange: String = "static-ip-range"
 
   given JsonCodec[HostId] = JsonCodec[Wire].transformOrFail(
     {
-      case Wire("fqdn", v) => Hostname.parse(v).map(Fqdn(_))
-      case Wire("ipv4", v) =>
+      case Wire("fqdn", v, _)  => Hostname.parse(v).map(Fqdn(_))
+      case Wire("ipv4", v, _)  =>
         IpAddress.parse(v).flatMap { ip =>
           if ip.value.contains(':') then Left(s"ipv4 host carried v6 value: $v")
           else Right(IPv4(ip))
         }
-      case Wire("ipv6", v) =>
+      case Wire("ipv6", v, _)  =>
         IpAddress.parse(v).flatMap { ip =>
           if ip.value.contains(':') then Right(IPv6(ip))
           else Left(s"ipv6 host carried v4 value: $v")
         }
-      case Wire(other, _)  =>
+      case Wire("label", v, _) =>
+        if v.isEmpty then Left("label host has empty value")
+        else Right(Label(v))
+      case Wire(other, _, _)   =>
         Left(s"unknown host type: $other")
     },
     {
-      case Fqdn(h) => Wire("fqdn", h.value)
-      case IPv4(a) => Wire("ipv4", a.value)
-      case IPv6(a) => Wire("ipv6", a.value)
+      case Fqdn(h)  => Wire("fqdn", h.value, None)
+      case IPv4(a)  => Wire("ipv4", a.value, None)
+      case IPv6(a)  => Wire("ipv6", a.value, None)
+      case Label(v) => Wire("label", v, Some(LabelSourceStaticIpRange))
     },
   )
 
@@ -65,16 +88,18 @@ object HostId {
 
     /** The raw string value, for display, logging, or DB column. */
     def value: String = h match {
-      case Fqdn(name) => name.value
-      case IPv4(addr) => addr.value
-      case IPv6(addr) => addr.value
+      case Fqdn(name)  => name.value
+      case IPv4(addr)  => addr.value
+      case IPv6(addr)  => addr.value
+      case Label(name) => name
     }
 
     /** The discriminator tag, for DB column or display. */
     def kind: String = h match {
-      case _: Fqdn => "fqdn"
-      case _: IPv4 => "ipv4"
-      case _: IPv6 => "ipv6"
+      case _: Fqdn  => "fqdn"
+      case _: IPv4  => "ipv4"
+      case _: IPv6  => "ipv6"
+      case _: Label => "label"
     }
 
     /**
@@ -83,7 +108,11 @@ object HostId {
      */
     def isFqdn: Boolean = h.isInstanceOf[Fqdn]
 
-    /** Pull out the FQDN if this is one — useful for matchers that only apply to named hosts. */
+    /**
+     * Pull out the FQDN if this is one — useful for matchers that only apply to named hosts.
+     * Returns None for IP literals AND for synthetic Label hosts (#1708): labels are not domain
+     * names and must never be pattern-matched against `*.example.com`.
+     */
     def asFqdn: Option[Hostname] = h match {
       case Fqdn(n) => Some(n)
       case _       => None

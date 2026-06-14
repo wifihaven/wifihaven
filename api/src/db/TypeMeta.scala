@@ -147,10 +147,14 @@ object TypeMeta {
   // in the same order. Any SQL touching HostId columns must respect that.
   given Read[HostId]  = Read[(String, String)].map { case (kind, value) =>
     kind match {
-      case "fqdn" => HostId.Fqdn(Hostname.unsafe(value))
-      case "ipv4" => HostId.IPv4(IpAddress.unsafe(value))
-      case "ipv6" => HostId.IPv6(IpAddress.unsafe(value))
-      case other  =>
+      case "fqdn"  => HostId.Fqdn(Hostname.unsafe(value))
+      case "ipv4"  => HostId.IPv4(IpAddress.unsafe(value))
+      case "ipv6"  => HostId.IPv6(IpAddress.unsafe(value))
+      // #1708: synthetic label (static IP-range attribution). `source` is wire-only;
+      // not persisted in the two-column composite — there's only one source today
+      // (`static-ip-range`) and the encoder reconstructs it on read.
+      case "label" => HostId.Label(value)
+      case other   =>
         throw new IllegalStateException(s"DB has unknown host_type: $other")
     }
   }
