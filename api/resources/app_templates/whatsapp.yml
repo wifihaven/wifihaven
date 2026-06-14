@@ -1,9 +1,8 @@
 slug: whatsapp
 name: WhatsApp
-# #1705: operator picked the green-heart emoji in prod; match prod so fresh
-# installs ship with the same default.
-icon: "💚"
-icon_type: emoji
+# Emoji fallback: 💚
+icon: "https://icons.duckduckgo.com/ip3/whatsapp.com.ico"
+icon_type: url
 hosts:
   - whatsapp.com
   - whatsapp.net
