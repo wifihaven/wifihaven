@@ -28,7 +28,6 @@ object PolicyServiceLive {
    */
   def apply(
       profileRepo: ProfileRepo,
-      scheduleRepo: ScheduleRepo,
       householdSettingsRepo: HouseholdSettingsRepo,
       timeLimitRepo: TimeLimitRepo,
       appTimeLimitRepo: AppTimeLimitRepo,
@@ -48,7 +47,6 @@ object PolicyServiceLive {
   ): PolicyServiceLive = {
     val tss = new TimeStatusServiceLive(
       profileRepo,
-      scheduleRepo,
       timeLimitRepo,
       appTimeLimitRepo,
       deviceRepo,
@@ -61,7 +59,6 @@ object PolicyServiceLive {
     )
     new PolicyServiceLive(
       profileRepo,
-      scheduleRepo,
       householdSettingsRepo,
       timeLimitRepo,
       appTimeLimitRepo,
@@ -81,12 +78,6 @@ object PolicyServiceLive {
 
 class PolicyServiceLive(
     profileRepo: ProfileRepo,
-    // #1482: the legacy per-profile `schedules` table is no longer an enforcement source — schedule
-    // downtime is read exclusively from `named_schedules` / `profile_schedule_rules` (both the
-    // snapshot, via TimeStatusService, and the per-host /decision fallback below). Retained
-    // injected-but-unused to keep the constructor arity ~40 test constructions depend on; removed
-    // when the legacy table is dropped (the future two-phase destructive PR).
-    @scala.annotation.unused scheduleRepo: ScheduleRepo,
     householdSettingsRepo: HouseholdSettingsRepo,
     // #1544: the per-host /decision aggregation now reads `TimeStatusService.todaysState` (the same
     // ProfileDayState the snapshot consumes) instead of re-folding from these repos directly. They
@@ -591,16 +582,15 @@ private case class SnapshotCore(
 
 object PolicyService {
   val layer: ZLayer[
-    AppConfig & ProfileRepo & ScheduleRepo & NamedScheduleRepo & HouseholdSettingsRepo &
-      TimeLimitRepo & AppTimeLimitRepo & DeviceRepo & BlocklistRepo & TrafficReportRepo &
-      TimeExtensionRepo & AppRepo & GlobalPolicyRepo & TimeStatusService & Clock,
+    AppConfig & ProfileRepo & NamedScheduleRepo & HouseholdSettingsRepo & TimeLimitRepo &
+      AppTimeLimitRepo & DeviceRepo & BlocklistRepo & TrafficReportRepo & TimeExtensionRepo &
+      AppRepo & GlobalPolicyRepo & TimeStatusService & Clock,
     Nothing,
     PolicyService,
   ] = ZLayer.fromFunction {
     (
         cfg: AppConfig,
         pr: ProfileRepo,
-        sr: ScheduleRepo,
         nsr: NamedScheduleRepo,
         hsr: HouseholdSettingsRepo,
         tlr: TimeLimitRepo,
@@ -616,7 +606,6 @@ object PolicyService {
     ) =>
       new PolicyServiceLive(
         pr,
-        sr,
         hsr,
         tlr,
         atlr,

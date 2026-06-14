@@ -6,7 +6,6 @@ import doobie.implicits.*
 import doobie.postgres.implicits.*
 import wifihaven.shared.*
 import wifihaven.shared.types.*
-import wifihaven.shared.Schedule
 import wifihaven.api.db.TypeMeta.given
 import wifihaven.api.metrics.DbMetrics
 import zio.*
@@ -171,12 +170,6 @@ object NoopNamedScheduleRepo extends NamedScheduleRepo {
   def setProfileBlockSchedules(pid: ProfileId, ids: List[NamedScheduleId]) = ZIO.unit
   def windowsForProfile(pid: ProfileId)                                    = ZIO.succeed(Nil)
   def windowsForAllProfiles                                                = ZIO.succeed(Map.empty)
-}
-
-trait ScheduleRepo {
-  def listAll: Task[List[Schedule]]
-  def listForProfile(pid: ProfileId): Task[List[Schedule]]
-  def replaceForProfile(pid: ProfileId, scheds: List[ScheduleRequest]): Task[Unit]
 }
 
 trait HouseholdSettingsRepo {
@@ -881,32 +874,6 @@ class ProfileRepoLive(xa: Transactor[Task]) extends ProfileRepo {
   def delete(id: ProfileId) = sql"DELETE FROM profiles WHERE id=$id".update.run.transact(xa).unit
   def setPaused(id: ProfileId, p: Boolean) =
     sql"UPDATE profiles SET paused=$p WHERE id=$id".update.run.transact(xa).unit
-}
-
-class ScheduleRepoLive(xa: Transactor[Task]) extends ScheduleRepo {
-  private type R = (ScheduleId, ProfileId, String, List[String], LocalTime, LocalTime, ZoneId)
-  private def toS(r: R)              = Schedule(r._1, r._2, r._3, r._4, r._5, r._6, r._7)
-  def listAll                        =
-    sql"SELECT id,profile_id,name,days,start_local,end_local,tz FROM schedules ORDER BY id"
-      .query[R]
-      .map(toS)
-      .to[List]
-      .transact(xa)
-  def listForProfile(pid: ProfileId) =
-    DbMetrics.timed("schedule.listForProfile")(
-      sql"SELECT id,profile_id,name,days,start_local,end_local,tz FROM schedules WHERE profile_id=$pid ORDER BY id"
-        .query[R]
-        .map(toS)
-        .to[List]
-        .transact(xa),
-    )
-  def replaceForProfile(pid: ProfileId, ss: List[ScheduleRequest]) = {
-    val del = sql"DELETE FROM schedules WHERE profile_id=$pid".update.run
-    val ins = ss.map(s =>
-      sql"INSERT INTO schedules(profile_id,name,days,start_local,end_local,tz) VALUES($pid,${s.name},${s.days.toArray},${s.startLocal},${s.endLocal},${s.tz})".update.run,
-    )
-    (del *> ins.foldLeft(FC.unit)(_ *> _.void)).transact(xa)
-  }
 }
 
 class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsRepo {
@@ -3305,7 +3272,6 @@ object Repos {
   val userRepo              = ZLayer.fromFunction(UserRepoLive(_))
   val userProfileRepo       = ZLayer.fromFunction(UserProfileRepoLive(_))
   val profileRepo           = ZLayer.fromFunction(ProfileRepoLive(_))
-  val scheduleRepo          = ZLayer.fromFunction(ScheduleRepoLive(_))
   val namedScheduleRepo     = ZLayer.fromFunction(NamedScheduleRepoLive(_))
   val householdSettingsRepo = ZLayer.fromFunction(HouseholdSettingsRepoLive(_))
   val globalPolicyRepo      = ZLayer.fromFunction(GlobalPolicyRepoLive(_))
@@ -3325,5 +3291,5 @@ object Repos {
   val timeUsedRollupRepo    = ZLayer.fromFunction(TimeUsedRollupRepoLive(_))
   val appUsedRollupRepo     = ZLayer.fromFunction(AppUsedRollupRepoLive(_))
   val all                   =
-    userRepo ++ userProfileRepo ++ profileRepo ++ scheduleRepo ++ namedScheduleRepo ++ householdSettingsRepo ++ globalPolicyRepo ++ timeLimitRepo ++ appTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ rollupRepo ++ timeUsedRollupRepo ++ appUsedRollupRepo
+    userRepo ++ userProfileRepo ++ profileRepo ++ namedScheduleRepo ++ householdSettingsRepo ++ globalPolicyRepo ++ timeLimitRepo ++ appTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ rollupRepo ++ timeUsedRollupRepo ++ appUsedRollupRepo
 }

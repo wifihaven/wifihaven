@@ -258,7 +258,6 @@ object Main extends ZIOAppDefault {
       userRepo       <- ZIO.service[UserRepo]
       upRepo         <- ZIO.service[UserProfileRepo]
       profileRepo    <- ZIO.service[ProfileRepo]
-      schedRepo      <- ZIO.service[ScheduleRepo]
       namedSchedRepo <- ZIO.service[NamedScheduleRepo]
       hsRepo         <- ZIO.service[HouseholdSettingsRepo]
       globalRepo     <- ZIO.service[GlobalPolicyRepo]
@@ -319,7 +318,6 @@ object Main extends ZIOAppDefault {
           ProfileRoutes.routes(
             auth,
             profileRepo,
-            schedRepo,
             tlRepo,
             upRepo,
             userRepo,
