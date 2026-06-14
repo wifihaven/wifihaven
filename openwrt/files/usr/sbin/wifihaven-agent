@@ -29,7 +29,8 @@ local paths      = require("wifihaven.paths")
 local block_page = require("wifihaven.block_page")
 local lan_warn   = require("wifihaven.lan_warn")
 local selfheal   = require("wifihaven.selfheal")
-local version    = require("wifihaven.version")
+local version      = require("wifihaven.version")
+local host_metrics = require("wifihaven.host_metrics")
 
 -- ── UCI config ───────────────────────────────────────────────────────────────
 
@@ -215,6 +216,77 @@ local function fold_sni_metrics()
   local by_result = dns_log.parse_query_results(text)
   metrics.fold_external(mreg, "sni_clienthellos_total", "result",
                         by_result, sni_results_baseline)
+end
+
+-- #1718: native OpenWRT OS-level host metrics — load avg, CPU%, memory,
+-- conntrack count, per-iface bandwidth, wireless client counts. Sampled on
+-- the same metrics_int timer as the rest of the registry, and the resulting
+-- gauges/counters ride the existing #1205 batch transport. Aggregate-only:
+-- per-MAC wireless data is NEVER a label (cardinality firewall, AGENTS.md
+-- §instrument-new-functionality). #1716 would have triaged in minutes if
+-- these series existed in Grafana.
+local function read_file_safe(path)
+  local f = io.open(path, "r")
+  if not f then return nil end
+  local body = f:read("*a")
+  f:close()
+  return body
+end
+
+-- Restrict iface names to a safe character class — UCI is operator-owned but
+-- defending against an accidental shell-meta in a config string is cheap.
+local function safe_iface(iface)
+  if not iface or iface == "" then return nil end
+  if iface:match("^[%w_%-:%.]+$") then return iface end
+  return nil
+end
+
+local function iw_station_dump(iface)
+  local safe = safe_iface(iface)
+  if not safe then return "" end
+  local f = io.popen("iw dev " .. safe .. " station dump 2>/dev/null")
+  if not f then return "" end
+  local out = f:read("*a") or ""
+  f:close()
+  return out
+end
+
+local function parse_iface_csv(s)
+  local out = {}
+  for tok in (s or ""):gmatch("[^,%s]+") do
+    if safe_iface(tok) then out[#out + 1] = tok end
+  end
+  return out
+end
+
+-- "phy0-ap0:Home,phy1-ap0:Guest" → list of {iface=…, ssid=…}.
+local function parse_wifi_ifaces(s)
+  local out = {}
+  for tok in (s or ""):gmatch("[^,]+") do
+    local iface, ssid = tok:match("^%s*([^:]+):(.+)%s*$")
+    if iface and ssid and safe_iface(iface) then
+      out[#out + 1] = { iface = iface, ssid = ssid }
+    end
+  end
+  return out
+end
+
+local host_metrics_ifaces      = parse_iface_csv(uci_get("host_metrics_ifaces", "br-lan,wan"))
+local host_metrics_wifi_ifaces = parse_wifi_ifaces(uci_get("host_metrics_wifi", ""))
+local host_metrics_state       = {
+  cpu_state      = {},
+  iface_baseline = { rx = {}, tx = {} },
+}
+
+local function sample_host_metrics()
+  host_metrics.sample(mreg, {
+    read_file      = read_file_safe,
+    iw_dump        = iw_station_dump,
+    cpu_state      = host_metrics_state.cpu_state,
+    ifaces         = host_metrics_ifaces,
+    iface_baseline = host_metrics_state.iface_baseline,
+    wifi_ifaces    = host_metrics_wifi_ifaces,
+  })
 end
 
 -- activity_sample_int should evenly divide usage_report_interval, or the last
@@ -958,6 +1030,7 @@ conntrack.watch({
       fold_enforcement_drops()
       fold_dns_queries()
       fold_sni_metrics()  -- #573
+      sample_host_metrics() -- #1718
       local sampled_at = os.date("!%Y-%m-%dT%H:%M:%SZ", wall)
       metrics.post(api_url, router_token, mreg, sampled_at, http_post, log)
     end
