@@ -30,6 +30,7 @@ LUA_PATH="./files/usr/lib/lua/?.lua;./files/usr/lib/lua/wifihaven/?.lua;./test/s
          test/lan_warn_spec.lua \
          test/eb_refresh_spec.lua \
          test/static_ip_labels_spec.lua \
+         test/host_metrics_spec.lua \
          "$@"
 
 echo ""
