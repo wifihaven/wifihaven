@@ -32,7 +32,7 @@ per #1661.
 | plex.tv       | 9 MB / 49 min          | media — pair with plex.direct (403 MB) which is the streaming pool |
 | plex.direct   | 403 MB / —             | (paired with plex.tv above) |
 | crazygames.com| 1.5 MB / 52 min        | browser-game portal — all subdomains brand-specific (`cza.*`, `auth.*`, `sdk.*`) |
-| poki.io       | 824 kB / 25 min        | browser-game portal — all subdomains brand-specific (`t.*`, `leveldata.*`) |
+| poki.io       | 824 kB / 25 min        | browser-game portal — observed subdomains `t.poki.io`, `leveldata.poki.io`. poki.com (marketing surface) deliberately omitted — no kid traffic seen there |
 | thingiverse.com| 40 MB / 4 min         | MakerBot 3D-model repository — all subdomains brand-specific (`img.*`, `resize.*`, `cdn.*`, `api.*`) |
 
 ## INFRA — should ride InfraHosts (#1672 family), NOT a template
