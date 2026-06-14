@@ -877,6 +877,15 @@ in zero drop or carve-out predicates: enforcement is the per-MAC
 an enforcement input requires explicit operator approval and a tracking
 issue. The header comment in `static_ip_labels.lua` repeats this.
 
+Note that the *produced label* is emitted as a `HostId` with
+`type = "fqdn"` and therefore flows through downstream
+`HostMatch.matchesAny` / app-host-set membership exactly like a real
+DNS/SNI-derived hostname — i.e. an operator who configures an app whose
+host-set includes the literal `apple-push` will see APNs flows attribute
+to that app, count against its quotas, and obey its allow/block policy.
+That's the intended way labels surface; what "labels only" rules out is
+the map *itself* gating a drop server-side.
+
 **Extending the map.** Add a `{ cidr, label }` row to `M._ranges` with a
 citation in the comment beside it, and a test in
 `openwrt/test/static_ip_labels_spec.lua`. Keep growth operator-curated:

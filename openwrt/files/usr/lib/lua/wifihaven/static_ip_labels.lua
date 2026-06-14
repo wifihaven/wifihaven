@@ -63,15 +63,17 @@ local function parse_cidr_v4(cidr)
 end
 
 -- Pre-compile the v4 ranges once at module load. We keep a parallel array
--- (not a map) so first-match-wins ordering is preserved.
+-- (not a map) so first-match-wins ordering is preserved. `blocksize` is
+-- `2^(32-prefix)` — pre-computed so the hot path in `lookup` is a single
+-- modulo + subtract per range, no per-call shift.
 local compiled_v4 = {}
 for _, entry in ipairs(M._ranges) do
   local parsed = parse_cidr_v4(entry.cidr)
   if parsed then
     compiled_v4[#compiled_v4 + 1] = {
-      network = parsed.network,
-      mask    = parsed.mask,
-      label   = entry.label,
+      network   = parsed.network,
+      blocksize = 0xFFFFFFFF - parsed.mask + 1,
+      label     = entry.label,
     }
   end
 end
@@ -92,8 +94,7 @@ function M.lookup(ip)
     -- Bitwise AND via float math: (n & mask) == network ⇔
     --   n - (n % blocksize) == network, where blocksize = 2^(32-prefix).
     -- Equivalent and avoids requiring bit32 on Lua 5.1.
-    local blocksize = 0xFFFFFFFF - range.mask + 1
-    if (n - (n % blocksize)) == range.network then
+    if (n - (n % range.blocksize)) == range.network then
       return range.label
     end
   end

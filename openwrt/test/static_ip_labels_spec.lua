@@ -37,9 +37,11 @@ describe("static_ip_labels.lookup", function()
   end)
 
   it("keeps the initial map small (< 10 entries) so growth is operator-curated", function()
-    -- Belt-and-braces: the map is intentionally a starter. Future entries
-    -- should land with prod evidence; if this assertion ever needs raising,
-    -- re-justify in the PR.
+    -- Tripwire: the map is intentionally a starter. Per the module header
+    -- + docs/architecture.md §7.2 ("Static IP-range labels"), new entries
+    -- must land with prod evidence that the range dominates the
+    -- unattributed-IP tail AND has an unambiguous well-known owner. If
+    -- this assertion ever needs raising, re-justify in the PR body.
     assert.is_true(#labels._ranges < 10)
   end)
 end)
