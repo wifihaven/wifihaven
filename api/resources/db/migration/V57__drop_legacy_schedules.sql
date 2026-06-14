@@ -1,0 +1,24 @@
+-- #1485 Phase 3 (destructive): drop the legacy per-profile `schedules` table.
+--
+-- Background:
+--   * #1482 / #1490 (merged 2026-06-05) cut the policy READ path over to
+--     `named_schedules` + `profile_schedule_rules`. The legacy table has not
+--     been an enforcement source since.
+--   * #1494 / #1495 / #1500 stopped writes from the profile/schedule editors.
+--   * #1602 / #1603 disabled `ScheduleSeeder.seedAndMigrate` so the legacy
+--     rows could no longer be resurrected on boot.
+--   * #1709 / PR #1714 (merged 2026-06-14) removed the residual
+--     `trait ScheduleRepo`, `ScheduleRepoLive`, wiring, and the
+--     `TestDatabase` fixture writes — so nothing in the codebase reads or
+--     writes the table anymore.
+--   * Soak in prod from 2026-06-05 → 2026-06-14 (9 days) past the ~1-week
+--     gate in the issue body.
+--
+-- Runtime: `schedules` is a small per-profile table (rows on the order of
+-- one per profile per window — dozens at most in prod). `DROP TABLE` is
+-- sub-second at this scale, so this is safe to run on the startup
+-- critical path despite the §migrations-prod-data-volume caution.
+--
+-- Irreversibility: this is destructive. Operator pre-flight must confirm a
+-- recent prod DB snapshot exists before merge; rollback is restore-only.
+DROP TABLE IF EXISTS schedules;
