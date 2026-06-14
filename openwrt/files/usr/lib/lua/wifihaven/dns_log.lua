@@ -448,7 +448,9 @@ function M.new(opts)
   -- edge is inserted with the given timestamp (default: now) so it ages out
   -- under the same TTL the in-process learned edges do. Existing edges are not
   -- overwritten by a stale seed, so a sidecar that has already relearned the
-  -- chain wins over its own old snapshot.
+  -- chain wins over its own old snapshot. If the seed exceeds max_aliases the
+  -- LRU evicts as we insert, so which edges survive is iteration-order
+  -- dependent — acceptable for best-effort recovery (#1572).
   function self.seed_aliases(tbl, now)
     if type(tbl) ~= "table" then return end
     now = now or now_fn()

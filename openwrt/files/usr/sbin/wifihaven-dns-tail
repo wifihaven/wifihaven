@@ -372,6 +372,12 @@ while true do
     if since_flush >= flush_every or (now - last_tick) >= 30 then
       cache.tick(now)
       atomic_write(cache_path, cache.dump_text())
+      -- #1572: persist the learned CNAME-alias edges in lockstep so a restart
+      -- can reseed them and recover the brand for a directly-queried CDN target.
+      -- Mirrored in the SNI-routed flush block above — both flush sites must
+      -- write the alias snapshot for the on-disk file to track the in-memory
+      -- map under both line types.
+      atomic_write(aliases_path, cache.dump_aliases_text())
       -- #1302: publish the cumulative query-result tally alongside the cache so
       -- the agent's next metrics tick can fold the deltas.
       atomic_write(dns_metrics_path, dns_log.format_query_results(dns_results))
