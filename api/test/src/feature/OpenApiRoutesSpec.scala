@@ -22,12 +22,15 @@ object OpenApiRoutesSpec extends ZIOSpecDefault {
 
   private val under = OpenApiRoutes.routes("test-sha", sample)
 
+  private def asMap(j: Json): Map[String, Json] =
+    j.asObject.get.fields.foldLeft(Map.empty[String, Json])((m, kv) => m + kv)
+
   def spec = suite("/api/openapi.json + /api/docs (#638)")(
     test("/api/openapi.json returns JSON with the OpenAPI envelope") {
       for {
         resp <- under.runZIO(Request.get(URL.decode("/api/openapi.json").toOption.get))
         body <- resp.body.asString
-        ast = body.fromJson[Json].toOption.get.asObject.get.fields.toMap
+        ast = asMap(body.fromJson[Json].toOption.get)
       } yield assertTrue(resp.status.code == 200) &&
         assertTrue(ast.get("openapi").flatMap(_.asString).exists(_.startsWith("3."))) &&
         assertTrue(ast.contains("paths"))
