@@ -12,6 +12,7 @@ import wifihaven.api.db.{
   TimeUsedRollupRepo,
   TrafficReportRepo,
 }
+import wifihaven.api.metrics.AppMetrics
 import wifihaven.api.policy.{PolicyService, TimeStatusService}
 import wifihaven.shared.Clock
 import wifihaven.shared.types.{AppId, ProfileId}
@@ -170,6 +171,10 @@ object TimeUsedRollupJob {
     atlsP    <- ZIO.foreach(profiles)(p => appTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
     presence <- trafficRepo.listPresenceRows(devices.map(_.mac), today)
     rolls = computeRolls(profiles, devices, atlsP.toMap, presence, settings, now)
+    // #1676: each tick emits the count of per-(mac, app) sessions silently
+    // dropped by the #1666 anchor-row guard so an operator can rate-alert on
+    // threshold drift. Summed across profiles since the metric is unlabelled.
+    _ <- AppMetrics.recordAppSessionsDropped(rolls._3)
     n <- rollup.upsertBatch(today, rolls._1)
     _ <- appRollup.upsertBatch(today, rolls._2)
   } yield n
@@ -188,14 +193,14 @@ object TimeUsedRollupJob {
       presence: List[wifihaven.api.presence.PresenceRow],
       settings: wifihaven.shared.HouseholdSettings,
       now: Instant,
-  ): (Map[ProfileId, RolledDay], Map[(ProfileId, AppId), RolledAppDay]) = {
+  ): (Map[ProfileId, RolledDay], Map[(ProfileId, AppId), RolledAppDay], Int) = {
     val devsByP                                                           =
       devices.groupBy(_.profileId).collect { case (Some(pid), devs) => pid -> devs }
     def presFor(pid: ProfileId): List[wifihaven.api.presence.PresenceRow] = {
       val mac = devsByP.getOrElse(pid, Nil).map(_.mac).toSet
       presence.filter(r => mac.contains(r.mac))
     }
-    val perProfile = profiles.iterator.map { p =>
+    val perProfile    = profiles.iterator.map { p =>
       val secs = TimeStatusService.usedSecondsForProfile(
         p,
         devsByP.getOrElse(p.id, Nil),
@@ -205,12 +210,23 @@ object TimeUsedRollupJob {
       )
       p.id -> RolledDay(secs, now)
     }.toMap
-    val perApp     = profiles.iterator.flatMap { p =>
-      TimeStatusService
-        .appSecondsByApp(p, atlMap.getOrElse(p.id, Nil), presFor(p.id), settings)
-        .iterator
-        .map { case (appId, secs) => (p.id, appId) -> RolledAppDay(secs, now) }
-    }.toMap
-    (perProfile, perApp)
+    // #1676: each profile's per-app fold also yields a dropped-session count
+    // from the #1666 anchor-row guard. The metric is unlabelled, so we sum
+    // across profiles and the caller emits the total.
+    val perAppEntries = profiles.iterator.map { p =>
+      val (secsByApp, dropped) = TimeStatusService.appSecondsByAppWithDropCount(
+        p,
+        atlMap.getOrElse(p.id, Nil),
+        presFor(p.id),
+        settings,
+      )
+      val rows                 = secsByApp.iterator.map { case (appId, secs) =>
+        (p.id, appId) -> RolledAppDay(secs, now)
+      }.toMap
+      (rows, dropped)
+    }.toList
+    val perApp = perAppEntries.foldLeft(Map.empty[(ProfileId, AppId), RolledAppDay])(_ ++ _._1)
+    val droppedTotal = perAppEntries.foldLeft(0)(_ + _._2)
+    (perProfile, perApp, droppedTotal)
   }
 }

@@ -100,6 +100,14 @@ object MetricGuard {
     // household-scoped gauges set each time the policy snapshot is assembled.
     "wifihaven_global_allow_hosts"              -> Set.empty[String],
     "wifihaven_default_deny_profiles"           -> Set.empty[String],
+    // #1676 — per-(mac, app) sessions dropped by the #1666 phantom-suppression
+    // guard inside Presence.appSpansForProfile. Unlabelled counter: the guard
+    // is unconditional, so a reason enum would only ever carry one value, and
+    // any per-mac / per-app label would blow the cardinality firewall. Operators
+    // rate-alert on threshold drift — a sustained rise means the threshold is
+    // too aggressive (real sessions vanishing), a flat zero while phantom
+    // inflation returns means it is too lax.
+    "presence_app_sessions_dropped_total"       -> Set.empty[String],
     // §5.1 router-sourced, pushed via POST /api/router/metrics (#1205). Every one carries the
     // server-attached `router_id` + `installation_id` plus its own bounded enum label.
     "dnsmasq_restarts_total"                    -> Set("reason", "router_id", "installation_id"),
@@ -304,6 +312,23 @@ object AppMetrics {
     ZIO
       .when(count > 0)(
         MetricGuard.counter("usage_records_rejected_total", Map("reason" -> reason), count.toLong),
+      )
+      .unit
+
+  // ── #1676: phantom-suppression drop count ───────────────────────────────────
+  // Emitted from TimeStatusService.appSecondsByAppWithDropCount, which threads
+  // the count out of Presence.appSpansForProfileWithDropCount (#1666 anchor-row
+  // guard). Unlabelled — the guard is unconditional, and per-mac / per-app
+  // would breach the cardinality firewall.
+
+  def recordAppSessionsDropped(count: Int): UIO[Unit] =
+    ZIO
+      .when(count > 0)(
+        MetricGuard.counter(
+          "presence_app_sessions_dropped_total",
+          Map.empty,
+          count.toLong,
+        ),
       )
       .unit
 

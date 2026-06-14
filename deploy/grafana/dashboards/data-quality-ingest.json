@@ -442,6 +442,82 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Phantom app sessions dropped — rate (#1676)",
+      "description": "rate(presence_app_sessions_dropped_total[5m]) — per-(mac, app) presence sessions silently dropped by the #1666 anchor-row guard (no row in the session cleared `Presence.AppSessionAnchorBytes`). Emitted once per `TimeUsedRollupJob` tick (~15 min). A sustained rise means the threshold is too aggressive (real sessions vanishing); a flat zero while phantom inflation returns (the original #1666 symptom) means it is too lax. Unlabelled; from AppMetrics.recordAppSessionsDropped.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 48 },
+      "id": 13,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 20, "showPoints": "never", "lineWidth": 1 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "rate(presence_app_sessions_dropped_total{env=\"$env\"}[5m])",
+          "legendFormat": "dropped/s",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Phantom app sessions dropped (last 24h)",
+      "description": "sum(increase(presence_app_sessions_dropped_total[24h])) — trailing-day total of per-(mac, app) sessions dropped by the #1666 guard. From AppMetrics.recordAppSessionsDropped, emitted once per `TimeUsedRollupJob` tick.",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 48 },
+      "id": 14,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "unit": "short",
+          "min": 0,
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(increase(presence_app_sessions_dropped_total{env=\"$env\"}[24h]))",
+          "legendFormat": "dropped (24h)",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",
