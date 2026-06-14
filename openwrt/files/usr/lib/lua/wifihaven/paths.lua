@@ -43,7 +43,8 @@ M.sni_capture = "/tmp/wifihaven-sni.log"
 -- per-result counts ("<result>\t<count>" lines, same format as dns_metrics) on
 -- each periodic flush; wifihaven-agent samples it on its metrics tick and folds
 -- the deltas into sni_clienthellos_total{result}. result ∈ {parsed, truncated,
--- no_sni, ipv6_skipped, not_tcp, malformed}. Same tmpfs-IPC pattern as
+-- no_sni, not_ip, not_tcp, malformed} (pre-#1652 agents also emit ipv6_skipped,
+-- ageing out as the fleet rolls forward). Same tmpfs-IPC pattern as
 -- dns_metrics — the sidecar has no metrics registry of its own.
 M.sni_metrics = "/tmp/wifihaven-sni-metrics.txt"
 
