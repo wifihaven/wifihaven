@@ -81,6 +81,19 @@ Mitigations: see [#572](https://github.com/wifihaven/wifihaven/issues/572)
 (block DoH/DoT egress) and [#573](https://github.com/wifihaven/wifihaven/issues/573)
 (recover hostname from TLS SNI).
 
+The SNI sidecar (`wifihaven-sni-tail`) can be disabled per-router on
+constrained or misconfigured hardware via the `wifihaven.sni.enabled`
+UCI option (default `1`):
+
+```
+uci set wifihaven.sni.enabled=0
+uci commit wifihaven
+/etc/init.d/wifihaven restart
+```
+
+This is local agent config, not a policy-snapshot field — the API and
+other routers are unaffected. ([#1654](https://github.com/wifihaven/wifihaven/issues/1654))
+
 ### 4. Connection-reuse / QUIC sessions
 
 HTTP/3 (QUIC) maintains a single UDP "connection" that the app reuses

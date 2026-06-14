@@ -41,3 +41,4 @@ sh test/lua_module_paths_spec.sh
 sh test/nft_log_dep_spec.sh
 sh test/agent_spec.sh
 sh test/rotate_dnsmasq_log_spec.sh
+sh test/init_sni_toggle_spec.sh
