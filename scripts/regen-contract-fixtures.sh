@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Regenerate golden contract fixtures under shared/contract/ (#634).
+# Regenerate golden contract fixtures under contract/ (#634).
 #
 # Two producers, two directions:
 #
@@ -18,7 +18,7 @@
 #     usage.build_report) via openwrt/test/contract_gen.lua. Drift in the
 #     lua agent flips the diff; the Scala consumer (ContractGoldenSpec)
 #     then catches decoder/round-trip breakage. (register_router_request.json
-#     is a documented exception — see shared/contract/README.md.)
+#     is a documented exception — see contract/README.md.)
 #
 # After running, inspect the diff: every change should correspond to an
 # intentional wire-contract update, and the consumer code on the other side

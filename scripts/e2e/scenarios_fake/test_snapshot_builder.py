@@ -1,7 +1,7 @@
 """Unit tests for the snapshot builder (#684).
 
 Pure-dict tests; do not request any VM fixtures. Cross-checks the builder's
-output structure against `shared/contract/api-to-router/policy_snapshot.json`,
+output structure against `contract/api-to-router/policy_snapshot.json`,
 the contract golden the fake itself loads on startup.
 """
 from __future__ import annotations

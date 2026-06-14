@@ -1,8 +1,8 @@
 """Load the contract goldens used as initial snapshot/response fixtures.
 
-The fake reads `shared/contract/api-to-router/policy_snapshot.json` verbatim
+The fake reads `contract/api-to-router/policy_snapshot.json` verbatim
 so the CI drift guard against the live Scala codec keeps it honest. See
-`shared/contract/README.md`.
+`contract/README.md`.
 """
 
 from __future__ import annotations

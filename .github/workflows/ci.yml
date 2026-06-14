@@ -94,7 +94,7 @@ jobs:
             # tweak doesn't drag the full openwrt/lua matrix along.
             contract:
               - '.github/workflows/ci.yml'
-              - 'shared/contract/**'
+              - 'contract/**'
               - 'shared/src/Models.scala'
               - 'shared/src/types/**'
               - 'openwrt/test/contract_spec.lua'
@@ -129,7 +129,7 @@ jobs:
               - 'scripts/regen-contract-fixtures.sh'
               # Additional producers (#667): the install.sh printf that
               # generates POST /api/router/register bodies (the documented
-              # exception in shared/contract/README.md), and the python
+              # exception in contract/README.md), and the python
               # fake-router which is a second producer of router→API bodies
               # — #664 demonstrated it can drift the contract independently.
               - 'openwrt/install.sh'
@@ -144,7 +144,7 @@ jobs:
             fake-api:
               - '.github/workflows/ci.yml'
               - 'scripts/e2e/fake-api/**'
-              - 'shared/contract/api-to-router/policy_snapshot.json'
+              - 'contract/api-to-router/policy_snapshot.json'
             shell:
               - '.github/workflows/ci.yml'
               - 'deploy/**/*.sh'
@@ -566,8 +566,8 @@ jobs:
       - name: Verify fixtures are in sync with producers
         run: |
           bash scripts/regen-contract-fixtures.sh
-          if ! git diff --exit-code shared/contract/; then
-            echo "::error::shared/contract/ is out of sync with producers — run scripts/regen-contract-fixtures.sh and commit the diff."
+          if ! git diff --exit-code contract/; then
+            echo "::error::contract/ is out of sync with producers — run scripts/regen-contract-fixtures.sh and commit the diff."
             exit 1
           fi
 
