@@ -37,6 +37,99 @@ function M.eb_san(host)
 end
 
 -- ---------------------------------------------------------------------------
+-- list_procs() -> { { pid, ppid, cmdline }, ... }   (default scanner)
+--
+-- Enumerates the live process table by reading /proc/<pid>/status (for PPid)
+-- and /proc/<pid>/cmdline (NUL-separated argv joined with spaces). Used by
+-- kill_orphan_watchers; injectable as opts.list_procs_fn for tests.
+-- ---------------------------------------------------------------------------
+local function default_list_procs()
+  local out = {}
+  local p = io.popen("ls /proc 2>/dev/null", "r")
+  if not p then return out end
+  for name in p:lines() do
+    local pid = tonumber(name)
+    if pid then
+      local sf = io.open("/proc/" .. pid .. "/status", "r")
+      local ppid
+      if sf then
+        for line in sf:lines() do
+          local v = line:match("^PPid:%s*(%d+)")
+          if v then ppid = tonumber(v); break end
+        end
+        sf:close()
+      end
+      local cf = io.open("/proc/" .. pid .. "/cmdline", "r")
+      local cmdline = ""
+      if cf then
+        local raw = cf:read("*a") or ""
+        cf:close()
+        -- argv is NUL-separated with a trailing NUL; replace NUL with space
+        -- and strip the trailing whitespace so it matches a plain command line.
+        cmdline = raw:gsub("%z", " "):gsub("%s+$", "")
+      end
+      if ppid then
+        out[#out + 1] = { pid = pid, ppid = ppid, cmdline = cmdline }
+      end
+    end
+  end
+  p:close()
+  return out
+end
+
+-- ---------------------------------------------------------------------------
+-- kill_orphan_watchers(opts) -> int (orphans killed)  -- #1716
+--
+-- Scan /proc for `conntrack -E -e NEW` processes that have been reparented to
+-- init (PPID = 1) — those are leftover children of a prior wifihaven-agent
+-- instance. SIGTERM each one before opening this agent's own conntrack
+-- subscription.
+--
+-- Why this is needed: conntrack subscribes to NFCT_ALL_CT_GROUPS on its
+-- netlink socket, idles waiting for events, and only ever writes to stdout
+-- when an event arrives. When the agent that opened it via io.popen() is
+-- replaced (procd restart, CD reinstall, upgrade), the child is reparented
+-- to init. SIGPIPE fires only on write, so an idle orphan with no events
+-- never gets SIGPIPE and never dies. Across many restarts the orphans
+-- accumulate, every netfilter event wakes all subscribers, and CPU + load
+-- climb. Prod #1716: 24-day uptime → 16 orphans → agent CPU 22-24% / load
+-- 3.2; SIGTERMing the orphans dropped agent CPU to 0%.
+--
+-- opts:
+--   list_procs_fn  function() -> { {pid, ppid, cmdline}, ... }   injectable
+--                  process scanner; defaults to default_list_procs above
+--                  (reads /proc). Tests pass a closure over a canned list.
+--   kill_fn        function(pid) -> bool                          injectable;
+--                  defaults to `kill <pid>` via os.execute. Returns true on
+--                  successful signal delivery (best-effort).
+--
+-- Matching is intentionally narrow: we only sweep processes whose cmdline is
+-- EXACTLY `conntrack -E -e NEW` (the agent's invocation) — not `conntrack -L`,
+-- `conntrack -F`, `conntrack -E -e NEW -p tcp`, etc. — so an operator's
+-- transient conntrack tool isn't stomped.
+-- ---------------------------------------------------------------------------
+local AGENT_CONNTRACK_CMDLINE = "conntrack -E -e NEW"
+
+function M.kill_orphan_watchers(opts)
+  opts = opts or {}
+  local list = opts.list_procs_fn or default_list_procs
+  local kill = opts.kill_fn or function(pid)
+    -- os.execute return shape varies by Lua version: int exit-code on 5.1/5.2,
+    -- boolean true on 5.3+ for a clean exit. Mirror nft_eb_hit's normalisation.
+    local ret = os.execute("kill " .. tostring(pid) .. " 2>/dev/null")
+    return ret == 0 or ret == true
+  end
+  local killed = 0
+  for _, p in ipairs(list()) do
+    if p.ppid == 1 and p.cmdline == AGENT_CONNTRACK_CMDLINE then
+      kill(p.pid)
+      killed = killed + 1
+    end
+  end
+  return killed
+end
+
+-- ---------------------------------------------------------------------------
 -- nft_eb_hit(dst_ip, eb_host, exec_fn) -> bool
 --
 -- Returns true when dst_ip is a current member of the nftables set

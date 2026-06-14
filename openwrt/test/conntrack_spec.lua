@@ -1844,3 +1844,85 @@ describe("encode_events_body (#1126 ingest reliability)", function()
     assert.truthy(body:find('"events":[', 1, true))
   end)
 end)
+
+-- ---------------------------------------------------------------------------
+-- kill_orphan_watchers — #1716
+--
+-- conntrack -E -e NEW is opened via io.popen() in watch(). If the agent
+-- process is replaced (procd restart, CD wave reinstall, upgrade), the child
+-- conntrack process is reparented to init (PPID 1) and idles on netlink with
+-- no reader for its stdout. SIGPIPE only fires on write, and an idle conntrack
+-- never writes when there are no events — so the orphan never dies, and each
+-- subsequent agent restart leaves another orphan behind. Prod evidence (#1716,
+-- 24-day uptime): 16 orphans accumulated, every netfilter event woke all 17
+-- subscribers, agent ran at 22-24% CPU sustained with vol_ctxt_switches ≈
+-- 2600/sec. After SIGTERMing the 16 orphans, agent CPU dropped to 0%.
+--
+-- At startup the agent calls kill_orphan_watchers to sweep any prior orphans
+-- before opening its own conntrack subscription.
+-- ---------------------------------------------------------------------------
+describe("kill_orphan_watchers (#1716)", function()
+  -- Builds a fake /proc scanner: returns the supplied {pid=, ppid=, cmdline=}
+  -- records, in order, when list_procs_fn() is called.
+  local function fake_list_procs(records)
+    return function() return records end
+  end
+
+  it("kills conntrack -E -e NEW processes whose PPID is 1 (init-reparented)", function()
+    local killed = {}
+    local n = conntrack.kill_orphan_watchers({
+      list_procs_fn = fake_list_procs({
+        { pid = 685,   ppid = 1,     cmdline = "conntrack -E -e NEW" },
+        { pid = 4233,  ppid = 1,     cmdline = "conntrack -E -e NEW" },
+        { pid = 15829, ppid = 1,     cmdline = "conntrack -E -e NEW" },
+      }),
+      kill_fn = function(pid) killed[#killed + 1] = pid; return true end,
+    })
+    assert.equal(3, n)
+    assert.same({ 685, 4233, 15829 }, killed)
+  end)
+
+  it("does NOT kill the live agent's own conntrack child (PPID = current agent)", function()
+    local killed = {}
+    local n = conntrack.kill_orphan_watchers({
+      list_procs_fn = fake_list_procs({
+        { pid = 14665, ppid = 14449, cmdline = "conntrack -E -e NEW" }, -- our child
+        { pid = 685,   ppid = 1,     cmdline = "conntrack -E -e NEW" }, -- orphan
+      }),
+      kill_fn = function(pid) killed[#killed + 1] = pid; return true end,
+    })
+    assert.equal(1, n)
+    assert.same({ 685 }, killed)
+  end)
+
+  it("ignores processes whose cmdline does not match the agent's conntrack invocation", function()
+    -- Avoid stomping unrelated `conntrack -L`, `conntrack -F`, etc. running
+    -- under cron or a transient operator shell. We match the exact agent
+    -- invocation only — also rejecting whitespace variants so a future
+    -- agent that opens conntrack differently can't be silently swept by this
+    -- one (would be a different invocation, deserves its own sweeper).
+    local killed = {}
+    conntrack.kill_orphan_watchers({
+      list_procs_fn = fake_list_procs({
+        { pid = 100, ppid = 1, cmdline = "conntrack -L" },
+        { pid = 101, ppid = 1, cmdline = "conntrack -F" },
+        { pid = 102, ppid = 1, cmdline = "conntrack -E -e NEW -p tcp" }, -- different flags
+        { pid = 103, ppid = 1, cmdline = "grep conntrack -E -e NEW" },
+        { pid = 105, ppid = 1, cmdline = "conntrack  -E -e NEW" },        -- extra-whitespace
+        { pid = 104, ppid = 1, cmdline = "conntrack -E -e NEW" },         -- match
+      }),
+      kill_fn = function(pid) killed[#killed + 1] = pid; return true end,
+    })
+    assert.same({ 104 }, killed)
+  end)
+
+  it("returns 0 and calls kill 0 times when there are no orphans", function()
+    local killed = {}
+    local n = conntrack.kill_orphan_watchers({
+      list_procs_fn = fake_list_procs({}),
+      kill_fn = function(pid) killed[#killed + 1] = pid; return true end,
+    })
+    assert.equal(0, n)
+    assert.same({}, killed)
+  end)
+end)

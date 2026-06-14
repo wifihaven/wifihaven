@@ -436,6 +436,29 @@ local last_nflog_run      = 0  -- #1126: nflog drop-spool drain cadence
 local activity_tracker     = usage.new_tracker()
 local usage_queue          = usage.new_queue()  -- retry queue for failed POSTs (#309)
 
+-- ── Sweep orphan conntrack subscribers (#1716) ──────────────────────────────
+-- conntrack -E -e NEW is opened via io.popen() below. When this agent process
+-- is replaced (procd restart, CD reinstall, upgrade), the child is reparented
+-- to init and idles on netlink with no reader for its stdout. SIGPIPE only
+-- fires on write, and an idle conntrack with no events never writes — so the
+-- orphan never dies. Across many restarts the orphans accumulate, every
+-- netfilter event wakes all subscribers, and CPU + load climb. Prod #1716:
+-- 24-day uptime → 16 orphans → agent CPU 22-24%, load 3.2; SIGTERMing them
+-- dropped agent CPU to 0%. Sweep before spawning our own.
+--
+-- Startup sweep bounds the orphan count at ~1 per restart cycle but doesn't
+-- prevent the orphan from being created in the first place. The proper
+-- complement — an explicit SIGTERM handler that kills the conntrack child on
+-- agent shutdown — is tracked in #1723. Fleet-level metric tracking (so an
+-- operator can see if any router is still spawning orphans after this fix
+-- ships) is tracked in #1722.
+do
+  local killed = conntrack.kill_orphan_watchers()
+  if killed > 0 then
+    log.info("startup: swept %d orphan conntrack -E -e NEW subscriber(s) (#1716)", killed)
+  end
+end
+
 -- ── Initial policy fetch at startup ──────────────────────────────────────────
 
 -- Load cached policy from flash BEFORE the first network poll (#309). If the
