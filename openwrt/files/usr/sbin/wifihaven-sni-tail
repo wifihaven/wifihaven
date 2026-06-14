@@ -29,8 +29,10 @@
 -- Capture: tcpdump-mini (libpcap-userspace) with a combined BPF filter for
 -- both TCP-443 first-segment-of-ClientHello AND UDP-443 long-header Initial
 -- packets (high nibble 0xc0 = header_form=1 + fixed=1 + type=Initial). Output
--- is raw pcap on stdout (-w -), parsed inline by sni.parse_packet (TCP path)
--- or quic.parse_initial (UDP path), dispatched by the IPv4 protocol byte.
+-- is raw pcap on stdout (-w -); the TCP path goes through sni.parse_framing
+-- + per-flow sni_reassembly buffer + sni.parse_client_hello (#1653 multi-
+-- segment ClientHello reassembly), the UDP path goes through
+-- quic.parse_initial. Dispatch is on the IPv4 protocol byte.
 
 local uci     = require("uci")
 local openssl = require("openssl")
@@ -109,7 +111,9 @@ log.info("sni-tail: starting iface=%s snaplen=%d spool=%s",
 -- logic lives in sni.lua (sni.read_global_header / sni.read_record /
 -- sni.iter_pcap) so it is exercised by the unit + integration suite; this
 -- sidecar is a thin driver that backs the reader's read_fn with the io.popen
--- handle and feeds each captured packet to sni.parse_packet.
+-- handle and feeds each captured packet to the dispatch helper below, which
+-- routes the TCP arm through sni.parse_framing + sni_reassembly:feed (#1653)
+-- and the UDP arm through quic.parse_initial.
 -- ---------------------------------------------------------------------------
 
 local h = io.popen(CAPTURE_CMD, "r")
@@ -159,10 +163,11 @@ local quic_crypto = quic.openssl_crypto(openssl)
 --   ttl_s=5          — handshakes complete in << 1s; 5s is generous.
 local reasm_buf = reasm.new({ cap_bytes = 8192, cap_flows = 64, ttl_s = 5 })
 
--- Dispatch on IPv4 protocol byte: TCP=6 → existing sni.parse_packet, UDP=17 →
--- new quic.parse_initial. We bounce non-IPv4 to "ipv6_skipped" inline so we
--- don't pay two parser attempts per non-matching frame. (Keep the inner
--- parsers' enum strings disjoint so the metric label space stays unambiguous.)
+-- Dispatch on IPv4 protocol byte: TCP=6 → dispatch_tcp (sni.parse_framing +
+-- sni_reassembly buffer + sni.parse_client_hello), UDP=17 → quic.parse_initial.
+-- Non-IP frames fall out into the bounded "not_ip" bucket inline so we don't
+-- pay two parser attempts per non-matching frame. (Keep the inner parsers'
+-- enum strings disjoint so the metric label space stays unambiguous.)
 -- dispatch(pkt) → (result | nil, label)
 --
 -- `label` is the result-enum string the main loop folds into the per-result

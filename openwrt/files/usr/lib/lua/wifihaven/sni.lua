@@ -22,8 +22,11 @@
 --     as no_sni / malformed. Rare in practice (ClientHellos fit in one MTU).
 --
 -- Public API:
---   sni.parse_client_hello(payload)   → server_name string | nil
---   sni.parse_packet(eth_frame_bytes) → { dst_ip, src_mac, sni } | nil
+--   sni.parse_client_hello(payload)   → server_name string | nil, reason string | nil
+--   sni.parse_framing(eth_frame_bytes)→ { src_mac, dst_ip, src_ip, src_port,
+--                                         dst_port, payload } | nil, reason
+--   sni.flow_key(framing)             → opaque 4-tuple key string
+--   sni.parse_packet(eth_frame_bytes) → { dst_ip, src_mac, sni } | nil, reason
 --   sni.format_sni_line(ip, mac, sni) → "SNI\t<ip>\t<mac>\t<sni>\n"
 --   sni.parse_sni_line(line)          → { dst_ip, src_mac, sni } | nil
 --   sni.read_global_header(read_fn)   → { swapped } | nil   (pcap stream)
@@ -368,89 +371,24 @@ function M.flow_key(f)
   return string.format("%s:%d-%s:%d", f.src_ip, f.src_port, f.dst_ip, f.dst_port)
 end
 
+-- parse_packet collapses onto parse_framing + parse_client_hello so there is
+-- exactly one copy of the Ethernet/IP/TCP framing logic in this module
+-- (AGENTS.md §single-source-of-truth — #1653 review feedback). The legacy
+-- contract is preserved: callers that don't need the 5-tuple still get
+-- `{ dst_ip, src_mac, sni } | nil, reason` with the same reason enum
+-- ("truncated" | "not_ip" | "not_tcp" | "malformed" | "no_sni").
 function M.parse_packet(eth_frame)
-  if type(eth_frame) ~= "string" or #eth_frame < 14 + 20 + 20 then
-    return nil, "truncated"
-  end
-
-  -- Ethernet header: dst (6), src (6), ethertype (2)
-  local ethertype = u16(eth_frame, 13)
-  local sa, sb, sc, sd, se, sf = eth_frame:byte(7, 12)
-  local src_mac = format_mac(sa, sb, sc, sd, se, sf)
-
-  local dst_ip, tcp_off
-  if ethertype == 0x0800 then
-    -- IPv4 header
-    local ip_off = 15 -- 1-based, after 14-byte Ethernet
-    local ver_ihl = u8(eth_frame, ip_off)
-    if not ver_ihl then return nil, "malformed" end
-    if math.floor(ver_ihl / 16) ~= 4 then return nil, "malformed" end
-    local ihl = (ver_ihl % 16) * 4
-    if ihl < 20 then return nil, "malformed" end
-    if ip_off + ihl - 1 > #eth_frame then return nil, "truncated" end
-    local proto = u8(eth_frame, ip_off + 9)
-    if proto ~= 6 then return nil, "not_tcp" end
-    local da, db, dc, dd = eth_frame:byte(ip_off + 16, ip_off + 19)
-    if not da then return nil, "malformed" end
-    dst_ip = string.format("%d.%d.%d.%d", da, db, dc, dd)
-    tcp_off = ip_off + ihl
-  elseif ethertype == 0x86dd then
-    -- IPv6 fixed header (40 bytes): version+TC+flow(4), payload_len(2),
-    -- next_header(1), hop_limit(1), src(16), dst(16). Walk RFC 8200
-    -- extension headers (Hop-by-Hop=0, Routing=43, Dest-Opts=60) past the
-    -- fixed header to land on the TCP header. Fragment (44), AH (51), ESP
-    -- (50) are not followed — they fall out as malformed / no_sni and are
-    -- vanishingly rare for TLS ClientHellos (which fit in one MTU).
-    local ip_off = 15
-    if ip_off + 40 - 1 > #eth_frame then return nil, "truncated" end
-    local ver = math.floor(u8(eth_frame, ip_off) / 16)
-    if ver ~= 6 then return nil, "malformed" end
-    local nh = u8(eth_frame, ip_off + 6)
-    dst_ip = format_ipv6(eth_frame, ip_off + 24)
-    local hdr_off = ip_off + 40
-    -- Bounded extension-header walk. RFC 8200 imposes no hard cap; 8 hops is
-    -- well past any realistic legitimate chain and stops a malicious packet
-    -- from looping us.
-    local hops = 0
-    while nh == 0 or nh == 43 or nh == 60 do
-      if hops >= 8 then return nil, "malformed" end
-      hops = hops + 1
-      if hdr_off + 1 > #eth_frame then return nil, "truncated" end
-      local next_nh = u8(eth_frame, hdr_off)
-      local hdr_ext_len = u8(eth_frame, hdr_off + 1)
-      if not next_nh or not hdr_ext_len then return nil, "malformed" end
-      local ext_bytes = (hdr_ext_len + 1) * 8
-      hdr_off = hdr_off + ext_bytes
-      nh = next_nh
-    end
-    if nh ~= 6 then return nil, "not_tcp" end
-    tcp_off = hdr_off
-  else
-    return nil, "not_ip"
-  end
-
-  -- TCP header (common to v4/v6)
-  if tcp_off + 20 - 1 > #eth_frame then return nil, "truncated" end
-  local data_off_byte = u8(eth_frame, tcp_off + 12)
-  if not data_off_byte then return nil, "malformed" end
-  local data_off = math.floor(data_off_byte / 16) * 4
-  if data_off < 20 then return nil, "malformed" end
-  local payload_off = tcp_off + data_off
-  if payload_off > #eth_frame then return nil, "truncated" end
-  local payload = eth_frame:sub(payload_off)
-
-  local sni, reason = M.parse_client_hello(payload)
+  local f, reason = M.parse_framing(eth_frame)
+  if not f then return nil, reason end
+  local sni, parse_reason = M.parse_client_hello(f.payload)
   if not sni then
-    -- Collapse parser reasons that can't be distinguished by a single-packet
-    -- caller into the existing "no_sni" bucket (this function is the
-    -- non-reassembly path; reassembly callers go through parse_framing +
-    -- sni_reassembly:feed and see the finer-grained reasons directly). The
-    -- "malformed" passthrough preserves the structurally-invalid signal so
-    -- existing parse_packet callers and metrics keep their reason fidelity.
-    if reason == "malformed" then return nil, "malformed" end
+    -- Collapse fine-grained parser reasons that the single-packet caller
+    -- can't act on into the existing "no_sni" bucket; preserve "malformed"
+    -- so a structurally invalid CH still surfaces as such in metrics.
+    if parse_reason == "malformed" then return nil, "malformed" end
     return nil, "no_sni"
   end
-  return { dst_ip = dst_ip, src_mac = src_mac, sni = sni }
+  return { dst_ip = f.dst_ip, src_mac = f.src_mac, sni = sni }
 end
 
 -- ---------------------------------------------------------------------------
