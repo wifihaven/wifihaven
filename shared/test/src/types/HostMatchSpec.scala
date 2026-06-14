@@ -33,6 +33,14 @@ object HostMatchSpec extends ZIOSpecDefault {
         !HostMatch.matchesAny(ip, List("*.google.com")),
       )
     },
+    test("#1708: Label hosts never match — synthetic names are not FQDN patterns") {
+      val label: HostId = HostId.Label("apple-push")
+      assertTrue(
+        !HostMatch.matchesAny(label, List("apple-push")),
+        !HostMatch.matchesAny(label, List("*.apple-push")),
+        !HostMatch.matchesAny(label, List("apple.com")),
+      )
+    },
     test("InfraHosts.isBackground(HostId): suppresses canonical infra and suppressOnly tier") {
       assertTrue(
         InfraHosts.isBackground(infra),
