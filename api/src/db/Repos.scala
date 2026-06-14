@@ -1117,8 +1117,10 @@ class AppTimeLimitRepoLive(xa: Transactor[Task]) extends AppTimeLimitRepo {
   // "no per-app limit configured" and is treated as never-exhausted by the exempt carve-out gate
   // in `PolicyService.exemptUnderCapHosts`; the COALESCE silently collapsed that case to 0 and
   // made the exempt+no-limit carve unreachable.
+  // #1679: `apa.allowed_during_schedule_block` carried straight through so the
+  // `ProfileAppDispositions` fold can suppress the extraAllowed carve during Schedule blocks.
   private type R =
-    (ProfileId, String, Option[Int], String, Boolean, AppId, AppPolicyAssignmentId, String)
+    (ProfileId, String, Option[Int], String, Boolean, AppId, AppPolicyAssignmentId, String, Boolean)
   private def toS(r: R) =
     AppTimeLimit(
       AppTimeLimitId(0L),
@@ -1130,12 +1132,14 @@ class AppTimeLimitRepoLive(xa: Transactor[Task]) extends AppTimeLimitRepo {
       r._6,
       AppMode.parse(r._8).getOrElse(AppMode.TimeLimited),
       r._7,
+      r._9,
     )
 
   def listForProfile(pid: ProfileId) =
     DbMetrics.timed("appTimeLimit.listForProfile")(
       sql"""SELECT apa.profile_id, ah.host, apa.daily_minutes, a.slug,
-                   apa.exempt_from_daily, a.id, apa.id, apa.mode::text
+                   apa.exempt_from_daily, a.id, apa.id, apa.mode::text,
+                   apa.allowed_during_schedule_block
             FROM app_policy_assignments apa
             JOIN apps a       ON a.id = apa.app_id
             JOIN app_hosts ah ON ah.app_id = apa.app_id
@@ -1149,7 +1153,8 @@ class AppTimeLimitRepoLive(xa: Transactor[Task]) extends AppTimeLimitRepo {
 
   def listAll =
     sql"""SELECT apa.profile_id, ah.host, apa.daily_minutes, a.slug,
-                 apa.exempt_from_daily, a.id, apa.id, apa.mode::text
+                 apa.exempt_from_daily, a.id, apa.id, apa.mode::text,
+                 apa.allowed_during_schedule_block
             FROM app_policy_assignments apa
             JOIN apps a       ON a.id = apa.app_id
             JOIN app_hosts ah ON ah.app_id = apa.app_id
@@ -2953,6 +2958,8 @@ trait AppRepo {
       mode: AppMode,
       dailyMinutes: Option[Int],
       exemptFromDaily: Boolean,
+      // #1679: default true for back-compat — all existing callers keep current behavior.
+      allowedDuringScheduleBlock: Boolean = true,
   ): Task[AppPolicyAssignmentId]
   def deleteAssignment(appId: AppId, profileId: ProfileId): Task[Unit]
   def listAssignmentsForApp(appId: AppId): Task[List[AppPolicyAssignment]]
@@ -3084,14 +3091,18 @@ class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
       mode: AppMode,
       dailyMinutes: Option[Int],
       exemptFromDaily: Boolean,
+      allowedDuringScheduleBlock: Boolean = true,
   ) =
     sql"""INSERT INTO app_policy_assignments
-            (app_id, profile_id, mode, daily_minutes, exempt_from_daily)
-          VALUES ($appId, $profileId, ${AppMode.asString(mode)}, $dailyMinutes, $exemptFromDaily)
+            (app_id, profile_id, mode, daily_minutes, exempt_from_daily,
+             allowed_during_schedule_block)
+          VALUES ($appId, $profileId, ${AppMode.asString(mode)}, $dailyMinutes, $exemptFromDaily,
+                  $allowedDuringScheduleBlock)
           ON CONFLICT (app_id, profile_id) DO UPDATE SET
             mode = EXCLUDED.mode,
             daily_minutes = EXCLUDED.daily_minutes,
-            exempt_from_daily = EXCLUDED.exempt_from_daily
+            exempt_from_daily = EXCLUDED.exempt_from_daily,
+            allowed_during_schedule_block = EXCLUDED.allowed_during_schedule_block
           RETURNING id"""
       .query[AppPolicyAssignmentId]
       .unique
@@ -3103,12 +3114,13 @@ class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
       .unit
 
   private type AR =
-    (AppPolicyAssignmentId, AppId, ProfileId, AppMode, Option[Int], Boolean)
+    (AppPolicyAssignmentId, AppId, ProfileId, AppMode, Option[Int], Boolean, Boolean)
   private def toAssignment(r: AR) =
-    AppPolicyAssignment(r._1, r._2, r._3, r._4, r._5, r._6)
+    AppPolicyAssignment(r._1, r._2, r._3, r._4, r._5, r._6, r._7)
 
   def listAssignmentsForApp(appId: AppId) =
-    sql"""SELECT id,app_id,profile_id,mode,daily_minutes,exempt_from_daily
+    sql"""SELECT id,app_id,profile_id,mode,daily_minutes,exempt_from_daily,
+                 allowed_during_schedule_block
           FROM app_policy_assignments WHERE app_id=$appId ORDER BY id"""
       .query[AR]
       .map(toAssignment)
@@ -3117,7 +3129,8 @@ class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
 
   def listAssignmentsForProfile(profileId: ProfileId) =
     DbMetrics.timed("app.listAssignmentsForProfile")(
-      sql"""SELECT id,app_id,profile_id,mode,daily_minutes,exempt_from_daily
+      sql"""SELECT id,app_id,profile_id,mode,daily_minutes,exempt_from_daily,
+                   allowed_during_schedule_block
           FROM app_policy_assignments WHERE profile_id=$profileId ORDER BY id"""
         .query[AR]
         .map(toAssignment)
