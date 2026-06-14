@@ -4,6 +4,7 @@ import type {
   HostUsage, OrphanHostUsage, ProfileAppUsage, ProfileUsageByApp,
 } from '@/types/api'
 import { formatMins } from '@/lib/timeFormat'
+import { AppIcon } from '@/components/AppIcon'
 
 // #1519 / #726 — per-profile usage breakdown: one row per configured app
 // (drillable to its per-host minutes — the #726 per-FQDN breakdown), then one
@@ -107,7 +108,9 @@ function AppRow({ profileId, app }: { profileId: number; app: ProfileAppUsage })
       >
         <span className="flex items-center gap-2">
           <span className={`text-brand-text-muted transition-transform text-xs ${open ? 'rotate-90' : ''}`}>▸</span>
-          {app.appIcon && <span aria-hidden>{app.appIcon}</span>}
+          {app.appIcon && (
+            <AppIcon icon={app.appIcon} iconType={app.appIconType ?? undefined} size="sm" />
+          )}
           <span className="text-sm font-medium text-brand-ink">{app.appName}</span>
         </span>
         <span

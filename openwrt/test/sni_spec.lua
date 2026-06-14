@@ -95,6 +95,14 @@ local function build_key_share_ext(payload_len)
   return u16(0x0033) .. u16(payload_len) .. string.rep("\0", payload_len)
 end
 
+-- An ECH extension (#1650) — RFC draft-ietf-tls-esni type 0xfe0d. The body is
+-- opaque; the parser only needs to detect the type, so an arbitrary fixed body
+-- is sufficient for the fixture.
+local function build_ech_ext(payload_len)
+  payload_len = payload_len or 32
+  return u16(0xfe0d) .. u16(payload_len) .. string.rep("\0", payload_len)
+end
+
 -- ---------------------------------------------------------------------------
 -- 1. parse_client_hello — happy paths
 -- ---------------------------------------------------------------------------
@@ -597,6 +605,85 @@ describe("lan_device — UCI LAN-bridge probe", function()
 
   it("falls back to br-lan when no cursor is available", function()
     assert.equal("br-lan", sni.lan_device(nil))
+  end)
+end)
+
+-- ---------------------------------------------------------------------------
+-- 7b. ECH (Encrypted ClientHello) detection (#1650)
+-- ---------------------------------------------------------------------------
+--
+-- An ECH-enabled ClientHello carries extension type 0xfe0d (RFC
+-- draft-ietf-tls-esni). The real server_name is inside the encrypted inner
+-- ClientHello; the outer ClientHello may carry a public/outer server_name
+-- naming the gateway hostname (best honest attribution we can offer).
+--
+-- The parser surfaces ECH via a second return value:
+--   * outer SNI present  → (outer_name, "ech")    — best-effort attribution
+--   * outer SNI absent   → (nil,        "ech")    — counted, not attributed
+--   * no ECH extension   → (name|nil,   nil)      — existing behaviour
+--
+-- parse_packet propagates the flag: on ECH it returns ({...}|nil, "ech") so
+-- the sni-tail sidecar buckets the capture under sni_clienthellos_total{result=
+-- "ech"} (a metric enum value already reserved by AGENTS.md / #1650).
+describe("parse_client_hello — ECH detection (#1650)", function()
+  it("returns (outer_name, \"ech\") when ECH ext is present alongside an outer server_name", function()
+    -- Outer ClientHello carries both server_name (the gateway hostname) AND
+    -- the ECH extension. We attribute via the outer name with an ECH label.
+    local rec = build_client_hello({
+      sni = "cloudflare-ech.com",
+      extra_exts = build_ech_ext(48),
+    })
+    local name, label = sni.parse_client_hello(rec)
+    assert.equal("cloudflare-ech.com", name)
+    assert.equal("ech", label)
+  end)
+
+  it("returns (nil, \"ech\") when ECH ext is present and no server_name extension is", function()
+    local rec = build_client_hello({
+      sni = "ignored", omit_sni_ext = true,
+      extra_exts = build_ech_ext(40),
+    })
+    local name, label = sni.parse_client_hello(rec)
+    assert.is_nil(name)
+    assert.equal("ech", label)
+  end)
+
+  it("returns (name, nil) for a non-ECH ClientHello (existing behaviour unchanged)", function()
+    local rec = build_client_hello({ sni = "example.com" })
+    local name, label = sni.parse_client_hello(rec)
+    assert.equal("example.com", name)
+    assert.is_nil(label)
+  end)
+end)
+
+describe("parse_packet — ECH detection (#1650)", function()
+  it("returns result and reason=\"ech\" when ECH is present with an outer SNI", function()
+    local hello = build_client_hello({
+      sni = "cloudflare-ech.com",
+      extra_exts = build_ech_ext(48),
+    })
+    local pkt = build_eth_ipv4_tcp({
+      payload = hello,
+      src_mac = { 0x76, 0x2d, 0x95, 0x47, 0xd1, 0x8e },
+      dst_ip  = { 142, 250, 80, 46 },
+    })
+    local r, reason = sni.parse_packet(pkt)
+    assert.is_not_nil(r)
+    assert.equal("cloudflare-ech.com", r.sni)
+    assert.equal("142.250.80.46",      r.dst_ip)
+    assert.equal("76:2d:95:47:d1:8e",  r.src_mac)
+    assert.equal("ech", reason)
+  end)
+
+  it("returns nil and reason=\"ech\" when ECH is present with no outer SNI", function()
+    local hello = build_client_hello({
+      sni = "x", omit_sni_ext = true,
+      extra_exts = build_ech_ext(40),
+    })
+    local pkt = build_eth_ipv4_tcp({ payload = hello })
+    local r, reason = sni.parse_packet(pkt)
+    assert.is_nil(r)
+    assert.equal("ech", reason)
   end)
 end)
 

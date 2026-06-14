@@ -180,9 +180,13 @@ local reasm_buf = reasm.new({ cap_bytes = 8192, cap_flows = 64, ttl_s = 5 })
 -- #1653: TCP path goes through sni.parse_framing → reasm_buf:feed so a
 -- multi-segment ClientHello is stitched together before parse_client_hello
 -- runs on the concatenated buffer. The buffer's `result` enum
--- ({parsed, reassembled, incomplete, dropped_byte_cap, not_handshake,
+-- ({parsed, reassembled, ech, incomplete, dropped_byte_cap, not_handshake,
 -- no_sni, malformed}) maps directly onto sni_clienthellos_total{result} —
 -- `reassembled` is the new bucket that surfaces the lift from this change.
+-- The `ech` bucket (#1650) overrides parsed/reassembled when the CH carries
+-- the Encrypted ClientHello extension — operators see ECH adoption split out
+-- from the regular parsed/reassembled buckets, and the spool still emits the
+-- outer/public SNI when one was present so attribution still works.
 local function dispatch_tcp(pkt)
   local f, reason = sni.parse_framing(pkt)
   if not f then return nil, reason end
@@ -190,6 +194,12 @@ local function dispatch_tcp(pkt)
   local result, sn = reasm_buf:feed(key, f.payload)
   if result == "parsed" or result == "reassembled" then
     return { dst_ip = f.dst_ip, src_mac = f.src_mac, sni = sn }, result
+  end
+  if result == "ech" then
+    -- ECH detected; sn may be nil if the outer ClientHello carried no public
+    -- SNI. Emit a spool entry only when there IS an outer name to attribute.
+    if sn then return { dst_ip = f.dst_ip, src_mac = f.src_mac, sni = sn }, "ech" end
+    return nil, "ech"
   end
   -- "incomplete" / "not_handshake" / "no_sni" / "dropped_byte_cap" / "malformed":
   -- bounded enum, fold into sni_clienthellos_total{result}.
@@ -215,7 +225,9 @@ local function dispatch(pkt)
     return dispatch_tcp(pkt)
   elseif proto == 17 then
     local r, reason = quic.parse_initial(pkt, quic_crypto)
-    if r then return r, "quic_success" end
+    -- ECH on the QUIC path (#1650) — propagate the "quic_ech" reason as the
+    -- result label so operators see ECH share split out from quic_success.
+    if r then return r, reason or "quic_success" end
     return nil, reason
   end
   -- BPF restricts to TCP/UDP, so anything else is unreachable in practice;
@@ -223,12 +235,12 @@ local function dispatch(pkt)
   return nil, "malformed"
 end
 
--- #573 / #1651 / #1652 / #1653: cumulative per-result tally. result ∈ {
+-- #573 / #1650 / #1651 / #1652 / #1653: cumulative per-result tally. result ∈ {
 -- parsed, reassembled, incomplete, dropped_byte_cap, not_handshake,
--- truncated, no_sni, not_ip, not_tcp, malformed, quic_success,
+-- truncated, no_sni, not_ip, not_tcp, malformed, ech, quic_success,
 -- quic_short_header, quic_unsupported_version, quic_not_initial,
 -- quic_truncated, quic_malformed, quic_decrypt_failed, quic_no_crypto_frame,
--- quic_no_sni, quic_not_ip, quic_not_udp, quic_not_443} — a small bounded
+-- quic_no_sni, quic_ech, quic_not_ip, quic_not_udp, quic_not_443} — a small bounded
 -- enum. The TCP-path "not_ip" replaced "ipv6_skipped" when sni.parse_packet
 -- gained IPv6 outer-header parsing in #1652. #1653 added the buffer-driven
 -- buckets: `reassembled` (multi-segment CH stitched + parsed),

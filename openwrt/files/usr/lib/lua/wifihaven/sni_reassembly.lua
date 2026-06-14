@@ -43,6 +43,10 @@
 --     result ∈ {
 --       "parsed"          — single-segment CH parsed cleanly; no buffer entry.
 --       "reassembled"     — multi-segment CH stitched and parsed; buffer cleared.
+--       "ech"             — ECH-bearing ClientHello (#1650). sni_string is the
+--                           outer/public SNI when present, nil otherwise. This
+--                           bucket overrides parsed/reassembled so operators
+--                           see ECH adoption distinctly.
 --       "incomplete"      — buffered (or updated) for the next segment.
 --       "dropped_byte_cap"— would exceed per-flow byte cap; flow dropped.
 --       "not_handshake"   — payload (with no buffered context) is not a TLS
@@ -149,6 +153,15 @@ function M:feed(key, payload)
   end
 
   local sn, reason = sni.parse_client_hello(data)
+
+  -- ECH (#1650) is terminal regardless of whether an outer/public SNI was
+  -- present. Override the parsed/reassembled bucket so operators see the
+  -- ECH-attributed fraction distinctly on sni_clienthellos_total{result=ech}.
+  if reason == "ech" then
+    if entry then self:_drop(key) end
+    return "ech", sn
+  end
+
   if sn then
     -- Success — single-source-of-truth parser owns the decode.
     if entry then
