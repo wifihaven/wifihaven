@@ -776,6 +776,18 @@ function M.handle_flow(flow, ctx, batcher)
     hname, hlabel_source = static_ip_labels.lookup(flow.dst_ip)
   end
 
+  -- #1708 carve-out / blocklist matching uses `match_hname`, NOT `hname`:
+  -- label-typed attributions ("apple-push", "google-dns") must not feed the
+  -- string-level suffix tests below (extraAllowed carve-out, extraBlocked
+  -- host_matches, category-blocklist host_matches). The server-side
+  -- HostMatch.matchesAny already returns false for HostId.Label, so a label
+  -- can never appear in ea_hosts/eb_hosts/bl_hosts in the first place — this
+  -- is defense-in-depth keeping the label/fqdn boundary local to the agent.
+  -- For label-attributed flows we fall through to the IP-based nft_eb_hit
+  -- path, which is the correct semantics: there is no real hostname here,
+  -- only an IP and a synthetic display name.
+  local match_hname = (hlabel_source == nil) and hname or nil
+
   -- Per-MAC block lookup (#297): pause and time-limit block every flow from
   -- the device, regardless of destination IP. render.update_shared rebuilds
   -- blocked_macs/blocked_reason from the policy snapshot on every poll.
@@ -795,11 +807,11 @@ function M.handle_flow(flow, ctx, batcher)
   -- whether the ea_ carve-out fired.  The flow is left as blocked=true even
   -- if the kernel allowed it.  This is documented as a known reporting gap
   -- when DNS attribution is missing for flows from a blocked MAC.
-  if not allowed and hname and mac then
+  if not allowed and match_hname and mac then
     local ea_hosts = ctx.ea_hosts_by_mac and ctx.ea_hosts_by_mac[mac]
     if ea_hosts then
       for ea_host in pairs(ea_hosts) do
-        if M.host_matches(hname, ea_host) then
+        if M.host_matches(match_hname, ea_host) then
           allowed = true
           reason  = nil
           break
@@ -837,8 +849,8 @@ function M.handle_flow(flow, ctx, batcher)
     local ea_hosts = ctx.ea_hosts_by_mac and ctx.ea_hosts_by_mac[mac]
     if not ea_hosts then return false end
     for ea_host in pairs(ea_hosts) do
-      if hname then
-        if M.host_matches(hname, ea_host) then return true end
+      if match_hname then
+        if M.host_matches(match_hname, ea_host) then return true end
       else
         if ea_host == eb_hit_host then return true end
       end
@@ -852,8 +864,8 @@ function M.handle_flow(flow, ctx, batcher)
       local eb_hit = false
       local eb_hit_host
       for host in pairs(eb_hosts) do
-        if hname then
-          if M.host_matches(hname, host) then
+        if match_hname then
+          if M.host_matches(match_hname, host) then
             eb_hit = true; eb_hit_host = host; break
           end
         else
@@ -890,8 +902,8 @@ function M.handle_flow(flow, ctx, batcher)
       local bl_hit_host
       local bl_hit_id
       for host, id in pairs(bl_hosts) do
-        if hname then
-          if M.host_matches(hname, host) then
+        if match_hname then
+          if M.host_matches(match_hname, host) then
             bl_hit_host = host; bl_hit_id = id; break
           end
         else

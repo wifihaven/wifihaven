@@ -70,8 +70,11 @@ local function parse_cidr_v4(cidr)
   if not addr then return nil end
   local ip = ipv4_to_uint(addr)
   prefix = tonumber(prefix)
-  if not ip or not prefix or prefix < 0 or prefix > 32 then return nil end
-  local mask = (prefix == 0) and 0 or (0xFFFFFFFF - (2 ^ (32 - prefix) - 1))
+  -- prefix=0 would match every IPv4 address (0.0.0.0/0) and is almost
+  -- certainly a typo for an operator-curated last-resort map. Fail loud
+  -- at module load rather than silently swallow every flow.
+  if not ip or not prefix or prefix < 1 or prefix > 32 then return nil end
+  local mask = 0xFFFFFFFF - (2 ^ (32 - prefix) - 1)
   return { network = ip - (ip % (2 ^ (32 - prefix))), mask = mask }
 end
 

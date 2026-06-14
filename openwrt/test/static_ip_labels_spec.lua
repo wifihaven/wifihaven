@@ -44,6 +44,15 @@ describe("static_ip_labels.lookup", function()
     assert.equal("static-ip-range", labels.SOURCE)
   end)
 
+  it("rejects a 0/0 entry — would match every flow (defense-in-depth)", function()
+    -- The compiled set must NOT contain a wildcard. We can't drive a 0/0
+    -- entry through the public table (it's frozen at module load), but we
+    -- can assert that no compiled range matches an arbitrary unrelated IP.
+    assert.is_nil(labels.lookup("203.0.113.7"))
+    assert.is_nil(labels.lookup("198.51.100.1"))
+    assert.is_nil(labels.lookup("0.0.0.0"))
+  end)
+
   it("the initial map is intentionally small (operator-curated)", function()
     -- Pinning this size keeps a follow-up PR from quietly bloating the
     -- last-resort map past the point where reviewers can reason about it.

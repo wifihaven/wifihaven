@@ -779,6 +779,54 @@ describe("handle_flow", function()
     assert.is_nil(b.events[2].host.source)
   end)
 
+  -- #1708 defense-in-depth: a label-typed hname must NOT participate in the
+  -- string-level extraAllowed carve-out or extraBlocked host_matches paths.
+  -- The server-side HostMatch.matchesAny already returns false for
+  -- HostId.Label, so the kernel-driven ea_/eb_/bl_ sets can never carry a
+  -- label as a host entry — but the agent's host_matches is just a string
+  -- suffix test that doesn't know its input is label-typed, so we keep the
+  -- semantic boundary local to handle_flow by clearing match_hname for
+  -- label attributions. The flow should still emit type='label' on the wire.
+  it("#1708: label-typed hname does NOT trigger the extraAllowed carve-out for a blocked MAC", function()
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      blocked_macs    = { [MAC] = true },
+      blocked_reason  = { [MAC] = "schedule" },
+      leases          = { [MAC] = { ip = "192.168.1.42", hostname = "laptop" } },
+      lookup_hostname = function(_ip) return nil end,
+      -- An operator-configured ea_host that happens to overlap a label literal
+      -- would otherwise unblock Apple-push flows via host_matches("apple-push",
+      -- "apple-push") returning true.
+      ea_hosts_by_mac = { [MAC] = { ["apple-push"] = true } },
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = "17.188.166.41" }, ctx, b)
+    -- Flow stays blocked (carve-out did NOT fire), AND the host on the wire
+    -- is still the label variant.
+    assert.equal(false,       b.events[2].allowed)
+    assert.equal("schedule",  b.events[2].reason)
+    assert.equal("label",     b.events[2].host.type)
+    assert.equal("apple-push", b.events[2].host.value)
+  end)
+
+  it("#1708: label-typed hname does NOT match an extraBlocked host_matches entry", function()
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      blocked_macs    = {},   -- MAC is allowed by per-MAC policy
+      leases          = { [MAC] = { ip = "192.168.1.42", hostname = "laptop" } },
+      lookup_hostname = function(_ip) return nil end,
+      -- If the agent did the string-level match it would block this flow with
+      -- reason "host:apple-push". The label boundary keeps that from firing
+      -- — the kernel-side eb_<host> ipset doesn't carry 17.0.0.0/8 anyway,
+      -- but we don't depend on that being true.
+      eb_hosts_by_mac = { [MAC] = { ["apple-push"] = true } },
+      ea_hosts_by_mac = {},
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = "17.188.166.41" }, ctx, b)
+    assert.equal(true,        b.events[2].allowed)
+    assert.equal("label",     b.events[2].host.type)
+    assert.equal("apple-push", b.events[2].host.value)
+  end)
+
   it("#1708: ipset (SNI/dns_log) attribution wins over the static map (emits fqdn)", function()
     local b = collecting_batcher()
     local ctx = ctx_with({
