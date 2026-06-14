@@ -137,9 +137,8 @@ object Main extends ZIOAppDefault {
             // #1602: the boot-time ScheduleSeeder.seedAndMigrate call lived here. The
             // legacy → named_schedules migration is complete on every household, and
             // re-running it resurrected schedules the operator deleted from the SPA
-            // (the #1538 marker guard inverts on legitimate delete). The seeder file
-            // itself is left in place; #1485 deletes it together with the legacy
-            // `schedules` table.
+            // (the #1538 marker guard inverts on legitimate delete). ScheduleSeeder.scala
+            // was deleted in #1709; the legacy `schedules` table is dropped in #1485.
           } yield ()
         }
         // #1248: migrations + ensureDefault + seeds are done — flip readiness so

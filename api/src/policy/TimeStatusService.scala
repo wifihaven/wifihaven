@@ -121,7 +121,6 @@ trait TimeStatusService {
 
 class TimeStatusServiceLive(
     profileRepo: ProfileRepo,
-    // #1482: the legacy per-profile `schedules` table is no longer an enforcement source —
     timeLimitRepo: TimeLimitRepo,
     appTimeLimitRepo: AppTimeLimitRepo,
     deviceRepo: DeviceRepo,
