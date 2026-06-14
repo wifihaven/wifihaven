@@ -77,6 +77,27 @@ describe('ProfileUsageBreakdown — #1519/#726', () => {
       .toBeInTheDocument()
   })
 
+  it('renders the app icon as an <img> for URL icons, not as raw URL text (#1703)', () => {
+    const data = fixture()
+    data.apps[0].appIcon = 'https://icons.duckduckgo.com/ip3/youtube.com.ico'
+    data.apps[0].appIconType = 'url'
+    render(<BreakdownBody profileId={1} data={data} />)
+    const row = screen.getByTestId('profile-usage-breakdown-1-app-10')
+    // The favicon URL must not appear as visible text on the row
+    expect(row).not.toHaveTextContent('https://icons.duckduckgo.com/ip3/youtube.com.ico')
+    // …it must render as an <img> whose src is the favicon URL
+    const img = row.querySelector('img')
+    expect(img).not.toBeNull()
+    expect(img!.getAttribute('src')).toBe('https://icons.duckduckgo.com/ip3/youtube.com.ico')
+  })
+
+  it('renders an emoji icon as text (not as an <img>) — fallback path unaffected', () => {
+    render(<BreakdownBody profileId={1} data={fixture()} />)
+    const row = screen.getByTestId('profile-usage-breakdown-1-app-10')
+    expect(row.querySelector('img')).toBeNull()
+    expect(row).toHaveTextContent('📺')
+  })
+
   it('renders an empty-state when there is no usage at all', () => {
     render(
       <BreakdownBody
