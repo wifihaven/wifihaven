@@ -70,7 +70,8 @@ object RouterHostMetricsAllowlistSpec extends ZIOSpecDefault {
       } yield assertTrue(after.count - before.count >= 1.0)
     },
     test("a permitted (iface, ssid) labelling on the wifi-clients gauge is accepted") {
-      // The reject counter is a global registry series that concurrent specs also touch, so
+      // The reject counter is a global registry series that concurrent specs also touch (see
+      // MetricCardinalityGuardSpec, which only asserts `>= 1.0` on it for the same reason), so
       // we cannot use a no-drift assertion safely. Verify acceptance by reading the gauge value
       // back — if MetricGuard had rejected the call it would stay at its pre-emit value.
       val gauge = Metric
