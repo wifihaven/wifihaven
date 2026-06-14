@@ -14,6 +14,10 @@
 #
 # The Makefile path is the file named "Makefile" in the same directory as
 # this script. Set WH_DEPENDS_MAKEFILE=/path/to/Makefile to override (tests).
+#
+# Execute, do not source: the script resolves its directory from $0 so sourcing
+# from another shell would silently misbehave. Callers invoke it as
+# `"$SCRIPT_DIR/depends-list.sh" ipk`.
 
 set -eu
 
@@ -26,8 +30,15 @@ if [ ! -f "$MAKEFILE" ]; then
 fi
 
 emit_lines() {
+    # Bail loud if the Makefile grows a second DEPENDS:= line — silently
+    # taking the first match would let a future luci subpackage's DEPENDS
+    # accidentally take precedence over the wifihaven package's.
+    n=$(grep -cE '^[[:space:]]*DEPENDS:=' "$MAKEFILE" || true)
+    if [ "$n" -ne 1 ]; then
+        echo "depends-list.sh: expected exactly one DEPENDS:= line in $MAKEFILE, found $n" >&2
+        exit 1
+    fi
     grep -E '^[[:space:]]*DEPENDS:=' "$MAKEFILE" \
-        | head -n1 \
         | sed -E 's/^[[:space:]]*DEPENDS:=//' \
         | tr ' \t' '\n' \
         | sed -E 's/^\+//' \

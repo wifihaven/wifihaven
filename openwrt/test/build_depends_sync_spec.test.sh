@@ -32,7 +32,7 @@ if [ -z "$lines" ]; then
     echo "FAIL: depends-list.sh emitted nothing — openwrt/Makefile DEPENDS unparsable?" >&2
     exit 1
 fi
-for required in lua-openssl kmod-nf-conntrack6 tcpdump-mini; do
+for required in lua-openssl kmod-nf-conntrack6 tcpdump-mini kmod-nf-log kmod-nf-log6; do
     if ! printf '%s\n' "$lines" | grep -qx "$required"; then
         echo "FAIL: canonical DEPENDS missing $required (regression-pinned by #1717)" >&2
         echo "  current list:" >&2
