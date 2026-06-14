@@ -4,6 +4,7 @@ import at.favre.lib.crypto.bcrypt.BCrypt
 import wifihaven.api.JwtConfig
 import wifihaven.api.db.*
 import wifihaven.api.metrics.AppMetrics
+import wifihaven.api.observability.LogContext
 import wifihaven.shared.*
 import wifihaven.shared.types.*
 import pdi.jwt.*
@@ -59,36 +60,50 @@ class AuthServiceLive(
   private val secret                 = jwtConfig.secret
 
   def login(username: String, password: String): IO[AuthError, LoginResponse] =
-    (for {
-      user  <- userRepo
-        .findByUsername(username)
-        .mapError(e => AuthError.Unexpected(e.getMessage))
-        .flatMap(ZIO.fromOption(_).mapError(_ => AuthError.InvalidCredentials))
-      valid <- ZIO.succeed(
-        BCrypt.verifyer().verify(password.toCharArray, user.passwordHash).verified,
-      )
-      _     <- ZIO.fail(AuthError.InvalidCredentials).when(!valid)
-      now   <- clock.instant.map(_.getEpochSecond)
-      claim = JwtClaim(
-        content = s"""{"role":"${UserRole.asString(user.role)}"}""",
-        subject = Some(user.username),
-        issuedAt = Some(now),
-        expiration = Some(now + jwtConfig.expiryHours * 3600L),
-      )
-      token <- ZIO
-        .attempt(JwtZIOJson.encode(claim, secret, algo))
-        .mapError(e => AuthError.Unexpected(e.getMessage))
-    } yield LoginResponse(
-      JwtToken.unsafe(token),
-      user.role,
-      user.username,
-      user.mustChangePassword,
-    ))
-      .tapError {
-        // #1204: a bad password or unknown user both collapse to InvalidCredentials.
-        case AuthError.InvalidCredentials => AppMetrics.recordAuthFailure("bad_password")
-        case _                            => ZIO.unit
-      }
+    LogContext.annotateAll(
+      LogContext.Op   -> "login",
+      LogContext.User -> username,
+    ) {
+      (for {
+        user  <- userRepo
+          .findByUsername(username)
+          .mapError(e => AuthError.Unexpected(e.getMessage))
+          .flatMap(ZIO.fromOption(_).mapError(_ => AuthError.InvalidCredentials))
+        valid <- ZIO.succeed(
+          BCrypt.verifyer().verify(password.toCharArray, user.passwordHash).verified,
+        )
+        _     <- ZIO.fail(AuthError.InvalidCredentials).when(!valid)
+        now   <- clock.instant.map(_.getEpochSecond)
+        claim = JwtClaim(
+          content = s"""{"role":"${UserRole.asString(user.role)}"}""",
+          subject = Some(user.username),
+          issuedAt = Some(now),
+          expiration = Some(now + jwtConfig.expiryHours * 3600L),
+        )
+        token <- ZIO
+          .attempt(JwtZIOJson.encode(claim, secret, algo))
+          .mapError(e => AuthError.Unexpected(e.getMessage))
+        // #602: explicit success log (the boundary only logs failures). Bounded — one line
+        // per successful login, MDC-annotated with the user + role for searchability.
+        _     <- LogContext.annotate(LogContext.Reason, "ok") {
+          ZIO.logInfo(s"login ok: user=$username role=${UserRole.asString(user.role)}")
+        }
+      } yield LoginResponse(
+        JwtToken.unsafe(token),
+        user.role,
+        user.username,
+        user.mustChangePassword,
+      ))
+        .tapError {
+          // #1204: a bad password or unknown user both collapse to InvalidCredentials.
+          case AuthError.InvalidCredentials =>
+            AppMetrics.recordAuthFailure("bad_password") *>
+              LogContext.annotate(LogContext.Reason, "bad_password") {
+                ZIO.logWarning(s"login failed: user=$username reason=bad_password")
+              }
+          case _                            => ZIO.unit
+        }
+    }
 
   // We delegate expiration/not-before checks to our injected Clock (see below).
   private val jwtOpts = JwtOptions(expiration = false, notBefore = false)

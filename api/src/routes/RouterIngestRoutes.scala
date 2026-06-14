@@ -2,6 +2,7 @@ package wifihaven.api.routes
 
 import wifihaven.api.db.*
 import wifihaven.api.metrics.AppMetrics
+import wifihaven.api.observability.LogContext
 import wifihaven.api.policy.PolicyService
 import wifihaven.shared.*
 import wifihaven.shared.types.*
@@ -66,16 +67,28 @@ object RouterIngestRoutes {
             decoded  = raw.records.zipWithIndex.map((j, i) => (i, j.as[UsageRecord]))
             rejected = decoded.collect { case (i, Left(err)) => (i, err) }
             records  = decoded.collect { case (_, Right(r)) => r }
-            _        <- ZIO.foreachDiscard(rejected) { (i, err) =>
-              ZIO.logWarning(
-                s"router usage: skipping malformed record[$i] for router=${router.id}: $err",
-              )
+            // #602: per-record skip log and the per-batch summary log share routerId/op via
+            // LogContext annotations so MDC consumers can filter without parsing the message.
+            _        <- LogContext.annotateAll(
+              LogContext.Op       -> "router_usage",
+              LogContext.RouterId -> router.id.toString,
+            ) {
+              ZIO.foreachDiscard(rejected) { (i, err) =>
+                ZIO.logWarning(
+                  s"router usage: skipping malformed record[$i] for router=${router.id}: $err",
+                )
+              } *>
+                AppMetrics.recordUsageRecordsRejected(rejected.size) *>
+                LogContext.annotateAll(
+                  LogContext.BatchSize -> records.size.toString,
+                  LogContext.Rejected  -> rejected.size.toString,
+                ) {
+                  ZIO.logDebug(
+                    s"router usage: router=${router.id} period=$ps..$pe records=${records.size} " +
+                      s"rejected=${rejected.size}",
+                  )
+                }
             }
-            _        <- AppMetrics.recordUsageRecordsRejected(rejected.size)
-            _        <- ZIO.logDebug(
-              s"router usage: router=${router.id} period=$ps..$pe records=${records.size} " +
-                s"rejected=${rejected.size}",
-            )
             _        <- ZIO.foreachDiscard(records)(r =>
               ZIO.logDebug(
                 s"  usage record: mac=${r.mac} ip=${r.ip.getOrElse("-")} " +
@@ -116,7 +129,10 @@ object RouterIngestRoutes {
             // accepted no-op rather than an error. Genuinely malformed non-empty
             // bodies still 400 + warn (and the agent emitter no longer
             // produces them — see conntrack.encode_events_body).
-            rep    <-
+            rep    <- LogContext.annotateAll(
+              LogContext.Op       -> "router_events",
+              LogContext.RouterId -> router.id.toString,
+            ) {
               if body.trim.isEmpty then
                 ZIO.logDebug(
                   s"router events: empty body from router=${router.id}; treating as no-op batch",
@@ -125,12 +141,20 @@ object RouterIngestRoutes {
                 ZIO
                   .fromEither(body.fromJson[RouterEventsRequest])
                   .mapError(ApiError.DecodeFailure(_))
+            }
             _      <- ZIO
               .fail(ApiError.BadRequest("router_id mismatch"))
               .when(rep.routerId != router.id)
-            _      <- ZIO.logDebug(
-              s"router events: router=${router.id} batchSize=${rep.events.size}",
-            )
+            // #602: structured context for the per-batch summary log.
+            _      <- LogContext.annotateAll(
+              LogContext.Op        -> "router_events",
+              LogContext.RouterId  -> router.id.toString,
+              LogContext.BatchSize -> rep.events.size.toString,
+            ) {
+              ZIO.logDebug(
+                s"router events: router=${router.id} batchSize=${rep.events.size}",
+              )
+            }
             _      <- ZIO.foreachDiscard(rep.events)(e =>
               ZIO.logDebug(
                 s"  event: type=${e.`type`} mac=${e.mac.getOrElse("-")} " +
