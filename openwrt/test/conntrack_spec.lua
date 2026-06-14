@@ -268,6 +268,41 @@ describe("build_event", function()
     assert.equal("1.1.1.1",            decoded.destIp)    -- camelCase to match server schema
     assert.is_boolean(decoded.allowed)
   end)
+
+  -- #1708: HostId.Label variant. When the caller marks the hostname as a
+  -- static-map attribution (host_label_source = "static-ip-range"), the
+  -- emitted host is a `label` variant with the source carried through,
+  -- NOT an fqdn — labels never pattern-match against a hostname apex.
+  it("#1708: emits host.type='label' with source when host_label_source is set", function()
+    local ev = conntrack.build_event({
+      mac               = "aa:bb:cc:11:22:33",
+      hostname          = "apple-push",
+      host_label_source = "static-ip-range",
+      dest_ip           = "17.1.2.3",
+      allowed           = true,
+      reason            = nil,
+      ts                = "2026-06-14T00:00:00Z",
+    })
+    assert.equal("label",           ev.host.type)
+    assert.equal("apple-push",      ev.host.value)
+    assert.equal("static-ip-range", ev.host.source)
+  end)
+
+  -- #1708: an fqdn-attributed event still emits type='fqdn' with no `source`
+  -- field; the wire shape PR #1713 settled on omits source on fqdn/ipv4/ipv6.
+  it("#1708: fqdn attribution still emits type='fqdn' (no source field)", function()
+    local ev = conntrack.build_event({
+      mac      = "aa:bb:cc:11:22:33",
+      hostname = "youtube.com",
+      dest_ip  = "1.2.3.4",
+      allowed  = true,
+      reason   = nil,
+      ts       = "2026-06-14T00:00:00Z",
+    })
+    assert.equal("fqdn",        ev.host.type)
+    assert.equal("youtube.com", ev.host.value)
+    assert.is_nil(ev.host.source)
+  end)
 end)
 
 -- ---------------------------------------------------------------------------
@@ -699,6 +734,62 @@ describe("handle_flow", function()
     conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
     assert.equal("fqdn",           b.events[2].host.type)
     assert.equal("legacy.example", b.events[2].host.value)
+  end)
+
+  -- #1655 / #1708: last-resort static IP-range → label fallback. When DNS and
+  -- nft_sets attribution both miss, attribute the flow via the in-repo static
+  -- map. The emitted host is a `HostId.Label` (not an fqdn) carrying the
+  -- attribution source — labels never pattern-match against a real apex.
+  it("#1708: falls back to HostId.Label with source when DNS and nft_sets both miss", function()
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      leases          = { [MAC] = { ip = "192.168.1.42", hostname = "laptop" } },
+      lookup_hostname = function(_ip) return nil end,
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = "17.188.166.41" }, ctx, b)
+    assert.equal("label",           b.events[2].host.type)
+    assert.equal("apple-push",      b.events[2].host.value)
+    assert.equal("static-ip-range", b.events[2].host.source)
+  end)
+
+  it("#1708: leaves host as IP literal when DNS, nft_sets, AND static map all miss", function()
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      leases          = { [MAC] = { ip = "192.168.1.42", hostname = "laptop" } },
+      lookup_hostname = function(_ip) return nil end,
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = "203.0.113.7" }, ctx, b)
+    assert.equal("ipv4",        b.events[2].host.type)
+    assert.equal("203.0.113.7", b.events[2].host.value)
+  end)
+
+  it("#1708: DNS attribution wins over the static map (emits fqdn, not label)", function()
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      leases          = { [MAC] = { ip = "192.168.1.42", hostname = "laptop" } },
+      -- dst_ip is in 17/8 — would hit static map — but DNS attributes first.
+      lookup_hostname = function(ip)
+        if ip == "17.1.2.3" then return "icloud.com" end
+        return nil
+      end,
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = "17.1.2.3" }, ctx, b)
+    assert.equal("fqdn",       b.events[2].host.type)
+    assert.equal("icloud.com", b.events[2].host.value)
+    assert.is_nil(b.events[2].host.source)
+  end)
+
+  it("#1708: ipset (SNI/dns_log) attribution wins over the static map (emits fqdn)", function()
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      leases          = { [MAC] = { ip = "192.168.1.42", hostname = "laptop" } },
+      nft_sets        = { ["push.apple.com"] = { ["17.1.2.3"] = true } },
+      lookup_hostname = function(_ip) return nil end,
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = "17.1.2.3" }, ctx, b)
+    assert.equal("fqdn",           b.events[2].host.type)
+    assert.equal("push.apple.com", b.events[2].host.value)
+    assert.is_nil(b.events[2].host.source)
   end)
 
   -- #583: dns-tail race fix. When the first lookup misses but the reply is
