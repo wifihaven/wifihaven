@@ -23,6 +23,8 @@
 
 local M = {}
 
+local static_ip_labels = require("wifihaven.static_ip_labels")
+
 -- ---------------------------------------------------------------------------
 -- eb_san(host) -> string
 --
@@ -441,7 +443,7 @@ end
 -- ---------------------------------------------------------------------------
 -- build_event(opts) -> table
 --
--- opts: { mac, hostname, dest_ip, allowed, reason, ts }
+-- opts: { mac, hostname, host_label_source, dest_ip, allowed, reason, ts }
 -- Returns a Lua table ready for JSON encoding.
 --
 -- Per #391, the emitted `host` is a tagged union (HostId): an FQDN when the
@@ -450,11 +452,23 @@ end
 -- silently put IP literals where a hostname was expected, breaking site-limit
 -- pattern matching and polluting the admin UI.
 --
+-- Per #1708, if `host_label_source` is set the host is emitted as a `label`
+-- variant — { type = "label", value = opts.hostname, source = host_label_source }
+-- — instead of an fqdn. Labels are produced by the static_ip_labels map
+-- (last-resort attribution for IP-range owners that bypass dnsmasq) and
+-- must NEVER be confused with a real DNS/SNI-derived hostname; the API
+-- side's HostMatch.matchesAny refuses to pattern-match labels against any
+-- apex. build_event is the SINGLE place that knows how to render each
+-- HostId variant — callers thread the kind/source through opts, they
+-- never construct the wire shape themselves.
+--
 -- reason nil → "allow" when allowed=true, "blocked" when false.
 -- ---------------------------------------------------------------------------
 function M.build_event(opts)
   local host
-  if opts.hostname then
+  if opts.host_label_source and opts.hostname then
+    host = { type = "label", value = opts.hostname, source = opts.host_label_source }
+  elseif opts.hostname then
     host = { type = "fqdn", value = opts.hostname }
   else
     local kind = (opts.dest_ip and opts.dest_ip:find(":", 1, true)) and "ipv6" or "ipv4"
@@ -749,6 +763,18 @@ function M.handle_flow(flow, ctx, batcher)
   if not hname then
     hname = M.ipset_lookup_hostname(flow.dst_ip, ctx.nft_sets or {})
   end
+  -- #1655 / #1708: last-resort static IP-range → label fallback for flows
+  -- with no SNI and no DNS resolution (Apple APNs on 17.0.0.0/8, well-known
+  -- public DNS resolvers, etc.). LABELS ONLY — see static_ip_labels.lua
+  -- header. The precedence (DNS > SNI-via-shared-cache > nft_sets > static
+  -- map) is intentional: a real attribution must always beat a static guess.
+  -- The label is emitted as a HostId.Label variant (`type="label"`); the
+  -- source string is threaded through to build_event so the wire shape is
+  -- assembled in exactly one place.
+  local hlabel_source
+  if not hname then
+    hname, hlabel_source = static_ip_labels.lookup(flow.dst_ip)
+  end
 
   -- Per-MAC block lookup (#297): pause and time-limit block every flow from
   -- the device, regardless of destination IP. render.update_shared rebuilds
@@ -889,12 +915,13 @@ function M.handle_flow(flow, ctx, batcher)
             flow.src_ip, flow.dst_ip, tostring(mac), tostring(hname),
             tostring(allowed), tostring(reason))
   batcher.add(M.build_event({
-    mac      = mac,
-    hostname = hname,
-    dest_ip  = flow.dst_ip,
-    allowed  = allowed,
-    reason   = reason,
-    ts       = ctx.ts,
+    mac               = mac,
+    hostname          = hname,
+    host_label_source = hlabel_source,
+    dest_ip           = flow.dst_ip,
+    allowed           = allowed,
+    reason            = reason,
+    ts                = ctx.ts,
   }))
 end
 
