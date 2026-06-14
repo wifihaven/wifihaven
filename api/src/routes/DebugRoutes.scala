@@ -226,7 +226,7 @@ object AdminDebugRoutes {
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] =
             for {
-              _    <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
+              _    <- requireAdmin(req, auth)
               snap <- policy.snapshot.mapError(ApiError.Db(_))
             } yield Response
               .json(snap.toJson)

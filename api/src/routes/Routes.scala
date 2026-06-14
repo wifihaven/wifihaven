@@ -15,14 +15,12 @@ import zio.json.ast.Json
 
 // ── Auth routes ────────────────────────────────────────────────────────────
 
-// #1570 Stage 2: handlers fail with a typed [[ApiError]] mapped centrally by
+// #1570: handlers fail with a typed [[ApiError]] mapped centrally by
 // [[ErrorMapper.errorToResponse]]; the [[wifihaven.api.ErrorBoundary]] logs (4xx WARN / 5xx ERROR) +
 // meters each error. Every case reproduces the EXACT status + body the hand-rolled code produced —
 // DB failures stay 503 via [[ApiError.Db]]; the `password_change_required` 403 JSON and the
 // `{status,db}` 503 auth-failure bodies are preserved verbatim (the latter via
-// [[ApiError.Wrapped]] of `ErrorMapper.dbUnavailable`, since the label is a static string). The
-// shared auth/visibility helpers below still return `Response` and are bridged via
-// [[ApiError.Wrapped]] (their own migration is a later stage).
+// [[ApiError.Wrapped]] of `ErrorMapper.dbUnavailable`, since the label is a static string).
 object AuthRoutes {
   def routes(
       auth: AuthService,
@@ -55,7 +53,7 @@ object AuthRoutes {
             // Skip the must_change_password guard: this is the one route that
             // clears it. Using requireAuthSkipPwCheck prevents a deadlock where
             // the flag blocks the only endpoint that can reset itself (#586).
-            claims <- requireAuthSkipPwCheck(req, auth).mapError(ApiError.Wrapped(_))
+            claims <- requireAuthSkipPwCheck(req, auth)
             body   <- req.body.asString.orElseFail(ApiError.BadRequest(""))
             cpr    <- ZIO
               .fromEither(body.fromJson[ChangePasswordRequest])
@@ -76,7 +74,7 @@ object AuthRoutes {
       Method.GET / "api" / "me"                              ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
+            claims <- requireAuth(req, auth)
             pids   <- userProfileRepo
               .listProfilesForUsername(claims.sub)
               .mapError(ApiError.Db(_))
@@ -92,7 +90,7 @@ object AuthRoutes {
       Method.POST / "api" / "users"                          ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _    <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
+            _    <- requireAdmin(req, auth)
             body <- req.body.asString.orElseFail(ApiError.BadRequest(""))
             cur  <- ZIO
               .fromEither(body.fromJson[CreateUserRequest])
@@ -110,7 +108,7 @@ object AuthRoutes {
       Method.GET / "api" / "users"                           ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _        <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
+            _        <- requireAdmin(req, auth)
             users    <- userRepo.listAll.mapError(ApiError.Db(_))
             mappings <- userProfileRepo.listAllMappings.mapError(ApiError.Db(_))
             byUser    = mappings.groupBy(_._1).view.mapValues(_.map(_._2)).toMap
@@ -123,7 +121,7 @@ object AuthRoutes {
       Method.PUT / "api" / "users" / long("id") / "profiles" ->
         handler { (id: Long, req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _    <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
+            _    <- requireAdmin(req, auth)
             body <- req.body.asString.orElseFail(ApiError.BadRequest(""))
             r    <- ZIO
               .fromEither(body.fromJson[SetUserProfilesRequest])
@@ -137,7 +135,7 @@ object AuthRoutes {
       Method.DELETE / "api" / "users" / long("id")           ->
         handler { (id: Long, req: Request) =>
           val handle: ZIO[Any, ApiError, Response] =
-            requireAdmin(req, auth).mapError(ApiError.Wrapped(_)) *>
+            requireAdmin(req, auth) *>
               userRepo.delete(UserId(id)).mapError(ApiError.Db(_)) *>
               ZIO.succeed(Response.ok)
           handle.mapError(ErrorMapper.errorToResponse)
@@ -150,7 +148,7 @@ object AuthRoutes {
         handler { (id: Long, req: Request) =>
           val uid                                  = UserId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
-            _    <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
+            _    <- requireAdmin(req, auth)
             _    <- userRepo
               .findById(uid)
               .mapError(ApiError.Db(_))
@@ -221,11 +219,11 @@ object ProfileRoutes {
       Method.GET / "api" / "profiles"                            ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims      <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
+            claims      <- requireAuth(req, auth)
             allProfiles <- profileRepo.listAll.mapError(ApiError.Db(_))
             visible     <- visibleProfiles(claims, allProfiles, userProfileRepo)
-              .mapError(ApiError.Wrapped(_))
-            details     <- ZIO
+
+            details <- ZIO
               .foreach(visible) { p =>
                 for {
                   tl      <- timeLimitRepo.findForProfile(p.id)
@@ -240,9 +238,9 @@ object ProfileRoutes {
         handler { (id: Long, req: Request) =>
           val pid                                  = ProfileId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims  <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
-            _       <- requireProfileReadAccess(claims, pid, userProfileRepo)
-              .mapError(ApiError.Wrapped(_))
+            claims <- requireAuth(req, auth)
+            _      <- requireProfileReadAccess(claims, pid, userProfileRepo)
+
             p       <- profileRepo
               .findById(pid)
               .mapError(ApiError.Db(_))
@@ -261,18 +259,18 @@ object ProfileRoutes {
         handler { (id: Long, req: Request) =>
           val pid                                  = ProfileId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims <- requireWriter(req, auth).mapError(ApiError.Wrapped(_))
+            claims <- requireWriter(req, auth)
             _      <- requireProfileAccess(claims, pid, userProfileRepo)
-              .mapError(ApiError.Wrapped(_))
-            body   <- req.body.asString.orElseFail(ApiError.BadRequest(""))
-            sr     <- ZIO
+
+            body <- req.body.asString.orElseFail(ApiError.BadRequest(""))
+            sr   <- ZIO
               .fromEither(body.fromJson[SetProfileSchedulesRequest])
               .mapError(ApiError.DecodeFailure(_))
-            _      <- profileRepo
+            _    <- profileRepo
               .findById(pid)
               .mapError(ApiError.Db(_))
               .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Profile not found")))
-            _      <- ZIO.foreachDiscard(sr.scheduleIds.distinct) { sid =>
+            _    <- ZIO.foreachDiscard(sr.scheduleIds.distinct) { sid =>
               namedScheduleRepo
                 .findById(sid)
                 .mapError(ApiError.Db(_))
@@ -282,20 +280,20 @@ object ProfileRoutes {
                     .orElseFail(ApiError.NotFound(s"Schedule ${sid.value} not found")),
                 )
             }
-            _      <- namedScheduleRepo
+            _    <- namedScheduleRepo
               .setProfileBlockSchedules(pid, sr.scheduleIds)
               .mapError(ApiError.Db(_))
             // #1538: attaching/detaching a block schedule changes whether this profile is "paused
             // for schedule", so bust its cached ProfileTimeStatus the same way /api/time/extend
             // does — otherwise a detach keeps showing a stale block for up to the today-TTL.
-            _      <- cache.invalidateProfile(pid)
+            _    <- cache.invalidateProfile(pid)
           } yield Response.ok
           handle.mapError(ErrorMapper.errorToResponse)
         },
       Method.POST / "api" / "profiles"                           ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _    <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
+            _    <- requireAdmin(req, auth)
             body <- req.body.asString.orElseFail(ApiError.BadRequest(""))
             upr  <- ZIO
               .fromEither(body.fromJson[UpsertProfileRequest])
@@ -344,18 +342,18 @@ object ProfileRoutes {
         handler { (id: Long, req: Request) =>
           val pid                                  = ProfileId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims <- requireWriter(req, auth).mapError(ApiError.Wrapped(_))
+            claims <- requireWriter(req, auth)
             _      <- requireProfileAccess(claims, pid, userProfileRepo)
-              .mapError(ApiError.Wrapped(_))
-            body   <- req.body.asString.orElseFail(ApiError.BadRequest(""))
-            upr    <- ZIO
+
+            body <- req.body.asString.orElseFail(ApiError.BadRequest(""))
+            upr  <- ZIO
               .fromEither(body.fromJson[UpsertProfileRequest])
               .mapError(ApiError.DecodeFailure(_))
-            p      <- profileRepo
+            p    <- profileRepo
               .findById(pid)
               .mapError(ApiError.Db(_))
               .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Profile not found")))
-            _      <- profileRepo
+            _    <- profileRepo
               .update(
                 p.copy(
                   name = upr.name,
@@ -378,14 +376,14 @@ object ProfileRoutes {
               )
               .mapError(ApiError.Db(_))
             // #481: log mutations that should bump the policy snapshot etag.
-            _      <- ZIO.logInfo(
+            _    <- ZIO.logInfo(
               s"profile updated: id=${pid.value} paused=${p.paused}→${upr.paused} " +
                 s"name=${upr.name}",
             )
             // #1494: profile upsert no longer writes the legacy `schedules`
             // table. Block schedules are attached via PUT
             // /api/profiles/{id}/schedules (named_schedules / profile_schedule_rules).
-            _      <- (upr.timeLimit match {
+            _    <- (upr.timeLimit match {
               case Some(mins) => timeLimitRepo.upsert(pid, mins)
               case None       => timeLimitRepo.delete(pid)
             }).mapError(ApiError.Db(_))
@@ -395,7 +393,7 @@ object ProfileRoutes {
       Method.DELETE / "api" / "profiles" / long("id")            ->
         handler { (id: Long, req: Request) =>
           val handle: ZIO[Any, ApiError, Response] =
-            requireAdmin(req, auth).mapError(ApiError.Wrapped(_)) *>
+            requireAdmin(req, auth) *>
               profileRepo.delete(ProfileId(id)).mapError(ApiError.Db(_)) *>
               ZIO.succeed(Response.ok)
           handle.mapError(ErrorMapper.errorToResponse)
@@ -404,7 +402,7 @@ object ProfileRoutes {
         handler { (id: Long, req: Request) =>
           val pid                                  = ProfileId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
-            _     <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
+            _     <- requireAdmin(req, auth)
             uids  <- userProfileRepo
               .listUsersForProfile(pid)
               .mapError(ApiError.Db(_))
@@ -420,7 +418,7 @@ object ProfileRoutes {
         handler { (id: Long, req: Request) =>
           val pid                                  = ProfileId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
-            _    <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
+            _    <- requireAdmin(req, auth)
             body <- req.body.asString.orElseFail(ApiError.BadRequest(""))
             r    <- ZIO
               .fromEither(body.fromJson[SetProfileUsersRequest])
@@ -451,16 +449,16 @@ object DeviceRoutes {
       Method.GET / "api" / "devices"                    ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims  <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
+            claims  <- requireAuth(req, auth)
             all     <- deviceRepo.listAll.mapError(ApiError.Db(_))
-            visible <- filterDevices(claims, all, userProfileRepo).mapError(ApiError.Wrapped(_))
+            visible <- filterDevices(claims, all, userProfileRepo)
           } yield Response.json(visible.toJson)
           handle.mapError(ErrorMapper.errorToResponse)
         },
       Method.PUT / "api" / "devices"                    ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims <- requireWriter(req, auth).mapError(ApiError.Wrapped(_))
+            claims <- requireWriter(req, auth)
             body   <- req.body.asString.orElseFail(ApiError.BadRequest(""))
             udr    <- ZIO
               .fromEither(body.fromJson[UpsertDeviceRequest])
@@ -471,7 +469,7 @@ object DeviceRoutes {
             // a profile they can't write to still 403s.
             _  <- udr.profileId match {
               case Some(pid) =>
-                requireProfileAccess(claims, pid, userProfileRepo).mapError(ApiError.Wrapped(_))
+                requireProfileAccess(claims, pid, userProfileRepo)
               case None      => ZIO.unit
             }
             id <- deviceRepo
@@ -488,17 +486,17 @@ object DeviceRoutes {
       Method.DELETE / "api" / "devices" / string("mac") ->
         handler { (mac: String, req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims <- requireWriter(req, auth).mapError(ApiError.Wrapped(_))
+            claims <- requireWriter(req, auth)
             normalized = MacAddress.unsafe(normalizeMac(mac))
             existing <- deviceRepo
               .findByMac(normalized)
               .mapError(ApiError.Db(_))
               .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Device not found")))
             _        <- requireProfileAccess(claims, existing.profileId, userProfileRepo)
-              .mapError(ApiError.Wrapped(_))
-            _        <- deviceRepo.delete(normalized).mapError(ApiError.Db(_))
+
+            _ <- deviceRepo.delete(normalized).mapError(ApiError.Db(_))
             // #481: same rationale as PUT — make the next CI failure diagnostic.
-            _        <- ZIO.logInfo(s"device deleted: mac=${normalized.value}")
+            _ <- ZIO.logInfo(s"device deleted: mac=${normalized.value}")
           } yield Response.ok
           handle.mapError(ErrorMapper.errorToResponse)
         },
@@ -510,14 +508,14 @@ object DeviceRoutes {
       Method.PATCH / "api" / "devices" / string("mac")  ->
         handler { (mac: String, req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims <- requireWriter(req, auth).mapError(ApiError.Wrapped(_))
+            claims <- requireWriter(req, auth)
             normalized = MacAddress.unsafe(normalizeMac(mac))
-            existing  <- deviceRepo
+            existing <- deviceRepo
               .findByMac(normalized)
               .mapError(ApiError.Db(_))
               .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Device not found")))
-            _         <- requireProfileAccess(claims, existing.profileId, userProfileRepo)
-              .mapError(ApiError.Wrapped(_))
+            _        <- requireProfileAccess(claims, existing.profileId, userProfileRepo)
+
             body      <- req.body.asString.orElseFail(ApiError.BadRequest(""))
             obj       <- ZIO.fromEither(FieldPatch.parseObj(body)).mapError(ApiError.BadRequest(_))
             namePatch <- ZIO
@@ -532,7 +530,7 @@ object DeviceRoutes {
             }
             _         <- pidPatch match {
               case FieldPatch.Set(pid) =>
-                requireProfileAccess(claims, pid, userProfileRepo).mapError(ApiError.Wrapped(_))
+                requireProfileAccess(claims, pid, userProfileRepo)
               case _                   => ZIO.unit
             }
             newName = namePatch.applyTo(existing.name)
@@ -583,7 +581,7 @@ object TimeRoutes {
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] =
             for {
-              claims   <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
+              claims   <- requireAuth(req, auth)
               settings <- hsRepo.get.mapError(ApiError.Db(_))
               now      <- clock.instant
               // #1104: default to household-local "today", not UTC `clock.today`.
@@ -592,8 +590,8 @@ object TimeRoutes {
               date    = LocalDate.parse(dateStr)
               allProfiles <- profileRepo.listAll.mapError(ApiError.Db(_))
               visible     <- visibleProfiles(claims, allProfiles, userProfileRepo)
-                .mapError(ApiError.Wrapped(_))
-              states      <- timeStatusService
+
+              states <- timeStatusService
                 .dayStateAll(now, date, settings)
                 .mapError(ApiError.Db(_))
               summaries = visible.map { p =>
@@ -623,7 +621,7 @@ object TimeRoutes {
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] =
             for {
-              claims   <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
+              claims   <- requireAuth(req, auth)
               settings <- hsRepo.get.mapError(ApiError.Db(_))
               now      <- clock.instant
               // #1104: anchor on household-local today, not UTC today.
@@ -635,7 +633,7 @@ object TimeRoutes {
               allDevices  <- deviceRepo.listAll.mapError(ApiError.Db(_))
               allLimits   <- timeLimitRepo.listAll.mapError(ApiError.Db(_))
               visible     <- visibleProfiles(claims, allProfiles, userProfileRepo)
-                .mapError(ApiError.Wrapped(_))
+
               devicesByPid = allDevices.groupBy(_.profileId)
               allMacs      = visible.iterator
                 .flatMap(p => devicesByPid.getOrElse(Some(p.id), Nil))
@@ -689,7 +687,7 @@ object TimeRoutes {
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] =
             for {
-              claims   <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
+              claims   <- requireAuth(req, auth)
               settings <- hsRepo.get.mapError(ApiError.Db(_))
               now      <- clock.instant
               // #1104: household-local today, not UTC.
@@ -700,11 +698,11 @@ object TimeRoutes {
               // SPA can fetch one card's worth of data instead of fanning out N
               // sub-rollups. Auth scope still applies — child tokens can only
               // request profiles they're already entitled to see.
-              profileIdOpt <- parseProfileIdParam(req).mapError(ApiError.Wrapped(_))
+              profileIdOpt <- parseProfileIdParam(req)
               allProfiles  <- profileRepo.listAll.mapError(ApiError.Db(_))
               allDevices   <- deviceRepo.listAll.mapError(ApiError.Db(_))
               visible      <- visibleProfiles(claims, allProfiles, userProfileRepo)
-                .mapError(ApiError.Wrapped(_))
+
               scoped       = profileIdOpt match {
                 case Some(pid) => visible.filter(_.id == pid)
                 case None      => visible
@@ -740,7 +738,7 @@ object TimeRoutes {
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] =
             for {
-              claims   <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
+              claims   <- requireAuth(req, auth)
               settings <- hsRepo.get.mapError(ApiError.Db(_))
               now      <- clock.instant
               // #1104: household-local today (was UTC).
@@ -754,11 +752,11 @@ object TimeRoutes {
               from  = to.minusDays(6)
               bucketOffsetMin <- parseBucketOffsetMin(req)
               // #795: same single-profile narrowing as the daily endpoint.
-              profileIdOpt    <- parseProfileIdParam(req).mapError(ApiError.Wrapped(_))
+              profileIdOpt    <- parseProfileIdParam(req)
               allProfiles     <- profileRepo.listAll.mapError(ApiError.Db(_))
               allDevices      <- deviceRepo.listAll.mapError(ApiError.Db(_))
               visible         <- visibleProfiles(claims, allProfiles, userProfileRepo)
-                .mapError(ApiError.Wrapped(_))
+
               scoped       = profileIdOpt match {
                 case Some(pid) => visible.filter(_.id == pid)
                 case None      => visible
@@ -794,7 +792,7 @@ object TimeRoutes {
       Method.GET / "api" / "time" / "status" / string("mac") / "week"   ->
         handler { (mac: String, req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims   <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
+            claims   <- requireAuth(req, auth)
             settings <- hsRepo.get.mapError(ApiError.Db(_))
             now      <- clock.instant
             // #1104: household-local today.
@@ -808,8 +806,8 @@ object TimeRoutes {
               .mapError(ApiError.Db(_))
               .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Device not found")))
             _               <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
-              .mapError(ApiError.Wrapped(_))
-            status          <- buildDeviceTimeStatusWeek(
+
+            status <- buildDeviceTimeStatusWeek(
               device,
               from,
               to,
@@ -826,7 +824,7 @@ object TimeRoutes {
       Method.GET / "api" / "time" / "status" / string("mac")            ->
         handler { (mac: String, req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims   <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
+            claims   <- requireAuth(req, auth)
             settings <- hsRepo.get.mapError(ApiError.Db(_))
             now      <- clock.instant
             // #1104: household-local today.
@@ -838,7 +836,7 @@ object TimeRoutes {
               .mapError(ApiError.Db(_))
               .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Device not found")))
             _      <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
-              .mapError(ApiError.Wrapped(_))
+
             status <- buildDeviceTimeStatus(
               device,
               date,
@@ -863,7 +861,7 @@ object TimeRoutes {
           // `heartbeat_filter_enabled` on.
           val handle: ZIO[Any, ApiError, Response] =
             for {
-              claims   <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
+              claims   <- requireAuth(req, auth)
               settings <- hsRepo.get.mapError(ApiError.Db(_))
               now      <- clock.instant
               // #1104: household-local today.
@@ -875,8 +873,8 @@ object TimeRoutes {
                 .mapError(ApiError.Db(_))
                 .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Device not found")))
               _      <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
-                .mapError(ApiError.Wrapped(_))
-              rows   <- trafficRepo
+
+              rows <- trafficRepo
                 .listPresenceRows(List(device.mac), date)
                 .mapError(ApiError.Db(_))
               classified = wifihaven.api.presence.Presence
@@ -906,13 +904,13 @@ object TimeRoutes {
       Method.POST / "api" / "time" / "extend"                           ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims   <- requireWriter(req, auth).mapError(ApiError.Wrapped(_))
-            body     <- req.body.asString.orElseFail(ApiError.BadRequest(""))
-            ger      <- ZIO
+            claims <- requireWriter(req, auth)
+            body   <- req.body.asString.orElseFail(ApiError.BadRequest(""))
+            ger    <- ZIO
               .fromEither(body.fromJson[GrantExtensionRequest])
               .mapError(ApiError.DecodeFailure(_))
-            _        <- requireProfileAccess(claims, ger.profileId, userProfileRepo)
-              .mapError(ApiError.Wrapped(_))
+            _      <- requireProfileAccess(claims, ger.profileId, userProfileRepo)
+
             // #1010: bucket the grant under the household-local "today" so the
             // policy-snapshot read path (also household-local) finds it.
             settings <- hsRepo.get.mapError(ApiError.Db(_))
@@ -931,9 +929,9 @@ object TimeRoutes {
         handler { (profileId: Long, req: Request) =>
           val pid                                  = ProfileId(profileId)
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims   <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
-            _        <- requireProfileAccess(claims, pid, userProfileRepo)
-              .mapError(ApiError.Wrapped(_))
+            claims <- requireAuth(req, auth)
+            _      <- requireProfileAccess(claims, pid, userProfileRepo)
+
             // #1010: same household-local "today" as the grant path.
             settings <- hsRepo.get.mapError(ApiError.Db(_))
             now      <- clock.instant
@@ -1397,11 +1395,11 @@ object LogRoutes {
       Method.GET / "api" / "logs"                         ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims     <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
+            claims     <- requireAuth(req, auth)
             // #865: mac/deviceId/profileId accept comma-separated multi-value lists.
             // Old single-value URLs (e.g. ?profileId=2) parse to a one-element list.
-            deviceIds  <- parseMultiDeviceIdParam(req).mapError(ApiError.Wrapped(_))
-            profileIds <- parseMultiProfileIdParam(req).mapError(ApiError.Wrapped(_))
+            deviceIds  <- parseMultiDeviceIdParam(req)
+            profileIds <- parseMultiProfileIdParam(req)
             untilOpt   <- parseInstantOpt(req, "until")
             cursorOpt  <- parseLogCursor(req)
             // #862: page cap. 500 max, 200 default. Wider pages would let one
@@ -1422,7 +1420,7 @@ object LogRoutes {
               includeMulticast = req.url.queryParam("includeMulticast").contains("true"),
             )
             logs    <- connRepo.query(filter).mapError(ApiError.Db(_))
-            visible <- filterLogs(claims, logs, userProfileRepo).mapError(ApiError.Wrapped(_))
+            visible <- filterLogs(claims, logs, userProfileRepo)
             // #862: nextCursor is built from the *raw* last row, not the
             // post-filter `visible` list — filterLogs may drop rows the child
             // can't see, but the cursor must continue from where the SQL window
@@ -1442,7 +1440,7 @@ object LogRoutes {
       Method.GET / "api" / "connection-events" / "series" ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
+            claims <- requireAuth(req, auth)
             // Aggregated rows don't carry per-row profile_id, so we can't
             // post-filter the way /api/logs does. Restrict to admin/adult;
             // children can still use /api/logs raw view with a profileId
@@ -1482,8 +1480,8 @@ object LogRoutes {
               .when(grpSet.exists(g => g.wire == "apex"))
             // #769: groupBy=app is now implemented (joins through app_hosts).
             groupByCodes = grpSet.map(_.wire)
-            deviceIds  <- parseMultiDeviceIdParam(req).mapError(ApiError.Wrapped(_))
-            profileIds <- parseMultiProfileIdParam(req).mapError(ApiError.Wrapped(_))
+            deviceIds  <- parseMultiDeviceIdParam(req)
+            profileIds <- parseMultiProfileIdParam(req)
             untilOpt   <- parseInstantOpt(req, "until")
             cursorOpt  <- parseAggCursor(req)
             limit      <- parseLimit(req, default = 500, max = 500)
@@ -1519,7 +1517,7 @@ object LogRoutes {
       Method.GET / "api" / "stats"                        ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] =
-            requireAdmin(req, auth).mapError(ApiError.Wrapped(_)) *>
+            requireAdmin(req, auth) *>
               connRepo.stats
                 .map(s => Response.json(s.toJson))
                 .mapError(ApiError.Db(_))
@@ -1545,7 +1543,7 @@ object BlocklistRoutes {
       Method.GET / "api" / "blocklists"                                 ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] =
-            requireAdmin(req, auth).mapError(ApiError.Wrapped(_)) *>
+            requireAdmin(req, auth) *>
               blRepo.summaries
                 .map(rs => Response.json(rs.toJson))
                 .mapError(ApiError.Db(_))
@@ -1558,7 +1556,7 @@ object BlocklistRoutes {
       Method.GET / "api" / "blocklists" / string("id") / "hosts"        ->
         handler { (id: String, req: Request) =>
           val handle: ZIO[Any, ApiError, Response] =
-            requireAdmin(req, auth).mapError(ApiError.Wrapped(_)) *>
+            requireAdmin(req, auth) *>
               ZIO
                 .fromEither(BlocklistId.parse(id))
                 .mapError(ApiError.BadRequest(_))
@@ -1579,7 +1577,7 @@ object BlocklistRoutes {
       Method.POST / "api" / "blocklists" / string("category") / "clear" ->
         handler { (cat: String, req: Request) =>
           val handle: ZIO[Any, ApiError, Response] =
-            requireAdmin(req, auth).mapError(ApiError.Wrapped(_)) *>
+            requireAdmin(req, auth) *>
               blRepo.clearCategory(BlocklistId.unsafe(cat)).mapError(ApiError.Db(_)) *>
               ZIO.succeed(Response.ok)
           handle.mapError(ErrorMapper.errorToResponse)
@@ -1590,7 +1588,7 @@ object BlocklistRoutes {
       Method.POST / "api" / "blocklists" / string("id") / "refresh"     ->
         handler { (id: String, req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _   <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
+            _   <- requireAdmin(req, auth)
             bid <- ZIO.fromEither(BlocklistId.parse(id)).mapError(ApiError.BadRequest(_))
             b   <- ZIO
               .fromOption(bundled.get(bid))
@@ -1632,7 +1630,7 @@ object HouseholdSettingsRoutes {
       Method.GET / "api" / "household" / "settings"   ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _ <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
+            _ <- requireAuth(req, auth)
             s <- repo.get.mapError(ApiError.Db(_))
           } yield Response.json(s.toJson)
           handle.mapError(ErrorMapper.errorToResponse)
@@ -1640,7 +1638,7 @@ object HouseholdSettingsRoutes {
       Method.PUT / "api" / "household" / "settings"   ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _    <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
+            _    <- requireAdmin(req, auth)
             body <- req.body.asString.orElseFail(ApiError.BadRequest(""))
             upd  <- ZIO
               .fromEither(body.fromJson[UpdateHouseholdSettingsRequest])
@@ -1670,7 +1668,7 @@ object HouseholdSettingsRoutes {
       Method.PATCH / "api" / "household" / "settings" ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _         <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
+            _         <- requireAdmin(req, auth)
             existing  <- repo.get.mapError(ApiError.Db(_))
             body      <- req.body.asString.orElseFail(ApiError.BadRequest(""))
             obj       <- ZIO.fromEither(FieldPatch.parseObj(body)).mapError(ApiError.BadRequest(_))
@@ -1792,26 +1790,28 @@ private def bearerToken(req: Request): Option[String] =
     if v.startsWith("Bearer ") then Some(v.drop(7)) else None
   }
 
-// 403 body emitted when must_change_password is set (#586).
-private val passwordChangeRequiredResponse: Response =
-  Response
-    .json("""{"error":"password_change_required"}""")
-    .status(Status.Forbidden)
+// 403 body emitted when must_change_password is set (#586). Wire-shape:
+// JSON `{"error":"password_change_required"}`, distinct from ApiError.Forbidden's plain text — kept
+// as a Wrapped Response since the SPA sniffs this exact JSON body.
+private val passwordChangeRequiredError: ApiError =
+  ApiError.Wrapped(
+    Response.json("""{"error":"password_change_required"}""").status(Status.Forbidden),
+  )
 
 /**
  * Verify auth token only — does NOT check must_change_password. Used exclusively by POST
  * /api/auth/change-password so that the flag doesn't block the one route that can clear it.
  */
-def requireAuthSkipPwCheck(req: Request, auth: AuthService): IO[Response, JwtClaims] =
+def requireAuthSkipPwCheck(req: Request, auth: AuthService): IO[ApiError, JwtClaims] =
   ZIO
     .fromOption(bearerToken(req))
-    .orElseFail(Response.unauthorized("Missing token"))
+    .orElseFail(ApiError.Unauthorized("Missing token"))
     .flatMap(t =>
       auth
         .verify(t)
         .mapError {
-          case AuthError.TokenExpired => Response.unauthorized("Token expired")
-          case _                      => Response.unauthorized("Invalid token")
+          case AuthError.TokenExpired => ApiError.Unauthorized("Token expired")
+          case _                      => ApiError.Unauthorized("Invalid token")
         },
     )
 
@@ -1820,32 +1820,32 @@ def requireAuthSkipPwCheck(req: Request, auth: AuthService): IO[Response, JwtCla
  * {"error":"password_change_required"} if the flag is set (#586). All authenticated routes except
  * change-password use this.
  */
-def requireAuth(req: Request, auth: AuthService): IO[Response, JwtClaims] =
+def requireAuth(req: Request, auth: AuthService): IO[ApiError, JwtClaims] =
   ZIO
     .fromOption(bearerToken(req))
-    .orElseFail(Response.unauthorized("Missing token"))
+    .orElseFail(ApiError.Unauthorized("Missing token"))
     .flatMap(t =>
       auth
         .requirePasswordChanged(t)
         .mapError {
-          case AuthError.Forbidden    => passwordChangeRequiredResponse
-          case AuthError.TokenExpired => Response.unauthorized("Token expired")
-          case _                      => Response.unauthorized("Invalid token")
+          case AuthError.Forbidden    => passwordChangeRequiredError
+          case AuthError.TokenExpired => ApiError.Unauthorized("Token expired")
+          case _                      => ApiError.Unauthorized("Invalid token")
         },
     )
 
-def requireAdmin(req: Request, auth: AuthService): IO[Response, JwtClaims] =
+def requireAdmin(req: Request, auth: AuthService): IO[ApiError, JwtClaims] =
   // requireAuth already enforces must_change_password; then we check role.
   requireAuth(req, auth).flatMap { claims =>
     if claims.role == "admin" then ZIO.succeed(claims)
-    else ZIO.fail(Response.forbidden("Admin required"))
+    else ZIO.fail(ApiError.Forbidden("Admin required"))
   }
 
-def requireWriter(req: Request, auth: AuthService): IO[Response, JwtClaims] =
+def requireWriter(req: Request, auth: AuthService): IO[ApiError, JwtClaims] =
   // requireAuth already enforces must_change_password; then we check role.
   requireAuth(req, auth).flatMap { claims =>
     if claims.role == "admin" || claims.role == "adult" then ZIO.succeed(claims)
-    else ZIO.fail(Response.forbidden("Adult or admin required"))
+    else ZIO.fail(ApiError.Forbidden("Adult or admin required"))
   }
 
 /** Admin and adult see all profiles. Child only sees profiles linked to their user. */
@@ -1853,36 +1853,36 @@ def visibleProfiles(
     claims: JwtClaims,
     all: List[Profile],
     upRepo: UserProfileRepo,
-): IO[Response, List[Profile]] =
+): IO[ApiError, List[Profile]] =
   if claims.role == "admin" || claims.role == "adult" then ZIO.succeed(all)
   else
     upRepo
       .listProfilesForUsername(claims.sub)
-      .mapError(ErrorMapper.dbErrorToResponse)
+      .mapError(ApiError.Db(_))
       .map(pids => all.filter(p => pids.contains(p.id)))
 
 def filterDevices(
     claims: JwtClaims,
     all: List[Device],
     upRepo: UserProfileRepo,
-): IO[Response, List[Device]] =
+): IO[ApiError, List[Device]] =
   if claims.role == "admin" || claims.role == "adult" then ZIO.succeed(all)
   else
     upRepo
       .listProfilesForUsername(claims.sub)
-      .mapError(ErrorMapper.dbErrorToResponse)
+      .mapError(ApiError.Db(_))
       .map(pids => all.filter(d => d.profileId.exists(pids.contains)))
 
 def filterLogs(
     claims: JwtClaims,
     all: List[QueryLog],
     upRepo: UserProfileRepo,
-): IO[Response, List[QueryLog]] =
+): IO[ApiError, List[QueryLog]] =
   if claims.role == "admin" || claims.role == "adult" then ZIO.succeed(all)
   else
     upRepo
       .listProfilesForUsername(claims.sub)
-      .mapError(ErrorMapper.dbErrorToResponse)
+      .mapError(ApiError.Db(_))
       .map(pids => all.filter(l => l.profileId.exists(pids.contains)))
 
 /** Allow read access if admin or adult (full visibility); child must be linked to the profile. */
@@ -1890,26 +1890,26 @@ def requireProfileReadAccess(
     claims: JwtClaims,
     profileId: ProfileId,
     upRepo: UserProfileRepo,
-): IO[Response, Unit] =
+): IO[ApiError, Unit] =
   if claims.role == "admin" || claims.role == "adult" then ZIO.succeed(())
   else
     upRepo
       .listProfilesForUsername(claims.sub)
-      .mapError(ErrorMapper.dbErrorToResponse)
+      .mapError(ApiError.Db(_))
       .flatMap { pids =>
         if pids.contains(profileId) then ZIO.succeed(())
-        else ZIO.fail(Response.forbidden("Not authorized for this profile"))
+        else ZIO.fail(ApiError.Forbidden("Not authorized for this profile"))
       }
 
 def requireProfileReadAccess(
     claims: JwtClaims,
     profileId: Option[ProfileId],
     upRepo: UserProfileRepo,
-): IO[Response, Unit] =
+): IO[ApiError, Unit] =
   profileId match {
     case None      =>
       if claims.role == "admin" || claims.role == "adult" then ZIO.succeed(())
-      else ZIO.fail(Response.forbidden("Device has no assigned profile"))
+      else ZIO.fail(ApiError.Forbidden("Device has no assigned profile"))
     case Some(pid) => requireProfileReadAccess(claims, pid, upRepo)
   }
 
@@ -1918,26 +1918,26 @@ def requireProfileAccess(
     claims: JwtClaims,
     profileId: ProfileId,
     upRepo: UserProfileRepo,
-): IO[Response, Unit] =
+): IO[ApiError, Unit] =
   if claims.role == "admin" then ZIO.succeed(())
   else
     upRepo
       .listProfilesForUsername(claims.sub)
-      .mapError(ErrorMapper.dbErrorToResponse)
+      .mapError(ApiError.Db(_))
       .flatMap { pids =>
         if pids.contains(profileId) then ZIO.succeed(())
-        else ZIO.fail(Response.forbidden("Not authorized for this profile"))
+        else ZIO.fail(ApiError.Forbidden("Not authorized for this profile"))
       }
 
 def requireProfileAccess(
     claims: JwtClaims,
     profileId: Option[ProfileId],
     upRepo: UserProfileRepo,
-): IO[Response, Unit] =
+): IO[ApiError, Unit] =
   profileId match {
     case None      =>
       if claims.role == "admin" then ZIO.succeed(())
-      else ZIO.fail(Response.forbidden("Device has no assigned profile"))
+      else ZIO.fail(ApiError.Forbidden("Device has no assigned profile"))
     case Some(pid) => requireProfileAccess(claims, pid, upRepo)
   }
 
@@ -1956,13 +1956,13 @@ def normalizeMac(mac: String): String = {
 // #795: parse a ?profileId=N query parameter, used by the per-profile-scoped
 // hot read endpoints. Returns None when the param is absent (callers fall back
 // to "all visible profiles"); returns a 400 when present but unparseable.
-def parseProfileIdParam(req: Request): IO[Response, Option[ProfileId]] =
+def parseProfileIdParam(req: Request): IO[ApiError, Option[ProfileId]] =
   req.url.queryParam("profileId") match {
     case None    => ZIO.succeed(None)
     case Some(s) =>
       s.toLongOption
         .map(l => ZIO.succeed(Some(ProfileId(l))))
-        .getOrElse(ZIO.fail(Response.badRequest(s"invalid profileId: $s")))
+        .getOrElse(ZIO.fail(ApiError.BadRequest(s"invalid profileId: $s")))
   }
 
 // #865: comma-separated multi-value query params. Old single-value URLs
@@ -1974,16 +1974,16 @@ def parseMultiValueParam(req: Request, name: String): List[String] =
     case Some(s) => s.split(',').toList.map(_.trim).filter(_.nonEmpty)
   }
 
-def parseMultiProfileIdParam(req: Request): IO[Response, List[ProfileId]] =
+def parseMultiProfileIdParam(req: Request): IO[ApiError, List[ProfileId]] =
   ZIO.foreach(parseMultiValueParam(req, "profileId")) { s =>
     ZIO
       .fromOption(s.toLongOption.map(ProfileId(_)))
-      .orElseFail(Response.badRequest(s"invalid profileId: $s"))
+      .orElseFail(ApiError.BadRequest(s"invalid profileId: $s"))
   }
 
-def parseMultiDeviceIdParam(req: Request): IO[Response, List[DeviceId]] =
+def parseMultiDeviceIdParam(req: Request): IO[ApiError, List[DeviceId]] =
   ZIO.foreach(parseMultiValueParam(req, "deviceId")) { s =>
     ZIO
       .fromOption(s.toLongOption.map(DeviceId(_)))
-      .orElseFail(Response.badRequest(s"invalid deviceId: $s"))
+      .orElseFail(ApiError.BadRequest(s"invalid deviceId: $s"))
   }

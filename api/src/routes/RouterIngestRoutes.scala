@@ -44,7 +44,7 @@ object RouterIngestRoutes {
           // boundary: a batch carrying a bad record still returns 200, so the boundary never sees
           // it — the skip is logged + metered inline here.
           val handle: ZIO[Any, ApiError, Response] = for {
-            router <- auth.authenticate(req).mapError(ApiError.Wrapped(_))
+            router <- auth.authenticate(req)
             body   <- req.body.asString.orElseFail(ApiError.BadRequest(""))
             // #1569: decode the *envelope* (routerId, periodStart, periodEnd) + `records` as a raw
             // JSON array, deferring per-record validation. A genuinely unparseable envelope (bad
@@ -106,7 +106,7 @@ object RouterIngestRoutes {
           // response-body snippet, so logging is uniform with the usage route (the #1569 dedup:
           // one emitter, not two).
           val handle: ZIO[Any, ApiError, Response] = for {
-            router <- auth.authenticate(req).mapError(ApiError.Wrapped(_))
+            router <- auth.authenticate(req)
             body   <- req.body.asString.orElseFail(ApiError.BadRequest(""))
             // #1126: tolerate an empty/blank body as a no-op batch. A truncated
             // or empty POST (network blip, retry-queue edge) used to fail

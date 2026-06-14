@@ -16,8 +16,7 @@ import zio.json.*
  * + meters each error. Every case reproduces the EXACT status + body the hand-rolled code produced
  * — the structured `slug_taken` (409), `seed_failed` (500), `not_template_derived` (400), and
  * `unknown_template` (404) JSON bodies are preserved verbatim via [[ApiError.Wrapped]] (the SPA
- * parses them), DB failures stay 503 via [[ApiError.Db]]. Auth/profile-access helpers still return
- * `Response` and are bridged via [[ApiError.Wrapped]].
+ * parses them), DB failures stay 503 via [[ApiError.Db]].
  */
 object AppRoutes {
 
@@ -86,7 +85,7 @@ object AppRoutes {
       Method.GET / "api" / "apps"                                                ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _        <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
+            _        <- requireAuth(req, auth)
             apps     <- appRepo.listAll.mapError(ApiError.Db(_))
             detailed <- ZIO
               .foreach(apps)(detail(appRepo, _))
@@ -98,7 +97,7 @@ object AppRoutes {
         handler { (id: Long, req: Request) =>
           val aid                                  = AppId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
-            _ <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
+            _ <- requireAuth(req, auth)
             a <- appRepo
               .findById(aid)
               .mapError(ApiError.Db(_))
@@ -110,7 +109,7 @@ object AppRoutes {
       Method.POST / "api" / "apps"                                               ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _    <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
+            _    <- requireAdmin(req, auth)
             body <- req.body.asString.orElseFail(ApiError.BadRequest(""))
             cr   <- ZIO
               .fromEither(body.fromJson[CreateAppRequest])
@@ -157,7 +156,7 @@ object AppRoutes {
         handler { (id: Long, req: Request) =>
           val aid                                  = AppId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
-            _    <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
+            _    <- requireAdmin(req, auth)
             body <- req.body.asString.orElseFail(ApiError.BadRequest(""))
             ur   <- ZIO
               .fromEither(body.fromJson[UpdateAppRequest])
@@ -184,7 +183,7 @@ object AppRoutes {
       Method.DELETE / "api" / "apps" / long("id")                                ->
         handler { (id: Long, req: Request) =>
           val handle: ZIO[Any, ApiError, Response] =
-            requireAdmin(req, auth).mapError(ApiError.Wrapped(_)) *>
+            requireAdmin(req, auth) *>
               appRepo.delete(AppId(id)).mapError(ApiError.Db(_)) *>
               ZIO.succeed(Response.ok)
           handle.mapError(ErrorMapper.errorToResponse)
@@ -193,7 +192,7 @@ object AppRoutes {
         handler { (id: Long, req: Request) =>
           val aid                                  = AppId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
-            _     <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
+            _     <- requireAdmin(req, auth)
             body  <- req.body.asString.orElseFail(ApiError.BadRequest(""))
             sr    <- ZIO
               .fromEither(body.fromJson[SetAppHostsRequest])
@@ -214,9 +213,9 @@ object AppRoutes {
           val aid                                  = AppId(id)
           val pid                                  = ProfileId(profileIdRaw)
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims   <- requireWriter(req, auth).mapError(ApiError.Wrapped(_))
-            _        <- requireProfileAccess(claims, pid, userProfileRepo)
-              .mapError(ApiError.Wrapped(_))
+            claims <- requireWriter(req, auth)
+            _      <- requireProfileAccess(claims, pid, userProfileRepo)
+
             body     <- req.body.asString.orElseFail(ApiError.BadRequest(""))
             ar       <- ZIO
               .fromEither(body.fromJson[UpsertAppAssignmentRequest])
@@ -257,7 +256,7 @@ object AppRoutes {
       Method.POST / "api" / "apps" / "seed-from-templates"                       ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _       <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
+            _       <- requireAdmin(req, auth)
             summary <- AppTemplates
               .seed(appRepo, templates.values.toList)
               .mapError(e =>
@@ -274,7 +273,7 @@ object AppRoutes {
         handler { (id: Long, req: Request) =>
           val aid                                  = AppId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
-            _    <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
+            _    <- requireAdmin(req, auth)
             app  <- appRepo
               .findById(aid)
               .mapError(ApiError.Db(_))
@@ -310,7 +309,7 @@ object AppRoutes {
         handler { (id: Long, req: Request) =>
           val aid                                  = AppId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
-            _         <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
+            _         <- requireAdmin(req, auth)
             a         <- appRepo
               .findById(aid)
               .mapError(ApiError.Db(_))
@@ -370,10 +369,10 @@ object AppRoutes {
           val aid                                  = AppId(id)
           val pid                                  = ProfileId(profileIdRaw)
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims <- requireWriter(req, auth).mapError(ApiError.Wrapped(_))
+            claims <- requireWriter(req, auth)
             _      <- requireProfileAccess(claims, pid, userProfileRepo)
-              .mapError(ApiError.Wrapped(_))
-            _      <- appRepo
+
+            _ <- appRepo
               .deleteAssignment(aid, pid)
               .mapError(ApiError.Db(_))
           } yield Response.ok

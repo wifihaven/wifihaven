@@ -25,18 +25,15 @@ object MetricsRoutes {
       Routes(
         Method.GET / "metrics" ->
           handler { (req: Request) =>
-            if authorized(req, cfg) then
-              publisher.get.map(text =>
-                Response(status = Status.Ok, body = Body.fromCharSequence(text))
-                  .removeHeader("content-type")
-                  .addHeader("content-type", ContentType),
-              )
-            else
-              ZIO.succeed(
-                Response
-                  .text("missing or invalid metrics scrape token")
-                  .status(Status.Unauthorized),
-              )
+            val handle: ZIO[Any, ApiError, Response] =
+              if authorized(req, cfg) then
+                publisher.get.map(text =>
+                  Response(status = Status.Ok, body = Body.fromCharSequence(text))
+                    .removeHeader("content-type")
+                    .addHeader("content-type", ContentType),
+                )
+              else ZIO.fail(ApiError.Unauthorized("missing or invalid metrics scrape token"))
+            handle.mapError(ErrorMapper.errorToResponse)
           },
       )
 

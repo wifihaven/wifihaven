@@ -24,9 +24,8 @@ import zio.json.*
  * [[ErrorMapper.errorToResponse]]; the [[wifihaven.api.ErrorBoundary]] logs (4xx WARN / 5xx ERROR)
  * + meters each error. Each case reproduces the EXACT status + body the hand-rolled code produced —
  * the pending-state `409` keeps its empty body via [[ApiError.Wrapped]], DB failures stay 503 via
- * [[ApiError.Db]]. Success-channel responses (the `Some/None` post-decide `.map`, the debounce
- * `Some(a)` hit) are unchanged; the boundary still observes their status. Auth helpers are bridged
- * via [[ApiError.Wrapped]].
+ * [[ApiError.Db]]. Success-channel responses (the debounce `Some(a)` hit) are unchanged; the
+ * boundary still observes their status.
  */
 object AlertRoutes {
 
@@ -92,7 +91,7 @@ object AlertRoutes {
       Method.GET / "api" / "alerts" ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _ <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
+            _ <- requireAuth(req, auth)
             includeAll = req.url
               .queryParam("all")
               .map(_.equalsIgnoreCase("true"))
@@ -109,7 +108,7 @@ object AlertRoutes {
         handler { (id: Long, req: Request) =>
           val aid                                  = AlertId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims  <- requireWriter(req, auth).mapError(ApiError.Wrapped(_))
+            claims  <- requireWriter(req, auth)
             body    <- req.body.asString.orElse(ZIO.succeed(""))
             apr     <-
               if (body.isEmpty) ZIO.succeed(ApproveAlertRequest())
@@ -143,11 +142,11 @@ object AlertRoutes {
             resp    <- alertRepo
               .findById(aid)
               .mapError(ApiError.Db(_))
-              .map {
-                case None          => Response.notFound("Alert not found")
+              .flatMap {
+                case None          => ZIO.fail(ApiError.NotFound("Alert not found"))
                 case Some(updated) =>
-                  if n == 0 then Response.status(Status.Conflict)
-                  else Response.json(updated.toJson)
+                  if n == 0 then ZIO.fail(ApiError.Wrapped(Response.status(Status.Conflict)))
+                  else ZIO.succeed(Response.json(updated.toJson))
               }
           } yield resp
           handle.mapError(ErrorMapper.errorToResponse)
@@ -158,7 +157,7 @@ object AlertRoutes {
         handler { (id: Long, req: Request) =>
           val aid                                  = AlertId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims <- requireWriter(req, auth).mapError(ApiError.Wrapped(_))
+            claims <- requireWriter(req, auth)
             now    <- clock.instant
             n      <- alertRepo
               .decide(aid, AlertStatus.Denied, now, claims.sub, None)
@@ -166,11 +165,11 @@ object AlertRoutes {
             resp   <- alertRepo
               .findById(aid)
               .mapError(ApiError.Db(_))
-              .map {
-                case None          => Response.notFound("Alert not found")
+              .flatMap {
+                case None          => ZIO.fail(ApiError.NotFound("Alert not found"))
                 case Some(updated) =>
-                  if n == 0 then Response.status(Status.Conflict)
-                  else Response.json(updated.toJson)
+                  if n == 0 then ZIO.fail(ApiError.Wrapped(Response.status(Status.Conflict)))
+                  else ZIO.succeed(Response.json(updated.toJson))
               }
           } yield resp
           handle.mapError(ErrorMapper.errorToResponse)

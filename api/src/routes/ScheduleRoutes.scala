@@ -19,8 +19,7 @@ import zio.json.*
  * [[ErrorMapper.errorToResponse]]; the [[wifihaven.api.ErrorBoundary]] logs (4xx WARN / 5xx ERROR)
  * + meters each error. Every case reproduces the EXACT status + body the hand-rolled code produced
  * before (the `name_taken` 409 JSON is preserved verbatim via [[ApiError.Wrapped]]), so the SPA
- * sees identical responses. Auth helpers still return `Response` and are bridged via
- * [[ApiError.Wrapped]].
+ * sees identical responses.
  */
 object ScheduleRoutes {
 
@@ -59,7 +58,7 @@ object ScheduleRoutes {
       Method.GET / "api" / "schedules"                 ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _    <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
+            _    <- requireAuth(req, auth)
             list <- scheduleRepo.listAll.mapError(ApiError.Db(_))
           } yield Response.json(list.toJson)
           handle.mapError(ErrorMapper.errorToResponse)
@@ -67,7 +66,7 @@ object ScheduleRoutes {
       Method.GET / "api" / "schedules" / long("id")    ->
         handler { (id: Long, req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _ <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
+            _ <- requireAuth(req, auth)
             s <- scheduleRepo
               .findById(NamedScheduleId(id))
               .mapError(ApiError.Db(_))
@@ -78,7 +77,7 @@ object ScheduleRoutes {
       Method.POST / "api" / "schedules"                ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _    <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
+            _    <- requireAdmin(req, auth)
             body <- req.body.asString.orElseFail(ApiError.BadRequest(""))
             cr   <- ZIO
               .fromEither(body.fromJson[CreateNamedScheduleRequest])
@@ -107,7 +106,7 @@ object ScheduleRoutes {
         handler { (id: Long, req: Request) =>
           val sid                                  = NamedScheduleId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
-            _    <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
+            _    <- requireAdmin(req, auth)
             body <- req.body.asString.orElseFail(ApiError.BadRequest(""))
             ur   <- ZIO
               .fromEither(body.fromJson[UpdateNamedScheduleRequest])
@@ -137,7 +136,7 @@ object ScheduleRoutes {
       Method.DELETE / "api" / "schedules" / long("id") ->
         handler { (id: Long, req: Request) =>
           val handle: ZIO[Any, ApiError, Response] =
-            requireAdmin(req, auth).mapError(ApiError.Wrapped(_)) *>
+            requireAdmin(req, auth) *>
               scheduleRepo
                 .delete(NamedScheduleId(id))
                 .mapError(ApiError.Db(_)) *>

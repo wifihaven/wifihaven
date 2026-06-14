@@ -45,20 +45,22 @@ object StaticRoutes {
         // substitutes URL.empty (encode == "") when netty can't parse the
         // request URI — e.g. unencoded `"` in a query string (issue #214).
         // The real "/" gives encode == "/", so this distinguishes them.
-        val encoded = req.url.path.encode
-        if encoded.isEmpty then ZIO.succeed(Response.badRequest("malformed request URI"))
-        else {
-          val rel = encoded.stripPrefix("/")
-          if rel.startsWith("api/") then
-            ZIO.succeed(Response.notFound(s"no such API route: ${req.method} /$rel"))
-          else
-            resolve(rel) match {
-              case Some(f) => serve(f)
-              case None    =>
-                if index.isFile then serve(index)
-                else ZIO.succeed(Response.notFound)
-            }
-        }
+        val encoded                              = req.url.path.encode
+        val handle: ZIO[Any, ApiError, Response] =
+          if encoded.isEmpty then ZIO.fail(ApiError.BadRequest("malformed request URI"))
+          else {
+            val rel = encoded.stripPrefix("/")
+            if rel.startsWith("api/") then
+              ZIO.fail(ApiError.NotFound(s"no such API route: ${req.method} /$rel"))
+            else
+              resolve(rel) match {
+                case Some(f) => serve(f)
+                case None    =>
+                  if index.isFile then serve(index)
+                  else ZIO.fail(ApiError.Wrapped(Response.notFound))
+              }
+          }
+        handle.mapError(ErrorMapper.errorToResponse)
       },
     )
   }

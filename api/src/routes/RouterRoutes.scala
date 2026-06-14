@@ -23,8 +23,7 @@ import java.util.{Base64, UUID}
  * the OpenWRT agent branches on status only (4xx = drop, 5xx = retry/back-off), so DB failures stay
  * 503 via [[ApiError.Db]]; a malformed enrollment is 401; an unknown blocklist slug is 404.
  * Success-channel responses (the 200 /304 policy/blocklist bodies with ETag headers) are unchanged;
- * the boundary still observes their status. `RouterAuth` still returns `Response` and is bridged
- * via [[ApiError.Wrapped]].
+ * the boundary still observes their status.
  */
 object RouterRoutes {
 
@@ -62,7 +61,7 @@ object RouterRoutes {
       Method.GET / "api" / "router" / "policy"         ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            router <- routerAuth.authenticate(req).mapError(ApiError.Wrapped(_))
+            router <- routerAuth.authenticate(req)
             snap   <- policy.snapshot.mapError(ApiError.Db(_))
             ifNoneMatch  = req
               .header(Header.IfNoneMatch)
@@ -101,7 +100,7 @@ object RouterRoutes {
       Method.GET / "api" / "blocklists" / string("id") ->
         handler { (id: String, req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _    <- routerAuth.authenticate(req).mapError(ApiError.Wrapped(_))
+            _    <- routerAuth.authenticate(req)
             // Treat malformed slugs (e.g. legacy ".rpz" suffix) the same as
             // "no such blocklist" — 404, not 400. They were a route on a prior
             // version of the API and external callers may still probe them.
@@ -136,7 +135,7 @@ object RouterRoutes {
       Method.POST / "api" / "router" / "decision"      ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            router <- routerAuth.authenticate(req).mapError(ApiError.Wrapped(_))
+            router <- routerAuth.authenticate(req)
             body   <- req.body.asString.orElseFail(ApiError.BadRequest(""))
             dreq   <- ZIO
               .fromEither(body.fromJson[RouterDecisionRequest])
@@ -200,7 +199,7 @@ object AdminRouterRoutes {
       Method.POST / "api" / "admin" / "routers"                  ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _    <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
+            _    <- requireAdmin(req, auth)
             body <- req.body.asString.orElseFail(ApiError.BadRequest(""))
             cr   <- ZIO
               .fromEither(body.fromJson[CreateRouterRequest])
@@ -219,7 +218,7 @@ object AdminRouterRoutes {
       Method.GET / "api" / "admin" / "routers"                   ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _   <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
+            _   <- requireAdmin(req, auth)
             all <- routerRepo.listAll.mapError(ApiError.Db(_))
           } yield Response.json(all.map(toSummary).toJson)
           handle.mapError(ErrorMapper.errorToResponse)
@@ -227,7 +226,7 @@ object AdminRouterRoutes {
       Method.DELETE / "api" / "admin" / "routers" / string("id") ->
         handler { (id: String, req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _   <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
+            _   <- requireAdmin(req, auth)
             uid <- ZIO
               .attempt(RouterId(UUID.fromString(id)))
               .orElseFail(ApiError.BadRequest("bad uuid"))

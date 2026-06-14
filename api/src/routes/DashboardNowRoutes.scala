@@ -47,16 +47,13 @@ object DashboardNowRoutes {
         handler { (req: Request) =>
           // #1570: fail with typed ApiError; ErrorMapper.errorToResponse maps it and the
           // ErrorBoundary logs (4xx WARN / 5xx ERROR) + meters. Same final Response as before.
-          // Auth/visibility helpers still return Response and are bridged via ApiError.Wrapped.
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims      <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
+            claims      <- requireAuth(req, auth)
             now         <- clock.instant
             allDevices  <- deviceRepo.listAll.mapError(ApiError.Db(_))
             visibleDevs <- filterDevices(claims, allDevices, userProfileRepo)
-              .mapError(ApiError.Wrapped(_))
             allProfiles <- profileRepo.listAll.mapError(ApiError.Db(_))
             visibleProf <- visibleProfiles(claims, allProfiles, userProfileRepo)
-              .mapError(ApiError.Wrapped(_))
             visibleMacs = visibleDevs.map(_.mac)
             // Both inputs in parallel.
             since       = now.minus(TopHostsWindow)

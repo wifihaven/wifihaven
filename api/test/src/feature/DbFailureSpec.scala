@@ -29,14 +29,14 @@ object DbFailureSpec extends ZIOSpecDefault {
    */
   private def failingAuth(t: Throwable): RouterAuth =
     new RouterAuth {
-      def authenticate(req: Request): IO[Response, Router] =
-        ZIO.fail(t).mapError(ErrorMapper.dbErrorToResponse)
+      def authenticate(req: Request): IO[ApiError, Router] =
+        ZIO.fail(ApiError.Db(t))
     }
 
   /** RouterAuth stub: succeeds with a synthetic Router; never touches the DB. */
   private def okAuth(routerId: RouterId): RouterAuth =
     new RouterAuth {
-      def authenticate(req: Request): IO[Response, Router] =
+      def authenticate(req: Request): IO[ApiError, Router] =
         ZIO.succeed(
           Router(
             id = routerId,

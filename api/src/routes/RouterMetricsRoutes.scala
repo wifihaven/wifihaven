@@ -19,8 +19,7 @@ import zio.json.*
  * [[ErrorMapper.errorToResponse]]; the [[wifihaven.api.ErrorBoundary]] logs (4xx WARN) + meters
  * each error. Each case reproduces the EXACT status + body the hand-rolled code produced (the 403
  * keeps its `text/plain` `router_id mismatch` body via [[ApiError.Wrapped]]). The bespoke
- * `recordRouterMetricsBatch` counters are NOT error-mapping and stay inline. Auth (RouterAuth)
- * still returns `Response` and is bridged via [[ApiError.Wrapped]].
+ * `recordRouterMetricsBatch` counters are NOT error-mapping and stay inline.
  */
 object RouterMetricsRoutes {
 
@@ -29,7 +28,7 @@ object RouterMetricsRoutes {
       Method.POST / "api" / "router" / "metrics" ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            router <- auth.authenticate(req).mapError(ApiError.Wrapped(_))
+            router <- auth.authenticate(req)
             body   <- req.body.asString.orElseFail(ApiError.BadRequest(""))
             batch  <- ZIO
               .fromEither(body.fromJson[RouterMetricsBatch])
