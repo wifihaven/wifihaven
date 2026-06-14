@@ -25,6 +25,10 @@ PKG_VERSION="${PKG_VERSION:-$(grep '^PKG_VERSION:=' "$SCRIPT_DIR/Makefile" | cut
 PKG_RELEASE="${PKG_RELEASE:-$(grep '^PKG_RELEASE:=' "$SCRIPT_DIR/Makefile" | cut -d= -f2)}"
 OUT_APK="$SCRIPT_DIR/wifihaven_${PKG_VERSION}-${PKG_RELEASE}_all.apk"
 
+# Derive the apk depends list from the canonical openwrt/Makefile DEPENDS line
+# via the shared helper (single-source-of-truth, #1717). See build-ipk.sh.
+DEPENDS_LIST=$("$SCRIPT_DIR/depends-list.sh" apk)
+
 APK_TOOLS_REPO="${APK_TOOLS_REPO:-https://gitlab.alpinelinux.org/alpine/apk-tools.git}"
 APK_TOOLS_REF="${APK_TOOLS_REF:-v3.0.6}"
 APK_TOOLS_PREFIX="${APK_TOOLS_PREFIX:-$HOME/.cache/wifihaven-apk-tools}"
@@ -146,7 +150,7 @@ rm -f "$OUT_APK"
     --info "license:MIT" \
     --info "url:https://github.com/wifihaven/wifihaven" \
     --info "maintainer:WifiHaven <noreply@example.com>" \
-    --info "depends:lua libuci-lua luci-lib-jsonc conntrack curl uhttpd-mod-lua kmod-nf-log kmod-nf-log6 libustream-mbedtls openssl-util tcpdump-mini" \
+    --info "depends:${DEPENDS_LIST}" \
     --script "post-install:$WORK/post-install" \
     --script "trigger:$WORK/trigger" \
     --trigger "/etc/crontabs" \
