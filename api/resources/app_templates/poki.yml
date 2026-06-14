@@ -1,0 +1,12 @@
+slug: poki
+name: Poki
+icon: "https://icons.duckduckgo.com/ip3/poki.com.ico"
+icon_type: url
+# Added from prod evidence (#1705): 14d kid traffic showed ~25 active min on
+# t.poki.io + leveldata.poki.io. Browser-game portal; like crazygames, the
+# heavy game-asset bytes ride shared CDNs and are intentionally NOT included
+# per #1661. Note: the marketing site is poki.com, the runtime endpoints
+# observed are poki.io — include both so dnsmasq's nftset= covers either.
+hosts:
+  - poki.com
+  - poki.io

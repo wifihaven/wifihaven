@@ -1,0 +1,12 @@
+slug: tinkercad
+name: Tinkercad
+icon: "https://icons.duckduckgo.com/ip3/tinkercad.com.ico"
+icon_type: url
+# Added from prod evidence (#1705, evidence/classification.md): 14d kid
+# traffic showed 36 MB / ~50 active min spread across editor.tinkercad.com,
+# csg-prd.tinkercad.com, www.tinkercad.com, colab.tinkercad.com,
+# api-reader-prd.tinkercad.com — all brand-specific, no shared-platform apex.
+# Autodesk's 3D modeling tool for kids; single apex is enough since dnsmasq's
+# nftset= suffix-matches every observed subdomain.
+hosts:
+  - tinkercad.com

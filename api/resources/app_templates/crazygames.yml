@@ -1,0 +1,12 @@
+slug: crazygames
+name: Crazy Games
+icon: "https://icons.duckduckgo.com/ip3/crazygames.com.ico"
+icon_type: url
+# Added from prod evidence (#1705): 14d kid traffic showed ~1.5 MB / ~52
+# active min across cza.crazygames.com, auth.crazygames.com,
+# www.crazygames.com, api.crazygames.com, sdk.crazygames.com — all
+# brand-specific. Browser-game portal; engagement minutes are the signal
+# (the actual game asset bytes mostly ride shared CDNs that we deliberately
+# do NOT pull in per #1661).
+hosts:
+  - crazygames.com

@@ -1,0 +1,12 @@
+slug: thingiverse
+name: Thingiverse
+icon: "https://icons.duckduckgo.com/ip3/thingiverse.com.ico"
+icon_type: url
+# Added from prod evidence (#1705): 14d kid traffic showed ~40 MB across
+# img.thingiverse.com, resize.thingiverse.com, visitors.thingiverse.com,
+# www.thingiverse.com, cdn.thingiverse.com, api.thingiverse.com — all
+# brand-specific (MakerBot's 3D-model repository). The model-download bytes
+# are real traffic on a single brand-owned apex; no shared-platform host
+# needed.
+hosts:
+  - thingiverse.com

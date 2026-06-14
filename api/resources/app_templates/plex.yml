@@ -1,0 +1,13 @@
+slug: plex
+name: Plex
+icon: "https://icons.duckduckgo.com/ip3/plex.tv.ico"
+icon_type: url
+# Added from prod evidence (#1705): plex.tv carries auth + pubsub + analytics
+# control traffic (~1 MB / 49 active min on kid devices over 14d); plex.direct
+# carries the direct-stream media bytes (~403 MB across the household). Both
+# apexes are Plex-owned and brand-specific. Keep them paired — dropping
+# plex.direct misses the bulk of the bytes; dropping plex.tv misses the
+# session control plane.
+hosts:
+  - plex.tv
+  - plex.direct

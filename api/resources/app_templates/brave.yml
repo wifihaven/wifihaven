@@ -1,0 +1,11 @@
+slug: brave
+name: Brave
+icon: "https://icons.duckduckgo.com/ip3/brave.com.ico"
+icon_type: url
+# Added from prod evidence (#1705): 14d kid traffic showed 46 MB / ~26 active
+# min across redirector.brave.com, collector.bsg.brave.com,
+# go-updater.brave.com, star-randsrv.bsg.brave.com, variations.brave.com —
+# all brand-specific. The browser app itself, not its content rendering
+# (page-load traffic attributes to the destination site, not to "Brave").
+hosts:
+  - brave.com

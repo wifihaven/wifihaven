@@ -1,0 +1,10 @@
+slug: duolingo
+name: Duolingo
+icon: "https://icons.duckduckgo.com/ip3/duolingo.com.ico"
+icon_type: url
+# Added from prod evidence (#1705): 14d kid traffic showed 39 MB / ~23 active
+# min, all on *.duolingo.com (simg-ssl, ios-api-cf, localization-duostrings,
+# avatars, excess, static-ssl, www, goals-api). No off-domain CDN seen — the
+# app's own asset hosts handle the heavy bytes. Single apex covers it.
+hosts:
+  - duolingo.com
