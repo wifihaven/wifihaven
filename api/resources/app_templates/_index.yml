@@ -19,3 +19,19 @@ slugs:
   - math-academy
   - lexia
   - imessage
+  # #1705: kid-traffic-driven additions (see evidence/classification.md)
+  - tinkercad
+  - duolingo
+  - brave
+  - plex
+  - crazygames
+  - poki
+  - thingiverse
+  # #1705: ported in from operator-created prod apps (apps with template_id IS NULL)
+  - 1password
+  - eaglercraft
+  - giphy
+  - google-play
+  - moc-pilot
+  - wifihaven
+  - x

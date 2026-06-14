@@ -1,0 +1,10 @@
+slug: wifihaven
+name: WifiHaven
+icon: "https://icons.duckduckgo.com/ip3/wifihaven.net.ico"
+icon_type: url
+# Added from prod evidence (#1705): operator-created in prod so household
+# traffic to the wifihaven SPA / API attributes to its own app instead of
+# the "Other" tail (handy when the operator is debugging from a kid device
+# and wants to see that activity at a glance). Single brand-owned apex.
+hosts:
+  - wifihaven.net

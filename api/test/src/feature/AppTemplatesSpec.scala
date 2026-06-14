@@ -103,6 +103,22 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
           "math-academy",
           "lexia",
           "imessage",
+          // #1705: kid-traffic-driven additions
+          "tinkercad",
+          "duolingo",
+          "brave",
+          "plex",
+          "crazygames",
+          "poki",
+          "thingiverse",
+          // #1705: ported in from operator-created prod apps
+          "1password",
+          "eaglercraft",
+          "giphy",
+          "google-play",
+          "moc-pilot",
+          "wifihaven",
+          "x",
         )
         val slugs    = templates.map(_.slug.value).toSet
         assertTrue(slugs == expected) &&
@@ -117,6 +133,35 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
       } yield assertTrue(templates.forall(_.iconType == IconType.Url)) &&
         assertTrue(templates.forall(_.icon.exists(_.startsWith("http")))) &&
         assertTrue(templates.forall(_.icon.exists(_.nonEmpty)))
+    },
+    test("#1705 new templates use favicon URLs, never emoji") {
+      // The 7 templates added by #1705 must all be icon_type=url with a
+      // ddg ip3 favicon — the operator explicitly asked for favicons on new
+      // templates so the new-app rollout looks consistent in the SPA.
+      val newSlugs = Set(
+        "tinkercad",
+        "duolingo",
+        "brave",
+        "plex",
+        "crazygames",
+        "poki",
+        "thingiverse",
+        "1password",
+        "eaglercraft",
+        "giphy",
+        "google-play",
+        "moc-pilot",
+        "wifihaven",
+        "x",
+      )
+      for {
+        templates <- AppTemplates.loadAll()
+      } yield {
+        val newTemplates = templates.filter(t => newSlugs.contains(t.slug.value))
+        assertTrue(newTemplates.size == newSlugs.size) &&
+        assertTrue(newTemplates.forall(_.iconType == IconType.Url)) &&
+        assertTrue(newTemplates.forall(_.icon.exists(_.startsWith("https://"))))
+      }
     },
     test("seeded apps round-trip icon_type=url through the DB (#1041)") {
       for {
@@ -204,6 +249,57 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         assertTrue(hosts.contains("googlevideo.com")) &&
         assertTrue(hosts.contains("youtube.com")) &&
         assertTrue(hosts.forall(h => !h.contains("googleapis.com")))
+      }
+    },
+    test(
+      "#1705 new templates attribute real prod-observed subdomains and exclude shared platforms",
+    ) {
+      // Phase-3 host-set evidence from `evidence/classification.md`. Each tuple
+      // is (slug, real-subdomain-seen-in-kid-traffic, shared-platform-apex-the-set-must-NOT-match).
+      // The new templates were authored from 14d of prod traffic on the kid
+      // MACs (see `scripts/analysis/fetch_prod_data.sh` for the device list);
+      // pinning these here guards against an author accidentally pulling in a
+      // shared-platform apex (#1661) or shrinking the set so real attribution
+      // breaks.
+      val cases = List(
+        ("tinkercad", "editor.tinkercad.com", "googleapis.com"),
+        ("duolingo", "simg-ssl.duolingo.com", "fastly.net"),
+        ("brave", "redirector.brave.com", "cloudfront.net"),
+        ("plex", "pubsub.plex.tv", "fastly.net"),
+        ("crazygames", "cza.crazygames.com", "cloudflare.com"),
+        ("poki", "t.poki.io", "akamaiedge.net"),
+        ("thingiverse", "img.thingiverse.com", "amazonaws.com"),
+      )
+      for {
+        templates <- AppTemplates.loadAll()
+      } yield {
+        val bySlug  = templates.map(t => t.slug.value -> t).toMap
+        val results = cases.map { case (slug, sub, sharedApex) =>
+          val t             = bySlug.getOrElse(slug, sys.error(s"missing template: $slug"))
+          val hosts         = t.hosts.map(_.value)
+          val attributes    =
+            hosts.exists(h => wifihaven.shared.types.HostMatch.matchesApex(sub, h))
+          val pullsInShared =
+            hosts.exists(h =>
+              h == sharedApex || wifihaven.shared.types.HostMatch.matchesApex(h, sharedApex),
+            )
+          (slug, sub, sharedApex, attributes, pullsInShared)
+        }
+        assertTrue(results.forall { case (_, _, _, attributes, _) => attributes }) &&
+        assertTrue(results.forall { case (_, _, _, _, pullsInShared) => !pullsInShared })
+      }
+    },
+    test("#1705 plex template covers both apex domains observed in prod") {
+      // plex.tv carries control/auth traffic, plex.direct carries the
+      // direct-stream media bytes. Both apexes had real kid traffic on the
+      // 14d evidence window (see evidence/classification.md).
+      for {
+        templates <- AppTemplates.loadAll()
+      } yield {
+        val plex  = templates.find(_.slug == AppTemplateId.unsafe("plex")).get
+        val hosts = plex.hosts.map(_.value).toSet
+        assertTrue(hosts.contains("plex.tv")) &&
+        assertTrue(hosts.contains("plex.direct"))
       }
     },
     test("each template's hosts parse as apex hostnames") {

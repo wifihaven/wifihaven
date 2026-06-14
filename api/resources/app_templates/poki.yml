@@ -1,0 +1,13 @@
+slug: poki
+name: Poki
+icon: "https://icons.duckduckgo.com/ip3/poki.com.ico"
+icon_type: url
+# Added from prod evidence (#1705): 14d kid traffic showed ~25 active min on
+# t.poki.io + leveldata.poki.io. Browser-game portal; like crazygames, the
+# heavy game-asset bytes ride shared CDNs and are intentionally NOT included
+# per #1661. Only the .io apex appeared in real traffic — poki.com was
+# observed only as a marketing surface and is intentionally NOT included
+# (don't template hosts we haven't seen kids use, per the #1705 out-of-scope
+# rule); add it later if the operator's traffic shows otherwise.
+hosts:
+  - poki.io

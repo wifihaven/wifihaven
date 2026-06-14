@@ -1,0 +1,11 @@
+slug: x
+name: X
+icon: "https://icons.duckduckgo.com/ip3/x.com.ico"
+icon_type: url
+# Added from prod evidence (#1705): operator-created in prod. Twitter/X —
+# x.com is the app apex; twimg.com is X's dedicated image/video CDN where
+# the dominant byte volume lives (346 MB / 337 active min in the 14d
+# sample). Both are brand-owned, no shared-platform exposure.
+hosts:
+  - x.com
+  - twimg.com

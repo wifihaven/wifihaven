@@ -1,0 +1,10 @@
+slug: giphy
+name: Giphy
+icon: "https://icons.duckduckgo.com/ip3/giphy.com.ico"
+icon_type: url
+# Added from prod evidence (#1705): operator-created in prod. Embedded in
+# many other apps but worth its own template — kids' messaging surfaces
+# generate visible giphy.com traffic and it should attribute distinctly
+# rather than landing in "Other".
+hosts:
+  - giphy.com
