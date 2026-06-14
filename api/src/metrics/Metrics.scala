@@ -59,6 +59,12 @@ object MetricGuard {
       "rollup_job",
       "router_id",
       "installation_id",
+      // #1718 — bounded per-router dimensions for native OS-level metrics. `iface` is the
+      // network-interface name (handful per router: br-lan, wan, phyN-apM, …). `ssid` is the
+      // wireless SSID (a handful per router). Both are bounded by router hardware/config, not
+      // by user/device/flow growth, so they're firewall-safe.
+      "iface",
+      "ssid",
     )
 
   /**
@@ -150,18 +156,38 @@ object MetricGuard {
     "usage_post_total"                          -> Set("result", "router_id", "installation_id"),
     // Server-side ingest health for POST /api/router/metrics (#1205). Concrete, emitted now.
     "router_metrics_batches_total"              -> Set("status"),
+    // #1718 — native OpenWRT OS-level metrics the agent collects from /proc/* and `iw dev`
+    // and pushes through the existing #1205 batch transport. Gives operators the LuCI-style
+    // view of router health (load / cpu / mem / bandwidth / conntrack / wifi clients) in
+    // Grafana, so incidents like #1716 (prod router CPU pegged) show as a visible climb
+    // rather than requiring an SSH session. Per the §4 cardinality firewall the per-MAC
+    // wireless client list is NEVER a Prometheus dimension — only the aggregate
+    // count-per-(iface,ssid) ships as a labeled series. Per-client drill-in would need a
+    // separate DB-backed surface.
+    "router_host_load_m1"                       -> Set("router_id", "installation_id"),
+    "router_host_load_m5"                       -> Set("router_id", "installation_id"),
+    "router_host_load_m15"                      -> Set("router_id", "installation_id"),
+    "router_host_cpu_pct"                       -> Set("router_id", "installation_id"),
+    "router_host_mem_total_kb"                  -> Set("router_id", "installation_id"),
+    "router_host_mem_free_kb"                   -> Set("router_id", "installation_id"),
+    "router_host_mem_buffers_kb"                -> Set("router_id", "installation_id"),
+    "router_host_mem_cached_kb"                 -> Set("router_id", "installation_id"),
+    "router_host_conntrack_count"               -> Set("router_id", "installation_id"),
+    "router_host_iface_rx_bytes_total"          -> Set("iface", "router_id", "installation_id"),
+    "router_host_iface_tx_bytes_total"          -> Set("iface", "router_id", "installation_id"),
+    "router_host_wifi_clients"             -> Set("iface", "ssid", "router_id", "installation_id"),
     // #1243 rollup health — `rollup_job` is a handful of hand-named jobs (traffic_hourly,
     // traffic_daily, time_used_daily), `status` ∈ {ok, error}. Bounded; routed through the guard.
-    "wifihaven_rollup_runs_total"               -> Set("rollup_job", "status"),
-    "wifihaven_rollup_duration_seconds"         -> Set("rollup_job"),
-    "wifihaven_rollup_rows_upserted"            -> Set("rollup_job"),
+    "wifihaven_rollup_runs_total"          -> Set("rollup_job", "status"),
+    "wifihaven_rollup_duration_seconds"    -> Set("rollup_job"),
+    "wifihaven_rollup_rows_upserted"       -> Set("rollup_job"),
     // #1069 named-schedule CRUD — `op` ∈ {create, update, delete}, a fixed enum. Lets an operator
     // see schedule edits land (and rate-alert on a runaway delete loop) without grepping logs.
-    "wifihaven_schedule_mutations_total"        -> Set("op"),
+    "wifihaven_schedule_mutations_total"   -> Set("op"),
     // #1243/#1221 HikariCP pool gauges — no labels.
-    "wifihaven_db_pool_active_connections"      -> Set.empty[String],
-    "wifihaven_db_pool_idle_connections"        -> Set.empty[String],
-    "wifihaven_db_pool_total_connections"       -> Set.empty[String],
+    "wifihaven_db_pool_active_connections" -> Set.empty[String],
+    "wifihaven_db_pool_idle_connections"   -> Set.empty[String],
+    "wifihaven_db_pool_total_connections"  -> Set.empty[String],
     "wifihaven_db_pool_threads_awaiting_connection" -> Set.empty[String],
     "wifihaven_db_pool_max_size"                    -> Set.empty[String],
   )

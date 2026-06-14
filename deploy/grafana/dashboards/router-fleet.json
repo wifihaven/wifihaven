@@ -508,6 +508,211 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Load avg (1m) per router (#1718)",
+      "description": "Per-router load average from /proc/loadavg. #1716 would have shown as a load-m1 climb on the affected router minutes before the operator noticed; this panel is the first-look for 'is any router CPU-pegged right now?'. router_id is server-attached; labels stay router_id-only.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 56 },
+      "id": 16,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "max by (router_id) (router_host_load_m1{env=\"$env\"})",
+          "legendFormat": "{{router_id}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "CPU% per router (#1718)",
+      "description": "Per-router CPU utilization (delta-of-/proc/stat between agent ticks). Pairs with load-m1 above: load > 1 with cpu_pct near 100 is CPU saturation; load > 1 with cpu_pct low is I/O wait. Either way the panel shows it in one glance.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 64 },
+      "id": 17,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "max by (router_id) (router_host_cpu_pct{env=\"$env\"})",
+          "legendFormat": "{{router_id}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Memory used% per router (#1718)",
+      "description": "(total - free - buffers - cached) / total — the LuCI 'available' definition. A climb here on a small router (~256 MB) is the early warning for the OOM/wedge cluster we've seen historically.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 64 },
+      "id": 18,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "max by (router_id) ((router_host_mem_total_kb{env=\"$env\"} - router_host_mem_free_kb{env=\"$env\"} - router_host_mem_buffers_kb{env=\"$env\"} - router_host_mem_cached_kb{env=\"$env\"}) / clamp_min(router_host_mem_total_kb{env=\"$env\"}, 1))",
+          "legendFormat": "{{router_id}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Per-iface bandwidth — RX (#1718)",
+      "description": "rate(router_host_iface_rx_bytes_total[5m]) by (router_id, iface). iface is bounded (br-lan, wan, phyN-apM…) — handful per router, firewall-safe. Counter, not gauge; cumulative, server re-bases on agent restart via the #1205 counter-reset sentinel.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 72 },
+      "id": 19,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "Bps",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (router_id, iface) (rate(router_host_iface_rx_bytes_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{router_id}} / {{iface}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Per-iface bandwidth — TX (#1718)",
+      "description": "rate(router_host_iface_tx_bytes_total[5m]) by (router_id, iface). Symmetric to RX above; usually a household's TX on the WAN iface tracks the uplink.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 72 },
+      "id": 20,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "Bps",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (router_id, iface) (rate(router_host_iface_tx_bytes_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{router_id}} / {{iface}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Conntrack table size per router (#1718)",
+      "description": "/proc/sys/net/netfilter/nf_conntrack_count. Routers wedge when this gets near nf_conntrack_max (typically 16k on the budget hardware). A sustained climb is the first sign of a torrent/scan-style flow explosion or a leaking conntrack timer.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 80 },
+      "id": 21,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "max by (router_id) (router_host_conntrack_count{env=\"$env\"})",
+          "legendFormat": "{{router_id}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Wireless clients connected per (router, iface, ssid) (#1718)",
+      "description": "Aggregate count of associated stations per AP (from `iw dev <iface> station dump | wc -l`). Per-MAC drill-in is deliberately NOT a Prometheus label — the cardinality firewall forbids `mac` as a label, and per-client surfaces belong in a separate DB-backed view. Useful for spotting an AP that drops to 0 connected clients (radio crash) or jumps to an unexpectedly high count.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 80 },
+      "id": 22,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "max by (router_id, iface, ssid) (router_host_wifi_clients{env=\"$env\"})",
+          "legendFormat": "{{router_id}} / {{ssid}} ({{iface}})",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",
