@@ -36,6 +36,19 @@ describe('HostCell', () => {
     expect(screen.getByText('label')).toBeInTheDocument()
   })
 
+  // #1708 + #826: label rows must inherit the same standardized unresolved
+  // treatment as IP rows (italic + text-brand-text) so a synthetic name
+  // doesn't visually masquerade as a resolved FQDN if the surface ever drifts.
+  it('#1708: label rows get the standardized italic / muted treatment', () => {
+    const { container } = render(
+      <HostCell host={{ type: 'label', value: 'apple-push', source: 'static-ip-range' }} />,
+    )
+    const outer = container.firstChild as HTMLElement
+    expect(outer.className).toContain('italic')
+    expect(outer.className).toContain('text-brand-text')
+    expect(outer.className).toContain('font-mono')
+  })
+
   // #458: The fix adds a {' '} text node between the IP value and the type tag so
   // the cell's text content reads "239.255.255.250 ipv4" (with a space), not
   // "239.255.255.250ipv4".  Verify the space is present in the rendered text.

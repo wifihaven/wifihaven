@@ -23,7 +23,10 @@ enum HostId {
   // inside a hardcoded operator-curated range (apple-push, google-dns, cloudflare-dns;
   // see openwrt static_ip_labels). NOT a hostname the agent ever observed at the
   // resolver — it cannot be pattern-matched against `*.example.com` and `asFqdn`
-  // returns None, the same as IP literals.
+  // returns None, the same as IP literals. The label string is intentionally a
+  // plain `String` (not a validated opaque type): label validity is enforced
+  // UPSTREAM by the curated `static_ip_labels.lua` map; the decoder's only
+  // defense here is rejecting an empty value.
   case Label(name: String)
 }
 

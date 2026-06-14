@@ -185,6 +185,9 @@ export type HostId =
   | { type: 'fqdn'; value: string }
   | { type: 'ipv4'; value: string }
   | { type: 'ipv6'; value: string }
+  // `source` is open-ended (forward-compat for a future ASN map etc.); today
+  // the only emitted value is 'static-ip-range'. Kept as plain string per
+  // eslint @typescript-eslint/ban-types (rules out the literal+string trick).
   | { type: 'label'; value: string; source?: string }
 
 export function hostDisplay(h: HostId): string {
