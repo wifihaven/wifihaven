@@ -848,6 +848,41 @@ rather than smuggling an IP into a hostname field, so the type system
 prevents accidental pattern matches against `*.example.com` and the admin
 UI can render direct-IP rows distinguishably from named hosts.
 
+#### Static IP-range labels (#1655)
+
+Before falling through to the IP literal, the agent consults a small,
+in-repo **static IP-range → label map**
+(`openwrt/files/usr/lib/lua/wifihaven/static_ip_labels.lua`) as a
+last-resort attribution source. Some traffic never presents an SNI *and*
+never resolves via dnsmasq — notably Apple push (APNs) on `17.0.0.0/8`,
+and apps that bypass the local resolver and hit public resolvers
+(`8.8.8.8`, `1.1.1.1`) directly. With the map, those flows show up in
+connection_events as `apple-push` / `google-dns` / `cloudflare-dns`
+instead of a bare IP.
+
+**Precedence in `handle_flow`:**
+
+1. `attribute_hostname` — dnsmasq query-log cache (the SNI/QUIC sidecars
+   also feed this primitive via `cache.insert_sni`, so SNI- and
+   QUIC-derived hostnames flow through the same path — #573, #1651).
+2. `ipset_lookup_hostname` — legacy `nft_sets` fallback for site_limits
+   domains.
+3. `static_ip_labels.lookup` — last-resort static map (this section).
+
+A real attribution always beats a static guess.
+
+**LABELS ONLY — never an enforcement input.** The static map participates
+in zero drop or carve-out predicates: enforcement is the per-MAC
+`BlockRules` / nftables pipeline (see §0.1 / §0.2). Promoting an entry to
+an enforcement input requires explicit operator approval and a tracking
+issue. The header comment in `static_ip_labels.lua` repeats this.
+
+**Extending the map.** Add a `{ cidr, label }` row to `M._ranges` with a
+citation in the comment beside it, and a test in
+`openwrt/test/static_ip_labels_spec.lua`. Keep growth operator-curated:
+entries should cover ranges with an unambiguous, well-known owner that
+prod evidence shows dominating the unattributed-IP tail.
+
 ### 7.3 Package layout
 
 ```

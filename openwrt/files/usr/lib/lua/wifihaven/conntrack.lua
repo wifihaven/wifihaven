@@ -23,6 +23,8 @@
 
 local M = {}
 
+local static_ip_labels = require("wifihaven.static_ip_labels")
+
 -- ---------------------------------------------------------------------------
 -- eb_san(host) -> string
 --
@@ -655,6 +657,14 @@ function M.handle_flow(flow, ctx, batcher)
   local hname = M.attribute_hostname(flow.dst_ip, ctx.lookup_hostname, ctx.fqdn_retry_state)
   if not hname then
     hname = M.ipset_lookup_hostname(flow.dst_ip, ctx.nft_sets or {})
+  end
+  -- #1655: last-resort static IP-range → label fallback for flows with no SNI
+  -- and no DNS resolution (Apple APNs on 17.0.0.0/8, well-known public DNS
+  -- resolvers, etc.). LABELS ONLY — see static_ip_labels.lua header. The
+  -- precedence above (DNS > SNI-via-shared-cache > nft_sets > static map) is
+  -- intentional: a real attribution must always beat a static guess.
+  if not hname then
+    hname = static_ip_labels.lookup(flow.dst_ip)
   end
 
   -- Per-MAC block lookup (#297): pause and time-limit block every flow from
