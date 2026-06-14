@@ -26,8 +26,11 @@
 --     as no_sni / malformed. Rare in practice (ClientHellos fit in one MTU).
 --
 -- Public API:
---   sni.parse_client_hello(payload)   → server_name string | nil
---   sni.parse_packet(eth_frame_bytes) → { dst_ip, src_mac, sni } | nil
+--   sni.parse_client_hello(payload)   → server_name string | nil, reason string | nil
+--   sni.parse_framing(eth_frame_bytes)→ { src_mac, dst_ip, src_ip, src_port,
+--                                         dst_port, payload } | nil, reason
+--   sni.flow_key(framing)             → opaque 4-tuple key string
+--   sni.parse_packet(eth_frame_bytes) → { dst_ip, src_mac, sni } | nil, reason
 --   sni.format_sni_line(ip, mac, sni) → "SNI\t<ip>\t<mac>\t<sni>\n"
 --   sni.parse_sni_line(line)          → { dst_ip, src_mac, sni } | nil
 --   sni.read_global_header(read_fn)   → { swapped } | nil   (pcap stream)
@@ -71,30 +74,44 @@ end
 -- TLS ClientHello parser.
 -- ---------------------------------------------------------------------------
 
--- parse_client_hello(payload) → server_name|nil, ech_label|nil
+-- parse_client_hello(payload) → server_name | nil, reason | nil
 --
 -- payload is the raw bytes of the TCP segment starting at the TLS record.
--- Returns the server_name from the SNI extension when present, or nil for
--- any of: non-handshake content type, non-ClientHello handshake, no SNI
--- extension, malformed/truncated record, name_type != host_name (0x00).
---
--- Second return value is "ech" when the ClientHello carries the Encrypted
--- ClientHello extension (type 0xfe0d, RFC draft-ietf-tls-esni) and nil
--- otherwise (#1650). ECH is observability + best-effort only — when present,
--- the real server_name is inside the encrypted inner ClientHello; any
--- server_name on the outer ClientHello is the public/outer name (the
--- gateway hostname, e.g. cloudflare-ech.com) and is the most honest
--- attribution we can offer. The sni-tail sidecar buckets these captures
--- under sni_clienthellos_total{result=ech} so operators can track the
--- ECH-attributed fraction independently of the regular `parsed` bucket.
+-- Returns (server_name, nil) on a regular ClientHello with SNI, or
+-- (server_name, "ech") / (nil, "ech") when the ClientHello carries the
+-- Encrypted ClientHello extension (#1650, type 0xfe0d). For failures
+-- returns (nil, reason) with a bounded enum so reassembly (#1653) can tell
+-- "needs more bytes" apart from "definitive failure":
+--   "not_handshake"  — payload does not start with TLS handshake (0x16) or
+--                      is shorter than a TLS record header. Buffering won't
+--                      help; this is a continuation segment for a flow we
+--                      have no first segment for, or non-TLS traffic.
+--   "incomplete"     — record/handshake header is present but the declared
+--                      lengths run past the payload, AND we have not yet
+--                      found server_name. More bytes (next TCP segment)
+--                      may complete it; the reassembly buffer should hold
+--                      on and retry.
+--   "no_sni"         — payload definitively does not contain a usable SNI
+--                      (no server_name extension, name we rejected as too
+--                      short, or non-ClientHello handshake type).
+--   "malformed"      — structurally invalid lengths (e.g. extension data
+--                      length overruns the extensions block).
+--   "ech"            — observability + best-effort only (#1650). The real
+--                      server_name is encrypted; any server_name on the
+--                      OUTER ClientHello is the public/outer name (gateway
+--                      hostname, e.g. cloudflare-ech.com) and is the most
+--                      honest attribution we can offer. The sni-tail
+--                      sidecar buckets these under
+--                      sni_clienthellos_total{result=ech} so operators
+--                      track ECH adoption independent of `parsed`.
 function M.parse_client_hello(payload)
-  if type(payload) ~= "string" or #payload < 5 then return nil end
+  if type(payload) ~= "string" or #payload < 5 then return nil, "not_handshake" end
 
   -- TLS record header
   local content_type = u8(payload, 1)
-  if content_type ~= 0x16 then return nil end -- not handshake
+  if content_type ~= 0x16 then return nil, "not_handshake" end -- not handshake
   local record_len = u16(payload, 4)
-  if not record_len then return nil end
+  if not record_len then return nil, "not_handshake" end
   -- NB: we deliberately do NOT reject when the declared record length exceeds
   -- the captured buffer. Real OpenSSL/curl TLS 1.3 ClientHellos are padded past
   -- ~512 bytes, so under the capture snaplen the tail (large key_share /
@@ -106,79 +123,104 @@ function M.parse_client_hello(payload)
   -- (each returns nil past end-of-buffer), so a SNI beyond the captured bytes
   -- still yields nil — we just no longer discard one that IS present.
 
-  -- Handshake header (inside the record)
+  -- Handshake header (inside the record). u8 returning nil here means the
+  -- buffer ended mid-record header — the next TCP segment may complete it.
   local hs_type = u8(payload, 6)
-  if hs_type ~= 0x01 then return nil end -- not ClientHello
+  if not hs_type then return nil, "incomplete" end
+  if hs_type ~= 0x01 then return nil, "no_sni" end -- not ClientHello (e.g. ServerHello)
   local hs_len = u24(payload, 7)
-  if not hs_len then return nil end
+  if not hs_len then return nil, "incomplete" end
 
   -- ClientHello body starts at offset 10
   local off = 10
   local end_off = 10 + hs_len -- one past last byte of body
 
+  -- From here on a u8/u16/slice returning nil means we ran past the captured
+  -- buffer (the next TCP segment may have the rest) → "incomplete". A field
+  -- whose declared length runs past `end_off` (the declared handshake body)
+  -- is structurally invalid → "malformed".
+
   -- legacy_version (2) + random (32) = 34 bytes
   off = off + 34
-  if off > end_off then return nil end
+  if off > end_off then return nil, "malformed" end
 
   -- legacy_session_id: u8 length + bytes
-  local sid_len = u8(payload, off); if not sid_len then return nil end
+  local sid_len = u8(payload, off); if not sid_len then return nil, "incomplete" end
   off = off + 1 + sid_len
-  if off > end_off then return nil end
+  if off > end_off then return nil, "malformed" end
 
   -- cipher_suites: u16 length + bytes
-  local cs_len = u16(payload, off); if not cs_len then return nil end
+  local cs_len = u16(payload, off); if not cs_len then return nil, "incomplete" end
   off = off + 2 + cs_len
-  if off > end_off then return nil end
+  if off > end_off then return nil, "malformed" end
 
   -- compression_methods: u8 length + bytes
-  local cm_len = u8(payload, off); if not cm_len then return nil end
+  local cm_len = u8(payload, off); if not cm_len then return nil, "incomplete" end
   off = off + 1 + cm_len
-  if off > end_off then return nil end
+  if off > end_off then return nil, "malformed" end
 
   -- extensions: u16 total length + extension records
-  local ext_total = u16(payload, off); if not ext_total then return nil end
+  local ext_total = u16(payload, off); if not ext_total then return nil, "incomplete" end
   off = off + 2
   local ext_end = off + ext_total
-  if ext_end > end_off then return nil end
+  if ext_end > end_off then return nil, "malformed" end
 
-  -- Walk extension records.
-  --
-  -- We can't early-return on the first server_name hit because we also need
-  -- to detect ECH (0xfe0d), which may appear before OR after server_name in
-  -- the extension list. Stash both findings and decide at the end. The list
-  -- is short (a few dozen extensions at most) so the full walk is cheap.
+  -- Walk extension records. We can't early-return on the first server_name
+  -- hit because we also need to detect ECH (0xfe0d), which may appear before
+  -- OR after server_name in the extension list (#1650). Stash both findings
+  -- and decide at the end. The walk is bounded by the DECLARED ext_end; an
+  -- intra-field u8/u16 returning nil means ext_end ran past the captured
+  -- buffer → "incomplete" if we have not yet found SNI (the SNI ext might
+  -- be in the next segment — #1653 reassembly will retry). The list is
+  -- short (a few dozen extensions at most) so the full walk is cheap.
   local found_sni
   local has_ech = false
+  -- Helper: when an intra-walk u8/u16 returns nil, the captured prefix ran
+  -- short of the declared extensions block. If we already have something
+  -- usable (found_sni or has_ech) prefer to surface it now rather than wait
+  -- for reassembly; otherwise signal "incomplete" so the buffer holds on.
+  local function on_short_buffer()
+    if found_sni then
+      if has_ech then return found_sni, "ech" end
+      return found_sni
+    end
+    if has_ech then return nil, "ech" end
+    return nil, "incomplete"
+  end
+
   while off + 4 <= ext_end do
-    local ext_type = u16(payload, off);     if not ext_type then return nil end
-    local ext_len  = u16(payload, off + 2); if not ext_len  then return nil end
+    local ext_type = u16(payload, off);     if not ext_type then return on_short_buffer() end
+    local ext_len  = u16(payload, off + 2); if not ext_len  then return on_short_buffer() end
     local ext_body_off = off + 4
     local ext_body_end = ext_body_off + ext_len
-    if ext_body_end > ext_end then return nil end
+    if ext_body_end > ext_end then return nil, "malformed" end
 
     if ext_type == 0x0000 and not found_sni then -- server_name (first hit only)
       -- ServerNameList: u16 list length + entries
-      if ext_body_off + 2 > ext_body_end then return nil end
+      if ext_body_off + 2 > ext_body_end then return nil, "malformed" end
       local sn_list_len = u16(payload, ext_body_off)
-      if not sn_list_len then return nil end
+      if not sn_list_len then return nil, "incomplete" end
       local list_off = ext_body_off + 2
       local list_end = list_off + sn_list_len
-      if list_end > ext_body_end then return nil end
+      if list_end > ext_body_end then return nil, "malformed" end
 
       -- First entry only — RFC 6066 §3 says list MAY contain multiple but
       -- in practice it's always one host_name. We'll take the first
       -- host_name entry we find.
       while list_off + 3 <= list_end do
-        local name_type = u8(payload, list_off);     if not name_type then return nil end
-        local sn_len    = u16(payload, list_off + 1); if not sn_len    then return nil end
+        local name_type = u8(payload, list_off);     if not name_type then return nil, "incomplete" end
+        local sn_len    = u16(payload, list_off + 1); if not sn_len    then return nil, "incomplete" end
         local sn_off    = list_off + 3
-        if sn_off + sn_len > list_end then return nil end
+        if sn_off + sn_len > list_end then return nil, "malformed" end
         if name_type == 0x00 then -- host_name
           local sn = slice(payload, sn_off, sn_len)
+          if not sn then return nil, "incomplete" end
           -- A real SNI is a domain; the shortest plausible one is "a.b" (3
           -- chars). Anything shorter is malformed — reject it (the value is
           -- only ever used as a cache key, but we don't want junk keys).
-          if sn and #sn >= 3 then found_sni = sn end
+          -- Record but don't early-return: we still need to walk the rest
+          -- of the extensions block to detect ECH (#1650).
+          if #sn >= 3 then found_sni = sn end
           break
         end
         list_off = sn_off + sn_len
@@ -190,8 +232,16 @@ function M.parse_client_hello(payload)
     off = ext_body_end
   end
 
-  if has_ech then return found_sni, "ech" end
-  return found_sni
+  -- Natural loop termination: we walked every declared extension. A u16/u8
+  -- returning nil mid-walk would have returned "incomplete" from inside the
+  -- loop, so reaching here means the captured prefix covered the entire
+  -- declared extensions block.
+  if found_sni then
+    if has_ech then return found_sni, "ech" end
+    return found_sni
+  end
+  if has_ech then return nil, "ech" end
+  return nil, "no_sni"
 end
 
 -- ---------------------------------------------------------------------------
@@ -278,20 +328,29 @@ end
 --                    returned in the result (best honest attribution) — the
 --                    reason still labels the capture as ECH so operators
 --                    can see the ECH-attributed fraction in the metric.
-function M.parse_packet(eth_frame)
+-- parse_framing(eth_frame) → { src_mac, dst_ip, src_ip, src_port, dst_port,
+--                              payload } | nil, reason
+--
+-- Decode the Ethernet + IPv4/IPv6 + TCP framing of `eth_frame` and return the
+-- 5-tuple identifiers plus the TCP payload bytes WITHOUT touching TLS at all.
+-- Carved out of parse_packet (#1653) so the reassembly buffer in
+-- sni_reassembly.lua can key on (src_ip, src_port, dst_ip, dst_port) and feed
+-- the payload through `parse_client_hello` itself — preserving the
+-- single-source-of-truth parser (AGENTS.md §single-source-of-truth). Reason
+-- enum is the framing-level subset ("truncated", "not_ip", "not_tcp",
+-- "malformed").
+function M.parse_framing(eth_frame)
   if type(eth_frame) ~= "string" or #eth_frame < 14 + 20 + 20 then
     return nil, "truncated"
   end
 
-  -- Ethernet header: dst (6), src (6), ethertype (2)
   local ethertype = u16(eth_frame, 13)
   local sa, sb, sc, sd, se, sf = eth_frame:byte(7, 12)
   local src_mac = format_mac(sa, sb, sc, sd, se, sf)
 
-  local dst_ip, tcp_off
+  local dst_ip, src_ip, tcp_off
   if ethertype == 0x0800 then
-    -- IPv4 header
-    local ip_off = 15 -- 1-based, after 14-byte Ethernet
+    local ip_off = 15
     local ver_ihl = u8(eth_frame, ip_off)
     if not ver_ihl then return nil, "malformed" end
     if math.floor(ver_ihl / 16) ~= 4 then return nil, "malformed" end
@@ -300,27 +359,21 @@ function M.parse_packet(eth_frame)
     if ip_off + ihl - 1 > #eth_frame then return nil, "truncated" end
     local proto = u8(eth_frame, ip_off + 9)
     if proto ~= 6 then return nil, "not_tcp" end
-    local da, db, dc, dd = eth_frame:byte(ip_off + 16, ip_off + 19)
-    if not da then return nil, "malformed" end
+    local sa4, sb4, sc4, sd4 = eth_frame:byte(ip_off + 12, ip_off + 15)
+    local da, db, dc, dd     = eth_frame:byte(ip_off + 16, ip_off + 19)
+    if not da or not sa4 then return nil, "malformed" end
+    src_ip = string.format("%d.%d.%d.%d", sa4, sb4, sc4, sd4)
     dst_ip = string.format("%d.%d.%d.%d", da, db, dc, dd)
     tcp_off = ip_off + ihl
   elseif ethertype == 0x86dd then
-    -- IPv6 fixed header (40 bytes): version+TC+flow(4), payload_len(2),
-    -- next_header(1), hop_limit(1), src(16), dst(16). Walk RFC 8200
-    -- extension headers (Hop-by-Hop=0, Routing=43, Dest-Opts=60) past the
-    -- fixed header to land on the TCP header. Fragment (44), AH (51), ESP
-    -- (50) are not followed — they fall out as malformed / no_sni and are
-    -- vanishingly rare for TLS ClientHellos (which fit in one MTU).
     local ip_off = 15
     if ip_off + 40 - 1 > #eth_frame then return nil, "truncated" end
     local ver = math.floor(u8(eth_frame, ip_off) / 16)
     if ver ~= 6 then return nil, "malformed" end
     local nh = u8(eth_frame, ip_off + 6)
+    src_ip = format_ipv6(eth_frame, ip_off + 8)
     dst_ip = format_ipv6(eth_frame, ip_off + 24)
     local hdr_off = ip_off + 40
-    -- Bounded extension-header walk. RFC 8200 imposes no hard cap; 8 hops is
-    -- well past any realistic legitimate chain and stops a malicious packet
-    -- from looping us.
     local hops = 0
     while nh == 0 or nh == 43 or nh == 60 do
       if hops >= 8 then return nil, "malformed" end
@@ -339,25 +392,58 @@ function M.parse_packet(eth_frame)
     return nil, "not_ip"
   end
 
-  -- TCP header (common to v4/v6)
   if tcp_off + 20 - 1 > #eth_frame then return nil, "truncated" end
+  local src_port = u16(eth_frame, tcp_off)
+  local dst_port = u16(eth_frame, tcp_off + 2)
   local data_off_byte = u8(eth_frame, tcp_off + 12)
   if not data_off_byte then return nil, "malformed" end
   local data_off = math.floor(data_off_byte / 16) * 4
   if data_off < 20 then return nil, "malformed" end
   local payload_off = tcp_off + data_off
   if payload_off > #eth_frame then return nil, "truncated" end
-  local payload = eth_frame:sub(payload_off)
+  return {
+    src_mac  = src_mac,
+    dst_ip   = dst_ip,
+    src_ip   = src_ip,
+    src_port = src_port,
+    dst_port = dst_port,
+    payload  = eth_frame:sub(payload_off),
+  }
+end
 
-  local sni, ech = M.parse_client_hello(payload)
+-- flow_key(framing) → opaque string keying the per-flow reassembly buffer.
+-- The 4-tuple is the canonical TCP-stream identity; we render it as a single
+-- string so the reassembly module can stay parser-agnostic.
+function M.flow_key(f)
+  return string.format("%s:%d-%s:%d", f.src_ip, f.src_port, f.dst_ip, f.dst_port)
+end
+
+-- parse_packet collapses onto parse_framing + parse_client_hello so there is
+-- exactly one copy of the Ethernet/IP/TCP framing logic in this module
+-- (AGENTS.md §single-source-of-truth — #1653 review feedback). The legacy
+-- contract is preserved: callers that don't need the 5-tuple still get
+-- `{ dst_ip, src_mac, sni } | nil, reason` with the reason enum
+-- ("truncated" | "not_ip" | "not_tcp" | "malformed" | "no_sni" | "ech").
+-- On ECH (#1650) the result table is populated when an outer/public SNI was
+-- present, and the reason "ech" labels the bucket either way.
+function M.parse_packet(eth_frame)
+  local f, reason = M.parse_framing(eth_frame)
+  if not f then return nil, reason end
+  local sni, parse_reason = M.parse_client_hello(f.payload)
+  if parse_reason == "ech" then
+    if sni then
+      return { dst_ip = f.dst_ip, src_mac = f.src_mac, sni = sni }, "ech"
+    end
+    return nil, "ech"
+  end
   if not sni then
-    if ech then return nil, "ech" end
+    -- Collapse fine-grained parser reasons that the single-packet caller
+    -- can't act on into the existing "no_sni" bucket; preserve "malformed"
+    -- so a structurally invalid CH still surfaces as such in metrics.
+    if parse_reason == "malformed" then return nil, "malformed" end
     return nil, "no_sni"
   end
-  if ech then
-    return { dst_ip = dst_ip, src_mac = src_mac, sni = sni }, "ech"
-  end
-  return { dst_ip = dst_ip, src_mac = src_mac, sni = sni }
+  return { dst_ip = f.dst_ip, src_mac = f.src_mac, sni = sni }
 end
 
 -- ---------------------------------------------------------------------------

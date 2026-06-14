@@ -201,8 +201,10 @@ end
 -- #573: SNI ClientHello result counters. The wifihaven-sni-tail sidecar writes
 -- a cumulative per-result tally (same <result>\t<count> format as dns_metrics)
 -- to paths.sni_metrics; sample + fold the deltas into
--- sni_clienthellos_total{result}. result ∈ {parsed, truncated, no_sni,
--- ipv6_skipped, not_tcp, malformed}. A sidecar restart re-bases from 0, which
+-- sni_clienthellos_total{result}. result ∈ {parsed, reassembled, incomplete,
+-- dropped_byte_cap, not_handshake, truncated, no_sni, not_ip, not_tcp,
+-- malformed} (#1653 added the buffer-state buckets) plus QUIC buckets
+-- (quic_*). A sidecar restart re-bases from 0, which
 -- fold_external treats as a reset.
 local sni_results_baseline = {}
 local function fold_sni_metrics()

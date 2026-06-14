@@ -118,12 +118,15 @@ object MetricGuard {
     "agent_uptime_seconds"                      -> Set("router_id", "installation_id"),
     "agent_version"                             -> Set("version", "router_id", "installation_id"),
     "dns_queries_total"                         -> Set("result", "router_id", "installation_id"),
-    // #573 — TLS ClientHello SNI capture outcomes from the wifihaven-sni-tail sidecar.
-    // `result` ∈ {parsed, truncated, no_sni, not_ip, not_tcp, malformed, ech (#1650)} — a
-    // small bounded enum that lets an operator see the fleet-wide SNI capture / truncation
-    // / non-IP rate. `ech` (TCP) and `quic_ech` (QUIC) are the share of ClientHellos using
-    // Encrypted ClientHello (the real server_name is encrypted; we attribute via the
-    // outer/public SNI when present).
+    // #573 / #1650 / #1653 — TLS ClientHello SNI capture outcomes from the wifihaven-sni-tail
+    // sidecar. `result` ∈ {parsed, reassembled, incomplete, dropped_byte_cap, not_handshake,
+    // truncated, no_sni, not_ip, not_tcp, malformed, ech} plus QUIC buckets (quic_*, including
+    // quic_ech) — a small bounded enum that lets an operator see the fleet-wide SNI capture /
+    // truncation / reassembly / ECH rate. #1653 added `reassembled` (multi-segment CH stitched +
+    // parsed) so the lift from per-flow buffering is visible directly; `incomplete` /
+    // `dropped_byte_cap` / `not_handshake` are the corresponding buffer-state buckets. #1650
+    // added `ech` / `quic_ech` — the share of ClientHellos using Encrypted ClientHello (real
+    // server_name is encrypted; attribution falls back to the outer/public SNI when present).
     // (Pre-#1652 agents also emit `ipv6_skipped`; the bucket ages out as the fleet rolls forward.)
     "sni_clienthellos_total"                    -> Set("result", "router_id", "installation_id"),
     "blocklist_fetch_failures_total"            -> Set("status", "router_id", "installation_id"),

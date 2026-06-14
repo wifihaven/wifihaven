@@ -29,12 +29,15 @@
 -- Capture: tcpdump-mini (libpcap-userspace) with a combined BPF filter for
 -- both TCP-443 first-segment-of-ClientHello AND UDP-443 long-header Initial
 -- packets (high nibble 0xc0 = header_form=1 + fixed=1 + type=Initial). Output
--- is raw pcap on stdout (-w -), parsed inline by sni.parse_packet (TCP path)
--- or quic.parse_initial (UDP path), dispatched by the IPv4 protocol byte.
+-- is raw pcap on stdout (-w -); the TCP path goes through sni.parse_framing
+-- + per-flow sni_reassembly buffer + sni.parse_client_hello (#1653 multi-
+-- segment ClientHello reassembly), the UDP path goes through
+-- quic.parse_initial. Dispatch is on the IPv4 protocol byte.
 
 local uci     = require("uci")
 local openssl = require("openssl")
 local sni     = require("wifihaven.sni")
+local reasm   = require("wifihaven.sni_reassembly")
 local quic    = require("wifihaven.quic")
 local log     = require("wifihaven.log")
 local paths   = require("wifihaven.paths")
@@ -57,10 +60,25 @@ local dns_log = require("wifihaven.dns_log")
 -- vast majority of steady-state QUIC traffic — and every 0-RTT/Handshake/
 -- Retry from the capture entirely, keeping per-packet cost at "one parse per
 -- new QUIC flow" parity with the TCP path.
+--
+-- #1653 BPF widening for multi-segment ClientHello reassembly: the v1 TCP
+-- arm matched ONLY the segment whose payload starts with 0x16 ... 0x01 (the
+-- TLS handshake / ClientHello signature). A CH that spans multiple TCP
+-- segments — increasingly common with TLS 1.3 hybrid PQ key shares —
+-- has segment 2+ payloads starting at arbitrary CH offsets, so the v1
+-- filter never captured them and the parser fell out as no_sni. The
+-- widened filter captures any TCP/443 segment whose first payload byte is
+-- not 0x17 (TLS application_data). This catches the full handshake of every
+-- flow (0x14 ChangeCipherSpec / 0x15 Alert / 0x16 Handshake all pass) AND
+-- continuation segments of a multi-segment CH whose first byte is unlikely
+-- to be 0x17 (the parser tolerates the ~1/256 false-negative when a
+-- continuation byte happens to be 0x17). Pure-data steady-state segments
+-- (the bulk of TLS traffic) are excluded so per-packet cost stays bounded
+-- by handshake-segment count. Reassembly per (TCP 4-tuple) lives in
+-- sni_reassembly.lua with a hard byte cap + flow cap + TTL.
 local BPF_FILTER =
   "(tcp dst port 443 and " ..
-    "(tcp[((tcp[12]&0xf0)>>2)] = 0x16) and " ..
-    "(tcp[((tcp[12]&0xf0)>>2)+5] = 0x01)) or " ..
+    "(tcp[((tcp[12]&0xf0)>>2)] != 0x17)) or " ..
   "(udp dst port 443 and (udp[8] & 0xf0) = 0xc0)"
 
 -- Capture interface: probe the actual LAN bridge from UCI (network.lan.device)
@@ -93,7 +111,9 @@ log.info("sni-tail: starting iface=%s snaplen=%d spool=%s",
 -- logic lives in sni.lua (sni.read_global_header / sni.read_record /
 -- sni.iter_pcap) so it is exercised by the unit + integration suite; this
 -- sidecar is a thin driver that backs the reader's read_fn with the io.popen
--- handle and feeds each captured packet to sni.parse_packet.
+-- handle and feeds each captured packet to the dispatch helper below, which
+-- routes the TCP arm through sni.parse_framing + sni_reassembly:feed (#1653)
+-- and the UDP arm through quic.parse_initial.
 -- ---------------------------------------------------------------------------
 
 local h = io.popen(CAPTURE_CMD, "r")
@@ -132,10 +152,22 @@ end
 -- caches them inside the returned closure.
 local quic_crypto = quic.openssl_crypto(openssl)
 
--- Dispatch on IPv4 protocol byte: TCP=6 → existing sni.parse_packet, UDP=17 →
--- new quic.parse_initial. We bounce non-IPv4 to "ipv6_skipped" inline so we
--- don't pay two parser attempts per non-matching frame. (Keep the inner
--- parsers' enum strings disjoint so the metric label space stays unambiguous.)
+-- #1653: per-(TCP 4-tuple) reassembly buffer. The BPF widening above lets us
+-- see segment 2+ of a multi-segment ClientHello; the buffer stitches them
+-- back together and feeds the concatenated payload through the SAME
+-- sni.parse_client_hello primitive (AGENTS.md §single-source-of-truth).
+-- Bounded three ways (cap_bytes per flow, cap_flows concurrent, ttl_s):
+--   cap_bytes=8192   — comfortably covers TLS 1.3 hybrid PQ key shares
+--                       (~3-4 KB) + extensions. Bigger than this is suspicious.
+--   cap_flows=64     — worst-case memory ≈ 64*8192 = 512 KB tmpfs.
+--   ttl_s=5          — handshakes complete in << 1s; 5s is generous.
+local reasm_buf = reasm.new({ cap_bytes = 8192, cap_flows = 64, ttl_s = 5 })
+
+-- Dispatch on IPv4 protocol byte: TCP=6 → dispatch_tcp (sni.parse_framing +
+-- sni_reassembly buffer + sni.parse_client_hello), UDP=17 → quic.parse_initial.
+-- Non-IP frames fall out into the bounded "not_ip" bucket inline so we don't
+-- pay two parser attempts per non-matching frame. (Keep the inner parsers'
+-- enum strings disjoint so the metric label space stays unambiguous.)
 -- dispatch(pkt) → (result | nil, label)
 --
 -- `label` is the result-enum string the main loop folds into the per-result
@@ -145,31 +177,52 @@ local quic_crypto = quic.openssl_crypto(openssl)
 -- ality stays bounded and the operator can read fleet HTTP/3 vs HTTP/1+2 mix
 -- from the metric alone. The (dst_ip, src_mac, sni) tuple is identical-shape
 -- between the two parsers, so spool writes flow through the same path.
+-- #1653: TCP path goes through sni.parse_framing → reasm_buf:feed so a
+-- multi-segment ClientHello is stitched together before parse_client_hello
+-- runs on the concatenated buffer. The buffer's `result` enum
+-- ({parsed, reassembled, ech, incomplete, dropped_byte_cap, not_handshake,
+-- no_sni, malformed}) maps directly onto sni_clienthellos_total{result} —
+-- `reassembled` is the new bucket that surfaces the lift from this change.
+-- The `ech` bucket (#1650) overrides parsed/reassembled when the CH carries
+-- the Encrypted ClientHello extension — operators see ECH adoption split out
+-- from the regular parsed/reassembled buckets, and the spool still emits the
+-- outer/public SNI when one was present so attribution still works.
+local function dispatch_tcp(pkt)
+  local f, reason = sni.parse_framing(pkt)
+  if not f then return nil, reason end
+  local key = sni.flow_key(f)
+  local result, sn = reasm_buf:feed(key, f.payload)
+  if result == "parsed" or result == "reassembled" then
+    return { dst_ip = f.dst_ip, src_mac = f.src_mac, sni = sn }, result
+  end
+  if result == "ech" then
+    -- ECH detected; sn may be nil if the outer ClientHello carried no public
+    -- SNI. Emit a spool entry only when there IS an outer name to attribute.
+    if sn then return { dst_ip = f.dst_ip, src_mac = f.src_mac, sni = sn }, "ech" end
+    return nil, "ech"
+  end
+  -- "incomplete" / "not_handshake" / "no_sni" / "dropped_byte_cap" / "malformed":
+  -- bounded enum, fold into sni_clienthellos_total{result}.
+  return nil, result
+end
+
 local function dispatch(pkt)
   if #pkt < 14 + 20 then return nil, "truncated" end
   local ethertype = pkt:byte(13) * 256 + pkt:byte(14)
 
-  -- IPv6 (#1652): sni.parse_packet handles the v6 outer header itself, so we
-  -- forward v6 frames to it directly. The QUIC v1 parser is IPv4-only — v6
-  -- QUIC Initials would fall out as "not_tcp" via sni.parse_packet, which is
-  -- the right bucket (not_tcp is the TCP-path's "not a TCP segment" label).
+  -- IPv6 (#1652): sni.parse_framing handles the v6 outer header itself, so we
+  -- forward v6 frames into the same TCP-reassembly path. The QUIC v1 parser
+  -- is IPv4-only — v6 QUIC Initials fall out as "not_tcp" via parse_framing,
+  -- which is the right bucket (not_tcp is the TCP-path's "not a TCP segment"
+  -- label).
   if ethertype == 0x86dd then
-    local r, reason = sni.parse_packet(pkt)
-    -- On a successful parse, sni.parse_packet may also return reason="ech"
-    -- (#1650) when the outer ClientHello carried the Encrypted ClientHello
-    -- extension. The result still attributes via the outer/public SNI, but
-    -- the metric bucket is `ech` rather than `parsed` so operators see the
-    -- ECH-attributed fraction distinctly.
-    if r then return r, reason or "parsed" end
-    return nil, reason
+    return dispatch_tcp(pkt)
   end
   if ethertype ~= 0x0800 then return nil, "not_ip" end
 
   local proto = pkt:byte(15 + 9)
   if proto == 6 then
-    local r, reason = sni.parse_packet(pkt)
-    if r then return r, reason or "parsed" end
-    return nil, reason
+    return dispatch_tcp(pkt)
   elseif proto == 17 then
     local r, reason = quic.parse_initial(pkt, quic_crypto)
     -- ECH on the QUIC path (#1650) — propagate the "quic_ech" reason as the
@@ -182,13 +235,18 @@ local function dispatch(pkt)
   return nil, "malformed"
 end
 
--- #573 / #1650 / #1651 / #1652: cumulative per-result tally. result ∈ {parsed,
+-- #573 / #1650 / #1651 / #1652 / #1653: cumulative per-result tally. result ∈ {
+-- parsed, reassembled, incomplete, dropped_byte_cap, not_handshake,
 -- truncated, no_sni, not_ip, not_tcp, malformed, ech, quic_success,
 -- quic_short_header, quic_unsupported_version, quic_not_initial,
 -- quic_truncated, quic_malformed, quic_decrypt_failed, quic_no_crypto_frame,
 -- quic_no_sni, quic_ech, quic_not_ip, quic_not_udp, quic_not_443} — a small bounded
 -- enum. The TCP-path "not_ip" replaced "ipv6_skipped" when sni.parse_packet
--- gained IPv6 outer-header parsing in #1652. We mirror the #1302
+-- gained IPv6 outer-header parsing in #1652. #1653 added the buffer-driven
+-- buckets: `reassembled` (multi-segment CH stitched + parsed),
+-- `incomplete` (segment buffered for follow-up), `dropped_byte_cap` (per-
+-- flow byte cap exceeded), `not_handshake` (continuation segment with no
+-- prior buffered context — typical for the widened BPF). We mirror the #1302
 -- dns_metrics IPC: reuse dns_log.format_query_results to serialise the tally
 -- to paths.sni_metrics on each flush, and the agent's metrics tick folds the
 -- deltas into sni_clienthellos_total{result}. The split also feeds the
@@ -234,8 +292,13 @@ while true do
 
   local now = os.time()
   -- Publish the result tally on the same cadence as the heartbeat. Cheap
-  -- (a few-row tmpfs write) and bounded by the result enum.
+  -- (a few-row tmpfs write) and bounded by the result enum. We also sweep
+  -- the reassembly buffer for TTL-expired flows here (#1653) — the buffer
+  -- evicts lazily on per-key access, but a flow whose continuation never
+  -- arrives would otherwise sit until the next access; the periodic sweep
+  -- keeps the in-memory footprint bounded under partial-flow scenarios.
   if (now - last_metrics_flush) >= 30 then
+    reasm_buf:evict_expired()
     flush_metrics()
     last_metrics_flush = now
   end
@@ -244,15 +307,21 @@ while true do
     -- counts below break out which transport contributed; the metric does the
     -- same. Was named `parsed` in the original (#573) log line; renamed for
     -- honesty post-#1651 so a fleet reader can't double-count the QUIC half.
-    log.info("sni-tail: success=%d (+%d in last %ds) truncated=%d no_sni=%d " ..
-             "not_ip=%d not_tcp=%d malformed=%d " ..
+    log.info("sni-tail: success=%d (+%d in last %ds) reassembled=%d " ..
+             "incomplete=%d dropped_byte_cap=%d not_handshake=%d " ..
+             "truncated=%d no_sni=%d not_ip=%d not_tcp=%d malformed=%d " ..
+             "buf=%d " ..
              "quic_success=%d quic_short_header=%d quic_not_initial=%d " ..
              "quic_unsupported_version=%d quic_decrypt_failed=%d " ..
              "quic_no_crypto_frame=%d quic_no_sni=%d",
              success_total, since_stat_parsed, now - last_stats_log,
+             results.reassembled or 0,
+             results.incomplete or 0, results.dropped_byte_cap or 0,
+             results.not_handshake or 0,
              results.truncated or 0, results.no_sni or 0,
              results.not_ip or 0, results.not_tcp or 0,
              results.malformed or 0,
+             reasm_buf:size(),
              results.quic_success or 0, results.quic_short_header or 0,
              results.quic_not_initial or 0,
              results.quic_unsupported_version or 0,
