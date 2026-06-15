@@ -104,7 +104,22 @@ trait ProfileRepo {
   def create(name: String, cats: List[BlocklistId]): Task[ProfileId]
   def update(p: Profile): Task[Unit]
   def delete(id: ProfileId): Task[Unit]
+
+  // #423: per-field setters for the PATCH handler so concurrent PATCHes
+  // touching disjoint fields don't race via a full-row rewrite. Each method
+  // issues a targeted `UPDATE profiles SET <col>=? WHERE id=?` — the absent
+  // fields aren't touched by the SQL, so a "tab A patches paused, tab B
+  // patches name" interleaving preserves both edits. The full-shape
+  // [[update]] above stays for the legacy PUT route, which is documented as
+  // a full-replace.
+  def setName(id: ProfileId, name: String): Task[Unit]
+  def setBlockedCategories(id: ProfileId, cats: List[BlocklistId]): Task[Unit]
   def setPaused(id: ProfileId, paused: Boolean): Task[Unit]
+  def setFailureMode(id: ProfileId, mode: FailureMode): Task[Unit]
+  def setBlockIpOnly(id: ProfileId, v: Boolean): Task[Unit]
+  def setCrossDeviceOverlapMode(id: ProfileId, mode: CrossDeviceOverlapMode): Task[Unit]
+  def setPauseMode(id: ProfileId, mode: PauseMode): Task[Unit]
+  def setDefaultDeny(id: ProfileId, v: Boolean): Task[Unit]
 }
 
 /**
@@ -915,8 +930,34 @@ class ProfileRepoLive(xa: Transactor[Task]) extends ProfileRepo {
       .transact(xa)
       .unit
   def delete(id: ProfileId) = sql"DELETE FROM profiles WHERE id=$id".update.run.transact(xa).unit
-  def setPaused(id: ProfileId, p: Boolean) =
+
+  // #423: targeted per-column setters for the PATCH handler. Each runs an
+  // UPDATE that touches exactly one column, so concurrent PATCHes on
+  // disjoint fields no longer race through a full-row rewrite.
+  def setName(id: ProfileId, name: String)                                   =
+    sql"UPDATE profiles SET name=$name WHERE id=$id".update.run.transact(xa).unit
+  def setBlockedCategories(id: ProfileId, cats: List[BlocklistId])           =
+    sql"UPDATE profiles SET blocked_categories=${cats.map(_.value).toArray} WHERE id=$id".update.run
+      .transact(xa)
+      .unit
+  def setPaused(id: ProfileId, p: Boolean)                                   =
     sql"UPDATE profiles SET paused=$p WHERE id=$id".update.run.transact(xa).unit
+  def setFailureMode(id: ProfileId, mode: FailureMode)                       =
+    sql"UPDATE profiles SET failure_mode=${FailureMode.asString(mode)} WHERE id=$id".update.run
+      .transact(xa)
+      .unit
+  def setBlockIpOnly(id: ProfileId, v: Boolean)                              =
+    sql"UPDATE profiles SET block_ip_only=$v WHERE id=$id".update.run.transact(xa).unit
+  def setCrossDeviceOverlapMode(id: ProfileId, mode: CrossDeviceOverlapMode) =
+    sql"UPDATE profiles SET cross_device_overlap_mode=${CrossDeviceOverlapMode.asString(mode)} WHERE id=$id".update.run
+      .transact(xa)
+      .unit
+  def setPauseMode(id: ProfileId, mode: PauseMode)                           =
+    sql"UPDATE profiles SET pause_mode=${PauseMode.asString(mode)} WHERE id=$id".update.run
+      .transact(xa)
+      .unit
+  def setDefaultDeny(id: ProfileId, v: Boolean)                              =
+    sql"UPDATE profiles SET default_deny=$v WHERE id=$id".update.run.transact(xa).unit
 }
 
 class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsRepo {
