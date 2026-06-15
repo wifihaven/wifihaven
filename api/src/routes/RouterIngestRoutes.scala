@@ -246,18 +246,15 @@ object RouterIngestRoutes {
   }
 
   /**
-   * #1585: rewrite a race-loser ipv4/ipv6 UsageRecord to its resolved FQDN by consulting recent
-   * fqdn-typed connection_events for the same (router_id, dest_ip). Reuses [[fqdnBackfillWindow]]
-   * for symmetry with the events-side backfill (#720); five minutes covers conntrack/dns-tail
-   * jitter without inviting attribution across reused-IP cloud endpoints. Emits
-   * `traffic_reports_backfill_total{outcome}` per record: `skip` (not a candidate — already fqdn,
-   * or no dest_ip), `filled` (rewritten), or `miss` (candidate, no fqdn found).
-   */
-  /**
-   * #1511: in-memory variant of the per-record backfill that consults a pre-resolved dest_ip →
-   * recent FQDN map (built once per batch by [[ConnectionEventRepo.findRecentFqdnForBatch]]). Same
-   * per-record outcome and metric labels as the pre-#1511 SELECT-per-record path — just without the
-   * round trip.
+   * #1585 + #1511: rewrite a race-loser ipv4/ipv6 UsageRecord to its resolved FQDN by consulting
+   * recent fqdn-typed connection_events for the same (router_id, dest_ip). #1585 introduced the
+   * write-time backfill; #1511 moved the per-record lookup off the wire — the resolved dest_ip →
+   * FQDN map is now built once per batch by [[ConnectionEventRepo.findRecentFqdnForBatch]] and
+   * consulted in memory here. Window symmetry with the events-side backfill (#720) is preserved via
+   * [[fqdnBackfillWindow]]: five minutes covers conntrack/dns-tail jitter without inviting
+   * attribution across reused-IP cloud endpoints. Emits `traffic_reports_backfill_total{result}`
+   * per record: `skip` (not a candidate — already fqdn, or no dest_ip), `filled` (rewritten), or
+   * `miss` (candidate, no fqdn found).
    */
   private def backfillRecordWith(
       fqdnMap: Map[IpAddress, Hostname],

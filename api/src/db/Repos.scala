@@ -1223,11 +1223,9 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
     sql"UPDATE devices SET last_seen_ip=$ip,last_seen_at=NOW() WHERE mac=$mac".update.run
       .transact(xa)
       .unit
-  def touchLastSeen(mac: MacAddress, ip: Option[IpAddress], at: Instant)               =
-    DbMetrics.timed("device.touchLastSeen")(
-      sql"UPDATE devices SET last_seen_ip=COALESCE($ip,last_seen_ip),last_seen_at=$at WHERE mac=$mac".update.run
-        .transact(xa),
-    )
+  def touchLastSeen(mac: MacAddress, ip: Option[IpAddress], at: Instant) =
+    // #1511 SSOT: route through the batch primitive so the UPDATE template lives in one place.
+    touchLastSeenBatch(List((mac, ip)), at)
   def touchLastSeenBatch(items: List[(MacAddress, Option[IpAddress])], at: Instant)    =
     if items.isEmpty then ZIO.succeed(0)
     else
@@ -1492,17 +1490,11 @@ class TimeUsageRepoLive(xa: Transactor[Task]) extends TimeUsageRepo {
       bytesOut: Long,
       proportionalSeconds: Long = 0L,
   ): Task[Unit] =
-    DbMetrics.timed("timeUsage.incrementSecondsAndBytes")(
-      sql"""INSERT INTO time_usage(device_mac,host_type,host_value,date,seconds_used,proportional_seconds,bytes_in,bytes_out,last_seen_at)
-          VALUES($mac,${host.kind},${host.value},$d,$seconds,$proportionalSeconds,$bytesIn,$bytesOut,NOW())
-          ON CONFLICT(device_mac,host_type,host_value,date) DO UPDATE
-          SET seconds_used=time_usage.seconds_used+EXCLUDED.seconds_used,
-              proportional_seconds=time_usage.proportional_seconds+EXCLUDED.proportional_seconds,
-              bytes_in=time_usage.bytes_in+EXCLUDED.bytes_in,
-              bytes_out=time_usage.bytes_out+EXCLUDED.bytes_out,
-              last_seen_at=NOW()""".update.run
-        .transact(xa)
-        .unit,
+    // #1511 SSOT: both the per-row and batch paths share one upsert template, owned by
+    // `incrementSecondsAndBytesBatch`. Per-row callers (test seeders, fixtures) pay one extra hop
+    // through a singleton list; the production hot path always calls the batch method directly.
+    incrementSecondsAndBytesBatch(
+      List(TimeUsageIncrement(mac, host, d, seconds, bytesIn, bytesOut, proportionalSeconds)),
     )
   def incrementSecondsAndBytesBatch(rows: List[TimeUsageIncrement]): Task[Unit]                 =
     if rows.isEmpty then ZIO.unit
