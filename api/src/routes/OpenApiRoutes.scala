@@ -13,9 +13,9 @@ import zio.http.*
  * not weaken anything — it just lists what's behind auth.
  *
  * Swagger UI is loaded from the jsdelivr CDN. The HTML payload is a few lines; bundling the UI
- * assets into the JVM would balloon the deploy for no real benefit (any environment that can reach
- * the API can reach jsdelivr). If that ever becomes a problem — e.g. the self-hosted install on a
- * network without outbound HTTPS — swap to a vendored copy under `api/resources/swagger-ui/`.
+ * assets into the JVM would balloon the deploy for no real benefit on cloud staging/prod (where
+ * outbound HTTPS to jsdelivr is reliable). Self-hosted installs on locked-down networks need the
+ * vendored alternative — tracked under #1749.
  */
 object OpenApiRoutes {
 
@@ -26,19 +26,27 @@ object OpenApiRoutes {
    *   every `Routes` chunk the API server mounts (system, stats, router, …)
    */
   def routes(version: String, apiRoutesList: Routes[?, ?]*): Routes[Any, Response] = {
+    // Self-list: the spec advertises the discovery surface itself. Build a
+    // dummy `Routes` containing just the two patterns so the generator walks
+    // them alongside the caller's chunks; the actual handlers are constructed
+    // below and share these patterns.
+    val selfRoutes: Routes[Any, Response] =
+      Routes(
+        Method.GET / "api" / "openapi.json" -> handler((_: Request) => Response.ok),
+        Method.GET / "api" / "docs"         -> handler((_: Request) => Response.ok),
+      )
+
     // Generate once at construction time; the route table is fixed for the
-    // lifetime of the JVM, so caching the rendered JSON avoids re-walking
-    // the routes on every probe and any allocation in the hot path.
-    val specJson: String = OpenApiSpec.generate(version, apiRoutesList*).toString
+    // lifetime of the JVM, so caching the rendered JSON avoids re-walking the
+    // routes on every probe and any allocation in the hot path.
+    val specJson: String =
+      OpenApiSpec.generate(version, (apiRoutesList :+ selfRoutes)*).toString
 
     Routes(
       Method.GET / "api" / "openapi.json" ->
         handler { (_: Request) => Response.json(specJson) },
       Method.GET / "api" / "docs"         ->
-        handler { (_: Request) =>
-          Response
-            .html(swaggerUiHtml)
-        },
+        handler { (_: Request) => Response.html(swaggerUiHtml) },
     )
   }
 

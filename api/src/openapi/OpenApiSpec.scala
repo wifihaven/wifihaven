@@ -15,9 +15,11 @@ import zio.json.ast.Json
  * What this DOES cover today:
  *   - HTTP method + path template (with `{param}` placeholders matching OpenAPI's path-parameter
  *     syntax)
- *   - Public vs. authenticated partition: paths under [[OpenApiSpec.publicPathPrefixes]] are
- *     advertised as unauthenticated; everything else carries a `bearerAuth` security requirement
- *   - The bearer-JWT security scheme declaration
+ *   - Three-way auth partition: paths are classified [[AuthScheme.Public]] / [[AuthScheme.User]] /
+ *     [[AuthScheme.Router]] and tagged with the matching `securityScheme` (`bearerAuth` for user
+ *     JWT, `routerBearer` for the OpenWRT agent's enrollment-derived token, or nothing for public
+ *     probes). Pinned against the production handlers by `OpenApiAuthPartitionSpec`.
+ *   - The `bearerAuth` (user JWT) and `routerBearer` (router) security scheme declarations
  *
  * What this does NOT cover (deliberate — keeps the surface honest and avoids a hand-maintained
  * schema catalog that would drift the moment a Scala case class changes):
@@ -33,35 +35,60 @@ import zio.json.ast.Json
 object OpenApiSpec {
 
   /**
-   * Paths the API exposes without bearer-token auth. Kept as a small explicit list rather than
-   * introspecting handlers (which is opaque after `Routes` composes them through middleware):
-   * authentication is already a per-route convention enforced by `requireAuth` / `requireAdmin` at
-   * the top of each handler, so the spec just mirrors that convention.
+   * Which auth scheme applies to a given path prefix. Three states:
+   *   - [[AuthScheme.Public]] — fully unauthenticated (block page, login, health, version, …)
+   *   - [[AuthScheme.User]] — user-session bearer JWT issued by `POST /api/auth/login`
+   *   - [[AuthScheme.Router]] — enrollment-derived bearer carried by the OpenWRT agent
    *
-   * If a new public route ships, add its prefix here so the spec doesn't falsely advertise it as
-   * bearer-required.
+   * The list mirrors the per-handler `requireAuth` / `requireAdmin` / `routerAuth` convention. It
+   * is hand-maintained on purpose (introspecting handlers after `Routes` composes them through
+   * middleware is opaque), and pinned against the production route table by
+   * `OpenApiAuthPartitionSpec` — any new public/router/user flip must update either the list or the
+   * test, surfacing the §single-source-of-truth display-vs-enforcement drift before merge.
+   *
+   * Prefixes are matched longest-first (so `/api/router/register` resolves before the broader
+   * `/api/router` entry).
    */
-  private val publicPathPrefixes: Vector[String] =
-    Vector(
-      "/api/health",
-      "/api/version",
-      "/api/auth/login",
-      "/api/blocked",         // #335: unauthenticated block-page support
-      "/api/openapi.json",
-      "/api/docs",
-      "/api/metrics",
-      "/api/router/register", // one-time enrollment
-      "/api/router/policy",   // router bearer (separate auth scheme, not user JWT)
-      "/api/router/events",
-      "/api/router/usage",
-      "/api/router/metrics",
-      "/api/blocklists",      // router-served blocklist URLs
-    )
+  enum AuthScheme {
+    case Public, User, Router
+  }
 
-  private def isPublic(path: String): Boolean =
-    publicPathPrefixes.exists(p =>
-      path == p || path.startsWith(p + "/") || path.startsWith(p + "?"),
+  /**
+   * (prefix, scheme) — first match wins. Ordering is longest-prefix-first so a more specific
+   * router-bearer carve-out beats a broader public prefix (e.g. `/api/router/register` is router-
+   * authed, `/api/blocked` is open).
+   */
+  private val authPartition: Vector[(String, AuthScheme)] = {
+    val raw = Vector(
+      // Fully public — discovery / probes / login / kid-side block page
+      "/api/health"          -> AuthScheme.Public,
+      "/api/version"         -> AuthScheme.Public,
+      "/api/auth/login"      -> AuthScheme.Public,
+      "/api/blocked"         -> AuthScheme.Public,
+      "/api/openapi.json"    -> AuthScheme.Public,
+      "/api/docs"            -> AuthScheme.Public,
+      // Router bearer — the OpenWRT/OPNsense agent's enrollment-derived token, NOT the user JWT
+      "/api/router/policy"   -> AuthScheme.Router,
+      "/api/router/register" -> AuthScheme.Router,
+      "/api/router/events"   -> AuthScheme.Router,
+      "/api/router/usage"    -> AuthScheme.Router,
+      "/api/router/metrics"  -> AuthScheme.Router,
+      "/api/router/decision" -> AuthScheme.Router,
+      "/api/blocklists" -> AuthScheme.Router, // router-served blocklist URLs (`/api/blocklists/{id}`)
     )
+    // Longest prefix first so specific carve-outs win.
+    raw.sortBy { case (p, _) => -p.length }
+  }
+
+  private def authFor(path: String): AuthScheme =
+    authPartition
+      .collectFirst {
+        case (p, scheme) if path == p || path.startsWith(p + "/") => scheme
+      }
+      .getOrElse(AuthScheme.User)
+
+  /** Exposed for the auth-partition drift test in `api/test`. */
+  def authForTesting(path: String): AuthScheme = authFor(path)
 
   /**
    * Generate the OpenAPI 3.0.3 document. `version` is interpolated into `info.version` so the
@@ -123,15 +150,25 @@ object OpenApiSpec {
           Chunk(
             "securitySchemes" -> Json.Obj(
               Chunk(
-                "bearerAuth" -> Json.Obj(
+                "bearerAuth"   -> Json.Obj(
                   Chunk(
                     "type"         -> Json.Str("http"),
                     "scheme"       -> Json.Str("bearer"),
                     "bearerFormat" -> Json.Str("JWT"),
                     "description"  -> Json.Str(
-                      "User-session JWT issued by POST /api/auth/login. " +
-                        "Router-side endpoints use a separate enrollment-derived bearer " +
-                        "managed by the OpenWRT agent.",
+                      "User-session JWT issued by POST /api/auth/login. Carried by SPA + admin " +
+                        "clients on every authenticated /api/* call.",
+                    ),
+                  ),
+                ),
+                "routerBearer" -> Json.Obj(
+                  Chunk(
+                    "type"        -> Json.Str("http"),
+                    "scheme"      -> Json.Str("bearer"),
+                    "description" -> Json.Str(
+                      "Enrollment-derived bearer issued by POST /api/router/register and carried " +
+                        "by the OpenWRT/OPNsense agent on /api/router/* and /api/blocklists/* " +
+                        "calls. Distinct from the user-session JWT.",
                     ),
                   ),
                 ),
@@ -177,12 +214,17 @@ object OpenApiSpec {
 
     val withParams = parametersField.fold(base)(p => base :+ p)
 
-    val withSec =
-      if (isPublic(path)) withParams
-      else
+    val withSec = authFor(path) match {
+      case AuthScheme.Public => withParams
+      case AuthScheme.User   =>
         withParams :+ ("security" -> Json.Arr(
           Chunk(Json.Obj(Chunk("bearerAuth" -> Json.Arr(Chunk.empty)))),
         ))
+      case AuthScheme.Router =>
+        withParams :+ ("security" -> Json.Arr(
+          Chunk(Json.Obj(Chunk("routerBearer" -> Json.Arr(Chunk.empty)))),
+        ))
+    }
 
     Json.Obj(withSec)
   }

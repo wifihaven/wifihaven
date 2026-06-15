@@ -59,17 +59,24 @@ object OpenApiSpecSpec extends ZIOSpecDefault {
       val byIdOps = asMap(paths("/api/profiles/{id}"))
       assertTrue(byIdOps.contains("get")) && assertTrue(byIdOps.contains("patch"))
     },
-    test("declares the bearer-JWT security scheme") {
+    test("declares both bearer security schemes (user JWT + router)") {
       val root    = asMap(OpenApiSpec.generate("v", sample))
       val schemes = asMap(asMap(root("components"))("securitySchemes"))
-      val bearer  = asMap(schemes("bearerAuth"))
-      assertTrue(bearer("type").asString.contains("http")) &&
-      assertTrue(bearer("scheme").asString.contains("bearer"))
+      val user    = asMap(schemes("bearerAuth"))
+      val router  = asMap(schemes("routerBearer"))
+      assertTrue(user("type").asString.contains("http")) &&
+      assertTrue(user("scheme").asString.contains("bearer")) &&
+      assertTrue(router("type").asString.contains("http")) &&
+      assertTrue(router("scheme").asString.contains("bearer"))
     },
-    test("authenticated routes carry a security requirement") {
-      val paths = asMap(asMap(OpenApiSpec.generate("v", sample))("paths"))
-      val meGet = asMap(asMap(paths("/api/auth/me"))("get"))
-      assertTrue(meGet.contains("security"))
+    test("user-authed routes reference bearerAuth, router routes reference routerBearer") {
+      val paths     = asMap(asMap(OpenApiSpec.generate("v", sample))("paths"))
+      val meGet     = asMap(asMap(paths("/api/auth/me"))("get"))
+      val policyGet = asMap(asMap(paths("/api/router/policy"))("get"))
+      val meSec     = meGet("security").asArray.get.head.asObject.get.fields.map(_._1).toSet
+      val policySec = policyGet("security").asArray.get.head.asObject.get.fields.map(_._1).toSet
+      assertTrue(meSec == Set("bearerAuth")) &&
+      assertTrue(policySec == Set("routerBearer"))
     },
     test("public probes do NOT carry a security requirement") {
       val paths     = asMap(asMap(OpenApiSpec.generate("v", sample))("paths"))
