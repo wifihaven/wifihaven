@@ -22,6 +22,10 @@ end
 local debug_opt   = uci_get("debug", "0")
 local source_path = "/tmp/wifihaven-dnsmasq.log"
 local cache_path  = paths.dns_cache
+-- #1572: persisted CNAME-alias map snapshot path. Written in lockstep with the
+-- ip→hostname cache; reloaded on startup so the brand attribution chain
+-- learned before the last restart survives.
+local aliases_path = paths.dns_aliases
 -- #1302: cumulative per-result DNS query tally, written for the agent to fold
 -- into dns_queries_total{result}. Flushed in lockstep with the hostname cache.
 local dns_metrics_path = paths.dns_metrics
@@ -50,6 +54,25 @@ log.init({ debug = debug_opt })
 log.info("dns-tail: starting source=%s cache=%s", source_path, cache_path)
 
 local cache = dns_log.new({ ttl_seconds = 3600 })
+
+-- #1572: reseed the CNAME-alias map from the on-disk snapshot, if one is
+-- present from a previous run. Without this the alias map starts cold on every
+-- restart, so a client that queries a CDN edge name DIRECTLY before its
+-- branded chain is re-observed is attributed to the opaque CDN target
+-- (~33 such entries observed on prod in the #1572 recon). Best-effort:
+-- silently skips when the file is missing / corrupted.
+do
+  local f = io.open(aliases_path, "r")
+  if f then
+    local text = f:read("*a")
+    f:close()
+    local seeded = dns_log.load_aliases_table(text or "", 3600, os.time())
+    cache.seed_aliases(seeded, os.time())
+    local n = 0
+    for _ in pairs(seeded) do n = n + 1 end
+    log.info("dns-tail: reseeded %d CNAME-alias edge(s) from %s", n, aliases_path)
+  end
+end
 
 -- tail -F follows the log across rotations (dnsmasq SIGHUP, file replaced).
 -- -n 0 skips replay of the historical log so we don't burn CPU at boot.
@@ -299,6 +322,9 @@ while true do
     if since_flush >= flush_every or (now - last_tick) >= 30 then
       cache.tick(now)
       atomic_write(cache_path, cache.dump_text())
+      -- #1572: persist the learned CNAME-alias edges in lockstep so a restart
+      -- can reseed them and recover the brand for a directly-queried CDN target.
+      atomic_write(aliases_path, cache.dump_aliases_text())
       atomic_write(dns_metrics_path, dns_log.format_query_results(dns_results))
       since_flush = 0
       last_tick   = now
@@ -346,6 +372,12 @@ while true do
     if since_flush >= flush_every or (now - last_tick) >= 30 then
       cache.tick(now)
       atomic_write(cache_path, cache.dump_text())
+      -- #1572: persist the learned CNAME-alias edges in lockstep so a restart
+      -- can reseed them and recover the brand for a directly-queried CDN target.
+      -- Mirrored in the SNI-routed flush block above — both flush sites must
+      -- write the alias snapshot for the on-disk file to track the in-memory
+      -- map under both line types.
+      atomic_write(aliases_path, cache.dump_aliases_text())
       -- #1302: publish the cumulative query-result tally alongside the cache so
       -- the agent's next metrics tick can fold the deltas.
       atomic_write(dns_metrics_path, dns_log.format_query_results(dns_results))
