@@ -100,5 +100,5 @@ object UsageConfigSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres 
         resp <- routes.runZIO(Request.get(url))
       } yield assertTrue(resp.status == Status.Unauthorized)
     },
-  )
+  ) @@ TestAspect.sequential
 }
