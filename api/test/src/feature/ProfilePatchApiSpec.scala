@@ -192,6 +192,26 @@ object ProfilePatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         resp         <- patch(routes, tk, ProfileId(99999), """{"paused":true}""")
       } yield assertTrue(resp.status == Status.NotFound)
     },
+    // Drift pin (#423): if `Profile` gains a writable field, this test fails
+    // until the new field is added to `ProfileRoutes.PatchableKeys` AND the
+    // PATCH handler's `p.copy(...)` fold. `id` is the only intentional
+    // exclusion (immutable identity); `timeLimit` is a sibling table not on
+    // `Profile` but still patchable, so it's added to the expected set.
+    test("PatchableKeys covers every writable Profile field (drift pin)") {
+      // `getDeclaredFields` returns synthetic compiler fields too (e.g.
+      // `OFFSET$_m_0` from lazy-val codegen, anything containing `$`), so
+      // filter those out and keep only the case-class parameter names.
+      val profileFields  = classOf[Profile].getDeclaredFields
+        .map(_.getName)
+        .filterNot(_.contains("$"))
+        .toSet
+      val writableFields = profileFields - "id"
+      val expected       = writableFields + "timeLimit"
+      assertTrue(
+        ProfileRoutes.PatchableKeys == expected,
+        ProfileRoutes.PatchableKeys.contains("paused"),
+      )
+    },
     test("401 without token") {
       for {
         kids   <- setupKids()

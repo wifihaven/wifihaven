@@ -205,6 +205,24 @@ object AuthRoutes {
 // ── Profile routes ─────────────────────────────────────────────────────────
 
 object ProfileRoutes {
+  // #423 — the set of writable Profile fields the PATCH handler recognizes.
+  // Kept as a single named source so the PATCH log message can filter to
+  // recognized keys, AND so the test pin in ProfilePatchApiSpec can assert
+  // it covers every field on the underlying `Profile` case class minus `id`.
+  // If you add a writable field to `Profile`, update this set and PATCH's
+  // `p.copy(...)` together — the test pin will fail loudly otherwise.
+  val PatchableKeys: Set[String] = Set(
+    "name",
+    "blockedCategories",
+    "paused",
+    "failureMode",
+    "blockIpOnly",
+    "crossDeviceOverlapMode",
+    "pauseMode",
+    "defaultDeny",
+    "timeLimit",
+  )
+
   def routes(
       auth: AuthService,
       profileRepo: ProfileRepo,
@@ -486,13 +504,20 @@ object ProfileRoutes {
             }
             // #1538: paused / timeLimit changes affect ProfileTimeStatus, so
             // bust the per-profile cache the same way schedule attach/detach
-            // and /api/time/extend do — otherwise a freshly-patched pause
-            // wouldn't reach the dashboard until the today-TTL expired.
-            _                       <- ZIO.when(
-              pausedPatch != FieldPatch.Absent || timeLimitPatch != FieldPatch.Absent,
-            )(cache.invalidateProfile(pid))
-            _                       <- ZIO.logInfo(
-              s"profile patched: id=${pid.value} keys=${obj.fields.map(_._1).mkString(",")}",
+            // and /api/time/extend do. Guard on a real value change — not
+            // mere field presence — so a no-op `{"paused": false}` on an
+            // already-unpaused profile doesn't churn the cache.
+            pausedChanged = pausedPatch match {
+              case FieldPatch.Set(v) => v != p.paused
+              case _                 => false
+            }
+            timeLimitChanged = timeLimitPatch != FieldPatch.Absent
+            _ <- ZIO.when(pausedChanged || timeLimitChanged)(cache.invalidateProfile(pid))
+            // Log only recognized keys; unknown keys are ignored per the
+            // backwards-compat rule and would mislead ops triage if echoed.
+            recognizedKeys = obj.fields.map(_._1).filter(ProfileRoutes.PatchableKeys.contains)
+            _ <- ZIO.logInfo(
+              s"profile patched: id=${pid.value} keys=${recognizedKeys.mkString(",")}",
             )
           } yield Response.ok
           handle.mapError(ErrorMapper.errorToResponse)
