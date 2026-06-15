@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-CONTRACT_DIR = REPO_ROOT / "shared" / "contract"
+CONTRACT_DIR = REPO_ROOT / "contract"
 POLICY_SNAPSHOT_PATH = CONTRACT_DIR / "api-to-router" / "policy_snapshot.json"
 
 

@@ -15,7 +15,7 @@ from .snapshot_builder import SnapshotBuilder, snapshot_with_assigned_device
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-GOLDEN_PATH = REPO_ROOT / "shared" / "contract" / "api-to-router" / "policy_snapshot.json"
+GOLDEN_PATH = REPO_ROOT / "contract" / "api-to-router" / "policy_snapshot.json"
 
 
 def _golden() -> dict:
