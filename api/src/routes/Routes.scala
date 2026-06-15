@@ -222,8 +222,7 @@ object ProfileRoutes {
             claims      <- requireAuth(req, auth)
             allProfiles <- profileRepo.listAll.mapError(ApiError.Db(_))
             visible     <- visibleProfiles(claims, allProfiles, userProfileRepo)
-
-            details <- ZIO
+            details     <- ZIO
               .foreach(visible) { p =>
                 for {
                   tl      <- timeLimitRepo.findForProfile(p.id)
@@ -238,9 +237,8 @@ object ProfileRoutes {
         handler { (id: Long, req: Request) =>
           val pid                                  = ProfileId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims <- requireAuth(req, auth)
-            _      <- requireProfileReadAccess(claims, pid, userProfileRepo)
-
+            claims  <- requireAuth(req, auth)
+            _       <- requireProfileReadAccess(claims, pid, userProfileRepo)
             p       <- profileRepo
               .findById(pid)
               .mapError(ApiError.Db(_))
@@ -261,16 +259,15 @@ object ProfileRoutes {
           val handle: ZIO[Any, ApiError, Response] = for {
             claims <- requireWriter(req, auth)
             _      <- requireProfileAccess(claims, pid, userProfileRepo)
-
-            body <- req.body.asString.orElseFail(ApiError.BadRequest(""))
-            sr   <- ZIO
+            body   <- req.body.asString.orElseFail(ApiError.BadRequest(""))
+            sr     <- ZIO
               .fromEither(body.fromJson[SetProfileSchedulesRequest])
               .mapError(ApiError.DecodeFailure(_))
-            _    <- profileRepo
+            _      <- profileRepo
               .findById(pid)
               .mapError(ApiError.Db(_))
               .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Profile not found")))
-            _    <- ZIO.foreachDiscard(sr.scheduleIds.distinct) { sid =>
+            _      <- ZIO.foreachDiscard(sr.scheduleIds.distinct) { sid =>
               namedScheduleRepo
                 .findById(sid)
                 .mapError(ApiError.Db(_))
@@ -280,13 +277,13 @@ object ProfileRoutes {
                     .orElseFail(ApiError.NotFound(s"Schedule ${sid.value} not found")),
                 )
             }
-            _    <- namedScheduleRepo
+            _      <- namedScheduleRepo
               .setProfileBlockSchedules(pid, sr.scheduleIds)
               .mapError(ApiError.Db(_))
             // #1538: attaching/detaching a block schedule changes whether this profile is "paused
             // for schedule", so bust its cached ProfileTimeStatus the same way /api/time/extend
             // does — otherwise a detach keeps showing a stale block for up to the today-TTL.
-            _    <- cache.invalidateProfile(pid)
+            _      <- cache.invalidateProfile(pid)
           } yield Response.ok
           handle.mapError(ErrorMapper.errorToResponse)
         },
@@ -344,16 +341,15 @@ object ProfileRoutes {
           val handle: ZIO[Any, ApiError, Response] = for {
             claims <- requireWriter(req, auth)
             _      <- requireProfileAccess(claims, pid, userProfileRepo)
-
-            body <- req.body.asString.orElseFail(ApiError.BadRequest(""))
-            upr  <- ZIO
+            body   <- req.body.asString.orElseFail(ApiError.BadRequest(""))
+            upr    <- ZIO
               .fromEither(body.fromJson[UpsertProfileRequest])
               .mapError(ApiError.DecodeFailure(_))
-            p    <- profileRepo
+            p      <- profileRepo
               .findById(pid)
               .mapError(ApiError.Db(_))
               .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Profile not found")))
-            _    <- profileRepo
+            _      <- profileRepo
               .update(
                 p.copy(
                   name = upr.name,
@@ -376,14 +372,14 @@ object ProfileRoutes {
               )
               .mapError(ApiError.Db(_))
             // #481: log mutations that should bump the policy snapshot etag.
-            _    <- ZIO.logInfo(
+            _      <- ZIO.logInfo(
               s"profile updated: id=${pid.value} paused=${p.paused}→${upr.paused} " +
                 s"name=${upr.name}",
             )
             // #1494: profile upsert no longer writes the legacy `schedules`
             // table. Block schedules are attached via PUT
             // /api/profiles/{id}/schedules (named_schedules / profile_schedule_rules).
-            _    <- (upr.timeLimit match {
+            _      <- (upr.timeLimit match {
               case Some(mins) => timeLimitRepo.upsert(pid, mins)
               case None       => timeLimitRepo.delete(pid)
             }).mapError(ApiError.Db(_))
@@ -493,10 +489,9 @@ object DeviceRoutes {
               .mapError(ApiError.Db(_))
               .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Device not found")))
             _        <- requireProfileAccess(claims, existing.profileId, userProfileRepo)
-
-            _ <- deviceRepo.delete(normalized).mapError(ApiError.Db(_))
+            _        <- deviceRepo.delete(normalized).mapError(ApiError.Db(_))
             // #481: same rationale as PUT — make the next CI failure diagnostic.
-            _ <- ZIO.logInfo(s"device deleted: mac=${normalized.value}")
+            _        <- ZIO.logInfo(s"device deleted: mac=${normalized.value}")
           } yield Response.ok
           handle.mapError(ErrorMapper.errorToResponse)
         },
@@ -510,12 +505,11 @@ object DeviceRoutes {
           val handle: ZIO[Any, ApiError, Response] = for {
             claims <- requireWriter(req, auth)
             normalized = MacAddress.unsafe(normalizeMac(mac))
-            existing <- deviceRepo
+            existing  <- deviceRepo
               .findByMac(normalized)
               .mapError(ApiError.Db(_))
               .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Device not found")))
-            _        <- requireProfileAccess(claims, existing.profileId, userProfileRepo)
-
+            _         <- requireProfileAccess(claims, existing.profileId, userProfileRepo)
             body      <- req.body.asString.orElseFail(ApiError.BadRequest(""))
             obj       <- ZIO.fromEither(FieldPatch.parseObj(body)).mapError(ApiError.BadRequest(_))
             namePatch <- ZIO
@@ -590,8 +584,7 @@ object TimeRoutes {
               date    = LocalDate.parse(dateStr)
               allProfiles <- profileRepo.listAll.mapError(ApiError.Db(_))
               visible     <- visibleProfiles(claims, allProfiles, userProfileRepo)
-
-              states <- timeStatusService
+              states      <- timeStatusService
                 .dayStateAll(now, date, settings)
                 .mapError(ApiError.Db(_))
               summaries = visible.map { p =>
@@ -633,7 +626,6 @@ object TimeRoutes {
               allDevices  <- deviceRepo.listAll.mapError(ApiError.Db(_))
               allLimits   <- timeLimitRepo.listAll.mapError(ApiError.Db(_))
               visible     <- visibleProfiles(claims, allProfiles, userProfileRepo)
-
               devicesByPid = allDevices.groupBy(_.profileId)
               allMacs      = visible.iterator
                 .flatMap(p => devicesByPid.getOrElse(Some(p.id), Nil))
@@ -702,7 +694,6 @@ object TimeRoutes {
               allProfiles  <- profileRepo.listAll.mapError(ApiError.Db(_))
               allDevices   <- deviceRepo.listAll.mapError(ApiError.Db(_))
               visible      <- visibleProfiles(claims, allProfiles, userProfileRepo)
-
               scoped       = profileIdOpt match {
                 case Some(pid) => visible.filter(_.id == pid)
                 case None      => visible
@@ -756,7 +747,6 @@ object TimeRoutes {
               allProfiles     <- profileRepo.listAll.mapError(ApiError.Db(_))
               allDevices      <- deviceRepo.listAll.mapError(ApiError.Db(_))
               visible         <- visibleProfiles(claims, allProfiles, userProfileRepo)
-
               scoped       = profileIdOpt match {
                 case Some(pid) => visible.filter(_.id == pid)
                 case None      => visible
@@ -806,8 +796,7 @@ object TimeRoutes {
               .mapError(ApiError.Db(_))
               .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Device not found")))
             _               <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
-
-            status <- buildDeviceTimeStatusWeek(
+            status          <- buildDeviceTimeStatusWeek(
               device,
               from,
               to,
@@ -836,7 +825,6 @@ object TimeRoutes {
               .mapError(ApiError.Db(_))
               .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Device not found")))
             _      <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
-
             status <- buildDeviceTimeStatus(
               device,
               date,
@@ -873,8 +861,7 @@ object TimeRoutes {
                 .mapError(ApiError.Db(_))
                 .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Device not found")))
               _      <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
-
-              rows <- trafficRepo
+              rows   <- trafficRepo
                 .listPresenceRows(List(device.mac), date)
                 .mapError(ApiError.Db(_))
               classified = wifihaven.api.presence.Presence
@@ -904,13 +891,12 @@ object TimeRoutes {
       Method.POST / "api" / "time" / "extend"                           ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims <- requireWriter(req, auth)
-            body   <- req.body.asString.orElseFail(ApiError.BadRequest(""))
-            ger    <- ZIO
+            claims   <- requireWriter(req, auth)
+            body     <- req.body.asString.orElseFail(ApiError.BadRequest(""))
+            ger      <- ZIO
               .fromEither(body.fromJson[GrantExtensionRequest])
               .mapError(ApiError.DecodeFailure(_))
-            _      <- requireProfileAccess(claims, ger.profileId, userProfileRepo)
-
+            _        <- requireProfileAccess(claims, ger.profileId, userProfileRepo)
             // #1010: bucket the grant under the household-local "today" so the
             // policy-snapshot read path (also household-local) finds it.
             settings <- hsRepo.get.mapError(ApiError.Db(_))
@@ -929,9 +915,8 @@ object TimeRoutes {
         handler { (profileId: Long, req: Request) =>
           val pid                                  = ProfileId(profileId)
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims <- requireAuth(req, auth)
-            _      <- requireProfileAccess(claims, pid, userProfileRepo)
-
+            claims   <- requireAuth(req, auth)
+            _        <- requireProfileAccess(claims, pid, userProfileRepo)
             // #1010: same household-local "today" as the grant path.
             settings <- hsRepo.get.mapError(ApiError.Db(_))
             now      <- clock.instant

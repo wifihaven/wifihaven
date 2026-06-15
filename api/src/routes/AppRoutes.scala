@@ -213,9 +213,8 @@ object AppRoutes {
           val aid                                  = AppId(id)
           val pid                                  = ProfileId(profileIdRaw)
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims <- requireWriter(req, auth)
-            _      <- requireProfileAccess(claims, pid, userProfileRepo)
-
+            claims   <- requireWriter(req, auth)
+            _        <- requireProfileAccess(claims, pid, userProfileRepo)
             body     <- req.body.asString.orElseFail(ApiError.BadRequest(""))
             ar       <- ZIO
               .fromEither(body.fromJson[UpsertAppAssignmentRequest])
@@ -371,8 +370,7 @@ object AppRoutes {
           val handle: ZIO[Any, ApiError, Response] = for {
             claims <- requireWriter(req, auth)
             _      <- requireProfileAccess(claims, pid, userProfileRepo)
-
-            _ <- appRepo
+            _      <- appRepo
               .deleteAssignment(aid, pid)
               .mapError(ApiError.Db(_))
           } yield Response.ok

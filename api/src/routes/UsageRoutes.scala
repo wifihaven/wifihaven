@@ -64,7 +64,6 @@ object UsageRoutes {
               .mapError(ApiError.Db(_))
               .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Device not found")))
             _      <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
-
             windowDays = req.url
               .queryParam("windowDays")
               .flatMap(_.toIntOption)
@@ -119,8 +118,7 @@ object UsageRoutes {
           val handle: ZIO[Any, ApiError, Response] = for {
             claims <- requireAuth(req, auth)
             _      <- requireProfileReadAccess(claims, pid, userProfileRepo)
-
-            today <- clock.today
+            today  <- clock.today
             fromS = req.url.queryParam("from").getOrElse(today.toString)
             toS   = req.url.queryParam("to").getOrElse(fromS)
             from     <- ZIO
@@ -159,9 +157,8 @@ object UsageRoutes {
         handler { (id: Long, req: Request) =>
           val pid                                  = ProfileId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims <- requireAuth(req, auth)
-            _      <- requireProfileReadAccess(claims, pid, userProfileRepo)
-
+            claims   <- requireAuth(req, auth)
+            _        <- requireProfileReadAccess(claims, pid, userProfileRepo)
             settings <- hsRepo.get.mapError(ApiError.Db(_))
             now      <- clock.instant
             todayLocal = wifihaven.api.policy.PolicyService.householdLocalDate(now, settings)
@@ -625,8 +622,7 @@ object UsageRoutes {
         .mapError(ApiError.Db(_))
         .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Device not found")))
       _      <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
-
-      rows <- fetchPresenceDayWindow(trafficRepo, List(mac), date, zone)
+      rows   <- fetchPresenceDayWindow(trafficRepo, List(mac), date, zone)
       (topHosts, buckets, presenceTotalMins) =
         UsageSeries.build(
           rows,
@@ -691,8 +687,7 @@ object UsageRoutes {
       settings: HouseholdSettings,
   ): IO[ApiError, UsageSeriesResponse] =
     for {
-      _ <- requireProfileReadAccess(claims, pid, userProfileRepo)
-
+      _         <- requireProfileReadAccess(claims, pid, userProfileRepo)
       profile   <- profileRepo
         .findById(pid)
         .mapError(ApiError.Db(_))
