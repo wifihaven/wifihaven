@@ -799,33 +799,21 @@ object UsageRoutes {
     case Raw, Hourly, Daily
   }
 
-  private def coarseness(t: SourceTier): Int = t match {
-    case SourceTier.Raw    => 0
-    case SourceTier.Hourly => 1
-    case SourceTier.Daily  => 2
-  }
-
-  // Coarsest table that can render `b` without losing resolution (the cap).
-  private def bucketTier(b: UsageTraffic.Bucket): SourceTier =
-    BucketPolicy.grainForBucket(b.code) match {
-      case BucketGrain.Raw    => SourceTier.Raw
-      case BucketGrain.Hourly => SourceTier.Hourly
-      case BucketGrain.Daily  => SourceTier.Daily
-    }
-
-  // Coarseness the window justifies on cost grounds — only the *cost* input to
-  // `pickTier`; it never coarsens the bucket itself.
-  private def windowTier(window: java.time.Duration): SourceTier = {
-    val hours = window.toHours
-    if (hours <= 24) SourceTier.Raw
-    else if (hours <= 14 * 24) SourceTier.Hourly
-    else SourceTier.Daily
+  private def grainToTier(g: BucketGrain): SourceTier = g match {
+    case BucketGrain.Raw    => SourceTier.Raw
+    case BucketGrain.Hourly => SourceTier.Hourly
+    case BucketGrain.Daily  => SourceTier.Daily
   }
 
   private def pickTier(b: UsageTraffic.Bucket, window: java.time.Duration): SourceTier = {
-    val cap  = bucketTier(b)
-    val pref = windowTier(window)
-    if (coarseness(pref) <= coarseness(cap)) pref else cap
+    // Cap: coarsest grain that can render the bucket without losing resolution.
+    // Pref: coarseness the window justifies on cost grounds — never coarsens
+    // the bucket itself. Finer of (cap, pref) wins. Both inputs and the rank
+    // ordering live in `wifihaven.shared.BucketPolicy` so this picker and
+    // `LogRoutes.seriesGrain` can't drift on the thresholds (#1744).
+    val cap  = BucketPolicy.grainForBucket(b.code)
+    val pref = BucketPolicy.windowGrain(window.toHours)
+    grainToTier(if (BucketPolicy.rank(pref) <= BucketPolicy.rank(cap)) pref else cap)
   }
 
   // Convert rollup rows back into the shape buildAggregate consumes. The
