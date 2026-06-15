@@ -188,7 +188,7 @@ object RouterIngestRoutes {
     val zeroByteRows =
       records.count(r => r.activeSeconds == 0L && r.bytesIn == 0L && r.bytesOut == 0L)
     for {
-      _         <- AppMetrics.recordZeroByteFiltered(zeroByteRows)
+      _ <- AppMetrics.recordZeroByteFiltered(zeroByteRows)
       // #1585: write-time FQDN backfill. The router's per-(mac, dst_ip)
       // accumulator emits records whose host is the resolved fqdn when DNS
       // attribution won the race, but ipv4/ipv6 when it lost (DoH, hard-coded
@@ -197,9 +197,20 @@ object RouterIngestRoutes {
       // rewrite the record to its resolved fqdn BEFORE inserting — so the
       // traffic_reports row lands under the human-readable host and the
       // read-side LATERAL join (#730 follow-up cleanup) can eventually go away.
-      rewritten <- ZIO.foreach(records)(r =>
-        backfillRecord(routerId, r, periodStart, connEventRepo),
-      )
+      // #1511: resolve the whole batch's race-loser dest_ips in one round trip,
+      // then rewrite each record in memory — collapses the per-record N+1 SELECT
+      // that dominated the handler's ~1 s p95.
+      candidateIps = records
+        .collect {
+          case r if r.host.isInstanceOf[HostId.IPv4] || r.host.isInstanceOf[HostId.IPv6] =>
+            r.destIp
+        }
+        .flatten
+        .distinct
+      fqdnMap <- connEventRepo
+        .findRecentFqdnForBatch(routerId, candidateIps, periodStart.minus(fqdnBackfillWindow))
+        .mapError(ApiError.Db(_))
+      rewritten <- ZIO.foreach(records)(r => backfillRecordWith(fqdnMap, r))
       // After rewrite, two distinct (mac, dst_ip) records can collapse to the
       // same (mac, host) at the same period — the existing primary key
       // (router_id, period_start, mac, host_type, host_value) makes the second
@@ -242,23 +253,24 @@ object RouterIngestRoutes {
    * `traffic_reports_backfill_total{outcome}` per record: `skip` (not a candidate — already fqdn,
    * or no dest_ip), `filled` (rewritten), or `miss` (candidate, no fqdn found).
    */
-  private def backfillRecord(
-      routerId: RouterId,
+  /**
+   * #1511: in-memory variant of the per-record backfill that consults a pre-resolved dest_ip →
+   * recent FQDN map (built once per batch by [[ConnectionEventRepo.findRecentFqdnForBatch]]). Same
+   * per-record outcome and metric labels as the pre-#1511 SELECT-per-record path — just without the
+   * round trip.
+   */
+  private def backfillRecordWith(
+      fqdnMap: Map[IpAddress, Hostname],
       record: UsageRecord,
-      periodStart: Instant,
-      connEventRepo: ConnectionEventRepo,
   ): IO[ApiError, UsageRecord] =
     (record.host, record.destIp) match {
       case (HostId.IPv4(_) | HostId.IPv6(_), Some(destIp)) =>
-        connEventRepo
-          .findRecentFqdnFor(routerId, destIp, periodStart.minus(fqdnBackfillWindow))
-          .mapError(ApiError.Db(_))
-          .flatMap {
-            case Some(name) =>
-              AppMetrics.recordTrafficBackfill("filled").as(record.copy(host = HostId.Fqdn(name)))
-            case None       =>
-              AppMetrics.recordTrafficBackfill("miss").as(record)
-          }
+        fqdnMap.get(destIp) match {
+          case Some(name) =>
+            AppMetrics.recordTrafficBackfill("filled").as(record.copy(host = HostId.Fqdn(name)))
+          case None       =>
+            AppMetrics.recordTrafficBackfill("miss").as(record)
+        }
       case _                                               =>
         AppMetrics.recordTrafficBackfill("skip").as(record)
     }
@@ -309,7 +321,7 @@ object RouterIngestRoutes {
     // #1010: bucket time_usage by the household's logical "today" so the
     // cap-tracking read path (which uses the same household-local date) lines
     // up with the rows we wrote.
-    val date      = PolicyService.householdLocalDate(periodEnd, settings)
+    val date       = PolicyService.householdLocalDate(periodEnd, settings)
     // A batch carries one record per (mac, dst_ip) but time_usage is keyed
     // by (mac, hostname, date), and activeSeconds is the bucket duration
     // (the report window, ~60 s — same value on every record that saw bytes>0). Two
@@ -321,7 +333,7 @@ object RouterIngestRoutes {
     // (one batch == one period, so max activeSeconds across the mac is the bucket
     // duration) and total bytes across the mac in this batch (denominator for the
     // bytes-share weight).
-    val perMacAgg = records
+    val perMacAgg  = records
       .groupBy(_.mac)
       .view
       .mapValues { rs =>
@@ -330,7 +342,7 @@ object RouterIngestRoutes {
         (bucketSecs, totalBytes)
       }
       .toMap
-    val grouped   = records
+    val grouped    = records
       .groupBy(r => (r.mac, r.host))
       .view
       .mapValues { rs =>
@@ -341,29 +353,31 @@ object RouterIngestRoutes {
         )
       }
       .toList
-    ZIO.foreachDiscard(grouped) { case ((mac, host), (secs, bIn, bOut)) =>
-      // #715: bytes-share weighted attribution within the batch. `bucketSecs` is
-      // the wall-clock duration of the bucket; the share is this host's
-      // (bytes_in + bytes_out) over the mac's total bytes in the batch. When the
-      // mac has zero bytes (shouldn't happen — the agent only emits a record
-      // when it saw bytes>0), fall back to crediting full bucket seconds so the
+    // #1511: build the per-(mac, host) increments in memory and ship them as ONE batched upsert
+    // instead of N sequential round trips. Same `seconds_used` / `proportional_seconds` /
+    // `bytes_in` / `bytes_out` deltas as before — only the wire shape to PG changed.
+    val increments = grouped.map { case ((mac, host), (secs, bIn, bOut)) =>
+      // #715: bytes-share weighted attribution within the batch. `bucketSecs` is the wall-clock
+      // duration of the bucket; the share is this host's (bytes_in + bytes_out) over the mac's
+      // total bytes in the batch. When the mac has zero bytes (shouldn't happen — the agent only
+      // emits a record when it saw bytes>0), fall back to crediting full bucket seconds so the
       // row still moves and matches `seconds_used`.
       val (bucketSecs, totalBytes) = perMacAgg.getOrElse(mac, (secs, bIn + bOut))
       val hostBytes                = bIn + bOut
       val proportionalSecs         =
         if (totalBytes > 0L) (bucketSecs.toDouble * hostBytes.toDouble / totalBytes.toDouble).round
         else bucketSecs
-      timeUsageRepo
-        .incrementSecondsAndBytes(mac, host, date, secs, bIn, bOut, proportionalSecs)
+      TimeUsageIncrement(mac, host, date, secs, bIn, bOut, proportionalSecs)
+    }
+    timeUsageRepo
+      .incrementSecondsAndBytesBatch(increments)
+      .mapError(ApiError.Db(_)) *>
+      // #1511: one batched UPDATE for all (mac, ip) last-seen touches in the batch — was N round
+      // trips. Skips rows for unknown MACs the same way the per-row method did (UPDATE only).
+      deviceRepo
+        .touchLastSeenBatch(records.map(r => (r.mac, r.ip)).distinct, periodEnd)
         .mapError(ApiError.Db(_))
-    } *>
-      // For each unique mac in the batch, touch last_seen on the existing row (no-op if unknown).
-      ZIO.foreachDiscard(records.map(r => (r.mac, r.ip)).distinct) { (mac, ip) =>
-        deviceRepo
-          .touchLastSeen(mac, ip, periodEnd)
-          .mapError(ApiError.Db(_))
-          .unit
-      }
+        .unit
   }
 
   /**

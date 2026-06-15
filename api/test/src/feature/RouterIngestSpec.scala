@@ -1689,5 +1689,110 @@ object RouterIngestSpec
         alerts <- aRepo.list(includeAll = true)
       } yield assertTrue(alerts.isEmpty)
     },
+
+    // ── #1511: usage ingest is a thin batched write ─────────────────────────
+    test(
+      "usage: a 30-record batch issues ONE timeUsage upsert and ONE device touch — not N",
+    ) {
+      // #1511: the pre-#1511 handler called incrementSecondsAndBytes + touchLastSeen per row, so a
+      // typical ~50-record batch spent ~1 s of round trips on these two stages alone. The fix
+      // batches both into single SQL statements. We assert this structurally: the batched op
+      // counter advances by exactly 1, and the pre-#1511 per-row op counter does NOT advance.
+      // That makes the regression undetectable in a wall-clock perf metric (test env latency is
+      // noisy) but unambiguous in CI.
+      val batchOpCounter     = Metric
+        .counter("db_queries_total")
+        .tagged("op", "timeUsage.incrementSecondsAndBytesBatch")
+        .tagged("status", "ok")
+      val perRowOpCounter    = Metric
+        .counter("db_queries_total")
+        .tagged("op", "timeUsage.incrementSecondsAndBytes")
+        .tagged("status", "ok")
+      val touchBatchCounter  = Metric
+        .counter("db_queries_total")
+        .tagged("op", "device.touchLastSeenBatch")
+        .tagged("status", "ok")
+      val touchPerRowCounter = Metric
+        .counter("db_queries_total")
+        .tagged("op", "device.touchLastSeen")
+        .tagged("status", "ok")
+      val fqdnBatchCounter   = Metric
+        .counter("db_queries_total")
+        .tagged("op", "connectionEvent.findRecentFqdnForBatch")
+        .tagged("status", "ok")
+      val fqdnPerRowCounter  = Metric
+        .counter("db_queries_total")
+        .tagged("op", "connectionEvent.findRecentFqdnFor")
+        .tagged("status", "ok")
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        pRepo    <- ZIO.service[ProfileRepo]
+        dRepo    <- ZIO.service[DeviceRepo]
+        tu       <- ZIO.service[TimeUsageRepo]
+        routes   <- buildRoutes
+        _        <- seedKnownDevice(dRepo, pRepo)
+        (id, tk) <- seedRouter(rRepo)
+        // 30 distinct (host) records, all on the same known mac — the pre-fix path would call
+        // incrementSecondsAndBytes 30 times. 5 of the hosts are ipv4-typed with destIp set so
+        // backfill runs and the per-record `findRecentFqdnFor` SELECT would fire 5 times.
+        fqdnRecs = (1 to 25).toList.map(i =>
+          UsageRecord(
+            MacAddress.unsafe(knownMac),
+            None,
+            HostId.Fqdn(Hostname.unsafe(s"host-$i.example.com")),
+            60L,
+            100L,
+            50L,
+          ),
+        )
+        ipv4Recs = (1 to 5).toList.map(i =>
+          UsageRecord(
+            MacAddress.unsafe(knownMac),
+            None,
+            HostId.IPv4(IpAddress.unsafe(s"203.0.113.$i")),
+            60L,
+            100L,
+            50L,
+            Some(IpAddress.unsafe(s"203.0.113.$i")),
+          ),
+        )
+        body     = UsageReport(
+          id,
+          periodStart.toString,
+          periodEnd.toString,
+          fqdnRecs ++ ipv4Recs,
+        ).toJson
+        b1   <- batchOpCounter.value
+        r1   <- perRowOpCounter.value
+        t1   <- touchBatchCounter.value
+        tr1  <- touchPerRowCounter.value
+        f1   <- fqdnBatchCounter.value
+        fr1  <- fqdnPerRowCounter.value
+        resp <- post(routes, "/api/router/usage", body, Some(tk))
+        b2   <- batchOpCounter.value
+        r2   <- perRowOpCounter.value
+        t2   <- touchBatchCounter.value
+        tr2  <- touchPerRowCounter.value
+        f2   <- fqdnBatchCounter.value
+        fr2  <- fqdnPerRowCounter.value
+        // Sanity: derived increments still landed under the canonical host.
+        sb   <- tu.getSecondsAndBytes(
+          MacAddress.unsafe(knownMac),
+          HostId.Fqdn(Hostname.unsafe("host-1.example.com")),
+          testDate,
+        )
+      } yield assertTrue(resp.status == Status.Ok) &&
+        // The hot path takes exactly ONE round trip per stage, regardless of batch size.
+        assertTrue(b2.count - b1.count == 1.0) &&
+        assertTrue(t2.count - t1.count == 1.0) &&
+        assertTrue(f2.count - f1.count == 1.0) &&
+        // And the per-row variants are NOT used on the hot path anymore.
+        assertTrue(r2.count - r1.count == 0.0) &&
+        assertTrue(tr2.count - tr1.count == 0.0) &&
+        assertTrue(fr2.count - fr1.count == 0.0) &&
+        // Derived increment is still correct.
+        assertTrue(sb == ((60L, 100L, 50L)))
+    },
   ) @@ TestAspect.sequential
 }
