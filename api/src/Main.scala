@@ -13,6 +13,7 @@ import wifihaven.api.metrics.{
   RouterPresenceMetrics,
 }
 import wifihaven.api.notify.Notifier
+import wifihaven.api.observability.LoggingMiddleware
 import wifihaven.api.policy.*
 import wifihaven.api.routes.*
 import wifihaven.api.usage.RetentionSweepJob
@@ -442,13 +443,22 @@ object Main extends ZIOAppDefault {
       // It sits *inside* the readiness gate so the gate's startup 503s don't spam the log. Only
       // /api/health (its own 503-while-starting semantics, polled constantly) and /metrics (the
       // scrape endpoint) are left out — mirroring HttpMetrics' own exclusion of /metrics.
+      // #602: LoggingMiddleware.annotate wraps every served route family so every
+      // ZIO.log* emitted inside a handler (or anything it calls) inherits the
+      // templated `route` and `method` as MDC keys via FiberRef — handlers no
+      // longer wrap individual log lines for that context. ErrorBoundary still
+      // adds `status` because it sees the response. The middleware sits *inside*
+      // HttpMetrics (so the same routes it counts also get logged) and *outside*
+      // the readiness gate so even a gated 503 carries its route/method context.
       HttpMetrics.instrument(
         healthRoutes ++
-          Readiness.gate(
-            ErrorBoundary.observe(
-              systemRoutes ++ statsRoutes ++ routerAndAdminRoutes ++ spaRoutes,
+          LoggingMiddleware.annotate(
+            Readiness.gate(
+              ErrorBoundary.observe(
+                systemRoutes ++ statsRoutes ++ routerAndAdminRoutes ++ spaRoutes,
+              ),
+              ready,
             ),
-            ready,
           ),
       ) ++ metricsRoutes
     }

@@ -14,6 +14,14 @@ M.block_page_api_url  = "/var/run/wifihaven/api_url"
 -- ip → hostname cache (#259): wifihaven-dns-tail writes, wifihaven-agent reads.
 M.dns_cache = "/tmp/wifihaven-dns-cache.txt"
 
+-- CNAME-alias map snapshot (#1572): wifihaven-dns-tail writes in lockstep with
+-- dns_cache and reloads it on startup via cache.seed_aliases. Persists the
+-- target→branded-head edges learned from observed CNAME chains so a sidecar
+-- restart does not lose the ability to attribute a directly-queried CDN edge
+-- name back to the brand the client originally typed. Same atomic-write/
+-- tmpfs-IPC pattern as dns_cache; the agent does not read this file.
+M.dns_aliases = "/tmp/wifihaven-dns-aliases.txt"
+
 -- DNS query-result tally (#1302): wifihaven-dns-tail writes cumulative
 -- per-result counts ("<result>\t<count>" lines) on each flush; wifihaven-agent
 -- samples it on its metrics tick and folds the deltas into

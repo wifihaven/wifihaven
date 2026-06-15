@@ -2,6 +2,7 @@ package wifihaven.api.routes
 
 import wifihaven.api.db.*
 import wifihaven.api.metrics.AppMetrics
+import wifihaven.api.observability.LogContext
 import wifihaven.api.policy.PolicyService
 import wifihaven.shared.*
 import wifihaven.shared.types.*
@@ -43,59 +44,72 @@ object RouterIngestRoutes {
           // The per-RECORD skip path (below) is kept from #1574 and is NOT redundant with the
           // boundary: a batch carrying a bad record still returns 200, so the boundary never sees
           // it — the skip is logged + metered inline here.
-          val handle: ZIO[Any, ApiError, Response] = for {
-            router <- auth.authenticate(req)
-            body   <- req.body.asString.orElseFail(ApiError.BadRequest(""))
-            // #1569: decode the *envelope* (routerId, periodStart, periodEnd) + `records` as a raw
-            // JSON array, deferring per-record validation. A genuinely unparseable envelope (bad
-            // routerId/timestamps, not an object, `records` not an array, truncated body) still
-            // 400s — logged by the boundary.
-            raw    <- ZIO
-              .fromEither(body.fromJson[RawUsageReport])
-              .mapError(ApiError.DecodeFailure(_))
-            _      <- ZIO
-              .fail(ApiError.BadRequest("router_id mismatch"))
-              .when(raw.routerId != router.id)
-            ps     <- parseInstant(raw.periodStart)
-            pe     <- parseInstant(raw.periodEnd)
-            // #1569: decode each record individually. A single malformed record
-            // (e.g. a host value that fails Hostname validation — an Akamai/CDN
-            // CNAME target with underscores, see #1572) used to fail the WHOLE
-            // batch, dropping every valid record with it. Now the bad records are
-            // skipped, logged (bounded), and metered, and the valid ones ingest.
-            decoded  = raw.records.zipWithIndex.map((j, i) => (i, j.as[UsageRecord]))
-            rejected = decoded.collect { case (i, Left(err)) => (i, err) }
-            records  = decoded.collect { case (_, Right(r)) => r }
-            _        <- ZIO.foreachDiscard(rejected) { (i, err) =>
-              ZIO.logWarning(
-                s"router usage: skipping malformed record[$i] for router=${router.id}: $err",
-              )
+          // #602: route/method are on the MDC via LoggingMiddleware. We add
+          // `routerId` to the whole post-auth scope so every log emitted from
+          // here (per-record skip warn, per-batch debug, per-record debug dump)
+          // inherits the same router context without re-wrapping.
+          val handle: ZIO[Any, ApiError, Response] =
+            auth.authenticate(req).flatMap { router =>
+              LogContext.annotate(LogContext.RouterId, router.id.toString) {
+                for {
+                  body <- req.body.asString.orElseFail(ApiError.BadRequest(""))
+                  // #1569: decode the *envelope* (routerId, periodStart, periodEnd) + `records` as a
+                  // raw JSON array, deferring per-record validation. A genuinely unparseable
+                  // envelope (bad routerId/timestamps, not an object, `records` not an array,
+                  // truncated body) still 400s — logged by the boundary.
+                  raw  <- ZIO
+                    .fromEither(body.fromJson[RawUsageReport])
+                    .mapError(ApiError.DecodeFailure(_))
+                  _    <- ZIO
+                    .fail(ApiError.BadRequest("router_id mismatch"))
+                    .when(raw.routerId != router.id)
+                  ps   <- parseInstant(raw.periodStart)
+                  pe   <- parseInstant(raw.periodEnd)
+                  // #1569: decode each record individually. A single malformed record
+                  // (e.g. a host value that fails Hostname validation — an Akamai/CDN
+                  // CNAME target with underscores, see #1572) used to fail the WHOLE
+                  // batch, dropping every valid record with it. Now the bad records are
+                  // skipped, logged (bounded), and metered, and the valid ones ingest.
+                  decoded  = raw.records.zipWithIndex.map((j, i) => (i, j.as[UsageRecord]))
+                  rejected = decoded.collect { case (i, Left(err)) => (i, err) }
+                  records  = decoded.collect { case (_, Right(r)) => r }
+                  _        <- ZIO.foreachDiscard(rejected) { (i, err) =>
+                    ZIO.logWarning(
+                      s"router usage: skipping malformed record[$i] for router=${router.id}: $err",
+                    )
+                  }
+                  _        <- AppMetrics.recordUsageRecordsRejected(rejected.size)
+                  _        <- LogContext.annotateAll(
+                    LogContext.BatchSize -> records.size.toString,
+                    LogContext.Rejected  -> rejected.size.toString,
+                  ) {
+                    ZIO.logDebug(
+                      s"router usage: router=${router.id} period=$ps..$pe records=${records.size} " +
+                        s"rejected=${rejected.size}",
+                    )
+                  }
+                  _        <- ZIO.foreachDiscard(records)(r =>
+                    ZIO.logDebug(
+                      s"  usage record: mac=${r.mac} ip=${r.ip.getOrElse("-")} " +
+                        s"host=${r.host.value} secs=${r.activeSeconds} bIn=${r.bytesIn} bOut=${r.bytesOut}",
+                    ),
+                  )
+                  settings <- householdSettingsRepo.get.mapError(ApiError.Db(_))
+                  _        <- handleUsage(
+                    router.id,
+                    ps,
+                    pe,
+                    records,
+                    settings,
+                    trafficRepo,
+                    timeUsageRepo,
+                    deviceRepo,
+                    connEventRepo,
+                  )
+                  _        <- routerRepo.touch(router.id, None, None).mapError(ApiError.Db(_))
+                } yield Response.ok
+              }
             }
-            _        <- AppMetrics.recordUsageRecordsRejected(rejected.size)
-            _        <- ZIO.logDebug(
-              s"router usage: router=${router.id} period=$ps..$pe records=${records.size} " +
-                s"rejected=${rejected.size}",
-            )
-            _        <- ZIO.foreachDiscard(records)(r =>
-              ZIO.logDebug(
-                s"  usage record: mac=${r.mac} ip=${r.ip.getOrElse("-")} " +
-                  s"host=${r.host.value} secs=${r.activeSeconds} bIn=${r.bytesIn} bOut=${r.bytesOut}",
-              ),
-            )
-            settings <- householdSettingsRepo.get.mapError(ApiError.Db(_))
-            _        <- handleUsage(
-              router.id,
-              ps,
-              pe,
-              records,
-              settings,
-              trafficRepo,
-              timeUsageRepo,
-              deviceRepo,
-              connEventRepo,
-            )
-            _        <- routerRepo.touch(router.id, None, None).mapError(ApiError.Db(_))
-          } yield Response.ok
           handle.mapError(ErrorMapper.errorToResponse)
         },
       Method.POST / "api" / "router" / "events" ->
@@ -105,43 +119,51 @@ object RouterIngestRoutes {
           // gone — the ErrorBoundary now logs every 4xx (incl. this decode 400) at WARN with the
           // response-body snippet, so logging is uniform with the usage route (the #1569 dedup:
           // one emitter, not two).
-          val handle: ZIO[Any, ApiError, Response] = for {
-            router <- auth.authenticate(req)
-            body   <- req.body.asString.orElseFail(ApiError.BadRequest(""))
-            // #1126: tolerate an empty/blank body as a no-op batch. A truncated
-            // or empty POST (network blip, retry-queue edge) used to fail
-            // RouterEventsRequest decoding with "Unexpected end of input" and
-            // 400, spamming the warn log and dropping the (harmless) batch. An
-            // empty events POST carries nothing to persist, so treat it as an
-            // accepted no-op rather than an error. Genuinely malformed non-empty
-            // bodies still 400 + warn (and the agent emitter no longer
-            // produces them — see conntrack.encode_events_body).
-            rep    <-
-              if body.trim.isEmpty then
-                ZIO.logDebug(
-                  s"router events: empty body from router=${router.id}; treating as no-op batch",
-                ) *> ZIO.succeed(RouterEventsRequest(router.id, Nil))
-              else
-                ZIO
-                  .fromEither(body.fromJson[RouterEventsRequest])
-                  .mapError(ApiError.DecodeFailure(_))
-            _      <- ZIO
-              .fail(ApiError.BadRequest("router_id mismatch"))
-              .when(rep.routerId != router.id)
-            _      <- ZIO.logDebug(
-              s"router events: router=${router.id} batchSize=${rep.events.size}",
-            )
-            _      <- ZIO.foreachDiscard(rep.events)(e =>
-              ZIO.logDebug(
-                s"  event: type=${e.`type`} mac=${e.mac.getOrElse("-")} " +
-                  s"ip=${e.ip.getOrElse("-")} host=${e.host.map(_.value).orElse(e.hostname.map(_.value)).getOrElse("-")} " +
-                  s"destIp=${e.destIp.getOrElse("-")} allowed=${e.allowed.map(_.toString).getOrElse("-")} " +
-                  s"reason=${e.reason.getOrElse("-")} ts=${e.ts}",
-              ),
-            )
-            _      <- handleEvents(router.id, rep.events, deviceRepo, connEventRepo, alertRepo)
-            _      <- routerRepo.touch(router.id, None, None).mapError(ApiError.Db(_))
-          } yield Response.ok
+          // #602: route/method via LoggingMiddleware; `routerId` annotates the
+          // whole post-auth scope so every log here inherits it without re-wrapping.
+          val handle: ZIO[Any, ApiError, Response] =
+            auth.authenticate(req).flatMap { router =>
+              LogContext.annotate(LogContext.RouterId, router.id.toString) {
+                for {
+                  body <- req.body.asString.orElseFail(ApiError.BadRequest(""))
+                  // #1126: tolerate an empty/blank body as a no-op batch. A truncated
+                  // or empty POST (network blip, retry-queue edge) used to fail
+                  // RouterEventsRequest decoding with "Unexpected end of input" and
+                  // 400, spamming the warn log and dropping the (harmless) batch. An
+                  // empty events POST carries nothing to persist, so treat it as an
+                  // accepted no-op rather than an error. Genuinely malformed non-empty
+                  // bodies still 400 + warn (and the agent emitter no longer
+                  // produces them — see conntrack.encode_events_body).
+                  rep  <-
+                    if body.trim.isEmpty then
+                      ZIO.logDebug(
+                        s"router events: empty body from router=${router.id}; treating as no-op batch",
+                      ) *> ZIO.succeed(RouterEventsRequest(router.id, Nil))
+                    else
+                      ZIO
+                        .fromEither(body.fromJson[RouterEventsRequest])
+                        .mapError(ApiError.DecodeFailure(_))
+                  _    <- ZIO
+                    .fail(ApiError.BadRequest("router_id mismatch"))
+                    .when(rep.routerId != router.id)
+                  _    <- LogContext.annotate(LogContext.BatchSize, rep.events.size.toString) {
+                    ZIO.logDebug(
+                      s"router events: router=${router.id} batchSize=${rep.events.size}",
+                    )
+                  }
+                  _    <- ZIO.foreachDiscard(rep.events)(e =>
+                    ZIO.logDebug(
+                      s"  event: type=${e.`type`} mac=${e.mac.getOrElse("-")} " +
+                        s"ip=${e.ip.getOrElse("-")} host=${e.host.map(_.value).orElse(e.hostname.map(_.value)).getOrElse("-")} " +
+                        s"destIp=${e.destIp.getOrElse("-")} allowed=${e.allowed.map(_.toString).getOrElse("-")} " +
+                        s"reason=${e.reason.getOrElse("-")} ts=${e.ts}",
+                    ),
+                  )
+                  _    <- handleEvents(router.id, rep.events, deviceRepo, connEventRepo, alertRepo)
+                  _    <- routerRepo.touch(router.id, None, None).mapError(ApiError.Db(_))
+                } yield Response.ok
+              }
+            }
           handle.mapError(ErrorMapper.errorToResponse)
         },
     )
@@ -188,7 +210,7 @@ object RouterIngestRoutes {
     val zeroByteRows =
       records.count(r => r.activeSeconds == 0L && r.bytesIn == 0L && r.bytesOut == 0L)
     for {
-      _         <- AppMetrics.recordZeroByteFiltered(zeroByteRows)
+      _ <- AppMetrics.recordZeroByteFiltered(zeroByteRows)
       // #1585: write-time FQDN backfill. The router's per-(mac, dst_ip)
       // accumulator emits records whose host is the resolved fqdn when DNS
       // attribution won the race, but ipv4/ipv6 when it lost (DoH, hard-coded
@@ -197,9 +219,20 @@ object RouterIngestRoutes {
       // rewrite the record to its resolved fqdn BEFORE inserting — so the
       // traffic_reports row lands under the human-readable host and the
       // read-side LATERAL join (#730 follow-up cleanup) can eventually go away.
-      rewritten <- ZIO.foreach(records)(r =>
-        backfillRecord(routerId, r, periodStart, connEventRepo),
-      )
+      // #1511: resolve the whole batch's race-loser dest_ips in one round trip,
+      // then rewrite each record in memory — collapses the per-record N+1 SELECT
+      // that dominated the handler's ~1 s p95.
+      candidateIps = records
+        .collect {
+          case r if r.host.isInstanceOf[HostId.IPv4] || r.host.isInstanceOf[HostId.IPv6] =>
+            r.destIp
+        }
+        .flatten
+        .distinct
+      fqdnMap <- connEventRepo
+        .findRecentFqdnForBatch(routerId, candidateIps, periodStart.minus(fqdnBackfillWindow))
+        .mapError(ApiError.Db(_))
+      rewritten <- ZIO.foreach(records)(r => backfillRecordWith(fqdnMap, r))
       // After rewrite, two distinct (mac, dst_ip) records can collapse to the
       // same (mac, host) at the same period — the existing primary key
       // (router_id, period_start, mac, host_type, host_value) makes the second
@@ -235,30 +268,28 @@ object RouterIngestRoutes {
   }
 
   /**
-   * #1585: rewrite a race-loser ipv4/ipv6 UsageRecord to its resolved FQDN by consulting recent
-   * fqdn-typed connection_events for the same (router_id, dest_ip). Reuses [[fqdnBackfillWindow]]
-   * for symmetry with the events-side backfill (#720); five minutes covers conntrack/dns-tail
-   * jitter without inviting attribution across reused-IP cloud endpoints. Emits
-   * `traffic_reports_backfill_total{outcome}` per record: `skip` (not a candidate — already fqdn,
-   * or no dest_ip), `filled` (rewritten), or `miss` (candidate, no fqdn found).
+   * #1585 + #1511: rewrite a race-loser ipv4/ipv6 UsageRecord to its resolved FQDN by consulting
+   * recent fqdn-typed connection_events for the same (router_id, dest_ip). #1585 introduced the
+   * write-time backfill; #1511 moved the per-record lookup off the wire — the resolved dest_ip →
+   * FQDN map is now built once per batch by [[ConnectionEventRepo.findRecentFqdnForBatch]] and
+   * consulted in memory here. Window symmetry with the events-side backfill (#720) is preserved via
+   * [[fqdnBackfillWindow]]: five minutes covers conntrack/dns-tail jitter without inviting
+   * attribution across reused-IP cloud endpoints. Emits `traffic_reports_backfill_total{result}`
+   * per record: `skip` (not a candidate — already fqdn, or no dest_ip), `filled` (rewritten), or
+   * `miss` (candidate, no fqdn found).
    */
-  private def backfillRecord(
-      routerId: RouterId,
+  private def backfillRecordWith(
+      fqdnMap: Map[IpAddress, Hostname],
       record: UsageRecord,
-      periodStart: Instant,
-      connEventRepo: ConnectionEventRepo,
   ): IO[ApiError, UsageRecord] =
     (record.host, record.destIp) match {
       case (HostId.IPv4(_) | HostId.IPv6(_), Some(destIp)) =>
-        connEventRepo
-          .findRecentFqdnFor(routerId, destIp, periodStart.minus(fqdnBackfillWindow))
-          .mapError(ApiError.Db(_))
-          .flatMap {
-            case Some(name) =>
-              AppMetrics.recordTrafficBackfill("filled").as(record.copy(host = HostId.Fqdn(name)))
-            case None       =>
-              AppMetrics.recordTrafficBackfill("miss").as(record)
-          }
+        fqdnMap.get(destIp) match {
+          case Some(name) =>
+            AppMetrics.recordTrafficBackfill("filled").as(record.copy(host = HostId.Fqdn(name)))
+          case None       =>
+            AppMetrics.recordTrafficBackfill("miss").as(record)
+        }
       case _                                               =>
         AppMetrics.recordTrafficBackfill("skip").as(record)
     }
@@ -309,7 +340,7 @@ object RouterIngestRoutes {
     // #1010: bucket time_usage by the household's logical "today" so the
     // cap-tracking read path (which uses the same household-local date) lines
     // up with the rows we wrote.
-    val date      = PolicyService.householdLocalDate(periodEnd, settings)
+    val date       = PolicyService.householdLocalDate(periodEnd, settings)
     // A batch carries one record per (mac, dst_ip) but time_usage is keyed
     // by (mac, hostname, date), and activeSeconds is the bucket duration
     // (the report window, ~60 s — same value on every record that saw bytes>0). Two
@@ -321,7 +352,7 @@ object RouterIngestRoutes {
     // (one batch == one period, so max activeSeconds across the mac is the bucket
     // duration) and total bytes across the mac in this batch (denominator for the
     // bytes-share weight).
-    val perMacAgg = records
+    val perMacAgg  = records
       .groupBy(_.mac)
       .view
       .mapValues { rs =>
@@ -330,7 +361,7 @@ object RouterIngestRoutes {
         (bucketSecs, totalBytes)
       }
       .toMap
-    val grouped   = records
+    val grouped    = records
       .groupBy(r => (r.mac, r.host))
       .view
       .mapValues { rs =>
@@ -341,29 +372,31 @@ object RouterIngestRoutes {
         )
       }
       .toList
-    ZIO.foreachDiscard(grouped) { case ((mac, host), (secs, bIn, bOut)) =>
-      // #715: bytes-share weighted attribution within the batch. `bucketSecs` is
-      // the wall-clock duration of the bucket; the share is this host's
-      // (bytes_in + bytes_out) over the mac's total bytes in the batch. When the
-      // mac has zero bytes (shouldn't happen — the agent only emits a record
-      // when it saw bytes>0), fall back to crediting full bucket seconds so the
+    // #1511: build the per-(mac, host) increments in memory and ship them as ONE batched upsert
+    // instead of N sequential round trips. Same `seconds_used` / `proportional_seconds` /
+    // `bytes_in` / `bytes_out` deltas as before — only the wire shape to PG changed.
+    val increments = grouped.map { case ((mac, host), (secs, bIn, bOut)) =>
+      // #715: bytes-share weighted attribution within the batch. `bucketSecs` is the wall-clock
+      // duration of the bucket; the share is this host's (bytes_in + bytes_out) over the mac's
+      // total bytes in the batch. When the mac has zero bytes (shouldn't happen — the agent only
+      // emits a record when it saw bytes>0), fall back to crediting full bucket seconds so the
       // row still moves and matches `seconds_used`.
       val (bucketSecs, totalBytes) = perMacAgg.getOrElse(mac, (secs, bIn + bOut))
       val hostBytes                = bIn + bOut
       val proportionalSecs         =
         if (totalBytes > 0L) (bucketSecs.toDouble * hostBytes.toDouble / totalBytes.toDouble).round
         else bucketSecs
-      timeUsageRepo
-        .incrementSecondsAndBytes(mac, host, date, secs, bIn, bOut, proportionalSecs)
+      TimeUsageIncrement(mac, host, date, secs, bIn, bOut, proportionalSecs)
+    }
+    timeUsageRepo
+      .incrementSecondsAndBytesBatch(increments)
+      .mapError(ApiError.Db(_)) *>
+      // #1511: one batched UPDATE for all (mac, ip) last-seen touches in the batch — was N round
+      // trips. Skips rows for unknown MACs the same way the per-row method did (UPDATE only).
+      deviceRepo
+        .touchLastSeenBatch(records.map(r => (r.mac, r.ip)).distinct, periodEnd)
         .mapError(ApiError.Db(_))
-    } *>
-      // For each unique mac in the batch, touch last_seen on the existing row (no-op if unknown).
-      ZIO.foreachDiscard(records.map(r => (r.mac, r.ip)).distinct) { (mac, ip) =>
-        deviceRepo
-          .touchLastSeen(mac, ip, periodEnd)
-          .mapError(ApiError.Db(_))
-          .unit
-      }
+        .unit
   }
 
   /**

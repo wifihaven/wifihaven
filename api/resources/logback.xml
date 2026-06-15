@@ -1,7 +1,14 @@
 <configuration>
   <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
     <encoder>
-      <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+      <!--
+        #602: %mdc renders the SLF4J MDC map populated by zio-logging annotations
+        (see api/src/observability/LogContext.scala). One-line-per-log locally;
+        keys like route=, mac=, op=, etag=, status= appear at the tail so they
+        can be grep'd without parsing the message text. A structured (JSON)
+        appender for deployed environments is tracked separately under #602.
+      -->
+      <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg %mdc%n</pattern>
     </encoder>
   </appender>
 

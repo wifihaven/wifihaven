@@ -3,6 +3,7 @@ package wifihaven.api.policy
 import wifihaven.api.AppConfig
 import wifihaven.api.db.*
 import wifihaven.api.metrics.AppMetrics
+import wifihaven.api.observability.LogContext
 import wifihaven.shared.{Schedule as DbSchedule, *}
 import wifihaven.shared.types.*
 import zio.{Clock as _, *}
@@ -291,11 +292,18 @@ class PolicyServiceLive(
     if (!changed) ZIO.unit
     else {
       val json = snap.toJson
-      ZIO.logInfo(
-        s"event=snapshot_changed etag=${snap.etag.value} " +
-          s"prevEtag=${prev.map(_.value).getOrElse("none")} " +
-          s"bytes=${json.length} snapshot=$json",
-      )
+      // #602: structured context — etag/op as annotations so ops can filter the
+      // snapshot_changed stream without parsing the message.
+      LogContext.annotateAll(
+        LogContext.Op   -> "snapshot_changed",
+        LogContext.Etag -> snap.etag.value,
+      ) {
+        ZIO.logInfo(
+          s"event=snapshot_changed etag=${snap.etag.value} " +
+            s"prevEtag=${prev.map(_.value).getOrElse("none")} " +
+            s"bytes=${json.length} snapshot=$json",
+        )
+      }
     }
   }
 

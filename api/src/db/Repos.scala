@@ -104,7 +104,22 @@ trait ProfileRepo {
   def create(name: String, cats: List[BlocklistId]): Task[ProfileId]
   def update(p: Profile): Task[Unit]
   def delete(id: ProfileId): Task[Unit]
+
+  // #423: per-field setters for the PATCH handler so concurrent PATCHes
+  // touching disjoint fields don't race via a full-row rewrite. Each method
+  // issues a targeted `UPDATE profiles SET <col>=? WHERE id=?` — the absent
+  // fields aren't touched by the SQL, so a "tab A patches paused, tab B
+  // patches name" interleaving preserves both edits. The full-shape
+  // [[update]] above stays for the legacy PUT route, which is documented as
+  // a full-replace.
+  def setName(id: ProfileId, name: String): Task[Unit]
+  def setBlockedCategories(id: ProfileId, cats: List[BlocklistId]): Task[Unit]
   def setPaused(id: ProfileId, paused: Boolean): Task[Unit]
+  def setFailureMode(id: ProfileId, mode: FailureMode): Task[Unit]
+  def setBlockIpOnly(id: ProfileId, v: Boolean): Task[Unit]
+  def setCrossDeviceOverlapMode(id: ProfileId, mode: CrossDeviceOverlapMode): Task[Unit]
+  def setPauseMode(id: ProfileId, mode: PauseMode): Task[Unit]
+  def setDefaultDeny(id: ProfileId, v: Boolean): Task[Unit]
 }
 
 /**
@@ -217,6 +232,14 @@ trait DeviceRepo {
    * to create rows here (events does that).
    */
   def touchLastSeen(mac: MacAddress, ip: Option[IpAddress], at: Instant): Task[Int]
+
+  /**
+   * #1511: batched version of [[touchLastSeen]]. One UPDATE per distinct (mac, ip) pair the caller
+   * wants to refresh, issued as a single Doobie `updateMany` instead of N round trips on the
+   * `/api/router/usage` hot path. Same per-row UPDATE template — does NOT create rows. Empty input
+   * is a no-op. Returns total rows touched across the batch.
+   */
+  def touchLastSeenBatch(items: List[(MacAddress, Option[IpAddress])], at: Instant): Task[Int]
 
   /**
    * Insert a row for a previously unknown device with NULL profile_id, or refresh last_seen_ip/at
@@ -424,6 +447,14 @@ trait TimeUsageRepo {
       proportionalSeconds: Long = 0L,
   ): Task[Unit]
 
+  /**
+   * #1511: batched upsert of (mac, host, date) increments. Collapses what used to be one round-trip
+   * per (mac, host) in the `/api/router/usage` hot path into a single Doobie `updateMany` against
+   * the same upsert template `incrementSecondsAndBytes` runs — same ON CONFLICT additive semantics.
+   * Empty input is a no-op.
+   */
+  def incrementSecondsAndBytesBatch(rows: List[TimeUsageIncrement]): Task[Unit]
+
   /** Read seconds_used for a (mac, host, date) row. Returns 0 if no row. */
   def getSecondsUsed(mac: MacAddress, host: HostId, date: LocalDate): Task[Long]
 
@@ -468,6 +499,21 @@ trait TimeExtensionRepo {
   def listForProfile(profileId: ProfileId, date: LocalDate): Task[List[TimeExtension]]
   def snapshotAllByProfile(date: LocalDate): Task[Map[ProfileId, Int]]
 }
+
+/**
+ * #1511: row shape for [[TimeUsageRepo.incrementSecondsAndBytesBatch]]. One per (mac, host, date)
+ * increment a `/api/router/usage` batch wants to apply; semantics match the per-arg
+ * `incrementSecondsAndBytes` exactly.
+ */
+case class TimeUsageIncrement(
+    mac: MacAddress,
+    host: HostId,
+    date: LocalDate,
+    seconds: Long,
+    bytesIn: Long,
+    bytesOut: Long,
+    proportionalSeconds: Long,
+)
 
 case class TrafficReportInsert(
     routerId: RouterId,
@@ -712,6 +758,18 @@ trait ConnectionEventRepo {
   ): Task[Option[Hostname]]
 
   /**
+   * #1511: batched version of [[findRecentFqdnFor]]. Resolves a whole batch of dest_ip → recent
+   * FQDN lookups in a single SQL — the per-record sequential call dominated the `/api/router/usage`
+   * hot path. Empty input returns an empty map. Only dest_ips with a matching fqdn-typed event are
+   * present in the result.
+   */
+  def findRecentFqdnForBatch(
+      routerId: RouterId,
+      destIps: List[IpAddress],
+      since: Instant,
+  ): Task[Map[IpAddress, Hostname]]
+
+  /**
    * #720 backfill: patch the `resolved_host_value` column on existing ipv4/ipv6-typed rows for the
    * given (router_id, dest_ip) that landed at-or-after `since` and don't yet carry a resolution.
    * Called when a fqdn-typed event lands and "teaches" the API the IP→hostname mapping
@@ -872,8 +930,34 @@ class ProfileRepoLive(xa: Transactor[Task]) extends ProfileRepo {
       .transact(xa)
       .unit
   def delete(id: ProfileId) = sql"DELETE FROM profiles WHERE id=$id".update.run.transact(xa).unit
-  def setPaused(id: ProfileId, p: Boolean) =
+
+  // #423: targeted per-column setters for the PATCH handler. Each runs an
+  // UPDATE that touches exactly one column, so concurrent PATCHes on
+  // disjoint fields no longer race through a full-row rewrite.
+  def setName(id: ProfileId, name: String)                                   =
+    sql"UPDATE profiles SET name=$name WHERE id=$id".update.run.transact(xa).unit
+  def setBlockedCategories(id: ProfileId, cats: List[BlocklistId])           =
+    sql"UPDATE profiles SET blocked_categories=${cats.map(_.value).toArray} WHERE id=$id".update.run
+      .transact(xa)
+      .unit
+  def setPaused(id: ProfileId, p: Boolean)                                   =
     sql"UPDATE profiles SET paused=$p WHERE id=$id".update.run.transact(xa).unit
+  def setFailureMode(id: ProfileId, mode: FailureMode)                       =
+    sql"UPDATE profiles SET failure_mode=${FailureMode.asString(mode)} WHERE id=$id".update.run
+      .transact(xa)
+      .unit
+  def setBlockIpOnly(id: ProfileId, v: Boolean)                              =
+    sql"UPDATE profiles SET block_ip_only=$v WHERE id=$id".update.run.transact(xa).unit
+  def setCrossDeviceOverlapMode(id: ProfileId, mode: CrossDeviceOverlapMode) =
+    sql"UPDATE profiles SET cross_device_overlap_mode=${CrossDeviceOverlapMode.asString(mode)} WHERE id=$id".update.run
+      .transact(xa)
+      .unit
+  def setPauseMode(id: ProfileId, mode: PauseMode)                           =
+    sql"UPDATE profiles SET pause_mode=${PauseMode.asString(mode)} WHERE id=$id".update.run
+      .transact(xa)
+      .unit
+  def setDefaultDeny(id: ProfileId, v: Boolean)                              =
+    sql"UPDATE profiles SET default_deny=$v WHERE id=$id".update.run.transact(xa).unit
 }
 
 class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsRepo {
@@ -1180,11 +1264,20 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
     sql"UPDATE devices SET last_seen_ip=$ip,last_seen_at=NOW() WHERE mac=$mac".update.run
       .transact(xa)
       .unit
-  def touchLastSeen(mac: MacAddress, ip: Option[IpAddress], at: Instant)               =
-    DbMetrics.timed("device.touchLastSeen")(
-      sql"UPDATE devices SET last_seen_ip=COALESCE($ip,last_seen_ip),last_seen_at=$at WHERE mac=$mac".update.run
-        .transact(xa),
-    )
+  def touchLastSeen(mac: MacAddress, ip: Option[IpAddress], at: Instant) =
+    // #1511 SSOT: route through the batch primitive so the UPDATE template lives in one place.
+    touchLastSeenBatch(List((mac, ip)), at)
+  def touchLastSeenBatch(items: List[(MacAddress, Option[IpAddress])], at: Instant)    =
+    if items.isEmpty then ZIO.succeed(0)
+    else
+      DbMetrics.timed("device.touchLastSeenBatch")(
+        // Same per-row UPDATE template as `touchLastSeen`; Doobie's `updateMany` runs them as one
+        // JDBC batch. We don't need the per-row affected count, just the sum — that matches what
+        // a future operator query would care about. (#1511)
+        Update[(Option[IpAddress], Instant, MacAddress)](
+          "UPDATE devices SET last_seen_ip=COALESCE(?,last_seen_ip),last_seen_at=? WHERE mac=?",
+        ).updateMany(items.map { case (mac, ip) => (ip, at, mac) }).transact(xa),
+      )
   def upsertUnknown(mac: MacAddress, name: String, ip: Option[IpAddress], at: Instant) =
     DbMetrics.timed("device.upsertUnknown")(
       sql"""INSERT INTO devices(mac,name,profile_id,last_seen_ip,last_seen_at)
@@ -1438,18 +1531,44 @@ class TimeUsageRepoLive(xa: Transactor[Task]) extends TimeUsageRepo {
       bytesOut: Long,
       proportionalSeconds: Long = 0L,
   ): Task[Unit] =
-    DbMetrics.timed("timeUsage.incrementSecondsAndBytes")(
-      sql"""INSERT INTO time_usage(device_mac,host_type,host_value,date,seconds_used,proportional_seconds,bytes_in,bytes_out,last_seen_at)
-          VALUES($mac,${host.kind},${host.value},$d,$seconds,$proportionalSeconds,$bytesIn,$bytesOut,NOW())
-          ON CONFLICT(device_mac,host_type,host_value,date) DO UPDATE
-          SET seconds_used=time_usage.seconds_used+EXCLUDED.seconds_used,
-              proportional_seconds=time_usage.proportional_seconds+EXCLUDED.proportional_seconds,
-              bytes_in=time_usage.bytes_in+EXCLUDED.bytes_in,
-              bytes_out=time_usage.bytes_out+EXCLUDED.bytes_out,
-              last_seen_at=NOW()""".update.run
-        .transact(xa)
-        .unit,
+    // #1511 SSOT: both the per-row and batch paths share one upsert template, owned by
+    // `incrementSecondsAndBytesBatch`. Per-row callers (test seeders, fixtures) pay one extra hop
+    // through a singleton list; the production hot path always calls the batch method directly.
+    incrementSecondsAndBytesBatch(
+      List(TimeUsageIncrement(mac, host, d, seconds, bytesIn, bytesOut, proportionalSeconds)),
     )
+  def incrementSecondsAndBytesBatch(rows: List[TimeUsageIncrement]): Task[Unit]                 =
+    if rows.isEmpty then ZIO.unit
+    else
+      DbMetrics.timed("timeUsage.incrementSecondsAndBytesBatch")(
+        Update[(MacAddress, String, String, LocalDate, Long, Long, Long, Long)](
+          // Same upsert template as the per-row method: one VALUES row per increment, additive
+          // ON CONFLICT. Doobie issues a single batched statement, collapsing the per-(mac, host)
+          // round trips that dominated the /api/router/usage hot path (#1511).
+          "INSERT INTO time_usage(device_mac,host_type,host_value,date,seconds_used,proportional_seconds,bytes_in,bytes_out,last_seen_at) " +
+            "VALUES(?,?,?,?,?,?,?,?,NOW()) " +
+            "ON CONFLICT(device_mac,host_type,host_value,date) DO UPDATE " +
+            "SET seconds_used=time_usage.seconds_used+EXCLUDED.seconds_used," +
+            "    proportional_seconds=time_usage.proportional_seconds+EXCLUDED.proportional_seconds," +
+            "    bytes_in=time_usage.bytes_in+EXCLUDED.bytes_in," +
+            "    bytes_out=time_usage.bytes_out+EXCLUDED.bytes_out," +
+            "    last_seen_at=NOW()",
+        ).updateMany(
+          rows.map(r =>
+            (
+              r.mac,
+              r.host.kind,
+              r.host.value,
+              r.date,
+              r.seconds,
+              r.proportionalSeconds,
+              r.bytesIn,
+              r.bytesOut,
+            ),
+          ),
+        ).transact(xa)
+          .unit,
+      )
   def getProportionalSeconds(mac: MacAddress, host: HostId, d: LocalDate): Task[Long]           =
     sql"SELECT COALESCE(proportional_seconds,0) FROM time_usage WHERE device_mac=$mac AND host_type=${host.kind} AND host_value=${host.value} AND date=$d"
       .query[Long]
@@ -2169,6 +2288,27 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
         .option
         .transact(xa),
     )
+
+  def findRecentFqdnForBatch(routerId: RouterId, destIps: List[IpAddress], since: Instant) =
+    if destIps.isEmpty then ZIO.succeed(Map.empty[IpAddress, Hostname])
+    else {
+      val arr = destIps.map(_.value).distinct.toArray
+      DbMetrics.timed("connectionEvent.findRecentFqdnForBatch")(
+        // DISTINCT ON returns the latest (per dest_ip) fqdn within the window in one round-trip.
+        // Matches the per-row `findRecentFqdnFor` semantics exactly. (#1511)
+        sql"""SELECT DISTINCT ON (dest_ip) dest_ip, host_value
+            FROM connection_events
+            WHERE router_id = $routerId
+              AND host_type = 'fqdn'
+              AND ts >= $since
+              AND dest_ip = ANY($arr)
+            ORDER BY dest_ip, ts DESC"""
+          .query[(IpAddress, Hostname)]
+          .to[List]
+          .transact(xa)
+          .map(_.toMap),
+      )
+    }
 
   def backfillResolvedFor(
       routerId: RouterId,
