@@ -202,7 +202,7 @@ class RollupRepoLive(xa: Transactor[Task]) extends RollupRepo {
           tr.bytes_in,
           tr.bytes_out
         FROM traffic_reports tr
-        """ ++ SqlFragments.resolvedHostLateral ++ fr"""
+        ${SqlFragments.resolvedHostLateral}
         WHERE (tr.active_seconds > 0 OR tr.bytes_in > 0 OR tr.bytes_out > 0)
       """
 
