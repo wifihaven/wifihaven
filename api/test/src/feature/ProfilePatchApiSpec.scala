@@ -212,6 +212,39 @@ object ProfilePatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         ProfileRoutes.PatchableKeys.contains("paused"),
       )
     },
+    // #423 — the bug the route exists to fix. Two concurrent PATCHes
+    // touching DISJOINT fields must both survive. Implemented today by
+    // routing each present field to its own targeted SET (no load-then-
+    // write-all-columns trip) — if a future change reintroduces the
+    // full-row rewrite, the loser's edit will silently disappear and this
+    // test will fail. Compares against the deterministic interleaving:
+    // both writes complete, both columns reflect their PATCH.
+    test("concurrent PATCHes on disjoint fields don't clobber each other") {
+      for {
+        kids         <- setupKids()
+        (routes, tk) <- routesAndToken
+        profileRepo  <- ZIO.service[ProfileRepo]
+        // Run the two PATCHes in parallel via the same routes value (one
+        // shared embedded Postgres + connection pool — true concurrent
+        // executions, the same way two browser tabs would race).
+        respPair     <- patch(routes, tk, kids.id, """{"paused":true}""")
+          .zipPar(patch(routes, tk, kids.id, """{"name":"Littles"}"""))
+        (rA, rB) = respPair
+        after <- profileRepo.findById(kids.id).someOrFailException
+      } yield assertTrue(
+        rA.status == Status.Ok,
+        rB.status == Status.Ok,
+        after.paused,            // tab A's edit survived
+        after.name == "Littles", // tab B's edit survived
+        // every other field still matches the pre-patch row
+        after.blockedCategories == kids.blockedCategories,
+        after.failureMode == kids.failureMode,
+        after.blockIpOnly == kids.blockIpOnly,
+        after.crossDeviceOverlapMode == kids.crossDeviceOverlapMode,
+        after.pauseMode == kids.pauseMode,
+        after.defaultDeny == kids.defaultDeny,
+      )
+    },
     test("401 without token") {
       for {
         kids   <- setupKids()

@@ -422,10 +422,18 @@ object ProfileRoutes {
       // Profile shape — every field optional, omitted fields preserve their
       // current value. `timeLimit` is the only nullable field and accepts
       // explicit null to clear; non-nullable fields reject null with 400.
-      // Race-safe vs the PUT clobber pattern that motivated #423 — the SPA
-      // can post `{"paused":true}` without first reading and re-shipping the
-      // rest of the profile. Schedules / users still live on their own
-      // sub-routes by design (#1494, #406) and are not patchable here.
+      //
+      // PER-FIELD RACE SAFETY — the whole point of #423. Each present field
+      // dispatches to a *targeted* repo setter (`profileRepo.setName`,
+      // `setPaused`, …) — NOT a full-row `profileRepo.update(p.copy(...))`.
+      // Two concurrent PATCHes touching disjoint fields therefore preserve
+      // both edits instead of the second-writer clobbering the first via a
+      // load → modify → write-all-columns trip. The Users PATCH already
+      // uses this dispatch shape; the Devices/Apps PATCHes still do not and
+      // have the same regression — tracked in follow-up issues.
+      //
+      // Schedules / users still live on their own sub-routes by design
+      // (#1494, #406) and are not patchable here.
       Method.PATCH / "api" / "profiles" / long("id")             ->
         handler { (id: Long, req: Request) =>
           val pid                                  = ProfileId(id)
@@ -433,12 +441,16 @@ object ProfileRoutes {
             claims    <- requireWriter(req, auth).mapError(ApiError.Wrapped(_))
             _         <- requireProfileAccess(claims, pid, userProfileRepo)
               .mapError(ApiError.Wrapped(_))
-            body      <- req.body.asString.orElseFail(ApiError.BadRequest(""))
-            obj       <- ZIO.fromEither(FieldPatch.parseObj(body)).mapError(ApiError.BadRequest(_))
-            p         <- profileRepo
+            // Existence check up front so a missing row 404s instead of
+            // letting per-field UPDATEs silently no-op. We deliberately do
+            // NOT carry the loaded row into the writes below: every SET is
+            // column-scoped, so there's no full-row copy to drift.
+            _         <- profileRepo
               .findById(pid)
               .mapError(ApiError.Db(_))
               .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Profile not found")))
+            body      <- req.body.asString.orElseFail(ApiError.BadRequest(""))
+            obj       <- ZIO.fromEither(FieldPatch.parseObj(body)).mapError(ApiError.BadRequest(_))
             namePatch <- ZIO
               .fromEither(FieldPatch.from[String](obj, "name"))
               .mapError(ApiError.BadRequest(_))
@@ -486,17 +498,43 @@ object ProfileRoutes {
                   case _                  => ZIO.unit
                 }
               }
-            updated = p.copy(
-              name = namePatch.applyTo(p.name),
-              blockedCategories = blockedCategoriesPatch.applyTo(p.blockedCategories),
-              paused = pausedPatch.applyTo(p.paused),
-              failureMode = failureModePatch.applyTo(p.failureMode),
-              blockIpOnly = blockIpOnlyPatch.applyTo(p.blockIpOnly),
-              crossDeviceOverlapMode = crossDeviceOverlapPatch.applyTo(p.crossDeviceOverlapMode),
-              pauseMode = pauseModePatch.applyTo(p.pauseMode),
-              defaultDeny = defaultDenyPatch.applyTo(p.defaultDeny),
-            )
-            _                       <- profileRepo.update(updated).mapError(ApiError.Db(_))
+            // Per-field dispatch: Absent ⇒ no SQL; Set(v) ⇒ targeted SET.
+            // No load-then-write-all-columns step ⇒ disjoint-field PATCH
+            // races preserve both writers' edits.
+            _                       <- namePatch match {
+              case FieldPatch.Set(v) => profileRepo.setName(pid, v).mapError(ApiError.Db(_))
+              case _                 => ZIO.unit
+            }
+            _                       <- blockedCategoriesPatch match {
+              case FieldPatch.Set(v) =>
+                profileRepo.setBlockedCategories(pid, v).mapError(ApiError.Db(_))
+              case _                 => ZIO.unit
+            }
+            _                       <- pausedPatch match {
+              case FieldPatch.Set(v) => profileRepo.setPaused(pid, v).mapError(ApiError.Db(_))
+              case _                 => ZIO.unit
+            }
+            _                       <- failureModePatch match {
+              case FieldPatch.Set(v) => profileRepo.setFailureMode(pid, v).mapError(ApiError.Db(_))
+              case _                 => ZIO.unit
+            }
+            _                       <- blockIpOnlyPatch match {
+              case FieldPatch.Set(v) => profileRepo.setBlockIpOnly(pid, v).mapError(ApiError.Db(_))
+              case _                 => ZIO.unit
+            }
+            _                       <- crossDeviceOverlapPatch match {
+              case FieldPatch.Set(v) =>
+                profileRepo.setCrossDeviceOverlapMode(pid, v).mapError(ApiError.Db(_))
+              case _                 => ZIO.unit
+            }
+            _                       <- pauseModePatch match {
+              case FieldPatch.Set(v) => profileRepo.setPauseMode(pid, v).mapError(ApiError.Db(_))
+              case _                 => ZIO.unit
+            }
+            _                       <- defaultDenyPatch match {
+              case FieldPatch.Set(v) => profileRepo.setDefaultDeny(pid, v).mapError(ApiError.Db(_))
+              case _                 => ZIO.unit
+            }
             _                       <- timeLimitPatch match {
               case FieldPatch.Absent  => ZIO.unit
               case FieldPatch.Cleared => timeLimitRepo.delete(pid).mapError(ApiError.Db(_))
@@ -504,15 +542,14 @@ object ProfileRoutes {
             }
             // #1538: paused / timeLimit changes affect ProfileTimeStatus, so
             // bust the per-profile cache the same way schedule attach/detach
-            // and /api/time/extend do. Guard on a real value change — not
-            // mere field presence — so a no-op `{"paused": false}` on an
-            // already-unpaused profile doesn't churn the cache.
-            pausedChanged = pausedPatch match {
-              case FieldPatch.Set(v) => v != p.paused
-              case _                 => false
-            }
-            timeLimitChanged = timeLimitPatch != FieldPatch.Absent
-            _ <- ZIO.when(pausedChanged || timeLimitChanged)(cache.invalidateProfile(pid))
+            // and /api/time/extend do. Trigger on any presence — a strict
+            // "value actually changed" check would require reading the row
+            // again post-write to compare, which would reintroduce the
+            // load-then-act window this handler exists to avoid. An
+            // over-invalidation just refills the cache: cheap and safe.
+            _                       <- ZIO.when(
+              pausedPatch != FieldPatch.Absent || timeLimitPatch != FieldPatch.Absent,
+            )(cache.invalidateProfile(pid))
             // Log only recognized keys; unknown keys are ignored per the
             // backwards-compat rule and would mislead ops triage if echoed.
             recognizedKeys = obj.fields.map(_._1).filter(ProfileRoutes.PatchableKeys.contains)
