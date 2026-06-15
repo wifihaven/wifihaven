@@ -86,9 +86,9 @@ object RouterRoutes {
             logMsg = s"router policy: router=${router.id} etagIn=${ifNoneMatch.getOrElse("-")} " +
               s"etagOut=${snap.etag.value} notModified=$notMod devices=${snap.devices.size} " +
               s"profiles=${snap.profiles.size}"
-            // #602: structured context for ops search/filter.
+            // #602: route + method are already on the MDC via LoggingMiddleware;
+            // only attach the per-handler dynamic data here.
             _ <- LogContext.annotateAll(
-              LogContext.Op       -> "router_policy",
               LogContext.RouterId -> router.id.toString,
               LogContext.Etag     -> snap.etag.value,
               LogContext.NotMod   -> notMod.toString,

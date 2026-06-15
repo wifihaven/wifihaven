@@ -44,16 +44,13 @@ object RouterIngestRoutes {
           // The per-RECORD skip path (below) is kept from #1574 and is NOT redundant with the
           // boundary: a batch carrying a bad record still returns 200, so the boundary never sees
           // it — the skip is logged + metered inline here.
-          // #602: `op=router_usage` + `routerId` annotate the WHOLE handler scope
-          // (after auth resolves router.id) so every log emitted from here — the
-          // per-record skip warn, the per-batch debug, and the per-record debug
-          // dump — shares the same MDC keys without re-wrapping.
+          // #602: route/method are on the MDC via LoggingMiddleware. We add
+          // `routerId` to the whole post-auth scope so every log emitted from
+          // here (per-record skip warn, per-batch debug, per-record debug dump)
+          // inherits the same router context without re-wrapping.
           val handle: ZIO[Any, ApiError, Response] =
             auth.authenticate(req).mapError(ApiError.Wrapped(_)).flatMap { router =>
-              LogContext.annotateAll(
-                LogContext.Op       -> "router_usage",
-                LogContext.RouterId -> router.id.toString,
-              ) {
+              LogContext.annotate(LogContext.RouterId, router.id.toString) {
                 for {
                   body <- req.body.asString.orElseFail(ApiError.BadRequest(""))
                   // #1569: decode the *envelope* (routerId, periodStart, periodEnd) + `records` as a
@@ -122,15 +119,11 @@ object RouterIngestRoutes {
           // gone — the ErrorBoundary now logs every 4xx (incl. this decode 400) at WARN with the
           // response-body snippet, so logging is uniform with the usage route (the #1569 dedup:
           // one emitter, not two).
-          // #602: `op=router_events` + `routerId` annotate the WHOLE handler scope
-          // (after auth resolves router.id) so every log emitted from here shares the
-          // same MDC keys without re-wrapping.
+          // #602: route/method via LoggingMiddleware; `routerId` annotates the
+          // whole post-auth scope so every log here inherits it without re-wrapping.
           val handle: ZIO[Any, ApiError, Response] =
             auth.authenticate(req).mapError(ApiError.Wrapped(_)).flatMap { router =>
-              LogContext.annotateAll(
-                LogContext.Op       -> "router_events",
-                LogContext.RouterId -> router.id.toString,
-              ) {
+              LogContext.annotate(LogContext.RouterId, router.id.toString) {
                 for {
                   body <- req.body.asString.orElseFail(ApiError.BadRequest(""))
                   // #1126: tolerate an empty/blank body as a no-op batch. A truncated

@@ -73,17 +73,16 @@ object ErrorBoundary {
     val status = response.status.code
     for {
       snippet <- bodySnippet(response)
-      base   = s"$method $route -> $status"
-      msg    = snippet.fold(base)(s => s"$base body=$s")
-      // #602: structured context (route, method, status) attached as log annotations
-      // so MDC/JSON consumers can search/filter without parsing the message text. The
-      // human-readable message is kept verbatim for back-compat with existing log readers.
-      logged = if status >= 500 then ZIO.logError(msg) else ZIO.logWarning(msg)
-      _ <- LogContext.annotateAll(
-        LogContext.Route  -> route,
-        LogContext.Method -> method,
-        LogContext.Status -> status.toString,
-      )(logged)
+      base = s"$method $route -> $status"
+      msg  = snippet.fold(base)(s => s"$base body=$s")
+      // #602: `route` + `method` are already annotated by `LoggingMiddleware` for
+      // the whole handler scope (via FiberRef), so they flow into this log line
+      // automatically. We only need to add the response-derived `status` here.
+      // Human-readable message text is kept verbatim for back-compat with
+      // existing log readers.
+      _ <- LogContext.annotate(LogContext.Status, status.toString) {
+        if status >= 500 then ZIO.logError(msg) else ZIO.logWarning(msg)
+      }
       _ <- AppMetrics.recordHttpError(route, status)
     } yield ()
   }

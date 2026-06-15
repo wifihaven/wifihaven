@@ -60,10 +60,11 @@ class AuthServiceLive(
   private val secret                 = jwtConfig.secret
 
   def login(username: String, password: String): IO[AuthError, LoginResponse] =
-    LogContext.annotateAll(
-      LogContext.Op   -> "login",
-      LogContext.User -> username,
-    ) {
+    // #602: route/method (`POST /api/auth/login`) ride in via LoggingMiddleware on
+    // the HTTP path. `user` is the only per-call dynamic context we add here, so
+    // every log inside the for-comprehension (success info, bad-password warn)
+    // inherits it via FiberRef.
+    LogContext.annotate(LogContext.User, username) {
       (for {
         user  <- userRepo
           .findByUsername(username)
