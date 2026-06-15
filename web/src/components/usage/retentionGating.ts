@@ -1,5 +1,13 @@
 import type { BucketGrain, TrafficUsageBucket } from '@/types/api'
 
+// Gating data for the usage date-picker: (a) retention horizons (still
+// hard-coded as defaults, paired with #1740 to move them API-side), and (b)
+// the bucket → grain mapping the API now emits via GET /api/usage/config
+// (#1743). `bucketAvailability` is the consumer; everything below is its
+// inputs. The bucket list this file iterates is intentionally SPA-known —
+// adding a new bucket code requires a SPA change in addition to the API
+// emitting it, since `TrafficUsageBucket` is a closed TS enum.
+//
 // Retention horizons, mirrored from the server. The sweep job
 // (api/src/usage/RetentionSweepJob.scala) drops raw rows after 30d, hourly
 // rollups after 90d, daily rollups after 180d. We hard-code the same values

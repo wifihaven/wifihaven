@@ -93,6 +93,8 @@ export function useUsageConfig(opts?: QueryOpts<UsageConfig>) {
     queryKey: ['usage', 'config'] as const,
     queryFn: () => api.usage.config(),
     staleTime: 60 * MIN,
+    // Effectively constant — survive page-mount churn without re-fetching.
+    gcTime: Infinity,
     ...opts,
   })
 }

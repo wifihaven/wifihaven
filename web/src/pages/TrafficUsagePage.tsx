@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
+import { useUsageConfig } from '@/api/queries'
 import type {
   Device,
   ProfileDetail,
@@ -26,7 +27,6 @@ import {
   localTime,
 } from '@/components/usage/usageHelpers'
 import { useInfiniteScroll } from '@/hooks/useInfiniteScroll'
-import { useUsageConfig } from '@/api/queries'
 
 // #846 — Traffic Usage page. Raw + aggregated views over traffic_reports.
 // Column headers double as groupBy toggles (Host=domain, Device=device,

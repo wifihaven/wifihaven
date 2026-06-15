@@ -43,6 +43,9 @@ object UsageRoutes {
       // date-picker, sourced from `BucketPolicy.bucketTiers` so the SPA no
       // longer hand-mirrors `grainForBucket` in retentionGating.ts. (Paired
       // with #1740 — the same endpoint will grow a `horizons` field there.)
+      // No bespoke metric: the HTTP middleware already meters `route`,
+      // `status`, and duration for this path, and the response is a static
+      // constant with no failure modes beyond auth.
       Method.GET / "api" / "usage" / "config"                                   ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
