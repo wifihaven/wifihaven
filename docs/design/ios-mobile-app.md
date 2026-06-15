@@ -141,7 +141,7 @@ Operator-decision points, no money committed by this doc:
 the existing `shared/` pattern.**
 
 `shared/` already publishes Scala models that the API and the router agent
-both consume (`shared/src/Models.scala`, `shared/contract/`). For the mobile
+both consume (`shared/src/Models.scala`, `contract/`). For the mobile
 app the relevant share point is TypeScript-from-SPA: lift the SPA's API
 client (`web/src/api/client.ts`) and its DTOs into a small `web-shared/`
 package (or use Capacitor's bundle which is the SPA itself, so the share is

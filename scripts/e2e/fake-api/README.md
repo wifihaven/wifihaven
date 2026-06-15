@@ -18,9 +18,9 @@ context. Auth shape is checked but not validated; nothing is persisted.
 - `POST /api/router/usage` — captures the body verbatim.
 
 The initial snapshot is loaded from
-`shared/contract/api-to-router/policy_snapshot.json` so the CI drift
+`contract/api-to-router/policy_snapshot.json` so the CI drift
 guard against the live Scala codec keeps the fixture honest. See
-[`shared/contract/README.md`](../../../shared/contract/README.md).
+[`contract/README.md`](../../../contract/README.md).
 
 ### Test-control (NOT exposed in production)
 

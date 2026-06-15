@@ -78,7 +78,7 @@ def test_usage_flows_to_fake_for_client_mac(router, client, fake_api):
         has_usage_for_mac_and_host, timeout_s=360, interval_s=10,
         description=f"fake usage report with row for {client.mac} host={ALLOWED_HOST}",
     )
-    # Wire-shape sanity: matches shared/contract/router-to-api/usage_report.json.
+    # Wire-shape sanity: matches contract/router-to-api/usage_report.json.
     assert "activeSeconds" in rec
     assert "bytesIn" in rec
     assert "bytesOut" in rec

@@ -29,7 +29,7 @@ name: Master Router CD
 # group (#657 capacity follow-up), so in practice they serialize on the
 # host even though the workflow graph runs them in parallel.
 #
-# Path scope: see `on.push.paths` below. shared/contract/** (wire-format
+# Path scope: see `on.push.paths` below. contract/** (wire-format
 # goldens) triggers BOTH pipelines for tandem releases until #597 lands.
 # Scala-only model changes under shared/src/ fire api/ui only — the router
 # agent is Lua and doesn't link Scala. Docs, READMEs, and meta files fire
@@ -41,10 +41,10 @@ on:
     paths:
       - 'openwrt/**'
       - 'opnsense/**'
-      # shared/contract/** = wire-format goldens that gate-2's fake API
+      # contract/** = wire-format goldens that gate-2's fake API
       # loads as fixtures. Scala-side model changes under shared/src/ don't
       # reach the Lua router agent, so we don't fire CD on those.
-      - 'shared/contract/**'
+      - 'contract/**'
       - '.github/workflows/master-router.yml'
       - '.github/workflows/build-release-artifacts.yml'
       - '.github/workflows/publish-openwrt-release.yml'
