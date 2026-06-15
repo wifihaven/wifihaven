@@ -1,17 +1,24 @@
 import type { TrafficUsageBucket } from '@/types/api'
 
-// Retention horizons, mirrored from the server. The sweep job
-// (api/src/usage/RetentionSweepJob.scala) drops raw rows after 30d, hourly
-// rollups after 90d, daily rollups after 180d. We hard-code the same values
-// here so the date-picker never offers a granularity whose source table has
-// already been swept. Operator-tunable horizons (GET /api/usage/horizons) are
-// a follow-up; until then these constants must track RetentionSweepJob.
+// Retention horizons. #1740: the authoritative values now live server-side
+// in api/src/usage/RetentionSweepJob.scala and are served from
+// GET /api/usage/horizons; TrafficUsagePage fetches them at boot and passes
+// them to bucketAvailability(). The shape and the DEFAULT_RETENTION_HORIZONS
+// constant below are a FALLBACK ONLY — used when the fetch hasn't landed yet
+// (first paint) or fails (offline / 5xx). The server is the single source of
+// truth; this fallback is intentionally conservative so the gate degrades to
+// pre-#1740 behaviour rather than failing closed during an outage.
 export interface RetentionHorizons {
   rawDays: number
   hourlyDays: number
   dailyDays: number
 }
 
+// Fallback values — chosen to match the current sweep job at the time of
+// writing so the gate behaves identically pre-fetch. NOT a contract the
+// caller must keep in sync: the server's response wins as soon as it
+// arrives. If the sweep job changes, leaving these stale only widens the
+// offline-fallback window — production behaviour still tracks the server.
 export const DEFAULT_RETENTION_HORIZONS: RetentionHorizons = {
   rawDays: 30,
   hourlyDays: 90,

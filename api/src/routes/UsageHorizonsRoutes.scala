@@ -27,9 +27,13 @@ object UsageHorizonsRoutes {
     dailyDays = RetentionSweepJob.DailyRetentionDays,
   )
 
+  // Payload is a compile-time constant; pre-serialize once and serve the
+  // cached string instead of re-encoding on every request.
+  private val body: String = payload.toJson
+
   val routes: Routes[Any, Response] =
     Routes(
       Method.GET / "api" / "usage" / "horizons" ->
-        handler { (_: Request) => Response.json(payload.toJson) },
+        handler { (_: Request) => Response.json(body) },
     )
 }
