@@ -47,7 +47,9 @@ object LogContext {
     ZIO.logAnnotate(key, value)(zio)
 
   /**
-   * Attach many annotations at once; nil-value pairs are dropped so the call site can be uniform.
+   * Attach every (key, value) pair as a log annotation. For optional values, use [[annotateOpt]] —
+   * this overload does not filter, so passing a null value would emit a stringified-null
+   * annotation.
    */
   def annotateAll[R, E, A](pairs: (String, String)*)(zio: ZIO[R, E, A]): ZIO[R, E, A] =
     pairs.foldRight(zio)((kv, acc) => ZIO.logAnnotate(kv._1, kv._2)(acc))

@@ -96,6 +96,10 @@ class AuthServiceLive(
       ))
         .tapError {
           // #1204: a bad password or unknown user both collapse to InvalidCredentials.
+          // #602: the message text duplicates the annotation values (user=, reason=) on
+          // purpose — same back-compat strategy as ErrorBoundary.scala. Existing log
+          // readers grep substrings; the MDC keys are additive for structured consumers.
+          // Don't drop the substrings until the JSON appender lands.
           case AuthError.InvalidCredentials =>
             AppMetrics.recordAuthFailure("bad_password") *>
               LogContext.annotate(LogContext.Reason, "bad_password") {
