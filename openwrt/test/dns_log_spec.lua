@@ -553,6 +553,85 @@ describe("dump_text + load_table", function()
 end)
 
 -- ---------------------------------------------------------------------------
+-- 4b. CNAME-alias persistence across restarts (#1572)
+--
+-- #1344's CNAME→brand alias map is in-memory only, so any restart of
+-- wifihaven-dns-tail loses every learned edge. If a client then queries the
+-- CDN target DIRECTLY before the branded chain is re-observed (the common
+-- Apple-device pattern), resolve_head returns the opaque CDN name verbatim
+-- and traffic/usage records are attributed to the CDN target instead of the
+-- queried brand — the very pollution #1344 set out to fix.
+--
+-- The "best-effort alias recovery" is to dump the alias map to /tmp on each
+-- cache flush and reload it on startup, mirroring the existing
+-- dump_text/load_table pattern for entries.
+-- ---------------------------------------------------------------------------
+
+describe("alias-map persistence (#1572)", function()
+  local function fake_clock()
+    local t = 1000000
+    return { now = function() return t end, advance = function(s) t = t + s end }
+  end
+
+  it("dumps learned aliases as <target>\\t<head>\\t<ts> lines", function()
+    local clk = fake_clock()
+    local c = dns_log.new({ ttl_seconds = 3600, now_fn = clk.now })
+    c.ingest_line("1 192.168.1.10/100 query[A] brand.com from 192.168.1.10")
+    c.ingest_line("1 192.168.1.10/100 reply brand.com is <CNAME>")
+    c.ingest_line("1 192.168.1.10/100 reply edge.akamai.net is 1.2.3.4")
+
+    local text = c.dump_aliases_text()
+    assert.truthy(text:find("edge.akamai.net\tbrand.com\t1000000", 1, true))
+  end)
+
+  it("seed_aliases restores the alias map so a later direct query attributes to the brand", function()
+    local clk = fake_clock()
+
+    -- Process A: learns brand.com -> CNAME edge.akamai.net -> 1.2.3.4
+    local a = dns_log.new({ ttl_seconds = 3600, now_fn = clk.now })
+    a.ingest_line("1 192.168.1.10/100 query[A] brand.com from 192.168.1.10")
+    a.ingest_line("1 192.168.1.10/100 reply brand.com is <CNAME>")
+    a.ingest_line("1 192.168.1.10/100 reply edge.akamai.net is 1.2.3.4")
+    local alias_dump = a.dump_aliases_text()
+
+    -- Process B: a fresh sidecar instance (post-restart). Without seeding,
+    -- a DIRECT query for the CDN target attributes to the CDN target itself.
+    clk.advance(60)
+    local b = dns_log.new({ ttl_seconds = 3600, now_fn = clk.now })
+    b.seed_aliases(dns_log.load_aliases_table(alias_dump, 3600, clk.now()))
+    b.ingest_line("2 192.168.1.10/200 query[A] edge.akamai.net from 192.168.1.10")
+    b.ingest_line("2 192.168.1.10/200 reply edge.akamai.net is 5.6.7.8")
+
+    -- With seeded aliases, the direct-query IP attributes back to brand.com.
+    assert.equal("brand.com", b.lookup("5.6.7.8"))
+    -- resolve_head() also recovers the brand directly.
+    assert.equal("brand.com", b.resolve_head("edge.akamai.net"))
+  end)
+
+  it("load_aliases_table skips expired alias edges", function()
+    local clk = fake_clock()
+    local c = dns_log.new({ ttl_seconds = 3600, now_fn = clk.now })
+    c.ingest_line("1 1.1.1.1/1 query[A] brand.com from 1.1.1.1")
+    c.ingest_line("1 1.1.1.1/1 reply brand.com is <CNAME>")
+    c.ingest_line("1 1.1.1.1/1 reply edge.akamai.net is 1.2.3.4")
+    clk.advance(7200)  -- past ttl
+    c.ingest_line("2 1.1.1.1/2 query[A] fresh.example from 1.1.1.1")
+    c.ingest_line("2 1.1.1.1/2 reply fresh.example is <CNAME>")
+    c.ingest_line("2 1.1.1.1/2 reply other.cdn.example is 2.2.2.2")
+
+    local table_out = dns_log.load_aliases_table(c.dump_aliases_text(), 3600, clk.now())
+    assert.is_nil(table_out["edge.akamai.net"])
+    assert.equal("fresh.example", table_out["other.cdn.example"])
+  end)
+
+  it("load_aliases_table tolerates nil / empty / malformed input", function()
+    assert.same({}, dns_log.load_aliases_table(nil, 3600, 0))
+    assert.same({}, dns_log.load_aliases_table("", 3600, 0))
+    assert.same({}, dns_log.load_aliases_table("garbage\nnot a real edge\n", 3600, 0))
+  end)
+end)
+
+-- ---------------------------------------------------------------------------
 -- 2c. resolve_head public accessor (#1346/#1348)
 --
 -- The CNAME-alias resolution (#1344) was previously an internal closure used

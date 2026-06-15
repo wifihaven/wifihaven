@@ -2,6 +2,7 @@ package wifihaven.api.routes
 
 import wifihaven.api.auth.*
 import wifihaven.api.db.*
+import wifihaven.api.observability.LogContext
 import wifihaven.api.policy.*
 import wifihaven.shared.*
 import wifihaven.shared.types.*
@@ -85,7 +86,13 @@ object RouterRoutes {
             logMsg = s"router policy: router=${router.id} etagIn=${ifNoneMatch.getOrElse("-")} " +
               s"etagOut=${snap.etag.value} notModified=$notMod devices=${snap.devices.size} " +
               s"profiles=${snap.profiles.size}"
-            _ <- if (notMod) ZIO.logDebug(logMsg) else ZIO.logInfo(logMsg)
+            // #602: route + method are already on the MDC via LoggingMiddleware;
+            // only attach the per-handler dynamic data here.
+            _ <- LogContext.annotateAll(
+              LogContext.RouterId -> router.id.toString,
+              LogContext.Etag     -> snap.etag.value,
+              LogContext.NotMod   -> notMod.toString,
+            )(if (notMod) ZIO.logDebug(logMsg) else ZIO.logInfo(logMsg))
             resp =
               if notMod then
                 Response

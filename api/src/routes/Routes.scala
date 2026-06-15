@@ -3,6 +3,7 @@ package wifihaven.api.routes
 import wifihaven.api.auth.*
 import wifihaven.api.cache.TimeStatusCache
 import wifihaven.api.db.*
+import wifihaven.api.observability.LogContext
 import wifihaven.shared.*
 import wifihaven.shared.types.*
 import zio.{Clock as _, *}
@@ -70,7 +71,7 @@ object AuthRoutes {
                 case _                            =>
                   ApiError.Wrapped(ErrorMapper.dbUnavailable("AuthError"))
               }
-          } yield Response.ok
+          } yield Response.json(ChangePasswordResponse(mustChangePassword = false).toJson)
           handle.mapError(ErrorMapper.errorToResponse)
         },
       Method.GET / "api" / "me"                              ->
@@ -205,6 +206,24 @@ object AuthRoutes {
 // ── Profile routes ─────────────────────────────────────────────────────────
 
 object ProfileRoutes {
+  // #423 — the set of writable Profile fields the PATCH handler recognizes.
+  // Kept as a single named source so the PATCH log message can filter to
+  // recognized keys, AND so the test pin in ProfilePatchApiSpec can assert
+  // it covers every field on the underlying `Profile` case class minus `id`.
+  // If you add a writable field to `Profile`, update this set and PATCH's
+  // `p.copy(...)` together — the test pin will fail loudly otherwise.
+  val PatchableKeys: Set[String] = Set(
+    "name",
+    "blockedCategories",
+    "paused",
+    "failureMode",
+    "blockIpOnly",
+    "crossDeviceOverlapMode",
+    "pauseMode",
+    "defaultDeny",
+    "timeLimit",
+  )
+
   def routes(
       auth: AuthService,
       profileRepo: ProfileRepo,
@@ -400,6 +419,147 @@ object ProfileRoutes {
               ZIO.succeed(Response.ok)
           handle.mapError(ErrorMapper.errorToResponse)
         },
+      // #423: field-scoped partial update. Body is a subset of the writable
+      // Profile shape — every field optional, omitted fields preserve their
+      // current value. `timeLimit` is the only nullable field and accepts
+      // explicit null to clear; non-nullable fields reject null with 400.
+      //
+      // PER-FIELD RACE SAFETY — the whole point of #423. Each present field
+      // dispatches to a *targeted* repo setter (`profileRepo.setName`,
+      // `setPaused`, …) — NOT a full-row `profileRepo.update(p.copy(...))`.
+      // Two concurrent PATCHes touching disjoint fields therefore preserve
+      // both edits instead of the second-writer clobbering the first via a
+      // load → modify → write-all-columns trip. The Users PATCH already
+      // uses this dispatch shape; the Devices/Apps PATCHes still do not and
+      // have the same regression — tracked in follow-up issues.
+      //
+      // Schedules / users still live on their own sub-routes by design
+      // (#1494, #406) and are not patchable here.
+      Method.PATCH / "api" / "profiles" / long("id")             ->
+        handler { (id: Long, req: Request) =>
+          val pid                                  = ProfileId(id)
+          val handle: ZIO[Any, ApiError, Response] = for {
+            claims    <- requireWriter(req, auth).mapError(ApiError.Wrapped(_))
+            _         <- requireProfileAccess(claims, pid, userProfileRepo)
+              .mapError(ApiError.Wrapped(_))
+            // Existence check up front so a missing row 404s instead of
+            // letting per-field UPDATEs silently no-op. We deliberately do
+            // NOT carry the loaded row into the writes below: every SET is
+            // column-scoped, so there's no full-row copy to drift.
+            _         <- profileRepo
+              .findById(pid)
+              .mapError(ApiError.Db(_))
+              .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Profile not found")))
+            body      <- req.body.asString.orElseFail(ApiError.BadRequest(""))
+            obj       <- ZIO.fromEither(FieldPatch.parseObj(body)).mapError(ApiError.BadRequest(_))
+            namePatch <- ZIO
+              .fromEither(FieldPatch.from[String](obj, "name"))
+              .mapError(ApiError.BadRequest(_))
+            blockedCategoriesPatch  <- ZIO
+              .fromEither(FieldPatch.from[List[BlocklistId]](obj, "blockedCategories"))
+              .mapError(ApiError.BadRequest(_))
+            pausedPatch             <- ZIO
+              .fromEither(FieldPatch.from[Boolean](obj, "paused"))
+              .mapError(ApiError.BadRequest(_))
+            failureModePatch        <- ZIO
+              .fromEither(FieldPatch.from[FailureMode](obj, "failureMode"))
+              .mapError(ApiError.BadRequest(_))
+            blockIpOnlyPatch        <- ZIO
+              .fromEither(FieldPatch.from[Boolean](obj, "blockIpOnly"))
+              .mapError(ApiError.BadRequest(_))
+            crossDeviceOverlapPatch <- ZIO
+              .fromEither(FieldPatch.from[CrossDeviceOverlapMode](obj, "crossDeviceOverlapMode"))
+              .mapError(ApiError.BadRequest(_))
+            pauseModePatch          <- ZIO
+              .fromEither(FieldPatch.from[PauseMode](obj, "pauseMode"))
+              .mapError(ApiError.BadRequest(_))
+            defaultDenyPatch        <- ZIO
+              .fromEither(FieldPatch.from[Boolean](obj, "defaultDeny"))
+              .mapError(ApiError.BadRequest(_))
+            timeLimitPatch          <- ZIO
+              .fromEither(FieldPatch.from[Int](obj, "timeLimit"))
+              .mapError(ApiError.BadRequest(_))
+            // Reject `field: null` for non-nullable fields — only `timeLimit`
+            // accepts an explicit clear. Mirrors the device PATCH convention.
+            _                       <- ZIO
+              .foreachDiscard(
+                List(
+                  "name"                   -> namePatch,
+                  "blockedCategories"      -> blockedCategoriesPatch,
+                  "paused"                 -> pausedPatch,
+                  "failureMode"            -> failureModePatch,
+                  "blockIpOnly"            -> blockIpOnlyPatch,
+                  "crossDeviceOverlapMode" -> crossDeviceOverlapPatch,
+                  "pauseMode"              -> pauseModePatch,
+                  "defaultDeny"            -> defaultDenyPatch,
+                ),
+              ) { case (k, fp) =>
+                fp match {
+                  case FieldPatch.Cleared => ZIO.fail(ApiError.BadRequest(s"$k cannot be cleared"))
+                  case _                  => ZIO.unit
+                }
+              }
+            // Per-field dispatch: Absent ⇒ no SQL; Set(v) ⇒ targeted SET.
+            // No load-then-write-all-columns step ⇒ disjoint-field PATCH
+            // races preserve both writers' edits.
+            _                       <- namePatch match {
+              case FieldPatch.Set(v) => profileRepo.setName(pid, v).mapError(ApiError.Db(_))
+              case _                 => ZIO.unit
+            }
+            _                       <- blockedCategoriesPatch match {
+              case FieldPatch.Set(v) =>
+                profileRepo.setBlockedCategories(pid, v).mapError(ApiError.Db(_))
+              case _                 => ZIO.unit
+            }
+            _                       <- pausedPatch match {
+              case FieldPatch.Set(v) => profileRepo.setPaused(pid, v).mapError(ApiError.Db(_))
+              case _                 => ZIO.unit
+            }
+            _                       <- failureModePatch match {
+              case FieldPatch.Set(v) => profileRepo.setFailureMode(pid, v).mapError(ApiError.Db(_))
+              case _                 => ZIO.unit
+            }
+            _                       <- blockIpOnlyPatch match {
+              case FieldPatch.Set(v) => profileRepo.setBlockIpOnly(pid, v).mapError(ApiError.Db(_))
+              case _                 => ZIO.unit
+            }
+            _                       <- crossDeviceOverlapPatch match {
+              case FieldPatch.Set(v) =>
+                profileRepo.setCrossDeviceOverlapMode(pid, v).mapError(ApiError.Db(_))
+              case _                 => ZIO.unit
+            }
+            _                       <- pauseModePatch match {
+              case FieldPatch.Set(v) => profileRepo.setPauseMode(pid, v).mapError(ApiError.Db(_))
+              case _                 => ZIO.unit
+            }
+            _                       <- defaultDenyPatch match {
+              case FieldPatch.Set(v) => profileRepo.setDefaultDeny(pid, v).mapError(ApiError.Db(_))
+              case _                 => ZIO.unit
+            }
+            _                       <- timeLimitPatch match {
+              case FieldPatch.Absent  => ZIO.unit
+              case FieldPatch.Cleared => timeLimitRepo.delete(pid).mapError(ApiError.Db(_))
+              case FieldPatch.Set(m)  => timeLimitRepo.upsert(pid, m).mapError(ApiError.Db(_))
+            }
+            // #1538: paused / timeLimit changes affect ProfileTimeStatus, so
+            // bust the per-profile cache the same way schedule attach/detach
+            // and /api/time/extend do. Trigger on any presence — a strict
+            // "value actually changed" check would require reading the row
+            // again post-write to compare, which would reintroduce the
+            // load-then-act window this handler exists to avoid. An
+            // over-invalidation just refills the cache: cheap and safe.
+            _                       <- ZIO.when(
+              pausedPatch != FieldPatch.Absent || timeLimitPatch != FieldPatch.Absent,
+            )(cache.invalidateProfile(pid))
+            // Log only recognized keys; unknown keys are ignored per the
+            // backwards-compat rule and would mislead ops triage if echoed.
+            recognizedKeys = obj.fields.map(_._1).filter(ProfileRoutes.PatchableKeys.contains)
+            _ <- ZIO.logInfo(
+              s"profile patched: id=${pid.value} keys=${recognizedKeys.mkString(",")}",
+            )
+          } yield Response.ok
+          handle.mapError(ErrorMapper.errorToResponse)
+        },
       Method.GET / "api" / "profiles" / long("id") / "users"     ->
         handler { (id: Long, req: Request) =>
           val pid                                  = ProfileId(id)
@@ -479,9 +639,18 @@ object DeviceRoutes {
               .mapError(ApiError.Db(_))
             // #481: log device upsert so the next CI failure makes it obvious
             // whether the mutation reached the API at all.
-            _  <- ZIO.logInfo(
-              s"device upserted: mac=${mac.value} profileId=${udr.profileId.map(_.value.toString).getOrElse("-")} name=${udr.name}",
-            )
+            _  <- LogContext.annotate(LogContext.Mac, mac.value) {
+              LogContext.annotateOpt(
+                LogContext.ProfileId,
+                udr.profileId.map(_.value.toString),
+              ) {
+                ZIO.logInfo(
+                  s"device upserted: mac=${mac.value} profileId=${udr.profileId
+                      .map(_.value.toString)
+                      .getOrElse("-")} name=${udr.name}",
+                )
+              }
+            }
           } yield Response.json(s"""{"id":${id.value}}""")
           handle.mapError(ErrorMapper.errorToResponse)
         },
@@ -498,7 +667,9 @@ object DeviceRoutes {
               .mapError(ApiError.Wrapped(_))
             _        <- deviceRepo.delete(normalized).mapError(ApiError.Db(_))
             // #481: same rationale as PUT — make the next CI failure diagnostic.
-            _        <- ZIO.logInfo(s"device deleted: mac=${normalized.value}")
+            _        <- LogContext.annotate(LogContext.Mac, normalized.value)(
+              ZIO.logInfo(s"device deleted: mac=${normalized.value}"),
+            )
           } yield Response.ok
           handle.mapError(ErrorMapper.errorToResponse)
         },
@@ -540,9 +711,16 @@ object DeviceRoutes {
             _ <- deviceRepo
               .upsert(normalized, newName, newPid, "")
               .mapError(ApiError.Db(_))
-            _ <- ZIO.logInfo(
-              s"device patched: mac=${normalized.value} name=$newName profileId=${newPid.map(_.value.toString).getOrElse("-")}",
-            )
+            _ <- LogContext.annotate(LogContext.Mac, normalized.value) {
+              LogContext.annotateOpt(
+                LogContext.ProfileId,
+                newPid.map(_.value.toString),
+              ) {
+                ZIO.logInfo(
+                  s"device patched: mac=${normalized.value} name=$newName profileId=${newPid.map(_.value.toString).getOrElse("-")}",
+                )
+              }
+            }
           } yield Response.ok
           handle.mapError(ErrorMapper.errorToResponse)
         },
