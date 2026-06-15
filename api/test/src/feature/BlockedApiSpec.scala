@@ -267,22 +267,24 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           .AppTimeLimit("YouTube")
           .wireKind,
       )
-      ZIO
-        .foreach(cases) { case (wire, expected) =>
-          for {
-            _   <- cleanDb
-            pr  <- ZIO.service[ProfileRepo]
-            dr  <- ZIO.service[DeviceRepo]
-            blr <- ZIO.service[BlocklistRepo]
-            tss <- makeTimeStatus
-            hsr <- ZIO.service[HouseholdSettingsRepo]
-            clk <- ZIO.service[Clock]
-            routes = BlockedRoutes.routes(stub(wire), dr, pr, blr, tss, hsr, clk)
-            info <- callBlocked(routes, "aa:bb:cc:dd:ee:ff", "example.com")
-          } yield assertTrue(info.blocked) &&
-            assertTrue(info.reasonClass.contains(expected))
+      // The stub PolicyService short-circuits before any repo read, so a single
+      // cleanDb + shared service binding is sufficient for all cases — no need to
+      // pay the embedded-Postgres reset per case.
+      for {
+        _       <- cleanDb
+        pr      <- ZIO.service[ProfileRepo]
+        dr      <- ZIO.service[DeviceRepo]
+        blr     <- ZIO.service[BlocklistRepo]
+        tss     <- makeTimeStatus
+        hsr     <- ZIO.service[HouseholdSettingsRepo]
+        clk     <- ZIO.service[Clock]
+        results <- ZIO.foreach(cases) { case (wire, expected) =>
+          val routes = BlockedRoutes.routes(stub(wire), dr, pr, blr, tss, hsr, clk)
+          callBlocked(routes, "aa:bb:cc:dd:ee:ff", "example.com").map { info =>
+            assertTrue(info.blocked) && assertTrue(info.reasonClass.contains(expected))
+          }
         }
-        .map(_.reduce(_ && _))
+      } yield results.reduce(_ && _)
     },
     // #335: kid-side block page must show today's usage so a restricted kid can see
     // *why* their time is gone, not just that it is. The fields are populated for any
