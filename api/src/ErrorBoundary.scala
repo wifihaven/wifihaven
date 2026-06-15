@@ -1,6 +1,7 @@
 package wifihaven.api
 
 import wifihaven.api.metrics.AppMetrics
+import wifihaven.api.observability.LogContext
 import zio.*
 import zio.http.*
 
@@ -74,7 +75,14 @@ object ErrorBoundary {
       snippet <- bodySnippet(response)
       base = s"$method $route -> $status"
       msg  = snippet.fold(base)(s => s"$base body=$s")
-      _ <- if status >= 500 then ZIO.logError(msg) else ZIO.logWarning(msg)
+      // #602: `route` + `method` are already annotated by `LoggingMiddleware` for
+      // the whole handler scope (via FiberRef), so they flow into this log line
+      // automatically. We only need to add the response-derived `status` here.
+      // Human-readable message text is kept verbatim for back-compat with
+      // existing log readers.
+      _ <- LogContext.annotate(LogContext.Status, status.toString) {
+        if status >= 500 then ZIO.logError(msg) else ZIO.logWarning(msg)
+      }
       _ <- AppMetrics.recordHttpError(route, status)
     } yield ()
   }

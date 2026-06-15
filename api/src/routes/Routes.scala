@@ -3,6 +3,7 @@ package wifihaven.api.routes
 import wifihaven.api.auth.*
 import wifihaven.api.cache.TimeStatusCache
 import wifihaven.api.db.*
+import wifihaven.api.observability.LogContext
 import wifihaven.shared.*
 import wifihaven.shared.types.*
 import zio.{Clock as _, *}
@@ -479,9 +480,18 @@ object DeviceRoutes {
               .mapError(ApiError.Db(_))
             // #481: log device upsert so the next CI failure makes it obvious
             // whether the mutation reached the API at all.
-            _  <- ZIO.logInfo(
-              s"device upserted: mac=${mac.value} profileId=${udr.profileId.map(_.value.toString).getOrElse("-")} name=${udr.name}",
-            )
+            _  <- LogContext.annotate(LogContext.Mac, mac.value) {
+              LogContext.annotateOpt(
+                LogContext.ProfileId,
+                udr.profileId.map(_.value.toString),
+              ) {
+                ZIO.logInfo(
+                  s"device upserted: mac=${mac.value} profileId=${udr.profileId
+                      .map(_.value.toString)
+                      .getOrElse("-")} name=${udr.name}",
+                )
+              }
+            }
           } yield Response.json(s"""{"id":${id.value}}""")
           handle.mapError(ErrorMapper.errorToResponse)
         },
@@ -498,7 +508,9 @@ object DeviceRoutes {
               .mapError(ApiError.Wrapped(_))
             _        <- deviceRepo.delete(normalized).mapError(ApiError.Db(_))
             // #481: same rationale as PUT — make the next CI failure diagnostic.
-            _        <- ZIO.logInfo(s"device deleted: mac=${normalized.value}")
+            _        <- LogContext.annotate(LogContext.Mac, normalized.value)(
+              ZIO.logInfo(s"device deleted: mac=${normalized.value}"),
+            )
           } yield Response.ok
           handle.mapError(ErrorMapper.errorToResponse)
         },
@@ -540,9 +552,16 @@ object DeviceRoutes {
             _ <- deviceRepo
               .upsert(normalized, newName, newPid, "")
               .mapError(ApiError.Db(_))
-            _ <- ZIO.logInfo(
-              s"device patched: mac=${normalized.value} name=$newName profileId=${newPid.map(_.value.toString).getOrElse("-")}",
-            )
+            _ <- LogContext.annotate(LogContext.Mac, normalized.value) {
+              LogContext.annotateOpt(
+                LogContext.ProfileId,
+                newPid.map(_.value.toString),
+              ) {
+                ZIO.logInfo(
+                  s"device patched: mac=${normalized.value} name=$newName profileId=${newPid.map(_.value.toString).getOrElse("-")}",
+                )
+              }
+            }
           } yield Response.ok
           handle.mapError(ErrorMapper.errorToResponse)
         },
