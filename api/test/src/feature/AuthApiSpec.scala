@@ -100,6 +100,26 @@ object AuthApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
       } yield assertTrue(bad.isFailure) &&
         assertTrue(good.isSuccess)
     },
+    test("POST /api/auth/change-password returns JSON body with mustChangePassword=false (#623)") {
+      for {
+        _               <- cleanDb
+        userRepo        <- ZIO.service[UserRepo]
+        auth            <- makeAuth
+        userProfileRepo <- ZIO.service[UserProfileRepo]
+        routes = AuthRoutes.routes(auth, userRepo, userProfileRepo)
+        token <- auth.login("admin", "changeme").map(_.token.value)
+        cpBody = ChangePasswordRequest("changeme", "newpassword123").toJson
+        cpReq  = Request
+          .post(URL.decode("/api/auth/change-password").toOption.get, Body.fromString(cpBody))
+          .addHeader(Header.Authorization.Bearer(token))
+          .addHeader(Header.ContentType(MediaType.application.json))
+        resp     <- routes.runZIO(cpReq)
+        respBody <- resp.body.asString
+        cpResp   <- ZIO.fromEither(respBody.fromJson[ChangePasswordResponse])
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(respBody.nonEmpty) &&
+        assertTrue(!cpResp.mustChangePassword)
+    },
     test("POST /api/auth/login via HTTP handler") {
       for {
         _               <- cleanDb

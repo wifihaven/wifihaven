@@ -70,7 +70,7 @@ object AuthRoutes {
                 case _                            =>
                   ApiError.Wrapped(ErrorMapper.dbUnavailable("AuthError"))
               }
-          } yield Response.ok
+          } yield Response.json(ChangePasswordResponse(mustChangePassword = false).toJson)
           handle.mapError(ErrorMapper.errorToResponse)
         },
       Method.GET / "api" / "me"                              ->

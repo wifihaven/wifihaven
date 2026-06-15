@@ -109,17 +109,11 @@ def _login(password: str) -> dict:
 
 
 def _change_password(token: str, current: str, new: str) -> None:
-    # The endpoint returns 200 with an empty body, so we can't go through
-    # _post (which always tries to json.loads the response).
-    data = json.dumps({"currentPassword": current, "newPassword": new}).encode()
-    req = urllib.request.Request(
-        f"{API_BASE}/api/auth/change-password",
-        data=data,
-        headers={"content-type": "application/json", "authorization": f"Bearer {token}"},
-        method="POST",
+    _post(
+        "/api/auth/change-password",
+        {"currentPassword": current, "newPassword": new},
+        token=token,
     )
-    with urllib.request.urlopen(req, timeout=10) as r:
-        r.read()
 
 
 def _bootstrap_admin_token() -> str:

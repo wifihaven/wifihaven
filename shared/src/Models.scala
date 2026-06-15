@@ -623,6 +623,10 @@ case class LoginResponse(
     mustChangePassword: Boolean = false,
 ) derives JsonCodec
 case class ChangePasswordRequest(currentPassword: String, newPassword: String) derives JsonCodec
+// #623: change-password used to return an empty 200 body, which broke clients
+// that assume "200 ⇒ parseable JSON" (every other route returns JSON). Echo
+// back mustChangePassword=false so callers can refresh session state inline.
+case class ChangePasswordResponse(mustChangePassword: Boolean) derives JsonCodec
 case class CreateUserRequest(
     username: String,
     password: String,
