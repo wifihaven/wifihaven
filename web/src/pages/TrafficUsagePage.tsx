@@ -26,6 +26,7 @@ import {
   localTime,
 } from '@/components/usage/usageHelpers'
 import { useInfiniteScroll } from '@/hooks/useInfiniteScroll'
+import { useUsageConfig } from '@/api/queries'
 
 // #846 — Traffic Usage page. Raw + aggregated views over traffic_reports.
 // Column headers double as groupBy toggles (Host=domain, Device=device,
@@ -103,9 +104,13 @@ export function TrafficUsagePage() {
   // those buckets grey out (BucketSelector) and we auto-promote the current
   // selection to the finest still-available bucket so we never request a
   // swept tier.
+  // #1743: the bucket → grain mapping comes from the API; until the fetch
+  // returns we fall back to the shipped defaults so the picker still works.
+  const usageConfig = useUsageConfig()
+  const bucketTiers = usageConfig.data?.bucketTiers
   const bucketGates = useMemo<Record<TrafficUsageBucket, BucketGate>>(
-    () => bucketAvailability(until ? new Date(until) : null, new Date()),
-    [until],
+    () => bucketAvailability(until ? new Date(until) : null, new Date(), undefined, bucketTiers),
+    [until, bucketTiers],
   )
 
   useEffect(() => {
