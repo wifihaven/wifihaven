@@ -403,15 +403,17 @@ class PolicyServiceLive(
                 // — exactly as the snapshot does. A non-exempt allowed_during app whose cap is
                 // exhausted is NOT carved, so it correctly falls through to the time_limit block
                 // below; an exempt one (or one under cap) is carved and beats it.
-                // #1679: pass isScheduleBlock so apps with allowedDuringScheduleBlock=false are
-                // suppressed from the extraAllowed carve during an active schedule window.
-                // Note: this reads `scheduleBlock(scheds, now).nonEmpty` independently of
-                // `p.paused`, so a Paused+schedule-active profile gets isScheduleBlock=true
-                // here while the snapshot uses `state.blockReason.contains(Schedule)=false`
-                // (Paused outranks Schedule in the blockReason precedence). The divergence is
-                // benign: if the snapshot has the app in extraAllowed, nftables allows the
-                // connection and the block page / /decide endpoint is never reached.
-                val isScheduleBlock          = scheduleBlock(scheds, now).nonEmpty
+                // #1679/#1742: read the carve gate off the precedence-collapsed `dayState.blockReason`
+                // — the SAME source the snapshot reads via `state.blockReason.contains(Schedule)`
+                // (see :194). This collapses the prior drift where this path re-derived schedule
+                // activity from raw schedules (`scheduleBlock(scheds, now).nonEmpty`) and disagreed
+                // with the snapshot on a Paused+schedule-active profile (Paused outranks Schedule in
+                // the documented precedence — AGENTS.md §Architectural model — so the toggle must
+                // NOT fire there; #1679 is schedule-scope only). `scheduleBlock(scheds, now)` is
+                // still consulted below for the actual whole-MAC schedule short-circuit (after the
+                // pause check, so its semantics match the precedence by construction).
+                val isScheduleBlock          =
+                  dayState.blockReason.contains(MacBlockReason.Schedule)
                 val (appAllowed, appBlocked) =
                   ProfileAppDispositions
                     .from(appLimits)
