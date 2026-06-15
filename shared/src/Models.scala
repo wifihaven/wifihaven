@@ -1092,6 +1092,18 @@ case class ProfileUsageByApp(
 // `perHost.mins + otherMins` sums to `totalMins` — a sketch of #715
 // proposal 2 (bytes-weighted is a follow-up). Hosts beyond `topN` are
 // collapsed into `otherMins`.
+// #1740 — usage retention horizons (days). Authoritative values live in
+// api/src/usage/RetentionSweepJob.scala; this shape is the wire format for
+// `GET /api/usage/horizons`, which the SPA reads at boot so the bucket
+// granularity gate (`web/src/components/usage/retentionGating.ts`) can't
+// silently drift from the sweep job. Defaults in the SPA are only used as
+// an offline fallback when the fetch fails.
+case class RetentionHorizons(
+    rawDays: Int,
+    hourlyDays: Int,
+    dailyDays: Int,
+) derives JsonCodec
+
 case class UsageHostTotal(host: HostId, dayMins: Int) derives JsonCodec
 case class UsageBucketHost(host: HostId, mins: Int) derives JsonCodec
 case class UsageBucket(

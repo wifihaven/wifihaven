@@ -17,8 +17,10 @@ import { GroupableHeader } from '@/components/usage/GroupableHeader'
 import { HeaderFilter } from '@/components/usage/HeaderFilter'
 import { JumpToDate } from '@/components/usage/JumpToDate'
 import {
+  DEFAULT_RETENTION_HORIZONS,
   bucketAvailability,
   type BucketGate,
+  type RetentionHorizons,
 } from '@/components/usage/retentionGating'
 import {
   fmtBytes,
@@ -78,12 +80,22 @@ export function TrafficUsagePage() {
   const [error, setError]       = useState<string | null>(null)
   // #769: surface the "no apps yet" empty-state on group-by=app.
   const [appCount, setAppCount] = useState<number | null>(null)
+  // #1740: retention horizons come from the server (single source of truth =
+  // RetentionSweepJob.scala). Seed with the same defaults the constants used
+  // to hard-code so the first render before the fetch lands behaves identically
+  // to the pre-#1740 behaviour, and so an offline / 5xx fallback keeps the
+  // gating sensible instead of failing closed.
+  const [horizons, setHorizons] = useState<RetentionHorizons>(DEFAULT_RETENTION_HORIZONS)
   const sentinelRef             = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
     api.devices.list().then(setDevices).catch(() => setDevices([]))
     api.profiles.list().then(setProfiles).catch(() => setProfiles([]))
     api.apps.list().then(xs => setAppCount(xs.length)).catch(() => setAppCount(0))
+    // #1740: best-effort horizon fetch. On error keep DEFAULT_RETENTION_HORIZONS;
+    // the worst case is a stale gate, which is no worse than the pre-#1740
+    // hand-mirrored constant.
+    api.usage.horizons().then(setHorizons).catch(() => { /* keep defaults */ })
   }, [])
 
   // Filter key drives the reset effect — when any of these change, the cursor
@@ -104,8 +116,8 @@ export function TrafficUsagePage() {
   // selection to the finest still-available bucket so we never request a
   // swept tier.
   const bucketGates = useMemo<Record<TrafficUsageBucket, BucketGate>>(
-    () => bucketAvailability(until ? new Date(until) : null, new Date()),
-    [until],
+    () => bucketAvailability(until ? new Date(until) : null, new Date(), horizons),
+    [until, horizons],
   )
 
   useEffect(() => {

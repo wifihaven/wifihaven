@@ -1006,3 +1006,14 @@ export interface BlockedInfoResponse {
   extensionMinutes?: number | null
   remainingMinutes?: number | null
 }
+
+// #1740 — usage retention horizons (days). Returned by GET /api/usage/horizons.
+// Authoritative values live in api/src/usage/RetentionSweepJob.scala; the SPA
+// fetches them at boot so the bucket gating in
+// `web/src/components/usage/retentionGating.ts` can't silently drift from the
+// sweep job's actual behaviour.
+export interface RetentionHorizons {
+  rawDays: number
+  hourlyDays: number
+  dailyDays: number
+}
