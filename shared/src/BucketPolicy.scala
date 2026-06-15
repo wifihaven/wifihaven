@@ -35,8 +35,8 @@ object BucketPolicy {
    * Coarseness the window justifies on cost grounds — the cost-preference input to the per-endpoint
    * tier picker. Keyed on the requested window width alone; the bucket width is a separate input
    * (see [[grainForBucket]]) and the picker takes the finer of (cap, pref). Both the traffic-series
-   * (`UsageRoutes.windowTier`) and connection-events-series (`LogRoutes.seriesGrain`) endpoints
-   * route through this so they can't drift on the thresholds (#1744 / #1532).
+   * (`UsageRoutes.pickTier`) and connection-events-series (`LogRoutes.seriesGrain`) endpoints route
+   * through this so they can't drift on the thresholds (#1744 / #1532).
    */
   def windowGrain(windowHours: Long): BucketGrain =
     if (windowHours <= 24) BucketGrain.Raw
