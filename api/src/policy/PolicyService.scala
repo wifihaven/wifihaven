@@ -404,8 +404,8 @@ class PolicyServiceLive(
                 // exhausted is NOT carved, so it correctly falls through to the time_limit block
                 // below; an exempt one (or one under cap) is carved and beats it.
                 // #1679/#1742: read the carve gate off the precedence-collapsed `dayState.blockReason`
-                // — the SAME source the snapshot reads via `state.blockReason.contains(Schedule)`
-                // (see :194). This collapses the prior drift where this path re-derived schedule
+                // — the SAME source the snapshot's own `isScheduleBlock` reads (via
+                // `state.blockReason.contains(Schedule)`). This collapses the prior drift where this path re-derived schedule
                 // activity from raw schedules (`scheduleBlock(scheds, now).nonEmpty`) and disagreed
                 // with the snapshot on a Paused+schedule-active profile (Paused outranks Schedule in
                 // the documented precedence — AGENTS.md §Architectural model — so the toggle must
