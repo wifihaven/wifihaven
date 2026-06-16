@@ -189,7 +189,7 @@ detail file holds the full rule text.
 What WifiHaven is; repo layout; SPA hosting split (self-hosted bundles SPA into API, cloud uses Cloudflare Pages); key API surface (`/api/router/*`, `/api/blocklists/*`); domain vocabulary (Profile, Device, Schedule, TimeLimit, App, App time limit, TimeUsage, TimeExtension, BlocklistDomain, QueryLog, Location); server-side policy decision pipeline (paused → schedule → daily limit → app limit → manual → extraBlocked → extraAllowed → blocklists → blockIpOnly). → see [`docs/architecture.md`](docs/architecture.md)
 
 ### Project board — every new issue gets an Epic
-Org-level Project #1; new issues auto-add (Status defaults `Todo`) but `Epic` is set on triage; start a new `Epic` option only for threads big enough to deserve their own swimlane. → see [`docs/project-board.md`](docs/project-board.md)
+Org-level Project #1; new issues auto-add (Status defaults `Todo`) but `Epic` is set on triage; start a new `Epic` option only for threads big enough to deserve their own swimlane. The live `Epic` taxonomy is **not** mirrored in-repo — fetch via `gh project field-list 1 --owner wifihaven --format json` (board at https://github.com/orgs/wifihaven/projects/1). → see [`docs/process/project-board.md`](docs/process/project-board.md)
 
 ### Tech stack decisions
 Scala 3 + ZIO 2, ZIO HTTP, Doobie, Flyway, Lua on OpenWRT, jwt-scala, Mill, React + Vite + TypeScript, Tailwind. → see [`docs/process/tech-stack.md`](docs/process/tech-stack.md)
