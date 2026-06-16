@@ -14,11 +14,23 @@ package wifihaven.shared
 // so the two can't disagree about which tier serves a width. This is the
 // single shared mapping that keeps them from drifting — and it is keyed on the
 // bucket, not the window.
-enum BucketGrain {
-  case Raw, Hourly, Daily
+enum BucketGrain(val wire: String) {
+  case Raw    extends BucketGrain("raw")
+  case Hourly extends BucketGrain("hourly")
+  case Daily  extends BucketGrain("daily")
+}
+
+object BucketGrain {
+  def fromWire(s: String): Option[BucketGrain] = values.find(_.wire == s)
 }
 
 object BucketPolicy {
+
+  /**
+   * Canonical list of bucket codes the API understands. Lives next to `grainForBucket` so the SPA
+   * can read both pieces from a single API surface (#1743) without re-listing buckets out-of-band.
+   */
+  val allBuckets: List[String] = List("raw", "1m", "10m", "1h", "12h", "1d", "1w")
 
   /**
    * Coarsest storage grain that can render `bucketCode` without losing resolution. Keyed on the
@@ -30,4 +42,11 @@ object BucketPolicy {
     case "1d" | "1w"  => BucketGrain.Daily
     case _            => BucketGrain.Raw
   }
+
+  /**
+   * Canonical bucket → grain mapping the API emits to the SPA (#1743). Built from `allBuckets` and
+   * `grainForBucket` so this stays the only place the classification is defined.
+   */
+  val bucketTiers: Map[String, BucketGrain] =
+    allBuckets.map(b => b -> grainForBucket(b)).toMap
 }
