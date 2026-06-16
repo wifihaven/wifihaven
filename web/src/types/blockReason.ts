@@ -13,7 +13,12 @@ export function blockReasonText(r: BlockReason): string {
     case 'allow':         return 'allowed'
     case 'blocked':       return 'blocked'
     case 'extraAllowed':  return 'allowed (household)'
-    case 'extraBlocked':  return 'blocked (household)'
+    // #1637: bare `extraBlocked` collapses every per-host eb_<host> drop
+    // (household global_blocks, per-profile extraBlocked, app-driven blocks)
+    // into one kind on the conntrack ingest path; "(household)" misled
+    // operator triage in #1636 / #1666. The #1645 `extraBlockedBy` arm
+    // below carries the matched host explicitly when the router knows it.
+    case 'extraBlocked':  return 'blocked (host rule)'
     case 'extraBlockedBy': return `blocked: matched ${r.host}` // #1645
     case 'noProfile':     return 'no profile'
     case 'unmanaged':     return 'unmanaged device'
