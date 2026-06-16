@@ -12,7 +12,7 @@
       }
     ]
   },
-  "description": "WifiHaven ingest health + data quality (#1281, follow-up to #1209). The router→API ingest pipeline (POST /api/router/{usage,events,metrics}) plus the #864 zero-byte traffic filter. Every panel targets a series actually emitted by AppMetrics/HttpMetrics in api/src (grep-verified, not the design-doc catalog): traffic_reports_filtered_zero_bytes_total (#864), http_requests_total / http_request_duration_seconds (#1204), router_metrics_batches_total (#1205), auth_failures_total (#1204), usage_records_rejected_total (#1569). The `route` label is the templated path (/api/router/usage), never a concrete id. See docs/design/metrics-observability.md §5.",
+  "description": "WifiHaven ingest health + data quality (#1281, follow-up to #1209). The router→API ingest pipeline (POST /api/router/{usage,events,metrics}) plus the #864 zero-byte traffic filter. Every panel targets a series actually emitted by AppMetrics/HttpMetrics in api/src (grep-verified, not the design-doc catalog): traffic_reports_filtered_zero_bytes_total (#864), http_requests_total / http_request_duration_seconds (#1204), router_metrics_batches_total (#1205), auth_failures_total (#1204), usage_records_rejected_total (#1569), events_records_rejected_total (#1757). The `route` label is the templated path (/api/router/usage), never a concrete id. See docs/design/metrics-observability.md §5.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -515,6 +515,82 @@
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "expr": "sum(increase(presence_app_sessions_dropped_total{env=\"$env\"}[24h]))",
           "legendFormat": "dropped (24h)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Events records rejected at decode (#1757)",
+      "description": "sum by (reason) (rate(events_records_rejected_total[5m])) — per-event /api/router/events ingest rejections. Same shape as the usage panel above but for the events ingest: a single malformed RouterEvent (bad host / mac / ts / unknown enum) is skipped + metered here instead of 400-ing the whole batch and dropping every valid connection_attempt / dhcp_lease / first_seen_mac with it. A sustained non-zero rate means an agent is emitting field values the API rejects; pair it with the server warn-log ('router events: skipping malformed event') to see the offending field. `reason` is a bounded enum (decode_error today). From AppMetrics.recordEventsRecordsRejected.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 56 },
+      "id": 15,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 20, "showPoints": "never", "lineWidth": 1 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.01 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (reason) (rate(events_records_rejected_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{reason}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Events records rejected (last 24h)",
+      "description": "sum(increase(events_records_rejected_total[24h])) — total events records skipped at decode over the trailing day. Non-zero means valid sibling events were preserved (no longer dropped with the batch) but the offending field values still need a fix. From AppMetrics.recordEventsRecordsRejected.",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 56 },
+      "id": 16,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "unit": "short",
+          "min": 0,
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(increase(events_records_rejected_total{env=\"$env\"}[24h]))",
+          "legendFormat": "rejected (24h)",
           "refId": "A"
         }
       ]
