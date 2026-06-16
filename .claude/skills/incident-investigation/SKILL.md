@@ -24,8 +24,10 @@ do not duplicate it here:
 - Grafana dashboards (checked-in JSON) →
   [`deploy/grafana/dashboards/`](../../../deploy/grafana/dashboards/);
   series are emitted by `AppMetrics` (`api/src/metrics/Metrics.scala`).
-- Epic taxonomy, Status meanings, board IDs →
-  [`docs/project-board.md`](../../../docs/project-board.md).
+- Status meanings, board maintenance →
+  [`docs/process/project-board.md`](../../../docs/process/project-board.md).
+  Live `Epic` taxonomy + field/option IDs: `gh project field-list 1 --owner wifihaven --format json`
+  (board at https://github.com/orgs/wifihaven/projects/1).
 - Prod-access + cred-masking conventions, router (`router.lan`) access →
   [`AGENTS.md`](../../../AGENTS.md) (§ *Safety rules for running EXPLAIN
   against prod*, § *Validate query performance before merge*) and
@@ -196,9 +198,11 @@ MITIGATION:    <revert PR #NNN now / feature-flag / tolerate-and-log>
 ```
 
 Then **file the incident issue** and set the board (per
-[`docs/project-board.md`](../../../docs/project-board.md)):
+[`docs/process/project-board.md`](../../../docs/process/project-board.md)):
 
-- **Epic** = `Observability/Metrics`; **Status** = `In Progress` while active.
+- **Epic** = `Observability/Metrics` (resolve the exact option name + ID via
+  `gh project field-list 1 --owner wifihaven --format json`);
+  **Status** = `In Progress` while active.
 - File any **observability-gap follow-ups** surfaced in Step 2 (cite #1570),
   and route **query-plan/contention** findings into the EXPLAIN-before-merge
   rule.
