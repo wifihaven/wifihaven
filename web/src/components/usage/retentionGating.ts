@@ -1,4 +1,6 @@
-import type { BucketGrain, TrafficUsageBucket } from '@/types/api'
+import type { BucketGrain, RetentionHorizons, TrafficUsageBucket } from '@/types/api'
+
+export type { RetentionHorizons }
 
 // Gating data for the usage date-picker:
 //   (a) retention horizons — #1740, sourced from `RetentionSweepJob` on the API,
@@ -13,12 +15,6 @@ import type { BucketGrain, TrafficUsageBucket } from '@/types/api'
 // bucket list this file iterates is intentionally SPA-known — adding a new
 // bucket code requires a SPA change in addition to the API emitting it, since
 // `TrafficUsageBucket` is a closed TS enum.
-export interface RetentionHorizons {
-  rawDays: number
-  hourlyDays: number
-  dailyDays: number
-}
-
 // Fallback values — chosen to match the current sweep job at the time of
 // writing so the gate behaves identically pre-fetch. NOT a contract the
 // caller must keep in sync: the server's response wins as soon as it
