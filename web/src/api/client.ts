@@ -279,9 +279,9 @@ export const api = {
 
   // ── Usage (#716) ───────────────────────────────────────────────────────
   usage: {
-    // #1743: bucket → grain mapping (and, post-#1740, retention horizons).
-    // Sourced from `BucketPolicy.bucketTiers` on the API so the SPA stops
-    // hand-mirroring `grainForBucket` in retentionGating.ts.
+    // #1743 + #1740: bucket → grain mapping and retention horizons. The SPA
+    // reads both at boot so retentionGating.ts no longer hand-mirrors
+    // `BucketPolicy.grainForBucket` or `RetentionSweepJob`'s day counts.
     config: () => req<UsageConfig>('GET', '/usage/config'),
     series: (params: {
       mac?: string

@@ -5,6 +5,7 @@ import wifihaven.api.JwtConfig
 import wifihaven.api.auth.*
 import wifihaven.api.db.*
 import wifihaven.api.routes.UsageRoutes
+import wifihaven.api.usage.RetentionSweepJob
 import wifihaven.shared.*
 import wifihaven.shared.Clock.TestClock
 import wifihaven.testinfra.*
@@ -66,7 +67,7 @@ object UsageConfigSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres 
       .mapError(e => new RuntimeException(e.toString))
       .map(_.token.value)
 
-  def spec = suite("GET /api/usage/config (#1743)")(
+  def spec = suite("GET /api/usage/config (#1743 + #1740)")(
     test("returns the canonical bucket → grain mapping from BucketPolicy") {
       for {
         _  <- cleanDb
@@ -89,6 +90,27 @@ object UsageConfigSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres 
         out.bucketTiers("12h") == "hourly",
         out.bucketTiers("1d") == "daily",
         out.bucketTiers("1w") == "daily",
+      )
+    },
+    // #1740: horizons ride on the same endpoint. The day counts come directly
+    // from `RetentionSweepJob` so the SPA's bucket gate (retentionGating.ts)
+    // can't drift from the sweep job's actual behaviour.
+    test("returns the retention horizons sourced from RetentionSweepJob") {
+      for {
+        _  <- cleanDb
+        rb <- buildRoutes
+        (routes, auth) = rb
+        token <- loginAdmin(auth)
+        url = URL.decode("/api/usage/config").toOption.get
+        resp <- routes.runZIO(Request.get(url).addHeader(Header.Authorization.Bearer(token)))
+        body <- resp.body.asString
+        out  <- ZIO.fromEither(body.fromJson[UsageConfig])
+      } yield assertTrue(
+        resp.status == Status.Ok,
+        out.horizons.rawDays == RetentionSweepJob.RawRetentionDays,
+        out.horizons.hourlyDays == RetentionSweepJob.HourlyRetentionDays,
+        out.horizons.dailyDays == RetentionSweepJob.DailyRetentionDays,
+        out.horizons == RetentionHorizons(30, 90, 180),
       )
     },
     test("requires auth") {

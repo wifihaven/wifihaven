@@ -3,7 +3,13 @@ package wifihaven.api.routes
 import wifihaven.api.auth.*
 import wifihaven.api.db.*
 import wifihaven.api.db.{RollupRepo, RollupRow}
-import wifihaven.api.usage.{AppMembership, RawTrafficCursorKey, UsageSeries, UsageTraffic}
+import wifihaven.api.usage.{
+  AppMembership,
+  RawTrafficCursorKey,
+  RetentionSweepJob,
+  UsageSeries,
+  UsageTraffic,
+}
 import wifihaven.shared.*
 import wifihaven.shared.types.*
 import zio.{Clock as _, *}
@@ -39,19 +45,26 @@ object UsageRoutes {
       clock: Clock,
   ): Routes[Any, Response] =
     Routes(
-      // #1743: bucket → grain mapping the SPA reads at boot to gate its
-      // date-picker, sourced from `BucketPolicy.bucketTiers` so the SPA no
-      // longer hand-mirrors `grainForBucket` in retentionGating.ts. (Paired
-      // with #1740 — the same endpoint will grow a `horizons` field there.)
-      // No bespoke metric: the HTTP middleware already meters `route`,
-      // `status`, and duration for this path, and the response is a static
-      // constant with no failure modes beyond auth.
+      // #1743 + #1740: client-facing usage config the SPA reads at boot. Carries
+      // the bucket → grain mapping (sourced from `BucketPolicy.bucketTiers`, so the
+      // SPA no longer hand-mirrors `grainForBucket` in retentionGating.ts) AND the
+      // retention horizons (sourced from `RetentionSweepJob`, so the SPA no longer
+      // hand-mirrors its day counts either). One endpoint covers both SSOT folds.
+      //
+      // No bespoke metric: the HTTP middleware already meters `route`, `status`,
+      // and duration for this path, and the response is compile-time constants
+      // with no failure modes beyond auth.
       Method.GET / "api" / "usage" / "config"                                   ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
             _ <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
             cfg = UsageConfig(
               bucketTiers = BucketPolicy.bucketTiers.view.mapValues(_.wire).toMap,
+              horizons = RetentionHorizons(
+                rawDays = RetentionSweepJob.RawRetentionDays,
+                hourlyDays = RetentionSweepJob.HourlyRetentionDays,
+                dailyDays = RetentionSweepJob.DailyRetentionDays,
+              ),
             )
           } yield Response.json(cfg.toJson)
           handle.mapError(ErrorMapper.errorToResponse)

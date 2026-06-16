@@ -580,6 +580,10 @@ export type BucketGrain = 'raw' | 'hourly' | 'daily'
 
 export interface UsageConfig {
   bucketTiers: Record<string, BucketGrain>
+  // #1740: retention horizons (raw / hourly / daily) sourced from
+  // `RetentionSweepJob` so the bucket gating in `retentionGating.ts` no longer
+  // hand-mirrors the sweep job's day counts.
+  horizons: RetentionHorizons
 }
 // #846: groupBy is composable. Apex is deferred to #856 (needs PSL). #769
 // turned `app` on — it now resolves to a server-side join through
@@ -1014,4 +1018,15 @@ export interface BlockedInfoResponse {
   dailyLimitMinutes?: number | null
   extensionMinutes?: number | null
   remainingMinutes?: number | null
+}
+
+// #1740 — usage retention horizons (days). Carried on `UsageConfig.horizons`
+// via GET /api/usage/config. Authoritative values live in
+// api/src/usage/RetentionSweepJob.scala; the SPA reads this at boot so the
+// bucket gating in `web/src/components/usage/retentionGating.ts` can't
+// silently drift from the sweep job's actual behaviour.
+export interface RetentionHorizons {
+  rawDays: number
+  hourlyDays: number
+  dailyDays: number
 }

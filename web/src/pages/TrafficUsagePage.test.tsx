@@ -7,7 +7,17 @@ import type { TrafficUsageResponse } from '@/types/api'
 
 vi.mock('@/api/client', () => ({
   api: {
-    usage:    { traffic: vi.fn(), config: vi.fn().mockResolvedValue({ bucketTiers: {} }) },
+    usage: {
+      traffic: vi.fn(),
+      // #1743 + #1740: SPA reads bucket → grain mapping AND retention horizons
+      // from `/api/usage/config`. The empty `bucketTiers` here exercises the
+      // SPA's fallback to `DEFAULT_BUCKET_TIERS`; horizons match the shipped
+      // defaults so the gate behaves identically to pre-#1740.
+      config: vi.fn().mockResolvedValue({
+        bucketTiers: {},
+        horizons: { rawDays: 30, hourlyDays: 90, dailyDays: 180 },
+      }),
+    },
     devices:  { list:    vi.fn() },
     profiles: { list:    vi.fn() },
     apps:     { list:    vi.fn() },
