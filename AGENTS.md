@@ -899,11 +899,13 @@ ADDRESSED *and* no new BLOCKER was introduced; any open BLOCKER stays
 merge-gating. See the *Posting & re-runs* section of the checklist for the full
 algorithm.
 
-**Spawned chips monitor PRs through to MERGED, not just to queued.**
-{#monitor-to-merged} The independent review pass is the gate for ENTERING the
-merge queue, but the author chip's job isn't done until the PR's state is
-`MERGED`. Once queued, the chip watches the merge queue and iterates without
-waiting for an operator prompt:
+### Monitor PRs through to MERGED, not just queued {#monitor-to-merged}
+
+**Spawned chips monitor PRs through to MERGED, not just to queued.** The
+independent review pass is the gate for ENTERING the merge queue, but the
+author chip's job isn't done until the PR's state is `MERGED`. Once queued,
+the chip watches the merge queue and iterates without waiting for an operator
+prompt:
 
 - **Queue CI fails** (Gate 2 port collision from a sibling chip,
   infrastructure flake, etc.) → diagnose, push a fix or re-queue, iterate.
