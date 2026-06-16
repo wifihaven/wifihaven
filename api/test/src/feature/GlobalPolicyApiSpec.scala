@@ -186,6 +186,137 @@ object GlobalPolicyApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         afterReplace.blocklistIds.map(_.value) == List("ads"),
       )
     },
+    // #1456: field-scoped PATCH so two concurrent admin edits don't clobber
+    // each other (e.g. one toggles `blocked`, the other `blockIpOnly`).
+    test("PATCH /api/global/flags updates only the fields present in the body") {
+      for {
+        _            <- cleanDb
+        (routes, tk) <- globalRoutesAndToken
+        // seed with all three set
+        _            <- send(
+          routes,
+          Request.put(
+            url("/api/global/flags"),
+            Body.fromString("""{"blocked":true,"blockReason":"Manual","blockIpOnly":true}"""),
+          ),
+          tk,
+        )
+        // PATCH only blockIpOnly — blocked and blockReason must stay set
+        resp         <- send(
+          routes,
+          Request.patch(
+            url("/api/global/flags"),
+            Body.fromString("""{"blockIpOnly":false}"""),
+          ),
+          tk,
+        )
+        repo         <- ZIO.service[GlobalPolicyRepo]
+        after        <- repo.get
+        // PATCH with blockReason:null clears it
+        _            <- send(
+          routes,
+          Request.patch(
+            url("/api/global/flags"),
+            Body.fromString("""{"blockReason":null}"""),
+          ),
+          tk,
+        )
+        afterClear   <- repo.get
+      } yield assertTrue(
+        resp.status == Status.Ok,
+        after.blocked,
+        after.blockReason.contains(MacBlockReason.Manual),
+        !after.blockIpOnly,
+        afterClear.blocked,
+        afterClear.blockReason.isEmpty,
+        !afterClear.blockIpOnly,
+      )
+    },
+    test("PATCH /api/global/flags — concurrent edits to different fields both stick") {
+      for {
+        _            <- cleanDb
+        (routes, tk) <- globalRoutesAndToken
+        // baseline: all false / None
+        _            <- send(
+          routes,
+          Request.put(
+            url("/api/global/flags"),
+            Body.fromString("""{"blocked":false,"blockIpOnly":false}"""),
+          ),
+          tk,
+        )
+        // Two concurrent PATCHes — one flips `blocked`, the other `blockIpOnly`.
+        // With field-scoped PATCH, both must end up persisted (no clobber).
+        _            <- send(
+          routes,
+          Request.patch(
+            url("/api/global/flags"),
+            Body.fromString("""{"blocked":true,"blockReason":"Manual"}"""),
+          ),
+          tk,
+        ).zipPar(
+          send(
+            routes,
+            Request.patch(
+              url("/api/global/flags"),
+              Body.fromString("""{"blockIpOnly":true}"""),
+            ),
+            tk,
+          ),
+        )
+        repo         <- ZIO.service[GlobalPolicyRepo]
+        after        <- repo.get
+      } yield assertTrue(
+        after.blocked,
+        after.blockReason.contains(MacBlockReason.Manual),
+        after.blockIpOnly,
+      )
+    },
+    // #1456: granular add/remove on the global category set — concurrent edits
+    // to different categories must not clobber each other (the wholesale PUT
+    // did).
+    test("POST/DELETE /api/global/blocklists/:id add and remove idempotently") {
+      for {
+        _            <- cleanDb
+        blr          <- ZIO.service[BlocklistRepo]
+        _            <- blr.upsertMeta(
+          BlocklistId.unsafe("ads"),
+          "Ads",
+          None,
+          bundled = true,
+          None,
+          java.time.Instant.parse("2026-01-01T00:00:00Z"),
+        )
+        _            <- blr.upsertMeta(
+          BlocklistId.unsafe("adult"),
+          "Adult",
+          None,
+          bundled = true,
+          None,
+          java.time.Instant.parse("2026-01-01T00:00:00Z"),
+        )
+        (routes, tk) <- globalRoutesAndToken
+        addResp  <- send(routes, Request.post(url("/api/global/blocklists/ads"), Body.empty), tk)
+        // idempotent: a second add is still 200, no error
+        addAgain <- send(routes, Request.post(url("/api/global/blocklists/ads"), Body.empty), tk)
+        // concurrent adds of two different ids → both end up present
+        _ <- send(routes, Request.post(url("/api/global/blocklists/ads"), Body.empty), tk).zipPar(
+          send(routes, Request.post(url("/api/global/blocklists/adult"), Body.empty), tk),
+        )
+        repo      <- ZIO.service[GlobalPolicyRepo]
+        afterAdds <- repo.get
+        delResp   <- send(routes, Request.delete(url("/api/global/blocklists/ads")), tk)
+        delAgain  <- send(routes, Request.delete(url("/api/global/blocklists/ads")), tk)
+        afterDel  <- repo.get
+      } yield assertTrue(
+        addResp.status == Status.Ok,
+        addAgain.status == Status.Ok,
+        afterAdds.blocklistIds.map(_.value).toSet == Set("ads", "adult"),
+        delResp.status == Status.Ok,
+        delAgain.status == Status.Ok,
+        afterDel.blocklistIds.map(_.value) == List("adult"),
+      )
+    },
     test("PUT /api/global/flags sets the lockdown + strict-IP flags") {
       for {
         _            <- cleanDb
