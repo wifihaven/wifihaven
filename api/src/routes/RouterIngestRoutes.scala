@@ -134,24 +134,45 @@ object RouterIngestRoutes {
                   // accepted no-op rather than an error. Genuinely malformed non-empty
                   // bodies still 400 + warn (and the agent emitter no longer
                   // produces them — see conntrack.encode_events_body).
-                  rep  <-
+                  raw  <-
                     if body.trim.isEmpty then
                       ZIO.logDebug(
                         s"router events: empty body from router=${router.id}; treating as no-op batch",
-                      ) *> ZIO.succeed(RouterEventsRequest(router.id, Nil))
+                      ) *> ZIO.succeed(RawEventsReport(router.id, Nil))
                     else
                       ZIO
-                        .fromEither(body.fromJson[RouterEventsRequest])
+                        .fromEither(body.fromJson[RawEventsReport])
                         .mapError(ApiError.DecodeFailure(_))
                   _    <- ZIO
                     .fail(ApiError.BadRequest("router_id mismatch"))
-                    .when(rep.routerId != router.id)
-                  _    <- LogContext.annotate(LogContext.BatchSize, rep.events.size.toString) {
-                    ZIO.logDebug(
-                      s"router events: router=${router.id} batchSize=${rep.events.size}",
+                    .when(raw.routerId != router.id)
+                  // #1757: decode each event individually. A single malformed
+                  // RouterEvent (bad host/mac/ts/unknown enum) used to fail the
+                  // WHOLE batch — every valid connection_attempt / dhcp_lease /
+                  // first_seen_mac dropped with it. Mirrors the #1574 fix on
+                  // /api/router/usage: bad ones are skipped + logged + metered;
+                  // the valid ones ingest. Envelope itself (routerId,
+                  // events-is-an-array) must still parse or the request is a
+                  // genuine 400.
+                  decoded  = raw.events.zipWithIndex.map((j, i) => (i, j.as[RouterEvent]))
+                  rejected = decoded.collect { case (i, Left(err)) => (i, err) }
+                  events   = decoded.collect { case (_, Right(e)) => e }
+                  _ <- ZIO.foreachDiscard(rejected) { (i, err) =>
+                    ZIO.logWarning(
+                      s"router events: skipping malformed event[$i] for router=${router.id}: $err",
                     )
                   }
-                  _    <- ZIO.foreachDiscard(rep.events)(e =>
+                  _ <- AppMetrics.recordEventsRecordsRejected(rejected.size)
+                  _ <- LogContext.annotateAll(
+                    LogContext.BatchSize -> events.size.toString,
+                    LogContext.Rejected  -> rejected.size.toString,
+                  ) {
+                    ZIO.logDebug(
+                      s"router events: router=${router.id} batchSize=${events.size} " +
+                        s"rejected=${rejected.size}",
+                    )
+                  }
+                  _ <- ZIO.foreachDiscard(events)(e =>
                     ZIO.logDebug(
                       s"  event: type=${e.`type`} mac=${e.mac.getOrElse("-")} " +
                         s"ip=${e.ip.getOrElse("-")} host=${e.host.map(_.value).orElse(e.hostname.map(_.value)).getOrElse("-")} " +
@@ -159,8 +180,8 @@ object RouterIngestRoutes {
                         s"reason=${e.reason.getOrElse("-")} ts=${e.ts}",
                     ),
                   )
-                  _    <- handleEvents(router.id, rep.events, deviceRepo, connEventRepo, alertRepo)
-                  _    <- routerRepo.touch(router.id, None, None).mapError(ApiError.Db(_))
+                  _ <- handleEvents(router.id, events, deviceRepo, connEventRepo, alertRepo)
+                  _ <- routerRepo.touch(router.id, None, None).mapError(ApiError.Db(_))
                 } yield Response.ok
               }
             }
@@ -182,6 +203,21 @@ object RouterIngestRoutes {
       periodStart: String,
       periodEnd: String,
       records: List[Json],
+  ) derives JsonDecoder
+
+  /**
+   * #1757: the wire-decode envelope for `POST /api/router/events`, the `RouterEventsRequest` analog
+   * of [[RawUsageReport]]. Identical field shape to [[RouterEventsRequest]] except `events` is held
+   * as a raw JSON array so each element can be decoded into a [[RouterEvent]] individually — a
+   * single malformed event (bad host / mac / ts / unknown enum value) is then skipped + logged +
+   * metered instead of 400-ing the whole batch and dropping every valid connection_attempt /
+   * dhcp_lease / first_seen_mac with it. The envelope itself (routerId, events-is-an-array) must
+   * still parse or the request is a genuine 400. Decode-only; this is a server-side parse aid, NOT
+   * a wire-contract type — unknown fields are still ignored.
+   */
+  private case class RawEventsReport(
+      routerId: RouterId,
+      events: List[Json],
   ) derives JsonDecoder
 
   // #1570: a bad timestamp is a typed BadRequest (400) mapped centrally; the boundary logs it.
