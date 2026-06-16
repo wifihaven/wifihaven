@@ -427,6 +427,20 @@ object Main extends ZIOAppDefault {
       val spaRoutes: Routes[Any, Response] =
         if (cfg.http.serveSpa) StaticRoutes.routes(cfg.http.staticDir) else Routes.empty
 
+      // #638: OpenAPI spec auto-generated from the live route table + Swagger UI.
+      // Unauthenticated by design (discovery surface); the spec itself advertises
+      // which routes require bearer auth. Constructed AFTER the real route chunks
+      // so the spec enumerates them all; mounted alongside the SPA fallback so
+      // /api/openapi.json + /api/docs resolve before the SPA catch-all.
+      val openApiRoutes: Routes[Any, Response] =
+        OpenApiRoutes.routes(
+          wifihaven.api.BuildInfo.fromEnv.sha,
+          systemRoutes,
+          statsRoutes,
+          routerAndAdminRoutes,
+          healthRoutes,
+        )
+
       // #1248: gate all real routes behind readiness (503 until migrations +
       // seeds complete). #1204: wrap health + the gated real routes in the HTTP
       // metrics middleware (templated route labels), then mount the uninstrumented
@@ -455,7 +469,7 @@ object Main extends ZIOAppDefault {
           LoggingMiddleware.annotate(
             Readiness.gate(
               ErrorBoundary.observe(
-                systemRoutes ++ statsRoutes ++ routerAndAdminRoutes ++ spaRoutes,
+                openApiRoutes ++ systemRoutes ++ statsRoutes ++ routerAndAdminRoutes ++ spaRoutes,
               ),
               ready,
             ),
