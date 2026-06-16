@@ -212,24 +212,24 @@ object GlobalPolicyApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         )
         repo         <- ZIO.service[GlobalPolicyRepo]
         after        <- repo.get
-        // PATCH with blockReason:null clears it
+        // PATCH only blockReason — flips the reason, leaves blocked / blockIpOnly alone
         _            <- send(
           routes,
           Request.patch(
             url("/api/global/flags"),
-            Body.fromString("""{"blockReason":null}"""),
+            Body.fromString("""{"blockReason":"Schedule"}"""),
           ),
           tk,
         )
-        afterClear   <- repo.get
+        afterReason  <- repo.get
       } yield assertTrue(
         resp.status == Status.Ok,
         after.blocked,
         after.blockReason.contains(MacBlockReason.Manual),
         !after.blockIpOnly,
-        afterClear.blocked,
-        afterClear.blockReason.isEmpty,
-        !afterClear.blockIpOnly,
+        afterReason.blocked,
+        afterReason.blockReason.contains(MacBlockReason.Schedule),
+        !afterReason.blockIpOnly,
       )
     },
     test("PATCH /api/global/flags — concurrent edits to different fields both stick") {

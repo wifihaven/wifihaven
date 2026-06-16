@@ -390,6 +390,22 @@ trait GlobalPolicyRepo {
   def setFlags(blocked: Boolean, reason: Option[MacBlockReason], blockIpOnly: Boolean): Task[Unit]
 
   /**
+   * #1456: field-scoped patch of the flat global flags so two concurrent admin edits to *different*
+   * fields don't clobber each other (the wholesale [[setFlags]] last-write-wins). Each parameter
+   * uses an outer Option to mean "field present in the patch?":
+   *   - `blocked = None` / `blockIpOnly = None` → no change to that column.
+   *   - `blockReason = None` → no change to the column.
+   *   - `blockReason = Some(None)` → write NULL (clear).
+   *   - `blockReason = Some(Some(r))` → assign `r`.
+   * A single SQL `UPDATE` runs server-side so disjoint-field concurrent calls commute.
+   */
+  def patchFlags(
+      blocked: Option[Boolean],
+      blockReason: Option[Option[MacBlockReason]],
+      blockIpOnly: Option[Boolean],
+  ): Task[Unit]
+
+  /**
    * Full audit history (active + soft-deleted) of the always-reachable allow set, newest first.
    * Unlike [[get]], this surfaces the `reason` / `added_by` / `removed_by` columns (resolved to
    * usernames) so the #1320 SPA can render the security-sensitive bypass-list audit trail. The
@@ -402,6 +418,13 @@ trait GlobalPolicyRepo {
 
   /** Replace the household-global category set (`global.blocklistIds`) wholesale. */
   def setBlocklists(ids: List[BlocklistId], addedBy: Option[Long]): Task[Unit]
+
+  /**
+   * #1456: idempotent remove of a single category from the household-global set. Matches the
+   * granular allow/block-host shape so concurrent edits to different categories don't clobber each
+   * other (the wholesale [[setBlocklists]] does). No-op if `id` is not currently associated.
+   */
+  def removeBlocklist(id: BlocklistId): Task[Unit]
 }
 
 /**
@@ -420,9 +443,15 @@ object NoopGlobalPolicyRepo extends GlobalPolicyRepo {
   def addBlocklist(id: BlocklistId, addedBy: Option[Long]): Task[Unit]                    = ZIO.unit
   def setFlags(blocked: Boolean, reason: Option[MacBlockReason], blockIpOnly: Boolean): Task[Unit] =
     ZIO.unit
+  def patchFlags(
+      blocked: Option[Boolean],
+      blockReason: Option[Option[MacBlockReason]],
+      blockIpOnly: Option[Boolean],
+  ): Task[Unit] = ZIO.unit
   def allowAudit: Task[List[GlobalPolicyAuditEntry]]                           = ZIO.succeed(Nil)
   def blockAudit: Task[List[GlobalPolicyAuditEntry]]                           = ZIO.succeed(Nil)
   def setBlocklists(ids: List[BlocklistId], addedBy: Option[Long]): Task[Unit] = ZIO.unit
+  def removeBlocklist(id: BlocklistId): Task[Unit]                             = ZIO.unit
 }
 
 trait TimeUsageRepo {
@@ -1100,6 +1129,30 @@ class GlobalPolicyRepoLive(xa: Transactor[Task]) extends GlobalPolicyRepo {
                 global_block_ip_only=$blockIpOnly
           WHERE id=1""".update.run.transact(xa).unit
 
+  // #1456: field-scoped patch — only columns whose patch is `Some(_)` appear in the SET clause, so
+  // a no-op patch is a no-op UPDATE and disjoint-field concurrent patches commute server-side
+  // (the wholesale `setFlags` is last-write-wins). For `global_block_reason`, the nullable column,
+  // `Some(None)` writes NULL and `Some(Some(r))` writes the reason string.
+  def patchFlags(
+      blocked: Option[Boolean],
+      blockReason: Option[Option[MacBlockReason]],
+      blockIpOnly: Option[Boolean],
+  ): Task[Unit] = {
+    val sets = List(
+      blocked.map(b => fr"global_blocked=$b"),
+      blockReason.map {
+        case None    => fr"global_block_reason=NULL"
+        case Some(r) => fr"global_block_reason=${MacBlockReason.asString(r)}"
+      },
+      blockIpOnly.map(b => fr"global_block_ip_only=$b"),
+    ).flatten
+    if (sets.isEmpty) ZIO.unit
+    else
+      (fr"UPDATE household_settings" ++
+        Fragments.set(sets.head, sets.tail*) ++
+        fr"WHERE id=1").update.run.transact(xa).unit
+  }
+
   private def audit(table: doobie.Fragment): Task[List[GlobalPolicyAuditEntry]] =
     (fr"""SELECT g.host, g.reason, ua.username, g.added_at::TEXT, ur.username, g.removed_at::TEXT
           FROM""" ++ table ++ fr"""g
@@ -1133,6 +1186,9 @@ class GlobalPolicyRepoLive(xa: Transactor[Task]) extends GlobalPolicyRepo {
                                   ON CONFLICT (blocklist_id) DO NOTHING""".update.run)
     (del *> ins.foldLeft(FC.unit)(_ *> _.void)).transact(xa).unit
   }
+
+  def removeBlocklist(id: BlocklistId): Task[Unit] =
+    sql"DELETE FROM global_blocklists WHERE blocklist_id=${id.value}".update.run.transact(xa).unit
 }
 
 class TimeLimitRepoLive(xa: Transactor[Task]) extends TimeLimitRepo {

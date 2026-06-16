@@ -124,6 +124,9 @@ object GlobalPolicyRoutes {
         },
 
       // ── household-global category set (replace wholesale) ─────────────────
+      // #1456: wholesale PUT retained for back-compat (existing SPA still
+      // calls it); prefer the granular POST/DELETE pair below for new clients
+      // so disjoint-category concurrent edits don't clobber each other.
       Method.PUT / "api" / "global" / "blocklists" ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
@@ -137,7 +140,36 @@ object GlobalPolicyRoutes {
           handle.mapError(ErrorMapper.errorToResponse)
         },
 
+      // #1456: idempotent add — re-adding a category that's already in the set
+      // is a no-op 200 (ON CONFLICT DO NOTHING). Mirrors the allow/block-host
+      // shape.
+      Method.POST / "api" / "global" / "blocklists" / string("id") ->
+        handler { (id: String, req: Request) =>
+          val handle: ZIO[Any, ApiError, Response] = for {
+            claims <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
+            uid    <- actingUserId(claims)
+            _      <- repo
+              .addBlocklist(BlocklistId.unsafe(id), uid)
+              .mapError(ApiError.Db(_))
+          } yield Response.ok
+          handle.mapError(ErrorMapper.errorToResponse)
+        },
+
+      // #1456: idempotent remove — deleting a category that's not in the set
+      // is a no-op 200.
+      Method.DELETE / "api" / "global" / "blocklists" / string("id") ->
+        handler { (id: String, req: Request) =>
+          val handle: ZIO[Any, ApiError, Response] = for {
+            _ <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
+            _ <- repo
+              .removeBlocklist(BlocklistId.unsafe(id))
+              .mapError(ApiError.Db(_))
+          } yield Response.ok
+          handle.mapError(ErrorMapper.errorToResponse)
+        },
+
       // ── flat global flags (network lockdown + strict-IP floor) ────────────
+      // Wholesale PUT retained for back-compat (existing SPA still calls it).
       Method.PUT / "api" / "global" / "flags" ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
@@ -145,6 +177,56 @@ object GlobalPolicyRoutes {
             r <- parseBody[SetGlobalFlagsRequest](req)
             _ <- repo
               .setFlags(r.blocked, r.blockReason, r.blockIpOnly)
+              .mapError(ApiError.Db(_))
+          } yield Response.ok
+          handle.mapError(ErrorMapper.errorToResponse)
+        },
+
+      // #1456: field-scoped PATCH so concurrent admin edits to *different*
+      // flag fields don't clobber each other (the wholesale PUT is
+      // last-write-wins). Omit a field → no change to that column.
+      // `blockReason: null` → clear (the column is nullable); `blockReason:
+      // "<value>"` → assign.
+      Method.PATCH / "api" / "global" / "flags" ->
+        handler { (req: Request) =>
+          val handle: ZIO[Any, ApiError, Response] = for {
+            _                <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
+            body             <- req.body.asString.orElseFail(ApiError.BadRequest(""))
+            obj              <- ZIO
+              .fromEither(FieldPatch.parseObj(body))
+              .mapError(ApiError.BadRequest(_))
+            blockedPatch     <- ZIO
+              .fromEither(FieldPatch.from[Boolean](obj, "blocked"))
+              .mapError(ApiError.BadRequest(_))
+            reasonPatch      <- ZIO
+              .fromEither(FieldPatch.from[MacBlockReason](obj, "blockReason"))
+              .mapError(ApiError.BadRequest(_))
+            blockIpOnlyPatch <- ZIO
+              .fromEither(FieldPatch.from[Boolean](obj, "blockIpOnly"))
+              .mapError(ApiError.BadRequest(_))
+            _                <- blockedPatch match {
+              case FieldPatch.Cleared =>
+                ZIO.fail(ApiError.BadRequest("blocked cannot be cleared"))
+              case _                  => ZIO.unit
+            }
+            _                <- blockIpOnlyPatch match {
+              case FieldPatch.Cleared =>
+                ZIO.fail(ApiError.BadRequest("blockIpOnly cannot be cleared"))
+              case _                  => ZIO.unit
+            }
+            blockedOpt = blockedPatch match {
+              case FieldPatch.Set(v) => Some(v); case _ => None
+            }
+            blockIpOnlyOpt = blockIpOnlyPatch match {
+              case FieldPatch.Set(v) => Some(v); case _ => None
+            }
+            reasonOpt = reasonPatch match {
+              case FieldPatch.Absent  => None
+              case FieldPatch.Cleared => Some(None)
+              case FieldPatch.Set(v)  => Some(Some(v))
+            }
+            _                <- repo
+              .patchFlags(blockedOpt, reasonOpt, blockIpOnlyOpt)
               .mapError(ApiError.Db(_))
           } yield Response.ok
           handle.mapError(ErrorMapper.errorToResponse)
