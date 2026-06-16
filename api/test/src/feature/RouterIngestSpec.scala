@@ -1595,6 +1595,58 @@ object RouterIngestSpec
         // exactly the one malformed record was metered as rejected
         assertTrue(after.count - before.count == 1.0)
     },
+    // ── #1761: tolerant decode of `host:port` fqdn values ───────────────────
+    test("usage: an fqdn host with a trailing :port is accepted (port stripped)") {
+      // Prod incident #1761: an attribution path (SNI / Host-header capture)
+      // bleeds the destination port into the wire `host` field, so values like
+      // `ws.nas.native-cloud.com:443` arrived verbatim. Hostname validation
+      // rejected them as "invalid hostname label 'com:443'" and the record
+      // was metered as a decode failure. The tolerant decoder strips a
+      // trailing `:<digits>` from fqdn values before parsing, so the record
+      // ingests normally and the rejection counter does NOT advance.
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        pRepo    <- ZIO.service[ProfileRepo]
+        dRepo    <- ZIO.service[DeviceRepo]
+        tu       <- ZIO.service[TimeUsageRepo]
+        routes   <- buildRoutes
+        _        <- seedKnownDevice(dRepo, pRepo)
+        (id, tk) <- seedRouter(rRepo)
+        before   <- rejectedCounter.value
+        rec  =
+          s"""{"mac":"$knownMac","host":{"type":"fqdn","value":"ws.nas.native-cloud.com:443"},"activeSeconds":60,"bytesIn":100,"bytesOut":50}"""
+        body =
+          s"""{"routerId":"$id","periodStart":"${periodStart.toString}","periodEnd":"${periodEnd.toString}","records":[$rec]}"""
+        resp  <- post(routes, "/api/router/usage", body, Some(tk))
+        sb    <- tu.getSecondsAndBytes(
+          MacAddress.unsafe(knownMac),
+          HostId.Fqdn(Hostname.unsafe("ws.nas.native-cloud.com")),
+          testDate,
+        )
+        after <- rejectedCounter.value
+      } yield assertTrue(resp.status == Status.Ok) &&
+        // persisted under the port-free hostname
+        assertTrue(sb == ((60L, 100L, 50L))) &&
+        // and the rejection counter did NOT advance
+        assertTrue(after.count - before.count == 0.0)
+    },
+    test("events: an fqdn host with a trailing :port ingests (port stripped)") {
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        pRepo    <- ZIO.service[ProfileRepo]
+        dRepo    <- ZIO.service[DeviceRepo]
+        routes   <- buildRoutes
+        _        <- seedKnownDevice(dRepo, pRepo)
+        (id, tk) <- seedRouter(rRepo)
+        ev   =
+          s"""{"type":"connection_attempt","mac":"$knownMac","host":{"type":"fqdn","value":"ws.nas.native-cloud.com:443"},"destIp":"1.2.3.4","allowed":false,"reason":"category:adult","ts":"2026-05-07T14:01:14Z"}"""
+        body =
+          s"""{"routerId":"$id","events":[$ev]}"""
+        resp <- post(routes, "/api/router/events", body, Some(tk))
+      } yield assertTrue(resp.status == Status.Ok)
+    },
     test("usage: a batch of ONLY malformed records is accepted (200) and meters them all") {
       // No valid records to ingest, but the envelope is well-formed — so this is
       // a 200 no-op-ingest, NOT a 400. The bad records are all metered.

@@ -211,6 +211,23 @@ describe("build_event", function()
     assert.equal("2026-05-07T14:01:14Z", ev.ts)
   end)
 
+  it("strips a :port suffix from a fqdn hostname (#1761)", function()
+    -- An attribution path (SNI/Host-header capture) can hand us a hostname
+    -- with a trailing ":443". Wire-emit must normalize it BEFORE it reaches
+    -- the API, where Hostname validation rejects "com:443" as an invalid
+    -- label and 4xxs the record.
+    local ev = conntrack.build_event({
+      mac      = "aa:bb:cc:11:22:33",
+      hostname = "ws.nas.native-cloud.com:443",
+      dest_ip  = "1.2.3.4",
+      allowed  = false,
+      reason   = "category:adult",
+      ts       = "2026-05-07T14:01:14Z",
+    })
+    assert.equal("fqdn",                     ev.host.type)
+    assert.equal("ws.nas.native-cloud.com",  ev.host.value)
+  end)
+
   it("uses dest_ip as host fallback (type='ipv4') when hostname is nil", function()
     local ev = conntrack.build_event({
       mac      = "aa:bb:cc:11:22:33",
