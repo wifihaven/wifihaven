@@ -2,11 +2,22 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { TrafficUsageResponse } from '@/types/api'
 
 vi.mock('@/api/client', () => ({
   api: {
-    usage:    { traffic: vi.fn(), horizons: vi.fn().mockRejectedValue(new Error('mock')) },
+    usage: {
+      traffic: vi.fn(),
+      // #1743 + #1740: SPA reads bucket → grain mapping AND retention horizons
+      // from `/api/usage/config`. The empty `bucketTiers` here exercises the
+      // SPA's fallback to `DEFAULT_BUCKET_TIERS`; horizons match the shipped
+      // defaults so the gate behaves identically to pre-#1740.
+      config: vi.fn().mockResolvedValue({
+        bucketTiers: {},
+        horizons: { rawDays: 30, hourlyDays: 90, dailyDays: 180 },
+      }),
+    },
     devices:  { list:    vi.fn() },
     profiles: { list:    vi.fn() },
     apps:     { list:    vi.fn() },
@@ -62,11 +73,19 @@ const aggResp: TrafficUsageResponse = {
   ],
 }
 
+function makeQueryClient() {
+  return new QueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: 0 } },
+  })
+}
+
 function renderPage() {
   return render(
-    <MemoryRouter>
-      <TrafficUsagePage />
-    </MemoryRouter>,
+    <QueryClientProvider client={makeQueryClient()}>
+      <MemoryRouter>
+        <TrafficUsagePage />
+      </MemoryRouter>
+    </QueryClientProvider>,
   )
 }
 
@@ -198,9 +217,11 @@ describe('TrafficUsagePage', () => {
     const trafficMock = api.usage.traffic as ReturnType<typeof vi.fn>
     trafficMock.mockResolvedValue(aggResp)
     render(
-      <MemoryRouter initialEntries={['/?groupBy=device&groupBy=domain']}>
-        <TrafficUsagePage />
-      </MemoryRouter>,
+      <QueryClientProvider client={makeQueryClient()}>
+        <MemoryRouter initialEntries={['/?groupBy=device&groupBy=domain']}>
+          <TrafficUsagePage />
+        </MemoryRouter>
+      </QueryClientProvider>,
     )
     await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(1))
     // Default bucket is raw — switch to 1h to surface the groupBy in the call.
@@ -286,9 +307,11 @@ describe('TrafficUsagePage', () => {
     trafficMock.mockResolvedValue(rawResp)
     const seed = '2026-05-21T14:00:00.000Z'
     render(
-      <MemoryRouter initialEntries={[`/?until=${encodeURIComponent(seed)}`]}>
-        <TrafficUsagePage />
-      </MemoryRouter>,
+      <QueryClientProvider client={makeQueryClient()}>
+        <MemoryRouter initialEntries={[`/?until=${encodeURIComponent(seed)}`]}>
+          <TrafficUsagePage />
+        </MemoryRouter>
+      </QueryClientProvider>,
     )
     await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(1))
     expect(trafficMock.mock.calls[0][0].to).toBe(seed)

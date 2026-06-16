@@ -8,9 +8,8 @@ import type {
   PatchUserRequest, PatchAppRequest,
   NamedSchedule, NamedScheduleRequest,
   RecentApexesResponse, RouterSummary, SetUserProfilesRequest, TimeExtension,
-  TrafficUsageBucket, TrafficUsageGroupBy, TrafficUsageResponse,
+  TrafficUsageBucket, TrafficUsageGroupBy, TrafficUsageResponse, UsageConfig,
   PatchDeviceRequest, PatchProfileRequest,
-  RetentionHorizons,
   UpsertAppAssignmentRequest, UpsertDeviceRequest, UpsertProfileRequest, GrantExtensionRequest,
   UsageSeriesBatchResponse, UsageSeriesResponse, User,
 } from '@/types/api'
@@ -280,11 +279,10 @@ export const api = {
 
   // ── Usage (#716) ───────────────────────────────────────────────────────
   usage: {
-    // #1740 — retention horizons (raw / hourly / daily) from the server.
-    // Auth-free + DB-free; the SPA fetches at boot so the bucket gating in
-    // `web/src/components/usage/retentionGating.ts` tracks the actual sweep
-    // job behaviour instead of a hand-mirrored constant.
-    horizons: () => req<RetentionHorizons>('GET', '/usage/horizons', undefined, true),
+    // #1743 + #1740: bucket → grain mapping and retention horizons. The SPA
+    // reads both at boot so retentionGating.ts no longer hand-mirrors
+    // `BucketPolicy.grainForBucket` or `RetentionSweepJob`'s day counts.
+    config: () => req<UsageConfig>('GET', '/usage/config'),
     series: (params: {
       mac?: string
       profileId?: number

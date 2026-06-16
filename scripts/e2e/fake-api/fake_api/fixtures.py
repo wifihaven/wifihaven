@@ -1,8 +1,8 @@
 """Load the contract goldens used as initial snapshot/response fixtures.
 
-The fake reads `shared/contract/api-to-router/policy_snapshot.json` verbatim
+The fake reads `contract/api-to-router/policy_snapshot.json` verbatim
 so the CI drift guard against the live Scala codec keeps it honest. See
-`shared/contract/README.md`.
+`contract/README.md`.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-CONTRACT_DIR = REPO_ROOT / "shared" / "contract"
+CONTRACT_DIR = REPO_ROOT / "contract"
 POLICY_SNAPSHOT_PATH = CONTRACT_DIR / "api-to-router" / "policy_snapshot.json"
 
 

@@ -133,20 +133,29 @@ object BlockedRoutes {
       reason: String,
       blocklistRepo: BlocklistRepo,
   ): Task[(String, Option[String])] = BlockReason.fromWire(reason) match {
-    case MacBlockReason.Paused         => ZIO.succeed(("paused", None))
-    case MacBlockReason.Schedule       => ZIO.succeed(("schedule", None))
-    case MacBlockReason.TimeLimit      => ZIO.succeed(("time_limit", None))
-    case BlockReason.ExtraBlocked      => ZIO.succeed(("extra_blocked", None))
-    case BlockReason.ExtraBlockedBy(_) => ZIO.succeed(("extra_blocked", None)) // #1645
-    case BlockReason.AppTimeLimit(_)   =>
-      // #1518: rename `site_time_limit` → `app_time_limit`. SPA-API surface,
-      // updated atomically with the SPA in the same PR.
-      ZIO.succeed(("app_time_limit", None))
-    case BlockReason.Category(id)      =>
+    // #1532: reasonClass strings are sourced from each case's `wireKind` rather
+    // than hand-written parallel literals. The block page's reason taxonomy and
+    // the BlockReason wire taxonomy are intentionally aligned; reading the value
+    // from `wireKind` keeps them aligned through future renames instead of
+    // leaving it to a "must mirror" comment.
+    case r @ MacBlockReason.Paused     => ZIO.succeed((r.wireKind, None))
+    case r @ MacBlockReason.Schedule   => ZIO.succeed((r.wireKind, None))
+    case r @ MacBlockReason.TimeLimit  => ZIO.succeed((r.wireKind, None))
+    case r @ BlockReason.ExtraBlocked  => ZIO.succeed((r.wireKind, None))
+    case BlockReason.ExtraBlockedBy(_) =>
+      // #1645: a per-flow host block from another path still renders as the
+      // generic "extra_blocked" class — the block page does not distinguish
+      // ExtraBlocked vs ExtraBlockedBy(host).
+      ZIO.succeed((BlockReason.ExtraBlocked.wireKind, None))
+    case r: BlockReason.AppTimeLimit   =>
+      // #1518 rename (`site_time_limit` → `app_time_limit`); `r.wireKind` is the
+      // SPA-API surface string, updated atomically with the SPA in the same PR.
+      ZIO.succeed((r.wireKind, None))
+    case r @ BlockReason.Category(id)  =>
       blocklistRepo
         .findMeta(id)
-        .map(meta => ("category", meta.map(_.name)))
-        .catchAll(_ => ZIO.succeed(("category", None)))
+        .map(meta => (r.wireKind, meta.map(_.name)))
+        .catchAll(_ => ZIO.succeed((r.wireKind, None)))
     // Generic / unrecognized blocks. `decide()` only reaches mapReason on a Block decision, so the
     // allow-side cases (Allow/ExtraAllowed/NoProfile) are defensive; Manual/Unmanaged/DefaultDeny/
     // AppBlocked and any Unknown(raw) wire string render the neutral block copy rather than being

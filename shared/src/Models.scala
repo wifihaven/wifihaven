@@ -1102,11 +1102,11 @@ case class UsageBucket(
 ) derives JsonCodec
 
 // #1740 — usage retention horizons (days). Authoritative values live in
-// api/src/usage/RetentionSweepJob.scala; this shape is the wire format for
-// `GET /api/usage/horizons`, which the SPA reads at boot so the bucket
-// granularity gate (`web/src/components/usage/retentionGating.ts`) can't
-// silently drift from the sweep job. Defaults in the SPA are only used as
-// an offline fallback when the fetch fails.
+// api/src/usage/RetentionSweepJob.scala; this shape rides on
+// `UsageConfig.horizons` (GET /api/usage/config), which the SPA reads at
+// boot so the bucket granularity gate (`web/src/components/usage/retentionGating.ts`)
+// can't silently drift from the sweep job. Defaults in the SPA are only
+// used as an offline fallback when the fetch fails.
 case class RetentionHorizons(
     rawDays: Int,
     hourlyDays: Int,
@@ -1750,6 +1750,16 @@ object MacBlockReason {
     asString,
   )
 }
+
+// #1743 + #1740: client-facing usage config the SPA reads at boot. Carries
+// the bucket → grain mapping (so `retentionGating.ts` no longer hand-mirrors
+// `BucketPolicy.grainForBucket`) and the retention horizons (so it no longer
+// hand-mirrors `RetentionSweepJob`'s day counts either). One endpoint covers
+// both SSOT folds.
+case class UsageConfig(
+    bucketTiers: Map[String, String],
+    horizons: RetentionHorizons,
+) derives JsonCodec
 
 // #962: typed reason for block_events / connection_events. Stored as JSONB
 // in Postgres tagged on `kind`. The router/PolicyService emit a free-form

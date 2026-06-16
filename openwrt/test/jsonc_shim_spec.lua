@@ -6,7 +6,7 @@
 -- `luci.jsonc.stringify`. That C module isn't on luarocks, so local/CI tests
 -- use `test/shim/luci/jsonc.lua`. If the shim diverges from real luci.jsonc,
 -- bytes generated here (especially the committed golden fixtures under
--- shared/contract/router-to-api/) no longer match what the router actually
+-- contract/router-to-api/) no longer match what the router actually
 -- emits — which is exactly how the #1365 empty-`labels` bug shipped green: the
 -- old cjson-backed shim encoded an empty Lua table as `{}` (object), masking
 -- that real luci.jsonc encodes it as `[]` (array) — a shape the API's

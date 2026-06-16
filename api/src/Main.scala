@@ -314,9 +314,6 @@ object Main extends ZIOAppDefault {
 
       val systemRoutes: Routes[Any, Response] =
         VersionRoutes.routes(wifihaven.api.BuildInfo.fromEnv) ++
-          // #1740: SPA-boot horizon fetch. Auth-free + DB-free like /api/version
-          // — the values are compile-time constants from RetentionSweepJob.
-          UsageHorizonsRoutes.routes ++
           AuthRoutes.routes(auth, userRepo, upRepo) ++
           ProfileRoutes.routes(
             auth,

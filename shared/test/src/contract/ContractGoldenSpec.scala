@@ -12,13 +12,13 @@ import java.nio.file.{Files, Path, Paths}
  * Bidirectional contract tests (#634). Two halves:
  *
  *   1. API → router: serialize representative response payloads via the production zio-json codecs,
- *      golden them under `shared/contract/api-to-router/`. The router-side lua spec
+ *      golden them under `contract/api-to-router/`. The router-side lua spec
  *      (`openwrt/test/contract_spec.lua`) consumes these via `luci.jsonc` and asserts render.lua +
  *      the policy fetcher digest each field.
  *
  * 2. Router → API: load hand-curated samples of what the agent actually sends (under
- * `shared/contract/router-to-api/`), decode each through the production decoder, and assert the
- * decoded value re-serializes to a JSON shape equivalent to the input (no fields dropped, no silent
+ * `contract/router-to-api/`), decode each through the production decoder, and assert the decoded
+ * value re-serializes to a JSON shape equivalent to the input (no fields dropped, no silent
  * fallback to defaults).
  *
  * To regenerate the API-to-router fixtures after an intentional codec change, set
@@ -29,17 +29,17 @@ object ContractGoldenSpec extends ZIOSpecDefault {
   private val contractDir: Path = locateContractDir()
 
   private def locateContractDir(): Path = {
-    // Walk up from cwd until we find a directory containing `shared/contract`.
+    // Walk up from cwd until we find a top-level `contract` directory.
     // Mill normally runs tests with cwd = workspace root, but `out/...` dirs
     // can shift this depending on test isolation settings.
     val start = Paths.get(sys.props.getOrElse("user.dir", "."))
     var cur   = start.toAbsolutePath
     while (cur != null) {
-      val cand = cur.resolve("shared/contract")
+      val cand = cur.resolve("contract")
       if (Files.isDirectory(cand)) return cand
       cur = cur.getParent
     }
-    sys.error(s"could not locate shared/contract from user.dir=$start")
+    sys.error(s"could not locate contract dir from user.dir=$start")
   }
 
   private val regenerate: Boolean =

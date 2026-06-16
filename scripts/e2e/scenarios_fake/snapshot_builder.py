@@ -1,6 +1,6 @@
 """Typed snapshot builder for fake-mode scenarios (#684).
 
-Produces dicts that match `shared/contract/api-to-router/policy_snapshot.json`
+Produces dicts that match `contract/api-to-router/policy_snapshot.json`
 verbatim. The fake's `POST /test/snapshot` accepts any dict and serves it back
 to the agent as-is, so all the shape rules live here, not in the fake.
 
