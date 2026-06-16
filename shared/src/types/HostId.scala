@@ -60,9 +60,25 @@ object HostId {
   /** The single label source today — see openwrt `static_ip_labels.lua` (#1655). */
   val LabelSourceStaticIpRange: String = "static-ip-range"
 
+  // #1761: tolerantly strip a trailing `:<port>` from an fqdn wire value.
+  // Older agents (and any future emitter that interns an SNI/Host-header value
+  // verbatim) can ship `ws.nas.native-cloud.com:443`; without this strip the
+  // decoder rejects "com:443" as an invalid Hostname label and the record is
+  // metered as a decode failure. Defense-in-depth: agent emitters also strip
+  // at the wire (openwrt host_norm.lua), so newer fleets never produce the
+  // suffix — this branch keeps the API tolerant of legacy / re-introduced
+  // emitters. Bare IPv6 literals contain colons too; they're emitted as
+  // type="ipv6" so they don't take this path, but as a guard we only strip
+  // when exactly one colon is present (a plain `host:port`).
+  private val FqdnPortSuffix                       = "^([^:\\[\\]]+):\\d+$".r
+  private def stripPortFromFqdn(v: String): String = v match {
+    case FqdnPortSuffix(host) => host
+    case _                    => v
+  }
+
   given JsonCodec[HostId] = JsonCodec[Wire].transformOrFail(
     {
-      case Wire("fqdn", v, _)  => Hostname.parse(v).map(Fqdn(_))
+      case Wire("fqdn", v, _)  => Hostname.parse(stripPortFromFqdn(v)).map(Fqdn(_))
       case Wire("ipv4", v, _)  =>
         IpAddress.parse(v).flatMap { ip =>
           if ip.value.contains(':') then Left(s"ipv4 host carried v6 value: $v")

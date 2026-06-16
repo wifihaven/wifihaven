@@ -75,6 +75,8 @@
 --     → bool
 --     post_fn(url, body, headers) → status_code, body_str
 
+local host_norm = require("wifihaven.host_norm")
+
 local M = {}
 
 -- log is injectable; default to the real logger wrapper, fall back to stderr.
@@ -252,10 +254,13 @@ end
 local function host_for_ip(dst_ip, nft_sets, lookup_hostname)
   if lookup_hostname then
     local h = lookup_hostname(dst_ip)
-    if h then return { type = "fqdn", value = h } end
+    -- #1761: strip a trailing :<port> — see host_norm.lua.
+    if h then return { type = "fqdn", value = host_norm.strip_port_suffix(h) } end
   end
   for hostname, ips in pairs(nft_sets or {}) do
-    if ips[dst_ip] then return { type = "fqdn", value = hostname } end
+    if ips[dst_ip] then
+      return { type = "fqdn", value = host_norm.strip_port_suffix(hostname) }
+    end
   end
   local kind = (dst_ip and dst_ip:find(":", 1, true)) and "ipv6" or "ipv4"
   return { type = kind, value = dst_ip }
