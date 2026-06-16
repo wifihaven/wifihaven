@@ -899,6 +899,26 @@ ADDRESSED *and* no new BLOCKER was introduced; any open BLOCKER stays
 merge-gating. See the *Posting & re-runs* section of the checklist for the full
 algorithm.
 
+**Spawned chips monitor PRs through to MERGED, not just to queued.**
+{#monitor-to-merged} The independent review pass is the gate for ENTERING the
+merge queue, but the author chip's job isn't done until the PR's state is
+`MERGED`. Once queued, the chip watches the merge queue and iterates without
+waiting for an operator prompt:
+
+- **Queue CI fails** (Gate 2 port collision from a sibling chip,
+  infrastructure flake, etc.) → diagnose, push a fix or re-queue, iterate.
+- **Conflict appears** with another PR that landed first → rebase on
+  `origin/main`, resolve, push, re-queue.
+- **Re-review needed** because new commits got pushed → re-run `/pr-review`,
+  address BLOCKERs, push. (This pairs with the re-run-on-push behavior in the
+  *Posting & re-runs* section of [`docs/pr-review-checklist.md`](docs/pr-review-checklist.md),
+  which covers the REVIEWER side; this rule covers the AUTHOR side of the
+  same lifecycle.)
+
+A chip replies "done" only when `gh pr view <n> --json state` returns
+`MERGED`. Polling cadence is ~5–10 minutes — use `ScheduleWakeup` for long
+waits, don't busy-poll.
+
 ## Testing philosophy
 
 ### Feature tests first, unit tests for edge cases only
