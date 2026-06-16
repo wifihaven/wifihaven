@@ -908,14 +908,33 @@ the chip watches the merge queue and iterates without waiting for an operator
 prompt:
 
 - **Queue CI fails** (Gate 2 port collision from a sibling chip,
-  infrastructure flake, etc.) → diagnose, push a fix or re-queue, iterate.
+  infrastructure flake, etc.) → diagnose, push a fix, iterate.
 - **Conflict appears** with another PR that landed first → rebase on
-  `origin/main`, resolve, push, re-queue.
+  `origin/main`, resolve, push.
 - **Re-review needed** because new commits got pushed → re-run `/pr-review`,
   address BLOCKERs, push. (This pairs with the re-run-on-push behavior in the
   *Posting & re-runs* section of [`docs/pr-review-checklist.md`](docs/pr-review-checklist.md),
   which covers the REVIEWER side; this rule covers the AUTHOR side of the
   same lifecycle.)
+
+**The chip NEVER queues a PR for merge itself, and NEVER re-arms
+merge-when-ready unless the operator had already armed it.** The
+merge-when-ready click is the operator's explicit approval to ship — it is
+**required** so the operator approves every change, and a chip running
+`gh pr merge … --auto` (or any equivalent) bypasses that approval and is
+forbidden. Concretely:
+
+- **First time the PR is ready** → the chip reports "review APPROVE, ready
+  for merge-when-ready," and stops. The operator clicks merge-when-ready.
+- **After a rebase or queue-CI fix push**, the chip may re-arm
+  merge-when-ready (`gh pr merge <n> --auto …`) **only if** the operator had
+  already armed it before the push — i.e. `gh pr view <n> --json
+  autoMergeRequest` returned a non-null `autoMergeRequest` immediately
+  before the push knocked it off. Check that field; if it is null, do
+  nothing and report state.
+- **If the operator explicitly unqueued the PR** (the chip should treat
+  any transition from armed → null as "operator unqueued" unless the chip
+  itself just force-pushed), the chip does NOT re-arm. Report and stop.
 
 A chip replies "done" only when `gh pr view <n> --json state` returns
 `MERGED`. Polling cadence is ~5–10 minutes — use `ScheduleWakeup` for long
