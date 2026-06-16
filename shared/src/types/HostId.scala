@@ -67,13 +67,20 @@ object HostId {
   // metered as a decode failure. Defense-in-depth: agent emitters also strip
   // at the wire (openwrt host_norm.lua), so newer fleets never produce the
   // suffix — this branch keeps the API tolerant of legacy / re-introduced
-  // emitters. Bare IPv6 literals contain colons too; they're emitted as
-  // type="ipv6" so they don't take this path, but as a guard we only strip
-  // when exactly one colon is present (a plain `host:port`).
+  // emitters.
+  //
+  // Symmetry with the Lua half (host_norm.lua):
+  //   - a plain `host:port`               → `host`        (one colon allowed)
+  //   - a bracketed v6 literal `[v6]:port`→ `[v6]`        (brackets disambiguate)
+  //   - a bare v6 literal (multiple ':')  → unchanged     (ambiguous, leave alone)
+  // In practice a bracketed v6 host arrives as type="ipv6" and never reaches
+  // this branch — the bracket case is parity with Lua, not load-bearing.
   private val FqdnPortSuffix                       = "^([^:\\[\\]]+):\\d+$".r
+  private val BracketedV6PortSuffix                = "^(\\[[^\\[\\]]*\\]):\\d+$".r
   private def stripPortFromFqdn(v: String): String = v match {
-    case FqdnPortSuffix(host) => host
-    case _                    => v
+    case FqdnPortSuffix(host)        => host
+    case BracketedV6PortSuffix(host) => host
+    case _                           => v
   }
 
   given JsonCodec[HostId] = JsonCodec[Wire].transformOrFail(
