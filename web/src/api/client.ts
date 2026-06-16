@@ -8,7 +8,7 @@ import type {
   PatchUserRequest, PatchAppRequest,
   NamedSchedule, NamedScheduleRequest,
   RecentApexesResponse, RouterSummary, SetUserProfilesRequest, TimeExtension,
-  TrafficUsageBucket, TrafficUsageGroupBy, TrafficUsageResponse,
+  TrafficUsageBucket, TrafficUsageGroupBy, TrafficUsageResponse, UsageConfig,
   PatchDeviceRequest, PatchProfileRequest,
   UpsertAppAssignmentRequest, UpsertDeviceRequest, UpsertProfileRequest, GrantExtensionRequest,
   UsageSeriesBatchResponse, UsageSeriesResponse, User,
@@ -279,6 +279,10 @@ export const api = {
 
   // ── Usage (#716) ───────────────────────────────────────────────────────
   usage: {
+    // #1743: bucket → grain mapping (and, post-#1740, retention horizons).
+    // Sourced from `BucketPolicy.bucketTiers` on the API so the SPA stops
+    // hand-mirroring `grainForBucket` in retentionGating.ts.
+    config: () => req<UsageConfig>('GET', '/usage/config'),
     series: (params: {
       mac?: string
       profileId?: number

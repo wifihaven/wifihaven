@@ -1,6 +1,6 @@
 -- contract_spec.lua — router-side half of the bidirectional contract test (#634).
 --
--- Loads the golden API → router fixtures from shared/contract/api-to-router/
+-- Loads the golden API → router fixtures from contract/api-to-router/
 -- via the production parser (luci.jsonc — shimmed to lua-cjson in tests, the
 -- same shim the rest of openwrt/test/ uses) and asserts that render.lua and
 -- the policy module can consume every field of every fixture.
@@ -19,14 +19,14 @@ local render = require("render")
 local function find_contract_dir()
   local cur = "."
   for _ = 1, 8 do
-    local f = io.open(cur .. "/shared/contract/api-to-router/policy_snapshot.json", "r")
+    local f = io.open(cur .. "/contract/api-to-router/policy_snapshot.json", "r")
     if f then
       f:close()
-      return cur .. "/shared/contract"
+      return cur .. "/contract"
     end
     cur = cur .. "/.."
   end
-  error("could not locate shared/contract from cwd")
+  error("could not locate contract from cwd")
 end
 
 local CONTRACT_DIR = find_contract_dir()

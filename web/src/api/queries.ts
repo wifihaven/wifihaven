@@ -12,7 +12,7 @@ import type {
   ProfileTimeStatus,
   ProfileAppWeeklyUsage,
   ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek, ProfileUsageByApp,
-  QueryLog, UsageSeriesResponse,
+  QueryLog, UsageConfig, UsageSeriesResponse,
 } from '@/types/api'
 
 const MIN = 60_000
@@ -80,6 +80,21 @@ export function useProfiles(opts?: QueryOpts<ProfileDetail[]>) {
     queryKey: qk.profiles(),
     queryFn: () => api.profiles.list(),
     staleTime: STALE.profiles,
+    ...opts,
+  })
+}
+
+// #1743: bucket → grain mapping the API emits from BucketPolicy. Cached for an
+// hour because it's effectively a constant; the SPA falls back to the locally
+// shipped defaults when the fetch hasn't completed (or fails) so the
+// date-picker isn't blocked by network.
+export function useUsageConfig(opts?: QueryOpts<UsageConfig>) {
+  return useQuery({
+    queryKey: ['usage', 'config'] as const,
+    queryFn: () => api.usage.config(),
+    staleTime: 60 * MIN,
+    // Effectively constant — survive page-mount churn without re-fetching.
+    gcTime: Infinity,
     ...opts,
   })
 }

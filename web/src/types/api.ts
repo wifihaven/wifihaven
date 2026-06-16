@@ -572,6 +572,15 @@ export interface UsageSeriesBatchResponse {
 // inspection. 1m bucket and apex/app groupBy are reserved (router cadence /
 // PSL / apps track) — server returns 400 with a typed `error` code.
 export type TrafficUsageBucket = 'raw' | '1m' | '10m' | '1h' | '12h' | '1d' | '1w'
+
+// #1743: which storage grain backs each display bucket. Sourced from the API
+// (`BucketPolicy.bucketTiers`), not hand-mirrored — see `useUsageConfig` /
+// `retentionGating.ts`.
+export type BucketGrain = 'raw' | 'hourly' | 'daily'
+
+export interface UsageConfig {
+  bucketTiers: Record<string, BucketGrain>
+}
 // #846: groupBy is composable. Apex is deferred to #856 (needs PSL). #769
 // turned `app` on — it now resolves to a server-side join through
 // `app_hosts`. #1526: a host with no registered app is its own single-host

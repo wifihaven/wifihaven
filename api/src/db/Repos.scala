@@ -1890,16 +1890,7 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
                  tr.date::TEXT, tr.period_start::TEXT, tr.period_end::TEXT,
                  tr.active_seconds, tr.bytes_in, tr.bytes_out
           FROM traffic_reports tr
-          LEFT JOIN LATERAL (
-            SELECT resolved_host_value
-            FROM connection_events
-            WHERE mac          = tr.mac
-              AND dest_ip      = tr.host_value
-              AND resolved_host_value IS NOT NULL
-              AND ts >= tr.date::TIMESTAMPTZ
-              AND ts <  (tr.date + INTERVAL '1 day')::TIMESTAMPTZ
-            ORDER BY ts DESC LIMIT 1
-          ) ce ON tr.host_type IN ('ipv4','ipv6')
+          ${SqlFragments.resolvedHostLateral}
           WHERE tr.router_id = $routerId
           ORDER BY tr.period_start DESC LIMIT $limit"""
       .query[R]
@@ -1939,16 +1930,7 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
                                tr.host_value),
                       tr.active_seconds, tr.bytes_in, tr.bytes_out, tr.period_start, tr.period_end
                FROM traffic_reports tr
-               LEFT JOIN LATERAL (
-                 SELECT resolved_host_value
-                 FROM connection_events
-                 WHERE mac          = tr.mac
-                   AND dest_ip      = tr.host_value
-                   AND resolved_host_value IS NOT NULL
-                   AND ts >= tr.date::TIMESTAMPTZ
-                   AND ts <  (tr.date + INTERVAL '1 day')::TIMESTAMPTZ
-                 ORDER BY ts DESC LIMIT 1
-               ) ce ON tr.host_type IN ('ipv4','ipv6')
+               ${SqlFragments.resolvedHostLateral}
                WHERE tr.period_start >= $fromInstant AND tr.period_start < $toInstant
                  AND (tr.active_seconds > 0 OR tr.bytes_in > 0 OR tr.bytes_out > 0)
                  AND """ ++ Fragments.in(fr"tr.mac", nel)
@@ -1986,16 +1968,7 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
                                tr.host_value),
                       tr.active_seconds, tr.bytes_in, tr.bytes_out, tr.period_start, tr.period_end
                FROM traffic_reports tr
-               LEFT JOIN LATERAL (
-                 SELECT resolved_host_value
-                 FROM connection_events
-                 WHERE mac          = tr.mac
-                   AND dest_ip      = tr.host_value
-                   AND resolved_host_value IS NOT NULL
-                   AND ts >= tr.date::TIMESTAMPTZ
-                   AND ts <  (tr.date + INTERVAL '1 day')::TIMESTAMPTZ
-                 ORDER BY ts DESC LIMIT 1
-               ) ce ON tr.host_type IN ('ipv4','ipv6')
+               ${SqlFragments.resolvedHostLateral}
                WHERE tr.date BETWEEN $from AND $to
                  AND (tr.active_seconds > 0 OR tr.bytes_in > 0 OR tr.bytes_out > 0)
                  AND """ ++ Fragments.in(fr"tr.mac", nel) ++
@@ -2033,16 +2006,7 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
                   tr.period_start, tr.period_end,
                   tr.active_seconds, tr.bytes_in, tr.bytes_out
            FROM traffic_reports tr
-           LEFT JOIN LATERAL (
-             SELECT resolved_host_value
-             FROM connection_events
-             WHERE mac          = tr.mac
-               AND dest_ip      = tr.host_value
-               AND resolved_host_value IS NOT NULL
-               AND ts >= tr.date::TIMESTAMPTZ
-               AND ts <  (tr.date + INTERVAL '1 day')::TIMESTAMPTZ
-             ORDER BY ts DESC LIMIT 1
-           ) ce ON tr.host_type IN ('ipv4','ipv6')
+           ${SqlFragments.resolvedHostLateral}
            WHERE tr.period_start >= $fromInstant AND tr.period_start < $toInstant
              AND (tr.active_seconds > 0 OR tr.bytes_in > 0 OR tr.bytes_out > 0) """
     val macFilter  = macs match {
@@ -2097,16 +2061,7 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
                    ) AS host,
                    (tr.bytes_in + tr.bytes_out) AS bytes
             FROM traffic_reports tr
-            LEFT JOIN LATERAL (
-              SELECT resolved_host_value
-              FROM connection_events
-              WHERE mac          = tr.mac
-                AND dest_ip      = tr.host_value
-                AND resolved_host_value IS NOT NULL
-                AND ts >= tr.date::TIMESTAMPTZ
-                AND ts <  (tr.date + INTERVAL '1 day')::TIMESTAMPTZ
-              ORDER BY ts DESC LIMIT 1
-            ) ce ON tr.host_type IN ('ipv4','ipv6')
+            ${SqlFragments.resolvedHostLateral}
             WHERE tr.mac = $mac
               AND tr.period_start >= $fromInstant
               AND tr.period_start <  $toInstant
@@ -2135,16 +2090,7 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
                   tr.date, tr.period_start, tr.period_end,
                   tr.active_seconds, tr.bytes_in, tr.bytes_out
            FROM traffic_reports tr
-           LEFT JOIN LATERAL (
-             SELECT resolved_host_value
-             FROM connection_events
-             WHERE mac          = tr.mac
-               AND dest_ip      = tr.host_value
-               AND resolved_host_value IS NOT NULL
-               AND ts >= tr.date::TIMESTAMPTZ
-               AND ts <  (tr.date + INTERVAL '1 day')::TIMESTAMPTZ
-             ORDER BY ts DESC LIMIT 1
-           ) ce ON tr.host_type IN ('ipv4','ipv6')
+           ${SqlFragments.resolvedHostLateral}
            WHERE 1=1"""
     val byMacs  = f.macs match {
       case None      => fr""

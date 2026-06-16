@@ -39,6 +39,23 @@ object UsageRoutes {
       clock: Clock,
   ): Routes[Any, Response] =
     Routes(
+      // #1743: bucket → grain mapping the SPA reads at boot to gate its
+      // date-picker, sourced from `BucketPolicy.bucketTiers` so the SPA no
+      // longer hand-mirrors `grainForBucket` in retentionGating.ts. (Paired
+      // with #1740 — the same endpoint will grow a `horizons` field there.)
+      // No bespoke metric: the HTTP middleware already meters `route`,
+      // `status`, and duration for this path, and the response is a static
+      // constant with no failure modes beyond auth.
+      Method.GET / "api" / "usage" / "config"                                   ->
+        handler { (req: Request) =>
+          val handle: ZIO[Any, ApiError, Response] = for {
+            _ <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
+            cfg = UsageConfig(
+              bucketTiers = BucketPolicy.bucketTiers.view.mapValues(_.wire).toMap,
+            )
+          } yield Response.json(cfg.toJson)
+          handle.mapError(ErrorMapper.errorToResponse)
+        },
       Method.GET / "api" / "usage" / "traffic"                                  ->
         handler { (req: Request) =>
           trafficHandler(

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import type { TrafficUsageBucket } from '@/types/api'
 import {
+  DEFAULT_BUCKET_TIERS,
   DEFAULT_RETENTION_HORIZONS,
   bucketAvailability,
 } from './retentionGating'
@@ -79,5 +80,49 @@ describe('bucketAvailability — gate granularity on retention horizon', () => {
     expect(gates.raw.enabled).toBe(false)
     expect(gates['1h'].enabled).toBe(true)
     expect(gates['1d'].enabled).toBe(true)
+  })
+})
+
+// #1743: the bucket → grain mapping is API-driven (GET /api/usage/config); the
+// SPA falls back to DEFAULT_BUCKET_TIERS when the boot fetch hasn't returned.
+describe('bucketAvailability — API-driven bucket tiers (#1743)', () => {
+  it('falls back to DEFAULT_BUCKET_TIERS when no map is supplied', () => {
+    const gates = bucketAvailability(daysAgo(45), NOW, DEFAULT_RETENTION_HORIZONS)
+    // Defaults: raw goes through the raw tier, 1h through hourly.
+    expect(gates.raw.enabled).toBe(false)
+    expect(gates['1h'].enabled).toBe(true)
+  })
+
+  it('uses the supplied bucketTiers map to classify buckets', () => {
+    // Re-classify 1h as raw — at 45d it should now be gated out by the raw horizon.
+    const overridden = { ...DEFAULT_BUCKET_TIERS, '1h': 'raw' as const }
+    const gates = bucketAvailability(daysAgo(45), NOW, DEFAULT_RETENTION_HORIZONS, overridden)
+    expect(gates['1h'].enabled).toBe(false)
+    expect(gates['1h'].reason).toMatch(/30 days/)
+    // 1d is still daily-tier, still enabled.
+    expect(gates['1d'].enabled).toBe(true)
+  })
+
+  it('a bucket missing from the supplied map falls back to its default tier', () => {
+    // Partial map (older API image, or a smaller payload): only `raw` is listed.
+    const partial: Record<string, 'raw' | 'hourly' | 'daily'> = { raw: 'raw' }
+    const gates = bucketAvailability(daysAgo(120), NOW, DEFAULT_RETENTION_HORIZONS, partial)
+    // 1h should still be classified hourly via the default, and gated out at 120d.
+    expect(gates['1h'].enabled).toBe(false)
+    // 1d should still be classified daily via the default, and enabled at 120d.
+    expect(gates['1d'].enabled).toBe(true)
+  })
+
+  it('DEFAULT_BUCKET_TIERS mirrors BucketPolicy.grainForBucket', () => {
+    // Backstop sanity-check that the fallback agrees with the API's mapping.
+    expect(DEFAULT_BUCKET_TIERS).toEqual({
+      raw: 'raw',
+      '1m': 'raw',
+      '10m': 'raw',
+      '1h': 'hourly',
+      '12h': 'hourly',
+      '1d': 'daily',
+      '1w': 'daily',
+    })
   })
 })

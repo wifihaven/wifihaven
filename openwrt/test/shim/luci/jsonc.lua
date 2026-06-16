@@ -2,7 +2,7 @@
 -- C module in production; it isn't on luarocks, so by default the lua tests
 -- load this shim instead. It MUST faithfully reproduce luci.jsonc's observed
 -- behavior so that bytes generated here — above all the committed golden
--- fixtures under shared/contract/router-to-api/ — equal what the router
+-- fixtures under contract/router-to-api/ — equal what the router
 -- actually emits on the wire (#1367). The CI contract job goes one better and
 -- builds the REAL module (test/build-luci-jsonc.sh) to verify the fixtures, so
 -- any drift between this shim and the real encoder fails CI; the shim stays the

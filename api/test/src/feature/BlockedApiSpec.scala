@@ -235,6 +235,57 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         assertTrue(info.reasonClass.contains("blocked")) &&
         assertTrue(info.categoryName.isEmpty)
     },
+    // #1532: pins the reasonClass invariant — for every BlockReason case that
+    // BlockedRoutes.mapReason recognizes, the reasonClass it emits MUST equal that
+    // case's wireKind (or the documented generic "blocked" fallthrough for the
+    // unrecognized-on-the-block-page bucket). This is the test-pin behind the
+    // collapse that sources reasonClass strings from `wireKind` instead of
+    // hand-written literals — the test holds both before and after.
+    test("reasonClass strings track BlockReason.wireKind for every recognized case") {
+      def stub(wire: String): PolicyService = new PolicyService {
+        def snapshot: Task[PolicySnapshot]                                      =
+          ZIO.dieMessage("snapshot unused in this test")
+        def renderBlocklist(id: BlocklistId): Task[Option[(ETag, String)]]      =
+          ZIO.dieMessage("renderBlocklist unused in this test")
+        def decide(mac: String, hostname: String): Task[RouterDecisionResponse] =
+          ZIO.succeed(RouterDecisionResponse(ConnectionDecision.Block, wire, None))
+      }
+      // Each entry is (wire reason string emitted by decide(), expected reasonClass).
+      // The expected value is taken directly from the case's `wireKind` — if a
+      // wireKind is renamed in shared/Models the same value flows through here.
+      val cases: List[(String, String)]     = List(
+        BlockReason.asWire(MacBlockReason.Paused)    -> MacBlockReason.Paused.wireKind,
+        BlockReason.asWire(MacBlockReason.Schedule)  -> MacBlockReason.Schedule.wireKind,
+        BlockReason.asWire(MacBlockReason.TimeLimit) -> MacBlockReason.TimeLimit.wireKind,
+        BlockReason.asWire(BlockReason.ExtraBlocked) -> BlockReason.ExtraBlocked.wireKind,
+        BlockReason.asWire(
+          BlockReason.ExtraBlockedBy(
+            Hostname.unsafe("example.com"),
+          ),
+        )                                            -> BlockReason.ExtraBlocked.wireKind,
+        BlockReason.asWire(BlockReason.AppTimeLimit("YouTube")) -> BlockReason
+          .AppTimeLimit("YouTube")
+          .wireKind,
+      )
+      // The stub PolicyService short-circuits before any repo read, so a single
+      // cleanDb + shared service binding is sufficient for all cases — no need to
+      // pay the embedded-Postgres reset per case.
+      for {
+        _       <- cleanDb
+        pr      <- ZIO.service[ProfileRepo]
+        dr      <- ZIO.service[DeviceRepo]
+        blr     <- ZIO.service[BlocklistRepo]
+        tss     <- makeTimeStatus
+        hsr     <- ZIO.service[HouseholdSettingsRepo]
+        clk     <- ZIO.service[Clock]
+        results <- ZIO.foreach(cases) { case (wire, expected) =>
+          val routes = BlockedRoutes.routes(stub(wire), dr, pr, blr, tss, hsr, clk)
+          callBlocked(routes, "aa:bb:cc:dd:ee:ff", "example.com").map { info =>
+            assertTrue(info.blocked) && assertTrue(info.reasonClass.contains(expected))
+          }
+        }
+      } yield results.reduce(_ && _)
+    },
     // #335: kid-side block page must show today's usage so a restricted kid can see
     // *why* their time is gone, not just that it is. The fields are populated for any
     // enrolled MAC (blocked or not) so the page can render usage on a non-blocked

@@ -169,7 +169,7 @@ profile).
 - **API unit (Gate 0)**: `BlockReason` decoding/encoding (sub-F / #396),
   category-list serialization, snapshot builder with apps + blocklists
   composed.
-- **Contract (Gate 1)**: `shared/contract/api-to-router/policy_snapshot.json`
+- **Contract (Gate 1)**: `contract/api-to-router/policy_snapshot.json`
   golden — blocklists field shape stays stable. Now that prod is deployed
   the snapshot is a public contract: changes must be additive and
   ignore-unknown-tolerant (see "Backwards compatibility" in `AGENTS.md`);

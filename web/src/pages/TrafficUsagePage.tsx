@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
+import { useUsageConfig } from '@/api/queries'
 import type {
   Device,
   ProfileDetail,
@@ -103,9 +104,13 @@ export function TrafficUsagePage() {
   // those buckets grey out (BucketSelector) and we auto-promote the current
   // selection to the finest still-available bucket so we never request a
   // swept tier.
+  // #1743: the bucket → grain mapping comes from the API; until the fetch
+  // returns we fall back to the shipped defaults so the picker still works.
+  const usageConfig = useUsageConfig()
+  const bucketTiers = usageConfig.data?.bucketTiers
   const bucketGates = useMemo<Record<TrafficUsageBucket, BucketGate>>(
-    () => bucketAvailability(until ? new Date(until) : null, new Date()),
-    [until],
+    () => bucketAvailability(until ? new Date(until) : null, new Date(), undefined, bucketTiers),
+    [until, bucketTiers],
   )
 
   useEffect(() => {

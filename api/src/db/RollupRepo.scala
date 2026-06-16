@@ -184,9 +184,8 @@ trait RollupRepo {
 
 class RollupRepoLive(xa: Transactor[Task]) extends RollupRepo {
 
-  // The LATERAL FQDN-resolve mirrors TrafficReportRepoLive — keep them in
-  // lockstep. If the read-time resolve in traffic_reports queries ever
-  // changes, this CTE must change too.
+  // The FQDN-resolve LATERAL is centralised in SqlFragments so this CTE and
+  // every TrafficReportRepoLive read use the same join shape (#1741).
   private val resolvedCte =
     fr"""
       WITH resolved AS (
@@ -203,16 +202,7 @@ class RollupRepoLive(xa: Transactor[Task]) extends RollupRepo {
           tr.bytes_in,
           tr.bytes_out
         FROM traffic_reports tr
-        LEFT JOIN LATERAL (
-          SELECT resolved_host_value
-          FROM connection_events
-          WHERE mac                 = tr.mac
-            AND dest_ip             = tr.host_value
-            AND resolved_host_value IS NOT NULL
-            AND ts >= tr.date::TIMESTAMPTZ
-            AND ts <  (tr.date + INTERVAL '1 day')::TIMESTAMPTZ
-          ORDER BY ts DESC LIMIT 1
-        ) ce ON tr.host_type IN ('ipv4','ipv6')
+        ${SqlFragments.resolvedHostLateral}
         WHERE (tr.active_seconds > 0 OR tr.bytes_in > 0 OR tr.bytes_out > 0)
       """
 

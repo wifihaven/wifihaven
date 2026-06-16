@@ -1739,6 +1739,12 @@ object MacBlockReason {
   )
 }
 
+// #1743: client-facing usage config the SPA reads at boot. Today this is just
+// the bucket → grain mapping (so `retentionGating.ts` no longer hand-mirrors
+// `BucketPolicy.grainForBucket`); paired with #1740 it will also carry
+// retention horizons.
+case class UsageConfig(bucketTiers: Map[String, String]) derives JsonCodec
+
 // #962: typed reason for block_events / connection_events. Stored as JSONB
 // in Postgres tagged on `kind`. The router/PolicyService emit a free-form
 // wire string today; the API converts on ingest via `BlockReason.fromWire`.

@@ -55,6 +55,7 @@ on:
       - 'infra/**'
       - 'scripts/**'
       - 'shared/**'
+      - 'contract/**'
       - '.github/workflows/master-api-ui.yml'
       - '.github/workflows/e2e-vm-gate3b.yml'
       - '.github/workflows/ci.yml'
