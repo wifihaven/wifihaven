@@ -2,6 +2,13 @@
 
 This file provides context for AI coding agents (Claude, Copilot, Cursor, etc.) working on this codebase.
 
+**How to use this file.** Read the *Architectural model* section in full — it is
+high-rep and must always be in context. Then use the *Where to look* TOC to load
+the detail file(s) for the topic(s) relevant to your task. Each TOC entry
+includes a one-paragraph summary so you can decide whether to read the detail
+file. Anchor IDs are preserved on TOC entries so existing
+`AGENTS.md#<anchor>` cross-references continue to resolve.
+
 ## Architectural model — read this before working on anything
 
 These two truths are the canonical architecture. Code or docs that contradict
@@ -172,885 +179,83 @@ shape, wire JSON examples, and the enforcement model.
 > [#1334](https://github.com/wifihaven/wifihaven/issues/1334) fixed the
 > agent's blocklist-fetch call.)
 
-## What this project is
+## Where to look — topic TOC
 
-WifiHaven is a self-hosted, network-level parental-control system with per-device filtering, time limits, and a web dashboard. The API runs on a Linux home server (Ubuntu) and replaces commercial products like Gryphon or TP-Link HomeShield; the enforcement agent runs on the gateway router (OpenWRT or OPNsense).
+Each entry below summarizes one previously-inline AGENTS.md section. Anchors
+are preserved so existing `AGENTS.md#<anchor>` cross-references resolve. The
+detail file holds the full rule text.
 
-## Architecture
+### Architecture, domain concepts, policy decision pipeline
+What WifiHaven is; repo layout; SPA hosting split (self-hosted bundles SPA into API, cloud uses Cloudflare Pages); key API surface (`/api/router/*`, `/api/blocklists/*`); domain vocabulary (Profile, Device, Schedule, TimeLimit, App, App time limit, TimeUsage, TimeExtension, BlocklistDomain, QueryLog, Location); server-side policy decision pipeline (paused → schedule → daily limit → app limit → manual → extraBlocked → extraAllowed → blocklists → blockIpOnly). → see [`docs/architecture.md`](docs/architecture.md)
 
-```
-wifihaven/
-├── shared/        # Domain models shared across all modules (Scala 3, ZIO JSON)
-├── api/           # REST API (ZIO HTTP, Doobie, PostgreSQL)
-├── openwrt/       # Lua agent for OpenWRT (dnsmasq + nftables policy enforcement)
-├── opnsense/      # Python agent for OPNsense (Unbound + pflog usage events)
-└── web/           # React TypeScript dashboard (Vite, Tailwind)
-```
+### Project board — every new issue gets an Epic
+Org-level Project #1; new issues auto-add (Status defaults `Todo`) but `Epic` is set on triage; start a new `Epic` option only for threads big enough to deserve their own swimlane. → see [`docs/project-board.md`](docs/project-board.md)
 
-One JVM process runs in production:
-1. `api` — REST API on :8080, handles auth (JWT), owns the DB, runs `PolicyService` (the only place decision logic lives).
+### Tech stack decisions
+Scala 3 + ZIO 2, ZIO HTTP, Doobie, Flyway, Lua on OpenWRT, jwt-scala, Mill, React + Vite + TypeScript, Tailwind. → see [`docs/process/tech-stack.md`](docs/process/tech-stack.md)
 
-SPA hosting differs by environment:
+### Coding conventions
+ZIO effects (no exceptions), typed errors as sealed traits, config via `zio-config` HOCON, SQL only in `*RepoLive`, ZLayer wiring, ZIO Test, scalafmt + scalafix enforced in CI. → see [`docs/process/coding-conventions.md`](docs/process/coding-conventions.md)
 
-- **Self-hosted (local / dev / `deploy/install.sh`)**: the SPA is bundled
-  with the API — `web/dist` is baked into the API container and served by
-  the JVM on :8080. One deploy, one rollback.
-- **Staging and production cloud (`staging.wifihaven.net`,
-  `api.wifihaven.net`)**: the SPA deploys to **Cloudflare Pages**,
-  independent of the API. The API JVM serves only `/api/*`; the SPA is a
-  static bundle that talks to the API over the network like any other
-  client. Cloudflare config lives in-repo:
-  - [`infra/cloudflare/`](infra/cloudflare/) — Terraform (`main.tf`,
-    `variables.tf`) for the Cloudflare account-level resources.
-  - [`web/wrangler.toml`](web/wrangler.toml) (prod) and
-    `web/wrangler.staging.toml` (staging) — Wrangler config for
-    `wrangler pages deploy`. Deploys are driven from
-    `.github/workflows/deploy-spa.yml`.
+### Single source of truth — never duplicate a decision or computation {#single-source-of-truth}
+The same logical quantity or decision (e.g. minutes used today, the block reason, engaged seconds for an app) must be computed in exactly ONE place; every other consumer calls it. Resolve unavoidable proximity by COLLAPSE or TYPE-ENFORCE; otherwise ACCEPT + TEST-PIN. Wire-shape duplication mandated by the architecture is a carve-out, not a violation. → see [`docs/process/single-source-of-truth.md`](docs/process/single-source-of-truth.md)
 
-**In the cloud environments, API and SPA roll back independently.**
-Rolling back the API on Render does **not** roll back the SPA on
-Cloudflare Pages, and vice versa. A coordinated rollback must touch
-both sides. This does not apply to the self-hosted install, where the
-SPA ships inside the API image.
+### Prefer declarative config over dashboard toggles
+Configure infra declaratively in-repo (Render `render.yaml`, GitHub Actions, `gh` API, DNS zone file) instead of clicking around vendor dashboards. → see [`docs/process/declarative-config.md`](docs/process/declarative-config.md)
 
-Connection-level enforcement and per-device usage tracking run on the gateway router, not on the API host (see the "Architectural model" callout at the top of this file for why):
-- **OpenWRT** — the `openwrt/` Lua agent polls `/api/router/policy` and rewrites nftables rules + a dnsmasq fragment used only for hostname attribution / ipset population; reports usage via `/api/router/events` and `/api/router/usage`
-- **OPNsense** — the `opnsense/` Python agent tails pflog and posts connection events
+### Always isolate spawned work in a worktree
+Spawned sessions/agents that edit files must use an isolated git worktree under `.claude/worktrees/<slug>` — the top-level checkout is usually on some other in-flight branch. → see [`docs/process/worktree-isolation.md`](docs/process/worktree-isolation.md)
 
-Key API surface (under `/api/router/*` and `/api/blocklists/*`):
-- `POST /api/router/register` — one-time enrollment
-- `GET  /api/router/policy`   — ETag-polled enforcement snapshot
-- `GET  /api/blocklists/<cat>.rpz` — RPZ blocklist per category
-- `POST /api/router/usage`    — per-(mac, hostname) traffic records
-- `POST /api/router/events`   — DHCP lease + connection attempt events
+### Backwards compatibility — the router↔API wire is a public contract
+API and agents deploy independently. Wire-visible changes are additive only, both sides ignore unknown fields, removals need a deprecation window. Non-additive changes are gated on capability negotiation (#376). UCI keys, CLI flags, and DB schema are NOT part of the wire contract. → see [`docs/process/wire-contract.md`](docs/process/wire-contract.md)
 
-## Key domain concepts
+### Docker inside Claude Code agents (worktrees)
+Docker commands hang indefinitely if Docker Desktop is degraded; verify `docker info` responds in <2s before any docker command. → see [`docs/process/docker.md`](docs/process/docker.md)
 
-- **Profile** — a set of filtering rules (blocked categories, schedules, time limits). Devices are assigned to profiles.
-- **Device** — identified by MAC address (not IP, which changes with DHCP). Matched to a profile.
-- **Schedule** — time windows when internet is blocked entirely for a profile (e.g. bedtime 21:00–07:00).
-- **TimeLimit** — daily total minutes allowed per profile (e.g. 120 min/day total screen time).
-- **App** — a named bundle of host patterns (a **host-set**: apex + off-domain asset/CDN domains) with a per-profile policy (allowed / blocked / time-limited). Apps are the unit usage and time limits are framed around — **the model is app-focused, not site-focused.**
-- **App time limit** — daily minutes for an *app*, counted against its **whole host-set aggregated as one budget** (#1505), tracked *separately* from the main daily limit (e.g. 30 min YouTube across `youtube.com` + `ytimg.com` + `googlevideo.com`, not counted in the 120 min total). A host belonging to no configured app **is its own single-host app**; there is no semantic catch-all "Other" app. "Other" only ever appears as a **display rollup** of the long tail (top-N + remainder) — a host there is *low on the list*, not *part of an Other app*.
-  > Naming debt: a few residual `SiteUsage` / `SiteDayState` / `perSite` spellings remain in code, and the `__other__` synthetic membership is still present. The reason token and BlockReason JSON kind were renamed to `app_time_limit:` / `appTimeLimit` in #1518 — both are SPA-API surfaces (the router treats `BlockReason` wire strings as opaque pass-through, so renaming was safe even pre-#376). `BlockReason.fromWire` only parses the new `app_time_limit:` text — routers echo back whatever they receive, and the dual-written `reason_text` column is consumed by older-image rollback only, never re-parsed here, so no live caller needs the legacy text alias. `JsonDecoder[BlockReason]` does still accept the legacy `siteTimeLimit` kind because V40-migrated `block_events.reason` / `connection_events.reason` JSONB rows persist that kind; the encoder canonicalizes them to `appTimeLimit` on read so the SPA never sees the legacy form on the wire.
-- **TimeUsage** — per-(device, domain, date) minutes accumulated, reset at midnight. Updated by traffic monitor.
-- **TimeExtension** — admin-granted extra minutes for a device on a specific day, with audit trail.
-- **BlocklistDomain** — domain → category mapping. Loaded into memory cache, refreshed every 15 min.
-- **QueryLog** — every DNS query logged with device, profile, blocked status, reason.
-- **Location** — `home` or `vacation`. Stored on devices and logs. Both locations share profiles/devices but query logs are tagged so you can filter by house.
+### Running locally + testing commands
+Postgres in Docker, `mill api.run`, `cd web && npm run dev`, `mill __.test`, plus OpenWRT (`busted`) and OPNsense (`pytest`) command incantations. → see [`docs/process/local-dev.md`](docs/process/local-dev.md)
 
-## Policy decision pipeline (server-side, in `PolicyService`)
-
-These steps happen **on the API server** when computing the snapshot — not on
-the router. They collapse into the per-MAC `BlockRules` fields described in
-the "Architectural model" callout above.
-
-Order matters because earlier conditions short-circuit:
-
-1. Profile paused → `blocked = true`, reason `Paused`
-2. Schedule active for current time → `blocked = true`, reason `Schedule`
-3. Daily time limit reached (`time_used_today >= daily_minutes + extensions_today`) → `blocked = true`, reason `TimeLimit`
-4. Per-app time limit reached (an app's usage, aggregated across its whole host-set, hits its limit) → **every** host in that app's host-set added to `extraBlocked` for this MAC
-5. Manual admin block → `blocked = true`, reason `Manual`
-6. Profile / device `extraBlocked` hostnames → `extraBlocked` for this MAC
-7. Profile / device `extraAllowed` hostnames → `extraAllowed` for this MAC (carves out blocks above)
-8. Profile / device assigned categories → `blocklistIds` for this MAC
-9. `blockIpOnly` flag for the profile / device → set as-is
-
-The router never re-evaluates any of this. It receives the resolved
-`BlockRules` and applies them mechanically.
-
-(DNS resolution itself is never blocked by WifiHaven. dnsmasq forwards
-upstream as normal; the enforcement plane is nftables on the resolved IPs.)
-
-## Project board — every new issue gets an Epic
-
-Open issues are tracked on the **WifiHaven GitHub Project** (org-level Project
-**#1**, <https://github.com/orgs/wifihaven/projects/1>). It is managed in the
-GitHub UI; the conventions (Epic taxonomy, Status meanings, umbrella =
-sub-issue-parent) live in [`docs/project-board.md`](docs/project-board.md).
-
-New repo issues are **auto-added** to the board (Status defaults to `Todo`) by the
-project's built-in *Auto-add to project* workflow, so they land on the board even
-when no agent is in the loop. The `Epic` is **not** set automatically — set it on
-triage.
-
-**When you file or triage a new issue, make sure it has the right `Epic`.**
-Don't leave a new issue sitting in the `Other` epic when a real thread fits (and
-if it somehow isn't on the board, add it). Steps:
-
-1. Add it if missing: `gh project item-add 1 --owner wifihaven --url <issue-url>`.
-2. Set `Epic` to the matching thread from the taxonomy in
-   `docs/project-board.md` (Observability/Metrics, Global Policy & Default-Deny,
-   Dashboard & UX, Blocklists & Enforcement, CI/CD & Ops, Rollups & Data, Mobile
-   App, Launch & Marketing, E2E Test Coverage, Schedules, or Other) — judge from
-   the title, labels, and body.
-3. Set `Status`: `In Progress` if it carries the `in-progress` label, `Blocked`
-   if `blocked` / `blocked-on-#NNN`, otherwise `Todo`.
-
-**Starting a large new thread? Create a new `Epic` option for it** instead of
-forcing it into `Other`. Only do this for a thread big enough to deserve its own
-swimlane — a new umbrella, or a body of work that will span several issues; a
-one-off still goes in `Other`. Add the option in the Project UI (Epic field →
-add option) or via GraphQL `updateProjectV2Field` (pass the full option list,
-each `{name,color,description}`), then record the new epic in
-`docs/project-board.md` so the taxonomy stays the source of truth.
-
-Field IDs and option IDs are discoverable with
-`gh project field-list 1 --owner wifihaven --format json`; set a field with
-`gh project item-edit --id <itemId> --project-id <projectId> --field-id <fid>
---single-select-option-id <oid>`.
-
-## Tech stack decisions
-
-| Choice | Reason |
-|--------|--------|
-| Scala 3 + ZIO 2 | Type-safe effects, great for concurrent servers |
-| ZIO HTTP | Native ZIO integration, good middleware support |
-| Doobie | Typesafe SQL, no magic ORM |
-| Flyway | Versioned DB migrations, easy to reason about schema |
-| Lua (OpenWRT) | Native on OpenWRT, zero-dep enforcement agent |
-| JWT (jwt-scala) | Stateless auth, easy to verify in DNS process too |
-| Mill | Faster than sbt, simpler build files |
-| React + Vite + TypeScript | Fast builds, good DX, type safety |
-| Tailwind CSS | Utility-first, mobile-friendly without component library lock-in |
-
-## Coding conventions
-
-- **Effects**: always `ZIO[R, E, A]`, never throw exceptions. Use `ZIO.attempt` to wrap unsafe code.
-- **Errors**: domain errors as sealed traits, not strings. Use `ZIO.fail` with typed errors.
-- **Config**: always via `zio-config` + HOCON. Never hardcode values or use `sys.env` directly.
-- **DB**: all queries in repository classes. No SQL outside of `*RepoLive` implementations.
-- **Layers**: wire dependencies via `ZLayer`. No global mutable state.
-- **Tests**: use `ZIO Test` spec style. Integration tests use Testcontainers PostgreSQL.
-- **Formatting**: `scalafmt` enforced in CI. Run `mill __.reformat` before committing.
-- **Imports**: managed by `scalafix OrganizeImports`. Run `mill __.fix` before committing.
-
-## Single source of truth — never duplicate a decision or computation {#single-source-of-truth}
-
-**The same logical quantity or decision must be computed in exactly ONE
-place; every other consumer calls it.** "Minutes used today", "is this MAC
-blocked", "the block reason", "engaged seconds for an app", a wire reason
-string — each of these is one function, not a pattern re-derived at each
-call site. Duplicated logic drifts: one copy gets updated, the others don't,
-and the surfaces silently disagree. Every recent prod incident in this class
-was a divergence — [#1531](https://github.com/wifihaven/wifihaven/issues/1531)
-(displayed daily total didn't subtract exempt-from-daily app time while the
-cap-evaluation path did) and
-[#1539](https://github.com/wifihaven/wifihaven/issues/1539) (the SPA schedule
-chip read a dead legacy table while enforcement read named schedules) were
-both display-vs-enforcement drift.
-
-- **Reuse the existing primitive — don't re-derive.** Before adding a new
-  path that computes such a value, search for the one that already does it
-  and call it. The canonical ones present today include
-  `TimeStatusService`'s day-state / `usedSecondsForProfile` /
-  `usedSecondsByMac`, `Presence.appSecondsForProfile`, and
-  `BlockReason.asWire` / `BlockReason.fromWire` for wire reason strings.
-- **Resolve unavoidable proximity two ways.** **COLLAPSE** — extract a shared
-  function, or have one path call the other. Or **TYPE-ENFORCE** — a shared
-  sealed type, or a wire round-trip the compiler keeps exhaustive (e.g.
-  `BlockReason.asWire`/`fromWire`). Treat any `must mirror X` / `same branch
-  as Y` / `keep in sync` comment as a defect to remove, not a pattern to
-  copy.
-- **If two paths genuinely must stay separate, ACCEPT + TEST-PIN.** Add a
-  test that fails the moment they diverge, so the coupling is enforced by CI
-  rather than by a comment.
-- **Carve-out — intentional wire-shape redundancy is NOT a violation.** Where
-  the architecture *mandates* duplication on the wire — the infra allowlist
-  copied into every profile's `extraAllowed`
-  ([#1311](https://github.com/wifihaven/wifihaven/issues/1311)), or the
-  `profiles` map as a wire dedup aid — that is the correct shape, not a
-  divergence to collapse. See the **"Redundancy and wire-shape are separate
-  concerns"** bullet under the Architectural model above; this rule and that
-  one are consistent — wire-shape duplication is data, not a second copy of a
-  decision.
-
-The worked example and outstanding backlog is the audit umbrella
-[#1532](https://github.com/wifihaven/wifihaven/issues/1532), which already
-drove several collapses:
-[#1544](https://github.com/wifihaven/wifihaven/issues/1544) (`decide()`
-hand-mirrored the whole snapshot fold),
-[#1545](https://github.com/wifihaven/wifihaven/issues/1545) (block-reason
-strings in three hand-written copies, fixing a live mislabel), and
-[#1546](https://github.com/wifihaven/wifihaven/issues/1546) (per-device totals
-recomputed off the canonical total, fixing a live over-count).
-
-## Prefer declarative config over dashboard toggles
-
-Anywhere a piece of infrastructure can be configured declaratively in-repo
-(Render Blueprint `render.yaml`, GitHub Actions workflows, repo settings via
-`gh` API, DNS via a checked-in zone file, etc.), do it there instead of
-clicking around in a vendor dashboard.
-
-- The repo is the source of truth; dashboard state should be reproducible
-  from `render blueprint apply` (or equivalent). When the two disagree,
-  the in-repo file wins on the next sync.
-- Render specifics: `autoDeploy`, image URLs, env vars, health check
-  paths, domains — all expressible in `render.yaml`. Set them there.
-  Note that some toggles exist in the dashboard UI for Static Sites but
-  are hidden (or missing entirely) for image-runtime services — declarative
-  config is sometimes the *only* reliable way to set them.
-- GitHub Actions secrets and repo settings: `gh secret set`, `gh repo edit`.
-  Branch protection: `gh api -X PUT repos/.../branches/main/protection`.
-- When a user reports doing something in a dashboard, take it as a signal
-  to encode that change declaratively in the same PR.
-
-## Always isolate spawned work in a worktree
-
-This repo is actively developed across many parallel sessions, so the main
-checkout at `/Users/sameer/workspace/wifihaven` is usually on some in-flight
-branch. **Spawning a session or agent that edits files without an isolated
-worktree pollutes that working tree and causes branch conflicts.**
-
-Rules:
-
-- When delegating with the `Agent` tool and the agent will edit files, pass
-  `isolation: "worktree"`. Read-only research agents (Explore, plain lookups)
-  don't need it.
-- When spinning off background work with `spawn_task`, write the prompt so
-  the spawned session creates its own worktree before doing anything else
-  (e.g. `git worktree add .claude/worktrees/<slug> -b <branch>` off the
-  latest `main`). State this explicitly in the prompt — the spawned session
-  starts with no context.
-- Never push to or check out a new branch in the top-level
-  `/Users/sameer/workspace/wifihaven` checkout from a spawned session. Treat
-  it as someone else's working tree.
-- Worktrees live under `.claude/worktrees/<slug>` and use branch names
-  `claude/<slug>` by convention (see `git worktree list`).
-
-## Backwards compatibility
-
-**WifiHaven is deployed to prod, so this policy is now IN EFFECT.** The
-API and the agents deploy **independently** — there is no longer a tandem
-deploy that lets you change both sides of the wire at once. A snapshot the
-API emits today may be parsed by an older already-deployed agent, and an
-event an older agent posts must still be accepted by a newer API. So the
-router↔API request/response shapes (and the policy snapshot in particular)
-are a **public contract**.
-
-Rules for any change to a wire-visible shape (API request/response bodies,
-the policy snapshot, the usage/event ingest payloads):
-
-- **Additive only.** New fields are fine; renaming, removing, retyping, or
-  changing the meaning of an existing field is not.
-- **Ignore unknown fields on input.** Both sides must tolerate fields they
-  don't recognize, so a newer peer can add fields without breaking an older
-  one.
-- **Deprecation windows for removals.** To drop a field, stop relying on it,
-  ship that, wait for the fleet to roll forward, then remove it in a later
-  change — never in the same step.
-- **The API may still change freely** as long as it stays backwards
-  compatible with already-deployed agents under the rules above.
-
-Non-additive / breaking wire changes are gated on **wire versioning and
-capability negotiation** ([#376](https://github.com/wifihaven/wifihaven/issues/376)):
-that mechanism is what will eventually let the two sides agree on a shape
-before using it. Until #376 lands, treat breaking wire changes as off the
-table.
-
-Surfaces that are **not** part of the cross-process wire contract — UCI keys
-written and read by the same agent build, CLI flags, and DB schema (guarded
-separately by Flyway migrations) — can still change without a deprecation
-window, but coordinate them within their own component.
-
-(The flip was driven by the actual prod deploy, not by the permanent-name
-decision [#38](https://github.com/wifihaven/wifihaven/issues/38).)
-
-## Docker inside Claude Code agents (worktrees)
-
-Docker commands (`docker info`, `docker compose`, etc.) will **hang
-indefinitely** if Docker Desktop is not running or is in a degraded state.
-The Claude Code bash sandbox does not block Unix socket connections — Docker
-simply must be healthy.
-
-**Before running any docker command**, verify the daemon responds:
-
-```bash
-docker info 2>&1 | grep "Server Version"
-```
-
-This should return within 2 seconds. If it hangs, restart Docker Desktop
-(quit from the menu bar, then reopen) and wait for the whale icon to become
-steady before retrying.
-
-Common symptom: Docker Desktop appears "running" (process exists, socket
-files exist) but the daemon inside the VM has crashed or frozen — this happens
-after long uptimes. Restarting Docker Desktop is the fix.
-
-## Running locally
-
-```bash
-# Start Postgres
-docker run -d --name wifihaven-pg \
-  -e POSTGRES_USER=wifihaven \
-  -e POSTGRES_PASSWORD=secret \
-  -e POSTGRES_DB=wifihaven \
-  -p 5432:5432 postgres:16
-
-# Copy and edit config
-cp config/application.conf.example config/application.conf
-
-# Run API
-mill api.run
-
-# Run frontend dev server (Vite — talks to the local API at :8080).
-# Self-hosted/install.sh deploys bundle the SPA into the API image; the
-# cloud staging/prod environments serve it from Cloudflare Pages instead.
-cd web && npm run dev
-```
-
-## Testing
-
-```bash
-# All Scala tests
-mill __.test
-
-# Single module
-mill api.test
-mill shared.test
-
-# Format check
-mill __.checkFormatting
-
-# Fix imports
-mill __.fix
-
-# OpenWRT agent tests (requires lua5.1 + busted + lua-cjson)
-cd openwrt && LUA_PATH="./files/usr/lib/lua/wifihaven/?.lua;$(lua -e 'print(package.path)')" busted test/
-
-# OPNsense agent tests (requires Python 3 + pytest)
-cd opnsense && python -m pytest test/ -v
-```
-
-## Database migrations
-
-Migrations live in `api/resources/db/migration/` as `V{n}__{description}.sql`. They run automatically on API startup via Flyway. Never edit existing migrations — always add a new one.
-
-Tests run the same Flyway migrations from `classpath:db/migration` against the embedded Postgres in `TestDatabase`, so there is one source of truth — never maintain a parallel test schema. To change the schema, add a new `V{n}__...sql` migration; do not edit `V1__init.sql` (or any other already-applied migration).
-
-### Schema changes land in their own PR {#migrations-back-compat}
-
-**A PR that adds a Flyway migration may contain only the migration and
-documentation (`*.md`) updates.** No source code. **No test changes.**
-No CI tweaks. No fixtures, no scripts, no build files. The follow-up
-PR — the one that adopts the new schema — carries all of that.
-
-This is the durable defense against the
-[#1176](https://github.com/wifihaven/wifihaven/issues/1176) class of
-bug (rollback blocked because the applied schema is incompatible with
-the previously deployed image). The gate is the existing feature-test
-suite:
-
-- `api/test/**` runs embedded Postgres via `TestDatabase`, which
-  applies **every** Flyway migration on the classpath, **including the
-  new one in this PR**, before any test runs.
-- The test fixtures exercise the **existing** production code paths in
-  `api/src/**` — image-(N-1)'s code.
-- If image-(N-1)'s queries, inserts, or wire shapes can't survive
-  DB-at-V<N>, those existing tests fail. That is the gate.
-
-**The gate only works when nothing else in the PR can move.** Test
-edits silently bypass it: a fixture author can update the assertions
-to the new shape, and the back-compat regression goes undetected. CI
-changes can disable the suite entirely. Source changes shift the test
-subject. So all of those are forbidden in a migration PR — not just
-production source.
-
-Docs are the one exception because they cannot alter execution.
-
-Allowed alongside a new migration:
-
-- `api/resources/db/migration/**.sql` — additional migration files
-- `**/*.md` — documentation, including `AGENTS.md`, `CLAUDE.md`,
-  READMEs, and anything under `docs/`
-
-Anything else is rejected by
-[`check-migration-isolation.sh`](.github/scripts/check-migration-isolation.sh).
-That includes `api/test/**` and `shared/test/**` — new tests probing
-the new schema shape belong in the follow-up PR, not here.
-
-The workflow is two PRs:
-
-1. **PR 1 — schema only.** Just `V<N>__….sql` (plus any doc updates
-   that describe the new shape). The existing `api.test` suite is the
-   gate: if it passes, the migration is backward-compatible with
-   image-(N-1) — modulo coverage gaps, so close those *before* you
-   open the migration PR by adding tests in a prior PR that exercises
-   the lines the migration will touch.
-2. **PR 2 — code adopts the new schema.** Lands after PR 1 is merged
-   and deployed. This is where new repo methods, route handlers, wire
-   shapes, and the tests that cover them go.
-
-**Escape hatch:** for genuinely atomic changes (rare), apply the
-`migration-coupled-justified` label on the PR and explain in the body
-why splitting isn't possible. The check skips when the label is set.
+### Database migrations — schema-only PR {#migrations-back-compat}
+A migration PR contains only the migration SQL and `*.md` docs — no source, tests, CI, fixtures, build files — so the existing feature-test suite can act as the back-compat gate. Escape hatch: `migration-coupled-justified` label. → see [`docs/process/migrations.md`](docs/process/migrations.md#migrations-back-compat)
 
 ### Migrations that are fast on dev/staging can be minutes-long on prod {#migrations-prod-data-volume}
-
-**A migration's runtime is dominated by prod data volume, which is
-orders of magnitude larger than dev/staging.** The embedded Postgres in
-`TestDatabase` is empty; staging carries days of data; prod carries the
-full accumulated history. A migration that completes in milliseconds
-under test can take **many minutes** on prod — and the API runs Flyway
-on startup, on the critical path, so a slow migration blocks the
-container from binding its port and **Render fails the deploy at the
-15-minute port-scan timeout**.
-
-This actually happened: the V41/V42 partition migrations
-([#805](https://github.com/wifihaven/wifihaven/issues/805),
-[#806](https://github.com/wifihaven/wifihaven/issues/806)) rewrite and
-re-index the two highest-growth tables (`traffic_reports`,
-`connection_events`). Their own comments assert *"at current volume
-this is seconds"* — true against test/embedded volume, false at prod
-scale, where the `ATTACH PARTITION` full-scan validation plus index
-rebuilds ran past 15 minutes and the forward-roll deploy timed out
-(post-mortem: [#1197](https://github.com/wifihaven/wifihaven/issues/1197)).
-
-**Before writing or reviewing any migration, ask: does this touch a
-table whose row count grows unbounded in prod?** The unbounded-growth
-tables are the event/usage surfaces — `traffic_reports`,
-`connection_events`, `block_events`, and the rollup tables that derive
-from them. A schema-metadata-only change (add a column, add an
-index on a *small* table, add a lookup table) is safe. A change that
-**scans, rewrites, copies, re-indexes, or `ATTACH`/`VALIDATE`s** one of
-the growth tables is not — assume minutes, not seconds.
-
-For such a migration:
-
-- **Never trust a "this is fast" comment that was measured on
-  dev/staging.** State the assumption explicitly and flag that it is
-  unverified at prod scale.
-- **Prefer index builds that don't hold the critical path.**
-  `CREATE INDEX CONCURRENTLY` avoids the long exclusive lock — but it
-  **cannot run inside a transaction**, and Flyway wraps each migration
-  in one by default. Splitting it out needs a non-transactional Flyway
-  migration (`-- flyway:transactional=false` is not our current setup),
-  so treat it as a design decision, not a one-liner.
-- **Have an offline plan.** If the migration genuinely must rewrite a
-  growth table, coordinate with the operator: it may need to run
-  out-of-band (operator-applied, deploy paused) rather than on the
-  startup critical path, or the table may need to be truncated/archived
-  first if the historical data is expendable. The #1197 unblock was a
-  one-time `TRUNCATE traffic_reports, connection_events;` — acceptable
-  only because losing ~1 week of history was acceptable; do not assume
-  that's always on the table.
-- **Estimate against prod row counts, not test fixtures.** Ask the
-  operator for the live row count of the affected table before deciding
-  the migration is safe to run on the startup path.
+Migrations that scan/rewrite the unbounded-growth tables (`traffic_reports`, `connection_events`, `block_events`, rollups) can take minutes on prod and time out the 15-minute Render port-scan; estimate against prod row counts, not test fixtures. → see [`docs/process/migrations.md`](docs/process/migrations.md#migrations-prod-data-volume)
 
 ### One-shot migration/backfill/seeder code is deleted after it deploys {#delete-deployed-one-shots}
+Scala-level one-shot migrations/backfills/seeders get a follow-up issue under #1608 to delete them after the deploy propagates; leaving them in risks re-runs (e.g. #1602). → see [`docs/process/migrations.md`](docs/process/migrations.md#delete-deployed-one-shots)
 
-Every application-level (Scala) one-shot migration, backfill, or seeder that
-gates on a "did this already?" check lands with a follow-up issue under the
-[#1608](https://github.com/wifihaven/wifihaven/issues/1608) umbrella to delete
-it. Once the deploy has propagated AND any legacy data the migration consumes
-is gone, the Scala code is removed (along with its tests and call site) — the
-Flyway SQL migration stays as history, but the application-level migration
-code does not. Leaving it in place risks live bugs from re-runs (see #1602,
-where a still-invoked seeder resurrected a deleted schedule on every boot)
-and bloats startup and test surface.
+### Validate query performance before merge {#query-explain-before-merge}
+Any PR introducing or materially changing a SQL query must prove its plan at prod scale: identify the access pattern, run `EXPLAIN (ANALYZE, BUFFERS)` against prod-shaped data (READ-ONLY; never `EXPLAIN ANALYZE` a write on prod), add needed indexes in the same PR. → see [`docs/process/query-perf.md`](docs/process/query-perf.md)
 
-## Validate query performance before merge {#query-explain-before-merge}
+### New functionality ships with metrics {#instrument-new-functionality}
+A meaningful new code path (route, background job, poller, external call, ingest/enforcement step) ships with a metric in the same PR, routed through `AppMetrics`/`MetricGuard` with bounded label enums — never per-mac / per-domain / per-device labels. → see [`docs/process/instrumentation.md`](docs/process/instrumentation.md#instrument-new-functionality)
 
-**Any PR that introduces or materially changes a SQL query must prove the
-query's plan at prod scale before it merges.** This applies to new
-Doobie/SQL in `*RepoLive` implementations and to any rollup/analytics
-query. It does *not* apply to trivially-bounded lookups by primary key.
+### A new metric ships with its dashboard {#metrics-need-a-dashboard}
+The same PR that emits a new metric series adds or updates a consuming Grafana panel under `deploy/grafana/dashboards/`, targeting the series actually emitted (grep `api/src` — don't author from a design-doc catalog). CI gate is `grafana-terraform`. → see [`docs/process/instrumentation.md`](docs/process/instrumentation.md#metrics-need-a-dashboard)
 
-This rule exists because the 2026-05-31 prod incident was a missing index.
-The [#809](https://github.com/wifihaven/wifihaven/issues/809) byte-rollup
-attribution shipped a `LEFT JOIN LATERAL` over `connection_events` with no
-`(mac, dest_ip, ts)` index, so each `traffic_reports` row triggered a
-full-day sequential scan. It only manifested in prod under real row counts
-— pegging managed-Postgres CPU at 100%, exhausting the HikariCP pool, and
-crash-looping the API. A single `EXPLAIN (ANALYZE)` against prod-shaped
-data at PR time would have caught it; instead it was diagnosed by hand
-mid-incident (root-caused in
-[#1254](https://github.com/wifihaven/wifihaven/issues/1254)/[#1256](https://github.com/wifihaven/wifihaven/issues/1256),
-[#1240](https://github.com/wifihaven/wifihaven/issues/1240)).
+### Grafana Cloud stack
+`https://wifihaven.grafana.net` hosts app metrics (Alloy), Render infra OTLP, deploy annotations. Repo secrets `GRAFANA_CLOUD_URL` + `GRAFANA_CLOUD_ANNOTATION_TOKEN`. → see [`docs/ops/grafana-cloud.md`](docs/ops/grafana-cloud.md)
 
-Before the PR merges:
+### Every router-agent write to `/tmp` must be bounded {#bounded-tmp-writes}
+On OpenWRT `/tmp` is `tmpfs` — RAM. Any agent file under `/tmp` that grows with traffic/time/event volume must ship a rotation/truncation path in the SAME change; add it to the existing `wifihaven-rotate-dnsmasq-log` cron (copytruncate, never rename). → see [`docs/process/router-agent-bounded-writes.md`](docs/process/router-agent-bounded-writes.md)
 
-1. **Identify the access pattern.** State the new/changed query, the
-   tables and columns it filters and joins on, and the expected prod
-   row-count growth of those tables. Call out any table on the
-   unbounded-growth list (`traffic_reports`, `connection_events`,
-   `block_events`, and the rollups derived from them).
-2. **Observe real performance (read-only).** Run
-   `EXPLAIN (ANALYZE, BUFFERS)` against **prod or a prod-shaped dataset**.
-   Watch for sequential scans on large tables, nested-loop lateral joins
-   without a supporting index, and runtime that scales with **table size
-   rather than result size**.
-3. **Add the needed indexes in the SAME PR.** If the plan shows a missing
-   index, add the migration that creates it (partial/covering as
-   appropriate) and re-run `EXPLAIN (ANALYZE, BUFFERS)` to confirm the
-   plan flips to an index scan. (Mind the migration-isolation rule above:
-   if the index migration must ship without code, split per the two-PR
-   workflow.) Capture the before/after plan summary in the PR description.
-4. **Document the expectation in the PR.** Note which tables the query
-   touches and why the chosen indexes cover it, so reviewers can
-   sanity-check at scale.
+### Branch-diff checks (CI + pre-push)
+Branch-vs-main diffs MUST use the merge base (three-dot `origin/main...HEAD` or `git merge-base`), not two-dot `origin/main..HEAD`. Pre-commit checks operate on staged files. → see [`docs/process/branch-diff-checks.md`](docs/process/branch-diff-checks.md)
 
-### Safety rules for running EXPLAIN against prod
+### Adding a new API route
+Models → repo trait → repo impl → route → register in Main → tests → TS client. → see [`docs/process/api-route-checklist.md`](docs/process/api-route-checklist.md)
 
-- **Read-only ONLY.** Only `SELECT` / `EXPLAIN` may be run against prod.
-  **Never `EXPLAIN ANALYZE` a writing statement against prod** — it
-  executes the write. Wrap-in-transaction-and-rollback is **not** an
-  acceptable substitute on prod for write paths; use a prod-shaped scratch
-  DB for those.
-- **Never echo credentials.** Use the existing prod-DSN handling, capture
-  the DSN into a shell var, and mask passwords in any printed output
-  (matches the live-debug conventions).
-- **Bound the work.** `SET statement_timeout='5s';` before a heavy
-  `EXPLAIN (ANALYZE, BUFFERS)` so an accidental expensive plan can't itself
-  stress prod.
-- **Prefer a prod-shaped dataset or replica where one exists.** Run there
-  first; fall back to a prod read-only `EXPLAIN` only when the real prod
-  data shape is what's being validated.
+### Security notes
+JWT secret ≥32 chars, router enrollment tokens single-use, bcrypt cost 12, Admin/ReadOnly via JWT claims + middleware, Doobie parameterized queries, config file not in repo. → see [`docs/process/security.md`](docs/process/security.md)
 
-> Out of scope here: automated query-plan regression testing in CI — a
-> heavier, separate idea. This rule is just the agent-workflow guardrail.
+### TDD workflow (required for new features and bug fixes)
+Write the test first; for autonomous/spawned sessions, commit the failing test as its own commit so the red→green progression is visible in PR history. → see [`docs/process/tdd.md`](docs/process/tdd.md)
 
-## New functionality ships with metrics {#instrument-new-functionality}
-
-**When you add a meaningful new code path — a route, a background job, a
-periodic poller, an external call, an ingest/enforcement step — instrument it
-with a metric in the same PR.** The architectural model puts all decision and
-aggregation logic server-side in the API (the router is a dumb applier), so the
-API process is the one place an operator can see what the system is doing. A
-feature that emits no metric is invisible until it breaks.
-
-What "meaningful" means — instrument it when at least one is true:
-
-- It can **fail or be rejected** in a way an operator would want to rate-alert
-  on (auth/validation failures, dropped/filtered records, ret-exhausted calls).
-  Emit a `*_total{reason}` counter with a **bounded** reason enum.
-- It does **work whose latency or volume matters** (a DB query on a
-  growth table, a rollup, an external fetch, a request handler). Emit a
-  `*_duration_seconds` histogram and/or a throughput counter.
-- It reflects **fleet/system state** an operator would check first during an
-  incident (connected routers, queue depth, last-success timestamp). Emit a
-  gauge.
-
-Rules of thumb:
-
-- **Route the emission through `AppMetrics` / `MetricGuard`** (see
-  `api/src/metrics/Metrics.scala`), not a bare `Metric.*` at the call site, so
-  the §4 cardinality firewall and the name/label allowlist apply. Add the new
-  `(name -> allowed keys)` entry to `MetricGuard.Allowed`.
-- **Labels are a small, known enum** — `route` (templated), `op`, `reason`,
-  `status`, `job`. **Never** a per-mac / per-domain / per-device / per-ip /
-  per-user value; those are forbidden keys and will be rejected.
-- **Don't over-instrument.** A pure helper, a trivial getter, or a path already
-  covered by the HTTP/DB middleware doesn't need its own series. One good
-  counter or histogram beats five redundant ones, and every series costs
-  cardinality.
-- A new metric then **ships with its dashboard panel** — see the next rule.
-
-## Grafana Cloud stack
-
-The cloud metrics + dashboard stack lives at
-**`https://wifihaven.grafana.net`** (free tier). It hosts app metrics
-(pushed by `wifihaven-alloy`), Render infra metrics (native OTLP), and
-deploy annotations (POSTed by `.github/workflows/master-api-ui.yml` via
-`.github/actions/grafana-annotation`). Repo secrets driving the
-annotation POSTs are `GRAFANA_CLOUD_URL` +
-`GRAFANA_CLOUD_ANNOTATION_TOKEN`. Operator runbook in
-[`docs/deploy-cloud.md`](docs/deploy-cloud.md) §11.
-
-## A new metric ships with its dashboard {#metrics-need-a-dashboard}
-
-**A PR that adds or changes an emitted metric series must also add or update
-a Grafana panel that consumes it, in the same PR.** A metric nobody can see
-is dead weight: it costs cardinality and registry space but never reaches an
-operator's eyes until an incident, which is exactly when you don't want to be
-authoring PromQL from scratch.
-
-"Emitted metric series" means any new `Metric.counter` / `histogram` / `gauge`
-(or `AppMetrics`/`MetricGuard` helper) whose name reaches the `/metrics`
-exposition. Adding a label to an existing series counts too if it changes what
-an operator would want to slice by.
-
-In the same PR:
-
-1. **Add the panel where it belongs.** Dashboards are checked-in JSON under
-   [`deploy/grafana/dashboards/`](deploy/grafana/dashboards/), deployed by
-   [`master-grafana.yml`](.github/workflows/master-grafana.yml) via the
-   [`infra/grafana`](infra/grafana/) Terraform. Extend an existing dashboard
-   when the metric fits its theme (process health vs. application
-   self-metrics vs. rollup health); add a new `*.json` and register it in
-   `infra/grafana/main.tf`'s `dashboards` list when it's a new concern.
-2. **Target the series you actually emit — never a design-doc catalog.** Grep
-   `api/src` for the exact metric name and labels and write the PromQL against
-   that. Histograms render as `<name>_bucket{le=…}` / `_sum` / `_count` (use
-   `histogram_quantile`); the zio-prometheus connector does **not** append
-   `_total` to counters, so the name in code is the name in the query. Do not
-   ship no-data panels for metrics that aren't emitted yet — defer those to
-   the follow-up PR that instruments them.
-3. **Keep labels low-cardinality in the query, too.** Slice only by bounded
-   label keys (templated `route`, `op`, `reason`, `status`); never by a
-   per-mac / per-domain / per-device / per-ip value. If the firewall would
-   reject the label, the panel shouldn't group by it.
-4. **The CI gate is `grafana-terraform`** ([`ci.yml`](.github/workflows/ci.yml)):
-   `terraform fmt -check`, `terraform validate`, and `python3 -m json.tool`
-   on every dashboard. Run all three locally before pushing.
-
-## Every router-agent write to `/tmp` must be bounded {#bounded-tmp-writes}
-
-**On the OpenWRT target `/tmp` is `tmpfs` — RAM, not disk.** A log, spool, or
-cache the agent appends to without a cap grows until it exhausts router memory,
-at which point allocations start failing fleet-wide: dnsmasq, the agent, and
-the kernel all compete for a few hundred MB of RAM on the smallest supported
-device. An unbounded `/tmp` writer is therefore not a disk-hygiene nicety —
-it is a latent **router-wedge / OOM** bug. (This rule comes out of the #573
-SNI sidecar, whose first cut appended to `/tmp/wifihaven-sni.log` forever.)
-
-So: **any agent file under `/tmp` that grows with traffic, time, or event
-volume must ship with a rotation/truncation path in the SAME change that
-introduces it.** Concretely:
-
-- **Add it to the existing rotation cron, don't invent a parallel one.**
-  [`wifihaven-rotate-dnsmasq-log`](openwrt/files/usr/sbin/wifihaven-rotate-dnsmasq-log)
-  runs every 10 minutes and is the canonical place — it caps each file at a
-  fixed `MAX_BYTES` using the **copytruncate** pattern (`cp` to `*.1`, then
-  `: > file`). New spools join its file list; they do not get a second cron
-  job or a bespoke shell script.
-- **Copytruncate, never rename**, for any file a long-lived process holds an
-  open fd on (dnsmasq, or a `tail -F` follower like `wifihaven-dns-tail`). A
-  rename leaves the writer appending to an invisible, unrotated inode and the
-  follower stranded; truncation keeps both on the same inode. The follower's
-  brief reseek window is acceptable and bounded — see the header comment in
-  the rotate script for the full rationale.
-- **A bounded in-memory ring that is only ever *snapshotted* to `/tmp`
-  (atomic write + rename of a whole file, like `paths.dns_cache`) is already
-  bounded** — its size is the cache size, not cumulative. Those don't need
-  cron rotation. The rule targets **append/grow** writers (logs, spools,
-  metrics journals), not fixed-size snapshots.
-- **State the cap and worst-case `/tmp` footprint** in the script/header so a
-  reviewer can sanity-check it against the smallest device's RAM.
-
-The same reasoning applies to anything else the agent persists under `/tmp`
-(JSON spools, NDJSON event journals, debug dumps). If it can grow, it gets a
-bound — in the same PR.
-
-## Branch-diff checks (CI + pre-push)
-
-CI checks and pre-push checks that compare a branch against `main` MUST diff against the **merge base** with `origin/main`, not `origin/main` directly. Use three-dot syntax (`origin/main...HEAD`) or an explicit `git merge-base origin/main HEAD`. Two-dot (`origin/main..HEAD`) over-reports when `main` has advanced since the branch diverged, producing spurious failures and noise.
-
-Pre-commit checks are different: they operate on staged files (`git diff --cached`), not against `origin/main`.
-
-## Adding a new API route
-
-1. Add request/response types to `shared/src/Models.scala`
-2. Add repo method to the trait in `api/src/db/Database.scala`
-3. Implement in `api/src/db/Repos.scala`
-4. Add route in the appropriate file under `api/src/routes/`
-5. Register route in `api/src/Main.scala`
-6. Add tests in `api/test/src/`
-7. Add TypeScript API call in `web/src/api/`
-
-## Security notes
-
-- JWT secret must be at least 32 chars, set in config
-- Router tokens are single-use enrollment tokens; after enrollment a separate bearer token is issued
-- Passwords are bcrypt hashed (cost factor 12)
-- Admin vs ReadOnly enforced via JWT claims + middleware
-- SQL injection impossible via Doobie parameterized queries
-- Config file contains DB credentials — never commit it (in .gitignore)
-
-## TDD workflow (required for new features and bug fixes)
-
-For any new feature or bug fix, follow test-driven development:
-
-1. **Write the test first.** Before implementing, write the unit and/or feature test(s) that describe the desired behavior. For bugs, the test should fail in the way the bug manifests; for features, it should describe the new behavior.
-2. **Validate the test logic before implementing.**
-   - **Interactive sessions:** show the test to the user and ask them to confirm it correctly describes the intended behavior.
-   - **Autonomous / spawned sessions:** commit the failing test as its own commit before any implementation commit. The red-green progression must be visible in the PR's commit history. The reviewer of the PR is the validator.
-3. **Only after the test exists, implement the code** to make it pass.
-
-This applies to both unit tests and feature tests — pick whichever level fits the change (see "Testing philosophy" below).
-
-## Independent PR review (required before merge) {#independent-pr-review}
-
-**Every PR gets an independent review pass before merge using
-[`docs/pr-review-checklist.md`](docs/pr-review-checklist.md).** Spawn a review
-subagent against the diff (or run `/code-review` / the equivalent review
-command); treat **BLOCKERS as merge-gating**. The author should self-run the
-checklist before opening the PR, but the **independent pass — a separate agent,
-not the author self-reviewing — is the gate.** It is read-only and adversarial:
-the reviewer cites `file:line`, classifies findings BLOCKER / SHOULD-FIX / NIT,
-and ends with APPROVE or REQUEST-CHANGES, never approving with an open BLOCKER.
-The checklist leads with duplicated-logic / single-source-of-truth (see
-[Single source of truth](#single-source-of-truth)) and test-integrity, the two
-failure modes behind our recurring prod incidents.
-
-**The review is POSTED to the PR and RE-RUN on each push.** The reviewer posts
-its findings as a marked, **non-approving** PR comment (`gh pr comment` — never a
-GitHub `--approve` / `--request-changes` review, so it can't interfere with
-required human reviews or the merge queue), leading with a machine-findable
-marker that records the reviewed commit
-(`<!-- wifihaven-pr-review reviewed-sha=<sha> -->`). On a subsequent push the
-review re-runs incrementally: it finds the prior marked comment, **statuses each
-prior finding** ADDRESSED / NOT-ADDRESSED / PARTIAL against current code, reviews
-only the **incremental delta** (`git diff <reviewed-sha>...HEAD`) for new
-findings, and posts an updated marked comment. A BLOCKER clears only when
-ADDRESSED *and* no new BLOCKER was introduced; any open BLOCKER stays
-merge-gating. See the *Posting & re-runs* section of the checklist for the full
-algorithm.
+### Independent PR review (required before merge) {#independent-pr-review}
+Every PR gets an independent review pass by a separate agent (not the author) before merge using `docs/pr-review-checklist.md`; BLOCKERs are merge-gating. Review is POSTED as a marked, non-approving PR comment and RE-RUN on each push, statusing prior findings ADDRESSED / NOT-ADDRESSED / PARTIAL and reviewing only the incremental delta. → see [`docs/pr-review-checklist.md#independent-pr-review`](docs/pr-review-checklist.md#independent-pr-review)
 
 ### Monitor PRs through to MERGED, not just queued {#monitor-to-merged}
+The author-side chip monitors the PR through to MERGED: iterate on queue CI failures / conflicts / re-reviews without an operator prompt, but **never** call `gh pr merge` or arm `--auto` (merge-when-ready is the operator's explicit approval); only re-arm `--auto` if the operator had already armed it before the iteration push. Reply done only when `gh pr view <n> --json state` returns `MERGED`. → see [`docs/pr-review-checklist.md#monitor-to-merged`](docs/pr-review-checklist.md#monitor-to-merged)
 
-**Spawned chips monitor PRs through to MERGED, not just to queued.** The
-independent review pass is the gate for ENTERING the merge queue, but the
-author chip's job isn't done until the PR's state is `MERGED`. Once queued,
-the chip watches the merge queue and iterates without waiting for an operator
-prompt:
-
-- **Queue CI fails** (Gate 2 port collision from a sibling chip,
-  infrastructure flake, etc.) → diagnose, push a fix, iterate.
-- **Conflict appears** with another PR that landed first → rebase on
-  `origin/main`, resolve, push.
-- **Re-review needed** because new commits got pushed → re-run `/pr-review`,
-  address BLOCKERs, push. (This pairs with the re-run-on-push behavior in the
-  *Posting & re-runs* section of [`docs/pr-review-checklist.md`](docs/pr-review-checklist.md),
-  which covers the REVIEWER side; this rule covers the AUTHOR side of the
-  same lifecycle.)
-
-**The chip NEVER queues a PR for merge itself, and NEVER re-arms
-merge-when-ready unless the operator had already armed it.** The
-merge-when-ready click is the operator's explicit approval to ship — it is
-**required** so the operator approves every change, and a chip running
-`gh pr merge … --auto` (or any equivalent) bypasses that approval and is
-forbidden. Concretely:
-
-- **First time the PR is ready** → the chip reports "review APPROVE, ready
-  for merge-when-ready," and stops. The operator clicks merge-when-ready.
-- **After a rebase or queue-CI fix push**, the chip may re-arm
-  merge-when-ready (`gh pr merge <n> --auto …`) **only if** the operator had
-  already armed it before the push — i.e. `gh pr view <n> --json
-  autoMergeRequest` returned a non-null `autoMergeRequest` immediately
-  before the push knocked it off. Check that field; if it is null, do
-  nothing and report state.
-- **If the operator explicitly unqueued the PR** (the chip should treat
-  any transition from armed → null as "operator unqueued" unless the chip
-  itself just force-pushed), the chip does NOT re-arm. Report and stop.
-
-A chip replies "done" only when `gh pr view <n> --json state` returns
-`MERGED`. Polling cadence is ~5–10 minutes — use `ScheduleWakeup` for long
-waits, don't busy-poll.
-
-## Testing philosophy
-
-### Feature tests first, unit tests for edge cases only
-
-The primary test style is **feature/functional tests** that exercise the full call stack:
-
-```
-HTTP request → Route handler → Service → Repository → Embedded Postgres → Response
-```
-
-Unit tests are reserved for:
-- Pure functions with complex edge cases (e.g. policy decision logic in `openwrt/policy.lua`)
-- Schedule boundary conditions (exact on/off times, overnight wrapping, day-of-week)
-- Domain pattern matching edge cases
-- Time limit arithmetic (extensions, site-specific exemptions)
-
-If you can test something via a feature test, do that instead of a unit test.
-
-### Embedded Postgres — no mocks for the DB layer
-
-All tests that touch data use a real embedded Postgres via `zonkyio/embedded-postgres`.
-Never mock `*Repo` traits. The point is to test the actual SQL.
-
-Test infrastructure lives in `api/test/src/TestDatabase.scala`:
-- `TestDatabase.layer` — spins up embedded PG, runs Flyway migrations, provides all repos
-- `TestDatabase.cleanAndMigrate` — call in `beforeEach` equivalent to reset state between tests
-- `TestLayers.seedKidsProfile`, `seedAdultsProfile`, `seedDevice` — common seed helpers
-
-### Clock is always injected — never call java.time directly
-
-`wifihaven.shared.Clock` is the only way to get the current time anywhere in the codebase.
-
-```scala
-// WRONG
-val now = LocalDateTime.now()
-val today = LocalDate.now()
-
-// RIGHT
-for
-  now   <- Clock.now
-  today <- Clock.today
-yield ...
-```
-
-In tests, use `Clock.TestClock.make(dt)` to control time:
-```scala
-// Standard fixtures in Clock.TestClock:
-Clock.TestClock.schoolDayAfternoon  // Monday 14:00
-Clock.TestClock.bedtime             // Monday 21:30
-Clock.TestClock.earlyMorning        // Monday 06:00
-Clock.TestClock.weekendAfternoon    // Saturday 15:00
-
-// Advance time in a test:
-for
-  ref <- Ref.make(LocalDateTime.of(2025, 1, 6, 20, 55, 0))
-  tc   = new Clock.TestClock(ref)
-  _   <- tc.advance(Duration.ofMinutes(10)) // now 21:05 — past bedtime
-  d   <- checkBlocking(tc)
-yield ...
-```
-
-### ZIO primitives for mutable state
-
-Use ZIO primitives everywhere except tight inner loops:
-
-| Use case | Type |
-|----------|------|
-| Single mutable value | `Ref[A]` |
-| Atomic read-modify-write across effects | `Ref.Synchronized[A]` |
-| Producer/consumer queue | `Queue[A]` |
-| Broadcast | `Hub[A]` |
-| Tight inner loop | Scala `mutable.HashMap` inside single fiber — document why |
-
-Avoid mutable Scala collections unless there is a strong, documented reason.
-
-### Mocks — external I/O only
-
-Only mock things that can't run in CI:
-- Network I/O in the router agents — use injected function parameters (see `policy.lua` `get_fn`, `write_fn`, `exec_fn` patterns)
-
-Never mock:
-- Repository traits
-- `AuthService`
-- `Clock` (use `TestClock`)
-
-### Test structure
-
-```
-api/test/src/
-  TestDatabase.scala          ← shared test infrastructure
-  feature/
-    AuthApiSpec.scala         ← login, token validation, password change
-    ProfileApiSpec.scala      ← CRUD, schedules, time limits
-    DeviceApiSpec.scala       ← upsert, MAC normalisation, delete
-    TimeApiSpec.scala         ← usage tracking, extensions, site limits
-    LogApiSpec.scala          ← query filtering, stats aggregation
-    RouterApiSpec.scala       ← enrollment, policy snapshot, ETag
-    RouterIngestSpec.scala    ← usage + event ingest endpoints
-    RouterDecisionSpec.scala  ← /api/router/decision blocking logic
-
-shared/test/src/
-  ClockSpec.scala             ← TestClock advance/set behaviour
-
-openwrt/test/
-  policy_spec.lua             ← policy fetch + apply (blocking decisions)
-  conntrack_spec.lua          ← conntrack event parsing
-  render_spec.lua             ← RPZ/dnsmasq render
-  usage_spec.lua              ← usage accumulation
-
-opnsense/test/
-  test_pflog.py               ← pflog line parsing
-  test_unbound.py             ← Unbound log parsing
-  test_agent.py               ← agent event loop
-```
+### Testing philosophy
+Feature/functional tests through the full call stack on embedded Postgres — never mock `*Repo`. Unit tests reserved for pure-function edge cases. Clock is always injected (`wifihaven.shared.Clock`) — use `Clock.TestClock` in tests. ZIO primitives for mutable state; mocks only for external I/O. → see [`docs/process/testing.md`](docs/process/testing.md)

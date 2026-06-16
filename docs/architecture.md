@@ -1117,3 +1117,100 @@ DNS server as the source).
 
 Steps #67–#70 land before #71: the old enforcement stack is not deleted until
 the new API surface is addressable.
+
+---
+
+## Imported rules (originally in AGENTS.md)
+
+These sections used to live in AGENTS.md; the TOC there now points here.
+
+### What this project is
+
+WifiHaven is a self-hosted, network-level parental-control system with per-device filtering, time limits, and a web dashboard. The API runs on a Linux home server (Ubuntu) and replaces commercial products like Gryphon or TP-Link HomeShield; the enforcement agent runs on the gateway router (OpenWRT or OPNsense).
+
+### Architecture
+
+```
+wifihaven/
+├── shared/        # Domain models shared across all modules (Scala 3, ZIO JSON)
+├── api/           # REST API (ZIO HTTP, Doobie, PostgreSQL)
+├── openwrt/       # Lua agent for OpenWRT (dnsmasq + nftables policy enforcement)
+├── opnsense/      # Python agent for OPNsense (Unbound + pflog usage events)
+└── web/           # React TypeScript dashboard (Vite, Tailwind)
+```
+
+One JVM process runs in production:
+1. `api` — REST API on :8080, handles auth (JWT), owns the DB, runs `PolicyService` (the only place decision logic lives).
+
+SPA hosting differs by environment:
+
+- **Self-hosted (local / dev / `deploy/install.sh`)**: the SPA is bundled
+  with the API — `web/dist` is baked into the API container and served by
+  the JVM on :8080. One deploy, one rollback.
+- **Staging and production cloud (`staging.wifihaven.net`,
+  `api.wifihaven.net`)**: the SPA deploys to **Cloudflare Pages**,
+  independent of the API. The API JVM serves only `/api/*`; the SPA is a
+  static bundle that talks to the API over the network like any other
+  client. Cloudflare config lives in-repo:
+  - [`infra/cloudflare/`](../infra/cloudflare/) — Terraform (`main.tf`,
+    `variables.tf`) for the Cloudflare account-level resources.
+  - [`web/wrangler.toml`](../web/wrangler.toml) (prod) and
+    `web/wrangler.staging.toml` (staging) — Wrangler config for
+    `wrangler pages deploy`. Deploys are driven from
+    `.github/workflows/deploy-spa.yml`.
+
+**In the cloud environments, API and SPA roll back independently.**
+Rolling back the API on Render does **not** roll back the SPA on
+Cloudflare Pages, and vice versa. A coordinated rollback must touch
+both sides. This does not apply to the self-hosted install, where the
+SPA ships inside the API image.
+
+Connection-level enforcement and per-device usage tracking run on the gateway router, not on the API host (see the "Architectural model" callout in AGENTS.md for why):
+- **OpenWRT** — the `openwrt/` Lua agent polls `/api/router/policy` and rewrites nftables rules + a dnsmasq fragment used only for hostname attribution / ipset population; reports usage via `/api/router/events` and `/api/router/usage`
+- **OPNsense** — the `opnsense/` Python agent tails pflog and posts connection events
+
+Key API surface (under `/api/router/*` and `/api/blocklists/*`):
+- `POST /api/router/register` — one-time enrollment
+- `GET  /api/router/policy`   — ETag-polled enforcement snapshot
+- `GET  /api/blocklists/<cat>.rpz` — RPZ blocklist per category
+- `POST /api/router/usage`    — per-(mac, hostname) traffic records
+- `POST /api/router/events`   — DHCP lease + connection attempt events
+
+### Key domain concepts
+
+- **Profile** — a set of filtering rules (blocked categories, schedules, time limits). Devices are assigned to profiles.
+- **Device** — identified by MAC address (not IP, which changes with DHCP). Matched to a profile.
+- **Schedule** — time windows when internet is blocked entirely for a profile (e.g. bedtime 21:00–07:00).
+- **TimeLimit** — daily total minutes allowed per profile (e.g. 120 min/day total screen time).
+- **App** — a named bundle of host patterns (a **host-set**: apex + off-domain asset/CDN domains) with a per-profile policy (allowed / blocked / time-limited). Apps are the unit usage and time limits are framed around — **the model is app-focused, not site-focused.**
+- **App time limit** — daily minutes for an *app*, counted against its **whole host-set aggregated as one budget** (#1505), tracked *separately* from the main daily limit (e.g. 30 min YouTube across `youtube.com` + `ytimg.com` + `googlevideo.com`, not counted in the 120 min total). A host belonging to no configured app **is its own single-host app**; there is no semantic catch-all "Other" app. "Other" only ever appears as a **display rollup** of the long tail (top-N + remainder) — a host there is *low on the list*, not *part of an Other app*.
+  > Naming debt: a few residual `SiteUsage` / `SiteDayState` / `perSite` spellings remain in code, and the `__other__` synthetic membership is still present. The reason token and BlockReason JSON kind were renamed to `app_time_limit:` / `appTimeLimit` in #1518 — both are SPA-API surfaces (the router treats `BlockReason` wire strings as opaque pass-through, so renaming was safe even pre-#376). `BlockReason.fromWire` only parses the new `app_time_limit:` text — routers echo back whatever they receive, and the dual-written `reason_text` column is consumed by older-image rollback only, never re-parsed here, so no live caller needs the legacy text alias. `JsonDecoder[BlockReason]` does still accept the legacy `siteTimeLimit` kind because V40-migrated `block_events.reason` / `connection_events.reason` JSONB rows persist that kind; the encoder canonicalizes them to `appTimeLimit` on read so the SPA never sees the legacy form on the wire.
+- **TimeUsage** — per-(device, domain, date) minutes accumulated, reset at midnight. Updated by traffic monitor.
+- **TimeExtension** — admin-granted extra minutes for a device on a specific day, with audit trail.
+- **BlocklistDomain** — domain → category mapping. Loaded into memory cache, refreshed every 15 min.
+- **QueryLog** — every DNS query logged with device, profile, blocked status, reason.
+- **Location** — `home` or `vacation`. Stored on devices and logs. Both locations share profiles/devices but query logs are tagged so you can filter by house.
+
+### Policy decision pipeline (server-side, in `PolicyService`)
+
+These steps happen **on the API server** when computing the snapshot — not on
+the router. They collapse into the per-MAC `BlockRules` fields described in
+the "Architectural model" callout in AGENTS.md.
+
+Order matters because earlier conditions short-circuit:
+
+1. Profile paused → `blocked = true`, reason `Paused`
+2. Schedule active for current time → `blocked = true`, reason `Schedule`
+3. Daily time limit reached (`time_used_today >= daily_minutes + extensions_today`) → `blocked = true`, reason `TimeLimit`
+4. Per-app time limit reached (an app's usage, aggregated across its whole host-set, hits its limit) → **every** host in that app's host-set added to `extraBlocked` for this MAC
+5. Manual admin block → `blocked = true`, reason `Manual`
+6. Profile / device `extraBlocked` hostnames → `extraBlocked` for this MAC
+7. Profile / device `extraAllowed` hostnames → `extraAllowed` for this MAC (carves out blocks above)
+8. Profile / device assigned categories → `blocklistIds` for this MAC
+9. `blockIpOnly` flag for the profile / device → set as-is
+
+The router never re-evaluates any of this. It receives the resolved
+`BlockRules` and applies them mechanically.
+
+(DNS resolution itself is never blocked by WifiHaven. dnsmasq forwards
+upstream as normal; the enforcement plane is nftables on the resolved IPs.)
