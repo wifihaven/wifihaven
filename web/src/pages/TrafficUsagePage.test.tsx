@@ -6,7 +6,7 @@ import type { TrafficUsageResponse } from '@/types/api'
 
 vi.mock('@/api/client', () => ({
   api: {
-    usage:    { traffic: vi.fn() },
+    usage:    { traffic: vi.fn(), horizons: vi.fn().mockRejectedValue(new Error('mock')) },
     devices:  { list:    vi.fn() },
     profiles: { list:    vi.fn() },
     apps:     { list:    vi.fn() },
