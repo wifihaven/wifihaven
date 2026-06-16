@@ -24,6 +24,7 @@
 local M = {}
 
 local static_ip_labels = require("wifihaven.static_ip_labels")
+local host_norm        = require("wifihaven.host_norm")
 
 -- ---------------------------------------------------------------------------
 -- eb_san(host) -> string
@@ -469,7 +470,9 @@ function M.build_event(opts)
   if opts.host_label_source and opts.hostname then
     host = { type = "label", value = opts.hostname, source = opts.host_label_source }
   elseif opts.hostname then
-    host = { type = "fqdn", value = opts.hostname }
+    -- #1761: strip a trailing :<port> so the API's Hostname validation
+    -- doesn't reject the record. Single-source via host_norm.
+    host = { type = "fqdn", value = host_norm.strip_port_suffix(opts.hostname) }
   else
     local kind = (opts.dest_ip and opts.dest_ip:find(":", 1, true)) and "ipv6" or "ipv4"
     host = { type = kind, value = opts.dest_ip }
