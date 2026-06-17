@@ -1,7 +1,7 @@
 -- contract_gen.lua — router→API contract fixture generator (#634, follow-up to PR #635).
 --
 -- This file is the router-side authoritative producer for the
--- shared/contract/router-to-api/*.json fixtures. It calls the SAME production
+-- contract/router-to-api/*.json fixtures. It calls the SAME production
 -- POST-body-builder functions the live agent uses (conntrack.build_event,
 -- conntrack.build_first_seen_mac_event, conntrack.build_dhcp_lease_event,
 -- conntrack.drain_events payload assembly, usage.build_report) with
@@ -13,7 +13,7 @@
 -- router-producer drift — if the lua agent silently changes its emitted
 -- shape, the Scala round-trip still passes. By writing these fixtures from
 -- the router's own production code, any agent-side change shows up as a diff
--- in shared/contract/router-to-api/*.json and either causes the Scala
+-- in contract/router-to-api/*.json and either causes the Scala
 -- round-trip decoder to fail (field rename, type change) or land as a
 -- visible PR diff (added/removed field).
 --
@@ -354,7 +354,7 @@ end
 -- ── register_router_request.json ─────────────────────────────────────────
 -- The register POST is built in openwrt/install.sh via shell `printf`, not
 -- lua, so there is no production lua function to call. We mirror the shell
--- format here and document the deviation in shared/contract/README.md.
+-- format here and document the deviation in contract/README.md.
 -- A simple regex-level check on install.sh's printf format string is added
 -- in contract_spec.lua so the shell format doesn't drift from this fixture
 -- without someone noticing.
@@ -372,14 +372,14 @@ end
 local function locate_contract_dir(start)
   local cur = start or "."
   for _ = 1, 8 do
-    local f = io.open(cur .. "/shared/contract/router-to-api/router_events_request.json", "r")
+    local f = io.open(cur .. "/contract/router-to-api/router_events_request.json", "r")
     if f then
       f:close()
-      return cur .. "/shared/contract"
+      return cur .. "/contract"
     end
     cur = cur .. "/.."
   end
-  error("could not locate shared/contract from " .. tostring(start))
+  error("could not locate contract from " .. tostring(start))
 end
 
 local M = {}

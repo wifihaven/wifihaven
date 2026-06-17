@@ -52,40 +52,40 @@ object RouterIngestRoutes {
             auth.authenticate(req).flatMap { router =>
               LogContext.annotate(LogContext.RouterId, router.id.toString) {
                 for {
-                  body <- req.body.asString.orElseFail(ApiError.BadRequest(""))
+                  body      <- req.body.asString.orElseFail(ApiError.BadRequest(""))
                   // #1569: decode the *envelope* (routerId, periodStart, periodEnd) + `records` as a
                   // raw JSON array, deferring per-record validation. A genuinely unparseable
                   // envelope (bad routerId/timestamps, not an object, `records` not an array,
                   // truncated body) still 400s — logged by the boundary.
-                  raw  <- ZIO
+                  raw       <- ZIO
                     .fromEither(body.fromJson[RawUsageReport])
                     .mapError(ApiError.DecodeFailure(_))
-                  _    <- ZIO
+                  _         <- ZIO
                     .fail(ApiError.BadRequest("router_id mismatch"))
                     .when(raw.routerId != router.id)
-                  ps   <- parseInstant(raw.periodStart)
-                  pe   <- parseInstant(raw.periodEnd)
-                  // #1569: decode each record individually. A single malformed record
-                  // (e.g. a host value that fails Hostname validation — an Akamai/CDN
-                  // CNAME target with underscores, see #1572) used to fail the WHOLE
-                  // batch, dropping every valid record with it. Now the bad records are
-                  // skipped, logged (bounded), and metered, and the valid ones ingest.
-                  decoded  = raw.records.zipWithIndex.map((j, i) => (i, j.as[UsageRecord]))
-                  rejected = decoded.collect { case (i, Left(err)) => (i, err) }
-                  records  = decoded.collect { case (_, Right(r)) => r }
-                  _        <- ZIO.foreachDiscard(rejected) { (i, err) =>
-                    ZIO.logWarning(
-                      s"router usage: skipping malformed record[$i] for router=${router.id}: $err",
-                    )
-                  }
-                  _        <- AppMetrics.recordUsageRecordsRejected(rejected.size)
+                  ps        <- parseInstant(raw.periodStart)
+                  pe        <- parseInstant(raw.periodEnd)
+                  // #1569 / #1757: decode each record individually via the shared per-
+                  // record skip helper. A single malformed record (e.g. a host value
+                  // that fails Hostname validation — an Akamai/CDN CNAME target with
+                  // underscores, see #1572) used to fail the WHOLE batch, dropping
+                  // every valid record with it. Now bad records are skipped, logged
+                  // (bounded), and metered, and the valid ones ingest.
+                  decResult <- decodePerRecord[UsageRecord](
+                    raw.records,
+                    "router usage",
+                    "record",
+                    router.id,
+                    AppMetrics.recordUsageRecordsRejected(_),
+                  )
+                  (records, rejectedCount) = decResult
                   _        <- LogContext.annotateAll(
                     LogContext.BatchSize -> records.size.toString,
-                    LogContext.Rejected  -> rejected.size.toString,
+                    LogContext.Rejected  -> rejectedCount.toString,
                   ) {
                     ZIO.logDebug(
                       s"router usage: router=${router.id} period=$ps..$pe records=${records.size} " +
-                        s"rejected=${rejected.size}",
+                        s"rejected=$rejectedCount",
                     )
                   }
                   _        <- ZIO.foreachDiscard(records)(r =>
@@ -125,7 +125,7 @@ object RouterIngestRoutes {
             auth.authenticate(req).flatMap { router =>
               LogContext.annotate(LogContext.RouterId, router.id.toString) {
                 for {
-                  body <- req.body.asString.orElseFail(ApiError.BadRequest(""))
+                  body      <- req.body.asString.orElseFail(ApiError.BadRequest(""))
                   // #1126: tolerate an empty/blank body as a no-op batch. A truncated
                   // or empty POST (network blip, retry-queue edge) used to fail
                   // RouterEventsRequest decoding with "Unexpected end of input" and
@@ -134,24 +134,42 @@ object RouterIngestRoutes {
                   // accepted no-op rather than an error. Genuinely malformed non-empty
                   // bodies still 400 + warn (and the agent emitter no longer
                   // produces them — see conntrack.encode_events_body).
-                  rep  <-
+                  raw       <-
                     if body.trim.isEmpty then
                       ZIO.logDebug(
                         s"router events: empty body from router=${router.id}; treating as no-op batch",
-                      ) *> ZIO.succeed(RouterEventsRequest(router.id, Nil))
+                      ) *> ZIO.succeed(RawEventsReport(router.id, Nil))
                     else
                       ZIO
-                        .fromEither(body.fromJson[RouterEventsRequest])
+                        .fromEither(body.fromJson[RawEventsReport])
                         .mapError(ApiError.DecodeFailure(_))
-                  _    <- ZIO
+                  _         <- ZIO
                     .fail(ApiError.BadRequest("router_id mismatch"))
-                    .when(rep.routerId != router.id)
-                  _    <- LogContext.annotate(LogContext.BatchSize, rep.events.size.toString) {
+                    .when(raw.routerId != router.id)
+                  // #1757: decode each event individually via the shared per-record
+                  // skip helper. A single malformed RouterEvent (bad host/mac/ts/
+                  // unknown enum) used to fail the WHOLE batch — every valid
+                  // connection_attempt / dhcp_lease / first_seen_mac dropped with
+                  // it. Envelope itself (routerId, events-is-an-array) must still
+                  // parse or the request is a genuine 400.
+                  decResult <- decodePerRecord[RouterEvent](
+                    raw.events,
+                    "router events",
+                    "event",
+                    router.id,
+                    AppMetrics.recordEventsRecordsRejected(_),
+                  )
+                  (events, rejectedCount) = decResult
+                  _ <- LogContext.annotateAll(
+                    LogContext.BatchSize -> events.size.toString,
+                    LogContext.Rejected  -> rejectedCount.toString,
+                  ) {
                     ZIO.logDebug(
-                      s"router events: router=${router.id} batchSize=${rep.events.size}",
+                      s"router events: router=${router.id} batchSize=${events.size} " +
+                        s"rejected=$rejectedCount",
                     )
                   }
-                  _    <- ZIO.foreachDiscard(rep.events)(e =>
+                  _ <- ZIO.foreachDiscard(events)(e =>
                     ZIO.logDebug(
                       s"  event: type=${e.`type`} mac=${e.mac.getOrElse("-")} " +
                         s"ip=${e.ip.getOrElse("-")} host=${e.host.map(_.value).orElse(e.hostname.map(_.value)).getOrElse("-")} " +
@@ -159,8 +177,8 @@ object RouterIngestRoutes {
                         s"reason=${e.reason.getOrElse("-")} ts=${e.ts}",
                     ),
                   )
-                  _    <- handleEvents(router.id, rep.events, deviceRepo, connEventRepo, alertRepo)
-                  _    <- routerRepo.touch(router.id, None, None).mapError(ApiError.Db(_))
+                  _ <- handleEvents(router.id, events, deviceRepo, connEventRepo, alertRepo)
+                  _ <- routerRepo.touch(router.id, None, None).mapError(ApiError.Db(_))
                 } yield Response.ok
               }
             }
@@ -184,10 +202,52 @@ object RouterIngestRoutes {
       records: List[Json],
   ) derives JsonDecoder
 
+  /**
+   * #1757: the wire-decode envelope for `POST /api/router/events`, the `RouterEventsRequest` analog
+   * of [[RawUsageReport]]. Identical field shape to [[RouterEventsRequest]] except `events` is held
+   * as a raw JSON array so each element can be decoded into a [[RouterEvent]] individually — a
+   * single malformed event (bad host / mac / ts / unknown enum value) is then skipped + logged +
+   * metered instead of 400-ing the whole batch and dropping every valid connection_attempt /
+   * dhcp_lease / first_seen_mac with it. The envelope itself (routerId, events-is-an-array) must
+   * still parse or the request is a genuine 400. Decode-only; this is a server-side parse aid, NOT
+   * a wire-contract type — unknown fields are still ignored.
+   */
+  private case class RawEventsReport(
+      routerId: RouterId,
+      events: List[Json],
+  ) derives JsonDecoder
+
   // #1570: a bad timestamp is a typed BadRequest (400) mapped centrally; the boundary logs it.
   // (The bespoke per-call warn log #1574 added is subsumed by the boundary — single emitter.)
   private def parseInstant(s: String): IO[ApiError, Instant] =
     ZIO.attempt(Instant.parse(s)).orElseFail(ApiError.BadRequest(s"invalid timestamp: $s"))
+
+  /**
+   * #1569 / #1757: shared per-record skip helper used by both `/api/router/usage` (records →
+   * UsageRecord) and `/api/router/events` (events → RouterEvent). The two ingest paths used to
+   * carry hand-copied decode loops with a "// must mirror" coupling — extracted here so the single
+   * source of truth is enforced by the compiler. Decodes each `Json` element into `T` individually,
+   * logs each failure (bounded — one warn per bad slot, with the JSON index) and increments the
+   * supplied rejection metric, then returns the decoded list plus the rejected count for the
+   * caller's per-batch debug annotation. Bad records are skipped, NOT 400'd — the envelope itself
+   * must still parse upstream.
+   */
+  private def decodePerRecord[T](
+      raw: List[Json],
+      logPrefix: String,
+      itemNoun: String,
+      routerId: RouterId,
+      recordMetric: Int => UIO[Unit],
+  )(implicit decoder: JsonDecoder[T]): UIO[(List[T], Int)] = {
+    val decoded  = raw.zipWithIndex.map((j, i) => (i, j.as[T]))
+    val rejected = decoded.collect { case (i, Left(err)) => (i, err) }
+    val ok       = decoded.collect { case (_, Right(t)) => t }
+    ZIO.foreachDiscard(rejected) { (i, err) =>
+      ZIO.logWarning(
+        s"$logPrefix: skipping malformed $itemNoun[$i] for router=$routerId: $err",
+      )
+    } *> recordMetric(rejected.size).as((ok, rejected.size))
+  }
 
   private def handleUsage(
       routerId: RouterId,

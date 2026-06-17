@@ -92,6 +92,13 @@ object MetricGuard {
     // underscores, see #1572) is skipped + metered here instead of 400-ing the
     // whole batch. `reason` is a small fixed enum (currently just `decode_error`).
     "usage_records_rejected_total"              -> Set("reason"),
+    // #1757 — events-ingest records dropped at decode. Same shape as
+    // usage_records_rejected_total: a single malformed RouterEvent (bad host /
+    // mac / ts / unknown enum value) is skipped + metered instead of 400-ing
+    // the whole batch (which would drop every valid connection_attempt /
+    // dhcp_lease / first_seen_mac with it). `reason` is a small fixed enum
+    // (currently just `decode_error`).
+    "events_records_rejected_total"             -> Set("reason"),
     // #1585 — write-time FQDN backfill for traffic_reports. Counts each
     // UsageRecord at ingest by what the backfill decided: `filled` (race-loser
     // ipv4/ipv6 rewritten to a fqdn from a recent connection_event),
@@ -345,6 +352,16 @@ object AppMetrics {
     ZIO
       .when(count > 0)(
         MetricGuard.counter("usage_records_rejected_total", Map("reason" -> reason), count.toLong),
+      )
+      .unit
+
+  // #1757 — events-ingest per-record skip count. Same wire shape as the usage
+  // counter above; emitted from RouterIngestRoutes when one or more events in
+  // a batch fail individual decode but the envelope itself parses.
+  def recordEventsRecordsRejected(count: Int, reason: String = "decode_error"): UIO[Unit] =
+    ZIO
+      .when(count > 0)(
+        MetricGuard.counter("events_records_rejected_total", Map("reason" -> reason), count.toLong),
       )
       .unit
 

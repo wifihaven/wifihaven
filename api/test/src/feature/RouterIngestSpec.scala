@@ -129,6 +129,10 @@ object RouterIngestSpec
   private val rejectedCounter =
     Metric.counter("usage_records_rejected_total").tagged("reason", "decode_error")
 
+  // #1757: events-side analog, used by the per-record skip tests below.
+  private val eventsRejectedCounter =
+    Metric.counter("events_records_rejected_total").tagged("reason", "decode_error")
+
   private def seedKnownDevice(dRepo: DeviceRepo, profileRepo: ProfileRepo): Task[Unit] =
     for {
       pid <- profileRepo.create("Kids", List(BlocklistId.unsafe("adult")))
@@ -1076,6 +1080,59 @@ object RouterIngestSpec
         rows <- cRepo.listForRouter(id, 100)
       } yield assertTrue(resp.status == Status.Ok) && assertTrue(rows.isEmpty)
     },
+    // ── #1757: one malformed event must not drop the whole events batch ─────
+    test(
+      "events: a batch with one malformed event ingests the valid events and meters the rejection",
+    ) {
+      // #1757: a single event whose host fails Hostname validation (same
+      // class as the #1569 Akamai CNAME bug, but on /events instead of
+      // /usage) used to fail the WHOLE RouterEventsRequest decode → 400 →
+      // every valid connection_attempt / dhcp_lease in the batch dropped.
+      // Now bad events are skipped + metered and the valid ones persist.
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        cRepo    <- ZIO.service[ConnectionEventRepo]
+        routes   <- buildRoutes
+        (id, tk) <- seedRouter(rRepo)
+        before   <- eventsRejectedCounter.value
+        goodEv  =
+          s"""{"type":"connection_attempt","mac":"$knownMac","host":{"type":"fqdn","value":"youtube.com"},"destIp":"1.2.3.4","allowed":false,"reason":"category:adult","ts":"2026-05-07T14:01:14Z"}"""
+        badEv   =
+          s"""{"type":"connection_attempt","mac":"$knownMac","host":{"type":"fqdn","value":"$badHost"},"destIp":"5.6.7.8","allowed":false,"reason":"category:adult","ts":"2026-05-07T14:01:15Z"}"""
+        rawBody =
+          s"""{"routerId":"$id","events":[$goodEv,$badEv]}"""
+        resp  <- post(routes, "/api/router/events", rawBody, Some(tk))
+        rows  <- cRepo.listForRouter(id, 100)
+        after <- eventsRejectedCounter.value
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(rows.size == 1) &&
+        assertTrue(
+          rows.exists(r => r.host == HostId.Fqdn(Hostname.unsafe("youtube.com")) && !r.allowed),
+        ) &&
+        assertTrue(after.count - before.count == 1.0)
+    },
+    test("events: a batch of ONLY malformed events is accepted (200) and meters them all") {
+      // No valid events to ingest, but the envelope is well-formed — 200,
+      // not 400. The bad events are all metered.
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        cRepo    <- ZIO.service[ConnectionEventRepo]
+        routes   <- buildRoutes
+        (id, tk) <- seedRouter(rRepo)
+        before   <- eventsRejectedCounter.value
+        badEv   =
+          s"""{"type":"connection_attempt","mac":"$knownMac","host":{"type":"fqdn","value":"$badHost"},"destIp":"5.6.7.8","allowed":false,"reason":"category:adult","ts":"2026-05-07T14:01:15Z"}"""
+        rawBody =
+          s"""{"routerId":"$id","events":[$badEv,$badEv]}"""
+        resp  <- post(routes, "/api/router/events", rawBody, Some(tk))
+        rows  <- cRepo.listForRouter(id, 100)
+        after <- eventsRejectedCounter.value
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(rows.isEmpty) &&
+        assertTrue(after.count - before.count == 2.0)
+    },
     test("events: nflog-synthesized blocked flow persists with host + reason (#1126)") {
       // The exact wire shape the agent's nflog path emits: a connection_attempt
       // with allowed=false, a parsed reason, and an attributed fqdn host —
@@ -1594,6 +1651,58 @@ object RouterIngestSpec
         assertTrue(rows.size == 1) &&
         // exactly the one malformed record was metered as rejected
         assertTrue(after.count - before.count == 1.0)
+    },
+    // ── #1761: tolerant decode of `host:port` fqdn values ───────────────────
+    test("usage: an fqdn host with a trailing :port is accepted (port stripped)") {
+      // Prod incident #1761: an attribution path (SNI / Host-header capture)
+      // bleeds the destination port into the wire `host` field, so values like
+      // `ws.nas.native-cloud.com:443` arrived verbatim. Hostname validation
+      // rejected them as "invalid hostname label 'com:443'" and the record
+      // was metered as a decode failure. The tolerant decoder strips a
+      // trailing `:<digits>` from fqdn values before parsing, so the record
+      // ingests normally and the rejection counter does NOT advance.
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        pRepo    <- ZIO.service[ProfileRepo]
+        dRepo    <- ZIO.service[DeviceRepo]
+        tu       <- ZIO.service[TimeUsageRepo]
+        routes   <- buildRoutes
+        _        <- seedKnownDevice(dRepo, pRepo)
+        (id, tk) <- seedRouter(rRepo)
+        before   <- rejectedCounter.value
+        rec  =
+          s"""{"mac":"$knownMac","host":{"type":"fqdn","value":"ws.nas.native-cloud.com:443"},"activeSeconds":60,"bytesIn":100,"bytesOut":50}"""
+        body =
+          s"""{"routerId":"$id","periodStart":"${periodStart.toString}","periodEnd":"${periodEnd.toString}","records":[$rec]}"""
+        resp  <- post(routes, "/api/router/usage", body, Some(tk))
+        sb    <- tu.getSecondsAndBytes(
+          MacAddress.unsafe(knownMac),
+          HostId.Fqdn(Hostname.unsafe("ws.nas.native-cloud.com")),
+          testDate,
+        )
+        after <- rejectedCounter.value
+      } yield assertTrue(resp.status == Status.Ok) &&
+        // persisted under the port-free hostname
+        assertTrue(sb == ((60L, 100L, 50L))) &&
+        // and the rejection counter did NOT advance
+        assertTrue(after.count - before.count == 0.0)
+    },
+    test("events: an fqdn host with a trailing :port ingests (port stripped)") {
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        pRepo    <- ZIO.service[ProfileRepo]
+        dRepo    <- ZIO.service[DeviceRepo]
+        routes   <- buildRoutes
+        _        <- seedKnownDevice(dRepo, pRepo)
+        (id, tk) <- seedRouter(rRepo)
+        ev   =
+          s"""{"type":"connection_attempt","mac":"$knownMac","host":{"type":"fqdn","value":"ws.nas.native-cloud.com:443"},"destIp":"1.2.3.4","allowed":false,"reason":"category:adult","ts":"2026-05-07T14:01:14Z"}"""
+        body =
+          s"""{"routerId":"$id","events":[$ev]}"""
+        resp <- post(routes, "/api/router/events", body, Some(tk))
+      } yield assertTrue(resp.status == Status.Ok)
     },
     test("usage: a batch of ONLY malformed records is accepted (200) and meters them all") {
       // No valid records to ingest, but the envelope is well-formed — so this is

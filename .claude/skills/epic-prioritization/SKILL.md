@@ -13,8 +13,11 @@ stale snapshot.
 This file is the **process**. The **data** lives elsewhere and is read live —
 do not duplicate it here:
 
-- Epic taxonomy, Status meanings, umbrella/sub-issue convention, board IDs →
-  [`docs/project-board.md`](../../../docs/project-board.md)
+- Status meanings, umbrella/sub-issue convention, board maintenance →
+  [`docs/process/project-board.md`](../../../docs/process/project-board.md).
+  The live `Epic` taxonomy and field/option IDs are **not** mirrored in-repo —
+  fetch via `gh project field-list 1 --owner wifihaven --format json`
+  (board at https://github.com/orgs/wifihaven/projects/1).
 - Operating guardrails (worktree isolation, TDD, migration-isolation,
   back-compat wire contract, single-source-of-truth, metrics-with-dashboards) →
   [`AGENTS.md`](../../../AGENTS.md)
@@ -67,9 +70,10 @@ done work, or skip unblocked work). Fix it before reasoning about priority:
 2. **In-flight work.** Anything currently spawned / has an open PR / carries the
    `in-progress` label → board **Status = In Progress** (and the matching label).
 3. **Blocked work.** `blocked` / `blocked-on-#NNN` label → **Status = Blocked**.
-4. **New issues without an Epic.** Triage onto the right epic from the taxonomy
-   in `docs/project-board.md`; don't leave real threads in `Other`. Add to the
-   board if the auto-add somehow missed it.
+4. **New issues without an Epic.** Triage onto the right epic from the live
+   taxonomy (`gh project field-list 1 --owner wifihaven --format json`);
+   don't leave real threads in `Other`. Add to the board if the auto-add
+   somehow missed it.
 
 > **Serialize board mutations.** Do **not** run two board-mutating operations
 > (`gh project item-edit`, `gh issue close`, label changes) concurrently —
@@ -82,15 +86,17 @@ moved.
 
 ## Step 2 — Apply the standing priority stack
 
-**Read the current epic order live** from `docs/project-board.md` (epic
-taxonomy + umbrellas) and `AGENTS.md`, plus what recent merges show is actually
-closing out — do not hardcode it here, it shifts as threads finish.
+**Read the current epic order live** from the board itself
+(`gh project field-list 1 --owner wifihaven --format json` for the taxonomy;
+the board UI at https://github.com/orgs/wifihaven/projects/1 for which epics
+are actively in flight) and `AGENTS.md`, plus what recent merges show is
+actually closing out — do not hardcode it here, it shifts as threads finish.
 
 As of this writing the order is: **App-Centric Model → Schedules (remainder) →
 Tuning → …**, with **Observability already done**. (These are working-thread
 names, not necessarily literal `Epic` field options — e.g. "App-Centric Model"
 and "Tuning" map onto board epics / umbrellas rather than being verbatim `Epic`
-values; resolve them against the live taxonomy in `docs/project-board.md`.) We
+values; resolve them against the live taxonomy.) We
 drive **one epic to closure at a time**, foundation-first, rather than spreading
 thin across epics — this avoids write-before-read ordering traps.
 

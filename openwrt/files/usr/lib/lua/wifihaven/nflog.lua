@@ -44,6 +44,8 @@
 
 local M = {}
 
+local host_norm = require("wifihaven.host_norm")
+
 -- Defer to conntrack.gen_event_id for the idempotency-key generator so the
 -- nflog path stamps event ids in exactly the same way (and tests can stub it
 -- via the same package.loaded indirection conntrack uses).
@@ -93,7 +95,8 @@ end
 function M.build_event(opts)
   local host
   if opts.hostname then
-    host = { type = "fqdn", value = opts.hostname }
+    -- #1761: strip a trailing :<port> — see host_norm.lua.
+    host = { type = "fqdn", value = host_norm.strip_port_suffix(opts.hostname) }
   else
     local kind = (opts.dst_ip and opts.dst_ip:find(":", 1, true)) and "ipv6" or "ipv4"
     host = { type = kind, value = opts.dst_ip }

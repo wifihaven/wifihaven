@@ -1466,13 +1466,14 @@ object TimeRoutes {
 // ── Query log routes ───────────────────────────────────────────────────────
 
 object LogRoutes {
-  // #1265: choose the source table for /api/connection-events/series. Mirrors
-  // UsageRoutes.pickTier on the traffic side: the bucket width caps how coarse
-  // a rollup may serve it (via the shared wifihaven.shared.BucketPolicy, so the
-  // two endpoints can't drift), and a wide window justifies coarsening on cost
-  // grounds. The finer of (cap, window-pref) wins. Raw → None (read the live
-  // connection_events table). includeMulticast forces raw, because the reroll
-  // excludes multicast/broadcast at write time so the rollups can't serve it.
+  // #1265: choose the source table for /api/connection-events/series. Both
+  // inputs and the rank ordering route through `wifihaven.shared.BucketPolicy`
+  // so this picker and `UsageRoutes.pickTier` on the traffic side can't drift
+  // (#1744). The bucket width caps how coarse a rollup may serve it, and a
+  // wide window justifies coarsening on cost grounds; the finer of
+  // (cap, window-pref) wins. Raw → None (read the live connection_events
+  // table). includeMulticast forces raw, because the reroll excludes
+  // multicast/broadcast at write time so the rollups can't serve it.
   private def seriesGrain(
       bucket: ConnectionEventBucket,
       hours: Int,
@@ -1480,17 +1481,9 @@ object LogRoutes {
   ): Option[BucketGrain] =
     if (includeMulticast) None
     else {
-      val cap                       = BucketPolicy.grainForBucket(bucket.wire)
-      val pref                      =
-        if (hours <= 24) BucketGrain.Raw
-        else if (hours <= 14 * 24) BucketGrain.Hourly
-        else BucketGrain.Daily
-      def rank(g: BucketGrain): Int = g match {
-        case BucketGrain.Raw    => 0
-        case BucketGrain.Hourly => 1
-        case BucketGrain.Daily  => 2
-      }
-      val chosen                    = if (rank(pref) <= rank(cap)) pref else cap
+      val cap    = BucketPolicy.grainForBucket(bucket.wire)
+      val pref   = BucketPolicy.windowGrain(hours.toLong)
+      val chosen = if (BucketPolicy.rank(pref) <= BucketPolicy.rank(cap)) pref else cap
       chosen match {
         case BucketGrain.Raw => None
         case g               => Some(g)
@@ -1539,10 +1532,11 @@ object LogRoutes {
           .mapBoth(ApiError.BadRequest(_), Some(_))
     }
 
-  // #862: must mirror the SQL's group_key concatenation order exactly
-  // (domain, device, profile — only requested columns, US-separator).
-  // Separator byte is sourced from `LogAggGroupKey` so the SQL `chr(N) ||`
-  // concat in `ConnectionEventRepo` and this builder cannot drift (#1532).
+  // #862: the (domain, device, profile) column order here must match the
+  // SQL's group_key concatenation in `ConnectionEventRepo` — that ordering
+  // remains the one manual constraint. The separator byte is sourced from
+  // `LogAggGroupKey` so the SQL `chr(N) ||` concat and this builder share
+  // one source of truth and can't drift on it (#1532).
   private def aggGroupKey(r: ConnectionEventAggRow): String =
     List("domain", "device", "profile").iterator
       .flatMap(k => r.groups.get(k))

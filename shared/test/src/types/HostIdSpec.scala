@@ -112,6 +112,38 @@ object HostIdSpec extends ZIOSpecDefault {
           l.asFqdn.isEmpty,
         )
       },
+      test("#1761: decoder strips a trailing :<port> from an fqdn wire value") {
+        // Older agents (and any future emitter that interns an SNI/Host-header
+        // value verbatim) ship `foo.com:443`; without the tolerant strip the
+        // record is rejected as "invalid hostname label 'com:443'". Symmetric
+        // with the Lua agent helper (host_norm.lua):
+        //  - plain `host:port`        → `host`
+        //  - bracketed v6 `[v6]:port` → `[v6]` (parity; v6 doesn't take this branch in practice)
+        //  - bare v6 (multi-colon)    → unchanged (ambiguous)
+        val stripped =
+          """{"type":"fqdn","value":"ws.nas.native-cloud.com:443"}"""
+            .fromJson[HostId]
+            .toOption
+            .flatMap(_.asFqdn)
+            .map(_.value)
+        val clean    =
+          """{"type":"fqdn","value":"foo.example.com"}"""
+            .fromJson[HostId]
+            .toOption
+            .flatMap(_.asFqdn)
+            .map(_.value)
+        assertTrue(stripped.contains("ws.nas.native-cloud.com")) &&
+        assertTrue(clean.contains("foo.example.com"))
+      },
+      test("#1761: decoder rejects fqdn values that are still invalid after strip") {
+        // `:443` alone strips to empty → Hostname.parse fails. A bare v6
+        // literal stays as-is (multi-colon, ambiguous) and Hostname.parse
+        // rejects it because Hostname is not an IP literal type.
+        val badEmpty = """{"type":"fqdn","value":":443"}"""
+        val badV6    = """{"type":"fqdn","value":"::1"}"""
+        assertTrue(badEmpty.fromJson[HostId].isLeft) &&
+        assertTrue(badV6.fromJson[HostId].isLeft)
+      },
     ),
   )
 }

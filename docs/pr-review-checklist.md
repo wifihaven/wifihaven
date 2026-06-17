@@ -315,3 +315,75 @@ new `reviewed-sha`) is fine and preserves the review history — the marker's SH
 distinguishes runs, and the re-run logic always reads the **latest** marked
 comment, so old comments don't cause double-review. Do not post duplicate
 comments for the same SHA.
+
+---
+
+## Imported rules (originally in AGENTS.md)
+
+These rules used to live in AGENTS.md; the TOC there now points here.
+
+### Independent PR review (required before merge) {#independent-pr-review}
+
+**Every PR gets an independent review pass before merge using this checklist.**
+Spawn a review subagent against the diff (or run `/code-review` / the equivalent
+review command); treat **BLOCKERS as merge-gating**. The author should self-run
+the checklist before opening the PR, but the **independent pass — a separate
+agent, not the author self-reviewing — is the gate.** It is read-only and
+adversarial: the reviewer cites `file:line`, classifies findings BLOCKER /
+SHOULD-FIX / NIT, and ends with APPROVE or REQUEST-CHANGES, never approving with
+an open BLOCKER. The checklist leads with duplicated-logic / single-source-of-truth
+(see [Single source of truth](process/single-source-of-truth.md#single-source-of-truth))
+and test-integrity, the two failure modes behind our recurring prod incidents.
+
+**The review is POSTED to the PR and RE-RUN on each push.** The reviewer posts
+its findings as a marked, **non-approving** PR comment (`gh pr comment` — never a
+GitHub `--approve` / `--request-changes` review, so it can't interfere with
+required human reviews or the merge queue), leading with a machine-findable
+marker that records the reviewed commit
+(`<!-- wifihaven-pr-review reviewed-sha=<sha> -->`). On a subsequent push the
+review re-runs incrementally: it finds the prior marked comment, **statuses each
+prior finding** ADDRESSED / NOT-ADDRESSED / PARTIAL against current code, reviews
+only the **incremental delta** (`git diff <reviewed-sha>...HEAD`) for new
+findings, and posts an updated marked comment. A BLOCKER clears only when
+ADDRESSED *and* no new BLOCKER was introduced; any open BLOCKER stays
+merge-gating. See the *Posting & re-runs* section above for the full algorithm.
+
+### Monitor PRs through to MERGED, not just queued {#monitor-to-merged}
+
+**Spawned chips monitor PRs through to MERGED, not just to queued.** The
+independent review pass is the gate for ENTERING the merge queue, but the
+author chip's job isn't done until the PR's state is `MERGED`. Once queued,
+the chip watches the merge queue and iterates without waiting for an operator
+prompt:
+
+- **Queue CI fails** (Gate 2 port collision from a sibling chip,
+  infrastructure flake, etc.) → diagnose, push a fix, iterate.
+- **Conflict appears** with another PR that landed first → rebase on
+  `origin/main`, resolve, push.
+- **Re-review needed** because new commits got pushed → re-run `/pr-review`,
+  address BLOCKERs, push. (This pairs with the re-run-on-push behavior in the
+  *Posting & re-runs* section above, which covers the REVIEWER side; this rule
+  covers the AUTHOR side of the same lifecycle.)
+
+**The chip NEVER queues a PR for merge itself, and NEVER re-arms
+merge-when-ready unless the operator had already armed it.** The
+merge-when-ready click is the operator's explicit approval to ship — it is
+**required** so the operator approves every change, and a chip running
+`gh pr merge … --auto` (or any equivalent) bypasses that approval and is
+forbidden. Concretely:
+
+- **First time the PR is ready** → the chip reports "review APPROVE, ready
+  for merge-when-ready," and stops. The operator clicks merge-when-ready.
+- **After a rebase or queue-CI fix push**, the chip may re-arm
+  merge-when-ready (`gh pr merge <n> --auto …`) **only if** the operator had
+  already armed it before the push — i.e. `gh pr view <n> --json
+  autoMergeRequest` returned a non-null `autoMergeRequest` immediately
+  before the push knocked it off. Check that field; if it is null, do
+  nothing and report state.
+- **If the operator explicitly unqueued the PR** (the chip should treat
+  any transition from armed → null as "operator unqueued" unless the chip
+  itself just force-pushed), the chip does NOT re-arm. Report and stop.
+
+A chip replies "done" only when `gh pr view <n> --json state` returns
+`MERGED`. Polling cadence is ~5–10 minutes — use `ScheduleWakeup` for long
+waits, don't busy-poll.

@@ -14,11 +14,23 @@ package wifihaven.shared
 // so the two can't disagree about which tier serves a width. This is the
 // single shared mapping that keeps them from drifting — and it is keyed on the
 // bucket, not the window.
-enum BucketGrain {
-  case Raw, Hourly, Daily
+enum BucketGrain(val wire: String) {
+  case Raw    extends BucketGrain("raw")
+  case Hourly extends BucketGrain("hourly")
+  case Daily  extends BucketGrain("daily")
+}
+
+object BucketGrain {
+  def fromWire(s: String): Option[BucketGrain] = values.find(_.wire == s)
 }
 
 object BucketPolicy {
+
+  /**
+   * Canonical list of bucket codes the API understands. Lives next to `grainForBucket` so the SPA
+   * can read both pieces from a single API surface (#1743) without re-listing buckets out-of-band.
+   */
+  val allBuckets: List[String] = List("raw", "1m", "10m", "1h", "12h", "1d", "1w")
 
   /**
    * Coarsest storage grain that can render `bucketCode` without losing resolution. Keyed on the
@@ -29,5 +41,31 @@ object BucketPolicy {
     case "1h" | "12h" => BucketGrain.Hourly
     case "1d" | "1w"  => BucketGrain.Daily
     case _            => BucketGrain.Raw
+  }
+
+  /**
+   * Canonical bucket → grain mapping the API emits to the SPA (#1743). Built from `allBuckets` and
+   * `grainForBucket` so this stays the only place the classification is defined.
+   */
+  val bucketTiers: Map[String, BucketGrain] =
+    allBuckets.map(b => b -> grainForBucket(b)).toMap
+
+  /**
+   * Coarseness the window justifies on cost grounds — the cost-preference input to the per-endpoint
+   * tier picker. Keyed on the requested window width alone; the bucket width is a separate input
+   * (see [[grainForBucket]]) and the picker takes the finer of (cap, pref). Both the traffic-series
+   * (`UsageRoutes.pickTier`) and connection-events-series (`LogRoutes.seriesGrain`) endpoints route
+   * through this so they can't drift on the thresholds (#1744 / #1532).
+   */
+  def windowGrain(windowHours: Long): BucketGrain =
+    if (windowHours <= 24) BucketGrain.Raw
+    else if (windowHours <= 14 * 24) BucketGrain.Hourly
+    else BucketGrain.Daily
+
+  /** Total ordering on [[BucketGrain]] from finest (Raw) to coarsest (Daily). */
+  def rank(g: BucketGrain): Int = g match {
+    case BucketGrain.Raw    => 0
+    case BucketGrain.Hourly => 1
+    case BucketGrain.Daily  => 2
   }
 }
