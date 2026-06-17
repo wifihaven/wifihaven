@@ -145,7 +145,7 @@ object GlobalPolicyRoutes {
       Method.POST / "api" / "global" / "blocklists" / string("id") ->
         handler { (id: String, req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
+            claims <- requireAdmin(req, auth)
             uid    <- actingUserId(claims)
             _      <- repo
               .addBlocklist(BlocklistId.unsafe(id), uid)
@@ -159,7 +159,7 @@ object GlobalPolicyRoutes {
       Method.DELETE / "api" / "global" / "blocklists" / string("id") ->
         handler { (id: String, req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _ <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
+            _ <- requireAdmin(req, auth)
             _ <- repo
               .removeBlocklist(BlocklistId.unsafe(id))
               .mapError(ApiError.Db(_))
@@ -189,7 +189,7 @@ object GlobalPolicyRoutes {
       Method.PATCH / "api" / "global" / "flags" ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _                <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
+            _                <- requireAdmin(req, auth)
             body             <- req.body.asString.orElseFail(ApiError.BadRequest(""))
             obj              <- ZIO
               .fromEither(FieldPatch.parseObj(body))
