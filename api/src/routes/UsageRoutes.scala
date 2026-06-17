@@ -28,8 +28,7 @@ import java.time.{Duration, Instant, LocalDate, ZoneId}
 // meters each error. Every case reproduces the EXACT status + body the hand-rolled code produced —
 // the structured `unknown_bucket` / `unknown_groupBy` / `groupBy_not_implemented` 400 JSON bodies
 // map through [[ApiError.BadRequest]] to the identical `Response.badRequest(...)`, DB failures stay
-// 503 via [[ApiError.Db]]. Auth/profile-access helpers still return `Response` and are bridged via
-// [[ApiError.Wrapped]].
+// 503 via [[ApiError.Db]].
 object UsageRoutes {
   def routes(
       auth: AuthService,
@@ -57,7 +56,7 @@ object UsageRoutes {
       Method.GET / "api" / "usage" / "config"                                   ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _ <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
+            _ <- requireAuth(req, auth)
             cfg = UsageConfig(
               bucketTiers = BucketPolicy.bucketTiers.view.mapValues(_.wire).toMap,
               horizons = RetentionHorizons(
@@ -88,14 +87,13 @@ object UsageRoutes {
       Method.GET / "api" / "devices" / string("mac") / "recent-apexes"          ->
         handler { (macRaw: String, req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
+            claims <- requireAuth(req, auth)
             mac = MacAddress.unsafe(normalizeMac(macRaw))
             device <- deviceRepo
               .findByMac(mac)
               .mapError(ApiError.Db(_))
               .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Device not found")))
             _      <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
-              .mapError(ApiError.Wrapped(_))
             windowDays = req.url
               .queryParam("windowDays")
               .flatMap(_.toIntOption)
@@ -148,9 +146,8 @@ object UsageRoutes {
         handler { (id: Long, req: Request) =>
           val pid                                  = ProfileId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
+            claims <- requireAuth(req, auth)
             _      <- requireProfileReadAccess(claims, pid, userProfileRepo)
-              .mapError(ApiError.Wrapped(_))
             today  <- clock.today
             fromS = req.url.queryParam("from").getOrElse(today.toString)
             toS   = req.url.queryParam("to").getOrElse(fromS)
@@ -190,9 +187,8 @@ object UsageRoutes {
         handler { (id: Long, req: Request) =>
           val pid                                  = ProfileId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims   <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
+            claims   <- requireAuth(req, auth)
             _        <- requireProfileReadAccess(claims, pid, userProfileRepo)
-              .mapError(ApiError.Wrapped(_))
             settings <- hsRepo.get.mapError(ApiError.Db(_))
             now      <- clock.instant
             todayLocal = wifihaven.api.policy.PolicyService.householdLocalDate(now, settings)
@@ -240,7 +236,7 @@ object UsageRoutes {
       Method.GET / "api" / "usage" / "series"                                   ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
+            claims <- requireAuth(req, auth)
             today  <- clock.today
             macOpt = req.url.queryParam("mac").map(s => MacAddress.unsafe(normalizeMac(s)))
             profileIdOpt <- ZIO
@@ -324,9 +320,9 @@ object UsageRoutes {
       Method.GET / "api" / "usage" / "series" / "batch"                         ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
+            claims <- requireAuth(req, auth)
             today  <- clock.today
-            pids   <- parseMultiProfileIdParam(req).mapError(ApiError.Wrapped(_)).map(_.distinct)
+            pids   <- parseMultiProfileIdParam(req).map(_.distinct)
             dateStr = req.url.queryParam("date").getOrElse(today.toString)
             date <- ZIO
               .attempt(LocalDate.parse(dateStr))
@@ -387,9 +383,7 @@ object UsageRoutes {
       settings: HouseholdSettings,
   ): IO[ApiError, UsageSeriesBatchResponse] =
     for {
-      _           <- ZIO.foreachDiscard(pids)(pid =>
-        requireProfileReadAccess(claims, pid, userProfileRepo).mapError(ApiError.Wrapped(_)),
-      )
+      _ <- ZIO.foreachDiscard(pids)(pid => requireProfileReadAccess(claims, pid, userProfileRepo))
       profiles    <- ZIO.foreach(pids) { pid =>
         profileRepo
           .findById(pid)
@@ -658,7 +652,6 @@ object UsageRoutes {
         .mapError(ApiError.Db(_))
         .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Device not found")))
       _      <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
-        .mapError(ApiError.Wrapped(_))
       rows   <- fetchPresenceDayWindow(trafficRepo, List(mac), date, zone)
       (topHosts, buckets, presenceTotalMins) =
         UsageSeries.build(
@@ -725,7 +718,6 @@ object UsageRoutes {
   ): IO[ApiError, UsageSeriesResponse] =
     for {
       _         <- requireProfileReadAccess(claims, pid, userProfileRepo)
-        .mapError(ApiError.Wrapped(_))
       profile   <- profileRepo
         .findById(pid)
         .mapError(ApiError.Db(_))
@@ -875,7 +867,7 @@ object UsageRoutes {
       clock: Clock,
   ): ZIO[Any, ApiError, Response] =
     for {
-      claims <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
+      claims <- requireAuth(req, auth)
       bucketS = req.url.queryParam("bucket").getOrElse("raw")
       bucket     <- ZIO
         .fromOption(UsageTraffic.Bucket.parse(bucketS))
@@ -938,7 +930,7 @@ object UsageRoutes {
       // single value still works ("mac=aa:bb:cc:dd:ee:01"). Empty/absent =
       // no filter on that column.
       macsRaw = parseMultiValueParam(req, "mac").map(s => MacAddress.unsafe(normalizeMac(s)))
-      profileIds <- parseMultiProfileIdParam(req).mapError(ApiError.Wrapped(_))
+      profileIds <- parseMultiProfileIdParam(req)
       // Retention gating per #814 is not yet wired (rollup tables + horizons endpoint
       // are dependencies). We still expose the 409 contract by emitting it when the
       // window straddles a horizon we DO know about — but until #814, the only
@@ -959,7 +951,7 @@ object UsageRoutes {
             }
             _    <- ZIO.foreach(devs.flatMap(_.profileId).distinct) { pid =>
               requireProfileReadAccess(claims, Some(pid), userProfileRepo)
-                .mapError(ApiError.Wrapped(_))
+
             }
           } yield
             if (profileIds.isEmpty) devs.map(_.mac)
@@ -967,8 +959,7 @@ object UsageRoutes {
         case (_, pids) if pids.nonEmpty =>
           for {
             _ <- ZIO.foreach(pids)(pid =>
-              requireProfileReadAccess(claims, Some(pid), userProfileRepo)
-                .mapError(ApiError.Wrapped(_)),
+              requireProfileReadAccess(claims, Some(pid), userProfileRepo),
             )
           } yield allDevices.filter(d => d.profileId.exists(pids.contains)).map(_.mac)
         case _                          =>

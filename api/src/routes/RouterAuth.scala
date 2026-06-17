@@ -17,7 +17,7 @@ import java.security.MessageDigest
  * Defined as a trait so #68 (enrollment) can swap implementations without editing every route.
  */
 trait RouterAuth {
-  def authenticate(req: Request): IO[Response, Router]
+  def authenticate(req: Request): IO[ApiError, Router]
 }
 
 object RouterAuth {
@@ -39,24 +39,24 @@ object RouterAuth {
 }
 
 class RouterAuthLive(repo: RouterRepo) extends RouterAuth {
-  def authenticate(req: Request): IO[Response, Router] =
+  def authenticate(req: Request): IO[ApiError, Router] =
     ZIO
       .fromOption(RouterAuth.bearer(req))
-      .orElseFail(Response.unauthorized("Missing router token"))
+      .orElseFail(ApiError.Unauthorized("Missing router token"): ApiError)
       .flatMap { tok =>
         repo
           .findByTokenHash(Sha256Hex.unsafe(RouterAuth.sha256Hex(tok)))
-          .mapError(ErrorMapper.dbErrorToResponse)
+          .mapError(ApiError.Db(_): ApiError)
           .flatMap(
-            ZIO.fromOption(_).orElseFail(Response.unauthorized("Invalid router token")),
+            ZIO
+              .fromOption(_)
+              .orElseFail(ApiError.Unauthorized("Invalid router token"): ApiError),
           )
       }
       // #1204: count only the 401s (missing / unrecognized token), not a 500 from a
-      // transient DB error that ErrorMapper also turns into a Response.
-      .tapError(resp =>
-        AppMetrics
-          .recordAuthFailure("bad_router_token")
-          .when(resp.status == Status.Unauthorized)
-          .unit,
-      )
+      // transient DB error that is mapped to a 503 by the central handler.
+      .tapError {
+        case _: ApiError.Unauthorized => AppMetrics.recordAuthFailure("bad_router_token")
+        case _                        => ZIO.unit
+      }
 }

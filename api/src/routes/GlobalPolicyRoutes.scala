@@ -26,8 +26,7 @@ import zio.json.*
 // [[ErrorMapper.errorToResponse]]; the [[wifihaven.api.ErrorBoundary]] logs (4xx WARN /
 // 5xx ERROR) + meters each error. Every case reproduces the EXACT status + body the
 // hand-rolled `Response.badRequest`/`ErrorMapper.dbErrorToResponse` produced before, so the
-// SPA sees identical responses. Auth helpers still return `Response` and are bridged via
-// [[ApiError.Wrapped]] (their migration is Routes.scala's, a later stage).
+// SPA sees identical responses.
 object GlobalPolicyRoutes {
   def routes(
       auth: AuthService,
@@ -71,7 +70,7 @@ object GlobalPolicyRoutes {
       Method.GET / "api" / "global" / "policy" ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _ <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
+            _ <- requireAuth(req, auth)
             v <- view
           } yield Response.json(v.toJson)
           handle.mapError(ErrorMapper.errorToResponse)
@@ -81,7 +80,7 @@ object GlobalPolicyRoutes {
       Method.POST / "api" / "global" / "allow"                    ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
+            claims <- requireAdmin(req, auth)
             r      <- parseBody[AddGlobalHostRequest](req)
             uid    <- actingUserId(claims)
             _      <- repo.addAllow(r.host, r.reason, uid).mapError(ApiError.Db(_))
@@ -91,7 +90,7 @@ object GlobalPolicyRoutes {
       Method.DELETE / "api" / "global" / "allow" / string("host") ->
         handler { (host: String, req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
+            claims <- requireAdmin(req, auth)
             uid    <- actingUserId(claims)
             _      <- repo
               .removeAllow(Hostname.unsafe(host), uid)
@@ -104,7 +103,7 @@ object GlobalPolicyRoutes {
       Method.POST / "api" / "global" / "blocks"                    ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
+            claims <- requireAdmin(req, auth)
             r      <- parseBody[AddGlobalHostRequest](req)
             uid    <- actingUserId(claims)
             _      <- repo.addBlock(r.host, r.reason, uid).mapError(ApiError.Db(_))
@@ -114,7 +113,7 @@ object GlobalPolicyRoutes {
       Method.DELETE / "api" / "global" / "blocks" / string("host") ->
         handler { (host: String, req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
+            claims <- requireAdmin(req, auth)
             uid    <- actingUserId(claims)
             _      <- repo
               .removeBlock(Hostname.unsafe(host), uid)
@@ -130,7 +129,7 @@ object GlobalPolicyRoutes {
       Method.PUT / "api" / "global" / "blocklists" ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
+            claims <- requireAdmin(req, auth)
             r      <- parseBody[SetGlobalBlocklistsRequest](req)
             uid    <- actingUserId(claims)
             _      <- repo
@@ -146,7 +145,7 @@ object GlobalPolicyRoutes {
       Method.POST / "api" / "global" / "blocklists" / string("id") ->
         handler { (id: String, req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
+            claims <- requireAdmin(req, auth)
             uid    <- actingUserId(claims)
             _      <- repo
               .addBlocklist(BlocklistId.unsafe(id), uid)
@@ -160,7 +159,7 @@ object GlobalPolicyRoutes {
       Method.DELETE / "api" / "global" / "blocklists" / string("id") ->
         handler { (id: String, req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _ <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
+            _ <- requireAdmin(req, auth)
             _ <- repo
               .removeBlocklist(BlocklistId.unsafe(id))
               .mapError(ApiError.Db(_))
@@ -173,7 +172,7 @@ object GlobalPolicyRoutes {
       Method.PUT / "api" / "global" / "flags" ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _ <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
+            _ <- requireAdmin(req, auth)
             r <- parseBody[SetGlobalFlagsRequest](req)
             _ <- repo
               .setFlags(r.blocked, r.blockReason, r.blockIpOnly)
@@ -190,7 +189,7 @@ object GlobalPolicyRoutes {
       Method.PATCH / "api" / "global" / "flags" ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _                <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
+            _                <- requireAdmin(req, auth)
             body             <- req.body.asString.orElseFail(ApiError.BadRequest(""))
             obj              <- ZIO
               .fromEither(FieldPatch.parseObj(body))

@@ -49,7 +49,7 @@ object RouterIngestRoutes {
           // here (per-record skip warn, per-batch debug, per-record debug dump)
           // inherits the same router context without re-wrapping.
           val handle: ZIO[Any, ApiError, Response] =
-            auth.authenticate(req).mapError(ApiError.Wrapped(_)).flatMap { router =>
+            auth.authenticate(req).flatMap { router =>
               LogContext.annotate(LogContext.RouterId, router.id.toString) {
                 for {
                   body      <- req.body.asString.orElseFail(ApiError.BadRequest(""))
@@ -122,7 +122,7 @@ object RouterIngestRoutes {
           // #602: route/method via LoggingMiddleware; `routerId` annotates the
           // whole post-auth scope so every log here inherits it without re-wrapping.
           val handle: ZIO[Any, ApiError, Response] =
-            auth.authenticate(req).mapError(ApiError.Wrapped(_)).flatMap { router =>
+            auth.authenticate(req).flatMap { router =>
               LogContext.annotate(LogContext.RouterId, router.id.toString) {
                 for {
                   body      <- req.body.asString.orElseFail(ApiError.BadRequest(""))
