@@ -260,7 +260,6 @@ object Main extends ZIOAppDefault {
       profileRepo    <- ZIO.service[ProfileRepo]
       namedSchedRepo <- ZIO.service[NamedScheduleRepo]
       hsRepo         <- ZIO.service[HouseholdSettingsRepo]
-      globalRepo     <- ZIO.service[GlobalPolicyRepo]
       tlRepo         <- ZIO.service[TimeLimitRepo]
       atlRepo        <- ZIO.service[AppTimeLimitRepo]
       deviceRepo     <- ZIO.service[DeviceRepo]
@@ -328,7 +327,6 @@ object Main extends ZIOAppDefault {
           ) ++
           ScheduleRoutes.routes(auth, namedSchedRepo) ++
           HouseholdSettingsRoutes.routes(auth, hsRepo) ++
-          GlobalPolicyRoutes.routes(auth, globalRepo, userRepo) ++
           DeviceRoutes.routes(auth, deviceRepo, upRepo)
 
       val statsRoutes: Routes[Any, Response] =

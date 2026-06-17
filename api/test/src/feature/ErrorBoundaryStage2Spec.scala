@@ -72,13 +72,6 @@ object ErrorBoundaryStage2Spec
       auth        <- makeAuth
     } yield ErrorBoundary.observe(AppRoutes.routes(auth, appRepo, profileRepo, upRepo))
 
-  private def globalRoutes =
-    for {
-      repo <- ZIO.service[GlobalPolicyRepo]
-      ur   <- ZIO.service[UserRepo]
-      auth <- makeAuth
-    } yield ErrorBoundary.observe(GlobalPolicyRoutes.routes(auth, repo, ur))
-
   private def url(p: String) = URL.decode(p).toOption.get
 
   private def post(rs: Routes[Any, Response], path: String, body: String, token: String) =
@@ -164,23 +157,6 @@ object ErrorBoundaryStage2Spec
       } yield assertTrue(dupe.status == Status.Conflict) &&
         assertTrue(dBody == """{"error":"slug_taken","slug":"youtube"}""") &&
         assertTrue(meteredStatus(scrapeB, 409)))
-        .provideSome[TestDatabase.AllRepos & EmbeddedPostgres & Clock & PrometheusPublisher](
-          ZTestLogger.default,
-        )
-    } @@ TestAspect.withLiveClock,
-    test("Global policy: a missing token is mapped to 401 and logged at WARN by the boundary") {
-      // requireAuth fails with a Response (Missing token); the migrated handler bridges it via
-      // ApiError.Wrapped, so the boundary still observes the 401 identically.
-      (for {
-        _       <- cleanDb
-        rs      <- globalRoutes
-        resp    <- rs.runZIO(Request.get(url("/api/global/policy")))
-        _       <- ZIO.sleep(700.millis)
-        scrapeB <- scrape.catchAll(r => bodyText(r))
-        logs    <- ZTestLogger.logOutput
-      } yield assertTrue(resp.status == Status.Unauthorized) &&
-        assertTrue(warned(logs, "/api/global/policy")) &&
-        assertTrue(meteredStatus(scrapeB, 401)))
         .provideSome[TestDatabase.AllRepos & EmbeddedPostgres & Clock & PrometheusPublisher](
           ZTestLogger.default,
         )

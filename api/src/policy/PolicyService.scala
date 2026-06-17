@@ -39,7 +39,6 @@ object PolicyServiceLive {
       appRepo: AppRepo,
       clock: Clock,
       uiAllowedHosts: List[Hostname] = Nil,
-      globalPolicyRepo: GlobalPolicyRepo = NoopGlobalPolicyRepo,
       // #1482: schedule downtime is read from the named-schedule model, so specs that assert
       // schedule blocking pass the real repo here; it threads into both the snapshot
       // (TimeStatusService) and the per-host /decision path. Defaults to the noop so the many specs
@@ -71,7 +70,6 @@ object PolicyServiceLive {
       tss,
       clock,
       uiAllowedHosts,
-      globalPolicyRepo,
       namedScheduleRepo,
     )
   }
@@ -99,7 +97,6 @@ class PolicyServiceLive(
     timeStatusService: TimeStatusService,
     clock: Clock,
     uiAllowedHosts: List[Hostname] = Nil,
-    globalPolicyRepo: GlobalPolicyRepo = NoopGlobalPolicyRepo,
     // #1069: defaulted to the noop so the many direct test constructions keep their arity. The
     // snapshot path gets named schedules via TimeStatusService; PolicyServiceLive needs this repo
     // directly only for the per-host /decision fallback, where the production layer wires the real
@@ -109,10 +106,12 @@ class PolicyServiceLive(
 
   // #1318: the WifiHaven UI / block-page hosts are fleet-wide always-reachable
   // hosts, so they live in `global.extraAllowed` (carving out every block at the
-  // router) rather than being copied into every profile's `extraAllowed`. The
-  // DB-backed `global_allow` set is unioned with these per-deployment config
-  // hosts when assembling the global section. (#1321 moved the curated
-  // `infraAllowHosts` onto the same global path, retiring its per-profile copy.)
+  // router) rather than being copied into every profile's `extraAllowed`. (#1321
+  // moved the curated `infraAllowHosts` onto the same global path, retiring its
+  // per-profile copy.) #1775: the legacy DB-backed `global_allow` / `global_blocks`
+  // / `global_blocklists` reader was deleted as a no-op (prod tables verified
+  // empty 2026-06-16); the curated UI + infra hosts continue to fill
+  // `global.extraAllowed` so the wire shape is unchanged.
   private val uiGlobalAllow: List[Hostname] = uiAllowedHosts
 
   // #1641: process-local last-seen-etag for snapshot-change INFO logging. On every `snapshot`
@@ -139,13 +138,8 @@ class PolicyServiceLive(
 
   def snapshot: Task[PolicySnapshot] =
     (for {
-      settings  <- householdSettingsRepo.get
-      now       <- clock.instant
-      // #1318: the fleet-wide global BlockRules, assembled once from the global-policy tables.
-      // `uiGlobalAllow` (the per-deployment UI / block-page hosts) is unioned into its
-      // `extraAllowed` so those hosts are always reachable for every MAC via `global.extraAllowed`
-      // rather than copied into each profile.
-      globalRaw <- globalPolicyRepo.get
+      settings <- householdSettingsRepo.get
+      now      <- clock.instant
       today = PolicyService.householdLocalDate(now, settings)
       // #1104: today's cap/block state for every profile in one batched read. Same call the
       // /api/time/status/... endpoints use — keeps the snapshot and the UI in lockstep.
@@ -246,8 +240,8 @@ class PolicyServiceLive(
         c -> Blocklist(version = version, url = BlocklistUrl.unsafe(s"/api/blocklists/${c.value}"))
       }.toMap
 
-      // #1318/#1321: union the fleet-wide always-reachable hosts into the
-      // DB-backed global allow set. Two relocated sources join `global_allow`:
+      // #1318/#1321: assemble the fleet-wide always-reachable host set from the
+      // two in-code sources:
       //   - `uiGlobalAllow` — the per-deployment UI / block-page hosts (#1318).
       //   - `infraAllowHosts` — the curated connectivity-check / OCSP / PKI /
       //     captive-portal / gvt2 device-level deps (#1307), which #1321 stops
@@ -256,9 +250,12 @@ class PolicyServiceLive(
       // ladder (@global_allow, #1319), carving every drop out for every MAC — so
       // these hosts beat every block path identically to the old per-(MAC) ea_
       // copies, with no per-profile duplication and a single ETag-moving source.
-      val globalRules = globalRaw.copy(
-        extraAllowed =
-          (globalRaw.extraAllowed ++ uiGlobalAllow ++ PolicyService.infraAllowHosts).distinct,
+      // #1775: the prior DB-backed `global_allow` / `global_blocks` /
+      // `global_blocklists` reader was removed (prod tables verified empty
+      // 2026-06-16); only the in-code allow set survives. The sentinel-profile
+      // path lands in #1771.
+      val globalRules = BlockRules.allowAll.copy(
+        extraAllowed = (uiGlobalAllow ++ PolicyService.infraAllowHosts).distinct,
       )
 
       val core = SnapshotCore(globalRules, devicePolicies, profilePolicies, pBlocklists)
@@ -594,7 +591,7 @@ object PolicyService {
   val layer: ZLayer[
     AppConfig & ProfileRepo & NamedScheduleRepo & HouseholdSettingsRepo & TimeLimitRepo &
       AppTimeLimitRepo & DeviceRepo & BlocklistRepo & TrafficReportRepo & TimeExtensionRepo &
-      AppRepo & GlobalPolicyRepo & TimeStatusService & Clock,
+      AppRepo & TimeStatusService & Clock,
     Nothing,
     PolicyService,
   ] = ZLayer.fromFunction {
@@ -610,7 +607,6 @@ object PolicyService {
         trr: TrafficReportRepo,
         er: TimeExtensionRepo,
         ar: AppRepo,
-        gpr: GlobalPolicyRepo,
         tss: TimeStatusService,
         clk: Clock,
     ) =>
@@ -627,7 +623,6 @@ object PolicyService {
         tss,
         clk,
         cfg.policy.uiAllowedHostsParsed,
-        gpr,
         nsr,
       )
   }

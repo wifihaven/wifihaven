@@ -2,7 +2,6 @@ import { apiHealth } from '@/api/apiHealth'
 import type {
   Alert, AppDetail, ApproveAlertRequest, BlockedInfoResponse, BlocklistHosts, BlocklistSummary, CreateAppRequest, CreateRouterRequest, CreateRouterResponse, CreateUserRequest,
   DashboardNow, DashboardStats, Device,
-  GlobalPolicyView, AddGlobalHostRequest, SetGlobalBlocklistsRequest, SetGlobalFlagsRequest,
   CreateAccessRequest, DeviceTimeStatus, DeviceTimeStatusWeek, HouseholdSettings, LoginResponse, MeResponse, ProfileAppWeeklyUsage, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek, ProfileUsageByApp,
   ConnectionEventSeriesPage, QueryLogPage,
   PatchUserRequest, PatchAppRequest,
@@ -197,37 +196,6 @@ export const api = {
     get: () => req<HouseholdSettings>('GET', '/household/settings'),
     patch: (data: Record<string, unknown>) =>
       req<void>('PATCH', '/household/settings', data),
-  },
-
-  // ── Global policy (#1320 / #1308) ──────────────────────────────────────
-  // Admin-only writes; GET is the management + audit view. `global.extraAllowed`
-  // is a security-sensitive bypass surface, so every mutation is auditable
-  // server-side (reason + acting user). Hosts are sent raw in the DELETE path —
-  // zio-http does not decode percent-encoded chars in path segments, and a
-  // hostname's dots/labels are valid path chars.
-  global: {
-    get: () => req<GlobalPolicyView>('GET', '/global/policy'),
-    addAllow: (data: AddGlobalHostRequest) =>
-      req<void>('POST', '/global/allow', data),
-    removeAllow: (host: string) => req<void>('DELETE', `/global/allow/${host}`),
-    addBlock: (data: AddGlobalHostRequest) =>
-      req<void>('POST', '/global/blocks', data),
-    removeBlock: (host: string) => req<void>('DELETE', `/global/blocks/${host}`),
-    setBlocklists: (blocklistIds: string[]) =>
-      req<void>('PUT', '/global/blocklists', { blocklistIds } as SetGlobalBlocklistsRequest),
-    // #1456: granular add/remove on the household-global category set.
-    // Idempotent — re-adding/re-removing is a no-op 200. Prefer over
-    // `setBlocklists` so disjoint-category concurrent admin edits don't
-    // clobber each other (the wholesale PUT is last-write-wins).
-    addBlocklist: (id: string) => req<void>('POST', `/global/blocklists/${id}`),
-    removeBlocklist: (id: string) => req<void>('DELETE', `/global/blocklists/${id}`),
-    setFlags: (data: SetGlobalFlagsRequest) =>
-      req<void>('PUT', '/global/flags', data),
-    // #1456: field-scoped flag PATCH. Omit a field → no change; send
-    // `blockReason: null` → clear it. Prefer over `setFlags` so two admins
-    // toggling different flags don't clobber each other.
-    patchFlags: (data: Partial<SetGlobalFlagsRequest>) =>
-      req<void>('PATCH', '/global/flags', data),
   },
 
   // ── Devices ────────────────────────────────────────────────────────────

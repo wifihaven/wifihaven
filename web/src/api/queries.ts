@@ -8,7 +8,7 @@
 import { useQuery, useQueryClient, type UseQueryOptions } from '@tanstack/react-query'
 import { api } from '@/api/client'
 import type {
-  Alert, BlocklistSummary, DashboardNow, Device, GlobalPolicyView, HouseholdSettings, NamedSchedule, ProfileDetail,
+  Alert, BlocklistSummary, DashboardNow, Device, HouseholdSettings, NamedSchedule, ProfileDetail,
   ProfileTimeStatus,
   ProfileAppWeeklyUsage,
   ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek, ProfileUsageByApp,
@@ -41,7 +41,6 @@ const STALE = {
 export const qk = {
   profiles: () => ['profiles'] as const,
   devices: () => ['devices'] as const,
-  globalPolicy: () => ['global', 'policy'] as const,
   alerts: (includeAll: boolean) => ['alerts', includeAll] as const,
   schedules: () => ['schedules'] as const,
   dashboardNow: () => ['dashboard', 'now'] as const,
@@ -319,17 +318,6 @@ export function useProfileAppWeekly(
   })
 }
 
-// #1320 — household-global policy management + audit view. Low-churn admin
-// data, so a generous stale window; the page invalidates on every edit.
-export function useGlobalPolicy(opts?: QueryOpts<GlobalPolicyView>) {
-  return useQuery({
-    queryKey: qk.globalPolicy(),
-    queryFn: () => api.global.get(),
-    staleTime: 60_000,
-    ...opts,
-  })
-}
-
 // Centralised invalidation helpers used by mutation onSuccess handlers.
 // Editing a profile or device can change schedule/limit-derived screen-time
 // rendering, so we invalidate the time/status keys too.
@@ -338,7 +326,6 @@ export function useInvalidators() {
   return {
     profiles: () => qc.invalidateQueries({ queryKey: qk.profiles() }),
     devices: () => qc.invalidateQueries({ queryKey: qk.devices() }),
-    globalPolicy: () => qc.invalidateQueries({ queryKey: qk.globalPolicy() }),
     // #1069 — schedule edits change profile/app/blocklist downtime, so also
     // refresh anything whose rendering derives from an active window.
     schedules: () => Promise.all([

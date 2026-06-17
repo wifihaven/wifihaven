@@ -15,7 +15,6 @@ import { AccountPage } from '@/pages/AccountPage'
 import { UsersPage } from '@/pages/UsersPage'
 import { RoutersPage } from '@/pages/RoutersPage'
 import { AdminPage } from '@/pages/AdminPage'
-import { GlobalPolicyPage } from '@/pages/GlobalPolicyPage'
 import { BlockedPage } from '@/pages/BlockedPage'
 import { AppsPage } from '@/pages/AppsPage'
 import { BlocklistsPage } from '@/pages/BlocklistsPage'
@@ -64,7 +63,6 @@ function AppRoutes() {
         <Route path="schedules"   element={<RequirePwChanged><RequireAdmin><SchedulesPage /></RequireAdmin></RequirePwChanged>} />
         <Route path="users"     element={<RequirePwChanged><RequireAdmin><UsersPage /></RequireAdmin></RequirePwChanged>} />
         <Route path="routers"   element={<RequirePwChanged><RequireAdmin><RoutersPage /></RequireAdmin></RequirePwChanged>} />
-        <Route path="global-policy" element={<RequirePwChanged><RequireAdmin><GlobalPolicyPage /></RequireAdmin></RequirePwChanged>} />
         <Route path="admin"     element={<RequirePwChanged><RequireAdmin><AdminPage /></RequireAdmin></RequirePwChanged>} />
       </Route>
     </Routes>
