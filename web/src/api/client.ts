@@ -215,8 +215,19 @@ export const api = {
     removeBlock: (host: string) => req<void>('DELETE', `/global/blocks/${host}`),
     setBlocklists: (blocklistIds: string[]) =>
       req<void>('PUT', '/global/blocklists', { blocklistIds } as SetGlobalBlocklistsRequest),
+    // #1456: granular add/remove on the household-global category set.
+    // Idempotent — re-adding/re-removing is a no-op 200. Prefer over
+    // `setBlocklists` so disjoint-category concurrent admin edits don't
+    // clobber each other (the wholesale PUT is last-write-wins).
+    addBlocklist: (id: string) => req<void>('POST', `/global/blocklists/${id}`),
+    removeBlocklist: (id: string) => req<void>('DELETE', `/global/blocklists/${id}`),
     setFlags: (data: SetGlobalFlagsRequest) =>
       req<void>('PUT', '/global/flags', data),
+    // #1456: field-scoped flag PATCH. Omit a field → no change; send
+    // `blockReason: null` → clear it. Prefer over `setFlags` so two admins
+    // toggling different flags don't clobber each other.
+    patchFlags: (data: Partial<SetGlobalFlagsRequest>) =>
+      req<void>('PATCH', '/global/flags', data),
   },
 
   // ── Devices ────────────────────────────────────────────────────────────
