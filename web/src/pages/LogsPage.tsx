@@ -364,7 +364,7 @@ function RawEventsView({
               <td className={`px-2 py-1 whitespace-nowrap ${l.blocked ? 'text-red-700' : 'text-brand-accent'}`}>
                 {l.blocked ? '✗ blocked' : '✓ ok'}
               </td>
-              <td className="px-2 py-1 text-brand-text-muted hidden sm:table-cell">{blockReasonText(l.reason)}</td>
+              <td className="px-2 py-1 text-brand-text-muted hidden sm:table-cell">{blockReasonText(l.reason, { host: l.host.value })}</td>
               <td className="px-2 py-1 text-brand-text-muted hidden lg:table-cell">{l.location ?? ''}</td>
             </tr>
           ))}

@@ -146,7 +146,7 @@ function RecentlyBlockedRow({ row }: { row: QueryLog }) {
       <span className="text-xs text-brand-text-muted truncate hidden sm:block max-w-[40%]">
         {who}{row.profileName ? ` · ${row.profileName}` : ''}
       </span>
-      <span className="text-xs text-red-700 shrink-0">{blockReasonText(row.reason)}</span>
+      <span className="text-xs text-red-700 shrink-0">{blockReasonText(row.reason, { host: row.host.value })}</span>
     </li>
   )
 }
@@ -301,7 +301,7 @@ function LogTable({ logs }: { logs: QueryLog[] }) {
             <td className={`px-4 py-2 ${l.blocked ? 'text-red-700' : 'text-brand-accent-dark'}`}>
               {l.blocked ? '✗ blocked' : '✓ ok'}
             </td>
-            <td className="px-4 py-2 text-brand-text-muted hidden md:table-cell">{blockReasonText(l.reason)}</td>
+            <td className="px-4 py-2 text-brand-text-muted hidden md:table-cell">{blockReasonText(l.reason, { host: l.host.value })}</td>
           </tr>
         ))}
       </tbody>
