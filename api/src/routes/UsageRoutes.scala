@@ -56,7 +56,7 @@ object UsageRoutes {
       Method.GET / "api" / "usage" / "config"                                   ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _ <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
+            _ <- requireAuth(req, auth)
             cfg = UsageConfig(
               bucketTiers = BucketPolicy.bucketTiers.view.mapValues(_.wire).toMap,
               horizons = RetentionHorizons(
