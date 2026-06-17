@@ -21,8 +21,8 @@ import zio.test.*
 /**
  * #1570 Stage 2: the migrated route files now fail with a typed [[ApiError]] mapped centrally by
  * [[ErrorMapper.errorToResponse]] and observed by [[ErrorBoundary.observe]]. This spec wraps a few
- * representative migrated families (Schedules, Apps, Global Policy) in the boundary exactly as
- * `Main` does and pins, end-to-end against embedded Postgres (no mocks):
+ * representative migrated families (Schedules, Apps) in the boundary exactly as `Main` does and
+ * pins, end-to-end against embedded Postgres (no mocks):
  *
  *   1. Wire back-compat: each error path returns the EXACT status + body the hand-rolled code
  *      produced — including the structured `name_taken` / `slug_taken` 409 JSON bodies the SPA

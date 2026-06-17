@@ -1596,7 +1596,6 @@ case class DevicePolicy(
     rules: Option[BlockRules],
 ) derives JsonCodec
 
-// ── Global policy management (#1320 / #1308) ──────────────────────────────
 case class ProfilePolicy(
     name: String,
     rules: BlockRules,
