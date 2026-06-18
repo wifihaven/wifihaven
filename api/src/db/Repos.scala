@@ -1092,33 +1092,35 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
         .option
         .transact(xa),
     )
-  def upsert(mac: MacAddress, name: String, pid: Option[ProfileId], ip: String) =
+  def upsert(mac: MacAddress, name: String, pid: Option[ProfileId], ip: String)        = {
     // #708: pid=None writes NULL (device unassigned). Devices without a profile
     // are a supported state — same shape auto-discovery produces.
     // #1771: defensive guard — devices cannot be assigned to the global sentinel
     // profile. The route layer rejects this with a 400 before we get here, but
     // catching it again in the repo means a buggy code path (or a direct SQL
     // call from a future caller) still fails loudly instead of corrupting the
-    // device-to-profile graph. The check is one SELECT against a tiny table.
-    pid.fold(ZIO.unit: Task[Unit]) { p =>
+    // device-to-profile graph. The guard and the INSERT run in the SAME doobie
+    // transaction so a (today-impossible) concurrent flip of `profiles.is_global`
+    // can't slip a device assignment past the check.
+    val check = pid.fold(doobie.free.connection.unit) { p =>
       sql"SELECT is_global FROM profiles WHERE id=$p"
         .query[Boolean]
         .option
-        .transact(xa)
         .flatMap {
           case Some(true) =>
-            ZIO.fail(
+            doobie.free.connection.raiseError[Unit](
               new IllegalArgumentException(
                 s"devices cannot be assigned to the global profile (id=${p.value})",
               ),
             )
-          case _          => ZIO.unit
+          case _          => doobie.free.connection.unit
         }
-    } *>
+    }
+    (check *>
       sql"INSERT INTO devices(mac,name,profile_id,last_seen_ip,last_seen_at) VALUES($mac,$name,$pid,NULLIF($ip,''),NOW()) ON CONFLICT(mac) DO UPDATE SET name=EXCLUDED.name,profile_id=EXCLUDED.profile_id RETURNING id"
         .query[DeviceId]
-        .unique
-        .transact(xa)
+        .unique).transact(xa)
+  }
   def updateLastSeen(mac: MacAddress, ip: String)                                      =
     sql"UPDATE devices SET last_seen_ip=$ip,last_seen_at=NOW() WHERE mac=$mac".update.run
       .transact(xa)

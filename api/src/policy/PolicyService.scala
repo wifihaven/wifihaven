@@ -224,10 +224,18 @@ class PolicyServiceLive(
         // the router's existing extraAllowed-beats-extraBlocked precedence
         // (`feedback_extraallowed_beats_blocked`) means a host that ends up in both lanes via
         // the union still resolves to allow, matching the prior global_* semantics.
+        // Under `defaultDeny` the profile's own extraBlocked / blocklistIds are intentionally
+        // empty (redundant under block-all per `computeBlockRules`); skip the global union on
+        // those two lanes so the wire payload stays consistent with the design intent. The
+        // router's whole-MAC drop dominates regardless, so behavior is unchanged either way.
         val rules = ownRules.copy(
           extraAllowed = (ownRules.extraAllowed ++ globalRulesResolved.extraAllowed).distinct,
-          extraBlocked = (ownRules.extraBlocked ++ globalRulesResolved.extraBlocked).distinct,
-          blocklistIds = (ownRules.blocklistIds ++ globalRulesResolved.blocklistIds).distinct,
+          extraBlocked =
+            if (p.defaultDeny) ownRules.extraBlocked
+            else (ownRules.extraBlocked ++ globalRulesResolved.extraBlocked).distinct,
+          blocklistIds =
+            if (p.defaultDeny) ownRules.blocklistIds
+            else (ownRules.blocklistIds ++ globalRulesResolved.blocklistIds).distinct,
         )
 
         p.id -> ProfilePolicy(name = p.name, rules = rules, failureMode = p.failureMode)

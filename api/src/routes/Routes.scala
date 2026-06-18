@@ -448,9 +448,11 @@ object ProfileRoutes {
             _         <- requireProfileAccess(claims, pid, userProfileRepo)
             // Existence check up front so a missing row 404s instead of
             // letting per-field UPDATEs silently no-op. We deliberately do
-            // NOT carry the loaded row into the writes below: every SET is
-            // column-scoped, so there's no full-row copy to drift.
-            _         <- profileRepo
+            // NOT carry the loaded row's mutable columns into the writes below: every SET is
+            // column-scoped, so there's no full-row copy to drift. `isGlobal` is the one
+            // structural flag we DO carry — it's immutable for the row's lifetime (#1771), so
+            // reading it once and reusing below avoids a second findById.
+            existing  <- profileRepo
               .findById(pid)
               .mapError(ApiError.Db(_))
               .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Profile not found")))
@@ -486,11 +488,8 @@ object ProfileRoutes {
             // #1771: paused / pauseMode / timeLimit are meaningless household-wide. Reject the
             // PATCH if any of those are present AND the target is the global sentinel. Other
             // fields (name, blockedCategories, blockIpOnly, …) are fine on the sentinel.
-            isGlobal                <- profileRepo
-              .findById(pid)
-              .mapError(ApiError.Db(_))
-              .map(_.exists(_.isGlobal))
-            _                       <- ZIO.when(isGlobal) {
+            // Read `isGlobal` from the existing-row check above — no second findById.
+            _                       <- ZIO.when(existing.isGlobal) {
               val offending = List(
                 "paused"    -> (pausedPatch != FieldPatch.Absent),
                 "pauseMode" -> (pauseModePatch != FieldPatch.Absent),
@@ -633,7 +632,7 @@ object DeviceRoutes {
       userProfileRepo: UserProfileRepo,
       // #1771: profileRepo is consulted to reject device assignments to the global sentinel with
       // a 400 before any DB write. The repo-layer guard (`DeviceRepoLive.upsert`) is a defensive
-      // backstop. Passing `null` is unsafe — every call site passes the real repo.
+      // backstop.
       profileRepo: ProfileRepo,
   ): Routes[Any, Response] =
     Routes(
