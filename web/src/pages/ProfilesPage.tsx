@@ -9,7 +9,7 @@ import { SaveStatusBadge } from '@/components/SaveStatusBadge'
 import { SchedulePicker } from '@/components/SchedulePicker'
 import type {
   AppDetail, AppMode, AppPolicyAssignment, AppScheduleMode, AppScheduleRule,
-  CrossDeviceOverlapMode, Device, FailureMode, PauseMode, ProfileDetail,
+  CrossDeviceOverlapMode, Device, PatchProfileRequest, PauseMode, ProfileDetail,
   ProfileTimeSummary, ScheduleWindow,
   UpsertAppAssignmentRequest, UpsertProfileRequest, User,
 } from '@/types/api'
@@ -19,44 +19,6 @@ import { ProfileUsageBreakdown } from '@/components/usage/ProfileUsageBreakdown'
 import { EmptyState } from '@/components/EmptyState'
 import { PageLoader } from './DashboardPage'
 import { formatMins } from '@/lib/timeFormat'
-
-interface FormState {
-  name: string
-  blockedCategories: string[]
-  paused: boolean
-  timeLimit: string
-  failureMode: FailureMode
-  crossDeviceOverlapMode: CrossDeviceOverlapMode
-  defaultDeny: boolean
-}
-
-function detailToForm(pd: ProfileDetail): FormState {
-  return {
-    name: pd.profile.name,
-    blockedCategories: pd.profile.blockedCategories,
-    paused: pd.profile.paused,
-    timeLimit: pd.timeLimit ? String(pd.timeLimit.dailyMinutes) : '',
-    failureMode: pd.profile.failureMode,
-    crossDeviceOverlapMode: pd.profile.crossDeviceOverlapMode,
-    defaultDeny: pd.profile.defaultDeny,
-  }
-}
-
-// #1494: schedules are no longer carried on the profile upsert — they attach
-// via api.profiles.setSchedules (PUT /profiles/{id}/schedules). So the
-// full-profile PUT this builds never touches schedules.
-function formToRequest(f: FormState): UpsertProfileRequest {
-  const tl = f.timeLimit.trim() === '' ? null : Number(f.timeLimit)
-  return {
-    name: f.name.trim(),
-    blockedCategories: f.blockedCategories,
-    paused: f.paused,
-    timeLimit: tl !== null && Number.isFinite(tl) ? tl : null,
-    failureMode: f.failureMode,
-    crossDeviceOverlapMode: f.crossDeviceOverlapMode,
-    defaultDeny: f.defaultDeny,
-  }
-}
 
 // #972: chip states reflect the at-a-glance "what's this profile doing right
 // now" answer. The schedule-active check is approximated locally — but it must
@@ -288,9 +250,15 @@ export function ProfilesPage() {
   // the inline create form below drops the new profile with defaults so the
   // operator immediately edits it via the same inline surfaces.
 
+  // #1737 — every inline edit + the pause toggle now PATCHes only the field(s)
+  // it changed, instead of round-tripping the whole UpsertProfileRequest. This
+  // closes the concurrent-edit clobber #423 was opened to fix: two operators
+  // editing different fields of the same profile no longer overwrite each
+  // other. PUT (api.profiles.update) stays on the client for full-shape replace
+  // but ProfilesPage no longer uses it.
   const updateMutation = useMutation({
-    mutationFn: ({ id, body }: { id: number; body: UpsertProfileRequest }) =>
-      api.profiles.update(id, body),
+    mutationFn: ({ id, body }: { id: number; body: PatchProfileRequest }) =>
+      api.profiles.patch(id, body),
     onSuccess: () => Promise.all([invalidators.profileMutated(), refetchAux()]),
   })
 
@@ -350,14 +318,13 @@ export function ProfilesPage() {
   })
 
   async function togglePause(pd: ProfileDetail, mode?: PauseMode) {
-    // #406: setting `paused` explicitly via the full-profile PUT is
-    // idempotent under concurrent clicks. #423 tracks adding PATCH so we
-    // don't have to send the whole profile.
+    // #406: setting `paused` explicitly is idempotent under concurrent clicks.
+    // #1737: PATCH carries only `paused` (and `pauseMode` when pausing), so a
+    // pause click no longer clobbers a concurrent edit to some other field.
     // #1471: when pausing, the admin picks soft vs hard at click-time; the
-    // chosen mode rides this same PUT. Resume omits it (preserve existing).
-    const body = formToRequest(detailToForm(pd))
+    // chosen mode rides this PATCH. Resume omits it (preserve existing).
     const nextPaused = !pd.profile.paused
-    body.paused = nextPaused
+    const body: PatchProfileRequest = { paused: nextPaused }
     if (nextPaused && mode) body.pauseMode = mode
     await updateMutation.mutateAsync({ id: pd.profile.id, body })
   }
@@ -603,7 +570,7 @@ function ProfileShellRow({
   onGrantTime: () => void
   onAppsChanged: () => void | Promise<void>
   onProfileChanged: () => void | Promise<unknown>
-  updateProfile: (body: UpsertProfileRequest) => Promise<unknown>
+  updateProfile: (body: PatchProfileRequest) => Promise<unknown>
   onToggleUserLink: (userId: number) => void
   pendingUserLinks: Set<string>
   userLinkError: string | null
@@ -637,8 +604,8 @@ function ProfileShellRow({
   // #973 — inline name editor lives in the card header (no redundant
   // "Name" subsection). When the card is expanded and the operator is an
   // admin, the title-line spot becomes an unobtrusive editable input;
-  // debounced autosave does a full-profile PUT because PATCH /profiles/:id
-  // (#423) hasn't shipped yet.
+  // debounced autosave PATCHes only the name (#1737) so it can't clobber a
+  // concurrent edit to some other field of the profile.
   const [editingName, setEditingName] = useState(pd.profile.name)
   useEffect(() => { setEditingName(pd.profile.name) }, [pd.profile.name])
   const { status: nameStatus, error: nameError } = useDebouncedSave(
@@ -646,14 +613,7 @@ function ProfileShellRow({
     async (next: string) => {
       const trimmed = next.trim()
       if (!trimmed) throw new Error('Name is required')
-      await updateProfile({
-        name: trimmed,
-        blockedCategories: pd.profile.blockedCategories,
-        paused: pd.profile.paused,
-        timeLimit: pd.timeLimit ? pd.timeLimit.dailyMinutes : null,
-        failureMode: pd.profile.failureMode,
-        crossDeviceOverlapMode: pd.profile.crossDeviceOverlapMode,
-      })
+      await updateProfile({ name: trimmed })
       await onProfileChanged()
     },
     { key: pd.profile.id },
@@ -1270,15 +1230,17 @@ function TimeSubsection({
     setStatus('saving')
     setErrorMsg(null)
     try {
-      const body = formToRequest(detailToForm(pd))
+      // #1737: PATCH only the two fields this subsection owns — the daily cap
+      // and the cross-device overlap mode. Schedules (#1474) and pauseMode
+      // (#1471) are owned elsewhere, and a field-scoped PATCH preserves them
+      // without round-tripping the whole profile (which would clobber a
+      // concurrent edit). `timeLimit: null` clears the cap.
       const tl = next.timeLimit.trim() === '' ? null : Number(next.timeLimit)
-      body.timeLimit = tl !== null && Number.isFinite(tl) && tl > 0 ? tl : null
-      // Schedules round-trip unchanged from pd (formToRequest already carried
-      // them); this subsection no longer edits them (#1474).
-      body.crossDeviceOverlapMode = next.crossDeviceOverlapMode
-      // #1471: pauseMode is no longer edited here; omit it from the time-form
-      // PUT so the existing value is preserved (the pause action owns it now).
-      await api.profiles.update(pd.profile.id, body)
+      const body: PatchProfileRequest = {
+        timeLimit: tl !== null && Number.isFinite(tl) && tl > 0 ? tl : null,
+        crossDeviceOverlapMode: next.crossDeviceOverlapMode,
+      }
+      await api.profiles.patch(pd.profile.id, body)
       baselineRef.current = next
       setStatus('saved')
       void invalidators.profileMutated()
@@ -1606,7 +1568,7 @@ function AppsRulesSubsection({
   apps: AppDetail[]
   onAppsChanged: () => void | Promise<void>
   onProfileChanged: () => void | Promise<unknown>
-  updateProfile: (body: UpsertProfileRequest) => Promise<unknown>
+  updateProfile: (body: PatchProfileRequest) => Promise<unknown>
 }) {
   const [open, setOpen] = useState(false)
   const assignedAppCount = useMemo(
