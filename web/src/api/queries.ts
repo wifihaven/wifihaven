@@ -83,6 +83,19 @@ export function useProfiles(opts?: QueryOpts<ProfileDetail[]>) {
   })
 }
 
+// #1773 — the household-global sentinel profile (#1771). Hidden from
+// `GET /api/profiles`, fetched via `/api/profiles/global` so the SPA can edit
+// it through the same per-profile editor preset to its id. Admin-only on the
+// server; non-admins get a 401/403 and the query resolves to `undefined`.
+export function useGlobalProfile(opts?: QueryOpts<ProfileDetail>) {
+  return useQuery({
+    queryKey: ['profiles', 'global'] as const,
+    queryFn: () => api.profiles.getGlobal(),
+    staleTime: STALE.profiles,
+    ...opts,
+  })
+}
+
 // #1743: bucket → grain mapping the API emits from BucketPolicy. Cached for an
 // hour because it's effectively a constant; the SPA falls back to the locally
 // shipped defaults when the fetch hasn't completed (or fails) so the
@@ -324,7 +337,13 @@ export function useProfileAppWeekly(
 export function useInvalidators() {
   const qc = useQueryClient()
   return {
-    profiles: () => qc.invalidateQueries({ queryKey: qk.profiles() }),
+    profiles: () => Promise.all([
+      qc.invalidateQueries({ queryKey: qk.profiles() }),
+      // #1773: the sentinel uses a separate query key (/profiles/global). Any
+      // profile-touching mutation that could land on the sentinel (apps,
+      // categories, defaultDeny) must bust it too.
+      qc.invalidateQueries({ queryKey: ['profiles', 'global'] }),
+    ]),
     devices: () => qc.invalidateQueries({ queryKey: qk.devices() }),
     // #1069 — schedule edits change profile/app/blocklist downtime, so also
     // refresh anything whose rendering derives from an active window.
@@ -338,6 +357,7 @@ export function useInvalidators() {
     timeStatus: () => qc.invalidateQueries({ queryKey: ['time', 'status'] }),
     profileMutated: () => Promise.all([
       qc.invalidateQueries({ queryKey: qk.profiles() }),
+      qc.invalidateQueries({ queryKey: ['profiles', 'global'] }),
       qc.invalidateQueries({ queryKey: qk.devices() }),
       qc.invalidateQueries({ queryKey: ['time', 'status'] }),
       qc.invalidateQueries({ queryKey: qk.dashboardNow() }),

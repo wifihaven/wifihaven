@@ -147,6 +147,11 @@ export const api = {
   // ── Profiles ───────────────────────────────────────────────────────────
   profiles: {
     list: () => req<ProfileDetail[]>('GET', '/profiles'),
+    // #1773 — the single `is_global=TRUE` sentinel profile (#1771). Hidden from
+    // /profiles; surfaced here so the SPA can render it through the same per-
+    // profile editor and POST its app-policy assignments / categories / default-
+    // deny via the existing `/profiles/<id>/...` routes.
+    getGlobal: () => req<ProfileDetail>('GET', '/profiles/global'),
     get: (id: number) => req<ProfileDetail>('GET', `/profiles/${id}`),
     create: (data: UpsertProfileRequest) =>
       req<{ id: number }>('POST', '/profiles', data),

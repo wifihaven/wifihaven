@@ -252,6 +252,27 @@ object ProfileRoutes {
           } yield Response.json(details.toJson)
           handle.mapError(ErrorMapper.errorToResponse)
         },
+      // #1773: surface the global sentinel profile to the SPA. `GET /api/profiles` hides it (the
+      // RoleAccessSpec invariant from #1771), so this is the SPA's one window into it for editing
+      // its app-policy assignments / categories / defaultDeny via the per-profile editor preset to
+      // the sentinel's id. Route literal MUST come before the `/profiles/long("id")` matcher so
+      // "global" doesn't get path-parsed into a Long. Admin-only because only admins author policy.
+      Method.GET / "api" / "profiles" / "global"                 ->
+        handler { (req: Request) =>
+          val handle: ZIO[Any, ApiError, Response] = for {
+            _       <- requireAdmin(req, auth)
+            p       <- profileRepo.getGlobal
+              .mapError(ApiError.Db(_))
+              .flatMap(
+                ZIO.fromOption(_).orElseFail(ApiError.NotFound("Global profile not seeded")),
+              )
+            tl      <- timeLimitRepo.findForProfile(p.id).mapError(ApiError.Db(_))
+            schedId <- namedScheduleRepo
+              .blockScheduleIdsForProfile(p.id)
+              .mapError(ApiError.Db(_))
+          } yield Response.json(ProfileDetail(p, tl, schedId).toJson)
+          handle.mapError(ErrorMapper.errorToResponse)
+        },
       Method.GET / "api" / "profiles" / long("id")               ->
         handler { (id: Long, req: Request) =>
           val pid                                  = ProfileId(id)
