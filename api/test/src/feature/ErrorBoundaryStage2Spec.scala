@@ -21,8 +21,8 @@ import zio.test.*
 /**
  * #1570 Stage 2: the migrated route files now fail with a typed [[ApiError]] mapped centrally by
  * [[ErrorMapper.errorToResponse]] and observed by [[ErrorBoundary.observe]]. This spec wraps a few
- * representative migrated families (Schedules, Apps, Global Policy) in the boundary exactly as
- * `Main` does and pins, end-to-end against embedded Postgres (no mocks):
+ * representative migrated families (Schedules, Apps) in the boundary exactly as `Main` does and
+ * pins, end-to-end against embedded Postgres (no mocks):
  *
  *   1. Wire back-compat: each error path returns the EXACT status + body the hand-rolled code
  *      produced — including the structured `name_taken` / `slug_taken` 409 JSON bodies the SPA
@@ -71,13 +71,6 @@ object ErrorBoundaryStage2Spec
       upRepo      <- ZIO.service[UserProfileRepo]
       auth        <- makeAuth
     } yield ErrorBoundary.observe(AppRoutes.routes(auth, appRepo, profileRepo, upRepo))
-
-  private def globalRoutes =
-    for {
-      repo <- ZIO.service[GlobalPolicyRepo]
-      ur   <- ZIO.service[UserRepo]
-      auth <- makeAuth
-    } yield ErrorBoundary.observe(GlobalPolicyRoutes.routes(auth, repo, ur))
 
   private def url(p: String) = URL.decode(p).toOption.get
 
@@ -164,23 +157,6 @@ object ErrorBoundaryStage2Spec
       } yield assertTrue(dupe.status == Status.Conflict) &&
         assertTrue(dBody == """{"error":"slug_taken","slug":"youtube"}""") &&
         assertTrue(meteredStatus(scrapeB, 409)))
-        .provideSome[TestDatabase.AllRepos & EmbeddedPostgres & Clock & PrometheusPublisher](
-          ZTestLogger.default,
-        )
-    } @@ TestAspect.withLiveClock,
-    test("Global policy: a missing token is mapped to 401 and logged at WARN by the boundary") {
-      // requireAuth fails with a Response (Missing token); the migrated handler bridges it via
-      // ApiError.Wrapped, so the boundary still observes the 401 identically.
-      (for {
-        _       <- cleanDb
-        rs      <- globalRoutes
-        resp    <- rs.runZIO(Request.get(url("/api/global/policy")))
-        _       <- ZIO.sleep(700.millis)
-        scrapeB <- scrape.catchAll(r => bodyText(r))
-        logs    <- ZTestLogger.logOutput
-      } yield assertTrue(resp.status == Status.Unauthorized) &&
-        assertTrue(warned(logs, "/api/global/policy")) &&
-        assertTrue(meteredStatus(scrapeB, 401)))
         .provideSome[TestDatabase.AllRepos & EmbeddedPostgres & Clock & PrometheusPublisher](
           ZTestLogger.default,
         )

@@ -107,10 +107,13 @@ object MetricGuard {
     // a small fixed enum; bounded. Reuses the existing `result` label key
     // rather than introducing `outcome` (#1210 keeps the vocabulary small).
     "traffic_reports_backfill_total"            -> Set("result"),
-    // #1318 — global-policy-layer visibility. `global_allow_hosts` is the size of the
-    // security-sensitive fleet-wide always-reachable set (a host here bypasses every block);
-    // `default_deny_profiles` counts profiles running the block-all baseline. Both are unlabelled
-    // household-scoped gauges set each time the policy snapshot is assembled.
+    // #1318/#1775 — global-policy-layer visibility. `global_allow_hosts` is the size of the
+    // fleet-wide always-reachable set (a host here bypasses every block). #1775 removed the
+    // DB-backed authoring path, so the set is now sourced entirely from compile-time config
+    // (`uiAllowedHosts` + `infraAllowHosts`); the gauge stays as a static sanity check that
+    // the deployment's allow set was loaded. `default_deny_profiles` counts profiles running the
+    // block-all baseline. Both are unlabelled household-scoped gauges, set each time the policy
+    // snapshot is assembled.
     "wifihaven_global_allow_hosts"              -> Set.empty[String],
     "wifihaven_default_deny_profiles"           -> Set.empty[String],
     // #1676 — per-(mac, app) sessions dropped by the #1666 phantom-suppression
@@ -388,13 +391,14 @@ object AppMetrics {
   def setConnectedRouters(count: Int): UIO[Unit] =
     MetricGuard.gauge("agent_connected_routers", Map.empty, count.toDouble)
 
-  // ── Global policy layer (#1318) ─────────────────────────────────────────────
+  // ── Global policy layer (#1318/#1775) ───────────────────────────────────────
   // Emitted from PolicyService.snapshot each time the snapshot is assembled.
   // `global_allow_hosts` tracks the size of the fleet-wide always-reachable set
-  // (`global.extraAllowed`) — a host on it is reachable from every device past
-  // any block, so operators want to watch it grow. `default_deny_profiles`
-  // counts profiles running the block-all baseline. Both unlabelled, gated by
-  // the cardinality firewall on the name.
+  // (`global.extraAllowed`); post-#1775 this is sourced entirely from compile-time
+  // config (`uiAllowedHosts` + `infraAllowHosts`), so the gauge is a static
+  // sanity check the deployment loaded its allow set rather than a live-growth
+  // signal. `default_deny_profiles` counts profiles running the block-all
+  // baseline. Both unlabelled, gated by the cardinality firewall on the name.
 
   def setGlobalPolicy(globalAllowHosts: Int, defaultDenyProfiles: Int): UIO[Unit] =
     MetricGuard.gauge("wifihaven_global_allow_hosts", Map.empty, globalAllowHosts.toDouble) *>

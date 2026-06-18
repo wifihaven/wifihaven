@@ -774,52 +774,6 @@ export interface UpsertProfileRequest {
   defaultDeny?: boolean
 }
 
-// #1320 / #1308: admin-facing management + audit view of the household-global
-// policy (`PolicySnapshot.global`). The wire snapshot carries only flat
-// hostname / category lists for the router; the *why* and *who* (the
-// security-sensitive bypass-list audit trail) are surfaced ONLY here.
-
-// One row of the global allow/block audit history. `removedAt == null` ⇒ the
-// entry is active and feeds the snapshot; non-null ⇒ soft-deleted, kept for
-// audit. `addedBy`/`removedBy` are usernames resolved server-side.
-export interface GlobalPolicyAuditEntry {
-  host: string
-  reason: string | null
-  addedBy: string | null
-  addedAt: string
-  removedBy: string | null
-  removedAt: string | null
-}
-
-export type MacBlockReason =
-  | 'Paused' | 'Schedule' | 'TimeLimit' | 'Manual' | 'Unmanaged' | 'DefaultDeny'
-
-export interface GlobalPolicyView {
-  // Full history (active + soft-deleted). The active set feeding the snapshot
-  // is the entries with `removedAt == null`.
-  allow: GlobalPolicyAuditEntry[]
-  blocks: GlobalPolicyAuditEntry[]
-  blocklistIds: string[]
-  blocked: boolean
-  blockReason: MacBlockReason | null
-  blockIpOnly: boolean
-}
-
-export interface AddGlobalHostRequest {
-  host: string
-  reason?: string | null
-}
-
-export interface SetGlobalBlocklistsRequest {
-  blocklistIds: string[]
-}
-
-export interface SetGlobalFlagsRequest {
-  blocked: boolean
-  blockReason?: MacBlockReason | null
-  blockIpOnly: boolean
-}
-
 export interface UpsertDeviceRequest {
   mac: string
   name: string

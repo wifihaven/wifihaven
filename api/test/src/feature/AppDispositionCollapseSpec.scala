@@ -96,7 +96,6 @@ object AppDispositionCollapseSpec extends ZIOSpec[TestDatabase.AllRepos & Embedd
       ar,
       clk,
       Nil,
-      NoopGlobalPolicyRepo,
       nsr,
     )
 

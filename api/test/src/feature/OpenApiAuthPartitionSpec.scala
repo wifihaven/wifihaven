@@ -47,7 +47,6 @@ object OpenApiAuthPartitionSpec extends ZIOSpecDefault {
       ("/api/devices", AuthScheme.User, "Routes.scala (DeviceRoutes)"),
       ("/api/schedules", AuthScheme.User, "ScheduleRoutes.scala"),
       ("/api/household-settings", AuthScheme.User, "Routes.scala (HouseholdSettingsRoutes)"),
-      ("/api/global-policy", AuthScheme.User, "GlobalPolicyRoutes.scala"),
       ("/api/alerts", AuthScheme.User, "AlertRoutes.scala"),
       ("/api/apps", AuthScheme.User, "AppRoutes.scala"),
       ("/api/dashboard/now", AuthScheme.User, "DashboardNowRoutes.scala"),
