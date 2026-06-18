@@ -1125,42 +1125,51 @@ describe("render blocklist enforcement (#352)", function()
 
   -- ── dnsmasq nftset= directives (post-#394 nftset/ipset migration) ───────
 
-  it("emits combined v4+v6 nftset=/<host>/... for each host in _blocklist_hosts[id] (#392)", function()
+  -- Post-#1782: bl_ nftset= directives are NO LONGER emitted inline in
+  -- wifihaven.conf. Instead, render.dnsmasq emits `conf-file=` directives that
+  -- point dnsmasq to per-blocklist shard files written by blocklists.render_shards.
+  -- This keeps the 80k+ host nftset= directives out of the agent's Lua heap.
+
+  it("emits conf-file= directive for each id in snapshot.blocklists (#1782)", function()
     local conf = render.dnsmasq(snap_bl())
     assert.truthy(conf:find(
-      "nftset=/adserver.example.com/4#inet#wifihaven#bl_test_ads,6#inet#wifihaven#bl6_test_ads",
-      1, true))
-    assert.truthy(conf:find(
-      "nftset=/doubleclick.net/4#inet#wifihaven#bl_test_ads,6#inet#wifihaven#bl6_test_ads",
-      1, true))
+      "conf-file=/tmp/wifihaven-blocklist-test_ads.conf",
+      1, true), "dnsmasq conf must reference the per-blocklist shard via conf-file=")
   end)
 
-  it("merges both bl_ specs into ONE nftset= directive when the same host appears in two blocklists (#1460)", function()
-    -- Post-#1460 contract: every nft set targeting a given host lands in ONE
-    -- comma-joined `nftset=/<host>/...` directive. dnsmasq honours only the
-    -- first matching `nftset=/<host>/...` directive per domain and silently
-    -- drops the rest, which is the H3 enforcement-gap bug: an ea_ directive
-    -- emitted before a global_block directive for the same host leaves
-    -- @global_block empty. Two bl_ sets covering the same host are the
-    -- closest pre-existing analogue.
+  it("does NOT emit bl_/bl6_ specs inline in the merged nftset= directive (#1782)", function()
+    -- bl_ specs now live in shard files, not in the main wifihaven.conf.
+    local conf = render.dnsmasq(snap_bl())
+    -- No inline nftset= line should contain bl_test_ads or bl6_test_ads.
+    assert.is_nil(conf:find("#bl_test_ads", 1, true),
+      "bl_ specs must not appear inline in wifihaven.conf after #1782")
+    assert.is_nil(conf:find("#bl6_test_ads", 1, true))
+  end)
+
+  it("emits conf-file= for every id in snapshot.blocklists, sorted", function()
     local s = snap_bl()
     s.blocklists["test_social"] = { version = "v1", url = "http://api/api/blocklists/test_social" }
-    s._blocklist_hosts["test_social"] = { "doubleclick.net", "facebook.com" }
     local conf = render.dnsmasq(s)
-    local _, dir_count = conf:gsub("nftset=/doubleclick%.net/", "")
-    assert.equals(1, dir_count)
-    assert.truthy(conf:find(
-      "4#inet#wifihaven#bl_test_ads,6#inet#wifihaven#bl6_test_ads", 1, true))
-    assert.truthy(conf:find(
-      "4#inet#wifihaven#bl_test_social,6#inet#wifihaven#bl6_test_social", 1, true))
+    assert.truthy(conf:find("conf-file=/tmp/wifihaven-blocklist-test_ads.conf", 1, true))
+    assert.truthy(conf:find("conf-file=/tmp/wifihaven-blocklist-test_social.conf", 1, true))
   end)
 
-  it("emits no nftset= lines when _blocklist_hosts is absent or empty", function()
+  it("emits no conf-file= lines when snapshot.blocklists is empty (#1782)", function()
     local s = snap_bl()
-    s._blocklist_hosts = nil
+    s.blocklists = {}
     local conf = render.dnsmasq(s)
-    assert.is_nil(conf:find("bl_test_ads", 1, true))
-    assert.is_nil(conf:find("bl6_test_ads", 1, true))
+    assert.is_nil(conf:find("conf-file=/tmp/wifihaven-blocklist-", 1, true))
+  end)
+
+  it("still emits eb_ and ea_ nftset= directives in the merged per-host block (#1782)", function()
+    -- Non-blocklist hosts (extraBlocked, extraAllowed) continue to have their
+    -- nftset= directives in the main wifihaven.conf — only bl_ moves to shards.
+    local s = snap_bl()
+    -- Add an extraBlocked host that will produce an eb_ directive.
+    s.profiles["3"].rules.extraBlocked = { "evil.example" }
+    local conf = render.dnsmasq(s)
+    assert.truthy(conf:find("nftset=/evil.example/4#inet#wifihaven#eb_evil_example", 1, true),
+      "eb_ directives must still appear inline for extraBlocked hosts")
   end)
 
   -- ── nft drop rules ───────────────────────────────────────────────────────
