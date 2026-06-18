@@ -85,8 +85,10 @@ export function useProfiles(opts?: QueryOpts<ProfileDetail[]>) {
 
 // #1773 — the household-global sentinel profile (#1771). Hidden from
 // `GET /api/profiles`, fetched via `/api/profiles/global` so the SPA can edit
-// it through the same per-profile editor preset to its id. Admin-only on the
-// server; non-admins get a 401/403 and the query resolves to `undefined`.
+// it through the same per-profile editor preset to its id. Server route is
+// admin-only; callers MUST gate the hook with `enabled: isAdmin` to avoid
+// firing a fetch the server will refuse — non-admins would otherwise see the
+// query stuck in an error state.
 export function useGlobalProfile(opts?: QueryOpts<ProfileDetail>) {
   return useQuery({
     queryKey: ['profiles', 'global'] as const,
@@ -337,13 +339,10 @@ export function useProfileAppWeekly(
 export function useInvalidators() {
   const qc = useQueryClient()
   return {
-    profiles: () => Promise.all([
-      qc.invalidateQueries({ queryKey: qk.profiles() }),
-      // #1773: the sentinel uses a separate query key (/profiles/global). Any
-      // profile-touching mutation that could land on the sentinel (apps,
-      // categories, defaultDeny) must bust it too.
-      qc.invalidateQueries({ queryKey: ['profiles', 'global'] }),
-    ]),
+    // react-query invalidation is prefix-match, so `['profiles']` also busts
+    // the sentinel key `['profiles', 'global']` (#1773) and any future
+    // `['profiles', ...]` sub-keys.
+    profiles: () => qc.invalidateQueries({ queryKey: qk.profiles() }),
     devices: () => qc.invalidateQueries({ queryKey: qk.devices() }),
     // #1069 — schedule edits change profile/app/blocklist downtime, so also
     // refresh anything whose rendering derives from an active window.
@@ -356,8 +355,9 @@ export function useInvalidators() {
     dashboardNow: () => qc.invalidateQueries({ queryKey: qk.dashboardNow() }),
     timeStatus: () => qc.invalidateQueries({ queryKey: ['time', 'status'] }),
     profileMutated: () => Promise.all([
+      // `qk.profiles()` (= `['profiles']`) prefix-matches `['profiles', 'global']`
+      // (#1773) too — react-query invalidation walks the prefix tree.
       qc.invalidateQueries({ queryKey: qk.profiles() }),
-      qc.invalidateQueries({ queryKey: ['profiles', 'global'] }),
       qc.invalidateQueries({ queryKey: qk.devices() }),
       qc.invalidateQueries({ queryKey: ['time', 'status'] }),
       qc.invalidateQueries({ queryKey: qk.dashboardNow() }),

@@ -1103,8 +1103,6 @@ function CategoriesSubsection({
       // #1773: PATCH (field-scoped) instead of PUT — the global sentinel rejects
       // PUT /profiles/:id but accepts PATCH for `blockedCategories`; for regular
       // profiles PATCH is also the preferred path per #423/#995 (race-safe).
-      // `updateProfile` retained on the prop signature for callers that still
-      // want the full-shape write; the named subsections drop it.
       await api.profiles.patch(pd.profile.id, { blockedCategories: next })
       await onProfileChanged()
     } catch (e) {
