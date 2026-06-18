@@ -843,37 +843,69 @@ describe("blocklists.render_shards (#1782)", function()
   end)
 
   it("streams a large fixture without accumulating in Lua heap (#1412 OOM)", function()
-    -- Build a 50k-host cache file in memory (the fs stub holds it as a string,
-    -- which is fine — what we're testing is that render_shards itself does NOT
-    -- build an equivalent 50k-entry Lua table internally).
+    -- Build a 50k-host cache file. To isolate render_shards's internal heap use
+    -- from the test stub's storage of the *output* (~3.5 MB of nftset lines),
+    -- the fs here uses a DISCARDING write — writes are counted but not retained
+    -- in any Lua string. That way mem_after - mem_before reflects ONLY what
+    -- render_shards itself holds across the call. A 50k-string accumulator
+    -- inside render_shards would push heap past several MB; a streaming
+    -- implementation should stay near zero (single-line scratch only).
     local n       = 50000
     local lines   = {}
     for i = 1, n do lines[i] = string.format("host%d.example.com", i) end
     local body = table.concat(lines, "\n") .. "\n"
 
-    local fs        = make_shard_fs()
-    local cache_dir = "/etc/wifihaven/blocklists"
-    local shard_dir = "/tmp"
-    fs._files[cache_dir .. "/biglist-v1.txt"] = body
+    local renamed = {}
+    local fs = {
+      open_read = function(path)
+        if path ~= "/etc/wifihaven/blocklists/biglist-v1.txt" then return nil end
+        local pos = 1
+        return {
+          read = function(self, fmt)
+            if fmt == "*l" or fmt == "l" then
+              if pos > #body then return nil end
+              local nl = body:find("\n", pos, true)
+              if not nl then
+                local line = body:sub(pos); pos = #body + 1; return line
+              end
+              local line = body:sub(pos, nl - 1); pos = nl + 1; return line
+            end
+          end,
+          close = function() end,
+        }
+      end,
+      open_write = function(path)
+        return {
+          write = function(self, chunk) end,  -- discard, do NOT store
+          close = function() end,
+        }
+      end,
+      rename = function(from, to) renamed[to] = true; return true end,
+      remove = function() return true end,
+      list = function() return {} end,
+      mkdir = function() return true end,
+      fsync = function() return true end,
+      read = function() return nil end,
+      write = function() return true end,
+    }
 
     local s = snap({ biglist = { version = "v1", url = "/api/blocklists/biglist" } })
 
-    -- Measure heap before and after. collectgarbage("count") returns KB.
     collectgarbage("collect")
     local mem_before = collectgarbage("count")
-    local result = blocklists.render_shards(s, fs, cache_dir, shard_dir)
+    local result = blocklists.render_shards(s, fs, "/etc/wifihaven/blocklists", "/tmp")
     collectgarbage("collect")
     local mem_after = collectgarbage("count")
 
-    -- The shard must have been written.
-    local shard = fs._files[shard_dir .. "/wifihaven-blocklist-biglist.conf"]
-    assert.not_nil(shard, "shard must be written for 50k-host list")
+    assert.is_true(renamed["/tmp/wifihaven-blocklist-biglist.conf"] or false,
+      "shard must be renamed into place for 50k-host list")
 
-    -- Lua heap delta should be well under 5 MB (5000 KB). If render_shards
-    -- were building a 50k-entry table it would easily exceed this.
+    -- With output discarded, render_shards's own working set should be tiny.
+    -- 2 MB threshold absorbs interpreter noise without letting a hypothetical
+    -- 50k-string accumulator slip through (that would be ~6+ MB on its own).
     local heap_delta_kb = mem_after - mem_before
-    assert.is_true(heap_delta_kb < 5000,
-      string.format("render_shards heap delta %.1f KB exceeds 5 MB — likely accumulating in table", heap_delta_kb))
+    assert.is_true(heap_delta_kb < 2000,
+      string.format("render_shards heap delta %.1f KB exceeds 2 MB — likely accumulating in table", heap_delta_kb))
 
     assert.equal(0, #(result.errors or {}))
   end)
