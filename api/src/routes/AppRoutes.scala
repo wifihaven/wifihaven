@@ -1,5 +1,6 @@
 package wifihaven.api.routes
 
+import wifihaven.api.AppReconciler
 import wifihaven.api.AppTemplate
 import wifihaven.api.AppTemplates
 import wifihaven.api.auth.*
@@ -247,6 +248,25 @@ object AppRoutes {
               .setScheduleRules(assignId, ar.scheduleRules.map(r => (r.scheduleId, r.mode)))
               .mapError(ApiError.Db(_))
           } yield Response.ok
+          handle.mapError(ErrorMapper.errorToResponse)
+        },
+      // #1777: admin-triggered reconciliation pass that collapses `<slug>-template`-suffixed app
+      // rows onto their canonical `<slug>` form, reattaching FK refs and unioning host-sets.
+      // Idempotent — operator can re-run; subsequent passes are no-ops once the DB is clean.
+      Method.POST / "api" / "admin" / "apps" / "reconcile-templates"             ->
+        handler { (req: Request) =>
+          val handle: ZIO[Any, ApiError, Response] = for {
+            _       <- requireAdmin(req, auth)
+            summary <- AppReconciler
+              .reconcileTemplates(appRepo, templates.values.toList)
+              .mapError(e =>
+                ApiError.Wrapped(
+                  Response
+                    .json(s"""{"error":"reconcile_failed","message":${e.getMessage.toJson}}""")
+                    .status(Status.InternalServerError),
+                ),
+              )
+          } yield Response.json(summary.toJson)
           handle.mapError(ErrorMapper.errorToResponse)
         },
       // #1024: admin-triggered re-run of the startup app-template seeder. Same idempotent

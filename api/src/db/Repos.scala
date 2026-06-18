@@ -2843,6 +2843,26 @@ trait AppRepo {
   def delete(id: AppId): Task[Unit]
 
   /**
+   * #1777: merge app `from` INTO app `to` in one transaction — reattaches every FK reference
+   * (`app_hosts`, `app_policy_assignments`, `traffic_hourly_apps`, `traffic_daily_apps`,
+   * `app_used_daily`) from `from` to `to`, unions their host-sets, transfers `template_id` to `to`
+   * if `to` lacks one, then deletes `from` (cascade drops any remaining duplicate FK rows that
+   * conflicted with `to`'s own). Host-set version is bumped once. Idempotent under repeat calls
+   * with the same args (a second call no-ops because `from` is gone).
+   *
+   * Conflict policy is "`to` wins" everywhere `to` already has a row at the merging key: an
+   * assignment for the same `profile_id` (and via the V51 cascade, its `app_policy_schedule_rules`)
+   * stays on `to`, with `from`'s discarded; a rollup bucket for the same key stays on `to`. For
+   * `app_used_daily` overlapping `(profile_id, date)` rows are summed (`engaged_seconds`) instead
+   * of dropped so usage isn't lost.
+   *
+   * Used by `AppReconciler.reconcileTemplates` to collapse the `<slug>-template` row that
+   * `AppTemplates.findFreeSlug` falls back to when an operator-added canonical row already owns the
+   * template's slug.
+   */
+  def mergeAppInto(from: AppId, to: AppId): Task[Unit]
+
+  /**
    * Replace the full set of hosts for an app. Wipes prior rows; canonicalization is the caller's
    * responsibility.
    */
@@ -2972,6 +2992,86 @@ class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
 
   def delete(id: AppId) =
     (sql"DELETE FROM apps WHERE id=$id".update.run *> bumpHostsVersion).transact(xa).unit
+
+  def mergeAppInto(from: AppId, to: AppId) = {
+    // Steps run inside ONE transaction so a mid-merge crash never strands FK rows referencing a
+    // half-deleted app row. Each step handles the PK / UNIQUE conflict its target table can
+    // produce: `to` may already own a row at the same key as a `from` row (e.g. an assignment for
+    // the same profile, a rollup for the same bucket). Conflicting `from` rows are dropped — `to`
+    // wins. Non-conflicting rows are reattached.
+    //
+    // Order matters only for `app_used_daily`: we INSERT-then-aggregate (so engaged_seconds sum)
+    // before the cascade DELETE on `apps` would have wiped the `from` rows. Everything else is
+    // safely commutative within the transaction.
+    val unionHosts =
+      sql"""INSERT INTO app_hosts (app_id, host)
+            SELECT $to, host FROM app_hosts WHERE app_id = $from
+            ON CONFLICT DO NOTHING""".update.run
+
+    val reattachAssignments =
+      sql"""UPDATE app_policy_assignments SET app_id = $to
+            WHERE app_id = $from
+              AND profile_id NOT IN (SELECT profile_id FROM app_policy_assignments WHERE app_id = $to)""".update.run
+
+    val dropConflictingHourly =
+      sql"""DELETE FROM traffic_hourly_apps t
+            WHERE t.app_id = $from
+              AND EXISTS (
+                SELECT 1 FROM traffic_hourly_apps c
+                 WHERE c.app_id = $to
+                   AND c.router_id = t.router_id
+                   AND c.mac = t.mac
+                   AND c.hostname = t.hostname
+                   AND c.bucket_start = t.bucket_start)""".update.run
+
+    val reattachHourly =
+      sql"UPDATE traffic_hourly_apps SET app_id = $to WHERE app_id = $from".update.run
+
+    val dropConflictingDaily =
+      sql"""DELETE FROM traffic_daily_apps t
+            WHERE t.app_id = $from
+              AND EXISTS (
+                SELECT 1 FROM traffic_daily_apps c
+                 WHERE c.app_id = $to
+                   AND c.router_id = t.router_id
+                   AND c.mac = t.mac
+                   AND c.hostname = t.hostname
+                   AND c.date = t.date)""".update.run
+
+    val reattachDaily =
+      sql"UPDATE traffic_daily_apps SET app_id = $to WHERE app_id = $from".update.run
+
+    // Sum engaged_seconds on (profile_id, date) collisions so we don't drop the duplicate's usage.
+    val mergeUsedDaily =
+      sql"""INSERT INTO app_used_daily (profile_id, app_id, date, engaged_seconds, rolled_through, rolled_at)
+            SELECT profile_id, $to, date, engaged_seconds, rolled_through, rolled_at
+              FROM app_used_daily WHERE app_id = $from
+            ON CONFLICT (profile_id, app_id, date) DO UPDATE
+              SET engaged_seconds = app_used_daily.engaged_seconds + EXCLUDED.engaged_seconds,
+                  rolled_through = LEAST(app_used_daily.rolled_through, EXCLUDED.rolled_through),
+                  rolled_at      = GREATEST(app_used_daily.rolled_at, EXCLUDED.rolled_at)""".update.run
+
+    // Transfer template_id IFF `to` lacks one — preserves the link `AppTemplates.findByTemplateId`
+    // walks on every seed so a future seed pass finds the canonical row instead of falling back to
+    // the `<slug>-template` slug again (the whack-a-mole guard).
+    val transferTemplateId =
+      sql"""UPDATE apps SET template_id = (SELECT template_id FROM apps WHERE id = $from)
+            WHERE id = $to
+              AND template_id IS NULL
+              AND (SELECT template_id FROM apps WHERE id = $from) IS NOT NULL""".update.run
+
+    // Final cascade DELETE drops any FK rows from `from` that we didn't actively reattach.
+    val deleteFrom = sql"DELETE FROM apps WHERE id = $from".update.run
+
+    (unionHosts *>
+      reattachAssignments *>
+      dropConflictingHourly *> reattachHourly *>
+      dropConflictingDaily *> reattachDaily *>
+      mergeUsedDaily *>
+      transferTemplateId *>
+      deleteFrom *>
+      bumpHostsVersion).transact(xa).unit
+  }
 
   def setHosts(appId: AppId, hosts: List[Hostname]) = {
     val del = sql"DELETE FROM app_hosts WHERE app_id=$appId".update.run
