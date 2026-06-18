@@ -1,7 +1,6 @@
 package wifihaven.api.feature
 
-import wifihaven.api.{AppReconcileSummary, AppReconciler, AppTemplate, JwtConfig}
-import wifihaven.api.auth.*
+import wifihaven.api.{AppReconciler, AppTemplate}
 import wifihaven.api.db.*
 import wifihaven.shared.*
 import wifihaven.shared.IconType
