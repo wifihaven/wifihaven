@@ -16,6 +16,18 @@ local M = {}
 
 local DEFAULT_CACHE_DIR = "/etc/wifihaven/blocklists"
 
+-- Lazy require render module — compatible with both the production on-device
+-- path (wifihaven.render) and the busted test path (render). Called at most
+-- once per process; result is cached in the upvalue.
+local _render_module
+local function get_render()
+  if not _render_module then
+    local ok, m = pcall(require, "wifihaven.render")
+    _render_module = ok and m or require("render")
+  end
+  return _render_module
+end
+
 -- classify_fetch_status(status) → bounded status enum (#1301).
 --
 -- The blocklist fetch surfaces as the `status` label of
@@ -361,12 +373,8 @@ function M.render_shards(snapshot, fs, cache_dir, shard_dir, max_bytes, global_b
   global_blocklist_ids = global_blocklist_ids or {}
 
   -- Require render.bl_sanitize for set-name normalization so there is
-  -- one source of truth.
-  -- In production (on-device) the module path is wifihaven.render; in the
-  -- busted test environment modules are loaded without the wifihaven. prefix.
-  local ok_render, render = pcall(require, "wifihaven.render")
-  if not ok_render then render = require("render") end
-  local bl_sanitize = render.bl_sanitize
+  -- one source of truth (see get_render() at the top of this module).
+  local bl_sanitize = get_render().bl_sanitize
 
   -- Resolve fs ops (injectable for tests, real I/O otherwise).
   local open_read_fn, open_write_fn, rename_fn, remove_fn, fsync_fn
@@ -547,10 +555,8 @@ function M.render_member_index(snapshot, fs, cache_dir, index_path)
   cache_dir  = cache_dir  or "/etc/wifihaven/blocklists"
   index_path = index_path or "/var/run/wifihaven/blocklist_members.tsv"
 
-  local ok_r2, render2 = pcall(require, "wifihaven.render")
-  if not ok_r2 then render2 = require("render") end
-  local bl_set_name  = render2.bl_set_name
-  local bl6_set_name = render2.bl6_set_name
+  local bl_set_name  = get_render().bl_set_name
+  local bl6_set_name = get_render().bl6_set_name
 
   local open_read_fn, open_write_fn, rename_fn
   if fs then

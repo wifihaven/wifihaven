@@ -78,7 +78,8 @@ local metrics_int   = tonumber(uci_get("metrics_report_interval", "60"))
 -- decoupled from the ~5 s policy poll. fetch_and_cache is a no-op read when the
 -- (id, version) file is already cached, so the cadence only does real work when
 -- a list's content version changed; the agent re-applies the ruleset only when
--- the loaded host set actually differs (blocklists.hosts_differ). Default 1 h.
+-- the snapshot's (id, version) pair set changes (post-#1782; pre-#1782 this used
+-- blocklists.hosts_differ on an in-memory host map). Default 1 h.
 local blocklist_int = tonumber(uci_get("blocklist_refresh_interval", "3600"))
 -- #1658: eb_/bl_ ipset re-resolve cadence (seconds). The per-host eb_<host>
 -- and per-blocklist bl_<id> sets are declared `flags dynamic,timeout 1h`,
@@ -494,14 +495,23 @@ local function refresh_blocklists(snap)
   blocklists.gc_shards(snap, nil, BLOCKLIST_SHARD_DIR)
 
   -- Step 4: write the member index for dns-tail's CNAME-aware bl_ population.
+  -- Written to paths.bl_member_index (= /tmp/wifihaven-bl-members.txt), the
+  -- path dns-tail reads (paths.lua:36). This replaces the
+  -- render.blocklist_member_index(snapshot) call in policy.apply (policy.lua:272)
+  -- which read from snapshot._blocklist_hosts — a table this PR no longer
+  -- attaches. policy.apply's write is skipped (see policy.lua) so the index
+  -- stays non-empty on every apply (#1782 BLOCKER fix).
   local idx_res = blocklists.render_member_index(
-    snap, nil, BLOCKLIST_CACHE_DIR, "/var/run/wifihaven/blocklist_members.tsv")
+    snap, nil, BLOCKLIST_CACHE_DIR, paths.bl_member_index)
   if idx_res and idx_res.error then
     log.warn("blocklist member index: %s", tostring(idx_res.error))
   end
 
-  -- Note: res.skipped is from load_cached (legacy path, now unused for render)
-  -- and is not surfaced separately since render_shards.skipped covers it.
+  -- Note: blocklists.refresh no longer receives max_bytes post-#1782, so
+  -- load_cached parses everything. The parsed res.hosts map is unused by the
+  -- agent's main path (update_shared uses bl_member_iterator to stream from
+  -- cache files). The map survives only for backward-compat callers and can be
+  -- removed in a follow-up once the fleet has rolled over fully.
 end
 
 -- make_bl_member_iterator(snap) → iterator(id) → {host,...}

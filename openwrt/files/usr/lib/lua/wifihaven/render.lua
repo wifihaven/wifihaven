@@ -77,6 +77,12 @@
 
 local M = {}
 
+-- Directory where per-blocklist dnsmasq conf shards live (#1782). Default /tmp
+-- (= tmpfs on OpenWRT). Overridable for tests via M.SHARD_DIR assignment before
+-- calling M.dnsmasq(). Production: always /tmp (matches BLOCKLIST_SHARD_DIR in
+-- wifihaven-agent).
+M.SHARD_DIR = "/tmp"
+
 -- Replace dots and colons with underscores (nftables set/counter name-safe).
 local function sanitize(s)
   return (s:gsub("[%.%:]", "_"))
@@ -445,7 +451,7 @@ function M.dnsmasq(snapshot)
     emit("# per-blocklist shard files written by blocklists.render_shards (#1782,#1783)")
     emit("# each shard contains nftset= directives for that list's member hosts")
     for _, id in ipairs(bl_ids) do
-      emit(string.format("conf-file=/tmp/wifihaven-blocklist-%s.conf", id))
+      emit(string.format("conf-file=%s/wifihaven-blocklist-%s.conf", M.SHARD_DIR, id))
     end
     emit("")
   end
@@ -569,18 +575,21 @@ end
 -- ---------------------------------------------------------------------------
 -- A host → bl_ set mapping for the wifihaven-dns-tail bl_ populator.
 --
--- bl_<id>/bl6_<id> sets are populated at DNS resolve time by the dnsmasq
--- `nftset=/<member>/...#bl_<id>` directives emitted above, which only fire for
--- queries that suffix-match a member host. A device that re-queries a member's
--- CNAME target directly lands on a CDN-anycast IP dnsmasq never added, so the
--- category drop misses (silent filter bypass). dns-tail closes the gap the same
--- way it does for eb_ (#515): it resolves each answered name through the #1344
--- CNAME-alias map and, when the recovered brand is a blocklist member, adds the
--- IP to that member's bl_ set. dns-tail can see which bl_ sets EXIST but not
--- their MEMBERSHIP, so this exports it.
+-- bl_<id>/bl6_<id> sets are populated at DNS resolve time by dnsmasq nftset=
+-- callbacks. A device that re-queries a member's CNAME target directly lands on
+-- a CDN-anycast IP dnsmasq never added, so the category drop misses (silent
+-- filter bypass). dns-tail closes the gap the same way it does for eb_ (#515):
+-- it resolves each answered name through the #1344 CNAME-alias map and, when
+-- the recovered brand is a blocklist member, adds the IP to that member's bl_
+-- set. dns-tail can see which bl_ sets EXIST but not their MEMBERSHIP, so this
+-- exports it.
 --
--- Derived from the same `snapshot._blocklist_hosts` that drives the `nftset=`
--- directives, so the set names line up exactly with what render.nft declares.
+-- Post-#1782 (LEGACY / TEST PATH): the agent no longer calls this function to
+-- write paths.bl_member_index — it uses blocklists.render_member_index instead,
+-- which streams from the on-disk cache files without building a Lua table.
+-- This in-memory path is retained for unit tests (render_spec.lua) and any
+-- caller that already has _blocklist_hosts in memory. It reads from
+-- snapshot._blocklist_hosts; when that table is absent the output is empty.
 -- One row per (member host, blocklist id): "<host>\t<bl_set>\t<bl6_set>".
 function M.blocklist_member_index(snapshot)
   local bl_hosts = snapshot and snapshot._blocklist_hosts or {}
