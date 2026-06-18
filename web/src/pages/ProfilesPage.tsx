@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
-import { useBlocklists, useProfiles, useDevices, useInvalidators, useNamedSchedules, useProfileUsageByApp, useTimeStatusSummary } from '@/api/queries'
+import { useBlocklists, useGlobalProfile, useProfiles, useDevices, useInvalidators, useNamedSchedules, useProfileUsageByApp, useTimeStatusSummary } from '@/api/queries'
 import { useAuth } from '@/hooks/useAuth'
 import { useDebouncedSave, type SaveStatus } from '@/hooks/useDebouncedSave'
 import { SaveStatusBadge } from '@/components/SaveStatusBadge'
@@ -152,9 +152,19 @@ export function ProfilesPage() {
   const { isAdmin } = useAuth()
   const invalidators = useInvalidators()
   const profilesQuery = useProfiles()
+  // #1773: the sentinel sits outside `/api/profiles` (#1771 hides it). Admins
+  // pull it via `/api/profiles/global` and we prepend it so the operator can
+  // edit its app-policy assignments / categories / defaultDeny through the
+  // same per-profile shell. Non-admins skip the fetch (the route requires
+  // admin and the page already gates most editing on `isAdmin`).
+  const globalProfileQuery = useGlobalProfile({ enabled: isAdmin })
   const devicesQuery  = useDevices()
   const summariesQuery = useTimeStatusSummary()
-  const profiles  = profilesQuery.data  ?? []
+  const profiles  = useMemo(() => {
+    const list = profilesQuery.data ?? []
+    const g    = globalProfileQuery.data
+    return g ? [g, ...list] : list
+  }, [profilesQuery.data, globalProfileQuery.data])
   const devices   = devicesQuery.data   ?? []
   const summaries = summariesQuery.data ?? []
   const [allUsers, setAllUsers] = useState<User[]>([])
@@ -599,6 +609,13 @@ function ProfileShellRow({
   userLinkError: string | null
 }) {
   const linkedUserIds = useMemo(() => new Set(users.map(u => u.id)), [users])
+  // #1773 — the global sentinel profile (#1771) is edited through this same
+  // shell, but concepts that only make sense per-MAC are write-rejected at the
+  // API for it (schedules / time limits / paused / pauseMode / delete; devices
+  // also can't reference it). Hide those subsections + actions so the UI
+  // doesn't dangle disabled controls. Apps, blocked categories, defaultDeny,
+  // and the name editor stay — they're what the operator actually edits here.
+  const isGlobal = pd.profile.isGlobal === true
   // #1539: resolve the windows of the NAMED schedules attached to this profile
   // (the enforcement source) so the chip matches what PolicyService enforces —
   // not the dead legacy `pd.schedules`. The catalog is shared/cached across all
@@ -681,7 +698,7 @@ function ProfileShellRow({
         >
           <span className={`inline-block transition-transform ${expanded ? 'rotate-90' : ''}`}>▸</span>
         </button>
-        {expanded && isAdmin ? (
+        {expanded && isAdmin && !isGlobal ? (
           <div className="flex-1 min-w-0 flex items-center gap-2">
             <input
               type="text"
@@ -708,7 +725,9 @@ function ProfileShellRow({
         )}
 
         <div className="flex items-center gap-3 shrink-0">
-          {/* Used / cap with a thin inline progress bar */}
+          {/* Used / cap with a thin inline progress bar. Hidden for the global
+              sentinel — daily limits don't apply household-wide. */}
+          {!isGlobal && (
           <div
             data-testid={`profile-summary-time-${pd.profile.id}`}
             className="hidden sm:flex flex-col items-end min-w-[7rem]"
@@ -734,7 +753,9 @@ function ProfileShellRow({
               </div>
             )}
           </div>
+          )}
 
+          {!isGlobal && (
           <span
             data-testid={`profile-pause-chip-${pd.profile.id}`}
             data-chip={chip}
@@ -742,8 +763,17 @@ function ProfileShellRow({
           >
             {CHIP_LABEL[chip]}
           </span>
+          )}
+          {isGlobal && (
+            <span
+              data-testid={`profile-global-badge-${pd.profile.id}`}
+              className="text-xs px-2 py-1 rounded-lg border bg-brand-accent/10 text-brand-accent border-brand-accent/20"
+            >
+              Global
+            </span>
+          )}
 
-          {isAdmin && hasLimit && (
+          {isAdmin && hasLimit && !isGlobal && (
             <button
               type="button"
               onClick={onGrantTime}
@@ -759,7 +789,7 @@ function ProfileShellRow({
               one-shot actions; making the operator expand the card first was
               busywork. Icon-only Pause (chip already says Paused/Active);
               Delete is muted + far right so it's hard to mis-click. */}
-          {isAdmin && (
+          {isAdmin && !isGlobal && (
             <div className="relative" ref={pausePickerRef}>
               <button
                 type="button"
@@ -816,7 +846,7 @@ function ProfileShellRow({
               )}
             </div>
           )}
-          {isAdmin && (
+          {isAdmin && !isGlobal && (
             <button
               type="button"
               onClick={onDelete}
@@ -835,15 +865,17 @@ function ProfileShellRow({
           {/* #1036 — always-visible per-profile timeline chart at the top of
               the expanded view. Carries the Today/Week toggle + host/device
               group-by + Other drill-in that the deleted /time page used to
-              own. Read-only; lives above the edit subsections. */}
-          <ProfileTimelineChart profileId={pd.profile.id} />
+              own. Read-only; lives above the edit subsections.
+              #1773 — skipped for the global sentinel: it has no MACs of its
+              own, so the per-profile usage feeds return nothing meaningful. */}
+          {!isGlobal && <ProfileTimelineChart profileId={pd.profile.id} />}
 
           {/* #1519/#726 — per-app usage breakdown: one row per configured app
               (drillable to its host-set, the per-FQDN view from #726), then
               one row per non-app host as its own single-host pseudo-app (per
               the App-Centric Model — no semantic "Other" bucket). Top-N + a
               "+N more sites" expander is a presentation rollup only. */}
-          <ProfileUsageBreakdown profileId={pd.profile.id} enabled={expanded} />
+          {!isGlobal && <ProfileUsageBreakdown profileId={pd.profile.id} enabled={expanded} />}
 
           {/* #1320 — per-profile default-deny baseline. Block-all; only the
               profile's allowed apps/hosts + the household global allowlist are
@@ -854,7 +886,6 @@ function ProfileShellRow({
           {isAdmin && (
             <DefaultDenySubsection
               pd={pd}
-              updateProfile={updateProfile}
               onProfileChanged={onProfileChanged}
             />
           )}
@@ -866,7 +897,7 @@ function ProfileShellRow({
               subsection now; failureMode (#385) is the one orphan, tracked
               separately. The "+ New Profile" name-only form (top of page)
               replaces the modal's create flow. */}
-          {isAdmin && (
+          {isAdmin && !isGlobal && (
             <DevicesSubsection pd={pd} assigned={devices} allDevices={allDevices} />
           )}
           {/* #1473 — blocked categories are edited inline here (admins),
@@ -876,7 +907,6 @@ function ProfileShellRow({
           {isAdmin ? (
             <CategoriesSubsection
               pd={pd}
-              updateProfile={updateProfile}
               onProfileChanged={onProfileChanged}
             />
           ) : (
@@ -907,17 +937,19 @@ function ProfileShellRow({
 
           {/* #975 — inline time-limit + cross-device overlap subsection.
               Replaces the modal's daily-cap + overlap blocks for this profile.
-              Schedules split into their own sibling subsection (#1474). */}
-          <TimeSubsection pd={pd} isAdmin={isAdmin} />
+              Schedules split into their own sibling subsection (#1474).
+              #1773: daily limits and schedules don't apply household-wide; the
+              API rejects writes against the sentinel for both. */}
+          {!isGlobal && <TimeSubsection pd={pd} isAdmin={isAdmin} />}
 
           {/* #1474 — schedules subsection (bedtime/windows), split out of the
               Time-limits expander into its own top-level disclosure. */}
-          <ScheduleSubsection pd={pd} isAdmin={isAdmin} />
+          {!isGlobal && <ScheduleSubsection pd={pd} isAdmin={isAdmin} />}
 
           {/* #973: read-only Devices listing for non-admins. Admins get the
               editable DevicesSubsection above; keeping a second copy here for
               them would be redundant. */}
-          {!isAdmin && (
+          {!isAdmin && !isGlobal && (
             <div data-testid={`profile-devices-${pd.profile.id}`}>
               <p className="text-xs text-brand-text-muted uppercase tracking-wider mb-2">Devices</p>
               {devices.length === 0
@@ -937,7 +969,7 @@ function ProfileShellRow({
             </div>
           )}
 
-          {isAdmin && (
+          {isAdmin && !isGlobal && (
             <div data-testid={`profile-users-${pd.profile.id}`}>
               <p className="text-xs text-brand-text-muted uppercase tracking-wider mb-2">Users</p>
               {userLinkError && (
@@ -1032,10 +1064,9 @@ function timeFormsEqual(a: TimeFormState, b: TimeFormState): boolean {
 // full-profile PUT. Admin-only — the catalog endpoint requires admin, and this
 // is the editing surface (non-admins fall back to the read-only chips).
 function CategoriesSubsection({
-  pd, updateProfile, onProfileChanged,
+  pd, onProfileChanged,
 }: {
   pd: ProfileDetail
-  updateProfile: (body: UpsertProfileRequest) => Promise<unknown>
   onProfileChanged: () => void | Promise<unknown>
 }) {
   // Catalog comes from the shared react-query cache (GET /api/blocklists), so
@@ -1069,9 +1100,10 @@ function CategoriesSubsection({
     try {
       const has = selected.includes(id)
       const next = has ? selected.filter(c => c !== id) : [...selected, id]
-      const body = formToRequest(detailToForm(pd))
-      body.blockedCategories = next
-      await updateProfile(body)
+      // #1773: PATCH (field-scoped) instead of PUT — the global sentinel rejects
+      // PUT /profiles/:id but accepts PATCH for `blockedCategories`; for regular
+      // profiles PATCH is also the preferred path per #423/#995 (race-safe).
+      await api.profiles.patch(pd.profile.id, { blockedCategories: next })
       await onProfileChanged()
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : 'Failed to update')
@@ -1131,10 +1163,9 @@ function CategoriesSubsection({
 }
 
 function DefaultDenySubsection({
-  pd, updateProfile, onProfileChanged,
+  pd, onProfileChanged,
 }: {
   pd: ProfileDetail
-  updateProfile: (body: UpsertProfileRequest) => Promise<unknown>
   onProfileChanged: () => void
 }) {
   const [saving, setSaving] = useState(false)
@@ -1146,9 +1177,9 @@ function DefaultDenySubsection({
     setSaving(true)
     setError(null)
     try {
-      const body = formToRequest(detailToForm(pd))
-      body.defaultDeny = !on
-      await updateProfile(body)
+      // #1773: PATCH so this works on the global sentinel too (PUT is rejected
+      // for the sentinel; PATCH on `defaultDeny` is allowed).
+      await api.profiles.patch(pd.profile.id, { defaultDeny: !on })
       onProfileChanged()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to update')

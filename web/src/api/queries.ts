@@ -83,6 +83,21 @@ export function useProfiles(opts?: QueryOpts<ProfileDetail[]>) {
   })
 }
 
+// #1773 — the household-global sentinel profile (#1771). Hidden from
+// `GET /api/profiles`, fetched via `/api/profiles/global` so the SPA can edit
+// it through the same per-profile editor preset to its id. Server route is
+// admin-only; callers MUST gate the hook with `enabled: isAdmin` to avoid
+// firing a fetch the server will refuse — non-admins would otherwise see the
+// query stuck in an error state.
+export function useGlobalProfile(opts?: QueryOpts<ProfileDetail>) {
+  return useQuery({
+    queryKey: ['profiles', 'global'] as const,
+    queryFn: () => api.profiles.getGlobal(),
+    staleTime: STALE.profiles,
+    ...opts,
+  })
+}
+
 // #1743: bucket → grain mapping the API emits from BucketPolicy. Cached for an
 // hour because it's effectively a constant; the SPA falls back to the locally
 // shipped defaults when the fetch hasn't completed (or fails) so the
@@ -324,6 +339,9 @@ export function useProfileAppWeekly(
 export function useInvalidators() {
   const qc = useQueryClient()
   return {
+    // react-query invalidation is prefix-match, so `['profiles']` also busts
+    // the sentinel key `['profiles', 'global']` (#1773) and any future
+    // `['profiles', ...]` sub-keys.
     profiles: () => qc.invalidateQueries({ queryKey: qk.profiles() }),
     devices: () => qc.invalidateQueries({ queryKey: qk.devices() }),
     // #1069 — schedule edits change profile/app/blocklist downtime, so also
@@ -337,6 +355,8 @@ export function useInvalidators() {
     dashboardNow: () => qc.invalidateQueries({ queryKey: qk.dashboardNow() }),
     timeStatus: () => qc.invalidateQueries({ queryKey: ['time', 'status'] }),
     profileMutated: () => Promise.all([
+      // `qk.profiles()` (= `['profiles']`) prefix-matches `['profiles', 'global']`
+      // (#1773) too — react-query invalidation walks the prefix tree.
       qc.invalidateQueries({ queryKey: qk.profiles() }),
       qc.invalidateQueries({ queryKey: qk.devices() }),
       qc.invalidateQueries({ queryKey: ['time', 'status'] }),

@@ -9,8 +9,12 @@ vi.mock('@/api/client', () => ({
   api: {
     profiles: {
       list: vi.fn(),
+      // #1773 — global sentinel profile (#1771). Hidden from /profiles,
+      // surfaced here so the per-profile editor can edit it via its id.
+      getGlobal: vi.fn(),
       create: vi.fn(),
       update: vi.fn(),
+      patch: vi.fn(),
       delete: vi.fn(),
       setUsers: vi.fn(),
       setSchedules: vi.fn(),
@@ -155,8 +159,12 @@ beforeEach(() => {
   vi.resetAllMocks()
   mockAuth = { isAdmin: true }
   ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([kidsProfile, adultsProfile])
+  // #1773 — default to "global not seeded" so existing tests don't see an extra
+  // card unless they explicitly opt in by overriding this mock.
+  ;(api.profiles.getGlobal as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Global profile not seeded'))
   ;(api.profiles.create as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 99 })
   ;(api.profiles.update as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
+  ;(api.profiles.patch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.profiles.delete as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.profiles.setUsers as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.profiles.setSchedules as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
@@ -1776,7 +1784,7 @@ describe('ProfilesPage — inline blocked-categories editor (#1473)', () => {
     expect(api.blocklists.list).toHaveBeenCalled()
   })
 
-  it('toggling an unselected category ADDS it to blockedCategories via the full PUT', async () => {
+  it('toggling an unselected category ADDS it to blockedCategories via PATCH (#1773)', async () => {
     const user = userEvent.setup()
     renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
@@ -1785,18 +1793,19 @@ describe('ProfilesPage — inline blocked-categories editor (#1473)', () => {
     const social = await within(kidsCard).findByTestId('profile-category-toggle-1-social')
     await user.click(social)
 
-    await waitFor(() => expect(api.profiles.update).toHaveBeenCalled())
-    const calls = (api.profiles.update as unknown as ReturnType<typeof vi.fn>).mock.calls
+    // #1773 — switched to PATCH so this surface also works on the global
+    // sentinel (PUT /profiles/:id is route-rejected for the sentinel).
+    await waitFor(() => expect(api.profiles.patch).toHaveBeenCalled())
+    const calls = (api.profiles.patch as unknown as ReturnType<typeof vi.fn>).mock.calls
     const [id, body] = calls[calls.length - 1]
     expect(id).toBe(1)
     expect([...body.blockedCategories].sort()).toEqual(['adult', 'gambling', 'social'])
-    // other fields carried through unchanged
-    expect(body.name).toBe('Kids')
-    expect(body.timeLimit).toBe(120)
-    expect(body.failureMode).toBe('block-all')
+    // PATCH is field-scoped — the body carries ONLY blockedCategories. No
+    // accidental writes to name / timeLimit / failureMode etc.
+    expect(Object.keys(body)).toEqual(['blockedCategories'])
   })
 
-  it('toggling a selected category REMOVES it from blockedCategories', async () => {
+  it('toggling a selected category REMOVES it from blockedCategories via PATCH', async () => {
     const user = userEvent.setup()
     renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
@@ -1805,8 +1814,8 @@ describe('ProfilesPage — inline blocked-categories editor (#1473)', () => {
     const adult = await within(kidsCard).findByTestId('profile-category-toggle-1-adult')
     await user.click(adult)
 
-    await waitFor(() => expect(api.profiles.update).toHaveBeenCalled())
-    const calls = (api.profiles.update as unknown as ReturnType<typeof vi.fn>).mock.calls
+    await waitFor(() => expect(api.profiles.patch).toHaveBeenCalled())
+    const calls = (api.profiles.patch as unknown as ReturnType<typeof vi.fn>).mock.calls
     const [id, body] = calls[calls.length - 1]
     expect(id).toBe(1)
     expect(body.blockedCategories).toEqual(['gambling'])
@@ -1844,7 +1853,7 @@ describe('ProfilesPage — inline blocked-categories editor (#1473)', () => {
 })
 
 describe('ProfilesPage — per-profile default-deny toggle (#1320)', () => {
-  it('toggling default-deny persists via the full-profile PUT, preserving other fields', async () => {
+  it('toggling default-deny persists via PATCH (#1773)', async () => {
     const user = userEvent.setup()
     renderPage()
     await screen.findByTestId('profile-card-1')
@@ -1856,16 +1865,13 @@ describe('ProfilesPage — per-profile default-deny toggle (#1320)', () => {
 
     await user.click(toggle)
 
-    await waitFor(() => expect(api.profiles.update).toHaveBeenCalled())
-    const calls = (api.profiles.update as unknown as ReturnType<typeof vi.fn>).mock.calls
+    // #1773 — switched to PATCH so the same surface works on the global
+    // sentinel; PATCH is field-scoped so no other field gets clobbered.
+    await waitFor(() => expect(api.profiles.patch).toHaveBeenCalled())
+    const calls = (api.profiles.patch as unknown as ReturnType<typeof vi.fn>).mock.calls
     const [id, body] = calls[calls.length - 1]
     expect(id).toBe(1)
-    expect(body.defaultDeny).toBe(true)
-    // other fields carried through the PUT unchanged
-    expect(body.name).toBe('Kids')
-    expect(body.blockedCategories).toEqual(['adult', 'gambling'])
-    expect(body.failureMode).toBe('block-all')
-    expect(body.timeLimit).toBe(120)
+    expect(body).toEqual({ defaultDeny: true })
   })
 
   // #1472 — default-deny is the profile's most fundamental posture, so it
@@ -1925,5 +1931,96 @@ describe('ProfilesPage — schedule chip reads named schedules (#1539)', () => {
     const c2 = await screen.findByTestId('profile-pause-chip-2')
     expect(c1).toHaveAttribute('data-chip', 'paused-schedule')
     expect(c2).toHaveAttribute('data-chip', 'paused-schedule')
+  })
+})
+
+// #1773 — the household-global sentinel profile (#1771) is edited through the
+// same per-profile shell. Verify: it renders as its own card labeled "Global",
+// inapplicable subsections (devices/schedules/time/users/pause) are hidden, and
+// edits route to the per-profile PATCH on its id — the SPA never calls
+// `/api/global/*` (those routes are gone, #1772).
+describe('ProfilesPage — global sentinel profile (#1773)', () => {
+  const globalProfile: ProfileDetail = {
+    profile: {
+      id: 999,
+      name: 'Global',
+      blockedCategories: [],
+      paused: false,
+      failureMode: 'block-all',
+      crossDeviceOverlapMode: 'sum',
+      pauseMode: 'soft',
+      defaultDeny: false,
+      isGlobal: true,
+    },
+    scheduleIds: [],
+    timeLimit: null,
+  }
+
+  beforeEach(() => {
+    (api.profiles.getGlobal as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(globalProfile)
+  })
+
+  it('renders the global profile as its own card with a "Global" badge', async () => {
+    renderPage()
+    const card = await screen.findByTestId('profile-card-999')
+    expect(within(card).getByTestId('profile-global-badge-999')).toHaveTextContent('Global')
+    // No pause chip — global is not paused/scheduled/time-limited.
+    expect(within(card).queryByTestId('profile-pause-chip-999')).not.toBeInTheDocument()
+    // No row-level pause/delete/+time buttons.
+    expect(within(card).queryByTestId('profile-row-pause-999')).not.toBeInTheDocument()
+    expect(within(card).queryByTestId('profile-row-delete-999')).not.toBeInTheDocument()
+    expect(within(card).queryByTestId('profile-row-grant-999')).not.toBeInTheDocument()
+  })
+
+  it('expanded global card hides device/time/schedule/user subsections but keeps Apps + defaultDeny', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByTestId('profile-card-999')
+    await expand(999, user)
+    const card = screen.getByTestId('profile-card-999')
+    // Inapplicable subsections are gone.
+    expect(within(card).queryByTestId('profile-devices-subsection-999')).not.toBeInTheDocument()
+    expect(within(card).queryByTestId('profile-users-999')).not.toBeInTheDocument()
+    // Apps subsection + defaultDeny toggle are present (the operator's actual
+    // editing surfaces on the sentinel).
+    expect(within(card).getByTestId('profile-apps-subsection-999')).toBeInTheDocument()
+    expect(within(card).getByTestId('profile-default-deny-999')).toBeInTheDocument()
+  })
+
+  it('toggling defaultDeny on the global profile PATCHes /profiles/<globalId>', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByTestId('profile-card-999')
+    await expand(999, user)
+    const toggle = await screen.findByTestId('profile-default-deny-toggle-999')
+    fireEvent.click(toggle)
+    await waitFor(() =>
+      expect(api.profiles.patch).toHaveBeenCalledWith(999, { defaultDeny: true }),
+    )
+    // Importantly: the legacy `/api/global/*` surface is gone; only the per-
+    // profile PATCH is hit.
+    expect(api.profiles.update).not.toHaveBeenCalled()
+  })
+
+  it('adding a blocked category on the global profile PATCHes /profiles/<globalId>', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByTestId('profile-card-999')
+    await expand(999, user)
+    const card = screen.getByTestId('profile-card-999')
+    const cb = await within(card).findByTestId('profile-category-toggle-999-adult')
+    fireEvent.click(cb)
+    await waitFor(() =>
+      expect(api.profiles.patch).toHaveBeenCalledWith(999, { blockedCategories: ['adult'] }),
+    )
+  })
+
+  it('non-admins do not fetch the global profile', async () => {
+    mockAuth = { isAdmin: false }
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    // useGlobalProfile is gated on isAdmin — the network call never fires.
+    expect(api.profiles.getGlobal).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('profile-card-999')).not.toBeInTheDocument()
   })
 })

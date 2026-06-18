@@ -30,6 +30,12 @@ export interface Profile {
   // (the inverse of the allow-by-default + blocklists model). Resolved
   // server-side into the per-MAC `blocked = true`; the router never sees it.
   defaultDeny: boolean
+  // #1771/#1773: marks the single household-wide sentinel profile. Hidden from
+  // GET /api/profiles; fetched separately via GET /api/profiles/global. Edited
+  // through the same per-profile editor; subsections that can't apply
+  // household-wide (devices, schedules, time limits, pause, users) are hidden.
+  // Optional + defaulted false so older API responses decode unchanged.
+  isGlobal?: boolean
 }
 
 export interface Schedule {
