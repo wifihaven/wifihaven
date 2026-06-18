@@ -39,3 +39,39 @@ introduces it.** Concretely:
 The same reasoning applies to anything else the agent persists under `/tmp`
 (JSON spools, NDJSON event journals, debug dumps). If it can grow, it gets a
 bound — in the same PR.
+
+## Per-blocklist dnsmasq conf shards (`/tmp/wifihaven-blocklist-<id>.conf`) {#blocklist-shards}
+
+Added in [#1782/#1783](https://github.com/wifihaven/wifihaven/issues/1782).
+One file per blocklist id in the current snapshot.
+
+**How they work.** `blocklists.render_shards` reads each list's on-disk cache
+file (`/etc/wifihaven/blocklists/<id>-<version>.txt`) line-by-line and writes
+one `nftset=/<host>/4#inet#wifihaven#bl_<id>,6#inet#wifihaven#bl6_<id>` line
+per host — never accumulating the full list in a Lua table. `render.dnsmasq`
+emits `conf-file=/tmp/wifihaven-blocklist-<id>.conf` for each id so dnsmasq
+picks up the host set at startup and on reload.
+
+**Atomic write.** Each shard is written to `<id>.conf.tmp`, then renamed onto
+`<id>.conf`. A partial shard is never visible to dnsmasq.
+
+**Sizing.** ~80 bytes per host × list member count. The two large StevenBlack
+lists are ~7 MB each; three curated lists total under 100 KB. A per-shard cap
+(default 10 MB, UCI `blocklist_max_list_bytes`) prevents a runaway list from
+filling `/tmp`.
+
+**Lifecycle (GC, NOT log rotation).** These are config files, not append-only
+logs — `copytruncate` is wrong here. The lifecycle is:
+
+- **On every render:** `blocklists.gc_shards` removes shards whose id is no
+  longer in the current snapshot (list unassigned or deleted). Stale
+  `.conf.tmp` files are also removed (crash-during-render defense).
+- **On agent startup:** `gc_shards` runs against the cached snapshot (or an
+  empty placeholder) before the first apply, so a crash-during-render from a
+  previous run can never leave a stale shard visible to the newly-started
+  dnsmasq.
+
+**NOT added to `wifihaven-rotate-dnsmasq-log`.** The rotate cron is for
+append-only logs. Shard lifecycle is precise removal of stale ids, not
+copytruncate — adding these to the cron would silently truncate a live shard
+mid-use.
