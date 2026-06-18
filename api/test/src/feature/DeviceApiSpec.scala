@@ -41,7 +41,7 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         profiles    <- profileRepo.listAll
         kidsId = profiles.find(_.name == "Kids").get.id
         userProfileRepo <- ZIO.service[UserProfileRepo]
-        routes = DeviceRoutes.routes(auth, deviceRepo, userProfileRepo)
+        routes = DeviceRoutes.routes(auth, deviceRepo, userProfileRepo, profileRepo)
         body   = UpsertDeviceRequest(
           mac = MacAddress.unsafe("aa:bb:cc:dd:ee:ff"),
           name = "iPad",
@@ -78,7 +78,7 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         profiles    <- profileRepo.listAll
         kidsId = profiles.find(_.name == "Kids").get.id
         userProfileRepo <- ZIO.service[UserProfileRepo]
-        routes = DeviceRoutes.routes(auth, deviceRepo, userProfileRepo)
+        routes = DeviceRoutes.routes(auth, deviceRepo, userProfileRepo, profileRepo)
         body   = UpsertDeviceRequest(
           MacAddress.unsafe("aa:bb:cc:dd:ee:ff"),
           "Laptop",
@@ -104,7 +104,7 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         mac    = "11:22:33:44:55:66"
         _ <- deviceRepo.upsert(MacAddress.unsafe(mac), "OldDevice", Some(kidsId), "192.168.1.50")
         userProfileRepo <- ZIO.service[UserProfileRepo]
-        routes = DeviceRoutes.routes(auth, deviceRepo, userProfileRepo)
+        routes = DeviceRoutes.routes(auth, deviceRepo, userProfileRepo, profileRepo)
         delReq = Request
           .delete(URL.decode(s"/api/devices/$mac").toOption.get)
           .addHeader(Header.Authorization.Bearer(token.value))
@@ -156,7 +156,7 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
           ),
         )
         userProfileRepo <- ZIO.service[UserProfileRepo]
-        routes  = DeviceRoutes.routes(auth, deviceRepo, userProfileRepo)
+        routes  = DeviceRoutes.routes(auth, deviceRepo, userProfileRepo, profileRepo)
         // The SPA builds the path with encodeURIComponent(mac), so the colons
         // arrive percent-encoded (de%3Aad%3A…). The route must decode them.
         encPath = s"/api/devices/${java.net.URLEncoder.encode(mac.value, "UTF-8")}"
@@ -207,10 +207,11 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
       for {
         _               <- cleanDb
         deviceRepo      <- ZIO.service[DeviceRepo]
+        profileRepo     <- ZIO.service[ProfileRepo]
         auth            <- makeAuth
         token           <- auth.login("admin", "changeme").map(_.token)
         userProfileRepo <- ZIO.service[UserProfileRepo]
-        routes = DeviceRoutes.routes(auth, deviceRepo, userProfileRepo)
+        routes = DeviceRoutes.routes(auth, deviceRepo, userProfileRepo, profileRepo)
         body   = UpsertDeviceRequest(
           mac = MacAddress.unsafe("aa:bb:cc:00:00:10"),
           name = "Lutron Bridge",
@@ -238,7 +239,7 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         mac    = "aa:bb:cc:00:00:20"
         _               <- deviceRepo.upsert(MacAddress.unsafe(mac), "OldName", Some(kidsId), "")
         userProfileRepo <- ZIO.service[UserProfileRepo]
-        routes = DeviceRoutes.routes(auth, deviceRepo, userProfileRepo)
+        routes = DeviceRoutes.routes(auth, deviceRepo, userProfileRepo, profileRepo)
         body   = UpsertDeviceRequest(MacAddress.unsafe(mac), "NewName", None).toJson
         putReq = Request
           .put(URL.decode("/api/devices").toOption.get, Body.fromString(body))
@@ -263,7 +264,7 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         mac      = "aa:bb:cc:00:00:21"
         _               <- deviceRepo.upsert(MacAddress.unsafe(mac), "OldName", Some(kidsId), "")
         userProfileRepo <- ZIO.service[UserProfileRepo]
-        routes = DeviceRoutes.routes(auth, deviceRepo, userProfileRepo)
+        routes = DeviceRoutes.routes(auth, deviceRepo, userProfileRepo, profileRepo)
         body   = UpsertDeviceRequest(MacAddress.unsafe(mac), "NewName", Some(adultsId)).toJson
         putReq = Request
           .put(URL.decode("/api/devices").toOption.get, Body.fromString(body))
@@ -300,7 +301,7 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         _     <- userRepo.clearMustChangePassword(momId)
         _     <- upRepo.setProfilesForUser(momId, List(kidsId))
         token <- auth.login("mom", "pass").map(_.token.value)
-        routes     = DeviceRoutes.routes(auth, deviceRepo, upRepo)
+        routes     = DeviceRoutes.routes(auth, deviceRepo, upRepo, profileRepo)
         // Rename only — no profileId supplied — should succeed.
         renameBody = UpsertDeviceRequest(MacAddress.unsafe(mac), "RenamedByMom", None).toJson
         renameReq  = Request

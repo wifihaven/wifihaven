@@ -99,7 +99,20 @@ trait UserProfileRepo {
 }
 
 trait ProfileRepo {
+
+  /**
+   * Non-global profiles only. The `is_global=TRUE` sentinel (#1771) is filtered out so it never
+   * appears on `GET /api/profiles`, role-access enumerations, or any user-facing listing — it is a
+   * wire-shape mechanism, not an authored profile. The snapshot path consumes
+   * [[listAllIncludingGlobal]].
+   */
   def listAll: Task[List[Profile]]
+
+  /** All profiles, including the global sentinel. Used by `PolicyService.snapshot` only. */
+  def listAllIncludingGlobal: Task[List[Profile]]
+
+  /** The single `is_global=TRUE` sentinel row, or None if not yet seeded. */
+  def getGlobal: Task[Option[Profile]]
   def findById(id: ProfileId): Task[Option[Profile]]
   def create(name: String, cats: List[BlocklistId]): Task[ProfileId]
   def update(p: Profile): Task[Unit]
@@ -801,6 +814,7 @@ class ProfileRepoLive(xa: Transactor[Task]) extends ProfileRepo {
       String,
       String,
       Boolean,
+      Boolean,
   )
   private def toP(r: R)                             = Profile(
     r._1,
@@ -812,18 +826,38 @@ class ProfileRepoLive(xa: Transactor[Task]) extends ProfileRepo {
     CrossDeviceOverlapMode.parse(r._7).getOrElse(CrossDeviceOverlapMode.Sum),
     PauseMode.parse(r._8).getOrElse(PauseMode.Soft),
     r._9,
+    r._10,
   )
+  // #1771: the global sentinel is filtered out of `listAll` so it never appears on
+  // `GET /api/profiles` or any role-access enumeration. The snapshot path uses
+  // [[listAllIncludingGlobal]] to fold the sentinel's rules into every other profile.
   def listAll                                       =
     DbMetrics.timed("profile.listAll")(
-      sql"SELECT id,name,blocked_categories,paused,failure_mode,block_ip_only,cross_device_overlap_mode,pause_mode,default_deny FROM profiles ORDER BY id"
+      sql"SELECT id,name,blocked_categories,paused,failure_mode,block_ip_only,cross_device_overlap_mode,pause_mode,default_deny,is_global FROM profiles WHERE is_global=FALSE ORDER BY id"
         .query[R]
         .map(toP)
         .to[List]
         .transact(xa),
     )
+  def listAllIncludingGlobal                        =
+    DbMetrics.timed("profile.listAllIncludingGlobal")(
+      sql"SELECT id,name,blocked_categories,paused,failure_mode,block_ip_only,cross_device_overlap_mode,pause_mode,default_deny,is_global FROM profiles ORDER BY id"
+        .query[R]
+        .map(toP)
+        .to[List]
+        .transact(xa),
+    )
+  def getGlobal                                     =
+    DbMetrics.timed("profile.getGlobal")(
+      sql"SELECT id,name,blocked_categories,paused,failure_mode,block_ip_only,cross_device_overlap_mode,pause_mode,default_deny,is_global FROM profiles WHERE is_global=TRUE"
+        .query[R]
+        .map(toP)
+        .option
+        .transact(xa),
+    )
   def findById(id: ProfileId)                       =
     DbMetrics.timed("profile.findById")(
-      sql"SELECT id,name,blocked_categories,paused,failure_mode,block_ip_only,cross_device_overlap_mode,pause_mode,default_deny FROM profiles WHERE id=$id"
+      sql"SELECT id,name,blocked_categories,paused,failure_mode,block_ip_only,cross_device_overlap_mode,pause_mode,default_deny,is_global FROM profiles WHERE id=$id"
         .query[R]
         .map(toP)
         .option
@@ -1058,13 +1092,35 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
         .option
         .transact(xa),
     )
-  def upsert(mac: MacAddress, name: String, pid: Option[ProfileId], ip: String) =
+  def upsert(mac: MacAddress, name: String, pid: Option[ProfileId], ip: String)        = {
     // #708: pid=None writes NULL (device unassigned). Devices without a profile
     // are a supported state — same shape auto-discovery produces.
-    sql"INSERT INTO devices(mac,name,profile_id,last_seen_ip,last_seen_at) VALUES($mac,$name,$pid,NULLIF($ip,''),NOW()) ON CONFLICT(mac) DO UPDATE SET name=EXCLUDED.name,profile_id=EXCLUDED.profile_id RETURNING id"
-      .query[DeviceId]
-      .unique
-      .transact(xa)
+    // #1771: defensive guard — devices cannot be assigned to the global sentinel
+    // profile. The route layer rejects this with a 400 before we get here, but
+    // catching it again in the repo means a buggy code path (or a direct SQL
+    // call from a future caller) still fails loudly instead of corrupting the
+    // device-to-profile graph. The guard and the INSERT run in the SAME doobie
+    // transaction so a (today-impossible) concurrent flip of `profiles.is_global`
+    // can't slip a device assignment past the check.
+    val check = pid.fold(doobie.free.connection.unit) { p =>
+      sql"SELECT is_global FROM profiles WHERE id=$p"
+        .query[Boolean]
+        .option
+        .flatMap {
+          case Some(true) =>
+            doobie.free.connection.raiseError[Unit](
+              new IllegalArgumentException(
+                s"devices cannot be assigned to the global profile (id=${p.value})",
+              ),
+            )
+          case _          => doobie.free.connection.unit
+        }
+    }
+    (check *>
+      sql"INSERT INTO devices(mac,name,profile_id,last_seen_ip,last_seen_at) VALUES($mac,$name,$pid,NULLIF($ip,''),NOW()) ON CONFLICT(mac) DO UPDATE SET name=EXCLUDED.name,profile_id=EXCLUDED.profile_id RETURNING id"
+        .query[DeviceId]
+        .unique).transact(xa)
+  }
   def updateLastSeen(mac: MacAddress, ip: String)                                      =
     sql"UPDATE devices SET last_seen_ip=$ip,last_seen_at=NOW() WHERE mac=$mac".update.run
       .transact(xa)

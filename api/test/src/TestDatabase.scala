@@ -83,6 +83,12 @@ object TestDatabase {
         "INSERT INTO household_settings (id, daily_reset_time, daily_reset_tz) " +
           "VALUES (1, '00:00', 'UTC') ON CONFLICT (id) DO NOTHING",
       )
+      // #1771: replicate Main.scala's startup seed of the global sentinel profile so
+      // PolicyService.snapshot can read it during tests. ON CONFLICT DO NOTHING + V59's
+      // partial unique index keeps this idempotent.
+      st.execute(
+        "INSERT INTO profiles (name, is_global) VALUES ('Global', TRUE) ON CONFLICT DO NOTHING",
+      )
       // #586: V18 sets must_change_password=true for the seeded admin so production deployments
       // force a password rotation. In tests we want the admin fully operational.
       st.execute("UPDATE users SET must_change_password=false WHERE username='admin'")

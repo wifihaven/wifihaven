@@ -88,10 +88,13 @@ object Main extends ZIOAppDefault {
           .serve(withCors)
           .provide(ZLayer.succeed(serverConfig) >>> Server.live)
           .forkScoped
-        _      <- ZIO.logInfo("HTTP port bound; running DB-heavy startup behind readiness gate")
+        _         <- ZIO.logInfo("HTTP port bound; running DB-heavy startup behind readiness gate")
         // Service handles are pure layer reads (no DB I/O); resolve them up front
         // so the retried DB-init block below is purely the idempotent DB work.
-        hsRepo <- ZIO.service[HouseholdSettingsRepo]
+        hsRepo    <- ZIO.service[HouseholdSettingsRepo]
+        // #1771: handle for the startup-time global sentinel seed; the seed itself runs inside
+        // the retried DB-init block below alongside ensureDefault.
+        xaForSeed <- ZIO.service[Transactor[Task]]
         appRepoForSeed <- ZIO.service[AppRepo]
         blRepoForSeed  <- ZIO.service[BlocklistRepo]
         blCacheForSeed <- ZIO.service[BlocklistCache]
@@ -115,6 +118,16 @@ object Main extends ZIOAppDefault {
             // daily-reset tz to the API server's local zone on first install.
             _ <- hsRepo.ensureDefault(tz)
             _ <- ZIO.logInfo(s"household_settings ensured (install-default tz=${tz.getId})")
+            // #1771: seed the single global sentinel profile that PolicyService unions into
+            // every other profile's BlockRules. Idempotent — V59's partial unique index
+            // (`is_global = TRUE`) ensures at most one row ever exists, and ON CONFLICT
+            // matches the [[HouseholdSettingsRepoLive.ensureDefault]] precedent so a restart
+            // is a no-op. Kept here (not in V59) so the seed lands atomically with the code
+            // that hides/uses the sentinel — see #1769 step 2.
+            _ <- sql"""INSERT INTO profiles (name, is_global)
+                       VALUES ('Global', TRUE)
+                       ON CONFLICT DO NOTHING""".update.run.transact(xaForSeed)
+            _ <- ZIO.logInfo("global profile sentinel ensured (is_global=TRUE)")
             // #768: seed the starter library of app templates. Idempotent —
             // operator host edits on previously-seeded apps are preserved.
             seedSummary <- AppTemplates.seed(appRepoForSeed, templates)
@@ -327,7 +340,7 @@ object Main extends ZIOAppDefault {
           ) ++
           ScheduleRoutes.routes(auth, namedSchedRepo) ++
           HouseholdSettingsRoutes.routes(auth, hsRepo) ++
-          DeviceRoutes.routes(auth, deviceRepo, upRepo)
+          DeviceRoutes.routes(auth, deviceRepo, upRepo, profileRepo)
 
       val statsRoutes: Routes[Any, Response] =
         TimeRoutes.routes(
