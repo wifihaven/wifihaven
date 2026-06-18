@@ -405,9 +405,9 @@ describe('ProfilesPage — pause / delete in collapsed row (#1063)', () => {
   // #1063 — Pause/Resume + Delete were moved from the expanded body into the
   // collapsed summary row (alongside the +Time button). The card no longer
   // needs to be expanded to reach either action.
-  // #406: pause is still an explicit PUT with the full profile + paused=!current.
+  // #406 / #1737: pause is an explicit PATCH carrying paused=!current.
   // #1471: clicking Pause on an active profile no longer fires immediately —
-  // it surfaces a soft/hard choice; the chosen mode rides the same PUT.
+  // it surfaces a soft/hard choice; the chosen mode rides the same PATCH.
   it('Pause button is rendered in the collapsed row and fires update without expanding', async () => {
     const user = userEvent.setup()
     renderPage()
@@ -482,7 +482,7 @@ describe('ProfilesPage — pause / delete in collapsed row (#1063)', () => {
 
 // #1471 — soft vs hard pause is chosen at the moment of pausing, via a small
 // picker on the row Pause action, NOT as a persistent radio buried in the
-// Time-limits subsection. The chosen mode rides the same PUT that sets paused.
+// Time-limits subsection. The chosen mode rides the same PATCH that sets paused.
 describe('ProfilesPage — pause-mode chosen at pause-time (#1471)', () => {
   it('clicking Pause surfaces a soft/hard choice rather than saving immediately', async () => {
     const user = userEvent.setup()
@@ -494,7 +494,7 @@ describe('ProfilesPage — pause-mode chosen at pause-time (#1471)', () => {
     expect(api.profiles.patch).not.toHaveBeenCalled()
   })
 
-  it('choosing Hard pause PUTs paused=true with pauseMode=hard', async () => {
+  it('choosing Hard pause PATCHes paused=true with pauseMode=hard', async () => {
     const user = userEvent.setup()
     renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
@@ -508,7 +508,7 @@ describe('ProfilesPage — pause-mode chosen at pause-time (#1471)', () => {
     )
   })
 
-  it('choosing Soft pause PUTs paused=true with pauseMode=soft', async () => {
+  it('choosing Soft pause PATCHes paused=true with pauseMode=soft', async () => {
     const user = userEvent.setup()
     renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
@@ -664,7 +664,7 @@ describe('ProfilesPage — inline time-limit subsection (#975)', () => {
   // which flaked (#1439): the time-limit input's mount value-resync
   // `useEffect(() => setX(value.x))` can run AFTER our change (its passive
   // effect hadn't flushed when the element was found under CI load), reverting
-  // the input so the debounce never commits and the PUT is never sent.
+  // the input so the debounce never commits and the PATCH is never sent.
   // `await act` drains those pending mount effects before we interact; `waitFor`
   // then polls for the real-clock debounce.
   it('autosaves the daily cap after debounce — single PATCH, no Save button', async () => {
@@ -679,7 +679,7 @@ describe('ProfilesPage — inline time-limit subsection (#975)', () => {
     await act(async () => {})
 
     // Set atomically: char-by-char typing lets the debounce fire on a transient
-    // partial value, producing extra PUTs. fireEvent.change gives one value.
+    // partial value, producing extra PATCHes. fireEvent.change gives one value.
     fireEvent.change(input, { target: { value: '90' } })
 
     // Pre-debounce: no save yet.
@@ -694,7 +694,7 @@ describe('ProfilesPage — inline time-limit subsection (#975)', () => {
       )
     })
 
-    // "Saved" indicator surfaces after the PUT resolves.
+    // "Saved" indicator surfaces after the PATCH resolves.
     await waitFor(() => {
       const status = within(kidsCard).getByTestId('profile-time-status-1')
       expect(status).toHaveAttribute('data-status', 'saved')
@@ -712,7 +712,7 @@ describe('ProfilesPage — inline time-limit subsection (#975)', () => {
 
     await user.click(within(kidsCard).getByTestId('profile-time-overlap-dedup-1'))
 
-    // Poll for the debounced PUT — see the daily-cap test (#1439).
+    // Poll for the debounced PATCH — see the daily-cap test (#1439).
     await waitFor(() =>
       expect(api.profiles.patch).toHaveBeenLastCalledWith(
         1,
@@ -731,7 +731,7 @@ describe('ProfilesPage — inline time-limit subsection (#975)', () => {
 
     await user.clear(within(kidsCard).getByTestId('profile-time-limit-1'))
 
-    // Poll for the debounced PUT — see the daily-cap test (#1439).
+    // Poll for the debounced PATCH — see the daily-cap test (#1439).
     await waitFor(() =>
       expect(api.profiles.patch).toHaveBeenLastCalledWith(
         1,
