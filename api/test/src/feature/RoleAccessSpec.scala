@@ -343,7 +343,7 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         )
         _     <- createUser(userRepo, upRepo, auth, "alice", "child", List(kidsId))
         token <- auth.login("alice", "pass").map(_.token.value)
-        routes = DeviceRoutes.routes(auth, deviceRepo, upRepo)
+        routes = DeviceRoutes.routes(auth, deviceRepo, upRepo, profileRepo)
         req    = Request
           .get(URL.decode("/api/devices").toOption.get)
           .addHeader(Header.Authorization.Bearer(token))
@@ -433,7 +433,7 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         )
         _     <- createUser(userRepo, upRepo, auth, "mom", "adult", List(kidsId))
         token <- auth.login("mom", "pass").map(_.token.value)
-        routes = DeviceRoutes.routes(auth, deviceRepo, upRepo)
+        routes = DeviceRoutes.routes(auth, deviceRepo, upRepo, profileRepo)
         req    = Request
           .get(URL.decode("/api/devices").toOption.get)
           .addHeader(Header.Authorization.Bearer(token))

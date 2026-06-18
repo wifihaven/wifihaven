@@ -205,7 +205,10 @@ object ProfilePatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         .map(_.getName)
         .filterNot(_.contains("$"))
         .toSet
-      val writableFields = profileFields - "id"
+      // #1771: `isGlobal` is a structural sentinel flag set once at install time, not a writable
+      // policy field — kept out of `PatchableKeys` so a PATCH cannot promote/demote a profile to
+      // the global slot. Excluded from the pin alongside `id` for the same reason.
+      val writableFields = profileFields - "id" - "isGlobal"
       val expected       = writableFields + "timeLimit"
       assertTrue(
         ProfileRoutes.PatchableKeys == expected,

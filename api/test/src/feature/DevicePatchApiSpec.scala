@@ -46,9 +46,10 @@ object DevicePatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
     for {
       auth            <- makeAuth
       deviceRepo      <- ZIO.service[DeviceRepo]
+      profileRepo     <- ZIO.service[ProfileRepo]
       userProfileRepo <- ZIO.service[UserProfileRepo]
       token           <- auth.login("admin", "changeme").map(_.token.value)
-    } yield (DeviceRoutes.routes(auth, deviceRepo, userProfileRepo), token)
+    } yield (DeviceRoutes.routes(auth, deviceRepo, userProfileRepo, profileRepo), token)
 
   private def patch(routes: Routes[Any, Response], token: String, body: String) =
     routes.runZIO(
@@ -147,7 +148,7 @@ object DevicePatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         _     <- userRepo.clearMustChangePassword(momId)
         _     <- upRepo.setProfilesForUser(momId, List(kidsId))
         token <- auth.login("mom", "pass").map(_.token.value)
-        routes = DeviceRoutes.routes(auth, deviceRepo, upRepo)
+        routes = DeviceRoutes.routes(auth, deviceRepo, upRepo, profileRepo)
         resp  <- routes.runZIO(
           Request
             .patch(

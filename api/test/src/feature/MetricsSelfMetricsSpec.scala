@@ -99,7 +99,7 @@ object MetricsSelfMetricsSpec
 
         // The whole real route surface, wrapped in the production HTTP metrics middleware.
         routes = HttpMetrics.instrument(
-          DeviceRoutes.routes(auth, deviceRepo, upRepo) ++
+          DeviceRoutes.routes(auth, deviceRepo, upRepo, profileRepo) ++
             RouterIngestRoutes
               .routes(ingestAuth, routerRepo, trafficR, tu, deviceRepo, connR, alertR, hsR),
         )

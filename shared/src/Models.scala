@@ -170,6 +170,15 @@ case class Profile(
     // flag, only the collapsed `blocked = true`. Default false. Additive field
     // with a default, so an older client that omits it decodes unchanged.
     defaultDeny: Boolean = false,
+    // #1771: marks the single household-wide "Global" sentinel profile. Exactly
+    // one row in `profiles` may have `is_global = TRUE` (V59 partial unique
+    // index). The sentinel replaces the deleted `global_*` tables (#1769): its
+    // resolved `extraAllowed` / `extraBlocked` / `blocklistIds` are unioned into
+    // every other profile's `BlockRules` by `PolicyService.snapshot`, while its
+    // `paused` / schedules / time limits / pauseMode are meaningless household-
+    // wide and write-rejected at the route layer. Devices cannot reference it.
+    // Defaulted to false to keep existing positional constructions arity-stable.
+    isGlobal: Boolean = false,
 ) derives JsonCodec
 
 case class Schedule(

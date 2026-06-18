@@ -143,8 +143,13 @@ class PolicyServiceLive(
       today = PolicyService.householdLocalDate(now, settings)
       // #1104: today's cap/block state for every profile in one batched read. Same call the
       // /api/time/status/... endpoints use — keeps the snapshot and the UI in lockstep.
-      dayStates          <- timeStatusService.dayStateAll(now, today, settings)
-      profiles           <- profileRepo.listAll
+      dayStates   <- timeStatusService.dayStateAll(now, today, settings)
+      // #1771: snapshot assembly needs the global sentinel too, so it can union the sentinel's
+      // resolved extraAllowed/extraBlocked/blocklistIds into every other profile. `listAll`
+      // is the user-facing listing and deliberately hides the sentinel.
+      allProfiles <- profileRepo.listAllIncludingGlobal
+      globalProfileOpt = allProfiles.find(_.isGlobal)
+      profiles         = allProfiles.filterNot(_.isGlobal)
       devices            <- deviceRepo.listAll
       cats               <- blocklistRepo.listCategories
       catDomains         <- ZIO.foreach(cats)(c => blocklistRepo.loadCategory(c).map(c -> _))
@@ -154,36 +159,29 @@ class PolicyServiceLive(
       // to time_limited), so the two readers saw different rows and the projections drifted.
       // Now both the per-app enforcement (extraAllowed/extraBlocked) and the structural
       // projections downstream of `TimeStatusService` read the SAME rows through the same fold.
-      appLimitsByProfile <- ZIO.foreach(profiles)(p =>
+      appLimitsByProfile <- ZIO.foreach(allProfiles)(p =>
         appTimeLimitRepo.listForProfile(p.id).map(p.id -> _),
       )
       // #1379: per-app schedule rules, resolved to (mode, window) pairs per assignment.
       // Folded into the per-app effective disposition below, before app-mode bucketing.
-      appSched           <- ZIO.foreach(profiles)(p =>
+      appSched           <- ZIO.foreach(allProfiles)(p =>
         appRepo.appScheduleWindowsForProfile(p.id).map(p.id -> _),
       )
       appLimitsMap = appLimitsByProfile.toMap
       appSchedMap = appSched.toMap
     } yield {
-      val profilePolicies: Map[ProfileId, ProfilePolicy] = profiles.iterator.map { p =>
-        // #1104: cap/block state comes from TimeStatusService — the same value the UI reads.
-        // Computed before app bucketing because the #1379 carve gate keys off the raw daily-cap
-        // condition (used/limit/extensions), independent of the collapsed blockReason.
-        val state = dayStates.getOrElse(
+      // #1771: resolve the global sentinel's rules via the SAME [[computeBlockRules]] path the
+      // per-profile policies use (AGENTS.md §single-source-of-truth — no parallel global-rule
+      // computation). The sentinel cannot meaningfully contribute `blocked`/schedules/time-limit/
+      // paused/defaultDeny — those are write-rejected at the route layer; we additionally zero
+      // them out defensively when reading so a dirty row (e.g. a manual SQL toggle) cannot leak a
+      // household-wide block.
+      def computeRulesFor(p: Profile): BlockRules = {
+        val state           = dayStates.getOrElse(
           p.id,
           ProfileDayState(p.id, today, None, 0, 0, None, blocked = false, None, Nil),
         )
-
-        // #763/#764/#1379/#1630: collapse this profile's app assignments into the per-MAC
-        // BlockRules buckets via the SINGLE fold `ProfileAppDispositions.enforcement`. Schedule
-        // windows fold over base mode (an active window overrides the base); the AllowedDuring
-        // carve is gated by the daily cap unless the app is exemptFromDaily (design §4.1, §5).
-        // `mode=TimeLimited` apps contribute nothing here — they surface via the per-app cap
-        // path (`appCapExhaustedHosts` reads `state.perApp`).
         val dispositions    = ProfileAppDispositions.from(appLimitsMap.getOrElse(p.id, Nil))
-        // #1679: suppress extraAllowed carve for apps with allowedDuringScheduleBlock=false when
-        // the profile's whole-MAC block reason is Schedule. Other reasons leave isScheduleBlock
-        // false so the toggle has no effect on Paused/TimeLimit/Manual blocks.
         val isScheduleBlock = state.blockReason.contains(MacBlockReason.Schedule)
         val (appAllowedHosts, appBlockedHosts) = dispositions.enforcement(
           schedWindows = appSchedMap.getOrElse(p.id, Map.empty),
@@ -191,12 +189,45 @@ class PolicyServiceLive(
           now = now,
           isScheduleBlock = isScheduleBlock,
         )
-
-        val rules = PolicyService.computeBlockRules(
+        PolicyService.computeBlockRules(
           profile = p,
           state = state,
           appExtraAllowed = appAllowedHosts,
           appExtraBlocked = appBlockedHosts,
+        )
+      }
+
+      // #1771: the sentinel's contribution to every profile — just the carve-out / blocklist
+      // fields. `blocked` / `blockReason` are deliberately not folded: the global cannot impose a
+      // whole-MAC drop on the household (that is what the architecture's per-profile pause /
+      // schedule / time-limit lanes are for; #1769).
+      val globalRulesResolved: BlockRules = globalProfileOpt.map(computeRulesFor) match {
+        case Some(r) =>
+          r.copy(blocked = false, blockReason = None)
+        case None    => BlockRules.allowAll
+      }
+
+      val profilePolicies: Map[ProfileId, ProfilePolicy] = profiles.iterator.map { p =>
+        // #1104: cap/block state comes from TimeStatusService — the same value the UI reads.
+        // Computed before app bucketing because the #1379 carve gate keys off the raw daily-cap
+        // condition (used/limit/extensions), independent of the collapsed blockReason.
+        // #763/#764/#1379/#1630: collapse this profile's app assignments into the per-MAC
+        // BlockRules buckets via the SINGLE fold `ProfileAppDispositions.enforcement`. Schedule
+        // windows fold over base mode (an active window overrides the base); the AllowedDuring
+        // carve is gated by the daily cap unless the app is exemptFromDaily (design §4.1, §5).
+        // `mode=TimeLimited` apps contribute nothing here — they surface via the per-app cap
+        // path (`appCapExhaustedHosts` reads `state.perApp`).
+        val ownRules = computeRulesFor(p)
+
+        // #1771: union the global sentinel's resolved extraAllowed / extraBlocked / blocklistIds
+        // into every (non-global) profile's rules. Set semantics via `.distinct` after concat —
+        // the router's existing extraAllowed-beats-extraBlocked precedence
+        // (`feedback_extraallowed_beats_blocked`) means a host that ends up in both lanes via
+        // the union still resolves to allow, matching the prior global_* semantics.
+        val rules = ownRules.copy(
+          extraAllowed = (ownRules.extraAllowed ++ globalRulesResolved.extraAllowed).distinct,
+          extraBlocked = (ownRules.extraBlocked ++ globalRulesResolved.extraBlocked).distinct,
+          blocklistIds = (ownRules.blocklistIds ++ globalRulesResolved.blocklistIds).distinct,
         )
 
         p.id -> ProfilePolicy(name = p.name, rules = rules, failureMode = p.failureMode)
@@ -254,8 +285,16 @@ class PolicyServiceLive(
       // `global_blocklists` reader was removed (prod tables verified empty
       // 2026-06-16); only the in-code allow set survives. The sentinel-profile
       // path lands in #1771.
+      // #1771: the wire `global.extraAllowed` is the union of the sentinel profile's resolved
+      // extraAllowed plus the in-code UI + infra host sets. `extraBlocked` and `blocklistIds`
+      // additionally carry the sentinel's contribution so a household-wide block list takes
+      // effect on every device. `blocked` / `blockReason` stay zeroed — the global section
+      // never imposes a whole-MAC drop (the architecture's per-profile lanes do that).
       val globalRules = BlockRules.allowAll.copy(
-        extraAllowed = (uiGlobalAllow ++ PolicyService.infraAllowHosts).distinct,
+        extraAllowed =
+          (globalRulesResolved.extraAllowed ++ uiGlobalAllow ++ PolicyService.infraAllowHosts).distinct,
+        extraBlocked = globalRulesResolved.extraBlocked.distinct,
+        blocklistIds = globalRulesResolved.blocklistIds.distinct,
       )
 
       val core = SnapshotCore(globalRules, devicePolicies, profilePolicies, pBlocklists)

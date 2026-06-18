@@ -278,6 +278,8 @@ object ProfileRoutes {
           val handle: ZIO[Any, ApiError, Response] = for {
             claims <- requireWriter(req, auth)
             _      <- requireProfileAccess(claims, pid, userProfileRepo)
+            // #1771: schedules are meaningless on the global sentinel — block here before any DB work.
+            _      <- requireNotGlobalProfile(profileRepo, pid, "schedules")
             body   <- req.body.asString.orElseFail(ApiError.BadRequest(""))
             sr     <- ZIO
               .fromEither(body.fromJson[SetProfileSchedulesRequest])
@@ -364,6 +366,10 @@ object ProfileRoutes {
             upr    <- ZIO
               .fromEither(body.fromJson[UpsertProfileRequest])
               .mapError(ApiError.DecodeFailure(_))
+            // #1771: full-replace PUT touches paused / timeLimit / pauseMode — none of which apply
+            // to the global sentinel. Reject before any DB work so a misdirected admin tab can't
+            // even partially write.
+            _      <- requireNotGlobalProfile(profileRepo, pid, "profile (PUT)")
             p      <- profileRepo
               .findById(pid)
               .mapError(ApiError.Db(_))
@@ -407,9 +413,14 @@ object ProfileRoutes {
         },
       Method.DELETE / "api" / "profiles" / long("id")            ->
         handler { (id: Long, req: Request) =>
+          val pid                                  = ProfileId(id)
           val handle: ZIO[Any, ApiError, Response] =
             requireAdmin(req, auth) *>
-              profileRepo.delete(ProfileId(id)).mapError(ApiError.Db(_)) *>
+              // #1771: the global sentinel is a wire-shape fixture, not an authored profile —
+              // never deletable. The partial unique index would let admin recreate it via SQL,
+              // but the snapshot would briefly miss the household-wide allow/block lists.
+              requireNotGlobalProfile(profileRepo, pid, "profile (DELETE)") *>
+              profileRepo.delete(pid).mapError(ApiError.Db(_)) *>
               ZIO.succeed(Response.ok)
           handle.mapError(ErrorMapper.errorToResponse)
         },
@@ -472,6 +483,27 @@ object ProfileRoutes {
             timeLimitPatch          <- ZIO
               .fromEither(FieldPatch.from[Int](obj, "timeLimit"))
               .mapError(ApiError.BadRequest(_))
+            // #1771: paused / pauseMode / timeLimit are meaningless household-wide. Reject the
+            // PATCH if any of those are present AND the target is the global sentinel. Other
+            // fields (name, blockedCategories, blockIpOnly, …) are fine on the sentinel.
+            isGlobal                <- profileRepo
+              .findById(pid)
+              .mapError(ApiError.Db(_))
+              .map(_.exists(_.isGlobal))
+            _                       <- ZIO.when(isGlobal) {
+              val offending = List(
+                "paused"    -> (pausedPatch != FieldPatch.Absent),
+                "pauseMode" -> (pauseModePatch != FieldPatch.Absent),
+                "timeLimit" -> (timeLimitPatch != FieldPatch.Absent),
+              ).collect { case (k, true) => k }
+              ZIO.when(offending.nonEmpty)(
+                ZIO.fail(
+                  ApiError.BadRequest(
+                    s"${offending.mkString(",")} cannot be set on the global profile (id=${pid.value})",
+                  ),
+                ),
+              )
+            }
             // Reject `field: null` for non-nullable fields — only `timeLimit`
             // accepts an explicit clear. Mirrors the device PATCH convention.
             _                       <- ZIO
@@ -599,6 +631,10 @@ object DeviceRoutes {
       auth: AuthService,
       deviceRepo: DeviceRepo,
       userProfileRepo: UserProfileRepo,
+      // #1771: profileRepo is consulted to reject device assignments to the global sentinel with
+      // a 400 before any DB write. The repo-layer guard (`DeviceRepoLive.upsert`) is a defensive
+      // backstop. Passing `null` is unsafe — every call site passes the real repo.
+      profileRepo: ProfileRepo,
   ): Routes[Any, Response] =
     Routes(
       Method.GET / "api" / "devices"                    ->
@@ -624,7 +660,10 @@ object DeviceRoutes {
             // a profile they can't write to still 403s.
             _  <- udr.profileId match {
               case Some(pid) =>
-                requireProfileAccess(claims, pid, userProfileRepo)
+                requireProfileAccess(claims, pid, userProfileRepo) *>
+                  // #1771: devices cannot be assigned to the global sentinel profile. Reject with
+                  // 400 before any DB write. The repo-layer guard catches direct callers too.
+                  requireNotGlobalProfile(profileRepo, pid, "device.profileId")
               case None      => ZIO.unit
             }
             id <- deviceRepo
@@ -694,7 +733,10 @@ object DeviceRoutes {
             }
             _         <- pidPatch match {
               case FieldPatch.Set(pid) =>
-                requireProfileAccess(claims, pid, userProfileRepo)
+                requireProfileAccess(claims, pid, userProfileRepo) *>
+                  // #1771: same guard as PUT — reassigning a device to the global sentinel is
+                  // rejected with 400.
+                  requireNotGlobalProfile(profileRepo, pid, "device.profileId")
               case _                   => ZIO.unit
             }
             newName = namePatch.applyTo(existing.name)
@@ -2096,6 +2138,35 @@ def requireProfileAccess(
       else ZIO.fail(ApiError.Forbidden("Device has no assigned profile"))
     case Some(pid) => requireProfileAccess(claims, pid, upRepo)
   }
+
+/**
+ * #1771: reject writes that target the global sentinel profile when the targeted concept is
+ * meaningless household-wide (schedules / time limits / paused / pauseMode / manual block /
+ * deletion). Returns 422 with a human-readable message naming the offending field. Read paths and
+ * writes that DO make sense on the sentinel (its app-policy assignments, blocked_categories via
+ * PATCH→blockedCategories, name, blockIpOnly, etc. when introduced) are not gated here.
+ *
+ * Implemented at the route layer (not the repo) because the repo setters have no context about
+ * WHICH field a PATCH is touching — a route knows the user-facing field name and can give a precise
+ * error.
+ */
+def requireNotGlobalProfile(
+    profileRepo: ProfileRepo,
+    profileId: ProfileId,
+    field: String,
+): IO[ApiError, Unit] =
+  profileRepo
+    .findById(profileId)
+    .mapError(ApiError.Db(_))
+    .flatMap {
+      case Some(p) if p.isGlobal =>
+        ZIO.fail(
+          ApiError.BadRequest(
+            s"$field cannot be set on the global profile (id=${profileId.value})",
+          ),
+        )
+      case _                     => ZIO.unit
+    }
 
 def normalizeMac(mac: String): String = {
   // Path-captured MACs arrive percent-encoded — the SPA builds the URL with
