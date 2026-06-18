@@ -47,30 +47,42 @@ object AppReconcilerSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
         // 1. Operator-added canonical 'youtube' (no template_id). Operator added an extra host.
         operatorId <- appRepo.create("My YouTube", "youtube", None, Some("📺"), IconType.Emoji)
         operatorHost = Hostname.unsafe("operator-only.example.com")
-        _              <- appRepo.setHosts(
+        _          <- appRepo.setHosts(
           operatorId,
           List(Hostname.unsafe("youtube.com"), operatorHost),
         )
-        _              <- appRepo.upsertAssignment(operatorId, kidsId, AppMode.Blocked, None, true)
+        _          <- appRepo.upsertAssignment(operatorId, kidsId, AppMode.Blocked, None, true)
         // 2. Seeded '-template'-suffixed row carrying template_id, distinct assignment + hosts.
-        seededId       <- appRepo.create(
+        seededId   <- appRepo.create(
           "YouTube",
           "youtube-template",
           Some(youtubeSlug),
           Some("https://example/yt.png"),
           IconType.Url,
         )
-        _              <- appRepo.setHosts(
+        _          <- appRepo.setHosts(
           seededId,
           List(Hostname.unsafe("youtube.com"), Hostname.unsafe("googlevideo.com")),
         )
-        _              <- appRepo.upsertAssignment(
+        _          <- appRepo.upsertAssignment(
           seededId,
           adultsId,
           AppMode.TimeLimited,
           Some(30),
           true,
         )
+        // 2b. Seed app_used_daily rows on both sides — overlapping (profile_id, date) on the
+        // Kids row to exercise the SUM-on-conflict path; a non-overlapping (Adults) row to
+        // exercise the plain reattach path. Verifies the rollup-table FK merge SQL.
+        rollupRepo <- ZIO.service[AppUsedRollupRepo]
+        usageDate     = java.time.LocalDate.parse("2026-06-15")
+        rolledThrough = java.time.Instant.parse("2026-06-15T23:59:00Z")
+        _              <- rollupRepo
+          .upsertDay(kidsId, operatorId, usageDate, RolledAppDay(120L, rolledThrough))
+        _              <- rollupRepo
+          .upsertDay(kidsId, seededId, usageDate, RolledAppDay(300L, rolledThrough))
+        _              <- rollupRepo
+          .upsertDay(adultsId, seededId, usageDate, RolledAppDay(600L, rolledThrough))
         // 3. Reconcile.
         summary        <- AppReconciler.reconcileTemplates(appRepo, List(youtubeTemplate))
         // 4. Assertions.
@@ -82,6 +94,10 @@ object AppReconcilerSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
         canonicalHosts <- appRepo.getHosts(canonical.id)
         canonicalAsgn  <- appRepo.listAssignmentsForApp(canonical.id)
         suffixedGone   <- appRepo.findBySlug("youtube-template")
+        // (profile, date) overlap collapses onto canonical with engaged_seconds summed.
+        kidsUsage      <- rollupRepo.getDayForProfile(kidsId, usageDate)
+        // Non-overlapping (Adults) row reattached.
+        adultsUsage    <- rollupRepo.getDayForProfile(adultsId, usageDate)
       } yield assertTrue(after.count(_.slug == "youtube") == 1) &&
         assertTrue(after.count(_.slug == "youtube-template") == 0) &&
         assertTrue(suffixedGone.isEmpty) &&
@@ -98,6 +114,13 @@ object AppReconcilerSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
         // Both assignments reattached to canonical.
         assertTrue(canonicalAsgn.size == 2) &&
         assertTrue(canonicalAsgn.map(_.profileId).toSet == Set(kidsId, adultsId)) &&
+        // engaged_seconds is the SUM of the conflicting (canonical=120) + (suffixed=300) row.
+        assertTrue(kidsUsage.get(canonical.id).map(_.engagedSeconds).contains(420L)) &&
+        // Adults-only suffixed row reattached to canonical id.
+        assertTrue(adultsUsage.get(canonical.id).map(_.engagedSeconds).contains(600L)) &&
+        // No stray rows still keyed by the deleted suffixed app id.
+        assertTrue(!kidsUsage.contains(seededId)) &&
+        assertTrue(!adultsUsage.contains(seededId)) &&
         assertTrue(summary.mergedSlugs == List("youtube")) &&
         assertTrue(summary.renamedSlugs.isEmpty)
     },

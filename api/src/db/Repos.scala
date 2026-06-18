@@ -2794,6 +2794,12 @@ trait AppRepo {
    * conflicted with `to`'s own). Host-set version is bumped once. Idempotent under repeat calls
    * with the same args (a second call no-ops because `from` is gone).
    *
+   * Conflict policy is "`to` wins" everywhere `to` already has a row at the merging key: an
+   * assignment for the same `profile_id` (and via the V51 cascade, its `app_policy_schedule_rules`)
+   * stays on `to`, with `from`'s discarded; a rollup bucket for the same key stays on `to`. For
+   * `app_used_daily` overlapping `(profile_id, date)` rows are summed (`engaged_seconds`) instead
+   * of dropped so usage isn't lost.
+   *
    * Used by `AppReconciler.reconcileTemplates` to collapse the `<slug>-template` row that
    * `AppTemplates.findFreeSlug` falls back to when an operator-added canonical row already owns the
    * template's slug.

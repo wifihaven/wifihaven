@@ -13,11 +13,13 @@ final case class AppReconcileSummary(
     mergedSlugs: List[String],
     renamedSlugs: List[String],
     hostsUnioned: List[String],
+    templateIdSet: List[String],
     alreadyClean: List[String],
     created: List[String],
 ) derives JsonCodec {
   def total: Int =
-    mergedSlugs.size + renamedSlugs.size + hostsUnioned.size + alreadyClean.size + created.size
+    mergedSlugs.size + renamedSlugs.size + hostsUnioned.size + templateIdSet.size +
+      alreadyClean.size + created.size
 }
 
 /**
@@ -40,11 +42,12 @@ object AppReconciler {
 
   private sealed trait OneOutcome
   private object OneOutcome {
-    final case class Merged(slug: String)       extends OneOutcome
-    final case class Renamed(slug: String)      extends OneOutcome
-    final case class HostsUnioned(slug: String) extends OneOutcome
-    final case class AlreadyClean(slug: String) extends OneOutcome
-    final case class Created(slug: String)      extends OneOutcome
+    final case class Merged(slug: String)        extends OneOutcome
+    final case class Renamed(slug: String)       extends OneOutcome
+    final case class HostsUnioned(slug: String)  extends OneOutcome
+    final case class TemplateIdSet(slug: String) extends OneOutcome
+    final case class AlreadyClean(slug: String)  extends OneOutcome
+    final case class Created(slug: String)       extends OneOutcome
   }
 
   def reconcileTemplates(
@@ -58,6 +61,7 @@ object AppReconciler {
           mergedSlugs = outcomes.collect { case OneOutcome.Merged(s) => s },
           renamedSlugs = outcomes.collect { case OneOutcome.Renamed(s) => s },
           hostsUnioned = outcomes.collect { case OneOutcome.HostsUnioned(s) => s },
+          templateIdSet = outcomes.collect { case OneOutcome.TemplateIdSet(s) => s },
           alreadyClean = outcomes.collect { case OneOutcome.AlreadyClean(s) => s },
           created = outcomes.collect { case OneOutcome.Created(s) => s },
         )
@@ -81,15 +85,17 @@ object AppReconciler {
             unionTemplateHostsInto(repo, s.id, t).as(OneOutcome.Renamed(canonicalSlug))
 
         case (Some(c), None) =>
-          // Only canonical exists. Set template_id if absent, top up template hosts.
+          // Only canonical exists. Set template_id if absent, top up template hosts. The two are
+          // tracked separately so the summary tells operators which subset of canonicals needed
+          // a template_id reattach vs which gained hosts.
+          val needsTemplateId  = c.templateId.isEmpty
           val ensureTemplateId =
-            if c.templateId.isEmpty then repo.update(c.copy(templateId = Some(t.slug)))
-            else ZIO.unit
+            if needsTemplateId then repo.update(c.copy(templateId = Some(t.slug))) else ZIO.unit
           ensureTemplateId *>
-            unionTemplateHostsInto(repo, c.id, t).flatMap { added =>
-              if added || c.templateId.isEmpty then
-                ZIO.succeed(OneOutcome.HostsUnioned(canonicalSlug))
-              else ZIO.succeed(OneOutcome.AlreadyClean(canonicalSlug))
+            unionTemplateHostsInto(repo, c.id, t).map { added =>
+              if added then OneOutcome.HostsUnioned(canonicalSlug)
+              else if needsTemplateId then OneOutcome.TemplateIdSet(canonicalSlug)
+              else OneOutcome.AlreadyClean(canonicalSlug)
             }
 
         case (None, None) =>
