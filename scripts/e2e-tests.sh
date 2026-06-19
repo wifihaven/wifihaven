@@ -42,12 +42,16 @@ for i in $(seq 1 60); do
 done
 
 step "Login as admin"
-LOGIN=$(curl -fsS -X POST "$BASE/api/auth/login" \
-  -H 'content-type: application/json' \
-  -d "{\"username\":\"admin\",\"password\":\"$ADMIN_PASS\"}")
-TOKEN=$(echo "$LOGIN" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
-[ -n "$TOKEN" ] || fail "no token in login response: $LOGIN"
-echo "$LOGIN" | grep -q '"role":"admin"' || fail "admin role missing"
+# #1790: shared self-healing helper. On a fresh staging DB reset, rotates
+# the seeded 'changeme' password back to $ADMIN_PASS before returning a JWT;
+# on the normal day this is a single-login pass-through.
+# shellcheck source=scripts/e2e/lib/admin-auth.sh
+source "$(dirname "${BASH_SOURCE[0]}")/e2e/lib/admin-auth.sh"
+export STAGING_API_URL="$BASE"
+export STAGING_ADMIN_USER="admin"
+export STAGING_ADMIN_PASSWORD="$ADMIN_PASS"
+TOKEN=$(admin_login_self_heal) || fail "admin login failed (see stderr)"
+[ -n "$TOKEN" ] || fail "admin_login_self_heal returned empty token"
 pass "logged in"
 
 AUTH=(-H "authorization: Bearer $TOKEN")

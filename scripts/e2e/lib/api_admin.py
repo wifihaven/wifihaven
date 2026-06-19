@@ -11,6 +11,10 @@ import urllib.request
 log = logging.getLogger(__name__)
 
 
+class _LoginUnauthorized(Exception):
+    """Internal — raised by _raw_login on a 401, caught by self-heal."""
+
+
 class AdminAPI:
     def __init__(self, base_url: str, *, username: str = "admin", password: str = "changeme"):
         self.base_url = base_url.rstrip("/")
@@ -20,17 +24,67 @@ class AdminAPI:
 
     # ── auth ──────────────────────────────────────────────────────────────
 
+    # #1790: staging's Postgres resets every 30 days; on reset the admin user
+    # reverts to 'changeme' with must_change_password set. CI's stored secret
+    # holds the operator-chosen value, so a normal login() 401s. Self-heal:
+    # try 'changeme', rotate the password back to self.password, re-login.
+    # Bash mirror lives at scripts/e2e/lib/admin-auth.sh — keep both in sync.
+    _DEFAULT_PASSWORD = "changeme"
+
     def login(self) -> str:
-        body = self._request(
-            "POST", "/api/auth/login",
-            body={"username": self.username, "password": self.password},
-            authed=False,
-        )
-        token = body.get("token")
-        if not token:
-            raise RuntimeError(f"login response missing token: {body!r}")
+        try:
+            token = self._raw_login(self.password)
+        except _LoginUnauthorized:
+            token = self._self_heal_after_reset()
         self._token = token
         return token
+
+    def _raw_login(self, password: str) -> str:
+        try:
+            body = self._request(
+                "POST", "/api/auth/login",
+                body={"username": self.username, "password": password},
+                authed=False,
+            )
+        except RuntimeError as e:
+            if "HTTP 401" in str(e):
+                raise _LoginUnauthorized() from e
+            raise
+        token = body.get("token") if isinstance(body, dict) else None
+        if not token:
+            raise RuntimeError(f"login response missing token: {body!r}")
+        return token
+
+    def _self_heal_after_reset(self) -> str:
+        log.info("admin login 401 — attempting post-reset bootstrap with 'changeme'")
+        try:
+            bootstrap_token = self._raw_login(self._DEFAULT_PASSWORD)
+        except _LoginUnauthorized as e:
+            raise RuntimeError(
+                "neither stored password nor 'changeme' worked on "
+                f"{self.base_url} — staging admin credentials need manual rotation",
+            ) from e
+        # Rotate back to the stored password BEFORE returning a token — that
+        # way every caller gets a token good for the post-rotation state, and
+        # the must_change_password guard can't bite the next admin call.
+        self._token = bootstrap_token
+        # #623: change-password returns JSON ({"mustChangePassword": false}).
+        # AdminAPI._request already json-decodes a JSON-content-type response;
+        # a regression to an empty body would surface as None here.
+        resp = self._request(
+            "POST", "/api/auth/change-password",
+            body={
+                "currentPassword": self._DEFAULT_PASSWORD,
+                "newPassword": self.password,
+            },
+        )
+        if not isinstance(resp, dict) or "mustChangePassword" not in resp:
+            raise RuntimeError(
+                f"change-password did not return the expected JSON body (#623 regression?): {resp!r}",
+            )
+        log.info("admin password rotated back to stored value; re-logging in")
+        self._token = None
+        return self._raw_login(self.password)
 
     @property
     def token(self) -> str:
