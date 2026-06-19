@@ -48,13 +48,18 @@ _py() { python3 -c "$1"; }
 E2E_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/e2e/lib" && pwd)"
 
 # ── Admin login ────────────────────────────────────────────────────────────
+# #1790: shared self-healing helper. On a fresh staging DB reset, rotates
+# the seeded 'changeme' password back to $ADMIN_PASS before returning a JWT;
+# on the normal day this is a single-login pass-through.
 step "Admin login"
-LOGIN=$(curl -fsS -X POST "$BASE/api/auth/login" \
-  -H 'content-type: application/json' \
-  -d "{\"username\":\"admin\",\"password\":\"$ADMIN_PASS\"}")
-ADMIN=$(_py "import sys,json; print(json.loads('$LOGIN'.replace(\"'\",\"'\"))['token'])" 2>/dev/null \
-  || echo "$LOGIN" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
-[ -n "$ADMIN" ] || fail "no token in login response: $LOGIN"
+# shellcheck source=scripts/e2e/lib/admin-auth.sh
+source "$E2E_LIB/admin-auth.sh"
+export STAGING_API_URL="$BASE"
+export STAGING_ADMIN_USER="admin"
+export STAGING_ADMIN_PASSWORD="$ADMIN_PASS"
+ADMIN=$(admin_login_self_heal) || fail "admin login failed (see stderr)"
+[ -n "$ADMIN" ] || fail "admin_login_self_heal returned empty token"
+unset STAGING_API_URL STAGING_ADMIN_USER STAGING_ADMIN_PASSWORD
 pass "logged in"
 AUTH=(-H "authorization: Bearer $ADMIN")
 

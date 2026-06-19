@@ -59,3 +59,4 @@ scripts/e2e/**/__pycache__/
 # from openwrt/files/ on every build; not source.
 openwrt/wifihaven_*.ipk
 openwrt/wifihaven_*.apk
+.venv-test/
