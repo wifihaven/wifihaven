@@ -264,16 +264,16 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
   end
 
   -- #1348: blocklist member → bl_ set index for the dns-tail bl_ populator.
-  -- Written in lockstep with the dnsmasq.conf above (whose nftset= directives
-  -- declare the same membership) so a directly-queried CNAME target landing on
-  -- a fresh CDN-anycast IP still populates the category drop-set. A write
-  -- failure here is non-fatal: it only loses the directly-queried-target
-  -- coverage until the next apply, not core enforcement, so we log and proceed.
-  local bl_index = render.blocklist_member_index(snapshot)
-  local okbl, errbl = write_fn(paths.bl_member_index, bl_index)
-  if not okbl then
-    log.warn("policy.apply: write bl member index failed: %s", tostring(errbl))
-  end
+  -- Post-#1782: this write is a no-op (the agent writes paths.bl_member_index
+  -- from blocklists.render_member_index, which streams from the cache files).
+  -- The old render.blocklist_member_index(snapshot) read from
+  -- snapshot._blocklist_hosts which is no longer populated; emitting it here
+  -- would overwrite the agent's populated index with an empty file on every
+  -- policy.apply call. The agent calls refresh_blocklists → render_member_index
+  -- → paths.bl_member_index BEFORE policy.apply so the index is ready when
+  -- dnsmasq restarts. (#1782 BLOCKER fix)
+  --
+  -- (The index is written by the agent's refresh_blocklists, not here.)
 
   if dnsmasq_changed then
     log.debug("policy.apply: wrote dnsmasq=%dB (changed) nft=%dB; restarting dnsmasq",

@@ -78,7 +78,8 @@ local metrics_int   = tonumber(uci_get("metrics_report_interval", "60"))
 -- decoupled from the ~5 s policy poll. fetch_and_cache is a no-op read when the
 -- (id, version) file is already cached, so the cadence only does real work when
 -- a list's content version changed; the agent re-applies the ruleset only when
--- the loaded host set actually differs (blocklists.hosts_differ). Default 1 h.
+-- the snapshot's (id, version) pair set changes (post-#1782; pre-#1782 this used
+-- blocklists.hosts_differ on an in-memory host map). Default 1 h.
 local blocklist_int = tonumber(uci_get("blocklist_refresh_interval", "3600"))
 -- #1658: eb_/bl_ ipset re-resolve cadence (seconds). The per-host eb_<host>
 -- and per-blocklist bl_<id> sets are declared `flags dynamic,timeout 1h`,
@@ -92,15 +93,14 @@ local blocklist_int = tonumber(uci_get("blocklist_refresh_interval", "3600"))
 -- the 1h kernel timeout, ~2 refreshes per window, ≈one `dig` per host every
 -- 30 min (negligible router load even at ~50 distinct hosts).
 local eb_refresh_int = tonumber(uci_get("eb_refresh_interval", "1800"))
--- #1412 OOM guard: a single category list larger than this many BYTES is cached
--- but NOT parsed/rendered. The prod agent OOM-killed (~700 MB RSS / 1 GB router)
--- loading the StevenBlack "extended" lists (ads-extended ~1.6 MB / 83k hosts,
--- adult-extended ~1.3 MB / 76k hosts) into memory and rendering ~160k `nftset=`
--- directives — which killed ALL category enforcement, including the tiny curated
--- lists. 256 KiB (~12k hosts) keeps every curated list (ads/malware/adult/…) and
--- skips only the oversized aggregate lists, which are tracked for a real
--- large-list strategy in the design issue referenced from #1412.
-local blocklist_max_bytes = tonumber(uci_get("blocklist_max_list_bytes", "262144"))
+-- #1782: per-shard byte cap. With the streaming shard path each blocklist is
+-- rendered line-by-line from the on-disk cache file directly to a per-id conf
+-- shard, so the agent's Lua heap never holds the full member set. The cap
+-- here limits the size of each rendered shard file (not the parsed table) as
+-- defense-in-depth against runaway lists. Lifted from 256 KiB (#1434) to 10 MB
+-- — large enough for the extended StevenBlack lists (~7 MB each) while still
+-- bounding /tmp usage per shard (tmpfs = RAM on OpenWRT).
+local blocklist_max_bytes = tonumber(uci_get("blocklist_max_list_bytes", "10485760"))
 local activity_sample_int = tonumber(uci_get("activity_sample_int", "10"))
 local debug_opt     = uci_get("debug",                            "0")
 
@@ -443,36 +443,117 @@ local function rename_file(from, to)
   return true
 end
 
--- #1412: fetch + cache + load the category blocklists for `snap`, emit the
--- failure metric, log any errors, and return the loaded host map. Called from
--- BOTH the startup apply and the on_tick blocklist timer so the bl_ ipsets are
--- populated regardless of the 200/304 status of the policy poll. The prod no-op
--- was that this ran only in the policy-poll 200 branch and never at startup, so
--- a household with a stable snapshot left every bl_ set empty and category
--- enforcement silently did nothing. The returned map is attached to
--- snap._blocklist_hosts, which render reads to emit the nftset= populators.
--- Defined after http_get (its upvalue) so the closure captures it.
+-- #1782: fetch + cache + write per-blocklist shard files for `snap`, emit the
+-- failure metric, log any errors. Called from BOTH the startup apply and the
+-- on_tick blocklist timer so the bl_ ipsets are populated regardless of the
+-- 200/304 status of the policy poll.
+--
+-- Post-#1782: snap._blocklist_hosts is NO LONGER attached. The bl_ nftset=
+-- directives are not emitted inline by render.dnsmasq — instead dnsmasq reads
+-- per-blocklist shard files at /tmp/wifihaven-blocklist-<id>.conf (via
+-- conf-file= directives). This keeps the 80k+ host set out of the Lua heap.
+--
+-- Returns nothing (caller no longer attaches a host map to the snapshot).
+-- BLOCKLIST_CACHE_DIR: persistent on-flash cache of fetched list bodies;
+--   survives reboots; shards in BLOCKLIST_SHARD_DIR are rebuilt from it.
 local BLOCKLIST_CACHE_DIR = "/etc/wifihaven/blocklists"
+-- BLOCKLIST_SHARD_DIR: per-blocklist dnsmasq conf files (/tmp = tmpfs = RAM);
+--   written atomically (tmp→rename) and GC'd on each render + startup.
+local BLOCKLIST_SHARD_DIR = "/tmp"
 local function refresh_blocklists(snap)
+  -- Step 1: fetch new list versions + cache them to disk.
   local res = blocklists.refresh(
-    snap, http_get, nil, BLOCKLIST_CACHE_DIR, api_url, router_token, blocklist_max_bytes)
+    snap, http_get, nil, BLOCKLIST_CACHE_DIR, api_url, router_token)
   record_blocklist_failures(res)
   for _, e in ipairs(res.errors or {}) do
     log.warn("blocklist fetch: %s", tostring(e))
   end
-  -- #1412: surface lists skipped by the byte cap so an oversized list that is
-  -- silently not enforced is visible to an operator (the bl_ set stays empty
-  -- for these ids by design until the large-list strategy lands).
-  if res.skipped and #res.skipped > 0 then
-    log.warn("blocklist render cap: skipped %d oversized list(s) (>%d bytes): %s",
-             #res.skipped, blocklist_max_bytes, table.concat(res.skipped, ", "))
+
+  -- Step 2: stream cache files → per-shard dnsmasq conf files.
+  -- Determine which blocklist ids are referenced by global.blocklistIds so
+  -- render_shards appends the global_block nftset specs to those shard lines.
+  local global_bl_ids = {}
+  local snap_global = snap and snap.global
+  if type(snap_global) == "table" and type(snap_global.blocklistIds) == "table" then
+    for _, id in ipairs(snap_global.blocklistIds) do
+      global_bl_ids[id] = true
+    end
   end
-  return res.hosts
+
+  local shard_res = blocklists.render_shards(
+    snap, nil, BLOCKLIST_CACHE_DIR, BLOCKLIST_SHARD_DIR, blocklist_max_bytes, global_bl_ids)
+  for _, e in ipairs(shard_res.errors or {}) do
+    log.warn("blocklist shard render: %s", tostring(e))
+  end
+  if shard_res.skipped and #shard_res.skipped > 0 then
+    log.warn("blocklist shard cap: skipped %d oversized shard(s) (>%d bytes): %s",
+             #shard_res.skipped, blocklist_max_bytes,
+             table.concat(shard_res.skipped, ", "))
+  end
+
+  -- Step 3: GC stale shards for ids that are no longer in the snapshot.
+  blocklists.gc_shards(snap, nil, BLOCKLIST_SHARD_DIR)
+
+  -- Step 4: write the member index for dns-tail's CNAME-aware bl_ population.
+  -- Written to paths.bl_member_index (= /tmp/wifihaven-bl-members.txt), the
+  -- path dns-tail reads (paths.lua:36). This replaces the
+  -- render.blocklist_member_index(snapshot) call in policy.apply (policy.lua:272)
+  -- which read from snapshot._blocklist_hosts — a table this PR no longer
+  -- attaches. policy.apply's write is skipped (see policy.lua) so the index
+  -- stays non-empty on every apply (#1782 BLOCKER fix).
+  local idx_res = blocklists.render_member_index(
+    snap, nil, BLOCKLIST_CACHE_DIR, paths.bl_member_index)
+  if idx_res and idx_res.error then
+    log.warn("blocklist member index: %s", tostring(idx_res.error))
+  end
+
+  -- Note: blocklists.refresh no longer receives max_bytes post-#1782, so
+  -- load_cached parses everything. The parsed res.hosts map is unused by the
+  -- agent's main path (update_shared uses bl_member_iterator to stream from
+  -- cache files). The map survives only for backward-compat callers and can be
+  -- removed in a follow-up once the fleet has rolled over fully.
+end
+
+-- make_bl_member_iterator(snap) → iterator(id) → {host,...}
+-- #1782: factory for the bl_member_iterator argument to render.update_shared.
+-- Returns a closure that, when called with a blocklist id, reads the on-disk
+-- cache file line-by-line and returns a flat table of hosts for that id. This
+-- avoids holding the full member set in memory between calls — each invocation
+-- reads the file fresh, and the per-id result table is only alive during the
+-- update_shared call scope (no MAC multiplier at steady state).
+local function make_bl_member_iterator(snap)
+  return function(id)
+    local bl = (snap and snap.blocklists or {})[id]
+    if not bl then return {} end
+    local path = BLOCKLIST_CACHE_DIR .. "/" .. id .. "-" .. tostring(bl.version) .. ".txt"
+    local f = io.open(path, "r")
+    if not f then return {} end
+    local hosts = {}
+    for line in f:lines() do
+      line = line:match("^%s*(.-)%s*$")
+      if line ~= "" and line:sub(1, 1) ~= "#" then
+        hosts[#hosts + 1] = line
+      end
+    end
+    f:close()
+    return hosts
+  end
 end
 
 -- ── Ensure output directories exist ───────────────────────────────────────────
 
 os.execute("mkdir -p /tmp/dnsmasq.d /tmp/nftables.d /etc/wifihaven /var/run/wifihaven")
+
+-- GC stale shard files from a previous agent run / crash-during-render on
+-- startup. We do this before the first apply so dnsmasq never loads a shard
+-- for a list that is no longer in the current snapshot. An empty snapshot
+-- placeholder is used if no cached policy is available yet; gc_shards with
+-- an empty blocklists map removes all existing shards (safe: they'll be
+-- rewritten when refresh_blocklists runs after the first successful fetch).
+do
+  local startup_snap = policy.load_snapshot(read_file, log)
+  blocklists.gc_shards(startup_snap or { blocklists = {} }, nil, BLOCKLIST_SHARD_DIR)
+end
 
 -- ── Block-page runtime config ────────────────────────────────────────────────
 -- The block-page uhttpd handler (/www/wifihaven/handler.lua, served via
@@ -553,7 +634,7 @@ do
     metrics.observe(mreg, "policy_apply_duration_seconds", {},
                     clock.monotonic_seconds() - t0)
     if applied then
-      render.update_shared(cached, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac)
+      render.update_shared(cached, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac, make_bl_member_iterator(cached))
       last_snapshot = cached
       log.info("startup: applied cached policy from /etc/wifihaven/policy.json")
     else
@@ -579,19 +660,19 @@ do
                   clock.monotonic_seconds() - pt0)
   if snap then
     record_poll("200")
-    -- #1412: fetch + cache the category blocklists and attach them BEFORE the
-    -- initial apply, so the boot ruleset already carries the bl_ nftset=
-    -- populators. Previously startup applied with no _blocklist_hosts, so a
-    -- freshly booted / re-enrolled router ran with empty bl_ sets until (and
-    -- unless) a later snapshot change happened to trigger a fetch.
-    snap._blocklist_hosts = refresh_blocklists(snap)
+    -- #1782: fetch + cache blocklists and write per-shard dnsmasq conf files
+    -- BEFORE the initial apply, so the boot ruleset's conf-file= directives
+    -- reference populated shards. Pre-#1782 this attached _blocklist_hosts to
+    -- the snapshot; now the shards carry the nftset= directives and the agent's
+    -- Lua heap never holds the full member set.
+    refresh_blocklists(snap)
     local at0 = clock.monotonic_seconds()
     local applied = policy.apply(snap, write_file, run_cmd, log,
                                  { on_apply = record_apply("boot") })
     metrics.observe(mreg, "policy_apply_duration_seconds", {},
                     clock.monotonic_seconds() - at0)
     if applied then
-      render.update_shared(snap, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac)
+      render.update_shared(snap, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac, make_bl_member_iterator(snap))
       current_etag = etag
       last_snapshot = snap
       policy.mark_poll_success(os.time())
@@ -757,13 +838,11 @@ conntrack.watch({
       if snap then
         record_poll("200")
         -- 200: fetch + cache blocklists, attach hosts to snapshot for render.
-        -- #1360: the blocklist route is router-authenticated, so refresh_blocklists
-        -- passes the router token — without it the fetch 401s and category (bl_)
-        -- enforcement silently no-ops. #1412: the same refresh runs at startup
-        -- and on the periodic blocklist timer, so a stable (304-only) snapshot no
-        -- longer leaves the sets empty; emitting blocklist_fetch_failures_total
-        -- (#1301) is folded into refresh_blocklists.
-        snap._blocklist_hosts = refresh_blocklists(snap)
+        -- #1782: fetch + cache blocklists and write/GC shard files.
+        -- The router token is passed via http_get closure (router-authenticated
+        -- route). Shards are atomic-written to /tmp; dnsmasq picks them up via
+        -- conf-file= directives in the rendered wifihaven.conf.
+        refresh_blocklists(snap)
         last_blocklist_run = mono  -- this poll already refreshed; reset cadence
 
         -- Apply with no failover opts. If we were in failover, this
@@ -778,7 +857,7 @@ conntrack.watch({
         metrics.observe(mreg, "policy_apply_duration_seconds", {},
                         clock.monotonic_seconds() - at0)
         if applied then
-          render.update_shared(snap, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac)
+          render.update_shared(snap, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac, make_bl_member_iterator(snap))
           current_etag = etag
           last_snapshot = snap
           policy.mark_poll_success(wall)
@@ -859,12 +938,35 @@ conntrack.watch({
     -- file is already cached, so this only does real work when a list's content
     -- version changed; we re-apply (which reloads dnsmasq for the new nftset=
     -- directives) only when the loaded host set actually differs.
+    -- Blocklist refresh timer (#1782). Fetches new list versions, re-renders
+    -- shards, and re-applies if the snapshot's (id, version) set changed.
+    -- Pre-#1782 this used blocklists.hosts_differ on the in-memory _blocklist_hosts
+    -- map; post-#1782 we detect change via (id, version) pairs — a content change
+    -- always implies a new version, so a stable pair set ↔ stable host set.
+    -- Rendering shards is idempotent, so a no-op tick is cheap.
     if last_snapshot and not in_failover_render
        and (mono - last_blocklist_run) >= blocklist_int then
       last_blocklist_run = mono
-      local new_hosts = refresh_blocklists(last_snapshot)
-      if blocklists.hosts_differ(last_snapshot._blocklist_hosts, new_hosts) then
-        last_snapshot._blocklist_hosts = new_hosts
+      -- Capture (id, version) pairs before refresh to detect changes.
+      local bls_before = {}
+      for id, bl in pairs(last_snapshot.blocklists or {}) do
+        bls_before[id] = bl.version
+      end
+      refresh_blocklists(last_snapshot)
+      -- Re-apply only if the (id, version) set changed (new content version for
+      -- any list, or a list added/removed). Stable pairs → stable shard content;
+      -- no dnsmasq reload needed.
+      local changed = false
+      local bls_after = last_snapshot.blocklists or {}
+      for id, bl in pairs(bls_after) do
+        if bls_before[id] ~= bl.version then changed = true; break end
+      end
+      if not changed then
+        for id, _ in pairs(bls_before) do
+          if not bls_after[id] then changed = true; break end
+        end
+      end
+      if changed then
         fold_enforcement_drops()
         local bt0 = clock.monotonic_seconds()
         local applied = policy.apply(last_snapshot, write_file, run_cmd, log,
@@ -873,8 +975,9 @@ conntrack.watch({
                         clock.monotonic_seconds() - bt0)
         if applied then
           render.update_shared(last_snapshot, nft_sets, blocked_macs, blocked_reason,
-                               eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac)
-          log.info("blocklist timer: category lists changed, re-applied ruleset")
+                               eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac,
+                               make_bl_member_iterator(last_snapshot))
+          log.info("blocklist timer: list version(s) changed, re-applied ruleset")
         end
       end
     end

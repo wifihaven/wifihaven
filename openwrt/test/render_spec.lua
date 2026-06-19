@@ -1125,42 +1125,51 @@ describe("render blocklist enforcement (#352)", function()
 
   -- ── dnsmasq nftset= directives (post-#394 nftset/ipset migration) ───────
 
-  it("emits combined v4+v6 nftset=/<host>/... for each host in _blocklist_hosts[id] (#392)", function()
+  -- Post-#1782: bl_ nftset= directives are NO LONGER emitted inline in
+  -- wifihaven.conf. Instead, render.dnsmasq emits `conf-file=` directives that
+  -- point dnsmasq to per-blocklist shard files written by blocklists.render_shards.
+  -- This keeps the 80k+ host nftset= directives out of the agent's Lua heap.
+
+  it("emits conf-file= directive for each id in snapshot.blocklists (#1782)", function()
     local conf = render.dnsmasq(snap_bl())
     assert.truthy(conf:find(
-      "nftset=/adserver.example.com/4#inet#wifihaven#bl_test_ads,6#inet#wifihaven#bl6_test_ads",
-      1, true))
-    assert.truthy(conf:find(
-      "nftset=/doubleclick.net/4#inet#wifihaven#bl_test_ads,6#inet#wifihaven#bl6_test_ads",
-      1, true))
+      "conf-file=/tmp/wifihaven-blocklist-test_ads.conf",
+      1, true), "dnsmasq conf must reference the per-blocklist shard via conf-file=")
   end)
 
-  it("merges both bl_ specs into ONE nftset= directive when the same host appears in two blocklists (#1460)", function()
-    -- Post-#1460 contract: every nft set targeting a given host lands in ONE
-    -- comma-joined `nftset=/<host>/...` directive. dnsmasq honours only the
-    -- first matching `nftset=/<host>/...` directive per domain and silently
-    -- drops the rest, which is the H3 enforcement-gap bug: an ea_ directive
-    -- emitted before a global_block directive for the same host leaves
-    -- @global_block empty. Two bl_ sets covering the same host are the
-    -- closest pre-existing analogue.
+  it("does NOT emit bl_/bl6_ specs inline in the merged nftset= directive (#1782)", function()
+    -- bl_ specs now live in shard files, not in the main wifihaven.conf.
+    local conf = render.dnsmasq(snap_bl())
+    -- No inline nftset= line should contain bl_test_ads or bl6_test_ads.
+    assert.is_nil(conf:find("#bl_test_ads", 1, true),
+      "bl_ specs must not appear inline in wifihaven.conf after #1782")
+    assert.is_nil(conf:find("#bl6_test_ads", 1, true))
+  end)
+
+  it("emits conf-file= for every id in snapshot.blocklists, sorted", function()
     local s = snap_bl()
     s.blocklists["test_social"] = { version = "v1", url = "http://api/api/blocklists/test_social" }
-    s._blocklist_hosts["test_social"] = { "doubleclick.net", "facebook.com" }
     local conf = render.dnsmasq(s)
-    local _, dir_count = conf:gsub("nftset=/doubleclick%.net/", "")
-    assert.equals(1, dir_count)
-    assert.truthy(conf:find(
-      "4#inet#wifihaven#bl_test_ads,6#inet#wifihaven#bl6_test_ads", 1, true))
-    assert.truthy(conf:find(
-      "4#inet#wifihaven#bl_test_social,6#inet#wifihaven#bl6_test_social", 1, true))
+    assert.truthy(conf:find("conf-file=/tmp/wifihaven-blocklist-test_ads.conf", 1, true))
+    assert.truthy(conf:find("conf-file=/tmp/wifihaven-blocklist-test_social.conf", 1, true))
   end)
 
-  it("emits no nftset= lines when _blocklist_hosts is absent or empty", function()
+  it("emits no conf-file= lines when snapshot.blocklists is empty (#1782)", function()
     local s = snap_bl()
-    s._blocklist_hosts = nil
+    s.blocklists = {}
     local conf = render.dnsmasq(s)
-    assert.is_nil(conf:find("bl_test_ads", 1, true))
-    assert.is_nil(conf:find("bl6_test_ads", 1, true))
+    assert.is_nil(conf:find("conf-file=/tmp/wifihaven-blocklist-", 1, true))
+  end)
+
+  it("still emits eb_ and ea_ nftset= directives in the merged per-host block (#1782)", function()
+    -- Non-blocklist hosts (extraBlocked, extraAllowed) continue to have their
+    -- nftset= directives in the main wifihaven.conf — only bl_ moves to shards.
+    local s = snap_bl()
+    -- Add an extraBlocked host that will produce an eb_ directive.
+    s.profiles["3"].rules.extraBlocked = { "evil.example" }
+    local conf = render.dnsmasq(s)
+    assert.truthy(conf:find("nftset=/evil.example/4#inet#wifihaven#eb_evil_example", 1, true),
+      "eb_ directives must still appear inline for extraBlocked hosts")
   end)
 
   -- ── nft drop rules ───────────────────────────────────────────────────────
@@ -2031,18 +2040,20 @@ describe("render.dnsmasq global section (#1319)", function()
       1, true))
   end)
 
-  it("expands global.blocklistIds members into @global_block at resolve time", function()
+  it("expands global.blocklistIds members into @global_block via shard conf-file= (#1782)", function()
+    -- Post-#1782: when global.blocklistIds = {"ads"} and "ads" is in
+    -- snapshot.blocklists, blocklists.render_shards appends global_block specs
+    -- to each host line in the shard file. render.dnsmasq emits a conf-file=
+    -- directive for the shard and does NOT emit inline nftset= for the members.
     local s = snap_global()
     s.global.blocklistIds = { "ads" }
     s.blocklists = { ads = { version = "v1", url = "/api/blocklists/ads" } }
     s._blocklist_hosts = { ads = { "ad.doubleclick.net" } }
     local conf = render.dnsmasq(s)
-    -- The member host gets the global_block specs (alongside any bl_ specs
-    -- if a profile/global also names the "ads" category — dnsmasq fires
-    -- every spec in the merged directive, see #1460).
-    assert.truthy(conf:find("nftset=/ad.doubleclick.net/", 1, true))
-    assert.truthy(conf:find(
-      "4#inet#wifihaven#global_block,6#inet#wifihaven#global_block6", 1, true))
+    -- dnsmasq includes the shard file (which will carry the global_block spec).
+    assert.truthy(conf:find("conf-file=/tmp/wifihaven-blocklist-ads.conf", 1, true))
+    -- The member is NOT inlined in the main conf (it's in the shard).
+    assert.is_nil(conf:find("nftset=/ad.doubleclick.net/", 1, true))
   end)
 
   it("emits no global nftset= lines when the global section is empty", function()
@@ -2208,10 +2219,13 @@ describe("render.dnsmasq global section (#1319)", function()
     assert.truthy(conf:find("dropped", 1, true))
   end)
 
-  -- Mixed case: a heavy host also carries a non-ea_ spec (e.g. it appears
-  -- in a blocklist). Capping drops the ea_ specs but keeps the bl_ spec, so
-  -- the surviving merged directive is still emitted and still under 1024.
-  it("preserves non-ea_ specs when capping an overflowing heavy host (#1489)", function()
+  -- Post-#1782: bl_ specs are in shard files, not the main conf. A host that
+  -- appears in both a blocklist AND a profile's extraAllowed no longer risks
+  -- overflowing the 1024-byte line limit from bl_ spec accumulation. The ea_
+  -- specs may still overflow if many MACs have the same extraAllowed host,
+  -- but when they do the capping only drops ea_ specs (never bl_, which are
+  -- now absent from the main conf). Verify all lines stay within 1024.
+  it("all nftset= lines stay within dnsmasq's 1024-byte line limit with 30 MACs sharing extraAllowed (#1489)", function()
     local s = snap_global()
     s.devices = {}
     s.profiles = {}
@@ -2234,10 +2248,10 @@ describe("render.dnsmasq global section (#1319)", function()
       assert.is_true(#line <= 1024, string.format(
         "nftset line exceeds 1024 bytes (%d): %s…", #line, line:sub(1, 72)))
     end
-    -- The bl_ad / bl6_ad specs survive — only the ea_ specs were dropped.
-    assert.truthy(conf:find(
-      "nftset=/shared.example/4#inet#wifihaven#bl_ads,6#inet#wifihaven#bl6_ads",
-      1, true))
+    -- conf-file= directive exists (bl_ specs are in the shard, not inline).
+    assert.truthy(conf:find("conf-file=/tmp/wifihaven-blocklist-ads.conf", 1, true))
+    -- shared.example is NOT in the main conf as an nftset= host line (no bl_ inline).
+    assert.is_nil(conf:find("nftset=/shared.example/4#inet#wifihaven#bl_ads", 1, true))
   end)
 end)
 

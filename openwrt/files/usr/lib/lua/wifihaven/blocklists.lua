@@ -16,6 +16,18 @@ local M = {}
 
 local DEFAULT_CACHE_DIR = "/etc/wifihaven/blocklists"
 
+-- Lazy require render module — compatible with both the production on-device
+-- path (wifihaven.render) and the busted test path (render). Called at most
+-- once per process; result is cached in the upvalue.
+local _render_module
+local function get_render()
+  if not _render_module then
+    local ok, m = pcall(require, "wifihaven.render")
+    _render_module = ok and m or require("render")
+  end
+  return _render_module
+end
+
 -- classify_fetch_status(status) → bounded status enum (#1301).
 --
 -- The blocklist fetch surfaces as the `status` label of
@@ -321,6 +333,290 @@ function M.hosts_differ(a, b)
   if not subset_match(a, b) then return true end
   if not subset_match(b, a) then return true end
   return false
+end
+
+-- ---------------------------------------------------------------------------
+-- M.render_shards(snapshot, fs, cache_dir, shard_dir, max_bytes,
+--                 global_blocklist_ids)
+-- ---------------------------------------------------------------------------
+-- Streams per-blocklist shard files to <shard_dir>/wifihaven-blocklist-<id>.conf,
+-- one file per blocklist in snapshot.blocklists. Each line in the shard is:
+--
+--   nftset=/<host>/4#inet#wifihaven#bl_<sanid>,6#inet#wifihaven#bl6_<sanid>\n
+--
+-- When global_blocklist_ids[id] is truthy, each line also appends:
+--   ,4#inet#wifihaven#global_block,6#inet#wifihaven#global_block6
+-- before the newline.
+--
+-- Reads from the on-disk cache file line-by-line (via fs.open_read) so the
+-- full host list is NEVER accumulated in a Lua table — the #1412 OOM source.
+-- Writes atomically: <id>.conf.tmp → <id>.conf.
+--
+-- Parameters:
+--   snapshot           — current policy snapshot (snapshot.blocklists used)
+--   fs                 — injectable filesystem ops (open_read, open_write,
+--                        rename, remove, fsync; defaults to real I/O)
+--   cache_dir          — directory holding <id>-<version>.txt cache files
+--                        (default /etc/wifihaven/blocklists)
+--   shard_dir          — directory to write shards into (default /tmp)
+--   max_bytes          — stop emitting once shard exceeds this many bytes;
+--                        nil = no cap (default 10 MB = 10485760 in agent)
+--   global_blocklist_ids — optional { [id] = true } set; ids in this set
+--                          have global_block/global_block6 appended to each
+--                          shard line
+--
+-- Returns:
+--   { rendered = { [id] = bytes }, skipped = { ids }, errors = { strings } }
+function M.render_shards(snapshot, fs, cache_dir, shard_dir, max_bytes, global_blocklist_ids)
+  cache_dir  = cache_dir  or "/etc/wifihaven/blocklists"
+  shard_dir  = shard_dir  or "/tmp"
+  global_blocklist_ids = global_blocklist_ids or {}
+
+  -- Require render.bl_sanitize for set-name normalization so there is
+  -- one source of truth (see get_render() at the top of this module).
+  local bl_sanitize = get_render().bl_sanitize
+
+  -- Resolve fs ops (injectable for tests, real I/O otherwise).
+  local open_read_fn, open_write_fn, rename_fn, remove_fn, fsync_fn
+  if fs then
+    open_read_fn  = fs.open_read
+    open_write_fn = fs.open_write
+    rename_fn     = fs.rename
+    remove_fn     = fs.remove
+    fsync_fn      = fs.fsync
+  else
+    open_read_fn = function(path)
+      local f = io.open(path, "r")
+      return f  -- nil if missing; caller checks
+    end
+    open_write_fn = function(path)
+      local f, err = io.open(path, "w")
+      if not f then return nil, err end
+      return f
+    end
+    rename_fn = function(from, to)
+      local ok, err = os.rename(from, to)
+      if not ok then return nil, err end
+      return true, nil
+    end
+    remove_fn = function(path)
+      os.remove(path)
+      return true, nil
+    end
+    fsync_fn = function(path)
+      -- Best-effort: sync the parent directory so the rename is durable.
+      os.execute("sync " .. string.format("%q", path) .. " 2>/dev/null")
+      return true
+    end
+  end
+
+  local result = { rendered = {}, skipped = {}, errors = {} }
+  local bls    = snapshot and snapshot.blocklists or {}
+
+  for id, bl in pairs(bls) do
+    local version    = bl.version
+    local cache_path = cache_dir .. "/" .. id .. "-" .. tostring(version) .. ".txt"
+    local shard_tmp  = shard_dir .. "/wifihaven-blocklist-" .. id .. ".conf.tmp"
+    local shard_final = shard_dir .. "/wifihaven-blocklist-" .. id .. ".conf"
+
+    -- Open the cache file for line-by-line reading.
+    local rf = open_read_fn(cache_path)
+    if not rf then
+      result.skipped[#result.skipped + 1] = id
+    else
+      -- Build the per-host spec suffix for this id.
+      local san    = bl_sanitize(id)
+      local spec   = "4#inet#wifihaven#bl_" .. san .. ",6#inet#wifihaven#bl6_" .. san
+      if global_blocklist_ids[id] then
+        spec = spec .. ",4#inet#wifihaven#global_block,6#inet#wifihaven#global_block6"
+      end
+
+      local wf, werr = open_write_fn(shard_tmp)
+      if not wf then
+        result.errors[#result.errors + 1] =
+          string.format("render_shards: open_write failed for %s: %s", shard_tmp, tostring(werr))
+        rf:close()
+      else
+        local bytes_written = 0
+        local cap_hit = false
+        -- Stream line-by-line — never accumulate.
+        while true do
+          local line = rf:read("*l")
+          if line == nil then break end
+          -- Trim whitespace; skip blank and comment lines.
+          line = line:match("^%s*(.-)%s*$")
+          if line ~= "" and line:sub(1, 1) ~= "#" then
+            local directive = "nftset=/" .. line .. "/" .. spec .. "\n"
+            -- Check byte cap BEFORE writing.
+            if max_bytes and (bytes_written + #directive) > max_bytes then
+              cap_hit = true
+              break
+            end
+            wf:write(directive)
+            bytes_written = bytes_written + #directive
+          end
+        end
+        rf:close()
+        wf:close()
+
+        if cap_hit then
+          -- Remove the truncated tmp file; record the id as skipped.
+          remove_fn(shard_tmp)
+          result.skipped[#result.skipped + 1] = id
+        else
+          -- fsync before rename for durability.
+          if fsync_fn then fsync_fn(shard_tmp) end
+          local rok, rerr = rename_fn(shard_tmp, shard_final)
+          if not rok then
+            result.errors[#result.errors + 1] =
+              string.format("render_shards: rename failed for %s → %s: %s",
+                shard_tmp, shard_final, tostring(rerr))
+            -- Best-effort cleanup of the tmp file.
+            remove_fn(shard_tmp)
+          else
+            result.rendered[id] = bytes_written
+          end
+        end
+      end
+    end
+  end
+
+  return result
+end
+
+-- ---------------------------------------------------------------------------
+-- M.gc_shards(snapshot, fs, shard_dir)
+-- ---------------------------------------------------------------------------
+-- Removes shard files in shard_dir whose blocklist id is no longer in
+-- snapshot.blocklists, and clears leftover .tmp files from a crash during
+-- render. Only touches files matching the pattern
+-- `wifihaven-blocklist-*.conf` or `wifihaven-blocklist-*.conf.tmp`.
+--
+-- Called at every render and at agent startup (defense against crash-
+-- during-render leaving stale shards visible to dnsmasq).
+function M.gc_shards(snapshot, fs, shard_dir)
+  shard_dir = shard_dir or "/tmp"
+
+  local list_fn, remove_fn
+  if fs then
+    list_fn   = fs.list
+    remove_fn = fs.remove
+  else
+    list_fn = function(dir)
+      local files = {}
+      local p = io.popen("ls -1 " .. dir .. " 2>/dev/null")
+      if p then
+        for line in p:lines() do files[#files + 1] = line end
+        p:close()
+      end
+      return files
+    end
+    remove_fn = function(path)
+      os.remove(path)
+      return true, nil
+    end
+  end
+
+  -- Build the set of ids present in the current snapshot.
+  local present = {}
+  local bls = snapshot and snapshot.blocklists or {}
+  for id, _ in pairs(bls) do present[id] = true end
+
+  local files = list_fn(shard_dir)
+  for _, fname in ipairs(files or {}) do
+    -- Match wifihaven-blocklist-<id>.conf or wifihaven-blocklist-<id>.conf.tmp
+    local id_from_conf     = fname:match("^wifihaven%-blocklist%-(.+)%.conf$")
+    local id_from_conf_tmp = fname:match("^wifihaven%-blocklist%-(.+)%.conf%.tmp$")
+
+    if id_from_conf_tmp then
+      -- Always remove .tmp files (leftover from crash-during-render).
+      remove_fn(shard_dir .. "/" .. fname)
+    elseif id_from_conf then
+      if not present[id_from_conf] then
+        remove_fn(shard_dir .. "/" .. fname)
+      end
+    end
+  end
+end
+
+-- ---------------------------------------------------------------------------
+-- M.render_member_index(snapshot, fs, cache_dir, index_path)
+-- ---------------------------------------------------------------------------
+-- Streams the blocklist member index (used by wifihaven-dns-tail for CNAME-
+-- aware bl_ set population) to index_path. Each line is:
+--   <host>\t<bl_set>\t<bl6_set>\n
+-- Reads from the on-disk cache files line-by-line so no large Lua table is
+-- built. Writes atomically: index_path.tmp → index_path.
+--
+-- This replaces render.blocklist_member_index for the on-disk output path
+-- while keeping render.blocklist_member_index available for the in-memory
+-- (tests / dns-tail in-process) path.
+function M.render_member_index(snapshot, fs, cache_dir, index_path)
+  cache_dir  = cache_dir  or "/etc/wifihaven/blocklists"
+  index_path = index_path or "/var/run/wifihaven/blocklist_members.tsv"
+
+  local bl_set_name  = get_render().bl_set_name
+  local bl6_set_name = get_render().bl6_set_name
+
+  local open_read_fn, open_write_fn, rename_fn
+  if fs then
+    open_read_fn  = fs.open_read
+    open_write_fn = fs.open_write
+    rename_fn     = fs.rename
+  else
+    open_read_fn = function(path)
+      return io.open(path, "r")
+    end
+    open_write_fn = function(path)
+      local f, err = io.open(path, "w")
+      if not f then return nil, err end
+      return f
+    end
+    rename_fn = function(from, to)
+      local ok, err = os.rename(from, to)
+      if not ok then return nil, err end
+      return true, nil
+    end
+  end
+
+  local tmp_path = index_path .. ".tmp"
+  local wf, werr = open_write_fn(tmp_path)
+  if not wf then
+    return { error = "render_member_index: open_write failed: " .. tostring(werr) }
+  end
+
+  local bls    = snapshot and snapshot.blocklists or {}
+  -- Sort ids for deterministic output (matches render.blocklist_member_index).
+  local ids = {}
+  for id, _ in pairs(bls) do ids[#ids + 1] = id end
+  table.sort(ids)
+
+  for _, id in ipairs(ids) do
+    local bl         = bls[id]
+    local cache_path = cache_dir .. "/" .. id .. "-" .. tostring(bl.version) .. ".txt"
+    local set4       = bl_set_name(id)
+    local set6       = bl6_set_name(id)
+
+    local rf = open_read_fn(cache_path)
+    if rf then
+      while true do
+        local line = rf:read("*l")
+        if line == nil then break end
+        line = line:match("^%s*(.-)%s*$")
+        if line ~= "" and line:sub(1, 1) ~= "#" then
+          wf:write(line .. "\t" .. set4 .. "\t" .. set6 .. "\n")
+        end
+      end
+      rf:close()
+    end
+  end
+  wf:close()
+
+  local rok, rerr = rename_fn(tmp_path, index_path)
+  if not rok then
+    return { error = "render_member_index: rename failed: " .. tostring(rerr) }
+  end
+  return {}
 end
 
 -- Remove cache files that are not referenced by the current snapshot.

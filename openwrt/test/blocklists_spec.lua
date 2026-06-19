@@ -597,3 +597,513 @@ describe("blocklists size cap (#1412)", function()
   end)
 
 end)
+
+-- ── render_shards (#1782) ─────────────────────────────────────────────────────
+--
+-- Streams per-blocklist shard files containing `nftset=/<host>/...` directives
+-- to /tmp/wifihaven-blocklist-<id>.conf without accumulating the full host list
+-- in a Lua table (the #1412 OOM source). Each shard is written atomically
+-- (<id>.conf.tmp → <id>.conf). dnsmasq picks them up via `conf-file=`
+-- directives in the main wifihaven.conf (emitted by render.dnsmasq).
+
+describe("blocklists.render_shards (#1782)", function()
+
+  -- Helper: build a fake filesystem like make_fs() above, but also tracking
+  -- fsync calls and supporting forced rename failure injection.
+  local function make_shard_fs(opts)
+    opts = opts or {}
+    local files    = {}
+    local fsynced  = {}
+    local removed  = {}
+    return {
+      _files   = files,
+      _fsynced = fsynced,
+      _removed = removed,
+      write = function(path, content)
+        files[path] = content
+        return true, nil
+      end,
+      -- open_write: streaming write API used by render_shards.
+      -- Returns a handle with :write(chunk) and :close().
+      open_write = function(path)
+        files[path] = ""
+        return {
+          write = function(self, chunk)
+            files[path] = (files[path] or "") .. chunk
+          end,
+          close = function() end,
+        }
+      end,
+      open_read = function(path)
+        local content = files[path]
+        if not content then return nil end
+        local pos = 1
+        return {
+          read = function(self, fmt)
+            if fmt == "*l" or fmt == "l" then
+              local nl = content:find("\n", pos, true)
+              if not nl then
+                if pos > #content then return nil end
+                local line = content:sub(pos)
+                pos = #content + 1
+                return line
+              end
+              local line = content:sub(pos, nl - 1)
+              pos = nl + 1
+              return line
+            elseif fmt == "*a" or fmt == "a" then
+              local rest = content:sub(pos)
+              pos = #content + 1
+              return rest
+            end
+          end,
+          close = function() end,
+        }
+      end,
+      read = function(path) return files[path] end,
+      rename = function(from, to)
+        if opts.fail_rename then return nil, "injected rename failure" end
+        if files[from] then
+          files[to]   = files[from]
+          files[from] = nil
+          return true, nil
+        end
+        return nil, "no such file: " .. tostring(from)
+      end,
+      remove = function(path)
+        removed[#removed + 1] = path
+        files[path] = nil
+        return true, nil
+      end,
+      list = function(dir)
+        local result = {}
+        local prefix = dir:sub(-1) == "/" and dir or (dir .. "/")
+        for k, _ in pairs(files) do
+          if k:sub(1, #prefix) == prefix then
+            result[#result + 1] = k:sub(#prefix + 1)
+          end
+        end
+        return result
+      end,
+      fsync = function(path)
+        fsynced[path] = true
+        return true
+      end,
+    }
+  end
+
+  it("emits correct nftset= line shape for each host in the cache file", function()
+    local fs        = make_shard_fs()
+    local cache_dir = "/etc/wifihaven/blocklists"
+    local shard_dir = "/tmp"
+    fs._files[cache_dir .. "/ads-v1.txt"] = "doubleclick.net\ngoogleadservices.com\n"
+
+    local s = snap({ ads = { version = "v1", url = "/api/blocklists/ads" } })
+    local result = blocklists.render_shards(s, fs, cache_dir, shard_dir)
+
+    local shard = fs._files[shard_dir .. "/wifihaven-blocklist-ads.conf"]
+    assert.not_nil(shard, "shard file must exist after render_shards")
+    assert.truthy(shard:find(
+      "nftset=/doubleclick.net/4#inet#wifihaven#bl_ads,6#inet#wifihaven#bl6_ads\n",
+      1, true))
+    assert.truthy(shard:find(
+      "nftset=/googleadservices.com/4#inet#wifihaven#bl_ads,6#inet#wifihaven#bl6_ads\n",
+      1, true))
+    assert.equal(0, #(result.errors or {}))
+  end)
+
+  it("sanitizes id with dots, dashes, and colons in the set names", function()
+    local fs        = make_shard_fs()
+    local cache_dir = "/etc/wifihaven/blocklists"
+    local shard_dir = "/tmp"
+    fs._files[cache_dir .. "/test.cat-1-v1.txt"] = "bad.host.com\n"
+
+    local s = snap({ ["test.cat-1"] = { version = "v1", url = "/api/blocklists/test.cat-1" } })
+    blocklists.render_shards(s, fs, cache_dir, shard_dir)
+
+    local shard = fs._files[shard_dir .. "/wifihaven-blocklist-test.cat-1.conf"]
+    assert.not_nil(shard)
+    -- bl_sanitize: dots/dashes/colons → underscores
+    assert.truthy(shard:find("#bl_test_cat_1,", 1, true))
+    assert.truthy(shard:find("#bl6_test_cat_1", 1, true))
+  end)
+
+  it("skips blank lines and comment lines in the cache file", function()
+    local fs        = make_shard_fs()
+    local cache_dir = "/etc/wifihaven/blocklists"
+    local shard_dir = "/tmp"
+    fs._files[cache_dir .. "/ads-v1.txt"] = "# header\n\ndoubleclick.net\n\n# comment\n"
+
+    local s = snap({ ads = { version = "v1", url = "/api/blocklists/ads" } })
+    blocklists.render_shards(s, fs, cache_dir, shard_dir)
+
+    local shard = fs._files[shard_dir .. "/wifihaven-blocklist-ads.conf"]
+    assert.not_nil(shard)
+    assert.is_nil(shard:find("# header", 1, true), "comment lines must be excluded")
+    assert.is_nil(shard:find("# comment", 1, true))
+    assert.truthy(shard:find("doubleclick.net", 1, true))
+    -- no blank nftset lines
+    assert.is_nil(shard:find("nftset=//", 1, true))
+  end)
+
+  it("writes atomically: tmp file is renamed, not left in place on success", function()
+    local fs        = make_shard_fs()
+    local cache_dir = "/etc/wifihaven/blocklists"
+    local shard_dir = "/tmp"
+    fs._files[cache_dir .. "/ads-v1.txt"] = "doubleclick.net\n"
+
+    local s = snap({ ads = { version = "v1", url = "/api/blocklists/ads" } })
+    blocklists.render_shards(s, fs, cache_dir, shard_dir)
+
+    -- Final shard must exist; tmp file must be gone.
+    assert.not_nil(fs._files[shard_dir .. "/wifihaven-blocklist-ads.conf"])
+    assert.is_nil(fs._files[shard_dir .. "/wifihaven-blocklist-ads.conf.tmp"],
+      "tmp file must have been renamed away")
+  end)
+
+  it("does NOT create the canonical shard when rename fails (partial-state guard)", function()
+    local fs        = make_shard_fs({ fail_rename = true })
+    local cache_dir = "/etc/wifihaven/blocklists"
+    local shard_dir = "/tmp"
+    fs._files[cache_dir .. "/ads-v1.txt"] = "doubleclick.net\n"
+
+    local s = snap({ ads = { version = "v1", url = "/api/blocklists/ads" } })
+    local result = blocklists.render_shards(s, fs, cache_dir, shard_dir)
+
+    -- Canonical shard must NOT exist (would be a partial state visible to dnsmasq).
+    assert.is_nil(fs._files[shard_dir .. "/wifihaven-blocklist-ads.conf"],
+      "canonical shard must not exist when rename fails")
+    assert.truthy(#(result.errors or {}) > 0 or result.skipped,
+      "a rename failure must be recorded as an error or skip")
+  end)
+
+  it("skips an id whose cache file is absent and records it", function()
+    local fs        = make_shard_fs()
+    local cache_dir = "/etc/wifihaven/blocklists"
+    local shard_dir = "/tmp"
+    -- NO cache file written for 'ads'.
+
+    local s = snap({ ads = { version = "v1", url = "/api/blocklists/ads" } })
+    local result = blocklists.render_shards(s, fs, cache_dir, shard_dir)
+
+    assert.is_nil(fs._files[shard_dir .. "/wifihaven-blocklist-ads.conf"])
+    -- skipped list should contain "ads"
+    local sk = {}
+    for _, id in ipairs(result.skipped or {}) do sk[id] = true end
+    assert.truthy(sk["ads"], "absent cache file must be listed in result.skipped")
+  end)
+
+  it("stops emitting when the shard exceeds max_bytes and records the id in skipped", function()
+    local fs        = make_shard_fs()
+    local cache_dir = "/etc/wifihaven/blocklists"
+    local shard_dir = "/tmp"
+    -- Build a body that exceeds a tiny cap.
+    local lines = {}
+    for i = 1, 200 do lines[#lines + 1] = "host" .. i .. ".example.com" end
+    fs._files[cache_dir .. "/ads-v1.txt"] = table.concat(lines, "\n") .. "\n"
+
+    local s = snap({ ads = { version = "v1", url = "/api/blocklists/ads" } })
+    local max_bytes = 200  -- well under the full content
+    local result = blocklists.render_shards(s, fs, cache_dir, shard_dir, max_bytes)
+
+    local sk = {}
+    for _, id in ipairs(result.skipped or {}) do sk[id] = true end
+    assert.truthy(sk["ads"], "oversized shard must be reported in result.skipped")
+  end)
+
+  it("appends global_block + global_block6 specs when id is in global_blocklist_ids", function()
+    local fs        = make_shard_fs()
+    local cache_dir = "/etc/wifihaven/blocklists"
+    local shard_dir = "/tmp"
+    fs._files[cache_dir .. "/ads-v1.txt"] = "doubleclick.net\n"
+
+    local s = snap({ ads = { version = "v1", url = "/api/blocklists/ads" } })
+    local result = blocklists.render_shards(s, fs, cache_dir, shard_dir, nil, { ads = true })
+
+    local shard = fs._files[shard_dir .. "/wifihaven-blocklist-ads.conf"]
+    assert.not_nil(shard)
+    -- Must include bl_ specs AND global_block specs.
+    assert.truthy(shard:find("4#inet#wifihaven#bl_ads,6#inet#wifihaven#bl6_ads", 1, true))
+    assert.truthy(shard:find("4#inet#wifihaven#global_block,6#inet#wifihaven#global_block6", 1, true))
+  end)
+
+  it("does NOT include global_block specs when id is not in global_blocklist_ids", function()
+    local fs        = make_shard_fs()
+    local cache_dir = "/etc/wifihaven/blocklists"
+    local shard_dir = "/tmp"
+    fs._files[cache_dir .. "/ads-v1.txt"] = "doubleclick.net\n"
+
+    local s = snap({ ads = { version = "v1", url = "/api/blocklists/ads" } })
+    -- Pass global_blocklist_ids without "ads" in it.
+    blocklists.render_shards(s, fs, cache_dir, shard_dir, nil, { other_id = true })
+
+    local shard = fs._files[shard_dir .. "/wifihaven-blocklist-ads.conf"]
+    assert.not_nil(shard)
+    assert.is_nil(shard:find("global_block", 1, true))
+  end)
+
+  it("streams a large fixture without accumulating in Lua heap (#1412 OOM)", function()
+    -- Build a 50k-host cache file. To isolate render_shards's internal heap use
+    -- from the test stub's storage of the *output* (~3.5 MB of nftset lines),
+    -- the fs here uses a DISCARDING write — writes are counted but not retained
+    -- in any Lua string. That way mem_after - mem_before reflects ONLY what
+    -- render_shards itself holds across the call. A 50k-string accumulator
+    -- inside render_shards would push heap past several MB; a streaming
+    -- implementation should stay near zero (single-line scratch only).
+    local n       = 50000
+    local lines   = {}
+    for i = 1, n do lines[i] = string.format("host%d.example.com", i) end
+    local body = table.concat(lines, "\n") .. "\n"
+
+    local renamed = {}
+    local fs = {
+      open_read = function(path)
+        if path ~= "/etc/wifihaven/blocklists/biglist-v1.txt" then return nil end
+        local pos = 1
+        return {
+          read = function(self, fmt)
+            if fmt == "*l" or fmt == "l" then
+              if pos > #body then return nil end
+              local nl = body:find("\n", pos, true)
+              if not nl then
+                local line = body:sub(pos); pos = #body + 1; return line
+              end
+              local line = body:sub(pos, nl - 1); pos = nl + 1; return line
+            end
+          end,
+          close = function() end,
+        }
+      end,
+      open_write = function(path)
+        return {
+          write = function(self, chunk) end,  -- discard, do NOT store
+          close = function() end,
+        }
+      end,
+      rename = function(from, to) renamed[to] = true; return true end,
+      remove = function() return true end,
+      list = function() return {} end,
+      mkdir = function() return true end,
+      fsync = function() return true end,
+      read = function() return nil end,
+      write = function() return true end,
+    }
+
+    local s = snap({ biglist = { version = "v1", url = "/api/blocklists/biglist" } })
+
+    collectgarbage("collect")
+    local mem_before = collectgarbage("count")
+    local result = blocklists.render_shards(s, fs, "/etc/wifihaven/blocklists", "/tmp")
+    collectgarbage("collect")
+    local mem_after = collectgarbage("count")
+
+    assert.is_true(renamed["/tmp/wifihaven-blocklist-biglist.conf"] or false,
+      "shard must be renamed into place for 50k-host list")
+
+    -- With output discarded, render_shards's own working set should be tiny.
+    -- 2 MB threshold absorbs interpreter noise without letting a hypothetical
+    -- 50k-string accumulator slip through (that would be ~6+ MB on its own).
+    local heap_delta_kb = mem_after - mem_before
+    assert.is_true(heap_delta_kb < 2000,
+      string.format("render_shards heap delta %.1f KB exceeds 2 MB — likely accumulating in table", heap_delta_kb))
+
+    assert.equal(0, #(result.errors or {}))
+  end)
+
+end)
+
+-- ── gc_shards (#1783) ─────────────────────────────────────────────────────────
+--
+-- Removes stale /tmp/wifihaven-blocklist-<id>.conf shards whose id is not
+-- in the current snapshot, and .tmp leftover files from crash-during-render.
+
+describe("blocklists.gc_shards (#1783)", function()
+
+  local function make_shard_fs_plain()
+    local files   = {}
+    local removed = {}
+    return {
+      _files   = files,
+      _removed = removed,
+      list = function(dir)
+        local result = {}
+        local prefix = dir:sub(-1) == "/" and dir or (dir .. "/")
+        for k, _ in pairs(files) do
+          if k:sub(1, #prefix) == prefix then
+            result[#result + 1] = k:sub(#prefix + 1)
+          end
+        end
+        return result
+      end,
+      remove = function(path)
+        removed[#removed + 1] = path
+        files[path] = nil
+        return true, nil
+      end,
+    }
+  end
+
+  it("removes shard for an id not in the current snapshot", function()
+    local fs = make_shard_fs_plain()
+    fs._files["/tmp/wifihaven-blocklist-old_ads.conf"] = "content"
+
+    local s = snap({})  -- no blocklists
+    blocklists.gc_shards(s, fs, "/tmp")
+
+    assert.is_nil(fs._files["/tmp/wifihaven-blocklist-old_ads.conf"],
+      "stale shard must be removed")
+    -- path must appear in removed list
+    local found = false
+    for _, p in ipairs(fs._removed) do
+      if p == "/tmp/wifihaven-blocklist-old_ads.conf" then found = true end
+    end
+    assert.is_true(found, "remove must have been called with the stale shard path")
+  end)
+
+  it("does NOT remove shards for ids present in the snapshot", function()
+    local fs = make_shard_fs_plain()
+    fs._files["/tmp/wifihaven-blocklist-ads.conf"] = "content"
+
+    local s = snap({ ads = { version = "v1", url = "/api/blocklists/ads" } })
+    blocklists.gc_shards(s, fs, "/tmp")
+
+    assert.not_nil(fs._files["/tmp/wifihaven-blocklist-ads.conf"],
+      "current shard must NOT be removed")
+  end)
+
+  it("removes stale .tmp files left by a crash during render", function()
+    local fs = make_shard_fs_plain()
+    fs._files["/tmp/wifihaven-blocklist-ads.conf.tmp"] = "partial"
+
+    local s = snap({ ads = { version = "v1", url = "/api/blocklists/ads" } })
+    blocklists.gc_shards(s, fs, "/tmp")
+
+    assert.is_nil(fs._files["/tmp/wifihaven-blocklist-ads.conf.tmp"],
+      "leftover .tmp file must be removed on gc")
+  end)
+
+  it("leaves non-wifihaven-blocklist files in the shard dir untouched", function()
+    local fs = make_shard_fs_plain()
+    fs._files["/tmp/dnsmasq.conf"] = "other content"
+    fs._files["/tmp/wifihaven.conf"] = "wifihaven content"
+
+    local s = snap({})
+    blocklists.gc_shards(s, fs, "/tmp")
+
+    assert.not_nil(fs._files["/tmp/dnsmasq.conf"])
+    assert.not_nil(fs._files["/tmp/wifihaven.conf"])
+  end)
+
+end)
+
+-- ── render_member_index (#1348, streaming rewrite) ───────────────────────────
+--
+-- Streams <host>\t<bl_set>\t<bl6_set>\n lines from cache files to an index
+-- file (atomic tmp→rename). Replaces the in-memory render.blocklist_member_index
+-- path for on-disk output used by wifihaven-dns-tail.
+
+describe("blocklists.render_member_index (#1782)", function()
+
+  local function make_index_fs()
+    local files = {}
+    return {
+      _files = files,
+      open_write = function(path)
+        files[path] = ""
+        return {
+          write = function(self, chunk)
+            files[path] = (files[path] or "") .. chunk
+          end,
+          close = function() end,
+        }
+      end,
+      open_read = function(path)
+        local content = files[path]
+        if not content then return nil end
+        local pos = 1
+        return {
+          read = function(self, fmt)
+            if fmt == "*l" or fmt == "l" then
+              local nl = content:find("\n", pos, true)
+              if not nl then
+                if pos > #content then return nil end
+                local line = content:sub(pos)
+                pos = #content + 1
+                return line
+              end
+              local line = content:sub(pos, nl - 1)
+              pos = nl + 1
+              return line
+            end
+          end,
+          close = function() end,
+        }
+      end,
+      rename = function(from, to)
+        if files[from] then
+          files[to]   = files[from]
+          files[from] = nil
+          return true, nil
+        end
+        return nil, "no such file: " .. tostring(from)
+      end,
+      remove = function(path)
+        files[path] = nil
+        return true, nil
+      end,
+    }
+  end
+
+  it("writes <host>\\t<bl_set>\\t<bl6_set> for each host in each blocklist cache file", function()
+    local fs        = make_index_fs()
+    local cache_dir = "/etc/wifihaven/blocklists"
+    local index_path = "/var/run/wifihaven/blocklist_members.tsv"
+    fs._files[cache_dir .. "/ads-v1.txt"] = "adserver.example.com\ndoubleclick.net\n"
+
+    local s = snap({ ads = { version = "v1", url = "/api/blocklists/ads" } })
+    local result = blocklists.render_member_index(s, fs, cache_dir, index_path)
+
+    local idx = fs._files[index_path]
+    assert.not_nil(idx, "index file must exist after render_member_index")
+    assert.truthy(idx:find("adserver.example.com\tbl_ads\tbl6_ads\n", 1, true))
+    assert.truthy(idx:find("doubleclick.net\tbl_ads\tbl6_ads\n", 1, true))
+    assert.is_nil(result and result.error, "render_member_index must not error")
+  end)
+
+  it("output matches render.blocklist_member_index shape for the same data", function()
+    -- Cross-check: the streaming output for a small fixture must be identical
+    -- to what render.blocklist_member_index (the in-memory path) would produce.
+    local render = require("render")
+    local fs        = make_index_fs()
+    local cache_dir = "/etc/wifihaven/blocklists"
+    local index_path = "/var/run/wifihaven/blocklist_members.tsv"
+    fs._files[cache_dir .. "/ads-v1.txt"] = "host1.example.com\nhost2.example.com\n"
+
+    local s = snap({ ads = { version = "v1", url = "/api/blocklists/ads" } })
+    s._blocklist_hosts = { ads = { "host1.example.com", "host2.example.com" } }
+
+    blocklists.render_member_index(s, fs, cache_dir, index_path)
+    local streaming_out = fs._files[index_path]
+
+    local in_memory_out = render.blocklist_member_index(s)
+
+    -- Both must contain the same rows (order may differ if multiple lists, but
+    -- for a single list they must match exactly).
+    assert.equal(in_memory_out, streaming_out)
+  end)
+
+  it("writes atomically (tmp→rename, canonical path absent until rename succeeds)", function()
+    local fs        = make_index_fs()
+    local cache_dir = "/etc/wifihaven/blocklists"
+    local index_path = "/var/run/wifihaven/blocklist_members.tsv"
+    fs._files[cache_dir .. "/ads-v1.txt"] = "a.example.com\n"
+
+    local s = snap({ ads = { version = "v1", url = "/api/blocklists/ads" } })
+    blocklists.render_member_index(s, fs, cache_dir, index_path)
+
+    assert.not_nil(fs._files[index_path])
+    assert.is_nil(fs._files[index_path .. ".tmp"],
+      "tmp file must have been renamed away")
+  end)
+
+end)

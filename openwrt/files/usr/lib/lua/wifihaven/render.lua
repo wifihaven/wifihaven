@@ -77,6 +77,12 @@
 
 local M = {}
 
+-- Directory where per-blocklist dnsmasq conf shards live (#1782). Default /tmp
+-- (= tmpfs on OpenWRT). Overridable for tests via M.SHARD_DIR assignment before
+-- calling M.dnsmasq(). Production: always /tmp (matches BLOCKLIST_SHARD_DIR in
+-- wifihaven-agent).
+M.SHARD_DIR = "/tmp"
+
 -- Replace dots and colons with underscores (nftables set/counter name-safe).
 local function sanitize(s)
   return (s:gsub("[%.%:]", "_"))
@@ -317,9 +323,18 @@ end
 M.global_allow_hosts = global_allow_hosts
 
 -- Sorted, de-duplicated list of hosts forming the @global_block set:
--- global.extraBlocked ∪ the member hosts of every id in global.blocklistIds
--- (expanded from snapshot._blocklist_hosts, the same source that drives the
--- per-category bl_ sets). Empty when there is nothing globally blocked by host.
+-- global.extraBlocked only.
+--
+-- Post-#1782: global.blocklistIds are no longer expanded here. When an id
+-- appears in global.blocklistIds, blocklists.render_shards appends
+-- `4#inet#wifihaven#global_block,6#inet#wifihaven#global_block6` to each host
+-- line in that id's shard file, so dnsmasq populates @global_block at DNS
+-- resolve time via the shard's nftset= directives — exactly as the per-MAC
+-- bl_ ipsets are populated. The @global_block nft set declaration is still
+-- emitted by render.nft when global.blocklistIds is non-empty (has_global_block
+-- guards on both extraBlocked and blocklistIds), so the set exists for the
+-- shard's callbacks to land in.
+-- Empty when there is nothing globally blocked by host.
 local function global_block_hosts(snapshot)
   local g = global_rules(snapshot)
   if not g then return {} end
@@ -327,12 +342,10 @@ local function global_block_hosts(snapshot)
   if type(g.extraBlocked) == "table" then
     for _, h in ipairs(g.extraBlocked) do seen[h] = true end
   end
-  if type(g.blocklistIds) == "table" then
-    local bl = (snapshot and snapshot._blocklist_hosts) or {}
-    for _, id in ipairs(g.blocklistIds) do
-      for _, h in ipairs(bl[id] or {}) do seen[h] = true end
-    end
-  end
+  -- Note: g.blocklistIds expansion is intentionally omitted here (#1782).
+  -- The @global_block ipset for blocklist-id members is populated at DNS
+  -- resolve time via per-shard nftset= directives (see blocklists.render_shards
+  -- global_blocklist_ids parameter), not by expanding hosts in-memory.
   local hosts = {}
   for h in pairs(seen) do hosts[#hosts + 1] = h end
   table.sort(hosts)
@@ -427,8 +440,22 @@ function M.dnsmasq(snapshot)
   -- populator — the #1307 infra-allow copy lands the same host in every
   -- profile's extraAllowed, so one ea_ spec per device would pile onto a
   -- single line. We skip the redundant ones in the ea_ loop below.
-  local bl_hosts = snapshot._blocklist_hosts or {}
-  local bl_ids   = sorted_keys(snapshot.blocklists or {})
+  -- #1782: per-blocklist shard files are included via conf-file= directives so
+  -- dnsmasq loads the nftset= host entries from /tmp/wifihaven-blocklist-<id>.conf
+  -- without the agent ever holding the full host list in Lua memory. The shard
+  -- files are written by blocklists.render_shards; each line contains:
+  --   nftset=/<host>/4#inet#wifihaven#bl_<id>,6#inet#wifihaven#bl6_<id>
+  -- Emit one conf-file= line per id in sorted order.
+  local bl_ids = sorted_keys(snapshot.blocklists or {})
+  if #bl_ids > 0 then
+    emit("# per-blocklist shard files written by blocklists.render_shards (#1782,#1783)")
+    emit("# each shard contains nftset= directives for that list's member hosts")
+    for _, id in ipairs(bl_ids) do
+      emit(string.format("conf-file=%s/wifihaven-blocklist-%s.conf", M.SHARD_DIR, id))
+    end
+    emit("")
+  end
+
   local ga_hosts = global_allow_hosts(snapshot)
   local gb_hosts = global_block_hosts(snapshot)
 
@@ -436,12 +463,17 @@ function M.dnsmasq(snapshot)
   -- host_specs accumulates the per-host spec list. Source order:
   --   1. ea_  (per-MAC, sorted by mac then host)
   --   2. eb_  (per-host, in effective_extra_blocked_hosts order)
-  --   3. bl_  (per-category, in bl_ids order; hosts in source order)
-  --   4. ga_  (global allow, sorted)
-  --   5. gb_  (global block, sorted)
+  --   3. ga_  (global allow, sorted)
+  --   4. gb_  (global block, sorted)
+  -- Note: bl_ specs are NO LONGER emitted here — they live in per-blocklist
+  -- shard files included via conf-file= above (#1782). A host that appears in
+  -- both a blocklist AND in ea_/eb_/global sets will have its bl_ spec in the
+  -- shard file and its other specs in this merged directive — dnsmasq applies
+  -- all matching nftset= directives across config files, so each set is
+  -- populated independently. See PR #1782 body for the rationale.
   -- Within each source the v4 spec precedes v6. add_spec de-duplicates
-  -- identical specs per host (e.g. the same host listed twice in one
-  -- blocklist) so the merged directive never carries a redundant comma entry.
+  -- identical specs per host (e.g. the same host listed twice) so the merged
+  -- directive never carries a redundant comma entry.
   local host_order, host_specs, host_seen = {}, {}, {}
   local function add_spec(host, spec)
     if not host_specs[host] then
@@ -481,14 +513,7 @@ function M.dnsmasq(snapshot)
     add_spec(host, "4#inet#wifihaven#" .. eb_set_name(host))
     add_spec(host, "6#inet#wifihaven#" .. eb6_set_name(host))
   end
-  for _, id in ipairs(bl_ids) do
-    local set4 = bl_set_name(id)
-    local set6 = bl6_set_name(id)
-    for _, host in ipairs(bl_hosts[id] or {}) do
-      add_spec(host, "4#inet#wifihaven#" .. set4)
-      add_spec(host, "6#inet#wifihaven#" .. set6)
-    end
-  end
+  -- bl_ specs removed from here (#1782): they now live in shard files.
   for _, host in ipairs(ga_hosts) do
     add_spec(host, "4#inet#wifihaven#" .. GLOBAL_ALLOW4)
     add_spec(host, "6#inet#wifihaven#" .. GLOBAL_ALLOW6)
@@ -550,18 +575,21 @@ end
 -- ---------------------------------------------------------------------------
 -- A host → bl_ set mapping for the wifihaven-dns-tail bl_ populator.
 --
--- bl_<id>/bl6_<id> sets are populated at DNS resolve time by the dnsmasq
--- `nftset=/<member>/...#bl_<id>` directives emitted above, which only fire for
--- queries that suffix-match a member host. A device that re-queries a member's
--- CNAME target directly lands on a CDN-anycast IP dnsmasq never added, so the
--- category drop misses (silent filter bypass). dns-tail closes the gap the same
--- way it does for eb_ (#515): it resolves each answered name through the #1344
--- CNAME-alias map and, when the recovered brand is a blocklist member, adds the
--- IP to that member's bl_ set. dns-tail can see which bl_ sets EXIST but not
--- their MEMBERSHIP, so this exports it.
+-- bl_<id>/bl6_<id> sets are populated at DNS resolve time by dnsmasq nftset=
+-- callbacks. A device that re-queries a member's CNAME target directly lands on
+-- a CDN-anycast IP dnsmasq never added, so the category drop misses (silent
+-- filter bypass). dns-tail closes the gap the same way it does for eb_ (#515):
+-- it resolves each answered name through the #1344 CNAME-alias map and, when
+-- the recovered brand is a blocklist member, adds the IP to that member's bl_
+-- set. dns-tail can see which bl_ sets EXIST but not their MEMBERSHIP, so this
+-- exports it.
 --
--- Derived from the same `snapshot._blocklist_hosts` that drives the `nftset=`
--- directives, so the set names line up exactly with what render.nft declares.
+-- Post-#1782 (LEGACY / TEST PATH): the agent no longer calls this function to
+-- write paths.bl_member_index — it uses blocklists.render_member_index instead,
+-- which streams from the on-disk cache files without building a Lua table.
+-- This in-memory path is retained for unit tests (render_spec.lua) and any
+-- caller that already has _blocklist_hosts in memory. It reads from
+-- snapshot._blocklist_hosts; when that table is absent the output is empty.
 -- One row per (member host, blocklist id): "<host>\t<bl_set>\t<bl6_set>".
 function M.blocklist_member_index(snapshot)
   local bl_hosts = snapshot and snapshot._blocklist_hosts or {}
@@ -672,7 +700,15 @@ function M.nft(snapshot, opts)
   local ga_hosts_list = global_allow_hosts(snapshot)
   local has_global_allow = #ga_hosts_list > 0
   local gb_hosts = global_block_hosts(snapshot)
-  local has_global_block = #gb_hosts > 0
+  -- #1782: has_global_block is true when global.extraBlocked is non-empty OR
+  -- global.blocklistIds is non-empty. In the latter case global_block_hosts()
+  -- returns {} (blocklist members are now populated via shard nftset= callbacks,
+  -- not by expanding in-memory), but the @global_block nft set still needs to
+  -- be declared so the shard's dnsmasq callbacks have a set to land in.
+  local g_for_block = global_rules(snapshot)
+  local has_global_block_from_ids = g_for_block and type(g_for_block.blocklistIds) == "table"
+    and #g_for_block.blocklistIds > 0
+  local has_global_block = #gb_hosts > 0 or (has_global_block_from_ids and true or false)
   local g_blocked = global_blocked(snapshot)
   local g_block_ip_only = global_block_ip_only(snapshot)
   local g_block_reason = (global_rules(snapshot) and global_rules(snapshot).blockReason)
@@ -1288,7 +1324,8 @@ end
 
 -- ---------------------------------------------------------------------------
 -- render.update_shared(snapshot, nft_sets, blocked_macs, blocked_reason,
---                      eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac)
+--                      eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac,
+--                      bl_member_iterator)
 -- ---------------------------------------------------------------------------
 -- Rebuilds blocked_macs / blocked_reason in place from each device's
 -- effective BlockRules. nft_sets is left intact — population is driven by
@@ -1309,8 +1346,22 @@ end
 --       blocklists contain the same host, the first by sorted id wins.
 -- All three tables are cleared and rebuilt on every call. Callers that do not
 -- need per-host block classification may omit them (pass nil).
+--
+-- bl_member_iterator (optional, #1782): a function `iterator(id)` that returns
+-- an iterable of hosts for blocklist `id` — typically by reading the cache file
+-- line-by-line, avoiding a full in-memory table. When nil, falls back to
+-- `snapshot._blocklist_hosts` (legacy / test path). Signature:
+--   iterator(id) → table-of-strings or iterator-function-returning-string
+-- The returned value must be iterable with `ipairs` OR be a 0-arg function
+-- returning successive host strings (then nil when done). For simplicity
+-- the agent passes a closure that returns a Lua table (streamed from disk).
+-- The residual memory cost is one flat list of hosts per subscribed blocklist id
+-- (no MAC multiplier), which is acceptable for update_shared's transient call
+-- scope — the steady-state OOM was the per-snapshot _blocklist_hosts table held
+-- across the agent's lifetime.
 function M.update_shared(snapshot, nft_sets, blocked_macs, blocked_reason,
-                         eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac)
+                         eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac,
+                         bl_member_iterator)
   if blocked_macs then
     for k in pairs(blocked_macs) do blocked_macs[k] = nil end
   end
@@ -1328,7 +1379,23 @@ function M.update_shared(snapshot, nft_sets, blocked_macs, blocked_reason,
   end
 
   -- Build a blocklist-id → [hosts] lookup so we can expand blocklistIds below.
-  local bl_hosts = (snapshot and snapshot._blocklist_hosts) or {}
+  -- #1782: when bl_member_iterator is provided (the agent streams from cache
+  -- files), use it instead of snapshot._blocklist_hosts. The iterator is called
+  -- once per unique id across all subscribed MACs; we cache the result per-id
+  -- so multiple MACs sharing the same blocklist id only trigger one read. The
+  -- in-memory cost is one flat host list per subscribed id — no MAC multiplier.
+  local bl_hosts_cache = {}
+  local function get_bl_hosts(id)
+    if bl_hosts_cache[id] ~= nil then return bl_hosts_cache[id] end
+    if bl_member_iterator then
+      local hosts = bl_member_iterator(id)
+      bl_hosts_cache[id] = hosts or {}
+    else
+      local legacy = (snapshot and snapshot._blocklist_hosts) or {}
+      bl_hosts_cache[id] = legacy[id] or {}
+    end
+    return bl_hosts_cache[id]
+  end
 
   for mac, dev in pairs(snapshot.devices or {}) do
     local r = effective_rules(dev, snapshot.profiles)
@@ -1361,7 +1428,7 @@ function M.update_shared(snapshot, nft_sets, blocked_macs, blocked_reason,
         for _, id in ipairs(r.blocklistIds) do ids[#ids + 1] = id end
         table.sort(ids)
         for _, id in ipairs(ids) do
-          local hosts = bl_hosts[id]
+          local hosts = get_bl_hosts(id)
           if type(hosts) == "table" then
             for _, host in ipairs(hosts) do
               local eb_for_mac = eb_hosts_by_mac and eb_hosts_by_mac[mac]
