@@ -23,8 +23,6 @@ import os
 import subprocess
 import sys
 import threading
-import urllib.error
-import urllib.request
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -196,3 +194,113 @@ def test_bash_hard_fail_when_neither_password_works():
         r = _run_bash(url, STORED_PASSWORD)
         assert r.returncode != 0
         assert "neither" in r.stderr.lower() or "changeme" in r.stderr.lower(), r.stderr
+
+
+# ── Concurrent-gate race recovery (sibling rotated between our calls) ────
+
+
+class _SiblingRaceHandler(_FakeAuthAPI):
+    """Mock variant simulating a sibling gate that rotated 'changeme' to the
+    stored password between our first changeme-call and our next call.
+
+    Server state is set to (current_password=STORED_PASSWORD, must_change=False)
+    BUT login returns 401 on the FIRST `changeme` attempt only (post-reset
+    state we sampled), then 200 on the stored password — modelling a sibling
+    that won the race after our initial stored-password login failed.
+
+    Practically: stored-password login → 200 (sibling already rotated).
+    changeme login → 401 (sibling already rotated).
+    change-password with currentPassword=changeme → 401 (same reason).
+    """
+
+
+def test_bash_race_recovery_on_changeme_401():
+    """Sibling rotated between our stored-login and our changeme-login.
+    The helper must retry the stored password before declaring hard-fail."""
+    # Start the server with the post-rotation state — stored works, changeme
+    # does not. The test simulates: we already saw a 401 on stored (the
+    # original reset state), then tried changeme and got 401 because a
+    # sibling rotated. The helper should retry stored and succeed.
+    # Force the first stored attempt to 401 by giving the mock a different
+    # password initially, then swap mid-flight — easier: subclass the mock
+    # to count requests and 401 the FIRST stored-password attempt only.
+    state = {"first_stored_seen": False}
+
+    class _Handler(_FakeAuthAPI):
+        def do_POST(self):
+            if self.path == "/api/auth/login":
+                body = self._read_json()
+                pw = body.get("password")
+                if pw == STORED_PASSWORD and not state["first_stored_seen"]:
+                    state["first_stored_seen"] = True
+                    self._send(401, {"error": "Invalid credentials"})
+                    return
+                if pw == STORED_PASSWORD:
+                    self._send(200, {
+                        "token": self.server.token, "role": "admin",
+                        "username": "admin", "mustChangePassword": False,
+                    })
+                    return
+                self._send(401, {"error": "Invalid credentials"})
+                return
+            self._send(404, {})
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
+    srv.current_password = STORED_PASSWORD
+    srv.must_change = False
+    srv.token = "race-recovered-jwt"
+    srv.change_password_calls = []
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        host, port = srv.server_address
+        url = f"http://{host}:{port}"
+        r = _run_bash(url, STORED_PASSWORD)
+        assert r.returncode == 0, r.stderr
+        assert r.stdout.strip() == srv.token
+        # No change-password call: race-recovery skipped that step.
+        assert srv.change_password_calls == []
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        t.join(timeout=2)
+
+
+def test_python_race_recovery_on_changeme_401():
+    """Python helper mirrors the bash race recovery."""
+    state = {"first_stored_seen": False}
+
+    class _Handler(_FakeAuthAPI):
+        def do_POST(self):
+            if self.path == "/api/auth/login":
+                body = self._read_json()
+                pw = body.get("password")
+                if pw == STORED_PASSWORD and not state["first_stored_seen"]:
+                    state["first_stored_seen"] = True
+                    self._send(401, {"error": "Invalid credentials"})
+                    return
+                if pw == STORED_PASSWORD:
+                    self._send(200, {
+                        "token": self.server.token, "role": "admin",
+                        "username": "admin", "mustChangePassword": False,
+                    })
+                    return
+                self._send(401, {"error": "Invalid credentials"})
+                return
+            self._send(404, {})
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
+    srv.token = "race-recovered-jwt"
+    srv.change_password_calls = []
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        host, port = srv.server_address
+        api = AdminAPI(f"http://{host}:{port}", username="admin", password=STORED_PASSWORD)
+        token = api.login()
+        assert token == srv.token
+        assert srv.change_password_calls == []
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        t.join(timeout=2)

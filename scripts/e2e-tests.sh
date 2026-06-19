@@ -52,6 +52,7 @@ export STAGING_ADMIN_USER="admin"
 export STAGING_ADMIN_PASSWORD="$ADMIN_PASS"
 TOKEN=$(admin_login_self_heal) || fail "admin login failed (see stderr)"
 [ -n "$TOKEN" ] || fail "admin_login_self_heal returned empty token"
+unset STAGING_API_URL STAGING_ADMIN_USER STAGING_ADMIN_PASSWORD
 pass "logged in"
 
 AUTH=(-H "authorization: Bearer $TOKEN")

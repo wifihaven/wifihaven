@@ -60,10 +60,16 @@ class AdminAPI:
         try:
             bootstrap_token = self._raw_login(self._DEFAULT_PASSWORD)
         except _LoginUnauthorized as e:
-            raise RuntimeError(
-                "neither stored password nor 'changeme' worked on "
-                f"{self.base_url} — staging admin credentials need manual rotation",
-            ) from e
+            # Concurrent-gate race: a sibling gate may have rotated 'changeme'
+            # back to the stored password between our first stored-login and
+            # this one. Retry stored once before declaring hard fail.
+            try:
+                return self._raw_login(self.password)
+            except _LoginUnauthorized:
+                raise RuntimeError(
+                    "neither stored password nor 'changeme' worked on "
+                    f"{self.base_url} — staging admin credentials need manual rotation",
+                ) from e
         # Rotate back to the stored password BEFORE returning a token — that
         # way every caller gets a token good for the post-rotation state, and
         # the must_change_password guard can't bite the next admin call.
@@ -71,13 +77,22 @@ class AdminAPI:
         # #623: change-password returns JSON ({"mustChangePassword": false}).
         # AdminAPI._request already json-decodes a JSON-content-type response;
         # a regression to an empty body would surface as None here.
-        resp = self._request(
-            "POST", "/api/auth/change-password",
-            body={
-                "currentPassword": self._DEFAULT_PASSWORD,
-                "newPassword": self.password,
-            },
-        )
+        try:
+            resp = self._request(
+                "POST", "/api/auth/change-password",
+                body={
+                    "currentPassword": self._DEFAULT_PASSWORD,
+                    "newPassword": self.password,
+                },
+            )
+        except RuntimeError as e:
+            # Same race: a sibling rotated between our changeme-login and
+            # this change-password call, so currentPassword=changeme is no
+            # longer valid. Fall back to a stored-password login.
+            if "HTTP 401" in str(e):
+                self._token = None
+                return self._raw_login(self.password)
+            raise
         if not isinstance(resp, dict) or "mustChangePassword" not in resp:
             raise RuntimeError(
                 f"change-password did not return the expected JSON body (#623 regression?): {resp!r}",

@@ -70,6 +70,11 @@ admin_login_self_heal() {
       : # got changeme working; continue to rotation
       ;;
     401)
+      # Concurrent-gate race: a sibling gate may have already rotated
+      # changeme back to the stored password between our first attempt and
+      # this one. Retry the stored password once before declaring hard fail.
+      _admin_auth_retry_stored_after_race "$base" "$user" "$stored" "$body_file" \
+        && return 0
       echo "admin-auth: neither stored password nor 'changeme' worked on $base — staging admin credentials need manual rotation" >&2
       return 1
       ;;
@@ -94,6 +99,12 @@ admin_login_self_heal() {
     -H "authorization: Bearer $bootstrap_token" \
     -d "$(_admin_auth_json_cp "$default_pw" "$stored")" || echo "000")
   if [ "$code" != "200" ]; then
+    # Same race as above — a sibling gate may have rotated between our
+    # changeme-login and our change-password call, so currentPassword is
+    # no longer 'changeme'. Retry login with the stored value before giving up.
+    if [ "$code" = "401" ] && _admin_auth_retry_stored_after_race "$base" "$user" "$stored" "$body_file"; then
+      return 0
+    fi
     _admin_auth_log "change-password failed: HTTP $code"
     cat "$cp_body" >&2 2>/dev/null || true
     return 1
@@ -137,6 +148,20 @@ _admin_auth_post_login() {
 
 _admin_auth_extract_token() {
   python3 -c 'import json,sys; b=json.load(open(sys.argv[1])); t=b.get("token") or ""; print(t); sys.exit(0 if t else 1)' "$1"
+}
+
+_admin_auth_retry_stored_after_race() {
+  # Sibling-gate race recovery: try the stored password once. On success
+  # echoes the JWT and returns 0; on any non-200 returns non-zero quietly so
+  # the caller can emit its own "neither worked" error.
+  local base="$1" user="$2" stored="$3" body_file="$4" code
+  _admin_auth_log "race-suspect: re-trying stored password (sibling gate may have rotated)"
+  code=$(_admin_auth_post_login "$base" "$user" "$stored" "$body_file")
+  if [ "$code" = "200" ]; then
+    _admin_auth_emit_token "$body_file"
+    return $?
+  fi
+  return 1
 }
 
 _admin_auth_emit_token() {
