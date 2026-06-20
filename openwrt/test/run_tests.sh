@@ -27,6 +27,7 @@ LUA_PATH="./files/usr/lib/lua/?.lua;./files/usr/lib/lua/wifihaven/?.lua;./test/s
          test/quic_spec.lua \
          test/nft_drops_spec.lua \
          test/nflog_spec.lua \
+         test/host_norm_spec.lua \
          test/lan_warn_spec.lua \
          test/eb_refresh_spec.lua \
          test/static_ip_labels_spec.lua \

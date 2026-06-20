@@ -30,6 +30,8 @@
 
 local M = {}
 
+local host_norm = require("wifihaven.host_norm")
+
 -- ---------------------------------------------------------------------------
 -- Line parsers
 -- ---------------------------------------------------------------------------
@@ -266,6 +268,10 @@ function M.new(opts)
   end
 
   local function store(ip, hostname, now)
+    -- #1793: key the cache by the canonical (fully-expanded) v6 form so a later
+    -- lookup with the kernel-LOG expanded spelling hits an insert that arrived
+    -- via dnsmasq's compressed spelling (and vice-versa). No-op for v4.
+    ip = host_norm.canon_ip(ip)
     if entries[ip] == nil then
       if entry_count >= max_entries then
         evict_oldest_entry()
@@ -362,10 +368,17 @@ function M.new(opts)
   end
 
   function self.lookup(ip)
-    local e = entries[ip]
+    -- #1793: canonicalize the query key the same way store() canonicalizes the
+    -- insert key, so compressed (dnsmasq/conntrack) and expanded (kernel LOG)
+    -- v6 spellings resolve to the same entry. Compute the canonical key ONCE and
+    -- use it for BOTH the read and the expiry delete — deleting under the raw
+    -- `ip` would miss the canonical entry while still decrementing entry_count,
+    -- corrupting the max_entries bound.
+    local key = host_norm.canon_ip(ip)
+    local e = entries[key]
     if not e then return nil end
     if (now_fn() - e.ts) > ttl then
-      entries[ip] = nil
+      entries[key] = nil
       entry_count = entry_count - 1
       return nil
     end
@@ -587,7 +600,12 @@ function M.load_table(text, ttl_seconds, now)
     if ip and hostname and ts then
       local ts_n = tonumber(ts)
       if ts_n and (now - ts_n) <= ttl_seconds then
-        out[ip] = hostname
+        -- #1793: canonicalize the v6 key on load so the agent's
+        -- lookup_hostname (which canonicalizes the query the same way) hits
+        -- regardless of whether the snapshot file holds a compressed (current
+        -- dns-tail) or expanded key. Old cache files therefore stay valid
+        -- across the upgrade — no format invalidation.
+        out[host_norm.canon_ip(ip)] = hostname
       end
     end
   end

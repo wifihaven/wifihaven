@@ -211,6 +211,46 @@ describe("nflog.run (end-to-end with injected reader + batcher)", function()
     assert.equal(1, #batched)
     assert.same({ type = "fqdn", value = "youtube.com" }, batched[1].host)
   end)
+
+  -- #1793: the kernel netfilter LOG action behind every wh_drop line emits the
+  -- v6 DST in FULLY-EXPANDED zero-padded form, but the dns cache is keyed by the
+  -- COMPRESSED form dnsmasq logs. Before the fix, the agent's lookup_hostname
+  -- (a tbl[canon_ip(dst_ip)] index over the cache snapshot) missed for blocked
+  -- v6 flows and the event recorded a bare ipv6 literal. This pins the
+  -- end-to-end path: an expanded DST resolves to the FQDN stored under the
+  -- compressed key.
+  it("attributes a v6 drop whose DST= is expanded but the cache key is compressed (#1793)", function()
+    local dns_log   = require("dns_log")
+    local host_norm = require("host_norm")
+    -- The cache snapshot as dns-tail writes it: COMPRESSED v6 key.
+    local snapshot = "2607:f8b0:400f:801::2002\tpagead2.googlesyndication.com\t1000\n"
+    local tbl = dns_log.load_table(snapshot, 3600, 1000)
+    -- Production lookup_hostname canonicalizes the query key (wifihaven-agent).
+    local lookup_hostname = function(ip) return tbl[host_norm.canon_ip(ip)] end
+
+    -- The wh_drop line as it actually appears in logread: EXPANDED DST=.
+    local lines = {
+      "wh_drop:04:72:ef:d6:e4:5a:category:ads SRC=2601:280:4700:f32::49df "
+        .. "DST=2607:f8b0:400f:0801:0000:0000:0000:2002 PROTO=UDP DPT=443",
+    }
+    local i = 0
+    local read_fn = function() i = i + 1; return lines[i] end
+    local batched = {}
+    nflog.run({
+      read_fn = read_fn,
+      batcher = { add = function(ev) batched[#batched + 1] = ev end },
+      now_fn  = function() return 1000 end,
+      ts_fn   = function() return "2026-06-19T12:00:00Z" end,
+      lookup_hostname = lookup_hostname,
+      window_seconds = 60,
+    })
+
+    assert.equal(1, #batched)
+    assert.same({ type = "fqdn", value = "pagead2.googlesyndication.com" },
+                batched[1].host)
+    assert.equal("category:ads", batched[1].reason)
+    assert.equal(false,          batched[1].allowed)
+  end)
 end)
 
 describe("nflog.drain_file (#1126 production reader — file-offset tail)", function()
