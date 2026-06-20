@@ -1161,6 +1161,30 @@ describe("render blocklist enforcement (#352)", function()
     assert.is_nil(conf:find("conf-file=/tmp/wifihaven-blocklist-", 1, true))
   end)
 
+  -- #1792: render_shards silently skips ids whose cache file is missing
+  -- (fetch never completed, transient HTTP error, cap_hit). If render.dnsmasq
+  -- still emits conf-file= for those ids, dnsmasq aborts at startup with
+  -- "cannot read /tmp/wifihaven-blocklist-<id>.conf" and :53 returns
+  -- "connection refused" — the Gate 3a regression after #1788. Skipping the
+  -- conf-file= line for an absent shard keeps dnsmasq alive; the bl_/bl6_
+  -- nft sets just stay empty until the next render_shards pass succeeds.
+  it("omits conf-file= for an id whose shard does not exist on disk (#1792)", function()
+    local s = snap_bl()
+    s.blocklists["test_social"] = { version = "v1", url = "http://api/api/blocklists/test_social" }
+    local conf = render.dnsmasq(s, {
+      bl_shard_exists = function(id) return id ~= "test_social" end,
+    })
+    assert.truthy(conf:find("conf-file=/tmp/wifihaven-blocklist-test_ads.conf", 1, true),
+      "shard that exists must still be referenced")
+    assert.is_nil(conf:find("conf-file=/tmp/wifihaven-blocklist-test_social.conf", 1, true),
+      "shard that does not exist on disk must NOT be referenced (#1792)")
+  end)
+
+  it("emits all conf-file= lines when opts.bl_shard_exists is not provided (back-compat)", function()
+    local conf = render.dnsmasq(snap_bl())
+    assert.truthy(conf:find("conf-file=/tmp/wifihaven-blocklist-test_ads.conf", 1, true))
+  end)
+
   it("still emits eb_ and ea_ nftset= directives in the merged per-host block (#1782)", function()
     -- Non-blocklist hosts (extraBlocked, extraAllowed) continue to have their
     -- nftset= directives in the main wifihaven.conf — only bl_ moves to shards.
