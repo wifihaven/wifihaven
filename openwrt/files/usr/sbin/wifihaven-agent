@@ -22,6 +22,7 @@ local conntrack  = require("wifihaven.conntrack")
 local nflog      = require("wifihaven.nflog")
 local render     = require("wifihaven.render")
 local dns_log    = require("wifihaven.dns_log")
+local host_norm  = require("wifihaven.host_norm")
 local nft_drops  = require("wifihaven.nft_drops")
 local log        = require("wifihaven.log")
 local clock      = require("wifihaven.clock")
@@ -777,7 +778,11 @@ local function lookup_hostname(dst_ip)
   local text = f:read("*a") or ""
   f:close()
   local tbl = dns_log.load_table(text, dns_cache_ttl, os.time())
-  return tbl[dst_ip]
+  -- #1793: load_table keys entries by the canonical (fully-expanded) v6 form;
+  -- canonicalize the query the same way so a kernel-LOG expanded DST= (the
+  -- nflog drop path) and a conntrack/dnsmasq compressed dst both resolve. No-op
+  -- for v4.
+  return tbl[host_norm.canon_ip(dst_ip)]
 end
 
 -- #1122/#1126: nflog tail. render.lua emits

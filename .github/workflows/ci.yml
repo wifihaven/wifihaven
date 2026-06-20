@@ -469,7 +469,9 @@ jobs:
                    test/metrics_spec.lua \
                    test/dns_log_spec.lua \
                    test/nft_drops_spec.lua \
-                   test/dns_tail_sets_spec.lua
+                   test/dns_tail_sets_spec.lua \
+                   test/nflog_spec.lua \
+                   test/host_norm_spec.lua
 
   # ── Bidirectional contract tests (#634) ──────────────────────────────────
   # One job, one green/red signal for "the API ↔ router wire contract holds".
