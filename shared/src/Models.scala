@@ -372,26 +372,11 @@ case class AppPolicyAssignment(
     allowedDuringScheduleBlock: Boolean = true,
 ) derives JsonCodec
 
-// #762: HTTP request/response shapes for the apps CRUD endpoints. Hosts are
-// accepted as strings on input (the server strips a leading `*.` then runs
-// Hostname.parse — both `foo.com` and `*.foo.com` canonicalize to apex).
-case class CreateAppRequest(
-    name: String,
-    slug: Option[String] = None,
-    icon: Option[String] = None,
-    iconType: Option[IconType] = None,
-    templateId: Option[AppTemplateId] = None,
-    hosts: List[String] = Nil,
-) derives JsonCodec
-
-case class UpdateAppRequest(
-    name: String,
-    icon: Option[String] = None,
-    iconType: Option[IconType] = None,
-    templateId: Option[AppTemplateId] = None,
-) derives JsonCodec
-
-case class SetAppHostsRequest(hosts: List[String]) derives JsonCodec
+// #1798: the app *definition* mutator endpoints (create / update name+icon /
+// replace hosts / PATCH) were retired — app definitions are authored only via
+// the built-in `AppTemplates` in code — so their request shapes
+// (CreateAppRequest / UpdateAppRequest / SetAppHostsRequest) were removed with
+// them. Only reads + policy assignment remain on the apps surface.
 
 // #1379: per-app schedule rules. Each rule attaches a #1069 named schedule
 // (NamedScheduleId, V50 `named_schedules`) to an app's (app, profile) assignment

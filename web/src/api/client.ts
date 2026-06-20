@@ -1,12 +1,12 @@
 import { apiHealth } from '@/api/apiHealth'
 import type {
-  Alert, AppDetail, ApproveAlertRequest, BlockedInfoResponse, BlocklistHosts, BlocklistSummary, CreateAppRequest, CreateRouterRequest, CreateRouterResponse, CreateUserRequest,
+  Alert, AppDetail, ApproveAlertRequest, BlockedInfoResponse, BlocklistHosts, BlocklistSummary, CreateRouterRequest, CreateRouterResponse, CreateUserRequest,
   DashboardNow, DashboardStats, Device,
   CreateAccessRequest, DeviceTimeStatus, DeviceTimeStatusWeek, HouseholdSettings, LoginResponse, MeResponse, ProfileAppWeeklyUsage, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek, ProfileUsageByApp,
   ConnectionEventSeriesPage, QueryLogPage,
-  PatchUserRequest, PatchAppRequest,
+  PatchUserRequest,
   NamedSchedule, NamedScheduleRequest,
-  RecentApexesResponse, RouterSummary, SetUserProfilesRequest, TimeExtension,
+  RouterSummary, SetUserProfilesRequest, TimeExtension,
   TrafficUsageBucket, TrafficUsageGroupBy, TrafficUsageResponse, UsageConfig,
   PatchDeviceRequest, PatchProfileRequest,
   UpsertAppAssignmentRequest, UpsertDeviceRequest, UpsertProfileRequest, GrantExtensionRequest,
@@ -426,28 +426,12 @@ export const api = {
   },
 
   // ── Apps (#762/#765) ───────────────────────────────────────────────────
+  // #1798 — app *definitions* are authored only via the built-in `AppTemplates`
+  // in code (seeded/reconciled server-side); the SPA-facing create/edit/delete
+  // wrappers were removed. Only reads + policy assignment remain.
   apps: {
     list: () => req<AppDetail[]>('GET', '/apps'),
     get: (id: number) => req<AppDetail>('GET', `/apps/${id}`),
-    create: (data: CreateAppRequest) => req<AppDetail>('POST', '/apps', data),
-    patch: (id: number, data: PatchAppRequest) =>
-      req<void>('PATCH', `/apps/${id}`, data),
-    delete: (id: number) => req<void>('DELETE', `/apps/${id}`),
-    // #766: recently-visited apexes for a device — drives the picker in the
-    // apps create/edit flow. Colons in the MAC are sent raw: zio-http doesn't
-    // auto-decode percent-encoded colons in path segments, so
-    // `encodeURIComponent` would turn the MAC into a 404 (same gotcha as
-    // time.statusDevice above).
-    recentApexes: (mac: string, opts: { windowDays?: number; limit?: number } = {}) => {
-      const qs = new URLSearchParams()
-      if (opts.windowDays != null) qs.set('windowDays', String(opts.windowDays))
-      if (opts.limit != null) qs.set('limit', String(opts.limit))
-      const q = qs.toString()
-      return req<RecentApexesResponse>(
-        'GET',
-        `/devices/${mac}/recent-apexes${q ? `?${q}` : ''}`,
-      )
-    },
     setPolicy: (id: number, profileId: number, data: UpsertAppAssignmentRequest) =>
       req<void>('PUT', `/apps/${id}/policy/${profileId}`, data),
     deletePolicy: (id: number, profileId: number) =>
