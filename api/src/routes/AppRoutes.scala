@@ -156,8 +156,10 @@ object AppRoutes {
           handle.mapError(ErrorMapper.errorToResponse)
         },
       // #1024: admin-triggered re-run of the startup app-template seeder. Same idempotent
-      // semantics as the boot pass (operator host edits preserved) — exposed as a route so the
-      // operator can backfill without a redeploy when prod is missing the starter set.
+      // semantics as the boot pass (existing rows' host divergence preserved — post-#1798 that
+      // divergence comes from reconcile unions / legacy data, no longer operator host edits) —
+      // exposed as a route so the operator can backfill without a redeploy when prod is missing
+      // the starter set.
       Method.POST / "api" / "apps" / "seed-from-templates"                       ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
