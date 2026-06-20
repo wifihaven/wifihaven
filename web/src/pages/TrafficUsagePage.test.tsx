@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
@@ -107,7 +107,16 @@ async function navigateToMonth(targetYear: number, targetMonth0: number) {
 }
 
 describe('TrafficUsagePage', () => {
+  // #1801: pin the wall clock. Several tests seed `until` / pick a calendar
+  // day around 2026-05-21, and `bucketAvailability` (#814) gates `raw` off once
+  // the anchor is older than the 30-day raw-retention horizon — measured
+  // against `new Date()`. With the real clock, those seeds aged past 30 days
+  // and the auto-promote effect fired an extra fetch, breaking the call-count
+  // assertions. Fake only `Date` (leave timers real so `waitFor`/userEvent
+  // behave normally) and freeze "now" near the seeds so the gate is stable.
   beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-05-22T12:00:00Z'))
     vi.clearAllMocks()
     ;(api.devices.list as ReturnType<typeof vi.fn>).mockResolvedValue([])
     ;(api.profiles.list as ReturnType<typeof vi.fn>).mockResolvedValue([])
@@ -116,6 +125,10 @@ describe('TrafficUsagePage', () => {
     ;(api.apps.list as ReturnType<typeof vi.fn>).mockResolvedValue([
       { app: { id: 1, name: 'YouTube', slug: 'youtube' } },
     ])
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
   })
 
   it('loads raw view by default and renders rows', async () => {
