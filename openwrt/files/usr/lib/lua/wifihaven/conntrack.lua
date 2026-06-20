@@ -995,6 +995,11 @@ function M.is_wan_bound(flow, lan_prefix, lan_prefix_v6, lan_ip_set)
        and flow.dst_ip:sub(1, #lan_prefix) ~= lan_prefix
   end
   -- v6: neighbor-membership (preferred) unioned with an optional authored prefix.
+  -- lan_ip_set may include neighbors from all interfaces (parse_arp_table runs
+  -- `ip -6 neigh show` without a dev filter), but that's safe here: an internet
+  -- dst reached via the default route is never on-link, so it can't appear and
+  -- falsely mark a flow LAN-internal; and a WAN host's src is never a forwarded
+  -- LAN flow's src.
   local src_lan, dst_lan = false, false
   if lan_ip_set then
     src_lan = lan_ip_set[flow.src_ip] ~= nil
