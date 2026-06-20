@@ -215,11 +215,20 @@ describe("render.nft", function()
   -- the remote-host axis (#897). The set now records (lan_device_ip,
   -- remote_ip) pairs and the agent resolves the lan_ip back to a MAC via
   -- the dnsmasq lease table.
+  -- Slice helper: body of a `set <name> { ... }` block (up to the first `}`),
+  -- so adjacent set declarations (e.g. the #1796 v6 sets) can't bleed into a
+  -- fixed-width window and break sibling assertions.
+  local function set_body(nft, name)
+    local start = nft:find("set " .. name .. " {", 1, true)
+    if not start then return nil end
+    local close = nft:find("}", start, true)
+    return nft:sub(start, close)
+  end
+
   it("declares the ip_pair_tracking_rx set keyed on (ipv4_addr . ipv4_addr) (#897)", function()
     local nft = render.nft(snap_one())
-    local pos = nft:find("set ip_pair_tracking_rx", 1, true)
-    assert.truthy(pos)
-    local block = nft:sub(pos, pos + 200)
+    local block = set_body(nft, "ip_pair_tracking_rx")
+    assert.truthy(block)
     assert.truthy(block:find("type ipv4_addr %. ipv4_addr"))
     -- Guards against regressing to ether_addr keying (#879) or single-key
     -- ipv4_addr keying (#897).
@@ -278,6 +287,42 @@ describe("render.nft", function()
     -- from the new `_tx`/`_rx` suffixes) must be gone.
     assert.is_nil(nft:find("chain wifihaven_account ", 1, true))
     assert.is_nil(nft:find("chain wifihaven_account\n", 1, true))
+  end)
+
+  -- #1796: the usage byte-accounting plane was IPv4-only — the tracking sets
+  -- were typed ipv4_addr and the update rules matched `ip daddr`/`ip saddr`, so
+  -- every IPv6 destination flow was never counted and never appeared in
+  -- per-device traffic / recent-apexes. (The enforcement plane was already
+  -- dual-stack via ip6 daddr + eb6_/bl6_/ea6_ sets; only accounting lagged.)
+  -- These mirror the v4 sets/chains with an ipv6_addr + ip6 daddr shape.
+  it("declares the mac_ip6_tracking set keyed on (ether_addr . ipv6_addr) (#1796)", function()
+    local nft = render.nft(snap_one())
+    local block = set_body(nft, "mac_ip6_tracking")
+    assert.truthy(block)
+    assert.truthy(block:find("type ether_addr %. ipv6_addr"))
+    assert.is_nil(block:find("ipv4_addr"))
+  end)
+
+  it("declares the ip_pair6_tracking_rx set keyed on (ipv6_addr . ipv6_addr) (#1796)", function()
+    local nft = render.nft(snap_one())
+    local block = set_body(nft, "ip_pair6_tracking_rx")
+    assert.truthy(block)
+    assert.truthy(block:find("type ipv6_addr %. ipv6_addr"))
+    assert.is_nil(block:find("ether_addr"))
+  end)
+
+  it("updates @mac_ip6_tracking from the tx chain via ip6 daddr (#1796)", function()
+    local nft  = render.nft(snap_one())
+    local body = chain_body(nft, "wifihaven_account_tx")
+    assert.truthy(body)
+    assert.truthy(body:find("update @mac_ip6_tracking%s+{%s*ether saddr %. ip6 daddr%s*}%s+counter"))
+  end)
+
+  it("updates @ip_pair6_tracking_rx from the rx chain via ip6 daddr/ip6 saddr (#1796)", function()
+    local nft  = render.nft(snap_one())
+    local body = chain_body(nft, "wifihaven_account_rx")
+    assert.truthy(body)
+    assert.truthy(body:find("update @ip_pair6_tracking_rx%s+{%s*ip6 daddr %. ip6 saddr%s*}%s+counter"))
   end)
 
   -- #354: blocked_macs is derived per-device from effective BlockRules.blocked.

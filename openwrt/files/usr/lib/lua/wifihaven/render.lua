@@ -807,15 +807,40 @@ function M.nft(snapshot, opts)
   ind("}")
   emit("")
 
+  -- #1796: IPv6 byte-accounting. The v4 sets above only match `ip daddr`, so
+  -- every IPv6 destination flow went uncounted and was invisible in
+  -- per-device traffic / recent-apexes (a v6-preferring client browsing a
+  -- dual-stack host showed nothing). These mirror the v4 sets with an
+  -- ipv6_addr shape; usage.lua reads both families through the same parsers
+  -- and `nft -j` emits compressed v6 that matches the dns-cache key, so
+  -- host attribution works without extra canonicalization.
+  ind("set mac_ip6_tracking {")
+  ind2("type ether_addr . ipv6_addr")
+  ind2("flags dynamic,timeout")
+  ind2("timeout 6h")
+  ind2("counter")
+  ind("}")
+  emit("")
+
+  ind("set ip_pair6_tracking_rx {")
+  ind2("type ipv6_addr . ipv6_addr")
+  ind2("flags dynamic,timeout")
+  ind2("timeout 6h")
+  ind2("counter")
+  ind("}")
+  emit("")
+
   ind("chain wifihaven_account_tx {")
   ind2("type filter hook forward priority 1; policy accept;")
   ind2("iifname \"br-lan\" update @mac_ip_tracking { ether saddr . ip daddr } counter")
+  ind2("iifname \"br-lan\" update @mac_ip6_tracking { ether saddr . ip6 daddr } counter")
   ind("}")
   emit("")
 
   ind("chain wifihaven_account_rx {")
   ind2("type filter hook forward priority 1; policy accept;")
   ind2("oifname \"br-lan\" update @ip_pair_tracking_rx { ip daddr . ip saddr } counter")
+  ind2("oifname \"br-lan\" update @ip_pair6_tracking_rx { ip6 daddr . ip6 saddr } counter")
   ind("}")
   emit("")
 

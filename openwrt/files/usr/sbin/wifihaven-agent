@@ -714,30 +714,58 @@ local function read_set_json(name)
   return json_str
 end
 
+-- #1796: read v4 (mac_ip_tracking) AND v6 (mac_ip6_tracking) tracking sets and
+-- merge their parsed records. The parser is family-agnostic — concat[2] is the
+-- remote IP in whatever family the set holds — so the same parse path handles
+-- both. A missing set is treated as the empty side (transient render swap).
 local function read_tx_set()
-  local json_str = read_set_json("mac_ip_tracking")
-  if not json_str then return nil end
-  local ok, counters = pcall(usage.parse_nft_counters, json_str)
-  if not ok then return nil end
-  return counters
+  local out = {}
+  for _, name in ipairs({ "mac_ip_tracking", "mac_ip6_tracking" }) do
+    local json_str = read_set_json(name)
+    if json_str then
+      local ok, counters = pcall(usage.parse_nft_counters, json_str)
+      if ok and counters then
+        for _, c in ipairs(counters) do out[#out + 1] = c end
+      end
+    end
+  end
+  if #out == 0 then return nil end
+  return out
 end
 
 local function read_rx_set()
-  local json_str = read_set_json("ip_pair_tracking_rx")
-  if not json_str then return nil end
-  local ok, counters = pcall(usage.parse_nft_rx_counters, json_str)
-  if not ok then return nil end
-  return counters
+  local out = {}
+  for _, name in ipairs({ "ip_pair_tracking_rx", "ip_pair6_tracking_rx" }) do
+    local json_str = read_set_json(name)
+    if json_str then
+      local ok, counters = pcall(usage.parse_nft_rx_counters, json_str)
+      if ok and counters then
+        for _, c in ipairs(counters) do out[#out + 1] = c end
+      end
+    end
+  end
+  if #out == 0 then return nil end
+  return out
 end
 
--- Build { ip -> mac } from /tmp/dhcp.leases for rx-side resolution (#879).
--- Cheap (a handful of lines on tmpfs); read every counter scrape so freshly
--- DHCP'd clients are attributed without waiting for a re-read.
+-- Build { ip -> mac } for rx-side resolution (#879). v4 comes from the dnsmasq
+-- lease table; v6 (#1796) comes from the NDP neighbor cache via
+-- conntrack.parse_arp_table (which reads /proc/net/arp + `ip -6 neigh`), since
+-- DHCP leases don't cover SLAAC/v6 device addresses. Leases win for any v4 IP
+-- already mapped; the neighbor table only fills gaps — all v6 keys, and (by
+-- design) any static-IP v4 LAN device with no DHCP lease, which previously had
+-- its rx download bytes dropped (#879). The rx set's lan_ip is always a real
+-- LAN device address (`oifname br-lan` ⇒ ip[6] daddr), so WAN-side entries in
+-- the ARP/NDP dump can't mis-resolve a flow.
+-- Cheap (a handful of lines on tmpfs / one netlink dump) so it runs every scrape.
 local function load_ip_to_mac()
   local leases = conntrack.parse_dhcp_leases()
   local m = {}
   for mac, lease in pairs(leases) do
     if lease.ip then m[lease.ip] = mac end
+  end
+  for ip, mac in pairs(conntrack.parse_arp_table()) do
+    if m[ip] == nil then m[ip] = mac end
   end
   return m
 end
@@ -1110,6 +1138,10 @@ conntrack.watch({
         -- nft counters intact would double-count on the next bucket.
         os.execute("nft reset set inet wifihaven mac_ip_tracking >/dev/null 2>&1")
         os.execute("nft reset set inet wifihaven ip_pair_tracking_rx >/dev/null 2>&1")
+        -- #1796: reset the v6 accounting sets too, else v6 counters carry over
+        -- and double-count on the next bucket.
+        os.execute("nft reset set inet wifihaven mac_ip6_tracking >/dev/null 2>&1")
+        os.execute("nft reset set inet wifihaven ip_pair6_tracking_rx >/dev/null 2>&1")
         usage.tracker_reset(activity_tracker)
         if not posted then
           log.warn("usage timer: queued for retry (queue depth=%d)",
