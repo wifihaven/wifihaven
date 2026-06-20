@@ -407,17 +407,26 @@ step "#1105: exempt time_limited app folds host into extraAllowed under MAC bloc
 # Idempotent on a persistent staging DB — re-seeding an already-seeded slug is a
 # no-op (preserved), so concurrent runs don't collide.
 curl -fsS -X POST "$BASE/api/apps/seed-from-templates" "${AUTH[@]}" >/dev/null
-# Pick the first seeded app that exposes at least one host; assert on that host.
 curl -fsS "${AUTH[@]}" "$BASE/api/apps" >"$TMP/apps.json"
+# Pick a seeded app+host whose host is NOT already in the profile's extraAllowed
+# *before* we assign anything. The global infra-allowlist (#1311) seeds some
+# hosts into every profile's extraAllowed, so picking a host that's already
+# allowed would let the post-assignment assertion pass even if the
+# time_limited+exempt → extraAllowed fold regressed. Selecting an as-yet-unallowed
+# host keeps the carve-out attributable solely to the assignment (the property
+# the synthetic-host version relied on pre-#1798).
+curl -fsS "${RAUTH[@]}" "$BASE/api/router/policy" >"$TMP/snap_pre.json"
 APP_SEL=$(_py "
 import json
+snap = json.load(open('$TMP/snap_pre.json'))
+p = snap['profiles'].get('$PID') or {}
+ea_before = set((p.get('rules') or {}).get('extraAllowed') or [])
 apps = json.load(open('$TMP/apps.json'))
 for a in apps:
-    hosts = a.get('hosts') or []
-    if hosts:
-        print(a['app']['id'], hosts[0]); break
-else:
-    raise SystemExit('no seeded app with a host found in GET /api/apps')
+    for h in (a.get('hosts') or []):
+        if h not in ea_before:
+            print(a['app']['id'], h); raise SystemExit(0)
+raise SystemExit('no seeded app host outside the pre-existing extraAllowed set')
 ") || fail "could not select a seeded app+host (see stderr)"
 APP_ID=${APP_SEL%% *}
 APP_HOST=${APP_SEL#* }
