@@ -218,6 +218,16 @@ local function exec_ok(rc)
   return rc == 0 or rc == true
 end
 
+-- #1792: default shard-existence check for render.dnsmasq's bl_shard_exists
+-- hook. Module-level so the closure is allocated once, not per apply call.
+-- Reads render.SHARD_DIR at call time (not at module-load) so tests that
+-- mutate render.SHARD_DIR before driving policy.apply still see the override.
+local function default_bl_shard_exists(id)
+  local f = io.open(render.shard_path(id), "r")
+  if f then f:close(); return true end
+  return false
+end
+
 function M.apply(snapshot, write_fn, reload_fn, log, opts)
   log = log or default_log()
   opts = opts or {}
@@ -240,14 +250,18 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
   -- whose cache file is missing (fetch not yet completed, transient HTTP
   -- error, cap_hit); a dangling conf-file= ref aborts dnsmasq startup with
   -- "cannot read ..." and :53 returns "connection refused" (Gate 3a regression
-  -- after #1788). Tests inject opts.bl_shard_exists; production uses io.open.
-  local bl_shard_exists = opts.bl_shard_exists or function(id)
-    local p = string.format("%s/wifihaven-blocklist-%s.conf", render.SHARD_DIR, id)
-    local f = io.open(p, "r")
-    if f then f:close(); return true end
-    return false
-  end
-  local dnsmasq_content = render.dnsmasq(snapshot, { bl_shard_exists = bl_shard_exists })
+  -- after #1788). Tests inject opts.bl_shard_exists; production uses the
+  -- module-level default_bl_shard_exists which stats the canonical shard path.
+  local bl_shard_exists = opts.bl_shard_exists or default_bl_shard_exists
+  local dnsmasq_content = render.dnsmasq(snapshot, {
+    bl_shard_exists = function(id)
+      local ok = bl_shard_exists(id)
+      if not ok then
+        log.debug("policy.apply: omitted conf-file= for id %s (shard missing)", tostring(id))
+      end
+      return ok
+    end,
+  })
   local nft_content     = render.nft(snapshot, opts)
 
   -- #414: dnsmasq only needs a full restart when its config-dir file

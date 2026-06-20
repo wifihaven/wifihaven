@@ -83,6 +83,17 @@ local M = {}
 -- wifihaven-agent).
 M.SHARD_DIR = "/tmp"
 
+-- Canonical path of a per-blocklist dnsmasq conf shard (#1792). Single source
+-- of truth — render.dnsmasq, policy.apply's shard-existence check, and
+-- blocklists.render_shards all call this so the prefix/extension can never
+-- drift between writer and reader. `dir` defaults to M.SHARD_DIR; pass an
+-- explicit dir for callers that already take shard_dir as a parameter
+-- (blocklists.render_shards / .gc_shards) so the test-injectable directory
+-- still flows through.
+function M.shard_path(id, dir)
+  return (dir or M.SHARD_DIR) .. "/wifihaven-blocklist-" .. id .. ".conf"
+end
+
 -- Replace dots and colons with underscores (nftables set/counter name-safe).
 local function sanitize(s)
   return (s:gsub("[%.%:]", "_"))
@@ -468,7 +479,7 @@ function M.dnsmasq(snapshot, opts)
     -- #1792: only reference shards that actually exist on disk; a dangling
     -- conf-file= ref aborts dnsmasq startup with "cannot read ...".
     for _, id in ipairs(bl_ids_with_shards) do
-      emit(string.format("conf-file=%s/wifihaven-blocklist-%s.conf", M.SHARD_DIR, id))
+      emit("conf-file=" .. M.shard_path(id))
     end
     emit("")
   end
