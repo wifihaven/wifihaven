@@ -966,19 +966,50 @@ end
 -- (#575)
 --
 -- Family is detected from src_ip — a colon means IPv6, otherwise v4 — so a
--- single helper handles both stacks (#1688). lan_prefix_v6 is the LAN v6 ULA
--- prefix (e.g. "fdaa:bbbb:cccc:"); when empty/nil v6 flows are rejected so a
--- prod router without an authored v6 LAN keeps today's behavior.
+-- single helper handles both stacks (#1688).
+--
+-- v4 LAN membership is a stable RFC1918 prefix match (`lan_prefix`).
+--
+-- v6 (#1796): a static `lan_prefix_v6` cannot identify LAN-sourced traffic in
+-- practice. Home IPv6 is not NATed, so devices source internet flows from their
+-- GUA — which is ISP-delegated and dynamic — not the ULA. Matching on the ULA
+-- (the only stable prefix) therefore records ZERO internet v6, which is why the
+-- option shipped commented-out and every unconfigured router silently dropped
+-- all v6 connection events. Instead, when the caller passes `lan_ip_set` (the
+-- NDP/ARP neighbor map { ip -> mac } the agent already builds for v6 MAC
+-- attribution), a v6 flow is LAN-bound iff `src` is a known LAN neighbor and
+-- `dst` is not — covering GUA, ULA, and privacy/temporary addresses with no
+-- prefix bookkeeping. `lan_prefix_v6`, if authored, is honored as an additional
+-- accept path (union). With neither a neighbor set nor a prefix, v6 is rejected
+-- (back-compat: the prior empty-prefix default).
 --
 -- lan_prefix    example: "192.168.1."
--- lan_prefix_v6 example: "fdaa:bbbb:cccc:"
+-- lan_prefix_v6 example: "fdaa:bbbb:cccc:"  (optional override; usually unset)
+-- lan_ip_set    example: { ["2601:280:4700:f32::42"] = "aa:bb:.." }  (parse_arp_table)
 -- ---------------------------------------------------------------------------
-function M.is_wan_bound(flow, lan_prefix, lan_prefix_v6)
+function M.is_wan_bound(flow, lan_prefix, lan_prefix_v6, lan_ip_set)
   local is_v6 = flow.src_ip:find(":", 1, true) ~= nil
-  local prefix = is_v6 and lan_prefix_v6 or lan_prefix
-  if not prefix or prefix == "" then return false end
-  return flow.src_ip:sub(1, #prefix) == prefix
-     and flow.dst_ip:sub(1, #prefix) ~= prefix
+  if not is_v6 then
+    if not lan_prefix or lan_prefix == "" then return false end
+    return flow.src_ip:sub(1, #lan_prefix) == lan_prefix
+       and flow.dst_ip:sub(1, #lan_prefix) ~= lan_prefix
+  end
+  -- v6: neighbor-membership (preferred) unioned with an optional authored prefix.
+  -- lan_ip_set may include neighbors from all interfaces (parse_arp_table runs
+  -- `ip -6 neigh show` without a dev filter), but that's safe here: an internet
+  -- dst reached via the default route is never on-link, so it can't appear and
+  -- falsely mark a flow LAN-internal; and a WAN host's src is never a forwarded
+  -- LAN flow's src.
+  local src_lan, dst_lan = false, false
+  if lan_ip_set then
+    src_lan = lan_ip_set[flow.src_ip] ~= nil
+    dst_lan = lan_ip_set[flow.dst_ip] ~= nil
+  end
+  if lan_prefix_v6 and lan_prefix_v6 ~= "" then
+    src_lan = src_lan or flow.src_ip:sub(1, #lan_prefix_v6) == lan_prefix_v6
+    dst_lan = dst_lan or flow.dst_ip:sub(1, #lan_prefix_v6) == lan_prefix_v6
+  end
+  return src_lan and not dst_lan
 end
 
 -- is_outbound is kept as a backward-compatible alias so existing call sites
@@ -1098,13 +1129,30 @@ function M.watch(cfg)
   local pending_hostname_macs = {}
   local leases_path           = cfg.leases_path or "/tmp/dhcp.leases"
 
+  -- #1796: v6 LAN-source is decided by NDP-neighbor membership, so the neighbor
+  -- table must be available *before* the wan-bound check (v4 still uses the
+  -- prefix and needs no table). Cache it per wall-clock second so a burst of
+  -- conntrack NEW events can't shell out to `ip -6 neigh` once per line.
+  local arp_cache, arp_cache_sec = nil, nil
+  local function neighbor_table()
+    local now = os.time()
+    if arp_cache and arp_cache_sec == now then return arp_cache end
+    arp_cache, arp_cache_sec = M.parse_arp_table(), now
+    return arp_cache
+  end
+
   while true do
     local line = handle:read("*l")
     if not line then break end
 
     local flow = M.parse_conntrack_line(line)
-    if flow and M.is_wan_bound(flow, lan_prefix, lan_prefix_v6) then
-      local arp = M.parse_arp_table()
+    -- Only v6 needs the neighbor set for the LAN-source decision; v4 stays on
+    -- the prefix and pays no per-line table cost.
+    local lan_ip_set = (flow and flow.src_ip:find(":", 1, true)) and neighbor_table() or nil
+    if flow and M.is_wan_bound(flow, lan_prefix, lan_prefix_v6, lan_ip_set) then
+      -- v6 reuses the cached neighbor table (src is guaranteed present — it just
+      -- passed the membership check); v4 fetches a fresh ARP table as before.
+      local arp = lan_ip_set or M.parse_arp_table()
       local mac_candidate = M.arp_lookup_mac(flow.src_ip, arp)
       -- Parse the lease file when (a) MAC is new, or (b) MAC is pending a
       -- late hostname (#249 — re-emit dhcp_lease once dnsmasq writes it).

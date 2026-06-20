@@ -1924,6 +1924,47 @@ describe("is_wan_bound (#575)", function()
     assert.is_false(conntrack.is_wan_bound(
       { src_ip = "2001:db8::99", dst_ip = "2001:db8::10" }, LAN, LAN6))
   end)
+
+  -- #1796: a static lan_prefix_v6 cannot identify LAN-sourced v6 in practice —
+  -- devices source internet flows from their GUA (ISP-delegated, dynamic), not
+  -- the ULA, so the ULA prefix records ZERO internet v6 and ships off by
+  -- default. The durable fix passes the NDP neighbor set (ip -> mac, the table
+  -- the agent already builds for v6 MAC attribution) as a 4th arg: a v6 flow is
+  -- LAN-bound iff src is a known neighbor and dst is not. v4 stays prefix-based.
+  describe("v6 via NDP neighbor table (#1796)", function()
+    -- Real prod shape: device GUA -> Cloudflare (mathplayground). No ULA in sight.
+    local GUA   = "2601:280:4700:f32:cd10:109c:441c:49df"
+    local CFv6  = "2606:4700::6812:446"
+    local PEER6 = "2601:280:4700:f32:aef7:a1ee:2623:6f41"
+    local NEIGH = { [GUA] = "04:72:ef:d6:e4:5a", [PEER6] = "78:78:35:a2:03:3a" }
+
+    it("accepts a GUA-sourced v6 flow to a public dst even with NO v6 prefix", function()
+      assert.is_true(conntrack.is_wan_bound(
+        { src_ip = GUA, dst_ip = CFv6 }, LAN, "", NEIGH))
+    end)
+
+    it("rejects a v6 flow between two LAN neighbors (LAN-internal)", function()
+      assert.is_false(conntrack.is_wan_bound(
+        { src_ip = GUA, dst_ip = PEER6 }, LAN, "", NEIGH))
+    end)
+
+    it("rejects a v6 flow whose src is not a known neighbor", function()
+      assert.is_false(conntrack.is_wan_bound(
+        { src_ip = "2001:db8::99", dst_ip = CFv6 }, LAN, "", NEIGH))
+    end)
+
+    it("still accepts via the authored prefix when src matches it (union, back-compat)", function()
+      assert.is_true(conntrack.is_wan_bound(
+        { src_ip = "fdaa:bbbb:cccc::42", dst_ip = CFv6 }, LAN, "fdaa:bbbb:cccc:", NEIGH))
+    end)
+
+    it("does not affect v4 (still prefix-based even when a neighbor set is passed)", function()
+      assert.is_true(conntrack.is_wan_bound(
+        { src_ip = "192.168.1.42", dst_ip = "1.2.3.4" }, LAN, "", NEIGH))
+      assert.is_false(conntrack.is_wan_bound(
+        { src_ip = "10.0.0.5", dst_ip = "1.2.3.4" }, LAN, "", NEIGH))
+    end)
+  end)
 end)
 
 -- ---------------------------------------------------------------------------
