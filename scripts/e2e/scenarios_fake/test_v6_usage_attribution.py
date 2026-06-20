@@ -251,51 +251,40 @@ def _set_fast_usage_cadence() -> None:
     )
 
 
-def _usage_row(fake_api, mac: str, host: str) -> dict | None:
-    """Return the latest captured usage record for (mac, host), or None.
+def _records_for_mac(fake_api, mac: str) -> list[dict]:
+    """Every usage record the fake has captured for `mac`, across all reports.
 
-    /test/usage returns a row per (mac, host) the agent reported; filter to the
-    workload host so incidental client traffic (NTP, DNS) can't shadow it
-    (#1049)."""
-    latest = None
+    The fake captures the RAW agent reports — there is no API-side projection
+    in fake mode. The agent resets the nft accounting sets after each POST
+    (wifihaven-agent), so reports are per-period DELTAS, and `build_report`
+    emits one record per `(mac, dst_ip)` (usage.lua): v4 and v6 traffic to the
+    same FQDN therefore land in SEPARATE records keyed by `destIp`
+    (192.0.2.10 vs 2001:db8::10), each carrying the resolved `host.value`. So
+    we key assertions on `destIp` (the family) and read `host.value` for the
+    attribution, never trying to compare bytes across periods or to observe an
+    API-side per-apex aggregation that does not exist here."""
+    out: list[dict] = []
     for r in (fake_api.usage().get("reports") or []):
         for rec in (r.get("body", {}).get("records") or []):
-            if (rec.get("mac") or "").lower() != mac.lower():
-                continue
-            if (rec.get("host") or {}).get("value") == host:
-                latest = rec
-    return latest
+            if (rec.get("mac") or "").lower() == mac.lower():
+                out.append(rec)
+    return out
 
 
-def _wait_usage_row(fake_api, mac: str, host: str, *,
-                    predicate, description: str, timeout_s: float = 180) -> dict:
+def _wait_record(fake_api, mac: str, *, dest_ip: str, predicate,
+                 description: str, timeout_s: float = 180) -> dict:
+    """Wait until some captured record for (mac, dest_ip) satisfies `predicate`,
+    returning the latest such record. Keying on `destIp` pins the family
+    (the workload host) and ignores incidental client traffic (NTP/DNS, #1049)."""
     def probe():
-        rec = _usage_row(fake_api, mac, host)
-        return rec if (rec is not None and predicate(rec)) else None
+        match = None
+        for rec in _records_for_mac(fake_api, mac):
+            if rec.get("destIp") == dest_ip and predicate(rec):
+                match = rec
+        return match
     return wait_until(
         probe, timeout_s=timeout_s, interval_s=5, description=description,
     )
-
-
-def _host_row_count(fake_api, mac: str, host: str) -> int:
-    """How many DISTINCT host rows the agent has reported whose value resolves
-    to `host` — across every captured report. >1 means a family-split
-    duplication (e.g. one row keyed to the bare v6 literal, one to the FQDN),
-    which is exactly the #1796-class bug the aggregation check guards against.
-
-    A bare v4/v6 literal for LEAF_IP4/LEAF_IP6 counts as a duplicate of the
-    FQDN row, since both denote the same host reached over different families.
-    """
-    seen: set[str] = set()
-    aliases = {host.lower(), LEAF_IP4, LEAF_IP6}
-    for r in (fake_api.usage().get("reports") or []):
-        for rec in (r.get("body", {}).get("records") or []):
-            if (rec.get("mac") or "").lower() != mac.lower():
-                continue
-            val = (rec.get("host") or {}).get("value") or ""
-            if val.lower() in aliases:
-                seen.add(val.lower())
-    return len(seen)
 
 
 # ── the test ─────────────────────────────────────────────────────────────────
@@ -355,41 +344,39 @@ def test_v6_usage_attributes_to_fqdn_and_aggregates_with_v4(router, client, fake
         url = f"http://{LEAF_HOST}/"
         _wait_origin_reachable(client, url=url, family_flag="-6")
 
-        # ── 1/3/4: drive IPv6 ONLY, then assert the host surfaces by FQDN with
-        # non-zero bytesIn (rx via NDP) AND bytesOut. No v4 has flowed yet, so
-        # a visible row here is proof a v6-only host is not invisible. ───────
+        # ── 1/3/4: drive IPv6 ONLY, then assert the v6 flow surfaces by FQDN
+        # with non-zero bytesIn (rx via NDP) AND bytesOut. We key on the v6
+        # destIp so the assertion can't be satisfied by stray v4 traffic; no v4
+        # has flowed yet, so a visible v6 record here is proof a v6-only host
+        # is not invisible (the exact #1796 symptom). ───────────────────────
         for _ in range(4):
             client_exec(
                 client, ["sh", "-c", f"curl -6 -s -o /dev/null --max-time 6 {url} || true"],
                 timeout=12, check=False,
             )
 
-        rec = _wait_usage_row(
-            fake_api, client.mac, LEAF_HOST,
+        v6 = _wait_record(
+            fake_api, client.mac, dest_ip=LEAF_IP6,
             predicate=lambda r: (r.get("bytesIn") or 0) > 0 and (r.get("bytesOut") or 0) > 0,
             description=(
-                f"usage row for {client.mac} host={LEAF_HOST} with bytesIn>0 AND "
-                f"bytesOut>0 from IPv6-only traffic (pre-#1802 v6 was uncounted)"
+                f"usage record for {client.mac} destIp={LEAF_IP6} with bytesIn>0 "
+                f"AND bytesOut>0 from IPv6-only traffic (pre-#1802 v6 was uncounted)"
             ),
         )
-        # host.value must be the FQDN, never the bare v6 literal.
-        hval = (rec.get("host") or {}).get("value") or ""
-        assert hval == LEAF_HOST, (
-            f"v6 usage attributed to {hval!r}, not the FQDN {LEAF_HOST!r} — "
-            f"pre-#1802/#1673 bare-literal attribution leak. rec={rec!r}"
+        # The v6 record must attribute to the FQDN, never a bare v6 literal.
+        v6_host = (v6.get("host") or {}).get("value") or ""
+        assert v6_host == LEAF_HOST, (
+            f"v6 usage attributed to {v6_host!r}, not the FQDN {LEAF_HOST!r} — "
+            f"pre-#1802/#1673 bare-literal attribution leak. rec={v6!r}"
         )
-        assert (rec.get("bytesIn") or 0) > 0, f"v6 download (rx) not counted: {rec!r}"
-        assert (rec.get("bytesOut") or 0) > 0, f"v6 upload (tx) not counted: {rec!r}"
-        v6_in, v6_out = rec["bytesIn"], rec["bytesOut"]
+        assert (v6.get("bytesIn") or 0) > 0, f"v6 download (rx) not counted: {v6!r}"
+        assert (v6.get("bytesOut") or 0) > 0, f"v6 upload (tx) not counted: {v6!r}"
 
-        # Exactly one host row from v6-only traffic (no bare-literal sibling).
-        assert _host_row_count(fake_api, client.mac, LEAF_HOST) == 1, (
-            f"expected a single host row for {LEAF_HOST} after IPv6-only "
-            f"traffic, found a family-split/literal duplicate"
-        )
-
-        # ── 2: add IPv4 to the SAME host; it must aggregate into the SAME row
-        # (no family-split duplication, no v6 silently dropped). ─────────────
+        # ── 2: add IPv4 to the SAME host. v4 and v6 land in separate per-destIp
+        # records in fake mode (the API-side per-apex aggregation isn't present
+        # here), so "aggregate to one host row" means: BOTH families attribute
+        # to the SAME FQDN apex (so the API will collapse them) and NEITHER is
+        # attributed to a bare literal — i.e. no family-split. ───────────────
         _wait_origin_reachable(client, url=url, family_flag="-4")
         for _ in range(4):
             client_exec(
@@ -397,19 +384,26 @@ def test_v6_usage_attributes_to_fqdn_and_aggregates_with_v4(router, client, fake
                 timeout=12, check=False,
             )
 
-        merged = _wait_usage_row(
-            fake_api, client.mac, LEAF_HOST,
-            predicate=lambda r: (r.get("bytesIn") or 0) > v6_in
-                                and (r.get("bytesOut") or 0) > v6_out,
+        v4 = _wait_record(
+            fake_api, client.mac, dest_ip=LEAF_IP4,
+            predicate=lambda r: (r.get("bytesOut") or 0) > 0,
             description=(
-                f"usage row for {client.mac} host={LEAF_HOST} growing past the "
-                f"v6-only totals after adding IPv4 (v4+v6 aggregate to one row)"
+                f"usage record for {client.mac} destIp={LEAF_IP4} with bytesOut>0 "
+                f"after adding IPv4 to {LEAF_HOST}"
             ),
         )
-        assert (merged.get("host") or {}).get("value") == LEAF_HOST
-        assert _host_row_count(fake_api, client.mac, LEAF_HOST) == 1, (
-            f"v4 and v6 to {LEAF_HOST} must aggregate to ONE host row — found a "
-            f"family-split duplicate (the #1796 silent-drop / double-count class)"
+        assert (v4.get("host") or {}).get("value") == LEAF_HOST, (
+            f"v4 traffic to {LEAF_HOST} attributed to {v4.get('host')!r}, not the "
+            f"FQDN — v4 and v6 would land under different apexes (family split)"
         )
+
+        # No record for either family's literal may carry a non-FQDN host: both
+        # the v4 and v6 legs of this host must roll up to the one FQDN apex.
+        for rec in _records_for_mac(fake_api, client.mac):
+            if rec.get("destIp") in (LEAF_IP4, LEAF_IP6):
+                assert (rec.get("host") or {}).get("value") == LEAF_HOST, (
+                    f"a {LEAF_HOST} flow attributed to a non-FQDN host — "
+                    f"family-split duplication (#1796 class). rec={rec!r}"
+                )
     finally:
         _teardown_origin(client)
