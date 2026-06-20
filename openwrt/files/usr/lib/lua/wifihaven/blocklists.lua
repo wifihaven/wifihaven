@@ -416,8 +416,8 @@ function M.render_shards(snapshot, fs, cache_dir, shard_dir, max_bytes, global_b
   for id, bl in pairs(bls) do
     local version    = bl.version
     local cache_path = cache_dir .. "/" .. id .. "-" .. tostring(version) .. ".txt"
-    local shard_tmp  = shard_dir .. "/wifihaven-blocklist-" .. id .. ".conf.tmp"
-    local shard_final = shard_dir .. "/wifihaven-blocklist-" .. id .. ".conf"
+    local shard_final = get_render().shard_path(id, shard_dir)
+    local shard_tmp  = shard_final .. ".tmp"
 
     -- Open the cache file for line-by-line reading.
     local rf = open_read_fn(cache_path)
