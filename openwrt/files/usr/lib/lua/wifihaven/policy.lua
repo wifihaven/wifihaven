@@ -235,7 +235,19 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
       pcall(on_apply, { result = result, dnsmasq_restarted = dnsmasq_restarted })
     end
   end
-  local dnsmasq_content = render.dnsmasq(snapshot)
+  -- #1792: gate per-blocklist conf-file= emission on whether the shard file
+  -- actually exists on disk. blocklists.render_shards silently skips an id
+  -- whose cache file is missing (fetch not yet completed, transient HTTP
+  -- error, cap_hit); a dangling conf-file= ref aborts dnsmasq startup with
+  -- "cannot read ..." and :53 returns "connection refused" (Gate 3a regression
+  -- after #1788). Tests inject opts.bl_shard_exists; production uses io.open.
+  local bl_shard_exists = opts.bl_shard_exists or function(id)
+    local p = string.format("%s/wifihaven-blocklist-%s.conf", render.SHARD_DIR, id)
+    local f = io.open(p, "r")
+    if f then f:close(); return true end
+    return false
+  end
+  local dnsmasq_content = render.dnsmasq(snapshot, { bl_shard_exists = bl_shard_exists })
   local nft_content     = render.nft(snapshot, opts)
 
   -- #414: dnsmasq only needs a full restart when its config-dir file

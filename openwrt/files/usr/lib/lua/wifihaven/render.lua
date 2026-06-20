@@ -366,7 +366,16 @@ end
 -- ---------------------------------------------------------------------------
 -- render.dnsmasq(snapshot) → string
 -- ---------------------------------------------------------------------------
-function M.dnsmasq(snapshot)
+function M.dnsmasq(snapshot, opts)
+  opts = opts or {}
+  -- #1792: blocklists.render_shards silently skips an id whose cache file is
+  -- missing (fetch never completed, transient HTTP error, cap_hit). Emitting
+  -- a conf-file= line for that id makes dnsmasq abort at startup with
+  -- "cannot read /tmp/wifihaven-blocklist-<id>.conf" and :53 returns
+  -- "connection refused". Callers that have observed which shards actually
+  -- landed on disk pass opts.bl_shard_exists(id) to gate the emission;
+  -- absent the option (e.g. legacy callers, tests) every id is referenced.
+  local bl_shard_exists = opts.bl_shard_exists or function() return true end
   local out = {}
   local function emit(s) out[#out + 1] = s end
 
@@ -447,10 +456,18 @@ function M.dnsmasq(snapshot)
   --   nftset=/<host>/4#inet#wifihaven#bl_<id>,6#inet#wifihaven#bl6_<id>
   -- Emit one conf-file= line per id in sorted order.
   local bl_ids = sorted_keys(snapshot.blocklists or {})
-  if #bl_ids > 0 then
+  local bl_ids_with_shards = {}
+  for _, id in ipairs(bl_ids) do
+    if bl_shard_exists(id) then
+      bl_ids_with_shards[#bl_ids_with_shards + 1] = id
+    end
+  end
+  if #bl_ids_with_shards > 0 then
     emit("# per-blocklist shard files written by blocklists.render_shards (#1782,#1783)")
     emit("# each shard contains nftset= directives for that list's member hosts")
-    for _, id in ipairs(bl_ids) do
+    -- #1792: only reference shards that actually exist on disk; a dangling
+    -- conf-file= ref aborts dnsmasq startup with "cannot read ...".
+    for _, id in ipairs(bl_ids_with_shards) do
       emit(string.format("conf-file=%s/wifihaven-blocklist-%s.conf", M.SHARD_DIR, id))
     end
     emit("")
