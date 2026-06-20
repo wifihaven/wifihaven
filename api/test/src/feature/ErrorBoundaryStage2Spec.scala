@@ -64,14 +64,6 @@ object ErrorBoundaryStage2Spec
       auth <- makeAuth
     } yield ErrorBoundary.observe(ScheduleRoutes.routes(auth, nsr))
 
-  private def appRoutes =
-    for {
-      appRepo     <- ZIO.service[AppRepo]
-      profileRepo <- ZIO.service[ProfileRepo]
-      upRepo      <- ZIO.service[UserProfileRepo]
-      auth        <- makeAuth
-    } yield ErrorBoundary.observe(AppRoutes.routes(auth, appRepo, profileRepo, upRepo))
-
   private def url(p: String) = URL.decode(p).toOption.get
 
   private def post(rs: Routes[Any, Response], path: String, body: String, token: String) =
@@ -143,23 +135,9 @@ object ErrorBoundaryStage2Spec
           ZTestLogger.default,
         )
     } @@ TestAspect.withLiveClock,
-    test("Apps: duplicate slug keeps the 409 + slug_taken JSON body, metered") {
-      (for {
-        _     <- cleanDb
-        token <- adminToken
-        rs    <- appRoutes
-        body = CreateAppRequest(name = "YouTube", slug = Some("youtube")).toJson
-        _       <- post(rs, "/api/apps", body, token)
-        dupe    <- post(rs, "/api/apps", body, token)
-        dBody   <- bodyText(dupe)
-        _       <- ZIO.sleep(700.millis)
-        scrapeB <- scrape.catchAll(r => bodyText(r))
-      } yield assertTrue(dupe.status == Status.Conflict) &&
-        assertTrue(dBody == """{"error":"slug_taken","slug":"youtube"}""") &&
-        assertTrue(meteredStatus(scrapeB, 409)))
-        .provideSome[TestDatabase.AllRepos & EmbeddedPostgres & Clock & PrometheusPublisher](
-          ZTestLogger.default,
-        )
-    } @@ TestAspect.withLiveClock,
+    // #1798: the Apps slug_taken case rode the now-removed `POST /api/apps`
+    // definition-create route; app definitions are authored via templates only.
+    // The ErrorBoundary mechanism stays covered by the Schedules cases above
+    // and Stage-1's ErrorBoundarySpec.
   ) @@ TestAspect.sequential
 }

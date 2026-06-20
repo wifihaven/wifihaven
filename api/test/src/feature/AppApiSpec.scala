@@ -65,26 +65,83 @@ object AppApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
   private def url(p: String) = URL.decode(p).toOption.get
 
   def spec = suite("Apps API")(
-    test("POST creates an app, GET list+detail returns it with hosts") {
+    // #1798: app *definition* mutators were retired — definitions are authored
+    // only via the built-in `AppTemplates`. These routes no longer exist, so
+    // they fall through to the unrouted 404.
+    test("POST /api/apps is gone (definition create removed)") {
       for {
         _     <- cleanDb
         token <- adminToken
         rs    <- makeRoutes
-        body = CreateAppRequest(
-          name = "YouTube",
-          slug = Some("youtube"),
-          icon = Some("📺"),
-          templateId = Some(AppTemplateId.unsafe("youtube")),
-          hosts = List("youtube.com", "*.ytimg.com"),
-        ).toJson
-        post     <- rs.runZIO(
+        resp  <- rs.runZIO(
           Request
-            .post(url("/api/apps"), Body.fromString(body))
+            .post(url("/api/apps"), Body.fromString("""{"name":"X","slug":"x"}"""))
             .addHeader(Header.Authorization.Bearer(token))
             .addHeader(Header.ContentType(MediaType.application.json)),
         )
-        postBody <- post.body.asString
-        created  <- ZIO.fromEither(postBody.fromJson[AppDetail])
+      } yield assertTrue(resp.status == Status.NotFound)
+    },
+    test("PUT /api/apps/:id is gone (definition update removed)") {
+      for {
+        _       <- cleanDb
+        token   <- adminToken
+        rs      <- makeRoutes
+        appRepo <- ZIO.service[AppRepo]
+        id      <- appRepo.create("Old", "old", None, None)
+        resp    <- rs.runZIO(
+          Request
+            .put(url(s"/api/apps/${id.value}"), Body.fromString("""{"name":"New"}"""))
+            .addHeader(Header.Authorization.Bearer(token))
+            .addHeader(Header.ContentType(MediaType.application.json)),
+        )
+      } yield assertTrue(resp.status == Status.NotFound)
+    },
+    test("PUT /api/apps/:id/hosts is gone (host editing removed)") {
+      for {
+        _       <- cleanDb
+        token   <- adminToken
+        rs      <- makeRoutes
+        appRepo <- ZIO.service[AppRepo]
+        id      <- appRepo.create("X", "x", None, None)
+        resp    <- rs.runZIO(
+          Request
+            .put(url(s"/api/apps/${id.value}/hosts"), Body.fromString("""{"hosts":["a.com"]}"""))
+            .addHeader(Header.Authorization.Bearer(token))
+            .addHeader(Header.ContentType(MediaType.application.json)),
+        )
+      } yield assertTrue(resp.status == Status.NotFound)
+    },
+    test("PATCH /api/apps/:id is gone (definition patch removed)") {
+      for {
+        _       <- cleanDb
+        token   <- adminToken
+        rs      <- makeRoutes
+        appRepo <- ZIO.service[AppRepo]
+        id      <- appRepo.create("X", "x", None, None)
+        resp    <- rs.runZIO(
+          Request
+            .patch(url(s"/api/apps/${id.value}"), Body.fromString("""{"name":"New"}"""))
+            .addHeader(Header.Authorization.Bearer(token))
+            .addHeader(Header.ContentType(MediaType.application.json)),
+        )
+      } yield assertTrue(resp.status == Status.NotFound)
+    },
+    test("GET list+detail returns apps with hosts") {
+      for {
+        _        <- cleanDb
+        token    <- adminToken
+        rs       <- makeRoutes
+        appRepo  <- ZIO.service[AppRepo]
+        id       <- appRepo.create(
+          "YouTube",
+          "youtube",
+          Some(AppTemplateId.unsafe("youtube")),
+          Some("📺"),
+        )
+        _        <- appRepo.setHosts(
+          id,
+          List(Hostname.unsafe("youtube.com"), Hostname.unsafe("ytimg.com")),
+        )
         list     <- rs.runZIO(
           Request.get(url("/api/apps")).addHeader(Header.Authorization.Bearer(token)),
         )
@@ -92,69 +149,17 @@ object AppApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         details  <- ZIO.fromEither(listBody.fromJson[List[AppDetail]])
         one      <- rs.runZIO(
           Request
-            .get(url(s"/api/apps/${created.app.id.value}"))
+            .get(url(s"/api/apps/${id.value}"))
             .addHeader(Header.Authorization.Bearer(token)),
         )
         oneBody  <- one.body.asString
         detail   <- ZIO.fromEither(oneBody.fromJson[AppDetail])
-      } yield assertTrue(post.status == Status.Ok) &&
-        assertTrue(created.app.name == "YouTube") &&
-        assertTrue(created.app.slug == "youtube") &&
+      } yield assertTrue(list.status == Status.Ok) &&
+        assertTrue(details.length == 1 && details.head.app.id == id) &&
+        assertTrue(details.head.app.name == "YouTube" && details.head.app.slug == "youtube") &&
         assertTrue(
-          created.hosts.toSet == Set(Hostname.unsafe("youtube.com"), Hostname.unsafe("ytimg.com")),
-        ) &&
-        assertTrue(details.length == 1 && details.head.app.id == created.app.id) &&
-        assertTrue(detail.hosts.toSet == created.hosts.toSet)
-    },
-    test("POST without slug derives one from the name") {
-      for {
-        _     <- cleanDb
-        token <- adminToken
-        rs    <- makeRoutes
-        body = CreateAppRequest(name = "My Cool App").toJson
-        resp <- rs.runZIO(
-          Request
-            .post(url("/api/apps"), Body.fromString(body))
-            .addHeader(Header.Authorization.Bearer(token))
-            .addHeader(Header.ContentType(MediaType.application.json)),
+          detail.hosts.toSet == Set(Hostname.unsafe("youtube.com"), Hostname.unsafe("ytimg.com")),
         )
-        rb   <- resp.body.asString
-        d    <- ZIO.fromEither(rb.fromJson[AppDetail])
-      } yield assertTrue(resp.status == Status.Ok) && assertTrue(d.app.slug == "my-cool-app")
-    },
-    test("POST returns 409 on duplicate slug") {
-      for {
-        _     <- cleanDb
-        token <- adminToken
-        rs    <- makeRoutes
-        body = CreateAppRequest(name = "YouTube", slug = Some("youtube")).toJson
-        _    <- rs.runZIO(
-          Request
-            .post(url("/api/apps"), Body.fromString(body))
-            .addHeader(Header.Authorization.Bearer(token))
-            .addHeader(Header.ContentType(MediaType.application.json)),
-        )
-        dupe <- rs.runZIO(
-          Request
-            .post(url("/api/apps"), Body.fromString(body))
-            .addHeader(Header.Authorization.Bearer(token))
-            .addHeader(Header.ContentType(MediaType.application.json)),
-        )
-      } yield assertTrue(dupe.status == Status.Conflict)
-    },
-    test("POST rejects malformed host strings with 400") {
-      for {
-        _     <- cleanDb
-        token <- adminToken
-        rs    <- makeRoutes
-        body = """{"name":"X","slug":"x","hosts":["not a hostname!"]}"""
-        resp <- rs.runZIO(
-          Request
-            .post(url("/api/apps"), Body.fromString(body))
-            .addHeader(Header.Authorization.Bearer(token))
-            .addHeader(Header.ContentType(MediaType.application.json)),
-        )
-      } yield assertTrue(resp.status == Status.BadRequest)
     },
     test("GET /api/apps without token returns 401") {
       for {
@@ -162,44 +167,8 @@ object AppApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         resp <- rs.runZIO(Request.get(url("/api/apps")))
       } yield assertTrue(resp.status == Status.Unauthorized)
     },
-    test("PUT updates name + icon") {
-      for {
-        _       <- cleanDb
-        token   <- adminToken
-        rs      <- makeRoutes
-        appRepo <- ZIO.service[AppRepo]
-        id      <- appRepo.create("Old", "old", None, None)
-        body = UpdateAppRequest(name = "New", icon = Some("✨")).toJson
-        resp <- rs.runZIO(
-          Request
-            .put(url(s"/api/apps/${id.value}"), Body.fromString(body))
-            .addHeader(Header.Authorization.Bearer(token))
-            .addHeader(Header.ContentType(MediaType.application.json)),
-        )
-        row  <- appRepo.findById(id)
-      } yield assertTrue(resp.status == Status.Ok) &&
-        assertTrue(row.exists(_.name == "New")) &&
-        assertTrue(row.exists(_.icon.contains("✨")))
-    },
-    test("PUT /hosts replaces the host set and canonicalizes *.foo") {
-      for {
-        _       <- cleanDb
-        token   <- adminToken
-        rs      <- makeRoutes
-        appRepo <- ZIO.service[AppRepo]
-        id      <- appRepo.create("X", "x", None, None)
-        _       <- appRepo.setHosts(id, List(Hostname.unsafe("a.com"), Hostname.unsafe("b.com")))
-        body = SetAppHostsRequest(hosts = List("*.youtube.com", "ytimg.com")).toJson
-        resp  <- rs.runZIO(
-          Request
-            .put(url(s"/api/apps/${id.value}/hosts"), Body.fromString(body))
-            .addHeader(Header.Authorization.Bearer(token))
-            .addHeader(Header.ContentType(MediaType.application.json)),
-        )
-        hosts <- appRepo.getHosts(id)
-      } yield assertTrue(resp.status == Status.Ok) &&
-        assertTrue(hosts.toSet == Set(Hostname.unsafe("youtube.com"), Hostname.unsafe("ytimg.com")))
-    },
+    // #1798: DELETE is kept as an admin-only path (stray-row cleanup) even
+    // though the SPA no longer surfaces it.
     test("DELETE cascades hosts and assignments") {
       for {
         _        <- cleanDb
@@ -308,23 +277,24 @@ object AppApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         rows <- appRepo.listAssignmentsForApp(id)
       } yield assertTrue(resp.status == Status.Ok) && assertTrue(rows.isEmpty)
     },
-    test("non-admin (adult) cannot create apps") {
+    test("non-admin (adult) cannot DELETE apps (admin-only)") {
       for {
         _        <- cleanDb
         userRepo <- ZIO.service[UserRepo]
         upRepo   <- ZIO.service[UserProfileRepo]
+        appRepo  <- ZIO.service[AppRepo]
         auth     <- makeAuth
         _        <- createUser(userRepo, upRepo, auth, "mom", "adult", Nil)
         token    <- auth.login("mom", "pass").map(_.token.value)
         rs       <- makeRoutes
-        body = CreateAppRequest(name = "X", slug = Some("x")).toJson
-        resp <- rs.runZIO(
+        id       <- appRepo.create("X", "x", None, None)
+        resp     <- rs.runZIO(
           Request
-            .post(url("/api/apps"), Body.fromString(body))
-            .addHeader(Header.Authorization.Bearer(token))
-            .addHeader(Header.ContentType(MediaType.application.json)),
+            .delete(url(s"/api/apps/${id.value}"))
+            .addHeader(Header.Authorization.Bearer(token)),
         )
-      } yield assertTrue(resp.status == Status.Forbidden)
+        still    <- appRepo.findById(id)
+      } yield assertTrue(resp.status == Status.Forbidden) && assertTrue(still.isDefined)
     },
     test("adult writer can upsert assignment only for a profile they're linked to") {
       for {

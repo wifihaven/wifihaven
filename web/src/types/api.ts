@@ -897,43 +897,10 @@ export interface AppDetail {
   assignments: AppPolicyAssignment[]
 }
 
-export interface CreateAppRequest {
-  name: string
-  slug?: string
-  icon?: string | null
-  iconType?: IconType
-  templateId?: number | null
-  hosts: string[]
-}
-
-// #999/#1003 — field-scoped partial update for PATCH /apps/:id. Omitted keys
-// are untouched; `null` clears a nullable field; `hosts` is a full replace
-// (matches PUT /apps/:id/hosts). `slug` is immutable post-create.
-export interface PatchAppRequest {
-  name?: string
-  icon?: string | null
-  iconType?: IconType
-  templateId?: number | null
-  hosts?: string[]
-}
-
-// #766 — recently-visited apex picker payload. One row per PSL-collapsed
-// registered domain for the device, sorted by total bytes desc. `subdomains`
-// is the set of observed FQDNs underneath the apex (empty when the apex
-// itself was the only hit). Bare-IP rows are excluded server-side.
-export interface RecentApex {
-  apex: string
-  bytes: number
-  hits: number
-  subdomains: string[]
-}
-
-export interface RecentApexesResponse {
-  deviceMac: string
-  deviceName: string
-  windowDays: number
-  items: RecentApex[]
-}
+// #1798 — app *definitions* (name/slug/icon/host-set/create) are authored only
+// via the built-in `AppTemplates` in code; the SPA create/edit/delete surface
+// and its request shapes (CreateAppRequest, PatchAppRequest) and the recent-apex
+// host picker (RecentApex/RecentApexesResponse) were removed.
 
 export interface UpsertAppAssignmentRequest {
   mode: AppMode
