@@ -957,4 +957,26 @@ describe("v6 cache-key canonicalization (#1793)", function()
     assert.equal("pagead2.googlesyndication.com", tbl[host_norm.canon_ip(EXPANDED)])
     assert.equal("pagead2.googlesyndication.com", tbl[host_norm.canon_ip(COMPRESSED)])
   end)
+
+  it("expired-entry eviction via lookup keeps entry_count consistent across v6 spellings", function()
+    -- The expiry path inside lookup must delete the entry under the SAME
+    -- canonical key it read, even when queried with a different (compressed)
+    -- v6 spelling than the one that was stored. Deleting under the raw query
+    -- key would leave the entry behind while still decrementing entry_count,
+    -- corrupting the max_entries bound.
+    local t = 1000
+    local c = dns_log.new({ ttl_seconds = 60, now_fn = function() return t end })
+    c.ingest_line("9 192.168.1.42/54321 query[AAAA] ads.example from 192.168.1.42")
+    c.ingest_line("9 192.168.1.42/54321 reply ads.example is " .. EXPANDED)
+    assert.equal(1, c.size())
+
+    t = t + 61  -- past ttl
+    -- Look up by the COMPRESSED spelling (canonicalizes to the stored key).
+    assert.is_nil(c.lookup(COMPRESSED))
+    assert.equal(0, c.size())
+    -- A second expired lookup must not double-decrement (would go negative if
+    -- the entry were never actually removed).
+    assert.is_nil(c.lookup(COMPRESSED))
+    assert.equal(0, c.size())
+  end)
 end)

@@ -370,11 +370,15 @@ function M.new(opts)
   function self.lookup(ip)
     -- #1793: canonicalize the query key the same way store() canonicalizes the
     -- insert key, so compressed (dnsmasq/conntrack) and expanded (kernel LOG)
-    -- v6 spellings resolve to the same entry.
-    local e = entries[host_norm.canon_ip(ip)]
+    -- v6 spellings resolve to the same entry. Compute the canonical key ONCE and
+    -- use it for BOTH the read and the expiry delete — deleting under the raw
+    -- `ip` would miss the canonical entry while still decrementing entry_count,
+    -- corrupting the max_entries bound.
+    local key = host_norm.canon_ip(ip)
+    local e = entries[key]
     if not e then return nil end
     if (now_fn() - e.ts) > ttl then
-      entries[ip] = nil
+      entries[key] = nil
       entry_count = entry_count - 1
       return nil
     end
