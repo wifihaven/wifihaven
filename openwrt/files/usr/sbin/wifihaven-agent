@@ -751,7 +751,11 @@ end
 -- lease table; v6 (#1796) comes from the NDP neighbor cache via
 -- conntrack.parse_arp_table (which reads /proc/net/arp + `ip -6 neigh`), since
 -- DHCP leases don't cover SLAAC/v6 device addresses. Leases win for any v4 IP
--- already mapped; the neighbor table only fills gaps (notably all v6 keys).
+-- already mapped; the neighbor table only fills gaps — all v6 keys, and (by
+-- design) any static-IP v4 LAN device with no DHCP lease, which previously had
+-- its rx download bytes dropped (#879). The rx set's lan_ip is always a real
+-- LAN device address (`oifname br-lan` ⇒ ip[6] daddr), so WAN-side entries in
+-- the ARP/NDP dump can't mis-resolve a flow.
 -- Cheap (a handful of lines on tmpfs / one netlink dump) so it runs every scrape.
 local function load_ip_to_mac()
   local leases = conntrack.parse_dhcp_leases()
