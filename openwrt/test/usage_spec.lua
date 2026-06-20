@@ -164,6 +164,21 @@ describe("usage.merge_counters", function()
     assert.equal(0,         merged[1].bytes)
   end)
 
+  -- #1796: rx download bytes over IPv6. The agent's ip_to_mac now also carries
+  -- v6 device addresses (from the NDP neighbor cache), so a v6 lan_ip resolves
+  -- to its MAC and the v6 remote_ip is attributed the same as v4.
+  it("resolves an IPv6 rx record by v6 lan_ip→mac and attributes to (mac, v6 remote_ip) (#1796)", function()
+    local LAN_V6    = "2601:280:4700:f32:cd10:109c:441c:49df"
+    local REMOTE_V6 = "2606:4700::6812:446"
+    local ip2m_v6   = { [LAN_V6] = MAC }
+    local rx = { { lan_ip = LAN_V6, remote_ip = REMOTE_V6, bytes = 2282889, packets = 1907 } }
+    local merged = usage.merge_counters({}, rx, ip2m_v6)
+    assert.equal(1, #merged)
+    assert.equal(MAC,       merged[1].mac)
+    assert.equal(REMOTE_V6, merged[1].dst_ip)
+    assert.equal(2282889,   merged[1].bytes_out)
+  end)
+
   it("drops rx records whose lan_ip is not in the lease table (#879)", function()
     -- An unknown LAN IP (lease aged out, stale set element) must not produce
     -- a record. Otherwise bytesOut would land on a fake device row.
@@ -354,6 +369,28 @@ describe("usage.build_report", function()
                                  nil, lookup, full_tracker(counters), SAMPLE_S, BUCKET_S)
     assert.equal("fqdn",          r.records[1].host.type)
     assert.equal("api.github.com", r.records[1].host.value)
+  end)
+
+  -- #1796: an IPv6 destination flow (now counted via the mac_ip6_tracking set)
+  -- must attribute to its FQDN through the same dns-cache path. `nft -j` emits
+  -- compressed RFC 5952 v6 and dnsmasq's cache key is compressed too, so the
+  -- raw lookup hits with no extra canonicalization — this pins that contract.
+  it("attributes an IPv6 dst_ip to its FQDN via the dns-cache (#1796)", function()
+    local V6 = "2606:4700::6812:446"  -- compressed, as nft -j and the cache emit
+    local counters = {
+      { mac = "ca:ef:a1:72:6a:a3", dst_ip = V6,
+        bytes = 0, packets = 0, bytes_out = 2282889, packets_out = 1907 },
+    }
+    local lookup = function(ip)
+      if ip == V6 then return "www.mathplayground.com" end
+      return nil
+    end
+    local r = usage.build_report(counters, {}, P_START, P_END, ROUTER,
+                                 nil, lookup, full_tracker(counters), SAMPLE_S, BUCKET_S)
+    assert.equal(1, #r.records)
+    assert.equal("fqdn",                  r.records[1].host.type)
+    assert.equal("www.mathplayground.com", r.records[1].host.value)
+    assert.equal(2282889,                  r.records[1].bytesIn)
   end)
 
   it("prefers lookup_hostname over nft_sets when both have an entry", function()
