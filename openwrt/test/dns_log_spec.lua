@@ -922,3 +922,39 @@ describe("cache:insert_sni (#573)", function()
     assert.equal(0, c.size())
   end)
 end)
+
+-- v6 cache-key canonicalization (#1793).
+--
+-- dnsmasq logs AAAA answers in COMPRESSED form (`2607:f8b0:400f:801::2002`), so
+-- that is what the cache key is stored as. But the kernel netfilter LOG action
+-- behind the nflog drop-visibility path (#1122) hands the agent the
+-- FULLY-EXPANDED form (`2607:f8b0:400f:0801:0000:0000:0000:2002`). Before #1793
+-- the exact-string lookup missed and every blocked v6 flow recorded a bare
+-- literal as its host. The cache now canonicalizes the key at every store/lookup
+-- site (via host_norm.canon_ip) so an expanded query hits a compressed insert.
+describe("v6 cache-key canonicalization (#1793)", function()
+  local COMPRESSED = "2607:f8b0:400f:801::2002"               -- dnsmasq / conntrack
+  local EXPANDED   = "2607:f8b0:400f:0801:0000:0000:0000:2002" -- kernel netfilter LOG
+
+  it("ingest (compressed AAAA) → lookup by expanded form hits", function()
+    local c = dns_log.new({ now_fn = function() return 1000 end })
+    c.ingest_line(
+      "7 192.168.1.42/54321 query[AAAA] pagead2.googlesyndication.com from 192.168.1.42")
+    c.ingest_line(
+      "7 192.168.1.42/54321 reply pagead2.googlesyndication.com is " .. COMPRESSED)
+    -- Sanity: the compressed key the writer saw still resolves.
+    assert.equal("pagead2.googlesyndication.com", c.lookup(COMPRESSED))
+    -- The bug: the nflog path queries with the EXPANDED form. It must hit.
+    assert.equal("pagead2.googlesyndication.com", c.lookup(EXPANDED))
+  end)
+
+  it("load_table snapshot (compressed key) is queryable by expanded form", function()
+    -- The production read path: dns-tail dump_text writes the cache file, the
+    -- agent loads it via load_table and indexes tbl[canon_ip(dst_ip)].
+    local host_norm = require("host_norm")
+    local text = COMPRESSED .. "\tpagead2.googlesyndication.com\t1000\n"
+    local tbl  = dns_log.load_table(text, 3600, 1000)
+    assert.equal("pagead2.googlesyndication.com", tbl[host_norm.canon_ip(EXPANDED)])
+    assert.equal("pagead2.googlesyndication.com", tbl[host_norm.canon_ip(COMPRESSED)])
+  end)
+end)
