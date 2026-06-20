@@ -1,6 +1,6 @@
 package wifihaven.api.feature
 
-import wifihaven.api.{AppReconciler, AppTemplate}
+import wifihaven.api.{AppReconciler, AppTemplate, AppTemplates}
 import wifihaven.api.db.*
 import wifihaven.shared.*
 import wifihaven.shared.IconType
@@ -33,7 +33,70 @@ object AppReconcilerSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
     hosts = List(Hostname.unsafe("youtube.com"), Hostname.unsafe("ytimg.com")),
   )
 
+  // #1794: the exact prod duplicate shape — operator-added canonical `1password` (template_id
+  // NULL, carrying assignments) co-existing with a seeded `1password-template` row. Pinned so the
+  // boot-time seed→reconcile pipeline that #1794 wires into `Main` provably collapses it.
+  private val onePasswordSlug     = AppTemplateId.unsafe("1password")
+  private val onePasswordTemplate = AppTemplate(
+    slug = onePasswordSlug,
+    name = "1Password",
+    icon = None,
+    iconType = IconType.Emoji,
+    hosts = List(Hostname.unsafe("1password.com"), Hostname.unsafe("1passwordusercontent.com")),
+  )
+
   def spec = suite("AppReconciler")(
+    test(
+      "#1794: seed-then-reconcile (the boot pipeline) collapses the prod operator+`-template` " +
+        "shape into one canonical row, preserving assignments",
+    ) {
+      for {
+        _        <- cleanDb
+        appRepo  <- ZIO.service[AppRepo]
+        profileR <- ZIO.service[ProfileRepo]
+        profiles <- profileR.listAll
+        kidsId   = profiles.find(_.name == "Kids").get.id
+        adultsId = profiles.find(_.name == "Adults").get.id
+        // Operator created `1password` BEFORE the template seeder ran (template_id NULL), and
+        // attached policy assignments to it — exactly prod app id17.
+        operatorId <- appRepo.create("1Password", "1password", None, Some("🔑"), IconType.Emoji)
+        _          <- appRepo.setHosts(operatorId, List(Hostname.unsafe("1password.com")))
+        _          <- appRepo.upsertAssignment(operatorId, kidsId, AppMode.Blocked, None, true)
+        _          <- appRepo.upsertAssignment(operatorId, adultsId, AppMode.Allowed, None, true)
+        // Boot step 1 — seed. `findByTemplateId(1password)` is None and the `1password` slug is
+        // taken, so `findFreeSlug` falls back to `1password-template`: this is how prod accreted
+        // the dup (the seeder can never un-create it because that row holds the template_id).
+        _          <- AppTemplates.seed(appRepo, List(onePasswordTemplate))
+        afterSeed  <- appRepo.listAll
+        // Boot step 2 — reconcile (what #1794 adds). Collapses the pair.
+        summary    <- AppReconciler.reconcileTemplates(appRepo, List(onePasswordTemplate))
+        afterRecon <- appRepo.listAll
+        canonical  <- appRepo.findBySlug("1password").someOrFailException
+        canonHosts <- appRepo.getHosts(canonical.id)
+        canonAsgn  <- appRepo.listAssignmentsForApp(canonical.id)
+        suffixGone <- appRepo.findBySlug("1password-template")
+        // Boot step 2 is idempotent on the next reboot.
+        second     <- AppReconciler.reconcileTemplates(appRepo, List(onePasswordTemplate))
+        afterAgain <- appRepo.listAll
+      } yield
+      // The seed reproduces the dup the operator saw: two rows for one logical app.
+      assertTrue(afterSeed.count(_.name == "1Password") == 2) &&
+        assertTrue(afterSeed.count(_.slug == "1password-template") == 1) &&
+        // Reconcile collapses to a single canonical row carrying the template_id…
+        assertTrue(afterRecon.count(_.name == "1Password") == 1) &&
+        assertTrue(canonical.id == operatorId) &&
+        assertTrue(canonical.templateId.contains(onePasswordSlug)) &&
+        assertTrue(suffixGone.isEmpty) &&
+        // …with the operator's assignments preserved on it…
+        assertTrue(canonAsgn.map(_.profileId).toSet == Set(kidsId, adultsId)) &&
+        // …and the template hosts unioned in.
+        assertTrue(canonHosts.toSet == onePasswordTemplate.hosts.toSet) &&
+        assertTrue(summary.mergedSlugs == List("1password")) &&
+        // The next reboot's reconcile is a clean no-op — no whack-a-mole.
+        assertTrue(second.mergedSlugs.isEmpty && second.renamedSlugs.isEmpty) &&
+        assertTrue(afterAgain.count(_.slug == "1password") == 1) &&
+        assertTrue(afterAgain.count(_.slug == "1password-template") == 0)
+    },
     test(
       "reconcileTemplates merges -template row INTO canonical, reattaches FK refs, unions hosts",
     ) {

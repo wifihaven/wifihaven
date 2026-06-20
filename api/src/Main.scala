@@ -130,8 +130,8 @@ object Main extends ZIOAppDefault {
             _ <- ZIO.logInfo("global profile sentinel ensured (is_global=TRUE)")
             // #768: seed the starter library of app templates. Idempotent —
             // operator host edits on previously-seeded apps are preserved.
-            seedSummary <- AppTemplates.seed(appRepoForSeed, templates)
-            _           <- ZIO.logInfo(
+            seedSummary      <- AppTemplates.seed(appRepoForSeed, templates)
+            _                <- ZIO.logInfo(
               s"app_templates seeded (${templates.size} templates): " +
                 s"created=${seedSummary.created.size} ${seedSummary.created.mkString("[", ",", "]")}, " +
                 s"repopulated=${seedSummary.repopulated.size} ${seedSummary.repopulated
@@ -142,12 +142,35 @@ object Main extends ZIOAppDefault {
                   .mkString("[", ",", "]") + ", " +
                 s"preserved=${seedSummary.preserved.size}",
             )
+            // #1794: collapse any `<slug>-template` rows onto their canonical `<slug>`
+            // form right after seeding. The seeder's `findFreeSlug` falls back to the
+            // `-template` slug whenever an operator-added row already owns the canonical
+            // slug, leaving two rows for one logical app; that fallback can't self-heal
+            // because the `-template` row carries the `template_id` the seeder keys on,
+            // so it gets *preserved* forever (this is how prod accreted 8 dup pairs).
+            // Running the idempotent reconciler on boot makes the merge automatic — and
+            // safe to repeat, because `mergeAppInto` transfers `template_id` onto the
+            // canonical, so the next seed pass finds the canonical and never re-creates
+            // the `-template` fallback. Cheap (indexed `findBySlug`) and a no-op once
+            // clean — NOT a one-shot, so it stays (unlike #1608-class seeders).
+            reconcileSummary <- AppReconciler.reconcileTemplates(appRepoForSeed, templates)
+            _                <- ZIO.logInfo(
+              s"app_templates reconciled (#1794): " +
+                s"merged=${reconcileSummary.mergedSlugs.size} ${reconcileSummary.mergedSlugs
+                    .mkString("[", ",", "]")}, " +
+                s"renamed=${reconcileSummary.renamedSlugs.size} ${reconcileSummary.renamedSlugs
+                    .mkString("[", ",", "]")}, " +
+                s"hostsUnioned=${reconcileSummary.hostsUnioned.size}, " +
+                s"templateIdSet=${reconcileSummary.templateIdSet.size}, " +
+                s"created=${reconcileSummary.created.size}, " +
+                s"alreadyClean=${reconcileSummary.alreadyClean.size}",
+            )
             // #958: seed the bundled category blocklists. Inline lists pull hosts
             // straight from YAML; remote lists fetch from the declared upstream
             // URL (cached in-memory after first success — see BlocklistCache).
             // REPLACE semantics; remote-fetch failures leave existing rows alone.
-            _           <- BundledBlocklists.seed(blRepoForSeed, blCacheForSeed, blFetcher, bundled)
-            _           <- ZIO.logInfo(s"bundled blocklists seeded (${bundled.size} lists)")
+            _ <- BundledBlocklists.seed(blRepoForSeed, blCacheForSeed, blFetcher, bundled)
+            _ <- ZIO.logInfo(s"bundled blocklists seeded (${bundled.size} lists)")
             // #1602: the boot-time ScheduleSeeder.seedAndMigrate call lived here. The
             // legacy → named_schedules migration is complete on every household, and
             // re-running it resurrected schedules the operator deleted from the SPA
