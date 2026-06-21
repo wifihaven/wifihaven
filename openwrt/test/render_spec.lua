@@ -1230,6 +1230,32 @@ describe("render blocklist enforcement (#352)", function()
     assert.truthy(conf:find("conf-file=/tmp/wifihaven-blocklist-test_ads.conf", 1, true))
   end)
 
+  -- #1812: OpenWRT runs dnsmasq inside a procd ujail that bind-mounts ONLY the
+  -- confdir (/tmp/dnsmasq.d) plus a handful of known files — see
+  -- /etc/init.d/dnsmasq's `procd_add_jail_mount $dnsmasqconfdir …`. A conf-file=
+  -- directive that points at a shard OUTSIDE the confdir (the pre-#1812 bare
+  -- /tmp location) is unreadable inside the jail: dnsmasq aborts with "cannot
+  -- read /tmp/wifihaven-blocklist-<id>.conf: No such file or directory", procd
+  -- crash-loops it 6× and gives up, and :53 goes dark — connection refused, no
+  -- DHCP leases (the Gate 3a regression: client DNS to fdaa:bbbb:cccc::1#53 is
+  -- refused). dnsmasq --test passes because it runs UNJAILED. Gate 2 never
+  -- tripped this because its blocklists 404, so no shard exists and no conf-file=
+  -- is emitted. So every shard MUST live under the confdir.
+  it("render.SHARD_DIR is a subdirectory of the dnsmasq confdir (#1812)", function()
+    assert.truthy(render.SHARD_DIR:match("^/tmp/dnsmasq%.d/.+"),
+      "shard dir must be a subdir of the jail-mounted confdir /tmp/dnsmasq.d/ " ..
+      "(a subdir so conf-dir does not auto-load the shards); got " ..
+      tostring(render.SHARD_DIR))
+  end)
+
+  it("render.dnsmasq emits conf-file= paths under the dnsmasq confdir (#1812)", function()
+    local conf = render.dnsmasq(snap_bl())
+    local p = conf:match("\nconf%-file=(%S+)")
+    assert.truthy(p, "expected a conf-file= directive")
+    assert.truthy(p:sub(1, #"/tmp/dnsmasq.d/") == "/tmp/dnsmasq.d/",
+      "conf-file= must point inside the confdir so the procd jail can read it; got " .. p)
+  end)
+
   it("still emits eb_ and ea_ nftset= directives in the merged per-host block (#1782)", function()
     -- Non-blocklist hosts (extraBlocked, extraAllowed) continue to have their
     -- nftset= directives in the main wifihaven.conf — only bl_ moves to shards.
