@@ -390,23 +390,51 @@ esac
 
 # ── 5b. #1105: time_limited app + exemptFromDaily carves around the MAC block ─
 #
-# Profile is currently blocked (reason=TimeLimit from §3's 90s usage). Create a
-# Khan-shaped app, assign it `mode=time_limited, exemptFromDaily=true` with
-# remaining per-host budget, and re-fetch the snapshot. The app's host MUST
-# appear in profile.rules.extraAllowed even though `blocked=true` is still
-# set — that's the contract the router (render.lua) relies on to carve the
-# host out of @blocked_macs. PolicySnapshotAppsSpec covers the same logic in
-# the unit tests; this step locks it in over the wire so a future refactor
-# can't drop the extraAllowed entry without tripping CI.
+# Profile is currently blocked (reason=TimeLimit from §3's 90s usage). Pick a
+# template-seeded app, assign it `mode=time_limited, exemptFromDaily=true`, and
+# re-fetch the snapshot. The app's host MUST appear in profile.rules.extraAllowed
+# even though `blocked=true` is still set — that's the contract the router
+# (render.lua) relies on to carve the host out of @blocked_macs.
+# PolicySnapshotAppsSpec covers the same logic in the unit tests; this step locks
+# it in over the wire so a future refactor can't drop the extraAllowed entry
+# without tripping CI.
+#
+# #1798 retired POST /api/apps (app *definitions* are now template-authored
+# only). So instead of minting a Khan-shaped app on the fly, seed the built-in
+# AppTemplates, then drive the assertion off whichever seeded app the API
+# returns (its real host-set) — the carve-out contract is host-agnostic.
 step "#1105: exempt time_limited app folds host into extraAllowed under MAC block"
-APP_BODY='{"name":"e2e-khan-'"$RUN_ID"'","hosts":["khan.example.com"]}'
-APP_JSON=$(curl -fsS -X POST "$BASE/api/apps" "${AUTH[@]}" \
-  -H 'content-type: application/json' -d "$APP_BODY")
-APP_ID=$(_py "import json; print(json.loads('''$APP_JSON''')['app']['id'])")
+# Idempotent on a persistent staging DB — re-seeding an already-seeded slug is a
+# no-op (preserved), so concurrent runs don't collide.
+curl -fsS -X POST "$BASE/api/apps/seed-from-templates" "${AUTH[@]}" >/dev/null
+curl -fsS "${AUTH[@]}" "$BASE/api/apps" >"$TMP/apps.json"
+# Pick a seeded app+host whose host is NOT already in the profile's extraAllowed
+# *before* we assign anything. The global infra-allowlist (#1311) seeds some
+# hosts into every profile's extraAllowed, so picking a host that's already
+# allowed would let the post-assignment assertion pass even if the
+# time_limited+exempt → extraAllowed fold regressed. Selecting an as-yet-unallowed
+# host keeps the carve-out attributable solely to the assignment (the property
+# the synthetic-host version relied on pre-#1798).
+curl -fsS "${RAUTH[@]}" "$BASE/api/router/policy" >"$TMP/snap_pre.json"
+APP_SEL=$(_py "
+import json
+snap = json.load(open('$TMP/snap_pre.json'))
+p = snap['profiles'].get('$PID') or {}
+ea_before = set((p.get('rules') or {}).get('extraAllowed') or [])
+apps = json.load(open('$TMP/apps.json'))
+for a in apps:
+    for h in (a.get('hosts') or []):
+        if h not in ea_before:
+            print(a['app']['id'], h); raise SystemExit(0)
+raise SystemExit('no seeded app host outside the pre-existing extraAllowed set')
+") || fail "could not select a seeded app+host (see stderr)"
+APP_ID=${APP_SEL%% *}
+APP_HOST=${APP_SEL#* }
+[ -n "$APP_ID" ] && [ -n "$APP_HOST" ] || fail "empty app id/host from selection: '$APP_SEL'"
 curl -fsS -X PUT "$BASE/api/apps/$APP_ID/policy/$PID" "${AUTH[@]}" \
   -H 'content-type: application/json' \
   -d '{"mode":"time_limited","dailyMinutes":60,"exemptFromDaily":true}' >/dev/null
-pass "app $APP_ID created + assigned time_limited+exempt to profile $PID"
+pass "seeded app $APP_ID (host=$APP_HOST) assigned time_limited+exempt to profile $PID"
 
 # Snapshot's extraAllowed must now include the app host while the profile
 # remains blocked.
@@ -424,14 +452,14 @@ r = p['rules']
 ea = set(r.get('extraAllowed') or [])
 blocked = r.get('blocked')
 reason = r.get('blockReason')
-ok = ('khan.example.com' in ea) and bool(blocked) and reason == 'TimeLimit'
+ok = ('$APP_HOST' in ea) and bool(blocked) and reason == 'TimeLimit'
 print('ok' if ok else f'fail: blocked={blocked} reason={reason} ea={sorted(ea)}')
 ")
   [ "$EA_OK" = "ok" ] && break
   sleep 1
 done
-[ "$EA_OK" = "ok" ] || fail "expected blocked=True+reason=TimeLimit+ea contains 'khan.example.com', got: $EA_OK"
-pass "extraAllowed carves 'khan.example.com' under blocked=True/TimeLimit"
+[ "$EA_OK" = "ok" ] || fail "expected blocked=True+reason=TimeLimit+ea contains '$APP_HOST', got: $EA_OK"
+pass "extraAllowed carves '$APP_HOST' under blocked=True/TimeLimit"
 
 # ── 6. Paused profile reflected immediately in snapshot ───────────────────
 #
