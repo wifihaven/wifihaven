@@ -77,11 +77,21 @@
 
 local M = {}
 
--- Directory where per-blocklist dnsmasq conf shards live (#1782). Default /tmp
--- (= tmpfs on OpenWRT). Overridable for tests via M.SHARD_DIR assignment before
--- calling M.dnsmasq(). Production: always /tmp (matches BLOCKLIST_SHARD_DIR in
--- wifihaven-agent).
-M.SHARD_DIR = "/tmp"
+-- Directory where per-blocklist dnsmasq conf shards live (#1782). A SUBDIR of
+-- the dnsmasq confdir (/tmp/dnsmasq.d, itself tmpfs = RAM on OpenWRT), NOT bare
+-- /tmp — #1812. OpenWRT runs dnsmasq inside a procd ujail that bind-mounts ONLY
+-- the confdir (and a handful of known files): see /etc/init.d/dnsmasq's
+-- `procd_add_jail_mount $dnsmasqconfdir …`. A `conf-file=` directive in
+-- wifihaven.conf that points at a shard OUTSIDE the confdir is unreadable inside
+-- the jail — dnsmasq aborts with "cannot read …", procd crash-loops it and
+-- gives up, and :53 goes dark (connection refused, no DHCP leases). Keeping the
+-- shards under the confdir puts them inside the jail mount. A SUBDIR (not the
+-- confdir root) so dnsmasq's `conf-dir=/tmp/dnsmasq.d` does NOT auto-load them
+-- (it is non-recursive) — they load only via the explicit, shard-existence-gated
+-- conf-file= directives. Overridable for tests via M.SHARD_DIR assignment before
+-- calling M.dnsmasq(). Production: always this dir (matches BLOCKLIST_SHARD_DIR
+-- in wifihaven-agent, which derives from render.SHARD_DIR).
+M.SHARD_DIR = "/tmp/dnsmasq.d/blocklists"
 
 -- Canonical path of a per-blocklist dnsmasq conf shard (#1792). Single source
 -- of truth — render.dnsmasq, policy.apply's shard-existence check, and

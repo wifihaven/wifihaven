@@ -1178,7 +1178,7 @@ describe("render blocklist enforcement (#352)", function()
   it("emits conf-file= directive for each id in snapshot.blocklists (#1782)", function()
     local conf = render.dnsmasq(snap_bl())
     assert.truthy(conf:find(
-      "conf-file=/tmp/wifihaven-blocklist-test_ads.conf",
+      "conf-file=/tmp/dnsmasq.d/blocklists/wifihaven-blocklist-test_ads.conf",
       1, true), "dnsmasq conf must reference the per-blocklist shard via conf-file=")
   end)
 
@@ -1195,15 +1195,15 @@ describe("render blocklist enforcement (#352)", function()
     local s = snap_bl()
     s.blocklists["test_social"] = { version = "v1", url = "http://api/api/blocklists/test_social" }
     local conf = render.dnsmasq(s)
-    assert.truthy(conf:find("conf-file=/tmp/wifihaven-blocklist-test_ads.conf", 1, true))
-    assert.truthy(conf:find("conf-file=/tmp/wifihaven-blocklist-test_social.conf", 1, true))
+    assert.truthy(conf:find("conf-file=/tmp/dnsmasq.d/blocklists/wifihaven-blocklist-test_ads.conf", 1, true))
+    assert.truthy(conf:find("conf-file=/tmp/dnsmasq.d/blocklists/wifihaven-blocklist-test_social.conf", 1, true))
   end)
 
   it("emits no conf-file= lines when snapshot.blocklists is empty (#1782)", function()
     local s = snap_bl()
     s.blocklists = {}
     local conf = render.dnsmasq(s)
-    assert.is_nil(conf:find("conf-file=/tmp/wifihaven-blocklist-", 1, true))
+    assert.is_nil(conf:find("conf-file=/tmp/dnsmasq.d/blocklists/wifihaven-blocklist-", 1, true))
   end)
 
   -- #1792: render_shards silently skips ids whose cache file is missing
@@ -1219,15 +1219,41 @@ describe("render blocklist enforcement (#352)", function()
     local conf = render.dnsmasq(s, {
       bl_shard_exists = function(id) return id ~= "test_social" end,
     })
-    assert.truthy(conf:find("conf-file=/tmp/wifihaven-blocklist-test_ads.conf", 1, true),
+    assert.truthy(conf:find("conf-file=/tmp/dnsmasq.d/blocklists/wifihaven-blocklist-test_ads.conf", 1, true),
       "shard that exists must still be referenced")
-    assert.is_nil(conf:find("conf-file=/tmp/wifihaven-blocklist-test_social.conf", 1, true),
+    assert.is_nil(conf:find("conf-file=/tmp/dnsmasq.d/blocklists/wifihaven-blocklist-test_social.conf", 1, true),
       "shard that does not exist on disk must NOT be referenced (#1792)")
   end)
 
   it("emits all conf-file= lines when opts.bl_shard_exists is not provided (back-compat)", function()
     local conf = render.dnsmasq(snap_bl())
-    assert.truthy(conf:find("conf-file=/tmp/wifihaven-blocklist-test_ads.conf", 1, true))
+    assert.truthy(conf:find("conf-file=/tmp/dnsmasq.d/blocklists/wifihaven-blocklist-test_ads.conf", 1, true))
+  end)
+
+  -- #1812: OpenWRT runs dnsmasq inside a procd ujail that bind-mounts ONLY the
+  -- confdir (/tmp/dnsmasq.d) plus a handful of known files — see
+  -- /etc/init.d/dnsmasq's `procd_add_jail_mount $dnsmasqconfdir …`. A conf-file=
+  -- directive that points at a shard OUTSIDE the confdir (the pre-#1812 bare
+  -- /tmp location) is unreadable inside the jail: dnsmasq aborts with "cannot
+  -- read /tmp/wifihaven-blocklist-<id>.conf: No such file or directory", procd
+  -- crash-loops it 6× and gives up, and :53 goes dark — connection refused, no
+  -- DHCP leases (the Gate 3a regression: client DNS to fdaa:bbbb:cccc::1#53 is
+  -- refused). dnsmasq --test passes because it runs UNJAILED. Gate 2 never
+  -- tripped this because its blocklists 404, so no shard exists and no conf-file=
+  -- is emitted. So every shard MUST live under the confdir.
+  it("render.SHARD_DIR is a subdirectory of the dnsmasq confdir (#1812)", function()
+    assert.truthy(render.SHARD_DIR:match("^/tmp/dnsmasq%.d/.+"),
+      "shard dir must be a subdir of the jail-mounted confdir /tmp/dnsmasq.d/ " ..
+      "(a subdir so conf-dir does not auto-load the shards); got " ..
+      tostring(render.SHARD_DIR))
+  end)
+
+  it("render.dnsmasq emits conf-file= paths under the dnsmasq confdir (#1812)", function()
+    local conf = render.dnsmasq(snap_bl())
+    local p = conf:match("\nconf%-file=(%S+)")
+    assert.truthy(p, "expected a conf-file= directive")
+    assert.truthy(p:sub(1, #"/tmp/dnsmasq.d/") == "/tmp/dnsmasq.d/",
+      "conf-file= must point inside the confdir so the procd jail can read it; got " .. p)
   end)
 
   it("still emits eb_ and ea_ nftset= directives in the merged per-host block (#1782)", function()
@@ -2120,7 +2146,7 @@ describe("render.dnsmasq global section (#1319)", function()
     s._blocklist_hosts = { ads = { "ad.doubleclick.net" } }
     local conf = render.dnsmasq(s)
     -- dnsmasq includes the shard file (which will carry the global_block spec).
-    assert.truthy(conf:find("conf-file=/tmp/wifihaven-blocklist-ads.conf", 1, true))
+    assert.truthy(conf:find("conf-file=/tmp/dnsmasq.d/blocklists/wifihaven-blocklist-ads.conf", 1, true))
     -- The member is NOT inlined in the main conf (it's in the shard).
     assert.is_nil(conf:find("nftset=/ad.doubleclick.net/", 1, true))
   end)
@@ -2318,7 +2344,7 @@ describe("render.dnsmasq global section (#1319)", function()
         "nftset line exceeds 1024 bytes (%d): %s…", #line, line:sub(1, 72)))
     end
     -- conf-file= directive exists (bl_ specs are in the shard, not inline).
-    assert.truthy(conf:find("conf-file=/tmp/wifihaven-blocklist-ads.conf", 1, true))
+    assert.truthy(conf:find("conf-file=/tmp/dnsmasq.d/blocklists/wifihaven-blocklist-ads.conf", 1, true))
     -- shared.example is NOT in the main conf as an nftset= host line (no bl_ inline).
     assert.is_nil(conf:find("nftset=/shared.example/4#inet#wifihaven#bl_ads", 1, true))
   end)

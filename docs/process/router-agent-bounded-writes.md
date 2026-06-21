@@ -40,7 +40,7 @@ The same reasoning applies to anything else the agent persists under `/tmp`
 (JSON spools, NDJSON event journals, debug dumps). If it can grow, it gets a
 bound — in the same PR.
 
-## Per-blocklist dnsmasq conf shards (`/tmp/wifihaven-blocklist-<id>.conf`) {#blocklist-shards}
+## Per-blocklist dnsmasq conf shards (`/tmp/dnsmasq.d/blocklists/wifihaven-blocklist-<id>.conf`) {#blocklist-shards}
 
 Added in [#1782/#1783](https://github.com/wifihaven/wifihaven/issues/1782).
 One file per blocklist id in the current snapshot.
@@ -49,8 +49,22 @@ One file per blocklist id in the current snapshot.
 file (`/etc/wifihaven/blocklists/<id>-<version>.txt`) line-by-line and writes
 one `nftset=/<host>/4#inet#wifihaven#bl_<id>,6#inet#wifihaven#bl6_<id>` line
 per host — never accumulating the full list in a Lua table. `render.dnsmasq`
-emits `conf-file=/tmp/wifihaven-blocklist-<id>.conf` for each id so dnsmasq
-picks up the host set at startup and on reload.
+emits `conf-file=/tmp/dnsmasq.d/blocklists/wifihaven-blocklist-<id>.conf` for
+each id so dnsmasq picks up the host set at startup and on reload.
+
+**Shards MUST live inside the dnsmasq confdir** (`/tmp/dnsmasq.d`), not bare
+`/tmp` — [#1812](https://github.com/wifihaven/wifihaven/issues/1812). OpenWRT
+runs dnsmasq in a procd ujail (`/etc/init.d/dnsmasq`'s
+`procd_add_jail_mount $dnsmasqconfdir …`) that bind-mounts ONLY the confdir and
+a few known files. A `conf-file=` directive pointing at a shard outside the
+confdir is unreadable inside the jail: dnsmasq aborts with `cannot read …`,
+procd crash-loops it and gives up, and `:53` goes dark (connection refused, no
+DHCP leases). `dnsmasq --test` passes only because it runs unjailed. The shard
+dir is a *subdir* of the confdir (`…/blocklists/`) so dnsmasq's
+non-recursive `conf-dir=/tmp/dnsmasq.d` does not auto-load the shards — they
+load only via the explicit, shard-existence-gated `conf-file=` directives.
+`render.SHARD_DIR` is the single source of truth (the agent's
+`BLOCKLIST_SHARD_DIR` derives from it).
 
 **Atomic write.** Each shard is written to `<id>.conf.tmp`, then renamed onto
 `<id>.conf`. A partial shard is never visible to dnsmasq.
