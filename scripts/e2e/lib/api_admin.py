@@ -255,33 +255,29 @@ class AdminAPI:
     def delete_device(self, mac: str) -> None:
         self._request("DELETE", f"/api/devices/{mac}")
 
-    # ── apps (#761/#764) ──────────────────────────────────────────────────
+    # ── apps (#761/#764/#1798) ────────────────────────────────────────────
     # Post-#764, extraAllowed/extraBlocked are sourced exclusively from
     # app_policy_assignments — the legacy `extraBlocked`/`extraAllowed`
-    # fields on profile POST/PUT are silently dropped. To exercise the
-    # block/allow planes against a real API, callers must use the Apps
-    # surface: create an app with hosts, then assign it to a profile with
-    # a mode.
+    # fields on profile POST/PUT are silently dropped.
+    #
+    # Post-#1798, app *definitions* are template-authored ONLY — the
+    # arbitrary-host `POST /api/apps` create (and the update / replace-hosts
+    # / PATCH mutators) were retired. To exercise the block/allow planes
+    # against a real API, callers seed the shipped templates
+    # (`seed_apps_from_templates`), read them back (`list_apps`), and assign
+    # a seeded app to a profile with a mode (`assign_app_policy`). See
+    # lib/app_seed.pick_block_allow_apps for the gate3 selection (#1810).
 
-    def create_app(self, *, name: str, slug: str | None = None,
-                   hosts: list[str] | None = None,
-                   template_id: str | None = None,
-                   icon: str | None = None,
-                   icon_type: str | None = None) -> dict[str, Any]:
-        """POST /api/apps. Returns the app-detail body
-        ({app: {id, name, ...}, hosts: [...], assignments: [...]})."""
-        body: dict[str, Any] = {"name": name}
-        if slug is not None:
-            body["slug"] = slug
-        if hosts is not None:
-            body["hosts"] = hosts
-        if template_id is not None:
-            body["templateId"] = template_id
-        if icon is not None:
-            body["icon"] = icon
-        if icon_type is not None:
-            body["iconType"] = icon_type
-        return self._request("POST", "/api/apps", body=body)
+    def seed_apps_from_templates(self) -> dict[str, Any]:
+        """POST /api/apps/seed-from-templates (admin, idempotent). Find-or-
+        creates one `apps` row per built-in template; returns the seed
+        summary ({created, repopulated, preserved, augmented})."""
+        return self._request("POST", "/api/apps/seed-from-templates")
+
+    def list_apps(self) -> list[dict[str, Any]]:
+        """GET /api/apps. Returns a list of app-detail bodies
+        ({app: {id, slug, templateId, ...}, hosts: [...], assignments: [...]})."""
+        return self._request("GET", "/api/apps")
 
     def assign_app_policy(self, *, app_id: int, profile_id: int, mode: str,
                           daily_minutes: int | None = None,
@@ -296,8 +292,17 @@ class AdminAPI:
             body["exemptFromDaily"] = exempt_from_daily
         self._request("PUT", f"/api/apps/{app_id}/policy/{profile_id}", body=body)
 
+    def delete_app_policy(self, *, app_id: int, profile_id: int) -> None:
+        """DELETE /api/apps/{app_id}/policy/{profile_id}. Detaches this
+        profile's assignment WITHOUT touching the shared app definition —
+        the teardown path for seeded (template-authored) apps, which must
+        survive for other gates / the live catalog."""
+        self._request("DELETE", f"/api/apps/{app_id}/policy/{profile_id}")
+
     def delete_app(self, app_id: int) -> None:
-        """DELETE /api/apps/{id}. Cascades app_policy_assignments."""
+        """DELETE /api/apps/{id} (admin, #1798 stray-row cleanup). Cascades
+        app_policy_assignments. NOT used to tear down seeded apps — detach
+        the assignment with `delete_app_policy` instead."""
         self._request("DELETE", f"/api/apps/{app_id}")
 
     # ── logs / sessions / stats ───────────────────────────────────────────
