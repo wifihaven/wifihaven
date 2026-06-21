@@ -1,0 +1,30 @@
+slug: lego
+name: LEGO Builder
+icon: "https://icons.duckduckgo.com/ip3/lego.com.ico"
+icon_type: url
+# Added from prod evidence (#1815, evidence/classification-1815.md): 30d kid
+# traffic showed 277 MB / 178 hits on lego.com across all three kid iPads
+# (Quintus 184 MB, Octavius 86 MB, Prima 7 MB) — the single largest uncovered
+# cluster in the "Other" bucket. Observed subdomains are unambiguously the
+# **LEGO Builder** building/instructions experience, NOT the shop:
+#   api.prod.cobuild.i.lego.com        co-build (build-together) backend
+#   api.prod.dbix.i.lego.com           digital building-instructions experience
+#   assets.prod.dbix.i.lego.com        build-instruction assets
+#   biapp.prod.dbix.i.lego.com         building-instructions app service
+#   imageresizer.prod.dbix.i.lego.com  instruction-image resizer
+#   appconfig.services.lego.com        Builder app config
+#   scout.services.lego.com            Builder app service
+#   videoprocessingpipeline.services.lego.com
+#   buggy.apps.lego.com                Builder app surface
+# These all sit under the `lego.com` apex, which the router matches by suffix
+# (dnsmasq nftset= suffix-matches every subdomain). The building experience
+# therefore CANNOT be separated from the shop (www.lego.com) at the apex
+# granularity the template model supports — so this is a single `lego` app on
+# the `lego.com` apex (acceptable fallback per #1815). The observed traffic is
+# overwhelmingly the Builder app, not the shop, so the time-limit budget tracks
+# real building activity. Sibling LEGO properties live on DISTINCT apexes and
+# are intentionally excluded: BrickLink (bricklink.com, a marketplace),
+# LEGO Education (legoeducation.com, classroom), and the corporate analytics
+# apex thelegogroup.com (97 kB, not the building experience).
+hosts:
+  - lego.com

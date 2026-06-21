@@ -35,3 +35,6 @@ slugs:
   - moc-pilot
   - wifihaven
   - x
+  # #1815: traffic-driven catalog pass (see evidence/classification-1815.md)
+  - lego
+  - duckmath

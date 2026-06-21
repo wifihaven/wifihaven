@@ -1,0 +1,17 @@
+slug: duckmath
+name: DuckMath
+icon: "https://icons.duckduckgo.com/ip3/duckmath.org.ico"
+icon_type: url
+# Added from prod evidence (#1815, evidence/classification-1815.md): 30d kid
+# traffic showed 65 MB / 3 hits on duckmath.org (Prima iPad 64.8 MB in one
+# long session; Kid Mac trace). Despite the innocuous "math" name, DuckMath is
+# an "unblocked games" portal (250+ browser games) that explicitly ships proxy
+# and cloaking tools to disguise game traffic and bypass network content
+# filters. Templating it gives the operator a one-click block / time-limit
+# surface for a known filter-evasion vector — high value precisely because the
+# name is camouflage. Single brand-specific apex; observed subdomain
+# db2.duckmath.org is covered by suffix match. Like crazygames/poki, the heavy
+# game-asset bytes ride shared CDNs and are intentionally NOT pinned here
+# (#1661) — only the brand apex.
+hosts:
+  - duckmath.org
