@@ -177,6 +177,13 @@ packages:
   - openssh-server
   - qemu-guest-agent
   - ca-certificates
+  # iproute2 (netns + `ip link add type macvlan`) and socat let the v6 usage
+  # attribution scenario (#1804) stand up a throwaway dual-stack HTTP origin as
+  # a second L2 host on the LAN, so a real bidirectional IPv6 flow traverses
+  # the router's FORWARD chain and is byte-accounted. BusyBox `ip` lacks netns
+  # and BusyBox `nc` on Alpine is client-only, so neither can do this.
+  - iproute2
+  - socat
 
 runcmd:
   # Alpine cloud images ship with root's /etc/shadow entry set to '!' (locked).
