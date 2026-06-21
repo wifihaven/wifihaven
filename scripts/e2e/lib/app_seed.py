@@ -62,4 +62,30 @@ def pick_block_allow_apps(
     hosted apps exist (a broken/empty seed — surface it loudly rather than
     silently degrade).
     """
-    raise NotImplementedError  # implemented in the follow-up (green) commit
+    hosted = _hosted(apps)
+    if len(hosted) < 2:
+        raise RuntimeError(
+            f"gate3 needs >=2 seeded apps with hosts; saw {len(hosted)} "
+            "(is the template catalog seeded?)",
+        )
+
+    blocked = next(
+        (a for a in (_find_by_template(hosted, s) for s in block_pref) if a is not None),
+        hosted[0],
+    )
+    block_id = blocked["app"]["id"]
+
+    allowed = next(
+        (
+            a
+            for a in (_find_by_template(hosted, s) for s in allow_pref)
+            if a is not None and a["app"]["id"] != block_id
+        ),
+        None,
+    )
+    if allowed is None:
+        # No distinct preferred allow pick — take any other hosted app.
+        allowed = next((a for a in hosted if a["app"]["id"] != block_id), None)
+    if allowed is None:
+        raise RuntimeError("gate3 could not pick two distinct hosted apps")
+    return blocked, allowed

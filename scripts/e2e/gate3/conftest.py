@@ -20,6 +20,7 @@ import os
 import pytest
 
 from lib.api_admin import AdminAPI
+from lib.app_seed import pick_block_allow_apps
 from lib.enrollment import exchange_enrollment_token, provision_router_uci
 from lib.vm import Client, client_down, client_up, router_down, router_up
 from lib.wait import wait_for_client_dns, wait_for_etag_change, wait_for_router_active
@@ -136,34 +137,50 @@ def client_vm() -> Client:
 
 @pytest.fixture()
 def scratch_profile_and_device(admin, enrolled_router, client_vm):
-    """Create a namespaced profile + device + blocked/allowed apps; yield
-    the relevant ids; delete on teardown.
+    """Create a namespaced profile + device, assign one seeded app `blocked`
+    and another `allowed` to it, and yield the relevant ids + hosts; clean
+    up on teardown.
 
     Post-#764, extraBlocked / extraAllowed are no longer profile fields —
-    they come from app_policy_assignments. The Apps API is:
-      POST   /api/apps {name, slug, hosts}                   → create
-      PUT    /api/apps/{aid}/policy/{pid} {mode: "blocked"}  → assign
-      DELETE /api/apps/{aid}                                 → cascades the
-                                                              assignment
+    they come from app_policy_assignments. Post-#1798, app *definitions* are
+    template-authored ONLY — the arbitrary-host `POST /api/apps` create was
+    retired, so this can no longer mint `example.com` / `example.org` apps.
+    Instead it seeds the shipped templates (idempotent, admin-gated) and
+    drives its two-leg block/allow assertion off two distinct *seeded* apps'
+    real hosts. The block/allow contract is host-agnostic (block = HTTP/80
+    DNAT to the block page on the resolved IPs; allow = carve-out / no
+    over-block), so the assertion is unchanged — only the host source moves
+    from a hand-minted app to the template catalog. Like example.com/.org,
+    the chosen template apexes resolve + are reachable through qemu SLIRP v4
+    NAT (see lib/app_seed.BLOCK_PREF / ALLOW_PREF).
+
+    Apps surface used — all kept by #1798:
+      POST   /api/apps/seed-from-templates          → seed catalog (idempotent)
+      GET    /api/apps                               → read seeded apps + hosts
+      PUT    /api/apps/{aid}/policy/{pid} {mode}     → assign block/allow
+      DELETE /api/apps/{aid}/policy/{pid}            → detach (teardown)
+    The shared seeded apps are NEVER deleted on teardown — only this run's
+    namespaced profile/device + its policy assignments.
     """
     suffix = _suffix()
-    blocked_host = "example.com"
-    allowed_host = "example.org"
+
+    # Seed (idempotent) then pick two distinct seeded apps for the two legs.
+    admin.seed_apps_from_templates()
+    blocked_app, allowed_app = pick_block_allow_apps(admin.list_apps())
+    blocked_app_id = blocked_app["app"]["id"]
+    allowed_app_id = allowed_app["app"]["id"]
+    blocked_host = blocked_app["hosts"][0]
+    allowed_host = allowed_app["hosts"][0]
+    log.info(
+        "gate3: block leg app=%s host=%s; allow leg app=%s host=%s",
+        blocked_app["app"].get("slug"), blocked_host,
+        allowed_app["app"].get("slug"), allowed_host,
+    )
 
     pname = f"gate3-{suffix}"
     p = admin.create_profile(name=pname)
     pid = (p.get("profile") or p)["id"]
 
-    blocked_app = admin.create_app(
-        name=f"gate3-blk-{suffix}", slug=f"gate3-blk-{suffix}",
-        hosts=[blocked_host],
-    )
-    allowed_app = admin.create_app(
-        name=f"gate3-alw-{suffix}", slug=f"gate3-alw-{suffix}",
-        hosts=[allowed_host],
-    )
-    blocked_app_id = blocked_app["app"]["id"]
-    allowed_app_id = allowed_app["app"]["id"]
     admin.assign_app_policy(app_id=blocked_app_id, profile_id=pid, mode="blocked")
     admin.assign_app_policy(app_id=allowed_app_id, profile_id=pid, mode="allowed")
 
@@ -190,17 +207,18 @@ def scratch_profile_and_device(admin, enrolled_router, client_vm):
         "allowed_app_id": allowed_app_id,
     }
 
-    # Teardown — DELETE app cascades its assignment, so order is:
-    # device → apps (cascades assignments) → profile.
+    # Teardown — detach this profile's policy assignments (the seeded apps
+    # are shared and must survive), then delete the namespaced device +
+    # profile. Order: device → assignments → profile.
     try:
         admin.delete_device(mac)
     except Exception as e:  # noqa: BLE001
         log.warning("delete_device(%s) failed: %s", mac, e)
     for aid in (blocked_app_id, allowed_app_id):
         try:
-            admin.delete_app(aid)
+            admin.delete_app_policy(app_id=aid, profile_id=pid)
         except Exception as e:  # noqa: BLE001
-            log.warning("delete_app(%s) failed: %s", aid, e)
+            log.warning("delete_app_policy(app=%s, profile=%s) failed: %s", aid, pid, e)
     try:
         admin.delete_profile(pid)
     except Exception as e:  # noqa: BLE001
