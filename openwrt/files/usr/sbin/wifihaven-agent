@@ -549,9 +549,17 @@ end
 
 -- BLOCKLIST_SHARD_DIR is a subdir of the dnsmasq confdir (#1812); create it so
 -- blocklists.render_shards' atomic open_write of <id>.conf.tmp doesn't fail on a
--- missing directory.
+-- missing directory. BLOCKLIST_SHARD_DIR is a trusted module constant (no shell
+-- metacharacters), so a bare append is safe here.
 os.execute("mkdir -p /tmp/dnsmasq.d /tmp/nftables.d /etc/wifihaven /var/run/wifihaven " ..
-           string.format("%q", BLOCKLIST_SHARD_DIR))
+           BLOCKLIST_SHARD_DIR)
+
+-- #1812: reclaim legacy bare-/tmp shards written by a pre-#1812 agent. They are
+-- no longer referenced by any conf-file= (the dir moved under the confdir), but
+-- on a package upgrade the agent restarts WITHOUT a reboot, so without this they
+-- linger in tmpfs (up to ~15 MB on a 512 MB router) until the next reboot. The
+-- glob is non-recursive, so it never touches the new BLOCKLIST_SHARD_DIR shards.
+os.execute("rm -f /tmp/wifihaven-blocklist-*.conf /tmp/wifihaven-blocklist-*.conf.tmp 2>/dev/null")
 
 -- GC stale shard files from a previous agent run / crash-during-render on
 -- startup. We do this before the first apply so dnsmasq never loads a shard
