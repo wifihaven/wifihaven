@@ -458,9 +458,13 @@ end
 -- BLOCKLIST_CACHE_DIR: persistent on-flash cache of fetched list bodies;
 --   survives reboots; shards in BLOCKLIST_SHARD_DIR are rebuilt from it.
 local BLOCKLIST_CACHE_DIR = "/etc/wifihaven/blocklists"
--- BLOCKLIST_SHARD_DIR: per-blocklist dnsmasq conf files (/tmp = tmpfs = RAM);
---   written atomically (tmp→rename) and GC'd on each render + startup.
-local BLOCKLIST_SHARD_DIR = "/tmp"
+-- BLOCKLIST_SHARD_DIR: per-blocklist dnsmasq conf files (tmpfs = RAM); written
+--   atomically (tmp→rename) and GC'd on each render + startup. A SUBDIR of the
+--   dnsmasq confdir (#1812) — NOT bare /tmp — so OpenWRT's procd ujail (which
+--   bind-mounts only the confdir) can read the shards the conf-file= directives
+--   reference; a bare-/tmp shard is unreadable inside the jail and crash-loops
+--   dnsmasq. Derived from render.SHARD_DIR so writer and reader never drift.
+local BLOCKLIST_SHARD_DIR = render.SHARD_DIR
 local function refresh_blocklists(snap)
   -- Step 1: fetch new list versions + cache them to disk.
   local res = blocklists.refresh(
@@ -543,7 +547,11 @@ end
 
 -- ── Ensure output directories exist ───────────────────────────────────────────
 
-os.execute("mkdir -p /tmp/dnsmasq.d /tmp/nftables.d /etc/wifihaven /var/run/wifihaven")
+-- BLOCKLIST_SHARD_DIR is a subdir of the dnsmasq confdir (#1812); create it so
+-- blocklists.render_shards' atomic open_write of <id>.conf.tmp doesn't fail on a
+-- missing directory.
+os.execute("mkdir -p /tmp/dnsmasq.d /tmp/nftables.d /etc/wifihaven /var/run/wifihaven " ..
+           string.format("%q", BLOCKLIST_SHARD_DIR))
 
 -- GC stale shard files from a previous agent run / crash-during-render on
 -- startup. We do this before the first apply so dnsmasq never loads a shard
