@@ -450,33 +450,17 @@ jobs:
 
       - name: Run openwrt agent tests
         working-directory: openwrt
-        run: |
-          # Mirror the full busted invocation from test/run_tests.sh so the
-          # whole Lua suite gates merges, not just conntrack_spec.
-          LUA_PATH="./files/usr/lib/lua/?.lua;./files/usr/lib/lua/wifihaven/?.lua;./spike/ws-1845/?.lua;./test/shim/?.lua;./test/shim/?/init.lua;$(lua -e 'print(package.path)')" \
-            busted test/conntrack_spec.lua \
-                   test/render_spec.lua \
-                   test/policy_spec.lua \
-                   test/usage_spec.lua \
-                   test/clock_spec.lua \
-                   test/failover_spec.lua \
-                   test/blocklists_spec.lua \
-                   test/block_page_spec.lua \
-                   test/contract_spec.lua \
-                   test/selfheal_spec.lua \
-                   test/version_spec.lua \
-                   test/update_spec.lua \
-                   test/metrics_spec.lua \
-                   test/dns_log_spec.lua \
-                   test/nft_drops_spec.lua \
-                   test/dns_tail_sets_spec.lua \
-                   test/nflog_spec.lua \
-                   test/host_norm_spec.lua \
-                   test/ws_frame_spec.lua
-
-      - name: Run ws-client e2e (#1845, real Lua 5.1 + cqueues/luaossl)
-        working-directory: openwrt
-        run: sh spike/ws-1845/e2e_test.sh
+        # Single source of truth: invoke test/run_tests.sh rather than a
+        # hand-copied busted list. The previous inline list had drifted from
+        # run_tests.sh (omitted sni/quic/lan_warn/eb_refresh/static_ip_labels/
+        # host_metrics + every `sh test/*.sh` shell spec), so those tests did
+        # not gate merges (#1870). run_tests.sh sets its own LUA_PATH and runs
+        # the full busted suite + the shell specs + the #1845 ws-client e2e
+        # (spike/ws-1845/e2e_test.sh, which actually runs here because the
+        # Install step above provides lua-cqueues/lua-luaossl); adding a spec
+        # there now automatically gates CI, so no separate per-spec CI step is
+        # needed.
+        run: sh test/run_tests.sh
 
   # ── Bidirectional contract tests (#634) ──────────────────────────────────
   # One job, one green/red signal for "the API ↔ router wire contract holds".

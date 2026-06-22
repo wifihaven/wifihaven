@@ -26,8 +26,13 @@ PASS=0; FAIL=0
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RENDER="$ROOT/files/usr/lib/lua/wifihaven/render.lua"
 MAKEFILE="$ROOT/Makefile"
-BUILD_IPK="$ROOT/build-ipk.sh"
-BUILD_APK="$ROOT/build-apk.sh"
+# #1717 single-sourced the .ipk/.apk Depends from openwrt/Makefile via
+# depends-list.sh; build-ipk.sh / build-apk.sh no longer embed a literal
+# Depends string (build_depends_sync_spec.test.sh actively forbids
+# reintroducing one). So the "does the shipped package declare the nft log
+# backend" check must run against the canonical emitted list, not a stale
+# grep of the builder scripts.
+DEPENDS_HELPER="$ROOT/depends-list.sh"
 
 check() {
   if [ "$2" = "ok" ]; then
@@ -37,7 +42,7 @@ check() {
   fi
 }
 
-for f in "$RENDER" "$MAKEFILE" "$BUILD_IPK" "$BUILD_APK"; do
+for f in "$RENDER" "$MAKEFILE" "$DEPENDS_HELPER"; do
   [ -f "$f" ] || { printf "MISSING: %s\n" "$f"; exit 1; }
 done
 
@@ -64,13 +69,17 @@ if [ "$EMITS_LOG" = "1" ]; then
       && check "Makefile DEPENDS includes +$pkg" ok \
       || check "Makefile DEPENDS includes +$pkg" "missing — atomic nft -f will reject the whole table"
 
-    grep -Eq "^Depends:.*$pkg" "$BUILD_IPK" \
-      && check "build-ipk.sh Depends includes $pkg" ok \
-      || check "build-ipk.sh Depends includes $pkg" "missing — ipk image lacks the nft log backend"
+    # The .ipk/.apk Depends are derived from openwrt/Makefile by depends-list.sh
+    # (#1717), so verify the package the builders ship actually carries the dep
+    # by inspecting that canonical output rather than the (now literal-free)
+    # builder scripts.
+    sh "$DEPENDS_HELPER" ipk 2>/dev/null | grep -Eq "(^|[ ,])$pkg([ ,]|$)" \
+      && check "depends-list.sh ipk includes $pkg" ok \
+      || check "depends-list.sh ipk includes $pkg" "missing — ipk image lacks the nft log backend"
 
-    grep -Eq "depends:[^\"]*$pkg" "$BUILD_APK" \
-      && check "build-apk.sh depends includes $pkg" ok \
-      || check "build-apk.sh depends includes $pkg" "missing — apk image lacks the nft log backend"
+    sh "$DEPENDS_HELPER" apk 2>/dev/null | grep -Eq "(^|[ ,])$pkg([ ,]|$)" \
+      && check "depends-list.sh apk includes $pkg" ok \
+      || check "depends-list.sh apk includes $pkg" "missing — apk image lacks the nft log backend"
   done
 fi
 

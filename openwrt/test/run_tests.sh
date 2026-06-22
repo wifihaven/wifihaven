@@ -22,8 +22,11 @@ LUA_PATH="./files/usr/lib/lua/?.lua;./files/usr/lib/lua/wifihaven/?.lua;./spike/
          test/version_spec.lua \
          test/update_spec.lua \
          test/metrics_spec.lua \
+         test/log_spec.lua \
          test/dns_log_spec.lua \
+         test/dns_tail_sets_spec.lua \
          test/sni_spec.lua \
+         test/sni_reassembly_spec.lua \
          test/quic_spec.lua \
          test/nft_drops_spec.lua \
          test/nflog_spec.lua \
