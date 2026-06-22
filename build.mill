@@ -45,6 +45,12 @@ val jwtVersion         = "10.0.1"
 val bcryptVersion      = "0.10.2"
 val postgresVersion    = "42.7.4"
 val logbackVersion     = "1.5.8"
+// #1873: loki4j ships API app logs straight to Grafana Cloud Loki via a
+// logback appender (deployed envs only). 2.0.x requires logback 1.5.x — matches
+// `logbackVersion` above. janino backs the `<if>` conditional in logback.xml that
+// gates the appender on the GRAFANA_CLOUD_LOKI_* secrets being present.
+val loki4jVersion      = "2.0.3"
+val janinoVersion      = "3.1.12"
 val embeddedPgVersion  = "2.1.0"
 val flywayPgVersion    = "10.17.3"
 val caffeineVersion    = "3.1.8"
@@ -121,6 +127,9 @@ object api extends CommonModule {
     mvn"at.favre.lib:bcrypt:$bcryptVersion",
     mvn"org.postgresql:postgresql:$postgresVersion",
     mvn"ch.qos.logback:logback-classic:$logbackVersion",
+    // #1873: deployed-env-only Loki appender + janino for the logback `<if>` gate.
+    mvn"com.github.loki4j:loki-logback-appender:$loki4jVersion",
+    mvn"org.codehaus.janino:janino:$janinoVersion",
     mvn"dev.zio::zio-interop-cats:23.1.0.3",
     mvn"com.github.ben-manes.caffeine:caffeine:$caffeineVersion",
     mvn"org.yaml:snakeyaml:$snakeYamlVersion",

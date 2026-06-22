@@ -116,6 +116,22 @@ services:
       # bearer token. Generated ONCE on first apply; share with the scraper.
       - key: WIFIHAVEN_METRICS_SCRAPE_TOKEN
         generateValue: true
+      # #1873: env label for the Loki appender (logback.xml reads ${WIFIHAVEN_ENV}).
+      - key: WIFIHAVEN_ENV
+        value: staging
+      # #1873: Grafana Cloud Loki push endpoint + basic-auth creds for the
+      # loki-logback-appender (api/resources/logback.xml). Render-managed secrets
+      # set out of band — same sync:false pattern as GRAFANA_CLOUD_PROM_* on the
+      # alloy worker below. Presence of GRAFANA_CLOUD_LOKI_URL is also the gate
+      # that activates the appender (deployed envs only). URL is the Loki push API
+      # (.../loki/api/v1/push); USER is the numeric instance id; PASSWORD is a
+      # Grafana Cloud API token with logs-push scope. NEVER commit values.
+      - key: GRAFANA_CLOUD_LOKI_URL
+        sync: false
+      - key: GRAFANA_CLOUD_LOKI_USER
+        sync: false
+      - key: GRAFANA_CLOUD_LOKI_PASSWORD
+        sync: false
 
   # ── Production API ─────────────────────────────────────────────────────────
   - type: web
@@ -219,6 +235,22 @@ services:
       # bearer token. Generated ONCE on first apply; share with the scraper.
       - key: WIFIHAVEN_METRICS_SCRAPE_TOKEN
         generateValue: true
+      # #1873: env label for the Loki appender (logback.xml reads ${WIFIHAVEN_ENV}).
+      - key: WIFIHAVEN_ENV
+        value: production
+      # #1873: Grafana Cloud Loki push endpoint + basic-auth creds for the
+      # loki-logback-appender (api/resources/logback.xml). Render-managed secrets
+      # set out of band — same sync:false pattern as GRAFANA_CLOUD_PROM_* on the
+      # alloy worker below. Presence of GRAFANA_CLOUD_LOKI_URL is also the gate
+      # that activates the appender (deployed envs only). URL is the Loki push API
+      # (.../loki/api/v1/push); USER is the numeric instance id; PASSWORD is a
+      # Grafana Cloud API token with logs-push scope. NEVER commit values.
+      - key: GRAFANA_CLOUD_LOKI_URL
+        sync: false
+      - key: GRAFANA_CLOUD_LOKI_USER
+        sync: false
+      - key: GRAFANA_CLOUD_LOKI_PASSWORD
+        sync: false
 
   # ── Metrics collector: Grafana Alloy → Grafana Cloud ─────────────────────────
   # #1208: the cloud APP-metrics path. Alloy (Prometheus agent-mode) scrapes
