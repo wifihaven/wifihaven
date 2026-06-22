@@ -1,6 +1,15 @@
 # /dashboard redesign — design note
 
-Status: **proposed** (design phase of [#1148](https://github.com/wifihaven/wifihaven/issues/1148)). No implementation in this PR.
+Status: **proposed — implementation PAUSED, gated on websocket #1023** (design phase of [#1148](https://github.com/wifihaven/wifihaven/issues/1148)). No implementation in this PR. See §7.5 for the sequencing decision.
+
+> **Revision 2 (2026-06-22).** §§1–6 below are the original design pass (PR
+> [#1158](https://github.com/wifihaven/wifihaven/pull/1158), 2026-05-29) and are kept
+> verbatim for the live-inspection grounding. Since then three things changed that the
+> original pass could not see, and the implementation sub-issues it called for were never
+> filed. **§7 is the authoritative revision**: it reconciles the now-shipped "Most Recently
+> Blocked" feed ([#1338](https://github.com/wifihaven/wifihaven/issues/1338)) into the IA,
+> resolves the §6 open questions into concrete decisions, and locks the implementation into
+> filed, dependency-ordered sub-issues. Where §7 and §§1–6 disagree, **§7 wins.**
 
 This note resolves the eight piecemeal ux-audit tweaks folded into #1148 into a single
 coherent layout, grounded in live inspection of the staging dashboard rather than code
@@ -210,3 +219,121 @@ raw `connection_events` scan — this is the #1099 win. The live NOW snapshot st
 6. **Device ranking inside a card (#819).** Prod's `Family` profile has ~11 devices, almost all IoT (Plex, Sonos, Lutron, Lennox, garage door, thermostat, NAS) generating constant bare-IP chatter. "Top-3 by most-recent activity" would surface a Sonos before a MacBook. Options: (a) rank by active-seconds/session length rather than recency; (b) de-prioritise devices whose only activity is heartbeat/bare-IP; (c) let IoT-heavy "infrastructure" profiles collapse more aggressively than human profiles. Which ranking do you want?
 7. **IoT noise generally.** Should infra/IoT devices (Sonos, thermostat, printers) be visually de-emphasised or grouped on the dashboard, or treated like any other device? This also affects the "Online now" KPI count — 18 devices are "online" but most are appliances.
 8. **Aside (not in scope here):** the `/usage/events` subtitle reads "Per-query DNS / blocking decisions", which is slightly off the architecture model (DNS is never the enforcement plane). Worth a tiny copy fix on that surface in a separate issue.
+
+---
+
+## 7. Revision 2 (2026-06-22) — reconcile shipped state, decisions, locked plan
+
+§§1–6 were written against prod on 2026-05-29. Three things changed since, and the
+implementation sub-issues §5 called for were never filed. This section is authoritative.
+
+### 7.1 What shipped since revision 1 (and how the design reconciles it)
+
+- **"Most Recently Blocked" feed shipped** ([#1338](https://github.com/wifihaven/wifihaven/issues/1338)).
+  `DashboardPage` now renders a `RecentlyBlockedSection` — a newest-first, **blocked-only**,
+  trailing-hour feed (`useRecentBlocked` → `api.logs.query({ blocked: true, hours: 1, limit: N })`,
+  polled every 10s), with a "View all → /usage/events" link. **This is signal, not the firehose
+  #823 targets.** The original §3 IA had only a "Recent connection events — link, not table"
+  footer; rev 2 folds the shipped feed into the IA as the **recency complement** to the 24h
+  blocking panel. It is *kept*. The thing #823 drops is the separate **unfiltered** "Recent
+  Queries" `LogTable` (still present at `DashboardPage.tsx:87-94`) — that one goes.
+- **#809 rollup tables merged** and **#1099 (per-profile usage opt) closed.** The §5 chunk-5
+  caveat "once #809 lands" is now unblocked: the 24h aggregations should ride the rollups.
+- **No throughput source was added.** `DashboardNowDevice` still carries no bytes field, so #747
+  remains backend-gated (see decision Q2).
+
+### 7.2 Updated section order (supersedes the §3 wireframe)
+
+```
+Dashboard (h1)
+  Banners            — NewDevicesHint, AccessRequestsBanner (only when present)
+  KPI strip          — Online now · Blocked now · Events (1h) · Blocked (1h)      [above the fold]
+  NOW                — freshness pill; active cards (top-3 devices + expander); idle-collapse row
+  Most Recently Blocked  — blocked-only trailing-hour feed (#1338), View all → /usage/events
+  Blocking activity (24h) — one merged ranked-host panel; one-line empty state
+  (no inline log table)
+```
+
+The two recency/blocking elements sit adjacent and are intentionally distinct: **Most Recently
+Blocked** answers "what just got dropped?" (live, un-aggregated, 1h); **Blocking activity (24h)**
+answers "what's been getting blocked today?" (aggregated, ranked). Neither duplicates the other,
+and neither is the firehose.
+
+### 7.3 Decisions on the §6 open questions
+
+| # | Question | Decision (rev 2) |
+|---|----------|------------------|
+| Q1 | KPI tile set | **Online now / Blocked now / Events (1h) / Blocked (1h).** Cumulative "today" volume is dropped from the dashboard — it is analytics and lives on `/usage/events`. (chunk 2) |
+| Q2 | Throughput (#747) on the dashboard | **De-scoped from the redesign arc.** The NOW snapshot carries no bytes today; surfacing it needs an additive API field + a per-profile rate aggregation, and §1 showed NOW activity lines are already often bare IPs — throughput on noisy IoT cards adds density without answering "is everything OK?". #747 stays open as its **own** backend-gated follow-up, **not** part of chunks 1–5. |
+| Q3 | Blocking-host → devices expansion | **Ship v1 without expansion** (ranked host list only). `stats.topBlocked` has no per-device linkage; adding it is an additive-API change. File separately only if wanted; do not block chunk 4. |
+| Q4 | Idle / "online now" threshold | **Keep 5 min** (the current NOW activity window). "Online now" = devices active in the last 5 min. |
+| Q5 | Mobile reflow | Reflow is derived from Tailwind classes, not a live narrow render. **Operator should sanity-check on a real phone before the iOS IA (#982) is locked.** Not a code blocker. |
+| Q6 | Device ranking inside a card (#819) | **Rank by active-seconds over the NOW top-hosts window, not recency** — recency would surface a Sonos heartbeat above an actively-streaming MacBook. The top-3 cap + expander contains the IoT chatter visually. (chunk 3) |
+| Q7 | IoT-noise classification | **Out of scope for v1.** No infra/IoT device taxonomy exists; building one is larger than this redesign. The active-seconds ranking + top-3 cap (Q6) is the v1 answer. "Online now" counts all active devices including appliances for v1; refining it depends on the same future classification work. File separately if pursued. |
+| Q8 | `/usage/events` subtitle copy ("Per-query DNS / blocking decisions") | Out of scope here — minor copy fix on a different surface. Tracked as a standalone good-first-issue, not part of this arc. |
+
+### 7.4 Locked implementation plan — filed sub-issues
+
+Dependency-ordered; each independently shippable and sized so it does not re-touch the others.
+TDD per `CLAUDE.md` (component/feature test first). Filed under umbrella #1148, Epic "Dashboard & UX".
+
+| # | Sub-issue | Inputs closed | Layer | Notes |
+|---|-----------|---------------|-------|-------|
+| 1 | [#1833](https://github.com/wifihaven/wifihaven/issues/1833) — drop Recent Queries firehose + rename queries→connection events | #299, #823 | FE | Lowest risk; removes one load-time fetch. Keeps the #1338 feed. |
+| 2 | [#1834](https://github.com/wifihaven/wifihaven/issues/1834) — KPI strip above NOW + status-first restate | #821, #299 | FE | Online now / Blocked now derive from the NOW snapshot. |
+| 3 | [#1835](https://github.com/wifihaven/wifihaven/issues/1835) — NOW density: top-N devices + idle collapse + single freshness | #819, #820, #825 | FE | Highest-value chunk. Active-seconds ranking; per-session expander; `dataUpdatedAt` pill. |
+| 4 | [#1836](https://github.com/wifihaven/wifihaven/issues/1836) — merge Top Blocked + Per Device → one Blocking activity (24h) panel | #822 | FE | One-line empty state; drops per-device volume. |
+| 5 | [#1837](https://github.com/wifihaven/wifihaven/issues/1837) — rollup-back 24h stats + per-section skeletons | (#1098) | BE+FE | Lands last; rides #809 rollups; NOW paints independently of stats. |
+
+Chunks 1–4 are pure frontend and could land in any order; the table order minimizes copy-merge
+conflicts (terminology first) and ships the biggest win (chunk 3) once the page is already tidy.
+Chunk 5 lands last because it touches the data path the earlier chunks render.
+
+**Inputs not closed by the arc** (stay open as their own follow-ups): **#747** (throughput,
+backend-gated — Q2), plus any optional spin-offs from Q3 (host→device expansion) / Q7 (device
+classification) / Q8 (copy fix) if the operator chooses to pursue them.
+
+Once this revision is signed off, #299/#819/#820/#821/#822/#823/#825 close as **superseded** by
+the chunk PRs above (do not also implement them piecemeal).
+
+### 7.5 Sequencing decision (2026-06-22) — paused, gated on websocket #1023
+
+**The implementation is on hold until the streaming transport lands.** Operator
+decision: the dashboard is the household's live status surface, so its live sections must be
+**sourced from the streaming push**, not the current 10s `refetchInterval` poll.
+
+Precise gate — two legs, both required:
+
+- [#1023](https://github.com/wifihaven/wifihaven/issues/1023) (priority #1) — the **router↔API**
+  leg: "migrate router↔API transport to a persistent websocket (push usage + events)." Gives the
+  API a connection-registry + push-on-change core so fresh usage/events land in real time.
+- [#1860](https://github.com/wifihaven/wifihaven/issues/1860) — the **API→SPA** leg: browser-facing
+  websocket pushing live state to the SPA in place of the TanStack Query `refetchInterval` polling.
+  This is the leg the dashboard's live sections actually consume.
+
+The redesign is gated on **both** (effectively on #1860, which itself depends on #1023's push core).
+When work resumes, the streaming-source wiring folds into chunks 2–3 on top of #1860. Building the
+redesigned NOW / KPI / Most-Recently-Blocked sections on the polling path first would be
+throwaway — the data plane changes underneath them when #1023 ships.
+
+Concretely, this revises the original real-time framing (which said the websocket "could later
+push these updates, but do not depend on it"): the redesign now **does** depend on it.
+
+- **`useDashboardNow` (NOW snapshot), `useRecentBlocked` (Most Recently Blocked), and the
+  derived "Online now / Blocked now" KPIs** become consumers of the streaming transport rather
+  than independent 10s pollers. The single-freshness-pill decision (#825) still holds, now
+  driven by last-push time instead of `dataUpdatedAt`.
+- **The 24h aggregate panel (chunk 5 / #1837)** stays request/response on the rollup tables —
+  it is not real-time and does not need the stream.
+- **Layout/structure chunks (1–4: #1833–#1836)** are mostly transport-agnostic, but they are
+  paused too rather than landed piecemeal: shipping the NOW density / KPI restate against the
+  poller and then re-sourcing them against the stream is double work, and a half-migrated
+  dashboard is worse than the current one.
+
+**Status of the sub-issues:** #1833–#1837 are moved out of *In Progress* → **Blocked**
+(`blocked` + `blocked-on-#1860`). They are kept (the plan is still correct); they resume once
+#1860 (riding #1023's push core) provides the browser stream. When work restarts, fold the
+streaming-source wiring into chunks 2 and 3 (the live sections) as their first step, before the
+layout changes.
+
+This note records the decision; no further dashboard PRs until #1023 lands.
