@@ -75,12 +75,14 @@ export function timeStatusRefetchMs(remainingMins: number | null | undefined): n
   return TIME_STATUS_REFETCH_MAX_MS
 }
 
+// The cadence-relevant slice of a time-status row — both ProfileTimeStatus and
+// ProfileTimeSummary carry these, and they're all we read to pick a poll rate.
+type CadenceRow = { dailyLimitMins?: number | null; remainingMins?: number | null }
+
 // The most-urgent (least remaining) capped profile across a freshly-fetched
 // time-status payload — `null` when no row has a daily limit. A row without a
 // `dailyLimitMins` isn't counting down, so it never drives the cadence.
-function minRemainingMins(
-  rows: ReadonlyArray<{ dailyLimitMins?: number | null; remainingMins?: number | null }>,
-): number | null {
+function minRemainingMins(rows: ReadonlyArray<CadenceRow>): number | null {
   let min: number | null = null
   for (const row of rows) {
     if (row.dailyLimitMins == null) continue
@@ -93,10 +95,7 @@ function minRemainingMins(
 // react-query refetchInterval callback: normalize the query data (single row,
 // array of rows, or not-yet-loaded) and pick the adaptive interval.
 function timeStatusRefetchInterval(data: unknown): number {
-  const rows = (Array.isArray(data) ? data : data ? [data] : []) as ReadonlyArray<{
-    dailyLimitMins?: number | null
-    remainingMins?: number | null
-  }>
+  const rows = (Array.isArray(data) ? data : data ? [data] : []) as ReadonlyArray<CadenceRow>
   return timeStatusRefetchMs(minRemainingMins(rows))
 }
 
