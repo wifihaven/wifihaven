@@ -1079,8 +1079,13 @@ function M.nft(snapshot, opts)
     end
   end
 
-  -- #1122/#1126: each drop rule carries
-  --   `log prefix "wh_drop:<mac>:<reason> " counter drop comment "wh_drop:<mac>:<reason>"`.
+  -- #1122/#1126: each drop is rendered as a pair of rules sharing one predicate
+  -- (see #1826 / `emit_drop` below):
+  --   `<predicate> limit rate 10/second burst 20 packets log prefix "wh_drop:<mac>:<reason> "`
+  --   `<predicate> counter drop comment "wh_drop:<mac>:<reason>"`
+  -- (pre-#1826 this was a single `… log prefix … counter drop` rule; the LOG is
+  -- now on its own rate-limited rule so a retry storm can't flood the kernel
+  -- ring buffer, while the drop stays unconditional).
   -- The `log prefix` form writes to the kernel ring buffer (the LOG backend),
   -- so the wifihaven-nflog-tail sidecar can read the dropped-packet records
   -- straight off `logread -f` on stock OpenWRT — no NFLOG netlink consumer
@@ -1104,10 +1109,38 @@ function M.nft(snapshot, opts)
   -- whole-MAC drop carries the MacBlockReason that the API server resolved
   -- (Paused / Schedule / TimeLimit / Manual / Unmanaged). See
   -- PolicySnapshotMacDropAttributionSpec for the wire-string contract.
+  -- #1826: a Schedule-blocked device that retry-storms 443 made the old
+  -- single-rule form (`… log prefix … counter drop`) emit one kernel-log line
+  -- per dropped packet — a ring-buffer flood that pegged wifihaven-agent and
+  -- wifihaven-dns-tail (load 4.3). We rate-limit the LOG, but the drop MUST
+  -- stay unconditional. An inline `limit rate … log … drop` would NOT achieve
+  -- that: in nftables a `limit` statement is a *match*, so packets exceeding the
+  -- rate fail the rule and fall through to `policy accept` — silently leaking
+  -- the block over budget. So each drop is split into TWO rules with the same
+  -- predicate: a rate-limited log rule (no verdict — over-budget packets just
+  -- skip the log and continue to the next rule) immediately followed by an
+  -- unconditional `counter drop`. The `log prefix` (the agent's nflog read
+  -- channel, parsed by nflog.lua off `logread`) lives on the log rule; the
+  -- `counter` + `wh_drop:` comment (ops view via `nft list ruleset` and the
+  -- nft_drops.lua attribution path, which sums only commented+countered rules)
+  -- live on the drop rule, so drop counts stay exact and unaffected by the rate
+  -- limit. 10/second burst 20 is per-rule, so each blocked MAC gets its own
+  -- budget — ample for ops visibility, bounded against a retry storm.
+  local DROP_LOG_LIMIT = "limit rate 10/second burst 20 packets"
+  local function log_suffix(mac, reason)
+    return string.format(" %s log prefix \"wh_drop:%s:%s \"",
+                         DROP_LOG_LIMIT, mac, reason)
+  end
   local function drop_suffix(mac, reason)
-    return string.format(
-      " log prefix \"wh_drop:%s:%s \" counter drop comment \"wh_drop:%s:%s\"",
-      mac, reason, mac, reason)
+    return string.format(" counter drop comment \"wh_drop:%s:%s\"",
+                         mac, reason)
+  end
+  -- Emit the rate-limited log rule then the unconditional drop rule for one
+  -- predicate. `predicate` is everything up to (but excluding) the log/drop
+  -- suffix; both rules share it verbatim so they match the same packets.
+  local function emit_drop(predicate, mac, reason)
+    ind2(predicate .. log_suffix(mac, reason))
+    ind2(predicate .. drop_suffix(mac, reason))
   end
   local blocked_reason_by_mac = {}
   for mac, dev in pairs(snapshot.devices or {}) do
@@ -1126,18 +1159,18 @@ function M.nft(snapshot, opts)
   -- family-agnostic per-MAC drop; MACs with extraAllowed get per-family
   -- rules carrying the ea exception (same shape as pre-#1122).
   for _, mac in ipairs(blocked_macs_list) do
-    ind2(string.format("ether saddr %s%s", mac,
-                       drop_suffix(mac, blocked_reason_by_mac[mac] or "blocked")))
+    emit_drop(string.format("ether saddr %s", mac),
+              mac, blocked_reason_by_mac[mac] or "blocked")
   end
   -- #1319: each per-MAC blocked rule also carries the `!= @global_allow`
   -- carve-out (ga_suffix), so a globally-allowed host stays reachable for a
   -- blocked MAC. ea_suffix (per-MAC allow) comes first, then ga_suffix.
   for _, mac in ipairs(blocked_ea_macs) do
     local reason = blocked_reason_by_mac[mac] or "blocked"
-    ind2(string.format("ether saddr %s%s%s%s", mac, ea_suffix(mac, "ip"),
-                       ga_suffix("ip"), drop_suffix(mac, reason)))
-    ind2(string.format("ether saddr %s%s%s%s", mac, ea_suffix(mac, "ip6"),
-                       ga_suffix("ip6"), drop_suffix(mac, reason)))
+    emit_drop(string.format("ether saddr %s%s%s", mac, ea_suffix(mac, "ip"),
+                            ga_suffix("ip")), mac, reason)
+    emit_drop(string.format("ether saddr %s%s%s", mac, ea_suffix(mac, "ip6"),
+                            ga_suffix("ip6")), mac, reason)
   end
   -- v4 drops first, then v6 (#392). One ipset directive populates both sets
   -- at DNS time; here we gate on whichever family the destination matched.
@@ -1157,36 +1190,36 @@ function M.nft(snapshot, opts)
   -- parser sees a partial host; for now we accept that gracefully (the
   -- drop still fires correctly — only the label is lossy).
   for _, p in ipairs(eb_pairs) do
-    ind2(string.format("ether saddr %s ip daddr @%s%s%s%s",
-                       p.mac, eb_set_name(p.host), ea_suffix(p.mac, "ip"),
-                       ga_suffix("ip"), drop_suffix(p.mac, "host:" .. p.host)))
+    emit_drop(string.format("ether saddr %s ip daddr @%s%s%s",
+                            p.mac, eb_set_name(p.host), ea_suffix(p.mac, "ip"),
+                            ga_suffix("ip")), p.mac, "host:" .. p.host)
   end
   for _, p in ipairs(eb_pairs) do
-    ind2(string.format("ether saddr %s ip6 daddr @%s%s%s%s",
-                       p.mac, eb6_set_name(p.host), ea_suffix(p.mac, "ip6"),
-                       ga_suffix("ip6"), drop_suffix(p.mac, "host:" .. p.host)))
+    emit_drop(string.format("ether saddr %s ip6 daddr @%s%s%s",
+                            p.mac, eb6_set_name(p.host), ea_suffix(p.mac, "ip6"),
+                            ga_suffix("ip6")), p.mac, "host:" .. p.host)
   end
   for _, p in ipairs(bl_pairs) do
-    ind2(string.format("ether saddr %s ip daddr @%s%s%s%s",
-                       p.mac, bl_set_name(p.id), ea_suffix(p.mac, "ip"),
-                       ga_suffix("ip"), drop_suffix(p.mac, "category:" .. tostring(p.id))))
+    emit_drop(string.format("ether saddr %s ip daddr @%s%s%s",
+                            p.mac, bl_set_name(p.id), ea_suffix(p.mac, "ip"),
+                            ga_suffix("ip")), p.mac, "category:" .. tostring(p.id))
   end
   for _, p in ipairs(bl_pairs) do
-    ind2(string.format("ether saddr %s ip6 daddr @%s%s%s%s",
-                       p.mac, bl6_set_name(p.id), ea_suffix(p.mac, "ip6"),
-                       ga_suffix("ip6"), drop_suffix(p.mac, "category:" .. tostring(p.id))))
+    emit_drop(string.format("ether saddr %s ip6 daddr @%s%s%s",
+                            p.mac, bl6_set_name(p.id), ea_suffix(p.mac, "ip6"),
+                            ga_suffix("ip6")), p.mac, "category:" .. tostring(p.id))
   end
   -- #353: blockIpOnly drop. Predicate `ip daddr != @resolved_<mac>` matches
   -- any v4 destination the device did not DNS-resolve via our resolver in
   -- the last 5 minutes — i.e. DoH / DoT / hard-coded IPs / stale cache
   -- entries past the set timeout.
   for _, mac in ipairs(bio_macs) do
-    ind2(string.format("ether saddr %s ip daddr != @%s%s",
-                       mac, resolved_set_name(mac), drop_suffix(mac, "ip_only")))
+    emit_drop(string.format("ether saddr %s ip daddr != @%s",
+                            mac, resolved_set_name(mac)), mac, "ip_only")
   end
   for _, mac in ipairs(bio_macs) do
-    ind2(string.format("ether saddr %s ip6 daddr != @%s%s",
-                       mac, resolved6_set_name(mac), drop_suffix(mac, "ip_only")))
+    emit_drop(string.format("ether saddr %s ip6 daddr != @%s",
+                            mac, resolved6_set_name(mac)), mac, "ip_only")
   end
   -- #1319: global block (hosts ∪ categories) → drop for every managed MAC on
   -- @global_block, carved out ONLY by @global_allow (a per-MAC extraAllowed
@@ -1194,14 +1227,14 @@ function M.nft(snapshot, opts)
   -- one v6 rule per managed MAC.
   if has_global_block then
     for _, mac in ipairs(managed_macs) do
-      ind2(string.format("ether saddr %s ip daddr @%s%s%s",
-                         mac, GLOBAL_BLOCK4, ga_suffix("ip"),
-                         drop_suffix(mac, "global_block")))
+      emit_drop(string.format("ether saddr %s ip daddr @%s%s",
+                              mac, GLOBAL_BLOCK4, ga_suffix("ip")),
+                mac, "global_block")
     end
     for _, mac in ipairs(managed_macs) do
-      ind2(string.format("ether saddr %s ip6 daddr @%s%s%s",
-                         mac, GLOBAL_BLOCK6, ga_suffix("ip6"),
-                         drop_suffix(mac, "global_block")))
+      emit_drop(string.format("ether saddr %s ip6 daddr @%s%s",
+                              mac, GLOBAL_BLOCK6, ga_suffix("ip6")),
+                mac, "global_block")
     end
   end
   -- #1319: global lockdown (global.blocked) → whole-network kill switch. Drop
@@ -1214,17 +1247,17 @@ function M.nft(snapshot, opts)
     if has_global_allow then
       -- Per-family so each can carry its family-specific @global_allow carve-out.
       for _, mac in ipairs(managed_macs) do
-        ind2(string.format("ether saddr %s%s%s",
-                           mac, ga_suffix("ip"), drop_suffix(mac, g_block_reason)))
+        emit_drop(string.format("ether saddr %s%s", mac, ga_suffix("ip")),
+                  mac, g_block_reason)
       end
       for _, mac in ipairs(managed_macs) do
-        ind2(string.format("ether saddr %s%s%s",
-                           mac, ga_suffix("ip6"), drop_suffix(mac, g_block_reason)))
+        emit_drop(string.format("ether saddr %s%s", mac, ga_suffix("ip6")),
+                  mac, g_block_reason)
       end
     else
       -- No global allow → one family-agnostic unconditional drop per MAC.
       for _, mac in ipairs(managed_macs) do
-        ind2(string.format("ether saddr %s%s", mac, drop_suffix(mac, g_block_reason)))
+        emit_drop(string.format("ether saddr %s", mac), mac, g_block_reason)
       end
     end
   end
