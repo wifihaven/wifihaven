@@ -104,6 +104,7 @@ agent                                   API
   │                                         │
   │   …steady state…                        │
   │   {"op":"usage", payload:<UsageReport>} │ ─▶  (agent → API, any time)
+  │   {"op":"ack", payload:{op,seq,status}} │ ◀─  (API → agent, per data frame; drives spool drain §5.3)
   │   {"op":"events", payload:<…>}          │ ─▶
   │   {"op":"metrics", payload:<…>}         │ ─▶
   │   {"op":"policy", payload:<snapshot>}   │ ◀─  (API → agent, on policy change)
@@ -539,6 +540,14 @@ Today every poll calls `policy.snapshot` (~500 ms recompute, #1512). Under push:
    independently valuable; sequenced after A so the registry exists to push to,
    but it improves the REST path regardless.)
 
+> **Ticker cost note (for sub-issue E):** the time-boundary re-evaluation
+> ticker re-checks only whether a schedule/time-limit transition moved the
+> *single* household snapshot's etag; it must not become a per-router per-tick
+> full recompute. For the single-household model the cache holds one global
+> snapshot, so a tick is one cheap re-eval + (only on an etag move) one rebuild
+> + fan-out — not O(routers). Spec the ticker cadence and the invalidation-vs-
+> recompute boundary explicitly in E so this stays true if the model grows.
+
 **What triggers a push:** exactly the events that move the etag today (the
 `PolicyService.computeEtag` inputs) — profile/device/blocklist/schedule changes,
 pause/unpause, manual block/allow, time-extension grants, and the time-boundary
@@ -559,7 +568,7 @@ Grafana panel per the dashboard rule — sub-issue tasks include the panel):
 | Metric | Type | Labels (bounded) | Meaning |
 | --- | --- | --- | --- |
 | `router_ws_connections_active` | gauge | — | currently-open channels |
-| `router_connected` | gauge | `router_id` (fleet-bounded) | 1/0 link-up per router (§5.5) |
+| `router_connected` | gauge | `router_id` (fleet-bounded) | 1/0 link-up per router (§5.5) — emitted only for currently-connected routers and **aged out on deregister** so the `router_id` series doesn't accumulate stale values (impl: sub-issue A) |
 | `router_ws_frames_total` | counter | `op`, `dir` (`in`/`out`), `result` (`ok`/`reject`/`unknown_op`) | frame throughput + the unknown-op forward-compat counter |
 | `router_ws_handshake_total` | counter | `result` (`ok`/`auth_fail`/`hello_timeout`/`version_exceeded`) | handshake outcomes |
 | `router_ws_policy_push_total` | counter | `result` (`ok`/`dropped_full`/`channel_closed`) | push fan-out health |
