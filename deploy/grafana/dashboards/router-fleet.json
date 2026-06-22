@@ -726,12 +726,18 @@
           "color": { "mode": "palette-classic" },
           "unit": "short",
           "min": 0,
-          "custom": { "drawStyle": "line", "fillOpacity": 30, "showPoints": "always", "lineWidth": 2 },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 30,
+            "showPoints": "always",
+            "lineWidth": 2,
+            "thresholdsStyle": { "mode": "line" }
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
               { "color": "green", "value": null },
-              { "color": "red", "value": 0 }
+              { "color": "red", "value": 0.0000001 }
             ]
           }
         },
