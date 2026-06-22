@@ -9,11 +9,15 @@
 -- confirmed, never emit IPCT_NEW, and the conntrack watcher never sees
 -- them. The Logs page therefore goes silent for blocked traffic — #1103.
 --
--- Fix: every per-MAC drop rule emitted by render.lua now carries
---   `log prefix "wh_drop:<mac>:<reason> " counter drop comment "wh_drop:…"`
--- (#1126 switched the read channel from NFLOG `log group` — which had no stock
--- userspace consumer — to a `log prefix` that lands in the kernel ring buffer,
--- readable straight off `logread`). This module tails the resulting stream
+-- Fix: every per-MAC drop emitted by render.lua now carries a
+--   `log prefix "wh_drop:<mac>:<reason> "`
+-- statement (#1126 switched the read channel from NFLOG `log group` — which had
+-- no stock userspace consumer — to a `log prefix` that lands in the kernel ring
+-- buffer, readable straight off `logread`). Post-#1826 that log prefix lives on
+-- its own rate-limited rule (`limit rate …/second`), separate from the
+-- unconditional `counter drop comment "wh_drop:…"`, so a retry storm can't flood
+-- the ring buffer — the kernel log line this module parses is unchanged in
+-- shape, just rate-bounded. This module tails the resulting stream
 -- (via the wifihaven-nflog-tail spool) + synthesizes a
 -- `connection_attempt` event for each dropped packet with allowed=false
 -- and reason set from the comment. The event then takes the same ingest
