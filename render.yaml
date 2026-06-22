@@ -276,6 +276,18 @@ services:
         sync: false
       - key: GRAFANA_CLOUD_PROM_PASSWORD
         sync: false
+      # Grafana Cloud Logs (Loki) push target + credentials (#1852, log-export
+      # epic #1831). Same sync:false out-of-band pattern as the Prometheus
+      # creds above; config.alloy reads these via sys.env(...) for the
+      # loki.write sink. URL is the Grafana Cloud Loki push endpoint
+      # (…/loki/api/v1/push); USER is the numeric Loki/instance user id;
+      # PASSWORD is a Grafana Cloud API token with logs-push scope.
+      - key: GRAFANA_CLOUD_LOKI_URL
+        sync: false
+      - key: GRAFANA_CLOUD_LOKI_USER
+        sync: false
+      - key: GRAFANA_CLOUD_LOKI_PASSWORD
+        sync: false
 
   # ── Deploy-event annotations moved to GitHub Actions (#1390) ─────────────────
   # The standalone `wifihaven-deploy-webhook` Render service was retired here.

@@ -69,3 +69,31 @@ prometheus.remote_write "grafana_cloud" {
     }
   }
 }
+
+// ── Remote write: Grafana Cloud Logs (Loki) ─────────────────────────────────
+// #1852 (log-export epic #1831): the SINK for the table-tailing log-export
+// pipeline. This component is the destination only — it establishes the Loki
+// push client and holds the Grafana Cloud Logs credentials in ONE place
+// (Alloy), exactly mirroring the prometheus.remote_write block above.
+//
+// Nothing forwards to it yet. The table-tailer fiber (#1854) — which reads
+// the append-only event tables forward by watermark and batches new rows —
+// will target this sink's exported receiver, `loki.write.grafana_cloud.receiver`,
+// via a `loki.source.api` receiver added in that issue (the API never holds
+// Loki creds; it pushes to Alloy on the internal Render network, Alloy forwards
+// here with basic auth). A bare loki.write with no forwarder is valid Alloy
+// config — it sits idle until a source is wired in.
+//
+// URL + credentials are Render-managed secrets (sync:false in render.yaml).
+// Grafana Cloud Loki uses HTTP basic auth: username = numeric Loki/instance
+// user id, password = a Grafana Cloud API token with logs-push scope.
+loki.write "grafana_cloud" {
+  endpoint {
+    url = sys.env("GRAFANA_CLOUD_LOKI_URL")
+
+    basic_auth {
+      username = sys.env("GRAFANA_CLOUD_LOKI_USER")
+      password = sys.env("GRAFANA_CLOUD_LOKI_PASSWORD")
+    }
+  }
+}

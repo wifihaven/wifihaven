@@ -48,6 +48,7 @@ jobs:
       workflows: ${{ steps.filter.outputs.workflows || steps.force.outputs.all }}
       grafana-tf: ${{ steps.filter.outputs.grafana-tf || steps.force.outputs.all }}
       cloudflare-tf: ${{ steps.filter.outputs.cloudflare-tf || steps.force.outputs.all }}
+      alloy: ${{ steps.filter.outputs.alloy || steps.force.outputs.all }}
     steps:
       - name: Force full matrix for CD / manual triggers
         id: force
@@ -163,6 +164,9 @@ jobs:
             cloudflare-tf:
               - '.github/workflows/ci.yml'
               - 'infra/cloudflare/**'
+            alloy:
+              - '.github/workflows/ci.yml'
+              - 'deploy/alloy/**'
             migrations:
               - '.github/workflows/ci.yml'
               - '.github/scripts/check-migrations.sh'
@@ -702,6 +706,30 @@ jobs:
           terraform init -backend=false -input=false
           terraform validate
 
+  # ── Alloy config: validate ──────────────────────────────────────────────
+  # Cheap config-quality gate for the cloud observability collector
+  # (deploy/alloy/config.alloy), mirroring grafana-terraform / cloudflare-
+  # terraform. Catches syntax errors and invalid component wiring before the
+  # wifihaven-alloy Render service deploys the config (#1852). Runs the EXACT
+  # pinned image the Dockerfile builds from, so the validator matches what
+  # ships. sys.env(...) of unset secrets resolves to "" during validate (no
+  # connection is attempted), so no Grafana Cloud credentials are needed here.
+  alloy-config:
+    name: Alloy Config Validate
+    needs: changes
+    if: needs.changes.outputs.alloy == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      # Keep this tag in lockstep with deploy/alloy/Dockerfile's FROM.
+      - name: alloy validate
+        run: |
+          docker run --rm -v "$PWD/deploy/alloy:/work:ro" \
+            grafana/alloy:v1.5.1 validate /work/config.alloy
+
   # ── GitHub Actions workflow lint ─────────────────────────────────────────
   # actionlint statically checks every workflow under .github/workflows/ for
   # syntax errors, bad expressions, unknown runner labels, and (via the
@@ -784,6 +812,7 @@ jobs:
       - render-blueprint
       - grafana-terraform
       - cloudflare-terraform
+      - alloy-config
       - actionlint
       - frontend
     runs-on: ubuntu-latest

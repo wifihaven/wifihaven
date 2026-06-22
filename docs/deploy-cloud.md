@@ -286,6 +286,12 @@ The cloud metrics + dashboard stack lives at **`https://wifihaven.grafana.net`**
 - **Render infrastructure metrics** — managed-Postgres CPU/RAM/conns +
   per-service CPU/RAM, streamed natively via Render → Grafana Cloud OTLP
   (no collector). Design doc §6.3.
+- **Logs (Loki)** — the same `wifihaven-alloy` worker carries a
+  `loki.write` sink to Grafana Cloud Logs (#1852, log-export epic #1831).
+  It is the destination only; the table-tailer fiber that produces log
+  lines from the append-only event tables (`connection_events`,
+  `traffic_reports`, `block_events`) lands in #1854 and forwards to this
+  sink. Until then nothing pushes to it.
 - **Deploy annotations** — POSTed directly from
   `.github/workflows/master-api-ui.yml` via the
   [`.github/actions/grafana-annotation`](../.github/actions/grafana-annotation)
@@ -323,6 +329,22 @@ Prometheus `remote_write` endpoint (distinct from the stack URL above —
 read it from **Connections → Prometheus** in the stack UI), PROM_USER
 is the numeric instance id, PROM_PASSWORD is a Grafana Cloud API token
 with `metrics-push` scope.
+
+For the logs (Loki) sink (#1852) there are three more, same `sync: false`
+out-of-band pattern: `GRAFANA_CLOUD_LOKI_URL`, `GRAFANA_CLOUD_LOKI_USER`,
+`GRAFANA_CLOUD_LOKI_PASSWORD`. The LOKI_URL is the Grafana Cloud Loki push
+endpoint (ends in `/loki/api/v1/push` — read it from **Connections →
+Loki** in the stack UI), LOKI_USER is the numeric Loki instance/user id,
+LOKI_PASSWORD is a Grafana Cloud API token with `logs-push` scope. To
+verify the sink end-to-end before the tailer exists, hand-push a test
+stream straight to that endpoint and query it in Grafana Explore:
+
+```sh
+curl -s -u "$GRAFANA_CLOUD_LOKI_USER:$GRAFANA_CLOUD_LOKI_PASSWORD" \
+  -H 'Content-Type: application/json' "$GRAFANA_CLOUD_LOKI_URL" \
+  --data-binary '{"streams":[{"stream":{"service":"wifihaven-export-smoketest"},"values":[["'"$(date +%s)"'000000000","hello from #1852"]]}}]'
+# then in Grafana Explore (Loki datasource): {service="wifihaven-export-smoketest"}
+```
 
 ---
 
