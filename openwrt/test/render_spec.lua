@@ -641,23 +641,27 @@ describe("render.nft nat chain", function()
     assert.is_nil(nft:find("wifihaven_block_nat", 1, true))
   end)
 
-  -- #411: v6 block-page DNAT mirrors v4. uhttpd also binds [::1]:8081 so the
-  -- redirect lands on a live listener (see install.sh). Each v4 DNAT line
-  -- gets a parallel v6 sibling targeting the eb6_/bl6_ sets and ::1:8081.
-  it("emits a v6 DNAT rule scoped to @blocked_macs (#411)", function()
+  -- #411/#1865: v6 block-page delivery mirrors v4 but uses `redirect` rather
+  -- than DNAT-to-::1. IPv6 has no route_localnet and ::1 is non-routable for
+  -- forwarded traffic (RFC 4291), so DNAT-to-::1 forwarded out the WAN instead
+  -- of delivering. `redirect` rewrites the destination to the inbound (br-lan)
+  -- address, which is router-local; uhttpd binds [::]:8081 so it lands on a
+  -- live listener (see setup-uhttpd-block-page.sh). Each v4 DNAT line gets a
+  -- parallel v6 sibling targeting the eb6_/bl6_ sets via `redirect to :8081`.
+  it("emits a v6 redirect rule scoped to @blocked_macs (#411/#1865)", function()
     local s = snap_one()
     s.profiles["3"].rules.blocked = true
     s.profiles["3"].rules.blockReason = "Paused"
     local nft = render.nft(s)
     assert.truthy(nft:find(
-      "ether saddr @blocked_macs ip6 daddr != ::1 tcp dport 80 dnat ip6 to ::1:8081",
+      "ether saddr @blocked_macs ip6 daddr != ::1 tcp dport 80 redirect to :8081",
       1, true))
   end)
 
-  it("DNATs v6 HTTP/80 from a MAC to the block page when daddr ∈ eb6_<host> (#411)", function()
+  it("redirects v6 HTTP/80 from a MAC to the block page when daddr ∈ eb6_<host> (#411/#1865)", function()
     local nft = render.nft(snap_one())
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @eb6_tiktok_com tcp dport 80 dnat ip6 to ::1:8081",
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @eb6_tiktok_com tcp dport 80 redirect to :8081",
       1, true))
   end)
 
@@ -677,18 +681,110 @@ describe("render.nft nat chain", function()
       "ether saddr @blocked_macs tcp dport 443 dnat ip to 127.0.0.1:8443",
       1, true))
     assert.truthy(nft:find(
-      "ether saddr @blocked_macs ip6 daddr != ::1 tcp dport 443 dnat ip6 to ::1:8443",
+      "ether saddr @blocked_macs ip6 daddr != ::1 tcp dport 443 redirect to :8443",
       1, true))
   end)
 
-  it("emits a parallel HTTPS/443 DNAT for per-MAC extraBlocked (#383)", function()
+  it("emits a parallel HTTPS/443 DNAT/redirect for per-MAC extraBlocked (#383/#1865)", function()
     local nft = render.nft(snap_one())
     assert.truthy(nft:find(
       "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com tcp dport 443 dnat ip to 127.0.0.1:8443",
       1, true))
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @eb6_tiktok_com tcp dport 443 dnat ip6 to ::1:8443",
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @eb6_tiktok_com tcp dport 443 redirect to :8443",
       1, true))
+  end)
+
+end)
+
+-- ── #1865: the block page must NEVER be dropped, and v6 must deliver ───────
+--
+-- Operator directive: a blocked device must always reach the local block-page
+-- listener so it sees *why* it is blocked, never a hung connection. Two
+-- confirmed failure modes:
+--   1. The block-page DNAT (wifihaven_block_nat, prerouting) rewrote a blocked
+--      device's HTTP/HTTPS to the local listener, but the per-MAC blocked drop
+--      in wifihaven_block (forward) then killed the redirected packet — it
+--      carved out ea_/@global_allow but NOT the block-page destination.
+--   2. v6 DNAT'd to ::1 (loopback). IPv6 has no route_localnet and ::1 is
+--      non-routable for forwarded traffic (RFC 4291), so the packet forwarded
+--      out the WAN (`DST=::1:8443 OUT=eth1`) instead of delivering.
+
+describe("render.nft #1865 block page is never dropped", function()
+
+  local function filter_chain_body(nft)
+    local start = nft:find("chain wifihaven_block {", 1, true)
+    if not start then return nil end
+    local open  = nft:find("{", start, true)
+    local close = nft:find("\n  }", open, true)
+    return nft:sub(open + 1, close - 1)
+  end
+
+  it("wifihaven_block accepts router-local (block-page DNAT) traffic before any drop", function()
+    local s = snap_one()
+    s.profiles["3"].rules.blocked = true
+    s.profiles["3"].rules.blockReason = "Schedule"
+    local nft  = render.nft(s)
+    local body = filter_chain_body(nft)
+    assert.truthy(body)
+    -- A single accept guard for router-local destinations (every block-page
+    -- DNAT/redirect target is a local address; normal forwarded traffic is
+    -- destined to an external host) — must be an accept, never a drop.
+    local guard = body:find("fib daddr type local counter accept", 1, true)
+    assert.truthy(guard, "expected a `fib daddr type local counter accept` guard")
+    -- It must precede every drop so the block page wins over all of them.
+    local first_drop = body:find("counter drop", 1, true)
+    assert.truthy(first_drop, "expected at least one drop rule")
+    assert.is_true(guard < first_drop,
+      "block-page accept guard must precede every drop rule")
+  end)
+
+  it("the guard is present even when only extraBlocked / category / blockIpOnly drops apply", function()
+    local s = snap_one()  -- snap_one has extraBlocked + blocklistIds, no MAC-wide block
+    s.profiles["3"].rules.blockIpOnly = true
+    local body = filter_chain_body(render.nft(s))
+    assert.truthy(body)
+    assert.truthy(body:find("fib daddr type local counter accept", 1, true))
+    -- And it still precedes the blockIpOnly drop.
+    local guard = body:find("fib daddr type local counter accept", 1, true)
+    local drop  = body:find("counter drop", 1, true)
+    assert.is_true(drop ~= nil and guard < drop)
+  end)
+
+  it("no v6 block-page DNAT to loopback (::1) survives — that path never delivered", function()
+    local s = snap_one()
+    s.profiles["3"].rules.blocked = true
+    s.profiles["3"].rules.blockReason = "Paused"
+    s.profiles["3"].rules.blocklistIds = { "ads" }
+    s.blocklists = { ads = { version = "v1", url = "/api/blocklists/ads" } }
+    local nft = render.nft(s)
+    assert.is_nil(nft:find("dnat ip6 to ::1", 1, true))
+  end)
+
+  it("v6 block-page uses redirect for @blocked_macs, extraBlocked and category", function()
+    local s = snap_one()
+    s.profiles["3"].rules.blocked = true
+    s.profiles["3"].rules.blockReason = "Paused"
+    s.profiles["3"].rules.blocklistIds = { "ads" }
+    s.blocklists = { ads = { version = "v1", url = "/api/blocklists/ads" } }
+    local nft = render.nft(s)
+    assert.truthy(nft:find(
+      "ether saddr @blocked_macs ip6 daddr != ::1 tcp dport 80 redirect to :8081", 1, true))
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @eb6_tiktok_com tcp dport 443 redirect to :8443", 1, true))
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @bl6_ads tcp dport 80 redirect to :8081", 1, true))
+  end)
+
+  it("v4 block-page path is unchanged (DNAT to 127.0.0.1; route_localnet delivers loopback)", function()
+    local s = snap_one()
+    s.profiles["3"].rules.blocked = true
+    s.profiles["3"].rules.blockReason = "Paused"
+    local nft = render.nft(s)
+    assert.truthy(nft:find(
+      "ether saddr @blocked_macs tcp dport 80 dnat ip to 127.0.0.1:8081", 1, true))
+    assert.truthy(nft:find(
+      "ether saddr @blocked_macs tcp dport 443 dnat ip to 127.0.0.1:8443", 1, true))
   end)
 
 end)
