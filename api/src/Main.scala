@@ -299,6 +299,18 @@ object Main extends ZIOAppDefault {
       promPublisher  <- ZIO.service[PrometheusPublisher]
       routerAuth = new RouterAuthLive(routerRepo)
       routerMetrics <- RouterMetricsService.make
+      // #1846: the transport-agnostic ingest service shared by the REST ingest routes and the new
+      // websocket transport, plus the per-router ws connection registry.
+      routerIngest = new RouterIngestService(
+        routerRepo,
+        trafficRepo,
+        usageRepo,
+        deviceRepo,
+        connRepo,
+        alertRepo,
+        hsRepo,
+      )
+      wsRegistry <- RouterWsRegistry.make
       dbHealthCheck = sql"SELECT 1".query[Int].unique.transact(xa).unit
     } yield {
       // #1177: split the route composition into typed chunks. A flat `++` chain across
@@ -401,16 +413,9 @@ object Main extends ZIOAppDefault {
         RouterRoutes.routes(routerRepo, policy, routerAuth, blockEvRepo) ++
           AdminRouterRoutes.routes(auth, routerRepo) ++
           RollupAdminRoutes.routes(auth, rollupRepo2) ++
-          RouterIngestRoutes.routes(
-            routerAuth,
-            routerRepo,
-            trafficRepo,
-            usageRepo,
-            deviceRepo,
-            connRepo,
-            alertRepo,
-            hsRepo,
-          ) ++
+          RouterIngestRoutes.routes(routerAuth, routerIngest) ++
+          // #1846: additive websocket transport. REST ingest/poll/metrics above stay fully live.
+          RouterWsRoutes.routes(routerAuth, wsRegistry, routerIngest, routerMetrics, routerRepo) ++
           RouterMetricsRoutes.routes(routerAuth, routerMetrics) ++
           AlertRoutes.routes(
             auth,

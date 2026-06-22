@@ -274,6 +274,125 @@ curl -fsS -X POST "$BASE/api/router/events" "${RAUTH[@]}" \
   -d "$EVTS" >/dev/null
 pass "dhcp_lease + 3 connection_attempt shapes posted"
 
+# ── 4b. #1846: WS↔REST ingest-transport demux parity ──────────────────────
+#
+# The websocket transport (GET /api/router/ws) demuxes {op,payload} frames into
+# the SAME RouterIngestService / RouterMetricsService the REST endpoints call.
+# Prove that end-to-end against the real API — this script runs against both the
+# in-docker compose stack and deployed staging — by sending identical payloads
+# over REST and over ws frames and asserting:
+#   (a) the ws upgrade authenticates exactly like REST (bad/missing → 401, valid → 101),
+#   (b) every usage/events/metrics frame is acked ok, and
+#   (c) the connection events land identically whether posted via REST or ws
+#       (read back through the public /api/logs surface — staging has no
+#        /api/debug/*, so this uses the same endpoint the #1122 step does).
+# Usage/metrics are validated at acceptance granularity (REST 200 == ws ack ok)
+# since neither exposes a per-mac public readback on staging; the events leg is
+# the deep parity proof of the shared ingest path.
+step "#1846: websocket transport demux parity with REST"
+
+WS_SEND="$E2E_LIB/ws_send.py"
+WS_URL="$(printf '%s' "$BASE" | sed -e 's#^http#ws#')/api/router/ws"
+ws_status() { python3 "$WS_SEND" --url "$WS_URL" "$@" --expect-upgrade-status \
+  | _py 'import json,sys; print(json.load(sys.stdin)["status"])'; }
+
+st_none=$(ws_status)
+st_bad=$(ws_status --token bogus-token)
+st_ok=$(ws_status --token "$RTOK")
+{ [ "$st_none" = 401 ] && [ "$st_bad" = 401 ]; } \
+  || fail "ws upgrade not 401 for missing/bad token (none=$st_none bad=$st_bad)"
+[ "$st_ok" = 101 ] || fail "ws upgrade not 101 for valid token (got $st_ok)"
+pass "ws upgrade auth parity: missing/bad → 401, valid → 101"
+
+# Disjoint MACs so the REST and ws connection-event rows compare side by side.
+PARITY_TS="$(_py 'import datetime; print(datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))')"
+MAC_REST="e2:e2:e3:${mac_suffix:0:2}:${mac_suffix:2:2}:${mac_suffix:4:2}"
+MAC_WS="e2:e2:e4:${mac_suffix:0:2}:${mac_suffix:2:2}:${mac_suffix:4:2}"
+
+# Build the REST bodies + the ws frame array together so payloads are identical
+# bar the MAC. usage/events carry routerId=$RID (the authed router); the ws
+# frames wrap the same bodies under {op,payload,seq}.
+PARITY=$(_py "
+import json, uuid
+rid, ts = '$RID', '$PARITY_TS'
+def events(mac):
+    return {'routerId': rid, 'events': [
+        {'type':'connection_attempt','mac':mac,'host':{'type':'fqdn','value':'youtube.com'},
+         'destIp':'203.0.113.51','allowed':False,'reason':'category:adult','ts':ts,'eventId':str(uuid.uuid4())},
+        {'type':'connection_attempt','mac':mac,'host':{'type':'fqdn','value':'khanacademy.org'},
+         'destIp':'203.0.113.52','allowed':True,'reason':'allow','ts':ts,'eventId':str(uuid.uuid4())},
+    ]}
+def usage(mac):
+    return {'routerId': rid, 'periodStart': ts, 'periodEnd': ts,
+            'records': [{'mac':mac,'ip':'192.168.50.10','host':{'type':'fqdn','value':'youtube.com'},
+                         'activeSeconds':240,'bytesIn':100000,'bytesOut':50000}]}
+def metrics():
+    return {'routerId': rid, 'agentVersion':'ws-parity-e2e','agentStartedAt':ts,'sampledAt':ts,
+            'gauges':[{'name':'agent_uptime_seconds','value':4242.0}]}
+print(json.dumps({
+  'rest_events': events('$MAC_REST'), 'rest_usage': usage('$MAC_REST'), 'rest_metrics': metrics(),
+  'ws_frames': [
+    {'op':'events','seq':1,'payload': events('$MAC_WS')},
+    {'op':'usage','seq':2,'payload': usage('$MAC_WS')},
+    {'op':'metrics','seq':3,'payload': metrics()},
+  ],
+}))
+")
+
+# REST legs — each must 200.
+for kind in events usage metrics; do
+  body=$(printf '%s' "$PARITY" | _py "import json,sys; print(json.dumps(json.load(sys.stdin)['rest_$kind']))")
+  code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/router/$kind" "${RAUTH[@]}" \
+    -H 'content-type: application/json' -d "$body")
+  [ "$code" = 200 ] || fail "REST /api/router/$kind returned $code (expected 200)"
+done
+pass "REST usage/events/metrics accepted (200)"
+
+# ws leg — send all three frames over one connection; every reply must be ack ok.
+# `|| true` so a ws_send.py failure doesn't abort under `set -e` before we can
+# surface it: on error the helper prints `{"error":…}` to stdout, which the
+# ACKS_OK parse below reports verbatim in the fail message.
+WS_REPLIES=$(printf '%s' "$PARITY" \
+  | _py "import json,sys; print(json.dumps(json.load(sys.stdin)['ws_frames']))" \
+  | python3 "$WS_SEND" --url "$WS_URL" --token "$RTOK" || true)
+ACKS_OK=$(printf '%s' "$WS_REPLIES" | _py "
+import json, sys
+replies = json.load(sys.stdin)
+ok = (isinstance(replies, list) and len(replies) == 3
+      and all(r.get('op') == 'ack' and (r.get('payload') or {}).get('status') == 'ok' for r in replies))
+print('ok' if ok else 'bad: ' + json.dumps(replies))
+")
+[ "$ACKS_OK" = ok ] || fail "ws frames not all acked ok: $ACKS_OK"
+pass "ws usage/events/metrics frames each acked ok"
+
+# (c) Deep parity — the connection events land identically whether posted over
+# REST or ws. Read both MACs via the public /api/logs and compare the
+# (host, allowed, reason-kind) projection.
+proj_for() { # $1 = mac → sorted JSON projection of that mac's youtube/khan events
+  curl -fsS "${AUTH[@]}" "$BASE/api/logs?mac=$1&hours=1" | _py "
+import json, sys
+rows = json.load(sys.stdin).get('rows', [])
+def host(r):
+    h = r.get('host') or {}
+    return h.get('value','') if h.get('type') == 'fqdn' else ''
+print(json.dumps(sorted(
+    (host(r), bool(r.get('allowed')), (r.get('reason') or {}).get('kind'))
+    for r in rows if host(r) in ('youtube.com', 'khanacademy.org'))))
+"
+}
+REST_PROJ=""; WS_PROJ=""
+deadline=$(( $(date +%s) + 15 ))
+while (( $(date +%s) < deadline )); do
+  REST_PROJ=$(proj_for "$MAC_REST"); WS_PROJ=$(proj_for "$MAC_WS")
+  n=$(printf '%s' "$REST_PROJ" | _py 'import json,sys; print(len(json.load(sys.stdin)))')
+  { [ "$n" = 2 ] && [ "$REST_PROJ" = "$WS_PROJ" ]; } && break
+  sleep 1
+done
+[ "$REST_PROJ" = "$WS_PROJ" ] || fail "ws/REST event parity mismatch: rest=$REST_PROJ ws=$WS_PROJ"
+[ "$(printf '%s' "$REST_PROJ" | _py 'import json,sys; print(len(json.load(sys.stdin)))')" = 2 ] \
+  || fail "expected 2 events per transport, got rest=$REST_PROJ"
+pass "ws and REST connection events landed identically via /api/logs"
+
 # ── 5a. #1122: nflog-synthesized blocked-MAC events end-to-end ────────────
 #
 # Server-side half of #1122 (router-side half lives in
