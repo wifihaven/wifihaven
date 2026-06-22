@@ -2,7 +2,7 @@
 #
 # Manages:
 #   - Two Cloudflare Pages projects (Direct Upload — CI pushes via wrangler).
-#   - Three Pages custom domains (apex, www, staging).
+#   - Five Pages custom domains (apex, www, staging, app, app-staging).
 #   - Two DNS-only CNAMEs pointing api / api-staging at Render.
 #
 # Does NOT manage:
@@ -87,6 +87,22 @@ resource "cloudflare_pages_domain" "staging" {
   domain       = "staging.wifihaven.net"
 }
 
+# App host on the existing prod/staging Pages projects (#1832, sub-issue #1839).
+# ADDITIVE: the SPA also answers on app.* alongside the existing apex/www so
+# nothing breaks while we verify. Cut-over of the canonical host, CORS/JWT, and
+# the staging→app redirect are later sub-issues (#1840/#1841); not done here.
+resource "cloudflare_pages_domain" "app" {
+  account_id   = var.account_id
+  project_name = cloudflare_pages_project.prod.name # "wifihaven"
+  domain       = "app.wifihaven.net"
+}
+
+resource "cloudflare_pages_domain" "app_staging" {
+  account_id   = var.account_id
+  project_name = cloudflare_pages_project.staging.name # "wifihaven-staging"
+  domain       = "app-staging.wifihaven.net"
+}
+
 # ── DNS: API CNAMEs to Render ───────────────────────────────────────────────
 # DNS-only (grey cloud). Proxying through Cloudflare's edge would terminate
 # TLS at Cloudflare and require additional work for the API to read the real
@@ -130,6 +146,26 @@ resource "cloudflare_record" "spa_staging" {
   proxied = true
   ttl     = 1
   comment = "Cloudflare Pages wifihaven-staging (#613)"
+}
+
+resource "cloudflare_record" "spa_app" {
+  zone_id = var.zone_id
+  name    = "app"
+  type    = "CNAME"
+  content = "wifihaven.pages.dev"
+  proxied = true
+  ttl     = 1
+  comment = "Cloudflare Pages wifihaven — app host (#1832)"
+}
+
+resource "cloudflare_record" "spa_app_staging" {
+  zone_id = var.zone_id
+  name    = "app-staging"
+  type    = "CNAME"
+  content = "wifihaven-staging.pages.dev"
+  proxied = true
+  ttl     = 1
+  comment = "Cloudflare Pages wifihaven-staging — app host (#1832)"
 }
 
 resource "cloudflare_record" "api_prod" {
