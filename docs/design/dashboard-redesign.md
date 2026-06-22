@@ -298,10 +298,18 @@ the chunk PRs above (do not also implement them piecemeal).
 
 ### 7.5 Sequencing decision (2026-06-22) — paused, gated on websocket #1023
 
-**The implementation is on hold until the websocket streaming transport
-([#1023](https://github.com/wifihaven/wifihaven/issues/1023), priority #1) lands.** Operator
+**The implementation is on hold until the streaming transport lands.** Operator
 decision: the dashboard is the household's live status surface, so its live sections must be
-**sourced from the streaming push**, not the current 10s `refetchInterval` poll. Building the
+**sourced from the streaming push**, not the current 10s `refetchInterval` poll.
+
+Precise gate: [#1023](https://github.com/wifihaven/wifihaven/issues/1023) (priority #1) is the
+**router↔API** leg — "migrate router↔API transport to a persistent websocket (push usage +
+events)." That feeds fresh usage/events into the API in real time, but the dashboard is a
+**browser SPA** consuming the *API*, so a live-streamed dashboard also needs the **API→SPA push
+leg** (a browser-facing websocket/SSE channel that re-publishes the snapshot deltas #1023 lands
+upstream). The redesign is gated on **both**: #1023 plus that API→SPA push channel. If the
+API→SPA leg isn't already tracked under #1023's epic when work resumes, file it as the explicit
+predecessor to chunks 2–3. Building the
 redesigned NOW / KPI / Most-Recently-Blocked sections on the polling path first would be
 throwaway — the data plane changes underneath them when #1023 ships.
 
