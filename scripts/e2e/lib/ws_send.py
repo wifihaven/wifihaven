@@ -56,6 +56,10 @@ def _open(url: str, token: str | None, timeout: float):
     sock: socket.socket = socket.create_connection((host, port), timeout=timeout)
     if u.scheme == "wss":
         ctx = ssl.create_default_context()
+        # Pin a TLS 1.2 floor — create_default_context() otherwise still permits
+        # TLSv1/1.1 (CodeQL py/insecure-protocol). Staging terminates modern TLS,
+        # so this only forbids the obsolete versions.
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
         sock = ctx.wrap_socket(sock, server_hostname=host)
 
     key = base64.b64encode(os.urandom(16)).decode("ascii")

@@ -349,9 +349,12 @@ done
 pass "REST usage/events/metrics accepted (200)"
 
 # ws leg — send all three frames over one connection; every reply must be ack ok.
+# `|| true` so a ws_send.py failure doesn't abort under `set -e` before we can
+# surface it: on error the helper prints `{"error":…}` to stdout, which the
+# ACKS_OK parse below reports verbatim in the fail message.
 WS_REPLIES=$(printf '%s' "$PARITY" \
   | _py "import json,sys; print(json.dumps(json.load(sys.stdin)['ws_frames']))" \
-  | python3 "$WS_SEND" --url "$WS_URL" --token "$RTOK")
+  | python3 "$WS_SEND" --url "$WS_URL" --token "$RTOK" || true)
 ACKS_OK=$(printf '%s' "$WS_REPLIES" | _py "
 import json, sys
 replies = json.load(sys.stdin)
