@@ -101,7 +101,23 @@ sock:starttls(ctx)                                -- TLS handshake
 1. **Framing wire-correctness** — 17/17 busted tests against RFC 6455 §1.3
    (handshake accept-key) and §5.7 (masked/unmasked frame byte vectors), plus
    extended-length (16/64-bit) and partial-buffer/multi-frame decode.
-   (`openwrt/test/ws_frame_spec.lua`, runs in CI via `run_tests.sh`.)
+   (`openwrt/test/ws_frame_spec.lua` — now in BOTH `run_tests.sh` and the CI
+   busted list; it had been added only to `run_tests.sh`, but CI keeps a
+   separate hardcoded list that had drifted, so it wasn't actually gating.)
+   **Drift note:** CI's `OpenWrt Lua Tests` busted list (`ci.yml`) and
+   `run_tests.sh` are two hand-maintained copies and have diverged (CI omits
+   `sni`/`quic`/`lan_warn`/`eb_refresh`/… and all `sh test/*.sh` specs). Out of
+   scope to reconcile here, but worth a follow-up — collapsing CI onto
+   `run_tests.sh` would prevent a test silently not-gating.
+1b. **Automated e2e (the manual hardware validation, codified)** —
+   `openwrt/spike/ws-1845/e2e_test.sh` drives the real `ws_client.lua` through
+   full ws:// **and** wss:// (self-signed TLS) round-trips against
+   `echo_server.lua`, asserting connect/handshake/echo/heartbeat/clean-close.
+   It self-skips where `lua-cqueues`/`lua-luaossl` are absent (dev macOS host),
+   and **runs in CI** on the real Lua 5.1 + packaged cqueues/luaossl stack
+   (deps added to the `OpenWrt Lua Tests` job) — so the three §5.1 bug classes
+   are now regression-gated automatically, not just caught by a one-off manual
+   run.
 2. **Full client end-to-end on a real Lua 5.1 + packaged-cqueues/luaossl target**
    (Ubuntu 24.04, epoll). `poc_echo.lua` PASS for **both** transports:
    - **ws://** loopback against `echo_server.lua`: connect → handshake →

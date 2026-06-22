@@ -47,3 +47,6 @@ sh test/nft_log_dep_spec.sh
 sh test/agent_spec.sh
 sh test/rotate_dnsmasq_log_spec.sh
 sh test/init_sni_toggle_spec.sh
+# ws-client e2e (#1845): runs ws://+wss:// round-trips through the real client;
+# self-skips (exit 0) when lua-cqueues/lua-luaossl aren't installed.
+sh spike/ws-1845/e2e_test.sh
