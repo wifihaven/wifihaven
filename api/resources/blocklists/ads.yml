@@ -44,3 +44,61 @@ hosts:
   - fullstory.com
   - mouseflow.com
   - chartbeat.com
+  # traffic-driven additions (#1822): observed but unblocked ad/RTB/tracker infra.
+  # Sourced from a 30-day prod recent-apexes sweep (25 devices); each apex below
+  # is unambiguous ad-tech (mobile ad network / SSP / DSP / exchange / RTB bidder /
+  # ad verification / identity-resolution / attribution) with meaningful real
+  # traffic and no shared-product-infra collateral. See
+  # evidence/ads-classification-1822.md for per-apex hits + classification.
+  # Mobile ad networks / mediation SDKs
+  - applovin.com
+  - liftoff-creatives.io
+  - liftoff.io
+  - adsmoloco.com
+  - moloco.com
+  - vungle.com
+  - inmobi.com
+  - inmobicdn.net
+  - chartboost.com
+  - fyber.com
+  - smadex.com
+  - mintegral.com
+  - tiktokpangle.us
+  - tiktokpangle-cdn-us.com
+  # Ad serving / video
+  - flashtalking.com
+  - innovid.com
+  - primis.tech
+  - connatix.com
+  - teads.tv
+  # SSPs / exchanges / RTB bidders
+  - 3lift.com
+  - media.net
+  - sharethrough.com
+  - pubnative.net
+  - onetag-sys.com
+  - seedtag.com
+  - kargo.com
+  - lijit.com
+  - richaudience.com
+  - 33across.com
+  - gumgum.com
+  - smaato.net
+  - contextweb.com
+  - adform.net
+  - kueezrtb.com
+  - servenobid.com
+  # Ad verification
+  - doubleverify.com
+  - adsafeprotected.com
+  # DSP
+  - stackadapt.com
+  # Identity resolution / data brokers
+  - rlcdn.com
+  - liadm.com
+  - agkn.com
+  - tapad.com
+  # Mobile attribution / measurement
+  - adjust.com
+  - appsflyer.com
+  - singular.net
