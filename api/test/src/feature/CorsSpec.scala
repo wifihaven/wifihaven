@@ -144,6 +144,38 @@ object CorsSpec extends ZIOSpecDefault {
         resp.header(Header.ETag).isDefined,
       )
     },
+    test("additive prod allowlist accepts both apex and app.* origins (#1840)") {
+      // #1840 (#1832 rename): the prod CORS allowlist gains app.wifihaven.net
+      // additively — the existing apex/www origins must keep working while the
+      // new app host is also accepted. Mirror the render.yaml prod value.
+      val prodCfg                   = CorsConfig(
+        allowedOrigins =
+          "https://wifihaven.net,https://www.wifihaven.net,https://app.wifihaven.net",
+      )
+      val prodRoutes                = Cors.wrap(Routes(loginEcho), prodCfg)
+      def preflight(origin: String) =
+        Request
+          .options("/api/auth/login")
+          .addHeader(Header.Origin.parse(origin).toOption.get)
+          .addHeader(Header.AccessControlRequestMethod(Method.POST))
+      def echoed(origin: String)    =
+        prodRoutes(preflight(origin)).merge.map { resp =>
+          resp
+            .header(Header.AccessControlAllowOrigin)
+            .contains(
+              Header.AccessControlAllowOrigin.Specific(
+                Header.Origin.parse(origin).toOption.get,
+              ),
+            )
+        }
+      for {
+        apex <- echoed("https://wifihaven.net")
+        www  <- echoed("https://www.wifihaven.net")
+        app  <- echoed("https://app.wifihaven.net")
+        evil <- prodRoutes(preflight("https://evil.example")).merge
+          .map(_.header(Header.AccessControlAllowOrigin).isEmpty)
+      } yield assertTrue(apex, www, app, evil)
+    },
     test("empty allowedOrigins disables middleware entirely") {
       val bare =
         Cors.wrap(Routes(loginEcho), CorsConfig(allowedOrigins = ""))
