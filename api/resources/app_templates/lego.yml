@@ -1,0 +1,39 @@
+slug: lego
+name: LEGO Builder
+icon: "https://icons.duckduckgo.com/ip3/lego.com.ico"
+icon_type: url
+# Added from prod evidence (#1815, evidence/classification-1815.md): 30d kid
+# traffic showed 277 MB / 178 hits under lego.com across all three kid iPads
+# (Quintus 184 MB, Octavius 86 MB, Prima 7 MB) — the single largest uncovered
+# cluster in the "Other" bucket. The observed FQDNs are unambiguously the
+# **LEGO Builder** 3D building-instructions experience, NOT the shop:
+#   api.prod.cobuild.i.lego.com        co-build (build-together) backend
+#   api.prod.dbix.i.lego.com           digital building-instructions experience
+#   assets.prod.dbix.i.lego.com        build-instruction assets
+#   biapp.prod.dbix.i.lego.com         building-instructions app service
+#   imageresizer.prod.dbix.i.lego.com  instruction-image resizer
+#   appconfig.services.lego.com        Builder app config
+#   scout.services.lego.com            Builder app service
+#   videoprocessingpipeline.services.lego.com
+#   buggy.apps.lego.com                Builder app surface
+#
+# Host-set is the four building-specific PARENT subdomains rather than the
+# `lego.com` apex — a deliberate, supported deviation from the "apex hostnames"
+# convention in _README.yml. dnsmasq's `nftset=/<host>/` populates the ipset for
+# `<host>` AND its subdomains by SUFFIX (render.lua emits one `nftset=/<host>/`
+# directive per host verbatim — no apex reduction anywhere in the API→agent
+# path), so `dbix.i.lego.com` matches `*.dbix.i.lego.com` but NOT
+# `www.lego.com`. This keeps the LEGO shop / marketing apex OUT of the app's
+# time-limit budget while covering every observed Builder FQDN:
+#   cobuild.i.lego.com  → api.prod.cobuild.i.lego.com
+#   dbix.i.lego.com     → api/assets/biapp/imageresizer.prod.dbix.i.lego.com
+#   services.lego.com   → appconfig/scout/videoprocessingpipeline.services.lego.com
+#   apps.lego.com       → buggy.apps.lego.com
+# Sibling LEGO properties on distinct apexes are excluded as before: BrickLink
+# (bricklink.com, marketplace), LEGO Education (legoeducation.com, classroom),
+# and the corporate analytics apex thelegogroup.com (97 kB).
+hosts:
+  - cobuild.i.lego.com
+  - dbix.i.lego.com
+  - services.lego.com
+  - apps.lego.com
