@@ -18,8 +18,8 @@ devices, aggregated by apex bytes:
 
 | apex             | kid bytes / hits | disposition |
 | ---------------- | ---------------- | ----------- |
-| lego.com         | 277 MB / 178     | **NEW template `lego`** (LEGO Builder — see below) |
-| duckmath.org     | 65 MB / 3        | **NEW template `duckmath`** (unblocked-games / filter-bypass portal) |
+| lego.com         | 277 MB / 178     | **NEW app template `lego`** (LEGO Builder — see below) |
+| duckmath.org     | 65 MB / 3        | **Added to `blocklists/games.yml`** (unblocked-games / filter-bypass portal) — NOT an app (a block target, not a time-budget app; operator decision) |
 | icloud-content.com, apple-dns.net, apple.com, fastly.net, akadns.net, aaplimg.com, gvt2.com | large | infra / Apple+Google service pools — NOT templatable (shared) |
 | flashtalking.com, innovid.com, adsrvr.org, doubleclick.net, pubmatic.com, casalemedia.com, … | large | ad / RTB networks — noise, skip |
 | kastatic.org, kasandbox.org | 381 / 12 MB | already covered by `khan-academy` |
@@ -30,7 +30,7 @@ devices, aggregated by apex bytes:
 | mathplayground.com | 181 kB / 4     | below engagement bar — skip (don't template incidental hosts) |
 | temu.com, ticketm.net, apple.news, reddit.com | low | not a kid app — skip |
 
-## NEW templates (2)
+## NEW app template (1)
 
 ### `lego` — "LEGO Builder" — host `lego.com`
 
@@ -83,15 +83,17 @@ videoprocessingpipeline.services.lego.com → services.lego.com
 buggy.apps.lego.com                 → apps.lego.com
 ```
 
-### `duckmath` — "DuckMath" — host `duckmath.org`
+## Blocklist addition — `duckmath.org` → `blocklists/games.yml`
 
 65 MB on Prima iPad (one long session) + a Kid Mac trace. Despite the "math"
 name, DuckMath is an **unblocked-games portal** (250+ browser games) that ships
 proxy and cloaking tools to disguise game traffic and bypass network content
-filters. Templating it gives the operator a one-click block / time-limit surface
-for a known filter-evasion vector — high value precisely because the name is
-camouflage. Single brand-specific apex (observed `db2.duckmath.org` covered by
-suffix match); heavy game-asset CDN bytes intentionally not pinned (#1661).
+filters. It is a **block target, not a time-budget app** — there is no reason to
+give a kid a daily allowance of a filter-evasion site — so it goes in the curated
+**Games** blocklist (`api/resources/blocklists/games.yml`) only, alongside the
+other browser-game portals (poki, crazygames, coolmathgames, …), and is NOT
+shipped as an app template (operator decision, 2026-06-21). The proxy/mirror
+sites DuckMath links to are added to the same blocklist (see commit history).
 
 ## No host-set changes to existing templates
 

@@ -66,10 +66,18 @@ hosts:
   - newgrounds.com
   # "Unblocked games" / filter-bypass portals (#1815): innocuous-sounding sites
   # that host 100s of browser games plus built-in proxy/cloaking tools to evade
-  # content filters. duckmath.org observed at 65 MB on a kid iPad. Also shipped
-  # as the `duckmath` app template (per-app limit surface); listing it here too
-  # gives the category-block surface — duplicates dedupe at the router.
+  # content filters. duckmath.org observed at 65 MB on a kid iPad. Block target
+  # only — intentionally NOT an app template (no reason to give a daily budget
+  # to a filter-evasion site).
   - duckmath.org
+  # Web-proxy / circumvention ecosystem these "unblocked games" portals embed to
+  # bypass filters (harvested from DuckMath + the TitaniumNetwork proxy stack:
+  # Holy Unblocker, InvisiProxy, Rammerhead, Ultraviolet/Scramjet). now.gg runs
+  # Android games/apps in-browser, a common in-browser game/bypass vector.
+  - holyunblocker.org
+  - invisiproxy.com
+  - titaniumnetwork.org
+  - now.gg
   - agar.io
   - slither.io
   - krunker.io
