@@ -813,7 +813,7 @@ describe("render.nft drop rules carry log prefix + counter + comment (#1122/#112
         -- The matching log rule is the line directly above, same predicate.
         local predicate = line:gsub(" counter drop.*$", "")
         assert(prev and prev:find(predicate, 1, true)
-               and prev:find("limit rate 10/second burst 20 packets log prefix \"wh_drop:", 1, true),
+               and prev:find("limit rate 2/second burst 10 packets log prefix \"wh_drop:", 1, true),
                "drop not preceded by its rate-limited log rule: " .. line)
       end
       prev = line
@@ -880,7 +880,7 @@ describe("render.nft rate-limits wh_drop logging (#1826)", function()
     local nft = render.nft(s)
     -- Rate-limited log rule for this MAC/reason (limit precedes log prefix).
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 limit rate 10/second burst 20 packets log prefix \"wh_drop:aa:bb:cc:11:22:33:Schedule \"",
+      "ether saddr aa:bb:cc:11:22:33 limit rate 2/second burst 10 packets log prefix \"wh_drop:aa:bb:cc:11:22:33:Schedule \"",
       1, true), "expected rate-limited wh_drop log rule")
     -- Unconditional drop rule (counter + comment), with NO limit/log.
     assert.truthy(nft:find(
@@ -925,6 +925,31 @@ describe("render.nft rate-limits wh_drop logging (#1826)", function()
         assert(false, "limit and drop on same rule (block leaks over budget): " .. line)
       end
     end
+  end)
+
+  -- #1864: even rate-limited at 10/second, the aggregate across many
+  -- simultaneously-storming drop rules dominated the shared `logread` ring
+  -- buffer and evicted agent/dnsmasq lines, leaving the router undiagnosable.
+  -- The LOG is throttled harder (≤ 2/second sustained) to keep the ring buffer
+  -- usable; the drop verdict is unaffected (asserted above). Guard against a
+  -- regression that bumps the sustained rate back up.
+  it("throttles the wh_drop LOG to ≤ 2/second sustained (#1864)", function()
+    local s = snap_one()
+    s.profiles["3"].rules.blocked     = true
+    s.profiles["3"].rules.blockReason = "Schedule"
+    local nft  = render.nft(s)
+    local body = filter_chain_body(nft)
+    assert.truthy(body)
+    local saw_log = false
+    for line in body:gmatch("[^\n]+") do
+      local rate = line:match("limit rate (%d+)/second")
+      if rate and line:find("log prefix \"wh_drop:", 1, true) then
+        saw_log = true
+        assert(tonumber(rate) <= 2,
+               "wh_drop LOG rate too high (ring-buffer flood risk): " .. line)
+      end
+    end
+    assert.truthy(saw_log, "expected at least one rate-limited wh_drop log rule")
   end)
 end)
 
@@ -2608,7 +2633,7 @@ describe("render.nft global composition (#1319)", function()
                "drop rule still logs (flood risk): " .. line)
         local predicate = line:gsub(" counter drop.*$", "")
         assert(prev and prev:find(predicate, 1, true)
-               and prev:find("limit rate 10/second burst 20 packets log prefix \"wh_drop:", 1, true),
+               and prev:find("limit rate 2/second burst 10 packets log prefix \"wh_drop:", 1, true),
                "drop not preceded by its rate-limited log rule: " .. line)
       end
       prev = line
