@@ -148,7 +148,9 @@ resource "cloudflare_record" "spa_app" {
   comment = "Cloudflare Pages wifihaven — app host (#1832)"
 }
 
-# Staging parity (keeps the smoke/e2e CORS chain coherent).
+# Staging parity (keeps the smoke/e2e CORS chain coherent). NOTE: app-staging
+# is an *added recommendation* for chain coherence, not an operator requirement
+# — #1832 names only the prod app.wifihaven.net.
 resource "cloudflare_pages_domain" "app_staging" {
   account_id   = var.account_id
   project_name = cloudflare_pages_project.staging.name # "wifihaven-staging"
@@ -238,10 +240,11 @@ Two distinct redirect needs, with different lifetimes:
    them. Implement as a high-priority redirect rule that the marketing site's
    catch-all cannot shadow:
    `https://wifihaven.net/blocked*  https://app.wifihaven.net/blocked:splat?:query  302`.
-   Recommend **302 (temporary)**, not 301: a 301 is cached hard by browsers, and
-   keeping it a 302 lets us retarget or retire it cleanly once telemetry shows no
-   pre-rename routers remain. (It costs nothing to keep, but 302 keeps options
-   open.)
+   Recommend **302 (temporary)**, not 301: a 301 is cached hard by browsers, so a
+   302 keeps the shim **retargetable** (we can repoint it without fighting stale
+   browser caches). This is a choice about retargetability, **not** about expected
+   lifetime — per §1.2 the shim must live for the *indefinite* lifetime of
+   pre-rename routers, so do not read "temporary" as "short-lived."
 
    > This shim is *required because* `block_page_url` can't be pushed over the
    > wire (§1.2). The alternative — re-running install / hand-editing UCI on
