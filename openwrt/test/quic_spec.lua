@@ -228,12 +228,12 @@ describe("quic", function()
       -- Same header shape but version field set to 0x6b3343cf (QUIC v2 RFC
       -- 9369). The salt for v2 is different so we can't reuse the keys; the
       -- parser must reject it cleanly before touching any crypto.
-      local v2 = "\xc0" ..             -- long header, Initial-like form
-                 "\x6b\x33\x43\xcf" .. -- version v2
-                 "\x08" .. RFC_DCID .. -- DCID
-                 "\x00" ..             -- SCID len 0
-                 "\x00" ..             -- token len 0
-                 "\x44\x9e" ..         -- length (varint, doesn't matter)
+      local v2 = "\192" ..             -- long header, Initial-like form
+                 "\107\051\067\207" .. -- version v2
+                 "\008" .. RFC_DCID .. -- DCID
+                 "\000" ..             -- SCID len 0
+                 "\000" ..             -- token len 0
+                 "\068\158" ..         -- length (varint, doesn't matter)
                  string.rep("\0", 1200) -- bogus payload
       local sni, reason = quic.parse_quic_packet(v2, stub_crypto())
       assert.is_nil(sni)
@@ -243,11 +243,11 @@ describe("quic", function()
     it("returns nil/quic_not_initial on a long header non-Initial (Handshake) packet", function()
       -- Long header, Initial-like prefix but packet-type bits = 0x02 (Handshake)
       -- in the first byte. We can't decrypt Handshake with Initial keys.
-      local hs = "\xe0" ..             -- 1100 0000 → 0xe0 = type=10 (Handshake)
-                 "\x00\x00\x00\x01" .. -- v1
-                 "\x08" .. RFC_DCID ..
-                 "\x00" ..             -- SCID len 0
-                 "\x44\x9e" ..         -- length
+      local hs = "\224" ..             -- 1100 0000 → 0xe0 = type=10 (Handshake)
+                 "\000\000\000\001" .. -- v1
+                 "\008" .. RFC_DCID ..
+                 "\000" ..             -- SCID len 0
+                 "\068\158" ..         -- length
                  string.rep("\0", 1200)
       local sni, reason = quic.parse_quic_packet(hs, stub_crypto())
       assert.is_nil(sni)
@@ -258,14 +258,14 @@ describe("quic", function()
       -- First-byte high bit clear = short header. SNI is only in Initials, so
       -- we silently skip — this is the steady-state case (most QUIC traffic
       -- on UDP 443 is 1-RTT once the handshake settles).
-      local short = "\x40" .. string.rep("\0", 100)
+      local short = "\064" .. string.rep("\0", 100)
       local sni, reason = quic.parse_quic_packet(short, stub_crypto())
       assert.is_nil(sni)
       assert.are.equal("quic_short_header", reason)
     end)
 
     it("returns nil/quic_truncated on a packet shorter than the long header", function()
-      local sni, reason = quic.parse_quic_packet("\xc0\x00\x00", stub_crypto())
+      local sni, reason = quic.parse_quic_packet("\192\000\000", stub_crypto())
       assert.is_nil(sni)
       assert.are.equal("quic_truncated", reason)
     end)
@@ -290,8 +290,8 @@ describe("quic", function()
       opts = opts or {}
       local random       = string.rep("\0", 32)
       local session_id   = "\0"
-      local cipher_suites = u16be(2) .. "\x13\x01"
-      local compression  = "\x01\x00"
+      local cipher_suites = u16be(2) .. "\019\001"
+      local compression  = "\001\000"
       local exts = ""
       if opts.sni then
         local sn = "\0" .. u16be(#opts.sni) .. opts.sni
@@ -305,7 +305,7 @@ describe("quic", function()
       local ext_block = u16be(#exts) .. exts
       local body = u16be(0x0303) .. random .. session_id ..
                    cipher_suites .. compression .. ext_block
-      return "\x01" .. u24be(#body) .. body
+      return "\001" .. u24be(#body) .. body
     end
 
     -- Wrap handshake bytes in a single CRYPTO frame (type 0x06, offset 0, len)
@@ -316,7 +316,7 @@ describe("quic", function()
       local hs_len = #handshake_bytes
       -- 2-byte varint for length: 0x4000 | len when len ≤ 16383.
       local len_varint = string.char(0x40 + math.floor(hs_len / 256), hs_len % 256)
-      local frame = "\x06" .. "\x00" .. len_varint .. handshake_bytes
+      local frame = "\006" .. "\000" .. len_varint .. handshake_bytes
       local pad = math.max(0, 1162 - #frame)
       return frame .. string.rep("\0", pad)
     end
@@ -387,7 +387,7 @@ describe("quic", function()
       -- quic_not_ip. The sidecar's dispatch() will route v6 frames to the
       -- TCP path instead of calling parse_initial in practice, so this label
       -- only ticks from direct API callers.
-      local f = string.rep("\0", 12) .. "\x86\xdd" .. string.rep("\0", 100)
+      local f = string.rep("\0", 12) .. "\134\221" .. string.rep("\0", 100)
       local _, reason = quic.parse_initial(f, stub_crypto())
       assert.are.equal("quic_not_ip", reason)
     end)
@@ -397,13 +397,13 @@ describe("quic", function()
       local ip  = string.char(1, 2, 3, 4)
       -- Build an eth+ipv4 with proto=6 (TCP) and bogus tail
       local dst_mac = string.rep("\0", 6)
-      local ethertype = "\x08\x00"
+      local ethertype = "\008\000"
       local eth = dst_mac .. mac .. ethertype
       local total = 20 + 20
       local total_b = string.char(math.floor(total / 256), total % 256)
-      local hdr = "\x45\x00" .. total_b .. "\x00\x00\x40\x00\x40" ..
-                  "\x06" .. -- proto=TCP
-                  "\x00\x00" .. string.rep("\0", 4) .. ip
+      local hdr = "\069\000" .. total_b .. "\000\000\064\000\064" ..
+                  "\006" .. -- proto=TCP
+                  "\000\000" .. string.rep("\0", 4) .. ip
       local frame = eth .. hdr .. string.rep("\0", 20)
       local _, reason = quic.parse_initial(frame, stub_crypto())
       assert.are.equal("quic_not_udp", reason)
