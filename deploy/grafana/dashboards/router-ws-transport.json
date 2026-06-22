@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "WifiHaven websocket router transport (#1846, epic #1023): server-side health for the persistent /api/router/ws endpoint. Panels target only the series the API actually emits today \u2014 router_ws_connections_active (RouterWsRegistry) and router_ws_frames_total{op,dir,result} (RouterWsRoutes demux). The REST transport stays the fallback; until the agent ws client (#1848) ships these read 0/flat. Push-on-change health (router_ws_policy_push_total) lands with #1849. Labels are bounded enums only per the \u00a74 cardinality firewall. datasource/env are templated for per-environment view.",
+  "description": "WifiHaven websocket router transport (#1846, epic #1023): server-side health for the persistent /api/router/ws endpoint. Panels target only the series the API actually emits today \u2014 router_ws_connections_active (RouterWsRegistry) and router_ws_frames_total{op,direction,result} (RouterWsRoutes demux). The REST transport stays the fallback; until the agent ws client (#1848) ships these read 0/flat. Push-on-change health (router_ws_policy_push_total) lands with #1849. Labels are bounded enums only per the \u00a74 cardinality firewall. datasource/env are templated for per-environment view.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -84,8 +84,8 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "title": "Websocket frame rate by op/dir/result (#1846)",
-      "description": "sum by (op, dir, result) (rate(router_ws_frames_total[5m])) \u2014 frame throughput across the {op,payload} demux. dir \u2208 {in,out}; result \u2208 {ok,reject,unknown_op}. A rising result=reject share means agents are sending frames the server rejects (the ws analog of a REST 4xx); result=unknown_op is the forward-compat counter for frames whose op the server does not recognize (design \u00a71.3).",
+      "title": "Websocket frame rate by op/direction/result (#1846)",
+      "description": "sum by (op, direction, result) (rate(router_ws_frames_total[5m])) \u2014 frame throughput across the {op,payload} demux. dir \u2208 {in,out}; result \u2208 {ok,reject,unknown_op}. A rising result=reject share means agents are sending frames the server rejects (the ws analog of a REST 4xx); result=unknown_op is the forward-compat counter for frames whose op the server does not recognize (design \u00a71.3).",
       "type": "timeseries",
       "gridPos": {
         "h": 8,
@@ -134,8 +134,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (op, dir, result) (rate(router_ws_frames_total{env=\"$env\"}[5m]))",
-          "legendFormat": "{{op}} {{dir}} {{result}}",
+          "expr": "sum by (op, direction, result) (rate(router_ws_frames_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{op}} {{direction}} {{result}}",
           "refId": "A"
         }
       ]
