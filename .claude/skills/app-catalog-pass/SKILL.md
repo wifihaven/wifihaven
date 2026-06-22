@@ -85,11 +85,14 @@ host-set instead of duplicating)? or a genuine gap?
   Duolingo, LEGO Builder, etc.
 - **Curated blocklist entry** — a whole **category** the operator blocks
   wholesale (`api/resources/blocklists/games.yml`, `social-media.yml`,
-  `adult.yml`, …). "Unblocked games" / proxy / filter-bypass portals belong in
-  `games.yml`. The two surfaces are **complementary**, not exclusive: a
-  browser-game portal can be BOTH an app (time-limit) and a games.yml entry
-  (category block) — duplicates dedupe at the router (precedent: roblox,
-  crazygames, poki are both).
+  `adult.yml`, …). A legit browser-game portal can be BOTH an app (time-limit)
+  and a games.yml entry (category block) — duplicates dedupe at the router
+  (precedent: roblox, crazygames, poki are both). **But a filter-bypass /
+  "unblocked games" / web-proxy site (duckmath.org, holyunblocker.org, now.gg,
+  the TitaniumNetwork stack) is blocklist-ONLY — never an app.** There's no
+  reason to give a kid a daily time *budget* for a filter-evasion tool; it's a
+  block target, full stop (operator decision, #1815). Put it in `games.yml` and
+  do NOT author an app template for it.
 - **Skip** — ad/RTB networks (flashtalking, adsrvr, pubmatic…), shared
   service/CDN pools (icloud-content, apple-dns, fastly, akadns, googleapis),
   shared corporate infra (adobe.com, autodesk.com), and below-engagement-bar
@@ -176,10 +179,12 @@ above is now wrong, fix the step too — don't just log around it.
 - **2026-06-21 (#1815)** — `recent-apexes?windowDays=&limit=` is the right traffic
   source: pre-grouped by apex with a `subdomains[]` list. Aggregate across kid
   devices by bytes with the awk one-liner in Step 0.
-- **2026-06-21 (#1815)** — "Unblocked games" / filter-bypass portals (e.g.
-  duckmath.org) go in `blocklists/games.yml` for the category-block surface, AND
-  optionally as an app for the time-limit surface — they're complementary and
-  dedupe at the router.
+- **2026-06-21 (#1815)** — "Unblocked games" / filter-bypass / web-proxy portals
+  (duckmath.org, holyunblocker.org, invisiproxy.com, titaniumnetwork.org, now.gg)
+  go in `blocklists/games.yml` ONLY — they are block targets, NOT apps. Don't
+  give a filter-evasion tool a daily time budget (operator decision). Harvest the
+  proxy ecosystem a portal embeds (TitaniumNetwork: Holy Unblocker, InvisiProxy,
+  Rammerhead, Ultraviolet/Scramjet) into the same list.
 - **2026-06-21 (#1815)** — Prod v6 host attribution is broken (#1796); the byte
   sample is IPv4-biased. Always web-cross-check candidates; never infer "no
   traffic" from a quiet apex.
