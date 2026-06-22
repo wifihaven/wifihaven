@@ -17,7 +17,6 @@
 -- pushed `policy` frames in. This file deliberately stays a thin, readable
 -- proof — not the production sidecar.
 
-local cqueues = require("cqueues")
 local socket  = require("cqueues.socket")
 local errno   = require("cqueues.errno")
 local context = require("openssl.ssl.context")
@@ -50,12 +49,24 @@ function M.connect(uri, opts)
   local sock, err = socket.connect({ host = host, port = port })
   if not sock then return nil, "connect: " .. tostring(err) end
   sock:setmode("b", "b")                       -- raw binary both directions
+  -- Make every socket I/O RETURN `nil, errno` instead of throwing. cqueues'
+  -- default onerror throws for non-timeout errors, but on Lua 5.1 (OpenWrt) we
+  -- cannot `pcall` a cqueues call that yields (starttls/read/write all yield to
+  -- the controller) — "attempt to yield across a C-call boundary". A returning
+  -- onerror lets us check return values everywhere with zero pcall. (MUST be
+  -- set before starttls.)
+  sock:onerror(function(_, _, why) return why end)
   sock:settimeout(opts.connect_timeout or 10)
 
   if tls then
     local ctx = context.new("TLS", false)      -- client context
-    ctx:setVerify(context.VERIFY_PEER)          -- verify the server cert chain
-    local ok, terr = pcall(function() sock:starttls(ctx) end)
+    -- Verify the server cert chain by default. opts.insecure disables it — for
+    -- self-signed loopback testing ONLY; production keeps VERIFY_PEER.
+    ctx:setVerify(opts.insecure and context.VERIFY_NONE or context.VERIFY_PEER)
+    -- Call starttls DIRECTLY (no pcall — it yields during the TLS handshake);
+    -- returns the socket on success, nil+errno on failure (no throw, per the
+    -- returning onerror above).
+    local ok, terr = sock:starttls(ctx)
     if not ok then return nil, "starttls: " .. tostring(terr) end
   end
 
@@ -76,17 +87,23 @@ function M.connect(uri, opts)
   sock:write(table.concat(req, CRLF))
   sock:flush()
 
-  -- Read the status line + headers (until blank line). cqueues *l mode reads
-  -- one CRLF-terminated line at a time.
+  -- Read the status line + headers (until the blank separator line). cqueues
+  -- `*l` strips only the LF, so each line — including the blank separator —
+  -- retains a trailing CR ("\r"). We MUST strip that CR BEFORE testing for the
+  -- blank line: testing `== ""` first never matches the "\r" separator, so the
+  -- loop reads one line too many; that extra `*l` hits end-of-headers, returns
+  -- nil, and poisons the socket's read buffer so every later read times out.
+  -- (Found on a real Lua-5.1 + packaged-cqueues target — see README.)
   local status = sock:read("*l")
-  if not status or not status:match("^HTTP/1%.1 101") then
+  if not status or not status:gsub("\r$", ""):match("^HTTP/1%.1 101") then
     return nil, "upgrade rejected: " .. tostring(status)
   end
   local got_accept
   while true do
     local line = sock:read("*l")
-    if not line or line == "" then break end
-    line = line:gsub("\r$", "")                -- *l may leave a trailing CR
+    if not line then break end
+    line = line:gsub("\r$", "")                -- strip CR *before* the blank test
+    if line == "" then break end               -- blank separator → headers done
     local h, val = line:match("^([^:]+):%s*(.-)%s*$")
     if h and h:lower() == "sec-websocket-accept" then got_accept = val end
   end
@@ -131,15 +148,12 @@ end
 -- (reason "closed"/"timeout"/"eof"/error string) — the clean drop signal §3.4
 -- asks for, so the caller's reconnect loop can act on it.
 --
--- Uses cqueues.poll (the controller-integrated readability wait) rather than a
--- bare timed socket read — this is the idiom the sidecar's event loop needs.
--- KNOWN ENV QUIRK: under the macOS luarocks-built cqueues + brew-openssl used
--- in the dev sandbox, a *reactive* read (waiting for bytes that arrive later)
--- can return an immediate ETIMEDOUT even after poll signals readability. The
--- raw socket I/O works (proven by the websocat↔echo_server round-trip), so this
--- is a kqueue/timeout-integration artifact of the dev build, NOT a protocol
--- bug. The receive loop must be re-validated on a real OpenWrt/Linux target with
--- the *packaged* cqueues (epoll) during D0 hardware validation — see README.
+-- Cooperative blocking read with a deadline. A read timeout is expected in
+-- steady state (the quiet gaps between heartbeats), so we MUST `clearerr` the
+-- preserved per-socket timeout after each benign timeout — cqueues otherwise
+-- accumulates them toward its "unchecked error limit" and the controller aborts
+-- the whole loop. Validated on a real Lua-5.1 + packaged-cqueues (epoll) target:
+-- without the clearerr the connection dies after a few idle heartbeat cycles.
 function M:recv(timeout)
   while true do
     local frame, consumed = ws_frame.decode(self.rxbuf)
@@ -159,27 +173,18 @@ function M:recv(timeout)
       self.closed = true
       return nil, "protocol: " .. tostring(consumed)
     else
-      -- need more bytes. Wait for readability via the cqueues controller
-      -- (cqueues.poll) rather than a blocking socket read with a per-op
-      -- timeout: poll integrates with the event loop deterministically, which
-      -- is exactly the "read server-pushed frames at any time" property the
-      -- sidecar needs. A bare timed read returned an immediate ETIMEDOUT here.
-      local ready = cqueues.poll(self.sock, timeout or 35)
-      if ready ~= self.sock then
-        return nil, "timeout"                    -- poll deadline, not a drop
-      end
-      self.sock:settimeout(0)                     -- non-blocking: drain ready bytes
-      local chunk, err = self.sock:read(-4096)
+      -- need more bytes — cooperative blocking read with a deadline.
+      self.sock:settimeout(timeout or 35)
+      local chunk, err = self.sock:read(-4096)    -- up to 4096B, returns what's ready
       if not chunk then
-        -- Distinguish a transient "nothing to drain yet" (EAGAIN/ETIMEDOUT, or a
-        -- spurious poll wakeup) from a real disconnect. Only the latter is a
-        -- drop — misclassifying a would-block as a drop would tear down a
-        -- perfectly live socket (the §3.4 drop signal must be precise).
-        if err == nil or err == errno.EAGAIN or err == errno.ETIMEDOUT then
-          return nil, "timeout"                  -- not a drop; caller may retry
+        -- A timeout/would-block is expected and NOT a drop; clear the preserved
+        -- error so it doesn't count toward cqueues' unchecked-error abort limit.
+        if err == errno.ETIMEDOUT or err == errno.EAGAIN then
+          self.sock:clearerr("r")
+          return nil, "timeout"                  -- connection still live
         end
-        self.closed = true
-        return nil, "eof: " .. tostring(err)     -- genuine error → reconnect
+        self.closed = true                        -- real error / EOF → reconnect
+        return nil, err and ("eof: " .. tostring(err)) or "eof"
       end
       self.rxbuf = self.rxbuf .. chunk
     end

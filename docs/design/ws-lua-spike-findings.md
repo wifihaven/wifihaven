@@ -15,9 +15,13 @@ Build the agent ws client (#1848) on **`cqueues` (event loop + TLS socket) +
 layer**. Do **not** adopt `lua-http`/`lua-websockets` — they are not in the
 OpenWrt feed and pull a heavy dependency tree we don't need.
 
-One caveat carried into #1848's first task: the **reactive receive loop** still
-needs a green run on a real OpenWrt/Linux target (the macOS dev build has a
-poll/timeout I/O quirk — §5). Everything else is proven.
+The full client — including the **TLS (wss) reactive receive loop and
+heartbeat** — is validated **end-to-end on a real Lua 5.1 + distro-packaged
+cqueues/luaossl target** (Ubuntu 24.04, `lua5.1` 5.1.5 + `lua-cqueues`
+`20200726` + `lua-luaossl` `20220711` — the same package versions the OpenWrt
+feed ships), not just on the dev host. That validation **found and fixed three
+real Lua-5.1/cqueues bugs** the macOS dev build had masked (§5.1) — which is
+exactly why hardware validation was a gate, not a formality.
 
 ---
 
@@ -92,34 +96,59 @@ sock:starttls(ctx)                                -- TLS handshake
 - Acceptable for the router image; comparable to the `lua-openssl` (~464 KiB,
   per the Makefile note) the agent already carries for QUIC SNI.
 
-## 5. What was proven, and the one open item
+## 5. What was proven
 
-**Proven locally:**
 1. **Framing wire-correctness** — 17/17 busted tests against RFC 6455 §1.3
    (handshake accept-key) and §5.7 (masked/unmasked frame byte vectors), plus
    extended-length (16/64-bit) and partial-buffer/multi-frame decode.
    (`openwrt/test/ws_frame_spec.lua`, runs in CI via `run_tests.sh`.)
-2. **TLS connect + handshake** via cqueues + luaossl (§3).
+2. **Full client end-to-end on a real Lua 5.1 + packaged-cqueues/luaossl target**
+   (Ubuntu 24.04, epoll). `poc_echo.lua` PASS for **both** transports:
+   - **ws://** loopback against `echo_server.lua`: connect → handshake →
+     hello → **echo received** → ping/pong heartbeat window → clean close +
+     drop detection.
+   - **wss://** loopback with real TLS (self-signed cert, luaossl
+     `openssl.ssl.context`): the same full cycle over an encrypted channel —
+     TLS handshake, encrypted frame send/receive, heartbeat, clean close.
 3. **Interop against an independent implementation (`websocat`, Rust), both
-   directions:**
-   - websocat *as server* accepted our `Sec-WebSocket-Key` (replied 101) and
-     decoded our masked text frame ("incoming text") → our client→server path.
-   - websocat *as client* fully round-tripped through our `echo_server.lua`
-     (our handshake reply + masked-frame `decode` + unmasked-frame `encode` all
-     interoperate) → our full duplex framing.
+   directions:** websocat *as server* accepted our `Sec-WebSocket-Key`/decoded
+   our masked frame; a websocat *client* round-tripped through our
+   `echo_server.lua`.
 4. **Clean drop detection** — `recv` returns a distinct reason
-   (`closed`/`eof`/`timeout`/error) so the sidecar's backoff loop (§5.1) can act.
-5. **Ping/pong + reconnect backoff** scaffolding (`poc_echo.lua`).
+   (`closed`/`eof`/`timeout`) so the sidecar's backoff loop (§5.1) can act, and a
+   benign idle timeout is *not* misreported as a drop.
 
-**Open item (must validate on hardware — folds into #1848's first task):**
-- The **Lua client's reactive receive** (waiting for bytes that arrive *after*
-  the read is issued). Under the macOS *luarocks*-built cqueues + brew-openssl
-  in the dev sandbox, such a read can return an immediate `ETIMEDOUT` even after
-  `cqueues.poll` reports readability. The underlying socket I/O is fine (the
-  websocat↔echo_server round-trip and raw reactive socket tests both pass), so
-  this is a kqueue/timeout-integration artifact of that specific build, **not**
-  a protocol or library-availability problem. Re-run `poc_echo.lua` against the
-  **packaged** cqueues (epoll) on the router or a Linux box — expected to pass.
+### 5.1 Three real bugs the hardware run caught (all fixed in this PR)
+
+The macOS dev build (luarocks cqueues + brew OpenSSL, kqueue) masked all three;
+each would have shipped a broken client. They are Lua-5.1/cqueues-specific —
+documented here because #1848 inherits the same gotchas:
+
+1. **HTTP-upgrade header parse poisoned the socket.** cqueues `read("*l")` strips
+   only the LF, so every header line — *including the blank separator* — keeps a
+   trailing `"\r"`. Testing `line == ""` before stripping the CR never matched
+   the separator, so the loop read one line too many; that extra `*l` hit
+   end-of-headers, returned nil, and left the socket's buffered-read state
+   poisoned so **every subsequent read timed out**. Fix: strip `\r` *before* the
+   blank-line test (`ws_client.lua`).
+2. **cqueues "unchecked error limit" killed idle connections.** cqueues
+   *preserves* a per-socket read error (incl. `ETIMEDOUT`) across calls and
+   aborts the whole controller once unchecked ones pile up. A steady-state
+   heartbeat (read, time out in the quiet gap, retry) hits that within a few
+   cycles. Fix: `sock:clearerr("r")` after each benign read timeout
+   (`ws_client.lua` `recv`).
+3. **`pcall` across a yield broke TLS on Lua 5.1.** `sock:starttls()` yields to
+   the controller during the handshake; wrapping it in `pcall` throws "attempt
+   to yield across a C-call boundary" on Lua 5.1 (OpenWrt's interpreter). Fix:
+   install a *returning* `onerror` on the socket so all I/O returns `nil,errno`
+   instead of throwing, then call `starttls` (and every read/write) directly —
+   **no pcall anywhere** (`ws_client.lua`).
+
+**Still pending (genuinely needs the deployed pieces, not this spike):** a
+multi-hour TLS soak for RSS/fd-leak watch, and a real `wss://api.wifihaven.net`
+run to pin Render's idle-timeout/max-frame empirically — both require the server
+endpoint (#1846) and are #1848 tasks. The *library/protocol/Lua-5.1 viability*
+question this spike exists to answer is fully settled: **viable.**
 
 ## 6. Render limits (heartbeat / max-frame inputs)
 
@@ -138,17 +167,21 @@ no Render hard cap forces a specific value. Confirm both empirically against
 
 1. Add `cqueues` + `luaossl` to `openwrt/Makefile` `DEPENDS` (after the per-arch
    feed confirmation in §2).
-2. Promote `ws_frame.lua` / `ws_crypto.lua` from the spike into
-   `files/usr/lib/lua/wifihaven/` essentially as-is (pure, tested).
+2. Promote `ws_frame.lua` / `ws_crypto.lua` / `ws_client.lua` from the spike
+   into `files/usr/lib/lua/wifihaven/` — they are validated on a real Lua 5.1 +
+   packaged-cqueues target (§5). **Carry the three §5.1 fixes** (CR-before-blank
+   header parse, `clearerr` on benign timeout, returning-`onerror` + no `pcall`
+   around yielding I/O) — they are easy to regress.
 3. Build the `wifihaven-ws` sidecar as a new procd instance
    (`websocket-transport.md` §0.1/§3.1) whose cqueues controller runs the
    `ws_client.lua` loop, drains the existing tmpfs spools out, and writes pushed
    `policy` frames to the snapshot file the main agent already reads.
-4. **First task of #1848: the hardware-validation step** — green
-   `poc_echo.lua` against packaged cqueues, a multi-hour TLS soak (watch RSS/fds),
-   and a real `wss://api.wifihaven.net` connection to pin Render limits (§6).
+4. **Remaining validation (needs the deployed server endpoint, §5):** a
+   multi-hour TLS soak (watch RSS/fds) and a real `wss://api.wifihaven.net`
+   connection to pin Render limits (§6). The receive-loop / Lua-5.1 viability is
+   already proven, so this is hardening, not a go/no-go gate.
 5. UCI flag, default off until the soak passes (§3.1).
 
-**If the hardware receive validation unexpectedly fails**, the epic still ships
-the server endpoint + handshake (#1846/#1847) and the agent stays on HTTP
-polling — exactly the A+B-only fallback §3.4 describes.
+**If the soak unexpectedly surfaces a blocker**, the epic still ships the server
+endpoint + handshake (#1846/#1847) and the agent stays on HTTP polling — exactly
+the A+B-only fallback §3.4 describes.

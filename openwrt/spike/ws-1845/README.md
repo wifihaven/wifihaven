@@ -51,27 +51,39 @@ lua poc_echo.lua wss://echo.websocket.events
 # fully offline against the bundled echo server (two terminals):
 lua run_echo_server.lua 8870           # terminal 1
 lua poc_echo.lua ws://127.0.0.1:8870   # terminal 2
+
+# offline wss:// (real TLS) with a self-signed cert:
+openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 2 -nodes -subj /CN=localhost
+lua run_echo_server.lua 8970 tls cert.pem key.pem        # terminal 1
+WS_INSECURE=1 lua poc_echo.lua wss://localhost:8970      # terminal 2 (insecure = self-signed)
 ```
 
-## What was validated where
+> **No-root install recipe** (how this was validated on Ubuntu without sudo):
+> `apt-get download lua5.1 liblua5.1-0 lua-cqueues lua-luaossl` then
+> `dpkg-deb -x <deb> <prefix>` each, and point `LUA_PATH`/`LUA_CPATH`/`LD_LIBRARY_PATH`
+> at `<prefix>`. The `.so`s link the system OpenSSL.
 
-**Validated locally (this spike):**
-- Framing is wire-correct against RFC 6455 vectors (17/17 busted tests).
+## What was validated
+
+**On a real Lua 5.1 + distro-packaged cqueues/luaossl target** (Ubuntu 24.04,
+epoll — the package versions match the OpenWrt feed):
+- `poc_echo.lua` PASS over **ws://** loopback (connect → handshake → hello →
+  echo received → ping/pong → clean close + drop detection).
+- `poc_echo.lua` PASS over **wss://** loopback with real TLS (self-signed cert) —
+  the same full cycle over an encrypted channel.
+
+This run **found and fixed three real Lua-5.1/cqueues bugs** the macOS dev build
+had masked (see findings doc §5.1): the HTTP-upgrade CR-before-blank header parse
+(poisoned the read buffer), cqueues' unchecked-error-limit abort on idle
+heartbeats (needs `clearerr`), and `pcall`-across-yield breaking TLS `starttls`
+on Lua 5.1 (needs a returning `onerror` + no pcall around yielding I/O).
+
+**Also validated:**
+- Framing wire-correct against RFC 6455 vectors (17/17 busted tests, in CI).
 - Package availability + TLS API on both feed generations (see findings doc).
-- **Handshake + client→server frames against an independent impl:** `websocat`
-  (Rust) accepted our `Sec-WebSocket-Key` (replied 101) and decoded our masked
-  text frame.
-- **Full duplex against an independent impl:** a `websocat` *client* round-trips
-  through our `echo_server.lua` — our handshake reply, masked-frame `decode`,
-  and unmasked-frame `encode` all interoperate.
+- Interop with `websocat` (independent Rust impl), both directions.
 
-**MUST be validated on a real OpenWrt/Linux target (the D0 hardware step):**
-- The Lua **client's reactive receive loop**. Under the macOS *luarocks*-built
-  cqueues + brew-openssl in the sandbox, a read waiting for not-yet-arrived
-  bytes can return an immediate `ETIMEDOUT` even after `cqueues.poll` signals
-  readability — a kqueue/timeout-integration artifact of that build (the raw
-  socket I/O works, proven by the websocat round-trip). Re-run `poc_echo.lua`
-  against the *packaged* cqueues (epoll) on the router / a Linux box.
+**Still pending (needs the deployed server endpoint, not this spike):**
 - **Multi-hour TLS soak** for memory growth / fd leaks (RSS over a wss kept warm
   by 30 s heartbeats for hours).
 - **`wss://api.wifihaven.net` against Render** to pin the idle-timeout and

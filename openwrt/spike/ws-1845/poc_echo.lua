@@ -39,7 +39,9 @@ loop:wrap(function()
   while attempt < 3 and not ok_overall do
     attempt = attempt + 1
     log("connect attempt", tostring(attempt), uri)
-    local c, err = ws_client.connect(uri, { connect_timeout = 10 })
+    -- WS_INSECURE=1 skips cert verification — for self-signed loopback testing.
+    local c, err = ws_client.connect(uri,
+      { connect_timeout = 10, insecure = (os.getenv("WS_INSECURE") ~= nil) })
     if not c then
       log("connect failed:", tostring(err), "— backing off")
       cqueues.sleep(backoff(attempt))
