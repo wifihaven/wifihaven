@@ -1,6 +1,7 @@
 #!/bin/sh
-# Configure the uhttpd block-page listener on 127.0.0.1:8081 (v4) + [::1]:8081
-# (v6) with the lua handler at /www/wifihaven/handler.lua.
+# Configure the uhttpd block-page listener on 127.0.0.1:8081 (v4) + [::]:8081
+# (v6, #1865 — wildcard so nft `redirect`'d forwarded v6 traffic lands on it)
+# with the lua handler at /www/wifihaven/handler.lua.
 #
 # Called from:
 #   - openwrt/Makefile  Package/wifihaven/postinst (package installs)
@@ -46,11 +47,23 @@ else
   uhttpd_changed=1
 fi
 
-# v6 sibling (#411).
-if ! uci -q get "uhttpd.${uhttpd_section}.listen_http" \
+# v6 sibling (#411). #1865: bind the wildcard [::] rather than loopback [::1].
+# Forwarded IPv6 block-page traffic is delivered by render.lua's nft `redirect`
+# to the br-lan address (::1 is non-routable for forwarded traffic, RFC 4291),
+# so the listener must accept on the router's real v6 address, not just
+# loopback. Migrate any legacy [::1]:8081 entry to [::]:8081 — binding BOTH
+# would fail (the [::] wildcard already covers ::1, so the second bind hits
+# "address already in use").
+if uci -q get "uhttpd.${uhttpd_section}.listen_http" \
     | tr ' ' '\n' | grep -qx '\[::1\]:8081'; then
-  log "adding v6 block-page uhttpd listener on [::1]:8081"
-  uci add_list "uhttpd.${uhttpd_section}.listen_http=[::1]:8081"
+  log "migrating v6 block-page listener [::1]:8081 -> [::]:8081"
+  uci del_list "uhttpd.${uhttpd_section}.listen_http=[::1]:8081"
+  uhttpd_changed=1
+fi
+if ! uci -q get "uhttpd.${uhttpd_section}.listen_http" \
+    | tr ' ' '\n' | grep -qx '\[::\]:8081'; then
+  log "adding v6 block-page uhttpd listener on [::]:8081"
+  uci add_list "uhttpd.${uhttpd_section}.listen_http=[::]:8081"
   uhttpd_changed=1
 fi
 
@@ -65,10 +78,17 @@ if ! uci -q get "uhttpd.${uhttpd_section}.listen_https" \
   uci add_list "uhttpd.${uhttpd_section}.listen_https=127.0.0.1:8443"
   uhttpd_changed=1
 fi
-if ! uci -q get "uhttpd.${uhttpd_section}.listen_https" \
+# #1865: wildcard [::] for v6 TLS, same rationale as listen_http above.
+if uci -q get "uhttpd.${uhttpd_section}.listen_https" \
     | tr ' ' '\n' | grep -qx '\[::1\]:8443'; then
-  log "adding v6 TLS block-page uhttpd listener on [::1]:8443"
-  uci add_list "uhttpd.${uhttpd_section}.listen_https=[::1]:8443"
+  log "migrating v6 TLS block-page listener [::1]:8443 -> [::]:8443"
+  uci del_list "uhttpd.${uhttpd_section}.listen_https=[::1]:8443"
+  uhttpd_changed=1
+fi
+if ! uci -q get "uhttpd.${uhttpd_section}.listen_https" \
+    | tr ' ' '\n' | grep -qx '\[::\]:8443'; then
+  log "adding v6 TLS block-page uhttpd listener on [::]:8443"
+  uci add_list "uhttpd.${uhttpd_section}.listen_https=[::]:8443"
   uhttpd_changed=1
 fi
 current_cert=$(uci -q get "uhttpd.${uhttpd_section}.cert" || echo "")

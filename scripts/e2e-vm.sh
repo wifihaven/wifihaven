@@ -96,6 +96,8 @@ case "${ONLY}" in
   usage)        MARK="usage" ;;
   blocked-page|blocked_page)
                 MARK="blocked_page" ;;
+  block-page-v6|block_page_v6)
+                MARK="block_page_v6" ;;
   pause)        MARK="pause" ;;
   extra-blocked|extra_blocked)
                 MARK="extra_blocked" ;;
@@ -117,7 +119,7 @@ case "${ONLY}" in
                 MARK="v6_usage_attribution" ;;
   *) echo "unknown --only: ${ONLY}" >&2
      echo "valid: enrollment, allowed-browsing, blocked-domain, daily-limit, usage, blocked-page," >&2
-     echo "       pause, extra-blocked, schedule, time-limit, reassignment, unknown-device," >&2
+     echo "       block-page-v6, pause, extra-blocked, schedule, time-limit, reassignment, unknown-device," >&2
      echo "       install-health, sni-attribution, v6-link-local, v6-attribution, v6-usage-attribution" >&2
      exit 2 ;;
 esac

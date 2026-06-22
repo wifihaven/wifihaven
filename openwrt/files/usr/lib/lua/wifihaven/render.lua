@@ -1162,6 +1162,28 @@ function M.nft(snapshot, opts)
 
   ind("chain wifihaven_block {")
   ind2("type filter hook forward priority 0; policy accept;")
+  -- #1865: the block page must NEVER be dropped, for any reason. The block-page
+  -- DNAT chain (wifihaven_block_nat, prerouting) rewrites a blocked device's
+  -- HTTP/HTTPS destination to the local block-page listener so the user sees
+  -- *why* they are blocked. With route_localnet (v4 → 127.0.0.1) / redirect
+  -- (v6 → br-lan addr) that packet is delivered locally and normally never
+  -- reaches this forward chain — but if it ever does (a transient routing edge,
+  -- a future DNAT target, or route_localnet not yet applied) the per-MAC / eb_
+  -- / bl_ / blockIpOnly / global drops below would kill it and the user would
+  -- get a hung connection instead of the block page (the original bug: a
+  -- Schedule-blocked v6 device DNAT'd to ::1, then dropped — DST=::1:8443).
+  -- One accept guard for router-local destinations encodes the invariant in a
+  -- SINGLE place: every block-page DNAT/redirect target is a router-local
+  -- address (`fib daddr type local`), whereas normal forwarded traffic is
+  -- destined to an external host, so the guard matches only block-page traffic
+  -- and never widens who is blocked. Threading a per-rule carve-out suffix
+  -- instead would be one missed rule away from re-introducing the bug.
+  -- `accept` is a per-chain verdict — the priority-1 accounting chains still
+  -- see the packet, so block-page bytes are still counted. This changes no
+  -- existing drop rule: the forward hook never governed traffic to the router
+  -- itself (that is the input hook), so router-local destinations were never
+  -- dropped here regardless.
+  ind2("fib daddr type local counter accept comment \"wh_block_page:never-drop:#1865\"")
   -- #1122: the family-agnostic @blocked_macs drop is replaced by per-MAC
   -- rules so each can carry its own `wh_drop:<mac>:<reason>` comment. The
   -- set is still declared (used by the DNAT chain below) but no longer
@@ -1293,9 +1315,20 @@ function M.nft(snapshot, opts)
       ind2(predicate .. " tcp dport 80 dnat ip to 127.0.0.1:8081")
       ind2(predicate .. " tcp dport 443 dnat ip to 127.0.0.1:8443")
     end
+    -- #1865: IPv6 has no `route_localnet` equivalent, and ::1 must never appear
+    -- on the wire (RFC 4291), so DNAT'ing forwarded v6 traffic to ::1 never
+    -- delivers — the routing decision treats ::1 as non-local and forwards the
+    -- packet out the WAN instead (observed live: DST=::1:8443 OUT=eth1). Use
+    -- `redirect` instead: it rewrites the destination to the inbound interface's
+    -- (br-lan) own address, which IS router-local, so the packet is delivered to
+    -- the local uhttpd block-page listener. uhttpd binds [::]:8081 / [::]:8443
+    -- (see setup-uhttpd-block-page.sh) so the redirected packet — now destined
+    -- to a br-lan v6 address rather than ::1 — lands on a live listener. (The v4
+    -- path keeps DNAT-to-127.0.0.1: route_localnet makes loopback deliverable on
+    -- v4, and that path already works on prod — leave it untouched.)
     local function dnat6(predicate)
-      ind2(predicate .. " tcp dport 80 dnat ip6 to ::1:8081")
-      ind2(predicate .. " tcp dport 443 dnat ip6 to ::1:8443")
+      ind2(predicate .. " tcp dport 80 redirect to :8081")
+      ind2(predicate .. " tcp dport 443 redirect to :8443")
     end
     if #blocked_macs_list > 0 then
       dnat4("ether saddr @blocked_macs")
@@ -1335,9 +1368,12 @@ function M.nft(snapshot, opts)
       dnat4(string.format("ether saddr %s ip daddr != @%s",
         mac, resolved_set_name(mac)))
     end
-    -- #411: v6 siblings. uhttpd also binds [::1]:8081 + [::1]:8443.
-    -- `ip6 daddr != ::1` guards against self-DNAT recursion if the block
-    -- page itself ever issues an outbound v6 request.
+    -- #411/#1865: v6 siblings, delivered via `redirect` (see dnat6 above).
+    -- uhttpd binds [::]:8081 + [::]:8443 so the redirected packet (now destined
+    -- to the br-lan v6 address) lands on a live listener. The retained
+    -- `ip6 daddr != ::1` guard keeps us from redirecting traffic literally
+    -- addressed to loopback (also avoids any self-redirect if the block page
+    -- ever issues an outbound v6 request).
     if #blocked_macs_list > 0 then
       dnat6("ether saddr @blocked_macs ip6 daddr != ::1")
     end

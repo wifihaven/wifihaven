@@ -20,7 +20,7 @@ import logging
 import time
 
 from lib.traffic import http_get
-from lib.wait import wait_until
+from lib.wait import wait_for_etag_change, wait_until
 
 log = logging.getLogger(__name__)
 
@@ -105,6 +105,34 @@ def test_gate3_smoke(admin, enrolled_router, client_vm, scratch_profile_and_devi
         f"saw {len(summaries)} summaries across {len(statuses)} profile(s)"
     )
     log.info("gate3: time_status summary present for %s: %s", mac, matched[0])
+
+    # ── whole-MAC block → block page is reachable (#1865) ─────────────────
+    # Regression for #1865 ("the block page must NEVER be blocked"). A
+    # *whole-MAC* block (pause / schedule / time-limit / manual — exercised
+    # here via pause) DNATs ALL of the device's HTTP to the local block page.
+    # The bug: the per-MAC blocked drop killed the DNAT'd packet (notably v6,
+    # which DNAT'd to ::1 and forwarded out the WAN), so the user saw a hung
+    # connection instead of the block page. After the fix the block page must
+    # load for the whole-MAC-blocked device. We probe a NEUTRAL host (not
+    # allowed_host: a Paused MAC keeps its extraAllowed carve-out per #1413,
+    # so the allowed host stays reachable even while paused). The block-page
+    # DNAT for a whole-MAC block is not gated on a resolved ipset, so any
+    # HTTP/80 from the paused MAC lands on the page.
+    neutral_host = "example.com"  # client_vm fixture already gated its DNS
+    admin.set_profile_paused(profile_id, True)
+    try:
+        wait_for_etag_change(admin, enrolled_router["router_id"], timeout_s=180)
+        blocked_probe = wait_until(
+            lambda: _block_page_probe(client_vm, neutral_host),
+            timeout_s=120, interval_s=3,
+            description=f"block page for whole-MAC-blocked {neutral_host}",
+        )
+        assert blocked_probe.http_code == 200
+        log.info("gate3: whole-MAC-block block page hit for %s (%d bytes)",
+                 neutral_host, len(blocked_probe.body))
+    finally:
+        # Restore so teardown (and any retry of this run) starts unpaused.
+        admin.set_profile_paused(profile_id, False)
 
 
 # ── probes ───────────────────────────────────────────────────────────────
