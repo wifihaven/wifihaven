@@ -215,6 +215,29 @@ for usage attribution (§7.2). It is **never** the enforcement plane.
 > templates in
 > [`api/resources/app_templates/_README.yml`](../api/resources/app_templates/_README.yml).
 
+> **Cache-warmth gap on `blocklistIds` — bounded by client TTL.** The
+> `bl_<id>` / `bl6_<id>` ipsets are populated at **client-DNS-resolution
+> time** via dnsmasq's `nftset=` callback (rendered in
+> `openwrt/files/usr/lib/lua/wifihaven/blocklists.lua`; see also the
+> comment at `openwrt/files/usr/lib/lua/wifihaven/render.lua:64`) — the
+> snapshot ships category *membership*, not pre-resolved IPs, and the
+> agent does not pre-seed the sets at boot. The consequence: when a
+> category list is newly applied to a `(mac, host)` pair AND the client
+> already holds a fresh OS / browser DNS cache entry for `host`,
+> enforcement for that flow lags until the client's TTL expires and it
+> re-queries — the router has no way to invalidate the *client's* DNS
+> cache. The window is bounded by that stored TTL: typically ≤ 5 min for
+> ad / tracker workloads (median TTL on programmatic-ad apexes sits in
+> the 60–300 s range), with outliers on high-TTL consumer-brand apexes
+> (social / gambling) where the client cache is hot regardless of
+> policy. Scope: this applies to a category becoming newly active for a
+> `(mac, host)` pair; brand-new hosts the client has never resolved
+> through this router, and blocklist-URL refreshes that ship new members
+> the client had no prior reason to cache, see a ≈ zero gap because the
+> first lookup populates `bl_<id>` before the connect. Accepted as a
+> bounded property of the resolve-time-population mechanism per
+> [#1786](https://github.com/wifihaven/wifihaven/issues/1786).
+
 ### 0.3 The global policy layer (#1308)
 
 Fleet-wide policy is carried **once** in `snapshot.global`, not copied into
