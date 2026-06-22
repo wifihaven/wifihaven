@@ -1,4 +1,4 @@
--- uhttpd-mod-lua handler for the block-page listener (127.0.0.1:8081 / [::1]:8081).
+-- uhttpd-mod-lua handler for the block-page listener (127.0.0.1:8081 / [::]:8081).
 --
 -- Wired in install.sh via:
 --   option lua_prefix '/'

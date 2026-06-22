@@ -1533,7 +1533,7 @@ describe("render blocklist enforcement (#352)", function()
   it("DNATs v6 HTTP/80 from a MAC to the block page when daddr ∈ bl6_<id> (#411)", function()
     local nft = render.nft(snap_bl())
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @bl6_test_ads tcp dport 80 dnat ip6 to ::1:8081",
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @bl6_test_ads tcp dport 80 redirect to :8081",
       1, true))
   end)
 
@@ -1750,7 +1750,7 @@ describe("render blockIpOnly enforcement (#353)", function()
   it("DNATs v6 HTTP/80 to the block page for daddrs NOT in resolved6_<mac> (#411)", function()
     local nft = render.nft(snap_bio())
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip6 daddr != ::1 ip6 daddr != @resolved6_aa_bb_cc_11_22_33 tcp dport 80 dnat ip6 to ::1:8081",
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr != ::1 ip6 daddr != @resolved6_aa_bb_cc_11_22_33 tcp dport 80 redirect to :8081",
       1, true))
   end)
 
@@ -2062,7 +2062,7 @@ describe("render extraAllowed enforcement (#421)", function()
   it("appends `ip6 daddr != @ea6_<m>_<a>` to the eb6_<host> DNAT for MAC m", function()
     local nft = render.nft(snap_ea())
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @eb6_tiktok_com ip6 daddr != @ea6_aa_bb_cc_11_22_33_music_tiktok_com tcp dport 80 dnat ip6 to ::1:8081",
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @eb6_tiktok_com ip6 daddr != @ea6_aa_bb_cc_11_22_33_music_tiktok_com tcp dport 80 redirect to :8081",
       1, true))
   end)
 
@@ -2171,7 +2171,7 @@ describe("render extraAllowed enforcement (#421)", function()
       "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_aa_bb_cc_11_22_33_music_tiktok_com tcp dport 80 dnat ip to 127.0.0.1:8081",
       1, true))
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip6 daddr != ::1 ip6 daddr != @ea6_aa_bb_cc_11_22_33_music_tiktok_com tcp dport 80 dnat ip6 to ::1:8081",
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr != ::1 ip6 daddr != @ea6_aa_bb_cc_11_22_33_music_tiktok_com tcp dport 80 redirect to :8081",
       1, true))
   end)
 

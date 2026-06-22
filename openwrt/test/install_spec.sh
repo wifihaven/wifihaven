@@ -132,10 +132,20 @@ grep -q "listen_https=127.0.0.1:8443" "$UHTTPD_HELPER" \
   || check "#383 helper configures TLS listener on 127.0.0.1:8443" \
            "missing listen_https=127.0.0.1:8443 wiring"
 
-grep -q "listen_https=\[::1\]:8443" "$UHTTPD_HELPER" \
-  && check "#383 helper configures TLS listener on [::1]:8443" ok \
-  || check "#383 helper configures TLS listener on [::1]:8443" \
-           "missing listen_https=[::1]:8443 wiring"
+# #1865: v6 TLS listener binds the wildcard [::] (not loopback [::1]) so the
+# nft `redirect` of forwarded v6 traffic to the br-lan address lands on a live
+# listener — ::1 is non-routable for forwarded traffic (RFC 4291).
+grep -q "listen_https=\[::\]:8443" "$UHTTPD_HELPER" \
+  && check "#1865 helper configures TLS listener on [::]:8443" ok \
+  || check "#1865 helper configures TLS listener on [::]:8443" \
+           "missing listen_https=[::]:8443 wiring"
+
+# #1865: legacy [::1]:8443 must be migrated away (binding both [::] and [::1]
+# fails — the wildcard already covers loopback).
+grep -q "del_list .*listen_https=\[::1\]:8443" "$UHTTPD_HELPER" \
+  && check "#1865 helper migrates legacy [::1]:8443 listener" ok \
+  || check "#1865 helper migrates legacy [::1]:8443 listener" \
+           "missing del_list for legacy listen_https=[::1]:8443"
 
 grep -q "/etc/wifihaven/block_page.crt" "$UHTTPD_HELPER" \
   && check "#383 helper wires cert=/etc/wifihaven/block_page.crt" ok \
