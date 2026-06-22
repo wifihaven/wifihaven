@@ -72,6 +72,10 @@ object MetricGuard {
       // stays specific — `id` would be a generic catch-all that future series
       // might mistakenly co-opt for unbounded entities.
       "blocklist_id",
+      // #1846 — websocket frame direction for `router_ws_frames_total`. A fixed
+      // 2-value enum (`in` agent→server / `out` server→agent); bounded, so it
+      // satisfies the §4 cardinality firewall.
+      "dir",
     )
 
   /**
@@ -186,6 +190,14 @@ object MetricGuard {
     "usage_post_total"                          -> Set("result", "router_id", "installation_id"),
     // Server-side ingest health for POST /api/router/metrics (#1205). Concrete, emitted now.
     "router_metrics_batches_total"              -> Set("status"),
+    // #1846 — websocket router transport (server side). `router_ws_connections_active` is the live
+    // count of open channels (a household-scoped gauge, refreshed on every register/deregister so it
+    // ages out cleanly on disconnect). `router_ws_frames_total` counts every frame demuxed/sent:
+    // `op` ∈ {hello, usage, events, metrics, ping, pong, ack, unknown} (the fixed envelope
+    // vocabulary), `dir` ∈ {in, out}, `result` ∈ {ok, reject, unknown_op}. All bounded enums — no
+    // per-mac / per-host dimension ever rides a ws metric.
+    "router_ws_connections_active"              -> Set.empty[String],
+    "router_ws_frames_total"                    -> Set("op", "dir", "result"),
     // #1718 — native OpenWRT OS-level metrics the agent collects from /proc/* and `iw dev`
     // and pushes through the existing #1205 batch transport. Gives operators the LuCI-style
     // view of router health (load / cpu / mem / bandwidth / conntrack / wifi clients) in
@@ -434,6 +446,24 @@ object AppMetrics {
 
   def recordRouterMetricsBatch(status: String): UIO[Unit] =
     MetricGuard.counter("router_metrics_batches_total", Map("status" -> status))
+
+  // ── Websocket router transport (#1846) ───────────────────────────────────────
+  // Set by RouterWsRegistry on every register/deregister: the live count of open
+  // ws channels. Refreshed to the recomputed total each time so a disconnect drives
+  // it back down (no stale high-water value). Unlabelled household-scoped gauge.
+
+  def setWsConnectionsActive(count: Int): UIO[Unit] =
+    MetricGuard.gauge("router_ws_connections_active", Map.empty, count.toDouble)
+
+  // Emitted from RouterWsRoutes for every frame demuxed (`dir=in`) or sent
+  // (`dir=out`). `op` is the envelope discriminator (a fixed enum), `dir` ∈
+  // {in, out}, `result` ∈ {ok, reject, unknown_op}. `unknown_op` is the
+  // forward-compat counter (design §1.3 — an unrecognized op is ignored + metered).
+  def recordWsFrame(op: String, dir: String, result: String): UIO[Unit] =
+    MetricGuard.counter(
+      "router_ws_frames_total",
+      Map("op" -> op, "dir" -> dir, "result" -> result),
+    )
 
   // §5.1 — server-side histogram boundaries for the router-pushed duration histograms. The agent
   // (#1206) reports cumulative bucket counts on these same boundaries; RouterMetricsService folds
