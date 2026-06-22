@@ -310,6 +310,9 @@ class PolicyServiceLive(
       // shipping unreferenced lists is wasted work — on prod the difference is hundreds of
       // thousands of directives vs hundreds (see #1412 investigation). Additive-safe on the wire:
       // the agent already iterates whatever ids appear here.
+      // The per-device override lane (`devicePolicies → rules → blocklistIds`) is wired in for
+      // future-proofing — today the only writer of `DevicePolicy.rules` is the unmanaged-MAC path
+      // (above), which sets `blocklistIds = Nil`, so this branch currently contributes nothing.
       val referencedBlocklistIds: Set[BlocklistId] =
         (globalRules.blocklistIds.iterator ++
           profilePolicies.valuesIterator.flatMap(_.rules.blocklistIds) ++
