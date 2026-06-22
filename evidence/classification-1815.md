@@ -49,18 +49,39 @@ videoprocessingpipeline.services.lego.com
 buggy.apps.lego.com                 Builder app surface
 ```
 
-**Lego Builder vs other Lego properties.** The Builder building experience is
-served from subdomains of the `lego.com` apex (`*.i.lego.com`,
-`*.services.lego.com`, `*.apps.lego.com`). The router matches host-sets by apex
-suffix (dnsmasq `nftset=`), so these cannot be separated from the LEGO shop
-(`www.lego.com`), which shares the same apex — hence a single `lego` app on the
-`lego.com` apex (the explicitly-allowed fallback in #1815). The observed traffic
-is overwhelmingly the Builder app, so the time-limit budget tracks real building
-activity. Sibling LEGO properties live on **distinct apexes** and are
-deliberately excluded: **BrickLink** (`bricklink.com`, a parts marketplace),
-**LEGO Education** (`legoeducation.com`, classroom), and the corporate analytics
-apex `thelegogroup.com` (97 kB — not the building experience). None of those
-appeared in meaningful kid traffic.
+**Lego Builder vs other Lego properties — separated, not a whole-apex app.**
+The Builder building experience is served from building-specific subdomains
+(`*.i.lego.com` = cobuild + dbix, `*.services.lego.com`, `*.apps.lego.com`); the
+LEGO shop / marketing lives on `www.lego.com` and the bare apex. Although these
+share the `lego.com` registrable apex, the host-set is NOT constrained to
+apexes: `Hostname.parse` accepts any valid multi-label host, nothing in the
+API→agent path reduces a host to its apex, and the agent emits one verbatim
+`nftset=/<host>/...` directive per host (`render.lua` ~L559). dnsmasq populates
+the ipset for `<host>` AND its subdomains by **suffix**, so a host entry of
+`dbix.i.lego.com` matches `*.dbix.i.lego.com` but NOT `www.lego.com`. We
+therefore ship the four building-specific **parent subdomains** —
+`cobuild.i.lego.com`, `dbix.i.lego.com`, `services.lego.com`, `apps.lego.com` —
+which cover every observed Builder FQDN while keeping the shop OUT of the app's
+time-limit budget. (Earlier draft shipped the whole `lego.com` apex on a mistaken
+"can't separate at apex granularity" belief; corrected after verifying the
+verbatim-host nftset path.) Sibling LEGO properties on **distinct apexes** remain
+excluded: **BrickLink** (`bricklink.com`, a parts marketplace), **LEGO
+Education** (`legoeducation.com`, classroom), and the corporate analytics apex
+`thelegogroup.com` (97 kB). None appeared in meaningful kid traffic.
+
+Coverage check (observed FQDN → host entry):
+
+```
+api.prod.cobuild.i.lego.com         → cobuild.i.lego.com
+api.prod.dbix.i.lego.com            → dbix.i.lego.com
+assets.prod.dbix.i.lego.com         → dbix.i.lego.com
+biapp.prod.dbix.i.lego.com          → dbix.i.lego.com
+imageresizer.prod.dbix.i.lego.com   → dbix.i.lego.com
+appconfig.services.lego.com         → services.lego.com
+scout.services.lego.com             → services.lego.com
+videoprocessingpipeline.services.lego.com → services.lego.com
+buggy.apps.lego.com                 → apps.lego.com
+```
 
 ### `duckmath` — "DuckMath" — host `duckmath.org`
 

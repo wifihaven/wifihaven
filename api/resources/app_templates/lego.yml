@@ -3,10 +3,10 @@ name: LEGO Builder
 icon: "https://icons.duckduckgo.com/ip3/lego.com.ico"
 icon_type: url
 # Added from prod evidence (#1815, evidence/classification-1815.md): 30d kid
-# traffic showed 277 MB / 178 hits on lego.com across all three kid iPads
+# traffic showed 277 MB / 178 hits under lego.com across all three kid iPads
 # (Quintus 184 MB, Octavius 86 MB, Prima 7 MB) — the single largest uncovered
-# cluster in the "Other" bucket. Observed subdomains are unambiguously the
-# **LEGO Builder** building/instructions experience, NOT the shop:
+# cluster in the "Other" bucket. The observed FQDNs are unambiguously the
+# **LEGO Builder** 3D building-instructions experience, NOT the shop:
 #   api.prod.cobuild.i.lego.com        co-build (build-together) backend
 #   api.prod.dbix.i.lego.com           digital building-instructions experience
 #   assets.prod.dbix.i.lego.com        build-instruction assets
@@ -16,15 +16,24 @@ icon_type: url
 #   scout.services.lego.com            Builder app service
 #   videoprocessingpipeline.services.lego.com
 #   buggy.apps.lego.com                Builder app surface
-# These all sit under the `lego.com` apex, which the router matches by suffix
-# (dnsmasq nftset= suffix-matches every subdomain). The building experience
-# therefore CANNOT be separated from the shop (www.lego.com) at the apex
-# granularity the template model supports — so this is a single `lego` app on
-# the `lego.com` apex (acceptable fallback per #1815). The observed traffic is
-# overwhelmingly the Builder app, not the shop, so the time-limit budget tracks
-# real building activity. Sibling LEGO properties live on DISTINCT apexes and
-# are intentionally excluded: BrickLink (bricklink.com, a marketplace),
-# LEGO Education (legoeducation.com, classroom), and the corporate analytics
-# apex thelegogroup.com (97 kB, not the building experience).
+#
+# Host-set is the four building-specific PARENT subdomains rather than the
+# `lego.com` apex — a deliberate, supported deviation from the "apex hostnames"
+# convention in _README.yml. dnsmasq's `nftset=/<host>/` populates the ipset for
+# `<host>` AND its subdomains by SUFFIX (render.lua emits one `nftset=/<host>/`
+# directive per host verbatim — no apex reduction anywhere in the API→agent
+# path), so `dbix.i.lego.com` matches `*.dbix.i.lego.com` but NOT
+# `www.lego.com`. This keeps the LEGO shop / marketing apex OUT of the app's
+# time-limit budget while covering every observed Builder FQDN:
+#   cobuild.i.lego.com  → api.prod.cobuild.i.lego.com
+#   dbix.i.lego.com     → api/assets/biapp/imageresizer.prod.dbix.i.lego.com
+#   services.lego.com   → appconfig/scout/videoprocessingpipeline.services.lego.com
+#   apps.lego.com       → buggy.apps.lego.com
+# Sibling LEGO properties on distinct apexes are excluded as before: BrickLink
+# (bricklink.com, marketplace), LEGO Education (legoeducation.com, classroom),
+# and the corporate analytics apex thelegogroup.com (97 kB).
 hosts:
-  - lego.com
+  - cobuild.i.lego.com
+  - dbix.i.lego.com
+  - services.lego.com
+  - apps.lego.com
