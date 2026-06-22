@@ -30,7 +30,7 @@ JVM pushes directly.
   enqueues); a bounded `<sendQueueMaxBytes>` drops on backpressure and
   `<drainOnStop>false` keeps shutdown from blocking on Loki. Loki being
   slow/down can never wedge the request path. (Load-proof + a drop metric +
-  panel are the #1831 sub-#2 follow-up.)
+  panel are the #1831 follow-up, tracked in #1879.)
 - **Label / cardinality model.** Loki **stream labels** are whitelisted to
   exactly `service` / `env` / `level`. Every other MDC key (`mac`, `route`,
   `op`, `status`, `etag`, …) rides Loki **structured metadata** via the

@@ -76,6 +76,15 @@
             <password>${GRAFANA_CLOUD_LOKI_PASSWORD}</password>
           </auth>
           <requestTimeoutMs>10000</requestTimeoutMs>
+          <!--
+            Pin the JSON push API explicitly. The protobuf path needs loki-protobuf
+            + snappy on the classpath, which we deliberately do NOT depend on (the
+            loki4j jar resolves standalone). If a future loki4j default flipped this
+            to protobuf, shipping would ClassNotFound on the background sender thread
+            and silently drop every log line (fail-open hides it — the #1334 trap).
+            Keeping it false makes the dep-free contract explicit and flip-proof.
+          -->
+          <useProtobufApi>false</useProtobufApi>
         </http>
         <batch>
           <maxItems>1000</maxItems>
