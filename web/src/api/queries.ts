@@ -38,6 +38,16 @@ const STALE = {
   devices: 5 * MIN,
 } as const
 
+// #1871 — live time-used surfaces must poll in the foreground so the displayed
+// "minutes left" can't lag enforcement. The router recomputes block state on
+// every ~5s snapshot poll and blocks within seconds of the cap, but a query
+// with only a staleTime never refetches on its own — it stays frozen from page
+// load until a manual trigger (reload / window refocus). Without a background
+// poll the UI shows minutes remaining while the profile is already blocked.
+// Match useDashboardNow's 10s cadence; foreground-only (refetchIntervalInBackground:
+// false) so hidden tabs don't poll.
+export const TIME_STATUS_REFETCH_MS = 10_000
+
 export const qk = {
   profiles: () => ['profiles'] as const,
   devices: () => ['devices'] as const,
@@ -211,6 +221,8 @@ export function useTimeStatusToday(opts?: QueryOpts<ProfileTimeStatus[]>) {
     queryKey: qk.timeStatusToday(),
     queryFn: () => api.time.statusAll(),
     staleTime: STALE.timeStatusToday,
+    refetchInterval: TIME_STATUS_REFETCH_MS,
+    refetchIntervalInBackground: false,
     ...opts,
   })
 }
@@ -243,6 +255,8 @@ export function useTimeStatusSummary(opts?: QueryOpts<ProfileTimeSummary[]>) {
     queryKey: qk.timeStatusSummaryToday(),
     queryFn: () => api.time.summaryAll(),
     staleTime: STALE.timeStatusToday,
+    refetchInterval: TIME_STATUS_REFETCH_MS,
+    refetchIntervalInBackground: false,
     ...opts,
   })
 }
@@ -269,6 +283,8 @@ export function useTimeStatusProfileToday(
     queryKey: qk.timeStatusProfileToday(profileId),
     queryFn: () => api.time.statusAll(undefined, profileId).then(rows => rows[0]),
     staleTime: STALE.timeStatusToday,
+    refetchInterval: TIME_STATUS_REFETCH_MS,
+    refetchIntervalInBackground: false,
     ...opts,
   })
 }

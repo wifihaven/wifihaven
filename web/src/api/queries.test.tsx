@@ -11,14 +11,15 @@ vi.mock('@/api/client', () => ({
   api: {
     profiles: { list: vi.fn() },
     devices: { list: vi.fn() },
-    time: { statusAll: vi.fn(), statusAllWeek: vi.fn() },
+    time: { statusAll: vi.fn(), statusAllWeek: vi.fn(), summaryAll: vi.fn() },
     dashboard: { now: vi.fn() },
   },
 }))
 
 import { api } from '@/api/client'
 import {
-  useProfiles, useDevices, useTimeStatusToday, useInvalidators, qk,
+  useProfiles, useDevices, useTimeStatusToday, useTimeStatusSummary,
+  useTimeStatusProfileToday, useInvalidators, qk, TIME_STATUS_REFETCH_MS,
 } from './queries'
 
 function makeWrapper(client: QueryClient) {
@@ -46,6 +47,7 @@ beforeEach(() => {
   ;(api.profiles.list  as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
   ;(api.devices.list   as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
   ;(api.time.statusAll as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+  ;(api.time.summaryAll as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
   ;(api.dashboard.now  as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ asOf: '', profiles: [] })
 })
 
@@ -101,5 +103,63 @@ describe('SWR caching (#803)', () => {
     // After the invalidation completes, data is still present — the
     // hook never exposes `undefined` for a query that has loaded once.
     expect(hook.result.current.data?.[0]?.profile.name).toBe('Kids')
+  })
+})
+
+// #1871: the live time-used surfaces must poll in the foreground so the
+// displayed "minutes left" can't lag enforcement (the router blocks within
+// seconds of the cap, but a query with only a staleTime never refetches on its
+// own). Each 'today' hook must carry a bounded refetchInterval; the immutable
+// 'past'/'week' hooks must NOT poll.
+describe('time-used live polling (#1871)', () => {
+  it('exposes a bounded refetch interval constant', () => {
+    expect(TIME_STATUS_REFETCH_MS).toBeGreaterThan(0)
+    expect(TIME_STATUS_REFETCH_MS).toBeLessThanOrEqual(30_000)
+  })
+
+  // Drive a hook with fake timers and prove it refetches after the interval.
+  // freshClient's long staleTime means an interval-driven refetch is the ONLY
+  // thing that can produce a second network call, so a missing/false
+  // refetchInterval makes the second assertion fail.
+  async function expectLivePolling(
+    render: () => void,
+    fetchSpy: ReturnType<typeof vi.fn>,
+  ): Promise<void> {
+    vi.useFakeTimers()
+    try {
+      render()
+      // Let the initial fetch resolve.
+      await vi.advanceTimersByTimeAsync(0)
+      expect(fetchSpy).toHaveBeenCalledTimes(1)
+      // One interval later, it polls again on its own.
+      await vi.advanceTimersByTimeAsync(TIME_STATUS_REFETCH_MS)
+      expect(fetchSpy).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  }
+
+  it('useTimeStatusToday refetches on the live interval', async () => {
+    const wrapper = makeWrapper(freshClient())
+    await expectLivePolling(
+      () => renderHook(() => useTimeStatusToday(), { wrapper }),
+      api.time.statusAll as unknown as ReturnType<typeof vi.fn>,
+    )
+  })
+
+  it('useTimeStatusSummary refetches on the live interval', async () => {
+    const wrapper = makeWrapper(freshClient())
+    await expectLivePolling(
+      () => renderHook(() => useTimeStatusSummary(), { wrapper }),
+      api.time.summaryAll as unknown as ReturnType<typeof vi.fn>,
+    )
+  })
+
+  it('useTimeStatusProfileToday refetches on the live interval', async () => {
+    const wrapper = makeWrapper(freshClient())
+    await expectLivePolling(
+      () => renderHook(() => useTimeStatusProfileToday(1), { wrapper }),
+      api.time.statusAll as unknown as ReturnType<typeof vi.fn>,
+    )
   })
 })
