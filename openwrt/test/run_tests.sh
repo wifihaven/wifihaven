@@ -8,7 +8,7 @@
 set -e
 cd "$(dirname "$0")/.."
 
-LUA_PATH="./files/usr/lib/lua/?.lua;./files/usr/lib/lua/wifihaven/?.lua;./test/shim/?.lua;./test/shim/?/init.lua;$(lua -e 'print(package.path)')" \
+LUA_PATH="./files/usr/lib/lua/?.lua;./files/usr/lib/lua/wifihaven/?.lua;./spike/ws-1845/?.lua;./test/shim/?.lua;./test/shim/?/init.lua;$(lua -e 'print(package.path)')" \
   busted test/conntrack_spec.lua \
          test/render_spec.lua \
          test/policy_spec.lua \
@@ -32,6 +32,7 @@ LUA_PATH="./files/usr/lib/lua/?.lua;./files/usr/lib/lua/wifihaven/?.lua;./test/s
          test/eb_refresh_spec.lua \
          test/static_ip_labels_spec.lua \
          test/host_metrics_spec.lua \
+         test/ws_frame_spec.lua \
          "$@"
 
 echo ""
