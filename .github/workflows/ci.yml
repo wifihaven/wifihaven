@@ -724,11 +724,20 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # Keep this tag in lockstep with deploy/alloy/Dockerfile's FROM.
+      # Validate with the EXACT image the Dockerfile builds from — derive the
+      # pinned tag from its FROM line rather than hardcoding it here, so a
+      # deliberate Dockerfile bump can't leave CI validating against a stale
+      # Alloy version (no second place to keep in sync).
       - name: alloy validate
         run: |
+          tag=$(grep -oP '^FROM grafana/alloy:\K\S+' deploy/alloy/Dockerfile)
+          if [ -z "$tag" ]; then
+            echo "::error::could not parse grafana/alloy tag from deploy/alloy/Dockerfile" >&2
+            exit 1
+          fi
+          echo "Validating deploy/alloy/config.alloy against grafana/alloy:$tag"
           docker run --rm -v "$PWD/deploy/alloy:/work:ro" \
-            grafana/alloy:v1.5.1 validate /work/config.alloy
+            "grafana/alloy:$tag" validate /work/config.alloy
 
   # ── GitHub Actions workflow lint ─────────────────────────────────────────
   # actionlint statically checks every workflow under .github/workflows/ for
