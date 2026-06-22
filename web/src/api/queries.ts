@@ -38,6 +38,67 @@ const STALE = {
   devices: 5 * MIN,
 } as const
 
+// #1871 — live time-used surfaces must poll in the foreground so the displayed
+// "minutes left" can't lag enforcement. The router recomputes block state on
+// every ~5s snapshot poll and blocks within seconds of the cap, but a query
+// with only a staleTime never refetches on its own — it stays frozen from page
+// load until a manual trigger (reload / window refocus). Without a background
+// poll the UI shows minutes remaining while the profile is already blocked.
+//
+// The cadence is *adaptive*: we only need a tight poll when a profile is close
+// to its daily cap (where a stale display would visibly disagree with
+// enforcement). With lots of time left, a fast poll is wasted load — so we slow
+// down. The ladder is keyed on the *most-urgent* profile's remaining minutes
+// (the one closest to its cap drives the whole list's cadence). Foreground-only
+// (refetchIntervalInBackground: false) so hidden tabs don't poll.
+//
+// `[thresholdMins, intervalMs]`, evaluated low-to-high — first row whose
+// threshold the remaining time is at/under wins.
+export const TIME_STATUS_REFETCH_LADDER: ReadonlyArray<readonly [number, number]> = [
+  [5, 10_000],   // ≤5m left  → poll every 10s
+  [10, 60_000],  // ≤10m left → poll every 1m
+  [30, 300_000], // ≤30m left → poll every 5m
+] as const
+// >30m left, or no daily limit at all (nothing counting down) → slow baseline.
+export const TIME_STATUS_REFETCH_MAX_MS = 300_000
+
+// Map a profile's remaining minutes to its poll interval. `null`/`undefined`
+// remaining means no daily limit is in force → baseline cadence. A profile at
+// or past its cap (remaining ≤ 0) lands in the fastest bucket so a time
+// extension / unblock shows up within seconds.
+export function timeStatusRefetchMs(remainingMins: number | null | undefined): number {
+  if (remainingMins == null) return TIME_STATUS_REFETCH_MAX_MS
+  const remaining = Math.max(0, remainingMins)
+  for (const [thresholdMins, intervalMs] of TIME_STATUS_REFETCH_LADDER) {
+    if (remaining <= thresholdMins) return intervalMs
+  }
+  return TIME_STATUS_REFETCH_MAX_MS
+}
+
+// The cadence-relevant slice of a time-status row — both ProfileTimeStatus and
+// ProfileTimeSummary carry these, and they're all we read to pick a poll rate.
+type CadenceRow = { dailyLimitMins?: number | null; remainingMins?: number | null }
+
+// The most-urgent (least remaining) capped profile across a freshly-fetched
+// time-status payload — `null` when no row has a daily limit. A row without a
+// `dailyLimitMins` isn't counting down, so it never drives the cadence.
+function minRemainingMins(rows: ReadonlyArray<CadenceRow>): number | null {
+  let min: number | null = null
+  for (const row of rows) {
+    if (row.dailyLimitMins == null) continue
+    const remaining = row.remainingMins ?? 0
+    if (min == null || remaining < min) min = remaining
+  }
+  return min
+}
+
+// react-query refetchInterval callback: normalize the query data (single row,
+// array of rows, or not-yet-loaded) and pick the adaptive interval.
+function timeStatusRefetchInterval(data: unknown): number {
+  const rows = (Array.isArray(data) ? data : data ? [data] : []) as ReadonlyArray<CadenceRow>
+  return timeStatusRefetchMs(minRemainingMins(rows))
+}
+
 export const qk = {
   profiles: () => ['profiles'] as const,
   devices: () => ['devices'] as const,
@@ -211,6 +272,8 @@ export function useTimeStatusToday(opts?: QueryOpts<ProfileTimeStatus[]>) {
     queryKey: qk.timeStatusToday(),
     queryFn: () => api.time.statusAll(),
     staleTime: STALE.timeStatusToday,
+    refetchInterval: q => timeStatusRefetchInterval(q.state.data),
+    refetchIntervalInBackground: false,
     ...opts,
   })
 }
@@ -243,6 +306,8 @@ export function useTimeStatusSummary(opts?: QueryOpts<ProfileTimeSummary[]>) {
     queryKey: qk.timeStatusSummaryToday(),
     queryFn: () => api.time.summaryAll(),
     staleTime: STALE.timeStatusToday,
+    refetchInterval: q => timeStatusRefetchInterval(q.state.data),
+    refetchIntervalInBackground: false,
     ...opts,
   })
 }
@@ -269,6 +334,8 @@ export function useTimeStatusProfileToday(
     queryKey: qk.timeStatusProfileToday(profileId),
     queryFn: () => api.time.statusAll(undefined, profileId).then(rows => rows[0]),
     staleTime: STALE.timeStatusToday,
+    refetchInterval: q => timeStatusRefetchInterval(q.state.data),
+    refetchIntervalInBackground: false,
     ...opts,
   })
 }
