@@ -1,0 +1,17 @@
+# Specs EXCLUDED from run_tests.sh's busted auto-discovery (#1877).
+#
+# Single source of truth for the exclude allowlist: both run_tests.sh (which
+# skips these during discovery) and spec_coverage_spec.test.sh (which fails if
+# any on-disk spec is neither discovered nor listed here) read this file.
+#
+# One basename per line (matching test/<basename>). Blank lines and lines
+# starting with '#' are ignored. Every entry MUST exist on disk and carry the
+# reason it is excluded and where it runs instead — the coverage guard fails on
+# a stale entry.
+#
+# jsonc_shim_spec.lua — fidelity contract for the REAL luci.jsonc C module.
+#   run_tests.sh puts the Lua shim (test/shim/luci/jsonc.lua) on LUA_PATH, so
+#   running it here would test the shim against itself (a tautology). It runs in
+#   CI's "Contract Tests" job with the shim dropped and LUA_CPATH pointed at the
+#   built luci-lib-jsonc .so — see .github/workflows/ci.yml.
+jsonc_shim_spec.lua
