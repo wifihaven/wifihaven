@@ -495,12 +495,13 @@ local function refresh_blocklists(snap)
              #shard_res.skipped, blocklist_max_bytes,
              table.concat(shard_res.skipped, ", "))
   end
-  -- #1785: per-id counter for the cap-hit subset only (absent-cache skips are
-  -- already covered by blocklist_fetch_failures_total). The `id` label is
-  -- bounded by the bundled set (api/resources/blocklists/_index.yml — 9 ids),
-  -- so it satisfies the §4 cardinality firewall.
+  -- #1785: per-blocklist counter for the cap-hit subset only (absent-cache
+  -- skips are already covered by blocklist_fetch_failures_total). The
+  -- `blocklist_id` label is bounded by the bundled set
+  -- (api/resources/blocklists/_index.yml — 9 ids), so it satisfies the §4
+  -- cardinality firewall.
   for _, id in ipairs(shard_res.cap_hit or {}) do
-    metrics.inc_counter(mreg, "blocklist_render_skipped_total", { id = id })
+    metrics.inc_counter(mreg, "blocklist_render_skipped_total", { blocklist_id = id })
   end
 
   -- Step 3: GC stale shards for ids that are no longer in the snapshot.

@@ -716,8 +716,8 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "title": "Blocklist render skipped (cap hit) by id",
-      "description": "sum by (id) (rate(blocklist_render_skipped_total[5m])) — per-blocklist rate of shard renders dropped because the rendered shard would have exceeded the agent's defensive per-shard byte cap (#1434, default 256 KiB ≈ 12k hosts). `id` is bounded by the bundled blocklist set (api/resources/blocklists/_index.yml). Steady-state value MUST be 0: a non-zero series means that list is currently NOT enforced at the router and the cap is the live limit. The cap remains as defense-in-depth at a higher threshold after #1435 Option 2c lands, so this panel keeps being the fleet-wide visibility for any future cap hit (#1785).",
+      "title": "Blocklist render skipped (cap hit) by blocklist_id",
+      "description": "sum by (blocklist_id) (rate(blocklist_render_skipped_total[5m])) — per-blocklist rate of shard renders dropped because the rendered shard would have exceeded the agent's defensive per-shard byte cap (#1434, default 256 KiB ≈ 12k hosts). `blocklist_id` is bounded by the bundled blocklist set (api/resources/blocklists/_index.yml). Steady-state value MUST be 0: a non-zero series means that list is currently NOT enforced at the router and the cap is the live limit. The cap remains as defense-in-depth at a higher threshold after #1435 Option 2c lands, so this panel keeps being the fleet-wide visibility for any future cap hit (#1785).",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 88 },
       "id": 23,
@@ -750,8 +750,8 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum by (id) (rate(blocklist_render_skipped_total{env=\"$env\"}[5m]))",
-          "legendFormat": "{{id}}",
+          "expr": "sum by (blocklist_id) (rate(blocklist_render_skipped_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{blocklist_id}}",
           "refId": "A"
         }
       ]
