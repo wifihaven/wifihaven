@@ -61,6 +61,21 @@ grep -q 'procd_set_param respawn' "$INIT" \
   && check "sets procd_set_param respawn" ok \
   || check "sets procd_set_param respawn" "not found"
 
+# 6b. #1864: every instance must be niced BELOW dnsmasq (positive nice) so DNS
+# resolution wins the CPU under contention. There are four instances (agent,
+# dns-tail, sni-tail, nflog-tail); each carries one `procd_set_param nice`.
+NICE_COUNT=$(grep -c 'procd_set_param nice' "$INIT")
+[ "$NICE_COUNT" -eq 4 ] \
+  && check "all four instances set procd_set_param nice (count=$NICE_COUNT)" ok \
+  || check "all four instances set procd_set_param nice" "expected 4, got $NICE_COUNT"
+
+# 6c. The nice value must be a POSITIVE integer (lower priority than dnsmasq's
+# default nice 0). A zero/negative value would not de-prioritise the agent.
+WH_NICE=$(sed -n 's/^WIFIHAVEN_NICE=\([0-9-]*\).*/\1/p' "$INIT")
+{ [ -n "$WH_NICE" ] && [ "$WH_NICE" -gt 0 ]; } \
+  && check "WIFIHAVEN_NICE is a positive integer ($WH_NICE)" ok \
+  || check "WIFIHAVEN_NICE is a positive integer" "got '$WH_NICE'"
+
 # 7. Must define service_triggers() for UCI-triggered reload
 grep -q 'service_triggers()' "$INIT" \
   && check "defines service_triggers()" ok \

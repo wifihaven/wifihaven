@@ -1081,7 +1081,7 @@ function M.nft(snapshot, opts)
 
   -- #1122/#1126: each drop is rendered as a pair of rules sharing one predicate
   -- (see #1826 / `emit_drop` below):
-  --   `<predicate> limit rate 10/second burst 20 packets log prefix "wh_drop:<mac>:<reason> "`
+  --   `<predicate> limit rate 2/second burst 10 packets log prefix "wh_drop:<mac>:<reason> "`
   --   `<predicate> counter drop comment "wh_drop:<mac>:<reason>"`
   -- (pre-#1826 this was a single `… log prefix … counter drop` rule; the LOG is
   -- now on its own rate-limited rule so a retry storm can't flood the kernel
@@ -1124,9 +1124,19 @@ function M.nft(snapshot, opts)
   -- `counter` + `wh_drop:` comment (ops view via `nft list ruleset` and the
   -- nft_drops.lua attribution path, which sums only commented+countered rules)
   -- live on the drop rule, so drop counts stay exact and unaffected by the rate
-  -- limit. 10/second burst 20 is per-rule, so each blocked MAC gets its own
-  -- budget — ample for ops visibility, bounded against a retry storm.
-  local DROP_LOG_LIMIT = "limit rate 10/second burst 20 packets"
+  -- limit. The limit is per-rule, so each blocked MAC gets its own budget.
+  -- #1864: the original 10/second budget was still enough to dominate the
+  -- shared `logread` ring buffer when several MACs retry-storm at once — the
+  -- aggregate (10/s × N drop rules) evicted wifihaven-agent and dnsmasq lines
+  -- from the ring buffer, leaving the router undiagnosable during an incident.
+  -- Throttle the LOG harder: 2/second with a burst of 10 still captures the
+  -- distinct flows the agent's nflog tail needs to label blocked-flow events
+  -- (the labels are deduped per (mac, reason, dst), so a retry storm to one
+  -- endpoint needs only a single sample), but cuts the steady-state ring-buffer
+  -- footprint ~5×. The burst absorbs the initial flurry of distinct hosts; the
+  -- low sustained rate keeps the ring buffer usable for everything else. The
+  -- `counter drop` rule is unchanged, so enforcement and drop counts are exact.
+  local DROP_LOG_LIMIT = "limit rate 2/second burst 10 packets"
   local function log_suffix(mac, reason)
     return string.format(" %s log prefix \"wh_drop:%s:%s \"",
                          DROP_LOG_LIMIT, mac, reason)
