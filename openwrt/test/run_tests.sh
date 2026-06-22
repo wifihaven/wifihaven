@@ -8,7 +8,7 @@
 set -e
 cd "$(dirname "$0")/.."
 
-LUA_PATH="./files/usr/lib/lua/?.lua;./files/usr/lib/lua/wifihaven/?.lua;./test/shim/?.lua;./test/shim/?/init.lua;$(lua -e 'print(package.path)')" \
+LUA_PATH="./files/usr/lib/lua/?.lua;./files/usr/lib/lua/wifihaven/?.lua;./spike/ws-1845/?.lua;./test/shim/?.lua;./test/shim/?/init.lua;$(lua -e 'print(package.path)')" \
   busted test/conntrack_spec.lua \
          test/render_spec.lua \
          test/policy_spec.lua \
@@ -32,6 +32,7 @@ LUA_PATH="./files/usr/lib/lua/?.lua;./files/usr/lib/lua/wifihaven/?.lua;./test/s
          test/eb_refresh_spec.lua \
          test/static_ip_labels_spec.lua \
          test/host_metrics_spec.lua \
+         test/ws_frame_spec.lua \
          "$@"
 
 echo ""
@@ -47,3 +48,6 @@ sh test/agent_spec.sh
 sh test/rotate_dnsmasq_log_spec.sh
 sh test/nflog_tail_bounded_spec.sh
 sh test/init_sni_toggle_spec.sh
+# ws-client e2e (#1845): runs ws://+wss:// round-trips through the real client;
+# self-skips (exit 0) when lua-cqueues/lua-luaossl aren't installed.
+sh spike/ws-1845/e2e_test.sh

@@ -444,7 +444,7 @@ jobs:
           sudo apt-get update -q
           # lua5.1 matches OpenWrt 23.x (LuaJIT is 5.1-compatible).
           # liblua5.1-dev is needed for luarocks to compile C modules.
-          sudo apt-get install -y lua5.1 liblua5.1-dev luarocks
+          sudo apt-get install -y lua5.1 liblua5.1-dev luarocks lua-cqueues lua-luaossl
           sudo luarocks install busted
           sudo luarocks install lua-cjson
 
@@ -453,7 +453,7 @@ jobs:
         run: |
           # Mirror the full busted invocation from test/run_tests.sh so the
           # whole Lua suite gates merges, not just conntrack_spec.
-          LUA_PATH="./files/usr/lib/lua/?.lua;./files/usr/lib/lua/wifihaven/?.lua;./test/shim/?.lua;./test/shim/?/init.lua;$(lua -e 'print(package.path)')" \
+          LUA_PATH="./files/usr/lib/lua/?.lua;./files/usr/lib/lua/wifihaven/?.lua;./spike/ws-1845/?.lua;./test/shim/?.lua;./test/shim/?/init.lua;$(lua -e 'print(package.path)')" \
             busted test/conntrack_spec.lua \
                    test/render_spec.lua \
                    test/policy_spec.lua \
@@ -471,7 +471,12 @@ jobs:
                    test/nft_drops_spec.lua \
                    test/dns_tail_sets_spec.lua \
                    test/nflog_spec.lua \
-                   test/host_norm_spec.lua
+                   test/host_norm_spec.lua \
+                   test/ws_frame_spec.lua
+
+      - name: Run ws-client e2e (#1845, real Lua 5.1 + cqueues/luaossl)
+        working-directory: openwrt
+        run: sh spike/ws-1845/e2e_test.sh
 
   # ── Bidirectional contract tests (#634) ──────────────────────────────────
   # One job, one green/red signal for "the API ↔ router wire contract holds".
