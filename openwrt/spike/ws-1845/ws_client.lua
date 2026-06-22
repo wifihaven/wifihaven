@@ -19,6 +19,7 @@
 
 local cqueues = require("cqueues")
 local socket  = require("cqueues.socket")
+local errno   = require("cqueues.errno")
 local context = require("openssl.ssl.context")
 
 local ws_frame = require("ws_frame")
@@ -170,8 +171,15 @@ function M:recv(timeout)
       self.sock:settimeout(0)                     -- non-blocking: drain ready bytes
       local chunk, err = self.sock:read(-4096)
       if not chunk then
+        -- Distinguish a transient "nothing to drain yet" (EAGAIN/ETIMEDOUT, or a
+        -- spurious poll wakeup) from a real disconnect. Only the latter is a
+        -- drop — misclassifying a would-block as a drop would tear down a
+        -- perfectly live socket (the §3.4 drop signal must be precise).
+        if err == nil or err == errno.EAGAIN or err == errno.ETIMEDOUT then
+          return nil, "timeout"                  -- not a drop; caller may retry
+        end
         self.closed = true
-        return nil, (err == socket.EPIPE) and "eof" or ("read: " .. tostring(err))
+        return nil, "eof: " .. tostring(err)     -- genuine error → reconnect
       end
       self.rxbuf = self.rxbuf .. chunk
     end
