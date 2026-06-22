@@ -12,7 +12,7 @@
       }
     ]
   },
-  "description": "WifiHaven router-fleet agent metrics (#1206): the cumulative counters/gauges/histograms each OpenWRT agent pushes to POST /api/router/metrics every 60s and the API folds into its exposition (RouterMetricsService, #1205). Panels target series actually emitted via that path — dnsmasq_restarts_total, policy_apply_total/_duration_seconds, snapshot_poll_total/_duration_seconds, agent_uptime_seconds, agent_version, dns_queries_total (#1302), blocklist_fetch_failures_total (#1301), enforcement_drops_total (#1325). The server attaches router_id; panels slice only by the bounded enum labels (reason/result/status/version) per the §4 cardinality firewall. See docs/design/metrics-observability.md §5.1.",
+  "description": "WifiHaven router-fleet agent metrics (#1206): the cumulative counters/gauges/histograms each OpenWRT agent pushes to POST /api/router/metrics every 60s and the API folds into its exposition (RouterMetricsService, #1205). Panels target series actually emitted via that path — dnsmasq_restarts_total, policy_apply_total/_duration_seconds, snapshot_poll_total/_duration_seconds, agent_uptime_seconds, agent_version, dns_queries_total (#1302), blocklist_fetch_failures_total (#1301), blocklist_render_skipped_total (#1785), enforcement_drops_total (#1325). The server attaches router_id; panels slice only by the bounded enum labels (reason/result/status/version) per the §4 cardinality firewall. See docs/design/metrics-observability.md §5.1.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -710,6 +710,42 @@
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "expr": "max by (router_id, iface, ssid) (router_host_wifi_clients{env=\"$env\"})",
           "legendFormat": "{{router_id}} / {{ssid}} ({{iface}})",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Blocklist render skipped (cap hit) by id",
+      "description": "sum by (id) (rate(blocklist_render_skipped_total[5m])) — per-blocklist rate of shard renders dropped because the rendered shard would have exceeded the agent's defensive per-shard byte cap (#1434, default 256 KiB ≈ 12k hosts). `id` is bounded by the bundled blocklist set (api/resources/blocklists/_index.yml). Steady-state value MUST be 0: a non-zero series means that list is currently NOT enforced at the router and the cap is the live limit. The cap remains as defense-in-depth at a higher threshold after #1435 Option 2c lands, so this panel keeps being the fleet-wide visibility for any future cap hit (#1785).",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 88 },
+      "id": 23,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 30, "showPoints": "always", "lineWidth": 2 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 0 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (id) (rate(blocklist_render_skipped_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{id}}",
           "refId": "A"
         }
       ]

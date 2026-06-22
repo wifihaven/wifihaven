@@ -366,7 +366,13 @@ end
 --                          shard line
 --
 -- Returns:
---   { rendered = { [id] = bytes }, skipped = { ids }, errors = { strings } }
+--   { rendered = { [id] = bytes }, skipped = { ids }, cap_hit = { ids },
+--     errors = { strings } }
+--   cap_hit ⊆ skipped — the subset whose render stopped because max_bytes was
+--   exceeded (the #1434 oversize signal the agent emits as
+--   blocklist_render_skipped_total{id}, #1785). Other skipped ids (absent
+--   cache file) are NOT in cap_hit — those are surfaced via
+--   blocklist_fetch_failures_total instead.
 function M.render_shards(snapshot, fs, cache_dir, shard_dir, max_bytes, global_blocklist_ids)
   cache_dir  = cache_dir  or "/etc/wifihaven/blocklists"
   shard_dir  = shard_dir  or "/tmp"
@@ -410,7 +416,12 @@ function M.render_shards(snapshot, fs, cache_dir, shard_dir, max_bytes, global_b
     end
   end
 
-  local result = { rendered = {}, skipped = {}, errors = {} }
+  -- `cap_hit` is the subset of `skipped` whose render stopped because the
+  -- per-shard byte cap (#1434 defensive guard) was exceeded — distinct from
+  -- `skipped` ids whose cache file was simply absent (transient fetch failure,
+  -- covered separately by blocklist_fetch_failures_total). The agent emits
+  -- blocklist_render_skipped_total{id} off this list (#1785).
+  local result = { rendered = {}, skipped = {}, cap_hit = {}, errors = {} }
   local bls    = snapshot and snapshot.blocklists or {}
 
   for id, bl in pairs(bls) do
@@ -460,9 +471,11 @@ function M.render_shards(snapshot, fs, cache_dir, shard_dir, max_bytes, global_b
         wf:close()
 
         if cap_hit then
-          -- Remove the truncated tmp file; record the id as skipped.
+          -- Remove the truncated tmp file; record the id as skipped + cap_hit
+          -- (the latter is the subset the agent emits the #1785 metric for).
           remove_fn(shard_tmp)
           result.skipped[#result.skipped + 1] = id
+          result.cap_hit[#result.cap_hit + 1] = id
         else
           -- fsync before rename for durability.
           if fsync_fn then fsync_fn(shard_tmp) end
