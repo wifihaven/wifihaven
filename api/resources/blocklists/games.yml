@@ -64,6 +64,12 @@ hosts:
   - y8.com
   - addictinggames.com
   - newgrounds.com
+  # "Unblocked games" / filter-bypass portals (#1815): innocuous-sounding sites
+  # that host 100s of browser games plus built-in proxy/cloaking tools to evade
+  # content filters. duckmath.org observed at 65 MB on a kid iPad. Also shipped
+  # as the `duckmath` app template (per-app limit surface); listing it here too
+  # gives the category-block surface — duplicates dedupe at the router.
+  - duckmath.org
   - agar.io
   - slither.io
   - krunker.io
