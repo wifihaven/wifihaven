@@ -5,15 +5,36 @@
 # LUA_PATH is set so that:
 #   require("render")            →  files/usr/lib/lua/wifihaven/render.lua    (short form, used in tests)
 #   require("wifihaven.render")  →  files/usr/lib/lua/wifihaven/render.lua    (qualified form, used in modules)
+#
+# Specs are AUTO-DISCOVERED, not hand-listed (#1877): every test/*_spec.lua runs
+# under busted and every test/*_spec.sh runs as a shell spec, so dropping a new
+# spec into test/ gates it with no edit here. The only carve-out is the
+# documented exclude allowlist in test/spec_exclude.txt (today: jsonc_shim_spec,
+# which needs the real luci.jsonc C module and runs in CI's Contract Tests job).
+# spec_coverage_spec.test.sh enforces that this discovery stays complete.
+# Note: test/*_spec.test.sh files are a different suffix owned by CI's
+# "Discover and run *.test.sh" job — the *_spec.sh glob does not match them.
 set -e
 cd "$(dirname "$0")/.."
 
-# RED step for #1877: the spec lists are still hand-maintained (replaced by
-# auto-discovery in the green commit). zzz_canary_spec.lua is on disk but absent
-# here, so the coverage guard fails — that is the gap this issue closes.
-LUA_SPECS="test/conntrack_spec.lua test/render_spec.lua test/policy_spec.lua test/usage_spec.lua test/clock_spec.lua test/failover_spec.lua test/blocklists_spec.lua test/block_page_spec.lua test/contract_spec.lua test/selfheal_spec.lua test/version_spec.lua test/update_spec.lua test/metrics_spec.lua test/log_spec.lua test/dns_log_spec.lua test/dns_tail_sets_spec.lua test/sni_spec.lua test/sni_reassembly_spec.lua test/quic_spec.lua test/nft_drops_spec.lua test/nflog_spec.lua test/host_norm_spec.lua test/lan_warn_spec.lua test/eb_refresh_spec.lua test/static_ip_labels_spec.lua test/host_metrics_spec.lua test/ws_frame_spec.lua"
+# shellcheck source=test/spec_discovery.sh
+. ./test/spec_discovery.sh
 
-SHELL_SPECS="test/init_spec.sh test/init_boot_spec.sh test/boot_skeleton_spec.sh test/update_spec.sh test/update_multi_pkg_spec.sh test/install_spec.sh test/lua_module_paths_spec.sh test/nft_log_dep_spec.sh test/agent_spec.sh test/rotate_dnsmasq_log_spec.sh test/nflog_tail_bounded_spec.sh test/init_sni_toggle_spec.sh"
+# Discover busted specs: test/*_spec.lua minus the exclude allowlist. Shell glob
+# expansion is sorted, so the runlist is deterministic.
+LUA_SPECS=""
+for f in test/*_spec.lua; do
+  [ -e "$f" ] || continue
+  wh_spec_is_excluded "${f#test/}" && continue
+  LUA_SPECS="$LUA_SPECS $f"
+done
+
+# Discover shell specs: test/*_spec.sh (does not match *_spec.test.sh).
+SHELL_SPECS=""
+for f in test/*_spec.sh; do
+  [ -e "$f" ] || continue
+  SHELL_SPECS="$SHELL_SPECS $f"
+done
 
 # List mode (WH_LIST_SPECS=1): print the specs this script would run, one per
 # line, and exit without running anything. spec_coverage_spec.test.sh reads this
