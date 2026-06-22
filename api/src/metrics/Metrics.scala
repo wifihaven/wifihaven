@@ -65,6 +65,13 @@ object MetricGuard {
       // by user/device/flow growth, so they're firewall-safe.
       "iface",
       "ssid",
+      // #1785 — blocklist id for blocklist_render_skipped_total. Bounded by the
+      // bundled blocklist set (api/resources/blocklists/_index.yml — currently
+      // 9 ids); not user/device/flow-growth driven, so firewall-safe. Use the
+      // domain-prefixed key (`blocklist_id`, not bare `id`) so the vocabulary
+      // stays specific — `id` would be a generic catch-all that future series
+      // might mistakenly co-opt for unbounded entities.
+      "blocklist_id",
     )
 
   /**
@@ -146,6 +153,19 @@ object MetricGuard {
     // (Pre-#1652 agents also emit `ipv6_skipped`; the bucket ages out as the fleet rolls forward.)
     "sni_clienthellos_total"                    -> Set("result", "router_id", "installation_id"),
     "blocklist_fetch_failures_total"            -> Set("status", "router_id", "installation_id"),
+    // #1785 — per-id counter incremented when the agent's render_shards hits the
+    // #1434 defensive byte cap and drops a list on the floor (cap_hit ⊆ skipped;
+    // absent-cache skips are covered by blocklist_fetch_failures_total above).
+    // `id` is bounded by the bundled blocklist set (currently 9 ids in
+    // api/resources/blocklists/_index.yml), so it satisfies the §4 cardinality
+    // firewall. Parent design: #1435 (the cap stays as defense-in-depth even
+    // after Option 2c streams large lists, so fleet-wide visibility of any
+    // future cap hit must keep working).
+    "blocklist_render_skipped_total"            -> Set(
+      "blocklist_id",
+      "router_id",
+      "installation_id",
+    ),
     "enforcement_drops_total"                   -> Set("reason", "router_id", "installation_id"),
     // #1658 — eb_/bl_ ipset re-resolve heartbeat. Each fire of the agent's
     // eb_refresh timer re-resolves the inventory of (extraBlocked, blocklist)

@@ -210,6 +210,12 @@ object RouterMetricsIngestSpec
             MetricCounter("dns_queries_total", Map("result" -> "resolved"), 41200),
             MetricCounter("dns_queries_total", Map("result" -> "nxdomain"), 318),
             MetricCounter("blocklist_fetch_failures_total", Map("status" -> "5xx"), 4),
+            // #1785 — per-id render-skipped counter (defensive byte-cap hit).
+            MetricCounter(
+              "blocklist_render_skipped_total",
+              Map("blocklist_id" -> "ads-extended"),
+              7,
+            ),
             MetricCounter("enforcement_drops_total", Map("reason" -> "whole_mac"), 1820),
             MetricCounter("enforcement_drops_total", Map("reason" -> "category_block"), 12990),
             // #573 SNI sidecar result counters — must be allowlisted and
@@ -231,6 +237,14 @@ object RouterMetricsIngestSpec
         assertTrue(
           seriesValue(scraped, "blocklist_fetch_failures_total", s"""router_id="$ridStr"""", "5xx")
             .contains(4.0),
+        ) &&
+        assertTrue(
+          seriesValue(
+            scraped,
+            "blocklist_render_skipped_total",
+            s"""router_id="$ridStr"""",
+            s"""blocklist_id="ads-extended"""",
+          ).contains(7.0),
         ) &&
         assertTrue(
           seriesValue(scraped, "enforcement_drops_total", s"""router_id="$ridStr"""", "whole_mac")

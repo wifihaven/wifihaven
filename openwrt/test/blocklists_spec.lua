@@ -811,6 +811,40 @@ describe("blocklists.render_shards (#1782)", function()
     assert.truthy(sk["ads"], "oversized shard must be reported in result.skipped")
   end)
 
+  -- #1785 — separate the cap-hit ids out from the conflated `skipped` array so
+  -- the agent can increment `blocklist_render_skipped_total{id}` only on the
+  -- byte-cap path (the #1434 oversize signal), not on the absent-cache-file
+  -- path (a transient fetch failure already covered by
+  -- blocklist_fetch_failures_total).
+  it("reports cap-hit ids in result.cap_hit, NOT absent-cache ids (#1785)", function()
+    local fs        = make_shard_fs()
+    local cache_dir = "/etc/wifihaven/blocklists"
+    local shard_dir = "/tmp"
+    -- 'ads' has an oversized cache file; 'gambling' has no cache file at all.
+    local lines = {}
+    for i = 1, 200 do lines[#lines + 1] = "host" .. i .. ".example.com" end
+    fs._files[cache_dir .. "/ads-v1.txt"] = table.concat(lines, "\n") .. "\n"
+
+    local s = snap({
+      ads      = { version = "v1", url = "/api/blocklists/ads" },
+      gambling = { version = "v1", url = "/api/blocklists/gambling" },
+    })
+    local result = blocklists.render_shards(s, fs, cache_dir, shard_dir, 200)
+
+    local cap = {}
+    for _, id in ipairs(result.cap_hit or {}) do cap[id] = true end
+    assert.truthy(cap["ads"], "cap-hit id must appear in result.cap_hit")
+    assert.is_nil(cap["gambling"], "absent-cache id MUST NOT appear in result.cap_hit")
+
+    -- An under-cap render must not trigger cap_hit either.
+    local fs2 = make_shard_fs()
+    fs2._files[cache_dir .. "/ads-v1.txt"] = "doubleclick.net\n"
+    local s2 = snap({ ads = { version = "v1", url = "/api/blocklists/ads" } })
+    local r2 = blocklists.render_shards(s2, fs2, cache_dir, shard_dir, 1024)
+    assert.equal(0, #(r2.cap_hit or {}),
+      "under-cap render must not populate cap_hit")
+  end)
+
   it("appends global_block + global_block6 specs when id is in global_blocklist_ids", function()
     local fs        = make_shard_fs()
     local cache_dir = "/etc/wifihaven/blocklists"
