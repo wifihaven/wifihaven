@@ -65,6 +65,10 @@ object MetricGuard {
       // by user/device/flow growth, so they're firewall-safe.
       "iface",
       "ssid",
+      // #1785 — blocklist id for blocklist_render_skipped_total. Bounded by the
+      // bundled blocklist set (api/resources/blocklists/_index.yml — currently
+      // 9 ids); not user/device/flow-growth driven, so firewall-safe.
+      "id",
     )
 
   /**
