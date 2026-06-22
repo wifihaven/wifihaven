@@ -1,6 +1,6 @@
 # /dashboard redesign — design note
 
-Status: **proposed** (design phase of [#1148](https://github.com/wifihaven/wifihaven/issues/1148)). No implementation in this PR.
+Status: **proposed — implementation PAUSED, gated on websocket #1023** (design phase of [#1148](https://github.com/wifihaven/wifihaven/issues/1148)). No implementation in this PR. See §7.5 for the sequencing decision.
 
 > **Revision 2 (2026-06-22).** §§1–6 below are the original design pass (PR
 > [#1158](https://github.com/wifihaven/wifihaven/pull/1158), 2026-05-29) and are kept
@@ -295,3 +295,33 @@ classification) / Q8 (copy fix) if the operator chooses to pursue them.
 
 Once this revision is signed off, #299/#819/#820/#821/#822/#823/#825 close as **superseded** by
 the chunk PRs above (do not also implement them piecemeal).
+
+### 7.5 Sequencing decision (2026-06-22) — paused, gated on websocket #1023
+
+**The implementation is on hold until the websocket streaming transport
+([#1023](https://github.com/wifihaven/wifihaven/issues/1023), priority #1) lands.** Operator
+decision: the dashboard is the household's live status surface, so its live sections must be
+**sourced from the streaming push**, not the current 10s `refetchInterval` poll. Building the
+redesigned NOW / KPI / Most-Recently-Blocked sections on the polling path first would be
+throwaway — the data plane changes underneath them when #1023 ships.
+
+Concretely, this revises the original real-time framing (which said the websocket "could later
+push these updates, but do not depend on it"): the redesign now **does** depend on it.
+
+- **`useDashboardNow` (NOW snapshot), `useRecentBlocked` (Most Recently Blocked), and the
+  derived "Online now / Blocked now" KPIs** become consumers of the streaming transport rather
+  than independent 10s pollers. The single-freshness-pill decision (#825) still holds, now
+  driven by last-push time instead of `dataUpdatedAt`.
+- **The 24h aggregate panel (chunk 5 / #1837)** stays request/response on the rollup tables —
+  it is not real-time and does not need the stream.
+- **Layout/structure chunks (1–4: #1833–#1836)** are mostly transport-agnostic, but they are
+  paused too rather than landed piecemeal: shipping the NOW density / KPI restate against the
+  poller and then re-sourcing them against the stream is double work, and a half-migrated
+  dashboard is worse than the current one.
+
+**Status of the sub-issues:** #1833–#1837 are moved out of *In Progress* → **Blocked**
+(`blocked` + `blocked-on-#1023`). They are kept (the plan is still correct); they resume once
+#1023 provides the stream. When work restarts, fold the streaming-source wiring into chunks 2
+and 3 (the live sections) as their first step, before the layout changes.
+
+This note records the decision; no further dashboard PRs until #1023 lands.
