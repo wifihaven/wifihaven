@@ -331,15 +331,32 @@ def test_v6_usage_attributes_to_fqdn_and_aggregates_with_v4(router, client, fake
         # the loaded ruleset. Pre-#1802 they do not (the regression's root
         # cause), so this is a cheap, deterministic #1796 guard independent of
         # the traffic round-trip. ──────────────────────────────────────────
-        sets = router_ssh(
-            "nft list sets inet wifihaven 2>/dev/null || true",
-            check=False, timeout=10,
-        ).stdout or ""
-        for s in ("mac_ip6_tracking", "ip_pair6_tracking_rx"):
-            assert s in sets, (
-                f"nft ruleset is missing the v6 accounting set {s!r} — "
-                f"pre-#1802 IPv4-only accounting plane regressed?\n{sets!r}"
-            )
+        #
+        # NB: dump the whole table (`nft list table inet wifihaven`), NOT
+        # `nft list sets inet wifihaven` — the latter is malformed (`list sets`
+        # takes only an optional FAMILY token, so the trailing table name makes
+        # nft error out; the `2>/dev/null` then swallowed it and the assert ran
+        # against an empty string, which is why this gate was red on every run
+        # since #1808 merged, see #1829). The table dump includes each set's
+        # `set <name> { ... }` declaration, so the membership check still holds.
+        # Poll briefly to absorb the fetch→apply gap (the etag is *served*
+        # before the agent finishes rendering the ruleset).
+        _required_sets = ("mac_ip6_tracking", "ip_pair6_tracking_rx")
+
+        def _v6_sets_present():
+            out = router_ssh(
+                "nft list table inet wifihaven 2>/dev/null || true",
+                check=False, timeout=10,
+            ).stdout or ""
+            return out if all(s in out for s in _required_sets) else None
+
+        wait_until(
+            _v6_sets_present, timeout_s=60, interval_s=3,
+            description=(
+                "nft table inet wifihaven contains the v6 accounting sets "
+                f"{_required_sets} (#1802 / #1796 regression guard)"
+            ),
+        )
 
         url = f"http://{LEAF_HOST}/"
         _wait_origin_reachable(client, url=url, family_flag="-6")
