@@ -231,6 +231,9 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         off1 <- seedTraffic(rid, kidMac, "youtube.com", today, 15)
         _    <- seedTraffic(rid, kidMac, "cnn.com", today, 45, off1)
         _    <- blr.insertBatch(List(("doubleclick.net", "ads"), ("ads.example.com", "ads")))
+        // #1784: snap.blocklists is scoped to lists referenced by some profile, so reference
+        // `ads` from the kid profile to keep the composition assertion meaningful.
+        _    <- pr.setBlockedCategories(kid, List(BlocklistId.unsafe("ads")))
         ber  <- ZIO.service[BlockEventRepo]
         ps   <- makePolicyService
         routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
@@ -666,6 +669,7 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
     ) {
       for {
         _       <- cleanDb
+        pr      <- ZIO.service[ProfileRepo]
         rr      <- ZIO.service[RouterRepo]
         blr     <- ZIO.service[BlocklistRepo]
         ps      <- makePolicyService
@@ -675,6 +679,11 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
             ("googleadservices.com", "test_ads"),
             ("tiktok.com", "test_social"),
           ),
+        )
+        // #1784: a profile must reference each id we expect to see in snap.blocklists.
+        _       <- pr.create(
+          "Kids",
+          List(BlocklistId.unsafe("test_ads"), BlocklistId.unsafe("test_social")),
         )
         ber     <- ZIO.service[BlockEventRepo]
         (_, et) <- seedRouter("gw-bl4")
@@ -715,8 +724,11 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         rr      <- ZIO.service[RouterRepo]
         blr     <- ZIO.service[BlocklistRepo]
         ber     <- ZIO.service[BlockEventRepo]
-        _       <- TestLayers.seedKidsProfile(pr)
+        kid     <- TestLayers.seedKidsProfile(pr)
         _       <- blr.insertBatch(List(("doubleclick.net", "test_ads")))
+        // #1784: the blocklist must be referenced by some profile to ship in snap.blocklists,
+        // otherwise mutating its content won't move the ETag.
+        _       <- pr.setBlockedCategories(kid, List(BlocklistId.unsafe("test_ads")))
         ps      <- makePolicyService
         (_, et) <- seedRouter("gw-etag")
         routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)

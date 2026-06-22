@@ -38,6 +38,15 @@ object PolicySnapshotBlocklistScopeSpec
       clock  <- ZIO.service[Clock]
     } yield PolicyServiceLive(pr, hsr, tlr, atlr, dr, blr, trRepo, er, ar, clock): PolicyService
 
+  // V1 seeds default Kids and Adults profiles with hard-coded blockedCategories. Clear them so each
+  // test starts from a known empty reference set and only the lists this test references show up.
+  private def clearDefaultProfileCategories: ZIO[ProfileRepo, Throwable, Unit] =
+    for {
+      pr  <- ZIO.service[ProfileRepo]
+      all <- pr.listAllIncludingGlobal
+      _   <- ZIO.foreachDiscard(all)(p => pr.setBlockedCategories(p.id, List.empty))
+    } yield ()
+
   // Seed three distinct bundled blocklists so the "drops the unreferenced ones" assertion has bite.
   private def seedThreeLists(blr: BlocklistRepo): Task[Unit] =
     blr
@@ -50,15 +59,22 @@ object PolicySnapshotBlocklistScopeSpec
       )
       .unit
 
+  private def kidsId: ZIO[ProfileRepo, Throwable, ProfileId] =
+    ZIO.serviceWithZIO[ProfileRepo](_.listAll.map(_.find(_.name == "Kids").get.id))
+
+  private def adultsId: ZIO[ProfileRepo, Throwable, ProfileId] =
+    ZIO.serviceWithZIO[ProfileRepo](_.listAll.map(_.find(_.name == "Adults").get.id))
+
   def spec = suite("PolicySnapshot — blocklists scoped to referenced lists (#1784)")(
     test("only the blocklists referenced by some profile ship in snap.blocklists") {
       for {
         _    <- cleanDb
+        _    <- clearDefaultProfileCategories
         pr   <- ZIO.service[ProfileRepo]
         blr  <- ZIO.service[BlocklistRepo]
         _    <- seedThreeLists(blr)
-        // ProfileRepo.create(name, blockedCategories): one profile references "malware" only.
-        _    <- pr.create("Kids", List(BlocklistId.unsafe("malware")))
+        kid  <- kidsId
+        _    <- pr.setBlockedCategories(kid, List(BlocklistId.unsafe("malware")))
         svc  <- makePs
         snap <- svc.snapshot
         keys = snap.blocklists.keySet.map(_.value)
@@ -66,10 +82,11 @@ object PolicySnapshotBlocklistScopeSpec
     },
     test("union across profiles: every referenced id appears, unreferenced ones do not") {
       for {
-        _    <- cleanDb
-        pr   <- ZIO.service[ProfileRepo]
-        blr  <- ZIO.service[BlocklistRepo]
-        _    <- blr.insertBatch(
+        _      <- cleanDb
+        _      <- clearDefaultProfileCategories
+        pr     <- ZIO.service[ProfileRepo]
+        blr    <- ZIO.service[BlocklistRepo]
+        _      <- blr.insertBatch(
           List(
             ("doubleclick.net", "ads"),
             ("badthings.example", "malware"),
@@ -77,31 +94,35 @@ object PolicySnapshotBlocklistScopeSpec
             ("p2p.example", "p2p"),
           ),
         )
-        _    <- pr.create("Kids", List(BlocklistId.unsafe("malware")))
-        _    <- pr.create("Teens", List(BlocklistId.unsafe("ads"), BlocklistId.unsafe("adult")))
-        svc  <- makePs
-        snap <- svc.snapshot
+        kid    <- kidsId
+        adults <- adultsId
+        _      <- pr.setBlockedCategories(kid, List(BlocklistId.unsafe("malware")))
+        _      <- pr.setBlockedCategories(
+          adults,
+          List(BlocklistId.unsafe("ads"), BlocklistId.unsafe("adult")),
+        )
+        svc    <- makePs
+        snap   <- svc.snapshot
         keys = snap.blocklists.keySet.map(_.value)
       } yield assertTrue(keys == Set("malware", "ads", "adult"))
     },
     test("with no profile referencing any blocklist, snap.blocklists is empty") {
       for {
         _    <- cleanDb
-        pr   <- ZIO.service[ProfileRepo]
+        _    <- clearDefaultProfileCategories
         blr  <- ZIO.service[BlocklistRepo]
         _    <- seedThreeLists(blr)
-        _    <- pr.create("Adults", List.empty)
         svc  <- makePs
         snap <- svc.snapshot
       } yield assertTrue(snap.blocklists.isEmpty)
     },
-    test("a list referenced by the global sentinel profile still ships") {
+    test("a list referenced only by the global sentinel profile still ships") {
       for {
         _    <- cleanDb
+        _    <- clearDefaultProfileCategories
         pr   <- ZIO.service[ProfileRepo]
         blr  <- ZIO.service[BlocklistRepo]
         _    <- seedThreeLists(blr)
-        _    <- pr.create("Adults", List.empty)
         g    <- pr.getGlobal.map(_.get.id)
         _    <- pr.setBlockedCategories(g, List(BlocklistId.unsafe("ads")))
         svc  <- makePs

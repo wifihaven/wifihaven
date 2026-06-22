@@ -272,8 +272,8 @@ class PolicyServiceLive(
         d.mac -> DevicePolicy(profileId = d.profileId, name = d.name, rules = rules)
       }.toMap
 
-      val catDomainsMap                            = catDomains.toMap
-      val pBlocklists: Map[BlocklistId, Blocklist] = cats.map { c =>
+      val catDomainsMap                               = catDomains.toMap
+      val pBlocklistsAll: Map[BlocklistId, Blocklist] = cats.map { c =>
         val domains = catDomainsMap.getOrElse(c, Set.empty[Hostname]).map(_.value)
         val version = BlocklistVersion.unsafe(PolicyService.blocklistContentVersion(domains))
         c -> Blocklist(version = version, url = BlocklistUrl.unsafe(s"/api/blocklists/${c.value}"))
@@ -304,6 +304,18 @@ class PolicyServiceLive(
         extraBlocked = globalRulesResolved.extraBlocked.distinct,
         blocklistIds = globalRulesResolved.blocklistIds.distinct,
       )
+
+      // #1784: scope `blocklists` to only those referenced by some profile (or by the global
+      // section / unmanaged-MAC rules). The router fetches and renders every id in this map, so
+      // shipping unreferenced lists is wasted work — on prod the difference is hundreds of
+      // thousands of directives vs hundreds (see #1412 investigation). Additive-safe on the wire:
+      // the agent already iterates whatever ids appear here.
+      val referencedBlocklistIds: Set[BlocklistId] =
+        (globalRules.blocklistIds.iterator ++
+          profilePolicies.valuesIterator.flatMap(_.rules.blocklistIds) ++
+          devicePolicies.valuesIterator.flatMap(_.rules.iterator.flatMap(_.blocklistIds))).toSet
+      val pBlocklists: Map[BlocklistId, Blocklist] =
+        pBlocklistsAll.view.filterKeys(referencedBlocklistIds).toMap
 
       val core = SnapshotCore(globalRules, devicePolicies, profilePolicies, pBlocklists)
       val etag = PolicyService.computeEtag(core)
