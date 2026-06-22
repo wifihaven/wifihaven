@@ -147,8 +147,11 @@ object RouterWsRoutes {
                 )
             case other     =>
               // Forward-compat: ignore + meter an unrecognized op (design §1.3) so a future op
-              // (e.g. policy_diff) can ship without a flag day.
-              AppMetrics.recordWsFrame(opLabel(other), "in", "unknown_op") *>
+              // (e.g. policy_diff) can ship without a flag day. The arbitrary op string is collapsed
+              // to the bounded literal `unknown` for the metric label (an attacker-supplied op must
+              // never become a Prometheus label value — cardinality firewall); the real op goes to
+              // the log only.
+              AppMetrics.recordWsFrame("unknown", "in", "unknown_op") *>
                 ZIO.logDebug(s"router ws: ignoring unknown op '$other' from router=${router.id}")
           }
         }
@@ -219,7 +222,10 @@ object RouterWsRoutes {
       status: String,
       reason: Option[String],
   ): ZIO[Any, Throwable, Unit] =
-    send(channel, WsFrame("ack", Some(WsAck(op, seq, status, reason).toJsonAST.toOption.get))) *>
+    send(
+      channel,
+      WsFrame("ack", Some(WsAck(op, seq, status, reason).toJsonAST.getOrElse(Json.Obj()))),
+    ) *>
       AppMetrics.recordWsFrame("ack", "out", status match { case "ok" => "ok"; case _ => "reject" })
 
   /** Short, bounded reason string for an ack reject — never the raw (potentially large) body. */
@@ -234,13 +240,6 @@ object RouterWsRoutes {
       case ApiError.Internal(_)      => "internal"
       case ApiError.Wrapped(_)       => "rejected"
     }
-
-  /**
-   * Collapse an unknown op string to a bounded metric label. An arbitrary string from a misbehaving
-   * client must NOT become a Prometheus label value (cardinality firewall) — every unrecognized op
-   * is reported under the single `unknown` label, while the actual op string goes to the log.
-   */
-  private def opLabel(op: String): String = "unknown"
 
   /**
    * The `{op, payload, seq}` frame envelope (design §1.2). `payload`/`seq` optional (e.g. ping).

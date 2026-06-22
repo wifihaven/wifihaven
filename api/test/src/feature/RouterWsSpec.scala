@@ -1,7 +1,9 @@
 package wifihaven.api.feature
 
+import wifihaven.api.{ErrorBoundary, Readiness}
 import wifihaven.api.db.*
-import wifihaven.api.metrics.RouterMetricsService
+import wifihaven.api.metrics.{HttpMetrics, RouterMetricsService}
+import wifihaven.api.observability.LoggingMiddleware
 import wifihaven.api.routes.*
 import wifihaven.shared.*
 import wifihaven.shared.types.*
@@ -64,7 +66,17 @@ object RouterWsSpec
       reg     <- RouterWsRegistry.make
       auth   = new RouterAuthLive(rRepo)
       ingest = new RouterIngestService(rRepo, tRepo, tu, dRepo, cRepo, aRepo, hsr)
-      routes = RouterWsRoutes.routes(auth, reg, ingest, metrics, rRepo)
+      // Mount the ws route through the SAME aspect stack `Main` wraps the router routes in
+      // (HttpMetrics.instrument → LoggingMiddleware.annotate → Readiness.gate → ErrorBoundary.observe)
+      // so the test proves the HTTP/1.1 upgrade survives the production middleware, not just the raw
+      // route. These aspects are response-transparent for a websocket Response, but pinning it here
+      // closes the gap between the test path and the assembled prod path.
+      raw    = RouterWsRoutes.routes(auth, reg, ingest, metrics, rRepo)
+      routes = HttpMetrics.instrument(
+        LoggingMiddleware.annotate(
+          Readiness.gate(ErrorBoundary.observe(raw), ZIO.succeed(true)),
+        ),
+      )
     } yield (routes, reg)
 
   /**
