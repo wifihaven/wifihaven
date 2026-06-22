@@ -710,10 +710,21 @@ jobs:
   # Cheap config-quality gate for the cloud observability collector
   # (deploy/alloy/config.alloy), mirroring grafana-terraform / cloudflare-
   # terraform. Catches syntax errors and invalid component wiring before the
-  # wifihaven-alloy Render service deploys the config (#1852). Runs the EXACT
-  # pinned image the Dockerfile builds from, so the validator matches what
-  # ships. sys.env(...) of unset secrets resolves to "" during validate (no
-  # connection is attempted), so no Grafana Cloud credentials are needed here.
+  # wifihaven-alloy Render service deploys the config (#1852).
+  #
+  # The validator IMAGE is intentionally NOT the same tag the Dockerfile ships
+  # (deploy/alloy/Dockerfile pins grafana/alloy:v1.5.1 for the runtime). The
+  # `alloy validate` subcommand did not exist in v1.5.1 — it was added in a
+  # later release — so this job pins a recent validate-capable image. That is
+  # sound, not a drift risk: `validate` is a STATIC check of the config
+  # language, and the only components used here (loki.write,
+  # prometheus.remote_write, prometheus.scrape, sys.env) have been
+  # generally-available with stable syntax since Alloy v1.0, so a newer
+  # validator checks the exact same config the v1.5.1 runtime loads. The two
+  # versions move independently and on purpose: ALLOY_VALIDATE_VERSION tracks
+  # "recent enough to have validate," the Dockerfile FROM tracks "what we run."
+  # sys.env(...) of unset secrets resolves to "" during validate (no connection
+  # is attempted), so no Grafana Cloud credentials are needed here.
   alloy-config:
     name: Alloy Config Validate
     needs: changes
@@ -721,23 +732,19 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      # Bump freely to any recent grafana/alloy tag — only constraint is that it
+      # ships the `validate` subcommand (>= ~v1.12). Independent of the runtime
+      # version in deploy/alloy/Dockerfile (see comment above).
+      ALLOY_VALIDATE_VERSION: v1.13.0
     steps:
       - uses: actions/checkout@v6
 
-      # Validate with the EXACT image the Dockerfile builds from — derive the
-      # pinned tag from its FROM line rather than hardcoding it here, so a
-      # deliberate Dockerfile bump can't leave CI validating against a stale
-      # Alloy version (no second place to keep in sync).
       - name: alloy validate
         run: |
-          tag=$(grep -oP '^FROM grafana/alloy:\K\S+' deploy/alloy/Dockerfile)
-          if [ -z "$tag" ]; then
-            echo "::error::could not parse grafana/alloy tag from deploy/alloy/Dockerfile" >&2
-            exit 1
-          fi
-          echo "Validating deploy/alloy/config.alloy against grafana/alloy:$tag"
+          echo "Validating deploy/alloy/config.alloy with grafana/alloy:${ALLOY_VALIDATE_VERSION}"
           docker run --rm -v "$PWD/deploy/alloy:/work:ro" \
-            "grafana/alloy:$tag" validate /work/config.alloy
+            "grafana/alloy:${ALLOY_VALIDATE_VERSION}" validate /work/config.alloy
 
   # ── GitHub Actions workflow lint ─────────────────────────────────────────
   # actionlint statically checks every workflow under .github/workflows/ for
