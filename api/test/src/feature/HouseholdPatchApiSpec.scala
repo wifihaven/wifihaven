@@ -65,6 +65,14 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         .addHeader(Header.ContentType(MediaType.application.json)),
     )
 
+  private def put(routes: Routes[Any, Response], token: String, body: String) =
+    routes.runZIO(
+      Request
+        .put(url("/api/household/settings"), Body.fromString(body))
+        .addHeader(Header.Authorization.Bearer(token))
+        .addHeader(Header.ContentType(MediaType.application.json)),
+    )
+
   def spec = suite("PATCH /api/household/settings (#998)")(
     test("single top-level field patch") {
       for {
@@ -215,6 +223,71 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         (routes, tk) <- routesAndToken
         resp         <- patch(routes, tk, """{"unmanagedMacPolicy":null}""")
       } yield assertTrue(resp.status == Status.BadRequest)
+    },
+    test("#1912 blockEncryptedDns defaults to false") {
+      for {
+        _     <- cleanDb
+        repo  <- ZIO.service[HouseholdSettingsRepo]
+        _     <- repo.ensureDefault(ZoneId.of("UTC"))
+        after <- repo.get
+      } yield assertTrue(!after.blockEncryptedDns)
+    },
+    test("#1912 PATCH {blockEncryptedDns:true} round-trips and preserves other fields") {
+      for {
+        _            <- setupHousehold
+        (routes, tk) <- routesAndToken
+        resp         <- patch(routes, tk, """{"blockEncryptedDns":true}""")
+        repo         <- ZIO.service[HouseholdSettingsRepo]
+        after        <- repo.get
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(after.blockEncryptedDns) &&
+        // a single-field PATCH leaves everything else untouched.
+        assertTrue(after.dailyResetTime == Seed.dailyResetTime) &&
+        assertTrue(after.unmanagedMacPolicy == Seed.unmanagedMacPolicy)
+    },
+    test("#1912 PATCH {blockEncryptedDns:false} clears the flag") {
+      for {
+        _            <- setupHousehold
+        (routes, tk) <- routesAndToken
+        _            <- patch(routes, tk, """{"blockEncryptedDns":true}""")
+        resp         <- patch(routes, tk, """{"blockEncryptedDns":false}""")
+        repo         <- ZIO.service[HouseholdSettingsRepo]
+        after        <- repo.get
+      } yield assertTrue(resp.status == Status.Ok) && assertTrue(!after.blockEncryptedDns)
+    },
+    test("#1912 PATCH that omits blockEncryptedDns preserves the stored value") {
+      for {
+        _            <- setupHousehold
+        (routes, tk) <- routesAndToken
+        _            <- patch(routes, tk, """{"blockEncryptedDns":true}""")
+        _            <- patch(routes, tk, """{"dailyResetTime":"04:00:00"}""")
+        repo         <- ZIO.service[HouseholdSettingsRepo]
+        after        <- repo.get
+      } yield assertTrue(after.blockEncryptedDns) &&
+        assertTrue(after.dailyResetTime == LocalTime.of(4, 0))
+    },
+    test("#1912 PUT carries blockEncryptedDns through the full-replace path") {
+      for {
+        _            <- setupHousehold
+        (routes, tk) <- routesAndToken
+        body =
+          """{"dailyResetTime":"00:00:00","dailyResetTz":"America/Los_Angeles","heartbeatFilter":{"enabled":false,"bytesThreshold":1024,"heartbeatHostPatterns":[]},"unmanagedMacPolicy":{"policy":"allow","blockPage":true},"blockEncryptedDns":true}"""
+        resp  <- put(routes, tk, body)
+        repo  <- ZIO.service[HouseholdSettingsRepo]
+        after <- repo.get
+      } yield assertTrue(resp.status == Status.Ok) && assertTrue(after.blockEncryptedDns)
+    },
+    test("#1912 PUT that omits blockEncryptedDns decodes to the default (false)") {
+      // Older SPA builds PUT without the field; tolerate it (additive default).
+      for {
+        _            <- setupHousehold
+        (routes, tk) <- routesAndToken
+        body =
+          """{"dailyResetTime":"00:00:00","dailyResetTz":"America/Los_Angeles","heartbeatFilter":{"enabled":false,"bytesThreshold":1024,"heartbeatHostPatterns":[]},"unmanagedMacPolicy":{"policy":"allow","blockPage":true}}"""
+        resp  <- put(routes, tk, body)
+        repo  <- ZIO.service[HouseholdSettingsRepo]
+        after <- repo.get
+      } yield assertTrue(resp.status == Status.Ok) && assertTrue(!after.blockEncryptedDns)
     },
     test("403 when non-admin (adult) tries to PATCH") {
       for {
