@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "WifiHaven websocket router transport (#1846, epic #1023): server-side health for the persistent /api/router/ws endpoint. Panels target only the series the API actually emits today \u2014 router_ws_connections_active (RouterWsRegistry) and router_ws_frames_total{op,direction,result} (RouterWsRoutes demux). The REST transport stays the fallback; until the agent ws client (#1848) ships these read 0/flat. Push-on-change health (router_ws_policy_push_total) lands with #1849. Labels are bounded enums only per the \u00a74 cardinality firewall. datasource/env are templated for per-environment view.",
+  "description": "WifiHaven websocket router transport (#1846/#1847, epic #1023): server-side health for the persistent /api/router/ws endpoint. Panels target only the series the API actually emits today \u2014 router_ws_connections_active (RouterWsRegistry), router_ws_frames_total{op,direction,result} (RouterWsRoutes demux), and router_ws_handshake_total{result} (the #1847 capability handshake). The REST transport stays the fallback; until the agent ws client (#1848) ships these read 0/flat. Push-on-change health (router_ws_policy_push_total) lands with #1849. Labels are bounded enums only per the \u00a74 cardinality firewall. datasource/env are templated for per-environment view.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -253,6 +253,63 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "title": "Capability handshake outcomes (#1847)",
+      "description": "sum by (result) (rate(router_ws_handshake_total[5m])) — the hello→ready capability-handshake outcomes (design §2). result ∈ {ok, auth_fail, hello_timeout, version_exceeded}: ok once a snapshotVersion is negotiated; auth_fail when the upgrade is rejected at the token check; hello_timeout when no hello arrives within the window (close 4002); version_exceeded when the agent's max-known snapshotVersion is below the server's floor (close 4003). A non-zero hello_timeout / version_exceeded share is the signal that agents and server disagree on the protocol or shape version during a rollover.",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "id": 5,
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "cps",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (result) (rate(router_ws_handshake_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{result}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",
@@ -319,6 +376,6 @@
   "timezone": "",
   "title": "WifiHaven \u2014 Router WS transport",
   "uid": "wifihaven-router-ws-transport",
-  "version": 1,
+  "version": 2,
   "weekStart": ""
 }

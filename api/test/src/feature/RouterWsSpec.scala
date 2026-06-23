@@ -19,11 +19,14 @@ import zio.test.*
 import java.time.{Instant, LocalDateTime}
 
 /**
- * #1846: server-side websocket transport. Exercises the real `/api/router/ws` endpoint end to end —
- * a real [[Server]] on an ephemeral port and a real ws [[Client]] — to prove upgrade-time auth, the
- * `{op, payload}` demux dispatching into the shared ingest service, the per-router connection
- * registry, and the heartbeat (`ping`→`pong`). The REST ingest path stays covered by
- * [[RouterIngestSpec]], which is the back-compat gate for the transport-agnostic ingest extraction.
+ * #1846 + #1847: server-side websocket transport. Exercises the real `/api/router/ws` endpoint end
+ * to end — a real [[Server]] on an ephemeral port and a real ws [[Client]] — to prove upgrade-time
+ * auth, the `{op, payload}` demux dispatching into the shared ingest service, the per-router
+ * connection registry, the heartbeat (`ping`→`pong`), and the #1847 capability handshake:
+ * `hello`→`ready` with `snapshotVersion` negotiation (`min` rule), the future-agent back-compat
+ * down-negotiation, the below-floor refusal (close 4003), and the hello-timeout refusal (close
+ * 4002). The REST ingest path stays covered by [[RouterIngestSpec]], which is the back-compat gate
+ * for the transport-agnostic ingest extraction.
  */
 object RouterWsSpec
     extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task]] {
@@ -53,7 +56,9 @@ object RouterWsSpec
       _   <- dRepo.upsert(MacAddress.unsafe(knownMac), "kid-ipad", Some(pid), "192.168.1.10")
     } yield ()
 
-  private def buildWsRoutes =
+  private def buildWsRoutes(
+      helloTimeout: Duration = RouterWsRoutes.DefaultHelloTimeout,
+  ) =
     for {
       rRepo   <- ZIO.service[RouterRepo]
       tRepo   <- ZIO.service[TrafficReportRepo]
@@ -71,7 +76,7 @@ object RouterWsSpec
       // so the test proves the HTTP/1.1 upgrade survives the production middleware, not just the raw
       // route. These aspects are response-transparent for a websocket Response, but pinning it here
       // closes the gap between the test path and the assembled prod path.
-      raw    = RouterWsRoutes.routes(auth, reg, ingest, metrics, rRepo)
+      raw    = RouterWsRoutes.routes(auth, reg, ingest, metrics, rRepo, helloTimeout)
       routes = HttpMetrics.instrument(
         LoggingMiddleware.annotate(
           Readiness.gate(ErrorBoundary.observe(raw), ZIO.succeed(true)),
@@ -116,11 +121,46 @@ object RouterWsSpec
       }
     }
 
+  /**
+   * Open a ws connection, run `send` on handshake-complete, and resolve with the close code the
+   * server sends (the #1847 handshake-refusal paths: 4002 hello-required, 4003 version-exceeded).
+   */
+  private def connectAndCaptureClose(
+      port: Int,
+      bearer: Option[String],
+      send: WebSocketChannel => ZIO[Any, Throwable, Unit],
+  ): ZIO[Client, Throwable, Int] =
+    Promise.make[Nothing, Int].flatMap { closeCode =>
+      // Forward close frames to userland (Netty's default `handleCloseFrames=true` would otherwise
+      // swallow the server's Close and complete the handshake silently) so we can assert the exact
+      // application close code (4002 hello-required / 4003 version-exceeded).
+      val app     = Handler
+        .webSocket { channel =>
+          channel.receiveAll {
+            case ChannelEvent.UserEventTriggered(UserEvent.HandshakeComplete) =>
+              send(channel)
+            case ChannelEvent.Read(WebSocketFrame.Close(code, _))             =>
+              closeCode.succeed(code).unit
+            case _                                                            =>
+              ZIO.unit
+          }
+        }
+        .withConfig(WebSocketConfig.default.forwardCloseFrames(true))
+      val headers = bearer.fold(Headers.empty)(t => Headers(Header.Authorization.Bearer(t)))
+      ZIO.scoped {
+        for {
+          _ <- app.connect(s"ws://localhost:$port/api/router/ws", headers).forkScoped
+          c <- closeCode.await
+            .timeoutFail(new RuntimeException("no close frame within 30s"))(30.seconds)
+        } yield c
+      }
+    }
+
   def spec = suite("Router websocket /api/router/ws")(
     test("rejects the upgrade with 401 when the bearer token is missing or invalid") {
       for {
         _           <- cleanDb
-        (routes, _) <- buildWsRoutes
+        (routes, _) <- buildWsRoutes()
         noToken     <- routes.runZIO(
           Request.get(URL.decode("/api/router/ws").toOption.get),
         )
@@ -141,7 +181,7 @@ object RouterWsSpec
         tRepo         <- ZIO.service[TrafficReportRepo]
         _             <- seedKnownDevice(dRepo, pRepo)
         (id, tk)      <- seedRouter(rRepo)
-        (routes, reg) <- buildWsRoutes
+        (routes, reg) <- buildWsRoutes()
         port          <- Server.install(routes)
         rec       = UsageRecord(
           MacAddress.unsafe(knownMac),
@@ -174,7 +214,7 @@ object RouterWsSpec
         _           <- cleanDb
         rRepo       <- ZIO.service[RouterRepo]
         (id, tk)    <- seedRouter(rRepo)
-        (routes, _) <- buildWsRoutes
+        (routes, _) <- buildWsRoutes()
         port        <- Server.install(routes)
         result      <- connectAndCapture(
           port,
@@ -184,6 +224,88 @@ object RouterWsSpec
         )
         pong = result._1
       } yield assertTrue(pong.contains("\"op\":\"pong\""))).provideSome[
+        TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task],
+      ](Server.defaultWithPort(0), Client.default)
+    },
+    // #1847 — capability handshake. A v1 `hello` negotiates `snapshotVersion: 1` and gets the
+    // server's capability set back in `ready`.
+    test("a hello at snapshotVersion 1 is answered with ready (negotiated v1 + server caps)") {
+      (for {
+        _           <- cleanDb
+        rRepo       <- ZIO.service[RouterRepo]
+        (_, tk)     <- seedRouter(rRepo)
+        (routes, _) <- buildWsRoutes()
+        port        <- Server.install(routes)
+        hello =
+          """{"op":"hello","payload":{"agentCapabilities":["ws-transport-v1"],"snapshotVersion":1,"agentVersion":"0.3.1"}}"""
+        result <- connectAndCapture(
+          port,
+          Some(tk),
+          ch => ch.send(ChannelEvent.read(WebSocketFrame.text(hello))),
+          ZIO.unit,
+        )
+        ready = result._1
+      } yield assertTrue(ready.contains("\"op\":\"ready\"")) &&
+        assertTrue(ready.contains("\"snapshotVersion\":1")) &&
+        assertTrue(ready.contains("ws-transport-v1")) &&
+        assertTrue(ready.contains("ack-frames"))).provideSome[
+        TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task],
+      ](Server.defaultWithPort(0), Client.default)
+    },
+    // #1847 / #376 back-compat: a FUTURE agent that knows a higher snapshotVersion polling a v1
+    // server is handed today's v1 shape (negotiated = min(agent.max, server.max)) — no flag day.
+    test("a hello at a future snapshotVersion negotiates down to the server's v1") {
+      (for {
+        _           <- cleanDb
+        rRepo       <- ZIO.service[RouterRepo]
+        (_, tk)     <- seedRouter(rRepo)
+        (routes, _) <- buildWsRoutes()
+        port        <- Server.install(routes)
+        hello =
+          """{"op":"hello","payload":{"agentCapabilities":["ws-transport-v1","policy-diff"],"snapshotVersion":5,"agentVersion":"9.9.9"}}"""
+        result <- connectAndCapture(
+          port,
+          Some(tk),
+          ch => ch.send(ChannelEvent.read(WebSocketFrame.text(hello))),
+          ZIO.unit,
+        )
+        ready = result._1
+      } yield assertTrue(ready.contains("\"op\":\"ready\"")) &&
+        assertTrue(ready.contains("\"snapshotVersion\":1"))).provideSome[
+        TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task],
+      ](Server.defaultWithPort(0), Client.default)
+    },
+    // #1847 / §2.3 version ceiling: an agent that doesn't even understand v1 (snapshotVersion 0)
+    // has no shape in common with the server → close 4003 version-exceeded, no `ready`.
+    test("a hello below the server's version floor is refused with close 4003") {
+      (for {
+        _           <- cleanDb
+        rRepo       <- ZIO.service[RouterRepo]
+        (_, tk)     <- seedRouter(rRepo)
+        (routes, _) <- buildWsRoutes()
+        port        <- Server.install(routes)
+        hello =
+          """{"op":"hello","payload":{"agentCapabilities":[],"snapshotVersion":0,"agentVersion":"0.0.1"}}"""
+        code <- connectAndCaptureClose(
+          port,
+          Some(tk),
+          ch => ch.send(ChannelEvent.read(WebSocketFrame.text(hello))),
+        )
+      } yield assertTrue(code == 4003)).provideSome[
+        TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task],
+      ](Server.defaultWithPort(0), Client.default)
+    },
+    // #1847 / §2.2 hello-timeout: a connection that never sends `hello` is closed 4002 after the
+    // window (driven short here so the test does not wait the real 5 s).
+    test("a connection that never sends hello is closed 4002 after the timeout") {
+      (for {
+        _           <- cleanDb
+        rRepo       <- ZIO.service[RouterRepo]
+        (_, tk)     <- seedRouter(rRepo)
+        (routes, _) <- buildWsRoutes(200.millis)
+        port        <- Server.install(routes)
+        code        <- connectAndCaptureClose(port, Some(tk), _ => ZIO.unit)
+      } yield assertTrue(code == 4002)).provideSome[
         TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task],
       ](Server.defaultWithPort(0), Client.default)
     },

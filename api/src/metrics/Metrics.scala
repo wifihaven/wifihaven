@@ -202,11 +202,19 @@ object MetricGuard {
     // #1846 — websocket router transport (server side). `router_ws_connections_active` is the live
     // count of open channels (a household-scoped gauge, refreshed on every register/deregister so it
     // ages out cleanly on disconnect). `router_ws_frames_total` counts every frame demuxed/sent:
-    // `op` ∈ {hello, usage, events, metrics, ping, pong, ack, unknown} (the fixed envelope
+    // `op` ∈ {hello, ready, usage, events, metrics, ping, pong, ack, unknown} (the fixed envelope
     // vocabulary), `direction` ∈ {in, out}, `result` ∈ {ok, reject, unknown_op}. All bounded enums —
     // no per-mac / per-host dimension ever rides a ws metric.
     "router_ws_connections_active"              -> Set.empty[String],
     "router_ws_frames_total"                    -> Set("op", "direction", "result"),
+    // #1847 — capability-handshake outcomes for the ws transport. `result` ∈
+    // {ok, auth_fail, hello_timeout, version_exceeded} (a fixed enum, design §2 /
+    // §7): `ok` once `hello`→`ready` negotiates a snapshotVersion, `auth_fail`
+    // when the upgrade is rejected at the token check, `hello_timeout` when no
+    // `hello` arrives within the window (close 4002), `version_exceeded` when the
+    // agent's max-known snapshotVersion is below the server's floor (close 4003).
+    // Bounded enum — no per-router dimension rides this series.
+    "router_ws_handshake_total"                 -> Set("result"),
     // #1718 — native OpenWRT OS-level metrics the agent collects from /proc/* and `iw dev`
     // and pushes through the existing #1205 batch transport. Gives operators the LuCI-style
     // view of router health (load / cpu / mem / bandwidth / conntrack / wifi clients) in
@@ -489,6 +497,12 @@ object AppMetrics {
       "router_ws_frames_total",
       Map("op" -> op, "direction" -> direction, "result" -> result),
     )
+
+  // Emitted from RouterWsRoutes for every capability-handshake outcome (#1847).
+  // `result` ∈ {ok, auth_fail, hello_timeout, version_exceeded} — a fixed enum,
+  // never a per-router dimension (the §4 cardinality firewall).
+  def recordWsHandshake(result: String): UIO[Unit] =
+    MetricGuard.counter("router_ws_handshake_total", Map("result" -> result))
 
   // §5.1 — server-side histogram boundaries for the router-pushed duration histograms. The agent
   // (#1206) reports cumulative bucket counts on these same boundaries; RouterMetricsService folds

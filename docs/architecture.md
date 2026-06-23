@@ -798,6 +798,41 @@ Query params: `mac`, `host`, `reason`. Renders a page showing why the request
 was blocked and offering a "request extension" button gated on parent login.
 This is the URL the router's local block page redirects to.
 
+### 6.8 Wire evolution policy — the ws capability handshake (#376 / #1847)
+
+The persistent websocket transport (`GET /api/router/ws`,
+[`docs/design/websocket-transport.md`](design/websocket-transport.md)) carries a
+**capability handshake** that lands the durable, minimal slice of
+[#376](https://github.com/wifihaven/wifihaven/issues/376) — the wire-evolution
+policy this contract previously lacked. The full rules (with the `hello`/`ready`
+JSON) live in [`docs/process/wire-contract.md`](process/wire-contract.md#evolution-policy-376--1847);
+the architecturally-load-bearing points:
+
+- **`hello` → `ready`.** Right after the ws upgrade the agent sends `hello`
+  (`agentCapabilities`, its max-known `snapshotVersion`, `agentVersion`) and the
+  server replies `ready` (`serverCapabilities`, the negotiated `snapshotVersion`).
+  These three fields exist **only inside these new frames on the new endpoint** —
+  the §6.2 `PolicySnapshot` JSON and every REST body are byte-identical, so no
+  deployed agent parses anything new (the change is additive).
+- **`snapshotVersion = min(agent.maxKnown, server.maxKnown)`**, starting at **1**
+  (today's snapshot shape, §6.2), bumped only on a breaking shape change. A newer
+  agent polling an older server is handed the older shape; the next breaking
+  change is a version bump, not a flag day.
+- **Capability sets are string sets**, intersected to gate optional behavior, and
+  are the **extension point** for future features (diffs, compression,
+  per-field snapshot gating) — those are announced here, never inferred. v1
+  gates no behavior on them yet.
+- **Forward-compat is now explicit:** a receiver ignores (and meters) an unknown
+  `op` (envelope) and unknown payload fields, so new ops/fields ship additively.
+- **Refusal paths:** no `hello` within the window → server closes `4002
+  hello-required` (agent falls back to HTTP polling); a `hello` below the
+  server's version floor → `4003 version-exceeded`. The REST poll (§6.2) stays
+  fully live as the fallback throughout.
+
+Deferred to the #376 follow-up that *uses* this handshake: per-field snapshot
+capability gating and the `snapshotVersion ≥ 2` shape-translation machinery —
+unneeded while the payload is frozen.
+
 ## 7. OpenWRT agent design
 
 This section describes the OpenWRT-specific rendering layer. It is implementation
