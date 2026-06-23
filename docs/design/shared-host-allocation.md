@@ -301,8 +301,13 @@ runs `/pr-review` before merge.
   `shared` flag from `AppTimeLimitRepoLive.listForProfile`
   ([Repos.scala](../../api/src/db/Repos.scala):1028-1042) into the group
   construction so `Presence.appSecondsForProfile` stitches **distinctive hosts
-  only**. Tests pin: shared host inside a distinctive span → 0 added minutes;
-  shared host with no distinctive activity → not credited.
+  only**. **Acceptance: expose `distinctiveSpans(A, D)` as a reusable `Presence`
+  primitive** (the per-app, per-device distinctive-host span list) — S3 consumes
+  the *same* spans for the co-presence overlap test. S3 must NOT re-derive them
+  (that would be a single-source-of-truth violation per
+  [AGENTS.md §single-source-of-truth](../process/single-source-of-truth.md)).
+  Tests pin: shared host inside a distinctive span → 0 added minutes; shared
+  host with no distinctive activity → not credited.
 
 - **S3 — Per-host reporting allocation** (depends on S2). In `buildUsageByApp`
   ([UsageRoutes](../../api/src/routes/UsageRoutes.scala):473-599), route shared
@@ -326,7 +331,10 @@ runs `/pr-review` before merge.
   ([#1889](https://github.com/wifihaven/wifihaven/issues/1889), depends on
   S1b). Author `feeling-great.yml`: distinctive `feelinggreat.com` (+ any
   Feeling-Great-specific apexes discovered from prod
-  `connection_events`), `shared_hosts: [elevenlabs.io, launchdarkly.com]`;
+  `connection_events`), `shared_hosts: [elevenlabs.io, launchdarkly.com]`
+  (apex form — covers `api.elevenlabs.io` / `events.launchdarkly.com` etc.
+  inherently via [`HostMatch`](../../shared/src/types/HostMatch.scala), per
+  `_README.yml`; do NOT list the API subdomains separately);
   register in `_index.yml`; run the template validation tests. This is the
   acceptance demonstration that elevenlabs/launchdarkly coexist on the catalog
   without mis-credit.
