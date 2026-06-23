@@ -188,7 +188,8 @@ curl -sS -o /dev/null -w "%{http_code}\n" https://app-staging.wifihaven.net/
 curl -sS -o /dev/null -w "%{http_code}\n" https://staging.wifihaven.net/
 ```
 
-All should return 200. Inspect the prod SPA HTML (`view-source` on
+The two `/api/health` calls should report `"db":"ok"`; every SPA-host curl
+should print `200`. Inspect the prod SPA HTML (`view-source` on
 `https://app.wifihaven.net/`) and search for `api.wifihaven.net` to confirm
 the right `VITE_API_BASE_URL` got baked in.
 
