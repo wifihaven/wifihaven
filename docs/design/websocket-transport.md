@@ -170,7 +170,8 @@ future `policy_diff` op (out of scope here, per #1023) ship without a flag day.
 
 The ETag stays the snapshot's identity, but the *transfer* inverts:
 
-- **On connect** (after `ready`), the server sends exactly one `policy` frame
+- **On connect** (right after the upgrade — there is no `ready` step; the
+  handshake is won't-do, §2 status), the server sends exactly one `policy` frame
   with the current snapshot. This replaces the agent's first `GET` poll. The
   agent applies it before sending any data frame (avoids a first-connect policy
   race — same guarantee #1023 calls out).
@@ -322,7 +323,7 @@ agent boot
   ├─ ws-transport enabled in UCI?  ── no ──▶  HTTP poll/POST path (today's code, untouched)
   │            │ yes
   ├─ open wss://…/api/router/ws
-  │     ├─ 101 + ready within connect_timeout?  ── no ──▶  log, mark ws-unhealthy, HTTP path
+  │     ├─ 101 + first policy frame within connect_timeout?  ── no ──▶  log, mark ws-unhealthy, HTTP path  (no `ready` — handshake won't-do, §2)
   │     │            │ yes
   │     └─ run ws sidecar; main agent's HTTP poll timer goes dormant
   │
@@ -371,10 +372,10 @@ Before any agent ws code is committed, sub-issue **D0** must answer:
   without leaking? (long-soak test on real hardware / qemu).
 - Does it cleanly surface "connection dropped" so the sidecar can reconnect?
 
-**If D0 fails** (no viable library), the epic stops at the server endpoint +
-handshake (A, B) — those are independently valuable (a future agent or an
-OPNsense agent can use them) — and the agent stays on HTTP. This is why A/B are
-sequenced first and sized to ship without C.
+**If D0 fails** (no viable library), the epic stops at the server endpoint (A;
+B the handshake is won't-do, §2) — independently valuable (a future agent or an
+OPNsense agent can use the endpoint) — and the agent stays on HTTP. This is why
+A is sequenced first and sized to ship without C.
 
 ---
 
@@ -428,8 +429,9 @@ surface.
 ### 5.1 Reconnect / backoff
 
 - The ws sidecar reconnects with **exponential backoff + jitter** (e.g. 1 s →
-  2 s → 4 s → … cap 60 s), reset on a successful `ready`. Reconnect *is* the
-  throttle — there is no per-frame retry (#1023).
+  2 s → 4 s → … cap 60 s), reset on a successful connect (the `101` upgrade; not
+  a `ready` — handshake won't-do, §2). Reconnect *is* the throttle — there is no
+  per-frame retry (#1023).
 - On every (re)connect the server pushes the current full snapshot, so the agent
   re-syncs policy unconditionally — a missed change during a disconnect window
   converges on reconnect, no diff bookkeeping needed.
@@ -523,7 +525,7 @@ Method.GET / "api" / "router" / "ws" ->
         Handler.webSocket { channel =>
           for {
             _ <- registry.register(router.id, channel)      // §6.2
-            _ <- handshake(channel, router)                 // hello→ready→first policy
+            _ <- pushCurrentSnapshot(channel, router)        // first policy on connect (#1849); no hello/ready handshake — §2 won't-do
             _ <- channel.receiveAll {
                    case Read(WebSocketFrame.Text(json)) => dispatch(router, json)  // demux on op
                    case Read(WebSocketFrame.Close(_,_)) => registry.deregister(router.id, channel)
@@ -660,11 +662,12 @@ and whatever minimal handshake it actually needs at that point.)
 | **B** | ~~**Capability handshake + `snapshotVersion` + Evolution-policy doc** — `hello`/`ready` frames, `min`-version rule, ignore-unknown rules.~~ **WON'T-DO ([#1847](https://github.com/wifihaven/wifihaven/issues/1847) closed 2026-06-23, see §2 status).** ws inherits the REST additive + ignore-unknown contract verbatim; the handshake gated zero behavior. Unknown-`op` forward-compat shipped in #1846. Version machinery deferred to F against a concrete need. | n/a (not built) | n/a |
 | **C** | **Agent websocket sidecar (`wifihaven-ws`)** — new procd instance, ws client over the proven library, drains existing tmpfs spools out / writes pushed `policy` in, HTTP-fallback wiring (§3.1), agent metrics. Gated on D0. | yes (behind UCI flag, default off until proven) | additive — main agent HTTP path unchanged |
 | **E** | **Push-on-change + computed-snapshot cache in `PolicyService`** (#1512) — cache + invalidation + time-boundary ticker; registry push on change; REST poll also reads the cache. | yes (improves REST path even with zero ws agents) | behavior-preserving (same snapshot bytes) |
-| **F** | **(deferred #376) per-field snapshot capability gating + `snapshotVersion ≥ 2` machinery** — only when the first breaking shape change needs it; *uses* B's handshake. | yes, later | additive |
+| **F** | **(deferred #376) per-field snapshot capability gating + `snapshotVersion ≥ 2` machinery** — only when the first breaking shape change needs it. (B is won't-do, so F lands both the version machinery **and** whatever minimal handshake it actually needs at that point — it no longer builds on a B handshake.) | yes, later | additive |
 | **G** | **Deprecate the REST poll** — after the operator confirms the ws path healthy across the fleet (the `router_transport` dashboard shows 100% ws), add a one-release deprecation log to the REST poll, then remove in a later release per the wire-contract deprecation window. | yes, last | the *only* non-additive step, gated on fleet rollover |
 
-**Critical path:** D0 → C (agent). **Parallel track:** A → B (server + handshake)
-and E (perf) can land while D0 runs, since they are valuable even if the agent
-never migrates. **G is last and operator-gated** — never armed automatically
+**Critical path:** D0 → C (agent). **Parallel track:** A (server endpoint; B the
+handshake is won't-do, §2) and E (perf) can land while D0 runs, since they are
+valuable even if the agent never migrates. **G is last and operator-gated** —
+never armed automatically
 (`docs/pr-review-checklist.md#monitor-to-merged` discipline: the cutover is the
 operator's call).
