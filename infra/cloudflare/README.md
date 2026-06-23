@@ -14,11 +14,6 @@ Declarative config for everything Cloudflare-side (#613):
 - SPF TXT record + the `e2e-brand` / `e2e-mid` / `e2e-edge` test-fixture
   CNAME chain (#1351).
 
-The redirect ruleset has a semantic gate beyond `terraform validate`:
-`redirects_test.py` (run by the `cloudflare-terraform` CI job) asserts the
-`www`/`staging` redirects target the right app host, are 301, and preserve the
-query string — and that no `/blocked` shim has crept back in.
-
 **Not managed here**: the zone itself (added once via the dash; NS flip at the
 registrar is a one-shot manual step), and the GitHub repo secrets.
 
