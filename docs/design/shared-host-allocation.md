@@ -315,11 +315,14 @@ app's host-set into distinctive vs shared. This is the plumbing in sub-issue
 Ordered foundation-first; each ships with tests per [TDD](../process/tdd.md) and
 runs `/pr-review` before merge.
 
-- **S1a — Migration: `app_hosts.shared` column** (schema-only PR per
-  [migrations](../process/migrations.md#migrations-back-compat)).
+- **S1a — Migration: `app_hosts.shared` column** ✅ shipped
+  ([#1895](https://github.com/wifihaven/wifihaven/issues/1895),
+  `V60__app_hosts_shared.sql`) — schema-only PR per
+  [migrations](../process/migrations.md#migrations-back-compat).
   `ALTER TABLE app_hosts ADD COLUMN shared BOOLEAN NOT NULL DEFAULT FALSE;`
   Existing rows default distinctive. No source/test in this PR — the existing
-  suite is the back-compat gate.
+  suite is the back-compat gate. The flag is stored and ignored until S1b
+  adopts it.
 
 - **S1b — Template syntax + parser + seeder + validation** (depends on S1a).
   Add `sharedHosts: List[Hostname]` to `AppTemplate`
