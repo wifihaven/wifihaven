@@ -1,0 +1,31 @@
+-- #1895 (shared-hosts S1a): mark an app_hosts row as a SHARED host.
+--
+-- Foundation for the shared-host allocation mechanism — see the design doc
+-- docs/design/shared-host-allocation.md (PR #1894) and parent #1888.
+--
+-- A SHARED host is a multi-tenant vendor backend/CDN (e.g. api.elevenlabs.io,
+-- app.launchdarkly.com) that several unrelated apps legitimately list. Its
+-- traffic must be credited to an app only while that app's DISTINCTIVE
+-- (non-shared) hosts have a live session on the same device — the co-presence
+-- rule. Distinctive hosts (shared = FALSE) keep their current unconditional
+-- minBy(appId) attribution.
+--
+-- The flag is stored per-(app_id, host) for enforcement flexibility, even
+-- though distinctiveness is globally consistent across the catalog (a host
+-- shared on any template must be shared on every template that lists it —
+-- enforced by the directory-wide validation test in S1b).
+--
+-- DEFAULT FALSE: every existing app_hosts row is "distinctive", which is the
+-- pre-#1895 behavior (all hosts attribute unconditionally). The next image
+-- after this migration deploys is backward-compatible — code that doesn't read
+-- this column behaves exactly as before. The flag is stored and ignored until
+-- the consuming PRs (S1b parser/seed #1896, then S2/S3/S4) adopt it.
+--
+-- app_hosts is a small, bounded table (one row per app/host pair from the
+-- template catalog), so this ADD COLUMN is fast at prod scale.
+--
+-- Schema-only per AGENTS.md §migrations-back-compat. Code adoption follows in
+-- a separate PR (#1896).
+
+ALTER TABLE app_hosts
+  ADD COLUMN shared BOOLEAN NOT NULL DEFAULT FALSE;
