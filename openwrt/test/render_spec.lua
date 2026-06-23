@@ -877,7 +877,7 @@ describe("render.nft drop rules carry log prefix + counter + comment (#1122/#112
     end
   end)
 
-  it("every drop rule carries `counter drop` + comment and is preceded by its rate-limited log rule (#1826)", function()
+  it("every drop rule carries `counter drop` + comment and is preceded by its per-flow log rule (#1826/#1915)", function()
     local s = snap_one()
     -- Force every kind of drop to appear.
     s.profiles["3"].rules.blocked      = true
@@ -889,13 +889,14 @@ describe("render.nft drop rules carry log prefix + counter + comment (#1122/#112
     local nft  = render.nft(s)
     local body = filter_chain_body(nft)
     assert.truthy(body)
-    -- Post-#1826 each drop is two rules: a rate-limited log rule (the agent's
-    -- read channel) immediately followed by an unconditional `counter drop`
-    -- carrying the `wh_drop:` comment. We scan line-by-line: every `counter
-    -- drop` line must carry the comment, and the line directly above it must be
-    -- the matching rate-limited `log prefix "wh_drop:…"` rule with the same
-    -- predicate (so the log can never be unbounded and the drop is never gated
-    -- by the limit).
+    -- Post-#1826/#1915 each drop is a per-flow rate-limited log rule (the
+    -- agent's read channel) immediately followed by an unconditional `counter
+    -- drop` carrying the `wh_drop:` comment. We scan line-by-line: every
+    -- `counter drop` line must carry the comment, and the line directly above
+    -- it must be the matching per-flow `log prefix "wh_drop:…"` rule with the
+    -- same predicate (so the log can never be unbounded and the drop is never
+    -- gated by the limit). The per-flow limiter is keyed via `update
+    -- @wh_drop_log…` — never a flat per-rule `limit rate N/second` (#1915).
     local prev = nil
     for line in body:gmatch("[^\n]+") do
       if line:find("counter drop", 1, true) then
@@ -906,11 +907,14 @@ describe("render.nft drop rules carry log prefix + counter + comment (#1122/#112
                "drop rule gated by limit rate: " .. line)
         assert(not line:find("log prefix", 1, true),
                "drop rule still logs (flood risk): " .. line)
-        -- The matching log rule is the line directly above, same predicate.
+        -- The matching log rule is the line directly above, same predicate,
+        -- gated by the per-flow @wh_drop_log limiter (not a flat per-rule one).
         local predicate = line:gsub(" counter drop.*$", "")
         assert(prev and prev:find(predicate, 1, true)
-               and prev:find("limit rate 2/second burst 10 packets log prefix \"wh_drop:", 1, true),
-               "drop not preceded by its rate-limited log rule: " .. line)
+               and prev:find("update @wh_drop_log", 1, true)
+               and prev:find("log prefix \"wh_drop:", 1, true)
+               and not prev:find("limit rate %d+/second"),
+               "drop not preceded by its per-flow log rule: " .. line)
       end
       prev = line
     end
@@ -969,15 +973,18 @@ describe("render.nft rate-limits wh_drop logging (#1826)", function()
     return nft:sub(open + 1, close - 1)
   end
 
-  it("whole-MAC Schedule drop rate-limits the LOG on a separate rule", function()
+  it("whole-MAC Schedule drop rate-limits the LOG on a separate rule (per-flow, #1915)", function()
     local s = snap_one()
     s.profiles["3"].rules.blocked     = true
     s.profiles["3"].rules.blockReason = "Schedule"
     local nft = render.nft(s)
-    -- Rate-limited log rule for this MAC/reason (limit precedes log prefix).
+    -- Per-flow rate-limited log rule for this MAC/reason. The whole-MAC drop is
+    -- family-agnostic, so its LOG is split per family (v4/v6) to key on
+    -- (mac,dst); the limiter is embedded in the @wh_drop_log… set update, which
+    -- precedes the log prefix (#1915 replaced the flat per-rule 2/second form).
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 limit rate 2/second burst 10 packets log prefix \"wh_drop:aa:bb:cc:11:22:33:Schedule \"",
-      1, true), "expected rate-limited wh_drop log rule")
+      "ether saddr aa:bb:cc:11:22:33 meta nfproto ipv4 update @wh_drop_log4 { ether saddr . ip daddr limit rate 1/minute burst 5 packets } log prefix \"wh_drop:aa:bb:cc:11:22:33:Schedule \"",
+      1, true), "expected per-flow v4 wh_drop log rule")
     -- Unconditional drop rule (counter + comment), with NO limit/log.
     assert.truthy(nft:find(
       "ether saddr aa:bb:cc:11:22:33 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:Schedule\"",
@@ -1023,29 +1030,37 @@ describe("render.nft rate-limits wh_drop logging (#1826)", function()
     end
   end)
 
-  -- #1864: even rate-limited at 10/second, the aggregate across many
-  -- simultaneously-storming drop rules dominated the shared `logread` ring
-  -- buffer and evicted agent/dnsmasq lines, leaving the router undiagnosable.
-  -- The LOG is throttled harder (≤ 2/second sustained) to keep the ring buffer
-  -- usable; the drop verdict is unaffected (asserted above). Guard against a
-  -- regression that bumps the sustained rate back up.
-  it("throttles the wh_drop LOG to ≤ 2/second sustained (#1864)", function()
+  -- #1864 → #1915: a flat per-rule `limit rate N/second` was the original
+  -- ring-buffer-flood mitigation, but it is a single bucket SHARED across all
+  -- flows on the rule, so a storm starves the next distinct flow's first log
+  -- line and breaks event synthesis. Ring-buffer protection now comes from the
+  -- PER-FLOW limiter (each (mac,dst) its own bucket), so no wh_drop LOG line may
+  -- carry a flat per-second per-rule limit. Guard against a regression that
+  -- reintroduces the flat throttle.
+  it("never uses a flat per-rule per-second LOG throttle (#1864/#1915)", function()
     local s = snap_one()
-    s.profiles["3"].rules.blocked     = true
-    s.profiles["3"].rules.blockReason = "Schedule"
+    s.profiles["3"].rules.blocked      = true
+    s.profiles["3"].rules.blockReason  = "Schedule"
+    s.profiles["3"].rules.blockIpOnly  = true
+    s.profiles["3"].rules.extraBlocked = { "tiktok.com" }
+    s.profiles["3"].rules.blocklistIds = { "ads" }
+    s.blocklists = { ads = { version = "v1", url = "/api/blocklists/ads" } }
     local nft  = render.nft(s)
     local body = filter_chain_body(nft)
     assert.truthy(body)
     local saw_log = false
     for line in body:gmatch("[^\n]+") do
-      local rate = line:match("limit rate (%d+)/second")
-      if rate and line:find("log prefix \"wh_drop:", 1, true) then
+      if line:find("log prefix \"wh_drop:", 1, true) then
         saw_log = true
-        assert(tonumber(rate) <= 2,
-               "wh_drop LOG rate too high (ring-buffer flood risk): " .. line)
+        assert(not line:find("limit rate %d+/second"),
+               "wh_drop LOG uses a flat per-rule per-second throttle (#1915 regression): " .. line)
+        -- Ring-buffer protection is the per-flow limiter set, embedded in the
+        -- packet-keyed `update @wh_drop_log…`.
+        assert(line:find("update @wh_drop_log", 1, true),
+               "wh_drop LOG not gated by the per-flow limiter set: " .. line)
       end
     end
-    assert.truthy(saw_log, "expected at least one rate-limited wh_drop log rule")
+    assert.truthy(saw_log, "expected at least one per-flow wh_drop log rule")
   end)
 end)
 
@@ -2811,7 +2826,7 @@ describe("render.nft global composition (#1319)", function()
 
   -- Every drop in wifihaven_block — including the new global drops — must
   -- carry the nflog attribution prefix (the #1122 invariant).
-  it("every global drop carries `counter drop` + comment, preceded by its rate-limited log rule (#1826)", function()
+  it("every global drop carries `counter drop` + comment, preceded by its per-flow log rule (#1826/#1915)", function()
     local s = snap_global()
     s.global.blocked      = true
     s.global.blockReason  = "DefaultDeny"
@@ -2822,9 +2837,11 @@ describe("render.nft global composition (#1319)", function()
     local block_start = nft:find("chain wifihaven_block {", 1, true)
     local next_chain  = nft:find("\n%s*chain ", block_start + 1)
     local body = nft:sub(block_start, (next_chain or #nft + 1) - 1)
-    -- Post-#1826: each drop is a `counter drop` + comment rule preceded by its
-    -- own rate-limited `log prefix` rule with the same predicate (see the
-    -- per-MAC equivalent above). The drop itself never logs or rate-limits.
+    -- Post-#1826/#1915: each drop is a `counter drop` + comment rule preceded by
+    -- its own per-flow `log prefix` rule with the same predicate (see the
+    -- per-MAC equivalent above). The drop itself never logs or rate-limits, and
+    -- the log is gated by the per-flow @wh_drop_log… limiter, not a flat
+    -- per-rule per-second throttle.
     local prev = nil
     for line in body:gmatch("[^\n]+") do
       if line:find("counter drop", 1, true) then
@@ -2836,8 +2853,10 @@ describe("render.nft global composition (#1319)", function()
                "drop rule still logs (flood risk): " .. line)
         local predicate = line:gsub(" counter drop.*$", "")
         assert(prev and prev:find(predicate, 1, true)
-               and prev:find("limit rate 2/second burst 10 packets log prefix \"wh_drop:", 1, true),
-               "drop not preceded by its rate-limited log rule: " .. line)
+               and prev:find("update @wh_drop_log", 1, true)
+               and prev:find("log prefix \"wh_drop:", 1, true)
+               and not prev:find("limit rate %d+/second"),
+               "drop not preceded by its per-flow log rule: " .. line)
       end
       prev = line
     end
