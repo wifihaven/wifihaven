@@ -2,16 +2,18 @@
 """Assertion test for the redirect ruleset in main.tf (#1842).
 
 `terraform validate` proves the ruleset is schema-valid, but not that the
-*semantics* are right. The merge-gating property here is router back-compat:
-pre-rename routers DNAT blocked HTTP/80 to the apex, so wifihaven.net/blocked*
-MUST keep working by redirecting to the app host **while preserving the
-?mac=&host= query string** the block page reads — and that shim must out-rank
-the marketing catch-all (i.e. be the first rule).
+*semantics* are right. The marketing split sends the old SPA hosts to the
+canonical app host so existing bookmarks keep working; the property worth
+pinning is that each redirect targets the right host **and preserves the query
+string** (a bookmark with `?…` should survive the hop).
+
+There is intentionally NO apex `/blocked` router-compat shim (dropped 2026-06 —
+no pre-rename routers still DNAT their block page at the apex), so this test
+also asserts that rule is absent, to catch an accidental re-introduction.
 
 We can't curl the live edge from CI (nothing is deployed at PR time), so this
-test pins the ruleset config instead. It is a plain-text parse of the HCL
-(stdlib only) — deliberately strict about the few properties that, if wrong,
-silently break every deployed router's block page.
+test pins the ruleset config instead — a plain-text parse of the HCL (stdlib
+only).
 
 Run: python3 infra/cloudflare/redirects_test.py
 """
@@ -63,84 +65,49 @@ def extract_rule_by_ref(ruleset: str, ref: str) -> str:
 def main() -> int:
     text = MAIN_TF.read_text()
 
-    ruleset = extract_block(
-        text, r'resource\s+"cloudflare_ruleset"\s+"redirects"'
-    )
+    ruleset = extract_block(text, r'resource\s+"cloudflare_ruleset"\s+"redirects"')
     check(bool(ruleset), "cloudflare_ruleset.redirects not found in main.tf")
     if not ruleset:
         _report()
         return 1
 
     check(
-        'phase       = "http_request_dynamic_redirect"' in ruleset
-        or 'phase = "http_request_dynamic_redirect"' in ruleset
-        or re.search(r'phase\s*=\s*"http_request_dynamic_redirect"', ruleset) is not None,
+        re.search(r'phase\s*=\s*"http_request_dynamic_redirect"', ruleset) is not None,
         "ruleset phase must be http_request_dynamic_redirect (edge redirect, fires before Pages)",
     )
 
-    # Order matters: the first match wins, so the /blocked shim must precede the
-    # other host redirects (and, at the edge, the marketing catch-all entirely).
     refs = re.findall(r'ref\s*=\s*"([^"]+)"', ruleset)
-    check(
-        refs[:1] == ["blocked_compat_shim"],
-        f"blocked_compat_shim must be the FIRST rule; got order {refs}",
-    )
-    for expected in ("blocked_compat_shim", "www_to_app", "staging_to_app_staging"):
+    for expected in ("www_to_app", "staging_to_app_staging"):
         check(expected in refs, f"missing redirect rule ref {expected!r}")
 
-    # The /blocked shim itself — the back-compat net. Pull just its rule block.
-    # Normalize HCL string escapes (\" → ") so the substring checks read cleanly.
-    shim = extract_rule_by_ref(ruleset, "blocked_compat_shim").replace('\\"', '"')
-    check(bool(shim), "could not isolate the blocked_compat_shim rule block")
-
-    # Matches the apex host + /blocked path prefix (so /blocked, /blocked?…,
-    # /blocked/anything all hit it).
+    # The apex /blocked router-compat shim was deliberately removed — assert it
+    # has not crept back in.
     check(
-        'http.host eq "wifihaven.net"' in shim,
-        "/blocked shim must match host wifihaven.net (the pre-rename apex)",
-    )
-    check(
-        'starts_with(http.request.uri.path, "/blocked")' in shim,
-        "/blocked shim must match the /blocked path prefix",
-    )
-    # 302 (retargetable), not 301 (hard-cached).
-    check(
-        re.search(r"status_code\s*=\s*302", shim) is not None,
-        "/blocked shim must be a 302 (retargetable), not 301",
-    )
-    # CRITICAL: preserve the ?mac=&host= query string the block page reads.
-    check(
-        re.search(r"preserve_query_string\s*=\s*true", shim) is not None,
-        "/blocked shim MUST preserve the query string (?mac=&host=) — the block "
-        "page can't render its reason without it",
-    )
-    # Targets the app host's /blocked, carrying the original path through. Match
-    # the exact concat() target as a regex anchored on the opening quote (not a
-    # substring `in`, which would also accept e.g. app.wifihaven.net.evil.com and
-    # which CodeQL flags as incomplete-URL-sanitization).
-    check(
-        re.search(
-            r'concat\(\s*"https://app\.wifihaven\.net"\s*,\s*http\.request\.uri\.path',
-            shim,
-        )
-        is not None,
-        "/blocked shim must redirect to https://app.wifihaven.net + the request path",
+        "blocked_compat_shim" not in refs,
+        "blocked_compat_shim rule should NOT exist — the apex /blocked shim was dropped (#1842)",
     )
 
-    # www / staging redirects also preserve the query string (lower stakes, but
-    # a bookmark with a query should survive the hop).
-    for ref, host in (
-        ("www_to_app", "app.wifihaven.net"),
-        ("staging_to_app_staging", "app-staging.wifihaven.net"),
+    # Each old-host redirect must hit the right app host AND preserve the query
+    # string. Match the exact concat() target as a regex anchored on the opening
+    # quote (not a substring `in`, which would also accept e.g.
+    # app.wifihaven.net.evil.com and which CodeQL flags as incomplete-URL-sanitization).
+    for ref, host, code in (
+        ("www_to_app", "app.wifihaven.net", 301),
+        ("staging_to_app_staging", "app-staging.wifihaven.net", 301),
     ):
         block = extract_rule_by_ref(ruleset, ref).replace('\\"', '"')
         check(
-            re.search(rf'concat\(\s*"https://{re.escape(host)}"', block) is not None,
-            f"{ref} must target https://{host} as the concat() host",
+            re.search(rf'concat\(\s*"https://{re.escape(host)}"\s*,\s*http\.request\.uri\.path', block)
+            is not None,
+            f"{ref} must redirect to https://{host} + the request path",
+        )
+        check(
+            re.search(rf"status_code\s*=\s*{code}", block) is not None,
+            f"{ref} must be a {code}",
         )
         check(
             re.search(r"preserve_query_string\s*=\s*true", block) is not None,
-            f"{ref} should preserve the query string",
+            f"{ref} must preserve the query string",
         )
 
     _report()
@@ -153,8 +120,10 @@ def _report() -> None:
         for f in failures:
             print(f"  ✗ {f}")
     else:
-        print("redirects_test: OK — /blocked shim is first, 302, query-preserving, "
-              "→ app.wifihaven.net; www/staging redirects present")
+        print(
+            "redirects_test: OK — www → app and staging → app-staging are 301, "
+            "query-preserving; no apex /blocked shim"
+        )
 
 
 if __name__ == "__main__":

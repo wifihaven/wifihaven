@@ -6,10 +6,10 @@
 #
 # The project (`wifihaven-www`) and its custom domains / DNS are declared in
 # infra/cloudflare/main.tf and created by the master-cloudflare apply. The
-# query-preserving `/blocked` router-compat shim and the www/staging → app
-# redirects live in that same Terraform (a zone-level dynamic-redirect ruleset),
-# NOT in a Pages `_redirects` file — the edge ruleset fires before Pages serves
-# content, so the static catch-all here can never shadow the /blocked shim.
+# www/staging → app redirects live in that same Terraform (a zone-level
+# dynamic-redirect ruleset), NOT in a Pages `_redirects` file, because they are
+# host-level. There is no apex `/blocked` shim (existing routers were re-pointed
+# to app.wifihaven.net; see main.tf), so the apex just serves this site.
 
 name = "wifihaven-www"
 pages_build_output_dir = "./site"

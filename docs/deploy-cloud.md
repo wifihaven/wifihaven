@@ -33,11 +33,11 @@ on the *same* Pages projects — the SPA bundle is identical, only the fronting
 host is canonical now. Post-#1842 the apex + `www` front the **marketing site**
 (`wifihaven-www`, source under `web-marketing/`), not the SPA. A zone-level
 dynamic-redirect ruleset (`cloudflare_ruleset.redirects` in
-`infra/cloudflare/main.tf`) sends `www`/`staging` → the app host and — the
-merge-gating piece — keeps `wifihaven.net/blocked*` working by 302-redirecting it
-to `app.wifihaven.net/blocked*`, **preserving `?mac=&host=`**, so block pages on
-routers enrolled before the rename (which DNAT to the apex) still render. The API
-host (`api.wifihaven.net`) is unchanged.
+`infra/cloudflare/main.tf`) sends `www`/`staging` → the app host (301,
+query-preserving) so old SPA bookmarks keep working. There is no apex
+`/blocked` router-compat shim — existing routers were already re-pointed to
+`app.wifihaven.net` for their block page (#1842), so the apex just serves
+marketing for every path. The API host (`api.wifihaven.net`) is unchanged.
 
 ---
 
@@ -141,10 +141,10 @@ minute or two.
 
 Apex + `www` behavior (post-#1842): the apex fronts the marketing site
 (`wifihaven-www`); `www` and `staging` 301-redirect to the app host via the
-`cloudflare_ruleset.redirects` ruleset, which also carries the merge-gating
-`wifihaven.net/blocked*` → `app.wifihaven.net/blocked*` 302 router-compat shim
-(query-preserving). All redirects are declarative in the Terraform module — no
-manual Page Rules.
+`cloudflare_ruleset.redirects` ruleset (query-preserving). There is no apex
+`/blocked` router-compat shim — existing routers were re-pointed to
+`app.wifihaven.net` for their block page. All redirects are declarative in the
+Terraform module — no manual Page Rules.
 
 > The §1 table above lists the two API CNAME records for reference; both
 > are managed by Terraform now and should NOT be added manually in the
@@ -192,12 +192,6 @@ curl -sS -o /dev/null -w "%{http_code}\n" https://wifihaven.net/        # 200, m
 
 # www → app redirect (301), query-preserving
 curl -sS -o /dev/null -w "%{http_code} -> %{redirect_url}\n" https://www.wifihaven.net/
-
-# CRITICAL router-compat: apex /blocked must 302 to the app host, KEEPING ?mac=&host=
-# (pre-rename routers DNAT blocked HTTP/80 to the apex; the block page reads the query).
-curl -sS -o /dev/null -w "%{http_code} -> %{redirect_url}\n" \
-  "https://wifihaven.net/blocked?mac=AA:BB:CC:DD:EE:FF&host=example.com"
-# Expect: 302 -> https://app.wifihaven.net/blocked?mac=AA:BB:CC:DD:EE:FF&host=example.com
 
 # Staging API + app host
 curl -sS https://api-staging.wifihaven.net/api/health

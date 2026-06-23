@@ -7,17 +7,17 @@ Declarative config for everything Cloudflare-side (#613):
 - Pages custom domains: `app` + apex + `www` (apex/www front `wifihaven-www`),
   `app-staging` + `staging`.
 - A zone-level dynamic-redirect ruleset (`cloudflare_ruleset.redirects`, #1842):
-  the router-compat `wifihaven.net/blocked*` → `app.wifihaven.net/blocked*` 302
-  shim (query-preserving) plus `www`/`staging` → app 301 redirects.
+  `www`/`staging` → app 301 redirects (query-preserving), so old SPA bookmarks
+  keep working after the marketing split. There is intentionally **no** apex
+  `/blocked` router-compat shim — dropped 2026-06, see `main.tf`.
 - DNS-only CNAMEs: `api.wifihaven.net`, `api-staging.wifihaven.net` → Render.
 - SPF TXT record + the `e2e-brand` / `e2e-mid` / `e2e-edge` test-fixture
   CNAME chain (#1351).
 
 The redirect ruleset has a semantic gate beyond `terraform validate`:
 `redirects_test.py` (run by the `cloudflare-terraform` CI job) asserts the
-`/blocked` shim is the first rule, 302, query-preserving, and targets the app
-host — the properties that, if wrong, silently break every pre-rename router's
-block page.
+`www`/`staging` redirects target the right app host, are 301, and preserve the
+query string — and that no `/blocked` shim has crept back in.
 
 **Not managed here**: the zone itself (added once via the dash; NS flip at the
 registrar is a one-shot manual step), and the GitHub repo secrets.
