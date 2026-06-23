@@ -246,6 +246,303 @@
         color: rgba(31, 27, 22, 0.55);
       }
 
+      /* ── Product preview ("See it in action") ──────────────────────────── */
+      /* Faithful in-page renderings of the real admin SPA, styled with the
+         same brand tokens (docs/brand.md / web/tailwind.config.js). Demo data
+         is fictional. */
+      .preview {
+        --b: #e5ddc9;
+        --b-strong: #c9bfa7;
+        --muted: #6b7f8a;
+        --red: #b91c1c;
+        --amber: #b45309;
+      }
+      .shot {
+        background: #fff;
+        border: 1px solid var(--b);
+        border-radius: 14px;
+        overflow: hidden;
+        box-shadow: 0 18px 40px -28px rgba(58, 90, 108, 0.45);
+      }
+      .shot .chrome {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 14px;
+        background: #f6f1e6;
+        border-bottom: 1px solid var(--b);
+      }
+      .shot .dots {
+        display: flex;
+        gap: 6px;
+      }
+      .shot .dots i {
+        width: 11px;
+        height: 11px;
+        border-radius: 50%;
+        background: var(--b-strong);
+        display: block;
+      }
+      .shot .url {
+        flex: 1;
+        background: #fff;
+        border: 1px solid var(--b);
+        border-radius: 7px;
+        padding: 5px 12px;
+        font-size: 12px;
+        color: var(--muted);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      .app {
+        background: var(--offwhite);
+      }
+      .appbar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 16px;
+        background: #fff;
+        border-bottom: 1px solid var(--b);
+      }
+      .appbar .brand {
+        height: 22px;
+        margin-right: 6px;
+      }
+      .appbar .tab {
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--slate);
+        padding: 6px 10px;
+        border-radius: 8px;
+      }
+      .appbar .tab.active {
+        background: var(--cream);
+        color: var(--terracotta);
+      }
+      .appbar .who {
+        margin-left: auto;
+        font-size: 11px;
+        color: var(--muted);
+        font-family: ui-monospace, Menlo, monospace;
+      }
+      .app-body {
+        padding: 18px 18px 22px;
+      }
+      .app-h1 {
+        font-size: 19px;
+        font-weight: 700;
+        color: var(--ink);
+        margin: 0 0 14px;
+      }
+      .lbl {
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--slate);
+        margin: 0 0 10px;
+      }
+      .pcards {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+        margin-bottom: 18px;
+      }
+      .pcard {
+        background: #fff;
+        border: 1px solid var(--b);
+        border-radius: 14px;
+        padding: 14px;
+      }
+      .pcard.live {
+        border-color: rgba(168, 88, 46, 0.5);
+      }
+      .pcard h4 {
+        margin: 0 0 8px;
+        font-size: 15px;
+        color: var(--ink);
+      }
+      .dev {
+        font-size: 13px;
+      }
+      .dev .row {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+      }
+      .dev .nm {
+        font-weight: 500;
+        color: var(--ink);
+      }
+      .dev .ago {
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .dev .watch {
+        color: var(--muted);
+        font-size: 12px;
+        margin: 2px 0 0;
+      }
+      .dev .watch b {
+        color: var(--slate);
+        font-weight: 500;
+        font-family: ui-monospace, Menlo, monospace;
+      }
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 12px;
+        margin-bottom: 18px;
+      }
+      .stat {
+        background: #fff;
+        border: 1px solid var(--b);
+        border-radius: 14px;
+        padding: 12px 14px;
+      }
+      .stat .k {
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin: 0 0 6px;
+      }
+      .stat .v {
+        font-size: 26px;
+        font-weight: 700;
+        color: var(--ink);
+        line-height: 1;
+      }
+      .stat .v.acc {
+        color: var(--terracotta);
+      }
+      .stat .v.red {
+        color: var(--red);
+      }
+      .stat .v.amb {
+        color: var(--amber);
+      }
+      .qtable {
+        background: #fff;
+        border: 1px solid var(--b);
+        border-radius: 14px;
+        overflow: hidden;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+      }
+      .qtable .qh {
+        padding: 9px 14px;
+        font-family: 'Inter', sans-serif;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+        color: var(--slate);
+        border-bottom: 1px solid var(--b);
+      }
+      .qrow {
+        display: grid;
+        grid-template-columns: 64px 1fr 1.4fr 84px;
+        gap: 10px;
+        padding: 8px 14px;
+        border-bottom: 1px solid rgba(229, 221, 201, 0.6);
+      }
+      .qrow:last-child {
+        border-bottom: 0;
+      }
+      .qrow .t {
+        color: var(--muted);
+      }
+      .qrow .d {
+        color: var(--amber);
+      }
+      .qrow .h {
+        color: var(--slate);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .qrow .ok {
+        color: var(--accent-dark, #a8582e);
+      }
+      .qrow .bk {
+        color: var(--red);
+      }
+      /* Block-page preview */
+      .blockpage {
+        background: var(--offwhite);
+        padding: 32px 24px 36px;
+        text-align: center;
+      }
+      .blockpage .big {
+        font-size: 34px;
+        font-weight: 700;
+        color: var(--red);
+        margin: 0;
+      }
+      .blockpage .host {
+        font-size: 17px;
+        font-family: ui-monospace, Menlo, monospace;
+        color: var(--ink);
+        margin: 6px 0 4px;
+      }
+      .blockpage .reason {
+        font-size: 14px;
+        color: var(--slate);
+        margin: 0;
+      }
+      .blockpage .forp {
+        font-size: 12px;
+        color: var(--muted);
+        margin: 2px 0 0;
+      }
+      .blockpage .timecard {
+        background: #fff;
+        border: 1px solid var(--b);
+        border-radius: 14px;
+        padding: 12px 16px;
+        text-align: left;
+        max-width: 300px;
+        margin: 18px auto;
+        font-size: 13px;
+        color: var(--slate);
+      }
+      .blockpage .timecard b {
+        color: var(--ink);
+        display: block;
+        margin-bottom: 4px;
+        font-weight: 500;
+      }
+      .blockpage .askbtns {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        max-width: 300px;
+        margin: 0 auto;
+      }
+      .blockpage .ask {
+        border: 1px solid var(--b-strong);
+        background: #fff;
+        color: var(--slate);
+        border-radius: 10px;
+        padding: 9px 14px;
+        font-size: 14px;
+        font-weight: 500;
+      }
+      .preview-grid {
+        display: grid;
+        grid-template-columns: 1.65fr 1fr;
+        gap: 22px;
+        align-items: start;
+      }
+      .preview-cap {
+        font-size: 13px;
+        color: rgba(31, 27, 22, 0.6);
+        margin: 10px 2px 0;
+        text-align: center;
+      }
+
       @media (max-width: 760px) {
         .hero-grid {
           grid-template-columns: 1fr;
@@ -259,6 +556,18 @@
         }
         .hero h1 {
           font-size: 34px;
+        }
+        .preview-grid {
+          grid-template-columns: 1fr;
+        }
+        .stats {
+          grid-template-columns: 1fr 1fr;
+        }
+        .pcards {
+          grid-template-columns: 1fr;
+        }
+        .appbar .who {
+          display: none;
         }
       }
     </style>
@@ -326,6 +635,106 @@
                 when limits kick in — and grant a few more minutes when it's
                 warranted.
               </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="band preview" style="padding-top: 0" id="preview">
+        <div class="wrap">
+          <h2>See it in action</h2>
+          <p class="sub">
+            One dashboard for the whole house, and a friendly block screen on
+            the device when a limit is reached. (Preview with sample data.)
+          </p>
+          <div class="preview-grid">
+            <!-- Admin dashboard -->
+            <div>
+              <div class="shot">
+                <div class="chrome">
+                  <div class="dots"><i></i><i></i><i></i></div>
+                  <div class="url">app.wifihaven.net/dashboard</div>
+                </div>
+                <div class="app">
+                  <div class="appbar">
+                    <svg class="brand" viewBox="0 0 900 260" xmlns="http://www.w3.org/2000/svg" aria-label="wifihaven">
+                      <path d="M 100 215 C 60 215, 25 185, 20 130 C 15 70, 65 25, 130 30 C 175 33, 200 70, 195 115 C 192 145, 175 165, 158 165 C 148 165, 142 155, 138 142 C 134 130, 132 122, 132 122 L 100 215 Z" fill="#A8582E"/>
+                      <ellipse cx="125" cy="200" rx="48" ry="52" fill="#C2693A"/>
+                      <ellipse cx="138" cy="220" rx="22" ry="28" fill="#E89A6A"/>
+                      <circle cx="148" cy="135" r="32" fill="#C2693A"/>
+                      <ellipse cx="130" cy="108" rx="8" ry="13" fill="#C2693A" transform="rotate(-25 130 108)"/>
+                      <circle cx="161" cy="132" r="3.2" fill="#1F1B16"/>
+                      <ellipse cx="160" cy="200" rx="15" ry="17" fill="#F2E8D5" stroke="#1F1B16" stroke-width="2"/>
+                      <path d="M 145 188 Q 160 178, 175 188 L 172 196 L 148 196 Z" fill="#3A5A6C"/>
+                      <text x="270" y="180" font-family="Inter, sans-serif" font-size="116" font-weight="500" fill="#3A5A6C" letter-spacing="-2.5">wifihaven</text>
+                    </svg>
+                    <span class="tab active">Dashboard</span>
+                    <span class="tab">Devices</span>
+                    <span class="tab">Profiles</span>
+                    <span class="tab">Advanced ▾</span>
+                    <span class="who">admin · admin</span>
+                  </div>
+                  <div class="app-body">
+                    <h1 class="app-h1">Dashboard</h1>
+                    <p class="lbl">Now</p>
+                    <div class="pcards">
+                      <div class="pcard live">
+                        <h4>Kids</h4>
+                        <div class="dev">
+                          <div class="row"><span class="nm">Maya's iPad</span><span class="ago">2m ago</span></div>
+                          <p class="watch">watching <b>youtube.com</b> · 14m</p>
+                        </div>
+                      </div>
+                      <div class="pcard live">
+                        <h4>Teens</h4>
+                        <div class="dev">
+                          <div class="row"><span class="nm">Leo's Laptop</span><span class="ago">just now</span></div>
+                          <p class="watch">watching <b>discord.com</b> · 3m</p>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="stats">
+                      <div class="stat"><p class="k">Queries today</p><p class="v acc">8,412</p></div>
+                      <div class="stat"><p class="k">Blocked today</p><p class="v red">326</p></div>
+                      <div class="stat"><p class="k">Queries (1h)</p><p class="v">540</p></div>
+                      <div class="stat"><p class="k">Blocked (1h)</p><p class="v amb">22</p></div>
+                    </div>
+                    <div class="qtable">
+                      <div class="qh">Recent queries</div>
+                      <div class="qrow"><span class="t">4:12:08</span><span class="d">Maya's iPad</span><span class="h">i.ytimg.com</span><span class="ok">✓ ok</span></div>
+                      <div class="qrow"><span class="t">4:12:03</span><span class="d">Leo's Laptop</span><span class="h">tiktok.com</span><span class="bk">✗ blocked</span></div>
+                      <div class="qrow"><span class="t">4:11:54</span><span class="d">Living Room TV</span><span class="h">api.netflix.com</span><span class="ok">✓ ok</span></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <p class="preview-cap">The household dashboard — live activity, daily counts, and a rolling query feed.</p>
+            </div>
+
+            <!-- Kid-side block page -->
+            <div>
+              <div class="shot">
+                <div class="chrome">
+                  <div class="dots"><i></i><i></i><i></i></div>
+                  <div class="url">app.wifihaven.net/blocked</div>
+                </div>
+                <div class="blockpage">
+                  <p class="big">Blocked</p>
+                  <p class="host">tiktok.com</p>
+                  <p class="reason">Outside allowed time.</p>
+                  <p class="forp">for Kids</p>
+                  <div class="timecard">
+                    <b>Time today</b>
+                    <div>Used: 60 / 60 min</div>
+                    <div>No time left today</div>
+                  </div>
+                  <div class="askbtns">
+                    <button class="ask">Ask for more time</button>
+                    <button class="ask">Ask to unblock this site</button>
+                  </div>
+                </div>
+              </div>
+              <p class="preview-cap">What a blocked device sees — with a one-tap "ask a parent" request.</p>
             </div>
           </div>
         </div>
