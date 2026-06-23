@@ -5,11 +5,9 @@ Declarative config for everything Cloudflare-side (#613):
 - Pages projects `wifihaven` (SPA prod), `wifihaven-staging` (SPA staging), and
   `wifihaven-www` (marketing site, #1842) — all Direct Upload.
 - Pages custom domains: `app` + apex + `www` (apex/www front `wifihaven-www`),
-  `app-staging` + `staging`.
-- A zone-level dynamic-redirect ruleset (`cloudflare_ruleset.redirects`, #1842):
-  `www`/`staging` → app 301 redirects (query-preserving), so old SPA bookmarks
-  keep working after the marketing split. There is intentionally **no** apex
-  `/blocked` router-compat shim — dropped 2026-06, see `main.tf`.
+  `app-staging` + `staging`. There is **no** zone-level redirect ruleset — apex
+  and www both serve the marketing site, staging keeps serving the staging SPA,
+  and there is no apex `/blocked` shim (dropped 2026-06, see `main.tf`).
 - DNS-only CNAMEs: `api.wifihaven.net`, `api-staging.wifihaven.net` → Render.
 - SPF TXT record + the `e2e-brand` / `e2e-mid` / `e2e-edge` test-fixture
   CNAME chain (#1351).
@@ -121,7 +119,7 @@ before merging anything that would trigger the pipeline.**
    `terraform state list` should show at least these resources (the original
    #1357 migration snapshot; the live set has since grown — the `app` /
    `app-staging` domains + `spa_app*` records (#1832), the `e2e_edge` AAAA
-   (#1677), and the `marketing` project + `redirects` ruleset (#1842)):
+   (#1677), and the `marketing` project (#1842)):
 
    ```
    cloudflare_pages_project.prod

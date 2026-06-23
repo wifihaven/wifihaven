@@ -224,6 +224,15 @@ Net: **the SPA bundle needs no code change** to live at `app.wifihaven.net`.
 
 ### 2.4 Redirects (old host → app, and the block-page compatibility shim)
 
+> **Outcome (2026-06): neither redirect shipped.** The `/blocked` router-compat
+> shim was dropped because existing routers were re-pointed to
+> `app.wifihaven.net` directly (so no router DNATs its block page at the apex),
+> and the `www → app` / `staging → app-staging` redirects were dropped because a
+> Cloudflare dynamic-redirect ruleset needs a token scope the deploy token
+> doesn't carry and the redirects are low-value. Apex and `www` simply serve the
+> marketing site; `staging` keeps serving the staging SPA. The plan below is
+> retained as the original design record.
+
 Two distinct redirect needs, with different lifetimes:
 
 1. **`www.wifihaven.net` → `app.wifihaven.net` (human bookmarks):** once apex/www

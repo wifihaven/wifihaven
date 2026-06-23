@@ -5,7 +5,6 @@
 #     wifihaven (SPA), wifihaven-staging (SPA), wifihaven-www (marketing).
 #   - Five Pages custom domains (apex, www, staging, app, app-staging). apex/www
 #     front the marketing project; app/app-staging front the SPA (#1842).
-#   - A zone-level dynamic-redirect ruleset: www/staging → app redirects (#1842).
 #   - Two DNS-only CNAMEs pointing api / api-staging at Render.
 #
 # Does NOT manage:
@@ -84,10 +83,9 @@ resource "cloudflare_pages_project" "marketing" {
 # ACME path-interception class of bug (#609).
 
 # Apex + www now front the MARKETING project (#1842). The SPA moved to its own
-# host (app.wifihaven.net, below); the apex serves the static landing page and
-# www 301-redirects to the app (redirect ruleset below). Repointing project_name
-# replaces the domain attachment — a brief gap on the apex's Pages backing, which
-# is acceptable for the marketing landing page.
+# host (app.wifihaven.net, below); apex and www both serve the static landing
+# page. Repointing project_name replaces the domain attachment — a brief gap on
+# the apex's Pages backing, which is acceptable for the marketing landing page.
 resource "cloudflare_pages_domain" "apex" {
   account_id   = var.account_id
   project_name = cloudflare_pages_project.marketing.name # "wifihaven-www"
@@ -189,61 +187,14 @@ resource "cloudflare_record" "spa_app_staging" {
   comment = "Cloudflare Pages wifihaven-staging — app host (#1832)"
 }
 
-# ── Redirects — marketing split (#1842) ─────────────────────────────────────
-#
-# A single zone-level dynamic-redirect ruleset for the marketing split: the
-# old SPA hosts (www, staging) 301 to the canonical app host so existing
-# human bookmarks keep working. Rules run at the edge BEFORE Cloudflare Pages
-# serves content, and preserve the query string.
-#
-# NOTE: there is intentionally NO apex `/blocked` router-compat shim — it was
-# dropped (2026-06) because there are no pre-rename routers still pointing their
-# block_page_url at the apex; new cloud installs default to app.wifihaven.net
-# (openwrt/install.sh) and any older router is re-pointed directly. The apex
-# therefore just serves the marketing site for all paths.
-resource "cloudflare_ruleset" "redirects" {
-  zone_id     = var.zone_id
-  name        = "wifihaven redirects"
-  description = "Marketing split: www/staging → app (#1842 / #1832)"
-  kind        = "zone"
-  phase       = "http_request_dynamic_redirect"
-
-  # 1. Old SPA bookmarks on www → app (301, query-preserving).
-  rules {
-    ref         = "www_to_app"
-    description = "www.wifihaven.net/* → app.wifihaven.net/:splat (#1842)"
-    expression  = "(http.host eq \"www.wifihaven.net\")"
-    action      = "redirect"
-    enabled     = true
-    action_parameters {
-      from_value {
-        status_code = 301
-        target_url {
-          expression = "concat(\"https://app.wifihaven.net\", http.request.uri.path)"
-        }
-        preserve_query_string = true
-      }
-    }
-  }
-
-  # 2. Staging mirror: staging → app-staging (301, query-preserving).
-  rules {
-    ref         = "staging_to_app_staging"
-    description = "staging.wifihaven.net/* → app-staging.wifihaven.net/:splat (#1842)"
-    expression  = "(http.host eq \"staging.wifihaven.net\")"
-    action      = "redirect"
-    enabled     = true
-    action_parameters {
-      from_value {
-        status_code = 301
-        target_url {
-          expression = "concat(\"https://app-staging.wifihaven.net\", http.request.uri.path)"
-        }
-        preserve_query_string = true
-      }
-    }
-  }
-}
+# NOTE: there is no zone-level redirect ruleset. The marketing split (#1842)
+# briefly shipped a `cloudflare_ruleset.redirects` with www→app / staging→
+# app-staging redirects, but it was dropped (2026-06): creating a dynamic-
+# redirect ruleset needs a Cloudflare token scope (Zone → Dynamic Redirect →
+# Edit) that the deploy token doesn't carry, and the redirects are low-value —
+# apex and www both simply front the marketing site, and staging keeps serving
+# the staging SPA. (The apex `/blocked` router-compat shim was likewise dropped:
+# existing routers were re-pointed to app.wifihaven.net; see openwrt/install.sh.)
 
 resource "cloudflare_record" "api_prod" {
   zone_id = var.zone_id
