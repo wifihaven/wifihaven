@@ -9,11 +9,14 @@ negotiation, the gate this re-examines), [#1512](https://github.com/wifihaven/wi
 that triggered this).
 
 > **Scope of this doc.** This is the umbrella design for the EPIC. It does NOT
-> implement the transport. It (a) fixes the wire protocol, (b) specifies the
+> implement the transport. It (a) fixes the wire protocol, ~~(b) specifies the
 > *minimal* capability-negotiation needed to ship a non-additive transport
-> change safely (the part of #376 that actually blocks #1023), and (c) lays out
+> change safely (the part of #376 that actually blocks #1023),~~ and (c) lays out
 > a phased, independently-shippable, back-compat rollout. The implementation
-> sub-issues filed against this doc are listed in §9.
+> sub-issues filed against this doc are listed in §9. **(b) was dropped:** the ws
+> transport carries the REST payloads verbatim, so the existing additive +
+> ignore-unknown wire contract already covers it — no capability handshake (§2
+> status, #1847 closed won't-do 2026-06-23).
 
 ---
 
@@ -115,6 +118,11 @@ agent                                   API
 The connection is **long-lived**: opened once at agent boot, kept warm by
 heartbeats, re-established on drop (§5).
 
+> **Note (2026-06-23):** the `hello`/`ready` exchange shown above is **not built**
+> — the capability handshake was closed won't-do (§2 status, #1847). In the
+> implemented flow the connection upgrades, the server registers the channel, and
+> (under #1849) pushes the first `policy` frame directly — no handshake step.
+
 ### 1.2 Frame envelope
 
 Every frame is a single JSON **text** websocket message:
@@ -145,8 +153,8 @@ into multiple `usage` frames instead of one over-cap POST.
 
 | `op` | Dir | Payload | Maps to today's |
 | --- | --- | --- | --- |
-| `hello` | A→S | `{agentCapabilities:[…], snapshotVersion:int, agentVersion:str}` | (new — handshake, §2) |
-| `ready` | S→A | `{serverCapabilities:[…], snapshotVersion:int}` | (new — handshake, §2) |
+| ~~`hello`~~ | A→S | ~~`{agentCapabilities:[…], snapshotVersion:int, agentVersion:str}`~~ | **NOT BUILT** — handshake won't-do, see §2 status (#1847) |
+| ~~`ready`~~ | S→A | ~~`{serverCapabilities:[…], snapshotVersion:int}`~~ | **NOT BUILT** — handshake won't-do, see §2 status (#1847) |
 | `policy` | S→A | `PolicySnapshot` JSON | `GET /api/router/policy` 200 body |
 | `usage` | A→S | `UsageReport` JSON | `POST /api/router/usage` body |
 | `events` | A→S | `RouterEventsRequest` JSON | `POST /api/router/events` body |
@@ -185,6 +193,27 @@ change-detection key the server uses to decide *whether* to push (§6.2).
 ---
 
 ## 2. Capability negotiation (re-examining #376)
+
+> **Status (2026-06-23): NOT BUILDING THIS — sub-issue B
+> ([#1847](https://github.com/wifihaven/wifihaven/issues/1847)) closed won't-do.**
+> The premise below — that replacing the poll "forces the question" of capability
+> negotiation — was reconsidered and rejected. The ws transport **carries the REST
+> payloads verbatim** (`PolicySnapshot`, `UsageReport`, events, metrics — §1.2/§1.3
+> are explicit that no payload shapes change), so the **existing REST wire contract
+> (additive-only + ignore-unknown fields, `docs/process/wire-contract.md`) already
+> makes ws evolution safe, identically to REST.** A `hello`/`ready` handshake with
+> `snapshotVersion` negotiation gated **zero behavior** today: version negotiation /
+> a `4003`-style refusal only buys anything for a *non-additive* snapshot change,
+> which the wire contract forbids without a deprecation window **regardless of
+> transport** — so the handshake was pure insurance for a hypothetical future
+> breaking change. The one genuinely-needed forward-compat rule — **ignore + meter
+> an unknown `op`** (§1.3) — already shipped in #1846, and unknown payload fields
+> are already ignored by both decoders. If an actual breaking snapshot-shape change
+> ever needs the `snapshotVersion ≥ 2` translation machinery, that is the deferred
+> #376 follow-up (sub-issue **F**) — built then, against a concrete need. **Do not
+> build the `hello`/`ready`/`snapshotVersion` handshake.** The rest of this section
+> is retained as the rejected design's rationale; the `hello`/`ready` rows in §1.1
+> and §1.3 are likewise not implemented.
 
 [#376](https://github.com/wifihaven/wifihaven/issues/376) was deferred on the
 grounds that a single prod router can tandem-deploy. **This transport change
@@ -570,7 +599,7 @@ Grafana panel per the dashboard rule — sub-issue tasks include the panel):
 | `router_ws_connections_active` | gauge | — | currently-open channels |
 | `router_connected` | gauge | `router_id` (fleet-bounded) | 1/0 link-up per router (§5.5) — emitted only for currently-connected routers and **aged out on deregister** so the `router_id` series doesn't accumulate stale values (impl: sub-issue A) |
 | `router_ws_frames_total` | counter | `op`, `dir` (`in`/`out`), `result` (`ok`/`reject`/`unknown_op`) | frame throughput + the unknown-op forward-compat counter |
-| `router_ws_handshake_total` | counter | `result` (`ok`/`auth_fail`/`hello_timeout`/`version_exceeded`) | handshake outcomes |
+| ~~`router_ws_handshake_total`~~ | — | — | **NOT BUILT** — handshake won't-do (§2 status, #1847) |
 | `router_ws_policy_push_total` | counter | `result` (`ok`/`dropped_full`/`channel_closed`) | push fan-out health |
 | `router_transport` | counter/gauge | `transport` (`ws`/`http`) | rollout-progress dashboard (§3.2) |
 | `policy_snapshot_build_total` | counter | `result` (`computed`/`cache_hit`) | proves the #1512 cache is working |
@@ -614,18 +643,21 @@ agent (gated on the spike) → optimization → deprecation.
 
 Filed: D0 → [#1845](https://github.com/wifihaven/wifihaven/issues/1845),
 A → [#1846](https://github.com/wifihaven/wifihaven/issues/1846),
-B → [#1847](https://github.com/wifihaven/wifihaven/issues/1847),
+B → [#1847](https://github.com/wifihaven/wifihaven/issues/1847) **(closed
+won't-do 2026-06-23 — see §2 status)**,
 C → [#1848](https://github.com/wifihaven/wifihaven/issues/1848),
 E → [#1849](https://github.com/wifihaven/wifihaven/issues/1849),
 G → [#1850](https://github.com/wifihaven/wifihaven/issues/1850).
 F (deferred #376) is not filed yet — it is created when the first breaking
-snapshot-shape change needs the version machinery this design lands.
+snapshot-shape change needs the version machinery. (Originally this doc said F
+"uses B's handshake"; with B dropped, F would land both the version machinery
+and whatever minimal handshake it actually needs at that point.)
 
 | # | Sub-issue | Independently shippable? | Back-compat |
 | --- | --- | --- | --- |
 | **D0** | **Spike: Lua websocket library viability on OpenWRT** — pick/prove a library, long-soak a TLS ws on real/qemu hardware, confirm Render limits. Gate for C. | yes (spike, no prod code) | n/a |
 | **A** | **API `/api/router/ws` endpoint + envelope demux + connection registry** — `RouterWsRoutes`, extract transport-agnostic ingest service from `RouterIngestRoutes` (no behavior change), per-frame structured logging, server metrics (§7). REST untouched. | yes | additive — new route only |
-| **B** | **Capability handshake + `snapshotVersion` + Evolution-policy doc** — `hello`/`ready` frames, `min`-version rule, ignore-unknown rules written into `wire-contract.md` + `architecture.md` (the durable #376 slice, §2). | yes (builds on A) | additive — handshake only on new endpoint |
+| **B** | ~~**Capability handshake + `snapshotVersion` + Evolution-policy doc** — `hello`/`ready` frames, `min`-version rule, ignore-unknown rules.~~ **WON'T-DO ([#1847](https://github.com/wifihaven/wifihaven/issues/1847) closed 2026-06-23, see §2 status).** ws inherits the REST additive + ignore-unknown contract verbatim; the handshake gated zero behavior. Unknown-`op` forward-compat shipped in #1846. Version machinery deferred to F against a concrete need. | n/a (not built) | n/a |
 | **C** | **Agent websocket sidecar (`wifihaven-ws`)** — new procd instance, ws client over the proven library, drains existing tmpfs spools out / writes pushed `policy` in, HTTP-fallback wiring (§3.1), agent metrics. Gated on D0. | yes (behind UCI flag, default off until proven) | additive — main agent HTTP path unchanged |
 | **E** | **Push-on-change + computed-snapshot cache in `PolicyService`** (#1512) — cache + invalidation + time-boundary ticker; registry push on change; REST poll also reads the cache. | yes (improves REST path even with zero ws agents) | behavior-preserving (same snapshot bytes) |
 | **F** | **(deferred #376) per-field snapshot capability gating + `snapshotVersion ≥ 2` machinery** — only when the first breaking shape change needs it; *uses* B's handshake. | yes, later | additive |
