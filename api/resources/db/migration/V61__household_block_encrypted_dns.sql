@@ -1,0 +1,37 @@
+-- V61__household_block_encrypted_dns.sql
+-- #1912 / #1909: household-level "block encrypted DNS & relays" toggle
+-- (schema-only foundation).
+--
+-- Background: a device that tunnels around the LAN resolver — iCloud Private
+-- Relay (`mask.icloud.com`), public DoH/DoT (`1.1.1.1`, `dns.google`, …) —
+-- bypasses ALL WifiHaven filtering and hostname attribution. The fix is a
+-- single network-wide toggle (NOT per-profile: the clean disable signal is
+-- NXDOMAIN, which stock dnsmasq can only answer network-wide; a per-profile
+-- connection-layer drop of the relay ingress is the path Apple explicitly
+-- warns against — it hangs the client, the #1891 symptom). Design: #1909.
+--
+-- This column is the one knob the feature needs. When true, the snapshot
+-- emits the additive top-level `blockEncryptedDns` boolean and the agent
+-- (#1911) enforces it (NXDOMAIN for the relay/DoH hostnames + nftables drops
+-- for hardcoded resolver IPs and DoT/853); the curated host/IP lists are
+-- baked in the agent, NOT shipped on the wire — only the boolean is.
+--
+-- SCHEMA-ONLY migration (per the migration-isolation rule in
+-- CLAUDE.md / AGENTS.md §migrations-back-compat): it ships with no source and
+-- no tests. The HouseholdSettings field, repo read/write, route handling, and
+-- snapshot emission that READ this column land in the follow-up code PR
+-- (#1912). Until then the column is inert — nothing reads it, every existing
+-- row gets the default, and behavior is unchanged.
+--
+-- `household_settings` is a small singleton-style metadata table (id=1), NOT
+-- one of the unbounded-growth event tables (traffic_reports, connection_events,
+-- …). Adding a column with a constant default is metadata-only in PG 11+ (no
+-- table rewrite), so this is safe on the Flyway startup critical path even at
+-- prod data volume (AGENTS.md §migrations-prod-data-volume).
+--
+-- Nullable-by-default contract: NOT NULL DEFAULT FALSE means image-(N-1) —
+-- which never names the column in any INSERT/UPDATE — keeps working unchanged;
+-- existing rows and any new rows it writes get the default.
+
+ALTER TABLE household_settings
+  ADD COLUMN block_encrypted_dns BOOLEAN NOT NULL DEFAULT FALSE;
