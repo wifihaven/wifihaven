@@ -62,8 +62,9 @@ object LokiDropMetrics {
     for {
       cur  <- read
       prev <- lastSeen.getAndSet(cur)
-      delta = cur - prev
-      _ <- AppMetrics.recordLokiDropped(delta).when(delta > 0)
+      // recordLokiDropped is a no-op for a non-positive delta (flat or — defensively — a
+      // non-increasing reading), so the single guard lives there.
+      _    <- AppMetrics.recordLokiDropped(cur - prev)
     } yield ()
 
   /**
