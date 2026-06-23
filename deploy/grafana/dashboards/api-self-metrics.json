@@ -587,6 +587,36 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Loki log shipping drops (#1885)",
+      "description": "sum(rate(loki_logs_dropped_total[5m])) — log events the loki4j appender shed because its bounded send queue (sendQueueMaxBytes) filled while Grafana Cloud Loki was slow/unreachable. Emitted by LokiDropMetrics polling MeteredLoki4jAppender's drop counter. Shipping is fail-open by design (the request path is never blocked — proven by LokiAppenderFailOpenSpec), so this is the ONLY signal that app logs are being silently lost. Should be flat zero in steady state; a sustained rate means a Loki outage is dropping logs.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 48 },
+      "id": 18,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 20, "showPoints": "never", "lineWidth": 1 },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 0.001 }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(rate(loki_logs_dropped_total{env=\"$env\"}[5m]))",
+          "legendFormat": "dropped/s",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",

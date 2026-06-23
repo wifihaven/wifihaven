@@ -27,17 +27,26 @@
 
     Fail-open by construction (hard requirement — Loki being slow/down must NEVER
     wedge the request path):
-      - Loki4jAppender is asynchronous by design: the calling (request) thread
-        only enqueues; an internal background thread batches and sends. Do NOT
-        wrap it in an AsyncAppender — it is already async.
+      - The appender is asynchronous by design: the calling (request) thread only
+        enqueues; an internal background thread batches and sends. Do NOT wrap it
+        in an AsyncAppender — it is already async.
       - <batch> bounds the in-memory send queue with <sendQueueMaxBytes>. When
         the queue is full (Loki slow/unreachable and the background sender backs
         up), incoming events are DROPPED, never blocked — drop-on-backpressure.
       - <drainOnStop>false</drainOnStop> so JVM shutdown is never held waiting on
         Loki to drain.
       - <http><requestTimeoutMs> caps each send on the background thread.
-    (Load-proven backpressure + a drop metric + a Grafana panel are the #1831
-    sub-#2 follow-up, intentionally out of scope here.)
+    #1885 PROVED this fail-open behaviour under load (LokiAppenderFailOpenSpec:
+    with Loki stalled and a tiny send queue, the calling thread keeps appending at
+    full speed while the appender sheds events) and INSTRUMENTED the drops:
+
+      - The class below is MeteredLoki4jAppender, a zero-behaviour subclass of
+        loki4j's Loki4jAppender that re-exports the appender's own cumulative
+        dropped-events counter (the AtomicLong loki4j bumps every time the bounded
+        send queue rejects an event). LokiDropMetrics polls it into the
+        `loki_logs_dropped_total` Prometheus counter (GET /metrics), so a Loki
+        outage silently shedding logs is now alertable (Grafana: api-self-metrics).
+        Swapping the class is wire/log-path-transparent; it only adds an accessor.
 
     Label / cardinality model (critical — same bounded-cardinality rule as
     metrics): ONLY service / env / level are Loki STREAM LABELS. Every other MDC
@@ -49,7 +58,7 @@
   -->
   <if condition='isDefined("GRAFANA_CLOUD_LOKI_URL")'>
     <then>
-      <appender name="LOKI" class="com.github.loki4j.logback.Loki4jAppender">
+      <appender name="LOKI" class="com.github.loki4j.logback.MeteredLoki4jAppender">
         <!-- Stream labels: low-cardinality ONLY. Do NOT add mac/route/host here. -->
         <labels>
           service = wifihaven-api
