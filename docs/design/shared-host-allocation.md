@@ -193,42 +193,75 @@ active 11:25–11:40.
 
 ---
 
-## Enforcement vs reporting — `shared` is reporting-first, with an asymmetric enforcement rule
+## Enforcement — the most-permissive rule for shared hosts
 
-The agent is a dumb applier; `extraAllowed` / `extraBlocked` are **unconditional
-per-`(mac, host)`** nftables sets (see [AGENTS.md](../../AGENTS.md) and
-[architecture §0.2](../architecture.md)). There is **no way** to express "allow
-this host only while the app's distinctive hosts are active" — that is a
-stateful temporal predicate the router does not have, and the minimal-functional-
-shape rule forbids pushing one onto it. So the co-presence semantics apply to
-**reporting only**. Enforcement follows a simpler, asymmetric rule that mirrors
-the existing collateral guidance:
+`shared` governs **two independent decisions**, and they are decided separately:
 
-- **Block side — a shared host is NEVER added to a drop set.** Not on
-  cap-exhaustion (`appCapExhaustedHosts`,
-  [PolicyService](../../api/src/policy/PolicyService.scala):878-885), not for a
-  `Blocked`-mode app's `extraBlocked`. Blocking `elevenlabs.io` when Feeling
-  Great's cap is hit would drop TTS for *every other app on the device* — the
-  precise [#1636](https://github.com/wifihaven/wifihaven/issues/1636) collateral
-  failure. Only **distinctive** hosts are eligible for `extraBlocked`. (A
-  cap-limited app's *time* is enforced through its distinctive hosts; the shared
-  backend stays reachable, which is correct — it belongs to other apps too.)
-- **Allow side — a shared host MAY be added to `extraAllowed`, unconditionally,
-  if any app listing it resolves to `Allowed` enforcement for the profile.**
-  Allowing is non-destructive: over-allowing `elevenlabs.io` breaks nothing, it
-  just keeps the shared backend reachable so an `Allowed`-mode app (e.g. Feeling
-  Great carved around a Schedule block) actually functions. This is a plain
-  reuse of the existing `extraAllowed` field — **no new wire field, no new wire
-  concept** (consistent with the minimal-functional-shape rule). The
-  `allowed_during_schedule_block` flag ([#1679](https://github.com/wifihaven/wifihaven/issues/1679),
-  [Models.scala](../../shared/src/Models.scala):293-296) governs shared hosts
-  identically to distinctive ones.
+1. **Attribution** (usage reporting / cap) — the co-presence rule above.
+2. **Enforcement** (whether a packet is allowed or dropped) — the
+   **most-permissive** rule defined here.
 
-The asymmetry ("over-allow is safe, over-block is collateral") is not new — it
-is the [`_README.yml`](../../api/resources/app_templates/_README.yml) shared-pool
-rule restated for the snapshot path. Net: **`shared` changes which app gets
-*credit* in usage reporting; it never changes whether a packet is dropped except
-to make over-blocking of shared backends impossible.**
+These are not the same computation and must not be conflated. The enforcement
+rule is deliberately *simpler* than attribution: it does **not** depend on
+co-presence at all. It is a single principle —
+
+> **A shared host follows the most permissive disposition of any app that lists
+> it. If the app is in ALLOW, the shared host goes into `extraAllowed`. If the
+> app is in BLOCK, the shared host is NOT put into `extraBlocked`.**
+
+Concretely, for each shared host `S` and the profile's app dispositions:
+
+- **App in ALLOW → `S` IS allowed.** Add `S` to `extraAllowed`,
+  **unconditionally** (no co-presence gate). It is added whenever *any* app that
+  lists `S` resolves to `Allowed` enforcement for the profile. This keeps the
+  shared backend reachable so the allowed app actually works — e.g. Feeling
+  Great carved around a Schedule block needs `elevenlabs.io` reachable for TTS.
+- **App in BLOCK (manual block, or TimeLimited cap exhausted) → `S` is NOT
+  blocked.** A shared host is **never** added to a drop set: not to a
+  `Blocked`-mode app's `extraBlocked`, and not to cap-exhaustion's
+  `appCapExhaustedHosts` ([PolicyService](../../api/src/policy/PolicyService.scala):878-885).
+  Only the app's **distinctive** hosts are block-eligible. Blocking
+  `elevenlabs.io` because Feeling Great's cap is hit would drop TTS for *every
+  other app on the device* — the precise
+  [#1636](https://github.com/wifihaven/wifihaven/issues/1636) collateral failure.
+  The cap is still enforced — through the app's distinctive hosts — while the
+  shared backend stays reachable, which is correct because it belongs to other
+  apps too.
+
+This is "most permissive" in the literal sense: allow wins, block is withheld.
+Two reasons it's the right rule, not a compromise:
+
+- **It's safe.** `extraAllowed` already **beats every block path** at the router
+  (an architectural invariant — admin allow overrides `@blocked_macs` too), and
+  over-allowing a shared backend breaks nothing. Over-*blocking* one is the
+  collateral hazard. So permissiveness costs nothing and avoids the failure mode.
+- **The router can't do better.** `extraAllowed` / `extraBlocked` are
+  **unconditional per-`(mac, host)`** nftables sets (see
+  [AGENTS.md](../../AGENTS.md) / [architecture §0.2](../architecture.md)). There
+  is no way to express "allow `S` only while the app's distinctive hosts are
+  active" — that's a stateful temporal predicate the dumb-applier router does not
+  have, and the minimal-functional-shape rule forbids pushing one onto it. So the
+  enforcement decision is necessarily host-level and unconditional; the most-
+  permissive choice is the only safe unconditional one. The co-presence subtlety
+  lives entirely in attribution, where it's a pure server-side computation.
+
+This is the same asymmetry as the
+[`_README.yml`](../../api/resources/app_templates/_README.yml) shared-pool rule
+("over-allow is safe, over-block is collateral"), restated for the snapshot path.
+The `allowed_during_schedule_block` flag
+([#1679](https://github.com/wifihaven/wifihaven/issues/1679),
+[Models.scala](../../shared/src/Models.scala):293-296) governs shared hosts
+identically to distinctive ones on the allow path.
+
+### Enforcement decision table
+
+| App disposition (for a profile) | Distinctive hosts | Shared hosts |
+|---|---|---|
+| **Allowed** | `extraAllowed` | **`extraAllowed`** (unconditional) |
+| **Blocked** (manual) | `extraBlocked` | **omitted** (never dropped) |
+| **TimeLimited**, cap exhausted | `extraBlocked` | **omitted** (never dropped) |
+| **TimeLimited**, under cap (exempt) | `extraAllowed` carve | **`extraAllowed`** if exempt-carve applies |
+| not assigned / no policy | — | — |
 
 ### No wire change
 
@@ -246,7 +279,7 @@ concept on the wire, we are refining a server-side computation.
 |---|---|---|
 | Per-app **engaged minutes** (cap, daily exemption) | `Presence.appSecondsForProfile` ([Presence](../../api/src/presence/Presence.scala):708-737) via `appSpansForProfileWithDropCount`:645-699 | shared hosts **excluded** from the group's host-set; minutes = distinctive stitch only |
 | Per-host **proportionalMins / bytes** (UI usage-by-app) | `buildUsageByApp` ([UsageRoutes](../../api/src/routes/UsageRoutes.scala):473-599); `Presence.proportionalHostSeconds`:803-833 | shared host row → co-presence overlap with `distinctiveSpans` → split among qualifiers → else "Other" |
-| `extraBlocked` / `extraAllowed` snapshot | `PolicyService.computeBlockRules` ([PolicyService](../../api/src/policy/PolicyService.scala):771-855) | shared hosts excluded from block; allowed unconditionally on the allow path |
+| `extraBlocked` / `extraAllowed` snapshot | `PolicyService.computeBlockRules` ([PolicyService](../../api/src/policy/PolicyService.scala):771-855) | **most-permissive**: shared hosts never enter `extraBlocked`; added to `extraAllowed` (unconditional) when the app is in ALLOW |
 
 The single-source-of-truth contract ([AGENTS.md §single-source-of-truth](../process/single-source-of-truth.md))
 is preserved: `distinctiveSpans` and the span→seconds projection still live in
