@@ -1,8 +1,12 @@
 # Cloudflare resources for wifihaven (#613).
 #
 # Manages:
-#   - Two Cloudflare Pages projects (Direct Upload — CI pushes via wrangler).
-#   - Five Pages custom domains (apex, www, staging, app, app-staging).
+#   - Three Cloudflare Pages projects (Direct Upload — CI pushes via wrangler):
+#     wifihaven (SPA), wifihaven-staging (SPA), wifihaven-www (marketing).
+#   - Five Pages custom domains (apex, www, staging, app, app-staging). apex/www
+#     front the marketing project; app/app-staging front the SPA (#1842).
+#   - A zone-level dynamic-redirect ruleset: the router-compat /blocked shim
+#     plus www/staging → app redirects (#1842).
 #   - Two DNS-only CNAMEs pointing api / api-staging at Render.
 #
 # Does NOT manage:
@@ -64,20 +68,37 @@ resource "cloudflare_pages_project" "staging" {
   production_branch = "main"
 }
 
+# Marketing site project (#1842 / epic #1832). Fronts the apex + www, distinct
+# from the SPA (which now lives on the `wifihaven` project at app.wifihaven.net).
+# Direct Upload — CI pushes the static web-marketing/site/ via wrangler from
+# .github/workflows/master-marketing.yml. On first rollout this apply must land
+# before that deploy job runs (the project must exist for wrangler to target).
+resource "cloudflare_pages_project" "marketing" {
+  account_id        = var.account_id
+  name              = "wifihaven-www"
+  production_branch = "main"
+}
+
 # ── Pages custom domains ────────────────────────────────────────────────────
 # When the apex zone is on the same Cloudflare account, the provider wires
 # the underlying DNS records automatically. Cert issuance is DNS-01 — no
 # ACME path-interception class of bug (#609).
 
+# Apex + www now front the MARKETING project (#1842). The SPA moved to its own
+# host (app.wifihaven.net, below); the apex serves the static landing page and
+# www 301-redirects to the app (redirect ruleset below). Repointing project_name
+# replaces the domain attachment — a brief gap on the apex's Pages backing, but
+# the /blocked router-compat shim is an edge redirect rule that fires before
+# Pages, so blocked-device block pages keep working throughout.
 resource "cloudflare_pages_domain" "apex" {
   account_id   = var.account_id
-  project_name = cloudflare_pages_project.prod.name
+  project_name = cloudflare_pages_project.marketing.name # "wifihaven-www"
   domain       = "wifihaven.net"
 }
 
 resource "cloudflare_pages_domain" "www" {
   account_id   = var.account_id
-  project_name = cloudflare_pages_project.prod.name
+  project_name = cloudflare_pages_project.marketing.name # "wifihaven-www"
   domain       = "www.wifihaven.net"
 }
 
@@ -118,24 +139,26 @@ resource "cloudflare_record" "spf" {
   comment = "SPF: no mail from this domain (#613)"
 }
 
+# Apex + www CNAME to the MARKETING project's .pages.dev (#1842). Stays proxied
+# (orange cloud) so the zone-level redirect ruleset below can fire at the edge.
 resource "cloudflare_record" "spa_apex" {
   zone_id = var.zone_id
   name    = "wifihaven.net"
   type    = "CNAME"
-  content = "wifihaven.pages.dev"
+  content = "wifihaven-www.pages.dev"
   proxied = true
   ttl     = 1
-  comment = "Cloudflare Pages wifihaven (#613)"
+  comment = "Cloudflare Pages wifihaven-www — marketing (#1842)"
 }
 
 resource "cloudflare_record" "spa_www" {
   zone_id = var.zone_id
   name    = "www"
   type    = "CNAME"
-  content = "wifihaven.pages.dev"
+  content = "wifihaven-www.pages.dev"
   proxied = true
   ttl     = 1
-  comment = "Cloudflare Pages wifihaven (#613)"
+  comment = "Cloudflare Pages wifihaven-www — marketing (#1842)"
 }
 
 resource "cloudflare_record" "spa_staging" {
@@ -166,6 +189,83 @@ resource "cloudflare_record" "spa_app_staging" {
   proxied = true
   ttl     = 1
   comment = "Cloudflare Pages wifihaven-staging — app host (#1832)"
+}
+
+# ── Redirects — marketing split + router-compat /blocked shim (#1842) ───────
+#
+# A single zone-level dynamic-redirect ruleset. Rules are evaluated in the order
+# listed; the first match wins. These run at the edge BEFORE Cloudflare Pages
+# serves any content, so the marketing site's static responses can never shadow
+# the /blocked shim.
+#
+# The /blocked shim is the merge-gating back-compat net for the host rename:
+# routers enrolled before the rename DNAT blocked HTTP/80 to the apex
+# (block_page_url is a per-install UCI key that can't be pushed over the wire),
+# so the apex MUST keep answering /blocked* by redirecting to the app host —
+# preserving ?mac=&host= so the block page still resolves its reason. 302 (not
+# 301) keeps it retargetable without fighting browser caches; this is about
+# retargetability, not lifetime (the shim lives as long as pre-rename routers do).
+resource "cloudflare_ruleset" "redirects" {
+  zone_id     = var.zone_id
+  name        = "wifihaven redirects"
+  description = "Marketing split: /blocked router-compat shim + www/staging → app (#1842 / #1832)"
+  kind        = "zone"
+  phase       = "http_request_dynamic_redirect"
+
+  # 1. Router-compat /blocked shim — MUST be first and query-preserving.
+  #    wifihaven.net/blocked* → app.wifihaven.net/blocked* (302, keep ?mac=&host=).
+  rules {
+    ref         = "blocked_compat_shim"
+    description = "Router-compat: pre-rename routers DNAT blocked HTTP/80 to the apex; keep /blocked working on the app host, preserving ?mac=&host= (#1842)"
+    expression  = "(http.host eq \"wifihaven.net\" and starts_with(http.request.uri.path, \"/blocked\"))"
+    action      = "redirect"
+    enabled     = true
+    action_parameters {
+      from_value {
+        status_code = 302
+        target_url {
+          expression = "concat(\"https://app.wifihaven.net\", http.request.uri.path)"
+        }
+        preserve_query_string = true
+      }
+    }
+  }
+
+  # 2. Old SPA bookmarks on www → app (301, query-preserving).
+  rules {
+    ref         = "www_to_app"
+    description = "www.wifihaven.net/* → app.wifihaven.net/:splat (#1842)"
+    expression  = "(http.host eq \"www.wifihaven.net\")"
+    action      = "redirect"
+    enabled     = true
+    action_parameters {
+      from_value {
+        status_code = 301
+        target_url {
+          expression = "concat(\"https://app.wifihaven.net\", http.request.uri.path)"
+        }
+        preserve_query_string = true
+      }
+    }
+  }
+
+  # 3. Staging mirror: staging → app-staging (301, query-preserving).
+  rules {
+    ref         = "staging_to_app_staging"
+    description = "staging.wifihaven.net/* → app-staging.wifihaven.net/:splat (#1842)"
+    expression  = "(http.host eq \"staging.wifihaven.net\")"
+    action      = "redirect"
+    enabled     = true
+    action_parameters {
+      from_value {
+        status_code = 301
+        target_url {
+          expression = "concat(\"https://app-staging.wifihaven.net\", http.request.uri.path)"
+        }
+        preserve_query_string = true
+      }
+    }
+  }
 }
 
 resource "cloudflare_record" "api_prod" {

@@ -2,11 +2,22 @@
 
 Declarative config for everything Cloudflare-side (#613):
 
-- Pages projects `wifihaven` (prod) and `wifihaven-staging` (Direct Upload).
-- Pages custom domains: `wifihaven.net`, `www.wifihaven.net`, `staging.wifihaven.net`.
+- Pages projects `wifihaven` (SPA prod), `wifihaven-staging` (SPA staging), and
+  `wifihaven-www` (marketing site, #1842) — all Direct Upload.
+- Pages custom domains: `app` + apex + `www` (apex/www front `wifihaven-www`),
+  `app-staging` + `staging`.
+- A zone-level dynamic-redirect ruleset (`cloudflare_ruleset.redirects`, #1842):
+  the router-compat `wifihaven.net/blocked*` → `app.wifihaven.net/blocked*` 302
+  shim (query-preserving) plus `www`/`staging` → app 301 redirects.
 - DNS-only CNAMEs: `api.wifihaven.net`, `api-staging.wifihaven.net` → Render.
 - SPF TXT record + the `e2e-brand` / `e2e-mid` / `e2e-edge` test-fixture
   CNAME chain (#1351).
+
+The redirect ruleset has a semantic gate beyond `terraform validate`:
+`redirects_test.py` (run by the `cloudflare-terraform` CI job) asserts the
+`/blocked` shim is the first rule, 302, query-preserving, and targets the app
+host — the properties that, if wrong, silently break every pre-rename router's
+block page.
 
 **Not managed here**: the zone itself (added once via the dash; NS flip at the
 registrar is a one-shot manual step), and the GitHub repo secrets.
@@ -112,7 +123,10 @@ before merging anything that would trigger the pipeline.**
    # Expect: "No changes. Your infrastructure matches the configuration."
    ```
 
-   `terraform state list` should show exactly these 14 resources:
+   `terraform state list` should show at least these resources (the original
+   #1357 migration snapshot; the live set has since grown — the `app` /
+   `app-staging` domains + `spa_app*` records (#1832), the `e2e_edge` AAAA
+   (#1677), and the `marketing` project + `redirects` ruleset (#1842)):
 
    ```
    cloudflare_pages_project.prod

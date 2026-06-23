@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#3A5A6C" />
+    <title>wifihaven — a haven for the household network</title>
+    <meta
+      name="description"
+      content="Connection-layer parental controls for your home wifi. Schedules, time limits, and category blocking enforced on the router — not DNS sinkholes."
+    />
+
+    <!-- Favicons (browsers pick the first format they understand) -->
+    <link rel="icon" type="image/svg+xml" href="/brand/favicon.svg" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/brand/favicon-16.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/brand/favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="48x48" href="/brand/favicon-48.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/brand/apple-touch-icon-180.png" />
+    <link rel="shortcut icon" href="/brand/favicon.ico" />
+
+    <!-- Open Graph / Twitter card -->
+    <meta property="og:title" content="wifihaven — a haven for the household network" />
+    <meta
+      property="og:description"
+      content="Connection-layer parental controls for your home wifi. Enforced on the router, not via DNS."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://wifihaven.net/" />
+    <meta property="og:image" content="/brand/og-card-1200x630.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:image" content="/brand/og-card-1200x630.png" />
+
+    <!-- Inter (wordmark + UI sans) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+
+    <style>
+      :root {
+        --terracotta: #c2693a;
+        --slate: #3a5a6c;
+        --cream: #f2e8d5;
+        --offwhite: #fafaf7;
+        --ink: #1f1b16;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html {
+        scroll-behavior: smooth;
+      }
+      body {
+        margin: 0;
+        font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+        color: var(--ink);
+        background: var(--offwhite);
+        line-height: 1.6;
+        -webkit-font-smoothing: antialiased;
+      }
+      a {
+        color: var(--terracotta);
+        text-decoration: none;
+      }
+      a:hover {
+        text-decoration: underline;
+      }
+      .wrap {
+        max-width: 1040px;
+        margin: 0 auto;
+        padding: 0 24px;
+      }
+
+      /* Header */
+      header {
+        border-bottom: 1px solid rgba(58, 90, 108, 0.12);
+      }
+      .nav {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 18px 24px;
+        max-width: 1040px;
+        margin: 0 auto;
+      }
+      .nav img {
+        height: 34px;
+        display: block;
+      }
+      .cta {
+        display: inline-block;
+        background: var(--terracotta);
+        color: #fff;
+        font-weight: 600;
+        padding: 11px 22px;
+        border-radius: 10px;
+        font-size: 15px;
+      }
+      .cta:hover {
+        background: #a8582e;
+        text-decoration: none;
+      }
+
+      /* Hero */
+      .hero {
+        background: var(--cream);
+        padding: 72px 0 80px;
+      }
+      .hero-grid {
+        display: grid;
+        grid-template-columns: 1.2fr 0.8fr;
+        gap: 48px;
+        align-items: center;
+      }
+      .hero h1 {
+        font-size: 44px;
+        line-height: 1.12;
+        letter-spacing: -0.02em;
+        color: var(--slate);
+        margin: 0 0 18px;
+      }
+      .hero p.lede {
+        font-size: 19px;
+        color: var(--ink);
+        max-width: 36ch;
+        margin: 0 0 28px;
+      }
+      .hero .actions {
+        display: flex;
+        gap: 14px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      .hero img {
+        width: 100%;
+        height: auto;
+      }
+      .ghost {
+        font-weight: 600;
+        color: var(--slate);
+        padding: 11px 6px;
+      }
+
+      /* Sections */
+      section.band {
+        padding: 64px 0;
+      }
+      h2 {
+        font-size: 28px;
+        color: var(--slate);
+        letter-spacing: -0.015em;
+        margin: 0 0 8px;
+      }
+      .sub {
+        color: rgba(31, 27, 22, 0.7);
+        margin: 0 0 36px;
+        font-size: 16px;
+      }
+      .steps {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 28px;
+      }
+      .step {
+        background: #fff;
+        border: 1px solid rgba(58, 90, 108, 0.12);
+        border-radius: 14px;
+        padding: 24px;
+      }
+      .step .n {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 30px;
+        height: 30px;
+        border-radius: 8px;
+        background: var(--cream);
+        color: var(--terracotta);
+        font-weight: 700;
+        margin-bottom: 14px;
+      }
+      .step h3 {
+        margin: 0 0 6px;
+        font-size: 17px;
+        color: var(--slate);
+      }
+      .step p {
+        margin: 0;
+        font-size: 15px;
+        color: rgba(31, 27, 22, 0.78);
+      }
+
+      .callout {
+        background: var(--cream);
+        border-radius: 16px;
+        padding: 28px 32px;
+        font-size: 16px;
+      }
+      .callout strong {
+        color: var(--slate);
+      }
+
+      .two {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 28px;
+      }
+      .card {
+        border: 1px solid rgba(58, 90, 108, 0.14);
+        border-radius: 14px;
+        padding: 26px;
+      }
+      .card h3 {
+        margin: 0 0 8px;
+        color: var(--slate);
+        font-size: 18px;
+      }
+      .card p {
+        margin: 0;
+        font-size: 15px;
+        color: rgba(31, 27, 22, 0.8);
+      }
+
+      .closing {
+        background: var(--slate);
+        color: var(--cream);
+        text-align: center;
+        padding: 64px 24px;
+      }
+      .closing h2 {
+        color: #fff;
+        margin-bottom: 18px;
+      }
+      .closing .cta {
+        background: var(--terracotta);
+      }
+
+      footer {
+        text-align: center;
+        padding: 32px 24px 48px;
+        font-size: 14px;
+        color: rgba(31, 27, 22, 0.55);
+      }
+
+      @media (max-width: 760px) {
+        .hero-grid {
+          grid-template-columns: 1fr;
+        }
+        .hero img {
+          display: none;
+        }
+        .steps,
+        .two {
+          grid-template-columns: 1fr;
+        }
+        .hero h1 {
+          font-size: 34px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <nav class="nav">
+        <a href="/" aria-label="wifihaven home">
+          <img src="/brand/lockup-horizontal.svg" alt="wifihaven" />
+        </a>
+        <a class="cta" href="https://app.wifihaven.net">Open the app →</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="wrap hero-grid">
+          <div>
+            <h1>A haven for the household network.</h1>
+            <p class="lede">
+              Parental controls that work at the connection layer — schedules,
+              time limits, and category blocking enforced right on your router.
+              No DNS sinkholes, no app to install on every device.
+            </p>
+            <div class="actions">
+              <a class="cta" href="https://app.wifihaven.net">Open the app →</a>
+              <a class="ghost" href="#how">See how it works</a>
+            </div>
+          </div>
+          <img src="/brand/mascot.svg" alt="" aria-hidden="true" />
+        </div>
+      </section>
+
+      <section class="band" id="how">
+        <div class="wrap">
+          <h2>How it works</h2>
+          <p class="sub">
+            Policy is decided in the cloud and enforced on the gateway router —
+            at the connection layer, where it can't be bypassed by changing a
+            device's DNS.
+          </p>
+          <div class="steps">
+            <div class="step">
+              <span class="n">1</span>
+              <h3>Set the rules</h3>
+              <p>
+                Create profiles for each kid — bedtimes, daily time limits, and
+                blocked categories — from the web app. No per-device software.
+              </p>
+            </div>
+            <div class="step">
+              <span class="n">2</span>
+              <h3>The router enforces</h3>
+              <p>
+                Your wifihaven router applies the policy at the connection
+                layer. Blocked traffic is dropped at the gateway, not faked at
+                the DNS resolver.
+              </p>
+            </div>
+            <div class="step">
+              <span class="n">3</span>
+              <h3>See what's happening</h3>
+              <p>
+                Watch which devices are online, what they're reaching, and
+                when limits kick in — and grant a few more minutes when it's
+                warranted.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="band" style="padding-top: 0">
+        <div class="wrap">
+          <div class="callout">
+            <strong>Why the connection layer?</strong> DNS-based blockers only
+            answer a name lookup — any device that hard-codes an IP, uses
+            DNS-over-HTTPS, or ships its own resolver slips right past them.
+            wifihaven lets DNS resolve normally and drops the actual
+            <em>connection</em> on the router, so the block holds.
+          </div>
+        </div>
+      </section>
+
+      <section class="band" style="padding-top: 0">
+        <div class="wrap">
+          <h2>Self-host or let us host it</h2>
+          <p class="sub">Same software, your choice of who runs the cloud side.</p>
+          <div class="two">
+            <div class="card">
+              <h3>Cloud</h3>
+              <p>
+                We run the control plane; you just plug in a wifihaven router
+                and manage everything from
+                <a href="https://app.wifihaven.net">app.wifihaven.net</a>.
+                Nothing to maintain.
+              </p>
+            </div>
+            <div class="card">
+              <h3>Self-hosted</h3>
+              <p>
+                Run the whole stack on your own hardware — the API server
+                bundles the web app — and keep every byte of household data
+                under your roof.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <section class="closing">
+      <h2>Ready to give your network a haven?</h2>
+      <a class="cta" href="https://app.wifihaven.net">Open the app →</a>
+    </section>
+
+    <footer>
+      <p>wifihaven — a haven for the household network.</p>
+    </footer>
+  </body>
+</html>

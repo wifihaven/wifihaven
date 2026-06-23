@@ -22,16 +22,22 @@ Custom domain layout:
 |--------------------------------|-----------------------------------|
 | `app.wifihaven.net`            | Cloudflare Pages: `wifihaven` (canonical app host, #1832) |
 | `app-staging.wifihaven.net`    | Cloudflare Pages: `wifihaven-staging` (canonical staging app host) |
-| `wifihaven.net` (apex)         | Cloudflare Pages: `wifihaven` (legacy SPA host; becomes marketing in #1842, must keep serving `/blocked*` for pre-rename routers) |
-| `www.wifihaven.net`            | Cloudflare Pages: `wifihaven`     |
-| `staging.wifihaven.net`        | Cloudflare Pages: `wifihaven-staging` (legacy) |
+| `wifihaven.net` (apex)         | Cloudflare Pages: `wifihaven-www` (marketing site, #1842) |
+| `www.wifihaven.net`            | Cloudflare Pages: `wifihaven-www` → **301-redirects to `app.wifihaven.net`** (#1842) |
+| `staging.wifihaven.net`        | **301-redirects to `app-staging.wifihaven.net`** (#1842) |
 | `api.wifihaven.net`            | Render: `wifihaven-api-prod`      |
 | `api-staging.wifihaven.net`    | Render: `wifihaven-api-staging`   |
 
 `app.wifihaven.net` / `app-staging.wifihaven.net` are additional custom domains
 on the *same* Pages projects — the SPA bundle is identical, only the fronting
-host is canonical now. The apex/`www` keep serving the SPA until the marketing
-split (#1842); the API host (`api.wifihaven.net`) is unchanged.
+host is canonical now. Post-#1842 the apex + `www` front the **marketing site**
+(`wifihaven-www`, source under `web-marketing/`), not the SPA. A zone-level
+dynamic-redirect ruleset (`cloudflare_ruleset.redirects` in
+`infra/cloudflare/main.tf`) sends `www`/`staging` → the app host and — the
+merge-gating piece — keeps `wifihaven.net/blocked*` working by 302-redirecting it
+to `app.wifihaven.net/blocked*`, **preserving `?mac=&host=`**, so block pages on
+routers enrolled before the rename (which DNAT to the apex) still render. The API
+host (`api.wifihaven.net`) is unchanged.
 
 ---
 
@@ -124,17 +130,21 @@ terraform plan
 terraform apply
 ```
 
-This creates two Pages projects (`wifihaven`, `wifihaven-staging`,
-Direct Upload — CI pushes via Wrangler), the Pages custom domains
-(`app`, `app-staging`, apex, `www`, `staging`), and the two API CNAMEs.
+This creates three Pages projects (`wifihaven`, `wifihaven-staging`, and
+`wifihaven-www` for the marketing site — all Direct Upload, CI pushes via
+Wrangler), the Pages custom domains (`app`, `app-staging`, apex, `www`,
+`staging`), the redirect ruleset, and the two API CNAMEs.
 
 Cloudflare auto-issues edge certs (DNS-01 challenge — no path
 interception). Cert status flips to **Active** in the dash within a
 minute or two.
 
-Apex + `www` behavior: both serve the same bundle. If you want
-`www → apex` canonical redirect, add a Cloudflare Page Rule or a Bulk
-Redirect later — out of scope of the Terraform module for now.
+Apex + `www` behavior (post-#1842): the apex fronts the marketing site
+(`wifihaven-www`); `www` and `staging` 301-redirect to the app host via the
+`cloudflare_ruleset.redirects` ruleset, which also carries the merge-gating
+`wifihaven.net/blocked*` → `app.wifihaven.net/blocked*` 302 router-compat shim
+(query-preserving). All redirects are declarative in the Terraform module — no
+manual Page Rules.
 
 > The §1 table above lists the two API CNAME records for reference; both
 > are managed by Terraform now and should NOT be added manually in the
@@ -175,17 +185,24 @@ workflow → **Run workflow**).
 Verify:
 
 ```sh
-# Prod API + SPA (app.wifihaven.net is the canonical app host; apex/www
-# still serve the SPA until the marketing split #1842)
+# Prod API + app host (app.wifihaven.net is the canonical app host)
 curl -sS https://api.wifihaven.net/api/health
-curl -sS -o /dev/null -w "%{http_code}\n" https://app.wifihaven.net/
-curl -sS -o /dev/null -w "%{http_code}\n" https://wifihaven.net/
-curl -sS -o /dev/null -w "%{http_code}\n" https://www.wifihaven.net/
+curl -sS -o /dev/null -w "%{http_code}\n" https://app.wifihaven.net/   # 200, SPA
+curl -sS -o /dev/null -w "%{http_code}\n" https://wifihaven.net/        # 200, marketing site (#1842)
 
-# Staging API + SPA
+# www → app redirect (301), query-preserving
+curl -sS -o /dev/null -w "%{http_code} -> %{redirect_url}\n" https://www.wifihaven.net/
+
+# CRITICAL router-compat: apex /blocked must 302 to the app host, KEEPING ?mac=&host=
+# (pre-rename routers DNAT blocked HTTP/80 to the apex; the block page reads the query).
+curl -sS -o /dev/null -w "%{http_code} -> %{redirect_url}\n" \
+  "https://wifihaven.net/blocked?mac=AA:BB:CC:DD:EE:FF&host=example.com"
+# Expect: 302 -> https://app.wifihaven.net/blocked?mac=AA:BB:CC:DD:EE:FF&host=example.com
+
+# Staging API + app host
 curl -sS https://api-staging.wifihaven.net/api/health
 curl -sS -o /dev/null -w "%{http_code}\n" https://app-staging.wifihaven.net/
-curl -sS -o /dev/null -w "%{http_code}\n" https://staging.wifihaven.net/
+curl -sS -o /dev/null -w "%{http_code} -> %{redirect_url}\n" https://staging.wifihaven.net/  # 301 -> app-staging
 ```
 
 The two `/api/health` calls should report `"db":"ok"`; every SPA-host curl

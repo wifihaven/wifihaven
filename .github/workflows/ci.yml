@@ -691,6 +691,13 @@ jobs:
           terraform init -backend=false -input=false
           terraform validate
 
+      # Semantic gate for the redirect ruleset (#1842): validate proves the
+      # schema, this proves the merge-gating /blocked router-compat shim is
+      # first, 302, query-preserving, and targets the app host.
+      - name: Redirect ruleset assertions
+        working-directory: infra/cloudflare
+        run: python3 redirects_test.py
+
   # ── GitHub Actions workflow lint ─────────────────────────────────────────
   # actionlint statically checks every workflow under .github/workflows/ for
   # syntax errors, bad expressions, unknown runner labels, and (via the
