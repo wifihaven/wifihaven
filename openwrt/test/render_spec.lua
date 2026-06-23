@@ -1049,6 +1049,113 @@ describe("render.nft rate-limits wh_drop logging (#1826)", function()
   end)
 end)
 
+-- ── wh_drop LOG must log DISTINCT flows, not flat-throttle (#1915) ─────────
+--
+-- Regression from #1864: the flat per-rule `limit rate 2/second burst 10`
+-- token bucket is shared across ALL flows that hit one drop rule. Once a retry
+-- storm drains the bucket, the NEXT distinct (mac,dst) flow's first packet is
+-- rate-limited away before the agent's nflog tail (logread -f) ever sees it —
+-- so blocked/paused connection_events stop synthesizing (Gate 2
+-- test_paused_mac_https_traffic_surfaces_as_nflog_event +
+-- test_ea_direct_requery_allowed_under_blocked_mac time out).
+--
+-- The fix replaces the flat per-rule limit with a PER-ELEMENT (per-flow)
+-- limiter: a dynamic set keyed on (ether saddr . ip[6] daddr) with an embedded
+-- `limit rate`, so each distinct flow gets its OWN token bucket. The first
+-- packet of every distinct (mac,dst) always logs (fresh bucket) → synthesis is
+-- never starved; a storm to the SAME flow drains only that element's bucket.
+-- Enforcement (`counter drop`) is unchanged — only the LOG gating moves from
+-- per-rule to per-flow.
+
+describe("render.nft logs distinct blocked flows, not a flat per-rule throttle (#1915)", function()
+
+  local function filter_chain_body(nft)
+    local start = nft:find("chain wifihaven_block {", 1, true)
+    if not start then return nil end
+    local open  = nft:find("{", start, true)
+    local close = nft:find("\n  }", open, true)
+    return nft:sub(open + 1, close - 1)
+  end
+
+  it("declares per-flow (mac,dst) LOG limiter sets for v4 and v6", function()
+    local nft = render.nft(snap_one())
+    assert.truthy(nft:find("set wh_drop_log4 {", 1, true),
+      "expected v4 per-flow log limiter set")
+    assert.truthy(nft:find("set wh_drop_log6 {", 1, true),
+      "expected v6 per-flow log limiter set")
+    -- Keyed on (mac, dst) with dynamic+timeout so each distinct flow is its
+    -- own rate-limited element.
+    assert.truthy(nft:find("type ether_addr . ipv4_addr", 1, true))
+    assert.truthy(nft:find("type ether_addr . ipv6_addr", 1, true))
+  end)
+
+  it("gates the LOG with a per-element limiter keyed on (mac,dst), NOT a flat per-rule limit", function()
+    local s = snap_one()
+    s.profiles["3"].rules.blocked     = true
+    s.profiles["3"].rules.blockReason = "Schedule"
+    local nft  = render.nft(s)
+    local body = filter_chain_body(nft)
+    assert.truthy(body)
+    -- The flat shared-bucket form (#1864) must be gone: no wh_drop log line may
+    -- carry a bare `limit rate N/second` clause (that conflates flood control
+    -- with synthesis and starves distinct flows).
+    for line in body:gmatch("[^\n]+") do
+      if line:find("log prefix \"wh_drop:", 1, true) then
+        assert(not line:find("limit rate %d+/second"),
+          "wh_drop LOG still uses a flat per-rule per-second limit (starves distinct flows): " .. line)
+        -- It MUST instead update a per-flow limiter set with an embedded limit.
+        assert(line:find("update @wh_drop_log", 1, true)
+               and line:find("limit rate ", 1, true),
+          "wh_drop LOG not gated by a per-flow @wh_drop_log limiter: " .. line)
+      end
+    end
+  end)
+
+  it("whole-MAC (family-agnostic) drop logs both v4 and v6 distinct flows", function()
+    local s = snap_one()
+    s.profiles["3"].rules.blocked     = true
+    s.profiles["3"].rules.blockReason = "Paused"
+    local nft = render.nft(s)
+    -- The whole-MAC drop has no daddr predicate, so its LOG is split per family
+    -- to extract a (mac,dst) key; the single counter drop stays family-agnostic.
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 meta nfproto ipv4 update @wh_drop_log4 { ether saddr . ip daddr limit rate 1/minute burst 5 packets } log prefix \"wh_drop:aa:bb:cc:11:22:33:Paused \"",
+      1, true), "expected v4 per-flow log rule for whole-MAC drop")
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 meta nfproto ipv6 update @wh_drop_log6 { ether saddr . ip6 daddr limit rate 1/minute burst 5 packets } log prefix \"wh_drop:aa:bb:cc:11:22:33:Paused \"",
+      1, true), "expected v6 per-flow log rule for whole-MAC drop")
+    -- Drop verdict unchanged and unconditional.
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:Paused\"",
+      1, true), "expected unconditional counter drop")
+  end)
+
+  it("per-host (eb_) drop logs its distinct flow via the v4 limiter set", function()
+    local nft  = render.nft(snap_one())
+    -- snap_one's extraBlocked tiktok.com → eb_ v4 drop. Its log rule updates the
+    -- per-flow set with the (mac,dst) key and an embedded limit, then logs.
+    assert.truthy(nft:find(
+      "ip daddr @eb_tiktok_com update @wh_drop_log4 { ether saddr . ip daddr limit rate 1/minute burst 5 packets } log prefix \"wh_drop:aa:bb:cc:11:22:33:host:tiktok.com \"",
+      1, true), "expected per-flow v4 log rule for eb_ drop")
+  end)
+
+  it("the drop verdict is still never gated by the rate limit (no `limit … drop` on one line)", function()
+    local s = snap_one()
+    s.profiles["3"].rules.blocked      = true
+    s.profiles["3"].rules.blockReason  = "Schedule"
+    s.profiles["3"].rules.blockIpOnly  = true
+    s.profiles["3"].rules.extraBlocked = { "tiktok.com" }
+    s.profiles["3"].rules.blocklistIds = { "ads" }
+    s.blocklists = { ads = { version = "v1", url = "/api/blocklists/ads" } }
+    local body = filter_chain_body(render.nft(s))
+    for line in body:gmatch("[^\n]+") do
+      if line:find("limit rate ", 1, true) and line:find(" drop", 1, true) then
+        assert(false, "limit and drop on same rule (block leaks over budget): " .. line)
+      end
+    end
+  end)
+end)
+
 -- ── nft syntax validation (skipped if `nft` binary unavailable) ───────────
 
 describe("render.nft syntax validation", function()
