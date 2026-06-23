@@ -135,14 +135,18 @@ API_URL=${API_URL%/}
 
 # #1174: the block page redirects blocked clients to the public SPA that serves
 # the /blocked route. In the cloud deploy the SPA lives on a SEPARATE host
-# (Cloudflare Pages, e.g. https://wifihaven.net) from the API
+# (Cloudflare Pages, e.g. https://app.wifihaven.net) from the API
 # (api.wifihaven.net), so the redirect must target the SPA host, not the API.
 # Self-hosted installs bundle the SPA into the API image on the same host, so
-# the block-page URL is just the API URL there. Default to the known public SPA
+# the block-page URL is just the API URL there. Default to the canonical app
 # host when enrolling against the managed cloud API; otherwise default to the
 # API URL (correct for self-hosted).
+# #1841/#1832: new cloud installs point at app.wifihaven.net (the canonical app
+# host). Routers enrolled before the rename keep https://wifihaven.net in their
+# block_page_url UCI key and rely on the apex /blocked compat shim (#1842) to
+# redirect to app.wifihaven.net/blocked.
 case "$API_URL" in
-  *api.wifihaven.net*) block_page_default="https://wifihaven.net" ;;
+  *api.wifihaven.net*) block_page_default="https://app.wifihaven.net" ;;
   *)                   block_page_default="$API_URL" ;;
 esac
 prompt BLOCK_PAGE_URL   "Public SPA URL for the block page" "$block_page_default"

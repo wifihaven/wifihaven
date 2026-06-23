@@ -149,7 +149,9 @@ device → blocked HTTP request
        ↓ DNAT (router nft)
 router uhttpd:8081  → returns HTML that redirects to
        ↓
-https://wifihaven.net/blocked?mac=<mac>&host=<dest>
+https://app.wifihaven.net/blocked?mac=<mac>&host=<dest>
+       (pre-rename routers DNAT to wifihaven.net/blocked, which 302-redirects
+        here via the apex compat shim #1842, preserving the query string)
        ↓
 SPA fetches GET /api/blocked?mac=<mac>&host=<dest>
        ↓ API resolves: profile, the BlockReason struct, category name if any

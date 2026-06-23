@@ -14,7 +14,7 @@ name: Master API/UI CD
 #       ‖ deploy-spa-staging         (build + wrangler push to Cloudflare Pages — parallel
 #                                     with deploy-staging, gated on the same test chain)
 #     → smoke-staging                (lightweight curl checks against api-staging.wifihaven.net
-#                                     AND staging.wifihaven.net SPA)
+#                                     AND app-staging.wifihaven.net SPA)
 #     → api-smoke-staging            (Gate 1 — admin + router API contract smoke against staging)
 #     → gate-3b-api-staging          (Gate 3b — last-published qemu router + freshly-deployed
 #                                     staging API; #655)
@@ -331,7 +331,7 @@ jobs:
   # Runs in parallel with deploy-staging — SPA build doesn't depend on the
   # API image. Gated on the same test chain as build-image so a CI failure
   # blocks both surfaces. smoke-staging waits on this job, so the SPA is
-  # live at staging.wifihaven.net before the cross-origin CORS checks run.
+  # live at app-staging.wifihaven.net before the cross-origin CORS checks run.
   deploy-spa-staging:
     name: Deploy SPA to Cloudflare Pages (staging)
     if: github.ref == 'refs/heads/main'
@@ -436,12 +436,12 @@ jobs:
         run: |
           headers=$(curl --silent --show-error --max-time 10 -i \
             -X OPTIONS \
-            -H "Origin: https://staging.wifihaven.net" \
+            -H "Origin: https://app-staging.wifihaven.net" \
             -H "Access-Control-Request-Method: POST" \
             -H "Access-Control-Request-Headers: content-type,authorization" \
             "${STAGING_API_URL}/api/health")
           echo "$headers"
-          echo "$headers" | grep -i '^access-control-allow-origin: https://staging.wifihaven.net'
+          echo "$headers" | grep -i '^access-control-allow-origin: https://app-staging.wifihaven.net'
           # Allow-Headers must echo back the requested headers — empty value
           # is the #626 regression.
           allow=$(echo "$headers" | grep -i '^access-control-allow-headers:' || true)
@@ -450,19 +450,19 @@ jobs:
 
       - name: Staging SPA returns 200 and bakes the staging API URL
         # Confirms the Cloudflare Pages deploy aliased the new build to
-        # staging.wifihaven.net and the VITE_API_BASE_URL was wired
-        # correctly (a prod-API URL in a staging bundle would silently
-        # break cross-origin auth).
+        # app-staging.wifihaven.net (the canonical app host post-#1841) and
+        # the VITE_API_BASE_URL was wired correctly (a prod-API URL in a
+        # staging bundle would silently break cross-origin auth).
         run: |
           body=$(curl --fail --silent --show-error --max-time 10 \
-            https://staging.wifihaven.net/)
+            https://app-staging.wifihaven.net/)
           echo "$body" | head -c 500
           # The Vite-built index.html references the hashed JS bundle.
           # Pull it and grep for the staging API origin.
           js_path=$(echo "$body" | grep -oE '/assets/index-[A-Za-z0-9_-]+\.js' | head -1)
           [[ -n "$js_path" ]] || { echo "could not find JS bundle path" >&2; exit 1; }
           curl --fail --silent --show-error --max-time 10 \
-            "https://staging.wifihaven.net${js_path}" \
+            "https://app-staging.wifihaven.net${js_path}" \
             | grep -q 'api-staging.wifihaven.net' \
             || { echo "staging bundle missing api-staging.wifihaven.net" >&2; exit 1; }
 
@@ -511,7 +511,8 @@ jobs:
           E2E_BASE_URL: ${{ env.STAGING_API_URL }}
           # Post-#613 the SPA is on Cloudflare Pages, not the API host —
           # so the `/blocked` SPA-route check has to hit the SPA host.
-          E2E_SPA_URL: https://staging.wifihaven.net
+          # #1841/#1832: app-staging.wifihaven.net is the canonical app host.
+          E2E_SPA_URL: https://app-staging.wifihaven.net
           ADMIN_PASS: ${{ secrets.WH_STAGING_ADMIN_PASS }}
           RUN_ID: gh-${{ github.run_id }}-${{ github.run_attempt }}
         run: scripts/e2e-router.sh

@@ -234,7 +234,7 @@ Now follow **[`install-openwrt.md` §2](install-openwrt.md#2-install-with-the-on
 For a Flint 2 talking to the production cloud API, the prompt answers are:
 
 - API server URL: `https://api.wifihaven.net` (the default)
-- Enrollment token: the `et_…` value from `https://wifihaven.net → Routers → Add router`
+- Enrollment token: the `et_…` value from `https://app.wifihaven.net → Routers → Add router`
 - LAN prefix: auto-detected from `network.lan.ipaddr`; accept the default
   unless you've moved LAN off its first /24.
 
