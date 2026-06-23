@@ -15,12 +15,11 @@ import { blockReasonText } from '@/types/blockReason'
 
 export function DashboardPage() {
   const [stats,  setStats]  = useState<DashboardStats | null>(null)
-  const [logs,   setLogs]   = useState<QueryLog[]>([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    Promise.all([api.logs.stats(), api.logs.query({ limit: 30 })])
-      .then(([s, l]) => { setStats(s); setLogs(l.rows) })
+    api.logs.stats()
+      .then(setStats)
       .finally(() => setLoading(false))
   }, [])
 
@@ -41,9 +40,9 @@ export function DashboardPage() {
       {stats && (
         <>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <StatCard label="Queries today"  value={stats.totalToday}   accent="emerald" />
+            <StatCard label="Events today"   value={stats.totalToday}   accent="emerald" />
             <StatCard label="Blocked today"  value={stats.blockedToday} accent="red" />
-            <StatCard label="Queries (1h)"   value={stats.totalHour}    accent="emerald" />
+            <StatCard label="Events (1h)"    value={stats.totalHour}    accent="emerald" />
             <StatCard label="Blocked (1h)"   value={stats.blockedHour}  accent="yellow" />
           </div>
 
@@ -53,7 +52,7 @@ export function DashboardPage() {
                 Top Blocked (24h)
               </h2>
               {stats.topBlocked.length === 0
-                ? <EmptyState variant="inline" title="No blocked queries yet" />
+                ? <EmptyState variant="inline" title="No blocked connection events yet" />
                 : stats.topBlocked.map(d => (
                     <div key={`${d.host.type}:${d.host.value}`} className="flex justify-between items-center py-2 border-b border-brand-border last:border-0">
                       <span className="font-mono text-sm text-brand-text truncate"><HostCell host={d.host} /></span>
@@ -74,7 +73,7 @@ export function DashboardPage() {
                     <p className="text-xs text-brand-text-muted font-mono">{d.mac}</p>
                   </div>
                   <div className="text-right shrink-0">
-                    <p className="text-sm text-brand-text">{d.total} queries</p>
+                    <p className="text-sm text-brand-text">{d.total} events</p>
                     <p className="text-xs text-red-700">{d.blocked} blocked</p>
                   </div>
                 </div>
@@ -83,15 +82,6 @@ export function DashboardPage() {
           </div>
         </>
       )}
-
-      <section className="bg-white rounded-2xl border border-brand-border overflow-hidden">
-        <div className="px-5 py-4 border-b border-brand-border">
-          <h2 className="text-sm font-semibold text-brand-text uppercase tracking-wider">Recent Queries</h2>
-        </div>
-        <div className="overflow-x-auto">
-          <LogTable logs={logs} />
-        </div>
-      </section>
     </div>
   )
 }
@@ -280,35 +270,6 @@ function StatCard({ label, value, accent }: { label: string; value: number; acce
   )
 }
 
-function LogTable({ logs }: { logs: QueryLog[] }) {
-  return (
-    <table className="w-full text-xs font-mono">
-      <thead>
-        <tr className="text-brand-text-muted border-b border-brand-border">
-          <th className="text-left px-4 py-2">Time</th>
-          <th className="text-left px-4 py-2">Device</th>
-          <th className="text-left px-4 py-2">Domain</th>
-          <th className="text-left px-4 py-2">Status</th>
-          <th className="text-left px-4 py-2 hidden md:table-cell">Reason</th>
-        </tr>
-      </thead>
-      <tbody>
-        {logs.map(l => (
-          <tr key={l.id} className="border-b border-brand-border/50 hover:bg-brand-alt/30">
-            <td className="px-4 py-2 text-brand-text-muted">{new Date(l.ts).toLocaleTimeString()}</td>
-            <td className="px-4 py-2 text-amber-700">{l.deviceName ?? l.mac ?? '?'}</td>
-            <td className="px-4 py-2 text-brand-text max-w-[200px] truncate"><HostCell host={l.host} /></td>
-            <td className={`px-4 py-2 ${l.blocked ? 'text-red-700' : 'text-brand-accent-dark'}`}>
-              {l.blocked ? '✗ blocked' : '✓ ok'}
-            </td>
-            <td className="px-4 py-2 text-brand-text-muted hidden md:table-cell">{blockReasonText(l.reason)}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  )
-}
-
 function PageLoader() {
   return (
     <div className="flex items-center justify-center h-64">
@@ -317,4 +278,4 @@ function PageLoader() {
   )
 }
 
-export { LogTable, PageLoader, formatRelativeTime }
+export { PageLoader, formatRelativeTime }

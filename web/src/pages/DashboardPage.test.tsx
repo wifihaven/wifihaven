@@ -93,9 +93,9 @@ const mockAlerts = () => api.alerts.list as unknown as ReturnType<typeof vi.fn>
 beforeEach(() => {
   vi.resetAllMocks()
   mockStats().mockResolvedValue(stats)
-  // #1338: the "Most recently blocked" panel and the "Recent Queries" table
-  // both hit api.logs.query; split the canned response by the blocked filter so
-  // each surface renders its own (distinct) fixture.
+  // #1338: the "Most recently blocked" panel hits api.logs.query with
+  // blocked=true; serve the blocked fixture for it. The unfiltered (allow) branch
+  // is retained only as a guard — #1833 dropped the firehose that consumed it.
   mockQuery().mockImplementation((params?: { blocked?: boolean }) =>
     Promise.resolve(
       params?.blocked
@@ -108,7 +108,7 @@ beforeEach(() => {
 })
 
 describe('DashboardPage', () => {
-  it('renders stat cards, top-blocked, per-device, and recent queries', async () => {
+  it('renders stat cards, top-blocked, and per-device with connection-events copy', async () => {
     render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
     expect(await screen.findByText('1234')).toBeInTheDocument()
     expect(screen.getByText('56')).toBeInTheDocument()
@@ -117,24 +117,31 @@ describe('DashboardPage', () => {
     expect(screen.getByText('evil.com')).toBeInTheDocument()
     expect(screen.getByText('42')).toBeInTheDocument()
     expect(screen.getAllByText("Kid's iPad").length).toBeGreaterThan(0)
-    expect(screen.getByText('500 queries')).toBeInTheDocument()
+    expect(screen.getByText('500 events')).toBeInTheDocument()
     expect(screen.getByText('20 blocked')).toBeInTheDocument()
-    expect(screen.getByText('example.com')).toBeInTheDocument()
-
-    expect(api.logs.query).toHaveBeenCalledWith({ limit: 30 })
   })
 
-  it('shows empty state when no blocked queries', async () => {
+  it('drops the unfiltered Recent Queries firehose (#823): no inline log table or query() call', async () => {
+    render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
+    await screen.findByText('1234')
+    // The un-aggregated allow row used only by the dropped firehose must not render.
+    expect(screen.queryByText('example.com')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Recent Queries/)).not.toBeInTheDocument()
+    // One fewer network call on load: the page fetches only stats, never the firehose query.
+    expect(api.logs.stats).toHaveBeenCalledTimes(1)
+    expect(mockQuery()).not.toHaveBeenCalledWith({ limit: 30 })
+  })
+
+  it('uses "connection events" terminology, never "queries" (#299)', async () => {
+    render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
+    await screen.findByText('1234')
+    expect(document.body.textContent).not.toMatch(/queries/i)
+  })
+
+  it('shows empty state when no blocked connection events', async () => {
     mockStats().mockResolvedValue({ ...stats, topBlocked: [] })
     render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
-    expect(await screen.findByText(/No blocked queries yet/)).toBeInTheDocument()
-  })
-
-  it('recent activity Time column renders in viewer local time (not UTC slice)', async () => {
-    render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
-    await screen.findByText('example.com')
-    const expected = new Date(recent.ts).toLocaleTimeString()
-    expect(screen.getByText(expected)).toBeInTheDocument()
+    expect(await screen.findByText(/No blocked connection events yet/)).toBeInTheDocument()
   })
 
   it('renders Now section above stat cards', async () => {
@@ -143,7 +150,7 @@ describe('DashboardPage', () => {
     await screen.findByText('1234')
     await waitFor(() => expect(screen.getByTestId('now-profile-1')).toBeInTheDocument())
     const nowHeading = screen.getByText('Now')
-    const statsCard  = screen.getByText('Queries today')
+    const statsCard  = screen.getByText('Events today')
     const comparison = nowHeading.compareDocumentPosition(statsCard)
     expect(comparison & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
