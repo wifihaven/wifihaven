@@ -1,0 +1,28 @@
+slug: feeling-great
+name: Feeling Great
+icon: "https://icons.duckduckgo.com/ip3/feelinggreat.com.ico"
+icon_type: url
+# Feeling Great — AI-powered CBT/therapy app (David Burns' T.E.A.M. approach),
+# built around an AI chatbot. Authored from prod evidence (#1889): 90d traffic
+# across 5 human devices showed every feelinggreat.com hit landing on exactly
+# ONE subdomain — `app.feelinggreat.com` (the web/app + API surface; 23 MB / 445
+# hits on the heaviest device). No separate api./cdn. feelinggreat apex appears
+# in traffic, so the single sub-experience host covers the whole app. Scoped to
+# `app.feelinggreat.com` rather than the `feelinggreat.com` apex so the
+# marketing/www site stays OUT of this app's time-limit budget — dnsmasq's
+# `nftset=/<host>/` suffix-matches `app.feelinggreat.com` and its subtree but
+# not `www.feelinggreat.com` (same deliberate sub-experience scoping as lego.yml).
+#
+# SHARED HOSTS — deferred to #1888 (do NOT add as distinctive hosts here):
+#   * elevenlabs.io   — TTS API powering the AI chat voice
+#   * launchdarkly.com — feature flags
+# Both are backends shared by MANY apps. The prod evidence proves it:
+# launchdarkly.com shows meaningful traffic on devices that hit feelinggreat
+# ZERO bytes (every device in the 90d sample), so listing it here would
+# mis-attribute its bytes to Feeling Great. They are the motivating case for the
+# shared-host attribution mechanism (#1888) — once that lands they'll be added
+# here marked `shared` (credited to Feeling Great only when app.feelinggreat.com
+# is also active for the same device/window). TODO(#1888): add elevenlabs.io and
+# launchdarkly.com as `shared` hosts once the mechanism ships.
+hosts:
+  - app.feelinggreat.com
