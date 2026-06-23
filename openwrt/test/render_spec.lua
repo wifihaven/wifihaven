@@ -2993,4 +2993,45 @@ describe("render.nft — blockEncryptedDns", function()
     assert.equal(render.nft(snap_edns(nil)), render.nft(snap_edns(false)))
     assert.equal(render.dnsmasq(snap_edns(nil)), render.dnsmasq(snap_edns(false)))
   end)
+
+  -- The deliberate "hard block, NO extraAllowed / @global_allow carve-out"
+  -- invariant (a documented deviation from "extraAllowed beats every block
+  -- path", mirroring blockIpOnly). A future refactor that mechanically threads
+  -- the ea_/ga carve-out suffix onto every drop would silently re-open the
+  -- bypass with the rest of the suite still green — so pin the ABSENCE of any
+  -- `!= @ea_…` / `!= @global_allow` clause on the encrypted_dns drops even when
+  -- the device's profile AND the global section both carry extraAllowed.
+  it("emits encrypted_dns drops with NO ea_/@global_allow carve-out suffix", function()
+    local s = snap_global()
+    s.blockEncryptedDns = true
+    s.profiles["3"].rules.extraBlocked = {}
+    s.profiles["3"].rules.blocklistIds = {}
+    s.profiles["3"].rules.extraAllowed = { "khanacademy.org" }
+    s.global.extraAllowed = { "connectivitycheck.gstatic.com" }
+    local nft = render.nft(s)
+    local mac = "aa:bb:cc:11:22:33"
+    -- The exact predicate runs straight from the set/port reference into the
+    -- `limit …` log rule and the `counter drop` rule with nothing in between —
+    -- any inserted `ip daddr != @ea_…` / `!= @global_allow` clause would break
+    -- these literal substrings.
+    assert.truthy(nft:find(
+      "ether saddr " .. mac .. " ip daddr @encrypted_dns_resolvers limit rate", 1, true))
+    assert.truthy(nft:find(
+      "ether saddr " .. mac .. " ip daddr @encrypted_dns_resolvers counter drop", 1, true))
+    assert.truthy(nft:find(
+      "ether saddr " .. mac .. " ip6 daddr @encrypted_dns_resolvers6 counter drop", 1, true))
+    assert.truthy(nft:find(
+      "ether saddr " .. mac .. " tcp dport 853 counter drop", 1, true))
+    -- And, defensively, no carve-out token appears anywhere on an encrypted_dns
+    -- line (the global-allow carve-out IS present elsewhere — the @blocked_macs
+    -- path — so we can't just assert it's globally absent; check per drop line).
+    for line in (nft .. "\n"):gmatch("([^\n]*)\n") do
+      if line:find("encrypted_dns", 1, true) then
+        assert.is_nil(line:find("@ea_", 1, true),
+          "encrypted_dns drop must not carry a per-MAC ea_ carve-out: " .. line)
+        assert.is_nil(line:find("@global_allow", 1, true),
+          "encrypted_dns drop must not carry a @global_allow carve-out: " .. line)
+      end
+    end
+  end)
 end)
