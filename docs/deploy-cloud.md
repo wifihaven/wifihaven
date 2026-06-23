@@ -16,15 +16,22 @@ Let's Encrypt issuance. Cloudflare Pages uses DNS-01 challenges, so the
 class of bug doesn't exist. CI is also already building the SPA, so
 having Render rebuild it was wasted work.
 
-Custom domain layout (unchanged from the pre-#613 setup):
+Custom domain layout:
 
 | Hostname                       | Where it lives                    |
 |--------------------------------|-----------------------------------|
-| `wifihaven.net` (apex)         | Cloudflare Pages: `wifihaven`     |
+| `app.wifihaven.net`            | Cloudflare Pages: `wifihaven` (canonical app host, #1832) |
+| `app-staging.wifihaven.net`    | Cloudflare Pages: `wifihaven-staging` (canonical staging app host) |
+| `wifihaven.net` (apex)         | Cloudflare Pages: `wifihaven` (legacy SPA host; becomes marketing in #1842, must keep serving `/blocked*` for pre-rename routers) |
 | `www.wifihaven.net`            | Cloudflare Pages: `wifihaven`     |
-| `staging.wifihaven.net`        | Cloudflare Pages: `wifihaven-staging` |
+| `staging.wifihaven.net`        | Cloudflare Pages: `wifihaven-staging` (legacy) |
 | `api.wifihaven.net`            | Render: `wifihaven-api-prod`      |
 | `api-staging.wifihaven.net`    | Render: `wifihaven-api-staging`   |
+
+`app.wifihaven.net` / `app-staging.wifihaven.net` are additional custom domains
+on the *same* Pages projects — the SPA bundle is identical, only the fronting
+host is canonical now. The apex/`www` keep serving the SPA until the marketing
+split (#1842); the API host (`api.wifihaven.net`) is unchanged.
 
 ---
 
@@ -54,8 +61,8 @@ DNS UI (proxy / orange-cloud status as noted):
 | CNAME | `api`          | shown in Render → `wifihaven-api-prod`    | DNS-only (grey) |
 | CNAME | `api-staging`  | shown in Render → `wifihaven-api-staging` | DNS-only (grey) |
 
-The Pages hostnames (apex, `www`, `staging`) are added through the Pages
-project's **Custom domains** tab (see §3) — Cloudflare wires the DNS
+The Pages hostnames (`app`, `app-staging`, apex, `www`, `staging`) are added
+through the Pages project's **Custom domains** tab (see §3) — Cloudflare wires the DNS
 records automatically when the apex zone is on the same account.
 
 API CNAMEs are intentionally **DNS-only** (grey cloud): proxying through
@@ -118,8 +125,8 @@ terraform apply
 ```
 
 This creates two Pages projects (`wifihaven`, `wifihaven-staging`,
-Direct Upload — CI pushes via Wrangler), three Pages custom domains
-(apex, `www`, `staging`), and the two API CNAMEs.
+Direct Upload — CI pushes via Wrangler), the Pages custom domains
+(`app`, `app-staging`, apex, `www`, `staging`), and the two API CNAMEs.
 
 Cloudflare auto-issues edge certs (DNS-01 challenge — no path
 interception). Cert status flips to **Active** in the dash within a
@@ -168,19 +175,23 @@ workflow → **Run workflow**).
 Verify:
 
 ```sh
-# Prod API + SPA
+# Prod API + SPA (app.wifihaven.net is the canonical app host; apex/www
+# still serve the SPA until the marketing split #1842)
 curl -sS https://api.wifihaven.net/api/health
+curl -sS -o /dev/null -w "%{http_code}\n" https://app.wifihaven.net/
 curl -sS -o /dev/null -w "%{http_code}\n" https://wifihaven.net/
 curl -sS -o /dev/null -w "%{http_code}\n" https://www.wifihaven.net/
 
 # Staging API + SPA
 curl -sS https://api-staging.wifihaven.net/api/health
+curl -sS -o /dev/null -w "%{http_code}\n" https://app-staging.wifihaven.net/
 curl -sS -o /dev/null -w "%{http_code}\n" https://staging.wifihaven.net/
 ```
 
-All five should return 200. Inspect the prod SPA HTML (`view-source`) and
-search for `api.wifihaven.net` to confirm the right `VITE_API_BASE_URL`
-got baked in.
+The two `/api/health` calls should report `"db":"ok"`; every SPA-host curl
+should print `200`. Inspect the prod SPA HTML (`view-source` on
+`https://app.wifihaven.net/`) and search for `api.wifihaven.net` to confirm
+the right `VITE_API_BASE_URL` got baked in.
 
 Login flow end-to-end on staging exercises the CORS allowlist from #612.
 
@@ -253,7 +264,7 @@ prod on the free PG tier (it expires after ~30 days).
 | `WifiHaven — Cloudflare API Token`     | The token written to `CLOUDFLARE_API_TOKEN` (Pages:Edit scope) |
 
 **First admin login**: the prod API ships with default `admin/changeme`,
-force-expired on first login (#586). Open `https://wifihaven.net/` in a
+force-expired on first login (#586). Open `https://app.wifihaven.net/` in a
 browser, log in, the UI redirects to `/account` to set a new password.
 Store it in 1Password immediately.
 

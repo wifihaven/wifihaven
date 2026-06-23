@@ -1170,8 +1170,8 @@ SPA hosting differs by environment:
 - **Self-hosted (local / dev / `deploy/install.sh`)**: the SPA is bundled
   with the API — `web/dist` is baked into the API container and served by
   the JVM on :8080. One deploy, one rollback.
-- **Staging and production cloud (`staging.wifihaven.net`,
-  `api.wifihaven.net`)**: the SPA deploys to **Cloudflare Pages**,
+- **Staging and production cloud (`app-staging.wifihaven.net`,
+  `app.wifihaven.net`; API at `api.wifihaven.net`)**: the SPA deploys to **Cloudflare Pages**,
   independent of the API. The API JVM serves only `/api/*`; the SPA is a
   static bundle that talks to the API over the network like any other
   client. Cloudflare config lives in-repo:

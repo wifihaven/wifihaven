@@ -141,7 +141,7 @@ script the install into your own provisioning system.
   installed (see [§M1](#m1-download-the-matching-package) and
   [§M2](#m2-install)). The agent does **not** need to be started yet —
   enrollment runs first.
-- Admin access to the cloud SPA at `https://wifihaven.net`. If the cloud
+- Admin access to the cloud SPA at `https://app.wifihaven.net`. If the cloud
   side isn't deployed yet, see [`deploy-cloud.md`](deploy-cloud.md).
 
 ### Steps
@@ -164,7 +164,7 @@ script the install into your own provisioning system.
    every flow.
 
 3. **Generate an enrollment token in the admin UI.** Open
-   `https://wifihaven.net` → **Routers → Add router**. Enter a display name
+   `https://app.wifihaven.net` → **Routers → Add router**. Enter a display name
    for the router (e.g. `main-house`) and submit. The UI returns a one-time
    `enrollmentToken` (`et_…`); copy it.
 
@@ -198,7 +198,7 @@ script the install into your own provisioning system.
    ```
 
    You should see `[wifihaven] policy snapshot fetched, etag=…` within ~60s.
-   Then check `https://wifihaven.net` → **Routers** — the new router should
+   Then check `https://app.wifihaven.net` → **Routers** — the new router should
    appear with a recent `last_seen_at`. If you've never set up the local
    block page on this router, also walk [§M6](#m6-set-up-the-local-block-page).
 
@@ -210,7 +210,7 @@ Two routers in the same operator's environment will run with different
 
 | Role | `api_url` | Notes |
 |---|---|---|
-| Prod router (new main-house box) | `https://api.wifihaven.net` | Cloud-hosted API on Render; the SPA at `https://wifihaven.net` is what household admins use. |
+| Prod router (new main-house box) | `https://api.wifihaven.net` | Cloud-hosted API on Render; the SPA at `https://app.wifihaven.net` is what household admins use. |
 | Dev router (existing OpenWRT box) | `http://192.168.10.43:8080` | Points at the on-prem dev API behind the prod router. Used for shakeout and integration testing. |
 
 Each router enrolls independently against its own API — there is no shared
