@@ -114,21 +114,30 @@ def main() -> int:
         "/blocked shim MUST preserve the query string (?mac=&host=) — the block "
         "page can't render its reason without it",
     )
-    # Targets the app host's /blocked, carrying the original path through.
+    # Targets the app host's /blocked, carrying the original path through. Match
+    # the exact concat() target as a regex anchored on the opening quote (not a
+    # substring `in`, which would also accept e.g. app.wifihaven.net.evil.com and
+    # which CodeQL flags as incomplete-URL-sanitization).
     check(
-        "https://app.wifihaven.net" in shim
-        and "http.request.uri.path" in shim,
+        re.search(
+            r'concat\(\s*"https://app\.wifihaven\.net"\s*,\s*http\.request\.uri\.path',
+            shim,
+        )
+        is not None,
         "/blocked shim must redirect to https://app.wifihaven.net + the request path",
     )
 
     # www / staging redirects also preserve the query string (lower stakes, but
     # a bookmark with a query should survive the hop).
-    for ref, target in (
-        ("www_to_app", "https://app.wifihaven.net"),
-        ("staging_to_app_staging", "https://app-staging.wifihaven.net"),
+    for ref, host in (
+        ("www_to_app", "app.wifihaven.net"),
+        ("staging_to_app_staging", "app-staging.wifihaven.net"),
     ):
-        block = extract_rule_by_ref(ruleset, ref)
-        check(target in block, f"{ref} must target {target}")
+        block = extract_rule_by_ref(ruleset, ref).replace('\\"', '"')
+        check(
+            re.search(rf'concat\(\s*"https://{re.escape(host)}"', block) is not None,
+            f"{ref} must target https://{host} as the concat() host",
+        )
         check(
             re.search(r"preserve_query_string\s*=\s*true", block) is not None,
             f"{ref} should preserve the query string",
