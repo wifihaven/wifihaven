@@ -1,0 +1,52 @@
+name: Master Marketing CD
+
+# Deploys the static marketing site (web-marketing/) to the Cloudflare Pages
+# project `wifihaven-www`, which fronts the apex (wifihaven.net) + www.
+#
+# Split out as its own pipeline (mirrors master-cloudflare.yml / master-grafana.yml):
+# the marketing site has nothing to do with the API/SPA release cadence, so it
+# only fires when web-marketing/** or this workflow changes, and never blocks —
+# or is blocked by — an API/SPA release.
+#
+# There is NO build step: web-marketing/site/ is plain static HTML/CSS and is
+# uploaded as-is. The Pages project, its custom domains, the apex/www DNS, and
+# the redirect rules (incl. the /blocked router-compat shim) live in
+# infra/cloudflare and are applied by master-cloudflare.yml. On the very first
+# rollout that Terraform apply must land first (the project must exist for
+# wrangler to target); subsequent deploys are independent.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'web-marketing/**'
+      - '.github/workflows/master-marketing.yml'
+  workflow_dispatch:
+
+# Queue (don't cancel) so a deploy in flight isn't killed mid-upload.
+concurrency:
+  group: master-marketing-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-marketing:
+    name: Deploy marketing site to Cloudflare Pages
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Deploy to Cloudflare Pages (wifihaven-www)
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # Wrangler 4 rejects `--config` for `pages deploy` (#672); the default
+          # wrangler.toml in web-marketing/ already targets the wifihaven-www
+          # project and points pages_build_output_dir at ./site.
+          wranglerVersion: '4'
+          workingDirectory: web-marketing
+          command: pages deploy --branch=main --commit-hash=${{ github.sha }} --commit-message="${{ github.sha }}"

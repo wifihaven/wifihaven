@@ -8,9 +8,9 @@ import type { AccessRequestKind, BlockedInfoResponse } from '@/types/api'
 // Flow: router DNATs blocked traffic to app.wifihaven.net (#944 has the SPA
 // hosts in extraAllowed so this resolves), redirecting to /blocked?mac=...&host=....
 // (#1841/#1832: app.wifihaven.net is the canonical app host. Routers enrolled
-// before the rename DNAT to the apex wifihaven.net, which serves a /blocked
-// compat shim (#1842) that 302-redirects to app.wifihaven.net/blocked,
-// preserving the query string.)
+// before the rename were re-pointed to app.wifihaven.net directly, so every
+// router DNATs to the app host now — there is no apex /blocked compat shim
+// (#1842); the apex serves only the marketing site.)
 // We call GET /api/blocked to resolve the reason class and render kid-friendly
 // copy per the #952 design doc Q4 decisions.
 //

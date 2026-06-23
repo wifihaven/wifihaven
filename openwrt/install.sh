@@ -142,9 +142,9 @@ API_URL=${API_URL%/}
 # host when enrolling against the managed cloud API; otherwise default to the
 # API URL (correct for self-hosted).
 # #1841/#1832: new cloud installs point at app.wifihaven.net (the canonical app
-# host). Routers enrolled before the rename keep https://wifihaven.net in their
-# block_page_url UCI key and rely on the apex /blocked compat shim (#1842) to
-# redirect to app.wifihaven.net/blocked.
+# host). Routers enrolled before the rename were re-pointed to app.wifihaven.net
+# directly (re-run install / edit the block_page_url UCI key); there is no apex
+# /blocked compat shim (#1842) — the apex now serves only the marketing site.
 case "$API_URL" in
   *api.wifihaven.net*) block_page_default="https://app.wifihaven.net" ;;
   *)                   block_page_default="$API_URL" ;;

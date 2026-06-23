@@ -1,8 +1,11 @@
 # Cloudflare resources for wifihaven (#613).
 #
 # Manages:
-#   - Two Cloudflare Pages projects (Direct Upload — CI pushes via wrangler).
-#   - Five Pages custom domains (apex, www, staging, app, app-staging).
+#   - Three Cloudflare Pages projects (Direct Upload — CI pushes via wrangler):
+#     wifihaven (SPA), wifihaven-staging (SPA), wifihaven-www (marketing).
+#   - Five Pages custom domains (apex, www, staging, app, app-staging). apex/www
+#     front the marketing project; app/app-staging front the SPA (#1842).
+#   - A zone-level dynamic-redirect ruleset: www/staging → app redirects (#1842).
 #   - Two DNS-only CNAMEs pointing api / api-staging at Render.
 #
 # Does NOT manage:
@@ -64,20 +67,36 @@ resource "cloudflare_pages_project" "staging" {
   production_branch = "main"
 }
 
+# Marketing site project (#1842 / epic #1832). Fronts the apex + www, distinct
+# from the SPA (which now lives on the `wifihaven` project at app.wifihaven.net).
+# Direct Upload — CI pushes the static web-marketing/site/ via wrangler from
+# .github/workflows/master-marketing.yml. On first rollout this apply must land
+# before that deploy job runs (the project must exist for wrangler to target).
+resource "cloudflare_pages_project" "marketing" {
+  account_id        = var.account_id
+  name              = "wifihaven-www"
+  production_branch = "main"
+}
+
 # ── Pages custom domains ────────────────────────────────────────────────────
 # When the apex zone is on the same Cloudflare account, the provider wires
 # the underlying DNS records automatically. Cert issuance is DNS-01 — no
 # ACME path-interception class of bug (#609).
 
+# Apex + www now front the MARKETING project (#1842). The SPA moved to its own
+# host (app.wifihaven.net, below); the apex serves the static landing page and
+# www 301-redirects to the app (redirect ruleset below). Repointing project_name
+# replaces the domain attachment — a brief gap on the apex's Pages backing, which
+# is acceptable for the marketing landing page.
 resource "cloudflare_pages_domain" "apex" {
   account_id   = var.account_id
-  project_name = cloudflare_pages_project.prod.name
+  project_name = cloudflare_pages_project.marketing.name # "wifihaven-www"
   domain       = "wifihaven.net"
 }
 
 resource "cloudflare_pages_domain" "www" {
   account_id   = var.account_id
-  project_name = cloudflare_pages_project.prod.name
+  project_name = cloudflare_pages_project.marketing.name # "wifihaven-www"
   domain       = "www.wifihaven.net"
 }
 
@@ -118,24 +137,26 @@ resource "cloudflare_record" "spf" {
   comment = "SPF: no mail from this domain (#613)"
 }
 
+# Apex + www CNAME to the MARKETING project's .pages.dev (#1842). Stays proxied
+# (orange cloud) so the zone-level redirect ruleset below can fire at the edge.
 resource "cloudflare_record" "spa_apex" {
   zone_id = var.zone_id
   name    = "wifihaven.net"
   type    = "CNAME"
-  content = "wifihaven.pages.dev"
+  content = "wifihaven-www.pages.dev"
   proxied = true
   ttl     = 1
-  comment = "Cloudflare Pages wifihaven (#613)"
+  comment = "Cloudflare Pages wifihaven-www — marketing (#1842)"
 }
 
 resource "cloudflare_record" "spa_www" {
   zone_id = var.zone_id
   name    = "www"
   type    = "CNAME"
-  content = "wifihaven.pages.dev"
+  content = "wifihaven-www.pages.dev"
   proxied = true
   ttl     = 1
-  comment = "Cloudflare Pages wifihaven (#613)"
+  comment = "Cloudflare Pages wifihaven-www — marketing (#1842)"
 }
 
 resource "cloudflare_record" "spa_staging" {
@@ -166,6 +187,62 @@ resource "cloudflare_record" "spa_app_staging" {
   proxied = true
   ttl     = 1
   comment = "Cloudflare Pages wifihaven-staging — app host (#1832)"
+}
+
+# ── Redirects — marketing split (#1842) ─────────────────────────────────────
+#
+# A single zone-level dynamic-redirect ruleset for the marketing split: the
+# old SPA hosts (www, staging) 301 to the canonical app host so existing
+# human bookmarks keep working. Rules run at the edge BEFORE Cloudflare Pages
+# serves content, and preserve the query string.
+#
+# NOTE: there is intentionally NO apex `/blocked` router-compat shim — it was
+# dropped (2026-06) because there are no pre-rename routers still pointing their
+# block_page_url at the apex; new cloud installs default to app.wifihaven.net
+# (openwrt/install.sh) and any older router is re-pointed directly. The apex
+# therefore just serves the marketing site for all paths.
+resource "cloudflare_ruleset" "redirects" {
+  zone_id     = var.zone_id
+  name        = "wifihaven redirects"
+  description = "Marketing split: www/staging → app (#1842 / #1832)"
+  kind        = "zone"
+  phase       = "http_request_dynamic_redirect"
+
+  # 1. Old SPA bookmarks on www → app (301, query-preserving).
+  rules {
+    ref         = "www_to_app"
+    description = "www.wifihaven.net/* → app.wifihaven.net/:splat (#1842)"
+    expression  = "(http.host eq \"www.wifihaven.net\")"
+    action      = "redirect"
+    enabled     = true
+    action_parameters {
+      from_value {
+        status_code = 301
+        target_url {
+          expression = "concat(\"https://app.wifihaven.net\", http.request.uri.path)"
+        }
+        preserve_query_string = true
+      }
+    }
+  }
+
+  # 2. Staging mirror: staging → app-staging (301, query-preserving).
+  rules {
+    ref         = "staging_to_app_staging"
+    description = "staging.wifihaven.net/* → app-staging.wifihaven.net/:splat (#1842)"
+    expression  = "(http.host eq \"staging.wifihaven.net\")"
+    action      = "redirect"
+    enabled     = true
+    action_parameters {
+      from_value {
+        status_code = 301
+        target_url {
+          expression = "concat(\"https://app-staging.wifihaven.net\", http.request.uri.path)"
+        }
+        preserve_query_string = true
+      }
+    }
+  }
 }
 
 resource "cloudflare_record" "api_prod" {
