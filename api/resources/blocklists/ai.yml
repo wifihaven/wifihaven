@@ -1,0 +1,82 @@
+# AI chatbots, assistants, and generators (#1890). Conservative, hand-curated
+# starter set of the consumer-facing AI services a household may want to block:
+# chat assistants, AI search, companion/roleplay bots, and image/video/audio/
+# text generators. Subdomains are matched at the router, so only apex hosts (and
+# the handful of product subdomains / dedicated CDNs each vendor uses) are
+# listed.
+#
+# Host-scoping note: entries are suffix-matched, not apex-constrained, so a
+# product subdomain like `gemini.google.com` blocks only that host (and deeper),
+# never the bare `google.com`. We deliberately list the product subdomain rather
+# than the shared vendor apex.
+#
+# Shared-infra caveat: Google's AI products (Gemini, AI Studio) and a few others
+# sit behind the vendor's shared front-end IP pool, so blocking the product
+# subdomain can incidentally affect other same-vendor services that resolve to
+# overlapping IPs — an inherent limitation of IP-layer enforcement, accepted
+# here because the product hostnames are the canonical block target. We still
+# avoid multi-tenant CDN/cloud apexes (cloudfront, fastly, amazonaws, akamai*)
+# that would drag unrelated tenants into the drop.
+#
+# Distinct from the *app* templates (which grant a daily time budget): this is a
+# category a profile subscribes to for an outright block.
+id: ai
+name: AI Tools
+description: AI chatbots, assistants, and content generators (ChatGPT/OpenAI, Claude, Gemini, Copilot, Perplexity, Character.AI, Midjourney, etc.). Hand-curated v1.
+source: curated
+hosts:
+  # OpenAI / ChatGPT / Sora
+  - openai.com
+  - chatgpt.com
+  - oaistatic.com
+  - oaiusercontent.com
+  - sora.com
+  # Anthropic / Claude
+  - anthropic.com
+  - claude.ai
+  - claudeusercontent.com
+  # Google Gemini (product subdomains only — never bare google.com)
+  - gemini.google.com
+  - bard.google.com
+  - aistudio.google.com
+  - ai.google.dev
+  - deepmind.com
+  # Microsoft Copilot
+  - copilot.microsoft.com
+  - githubcopilot.com
+  # xAI / Grok
+  - x.ai
+  - grok.com
+  # Perplexity
+  - perplexity.ai
+  - pplx.ai
+  # Other major chat assistants
+  - meta.ai
+  - deepseek.com
+  - mistral.ai
+  - poe.com
+  - you.com
+  - phind.com
+  - huggingface.co
+  # Companion / roleplay chatbots
+  - character.ai
+  - characterai.io
+  - janitorai.com
+  - replika.com
+  - pi.ai
+  - chai-research.com
+  # Image / video / audio generators
+  - midjourney.com
+  - stability.ai
+  - runwayml.com
+  - leonardo.ai
+  - ideogram.ai
+  - civitai.com
+  - lumalabs.ai
+  - elevenlabs.io
+  - suno.com
+  - udio.com
+  # Writing assistants
+  - jasper.ai
+  - copy.ai
+  - writesonic.com
