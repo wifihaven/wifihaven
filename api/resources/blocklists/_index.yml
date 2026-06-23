@@ -10,6 +10,7 @@ ids:
   - gambling
   - adult
   - games
+  - ai
   # URL-sourced lists fetched at startup; cached in-memory.
   - ads-extended
   - social-extended

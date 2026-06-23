@@ -366,6 +366,28 @@ object BundledBlocklistsSpec
         assertTrue(hosts.contains(Hostname.unsafe("riotgames.com"))) &&
         assertTrue(hosts.contains(Hostname.unsafe("gimkitconnect.com")))
     },
+    test("ai: bundled list is loaded and includes the major AI services (#1890)") {
+      for {
+        bundled <- BundledBlocklists.loadAll()
+        ai    = bundled.find(_.id == BlocklistId.unsafe("ai"))
+        hosts = ai.toList.flatMap(_.content match {
+          case BundledBlocklistContent.Inline(hs) => hs
+          case _                                  => Nil
+        })
+      } yield assertTrue(ai.isDefined) &&
+        assertTrue(ai.exists(_.name == "AI Tools")) &&
+        assertTrue(hosts.contains(Hostname.unsafe("chatgpt.com"))) &&
+        assertTrue(hosts.contains(Hostname.unsafe("openai.com"))) &&
+        assertTrue(hosts.contains(Hostname.unsafe("claude.ai"))) &&
+        assertTrue(hosts.contains(Hostname.unsafe("gemini.google.com"))) &&
+        assertTrue(hosts.contains(Hostname.unsafe("copilot.microsoft.com"))) &&
+        assertTrue(hosts.contains(Hostname.unsafe("perplexity.ai"))) &&
+        assertTrue(hosts.contains(Hostname.unsafe("character.ai"))) &&
+        assertTrue(hosts.contains(Hostname.unsafe("midjourney.com"))) &&
+        // Never list the bare shared vendor apex (#1890 host-scoping note).
+        assertTrue(!hosts.contains(Hostname.unsafe("google.com"))) &&
+        assertTrue(!hosts.contains(Hostname.unsafe("microsoft.com")))
+    },
     test("refresh(): re-fetches a single bundled list and returns new host count") {
       for {
         _       <- cleanDb
