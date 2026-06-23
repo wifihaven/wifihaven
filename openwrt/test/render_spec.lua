@@ -2901,3 +2901,96 @@ describe("render.nft #1174 schedule-block + ui-host allow", function()
     assert.is_nil(nft:find("!= @global_allow", 1, true))
   end)
 end)
+
+-- ── blockEncryptedDns — network-wide encrypted-DNS / relay bypass disable ────
+-- #1909 / #1911. A single top-level `blockEncryptedDns` bool. When true the
+-- agent (a) returns a NEGATIVE DNS answer (NXDOMAIN via `local=/host/`) for the
+-- curated relay/DoH hostnames — the deliberate, narrow exception to
+-- Architectural Truth #1, scoped to bypass-disable signalling — and (b) drops,
+-- for every managed MAC, forwarded traffic to the curated public-resolver IPs
+-- and to DoT (TCP/853). Flag absent/false → byte-identical no-op.
+
+local edns = require("encrypted_dns")
+
+local function snap_edns(flag)
+  local s = snap_one()
+  -- Strip the extraBlocked/blocklist noise from snap_one so the flag's output
+  -- is the only thing under test; keep a single assigned device (a managed MAC).
+  s.profiles["3"].rules.extraBlocked = {}
+  s.profiles["3"].rules.blocklistIds = {}
+  if flag ~= nil then s.blockEncryptedDns = flag end
+  return s
+end
+
+describe("render.dnsmasq — blockEncryptedDns", function()
+  it("emits a NEGATIVE-answer local=/host/ for every curated relay/DoH host when on", function()
+    local conf = render.dnsmasq(snap_edns(true))
+    for _, h in ipairs(edns.HOSTS) do
+      assert.truthy(conf:find("local=/" .. h .. "/", 1, true),
+        "expected local=/" .. h .. "/ for curated host " .. h)
+    end
+  end)
+
+  it("never sinkholes the curated hosts (Truth 1: no address=/host/# / 0.0.0.0)", function()
+    local conf = render.dnsmasq(snap_edns(true))
+    for _, h in ipairs(edns.HOSTS) do
+      assert.is_nil(conf:find("address=/" .. h .. "/#", 1, true))
+      assert.is_nil(conf:find("address=/" .. h .. "/0.0.0.0", 1, true))
+    end
+  end)
+
+  it("emits NO local= directives when the flag is false", function()
+    local conf = render.dnsmasq(snap_edns(false))
+    assert.is_nil(conf:find("local=/mask.icloud.com/", 1, true))
+    assert.is_nil(conf:find("local=/dns.google/", 1, true))
+  end)
+
+  it("emits NO local= directives when the flag is absent (default off)", function()
+    local conf = render.dnsmasq(snap_edns(nil))
+    assert.is_nil(conf:find("local=/", 1, true))
+  end)
+end)
+
+describe("render.nft — blockEncryptedDns", function()
+  it("declares the curated resolver-IP sets with the curated v4/v6 elements when on", function()
+    local nft = render.nft(snap_edns(true))
+    assert.truthy(nft:find("set encrypted_dns_resolvers {", 1, true))
+    assert.truthy(nft:find("set encrypted_dns_resolvers6 {", 1, true))
+    for _, ip in ipairs(edns.RESOLVER_IPS_V4) do
+      assert.truthy(nft:find(ip, 1, true), "expected v4 resolver IP " .. ip)
+    end
+    for _, ip in ipairs(edns.RESOLVER_IPS_V6) do
+      assert.truthy(nft:find(ip, 1, true), "expected v6 resolver IP " .. ip)
+    end
+  end)
+
+  it("drops the curated resolver IPs (v4 + v6) per managed MAC when on", function()
+    local nft = render.nft(snap_edns(true))
+    local mac = "aa:bb:cc:11:22:33"
+    assert.truthy(nft:find(
+      "ether saddr " .. mac .. " ip daddr @encrypted_dns_resolvers", 1, true))
+    assert.truthy(nft:find(
+      "ether saddr " .. mac .. " ip6 daddr @encrypted_dns_resolvers6", 1, true))
+    -- carries an attributable wh_drop reason so nflog/metrics can bucket it
+    assert.truthy(nft:find("wh_drop:" .. mac .. ":encrypted_dns", 1, true))
+  end)
+
+  it("drops DoT (TCP/853) to any IP per managed MAC when on", function()
+    local nft = render.nft(snap_edns(true))
+    local mac = "aa:bb:cc:11:22:33"
+    assert.truthy(nft:find("ether saddr " .. mac .. " tcp dport 853", 1, true))
+    assert.truthy(nft:find("wh_drop:" .. mac .. ":encrypted_dns_dot", 1, true))
+  end)
+
+  it("is a no-op (no sets, no drops, no port rule) when the flag is false", function()
+    local nft = render.nft(snap_edns(false))
+    assert.is_nil(nft:find("encrypted_dns_resolvers", 1, true))
+    assert.is_nil(nft:find("tcp dport 853", 1, true))
+    assert.is_nil(nft:find("encrypted_dns", 1, true))
+  end)
+
+  it("renders byte-identically with the flag absent vs explicitly false", function()
+    assert.equal(render.nft(snap_edns(nil)), render.nft(snap_edns(false)))
+    assert.equal(render.dnsmasq(snap_edns(nil)), render.dnsmasq(snap_edns(false)))
+  end)
+end)

@@ -36,6 +36,18 @@ describe("nft_drops.classify_reason", function()
     assert.equal("whole_mac", nft_drops.classify_reason("SomeFutureReason"))
     assert.equal("whole_mac", nft_drops.classify_reason(nil))
   end)
+
+  -- #1911: the network-wide blockEncryptedDns drops (curated resolver IPs +
+  -- DoT/853) carry `encrypted_dns` / `encrypted_dns_dot` reasons. Both fold
+  -- into ONE bounded `encrypted_dns` bucket (the metric label space stays
+  -- bounded; the dst IP / port never becomes a label).
+  it("folds the resolver-IP drop into the encrypted_dns bucket", function()
+    assert.equal("encrypted_dns", nft_drops.classify_reason("encrypted_dns"))
+  end)
+
+  it("folds the DoT/853 drop into the same encrypted_dns bucket", function()
+    assert.equal("encrypted_dns", nft_drops.classify_reason("encrypted_dns_dot"))
+  end)
 end)
 
 -- A representative `nft -j list chain inet wifihaven wifihaven_block` body: four
