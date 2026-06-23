@@ -11,11 +11,12 @@ import zio.json.*
 import zio.test.*
 
 /**
- * #1912 / #1909: the network-wide "block encrypted DNS & relays" toggle lives on `household_settings`
- * and surfaces on the wire as the additive top-level `PolicySnapshot.blockEncryptedDns` boolean. The
- * router agent (#1911) bakes the curated relay/DoH host + resolver-IP lists itself; the snapshot only
- * carries the boolean. This spec pins that the snapshot reflects the household setting and that
- * toggling it moves the ETag (so the fleet re-polls).
+ * #1912 / #1909: the network-wide "block encrypted DNS & relays" toggle lives on
+ * `household_settings` and surfaces on the wire as the additive top-level
+ * `PolicySnapshot.blockEncryptedDns` boolean. The router agent (#1911) bakes the curated relay/DoH
+ * host + resolver-IP lists itself; the snapshot only carries the boolean. This spec pins that the
+ * snapshot reflects the household setting and that toggling it moves the ETag (so the fleet
+ * re-polls).
  */
 object PolicySnapshotBlockEncryptedDnsSpec
     extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock] {

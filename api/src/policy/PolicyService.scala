@@ -320,7 +320,14 @@ class PolicyServiceLive(
       val pBlocklists: Map[BlocklistId, Blocklist] =
         pBlocklistsAll.view.filterKeys(referencedBlocklistIds).toMap
 
-      val core = SnapshotCore(globalRules, devicePolicies, profilePolicies, pBlocklists)
+      val core =
+        SnapshotCore(
+          globalRules,
+          devicePolicies,
+          profilePolicies,
+          pBlocklists,
+          settings.blockEncryptedDns,
+        )
       val etag = PolicyService.computeEtag(core)
       val snap = PolicySnapshot(
         etag = etag,
@@ -329,6 +336,9 @@ class PolicyServiceLive(
         devices = devicePolicies,
         profiles = profilePolicies,
         blocklists = pBlocklists,
+        // #1912 / #1909: network-wide bypass-disable flag, straight from the
+        // household setting. Curated host/IP lists are baked in the agent.
+        blockEncryptedDns = settings.blockEncryptedDns,
       )
       (snap, profiles.count(_.defaultDeny))
     }).flatMap { case (snap, defaultDenyProfiles) =>
@@ -647,6 +657,7 @@ private case class SnapshotCore(
     devices: Map[MacAddress, DevicePolicy],
     profiles: Map[ProfileId, ProfilePolicy],
     blocklists: Map[BlocklistId, Blocklist],
+    blockEncryptedDns: Boolean,
 )
 
 object PolicyService {
@@ -742,6 +753,9 @@ object PolicyService {
     core.blocklists.toList
       .sortBy(_._1.value)
       .foreach((k, v) => parts += s"bl:${k.value}=${v.version.value}")
+    // #1912: the network-wide bypass-disable flag is logical snapshot content,
+    // so toggling it must move the ETag and re-poll the fleet.
+    parts += s"bed:${core.blockEncryptedDns}"
     ETag.unsafe("\"sha256:" + sha256Hex(parts.mkString("\n")) + "\"")
   }
 

@@ -1872,6 +1872,7 @@ object HouseholdSettingsRoutes {
                   upd.heartbeatFilter,
                   upd.unmanagedMacPolicy,
                   upd.presenceContinuationSeconds,
+                  upd.blockEncryptedDns,
                 ),
               )
               .mapError(ApiError.Db(_))
@@ -1896,6 +1897,17 @@ object HouseholdSettingsRoutes {
             tzPatch   <- ZIO
               .fromEither(FieldPatch.from[ZoneId](obj, "dailyResetTz"))
               .mapError(ApiError.BadRequest(_))
+            // #1912: top-level boolean, standard PATCH semantics — absent
+            // preserves, present sets, null clears (rejected; a boolean toggle
+            // is never nullable).
+            bedPatch  <- ZIO
+              .fromEither(FieldPatch.from[Boolean](obj, "blockEncryptedDns"))
+              .mapError(ApiError.BadRequest(_))
+            _         <- bedPatch match {
+              case FieldPatch.Cleared =>
+                ZIO.fail(ApiError.BadRequest("blockEncryptedDns cannot be cleared"))
+              case _                  => ZIO.unit
+            }
             _         <- timePatch match {
               case FieldPatch.Cleared =>
                 ZIO.fail(ApiError.BadRequest("dailyResetTime cannot be cleared"))
@@ -1931,6 +1943,7 @@ object HouseholdSettingsRoutes {
               heartbeatFilter = mergedFilter,
               unmanagedMacPolicy = mergedUmm,
               presenceContinuationSeconds = existing.presenceContinuationSeconds,
+              blockEncryptedDns = bedPatch.applyTo(existing.blockEncryptedDns),
             )
             _            <- repo.update(merged).mapError(ApiError.Db(_))
           } yield Response.ok

@@ -75,6 +75,20 @@ case class PolicySnapshot(
     devices: Map[MacAddress, DevicePolicy],
     profiles: Map[ProfileId, ProfilePolicy],   // wire-dedup only; not consulted at enforcement
     blocklists: Map[BlocklistId, Blocklist],
+    blockEncryptedDns: Boolean,                // #1912/#1909: network-wide "block encrypted
+                                               //   DNS & relays" toggle, resolved from
+                                               //   household_settings.block_encrypted_dns.
+                                               //   When true the agent (#1911) forces devices
+                                               //   onto the LAN resolver: NXDOMAIN for the
+                                               //   curated relay/DoH hostnames (iCloud Private
+                                               //   Relay, public DoH) + nftables drops for
+                                               //   hardcoded resolver IPs and DoT/853. Carries
+                                               //   ONLY the boolean — the curated host/IP
+                                               //   lists are baked in the agent, never shipped
+                                               //   on the wire. Deliberate, narrow exception to
+                                               //   Architectural Truth #1 ("DNS always
+                                               //   resolves") — bypass-disablement signaling is
+                                               //   itself enforcement-enabling. Default false.
 )
 
 case class DevicePolicy(

@@ -925,13 +925,21 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
       sql"""SELECT daily_reset_time, daily_reset_tz,
                  heartbeat_filter_enabled, heartbeat_bytes_threshold,
                  unmanaged_mac_policy::text,
-                 presence_continuation_seconds
+                 presence_continuation_seconds,
+                 block_encrypted_dns
             FROM household_settings WHERE id=1"""
-        .query[(LocalTime, ZoneId, Boolean, Int, String, Int)]
+        .query[(LocalTime, ZoneId, Boolean, Int, String, Int, Boolean)]
         .unique
-        .map { case (t, z, hbEnabled, hbBytes, ummJson, presenceCont) =>
+        .map { case (t, z, hbEnabled, hbBytes, ummJson, presenceCont, blockEncDns) =>
           val umm = ummJson.fromJson[UnmanagedMacPolicy].getOrElse(UnmanagedMacPolicy.Default)
-          HouseholdSettings(t, z, HeartbeatFilter(hbEnabled, hbBytes, Nil), umm, presenceCont)
+          HouseholdSettings(
+            t,
+            z,
+            HeartbeatFilter(hbEnabled, hbBytes, Nil),
+            umm,
+            presenceCont,
+            blockEncDns,
+          )
         }
         .transact(xa),
     )
@@ -950,7 +958,12 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
     // from V24 so existing rows keep their seed value until the follow-up migration drops it
     // entirely; nothing in the API reads it anymore (see `Presence.isHeartbeat` →
     // `InfraHosts.isBackground`).
-    val upd           =
+    val upd =
+      // #1912: `block_encrypted_dns` does NOT gate the active-minute definition,
+      // so it doesn't strictly need the rollup invalidation below — but the
+      // invalidation is already wholesale (these fields share one aggregation
+      // path) and an admin toggling it is rare, so refilling the cache from
+      // first principles is harmless and keeps the update path single.
       sql"""UPDATE household_settings
               SET daily_reset_time=${s.dailyResetTime},
                   daily_reset_tz=${s.dailyResetTz},
@@ -958,6 +971,7 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
                   heartbeat_bytes_threshold=${s.heartbeatFilter.bytesThreshold},
                   unmanaged_mac_policy=${ummJson}::jsonb,
                   presence_continuation_seconds=${s.presenceContinuationSeconds},
+                  block_encrypted_dns=${s.blockEncryptedDns},
                   updated_at=NOW()
             WHERE id=1""".update.run
     val invalidate    = sql"DELETE FROM time_used_daily".update.run
