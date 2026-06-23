@@ -410,3 +410,53 @@ def wait_event_with_host_attribution(
             f"{branded_host!r}"
         ),
     )
+
+
+# ── #1909/#1911 blockEncryptedDns (network-wide encrypted-DNS bypass disable) ─
+#
+# Two halves on the router: (1) dnsmasq answers the curated relay/DoH hostnames
+# NEGATIVELY (NXDOMAIN via `local=/host/`) — observable directly through `dig`;
+# (2) the nftables forward chain drops the curated public-resolver IPs (a static,
+# agent-baked `encrypted_dns_resolvers` set) and DoT (TCP/853). Unlike the
+# eb_/bl_/global sets, the resolver-IP set is NOT DNS-populated — it carries
+# constant `elements`, so it's present with members as soon as the agent applies
+# the snapshot.
+
+ENCRYPTED_DNS_RESOLVERS_SET = "encrypted_dns_resolvers"
+
+
+def wait_encrypted_dns_resolvers_populated(*, timeout_s: float = 180) -> list[str]:
+    """Wait until the static curated v4 resolver-IP drop set has its elements.
+
+    Membership is the router-state proof that the agent applied the
+    blockEncryptedDns connection-layer half — the set is agent-baked (static
+    elements), so a populated set means the rendered ruleset with the flag on is
+    live.
+    """
+    return _wait_set_populated(ENCRYPTED_DNS_RESOLVERS_SET, timeout_s=timeout_s)
+
+
+def dot_drop_rule_present() -> bool:
+    """True iff the forward chain carries the DoT (TCP/853) drop rule (#1911)."""
+    res = router_ssh(
+        "nft list table inet wifihaven 2>/dev/null || true",
+        check=False, timeout=10,
+    )
+    return "tcp dport 853" in (res.stdout or "")
+
+
+def wait_dot_drop_rule_present(*, timeout_s: float = 180) -> None:
+    wait_until(
+        lambda: True if dot_drop_rule_present() else None,
+        timeout_s=timeout_s, interval_s=3,
+        description="forward-chain DoT (tcp dport 853) drop rule present",
+    )
+
+
+def resolver_ip_drop_rule_present() -> bool:
+    """True iff the forward chain carries the curated resolver-IP drop rule."""
+    res = router_ssh(
+        "nft list table inet wifihaven 2>/dev/null || true",
+        check=False, timeout=10,
+    )
+    return "@encrypted_dns_resolvers" in (res.stdout or "")

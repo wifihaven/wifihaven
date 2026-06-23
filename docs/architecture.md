@@ -50,6 +50,49 @@ The `blockIpOnly` flag (see §0.2) is what closes the DoH / hard-coded-IP
 hole: forwarded traffic to an IP we did not resolve for this MAC is
 dropped.
 
+#### Truth #1 — the `blockEncryptedDns` exception (bypass-disable signalling)
+
+There is exactly **one** deliberate, narrowly-scoped place where the agent
+returns a **negative DNS answer**, and it is *not* content blocking — it is
+**bypass-disable signalling**. The network-wide `blockEncryptedDns` toggle
+([#1909](https://github.com/wifihaven/wifihaven/issues/1909) /
+[#1911](https://github.com/wifihaven/wifihaven/issues/1911), epic
+[#1903](https://github.com/wifihaven/wifihaven/issues/1903)) exists because a
+device running iCloud Private Relay / DoH / DoT tunnels its traffic around the
+LAN resolver and defeats **both** hostname attribution **and** connection-layer
+enforcement (the [#1891](https://github.com/wifihaven/wifihaven/issues/1891)
+root cause). When the household enables the toggle, the agent enforces, for
+every managed MAC:
+
+1. **A negative DNS answer (NXDOMAIN) for a curated list of relay / DoH
+   *hostnames*** (`mask.icloud.com`, `mask-h2.icloud.com`, `cloudflare-dns.com`,
+   `dns.google`, …) via dnsmasq `local=/<host>/`. For iCloud Private Relay this
+   is **Apple's documented clean signal**: a negative answer for the relay
+   ingress makes iOS *disable* Private Relay and fall back to direct, filterable
+   connections — **without** the client-side hang that a silent connection-layer
+   *drop* of the relay ingress causes (that hang is the #1891 symptom, and the
+   path Apple explicitly warns against). A positive `0.0.0.0` sinkhole does
+   **not** disable Private Relay; the answer must be negative. The DoH-by-name
+   hosts are denied a positive answer so a browser's built-in DoH falls back to
+   Do53 through us. The parent apex (e.g. `icloud.com`) keeps resolving — only
+   the curated relay/DoH names are answered negatively.
+2. **A connection-layer drop** (nftables forward-drop, the normal enforcement
+   plane) for a curated set of public-resolver **IPs** (`1.1.1.1`, `8.8.8.8`,
+   … + v6) reached by hardcoded IP, and for **DoT (TCP/853) to any IP**.
+
+Why this does not violate Truth #1 in spirit: the negative DNS answer here does
+not *block content* — it tells the client to **stop tunnelling** so our real,
+connection-layer enforcement can see the traffic at all. It is gated behind the
+household toggle, scoped to a small curated list baked into the agent
+(`openwrt/files/usr/lib/lua/wifihaven/encrypted_dns.lua` — not shipped on the
+wire), and is the *only* sanctioned DNS-layer negative answer. Do **not**
+generalize it into content blocking. The wire stays a single additive top-level
+boolean, `blockEncryptedDns` (default `false`); the agent ignores it when absent
+(old-agent / no-flag intermediate states are all no-ops). Curated-list drops are
+a hard network-wide block: they carry **no** `extraAllowed` / `@global_allow`
+carve-out (an allow entry must not re-open an encrypted-DNS escape) and are
+**not** DNAT'd to the block page (a DoH/DoT flow is not a browser navigation).
+
 ### 0.2 The router agent is a dumb applier
 
 The API server's `PolicyService` evaluates every policy concept — schedules,

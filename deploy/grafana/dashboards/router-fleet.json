@@ -319,7 +319,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "Enforcement forward-drops by reason",
-      "description": "sum by (reason) (rate(enforcement_drops_total[5m])) — packets dropped at the nftables forward chain (the actual enforcement plane), reason ∈ {whole_mac, host_block, category_block, ip_only}. Sourced from the per-rule nft counters the agent folds on each tick (#1325). This is how much traffic is really being blocked and why — the prerequisite signal for the enforcement dashboard (#1280).",
+      "description": "sum by (reason) (rate(enforcement_drops_total[5m])) — packets dropped at the nftables forward chain (the actual enforcement plane), reason ∈ {whole_mac, host_block, category_block, ip_only, encrypted_dns}. Sourced from the per-rule nft counters the agent folds on each tick (#1325). This is how much traffic is really being blocked and why — the prerequisite signal for the enforcement dashboard (#1280).",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 32 },
       "id": 10,

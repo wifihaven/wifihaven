@@ -66,6 +66,11 @@ class SnapshotBuilder:
         # layer omit the key entirely and render byte-identically to pre-#1319
         # (render.lua treats an absent `global` as BlockRules.allowAll).
         self._global: dict[str, Any] | None = None
+        # The network-wide `blockEncryptedDns` toggle (#1909/#1911). None until
+        # `set_block_encrypted_dns()` is called, so snapshots that don't exercise
+        # it omit the top-level key entirely and render byte-identically to
+        # pre-#1911 (the agent treats an absent flag as false).
+        self._block_encrypted_dns: bool | None = None
 
     def add_profile(
         self,
@@ -168,6 +173,19 @@ class SnapshotBuilder:
         )
         return self
 
+    def set_block_encrypted_dns(self, value: bool = True) -> "SnapshotBuilder":
+        """Set the top-level `blockEncryptedDns` toggle (#1909/#1911).
+
+        When True the agent enforces, network-wide: a NEGATIVE DNS answer
+        (NXDOMAIN) for the curated relay/DoH hostnames (mask.icloud.com,
+        dns.google, …) plus an nftables forward-drop for the curated
+        public-resolver IPs and for DoT (TCP/853). The curated lists are baked
+        into the agent (openwrt/.../encrypted_dns.lua), NOT shipped on the wire —
+        the snapshot carries only this single boolean.
+        """
+        self._block_encrypted_dns = value
+        return self
+
     def add_blocklist(
         self,
         *,
@@ -205,6 +223,11 @@ class SnapshotBuilder:
         # scenarios (and test_snapshot_builder) that don't touch it.
         if self._global is not None:
             snap["global"] = dict(self._global)
+        # Emit `blockEncryptedDns` only when explicitly set, so unrelated
+        # scenarios keep the default top-level key set and exercise the
+        # absent-flag no-op path.
+        if self._block_encrypted_dns is not None:
+            snap["blockEncryptedDns"] = self._block_encrypted_dns
         return snap
 
 

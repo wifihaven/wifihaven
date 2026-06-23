@@ -15,10 +15,12 @@
 -- — and a category drop carries `category:<blocklistId>`). classify_reason
 -- folds those into the four bounded buckets the §4 cardinality firewall allows:
 --
---   host        → host_block       (per-(MAC, host) eb_ drop, #515)
---   ip_only     → ip_only          (blockIpOnly un-resolved-daddr drop, #353)
---   category:*  → category_block   (per-(MAC, blocklistId) bl_ drop, #352)
---   <anything   → whole_mac        (whole-MAC @blocked_macs drop carrying a
+--   host          → host_block     (per-(MAC, host) eb_ drop, #515)
+--   ip_only       → ip_only        (blockIpOnly un-resolved-daddr drop, #353)
+--   category:*    → category_block (per-(MAC, blocklistId) bl_ drop, #352)
+--   encrypted_dns* → encrypted_dns (network-wide blockEncryptedDns curated
+--                                   resolver-IP + DoT/853 drop, #1911)
+--   <anything     → whole_mac      (whole-MAC @blocked_macs drop carrying a
 --    else>                          MacBlockReason — Paused/Schedule/…/blocked)
 --
 -- There is deliberately NO per-mac / per-host / per-ip / per-blocklist-id
@@ -60,6 +62,11 @@ function M.classify_reason(comment_reason)
     return "ip_only"
   elseif comment_reason:match("^category:") then
     return "category_block"
+  elseif comment_reason:match("^encrypted_dns") then
+    -- #1911: the network-wide blockEncryptedDns drops (curated resolver IPs →
+    -- `encrypted_dns`; DoT/853 → `encrypted_dns_dot`) fold into ONE bounded
+    -- bucket. The dst IP / port is never a label (§4 cardinality firewall).
+    return "encrypted_dns"
   else
     -- Whole-MAC drops carry a MacBlockReason (or "blocked"); fold them — and
     -- any unrecognised future string — into the single whole_mac bucket so the

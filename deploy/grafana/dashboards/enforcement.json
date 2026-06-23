@@ -12,7 +12,7 @@
       }
     ]
   },
-  "description": "WifiHaven enforcement plane (#1280): the nftables forward-drop activity on the gateway router — the ACTUAL block plane (DNS always resolves; blocking is connection-layer, never a DNS sinkhole). Every panel targets the single emitted series enforcement_drops_total{reason} (#1325): the agent reads the per-rule nft `counter` packets in the wifihaven_block chain (nft_drops.lua), classifies each by its wh_drop:<mac>:<reason> comment into a bounded reason enum — whole_mac / host_block / category_block / ip_only — and folds the per-tick growth into its 60s metrics push (metrics.fold_external). RouterMetricsService re-exports it on /metrics with the server-attached router_id (+ installation_id); Alloy adds env at scrape time. The counter is dropped PACKETS, so rate() is packets/sec. Slices only by the bounded reason / router_id labels per the §4 cardinality firewall — never per-mac / per-host / per-ip / per-blocklist-id. See docs/architecture.md (enforcement model) and docs/design/metrics-observability.md §5.1.",
+  "description": "WifiHaven enforcement plane (#1280): the nftables forward-drop activity on the gateway router — the ACTUAL block plane (DNS always resolves; blocking is connection-layer, never a DNS sinkhole). Every panel targets the single emitted series enforcement_drops_total{reason} (#1325): the agent reads the per-rule nft `counter` packets in the wifihaven_block chain (nft_drops.lua), classifies each by its wh_drop:<mac>:<reason> comment into a bounded reason enum — whole_mac / host_block / category_block / ip_only / encrypted_dns — and folds the per-tick growth into its 60s metrics push (metrics.fold_external). RouterMetricsService re-exports it on /metrics with the server-attached router_id (+ installation_id); Alloy adds env at scrape time. The counter is dropped PACKETS, so rate() is packets/sec. Slices only by the bounded reason / router_id labels per the §4 cardinality firewall — never per-mac / per-host / per-ip / per-blocklist-id. See docs/architecture.md (enforcement model) and docs/design/metrics-observability.md §5.1.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -95,7 +95,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "Drop share by reason (5m rate)",
-      "description": "sum by (reason) (rate(enforcement_drops_total[5m])) — proportion of forward-drops attributable to each bounded reason. whole_mac = a whole-MAC @blocked_macs drop (paused / schedule / time-limit / manual, the resolved MacBlockReason); host_block = per-(MAC, host) eb_ drop; category_block = per-(MAC, blocklistId) bl_ drop; ip_only = blockIpOnly unresolved-destination drop. A category_block share collapsing to zero while categories are assigned is the #1334 silent-no-op signature.",
+      "description": "sum by (reason) (rate(enforcement_drops_total[5m])) — proportion of forward-drops attributable to each bounded reason. whole_mac = a whole-MAC @blocked_macs drop (paused / schedule / time-limit / manual, the resolved MacBlockReason); host_block = per-(MAC, host) eb_ drop; category_block = per-(MAC, blocklistId) bl_ drop; ip_only = blockIpOnly unresolved-destination drop; encrypted_dns = network-wide blockEncryptedDns curated resolver-IP + DoT/853 drop (#1911). A category_block share collapsing to zero while categories are assigned is the #1334 silent-no-op signature.",
       "type": "piechart",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
       "id": 3,
@@ -125,7 +125,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "Forward-drop rate by reason (fleet)",
-      "description": "sum by (reason) (rate(enforcement_drops_total[5m])) — stacked packets/sec dropped at the forward chain, broken down by the four bounded drop reasons. This is the core enforcement view: how much traffic is really being blocked and why. reason ∈ {whole_mac, host_block, category_block, ip_only}.",
+      "description": "sum by (reason) (rate(enforcement_drops_total[5m])) — stacked packets/sec dropped at the forward chain, broken down by the bounded drop reasons. This is the core enforcement view: how much traffic is really being blocked and why. reason ∈ {whole_mac, host_block, category_block, ip_only, encrypted_dns}.",
       "type": "timeseries",
       "gridPos": { "h": 9, "w": 24, "x": 0, "y": 8 },
       "id": 4,

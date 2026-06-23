@@ -77,6 +77,27 @@
 
 local M = {}
 
+-- Lazy require of the curated encrypted-DNS lists (#1909/#1911) — compatible
+-- with both the on-device path (wifihaven.encrypted_dns) and the busted test
+-- path (encrypted_dns). Cached after first use.
+local _edns_module
+local function edns()
+  if not _edns_module then
+    local ok, m = pcall(require, "wifihaven.encrypted_dns")
+    _edns_module = ok and m or require("encrypted_dns")
+  end
+  return _edns_module
+end
+
+-- #1909/#1911: the network-wide "block encrypted DNS & relays" toggle. A single
+-- top-level boolean on the snapshot; absent/false renders byte-identically to a
+-- snapshot that never carried it (default off, additive — old agents ignore it,
+-- a new agent reading an absent flag treats it as false).
+local function block_encrypted_dns(snapshot)
+  return (snapshot and snapshot.blockEncryptedDns) and true or false
+end
+M.block_encrypted_dns = block_encrypted_dns
+
 -- Directory where per-blocklist dnsmasq conf shards live (#1782). A SUBDIR of
 -- the dnsmasq confdir (/tmp/dnsmasq.d, itself tmpfs = RAM on OpenWRT), NOT bare
 -- /tmp — #1812. OpenWRT runs dnsmasq inside a procd ujail that bind-mounts ONLY
@@ -605,6 +626,27 @@ function M.dnsmasq(snapshot, opts)
     emit("")
   end
 
+  -- #1909/#1911: blockEncryptedDns — negative DNS answer for the curated
+  -- relay/DoH hostnames. `local=/<host>/` makes dnsmasq authoritative for the
+  -- name with no records, so it answers NXDOMAIN (verified live on dnsmasq 2.91
+  -- / OpenWRT — a clean negative answer, NOT a 0.0.0.0 sinkhole). This is the
+  -- documented Truth-#1 exception: a negative answer for mask.icloud.com /
+  -- mask-h2.icloud.com is Apple's clean signal to DISABLE iCloud Private Relay
+  -- (the device then makes direct, filterable connections without the hang a
+  -- silent connection-layer drop causes); the DoH-by-name hosts are denied a
+  -- positive answer so a browser's built-in DoH falls back to Do53 through us.
+  -- Scoped to bypass-disable signalling and gated on the household toggle; the
+  -- parent apex (e.g. icloud.com) keeps resolving. See docs/architecture.md.
+  if block_encrypted_dns(snapshot) then
+    emit("# blockEncryptedDns (#1909/#1911): NEGATIVE DNS answer (NXDOMAIN) for")
+    emit("# curated relay/DoH hostnames — Apple's clean Private-Relay disable")
+    emit("# signal; deliberate, scoped Truth-#1 exception (docs/architecture.md).")
+    for _, host in ipairs(edns().HOSTS) do
+      emit("local=/" .. host .. "/")
+    end
+    emit("")
+  end
+
   return table.concat(out, "\n")
 end
 
@@ -755,6 +797,16 @@ function M.nft(snapshot, opts)
   for mac, _ in sorted_devices(snapshot.devices) do
     if not allowall_macs[mac] then managed_macs[#managed_macs + 1] = mac end
   end
+
+  -- #1909/#1911: network-wide blockEncryptedDns. When on, every managed MAC gets
+  -- a forward-chain drop on the curated public-resolver IPs (v4/v6) and on DoT
+  -- (TCP/853, any IP) — the connection-layer half of the toggle (the DNS half is
+  -- the NXDOMAIN directives in render.dnsmasq). Network-wide, NOT per-profile,
+  -- and NOT carved out by extraAllowed/@global_allow: this is a hard bypass
+  -- block, so an allow entry must not re-open an encrypted-DNS escape. Suppressed
+  -- only for allow-all-failover MACs (they reach this point absent from
+  -- managed_macs), mirroring every other drop's failover behaviour.
+  local block_edns = block_encrypted_dns(snapshot)
 
   -- ga_suffix(family) → the fleet-wide @global_allow carve-out clause appended
   -- to EVERY hostname/MAC drop and DNAT (per-MAC or global). Returns "" when
@@ -920,6 +972,29 @@ function M.nft(snapshot, opts)
     ind2("type ipv6_addr")
     ind2("flags dynamic,timeout")
     ind2("timeout 1h")
+    ind("}")
+    emit("")
+  end
+
+  -- #1909/#1911: blockEncryptedDns curated public-resolver IP sets. Unlike
+  -- eb_/bl_/global sets these are NOT dynamic/DNS-populated — they are a fixed,
+  -- agent-baked constant (encrypted_dns.lua), so they carry static `elements`
+  -- and no timeout. Declared only when the toggle is on, so a snapshot without
+  -- the flag renders byte-identically to pre-#1911.
+  if block_edns then
+    local e = edns()
+    ind("set encrypted_dns_resolvers {")
+    ind2("type ipv4_addr")
+    if #e.RESOLVER_IPS_V4 > 0 then
+      ind2("elements = { " .. table.concat(e.RESOLVER_IPS_V4, ", ") .. " }")
+    end
+    ind("}")
+    emit("")
+    ind("set encrypted_dns_resolvers6 {")
+    ind2("type ipv6_addr")
+    if #e.RESOLVER_IPS_V6 > 0 then
+      ind2("elements = { " .. table.concat(e.RESOLVER_IPS_V6, ", ") .. " }")
+    end
     ind("}")
     emit("")
   end
@@ -1291,6 +1366,28 @@ function M.nft(snapshot, opts)
       for _, mac in ipairs(managed_macs) do
         emit_drop(string.format("ether saddr %s", mac), mac, g_block_reason)
       end
+    end
+  end
+  -- #1909/#1911: blockEncryptedDns drops. For each managed MAC, drop forwarded
+  -- traffic to the curated public-resolver IPs (v4/v6) and to DoT (TCP/853, any
+  -- IP). No ea/ga carve-out suffix: a hard bypass block must not be re-openable
+  -- by an allow entry. Per-MAC (not one fleet-wide rule) so each drop carries an
+  -- attributable `wh_drop:<mac>:encrypted_dns[_dot]` comment for nflog/metrics
+  -- (folds to the bounded `encrypted_dns` reason — nft_drops.classify_reason).
+  -- Deliberately NOT DNAT'd to the block page (see the DNAT chain): a DoH/DoT
+  -- flow is not a browser navigation, so a block page is meaningless there.
+  if block_edns then
+    for _, mac in ipairs(managed_macs) do
+      emit_drop(string.format("ether saddr %s ip daddr @encrypted_dns_resolvers", mac),
+                mac, "encrypted_dns")
+    end
+    for _, mac in ipairs(managed_macs) do
+      emit_drop(string.format("ether saddr %s ip6 daddr @encrypted_dns_resolvers6", mac),
+                mac, "encrypted_dns")
+    end
+    for _, mac in ipairs(managed_macs) do
+      emit_drop(string.format("ether saddr %s tcp dport %d", mac, edns().DOT_PORT),
+                mac, "encrypted_dns_dot")
     end
   end
   ind("}")
