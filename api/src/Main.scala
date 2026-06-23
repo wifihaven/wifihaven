@@ -14,6 +14,7 @@ import wifihaven.api.metrics.{
 }
 import wifihaven.api.notify.Notifier
 import wifihaven.api.observability.LoggingMiddleware
+import wifihaven.api.observability.LokiDropMetrics
 import wifihaven.api.policy.*
 import wifihaven.api.routes.*
 import wifihaven.api.usage.RetentionSweepJob
@@ -221,6 +222,11 @@ object Main extends ZIOAppDefault {
         routerRepoMetric  <- ZIO.service[RouterRepo]
         _                 <- RouterPresenceMetrics.loop(routerRepoMetric).forkDaemon
         _                 <- ZIO.logInfo("router-presence metrics fiber forked")
+        // #1885: poll the loki4j appender's fail-open drop counter into
+        // loki_logs_dropped_total. forkDaemon; no-ops on local/test where the
+        // LOKI appender isn't present (deployed-env gate lives in logback.xml).
+        _                 <- LokiDropMetrics.loop().forkDaemon
+        _                 <- ZIO.logInfo("loki-drop metrics fiber forked")
         _                 <- ZIO
           .logWarning(
             "WIFIHAVEN_SEED_TEST_BLOCKLISTS=1 set — seeding dev test_ads/test_social. " +

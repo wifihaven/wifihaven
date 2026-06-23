@@ -135,6 +135,15 @@ object MetricGuard {
     // too aggressive (real sessions vanishing), a flat zero while phantom
     // inflation returns means it is too lax.
     "presence_app_sessions_dropped_total"       -> Set.empty[String],
+    // #1885 — log events the loki4j appender shed because its bounded send queue
+    // (sendQueueMaxBytes) was full while Loki was slow/unreachable. The appender
+    // is async/drop-on-backpressure by construction (fail-open: the request path
+    // is never blocked), so a sustained outage silently loses logs — this counter
+    // makes that loss alertable. Unlabelled: the appender exposes a single
+    // appender-wide cumulative count, and any per-mac/route label would breach the
+    // §4 cardinality firewall (service/env/level already ride the Loki stream
+    // labels, not this Prometheus series).
+    "loki_logs_dropped_total"                   -> Set.empty[String],
     // §5.1 router-sourced, pushed via POST /api/router/metrics (#1205). Every one carries the
     // server-attached `router_id` + `installation_id` plus its own bounded enum label.
     "dnsmasq_restarts_total"                    -> Set("reason", "router_id", "installation_id"),
@@ -446,6 +455,22 @@ object AppMetrics {
 
   def recordRouterMetricsBatch(status: String): UIO[Unit] =
     MetricGuard.counter("router_metrics_batches_total", Map("status" -> status))
+
+  // ── Loki appender fail-open drops (#1885) ────────────────────────────────────
+  // Emitted from LokiDropMetrics, which polls the MeteredLoki4jAppender's
+  // cumulative drop counter and feeds the per-tick positive delta here. A drop
+  // means the async appender shed a log line because its bounded send queue was
+  // full (Loki slow/unreachable) — the fail-open path that keeps the request
+  // thread unblocked. A sustained rate is the alert that logs are being lost.
+  // Unlabelled; only emits when `delta > 0` so a healthy appender never touches
+  // the series.
+
+  def recordLokiDropped(delta: Long): UIO[Unit] =
+    ZIO
+      .when(delta > 0)(
+        MetricGuard.counter("loki_logs_dropped_total", Map.empty, delta),
+      )
+      .unit
 
   // ── Websocket router transport (#1846) ───────────────────────────────────────
   // Set by RouterWsRegistry on every register/deregister: the live count of open
