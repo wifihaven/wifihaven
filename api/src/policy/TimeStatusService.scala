@@ -442,16 +442,17 @@ object TimeStatusService {
       continuationSeconds: Int,
   ): List[AppDayState] = {
     // #1564: feed Presence the cap-group label as its String key so the underlying span/union math
-    // is unchanged, then re-key the result by appId via the (label -> appId) map groupAppLimits
-    // emits directly. One canonical conversion, no slug parsing.
+    // is unchanged, then re-key the result by appId via the (label -> appId) map the same fold
+    // emits. One canonical conversion, no slug parsing.
     // #1897: the stitch reads each app's DISTINCTIVE host-set only (`capGroupLabelDistinctiveHosts`)
     // — a shared host overlapping a distinctive span is already counted there, so excluding it is a
-    // no-op that also guarantees it can never inflate or extend the app's engaged minutes.
-    val groups       = groupAppLimits(appLimits)
-    val labelToAppId = groups.map(g => g._2 -> g._1).toMap
+    // no-op that also guarantees it can never inflate or extend the app's engaged minutes. Both the
+    // label→appId map and the distinctive host-set come off ONE `ProfileAppDispositions.from` fold.
+    val dispositions = ProfileAppDispositions.from(appLimits)
+    val labelToAppId = dispositions.capGroups.map(d => d.label -> d.appId).toMap
     val perLabel     = Presence.patternGroupMinutesForProfile(
       presence,
-      ProfileAppDispositions.from(appLimits).capGroupLabelDistinctiveHosts,
+      dispositions.capGroupLabelDistinctiveHosts,
       overlap,
       filter,
       continuationSeconds,
@@ -588,12 +589,13 @@ object TimeStatusService {
       presence: List[PresenceRow],
       settings: HouseholdSettings,
   ): (Map[AppId, Long], Int) = {
-    // #1897: distinctive host-set only — see `appDayStates` / `capGroupLabelDistinctiveHosts`.
-    val groups                 = groupAppLimits(appLimits)
-    val labelToAppId           = groups.map(g => g._2 -> g._1).toMap
+    // #1897: distinctive host-set only — see `appDayStates` / `capGroupLabelDistinctiveHosts`. Both
+    // the label→appId map and the distinctive host-set come off ONE `ProfileAppDispositions.from`.
+    val dispositions           = ProfileAppDispositions.from(appLimits)
+    val labelToAppId           = dispositions.capGroups.map(d => d.label -> d.appId).toMap
     val (secsByLabel, dropped) = Presence.appSecondsForProfileWithDropCount(
       presence,
-      ProfileAppDispositions.from(appLimits).capGroupLabelDistinctiveHosts,
+      dispositions.capGroupLabelDistinctiveHosts,
       profile.crossDeviceOverlapMode,
       settings.heartbeatFilter,
       settings.presenceContinuationSeconds,
