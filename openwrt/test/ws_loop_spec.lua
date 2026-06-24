@@ -271,7 +271,9 @@ describe("ws_loop.run — inbound + heartbeat", function()
       end,
       on_policy = function(p) applied = p end,
       metrics = m,
-      stop = function() return false end,           -- run until the scripted drop
+      -- serve consumes the scripted [policy, drop] in the first connection; stop
+      -- the outer reconnect loop after that single pass.
+      stop = (function() local n = 0; return function() n = n + 1; return n > 1 end end)(),
     })
     ws_loop.run(cfg)
     assert.are.equal("SNAP", applied)
@@ -291,7 +293,7 @@ describe("ws_loop.run — inbound + heartbeat", function()
       sleep = function() end,
       heartbeat_interval = 30,
       metrics = m,
-      stop = function() return false end,
+      stop = (function() local n = 0; return function() n = n + 1; return n > 1 end end)(),
     })
     -- bump the clock on each recv so the heartbeat condition trips.
     local orig_recv = client.recv
