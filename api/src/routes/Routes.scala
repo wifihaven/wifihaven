@@ -1522,13 +1522,21 @@ object TimeRoutes {
           .usedSecondsByMac(p, List(device), appLimits, presence, settings)
           .getOrElse(device.mac, 0L) / 60L).toInt,
       )
-      // #1505 + #1504: per-device per-app usage via the #1464 session-stitch primitive, aggregated
-      // across each app's whole host-set (one bar per app). Single-device view, so cross-device
-      // overlap mode is moot — Sum and Dedup coincide.
+      // #1505 + #1504: per-device per-app usage via the #1464 session-stitch primitive (one bar per
+      // app). Single-device view, so cross-device overlap mode is moot — Sum and Dedup coincide.
+      // #1897 (shared-hosts S2): stitch each app's DISTINCTIVE host-set only — the SAME source the
+      // canonical per-profile stitch reads (`TimeStatusService.appDayStates` →
+      // `ProfileAppDispositions.capGroupLabelDistinctiveHosts`). A shared backend overlapping a
+      // distinctive span is already counted there, and a shared firing without distinctive activity
+      // must not inflate the app's minutes; reading the full host-set here over-counted. Routes
+      // through the one canonical distinctive-host projection (AGENTS.md §single-source-of-truth)
+      // rather than re-deriving a host-set locally — `appLimits` is already loaded above.
       perApp    = wifihaven.api.presence.Presence
         .patternGroupMinutesForProfile(
           presence,
-          stateOpt.toList.flatMap(_.perApp).map(s => s.label -> s.hosts),
+          wifihaven.api.policy.ProfileAppDispositions
+            .from(appLimits)
+            .capGroupLabelDistinctiveHosts,
           wifihaven.shared.CrossDeviceOverlapMode.Sum,
           settings.heartbeatFilter,
           settings.presenceContinuationSeconds,

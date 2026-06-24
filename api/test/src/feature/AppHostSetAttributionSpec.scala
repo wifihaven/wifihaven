@@ -158,6 +158,86 @@ object AppHostSetAttributionSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
         assertTrue(status.usedMins == 60)
       }
     },
+    test(
+      "single-device per-app view counts DISTINCTIVE hosts only — a shared host firing without distinctive activity does not inflate the app's minutes (#1897)",
+    ) {
+      // #1897 shared-hosts S2: the canonical per-app engaged-minutes stitch reads each app's
+      // distinctive (`shared = false`) host-set only — a shared backend (e.g. elevenlabs.io behind
+      // multiple apps) overlapping a distinctive span is already counted there, and a shared firing
+      // WITHOUT any distinctive activity must NOT create/extend the app's minutes. The single-device
+      // view (`GET /api/time/status/{mac}`) re-derives per-app minutes against this device's presence
+      // rows, so it must read the SAME distinctive-only source as the profile view, not the full
+      // host-set.
+      val distinctiveHost = "elevenlabs-app.example"
+      val sharedHost      = "elevenlabs.io"
+      for {
+        _           <- cleanDb
+        profileRepo <- ZIO.service[ProfileRepo]
+        tlRepo      <- ZIO.service[TimeLimitRepo]
+        atlRepo     <- ZIO.service[AppTimeLimitRepo]
+        deviceRepo  <- ZIO.service[DeviceRepo]
+        trafficRepo <- ZIO.service[TrafficReportRepo]
+        extRepo     <- ZIO.service[TimeExtensionRepo]
+        appRepo     <- ZIO.service[AppRepo]
+        auth        <- makeAuth
+        token       <- auth.login("admin", "changeme").map(_.token.value)
+        kidsId      <- TestLayers.seedKidsProfile(profileRepo)
+        _           <- tlRepo.upsert(kidsId, 120)
+        appId       <- appRepo.create("ElevenLabs", "elevenlabs", None, None)
+        // Distinctive app host + a SHARED backend host (e.g. shared across multiple AI apps).
+        _           <- appRepo.setHostEntries(
+          appId,
+          List(
+            AppHostEntry(Hostname.unsafe(distinctiveHost), shared = false),
+            AppHostEntry(Hostname.unsafe(sharedHost), shared = true),
+          ),
+        )
+        _           <- appRepo.upsertAssignment(appId, kidsId, AppMode.TimeLimited, Some(30), false)
+        _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
+        routerId    <- seedRouter
+        today = TestClock.schoolDayAfternoon.toLocalDate
+        // 10 m on the distinctive host (buckets 0–1), then 10 m on the SHARED host an hour later
+        // (buckets 12–13) — a separate, non-overlapping span with no distinctive activity around it.
+        _               <- seedTraffic(routerId, testMac, distinctiveHost, today, 10)
+        _               <- seedTraffic(routerId, testMac, sharedHost, today, 10, 12)
+        userProfileRepo <- ZIO.service[UserProfileRepo]
+        hsRepo          <- ZIO.service[HouseholdSettingsRepo]
+        clock           <- ZIO.service[Clock]
+        tss    = new wifihaven.api.policy.TimeStatusServiceLive(
+          profileRepo,
+          tlRepo,
+          atlRepo,
+          deviceRepo,
+          trafficRepo,
+          extRepo,
+        )
+        routes = TimeRoutes.routes(
+          auth,
+          deviceRepo,
+          tlRepo,
+          atlRepo,
+          trafficRepo,
+          extRepo,
+          profileRepo,
+          userProfileRepo,
+          hsRepo,
+          tss,
+          clock,
+        )
+        req    = Request
+          .get(URL.decode(s"/api/time/status/$testMac").toOption.get)
+          .addHeader(Header.Authorization.Bearer(token))
+        resp   <- routes.runZIO(req)
+        body   <- resp.body.asString
+        status <- ZIO.fromEither(body.fromJson[DeviceTimeStatus])
+      } yield {
+        val bars = status.appUsage.filter(_.label == "app:elevenlabs")
+        assertTrue(bars.size == 1) &&
+        // Distinctive-only: the 10 m of shared-host traffic must NOT be added on top of the 10 m of
+        // distinctive activity. Reading the full host-set (the bug) yields 20.
+        assertTrue(bars.head.usedMins == 10)
+      }
+    },
     test("off-domain asset host attributes to the app, not the 'Other' bucket") {
       // Pure attribution guardrail (Fix C): once the off-domain host is in the app's host-set, the
       // group-by-app aggregation buckets its traffic under the app rather than __other__.
@@ -195,5 +275,7 @@ object AppHostSetAttributionSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
           assertTrue(agg.flatMap(_.groups.get("app")).toSet == Set(appSlug)),
       )
     },
-  )
+    // The DB-backed tests each clone the migration template into a fixed-named scratch DB, so they
+    // must not run concurrently within this suite.
+  ) @@ TestAspect.sequential
 }
