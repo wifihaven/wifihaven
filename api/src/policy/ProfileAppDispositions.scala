@@ -76,6 +76,26 @@ final case class ProfileAppDispositions(
     capGroups.map(d => d.label -> d.distinctiveHosts)
 
   /**
+   * #1898 (shared-hosts S3): the (label → DISTINCTIVE hosts) pairs for EVERY assigned app,
+   * mode-agnostic. Same per-(app, host) `shared = false` partition as
+   * [[capGroupLabelDistinctiveHosts]], but NOT restricted to `mode = TimeLimited`: the per-host
+   * reporting co-presence test attributes a shared host to an app whose distinctive session
+   * overlaps it regardless of the app's enforcement mode (an Allowed app like Feeling Great still
+   * earns its shared-backend bytes), whereas the per-app daily cap only ticks for TimeLimited apps.
+   * Attribution is a structural relationship, not an enforcement one — same reasoning as
+   * [[appHostPatterns]] / [[exemptPatterns]] being mode-agnostic. Stable order by label.
+   */
+  def appLabelDistinctiveHosts: List[(String, List[String])] =
+    perApp.map(d => d.label -> d.distinctiveHosts)
+
+  /**
+   * #1898: (label → appId) for EVERY assigned app — the mode-agnostic re-key partner of
+   * [[appLabelDistinctiveHosts]] used by `TimeStatusService.distinctiveSpansByApp`.
+   */
+  def appLabelToAppId: Map[String, AppId] =
+    perApp.map(d => d.label -> d.appId).toMap
+
+  /**
    * Snapshot enforcement: collapse every assignment into the per-MAC `(extraAllowed, extraBlocked)`
    * BlockRules buckets the router applies, folding each assignment's per-app schedule windows over
    * its base mode (design §4.1):

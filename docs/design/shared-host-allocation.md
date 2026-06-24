@@ -345,16 +345,21 @@ runs `/pr-review` before merge.
   Tests pin: shared host inside a distinctive span → 0 added minutes; shared
   host with no distinctive activity → not credited.
 
-- **S3 — Per-host reporting allocation** (depends on S2). In `buildUsageByApp`
-  ([UsageRoutes](../../api/src/routes/UsageRoutes.scala):473-599), route shared
-  hosts through the co-presence overlap rule + equal split + "Other" fallback,
-  replacing `minBy(appId)` for shared hosts only. Extends to the by-app axis
-  builder at :601+. Tests pin the worked example above. Ships with an
-  `AppMetrics` counter for shared-row attribution outcome
-  (`attributed` / `split` / `other`) per
-  [instrument-new-functionality](../process/instrumentation.md#instrument-new-functionality)
-  and the consuming Grafana panel per
-  [metrics-need-a-dashboard](../process/instrumentation.md#metrics-need-a-dashboard).
+- **S3 — Per-host reporting allocation** ✅ shipped
+  ([#1898](https://github.com/wifihaven/wifihaven/issues/1898)). In
+  `buildUsageByApp` ([UsageRoutes](../../api/src/routes/UsageRoutes.scala)), shared
+  hosts route through `Presence.allocateSharedHostSeconds` — co-presence overlap
+  with each candidate app's distinctive spans (the S2
+  `TimeStatusService.distinctiveSpansByApp` seam, now mode-agnostic so an Allowed
+  app earns its shared backends too) + equal split among qualifiers + "Other"
+  fallback — replacing `minBy(appId)` for shared hosts only; distinctive hosts keep
+  the unconditional `minBy`. The by-app axis builder (`loadAppLookup`) excludes
+  shared hosts from both `appOf` and `patternsBySlug` so the per-app *time-series*
+  span stays distinctive-only (reconciling with the S2 cap); a shared host surfaces
+  there as a standalone host entry. No argmax / byte-share anywhere. Ships with the
+  bounded-label `usage_shared_host_attribution_total{outcome}` counter
+  (`attributed` / `split` / `other`) and its Grafana panels on the
+  `data-quality-ingest` dashboard.
 
 - **S4 — Enforcement guardrails** (depends on S1b; parallel to S2/S3).
   Exclude shared hosts from `appCapExhaustedHosts` and `Blocked`-mode

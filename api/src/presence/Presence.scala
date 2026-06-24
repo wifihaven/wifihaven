@@ -832,6 +832,112 @@ object Presence {
     }
   }
 
+  /**
+   * #1898 (shared-hosts S3): outcome tally for the shared-host reporting-attribution metric,
+   * counted per shared-host stitched span. Bounded — exactly three buckets, no per-mac/host/app
+   * cardinality: `attributed` (exactly one co-present qualifier), `split` (≥2 qualifiers, bytes
+   * split equally), `other` (no qualifier → surfaces in the "Other"/orphan bucket).
+   */
+  final case class SharedHostAttributionCounts(attributed: Long, split: Long, other: Long) {
+    def +(o: SharedHostAttributionCounts): SharedHostAttributionCounts =
+      SharedHostAttributionCounts(
+        attributed + o.attributed,
+        split + o.split,
+        other + o.other,
+      )
+  }
+  object SharedHostAttributionCounts                                                       {
+    val zero: SharedHostAttributionCounts = SharedHostAttributionCounts(0L, 0L, 0L)
+  }
+
+  /**
+   * Strict (positive-length) temporal intersection — `[start, end)` half-open, so spans that merely
+   * touch at an endpoint do NOT overlap. A shared row may refine WITHIN a distinctive session but
+   * never extend or create one (design §"Allocation rule").
+   */
+  private def spansOverlap(a: Span, b: Span): Boolean =
+    a.startEpoch.max(b.startEpoch) < a.endEpoch.min(b.endEpoch)
+
+  /**
+   * #1898 (shared-hosts S3): allocate ONE shared host's stitched session-seconds to app(s) by
+   * TEMPORAL CO-PRESENCE with each candidate app's DISTINCTIVE spans (the #1897
+   * [[wifihaven.api.policy.TimeStatusService.distinctiveSpansByApp]] seam), returning the
+   * proportional seconds keyed by `Some(appId)` for each qualifying app and `None` for the
+   * unattributed "Other" bucket, plus the per-span outcome tally for the metric.
+   *
+   * This is NOT the rejected #842/#715 Path 1 argmax-foreground heuristic: a shared span is
+   * credited to an app iff that app's OWN distinctive session overlaps it — a presence predicate,
+   * never a byte magnitude comparison — and when several apps qualify the seconds split EQUALLY
+   * among them (deterministic, symmetric, picks no winner). A span overlapping no candidate's
+   * distinctive span is credited to NONE (`None` key).
+   *
+   * The host's rows are stitched the SAME way [[proportionalHostSeconds]] stitches them (same
+   * [[spanOf]]/[[stitch]], the same [[effectiveGap]] over the full active set, and the same
+   * per-device → `overlap`-mode combination), so summing the returned allocation reproduces
+   * `proportionalHostSeconds(host)` exactly — equal split conserves seconds and the integer
+   * remainder rides the lowest-`appId` qualifier so nothing is lost.
+   *
+   * `rows` is the full profile presence batch (used to size the gap consistently with
+   * `proportionalHostSeconds`); only `sharedHost`'s rows are stitched. `candidateDistinctiveSpans`
+   * must already be restricted to the apps that LIST this host as shared.
+   */
+  def allocateSharedHostSeconds(
+      rows: List[PresenceRow],
+      sharedHost: HostId,
+      candidateDistinctiveSpans: Map[AppId, List[Span]],
+      overlap: CrossDeviceOverlapMode = CrossDeviceOverlapMode.Sum,
+      filter: HeartbeatFilter = HeartbeatFilter.Off,
+      continuationSeconds: Int = DefaultContinuationSeconds,
+  ): (Map[Option[AppId], Long], SharedHostAttributionCounts) = {
+    val active    = rows.filterNot(r => isHeartbeat(r, filter))
+    val gap       = effectiveGap(active, continuationSeconds)
+    val hostRows  = active.filter(_.host == sharedHost)
+    // Per device, stitch THIS host's sessions (one device can't be on the host twice at once), then
+    // combine across devices exactly as `proportionalHostSeconds` does: `Sum` keeps per-device spans
+    // separate; `Dedup` unions them so simultaneous cross-device use counts once.
+    val perDevice =
+      hostRows.groupBy(_.mac).valuesIterator.map(rs => stitch(rs.map(spanOf), gap)).toList
+    val hostSpans = overlap match {
+      case CrossDeviceOverlapMode.Sum   => perDevice.flatten
+      case CrossDeviceOverlapMode.Dedup => mergeSpans(perDevice.flatten)
+    }
+
+    val alloc  = scala.collection.mutable.Map.empty[Option[AppId], Long]
+    var counts = SharedHostAttributionCounts.zero
+    hostSpans.foreach { s =>
+      if (s.seconds > 0L) {
+        val qualifiers = candidateDistinctiveSpans.iterator
+          .collect {
+            case (appId, dSpans) if dSpans.exists(d => spansOverlap(d, s)) => appId
+          }
+          .toList
+          .sortBy(_.value)
+        qualifiers match {
+          case Nil       =>
+            alloc.updateWith(None)(p => Some(p.getOrElse(0L) + s.seconds))
+            counts = counts.copy(other = counts.other + 1L)
+          case oneOrMore =>
+            val n    = oneOrMore.size.toLong
+            val base = s.seconds / n
+            val rem  = s.seconds % n
+            // Equal split; the indivisible remainder rides the first (lowest-appId) qualifiers so the
+            // allocation sums to the span's seconds exactly (no winner-by-magnitude — purely by id).
+            oneOrMore.zipWithIndex.foreach { case (appId, i) =>
+              val share = base + (if (i.toLong < rem) 1L else 0L)
+              if (share > 0L) {
+                alloc.updateWith(Some(appId))(p => Some(p.getOrElse(0L) + share))
+                ()
+              }
+            }
+            counts =
+              if (n == 1L) counts.copy(attributed = counts.attributed + 1L)
+              else counts.copy(split = counts.split + 1L)
+        }
+      }
+    }
+    (alloc.toMap, counts)
+  }
+
   /** Convenience: floor-divided minute view of [[proportionalHostSeconds]]. */
   def proportionalHostMinutes(
       rows: List[PresenceRow],

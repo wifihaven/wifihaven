@@ -1901,6 +1901,89 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           assertTrue(orphan.proportionalSeconds == 300L) &&
           assertTrue(orphan.presenceSeconds == 300L)
       },
+      test(
+        "#1898: a SHARED host is allocated to the co-present app, split on overlap, else 'Other'",
+      ) {
+        // Feeling Great (distinctive feelinggreat.com, SHARED elevenlabs.io) + Speechify
+        // (distinctive speechify.com). One device, one day:
+        //   feelinggreat.com active 09:00–09:20 → FG distinctive span
+        //   speechify.com    active 11:25–11:40 → Speechify distinctive span
+        //   elevenlabs.io (shared) fires at 09:05 (inside FG), 11:30 (inside Speechify),
+        //                          and 03:00 (neither app active → "Other").
+        // The shared host must split across FG / Speechify by CO-PRESENCE (NOT argmax), and its
+        // un-covered 03:00 span must surface in the orphanHosts "Other" bucket.
+        val today = TestClock.schoolDayAfternoon.toLocalDate
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
+          appRepo     <- ZIO.service[AppRepo]
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
+          _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
+          routerId    <- seedRouter
+          fgId        <- appRepo.create("Feeling Great", "feeling-great", None, Some("🧠"))
+          spId        <- appRepo.create("Speechify", "speechify", None, Some("🗣"))
+          // Feeling Great: distinctive feelinggreat.com + SHARED elevenlabs.io.
+          _           <- appRepo.setHostEntries(
+            fgId,
+            List(
+              AppHostEntry(Hostname.unsafe("feelinggreat.com"), shared = false),
+              AppHostEntry(Hostname.unsafe("elevenlabs.io"), shared = true),
+            ),
+          )
+          // Speechify also lists elevenlabs.io as SHARED (the host is multi-tenant across both apps).
+          _           <- appRepo.setHostEntries(
+            spId,
+            List(
+              AppHostEntry(Hostname.unsafe("speechify.com"), shared = false),
+              AppHostEntry(Hostname.unsafe("elevenlabs.io"), shared = true),
+            ),
+          )
+          // Assignments so both apps reach `listForProfile` (distinctiveSpansByApp is mode-agnostic).
+          _           <- appRepo.upsertAssignment(fgId, kidsId, AppMode.Allowed, None, true)
+          _           <- appRepo.upsertAssignment(spId, kidsId, AppMode.Allowed, None, true)
+          // feelinggreat.com 09:00,09:05,09:10,09:15 → one stitched span [09:00,09:20] (1200 s).
+          _           <- insertRow(routerId, testMac, "feelinggreat.com", today, 9, 0)
+          _           <- insertRow(routerId, testMac, "feelinggreat.com", today, 9, 5)
+          _           <- insertRow(routerId, testMac, "feelinggreat.com", today, 9, 10)
+          _           <- insertRow(routerId, testMac, "feelinggreat.com", today, 9, 15)
+          // speechify.com 11:25,11:30,11:35 → one stitched span [11:25,11:40] (900 s).
+          _           <- insertRow(routerId, testMac, "speechify.com", today, 11, 25)
+          _           <- insertRow(routerId, testMac, "speechify.com", today, 11, 30)
+          _           <- insertRow(routerId, testMac, "speechify.com", today, 11, 35)
+          // elevenlabs.io shared rows: 09:05 → FG, 11:30 → Speechify, 03:00 → Other. Each 300 s.
+          _           <- insertRow(routerId, testMac, "elevenlabs.io", today, 9, 5)
+          _           <- insertRow(routerId, testMac, "elevenlabs.io", today, 11, 30)
+          _           <- insertRow(routerId, testMac, "elevenlabs.io", today, 3, 0)
+          rb          <- buildRoutes
+          (routes, auth) = rb
+          token <- auth.login("admin", "changeme").map(_.token.value)
+          req = Request
+            .get(
+              URL
+                .decode(s"/api/profiles/${kidsId.value}/usage-by-app?from=$today&to=$today")
+                .toOption
+                .get,
+            )
+            .addHeader(Header.Authorization.Bearer(token))
+          resp <- routes.runZIO(req)
+          body <- resp.body.asString
+          out  <- ZIO.fromEither(body.fromJson[ProfileUsageByApp])
+          fg     = out.apps.find(_.appName == "Feeling Great").get
+          sp     = out.apps.find(_.appName == "Speechify").get
+          orphan = out.orphanHosts.find(_.host.value == "elevenlabs.io")
+        } yield assertTrue(resp.status == Status.Ok) &&
+          // FG = feelinggreat.com (1200 s) + elevenlabs.io 09:05 share (300 s).
+          assertTrue(fg.proportionalSeconds == 1500L) &&
+          // Speechify = speechify.com (900 s) + elevenlabs.io 11:30 share (300 s).
+          assertTrue(sp.proportionalSeconds == 1200L) &&
+          // The shared host surfaces under BOTH apps' host rows (co-presence attribution).
+          assertTrue(fg.hosts.exists(_.host.value == "elevenlabs.io")) &&
+          assertTrue(sp.hosts.exists(_.host.value == "elevenlabs.io")) &&
+          // The un-covered 03:00 span lands in "Other" with exactly its 300 s.
+          assertTrue(orphan.exists(_.proportionalSeconds == 300L))
+      },
       test("#1433: an app with usage but no time limit still returns its time-used") {
         // The profile/app page surfaces today's time-used for every app, not
         // just time-limited ones. An app assigned with mode=allowed (no daily
