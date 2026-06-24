@@ -84,7 +84,7 @@ async def test_ws_status_tracks_connections_and_pushes(client, auth_headers):
         await ws.close()
 
 
-async def test_ws_push_to_all_with_no_connections_is_noop(client, auth_headers):
+async def test_ws_push_to_all_with_no_connections_is_noop(client):
     # A snapshot change with nobody connected must not error and reports 0 pushes.
     new_snap = {
         "etag": '"sha256:ws-noconn-0001"',
