@@ -1,6 +1,7 @@
 package wifihaven.api
 
 import wifihaven.api.db.AppRepo
+import wifihaven.shared.AppHostEntry
 import wifihaven.shared.IconType
 import wifihaven.shared.types.*
 import org.yaml.snakeyaml.LoaderOptions
@@ -49,6 +50,11 @@ final case class AppTemplate(
     icon: Option[String],
     iconType: IconType,
     hosts: List[Hostname],
+    // #1896: optional, parallel to `hosts`. `hosts` are DISTINCTIVE (uniquely identify this app);
+    // `sharedHosts` are multi-tenant vendor backends listed on many apps. Defaults to empty, so every
+    // existing template is unchanged. The flag is stored but ignored until S2-S5 — see
+    // `docs/design/shared-host-allocation.md`.
+    sharedHosts: List[Hostname] = Nil,
 )
 
 object AppTemplates {
@@ -105,27 +111,27 @@ object AppTemplates {
       Option(root.get(key)).toRight(s"missing required field '$key'").flatMap(f)
 
     for {
-      slugRaw  <- req("slug") {
+      slugRaw     <- req("slug") {
         case s: String => Right(s)
         case other     => Left(s"slug must be a string, got $other")
       }
-      slug     <- AppTemplateId.parse(slugRaw)
-      name     <- req("name") {
+      slug        <- AppTemplateId.parse(slugRaw)
+      name        <- req("name") {
         case s: String if s.trim.nonEmpty => Right(s.trim)
         case _                            => Left("name must be a non-empty string")
       }
-      icon     <- Option(root.get("icon")) match {
+      icon        <- Option(root.get("icon")) match {
         case None            => Right(None)
         case Some(s: String) => Right(Some(s).filter(_.trim.nonEmpty))
         case Some(other)     => Left(s"icon must be a string if present, got $other")
       }
-      iconType <- Option(root.get("icon_type")) match {
+      iconType    <- Option(root.get("icon_type")) match {
         case None            => Right(IconType.Emoji)
         case Some(s: String) =>
           IconType.parse(s.trim).toRight(s"unknown icon_type '$s' (expected emoji|url|png_base64)")
         case Some(other)     => Left(s"icon_type must be a string if present, got $other")
       }
-      hosts    <- Option(root.get("hosts")) match {
+      hosts       <- Option(root.get("hosts")) match {
         case Some(xs: java.util.List[?]) =>
           val strs = xs.asScala.toList.map(_.toString)
           if strs.isEmpty then Left("hosts must contain at least one entry")
@@ -139,13 +145,70 @@ object AppTemplates {
               .map(_.reverse.distinct)
         case _                           => Left("hosts must be a non-empty list of strings")
       }
-      _        <- Either.cond(
+      sharedHosts <- Option(root.get("shared_hosts")) match {
+        case None                        => Right(Nil)
+        case Some(xs: java.util.List[?]) =>
+          xs.asScala.toList
+            .map(_.toString)
+            .foldLeft[Either[String, List[Hostname]]](Right(Nil)) { (acc, raw) =>
+              acc.flatMap(prev =>
+                Hostname
+                  .parse(raw.trim)
+                  .left
+                  .map(e => s"invalid shared host '$raw': $e")
+                  .map(_ :: prev),
+              )
+            }
+            .map(_.reverse.distinct)
+        case Some(other)                 =>
+          Left(s"shared_hosts must be a list of strings if present, got $other")
+      }
+      _           <- {
+        val overlap = hosts.toSet.intersect(sharedHosts.toSet)
+        Either.cond(
+          overlap.isEmpty,
+          (),
+          s"host(s) ${overlap.map(_.value).mkString(",")} listed in both hosts and shared_hosts",
+        )
+      }
+      _           <- Either.cond(
         source.endsWith(s"/${slug.value}.yml"),
         (), {
           s"slug '${slug.value}' does not match file name $source"
         },
       )
-    } yield AppTemplate(slug, name, icon, iconType, hosts)
+    } yield AppTemplate(slug, name, icon, iconType, hosts, sharedHosts)
+  }
+
+  /**
+   * #1896: directory-wide invariants for the shared-host attribution catalog. Returns a
+   * human-readable violation per breach (empty == valid); used by the validation test:
+   *   1. every app has ≥1 distinctive host (`hosts` non-empty) — an all-shared app could never be
+   *      "demonstrably in use" and would receive zero attribution forever; 2. a host marked
+   *      `shared` on any template must be `shared` on every template that lists it. Listing it
+   *      under plain `hosts` elsewhere would re-introduce the unconditional mis-credit the shared
+   *      flag exists to prevent. Distinctiveness is thus globally consistent across the catalog
+   *      even though the flag is stored per-`(app, host)`.
+   */
+  def sharedHostViolations(templates: List[AppTemplate]): List[String] = {
+    val emptyDistinctive  = templates.collect {
+      case t if t.hosts.isEmpty =>
+        s"template '${t.slug.value}' has no distinctive hosts — an all-shared template is rejected"
+    }
+    val distinctiveOwners = templates.flatMap(t => t.hosts.map(_ -> t.slug.value))
+    val sharedOwners      = templates.flatMap(t => t.sharedHosts.map(_ -> t.slug.value))
+    val distinctiveByHost = distinctiveOwners.groupMap(_._1)(_._2)
+    val sharedByHost      = sharedOwners.groupMap(_._1)(_._2)
+    val conflicts         = distinctiveByHost.keySet
+      .intersect(sharedByHost.keySet)
+      .toList
+      .sortBy(_.value)
+      .map { h =>
+        s"host '${h.value}' is distinctive on [${distinctiveByHost(h).sorted.mkString(",")}] but " +
+          s"shared on [${sharedByHost(h).sorted.mkString(",")}] — a shared host must be shared on " +
+          "every template that lists it"
+      }
+    emptyDistinctive ++ conflicts
   }
 
   private def withResource[A](resource: String)(f: InputStream => A): Task[A] =
@@ -201,40 +264,51 @@ object AppTemplates {
     final case class Augmented(added: List[Hostname]) extends SeedOutcome
   }
 
+  /**
+   * The template's full host-set as repo entries: distinctive `hosts` (shared=false) followed by
+   * `sharedHosts` (shared=true). #1896 — `parseTemplate` guarantees the two lists are disjoint.
+   */
+  private def templateEntries(t: AppTemplate): List[AppHostEntry] =
+    t.hosts.map(AppHostEntry(_, shared = false)) ++ t.sharedHosts.map(
+      AppHostEntry(_, shared = true),
+    )
+
   private def seedOne(repo: AppRepo, t: AppTemplate): Task[(String, SeedOutcome)] =
     repo
       .findByTemplateId(t.slug)
       .flatMap {
         case Some(existing) =>
-          repo.getHosts(existing.id).flatMap { hosts =>
-            if hosts.isEmpty then
-              repo.setHosts(existing.id, t.hosts) *>
+          repo.getHostEntries(existing.id).flatMap { existingEntries =>
+            if existingEntries.isEmpty then
+              repo.setHostEntries(existing.id, templateEntries(t)) *>
                 ZIO.logInfo(
                   s"app_templates: slug=${t.slug.value} exists with empty hosts — repopulated (${t.hosts.size} hosts)",
                 ) *>
                 ZIO.succeed((t.slug.value, SeedOutcome.Repopulated))
             else {
-              val existingSet = hosts.toSet
-              val missing     = t.hosts.filterNot(existingSet.contains)
+              val existingHosts = existingEntries.map(_.host).toSet
+              // Additively merge only NEW hosts; existing rows keep their stored shared flag and
+              // operator-added hosts are never removed (#1087). New rows carry the template flag.
+              val missing       = templateEntries(t).filterNot(e => existingHosts.contains(e.host))
               if missing.isEmpty then
                 ZIO.logDebug(
-                  s"app_templates: slug=${t.slug.value} exists (id=${existing.id.value}, hosts=${hosts.size}) — preserved",
+                  s"app_templates: slug=${t.slug.value} exists (id=${existing.id.value}, hosts=${existingEntries.size}) — preserved",
                 ) *>
                   ZIO.succeed((t.slug.value, SeedOutcome.Preserved))
               else
-                repo.setHosts(existing.id, (hosts ++ missing).distinct) *>
+                repo.setHostEntries(existing.id, existingEntries ++ missing) *>
                   ZIO.logInfo(
                     s"app_templates: slug=${t.slug.value} augmented (added ${missing.size} hosts: " +
-                      s"${missing.map(_.value).mkString(",")})",
+                      s"${missing.map(_.host.value).mkString(",")})",
                   ) *>
-                  ZIO.succeed((t.slug.value, SeedOutcome.Augmented(missing)))
+                  ZIO.succeed((t.slug.value, SeedOutcome.Augmented(missing.map(_.host))))
             }
           }
         case None           =>
           for {
             freeSlug <- findFreeSlug(repo, t.slug.value)
             id       <- repo.create(t.name, freeSlug, Some(t.slug), t.icon, t.iconType)
-            _        <- repo.setHosts(id, t.hosts)
+            _        <- repo.setHostEntries(id, templateEntries(t))
             _        <- ZIO.logInfo(
               s"app_templates: created slug=${t.slug.value} (id=${id.value}, hosts=${t.hosts.size})",
             )

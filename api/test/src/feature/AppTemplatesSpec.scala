@@ -15,6 +15,8 @@ import zio.http.*
 import zio.json.*
 import zio.test.*
 
+import scala.jdk.CollectionConverters.*
+
 /**
  * #768: tests for the starter library YAML templates, the idempotent startup seeder, and the
  * reset-to-template endpoint.
@@ -35,6 +37,30 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
   private val cleanDb = TestDatabase.cleanAndMigrate
 
   private def url(p: String) = URL.decode(p).toOption.get
+
+  /** Build a raw YAML-shaped root map for exercising [[AppTemplates.parseTemplate]] directly. */
+  private def rootMap(
+      slug: String,
+      hosts: List[String],
+      sharedHosts: Option[List[String]],
+  ): java.util.Map[String, AnyRef] = {
+    val m = new java.util.HashMap[String, AnyRef]()
+    m.put("slug", slug)
+    m.put("name", slug)
+    m.put("hosts", hosts.asJava)
+    sharedHosts.foreach(s => m.put("shared_hosts", s.asJava))
+    m
+  }
+
+  private def tmpl(slug: String, hosts: List[String], sharedHosts: List[String]): AppTemplate =
+    AppTemplate(
+      AppTemplateId.unsafe(slug),
+      slug,
+      None,
+      IconType.Emoji,
+      hosts.map(Hostname.unsafe),
+      sharedHosts.map(Hostname.unsafe),
+    )
 
   private def adminToken =
     for {
@@ -130,6 +156,63 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         assertTrue(templates.forall(_.name.nonEmpty)) &&
         assertTrue(templates.map(_.slug).distinct.size == templates.size)
       }
+    },
+    test("#1896 shared_hosts defaults to empty and parses parallel to hosts") {
+      val base       = AppTemplates.parseTemplate(
+        rootMap("youtube", List("youtube.com"), None),
+        "/app_templates/youtube.yml",
+      )
+      val withShared = AppTemplates.parseTemplate(
+        rootMap("youtube", List("youtube.com"), Some(List("elevenlabs.io", "launchdarkly.com"))),
+        "/app_templates/youtube.yml",
+      )
+      assertTrue(base.map(_.sharedHosts) == Right(Nil)) &&
+      assertTrue(
+        withShared.map(_.sharedHosts) ==
+          Right(List(Hostname.unsafe("elevenlabs.io"), Hostname.unsafe("launchdarkly.com"))),
+      )
+    },
+    test("#1896 parseTemplate rejects a host listed in both hosts and shared_hosts") {
+      val r = AppTemplates.parseTemplate(
+        rootMap("youtube", List("youtube.com"), Some(List("youtube.com"))),
+        "/app_templates/youtube.yml",
+      )
+      assertTrue(r.isLeft)
+    },
+    test("#1896 catalog satisfies the shared-host invariants") {
+      for {
+        templates <- AppTemplates.loadAll()
+      } yield assertTrue(AppTemplates.sharedHostViolations(templates).isEmpty)
+    },
+    test("#1896 sharedHostViolations flags an all-shared template (no distinctive host)") {
+      assertTrue(
+        AppTemplates.sharedHostViolations(List(tmpl("x", Nil, List("elevenlabs.io")))).nonEmpty,
+      )
+    },
+    test("#1896 sharedHostViolations flags a host distinctive on one app but shared on another") {
+      val a = tmpl("a", List("elevenlabs.io"), Nil)
+      val b = tmpl("b", List("b.com"), List("elevenlabs.io"))
+      assertTrue(AppTemplates.sharedHostViolations(List(a, b)).nonEmpty)
+    },
+    test("#1896 sharedHostViolations passes a globally consistent catalog") {
+      val a = tmpl("a", List("a.com"), List("elevenlabs.io"))
+      val b = tmpl("b", List("b.com"), List("elevenlabs.io"))
+      assertTrue(AppTemplates.sharedHostViolations(List(a, b)).isEmpty)
+    },
+    test("#1896 seeder persists the shared flag per host") {
+      for {
+        _       <- cleanDb
+        appRepo <- ZIO.service[AppRepo]
+        t = tmpl("youtube", List("youtube.com"), List("elevenlabs.io"))
+        _       <- AppTemplates.seed(appRepo, List(t))
+        app     <- appRepo.findByTemplateId(t.slug)
+        entries <- appRepo.getHostEntries(app.get.id)
+      } yield assertTrue(
+        entries.toSet == Set(
+          AppHostEntry(Hostname.unsafe("youtube.com"), false),
+          AppHostEntry(Hostname.unsafe("elevenlabs.io"), true),
+        ),
+      )
     },
     test("every starter template has icon_type=url with a non-empty URL (#1041)") {
       for {
