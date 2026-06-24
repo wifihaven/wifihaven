@@ -117,6 +117,30 @@ class FakeAPIClient:
             path += f"?since_id={since_id}"
         return self._get_json(path)
 
+    # ── /test/ws_status (#1939) ─────────────────────────────────────────────
+
+    def ws_status(self) -> dict[str, Any]:
+        """{connections, policyFramesSent} — server side of the ws push path."""
+        return self._get_json("/test/ws_status")
+
+    def wait_for_ws_connected(
+        self,
+        *,
+        timeout_s: float = 180,
+        interval_s: float = 2.0,
+    ) -> dict[str, Any]:
+        """Block until the agent's wifihaven-ws sidecar has upgraded the socket."""
+        deadline = time.monotonic() + timeout_s
+        last: dict[str, Any] = {}
+        while time.monotonic() < deadline:
+            last = self.ws_status()
+            if last.get("connections", 0) >= 1:
+                return last
+            time.sleep(interval_s)
+        raise TimeoutError(
+            f"agent ws sidecar never connected in {timeout_s}s (last={last!r})"
+        )
+
     # ── internal ───────────────────────────────────────────────────────────
 
     def _post_json(self, path: str, body: dict[str, Any]) -> dict[str, Any]:

@@ -267,7 +267,18 @@ HOST_GID=$(id -g)
 # render.lua DNATs blocked HTTP/80 traffic there; without uhttpd in
 # the image, the DNAT lands on a dead port and curl times out
 # instead of receiving the block page.
-PACKAGES_LIST="wifihaven -dnsmasq dnsmasq-full uhttpd"
+#
+# cqueues + luaossl: the wifihaven-ws sidecar's hard runtime deps (the async
+# event loop + TLS/crypto the agent lacks, #1845/#1848). They are NOT a package
+# DEPENDS of wifihaven (ws is opt-in, default-off — see openwrt/files/etc/config/
+# wifihaven), so they are not pulled in automatically. The Gate-2 ws push→apply
+# scenario (scripts/e2e/scenarios_fake/test_ws_push_apply.py, #1939) flips
+# `wifihaven.ws.enabled=1`, which only starts a *working* sidecar when these are
+# present. Both are in the official OpenWrt feeds for Lua 5.1 on the 23.05 (ipk)
+# and snapshot (apk) generations the matrix builds (verified by the #1845 spike),
+# so the Image Builder pulls them from the upstream feed. e2e image only —
+# production routers install these out-of-band when an operator opts into ws.
+PACKAGES_LIST="wifihaven -dnsmasq dnsmasq-full uhttpd cqueues luaossl"
 
 # Per-flavor IB prep script — chosen branch is run inside the container.
 case "$PKG_FORMAT" in

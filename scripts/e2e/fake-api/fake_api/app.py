@@ -9,9 +9,10 @@ Test-control endpoints (`/test/*`) let pytest scenarios drive the fake.
 from __future__ import annotations
 
 import copy
+import json
 from typing import Any
 
-from aiohttp import web
+from aiohttp import WSMsgType, web
 
 from .state import State
 
@@ -130,6 +131,83 @@ async def get_blocklist(request: web.Request) -> web.Response:
     )
 
 
+# --- Websocket transport (#1939: server-side push for the Gate-2 e2e) --------
+#
+# Mirrors the real API's GET /api/router/ws (api/src/routes/RouterWsRoutes.scala)
+# closely enough to exercise the agent's wifihaven-ws sidecar end-to-end:
+#   - auth at upgrade: a missing/empty bearer is rejected 401 BEFORE the 101,
+#     exactly like the REST routes (and the real ws route),
+#   - on connect: push exactly one `policy` frame with the current snapshot
+#     (the #1849 first-policy-on-connect push),
+#   - on change: POST /test/snapshot fans a fresh `policy` frame to every
+#     connected channel (the #1849 push-on-change),
+#   - inbound: the agent's outbound usage/events/metrics frames and control
+#     pings are drained and discarded. The real server acks data frames; the
+#     agent's drain does NOT gate on an ack (ws_loop.drain_and_send), so the
+#     fake omits acks and lets aiohttp auto-pong the control pings. Keeping the
+#     fake a read-and-discard sink avoids a second concurrent sender on the
+#     socket (only the policy pushes send), so frames never interleave.
+
+
+def _policy_frame_text(snapshot: dict[str, Any]) -> str:
+    """The `{op:"policy", payload:<snapshot>}` envelope a pushed snapshot rides.
+
+    Byte-for-byte the shape RouterWsRegistry.policyFrameText produces, so the
+    agent's ws_loop sees an identical frame whether the push came from the real
+    Scala API or this fake.
+    """
+    return json.dumps({"op": "policy", "payload": snapshot})
+
+
+async def _push_policy(state: State, ws: web.WebSocketResponse) -> bool:
+    """Send one `policy` frame to a single channel; True on success.
+
+    A send failure (a racing disconnect) returns False so the caller can drop
+    the dead channel — same posture as the real registry's channel_closed path.
+    """
+    try:
+        await ws.send_str(_policy_frame_text(state.snapshot))
+        state.note_policy_frame_sent()
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+async def _push_policy_to_all(state: State) -> int:
+    """Fan the current snapshot to every connected channel; return push count."""
+    pushed = 0
+    for ws in list(state.ws_connections):
+        if await _push_policy(state, ws):
+            pushed += 1
+        else:
+            state.deregister_ws(ws)
+    return pushed
+
+
+async def get_ws(request: web.Request) -> web.StreamResponse:
+    # Auth at upgrade time. Reject a missing/empty bearer with the SAME 401 the
+    # REST routes produce (no 101) before preparing the websocket.
+    if _bearer_token(request) is None:
+        return web.json_response({"error": "Missing router token"}, status=401)
+    state: State = request.app[STATE_KEY]
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
+    state.register_ws(ws)
+    # #1849 first-policy-on-connect push.
+    await _push_policy(state, ws)
+    try:
+        async for msg in ws:
+            if msg.type == WSMsgType.ERROR:
+                break
+            # TEXT/BINARY (agent usage/events/metrics) are drained + discarded;
+            # control pings are auto-ponged by aiohttp. The fake never needs the
+            # inbound payloads — the Gate-2 ingest-parity coverage is Gate 3
+            # (ws_send.py against the real API).
+    finally:
+        state.deregister_ws(ws)
+    return ws
+
+
 # --- Test-control endpoints --------------------------------------------------
 
 
@@ -137,7 +215,12 @@ async def test_post_snapshot(request: web.Request) -> web.Response:
     body = await _read_json(request)
     state: State = request.app[STATE_KEY]
     state.replace_snapshot(body)
-    return web.json_response({"ok": True, "etag": state.etag})
+    # #1939/#1849: a snapshot change pushes ONE fresh `policy` frame to every
+    # connected ws channel. The HTTP poll path (GET /api/router/policy) is
+    # unchanged; a scenario that wants to prove the push specifically widens the
+    # agent's poll interval so only this push can deliver the new etag.
+    pushed = await _push_policy_to_all(state)
+    return web.json_response({"ok": True, "etag": state.etag, "wsPushed": pushed})
 
 
 async def test_get_events(request: web.Request) -> web.Response:
@@ -255,6 +338,24 @@ async def test_post_blocklist(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "id": bl_id, "host_count": len(hosts)})
 
 
+async def test_get_ws_status(request: web.Request) -> web.Response:
+    """Report ws push state so scenarios can sync on "the agent connected".
+
+    `connections` is the live channel count; `policyFramesSent` is the
+    cumulative count of `policy` frames the fake has pushed (on-connect +
+    on-change). Added by #1939 so the Gate-2 ws-push scenario can wait for the
+    sidecar to upgrade before triggering a change, and assert the server side
+    of the push independently of the router-side receive observables.
+    """
+    state: State = request.app[STATE_KEY]
+    return web.json_response(
+        {
+            "connections": len(state.ws_connections),
+            "policyFramesSent": state.ws_policy_frames_sent,
+        }
+    )
+
+
 async def test_post_reset(request: web.Request) -> web.Response:
     state: State = request.app[STATE_KEY]
     state.reset()
@@ -283,7 +384,9 @@ def make_app(state: State | None = None) -> web.Application:
     app.router.add_post("/api/router/events", post_events)
     app.router.add_post("/api/router/usage", post_usage)
     app.router.add_get("/api/blocklists/{id}", get_blocklist)
+    app.router.add_get("/api/router/ws", get_ws)
     app.router.add_post("/test/snapshot", test_post_snapshot)
+    app.router.add_get("/test/ws_status", test_get_ws_status)
     app.router.add_post("/test/blocklist", test_post_blocklist)
     app.router.add_get("/test/events", test_get_events)
     app.router.add_get("/test/usage", test_get_usage)
