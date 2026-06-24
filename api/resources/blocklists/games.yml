@@ -90,3 +90,9 @@ hosts:
   - garena.com
   - tencentgames.com
   - epicgames.dev
+  # #1922: "Rainbow Obby" browser-game host marketed as unblocked / works in
+  # restrictive school networks; observed on a kid iPad via rotating numbered
+  # subdomains (rainbowobby4/12.emolingo.games) — the unblocked-games evasion
+  # pattern. Block target only, NOT an app template (no daily budget for a
+  # filter-positioned game host). Apex covers all rainbowobbyN.* subdomains.
+  - emolingo.games
