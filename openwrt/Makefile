@@ -60,6 +60,12 @@ define Package/wifihaven/install
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/usr/sbin/wifihaven-dns-tail $(1)/usr/sbin/
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/usr/sbin/wifihaven-nflog-tail $(1)/usr/sbin/
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/usr/sbin/wifihaven-sni-tail $(1)/usr/sbin/
+	# #1848: websocket transport sidecar. Default-off (UCI wifihaven.ws.enabled);
+	# the init script only starts it when enabled. Needs cqueues + luaossl at
+	# runtime, which the operator installs when turning ws on (see
+	# docs/design/websocket-transport.md / the ws UCI section) — NOT a hard
+	# DEPENDS, so a default (ws-off) install stays lean.
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/usr/sbin/wifihaven-ws $(1)/usr/sbin/
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/usr/sbin/wifihaven-update $(1)/usr/sbin/
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/usr/sbin/wifihaven-rotate-dnsmasq-log $(1)/usr/sbin/
 

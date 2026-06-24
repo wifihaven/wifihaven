@@ -1,324 +1,573 @@
 {
-  "annotations": {
-    "list": [
-      {
-        "builtIn": 1,
-        "datasource": {
-          "type": "grafana",
-          "uid": "-- Grafana --"
-        },
-        "enable": true,
-        "hide": true,
-        "iconColor": "rgba(0, 211, 255, 1)",
-        "name": "Annotations & Alerts",
-        "type": "dashboard"
-      }
-    ]
-  },
-  "description": "WifiHaven websocket router transport (#1846, epic #1023): server-side health for the persistent /api/router/ws endpoint. Panels target only the series the API actually emits today \u2014 router_ws_connections_active (RouterWsRegistry) and router_ws_frames_total{op,direction,result} (RouterWsRoutes demux). The REST transport stays the fallback; until the agent ws client (#1848) ships these read 0/flat. Push-on-change health (router_ws_policy_push_total) lands with #1849. Labels are bounded enums only per the \u00a74 cardinality firewall. datasource/env are templated for per-environment view.",
-  "editable": true,
-  "fiscalYearStartMonth": 0,
-  "graphTooltip": 1,
-  "links": [],
-  "liveNow": false,
-  "panels": [
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "title": "Websocket connections active (#1846)",
-      "description": "router_ws_connections_active \u2014 live count of open /api/router/ws channels, refreshed on every register/deregister so it ages out cleanly on disconnect. The single \"how many routers are on the ws transport right now?\" signal; 0 while REST ingest flows means no agent has migrated yet (the Lua ws client is #1848).",
-      "type": "timeseries",
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 0
-      },
-      "id": 1,
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "unit": "short",
-          "min": 0,
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "showPoints": "never",
-            "lineWidth": 1
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "router_ws_connections_active{env=\"$env\"}",
-          "legendFormat": "active channels",
-          "refId": "A"
-        }
-      ]
+ "annotations": {
+  "list": [
+   {
+    "builtIn": 1,
+    "datasource": {
+     "type": "grafana",
+     "uid": "-- Grafana --"
     },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "title": "Websocket frame rate by op/direction/result (#1846)",
-      "description": "sum by (op, direction, result) (rate(router_ws_frames_total[5m])) \u2014 frame throughput across the {op,payload} demux. dir \u2208 {in,out}; result \u2208 {ok,reject,unknown_op}. A rising result=reject share means agents are sending frames the server rejects (the ws analog of a REST 4xx); result=unknown_op is the forward-compat counter for frames whose op the server does not recognize (design \u00a71.3).",
-      "type": "timeseries",
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 0
-      },
-      "id": 2,
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "unit": "cps",
-          "min": 0,
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "showPoints": "never",
-            "lineWidth": 1,
-            "stacking": {
-              "mode": "normal",
-              "group": "A"
-            }
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "sum by (op, direction, result) (rate(router_ws_frames_total{env=\"$env\"}[5m]))",
-          "legendFormat": "{{op}} {{direction}} {{result}}",
-          "refId": "A"
-        }
-      ]
+    "enable": true,
+    "hide": true,
+    "iconColor": "rgba(0, 211, 255, 1)",
+    "name": "Annotations & Alerts",
+    "type": "dashboard"
+   }
+  ]
+ },
+ "description": "WifiHaven websocket router transport (#1846, epic #1023): server-side health for the persistent /api/router/ws endpoint. Panels target only the series the API actually emits today \u2014 router_ws_connections_active (RouterWsRegistry) and router_ws_frames_total{op,direction,result} (RouterWsRoutes demux). The REST transport stays the fallback; until the agent ws client (#1848) ships these read 0/flat. Push-on-change health (router_ws_policy_push_total) lands with #1849. Labels are bounded enums only per the \u00a74 cardinality firewall. datasource/env are templated for per-environment view.",
+ "editable": true,
+ "fiscalYearStartMonth": 0,
+ "graphTooltip": 1,
+ "links": [],
+ "liveNow": false,
+ "panels": [
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "title": "Websocket connections active (#1846)",
+   "description": "router_ws_connections_active \u2014 live count of open /api/router/ws channels, refreshed on every register/deregister so it ages out cleanly on disconnect. The single \"how many routers are on the ws transport right now?\" signal; 0 while REST ingest flows means no agent has migrated yet (the Lua ws client is #1848).",
+   "type": "timeseries",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 0
+   },
+   "id": 1,
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "unit": "short",
+     "min": 0,
+     "custom": {
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "showPoints": "never",
+      "lineWidth": 1
+     }
     },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "title": "Websocket frames by op (rate)",
-      "description": "sum by (op) (rate(router_ws_frames_total[5m])) \u2014 total frame rate per logical channel (hello/usage/events/metrics/ping/pong/ack). Lets an operator see which flows dominate the socket and confirm heartbeats (ping/pong) are ticking.",
-      "type": "timeseries",
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 8
-      },
-      "id": 3,
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "unit": "cps",
-          "min": 0,
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "showPoints": "never",
-            "lineWidth": 1
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "sum by (op) (rate(router_ws_frames_total{env=\"$env\"}[5m]))",
-          "legendFormat": "{{op}}",
-          "refId": "A"
-        }
-      ]
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
     },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "title": "Websocket reject + unknown_op rate",
-      "description": "sum by (op) (rate(router_ws_frames_total{result=~\"reject|unknown_op\"}[5m])) \u2014 the error surface of the transport isolated. Steady non-zero here is the first sign agents and server disagree on the wire (a bad payload, or an op one side hasn't shipped yet).",
-      "type": "timeseries",
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 8
-      },
-      "id": 4,
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "unit": "cps",
-          "min": 0,
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "showPoints": "never",
-            "lineWidth": 1
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "sum by (op, result) (rate(router_ws_frames_total{env=\"$env\",result=~\"reject|unknown_op\"}[5m]))",
-          "legendFormat": "{{op}} {{result}}",
-          "refId": "A"
-        }
-      ]
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
     }
-  ],
-  "refresh": "30s",
-  "schemaVersion": 39,
-  "tags": [
-    "wifihaven",
-    "router",
-    "websocket"
-  ],
-  "templating": {
-    "list": [
-      {
-        "current": {
-          "selected": true,
-          "text": "prod",
-          "value": "prod"
-        },
-        "hide": 0,
-        "includeAll": false,
-        "label": "Environment",
-        "multi": false,
-        "name": "env",
-        "options": [
-          {
-            "selected": true,
-            "text": "prod",
-            "value": "prod"
-          },
-          {
-            "selected": false,
-            "text": "staging",
-            "value": "staging"
-          }
-        ],
-        "query": "prod,staging",
-        "skipUrlSync": false,
-        "type": "custom"
-      },
-      {
-        "current": {
-          "selected": true,
-          "text": "grafanacloud-wifihaven-prom",
-          "value": "grafanacloud-prom"
-        },
-        "hide": 0,
-        "includeAll": false,
-        "label": "Datasource",
-        "multi": false,
-        "name": "datasource",
-        "options": [],
-        "query": "prometheus",
-        "refresh": 1,
-        "regex": "",
-        "skipUrlSync": false,
-        "type": "datasource"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "expr": "router_ws_connections_active{env=\"$env\"}",
+     "legendFormat": "active channels",
+     "refId": "A"
+    }
+   ]
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "title": "Websocket frame rate by op/direction/result (#1846)",
+   "description": "sum by (op, direction, result) (rate(router_ws_frames_total[5m])) \u2014 frame throughput across the {op,payload} demux. dir \u2208 {in,out}; result \u2208 {ok,reject,unknown_op}. A rising result=reject share means agents are sending frames the server rejects (the ws analog of a REST 4xx); result=unknown_op is the forward-compat counter for frames whose op the server does not recognize (design \u00a71.3).",
+   "type": "timeseries",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 0
+   },
+   "id": 2,
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "unit": "cps",
+     "min": 0,
+     "custom": {
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "showPoints": "never",
+      "lineWidth": 1,
+      "stacking": {
+       "mode": "normal",
+       "group": "A"
       }
-    ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "expr": "sum by (op, direction, result) (rate(router_ws_frames_total{env=\"$env\"}[5m]))",
+     "legendFormat": "{{op}} {{direction}} {{result}}",
+     "refId": "A"
+    }
+   ]
   },
-  "time": {
-    "from": "now-6h",
-    "to": "now"
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "title": "Websocket frames by op (rate)",
+   "description": "sum by (op) (rate(router_ws_frames_total[5m])) \u2014 total frame rate per logical channel (hello/usage/events/metrics/ping/pong/ack). Lets an operator see which flows dominate the socket and confirm heartbeats (ping/pong) are ticking.",
+   "type": "timeseries",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 8
+   },
+   "id": 3,
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "unit": "cps",
+     "min": 0,
+     "custom": {
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "showPoints": "never",
+      "lineWidth": 1
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "expr": "sum by (op) (rate(router_ws_frames_total{env=\"$env\"}[5m]))",
+     "legendFormat": "{{op}}",
+     "refId": "A"
+    }
+   ]
   },
-  "timepicker": {},
-  "timezone": "",
-  "title": "WifiHaven \u2014 Router WS transport",
-  "uid": "wifihaven-router-ws-transport",
-  "version": 1,
-  "weekStart": ""
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "title": "Websocket reject + unknown_op rate",
+   "description": "sum by (op) (rate(router_ws_frames_total{result=~\"reject|unknown_op\"}[5m])) \u2014 the error surface of the transport isolated. Steady non-zero here is the first sign agents and server disagree on the wire (a bad payload, or an op one side hasn't shipped yet).",
+   "type": "timeseries",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 8
+   },
+   "id": 4,
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "unit": "cps",
+     "min": 0,
+     "custom": {
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "showPoints": "never",
+      "lineWidth": 1
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "expr": "sum by (op, result) (rate(router_ws_frames_total{env=\"$env\",result=~\"reject|unknown_op\"}[5m]))",
+     "legendFormat": "{{op}} {{result}}",
+     "refId": "A"
+    }
+   ]
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "title": "Agent ws link state by router (ws_state) (#1848)",
+   "description": "max by (router_id) (ws_state) \u2014 the wifihaven-ws sidecar's link gauge folded into the agent /metrics push: 1 = a live websocket to the API, 0 = disconnected (running on the HTTP fallback path). One series per router_id (bounded fleet dimension). This is the agent's own view of link health, complementing the server-side router_ws_connections_active gauge.",
+   "type": "timeseries",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 16
+   },
+   "id": 5,
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "unit": "short",
+     "min": 0,
+     "custom": {
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "showPoints": "never",
+      "lineWidth": 1
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "expr": "max by (router_id) (ws_state{env=\"$env\"})",
+     "legendFormat": "{{router_id}}",
+     "refId": "A"
+    }
+   ]
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "title": "Agent ws connect outcomes by result (#1848)",
+   "description": "sum by (result) (rate(ws_connect_total[5m])) \u2014 reconnect health from the agent side. result \u2208 {ok, upgrade_fail, auth_fail, timeout}. A rising auth_fail means the bearer token is being rejected at upgrade; upgrade_fail/timeout point at a proxy mangling Upgrade or an unreachable endpoint (the agent falls back to HTTP, design \u00a73.1).",
+   "type": "timeseries",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 16
+   },
+   "id": 6,
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "unit": "cps",
+     "min": 0,
+     "custom": {
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "showPoints": "never",
+      "lineWidth": 1,
+      "stacking": {
+       "mode": "normal",
+       "group": "A"
+      }
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "expr": "sum by (result) (rate(ws_connect_total{env=\"$env\"}[5m]))",
+     "legendFormat": "{{result}}",
+     "refId": "A"
+    }
+   ]
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "title": "Agent ws HTTP-fallback events by result (#1848)",
+   "description": "sum by (result) (rate(ws_fallback_total[5m])) \u2014 how often the agent crossed the transport boundary. result=to_http: the socket was down past ws_fallback_after and the main agent resumed HTTP polling; result=back_to_ws: the socket re-established and the agent returned to the ws path. A high to_http rate without matching back_to_ws means the fleet is stuck on HTTP \u2014 do NOT arm any poll-deprecation (design \u00a73.1/\u00a73.2).",
+   "type": "timeseries",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 24
+   },
+   "id": 7,
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "unit": "cps",
+     "min": 0,
+     "custom": {
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "showPoints": "never",
+      "lineWidth": 1,
+      "stacking": {
+       "mode": "normal",
+       "group": "A"
+      }
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "expr": "sum by (result) (rate(ws_fallback_total{env=\"$env\"}[5m]))",
+     "legendFormat": "{{result}}",
+     "refId": "A"
+    }
+   ]
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "title": "Agent ws frame throughput sent/recv by op (#1848)",
+   "description": "sum by (op) (rate(ws_frames_sent_total[5m])) and ws_frames_recv_total \u2014 agent-side frame throughput. sent op \u2208 {usage, events, ping}; recv op \u2208 {policy, ack, pong, unknown}. A pushed policy shows up as recv op=policy (the server-side push is #1849); usage/events sent are the outbound spool drain. recv op=unknown is the agent's forward-compat counter for an unrecognised server op.",
+   "type": "timeseries",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 24
+   },
+   "id": 8,
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "unit": "cps",
+     "min": 0,
+     "custom": {
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "showPoints": "never",
+      "lineWidth": 1,
+      "stacking": {
+       "mode": "normal",
+       "group": "A"
+      }
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "expr": "sum by (op) (rate(ws_frames_sent_total{env=\"$env\"}[5m]))",
+     "legendFormat": "sent {{op}}",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "expr": "sum by (op) (rate(ws_frames_recv_total{env=\"$env\"}[5m]))",
+     "legendFormat": "recv {{op}}",
+     "refId": "B"
+    }
+   ]
+  }
+ ],
+ "refresh": "30s",
+ "schemaVersion": 39,
+ "tags": [
+  "wifihaven",
+  "router",
+  "websocket"
+ ],
+ "templating": {
+  "list": [
+   {
+    "current": {
+     "selected": true,
+     "text": "prod",
+     "value": "prod"
+    },
+    "hide": 0,
+    "includeAll": false,
+    "label": "Environment",
+    "multi": false,
+    "name": "env",
+    "options": [
+     {
+      "selected": true,
+      "text": "prod",
+      "value": "prod"
+     },
+     {
+      "selected": false,
+      "text": "staging",
+      "value": "staging"
+     }
+    ],
+    "query": "prod,staging",
+    "skipUrlSync": false,
+    "type": "custom"
+   },
+   {
+    "current": {
+     "selected": true,
+     "text": "grafanacloud-wifihaven-prom",
+     "value": "grafanacloud-prom"
+    },
+    "hide": 0,
+    "includeAll": false,
+    "label": "Datasource",
+    "multi": false,
+    "name": "datasource",
+    "options": [],
+    "query": "prometheus",
+    "refresh": 1,
+    "regex": "",
+    "skipUrlSync": false,
+    "type": "datasource"
+   }
+  ]
+ },
+ "time": {
+  "from": "now-6h",
+  "to": "now"
+ },
+ "timepicker": {},
+ "timezone": "",
+ "title": "WifiHaven \u2014 Router WS transport",
+ "uid": "wifihaven-router-ws-transport",
+ "version": 2,
+ "weekStart": ""
 }

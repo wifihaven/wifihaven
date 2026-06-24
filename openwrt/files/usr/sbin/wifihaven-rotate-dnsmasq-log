@@ -9,6 +9,14 @@
 #   /tmp/wifihaven-dnsmasq.log  — dnsmasq query log (the writer is dnsmasq).
 #   /tmp/wifihaven-sni.log      — SNI capture spool (#573; writer is
 #                                 wifihaven-sni-tail, follower is dns-tail).
+#   /tmp/wifihaven-ws-outbound.jsonl — outbound ws frame spool (#1848; writer is
+#                                 wifihaven-agent, drained by wifihaven-ws). It is
+#                                 ALREADY self-bounded at ws_spool_max_bytes
+#                                 (default 1 MB, oldest-first drop) on every
+#                                 append, so this 20 MB cron is a belt-and-
+#                                 suspenders backstop that should never fire; the
+#                                 sidecar's offset-cursor drain detects the
+#                                 truncation (size < offset → reset) like dns-tail.
 #
 # Truncating the original (rather than renaming it) is the "copytruncate"
 # pattern. dnsmasq / sni-tail hold the log fd open for the lifetime of the
@@ -40,3 +48,4 @@ rotate_if_big() {
 
 rotate_if_big /tmp/wifihaven-dnsmasq.log
 rotate_if_big /tmp/wifihaven-sni.log
+rotate_if_big /tmp/wifihaven-ws-outbound.jsonl
