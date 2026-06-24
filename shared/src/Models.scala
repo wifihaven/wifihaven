@@ -294,6 +294,14 @@ case class AppTimeLimit(
     // during a Schedule-reason whole-MAC block. Only applies to Schedule; Paused/TimeLimit/Manual
     // are not affected. Default true preserves current behavior (extraAllowed beats every block).
     allowedDuringScheduleBlock: Boolean = true,
+    // #1897 (shared-hosts S2): this (app, host) row's `app_hosts.shared` flag. `true` marks a SHARED
+    // backend (a multi-tenant vendor API / CDN listed on several apps); `false` (default) is a
+    // DISTINCTIVE host that uniquely identifies the app's use. Carried per-(assignment × host) from
+    // `AppTimeLimitRepo.listForProfile` so `ProfileAppDispositions` can partition each app's host-set
+    // into distinctive vs shared. Shared hosts are excluded from the per-app engaged-minutes stitch
+    // (already counted inside any overlapping distinctive span — see docs/design/shared-host-
+    // allocation.md). Default false keeps every legacy hand-built construction distinctive.
+    shared: Boolean = false,
 ) derives JsonCodec
 
 // #761: app concept. An App is a household-scoped named bundle of host
