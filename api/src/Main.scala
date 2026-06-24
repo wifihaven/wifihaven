@@ -178,6 +178,10 @@ object Main extends ZIOAppDefault {
         // not one ~500ms recompute per poll per router. forkScoped (like the rollup loops) so it is
         // interrupted before the Hikari pool closes on shutdown. The first tick fires immediately;
         // `reevaluate` swallows+logs a transient build failure and keeps the last good cache.
+        // Idle cost: the tick rebuilds unconditionally even with zero connected routers / no recent
+        // poll — but for an always-polling household fleet that is ≈ the pre-cache per-poll load
+        // (which also ran every ~5s), so it is not a regression; gating on "any consumer present" is
+        // a possible later refinement.
         policyForPush <- ZIO.service[PolicyService]
         _ <- policyForPush.setPublisher(new wifihaven.api.policy.PolicySnapshotPublisher {
           def publish(snap: wifihaven.shared.PolicySnapshot): UIO[Unit] =

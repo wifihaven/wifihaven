@@ -207,6 +207,13 @@ object MetricGuard {
     // no per-mac / per-host dimension ever rides a ws metric.
     "router_ws_connections_active"              -> Set.empty[String],
     "router_ws_frames_total"                    -> Set("op", "direction", "result"),
+    // #1849 — computed-snapshot cache + push-on-change. `policy_snapshot_build_total` splits policy
+    // snapshot accesses into `result` ∈ {computed, cache_hit} (proves the cache works);
+    // `router_ws_policy_push_total` is the push fan-out, `result` ∈ {ok, channel_closed}. Both are
+    // fixed 2-value enums — bounded, no per-mac / per-host dimension. (Without these entries the
+    // firewall would reject both names as unknown_name and the series would never emit.)
+    "policy_snapshot_build_total"               -> Set("result"),
+    "router_ws_policy_push_total"               -> Set("result"),
     // #1848 — AGENT-side websocket transport metrics. The wifihaven-ws sidecar has no metrics
     // registry of its own, so it writes a cumulative tally that the agent folds into its
     // /api/router/metrics push (the server attaches router_id / installation_id, as for every

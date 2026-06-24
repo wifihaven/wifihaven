@@ -60,6 +60,13 @@ object MetricCardinalityGuardSpec extends ZIOSpecDefault {
   private val AgentEmit =
     """metrics\.(?:inc_counter|set_gauge|observe)\(\s*[A-Za-z_][A-Za-z0-9_]*\s*,\s*"([^"]+)"""".r
 
+  // #1849: `MetricGuard.counter("name"...)` / `.gauge` / `.histogram` with a string-literal name.
+  // The guard REJECTS a name not in `Allowed` at runtime (`check` → `unknown_name`), so a series
+  // routed through the guard but missing from the allowlist emits NOTHING — a silent dead metric the
+  // `BareEmit` scan above does NOT catch (it only sees bare `Metric.*`). This regex closes that gap.
+  private val GuardEmit =
+    """MetricGuard\.(?:counter|gauge|histogram|summary|frequency)\(\s*"([^"]+)"""".r
+
   // The firewall's own reject counter is emitted with a bare literal by design — it is the gate, so
   // it does not itself live in the allowlist.
   private val GuardInternal = Set("metrics_rejected_total")
@@ -71,6 +78,16 @@ object MetricCardinalityGuardSpec extends ZIOSpecDefault {
           .flatMap(p => BareEmit.findAllMatchIn(readAll(p)).map(_.group(1)))
           .toSet
       val unallowed = names -- MetricGuard.Allowed.keySet -- GuardInternal
+      assertTrue(unallowed.isEmpty)
+    },
+    test(
+      "every MetricGuard.* literal series in api/src is allowlisted (no silent unknown_name drop)",
+    ) {
+      val names     =
+        scalaFilesUnder("api/src")
+          .flatMap(p => GuardEmit.findAllMatchIn(readAll(p)).map(_.group(1)))
+          .toSet
+      val unallowed = names -- MetricGuard.Allowed.keySet
       assertTrue(unallowed.isEmpty)
     },
     test("every metric name the OpenWRT agent emits is allowlisted") {

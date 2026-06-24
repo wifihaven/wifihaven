@@ -120,8 +120,10 @@ case class PolicyConfig(
     // not wait for this tick.
     snapshotCacheRefreshSeconds: Int = 5,
 ) {
+  // Clamp to a 1s floor so a misconfigured `0`/negative can't turn `Schedule.fixed(Duration.Zero)`
+  // into a no-delay tight loop that pegs the DB with back-to-back ~500ms snapshot builds.
   val snapshotCacheRefreshInterval: zio.Duration =
-    zio.Duration.fromSeconds(snapshotCacheRefreshSeconds.toLong)
+    zio.Duration.fromSeconds(math.max(1, snapshotCacheRefreshSeconds).toLong)
 
   val uiAllowedHostsParsed: List[Hostname] =
     uiAllowedHosts
