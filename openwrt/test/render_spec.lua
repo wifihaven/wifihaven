@@ -1219,6 +1219,28 @@ describe("render.nft syntax validation", function()
     assert.is_true(ok == 0 or ok == true)
   end)
 
+  -- #1911: the wifihaven_encrypted_dns chain (DoT/853 + DNS:53-to-resolver-IPs)
+  -- must parse cleanly too — the v4/v6 `ip daddr { … }` anonymous sets and the
+  -- port-qualified drops are new rule shapes for this table.
+  it("encrypted-dns chain loads cleanly via `nft -c -f -`", function()
+    local ok, why = nft_checkable()
+    if not ok then
+      pending(why)
+      return
+    end
+    local s = snap_one()
+    s.blockEncryptedDns = true
+    local nft_text = render.nft(s)
+    assert.truthy(nft_text:find("chain wifihaven_encrypted_dns", 1, true))
+    local tmp = os.tmpname()
+    local f = io.open(tmp, "w")
+    f:write(nft_text)
+    f:close()
+    local ran = os.execute("nft -c -f " .. tmp .. " >/dev/null 2>&1")
+    os.remove(tmp)
+    assert.is_true(ran == 0 or ran == true)
+  end)
+
 end)
 
 -- ── shared-state update ───────────────────────────────────────────────────

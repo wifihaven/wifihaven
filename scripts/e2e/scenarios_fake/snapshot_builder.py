@@ -66,6 +66,11 @@ class SnapshotBuilder:
         # layer omit the key entirely and render byte-identically to pre-#1319
         # (render.lua treats an absent `global` as BlockRules.allowAll).
         self._global: dict[str, Any] | None = None
+        # #1911: the additive top-level `blockEncryptedDns` bool. None until
+        # `set_block_encrypted_dns()` is called, so by default the key is omitted
+        # entirely and the agent renders byte-identically to today (absent →
+        # false). Mirrors the API: a sibling of global/devices/profiles/blocklists.
+        self._block_encrypted_dns: bool | None = None
 
     def add_profile(
         self,
@@ -168,6 +173,17 @@ class SnapshotBuilder:
         )
         return self
 
+    def set_block_encrypted_dns(self, value: bool = True) -> "SnapshotBuilder":
+        """Set the network-wide `blockEncryptedDns` toggle (#1911 / #1909).
+
+        When true the agent enforces the "block encrypted DNS & relays"
+        behaviour: NODATA for the curated relay/DoH hostnames (dnsmasq) + a
+        forward-chain drop of DoT/853 and DNS:53-to-curated-resolver-IPs (nft).
+        Additive top-level field; absent → false (no-op).
+        """
+        self._block_encrypted_dns = value
+        return self
+
     def add_blocklist(
         self,
         *,
@@ -205,6 +221,10 @@ class SnapshotBuilder:
         # scenarios (and test_snapshot_builder) that don't touch it.
         if self._global is not None:
             snap["global"] = dict(self._global)
+        # #1911: emit `blockEncryptedDns` only when explicitly set, so the
+        # default top-level key set is unchanged for every other scenario.
+        if self._block_encrypted_dns is not None:
+            snap["blockEncryptedDns"] = self._block_encrypted_dns
         return snap
 
 

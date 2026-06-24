@@ -50,6 +50,59 @@ The `blockIpOnly` flag (see §0.2) is what closes the DoH / hard-coded-IP
 hole: forwarded traffic to an IP we did not resolve for this MAC is
 dropped.
 
+#### The one sanctioned exception: `blockEncryptedDns` NODATA signaling (#1911)
+
+There is exactly **one** place where the agent returns a negative DNS answer,
+and it is a deliberate, narrow exception — not a softening of the rule above.
+The additive top-level snapshot flag **`blockEncryptedDns`** (a network-wide
+household toggle; feature [#1909](https://github.com/wifihaven/wifihaven/issues/1909),
+epic [#1903](https://github.com/wifihaven/wifihaven/issues/1903)) enables the
+"block encrypted DNS & relays" behaviour. When it is `true` the agent enforces
+**two separable halves**:
+
+1. **NODATA half (dnsmasq).** A *negative* DNS answer (`local=/<host>/` →
+   NODATA) for a small curated list of relay / DoH hostnames baked into the
+   agent (`mask.icloud.com`, `mask-h2.icloud.com`, `cloudflare-dns.com`,
+   `dns.google`, `dns.quad9.net`, NextDNS, AdGuard, OpenDNS). This is the
+   exception. It exists **only because Apple's documented way to disable iCloud
+   Private Relay network-wide is a negative answer** for the relay hostnames:
+   iOS then turns Private Relay *off* and falls back to direct, filterable
+   connections. A connection-layer drop of the relay ingress does **not**
+   disable it — Apple explicitly warns that silently dropping Private Relay
+   packets causes client hangs (the [#1891](https://github.com/wifihaven/wifihaven/issues/1891)
+   symptom), and a `0.0.0.0` sinkhole leaves it "on but failing" rather than
+   cleanly off. So this DNS answer is **bypass-disable *signaling*, not
+   enforcement** — its purpose is to make the device stop tunneling so that the
+   real (connection-layer) enforcement can see and filter the traffic. It is
+   network-wide because stock dnsmasq cannot answer DNS per-client.
+
+2. **Connection-layer half (nftables).** The actual enforcement, in the
+   standard plane: a dedicated `wifihaven_encrypted_dns` forward chain that
+   drops **DoT (TCP/853 to any IP)** and **DNS port 53 (UDP+TCP) to a curated
+   set of public-resolver IPs** (`1.1.1.1`, `8.8.8.8`, `9.9.9.9`, … +v6).
+   Deliberately **port-scoped to :53** — `:443` and ICMP to those IPs are left
+   intact because `1.1.1.1`/`8.8.8.8` double as ubiquitous "am I online?"
+   connectivity-check targets, and a blanket drop makes such devices believe
+   they are permanently offline (the [#1909](https://github.com/wifihaven/wifihaven/issues/1909)
+   port-scope refinement). DoH pinned to a raw resolver IP (`:443`) is the only
+   bypass this leaves open; it is rare and handled per-device if it appears.
+
+Both halves are gated on the single `blockEncryptedDns` flag and are **default
+off** — absent/false renders byte-identically to today, and an un-updated agent
+ignores the unknown field entirely. The curated lists live baked into the agent
+(`openwrt/files/usr/lib/lua/wifihaven/encrypted_dns.lua`), keeping the wire to a
+single boolean. This is the *only* DNS-negative-answer path in the system;
+every other block remains a connection-layer drop.
+
+> **Interaction note.** The NODATA half wins over any allow carve-out for the
+> *same* curated hostname: `local=/<host>/` short-circuits resolution, so if a
+> profile's `extraAllowed` (or `global.extraAllowed`) happens to name one of the
+> curated DoH/relay hosts, its `ea_`/`@global_allow` ipset never populates (no
+> resolved IP to add) and the host stays unreachable. This is intended — the
+> toggle is a deliberately heavy-handed *network-wide* control, not a per-profile
+> one — but it means an allow entry for a curated host is silently inert while
+> the toggle is on.
+
 ### 0.2 The router agent is a dumb applier
 
 The API server's `PolicyService` evaluates every policy concept — schedules,
@@ -89,6 +142,7 @@ case class PolicySnapshot(
                                                //   Architectural Truth #1 ("DNS always
                                                //   resolves") — bypass-disablement signaling is
                                                //   itself enforcement-enabling. Default false.
+                                               //   Enforcement detail in §0.1.
 )
 
 case class DevicePolicy(

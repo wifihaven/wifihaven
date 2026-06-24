@@ -203,6 +203,30 @@ def test_set_global_matches_golden_global_keys():
     assert set(built) == set(g)
 
 
+def test_block_encrypted_dns_omitted_by_default():
+    """#1911: the additive top-level flag is absent unless explicitly set, so
+    every other scenario renders byte-identically to today."""
+    snap = SnapshotBuilder().build(etag='"sha256:no-edns"')
+    assert "blockEncryptedDns" not in snap
+
+
+def test_set_block_encrypted_dns_emits_top_level_bool():
+    """#1911: set_block_encrypted_dns() puts a top-level bool sibling of
+    global/devices/profiles/blocklists (matching the API wire shape)."""
+    snap = (
+        SnapshotBuilder()
+        .set_block_encrypted_dns(True)
+        .build(etag='"sha256:edns-on"')
+    )
+    assert snap["blockEncryptedDns"] is True
+    snap_off = (
+        SnapshotBuilder()
+        .set_block_encrypted_dns(False)
+        .build(etag='"sha256:edns-off"')
+    )
+    assert snap_off["blockEncryptedDns"] is False
+
+
 def test_set_global_lockdown_allows_optional_reason():
     """Unlike add_profile(blocked=True), set_global(blocked=True) does NOT
     require a block_reason — a global lockdown's reason is cosmetic."""
