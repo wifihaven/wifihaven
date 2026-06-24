@@ -62,12 +62,15 @@ grep -q 'procd_set_param respawn' "$INIT" \
   || check "sets procd_set_param respawn" "not found"
 
 # 6b. #1864: every instance must be niced BELOW dnsmasq (positive nice) so DNS
-# resolution wins the CPU under contention. There are four instances (agent,
-# dns-tail, sni-tail, nflog-tail); each carries one `procd_set_param nice`.
+# resolution wins the CPU under contention. There are five instances (agent,
+# dns-tail, sni-tail, nflog-tail, and the #1848 ws sidecar); each carries one
+# `procd_set_param nice`. The sni + ws instances are UCI-gated but still appear
+# unconditionally in the script text (the gate is runtime), so the static count
+# is 5.
 NICE_COUNT=$(grep -c 'procd_set_param nice' "$INIT")
-[ "$NICE_COUNT" -eq 4 ] \
-  && check "all four instances set procd_set_param nice (count=$NICE_COUNT)" ok \
-  || check "all four instances set procd_set_param nice" "expected 4, got $NICE_COUNT"
+[ "$NICE_COUNT" -eq 5 ] \
+  && check "all five instances set procd_set_param nice (count=$NICE_COUNT)" ok \
+  || check "all five instances set procd_set_param nice" "expected 5, got $NICE_COUNT"
 
 # 6c. The nice value must be a POSITIVE integer (lower priority than dnsmasq's
 # default nice 0). A zero/negative value would not de-prioritise the agent.

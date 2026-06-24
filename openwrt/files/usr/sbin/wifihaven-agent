@@ -32,6 +32,14 @@ local lan_warn   = require("wifihaven.lan_warn")
 local selfheal   = require("wifihaven.selfheal")
 local version      = require("wifihaven.version")
 local host_metrics = require("wifihaven.host_metrics")
+-- #1848: ws transport sidecar bridge. Default-off; these only do work when
+-- wifihaven.ws.enabled=1. ws_outbound tees outbound usage/events to the spool
+-- the wifihaven-ws sidecar drains; ws_metrics folds the sidecar's tally into the
+-- /api/router/metrics push. With ws off, ws_outbound is a pure pass-through and
+-- the fold is a no-op (the tmpfs files never exist), so the agent is unchanged.
+local ws_outbound  = require("wifihaven.ws_outbound")
+local ws_spool     = require("wifihaven.ws_spool")
+local ws_metrics   = require("wifihaven.ws_metrics")
 
 -- ── UCI config ───────────────────────────────────────────────────────────────
 
@@ -104,6 +112,16 @@ local eb_refresh_int = tonumber(uci_get("eb_refresh_interval", "1800"))
 local blocklist_max_bytes = tonumber(uci_get("blocklist_max_list_bytes", "10485760"))
 local activity_sample_int = tonumber(uci_get("activity_sample_int", "10"))
 local debug_opt     = uci_get("debug",                            "0")
+-- #1848: ws transport config (named `config ws 'ws'` section). DEFAULT OFF.
+-- These only affect behaviour when ws_enabled == "1"; the sidecar (a separate
+-- procd instance) does the actual ws work, and the agent merely tees its
+-- outbound usage/events to the bounded spool the sidecar drains.
+local function uci_get_ws(opt, default)
+  return cursor:get("wifihaven", "ws", opt) or default
+end
+local ws_enabled        = uci_get_ws("enabled", "0")
+local ws_fallback_after = tonumber(uci_get_ws("fallback_after", "300"))
+local ws_spool_max      = tonumber(uci_get_ws("spool_max_bytes", "1048576"))
 
 log.init({ debug = debug_opt })
 -- #771: PKG_VERSION baked at install time into /usr/lib/wifihaven/VERSION.
@@ -217,6 +235,42 @@ local function fold_sni_metrics()
   local by_result = dns_log.parse_query_results(text)
   metrics.fold_external(mreg, "sni_clienthellos_total", "result",
                         by_result, sni_results_baseline)
+end
+
+-- #1848: ws sidecar metrics. The wifihaven-ws sidecar has no metrics registry of
+-- its own, so it writes a cumulative tally to paths.ws_metrics; sample + fold the
+-- deltas into the registry on the metrics tick (same external-cumulative pattern
+-- as dns/sni). A sidecar restart re-bases the tally from 0, which fold_external
+-- treats as a reset. No-op until ws is enabled (the file never exists otherwise).
+-- The per-metric label key + bounded enums must match the API allowlist
+-- (api/src/metrics/Metrics.scala). ws_state is an unlabelled link gauge (1/0).
+local ws_metrics_baseline = {
+  ws_connect_total     = {},
+  ws_fallback_total    = {},
+  ws_frames_sent_total = {},
+  ws_frames_recv_total = {},
+}
+local WS_METRIC_LABEL_KEY = {
+  ws_connect_total     = "result",
+  ws_fallback_total    = "result",
+  ws_frames_sent_total = "op",
+  ws_frames_recv_total = "op",
+}
+local function fold_ws_metrics()
+  local f = io.open(paths.ws_metrics, "r")
+  if not f then return end
+  local text = f:read("*a") or ""
+  f:close()
+  local parsed = ws_metrics.parse(text)
+  for name, key in pairs(WS_METRIC_LABEL_KEY) do
+    if parsed.counters[name] then
+      metrics.fold_external(mreg, name, key, parsed.counters[name],
+                            ws_metrics_baseline[name])
+    end
+  end
+  if parsed.gauges.ws_state ~= nil then
+    metrics.set_gauge(mreg, "ws_state", {}, parsed.gauges.ws_state)
+  end
 end
 
 -- #1718: native OpenWRT OS-level host metrics — load avg, CPU%, memory,
@@ -387,6 +441,34 @@ local function http_post(url, body, headers)
   end
   return code, resp_body, err_str
 end
+
+-- #1848: outbound tee. When the ws sidecar is enabled AND the link is healthy
+-- (its ws-health sentinel carries a timestamp within ws_fallback_after), an
+-- outbound usage/events body is appended to the bounded spool the sidecar drains
+-- instead of being POSTed here; otherwise this is a pure pass-through to
+-- http_post (so the default-off path is byte-for-byte the old behaviour). The
+-- metrics push deliberately stays on plain http_post so the ws_* observability
+-- series reach the server even while the socket is down. The sentinel timestamp
+-- is read from the file CONTENT (the sidecar writes os.time() into it), avoiding
+-- `stat -c %Y` which stock busybox lacks.
+local function ws_health_read()
+  local f = io.open(paths.ws_health, "r")
+  if not f then return nil end
+  local v = tonumber((f:read("*a") or ""):match("%d+"))
+  f:close()
+  return v
+end
+local function ws_spool_append(line)
+  return ws_spool.append_bounded(paths.ws_outbound, line, ws_spool_max, io.open)
+end
+local usage_events_post = ws_outbound.make({
+  enabled        = (ws_enabled == "1"),
+  http_post      = http_post,
+  spool_append   = ws_spool_append,
+  health_read    = ws_health_read,
+  now            = os.time,
+  fallback_after = ws_fallback_after,
+})
 
 local function http_get(url, headers)
   local hdr_args = ""
@@ -871,7 +953,10 @@ conntrack.watch({
   lan_prefix_v6   = lan_prefix_v6,
   max_batch       = max_batch,
   flush_interval  = flush_int,
-  http_post       = http_post,
+  -- #1848: events POST goes through the ws outbound tee (default-off → identical
+  -- to http_post). The tee routes /api/router/events to the spool only when ws
+  -- is enabled+healthy; everything else passes straight through.
+  http_post       = usage_events_post,
   log             = log,
   register_batcher = function(b) events_batcher = b end,
 
@@ -1148,8 +1233,12 @@ conntrack.watch({
                   #counters, report.records and #report.records or 0)
         -- Retry queue's next_attempt_at math runs on the monotonic clock so
         -- a backward wall-clock jump can't freeze the drain (#336).
+        -- #1848: usage POST goes through the ws outbound tee (default-off →
+        -- identical to http_post). A spool write counts as a successful "post"
+        -- to the retry queue (at-least-once; the sidecar owns delivery + the
+        -- server dedups), so the queue/reset semantics below are unchanged.
         local posted = usage.post_with_retry(
-          api_url, router_token, report, http_post, usage_queue, mono, nil, log)
+          api_url, router_token, report, usage_events_post, usage_queue, mono, nil, log)
         -- #1033: classify the immediate-post outcome so operators can see whether
         -- usage reports are flowing (`ok`) or stacking up in the retry queue
         -- (`queued`). The empty-report short-circuit in post_with_retry also
@@ -1198,6 +1287,7 @@ conntrack.watch({
       fold_enforcement_drops()
       fold_dns_queries()
       fold_sni_metrics()  -- #573
+      fold_ws_metrics()   -- #1848
       sample_host_metrics() -- #1718
       local sampled_at = os.date("!%Y-%m-%dT%H:%M:%SZ", wall)
       metrics.post(api_url, router_token, mreg, sampled_at, http_post, log)
@@ -1215,7 +1305,7 @@ conntrack.watch({
       for _, b in ipairs(usage_queue.buckets) do
         attempts_before[b] = b.attempts
       end
-      usage.drain(api_url, router_token, usage_queue, http_post, mono, nil, log)
+      usage.drain(api_url, router_token, usage_queue, usage_events_post, mono, nil, log)
       local drained = depth_before - #usage_queue.buckets
       if drained > 0 then
         metrics.inc_counter(mreg, "usage_post_total", { result = "drained" }, drained)

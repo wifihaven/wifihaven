@@ -207,6 +207,20 @@ object MetricGuard {
     // no per-mac / per-host dimension ever rides a ws metric.
     "router_ws_connections_active"              -> Set.empty[String],
     "router_ws_frames_total"                    -> Set("op", "direction", "result"),
+    // #1848 — AGENT-side websocket transport metrics. The wifihaven-ws sidecar has no metrics
+    // registry of its own, so it writes a cumulative tally that the agent folds into its
+    // /api/router/metrics push (the server attaches router_id / installation_id, as for every
+    // agent-pushed series). All bounded enums — never a per-mac / per-host dimension:
+    //   ws_connect_total{result}   result ∈ {ok, upgrade_fail, auth_fail, timeout}  (reconnect health)
+    //   ws_state                   1 connected / 0 disconnected (link gauge)
+    //   ws_fallback_total{result}  result ∈ {to_http, back_to_ws}  (how often it fell back, §3.1)
+    //   ws_frames_{sent,recv}_total{op}  op ∈ the fixed envelope vocabulary (usage/events/metrics/
+    //                                    policy/ping/pong/ack/unknown)  (agent-side throughput)
+    "ws_connect_total"                          -> Set("result", "router_id", "installation_id"),
+    "ws_state"                                  -> Set("router_id", "installation_id"),
+    "ws_fallback_total"                         -> Set("result", "router_id", "installation_id"),
+    "ws_frames_sent_total"                      -> Set("op", "router_id", "installation_id"),
+    "ws_frames_recv_total"                      -> Set("op", "router_id", "installation_id"),
     // #1718 — native OpenWRT OS-level metrics the agent collects from /proc/* and `iw dev`
     // and pushes through the existing #1205 batch transport. Gives operators the LuCI-style
     // view of router health (load / cpu / mem / bandwidth / conntrack / wifi clients) in

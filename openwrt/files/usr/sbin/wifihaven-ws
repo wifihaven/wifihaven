@@ -1,0 +1,195 @@
+#!/usr/bin/lua
+-- wifihaven-ws — websocket transport sidecar for the wifihaven OpenWrt agent.
+--
+-- Sub-issue C of the websocket-transport epic (#1848,
+-- docs/design/websocket-transport.md §3/§5). A SEPARATE procd instance from the
+-- main wifihaven-agent: the agent owns the conntrack-driven loop unchanged; this
+-- process owns the websocket event loop the agent deliberately lacks (§0.1),
+-- built on the spike-proven (#1845) cqueues + luaossl + hand-rolled RFC 6455
+-- client (ws_client.lua) and the ws_loop.lua state machine.
+--
+-- Default OFF. The init script only starts this instance when
+-- `wifihaven.ws.enabled=1`; with the flag off (the shipped default) the agent's
+-- HTTP poll/POST path is the sole transport, byte-for-byte unchanged. When on,
+-- this sidecar: opens wss://…/api/router/ws with the bearer token in the upgrade
+-- Authorization header; reconnects with exp backoff + jitter (§5.1); drains the
+-- agent's outbound usage/events spool OUT as frames (splitting an oversized
+-- UsageReport, the #1017 fix §5.3); writes a pushed `policy` frame IN to the
+-- snapshot file the agent applies (etag-guarded, unchanged — the server-side
+-- push itself is #1849); heartbeats (§5.5); and folds its metrics into the
+-- agent's /metrics push via the ws_metrics tmpfs tally (§7).
+--
+-- All decision logic lives in ws_loop.lua (unit-tested on the dev host against a
+-- fake client); this file is the thin target wiring (UCI + cqueues + JSON codec).
+
+local uci        = require("uci")
+local cqueues    = require("cqueues")
+local ws_client  = require("wifihaven.ws_client")
+local ws_crypto  = require("wifihaven.ws_crypto")
+local ws_loop    = require("wifihaven.ws_loop")
+local ws_spool   = require("wifihaven.ws_spool")
+local ws_metrics = require("wifihaven.ws_metrics")
+local ws_split   = require("wifihaven.ws_usage_split")
+local policy     = require("wifihaven.policy")
+local paths      = require("wifihaven.paths")
+local log        = require("wifihaven.log")
+local jsonc      = require("luci.jsonc")
+
+-- ── UCI config ───────────────────────────────────────────────────────────────
+local cursor = uci.cursor()
+local function uci_get(opt, default)
+  return cursor:get("wifihaven", "@wifihaven[0]", opt) or default
+end
+local function uci_get_ws(opt, default)
+  return cursor:get("wifihaven", "ws", opt) or default
+end
+
+local api_url      = uci_get("api_url", "http://192.168.1.1:8080")
+local router_token = uci_get("router_token", "")
+local router_id    = uci_get("router_id", "")
+local ws_enabled   = uci_get_ws("enabled", "0")
+local heartbeat    = tonumber(uci_get_ws("heartbeat_interval", "30"))
+local fallback     = tonumber(uci_get_ws("fallback_after", "300"))
+local max_frame    = tonumber(uci_get_ws("max_frame_bytes", "65536"))
+local connect_to   = tonumber(uci_get_ws("connect_timeout", "10"))
+local debug_opt    = uci_get("debug", "0")
+
+log.init({ debug = debug_opt })
+
+if ws_enabled ~= "1" then
+  -- The init script gates the instance on this flag, so we normally never reach
+  -- here with it off; if we do (manual run / race), idle quietly instead of
+  -- exiting fast and tripping procd's respawn throttle.
+  log.info("wifihaven-ws: ws.enabled != 1 — sidecar disabled, idling")
+  while true do os.execute("sleep 3600") end
+end
+if router_token == "" or router_id == "" then
+  log.err("wifihaven-ws: router not enrolled (token/id unset) — exiting")
+  os.exit(1)
+end
+
+-- ── wss URL (http→ws, https→wss) ─────────────────────────────────────────────
+local function ws_url_of(base)
+  local scheme, rest = base:match("^(%w+)://(.+)$")
+  if not scheme then return "ws://" .. base .. "/api/router/ws" end
+  local ws_scheme = (scheme == "https") and "wss" or "ws"
+  rest = rest:gsub("/+$", "")
+  return ws_scheme .. "://" .. rest .. "/api/router/ws"
+end
+local ws_url = ws_url_of(api_url)
+
+log.info("wifihaven-ws: starting url=%s router_id=%s heartbeat=%ds fallback_after=%ds max_frame=%dB",
+         ws_url, router_id, heartbeat, fallback, max_frame)
+
+-- Seed the jitter PRNG. ws_backoff.delay uses cfg.rng; vary the seed by pid +
+-- monotime so a fleet that all reconnect at once doesn't share a jitter phase.
+math.randomseed(math.floor((cqueues.monotime() * 1000)) % 2147483647)
+
+-- ── file helpers ─────────────────────────────────────────────────────────────
+local function write_file(path, content)
+  local f, err = io.open(path, "w")
+  if not f then return nil, err end
+  f:write(content); f:close()
+  return true
+end
+local function rename_file(from, to)
+  local ok, err = os.rename(from, to)
+  if not ok then return nil, err end
+  return true
+end
+
+-- ── metrics tally (folded by the agent into /api/router/metrics, §7) ──────────
+local mstate = ws_metrics.new()
+ws_metrics.set(mstate, "ws_state", 0)
+ws_metrics.flush(mstate, paths.ws_metrics)
+local function flush_metrics() ws_metrics.flush(mstate, paths.ws_metrics) end
+
+local metrics_sink = {
+  connect    = function(result) ws_metrics.inc(mstate, "ws_connect_total", result); flush_metrics() end,
+  fallback   = function(result) ws_metrics.inc(mstate, "ws_fallback_total", result); flush_metrics() end,
+  frame_sent = function(op)     ws_metrics.inc(mstate, "ws_frames_sent_total", op); flush_metrics() end,
+  frame_recv = function(op)     ws_metrics.inc(mstate, "ws_frames_recv_total", op); flush_metrics() end,
+  state      = function(v)      ws_metrics.set(mstate, "ws_state", v); flush_metrics() end,
+}
+
+-- ── health sentinel (the agent's outbound tee + fallback decision, §3.1) ──────
+local function touch_health()
+  local f = io.open(paths.ws_health, "w")
+  if f then f:write(tostring(os.time())); f:close() end
+end
+local function clear_health() os.remove(paths.ws_health) end
+
+-- ── outbound spool drain (§5.2) ──────────────────────────────────────────────
+local spool_state = {}
+local function spool_drain()
+  return ws_spool.drain(paths.ws_outbound, spool_state, io.open)
+end
+
+-- ── JSON codec seams ─────────────────────────────────────────────────────────
+local function decode_frame(line)
+  local ok, t = pcall(jsonc.parse, line)
+  if ok and type(t) == "table" and t.op then return t end
+  return nil
+end
+local function encode_frame(frame)
+  return jsonc.stringify(frame)
+end
+local function frame_op(frame) return frame.op end
+
+-- Split an oversized `usage` frame across multiple `usage` frames (#1017, §5.3).
+-- Encodes each candidate as a full {op,payload} frame so the cap math counts the
+-- real on-wire bytes, then re-wraps each report chunk as its own usage frame.
+local function split_usage(frame)
+  local chunks = ws_split.split(frame.payload or {}, max_frame, function(report)
+    return jsonc.stringify({ op = "usage", payload = report })
+  end)
+  if #chunks == 0 then return { frame } end
+  local out = {}
+  for _, c in ipairs(chunks) do out[#out + 1] = { op = "usage", payload = c } end
+  return out
+end
+
+-- Apply a pushed `policy` frame: write it to the snapshot file the main agent
+-- reads/applies (etag-guarded apply unchanged). Dormant until the server pushes
+-- on connect (#1849); wired here so #1849 is purely server-side.
+local function on_policy(snapshot)
+  if type(snapshot) ~= "table" then return end
+  policy.save_snapshot(snapshot, write_file, rename_file, log)
+  log.info("wifihaven-ws: applied pushed policy snapshot etag=%s", tostring(snapshot.etag))
+end
+
+-- ── run the loop under a cqueues controller ──────────────────────────────────
+local conn_opts = {
+  headers         = { Authorization = "Bearer " .. router_token },
+  connect_timeout = connect_to,
+  crypto          = ws_crypto.luaossl(),
+}
+
+local cfg = {
+  connect      = function() return ws_client.connect(ws_url, conn_opts) end,
+  now          = cqueues.monotime,
+  sleep        = cqueues.sleep,
+  stop         = function() return false end,
+  spool_drain  = spool_drain,
+  on_policy    = on_policy,
+  decode_frame = decode_frame,
+  encode_frame = encode_frame,
+  frame_op     = frame_op,
+  split_usage  = split_usage,
+  touch_health = touch_health,
+  clear_health = clear_health,
+  metrics      = metrics_sink,
+  heartbeat_interval = heartbeat,
+  fallback_after     = fallback,
+  rng          = math.random,
+  log          = log,
+}
+
+local loop = cqueues.new()
+loop:wrap(function() ws_loop.run(cfg) end)
+local ok, err = loop:loop()
+if not ok then
+  log.err("wifihaven-ws: event loop exited: %s", tostring(err))
+  clear_health()
+  os.exit(1)
+end

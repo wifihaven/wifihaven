@@ -40,6 +40,14 @@ grep -q '/tmp/wifihaven-sni.log' "$SCRIPT" \
   || check "rotation script also targets /tmp/wifihaven-sni.log (#573)" \
            "SNI spool not bounded by rotation"
 
+# #1848: the outbound ws frame spool self-bounds at ws_spool_max_bytes on every
+# append, but the rotation cron is the canonical tmpfs backstop, so it must also
+# carry the spool (belt-and-suspenders per docs/process/router-agent-bounded-writes.md).
+grep -q '/tmp/wifihaven-ws-outbound.jsonl' "$SCRIPT" \
+  && check "rotation script also targets /tmp/wifihaven-ws-outbound.jsonl (#1848)" ok \
+  || check "rotation script also targets /tmp/wifihaven-ws-outbound.jsonl (#1848)" \
+           "ws outbound spool not bounded by rotation"
+
 # Must use in-place truncation (: > "$LOG") so dnsmasq's open fd stays on the
 # same inode. A rename would send dnsmasq's writes to an invisible inode.
 grep -q ': > ' "$SCRIPT" \

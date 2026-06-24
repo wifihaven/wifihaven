@@ -64,4 +64,31 @@ M.sni_metrics = "/tmp/wifihaven-sni-metrics.txt"
 -- agent never needs non-blocking I/O.
 M.nflog_drops = "/tmp/wifihaven-nflog.log"
 
+-- ── websocket sidecar IPC (#1848) ────────────────────────────────────────────
+-- The wifihaven-ws sidecar (ws_loop.lua) is a separate procd process from the
+-- main agent (which owns the conntrack loop). These three tmpfs files are the
+-- IPC between them, all bounded (docs/process/router-agent-bounded-writes.md).
+
+-- Outbound frame spool: the main agent APPENDS one NDJSON `{op,payload}` frame
+-- line per outbound usage/events body when ws is enabled; the sidecar DRAINS new
+-- complete lines by byte offset (ws_spool — same lock-free single-writer/single-
+-- reader pattern as nflog_drops). Self-bounded at ws_spool_max_bytes (oldest-
+-- first drop) plus a copytruncate rotation belt.
+M.ws_outbound = "/tmp/wifihaven-ws-outbound.jsonl"
+
+-- ws-health sentinel: the sidecar touches this file's mtime on every successful
+-- send/recv while the socket is up, and removes it on disconnect. The main agent
+-- stats it on its tick: a FRESH sentinel (mtime within ws_fallback_after) means
+-- "the sidecar owns outbound" → tee usage/events to the spool above; a STALE or
+-- absent sentinel means the link is down past the fallback window → the agent
+-- resumes HTTP posting (design §3.1). Default-off: absent unless ws is enabled.
+M.ws_health = "/tmp/wifihaven-ws-health"
+
+-- ws metrics tally: the sidecar has no metrics registry of its own (like the
+-- dns/sni tails), so it writes a cumulative tally here (ws_metrics format) and
+-- the main agent folds the deltas into the existing /api/router/metrics push on
+-- its metrics tick. A sidecar restart re-bases the tally from 0, which
+-- fold_external treats as a reset.
+M.ws_metrics = "/tmp/wifihaven-ws-metrics.txt"
+
 return M
