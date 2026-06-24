@@ -102,3 +102,43 @@ hosts:
   - adjust.com
   - appsflyer.com
   - singular.net
+  # traffic-driven additions (#1923): observed but unblocked ad/RTB/tracker infra.
+  # Sourced from a 30-day prod recent-apexes sweep (25 devices). Cross-checked
+  # against the StevenBlack ads-extended feed: the first group are genuine gaps
+  # that even ads-extended misses entirely; the second are clearly-ad apexes the
+  # extended feed covers, added to the curated baseline for curated-only profiles.
+  # Dual-use SKIPPED: app-analytics-services.com / app-ads-services.com (Google
+  # GA4/Firebase), ttdns2.com (TikTok shared infra), demonii.com (BitTorrent
+  # tracker). See evidence/ads-classification-1923.md for per-apex hits + what-it-is.
+  # Mobile ad networks / DSP / SSP / RTB exchanges (gaps not in ads-extended)
+  - bidmachine.io
+  - bidease.com
+  - kayzen.io
+  - openwebmp.com
+  - krushmedia.com
+  - vervegroupinc.net
+  - verve.net
+  - personaly.bid
+  - appiersig.com
+  # Video / SDK ad infra (gaps not in ads-extended)
+  - vidazoo.com
+  - vidazoo.services
+  - safedk.com
+  # Attribution / session-replay trackers (gaps not in ads-extended)
+  - sng.link
+  - clarity.ms
+  # High-traffic ad apexes also in ads-extended (curated-baseline coverage)
+  - applvn.com
+  - adthrive.com
+  - jampp.com
+  - inner-active.mobi
+  - celtra.com
+  - pub.network
+  - adswizz.com
+  - contentsquare.net
+  - rayjump.com
+  - mtgglobals.com
+  - aarki.net
+  - mgid.com
+  - creativecdn.com
+  - demdex.net
