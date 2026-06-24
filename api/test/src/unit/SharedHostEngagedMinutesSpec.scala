@@ -101,5 +101,15 @@ object SharedHostEngagedMinutesSpec extends ZIOSpecDefault {
       val presence = List(row(0, "elevenlabs.io"), row(1, "elevenlabs.io"))
       assertTrue(engagedSeconds(presence) == 0L)
     },
+    test("distinctiveSpansByApp (the S3 seam) exposes distinctive-only spans") {
+      // The reusable per-app distinctive-span primitive S3 reads for the co-presence overlap
+      // test: feelinggreat.com [0, 600); elevenlabs.io at bucket 2 must NOT extend the span.
+      val presence =
+        List(row(0, "feelinggreat.com"), row(1, "feelinggreat.com"), row(2, "elevenlabs.io"))
+      val spans    =
+        TimeStatusService.distinctiveSpansByApp(profile, appLimits, presence, settings)
+      val totalSec = spans.getOrElse(appId, Nil).map(s => s.endEpoch - s.startEpoch).sum
+      assertTrue(totalSec == 600L)
+    },
   )
 }
