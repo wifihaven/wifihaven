@@ -607,17 +607,20 @@ object TimeStatusService {
   }
 
   /**
-   * #1897 (shared-hosts S2): per-app DISTINCTIVE-host engaged spans, keyed by `apps.id` — the
-   * gap-bridged union of each app's `shared = false` hosts, the exact spans the per-app cap
-   * ([[appSecondsByApp]]) sums. Built on the SAME stitch primitive
-   * ([[Presence.appSpansForProfile]]) over the SAME distinctive host-set
-   * ([[ProfileAppDispositions.capGroupLabelDistinctiveHosts]]).
+   * #1897 (shared-hosts S2) / #1898 (S3): per-app DISTINCTIVE-host engaged spans, keyed by
+   * `apps.id` — the gap-bridged union of each app's `shared = false` hosts. Built on the SAME
+   * stitch primitive ([[Presence.appSpansForProfile]]) over the SAME distinctive host-set the
+   * per-app cap reads, so for a TimeLimited app these are exactly the spans [[appSecondsByApp]]
+   * sums. Unlike the cap, this is mode-agnostic
+   * ([[ProfileAppDispositions.appLabelDistinctiveHosts]], not the TimeLimited-only
+   * `capGroupLabelDistinctiveHosts`): an Allowed-mode app earns the co-presence attribution of its
+   * shared backends too — attribution is structural, not enforcement.
    *
    * This is the reusable seam S3's shared-host co-presence allocation consumes: a shared-host
    * presence row attributes to app A iff it overlaps one of A's distinctive spans. S3 MUST read
    * these spans rather than re-deriving the distinctive partition, so the distinctive-span
    * computation lives in exactly one place (AGENTS.md §single-source-of-truth). Spans are combined
-   * across the profile's devices per `profile.crossDeviceOverlapMode`, matching the cap aggregate.
+   * across the profile's devices per `profile.crossDeviceOverlapMode`.
    */
   def distinctiveSpansByApp(
       profile: Profile,
@@ -625,12 +628,16 @@ object TimeStatusService {
       presence: List[PresenceRow],
       settings: HouseholdSettings,
   ): Map[AppId, List[Presence.Span]] = {
+    // #1898: mode-agnostic — `appLabelDistinctiveHosts` / `appLabelToAppId` cover EVERY assigned app,
+    // not just the TimeLimited cap subset, so an Allowed-mode app's distinctive session still gates
+    // the co-presence allocation of its shared backends. The span math is the SAME stitch primitive
+    // ([[Presence.appSpansForProfile]]) over the SAME distinctive host-set the cap reads.
     val dispositions = ProfileAppDispositions.from(appLimits)
-    val labelToAppId = dispositions.capGroups.map(d => d.label -> d.appId).toMap
+    val labelToAppId = dispositions.appLabelToAppId
     Presence
       .appSpansForProfile(
         presence,
-        dispositions.capGroupLabelDistinctiveHosts,
+        dispositions.appLabelDistinctiveHosts,
         profile.crossDeviceOverlapMode,
         settings.heartbeatFilter,
         settings.presenceContinuationSeconds,

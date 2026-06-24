@@ -76,6 +76,10 @@ object MetricGuard {
       // 2-value enum (`in` agent→server / `out` server→agent); bounded, so it
       // satisfies the §4 cardinality firewall.
       "direction",
+      // #1898 — shared-host reporting attribution outcome for
+      // `usage_shared_host_attribution_total`. A fixed 3-value enum (attributed /
+      // split / other); bounded, so it satisfies the §4 cardinality firewall.
+      "outcome",
     )
 
   /**
@@ -135,6 +139,10 @@ object MetricGuard {
     // too aggressive (real sessions vanishing), a flat zero while phantom
     // inflation returns means it is too lax.
     "presence_app_sessions_dropped_total"       -> Set.empty[String],
+    // #1898 — outcome of attributing a SHARED host's stitched span in usage-by-app
+    // by temporal co-presence with apps' distinctive sessions. `outcome` is a
+    // bounded 3-value enum (attributed / split / other); no per-mac/host/app label.
+    "usage_shared_host_attribution_total"       -> Set("outcome"),
     // #1885 — log events the loki4j appender shed because its bounded send queue
     // (sendQueueMaxBytes) was full while Loki was slow/unreachable. The appender
     // is async/drop-on-backpressure by construction (fail-open: the request path
@@ -443,6 +451,25 @@ object AppMetrics {
           "presence_app_sessions_dropped_total",
           Map.empty,
           count.toLong,
+        ),
+      )
+      .unit
+
+  // ── #1898: shared-host reporting attribution outcome ─────────────────────────
+  // Emitted from UsageRoutes.buildUsageByApp, counted per shared-host stitched span:
+  // `attributed` (one co-present qualifier), `split` (≥2 qualifiers, bytes split
+  // equally), `other` (no qualifier → "Other"/orphan bucket). Bounded `outcome`
+  // label (exactly three values) — no per-mac/host/app cardinality. A sustained
+  // rise in `other` means shared backends are firing with no app demonstrably in
+  // use; a rise in `split` means several apps' distinctive sessions co-occur.
+
+  def recordSharedHostAttribution(outcome: String, count: Long): UIO[Unit] =
+    ZIO
+      .when(count > 0L)(
+        MetricGuard.counter(
+          "usage_shared_host_attribution_total",
+          Map("outcome" -> outcome),
+          count,
         ),
       )
       .unit

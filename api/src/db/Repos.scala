@@ -3149,9 +3149,9 @@ class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
     sql"SELECT version FROM app_hosts_version".query[Long].unique.transact(xa)
 
   def listAllHostMappings =
-    sql"SELECT app_id, host FROM app_hosts"
-      .query[(AppId, Hostname)]
-      .map { case (id, h) => AppHost(id, h) }
+    sql"SELECT app_id, host, shared FROM app_hosts"
+      .query[(AppId, Hostname, Boolean)]
+      .map { case (id, h, shared) => AppHost(id, h, shared) }
       .to[List]
       .transact(xa)
 

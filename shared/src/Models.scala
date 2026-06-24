@@ -367,7 +367,12 @@ case class App(
     createdAt: java.time.Instant,
 ) derives JsonCodec
 
-case class AppHost(appId: AppId, host: Hostname) derives JsonCodec
+// #1898 (shared-hosts S3): `shared` carries the per-(app, host) `app_hosts.shared` flag through the
+// global host→app inventory (`listAllHostMappings`). The usage-by-app reporting path uses it to route
+// SHARED hosts through the co-presence allocation instead of the unconditional `minBy(appId)` mapping
+// that distinctive hosts keep. Default false keeps every legacy construction distinctive and is
+// additive on the wire.
+case class AppHost(appId: AppId, host: Hostname, shared: Boolean = false) derives JsonCodec
 
 /**
  * #1896: an app's host paired with its `shared` flag (`false` == distinctive). Distinctive hosts

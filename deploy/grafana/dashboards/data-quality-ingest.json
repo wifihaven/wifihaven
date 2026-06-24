@@ -594,6 +594,80 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Shared-host attribution by outcome — rate (#1898)",
+      "description": "sum by (outcome) (rate(usage_shared_host_attribution_total[5m])) — outcome of each SHARED-host stitched span when usage-by-app attributes it by temporal co-presence with apps' DISTINCTIVE sessions (NOT byte-share/argmax). `attributed` = exactly one co-present app; `split` = ≥2 apps' distinctive sessions overlap, bytes split equally; `other` = no app demonstrably in use → the host's span surfaces in the usage-by-app 'Other'/orphan bucket. Bounded `outcome` enum (3 values). A rising `other` share means shared backends fire with no owning app active; a rising `split` means several apps' sessions co-occur. From AppMetrics.recordSharedHostAttribution (UsageRoutes.buildUsageByApp).",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 64 },
+      "id": 17,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 20, "showPoints": "never", "lineWidth": 1 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (outcome) (rate(usage_shared_host_attribution_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{outcome}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Shared-host 'Other' share (last 24h) (#1898)",
+      "description": "sum(increase(usage_shared_host_attribution_total{outcome=\"other\"}[24h])) / sum(increase(usage_shared_host_attribution_total[24h])) — fraction of shared-host spans that found NO co-present app over the trailing day. A high share is expected for genuinely-shared infra backends but a sudden climb can indicate a mis-authored app (a distinctive host marked shared, or a shared host whose owning app lost its distinctive hosts). From AppMetrics.recordSharedHostAttribution.",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 64 },
+      "id": 18,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.8 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(increase(usage_shared_host_attribution_total{env=\"$env\", outcome=\"other\"}[24h])) / clamp_min(sum(increase(usage_shared_host_attribution_total{env=\"$env\"}[24h])), 1)",
+          "legendFormat": "other share (24h)",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",

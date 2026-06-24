@@ -3,6 +3,7 @@ package wifihaven.api.routes
 import wifihaven.api.auth.*
 import wifihaven.api.db.*
 import wifihaven.api.db.{RollupRepo, RollupRow}
+import wifihaven.api.metrics.AppMetrics
 import wifihaven.api.usage.{
   AppMembership,
   RawTrafficCursorKey,
@@ -169,8 +170,8 @@ object UsageRoutes {
               deviceRepo,
               trafficRepo,
               appRepo,
-              settings.heartbeatFilter,
-              settings.presenceContinuationSeconds,
+              appTimeLimitRepo,
+              settings,
             )
           } yield Response.json(resp.toJson)
           handle.mapError(ErrorMapper.errorToResponse)
@@ -478,9 +479,11 @@ object UsageRoutes {
       deviceRepo: DeviceRepo,
       trafficRepo: TrafficReportRepo,
       appRepo: AppRepo,
-      filter: HeartbeatFilter,
-      continuationSeconds: Int,
-  ): IO[ApiError, ProfileUsageByApp] =
+      appTimeLimitRepo: AppTimeLimitRepo,
+      settings: HouseholdSettings,
+  ): IO[ApiError, ProfileUsageByApp] = {
+    val filter              = settings.heartbeatFilter
+    val continuationSeconds = settings.presenceContinuationSeconds
     for {
       profile <- profileRepo
         .findById(pid)
@@ -488,115 +491,217 @@ object UsageRoutes {
         .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Profile not found")))
       allDevs <- deviceRepo.listAll.mapError(ApiError.Db(_))
       macs = allDevs.collect { case d if d.profileId.contains(pid) => d.mac }
-      presence <- (if (macs.isEmpty) ZIO.succeed(Nil)
+      presence  <- (if (macs.isEmpty) ZIO.succeed(Nil)
                    else trafficRepo.listPresenceRows(macs, from, to))
         .mapError(ApiError.Db(_))
-      appList  <- appRepo.listAll.mapError(ApiError.Db(_))
-      mappings <- appRepo.listAllHostMappings.mapError(ApiError.Db(_))
-    } yield {
-      val appById                            = appList.iterator.map(a => a.id -> a).toMap
-      // Deterministic host → owning-app: lowest appId wins when a host is in
-      // multiple apps. Avoids double-counting one bucket of activity into two
-      // apps for the per-profile screen-time view (matches #1061 acceptance).
-      //
-      // #1161: app_hosts rows are stored apex-form (`youtube.com`) but traffic
-      // rows carry FQDNs (`m.youtube.com`). Use suffix-aware lookup — same
-      // matcher as #1085's groupBy=app fix and PolicyService — so subdomain
-      // traffic attributes to the apex-form app entry instead of falling into
-      // the synthetic "Other" bucket.
-      val appOfHost: HostId => Option[AppId] = {
-        val byApex = mappings
-          .groupBy(_.host.value)
-          .view
-          .mapValues(ms => ms.iterator.map(_.appId).minBy(_.value))
-          .toMap
-        h => h.asFqdn.flatMap(fqdn => HostMatch.lookupApex(fqdn.value, byApex))
+      appList   <- appRepo.listAll.mapError(ApiError.Db(_))
+      mappings  <- appRepo.listAllHostMappings.mapError(ApiError.Db(_))
+      // #1898: the per-(app, host) `shared` flag rides the per-profile assignment join so
+      // `distinctiveSpansByApp` can partition each app's host-set; classification of which traffic
+      // hosts are shared comes from the GLOBAL `mappings` above (a catalog-wide property).
+      appLimits <- appTimeLimitRepo.listForProfile(pid).mapError(ApiError.Db(_))
+      built          = computeUsageByApp(
+        pid,
+        from,
+        to,
+        profile,
+        presence,
+        appList,
+        mappings,
+        appLimits,
+        settings,
+        filter,
+        continuationSeconds,
+      )
+      (resp, counts) = built
+      // #1898: bounded-label outcome counter for shared-row attribution (attributed/split/other).
+      _ <- AppMetrics.recordSharedHostAttribution("attributed", counts.attributed)
+      _ <- AppMetrics.recordSharedHostAttribution("split", counts.split)
+      _ <- AppMetrics.recordSharedHostAttribution("other", counts.other)
+    } yield resp
+  }
+
+  // #1898: pure core of `buildUsageByApp`. Distinctive hosts keep the unconditional `minBy(appId)`
+  // mapping; SHARED hosts (multi-tenant backends listed on several apps) are routed through the
+  // co-presence allocation — their per-row proportional seconds attribute to the app(s) whose
+  // DISTINCTIVE session overlaps the row, split EQUALLY among co-present qualifiers, else "Other".
+  // This is NOT the rejected #842/#715 argmax-foreground heuristic: allocation is gated purely on an
+  // app's own distinctive presence, never on byte magnitude. Returns the response plus the per-span
+  // attribution tally for the metric.
+  private def computeUsageByApp(
+      pid: ProfileId,
+      from: LocalDate,
+      to: LocalDate,
+      profile: Profile,
+      presence: List[wifihaven.api.presence.PresenceRow],
+      appList: List[App],
+      mappings: List[AppHost],
+      appLimits: List[AppTimeLimit],
+      settings: HouseholdSettings,
+      filter: HeartbeatFilter,
+      continuationSeconds: Int,
+  ): (ProfileUsageByApp, wifihaven.api.presence.Presence.SharedHostAttributionCounts) = {
+    import wifihaven.api.presence.Presence
+    val appById = appList.iterator.map(a => a.id -> a).toMap
+    val overlap = profile.crossDeviceOverlapMode
+
+    // Distinctive host → owning-app: lowest appId wins when a host is in multiple apps (#1061),
+    // apex-aware so subdomain traffic attributes to the apex-form entry (#1161). #1898: SHARED rows
+    // are EXCLUDED from this map — a shared host is never distinctively credited to one app.
+    val distinctiveByApex = mappings
+      .filterNot(_.shared)
+      .groupBy(_.host.value)
+      .view
+      .mapValues(ms => ms.iterator.map(_.appId).minBy(_.value))
+      .toMap
+    // #1898: apps that LIST a host as shared (the co-presence candidates), apex-keyed. Global
+    // consistency (validation S1b) guarantees a host shared on any app is shared on every app
+    // listing it, so a host is never simultaneously distinctive and shared.
+    val sharedAppsByApex  = mappings
+      .filter(_.shared)
+      .groupBy(_.host.value)
+      .view
+      .mapValues(ms => ms.iterator.map(_.appId).toSet)
+      .toMap
+
+    def distinctiveAppOf(h: HostId): Option[AppId] =
+      h.asFqdn.flatMap(fqdn => HostMatch.lookupApex(fqdn.value, distinctiveByApex))
+    def sharedAppsOf(h: HostId): Set[AppId]        =
+      h.asFqdn
+        .flatMap(fqdn => HostMatch.lookupApex(fqdn.value, sharedAppsByApex))
+        .getOrElse(Set.empty)
+
+    // #1898: the S2 single-source-of-truth seam — each app's DISTINCTIVE-host engaged spans. S3 reads
+    // these for the co-presence overlap test rather than re-deriving the distinctive partition.
+    val distinctiveSpans =
+      wifihaven.api.policy.TimeStatusService.distinctiveSpansByApp(
+        profile,
+        appLimits,
+        presence,
+        settings,
+      )
+
+    // #1465: per-host presence is the session-stitch span (heartbeat-filtered), combined across the
+    // profile's devices by its `crossDeviceOverlapMode`.
+    val propByHost    =
+      Presence.proportionalHostSeconds(presence, overlap, filter, continuationSeconds)
+    val seenByHost    = Presence.hostMinutes(presence, filter)
+    val propMinByHost =
+      Presence.proportionalHostMinutes(presence, overlap, filter, continuationSeconds)
+
+    // Per host, the proportional-seconds allocation across `Some(appId)` / `None` ("Other").
+    var counts = Presence.SharedHostAttributionCounts.zero
+    val allocByHost: Map[HostId, Map[Option[AppId], Long]] =
+      propByHost.map { case (h, secs) =>
+        val candidates = sharedAppsOf(h)
+        if (candidates.nonEmpty) {
+          val candidateSpans = distinctiveSpans.view.filterKeys(candidates.contains).toMap
+          val (alloc, c)     = Presence.allocateSharedHostSeconds(
+            presence,
+            h,
+            candidateSpans,
+            overlap,
+            filter,
+            continuationSeconds,
+          )
+          counts = counts + c
+          h -> alloc
+        } else h -> Map(distinctiveAppOf(h) -> secs)
       }
+    // The set of `Option[AppId]` keys each host's activity touches (for the non-additive
+    // presence-seconds surface). A shared host split across apps + "Other" touches all of them.
+    val touchedByHost: Map[HostId, Set[Option[AppId]]]     =
+      allocByHost.view.mapValues(_.keySet).toMap
 
-      val overlap       = profile.crossDeviceOverlapMode
-      // #1465: per-host presence is now the session-stitch span (heartbeat-filtered),
-      // combined across the profile's devices by its `crossDeviceOverlapMode`.
-      val propByHost    =
-        wifihaven.api.presence.Presence
-          .proportionalHostSeconds(presence, overlap, filter, continuationSeconds)
-      val seenByHost    = wifihaven.api.presence.Presence.hostMinutes(presence, filter)
-      val propMinByHost =
-        wifihaven.api.presence.Presence
-          .proportionalHostMinutes(presence, overlap, filter, continuationSeconds)
-
-      val appProp    = scala.collection.mutable.Map.empty[Option[AppId], Long]
-      val hostsByApp =
-        scala.collection.mutable.Map.empty[Option[AppId], List[HostUsage]]
-      for ((h, secs) <- propByHost) {
-        val key = appOfHost(h)
+    val appProp    = scala.collection.mutable.Map.empty[Option[AppId], Long]
+    val hostsByApp = scala.collection.mutable.Map.empty[Option[AppId], List[HostUsage]]
+    for ((h, alloc) <- allocByHost) {
+      val totalSecs = alloc.values.sum
+      val single    = alloc.sizeIs == 1
+      for ((key, secs) <- alloc if key.isDefined) {
         appProp.updateWith(key)(prev => Some(prev.getOrElse(0L) + secs))
-        val hu  = HostUsage(h, seenByHost.getOrElse(h, 0), propMinByHost.getOrElse(h, 0))
+        // Distinctive (single-key) host carries its display minutes verbatim; a split shared host's
+        // proportional minutes follow its allocated seconds, and its `usedMins` (bucket presence) is
+        // scaled by the same fraction so the per-app host row reflects the share.
+        val usedM =
+          if (single) seenByHost.getOrElse(h, 0)
+          else if (totalSecs <= 0L) 0
+          else
+            math
+              .round(seenByHost.getOrElse(h, 0).toDouble * (secs.toDouble / totalSecs.toDouble))
+              .toInt
+        val propM = if (single) propMinByHost.getOrElse(h, 0) else (secs / 60L).toInt
+        val hu    = HostUsage(h, usedM, propM)
         hostsByApp.updateWith(key)(prev => Some(hu :: prev.getOrElse(Nil)))
       }
-      // Per-app bucket-dedup for presence-seconds (heartbeat rows stripped, #1465).
-      val appPresence = scala.collection.mutable.Map.empty[Option[AppId], Long]
-      val activeRows =
-        presence.filterNot(r => wifihaven.api.presence.Presence.isHeartbeat(r, filter))
-      for ((_, bucket) <- activeRows.groupBy(r => (r.mac, r.periodStart))) {
-        val secs = bucket.iterator.map(_.activeSeconds.toLong).maxOption.getOrElse(0L)
-        val keys = bucket.iterator.map(r => appOfHost(r.host)).toSet
-        for (a <- keys)
-          appPresence.updateWith(a)(prev => Some(prev.getOrElse(0L) + secs))
-      }
+    }
 
-      // #1519: real-app rows ONLY. Drop the `None` key — those hosts surface as
-      // individual orphanHosts entries below.
-      val appKeys = (appProp.keySet ++ appPresence.keySet).iterator.flatten.toList.distinct
-      val rows    = appKeys.map { aid =>
-        val key   = Some(aid)
-        val name  = appById.get(aid).map(_.name).getOrElse(aid.value.toString)
-        val icon  = appById.get(aid).flatMap(_.icon)
-        val it    = appById.get(aid).map(_.iconType)
-        val hosts = hostsByApp
-          .getOrElse(key, Nil)
-          .sortBy(hu => (-hu.proportionalMins, -hu.usedMins, hu.host.value))
-        ProfileAppUsage(
-          appId = key,
-          appName = name,
-          appIcon = icon,
-          appIconType = it,
-          proportionalSeconds = appProp.getOrElse(key, 0L),
-          presenceSeconds = appPresence.getOrElse(key, 0L),
-          hosts = hosts,
-        )
-      }
+    // Per-app bucket-dedup for presence-seconds (heartbeat rows stripped, #1465). Not additive across
+    // apps by design — a bucket's seconds count once per distinct app key it touches.
+    val appPresence = scala.collection.mutable.Map.empty[Option[AppId], Long]
+    val activeRows  = presence.filterNot(r => Presence.isHeartbeat(r, filter))
+    for ((_, bucket) <- activeRows.groupBy(r => (r.mac, r.periodStart))) {
+      val secs = bucket.iterator.map(_.activeSeconds.toLong).maxOption.getOrElse(0L)
+      val keys = bucket.iterator.flatMap(r => touchedByHost.getOrElse(r.host, Set.empty)).toSet
+      for (a <- keys if a.isDefined)
+        appPresence.updateWith(a)(prev => Some(prev.getOrElse(0L) + secs))
+    }
 
-      // #1519: orphan rows = non-app hosts, each rendered as its own single-host
-      // pseudo-app. proportional = the per-host attention sum already gathered;
-      // presence = dedupe (mac, periodStart) buckets PER HOST (each host's
-      // presence is its own bucket-deduped wall-clock seconds — same shape as
-      // the per-app presence, but one row per host).
-      val orphanHostSet  = propByHost.keysIterator.filter(h => appOfHost(h).isEmpty).toSet
-      val orphanPresence = scala.collection.mutable.Map.empty[HostId, Long]
-      for ((_, bucket) <- activeRows.groupBy(r => (r.mac, r.periodStart))) {
-        val secs      = bucket.iterator.map(_.activeSeconds.toLong).maxOption.getOrElse(0L)
-        val hostsHere = bucket.iterator.map(_.host).filter(orphanHostSet.contains).toSet
-        for (h <- hostsHere)
-          orphanPresence.updateWith(h)(prev => Some(prev.getOrElse(0L) + secs))
-      }
-      val orphanRows = orphanHostSet.toList.map { h =>
-        OrphanHostUsage(
-          host = h,
-          proportionalSeconds = propByHost.getOrElse(h, 0L),
-          presenceSeconds = orphanPresence.getOrElse(h, 0L),
-        )
-      }
-
-      ProfileUsageByApp(
-        profileId = pid,
-        profileName = profile.name,
-        from = from.toString,
-        to = to.toString,
-        apps = rows.sortBy(r => (-r.proportionalSeconds, -r.presenceSeconds, r.appName)),
-        orphanHosts = orphanRows
-          .sortBy(o => (-o.proportionalSeconds, -o.presenceSeconds, o.host.value)),
+    // #1519: real-app rows ONLY. The `None` key surfaces as individual orphanHosts entries below.
+    val appKeys = (appProp.keySet ++ appPresence.keySet).iterator.flatten.toList.distinct
+    val rows    = appKeys.map { aid =>
+      val key   = Some(aid)
+      val name  = appById.get(aid).map(_.name).getOrElse(aid.value.toString)
+      val icon  = appById.get(aid).flatMap(_.icon)
+      val it    = appById.get(aid).map(_.iconType)
+      val hosts = hostsByApp
+        .getOrElse(key, Nil)
+        .sortBy(hu => (-hu.proportionalMins, -hu.usedMins, hu.host.value))
+      ProfileAppUsage(
+        appId = key,
+        appName = name,
+        appIcon = icon,
+        appIconType = it,
+        proportionalSeconds = appProp.getOrElse(key, 0L),
+        presenceSeconds = appPresence.getOrElse(key, 0L),
+        hosts = hosts,
       )
     }
+
+    // #1519: orphan rows = the unattributed portion of each host, each rendered as its own
+    // single-host pseudo-app. #1898: a SHARED host with a "no qualifier" span contributes its
+    // unattributed seconds here (the "Other" fallback) — possibly alongside app rows for its
+    // attributed spans. proportional = the `None`-keyed allocation; presence = dedupe (mac,
+    // periodStart) buckets PER HOST.
+    val orphanHostSet  = allocByHost.iterator.collect {
+      case (h, alloc) if alloc.get(None).exists(_ > 0L) => h
+    }.toSet
+    val orphanPresence = scala.collection.mutable.Map.empty[HostId, Long]
+    for ((_, bucket) <- activeRows.groupBy(r => (r.mac, r.periodStart))) {
+      val secs      = bucket.iterator.map(_.activeSeconds.toLong).maxOption.getOrElse(0L)
+      val hostsHere = bucket.iterator.map(_.host).filter(orphanHostSet.contains).toSet
+      for (h <- hostsHere)
+        orphanPresence.updateWith(h)(prev => Some(prev.getOrElse(0L) + secs))
+    }
+    val orphanRows = orphanHostSet.toList.map { h =>
+      OrphanHostUsage(
+        host = h,
+        proportionalSeconds = allocByHost.get(h).flatMap(_.get(None)).getOrElse(0L),
+        presenceSeconds = orphanPresence.getOrElse(h, 0L),
+      )
+    }
+
+    val resp = ProfileUsageByApp(
+      profileId = pid,
+      profileName = profile.name,
+      from = from.toString,
+      to = to.toString,
+      apps = rows.sortBy(r => (-r.proportionalSeconds, -r.presenceSeconds, r.appName)),
+      orphanHosts = orphanRows
+        .sortBy(o => (-o.proportionalSeconds, -o.presenceSeconds, o.host.value)),
+    )
+    (resp, counts)
+  }
 
   // #1079 — build the by-app axis used by the unified-axis builder. `appOf` mirrors the
   // deterministic "lowest appId wins" tiebreak from #1061 and the apex-aware match from #1085 so
@@ -605,13 +710,23 @@ object UsageRoutes {
   // the per-app cap aggregate and the #1510 rollup use (via Presence.appSpansForProfile), keyed by
   // slug. Both are built from one `app_hosts` snapshot so the attribution and the span host-set
   // can't drift.
+  //
+  // #1898: SHARED hosts are excluded from BOTH `appOf` and `patternsBySlug` here. The per-app series
+  // span is the gap-bridged union of an app's host-set, and a shared backend folded in would extend
+  // the app's span past its distinctive activity — exactly the inflation S2 removed from the cap
+  // aggregate (TimeStatusService reads `capGroupLabelDistinctiveHosts`). Keeping this axis
+  // distinctive-only keeps the per-app series reconciling with the cap and the #1510 rollup by
+  // construction; a shared host instead surfaces as a standalone host entry (the time-series analog
+  // of the usage-by-app "Other"/orphan bucket). Per-bucket co-presence allocation is not applied to
+  // the time-series; the worked-example allocation lives on the `buildUsageByApp` totals surface.
   private def loadAppLookup(
       appRepo: AppRepo,
   ): IO[ApiError, UsageSeries.AppAxis] =
     for {
-      apps     <- appRepo.listAll.mapError(ApiError.Db(_))
-      mappings <- appRepo.listAllHostMappings.mapError(ApiError.Db(_))
+      apps    <- appRepo.listAll.mapError(ApiError.Db(_))
+      allMaps <- appRepo.listAllHostMappings.mapError(ApiError.Db(_))
     } yield {
+      val mappings       = allMaps.filterNot(_.shared)
       val appById        = apps.iterator.map(a => a.id -> a).toMap
       val byApex         = mappings
         .groupBy(_.host.value)
