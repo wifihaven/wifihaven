@@ -158,6 +158,15 @@ class PolicyServiceLive(
   private val publisher: AtomicReference[PolicySnapshotPublisher] =
     new AtomicReference(PolicySnapshotPublisher.noop)
 
+  // #1849: the last ETag we PUSHED, tracked separately from `snapshotCache` so the push-on-change
+  // decision is independent of the REST cache slot. This is what makes `invalidate` safe to clear
+  // the cache for immediate REST freshness: even if a racing REST poll rebuilds and repopulates
+  // `snapshotCache` with the new ETag before `reevaluate`'s compare runs, `reevaluate` still sees
+  // `lastPublishedEtag` at the OLD value and fires the push exactly once. The ticker then dedups
+  // against this same value so an unchanged tick never re-pushes.
+  private val lastPublishedEtag: AtomicReference[Option[ETag]] =
+    new AtomicReference(Option.empty[ETag])
+
   // #1318: the WifiHaven UI / block-page hosts are fleet-wide always-reachable
   // hosts, so they live in `global.extraAllowed` (carving out every block at the
   // router) rather than being copied into every profile's `extraAllowed`. (#1321
@@ -193,13 +202,45 @@ class PolicyServiceLive(
   // #1849: cache-aware entry point. On a hit, return the cached snapshot and meter `cache_hit` — no
   // rebuild, which is the #1512 win for both ws and (un-migrated) REST poll agents. On a cold or
   // invalidated cache, rebuild once, store, and serve it. With the cache disabled, always rebuild.
-  // RED STUB (#1849): not yet implemented — always rebuilds, no cache read, no push.
   def snapshot: Task[PolicySnapshot] =
-    ZIO.succeed((cacheEnabled, snapshotCache.get)).flatMap(_ => buildSnapshot)
+    if (!cacheEnabled) buildSnapshot
+    else
+      ZIO.succeed(snapshotCache.get).flatMap {
+        case Some((_, snap)) => AppMetrics.recordSnapshotBuild("cache_hit").as(snap)
+        case None            =>
+          buildSnapshot.tap(snap => ZIO.succeed(snapshotCache.set(Some((snap.etag, snap)))))
+      }
 
-  def invalidate: UIO[Unit] = ZIO.unit
+  def invalidate: UIO[Unit] =
+    if (!cacheEnabled) ZIO.unit
+    else
+      // Clear so the next REST poll rebuilds immediately (fresh bytes), and reconcile in the
+      // background so any connected ws router is pushed the change without blocking the mutating
+      // request on a ~500ms rebuild. Clearing is safe w.r.t. the push: `reevaluate` keys its push
+      // decision off `lastPublishedEtag`, NOT off the (now-cleared, possibly poll-repopulated) cache
+      // slot — so the push still fires exactly once even if a REST poll races in. The reconcile
+      // ticker is a backstop on the same bound.
+      ZIO.succeed(snapshotCache.set(None)) *> reevaluate.forkDaemon.unit
 
-  def reevaluate: UIO[Unit] = ZIO.succeed(publisher.get).unit
+  def reevaluate: UIO[Unit] =
+    if (!cacheEnabled) ZIO.unit
+    else
+      buildSnapshot.foldZIO(
+        err =>
+          // Keep the last good cache on a transient build failure (e.g. a DB blip) so the REST poll
+          // keeps serving the previous snapshot rather than a cold rebuild storm; the next tick
+          // retries.
+          ZIO.logWarning(s"policy reevaluate: snapshot rebuild failed, keeping cache: $err"),
+        snap => {
+          snapshotCache.set(Some((snap.etag, snap)))
+          // Push only when the ETag actually moved since the last PUSH — the same "change is exactly
+          // an ETag move" semantics the REST 200-vs-304 path uses (design §6.2), so we never fan out
+          // a frame the routers would treat as unchanged. Keyed off `lastPublishedEtag` (not the
+          // cache slot) so a racing REST poll repopulating the cache can't suppress the push.
+          val prevPublished = lastPublishedEtag.getAndSet(Some(snap.etag))
+          ZIO.when(!prevPublished.contains(snap.etag))(publisher.get.publish(snap)).unit
+        },
+      )
 
   def setPublisher(p: PolicySnapshotPublisher): UIO[Unit] =
     ZIO.succeed(publisher.set(p))

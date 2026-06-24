@@ -148,23 +148,25 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
         snap2 <- svc.snapshot
       } yield assertTrue(snap2.blockEncryptedDns) && assertTrue(snap2.etag != snap1.etag)
     },
-    test("reevaluate rebuilds and pushes to the publisher exactly when the ETag moves") {
+    test(
+      "reevaluate pushes once per ETag change — the first establishes the baseline, an unchanged re-eval does not re-push",
+    ) {
       for {
         _      <- cleanDb
         triple <- makeCachedSvc(TestClock.schoolDayAfternoon)
         (svc, _, pushed) = triple
-        _           <- svc.snapshot   // warm the cache
-        _           <- svc.reevaluate // unchanged state → no push
-        afterNoop   <- pushed.get
-        _           <- setBlockEncryptedDns(true)
-        _           <- svc.invalidate // clear cache so reevaluate sees the new etag vs prev
-        // `invalidate` cleared the cache; reevaluate rebuilds, sees a different etag than the (now
-        // empty) prev, and pushes once.
-        _           <- svc.reevaluate
-        afterChange <- pushed.get
-      } yield assertTrue(afterNoop.isEmpty) &&
-        assertTrue(afterChange.size == 1) &&
-        assertTrue(afterChange.head.blockEncryptedDns)
+        _             <- svc.reevaluate // first reevaluate establishes + pushes the baseline
+        afterBaseline <- pushed.get
+        _             <- svc.reevaluate // unchanged state → no new push
+        afterNoop     <- pushed.get
+        _             <- setBlockEncryptedDns(true)
+        _             <- svc.reevaluate // ETag moved → exactly one more push
+        afterChange   <- pushed.get
+      } yield assertTrue(afterBaseline.size == 1) &&
+        assertTrue(afterNoop.size == 1) && // no re-push on the unchanged re-eval
+        assertTrue(afterChange.size == 2) &&
+        assertTrue(!afterBaseline.head.blockEncryptedDns) &&
+        assertTrue(afterChange.last.blockEncryptedDns)
     },
     test(
       "a schedule boundary crossed with no DB write is caught + pushed by reevaluate (the ticker mechanism)",

@@ -372,10 +372,12 @@ object Main extends ZIOAppDefault {
             // #1538: same cache instance TimeRoutes uses, so a schedule detach busts the
             // per-profile time-status entry instead of leaving a stale "paused for schedule".
             timeCache,
+            // #1849: bust the computed-snapshot cache on a profile/schedule mutation.
+            policy.invalidate,
           ) ++
-          ScheduleRoutes.routes(auth, namedSchedRepo) ++
-          HouseholdSettingsRoutes.routes(auth, hsRepo) ++
-          DeviceRoutes.routes(auth, deviceRepo, upRepo, profileRepo)
+          ScheduleRoutes.routes(auth, namedSchedRepo, policy.invalidate) ++
+          HouseholdSettingsRoutes.routes(auth, hsRepo, policy.invalidate) ++
+          DeviceRoutes.routes(auth, deviceRepo, upRepo, profileRepo, policy.invalidate)
 
       val statsRoutes: Routes[Any, Response] =
         TimeRoutes.routes(
@@ -391,6 +393,8 @@ object Main extends ZIOAppDefault {
           timeStatus,
           clock,
           timeCache,
+          // #1849: a +Time grant can lift a TimeLimit block, so bust the computed-snapshot cache.
+          policy.invalidate,
         ) ++
           LogRoutes.routes(auth, connRepo, upRepo) ++
           UsageRoutes.routes(

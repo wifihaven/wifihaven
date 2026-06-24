@@ -53,6 +53,13 @@ object ScheduleRoutes {
   def routes(
       auth: AuthService,
       scheduleRepo: NamedScheduleRepo,
+      // #1849: editing/deleting a named schedule changes the per-MAC `blocked` flag for every
+      // profile that references it (PolicyService folds the windows in at snapshot time), so drop
+      // the computed-snapshot cache on a schedule mutation. Defaulted to a no-op for test call sites;
+      // production passes `policy.invalidate`. Create alone is NOT invalidated: a brand-new schedule
+      // is referenced by no profile, so it is invisible to the snapshot until a profile attaches it
+      // via PUT /api/profiles/{id}/schedules — which invalidates there.
+      invalidateSnapshot: UIO[Unit] = ZIO.unit,
   ): Routes[Any, Response] =
     Routes(
       Method.GET / "api" / "schedules"                 ->
@@ -130,6 +137,7 @@ object ScheduleRoutes {
                 ZIO.fromOption(_).orElseFail(ApiError.Internal("Schedule vanished")),
               )
             _       <- AppMetrics.scheduleMutation("update")
+            _       <- invalidateSnapshot
           } yield Response.json(s.toJson)
           handle.mapError(ErrorMapper.errorToResponse)
         },
@@ -140,6 +148,7 @@ object ScheduleRoutes {
               scheduleRepo
                 .delete(NamedScheduleId(id))
                 .mapError(ApiError.Db(_)) *>
+              invalidateSnapshot *>
               AppMetrics.scheduleMutation("delete").as(Response.ok)
           handle.mapError(ErrorMapper.errorToResponse)
         },

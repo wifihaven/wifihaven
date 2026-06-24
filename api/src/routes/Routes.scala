@@ -233,6 +233,11 @@ object ProfileRoutes {
       // can bust the cached ProfileTimeStatus the same way `/api/time/extend` does. Defaulted so
       // the many test call sites that don't exercise caching keep their existing arity.
       cache: TimeStatusCache = TimeStatusCache.makeUnsafe(),
+      // #1849: drop the computed-snapshot cache when this profile's policy changes (pause, schedule
+      // attach, default-deny, time limit, categories, create/delete) so the change propagates to the
+      // fleet at once rather than waiting for the reconcile ticker. Defaulted to a no-op so test call
+      // sites keep their arity; production passes `policy.invalidate`.
+      invalidateSnapshot: UIO[Unit] = ZIO.unit,
   ): Routes[Any, Response] =
     Routes(
       Method.GET / "api" / "profiles"                            ->
@@ -326,6 +331,9 @@ object ProfileRoutes {
             // for schedule", so bust its cached ProfileTimeStatus the same way /api/time/extend
             // does — otherwise a detach keeps showing a stale block for up to the today-TTL.
             _      <- cache.invalidateProfile(pid)
+            // #1849: the attached schedule set is snapshot content, so drop the computed-snapshot
+            // cache too.
+            _      <- invalidateSnapshot
           } yield Response.ok
           handle.mapError(ErrorMapper.errorToResponse)
         },
@@ -374,6 +382,8 @@ object ProfileRoutes {
             _    <- ZIO
               .foreachDiscard(upr.timeLimit)(mins => timeLimitRepo.upsert(id, mins))
               .mapError(ApiError.Db(_))
+            // #1849: a new profile changes the snapshot's profile set.
+            _    <- invalidateSnapshot
           } yield Response.json(s"""{"id":${id.value}}""")
           handle.mapError(ErrorMapper.errorToResponse)
         },
@@ -429,6 +439,9 @@ object ProfileRoutes {
               case Some(mins) => timeLimitRepo.upsert(pid, mins)
               case None       => timeLimitRepo.delete(pid)
             }).mapError(ApiError.Db(_))
+            // #1849: a full-replace PUT can move paused / categories / failureMode / blockIpOnly /
+            // defaultDeny / timeLimit — all snapshot content.
+            _      <- invalidateSnapshot
           } yield Response.ok
           handle.mapError(ErrorMapper.errorToResponse)
         },
@@ -442,6 +455,8 @@ object ProfileRoutes {
               // but the snapshot would briefly miss the household-wide allow/block lists.
               requireNotGlobalProfile(profileRepo, pid, "profile (DELETE)") *>
               profileRepo.delete(pid).mapError(ApiError.Db(_)) *>
+              // #1849: a deleted profile drops out of the snapshot's profile set.
+              invalidateSnapshot *>
               ZIO.succeed(Response.ok)
           handle.mapError(ErrorMapper.errorToResponse)
         },
@@ -596,6 +611,10 @@ object ProfileRoutes {
             _                       <- ZIO.when(
               pausedPatch != FieldPatch.Absent || timeLimitPatch != FieldPatch.Absent,
             )(cache.invalidateProfile(pid))
+            // #1849: any recognized patch (pause, pauseMode, defaultDeny, timeLimit, name,
+            // categories) is snapshot content, so drop the computed-snapshot cache so the change
+            // reaches the fleet at once.
+            _                       <- invalidateSnapshot
             // Log only recognized keys; unknown keys are ignored per the
             // backwards-compat rule and would mislead ops triage if echoed.
             recognizedKeys = obj.fields.map(_._1).filter(ProfileRoutes.PatchableKeys.contains)
@@ -655,6 +674,11 @@ object DeviceRoutes {
       // a 400 before any DB write. The repo-layer guard (`DeviceRepoLive.upsert`) is a defensive
       // backstop.
       profileRepo: ProfileRepo,
+      // #1849: a device's profile assignment (or its existence) is snapshot content — drop the
+      // computed-snapshot cache on upsert/delete/reassign so the change reaches the fleet at once.
+      // Defaulted to a no-op so test call sites keep their arity; production passes
+      // `policy.invalidate`.
+      invalidateSnapshot: UIO[Unit] = ZIO.unit,
   ): Routes[Any, Response] =
     Routes(
       Method.GET / "api" / "devices"                    ->
@@ -703,6 +727,7 @@ object DeviceRoutes {
                 )
               }
             }
+            _  <- invalidateSnapshot
           } yield Response.json(s"""{"id":${id.value}}""")
           handle.mapError(ErrorMapper.errorToResponse)
         },
@@ -721,6 +746,7 @@ object DeviceRoutes {
             _        <- LogContext.annotate(LogContext.Mac, normalized.value)(
               ZIO.logInfo(s"device deleted: mac=${normalized.value}"),
             )
+            _        <- invalidateSnapshot
           } yield Response.ok
           handle.mapError(ErrorMapper.errorToResponse)
         },
@@ -774,6 +800,7 @@ object DeviceRoutes {
                 )
               }
             }
+            _ <- invalidateSnapshot
           } yield Response.ok
           handle.mapError(ErrorMapper.errorToResponse)
         },
@@ -805,6 +832,10 @@ object TimeRoutes {
       timeStatusService: wifihaven.api.policy.TimeStatusService,
       clock: Clock,
       cache: TimeStatusCache = TimeStatusCache.makeUnsafe(),
+      // #1849: a +Time grant can flip a profile's daily-limit block off, which is snapshot content —
+      // drop the computed-snapshot cache so the fleet sees the unblock at once. Defaulted to a no-op
+      // for test call sites; production passes `policy.invalidate`.
+      invalidateSnapshot: UIO[Unit] = ZIO.unit,
   ): Routes[Any, Response] =
     Routes(
       // #777 — collapsed accordion summary. One batched presence query over ALL devices
@@ -1147,6 +1178,9 @@ object TimeRoutes {
             // #946: bust the cached ProfileTimeStatus for this profile so the SPA's next
             // refetch reflects the new cap immediately instead of waiting up to todayTtl.
             _  <- cache.invalidateProfile(ger.profileId)
+            // #1849: a grant can lift a TimeLimit block — snapshot content — so drop the
+            // computed-snapshot cache too.
+            _  <- invalidateSnapshot
           } yield Response.json(s"""{"id":${id.value},"grantedMinutes":${ger.extraMinutes}}""")
           handle.mapError(ErrorMapper.errorToResponse)
         },
@@ -1843,6 +1877,11 @@ object HouseholdSettingsRoutes {
   def routes(
       auth: AuthService,
       repo: HouseholdSettingsRepo,
+      // #1849: unmanagedMacPolicy and blockEncryptedDns are snapshot content (the former drives the
+      // unmanaged-MAC block rules, the latter the top-level `blockEncryptedDns` flag), so drop the
+      // computed-snapshot cache on a settings write. Defaulted to a no-op for test call sites;
+      // production passes `policy.invalidate`.
+      invalidateSnapshot: UIO[Unit] = ZIO.unit,
   ): Routes[Any, Response] =
     Routes(
       Method.GET / "api" / "household" / "settings"   ->
@@ -1876,6 +1915,7 @@ object HouseholdSettingsRoutes {
                 ),
               )
               .mapError(ApiError.Db(_))
+            _    <- invalidateSnapshot
           } yield Response.ok
           handle.mapError(ErrorMapper.errorToResponse)
         },
@@ -1946,6 +1986,7 @@ object HouseholdSettingsRoutes {
               blockEncryptedDns = bedPatch.applyTo(existing.blockEncryptedDns),
             )
             _            <- repo.update(merged).mapError(ApiError.Db(_))
+            _            <- invalidateSnapshot
           } yield Response.ok
           handle.mapError(ErrorMapper.errorToResponse)
         },
