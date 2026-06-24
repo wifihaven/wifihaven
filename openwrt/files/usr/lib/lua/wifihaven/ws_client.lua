@@ -1,28 +1,28 @@
--- ws_client.lua — cqueues-backed RFC 6455 websocket CLIENT (spike #1845).
+-- ws_client.lua — cqueues-backed RFC 6455 websocket CLIENT.
 --
--- This is the I/O half of the spike: it wires ws_frame.lua's pure framing to a
--- real TLS socket and an async event loop, both provided by `cqueues` (the one
--- websocket-capable building block actually in the OpenWrt feed — 131 KiB,
--- Lua 5.1, bundled openssl TLS). It runs on Linux / the router target ONLY;
--- it is NOT loaded by the macOS busted suite (which exercises ws_frame.lua).
+-- Proven on the real Lua 5.1 + packaged-cqueues/luaossl target by the #1845
+-- spike; promoted from spike/ws-1845/ into the shipped agent package by #1848,
+-- where the wifihaven-ws sidecar (ws_loop.lua) drives it. It wires
+-- ws_frame.lua's pure framing to a real TLS socket and an async event loop,
+-- both provided by `cqueues` (the one websocket-capable building block actually
+-- in the OpenWrt feed — 131 KiB, Lua 5.1, bundled openssl TLS). It runs on
+-- Linux / the router target ONLY (it `require`s cqueues + luaossl at load time),
+-- so the macOS busted suite never loads it — ws_loop_spec.lua exercises the
+-- sidecar's orchestration against a FAKE client instead, and the live cqueues
+-- round-trip is validated on plex.lan (Lua 5.1) via spike/ws-1845/e2e_test.sh.
 --
--- It demonstrates the four things §3.4 of the design asks the spike to prove:
+-- It provides the four things the transport needs:
 --   1. open a wss:// connection (TLS via cqueues + openssl.ssl.context),
 --   2. complete the HTTP/1.1 Upgrade handshake and verify Sec-WebSocket-Accept,
 --   3. send/receive text frames + answer server ping with pong (heartbeat),
 --   4. surface "connection dropped" cleanly so a caller can reconnect.
---
--- The sidecar in sub-issue C (#1848) will build on this shape: one cqueues
--- controller running this client, draining the tmpfs spools out and writing
--- pushed `policy` frames in. This file deliberately stays a thin, readable
--- proof — not the production sidecar.
 
 local socket  = require("cqueues.socket")
 local errno   = require("cqueues.errno")
 local context = require("openssl.ssl.context")
 
-local ws_frame = require("ws_frame")
-local ws_crypto = require("ws_crypto")
+local ws_frame = require("wifihaven.ws_frame")
+local ws_crypto = require("wifihaven.ws_crypto")
 
 local M = {}
 

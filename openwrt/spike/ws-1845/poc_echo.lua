@@ -14,11 +14,15 @@
 -- This is throwaway proof code; the real sidecar (#1848) reuses ws_client.lua
 -- but is driven by the spool/snapshot bridge, not this demo loop.
 
-package.path = (arg and arg[0] and arg[0]:match("^(.*/)") or "./")
-  .. "?.lua;" .. package.path
+local SCRIPT_DIR = (arg and arg[0] and arg[0]:match("^(.*/)") or "./")
+-- ws_client/ws_frame/ws_crypto were promoted into the shipped agent package
+-- (openwrt/files/usr/lib/lua/wifihaven/) by #1848; resolve the qualified
+-- `wifihaven.*` requires from there.
+package.path = SCRIPT_DIR .. "?.lua;"
+  .. SCRIPT_DIR .. "../../files/usr/lib/lua/?.lua;" .. package.path
 
 local cqueues = require("cqueues")
-local ws_client = require("ws_client")
+local ws_client = require("wifihaven.ws_client")
 
 local uri = arg[1] or "wss://echo.websocket.events"
 local HEARTBEAT_PROOF_SECS = tonumber(arg[2] or "8")

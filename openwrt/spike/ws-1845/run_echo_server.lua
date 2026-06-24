@@ -4,7 +4,12 @@
 -- (matching the real deployment: the ws sidecar and the API are separate
 -- processes), avoiding single-event-loop scheduling artifacts. TARGET/Linux.
 --   lua run_echo_server.lua <port>
-package.path = (arg and arg[0] and arg[0]:match("^(.*/)") or "./") .. "?.lua;" .. package.path
+local SCRIPT_DIR = (arg and arg[0] and arg[0]:match("^(.*/)") or "./")
+-- The ws_frame/ws_crypto modules were promoted into the shipped agent package
+-- (openwrt/files/usr/lib/lua/wifihaven/) by #1848; resolve them from there
+-- (qualified `wifihaven.*` require) plus the spike dir for echo_server itself.
+package.path = SCRIPT_DIR .. "?.lua;"
+  .. SCRIPT_DIR .. "../../files/usr/lib/lua/?.lua;" .. package.path
 local cq = require("cqueues")
 local server = require("echo_server")
 local port = tonumber(arg[1] or "8800")

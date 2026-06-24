@@ -14,8 +14,8 @@
 --   inside a cqueues coroutine) and :stop().
 
 local socket  = require("cqueues.socket")
-local ws_frame = require("ws_frame")
-local ws_crypto = require("ws_crypto")
+local ws_frame = require("wifihaven.ws_frame")
+local ws_crypto = require("wifihaven.ws_crypto")
 
 local M = {}
 local CRLF = "\r\n"
