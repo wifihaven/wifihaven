@@ -182,6 +182,10 @@ object Main extends ZIOAppDefault {
         // poll — but for an always-polling household fleet that is ≈ the pre-cache per-poll load
         // (which also ran every ~5s), so it is not a regression; gating on "any consumer present" is
         // a possible later refinement.
+        // TODO(#1936): replace this fixed-interval ticker with a boundary-scheduled refresh — compute
+        // the next schedule-edge / daily-reset / limit-exhaustion instant from the data buildSnapshot
+        // already loads and sleep until then, so the ~2.5s build runs at real transitions instead of
+        // every tick.
         policyForPush <- ZIO.service[PolicyService]
         _ <- policyForPush.setPublisher(new wifihaven.api.policy.PolicySnapshotPublisher {
           def publish(snap: wifihaven.shared.PolicySnapshot): UIO[Unit] =
