@@ -361,12 +361,16 @@ runs `/pr-review` before merge.
   (`attributed` / `split` / `other`) and its Grafana panels on the
   `data-quality-ingest` dashboard.
 
-- **S4 — Enforcement guardrails** (depends on S1b; parallel to S2/S3).
-  Exclude shared hosts from `appCapExhaustedHosts` and `Blocked`-mode
-  `extraBlocked` in `PolicyService.computeBlockRules`
-  ([PolicyService](../../api/src/policy/PolicyService.scala):771-885); keep the
-  unconditional allow path for shared hosts on `Allowed`-mode apps. Tests pin:
-  cap exhaustion never drops a shared host; allow-mode shared host carves.
+- **S4 — Enforcement guardrails** ✅ shipped
+  ([#1899](https://github.com/wifihaven/wifihaven/issues/1899)) — the BLOCK side
+  is restricted to each app's DISTINCTIVE hosts: `ProfileAppDispositions
+  .enforcement` blocks only `distinctiveHosts`, and `appCapExhaustedHosts` (plus
+  the `/decision` fallback `timeLimitBlockFromState`) read a new
+  `AppDayState.distinctiveHosts` threaded from the single
+  `ProfileAppDispositions.from` fold. The ALLOW side is unchanged — a shared host
+  rides the full host-set into `extraAllowed` whenever an app resolves to
+  `Allowed` (subject to #1679). No wire change. Tests pin: cap exhaustion /
+  manual block never drops a shared host; an allow-mode shared host carves.
 
 - **S5 — Feeling Great app, first consumer**
   ([#1889](https://github.com/wifihaven/wifihaven/issues/1889), depends on

@@ -819,5 +819,128 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
       } yield assertTrue(kidEa.contains("khanacademy.org")) &&
         assertTrue(!adultEa.contains("khanacademy.org"))
     },
+    // ── #1899 (shared-hosts S4): most-permissive enforcement for shared hosts ──
+    // A shared host follows the MOST PERMISSIVE disposition of any app that lists it: allow wins
+    // (added to extraAllowed unconditionally), block is withheld (never enters a drop set). This
+    // does NOT depend on co-presence (that gates attribution only, S2/S3). Reuses extraAllowed — no
+    // new wire field; the router stays a dumb applier.
+    test("#1899 allowed-mode app: distinctive AND shared hosts both carve into extraAllowed") {
+      for {
+        _     <- cleanDb
+        ar    <- ZIO.service[AppRepo]
+        kids  <- kidsId
+        appId <- ar.create("Feeling Great", "feeling-great", None, None)
+        // feelinggreat.com distinctive; elevenlabs.io shared backend.
+        _     <- ar.setHostEntries(
+          appId,
+          List(
+            AppHostEntry(Hostname.unsafe("feelinggreat.com"), shared = false),
+            AppHostEntry(Hostname.unsafe("elevenlabs.io"), shared = true),
+          ),
+        )
+        _     <- ar.upsertAssignment(appId, kids, AppMode.Allowed, None, true)
+        svc   <- makePs
+        snap  <- svc.snapshot
+      } yield {
+        val ea = snap.profiles(kids).rules.extraAllowed.map(_.value).toSet
+        val eb = snap.profiles(kids).rules.extraBlocked.map(_.value).toSet
+        // Allow wins for both host kinds; nothing is dropped.
+        assertTrue(ea.contains("feelinggreat.com")) &&
+        assertTrue(ea.contains("elevenlabs.io")) &&
+        assertTrue(!eb.contains("elevenlabs.io"))
+      }
+    },
+    test(
+      "#1899 blocked-mode app: distinctive host blocked, shared host omitted from extraBlocked",
+    ) {
+      // Blocking elevenlabs.io because one app is blocked would drop TTS for every OTHER app on the
+      // device — the #1636 collateral failure. Only the distinctive host is block-eligible.
+      for {
+        _     <- cleanDb
+        ar    <- ZIO.service[AppRepo]
+        kids  <- kidsId
+        appId <- ar.create("Some Blocked App", "blocked-app", None, None)
+        _     <- ar.setHostEntries(
+          appId,
+          List(
+            AppHostEntry(Hostname.unsafe("blockedapp.com"), shared = false),
+            AppHostEntry(Hostname.unsafe("elevenlabs.io"), shared = true),
+          ),
+        )
+        _     <- ar.upsertAssignment(appId, kids, AppMode.Blocked, None, true)
+        svc   <- makePs
+        snap  <- svc.snapshot
+      } yield {
+        val eb = snap.profiles(kids).rules.extraBlocked.map(_.value).toSet
+        assertTrue(eb.contains("blockedapp.com")) &&
+        assertTrue(!eb.contains("elevenlabs.io"))
+      }
+    },
+    test(
+      "#1899 time_limited app cap exhausted: distinctive host blocked, shared host NEVER dropped",
+    ) {
+      // The per-app cap exhausts on the distinctive host and the WHOLE distinctive host-set goes to
+      // extraBlocked — but the shared backend stays reachable (it belongs to other apps too). The
+      // cap is still enforced through the distinctive hosts.
+      for {
+        _     <- cleanDb
+        ar    <- ZIO.service[AppRepo]
+        kids  <- kidsId
+        dr    <- ZIO.service[DeviceRepo]
+        _     <- dr.upsert(MacAddress.unsafe("aa:bb:cc:dd:ee:99"), "iPad", Some(kids), "10.0.0.99")
+        rid   <- seedRouterRow
+        appId <- ar.create("Feeling Great", "feeling-great", None, None)
+        _     <- ar.setHostEntries(
+          appId,
+          List(
+            AppHostEntry(Hostname.unsafe("feelinggreat.com"), shared = false),
+            AppHostEntry(Hostname.unsafe("elevenlabs.io"), shared = true),
+          ),
+        )
+        _     <- ar.upsertAssignment(appId, kids, AppMode.TimeLimited, Some(30), true)
+        today = TestClock.schoolDayAfternoon.toLocalDate
+        // 30 m on the distinctive host → aggregate hits the 30 m cap.
+        _    <- seedTraffic(rid, "aa:bb:cc:dd:ee:99", "feelinggreat.com", today, 30)
+        svc  <- makePs
+        snap <- svc.snapshot
+      } yield {
+        val eb = snap.profiles(kids).rules.extraBlocked.map(_.value).toSet
+        assertTrue(eb.contains("feelinggreat.com")) &&
+        assertTrue(!eb.contains("elevenlabs.io"))
+      }
+    },
+    test(
+      "#1899 shared host on a blocked app AND an allowed app: allow wins, never dropped",
+    ) {
+      // Most-permissive across apps: elevenlabs.io is shared on a Blocked app and an Allowed app.
+      // The Allowed app puts it in extraAllowed; the Blocked app never drops it. Net: allowed.
+      for {
+        _     <- cleanDb
+        ar    <- ZIO.service[AppRepo]
+        kids  <- kidsId
+        block <- ar.create("Blocked App", "blocked-app", None, None)
+        allow <- ar.create("Feeling Great", "feeling-great", None, None)
+        _     <- ar.setHostEntries(
+          block,
+          List(
+            AppHostEntry(Hostname.unsafe("blockedapp.com"), shared = false),
+            AppHostEntry(Hostname.unsafe("elevenlabs.io"), shared = true),
+          ),
+        )
+        _     <- ar.setHostEntries(
+          allow,
+          List(
+            AppHostEntry(Hostname.unsafe("feelinggreat.com"), shared = false),
+            AppHostEntry(Hostname.unsafe("elevenlabs.io"), shared = true),
+          ),
+        )
+        _     <- ar.upsertAssignment(block, kids, AppMode.Blocked, None, true)
+        _     <- ar.upsertAssignment(allow, kids, AppMode.Allowed, None, true)
+        svc   <- makePs
+        snap  <- svc.snapshot
+        rules = snap.profiles(kids).rules
+      } yield assertTrue(rules.extraAllowed.map(_.value).toSet.contains("elevenlabs.io")) &&
+        assertTrue(!rules.extraBlocked.map(_.value).toSet.contains("elevenlabs.io"))
+    },
   ) @@ TestAspect.sequential
 }

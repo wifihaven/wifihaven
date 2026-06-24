@@ -711,7 +711,10 @@ class PolicyServiceLive(
     // Time-limit blocks expire at the next household daily-reset Instant.
     val resetAt     = PolicyService.nextDailyResetAfter(settings, now).toString
     val appLimitHit = state.perApp.find { sd =>
-      sd.hosts.exists(hp => HostMatch.matchesPattern(hostname, hp)) &&
+      // #1899 (shared-hosts S4): match only the app's DISTINCTIVE hosts — a shared backend is never
+      // app-cap-blocked, so the /decision fallback agrees with the snapshot's `appCapExhaustedHosts`
+      // (which also reads `distinctiveHosts`). Keeps the two paths from diverging (#1532).
+      sd.distinctiveHosts.exists(hp => HostMatch.matchesPattern(hostname, hp)) &&
       // #1627: same Option-aware exhaustion check as `appCapExhaustedHosts`.
       sd.dailyLimitMinutes.exists(lim => sd.usedMinutes >= lim)
     }
@@ -1011,8 +1014,12 @@ object PolicyService {
       // #1627: `dailyLimitMinutes = None` means "no per-app cap configured" —
       // never exhausted. Only an app with `Some(lim)` and `usedMinutes >= lim`
       // contributes hosts to extraBlocked here.
+      // #1899 (shared-hosts S4): only the app's DISTINCTIVE hosts are block-eligible. A shared
+      // backend is NEVER dropped on cap exhaustion — dropping it because THIS app hit its cap would
+      // drop it for every OTHER app on the device (the #1636 collateral failure). The cap is still
+      // enforced through the distinctive hosts; `usedMinutes` already aggregates the whole host-set.
       case sd if sd.dailyLimitMinutes.exists(lim => sd.usedMinutes >= lim) =>
-        sd.hosts.map(Hostname.unsafe)
+        sd.distinctiveHosts.map(Hostname.unsafe)
     }.flatten
 
   /**
