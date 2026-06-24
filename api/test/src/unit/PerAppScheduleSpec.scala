@@ -69,6 +69,7 @@ object PerAppScheduleSpec extends ZIOSpecDefault {
       dailyMinutes = a.dailyMinutes,
       label = s"app:${a.appId.value}",
       hosts = hostsByApp.getOrElse(a.appId, Nil).map(_.value),
+      distinctiveHosts = hostsByApp.getOrElse(a.appId, Nil).map(_.value),
     )
     val (allowed, blocked) =
       ProfileAppDispositions(List(d)).enforcement(Map(a.id -> rules), capExhausted, now)
@@ -103,6 +104,7 @@ object PerAppScheduleSpec extends ZIOSpecDefault {
       dailyMinutes = None,
       label = s"app:$appId",
       hosts = hosts,
+      distinctiveHosts = hosts,
     )
 
   def spec = suite("per-app schedules (#1379)")(

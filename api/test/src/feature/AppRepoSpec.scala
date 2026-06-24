@@ -115,6 +115,27 @@ object AppRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Tr
         entries.toSet == Set(AppHostEntry(youtube, false), AppHostEntry(gvideo, true)),
       )
     },
+    test("#1897 AppTimeLimitRepo.listForProfile round-trips the per-host shared flag") {
+      for {
+        _      <- cleanDb
+        appR   <- ZIO.service[AppRepo]
+        atlR   <- ZIO.service[AppTimeLimitRepo]
+        pRepo  <- ZIO.service[ProfileRepo]
+        pid    <- pRepo.create("Kids", Nil)
+        id     <- appR.create("Feeling Great", "feeling-great", None, None)
+        // distinctive feelinggreat.com + shared elevenlabs.io (a multi-tenant TTS backend).
+        _      <- appR.setHostEntries(
+          id,
+          List(
+            AppHostEntry(Hostname.unsafe("feelinggreat.com"), shared = false),
+            AppHostEntry(Hostname.unsafe("elevenlabs.io"), shared = true),
+          ),
+        )
+        _      <- appR.upsertAssignment(id, pid, AppMode.TimeLimited, Some(30), false)
+        limits <- atlR.listForProfile(pid)
+        bySh = limits.map(l => l.domainPattern -> l.shared).toMap
+      } yield assertTrue(bySh == Map("feelinggreat.com" -> false, "elevenlabs.io" -> true))
+    },
     test("upsertAssignment inserts and overwrites on same (app, profile)") {
       for {
         _     <- cleanDb

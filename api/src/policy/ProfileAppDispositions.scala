@@ -62,6 +62,20 @@ final case class ProfileAppDispositions(
     capGroups.map(d => d.label -> d.hosts)
 
   /**
+   * #1897 (shared-hosts S2): the (label → DISTINCTIVE hosts) pairs for the per-app engaged-minutes
+   * stitch. Same shape and order as [[capGroupLabelHosts]] but with each app's `shared` hosts
+   * dropped. This is THE single definition of "an app's distinctive host-set for presence" — both
+   * engaged-minutes consumers ([[wifihaven.api.policy.TimeStatusService.appDayStates]] /
+   * [[wifihaven.api.policy.TimeStatusService.appSecondsByAppWithDropCount]]) and S3's shared-host
+   * co-presence overlap test read through it, so the distinctive-span computation lives in exactly
+   * one place (AGENTS.md §single-source-of-truth). A shared host overlapping a distinctive span is
+   * already counted inside that span, so excluding it from the stitch changes the minutes by zero
+   * while guaranteeing a shared host can never inflate, extend, or create an app's engaged time.
+   */
+  def capGroupLabelDistinctiveHosts: List[(String, List[String])] =
+    capGroups.map(d => d.label -> d.distinctiveHosts)
+
+  /**
    * Snapshot enforcement: collapse every assignment into the per-MAC `(extraAllowed, extraBlocked)`
    * BlockRules buckets the router applies, folding each assignment's per-app schedule windows over
    * its base mode (design §4.1):
@@ -138,6 +152,12 @@ final case class AppDisposition(
     dailyMinutes: Option[Int],
     label: String,
     hosts: List[String],
+    // #1897 (shared-hosts S2): the subset of `hosts` whose `app_hosts.shared` flag is false — the
+    // app's DISTINCTIVE hosts. Enforcement / exempt / attribution projections keep reading `hosts`
+    // (all of them); only the per-app engaged-minutes stitch reads this subset, so a shared backend
+    // never inflates or extends an app's time. An app with no shared hosts has
+    // `distinctiveHosts == hosts`.
+    distinctiveHosts: List[String],
     // #1679: when false, suppress this app's extraAllowed carve-out during Schedule-reason blocks.
     allowedDuringScheduleBlock: Boolean = true,
 )
@@ -175,6 +195,9 @@ object ProfileAppDispositions {
           dailyMinutes = first.dailyMinutes,
           label = first.label,
           hosts = rows.map(_.domainPattern).distinct,
+          // #1897: distinctive = the host rows whose `shared` flag is false. `shared` is per-(app,
+          // host) (one repo row per host), so it is read off each row, not off `first`.
+          distinctiveHosts = rows.filterNot(_.shared).map(_.domainPattern).distinct,
           allowedDuringScheduleBlock = first.allowedDuringScheduleBlock,
         )
       }

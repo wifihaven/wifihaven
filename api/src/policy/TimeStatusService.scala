@@ -442,13 +442,17 @@ object TimeStatusService {
       continuationSeconds: Int,
   ): List[AppDayState] = {
     // #1564: feed Presence the cap-group label as its String key so the underlying span/union math
-    // is unchanged, then re-key the result by appId via the (label -> appId) map groupAppLimits
-    // emits directly. One canonical conversion, no slug parsing.
-    val groups       = groupAppLimits(appLimits)
-    val labelToAppId = groups.map(g => g._2 -> g._1).toMap
+    // is unchanged, then re-key the result by appId via the (label -> appId) map the same fold
+    // emits. One canonical conversion, no slug parsing.
+    // #1897: the stitch reads each app's DISTINCTIVE host-set only (`capGroupLabelDistinctiveHosts`)
+    // — a shared host overlapping a distinctive span is already counted there, so excluding it is a
+    // no-op that also guarantees it can never inflate or extend the app's engaged minutes. Both the
+    // label→appId map and the distinctive host-set come off ONE `ProfileAppDispositions.from` fold.
+    val dispositions = ProfileAppDispositions.from(appLimits)
+    val labelToAppId = dispositions.capGroups.map(d => d.label -> d.appId).toMap
     val perLabel     = Presence.patternGroupMinutesForProfile(
       presence,
-      groups.map(g => g._2 -> g._5),
+      dispositions.capGroupLabelDistinctiveHosts,
       overlap,
       filter,
       continuationSeconds,
@@ -585,11 +589,13 @@ object TimeStatusService {
       presence: List[PresenceRow],
       settings: HouseholdSettings,
   ): (Map[AppId, Long], Int) = {
-    val groups                 = groupAppLimits(appLimits)
-    val labelToAppId           = groups.map(g => g._2 -> g._1).toMap
+    // #1897: distinctive host-set only — see `appDayStates` / `capGroupLabelDistinctiveHosts`. Both
+    // the label→appId map and the distinctive host-set come off ONE `ProfileAppDispositions.from`.
+    val dispositions           = ProfileAppDispositions.from(appLimits)
+    val labelToAppId           = dispositions.capGroups.map(d => d.label -> d.appId).toMap
     val (secsByLabel, dropped) = Presence.appSecondsForProfileWithDropCount(
       presence,
-      groups.map(g => g._2 -> g._5),
+      dispositions.capGroupLabelDistinctiveHosts,
       profile.crossDeviceOverlapMode,
       settings.heartbeatFilter,
       settings.presenceContinuationSeconds,
@@ -598,6 +604,40 @@ object TimeStatusService {
       labelToAppId.get(label).map(_ -> secs)
     }.toMap
     (byAppId, dropped)
+  }
+
+  /**
+   * #1897 (shared-hosts S2): per-app DISTINCTIVE-host engaged spans, keyed by `apps.id` — the
+   * gap-bridged union of each app's `shared = false` hosts, the exact spans the per-app cap
+   * ([[appSecondsByApp]]) sums. Built on the SAME stitch primitive
+   * ([[Presence.appSpansForProfile]]) over the SAME distinctive host-set
+   * ([[ProfileAppDispositions.capGroupLabelDistinctiveHosts]]).
+   *
+   * This is the reusable seam S3's shared-host co-presence allocation consumes: a shared-host
+   * presence row attributes to app A iff it overlaps one of A's distinctive spans. S3 MUST read
+   * these spans rather than re-deriving the distinctive partition, so the distinctive-span
+   * computation lives in exactly one place (AGENTS.md §single-source-of-truth). Spans are combined
+   * across the profile's devices per `profile.crossDeviceOverlapMode`, matching the cap aggregate.
+   */
+  def distinctiveSpansByApp(
+      profile: Profile,
+      appLimits: List[AppTimeLimit],
+      presence: List[PresenceRow],
+      settings: HouseholdSettings,
+  ): Map[AppId, List[Presence.Span]] = {
+    val dispositions = ProfileAppDispositions.from(appLimits)
+    val labelToAppId = dispositions.capGroups.map(d => d.label -> d.appId).toMap
+    Presence
+      .appSpansForProfile(
+        presence,
+        dispositions.capGroupLabelDistinctiveHosts,
+        profile.crossDeviceOverlapMode,
+        settings.heartbeatFilter,
+        settings.presenceContinuationSeconds,
+      )
+      .iterator
+      .flatMap { case (label, spans) => labelToAppId.get(label).map(_ -> spans) }
+      .toMap
   }
 
   /**

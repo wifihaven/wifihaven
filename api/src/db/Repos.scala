@@ -1023,8 +1023,22 @@ class AppTimeLimitRepoLive(xa: Transactor[Task]) extends AppTimeLimitRepo {
   // made the exempt+no-limit carve unreachable.
   // #1679: `apa.allowed_during_schedule_block` carried straight through so the
   // `ProfileAppDispositions` fold can suppress the extraAllowed carve during Schedule blocks.
+  // #1897: `ah.shared` is carried through as the 10th column so `ProfileAppDispositions` can
+  // partition each app's host-set into distinctive (`shared = false`) vs shared hosts. The
+  // engaged-minutes stitch reads the distinctive subset only.
   private type R =
-    (ProfileId, String, Option[Int], String, Boolean, AppId, AppPolicyAssignmentId, String, Boolean)
+    (
+        ProfileId,
+        String,
+        Option[Int],
+        String,
+        Boolean,
+        AppId,
+        AppPolicyAssignmentId,
+        String,
+        Boolean,
+        Boolean,
+    )
   private def toS(r: R) =
     AppTimeLimit(
       AppTimeLimitId(0L),
@@ -1037,13 +1051,14 @@ class AppTimeLimitRepoLive(xa: Transactor[Task]) extends AppTimeLimitRepo {
       AppMode.parse(r._8).getOrElse(AppMode.TimeLimited),
       r._7,
       r._9,
+      r._10,
     )
 
   def listForProfile(pid: ProfileId) =
     DbMetrics.timed("appTimeLimit.listForProfile")(
       sql"""SELECT apa.profile_id, ah.host, apa.daily_minutes, a.slug,
                    apa.exempt_from_daily, a.id, apa.id, apa.mode::text,
-                   apa.allowed_during_schedule_block
+                   apa.allowed_during_schedule_block, ah.shared
             FROM app_policy_assignments apa
             JOIN apps a       ON a.id = apa.app_id
             JOIN app_hosts ah ON ah.app_id = apa.app_id
@@ -1058,7 +1073,7 @@ class AppTimeLimitRepoLive(xa: Transactor[Task]) extends AppTimeLimitRepo {
   def listAll =
     sql"""SELECT apa.profile_id, ah.host, apa.daily_minutes, a.slug,
                  apa.exempt_from_daily, a.id, apa.id, apa.mode::text,
-                 apa.allowed_during_schedule_block
+                 apa.allowed_during_schedule_block, ah.shared
             FROM app_policy_assignments apa
             JOIN apps a       ON a.id = apa.app_id
             JOIN app_hosts ah ON ah.app_id = apa.app_id
