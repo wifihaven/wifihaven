@@ -683,22 +683,40 @@ end
 
 -- ── Timer state ───────────────────────────────────────────────────────────────
 
-local current_etag        = nil
--- #331: tracks the most recently applied snapshot so we can re-render with
--- failover opts on the first failed poll (#422 — without a fresh fetch we
--- have no other snapshot to render from).
-local last_snapshot       = nil
--- #331: whether the last apply emitted the failover chain. Used to dedupe
--- re-renders while we sit in failover and to detect the recovery edge so we
--- can apply a clean (non-failover) ruleset on the next successful poll.
-local in_failover_render  = false
-local last_policy_run     = 0
-local last_usage_run      = 0
-local last_metrics_run    = 0
-local last_blocklist_run  = 0  -- #1412: category blocklist refresh cadence
-local last_eb_refresh_run = 0  -- #1658: eb_/bl_ ipset re-resolve cadence
-local last_activity_sample = 0
-local last_nflog_run      = 0  -- #1126: nflog drop-spool drain cadence
+-- #1930: all mutable per-tick scheduler state lives in ONE table so the big
+-- on_tick closure (and register_batcher) capture a single upvalue for it instead
+-- of a dozen. Lua 5.1 caps a function at 60 upvalues — a LOAD-time limit the
+-- dev-host Lua (5.4) does not enforce — and on_tick had crept past 60 as
+-- enforcement layers were added (#1921 encrypted DNS, #1927 ws sidecar), so the
+-- agent failed to load and crash-looped at boot on the router. Bundling here is
+-- behaviour-identical (field access for local access) and keeps headroom.
+-- Guarded by test/lua_compile_spec.sh (luac5.1 -p).
+local ts = {
+  current_etag       = nil,
+  -- #331: tracks the most recently applied snapshot so we can re-render with
+  -- failover opts on the first failed poll (#422 — without a fresh fetch we
+  -- have no other snapshot to render from).
+  last_snapshot      = nil,
+  -- #331: whether the last apply emitted the failover chain. Used to dedupe
+  -- re-renders while we sit in failover and to detect the recovery edge so we
+  -- can apply a clean (non-failover) ruleset on the next successful poll.
+  in_failover_render = false,
+  last_policy_run    = 0,
+  last_usage_run     = 0,
+  last_metrics_run   = 0,
+  last_blocklist_run  = 0,  -- #1412: category blocklist refresh cadence
+  last_eb_refresh_run = 0,  -- #1658: eb_/bl_ ipset re-resolve cadence
+  last_activity_sample = 0,
+  last_nflog_run      = 0,  -- #1126: nflog drop-spool drain cadence
+  -- Wall-clock anchor for usage report periodStart. Updated each time the usage
+  -- timer fires; kept on os.time() because the API expects RFC3339 UTC, not a
+  -- monotonic value. The "should this timer fire?" decision is monotonic
+  -- (last_usage_run); the "what time range does this report cover?" is this.
+  last_usage_wall_ts = os.time(),
+  -- Shared conntrack event batcher, wired up by register_batcher once
+  -- conntrack.watch starts (#1126 nflog drain reuses it).
+  events_batcher     = nil,
+}
 local activity_tracker     = usage.new_tracker()
 local usage_queue          = usage.new_queue()  -- retry queue for failed POSTs (#309)
 
@@ -742,7 +760,7 @@ do
                     clock.monotonic_seconds() - t0)
     if applied then
       render.update_shared(cached, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac, make_bl_member_iterator(cached))
-      last_snapshot = cached
+      ts.last_snapshot = cached
       log.info("startup: applied cached policy from /etc/wifihaven/policy.json")
     else
       log.warn("startup: cached policy apply failed — staying on default-deny")
@@ -751,13 +769,6 @@ do
     log.info("startup: no cached policy snapshot on flash (fresh install or first boot)")
   end
 end
-
--- Wall-clock anchor for usage report periodStart. Updated each time the usage
--- timer fires; kept on os.time() because the API expects RFC3339 UTC, not a
--- monotonic value. The "should this timer fire?" decision is monotonic
--- (last_usage_run, below); the "what time range does this report cover?"
--- decision is wall-clock (this).
-local last_usage_wall_ts = os.time()
 
 do
   log.debug("startup: initial policy fetch")
@@ -780,8 +791,8 @@ do
                     clock.monotonic_seconds() - at0)
     if applied then
       render.update_shared(snap, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac, make_bl_member_iterator(snap))
-      current_etag = etag
-      last_snapshot = snap
+      ts.current_etag = etag
+      ts.last_snapshot = snap
       policy.mark_poll_success(os.time())
       policy.save_snapshot(snap, write_file, rename_file, log)
       log.info("startup: applied initial policy etag=%s", tostring(etag))
@@ -795,13 +806,13 @@ do
   -- Scheduler timers use the monotonic clock so backward wall-clock jumps
   -- (NTP correction, DST, deliberate manipulation) can't stall polling — #336.
   local mono = clock.monotonic_seconds()
-  last_policy_run        = mono
-  last_usage_run         = mono
-  last_metrics_run       = mono
-  last_blocklist_run     = mono
-  last_eb_refresh_run    = mono
-  last_activity_sample   = mono
-  last_nflog_run         = mono
+  ts.last_policy_run        = mono
+  ts.last_usage_run         = mono
+  ts.last_metrics_run       = mono
+  ts.last_blocklist_run     = mono
+  ts.last_eb_refresh_run    = mono
+  ts.last_activity_sample   = mono
+  ts.last_nflog_run         = mono
 end
 
 -- Snapshot nft counters for the activity tracker.  Cheap (same JSON we'd
@@ -934,9 +945,8 @@ local nflog_int    = tonumber(uci_get("nflog_poll_interval", "5"))
 local nflog_window = tonumber(uci_get("nflog_dedup_window", "60"))
 local nflog_state  = { offset = 0 }
 local nflog_dedup  = nflog.new_dedup({ window_seconds = nflog_window })
--- Set by conntrack.watch via register_batcher below; the nflog drain adds its
--- synthesized events to this shared batcher. nil until watch wires it.
-local events_batcher = nil
+-- The shared conntrack event batcher (used by the nflog drain) lives on ts so
+-- on_tick captures it as one upvalue with the rest of the per-tick state (#1930).
 
 conntrack.watch({
   router_id       = router_id,
@@ -958,7 +968,7 @@ conntrack.watch({
   -- is enabled+healthy; everything else passes straight through.
   http_post       = usage_events_post,
   log             = log,
-  register_batcher = function(b) events_batcher = b end,
+  register_batcher = function(b) ts.events_batcher = b end,
 
   -- Called on every conntrack line (after event processing).
   -- Drives the policy and usage timers co-operatively.
@@ -970,10 +980,10 @@ conntrack.watch({
     local wall = os.time()
 
     -- Policy timer
-    if (mono - last_policy_run) >= policy_int then
-      last_policy_run = mono
+    if (mono - ts.last_policy_run) >= policy_int then
+      ts.last_policy_run = mono
       local pt0 = clock.monotonic_seconds()
-      local snap, etag = policy.fetch(api_url, router_token, current_etag, http_get, log, policy_opts)
+      local snap, etag = policy.fetch(api_url, router_token, ts.current_etag, http_get, log, policy_opts)
       metrics.observe(mreg, "snapshot_poll_duration_seconds", {},
                       clock.monotonic_seconds() - pt0)
       local fetch_ok
@@ -985,7 +995,7 @@ conntrack.watch({
         -- route). Shards are atomic-written to /tmp; dnsmasq picks them up via
         -- conf-file= directives in the rendered wifihaven.conf.
         refresh_blocklists(snap)
-        last_blocklist_run = mono  -- this poll already refreshed; reset cadence
+        ts.last_blocklist_run = mono  -- this poll already refreshed; reset cadence
 
         -- Apply with no failover opts. If we were in failover, this
         -- apply already emits a clean ruleset (no failover chain), so we
@@ -1000,8 +1010,8 @@ conntrack.watch({
                         clock.monotonic_seconds() - at0)
         if applied then
           render.update_shared(snap, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac, make_bl_member_iterator(snap))
-          current_etag = etag
-          last_snapshot = snap
+          ts.current_etag = etag
+          ts.last_snapshot = snap
           policy.mark_poll_success(wall)
           policy.save_snapshot(snap, write_file, rename_file, log)
           log.debug("policy timer: applied snapshot etag=%s", tostring(etag))
@@ -1009,7 +1019,7 @@ conntrack.watch({
         end
       elseif etag then
         record_poll("304")
-        current_etag = etag  -- 304: just update etag
+        ts.current_etag = etag  -- 304: just update etag
         policy.mark_poll_success(wall)  -- 304 still counts as a successful poll
         log.debug("policy timer: 304 not modified etag=%s poll_age=%s",
                   tostring(etag), policy.format_poll_age(policy.poll_age_seconds(wall)))
@@ -1031,8 +1041,8 @@ conntrack.watch({
       -- (#422 — no 300s cushion).
       if fetch_ok ~= nil then
         local should_apply, fo_opts, new_in_failover =
-          policy.failover_transition(in_failover_render, fetch_ok)
-        if should_apply and not snap and last_snapshot then
+          policy.failover_transition(ts.in_failover_render, fetch_ok)
+        if should_apply and not snap and ts.last_snapshot then
           -- Recovery via 304, or entering failover. Re-render last_snapshot
           -- with the computed opts. Skip if we have no cached snapshot at
           -- all (cold boot during outage): the #308 boot skeleton stays in
@@ -1041,7 +1051,7 @@ conntrack.watch({
           -- #1325: same pre-reset capture as the main apply above.
           fold_enforcement_drops()
           local ft0 = clock.monotonic_seconds()
-          local fo_applied = policy.apply(last_snapshot, write_file, run_cmd, log, fo_opts)
+          local fo_applied = policy.apply(ts.last_snapshot, write_file, run_cmd, log, fo_opts)
           metrics.observe(mreg, "policy_apply_duration_seconds", {},
                           clock.monotonic_seconds() - ft0)
           if fo_applied then
@@ -1053,19 +1063,19 @@ conntrack.watch({
             end
           else
             log.warn("failover transition: apply failed (in_failover=%s→%s)",
-                     tostring(in_failover_render), tostring(new_in_failover))
+                     tostring(ts.in_failover_render), tostring(new_in_failover))
             -- Don't flip the flag if the apply failed — we'll retry next tick.
-            new_in_failover = in_failover_render
+            new_in_failover = ts.in_failover_render
           end
-        elseif should_apply and not last_snapshot then
+        elseif should_apply and not ts.last_snapshot then
           -- Cold boot during API outage with no cached snapshot. Boot
           -- skeleton (#308) is still enforcing default-deny; nothing to
           -- render. Don't flip the flag so we keep retrying on each tick.
           log.warn("failover transition skipped: no cached snapshot (boot-skeleton default-deny still active, poll_age=%s)",
                    policy.format_poll_age(policy.poll_age_seconds(wall)))
-          new_in_failover = in_failover_render
+          new_in_failover = ts.in_failover_render
         end
-        in_failover_render = new_in_failover
+        ts.in_failover_render = new_in_failover
       end
     end
 
@@ -1086,20 +1096,20 @@ conntrack.watch({
     -- map; post-#1782 we detect change via (id, version) pairs — a content change
     -- always implies a new version, so a stable pair set ↔ stable host set.
     -- Rendering shards is idempotent, so a no-op tick is cheap.
-    if last_snapshot and not in_failover_render
-       and (mono - last_blocklist_run) >= blocklist_int then
-      last_blocklist_run = mono
+    if ts.last_snapshot and not ts.in_failover_render
+       and (mono - ts.last_blocklist_run) >= blocklist_int then
+      ts.last_blocklist_run = mono
       -- Capture (id, version) pairs before refresh to detect changes.
       local bls_before = {}
-      for id, bl in pairs(last_snapshot.blocklists or {}) do
+      for id, bl in pairs(ts.last_snapshot.blocklists or {}) do
         bls_before[id] = bl.version
       end
-      refresh_blocklists(last_snapshot)
+      refresh_blocklists(ts.last_snapshot)
       -- Re-apply only if the (id, version) set changed (new content version for
       -- any list, or a list added/removed). Stable pairs → stable shard content;
       -- no dnsmasq reload needed.
       local changed = false
-      local bls_after = last_snapshot.blocklists or {}
+      local bls_after = ts.last_snapshot.blocklists or {}
       for id, bl in pairs(bls_after) do
         if bls_before[id] ~= bl.version then changed = true; break end
       end
@@ -1111,14 +1121,14 @@ conntrack.watch({
       if changed then
         fold_enforcement_drops()
         local bt0 = clock.monotonic_seconds()
-        local applied = policy.apply(last_snapshot, write_file, run_cmd, log,
+        local applied = policy.apply(ts.last_snapshot, write_file, run_cmd, log,
                                      { on_apply = record_apply("policy_change") })
         metrics.observe(mreg, "policy_apply_duration_seconds", {},
                         clock.monotonic_seconds() - bt0)
         if applied then
-          render.update_shared(last_snapshot, nft_sets, blocked_macs, blocked_reason,
+          render.update_shared(ts.last_snapshot, nft_sets, blocked_macs, blocked_reason,
                                eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac,
-                               make_bl_member_iterator(last_snapshot))
+                               make_bl_member_iterator(ts.last_snapshot))
           log.info("blocklist timer: list version(s) changed, re-applied ruleset")
         end
       end
@@ -1137,9 +1147,9 @@ conntrack.watch({
     -- last-applied snapshot so a stable (304-only) household still gets
     -- refreshed. Skipped while we're in failover render: the failover chain
     -- closes the world for those profiles already.
-    if last_snapshot and not in_failover_render
-       and (mono - last_eb_refresh_run) >= eb_refresh_int then
-      last_eb_refresh_run = mono
+    if ts.last_snapshot and not ts.in_failover_render
+       and (mono - ts.last_eb_refresh_run) >= eb_refresh_int then
+      ts.last_eb_refresh_run = mono
       local inv = eb_refresh.collect_inventory(eb_hosts_by_mac, bl_hosts_by_mac)
       if #inv.eb_hosts > 0 or #inv.bl_pairs > 0 then
         local rt0 = clock.monotonic_seconds()
@@ -1175,14 +1185,14 @@ conntrack.watch({
     -- cache the conntrack path uses (lookup_hostname), so a blocked flow surfaces
     -- with a host, not a bare IP, whenever DNS attribution exists. A persistent
     -- dedup (nflog_dedup) collapses retry storms across ticks.
-    if events_batcher and (mono - last_nflog_run) >= nflog_int then
-      last_nflog_run = mono
+    if ts.events_batcher and (mono - ts.last_nflog_run) >= nflog_int then
+      ts.last_nflog_run = mono
       local lines = nflog.drain_file(paths.nflog_drops, nflog_state)
       if #lines > 0 then
         local idx = 0
         nflog.run({
           read_fn         = function() idx = idx + 1; return lines[idx] end,
-          batcher         = events_batcher,
+          batcher         = ts.events_batcher,
           dedup           = nflog_dedup,
           lookup_hostname = lookup_hostname,
         })
@@ -1197,8 +1207,8 @@ conntrack.watch({
     -- them to the tracker so end-of-bucket activeSeconds reflects real
     -- ~10-second-granularity usage rather than collapsing to {0, 300} or
     -- rounding to whole-minute buckets.
-    if (mono - last_activity_sample) >= activity_sample_int then
-      last_activity_sample = mono
+    if (mono - ts.last_activity_sample) >= activity_sample_int then
+      ts.last_activity_sample = mono
       local counters = read_nft_counters()
       if counters then
         usage.tracker_sample(activity_tracker, counters)
@@ -1206,12 +1216,12 @@ conntrack.watch({
     end
 
     -- Usage timer
-    if (mono - last_usage_run) >= usage_int then
+    if (mono - ts.last_usage_run) >= usage_int then
       -- periodStart/periodEnd are wall-clock RFC3339: the API expects UTC.
       local period_end   = os.date("!%Y-%m-%dT%H:%M:%SZ", wall)
-      local period_start = os.date("!%Y-%m-%dT%H:%M:%SZ", last_usage_wall_ts)
-      last_usage_run     = mono
-      last_usage_wall_ts = wall
+      local period_start = os.date("!%Y-%m-%dT%H:%M:%SZ", ts.last_usage_wall_ts)
+      ts.last_usage_run     = mono
+      ts.last_usage_wall_ts = wall
 
       -- Per-flow counters live as element counters on two dynamic sets:
       -- `mac_ip_tracking` (tx, keyed mac+remote_ip) and
@@ -1224,7 +1234,7 @@ conntrack.watch({
         -- Final sample at flush so set elements that appeared after the
         -- last activity_sample_int tick still get an active sample counted.
         usage.tracker_sample(activity_tracker, counters)
-        last_activity_sample = mono
+        ts.last_activity_sample = mono
         local report = usage.build_report(
           counters, nft_sets, period_start, period_end, router_id,
           nil, lookup_hostname, activity_tracker,
@@ -1268,8 +1278,8 @@ conntrack.watch({
     -- (default 60). Best-effort — on a failed POST the counters are RETAINED
     -- (metrics.post never resets the registry), so the next success carries the
     -- full total and the server re-bases off agentStartedAt. No retry queue.
-    if (mono - last_metrics_run) >= metrics_int then
-      last_metrics_run = mono
+    if (mono - ts.last_metrics_run) >= metrics_int then
+      ts.last_metrics_run = mono
       -- Refresh instantaneous gauges just before the snapshot. uptime is
       -- derived from the monotonic clock so a wall-clock jump can't make it
       -- go backward.
