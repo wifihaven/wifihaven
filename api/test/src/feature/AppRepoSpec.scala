@@ -84,6 +84,23 @@ object AppRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Tr
       } yield assertTrue(a.toSet == Set(youtube, ytimg)) &&
         assertTrue(b.toSet == Set(youtube, gvideo))
     },
+    test("#1896 setHostEntries persists the shared flag; setHosts defaults shared=false") {
+      for {
+        _       <- cleanDb
+        repo    <- ZIO.service[AppRepo]
+        id      <- repo.create("YouTube", "youtube", None, None)
+        _       <- repo.setHostEntries(
+          id,
+          List(AppHostEntry(youtube, shared = false), AppHostEntry(ytimg, shared = true)),
+        )
+        entries <- repo.getHostEntries(id)
+        // setHosts is the plain (all-distinctive) overload — every row defaults shared=false.
+        _       <- repo.setHosts(id, List(youtube, gvideo))
+        plain   <- repo.getHostEntries(id)
+      } yield assertTrue(
+        entries.toSet == Set(AppHostEntry(youtube, false), AppHostEntry(ytimg, true)),
+      ) && assertTrue(plain.nonEmpty && plain.forall(!_.shared))
+    },
     test("upsertAssignment inserts and overwrites on same (app, profile)") {
       for {
         _     <- cleanDb
