@@ -125,6 +125,34 @@ that edit in the same PR.** If a step above is now wrong, fix the step too.
 
 ## Learnings log (newest first)
 
+- **2026-06-23** (#1923) — **Diff candidates against the StevenBlack
+  `ads-extended` feed before adding.** Fetch
+  `raw.githubusercontent.com/StevenBlack/hosts/master/hosts`, extract the
+  `0.0.0.0 <host>` second field into a set, and test each candidate apex for
+  exact + subdomain membership. This cleanly splits **genuine gaps** (feed
+  misses the apex entirely → highest value to hand-curate) from apexes the
+  extended feed already covers (lower value, only helps curated-only profiles).
+  Prioritize the gaps; add a small set of the highest-traffic covered apexes for
+  the curated baseline.
+- **2026-06-23** (#1923) — **A name that resembles a known ad co is NOT
+  identity — verify ownership.** `ttdns2.com` reads like TheTradeDesk
+  (`adsrvr.org`/`ttd*`) but is actually **TikTok** shared DNS infra
+  (CapCut/Pangle/app analytics) per netify — content collateral, skip. Web-fetch
+  netify/whois for any apex whose owner you're inferring from the name alone.
+- **2026-06-23** (#1923) — **New dual-use to skip:**
+  `app-analytics-services.com` (Google GA4) and its ATT-segmentation pair
+  `app-ads-services.com` — both Google-operated, same shared-product class as the
+  already-listed `app-measurement.com` (Firebase). Both showed high prod traffic;
+  skip anyway.
+- **2026-06-23** (#1923) — **High hit-count alone is not an ad signal — check
+  the category.** `demonii.com` had 9,240 hits but is a BitTorrent tracker
+  (`open.demonii.com`), not ad infra. Classify by what the apex *is*, not by how
+  often it's hit.
+- **2026-06-23** (#1923) — **One ad vendor fronts multiple apexes.** Verve Group
+  (MGI) served `vervegroupinc.net`, `verve.net`, and `personaly.bid` (its `.bid`
+  bidder endpoint) — list every observed apex, not just the obvious one. Same for
+  Vidazoo (`vidazoo.com` + `vidazoo.services`) and AppLovin
+  (`applovin.com` + `applvn.com` + `safedk.com`).
 - **2026-06-21** — Skill seeded from the `app-catalog-pass` method. Reuse the
   same `recent-apexes` pull; the difference is the classification target
   (ad/RTB/tracker infra) and that the bulk of coverage belongs in the

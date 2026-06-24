@@ -140,6 +140,8 @@ object BundledBlocklistsSpec
         meta    <- blRepo.findMeta(BlocklistId.unsafe("ads"))
       } yield assertTrue(ads.nonEmpty) &&
         assertTrue(ads.contains(Hostname.unsafe("doubleclick.net"))) &&
+        // traffic-driven addition pinned for presence (#1923)
+        assertTrue(ads.contains(Hostname.unsafe("bidmachine.io"))) &&
         assertTrue(meta.isDefined) &&
         assertTrue(meta.exists(m => m.bundled && m.name == "Ads & Trackers"))
     },
