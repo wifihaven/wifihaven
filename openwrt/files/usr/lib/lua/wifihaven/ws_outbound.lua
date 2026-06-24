@@ -57,9 +57,11 @@ function M.make(opts)
     -- Healthy: hand the body to the sidecar as one frame. The body is already a
     -- JSON object string, so wrapping it as the frame payload is a concat — no
     -- re-encode. A synthetic 200 tells the caller's retry queue the body is now
-    -- owned by the sidecar (at-least-once; the sidecar re-sends on reconnect and
-    -- the server dedups). If the spool write itself fails, fall back to HTTP so
-    -- the datum is never silently dropped.
+    -- owned by the sidecar. Delivery is best-effort (usage is best-effort per
+    -- docs/resilience.md §1): the sidecar re-sends frames that fail to SEND and
+    -- the server dedups, but a frame sent-then-lost is not yet retried — full
+    -- ack-gated at-least-once is the follow-up #1928. If the spool write itself
+    -- fails, fall back to HTTP so the datum is never silently dropped here.
     local line = '{"op":"' .. op .. '","payload":' .. body .. '}'
     if spool_append(line) then
       metrics_inc("spooled")

@@ -14,10 +14,17 @@
 -- is #1849). Until then policy continues to flow over the main agent's unchanged
 -- HTTP poll; this sidecar carries usage/events/heartbeat and is ready for push.
 --
--- Reliability model (design §5): at-least-once. A frame that fails to send is
--- retained in memory and re-sent on the next connection; the server dedups on
--- the persistence-layer unique keys, so a redelivery is a no-op (§5.3). Best-
--- effort across a reboot, exactly like the existing usage retry queue (§5.2).
+-- Reliability model (design §5): best-effort, like the existing usage retry
+-- queue (usage is best-effort per docs/resilience.md §1). A frame that fails to
+-- SEND is retained in memory and re-sent on the next connection; the server
+-- dedups on the persistence-layer unique keys, so a redelivery is a no-op
+-- (§5.3). NOTE: a frame that sends successfully but is lost before the server
+-- persists it (drop in the window, or an `ack reject`) is NOT yet retried — the
+-- server's `ack` is received + metered but does not gate spool removal, and
+-- outbound frames carry no `seq` yet. Full ack-gated at-least-once is the
+-- follow-up #1928, required before ws is armed in prod / the HTTP poll is
+-- deprecated (#1850). Until then the at-least-once guarantee rides the default-
+-- on HTTP fallback path; this default-off ws path is best-effort-after-send.
 
 local ws_backoff = require("wifihaven.ws_backoff")
 
