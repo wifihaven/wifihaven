@@ -685,6 +685,15 @@ case class HouseholdSettings(
     // presence is the [first, last]-activity span. Default 120 (migration V52);
     // the rollup raises it to the 2×R collapse guard at compute time.
     presenceContinuationSeconds: Int = HouseholdSettings.DefaultPresenceContinuationSeconds,
+    // #1912 / #1909: network-wide "block encrypted DNS & relays" toggle. When
+    // true, PolicyService emits the additive top-level `PolicySnapshot.blockEncryptedDns`
+    // and the agent (#1911) forces devices onto the LAN resolver — NXDOMAIN for
+    // the curated relay/DoH hostnames (iCloud Private Relay, public DoH) plus
+    // nftables drops for hardcoded resolver IPs and DoT/853. Household-level
+    // (NOT per-profile): the clean disable signal is NXDOMAIN, which stock
+    // dnsmasq answers network-wide only. Default false (migration V61). The
+    // curated host/IP lists are baked in the agent, never shipped on the wire.
+    blockEncryptedDns: Boolean = false,
 ) derives JsonCodec
 
 object HouseholdSettings {
@@ -697,6 +706,10 @@ case class UpdateHouseholdSettingsRequest(
     heartbeatFilter: HeartbeatFilter,
     unmanagedMacPolicy: UnmanagedMacPolicy = UnmanagedMacPolicy.Default,
     presenceContinuationSeconds: Int = HouseholdSettings.DefaultPresenceContinuationSeconds,
+    // #1912: additive — an older SPA build that PUTs without this field decodes
+    // to the default (false), so a full-replace PUT never silently clears it for
+    // a peer that doesn't know about it yet.
+    blockEncryptedDns: Boolean = false,
 ) derives JsonCodec
 
 /**
@@ -1616,6 +1629,16 @@ case class PolicySnapshot(
     devices: Map[MacAddress, DevicePolicy],
     profiles: Map[ProfileId, ProfilePolicy],
     blocklists: Map[BlocklistId, Blocklist],
+    // #1912 / #1909: network-wide "block encrypted DNS & relays" flag, resolved
+    // from `household_settings.block_encrypted_dns`. Additive top-level boolean,
+    // defaults false (so an older snapshot JSON predating it decodes to off, and
+    // an un-updated agent ignoring it is also off). It carries ONLY the boolean:
+    // the curated relay/DoH host + resolver-IP lists are baked in the agent
+    // (#1911), not shipped here — the router enforces NXDOMAIN/nftables drops
+    // off its own lists when this is true. This is the snapshot's one deliberate,
+    // narrowly-scoped exception to "DNS always resolves" (Architectural Truth #1),
+    // and it is bypass-disablement signaling, which is itself enforcement-enabling.
+    blockEncryptedDns: Boolean = false,
 ) derives JsonCodec
 
 // ── Block reasons (snapshot + router-emitted) ─────────────────────────────

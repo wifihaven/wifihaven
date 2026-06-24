@@ -102,6 +102,12 @@ export interface HouseholdSettings {
   dailyResetTz: string    // IANA timezone
   heartbeatFilter: HeartbeatFilter
   unmanagedMacPolicy: UnmanagedMacPolicy
+  // #1912 / #1909 — network-wide "block encrypted DNS & relays" toggle. When on,
+  // the API ships `blockEncryptedDns:true` on the policy snapshot and the router
+  // forces devices onto the LAN resolver (NXDOMAIN for iCloud Private Relay +
+  // public DoH/DoT hostnames, connection-layer drops for hardcoded resolver IPs)
+  // so filtering and hostname attribution work. Household-wide, not per-profile.
+  blockEncryptedDns: boolean
 }
 
 export interface TimeLimit {

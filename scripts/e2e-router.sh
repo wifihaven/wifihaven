@@ -1242,5 +1242,61 @@ print('ok' if isinstance(r.get('topHosts'), list) and isinstance(r.get('buckets'
 [ "$SER932" = "ok" ] || fail "#932: /api/usage/series shape unexpected: $SER932"
 pass "#932: /api/usage/series returns topHosts + buckets arrays"
 
+# ── #1912: network-wide blockEncryptedDns reflected on the wire ───────────
+#
+# The household "block encrypted DNS & relays" toggle surfaces on the snapshot
+# as the additive top-level boolean `blockEncryptedDns` (sibling of global /
+# devices / profiles / blocklists). The router agent (#1911) bakes the curated
+# relay/DoH host + resolver-IP lists itself; the API only ships the boolean.
+# Assert: default is false, flipping the household setting flips the wire flag,
+# and we reset it so the run is idempotent against persistent staging.
+step "#1912: blockEncryptedDns reflects the household setting"
+
+read_bed() {  # → "true"/"false" from a fresh /api/router/policy read
+  curl -fsS "${RAUTH[@]}" "$BASE/api/router/policy" >"$TMP/snap_bed.json"
+  _py "
+import json
+snap = json.load(open('$TMP/snap_bed.json'))
+print('true' if snap.get('blockEncryptedDns') is True else ('false' if snap.get('blockEncryptedDns') is False else 'MISSING'))
+"
+}
+
+# Default (household setting untouched this run) must be a present, false bool —
+# never absent (the field is non-optional on the wire).
+BED0="$(read_bed)"
+[ "$BED0" = "false" ] || fail "#1912: expected default blockEncryptedDns=false, got: $BED0"
+pass "#1912: default blockEncryptedDns=false"
+
+curl -fsS -X PATCH "$BASE/api/household/settings" "${AUTH[@]}" \
+  -H 'content-type: application/json' \
+  -d '{"blockEncryptedDns":true}' >/dev/null
+pass "#1912: household setting → blockEncryptedDns=true"
+
+# Poll (staging Render rollover may briefly serve a stale instance — same
+# pattern as the TimeLimit step above).
+BED1=""
+deadline=$(( $(date +%s) + 15 ))
+while (( $(date +%s) < deadline )); do
+  BED1="$(read_bed)"
+  [ "$BED1" = "true" ] && break
+  sleep 1
+done
+[ "$BED1" = "true" ] || fail "#1912: expected blockEncryptedDns=true after toggle, got: $BED1"
+pass "#1912: snapshot blockEncryptedDns=true after enabling"
+
+# Reset to false so persistent staging is left as we found it.
+curl -fsS -X PATCH "$BASE/api/household/settings" "${AUTH[@]}" \
+  -H 'content-type: application/json' \
+  -d '{"blockEncryptedDns":false}' >/dev/null
+BED2=""
+deadline=$(( $(date +%s) + 15 ))
+while (( $(date +%s) < deadline )); do
+  BED2="$(read_bed)"
+  [ "$BED2" = "false" ] && break
+  sleep 1
+done
+[ "$BED2" = "false" ] || fail "#1912: expected blockEncryptedDns=false after reset, got: $BED2"
+pass "#1912: snapshot blockEncryptedDns=false after disabling"
+
 echo
 echo "All router e2e checks passed."

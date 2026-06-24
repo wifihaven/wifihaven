@@ -34,6 +34,7 @@ beforeEach(() => {
     dailyResetTz: 'America/Los_Angeles',
     heartbeatFilter: { ...DEFAULT_HF },
     unmanagedMacPolicy: { ...DEFAULT_UMM },
+    blockEncryptedDns: false,
   }
   ;(api.household.get as unknown as ReturnType<typeof vi.fn>).mockImplementation(
     async () => ({
@@ -193,5 +194,39 @@ describe('AdminPage — unmanaged-MAC policy autosave (#1002)', () => {
     const card = await screen.findByTestId('unmanaged-mac-policy-card')
     const blockPage = within(card).getByTestId('unmanaged-mac-policy-block-page') as HTMLInputElement
     expect(blockPage.disabled).toBe(true)
+  })
+})
+
+describe('AdminPage — block-encrypted-DNS toggle (#1913)', () => {
+  it('renders the toggle reflecting the stored setting (off by default)', async () => {
+    render(<AdminPage />)
+    const toggle = await screen.findByTestId('block-encrypted-dns-enabled') as HTMLInputElement
+    expect(toggle.checked).toBe(false)
+  })
+
+  it('toggling on fires PATCH {blockEncryptedDns:true}', async () => {
+    const user = userEvent.setup()
+    render(<AdminPage />)
+    await screen.findByTestId('block-encrypted-dns-enabled')
+
+    await user.click(screen.getByTestId('block-encrypted-dns-enabled'))
+
+    await waitFor(() =>
+      expect(api.household.patch).toHaveBeenCalledWith({ blockEncryptedDns: true }),
+    )
+  })
+
+  it('reflects a stored true after the round-trip (persists via the API client)', async () => {
+    const user = userEvent.setup()
+    render(<AdminPage />)
+    const toggle = await screen.findByTestId('block-encrypted-dns-enabled') as HTMLInputElement
+
+    await user.click(toggle)
+
+    // The card re-reads the server-of-record after autosave; the persisted
+    // value must come back checked.
+    await waitFor(() =>
+      expect((screen.getByTestId('block-encrypted-dns-enabled') as HTMLInputElement).checked).toBe(true),
+    )
   })
 })

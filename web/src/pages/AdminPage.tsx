@@ -34,6 +34,7 @@ export function AdminPage() {
 
       {hs && <DailyResetCard value={hs} reload={reload} />}
       {hs && <HeartbeatFilterCard value={hs} reload={reload} />}
+      {hs && <BlockEncryptedDnsCard value={hs} reload={reload} />}
       {hs && <UnmanagedMacPolicyCard value={hs} reload={reload} />}
     </div>
   )
@@ -125,6 +126,63 @@ function UnmanagedMacPolicyCard({
           className="h-4 w-4"
         />
         Show block page (HTTP/80 DNATs to the "device not enrolled" page)
+      </label>
+    </div>
+  )
+}
+
+// #1913 / #1909 — network-wide "block encrypted DNS & relays" toggle. Forces
+// every device onto the LAN resolver (turns off iCloud Private Relay + public
+// DoH/DoT, drops hardcoded resolver IPs) so WifiHaven's filtering and
+// hostname attribution actually see the traffic. Household-wide, not
+// per-profile (the clean disable signal — NXDOMAIN — is network-wide only).
+function BlockEncryptedDnsCard({
+  value, reload,
+}: {
+  value: HouseholdSettings
+  reload: () => Promise<void>
+}) {
+  const [enabled, setEnabled] = useState(value.blockEncryptedDns)
+  useEffect(() => { setEnabled(value.blockEncryptedDns) }, [value.blockEncryptedDns])
+
+  const save = useDebouncedSave(
+    enabled,
+    async (next) => {
+      await api.household.patch({ blockEncryptedDns: next })
+      await reload()
+    },
+  )
+
+  return (
+    <div
+      data-testid="block-encrypted-dns-card"
+      className="bg-white rounded-2xl border border-brand-border p-5 space-y-3"
+    >
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="font-bold text-brand-ink">Block encrypted DNS &amp; relays</h2>
+        <SaveStatusBadge
+          testId="block-encrypted-dns-save-status"
+          status={save.status}
+          error={save.error}
+          onRetry={save.retry}
+        />
+      </div>
+
+      <p className="text-xs text-brand-text">
+        Forces every device onto this network's local DNS resolver so WifiHaven can filter
+        traffic and attribute it to the right site. Turns off iCloud Private Relay and public
+        encrypted DNS (DoH/DoT) — without this, a device can tunnel around all filtering and
+        time limits. Applies to the whole household, not a single profile.
+      </p>
+      <label className="flex items-center gap-2 text-sm text-brand-ink">
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={e => setEnabled(e.target.checked)}
+          data-testid="block-encrypted-dns-enabled"
+          className="h-4 w-4"
+        />
+        Block encrypted DNS &amp; relays
       </label>
     </div>
   )
