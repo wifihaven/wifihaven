@@ -89,6 +89,11 @@ def is_block_page_body(body: str | None) -> bool:
 
 
 def wait_block_page(client, *, host: str = "example.com", timeout_s: float = 90):
+    # No `ipv4_only` knob (cf. wait_http_succeeds): the block-path DNAT/redirect
+    # serves the block page in BOTH families (v4 DNAT → 127.0.0.1, v6 redirect →
+    # br-lan), so whichever address curl's happy-eyeballs picks for a dual-stack
+    # host still lands on the block page. Only the ALLOW path is family-sensitive
+    # — it must hit the same family whose ea_/ea6_ set the test populated (#1929).
     def probe():
         p = http_get(client, f"http://{host}/", timeout_s=8)
         if p.http_code == 200 and is_block_page_body(p.body):
@@ -100,10 +105,17 @@ def wait_block_page(client, *, host: str = "example.com", timeout_s: float = 90)
     )
 
 
-def wait_http_succeeds(client, *, host: str = "example.com", timeout_s: float = 60):
-    """Probe HTTP success, disambiguating block-page (also 200) by body."""
+def wait_http_succeeds(
+    client, *, host: str = "example.com", timeout_s: float = 60, ipv4_only: bool = False
+):
+    """Probe HTTP success, disambiguating block-page (also 200) by body.
+
+    `ipv4_only=True` pins the probe to IPv4 (curl `-4`) so it exercises the same
+    address family the caller populated/asserted in the kernel sets — see
+    http_get for the dual-stack happy-eyeballs trap (#1929).
+    """
     def probe():
-        p = http_get(client, f"http://{host}/", timeout_s=8)
+        p = http_get(client, f"http://{host}/", timeout_s=8, ipv4_only=ipv4_only)
         if p.http_code is not None and 200 <= p.http_code < 400:
             if is_block_page_body(p.body):
                 return None

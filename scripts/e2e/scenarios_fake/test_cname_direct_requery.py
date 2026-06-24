@@ -114,6 +114,13 @@ pytestmark = pytest.mark.cname_direct_requery
 BRAND_HOST = "e2e-brand.wifihaven.net"  # branded/queried host in extraBlocked/extraAllowed
 MID_HOST = "e2e-mid.wifihaven.net"  # intermediate CNAME hop
 LEAF_HOST = "e2e-edge.wifihaven.net"  # final CNAME target; Apple devices re-query this directly
+# NOTE (#1929): LEAF_HOST is DUAL-STACK — it carries both an A (LEAF_IP below)
+# and an AAAA (2001:db8::10, RFC 3849, added in #1677 for the v6-attribution
+# scenario). The allow-path probes here are pinned to IPv4 (`ipv4_only=True`)
+# so they exercise the v4 ea_/eb_ sets these tests populate and assert; an
+# unpinned probe drifts to the v6 chain (whose ea6_ set is unpopulated at
+# connect time) and, post-#1868, lands on the now-delivering v6 block-page
+# redirect. See _xfail_if_leaf_unreachable for the full mechanism.
 # Leaf A record — RFC 5737 TEST-NET-1, reserved-for-documentation and GUARANTEED
 # never globally routed or reassigned (#1360). The previous value 93.184.216.34
 # (legacy IANA example.com) was decommissioned ~2025 and its HTTP/80 went dead,
@@ -196,8 +203,25 @@ def _xfail_if_leaf_unreachable(client) -> None:
     which needs only DNS resolution. A future harness-served origin (a fake-mode
     DNAT of the TEST-NET leaf to a local HTTP responder) would let these run for
     real again — tracked as the #1360 follow-up.
+
+    #1929: the probe is PINNED to IPv4 (`-4`). The leaf is dual-stack — an A
+    (192.0.2.10) AND an AAAA (2001:db8::10), the latter added in #1677 for the
+    v6-attribution scenario, AFTER this suite was authored against a v4-only
+    leaf (#1360). Without `-4`, curl's happy-eyeballs prefers the v6 address and
+    probes the v6 chain instead of the v4 ea_ set this test populated and
+    asserted. That is a real trap, not cosmetic: #1868 switched the v6
+    block-page path from a DNAT-to-::1 that never delivered to an nft `redirect`
+    that DOES deliver to the local uhttpd listener, so a v6 probe to the leaf —
+    whose ea6_ carve set is empty here (no AAAA is resolved through the router
+    before curl's own lookup, so dns-tail has not populated ea6_ at connect
+    time) — now lands on the block page and hard-fails the allow assertion
+    (Master Router CD red 2026-06-22 → 06-24). Pinning to v4 exercises the v4
+    ea_ carve the test actually proved, restoring the documented "unroutable v4
+    leaf ⇒ xfail" semantics. The carve itself is correct in both families
+    (render.lua emits `ip daddr != @ea_…` / `ip6 daddr != @ea6_…`; dns-tail
+    populates both) — this was test-harness drift, not a carve regression.
     """
-    probe = http_get(client, f"http://{LEAF_HOST}/", timeout_s=8)
+    probe = http_get(client, f"http://{LEAF_HOST}/", timeout_s=8, ipv4_only=True)
     if probe.http_code is None:
         pytest.xfail(
             f"leaf origin {LEAF_HOST} ({LEAF_IP}, RFC 5737 TEST-NET-1) is "
@@ -364,8 +388,12 @@ def test_ea_direct_requery_allowed_under_blocked_mac(router, client, fake_api):
     # answers) and must NOT come back as the block page. The unroutable
     # TEST-NET leaf can't answer, so this xfails rather than red-gating (#1360);
     # the carve-out itself is already proven by the ea_ membership above.
+    # #1929: pin the probe to IPv4 — the leaf is dual-stack (A + #1677 AAAA) and
+    # the v4 ea_ set is the one populated/asserted above; see
+    # _xfail_if_leaf_unreachable for why an unpinned (v6) probe hits the block
+    # page post-#1868.
     _xfail_if_leaf_unreachable(client)
-    probe = wait_http_succeeds(client, host=LEAF_HOST, timeout_s=120)
+    probe = wait_http_succeeds(client, host=LEAF_HOST, timeout_s=120, ipv4_only=True)
     assert probe.http_code is not None and 200 <= probe.http_code < 400, (
         f"expected allowed HTTP response (200-399) for {LEAF_HOST} under "
         f"blocked=True, got {probe.http_code!r} — ea_ carve-out may be missing"
@@ -416,8 +444,11 @@ def test_attribution_reports_branded_host_after_direct_requery(router, client, f
     # needs a real flow to the origin; the unroutable TEST-NET leaf can't
     # provide one, so xfail rather than red-gate when it's unreachable (#1360).
     # The branded-host alias recovery itself is unit-covered in dns_log_spec.
+    # #1929: pin to IPv4 for the same dual-stack reason as G2 — keep the probe
+    # on the A-record path the attribution fixture exercises (the v4 conntrack
+    # NEW event) rather than letting happy-eyeballs drift to the #1677 AAAA.
     _xfail_if_leaf_unreachable(client)
-    wait_http_succeeds(client, host=LEAF_HOST, timeout_s=60)
+    wait_http_succeeds(client, host=LEAF_HOST, timeout_s=60, ipv4_only=True)
 
     # Primary assertion: the event posted to /api/router/events carries the
     # branded host, not the CDN leaf target.

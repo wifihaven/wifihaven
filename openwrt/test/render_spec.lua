@@ -787,6 +787,40 @@ describe("render.nft #1865 block page is never dropped", function()
       "ether saddr @blocked_macs tcp dport 443 dnat ip to 127.0.0.1:8443", 1, true))
   end)
 
+  -- #1929: #1865 (block page never dropped / v6 redirect that now DELIVERS) and
+  -- #421 (extraAllowed carve under a whole-MAC block) must COEXIST: a blocked
+  -- MAC's allowed host must be carved out of the block-page DNAT/redirect in
+  -- BOTH families, while a fully-blocked dest still reaches the listener. If the
+  -- block-page DNAT/redirect ever stops carrying the ea_/ea6_ exception, an
+  -- allowed dest would be redirected to the block page — the prod
+  -- "allowed app blocked under schedule" family (#1344/#1891) and the exact
+  -- shape that took Master Router CD red on the v6 path post-#1868. Pin both
+  -- here so neither fix can silently un-fix the other.
+  it("#1929: blocked+extraAllowed dest is carved out of the block-page DNAT/redirect (v4 AND v6) while the never-drop guard stays", function()
+    local s = snap_one()
+    s.profiles["3"].rules.blocked      = true
+    s.profiles["3"].rules.blockReason  = "Schedule"
+    s.profiles["3"].rules.extraAllowed = { "mathacademy.com" }
+    local nft = render.nft(s)
+    -- v4 block-page DNAT for the blocked MAC carries the ea_ carve, so an
+    -- allowed dest is NEVER DNAT'd to the local block page.
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_aa_bb_cc_11_22_33_mathacademy_com tcp dport 80 dnat ip to 127.0.0.1:8081",
+      1, true),
+      "expected v4 block-page DNAT to carve out the ea_ allowed dest")
+    -- v6 block-page REDIRECT (the path #1868 made deliver) carries the ea6_
+    -- carve, so an allowed v6 dest is NEVER redirected to the block page.
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr != ::1 ip6 daddr != @ea6_aa_bb_cc_11_22_33_mathacademy_com tcp dport 80 redirect to :8081",
+      1, true),
+      "expected v6 block-page redirect to carve out the ea6_ allowed dest")
+    -- And the #1865 never-drop guard is still present so a FULLY-blocked dest
+    -- (no carve) still reaches the block-page listener rather than being dropped.
+    local body = filter_chain_body(nft)
+    assert.truthy(body and body:find("fib daddr type local counter accept", 1, true),
+      "expected the #1865 block-page never-drop guard to coexist with the ea carve")
+  end)
+
 end)
 
 -- ── nflog drop-rule shape (#1122) ─────────────────────────────────────────

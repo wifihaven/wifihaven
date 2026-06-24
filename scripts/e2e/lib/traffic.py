@@ -25,13 +25,25 @@ class HttpProbe:
     raw: Result
 
 
-def http_get(client: Client, url: str, *, timeout_s: int = 8) -> HttpProbe:
-    """Curl a URL from the client. Captures status code + first 256 bytes."""
+def http_get(
+    client: Client, url: str, *, timeout_s: int = 8, ipv4_only: bool = False
+) -> HttpProbe:
+    """Curl a URL from the client. Captures status code + first 256 bytes.
+
+    `ipv4_only=True` adds curl's `-4` so the request resolves and connects over
+    IPv4 only. Use this when the test set up and asserted an IPv4-family carve /
+    drop set (e.g. ea_/eb_/bl_) and must exercise THAT family end-to-end: a
+    dual-stack fixture host (one with both an A and an AAAA, e.g. the #1677
+    e2e-edge leaf) would otherwise let curl's happy-eyeballs prefer the v6
+    address and probe the v6 chain — a different set the test never populated
+    (see test_cname_direct_requery for the concrete #1929 trap).
+    """
+    family = "-4 " if ipv4_only else ""
     cmd = [
         "sh", "-c",
         # `-w` writes status code on its own line at the end of stdout. We pipe
         # the body through head to bound size. `--max-time` prevents hangs.
-        f"curl -s --max-time {timeout_s} -o - -w '\\nHTTPCODE:%{{http_code}}\\n' "
+        f"curl {family}-s --max-time {timeout_s} -o - -w '\\nHTTPCODE:%{{http_code}}\\n' "
         f"{shell_quote(url)} | head -c 4096",
     ]
     res = client_exec(client, cmd, timeout=timeout_s + 10, check=False)
