@@ -56,6 +56,12 @@ ROUTER_IMAGE_PATH = os.environ.get("WH_ROUTER_IMAGE_PATH")
 KEEP_VMS = os.environ.get("E2E_VM_KEEP", "0") == "1"
 SKIP_VMS = os.environ.get("E2E_VM_SKIP_VMS", "0") == "1"
 
+# Upstream the router VM's dnsmasq forwards to — the runner's LAN resolver
+# (the household wifihaven gateway), NOT external public DNS. See the rationale
+# at its use site in `router_session` (#1935). Override via env if the
+# self-hosted runner sits on a different LAN.
+ROUTER_LAN_RESOLVER = os.environ.get("WH_ROUTER_LAN_RESOLVER", "192.168.10.1")
+
 BASE_SNAPSHOT = "e2e-base-fake"
 
 
@@ -184,34 +190,42 @@ def router_session(fake_server, fake_api) -> EnrolledRouter:
         pytest.skip("E2E_VM_SKIP_VMS=1 set; skipping VM-dependent scenarios")
     router_up(image_path=ROUTER_IMAGE_PATH)
 
-    # Pin the router VM's dnsmasq upstream resolvers to public DNS
-    # (1.1.1.1 + 8.8.8.8) and `noresolv=1` to ignore the WAN-DHCP-supplied
-    # resolver list. Without this, dnsmasq forwards via the QEMU SLIRP DNS
-    # proxy, which in turn forwards via the **host**'s /etc/resolv.conf —
-    # on the self-hosted KVM runner that points at the user's LAN router
-    # (a wifihaven router), which does NOT resolve the
-    # e2e-{brand,mid,edge}.wifihaven.net chain that the Suite G (#1351)
-    # CNAME direct-requery tests require. The records are deployed in the
-    # public wifihaven.net zone (#1357/#1358 master-cloudflare CD) — going
-    # straight to 1.1.1.1 / 8.8.8.8 sees them. Scoped to the e2e VM image,
-    # not production. See #1360.
+    # Pin the router VM's dnsmasq upstream to the **LAN resolver** — the
+    # self-hosted runner's gateway, the household wifihaven router at
+    # ROUTER_LAN_RESOLVER (reached via SLIRP → host) — and `noresolv=1` to
+    # ignore the WAN-DHCP-supplied resolver list. NOT external public DNS.
     #
-    # Also whitelist `wifihaven.net` from dnsmasq's `--stop-dns-rebind`
-    # protection. OpenWRT ships `rebind_protection=1` by default, which
-    # rejects upstream answers whose addresses fall in dnsmasq's "private"
-    # set (RFC1918, loopback, link-local, **plus the RFC 5737
-    # documentation ranges** including TEST-NET-1 192.0.2.0/24). The
-    # Suite G (#1351) leaf A record is 192.0.2.10 (chosen by #1360 for its
-    # never-routed/never-reassigned guarantee) — so without a domain
-    # carve-out, dnsmasq logs `possible DNS-rebind attack detected:
-    # e2e-edge.wifihaven.net` and discards the answer, the leaf never
-    # resolves on the router VM, and every G1..G4 test times out at the
-    # `dig` precondition. `rebind_domain=wifihaven.net` is the
-    # narrowly-scoped fix.
+    # Why not 1.1.1.1 / 8.8.8.8 (the previous value)? Two reasons, both #1935:
+    #   1. #1911's network-wide `blockEncryptedDns` toggle drops FORWARDED LAN
+    #      traffic on :53 to the curated public-resolver IPs (1.1.1.1 / 8.8.8.8 /
+    #      9.9.9.9 / …). The e2e VMs are LAN devices behind the household router
+    #      (SLIRP → host → gateway), so once that toggle is enabled on the
+    #      gateway the harness's own resolution would be killed by the very
+    #      feature under test. The LAN resolver survives it: the gateway answers
+    #      on the VM's behalf via its OWN upstream (the output hook), which the
+    #      forward-hook drop never touches — a LAN device querying the gateway
+    #      keeps resolving.
+    #   2. The public-DNS path (VM → SLIRP → host → gateway → ISP → 8.8.8.8) was
+    #      intermittently unreliable in CI — `dig @8.8.8.8` timeouts and dnsmasq
+    #      "smoke check … nil for tiktok.com", red-gating router releases even
+    #      though the host itself resolved fine. The gateway is a directly-
+    #      attached, far shorter path.
+    #
+    # `rebind_domain=wifihaven.net` whitelists our zone from dnsmasq's
+    # `--stop-dns-rebind` protection. OpenWRT ships `rebind_protection=1`, which
+    # discards upstream answers in the "private" set (RFC1918, loopback,
+    # link-local, **plus the RFC 5737 documentation ranges** incl. TEST-NET-1
+    # 192.0.2.0/24). The Suite G (#1351) leaf A record is 192.0.2.10 (chosen by
+    # #1360 for its never-routed guarantee), so without the carve-out dnsmasq
+    # logs `possible DNS-rebind attack detected: e2e-edge.wifihaven.net` and
+    # drops it. The carve-out is needed at BOTH hops: here on the VM, AND on the
+    # gateway (applied out-of-band: `uci add_list
+    # dhcp.@dnsmasq[0].rebind_domain='wifihaven.net'` on ROUTER_LAN_RESOLVER) —
+    # the gateway strips the leaf before the VM ever sees it otherwise. See
+    # #1935.
     router_ssh(
         "uci -q delete dhcp.@dnsmasq[0].server; "
-        "uci add_list dhcp.@dnsmasq[0].server='1.1.1.1'; "
-        "uci add_list dhcp.@dnsmasq[0].server='8.8.8.8'; "
+        f"uci add_list dhcp.@dnsmasq[0].server='{ROUTER_LAN_RESOLVER}'; "
         "uci set dhcp.@dnsmasq[0].noresolv='1'; "
         "uci add_list dhcp.@dnsmasq[0].rebind_domain='wifihaven.net'; "
         "uci commit dhcp; "
