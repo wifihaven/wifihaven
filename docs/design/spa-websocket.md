@@ -231,6 +231,16 @@ stale for their next mount), so a `stale{time-status}` while the dashboard isn't
 open costs nothing — the exact "poll only what's visible" property the adaptive
 ladder hand-rolls, now for free.
 
+> Four of the five topics map to an existing polled hook in
+> [`queries.ts`](../../web/src/api/queries.ts) (`useDashboardNow`,
+> `useRecentBlocked`, `useAlerts`, `useTimeStatus*`). **`routers` is the
+> exception:** the admin router list is a plain `api.routers.list()` call today,
+> not a TanStack-cached poll, so the `['admin','routers']` key above is
+> *forward-looking* — the `routers` topic (router connect/disconnect, fed by
+> `RouterWsRegistry` register/deregister, §4.2) implies first wrapping the router
+> list/status in a query, not pausing an existing interval. Noted for S5 so the
+> implementer doesn't assume a poll to retire.
+
 ### 2.3 The thick-push exception (deferred, measured)
 
 `data{topic, body}` exists in the protocol (§1.3) for **one** future case:
@@ -509,6 +519,12 @@ value to the log only, exactly as `RouterWsRoutes` does). **No `router_id`-style
 per-entity label** — the SPA has no fleet-bounded entity, so unlike
 `router_connected` there is no per-id gauge here.
 
+> **Registration (S1/S6 implementer note):** each new `spa_ws_*` series needs its
+> `(name -> allowed keys)` entry added to `MetricGuard.Allowed`
+> ([`api/src/metrics/Metrics.scala`](../../api/src/metrics/Metrics.scala), the
+> `Allowed` map) or `MetricGuard` rejects the emit — exactly as the `router_ws_*`
+> families were registered. Do not rely on the discipline being implicit.
+
 ### 6.1 Grafana panel
 
 Add a **`spa-ws.json`** dashboard under
@@ -532,7 +548,11 @@ Panels:
 
 The dashboard ships in the **same PR** as the metric-emitting code for each
 phase, targeting only series that phase actually emits (no no-data panels), per
-the dashboard rule. CI gate: `grafana-terraform`.
+the dashboard rule. CI gate: `grafana-terraform`. As a *new* dashboard,
+`spa-ws.json` must also be added to the `local.dashboards` list in
+[`infra/grafana/main.tf`](../../infra/grafana/main.tf) (sibling to the existing
+`router-ws-transport` entry) — that list is what the `grafana-terraform` gate
+provisions from.
 
 ---
 
