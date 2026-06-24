@@ -1080,12 +1080,14 @@ function M.nft(snapshot, opts)
   end
 
   -- #1122/#1126: each drop is rendered as a pair of rules sharing one predicate
-  -- (see #1826 / `emit_drop` below):
-  --   `<predicate> limit rate 2/second burst 10 packets log prefix "wh_drop:<mac>:<reason> "`
+  -- (see #1826/#1915 / `emit_drop` below):
+  --   `<predicate> update @wh_drop_log4 { ether saddr . ip daddr limit rate 1/minute burst 5 packets } log prefix "wh_drop:<mac>:<reason> "`
   --   `<predicate> counter drop comment "wh_drop:<mac>:<reason>"`
   -- (pre-#1826 this was a single `… log prefix … counter drop` rule; the LOG is
-  -- now on its own rate-limited rule so a retry storm can't flood the kernel
-  -- ring buffer, while the drop stays unconditional).
+  -- now on its own rule so a retry storm can't flood the kernel ring buffer,
+  -- while the drop stays unconditional. #1915 made the LOG gate a per-flow
+  -- (per-(mac,dst)) limiter set instead of a flat per-rule rate — see the
+  -- emit_drop comment below for why.)
   -- The `log prefix` form writes to the kernel ring buffer (the LOG backend),
   -- so the wifihaven-nflog-tail sidecar can read the dropped-packet records
   -- straight off `logread -f` on stock OpenWRT — no NFLOG netlink consumer
@@ -1129,27 +1131,68 @@ function M.nft(snapshot, opts)
   -- shared `logread` ring buffer when several MACs retry-storm at once — the
   -- aggregate (10/s × N drop rules) evicted wifihaven-agent and dnsmasq lines
   -- from the ring buffer, leaving the router undiagnosable during an incident.
-  -- Throttle the LOG harder: 2/second with a burst of 10 still captures the
-  -- distinct flows the agent's nflog tail needs to label blocked-flow events
-  -- (the labels are deduped per (mac, reason, dst), so a retry storm to one
-  -- endpoint needs only a single sample), but cuts the steady-state ring-buffer
-  -- footprint ~5×. The burst absorbs the initial flurry of distinct hosts; the
-  -- low sustained rate keeps the ring buffer usable for everything else. The
-  -- `counter drop` rule is unchanged, so enforcement and drop counts are exact.
-  local DROP_LOG_LIMIT = "limit rate 2/second burst 10 packets"
-  local function log_suffix(mac, reason)
-    return string.format(" %s log prefix \"wh_drop:%s:%s \"",
-                         DROP_LOG_LIMIT, mac, reason)
+  -- That was first throttled harder (a flat 2/second per-rule limit), but —
+  --
+  -- #1915: a flat per-RULE `limit rate` is a single token bucket SHARED across
+  -- every flow that hits the rule. It conflates two needs the wh_drop LOG
+  -- serves: flood control (suppress retry STORMS) and event synthesis (the
+  -- agent's nflog tail needs ≥1 line per DISTINCT (mac,reason,dst) to emit a
+  -- blocked/paused connection_event). Once a storm drains the shared bucket,
+  -- the NEXT distinct flow's first packet is rate-limited away before the tail
+  -- reads it — so events silently stop synthesizing (Gate 2
+  -- test_paused_mac_https_traffic_surfaces_as_nflog_event hung; the regression
+  -- that took Master Router CD red ~2026-06-22 and blocked every router
+  -- publish, #1865 included).
+  --
+  -- Fix: gate the LOG with a PER-ELEMENT (per-flow) limiter instead — a
+  -- dynamic set keyed on (ether saddr . ip[6] daddr) with an embedded
+  -- `limit rate`. Each distinct (mac,dst) flow gets its OWN token bucket, so
+  -- the first packet of every distinct flow always logs (fresh bucket) and
+  -- synthesis is never starved; a storm to the SAME (mac,dst) drains only that
+  -- element's bucket and is suppressed, so the ring buffer stays usable. The
+  -- embedded limit is a match: when the bucket is empty the `update` expression
+  -- is false and the rule stops BEFORE the log (no verdict), falling through to
+  -- the unconditional `counter drop` on the next rule — enforcement and drop
+  -- counts are unchanged, exactly as the two-rule #1826 split guarantees. The
+  -- small burst headroom (5) is collapsed back to one event by the agent's own
+  -- per-(mac,reason,dst) dedup (nflog.new_dedup, 60s window). The two sets
+  -- (wh_drop_log4/6) are declared just above `chain wifihaven_block`.
+  --
+  -- Per-flow rate keyed on (mac,dst): 1/minute lines up with the agent's 60s
+  -- dedup window; burst 5 absorbs a couple of initial retransmits per flow
+  -- without flooding. Distinct flows are never throttled against each other.
+  local DROP_LOG_RATE = "limit rate 1/minute burst 5 packets"
+  -- LOG suffix for a family-constrained predicate ("ip" → v4 set, else v6).
+  local function log_suffix(family, mac, reason)
+    local set, key
+    if family == "ip6" then
+      set, key = "wh_drop_log6", "ether saddr . ip6 daddr"
+    else
+      set, key = "wh_drop_log4", "ether saddr . ip daddr"
+    end
+    return string.format(
+      " update @%s { %s %s } log prefix \"wh_drop:%s:%s \"",
+      set, key, DROP_LOG_RATE, mac, reason)
   end
   local function drop_suffix(mac, reason)
     return string.format(" counter drop comment \"wh_drop:%s:%s\"",
                          mac, reason)
   end
-  -- Emit the rate-limited log rule then the unconditional drop rule for one
-  -- predicate. `predicate` is everything up to (but excluding) the log/drop
-  -- suffix; both rules share it verbatim so they match the same packets.
-  local function emit_drop(predicate, mac, reason)
-    ind2(predicate .. log_suffix(mac, reason))
+  -- Emit the per-flow rate-limited log rule(s) then the unconditional drop
+  -- rule for one predicate. `family` is "ip", "ip6", or "any". "any" (the
+  -- family-agnostic whole-MAC drop, which has no daddr predicate) emits both a
+  -- v4 and a v6 log rule guarded by `meta nfproto` so each can read its
+  -- family's daddr into the (mac,dst) key, then one shared family-agnostic
+  -- drop. `predicate` is everything up to (but excluding) the log/drop suffix;
+  -- the log and drop rules share it verbatim so they match the same packets.
+  local function emit_drop(predicate, mac, reason, family)
+    family = family or "any"
+    if family == "any" then
+      ind2(predicate .. " meta nfproto ipv4" .. log_suffix("ip", mac, reason))
+      ind2(predicate .. " meta nfproto ipv6" .. log_suffix("ip6", mac, reason))
+    else
+      ind2(predicate .. log_suffix(family, mac, reason))
+    end
     ind2(predicate .. drop_suffix(mac, reason))
   end
   local blocked_reason_by_mac = {}
@@ -1159,6 +1202,25 @@ function M.nft(snapshot, opts)
       blocked_reason_by_mac[mac] = r.blockReason or "blocked"
     end
   end
+
+  -- #1915: per-flow wh_drop LOG limiter sets (see emit_drop above). Keyed on
+  -- (mac, dst) so each distinct blocked flow gets its own token bucket and logs
+  -- on first-seen (synthesis is never starved), while a retry storm to one flow
+  -- drains only that element's bucket. The short timeout bounds set memory and
+  -- keeps the limiter state alive across a storm (each `update` refreshes it); a
+  -- flow that resumes after the timeout logs fresh — a new visibility window.
+  ind("set wh_drop_log4 {")
+  ind2("type ether_addr . ipv4_addr")
+  ind2("flags dynamic,timeout")
+  ind2("timeout 2m")
+  ind("}")
+  emit("")
+  ind("set wh_drop_log6 {")
+  ind2("type ether_addr . ipv6_addr")
+  ind2("flags dynamic,timeout")
+  ind2("timeout 2m")
+  ind("}")
+  emit("")
 
   ind("chain wifihaven_block {")
   ind2("type filter hook forward priority 0; policy accept;")
@@ -1200,9 +1262,9 @@ function M.nft(snapshot, opts)
   for _, mac in ipairs(blocked_ea_macs) do
     local reason = blocked_reason_by_mac[mac] or "blocked"
     emit_drop(string.format("ether saddr %s%s%s", mac, ea_suffix(mac, "ip"),
-                            ga_suffix("ip")), mac, reason)
+                            ga_suffix("ip")), mac, reason, "ip")
     emit_drop(string.format("ether saddr %s%s%s", mac, ea_suffix(mac, "ip6"),
-                            ga_suffix("ip6")), mac, reason)
+                            ga_suffix("ip6")), mac, reason, "ip6")
   end
   -- v4 drops first, then v6 (#392). One ipset directive populates both sets
   -- at DNS time; here we gate on whichever family the destination matched.
@@ -1224,22 +1286,22 @@ function M.nft(snapshot, opts)
   for _, p in ipairs(eb_pairs) do
     emit_drop(string.format("ether saddr %s ip daddr @%s%s%s",
                             p.mac, eb_set_name(p.host), ea_suffix(p.mac, "ip"),
-                            ga_suffix("ip")), p.mac, "host:" .. p.host)
+                            ga_suffix("ip")), p.mac, "host:" .. p.host, "ip")
   end
   for _, p in ipairs(eb_pairs) do
     emit_drop(string.format("ether saddr %s ip6 daddr @%s%s%s",
                             p.mac, eb6_set_name(p.host), ea_suffix(p.mac, "ip6"),
-                            ga_suffix("ip6")), p.mac, "host:" .. p.host)
+                            ga_suffix("ip6")), p.mac, "host:" .. p.host, "ip6")
   end
   for _, p in ipairs(bl_pairs) do
     emit_drop(string.format("ether saddr %s ip daddr @%s%s%s",
                             p.mac, bl_set_name(p.id), ea_suffix(p.mac, "ip"),
-                            ga_suffix("ip")), p.mac, "category:" .. tostring(p.id))
+                            ga_suffix("ip")), p.mac, "category:" .. tostring(p.id), "ip")
   end
   for _, p in ipairs(bl_pairs) do
     emit_drop(string.format("ether saddr %s ip6 daddr @%s%s%s",
                             p.mac, bl6_set_name(p.id), ea_suffix(p.mac, "ip6"),
-                            ga_suffix("ip6")), p.mac, "category:" .. tostring(p.id))
+                            ga_suffix("ip6")), p.mac, "category:" .. tostring(p.id), "ip6")
   end
   -- #353: blockIpOnly drop. Predicate `ip daddr != @resolved_<mac>` matches
   -- any v4 destination the device did not DNS-resolve via our resolver in
@@ -1247,11 +1309,11 @@ function M.nft(snapshot, opts)
   -- entries past the set timeout.
   for _, mac in ipairs(bio_macs) do
     emit_drop(string.format("ether saddr %s ip daddr != @%s",
-                            mac, resolved_set_name(mac)), mac, "ip_only")
+                            mac, resolved_set_name(mac)), mac, "ip_only", "ip")
   end
   for _, mac in ipairs(bio_macs) do
     emit_drop(string.format("ether saddr %s ip6 daddr != @%s",
-                            mac, resolved6_set_name(mac)), mac, "ip_only")
+                            mac, resolved6_set_name(mac)), mac, "ip_only", "ip6")
   end
   -- #1319: global block (hosts ∪ categories) → drop for every managed MAC on
   -- @global_block, carved out ONLY by @global_allow (a per-MAC extraAllowed
@@ -1261,12 +1323,12 @@ function M.nft(snapshot, opts)
     for _, mac in ipairs(managed_macs) do
       emit_drop(string.format("ether saddr %s ip daddr @%s%s",
                               mac, GLOBAL_BLOCK4, ga_suffix("ip")),
-                mac, "global_block")
+                mac, "global_block", "ip")
     end
     for _, mac in ipairs(managed_macs) do
       emit_drop(string.format("ether saddr %s ip6 daddr @%s%s",
                               mac, GLOBAL_BLOCK6, ga_suffix("ip6")),
-                mac, "global_block")
+                mac, "global_block", "ip6")
     end
   end
   -- #1319: global lockdown (global.blocked) → whole-network kill switch. Drop
@@ -1280,11 +1342,11 @@ function M.nft(snapshot, opts)
       -- Per-family so each can carry its family-specific @global_allow carve-out.
       for _, mac in ipairs(managed_macs) do
         emit_drop(string.format("ether saddr %s%s", mac, ga_suffix("ip")),
-                  mac, g_block_reason)
+                  mac, g_block_reason, "ip")
       end
       for _, mac in ipairs(managed_macs) do
         emit_drop(string.format("ether saddr %s%s", mac, ga_suffix("ip6")),
-                  mac, g_block_reason)
+                  mac, g_block_reason, "ip6")
       end
     else
       -- No global allow → one family-agnostic unconditional drop per MAC.
