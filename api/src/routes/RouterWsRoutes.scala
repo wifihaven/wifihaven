@@ -3,6 +3,7 @@ package wifihaven.api.routes
 import wifihaven.api.db.RouterRepo
 import wifihaven.api.metrics.{AppMetrics, RouterMetricsService}
 import wifihaven.api.observability.LogContext
+import wifihaven.api.policy.PolicyService
 import wifihaven.shared.{Router, RouterMetricsBatch}
 import zio.*
 import zio.http.*
@@ -44,6 +45,7 @@ object RouterWsRoutes {
       ingest: RouterIngestService,
       metricsSvc: RouterMetricsService,
       routerRepo: RouterRepo,
+      policy: PolicyService,
   ): Routes[Any, Response] =
     Routes(
       Method.GET / "api" / "router" / "ws" ->
@@ -54,7 +56,8 @@ object RouterWsRoutes {
             .authenticate(req)
             .foldZIO(
               err => ZIO.succeed(ErrorMapper.errorToResponse(err)),
-              router => socketApp(router, registry, ingest, metricsSvc, routerRepo).toResponse,
+              router =>
+                socketApp(router, registry, ingest, metricsSvc, routerRepo, policy).toResponse,
             )
         },
     )
@@ -65,6 +68,7 @@ object RouterWsRoutes {
       ingest: RouterIngestService,
       metricsSvc: RouterMetricsService,
       routerRepo: RouterRepo,
+      policy: PolicyService,
   ): WebSocketApp[Any] =
     Handler.webSocket { channel =>
       // Register once the upgrade handshake completes; deregister unconditionally on exit (normal
@@ -74,8 +78,20 @@ object RouterWsRoutes {
       channel
         .receiveAll {
           case ChannelEvent.UserEventTriggered(UserEvent.HandshakeComplete) =>
+            // #1849: register, then push the current snapshot once so a freshly-connected router
+            // has policy immediately (design §6.1). A snapshot-build failure must not tear the
+            // socket down — log and carry on; the router still gets the next push-on-change and can
+            // fall back to the REST poll.
             registry.register(router.id, channel) *>
-              ZIO.logInfo(s"router ws: connected router=${router.id}")
+              ZIO.logInfo(s"router ws: connected router=${router.id}") *>
+              policy.snapshot
+                .flatMap(registry.pushPolicyTo(channel, _))
+                .catchAllCause(c =>
+                  ZIO.logWarningCause(
+                    s"router ws: first-policy push failed router=${router.id}",
+                    c,
+                  ),
+                )
           case ChannelEvent.Read(WebSocketFrame.Text(text))                 =>
             // A dispatch failure (e.g. a send error) tears this frame's handling down; log the cause
             // so a transport-level fault is debuggable, then let it surface (the socket closes and

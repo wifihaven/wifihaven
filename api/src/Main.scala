@@ -66,8 +66,9 @@ object Main extends ZIOAppDefault {
         bundled   <- BundledBlocklists.loadAll()
         templatesById = templates.map(t => t.slug -> t).toMap
         bundledById   = bundled.map(b => b.id -> b).toMap
-        routes <- allRoutes(templatesById, bundledById, readyRef.get)
-        withCors = Cors.wrap(routes, cfg.cors)
+        routesAndRegistry <- allRoutes(templatesById, bundledById, readyRef.get)
+        (routes, wsRegistry) = routesAndRegistry
+        withCors             = Cors.wrap(routes, cfg.cors)
         _ <- ZIO
           .logInfo(s"CORS enabled for origins: ${cfg.cors.origins.mkString(", ")}")
           .when(cfg.cors.origins.nonEmpty)
@@ -111,7 +112,7 @@ object Main extends ZIOAppDefault {
         // is idempotent (Flyway tracks applied migrations; ensureDefault is
         // ON CONFLICT DO NOTHING; the seeds are REPLACE / idempotent), so a retry
         // safely re-runs it from the start.
-        _            <- Database.withStartupRetry(cfg.db.resilience, "startup DB init") {
+        _             <- Database.withStartupRetry(cfg.db.resilience, "startup DB init") {
           for {
             _ <- Database.runMigrations(cfg.db)
             _ <- ZIO.logInfo("Database migrations complete")
@@ -158,8 +159,8 @@ object Main extends ZIOAppDefault {
         }
         // #1248: migrations + ensureDefault + seeds are done — flip readiness so
         // /api/health returns 200 and the gated routes start serving real traffic.
-        _            <- readyRef.set(true)
-        _            <- ZIO.logInfo("readiness flipped → /api/health healthy, API routes ungated")
+        _             <- readyRef.set(true)
+        _             <- ZIO.logInfo("readiness flipped → /api/health healthy, API routes ungated")
         // #809: scheduled re-aggregation of traffic_reports into the rollup
         // tables. #1230: cadence matches the tier each table is read at — hourly
         // tick re-rolls the trailing 2h every hour, daily tick re-rolls the
@@ -167,9 +168,33 @@ object Main extends ZIOAppDefault {
         // traffic_reports, not these tables). #1247: forkScoped (not forkDaemon)
         // into the run scope so they are interrupted before the Hikari pool
         // closes on shutdown; the fork never blocks startup either way.
-        rollupRepo   <- ZIO.service[wifihaven.api.db.RollupRepo]
-        clockForJobs <- ZIO.service[Clock]
-        _            <- RollupJobs.hourlyLoop(rollupRepo, appRepoForSeed, clockForJobs).forkScoped
+        rollupRepo    <- ZIO.service[wifihaven.api.db.RollupRepo]
+        clockForJobs  <- ZIO.service[Clock]
+        // #1849: wire the computed-snapshot cache's push-on-change. Install the ws registry as the
+        // PolicyService push sink, then fork the reconcile ticker: every `snapshotCacheRefreshSeconds`
+        // it rebuilds the snapshot once and pushes it to every connected router IFF the ETag moved
+        // (schedule edges, daily-limit/usage transitions). This is the single rebuild point that
+        // keeps the cache warm so REST polls read it (#1512) and ws routers are pushed on change —
+        // not one ~500ms recompute per poll per router. forkScoped (like the rollup loops) so it is
+        // interrupted before the Hikari pool closes on shutdown. The first tick fires immediately;
+        // `reevaluate` swallows+logs a transient build failure and keeps the last good cache.
+        // Idle cost: the tick rebuilds unconditionally even with zero connected routers / no recent
+        // poll — but for an always-polling household fleet that is ≈ the pre-cache per-poll load
+        // (which also ran every ~5s), so it is not a regression; gating on "any consumer present" is
+        // a possible later refinement.
+        // TODO(#1936): replace this fixed-interval ticker with a boundary-scheduled refresh — compute
+        // the next schedule-edge / daily-reset / limit-exhaustion instant from the data buildSnapshot
+        // already loads and sleep until then, so the ~2.5s build runs at real transitions instead of
+        // every tick.
+        policyForPush <- ZIO.service[PolicyService]
+        _ <- policyForPush.setPublisher(new wifihaven.api.policy.PolicySnapshotPublisher {
+          def publish(snap: wifihaven.shared.PolicySnapshot): UIO[Unit] =
+            wsRegistry.publishPolicy(snap)
+        })
+        _ <- policyForPush.reevaluate
+          .repeat(Schedule.fixed(cfg.policy.snapshotCacheRefreshInterval))
+          .forkScoped
+        _ <- RollupJobs.hourlyLoop(rollupRepo, appRepoForSeed, clockForJobs).forkScoped
         _ <- RollupJobs.dailyLoop(rollupRepo, appRepoForSeed, clockForJobs, tz).forkScoped
         // #1265: connection-event rollup tier — same cadence/lookback as the
         // traffic rollups, re-rolling the trailing windows into
@@ -355,10 +380,12 @@ object Main extends ZIOAppDefault {
             // #1538: same cache instance TimeRoutes uses, so a schedule detach busts the
             // per-profile time-status entry instead of leaving a stale "paused for schedule".
             timeCache,
+            // #1849: bust the computed-snapshot cache on a profile/schedule mutation.
+            policy.invalidate,
           ) ++
-          ScheduleRoutes.routes(auth, namedSchedRepo) ++
-          HouseholdSettingsRoutes.routes(auth, hsRepo) ++
-          DeviceRoutes.routes(auth, deviceRepo, upRepo, profileRepo)
+          ScheduleRoutes.routes(auth, namedSchedRepo, policy.invalidate) ++
+          HouseholdSettingsRoutes.routes(auth, hsRepo, policy.invalidate) ++
+          DeviceRoutes.routes(auth, deviceRepo, upRepo, profileRepo, policy.invalidate)
 
       val statsRoutes: Routes[Any, Response] =
         TimeRoutes.routes(
@@ -374,6 +401,8 @@ object Main extends ZIOAppDefault {
           timeStatus,
           clock,
           timeCache,
+          // #1849: a +Time grant can lift a TimeLimit block, so bust the computed-snapshot cache.
+          policy.invalidate,
         ) ++
           LogRoutes.routes(auth, connRepo, upRepo) ++
           UsageRoutes.routes(
@@ -421,7 +450,14 @@ object Main extends ZIOAppDefault {
           RollupAdminRoutes.routes(auth, rollupRepo2) ++
           RouterIngestRoutes.routes(routerAuth, routerIngest) ++
           // #1846: additive websocket transport. REST ingest/poll/metrics above stay fully live.
-          RouterWsRoutes.routes(routerAuth, wsRegistry, routerIngest, routerMetrics, routerRepo) ++
+          RouterWsRoutes.routes(
+            routerAuth,
+            wsRegistry,
+            routerIngest,
+            routerMetrics,
+            routerRepo,
+            policy,
+          ) ++
           RouterMetricsRoutes.routes(routerAuth, routerMetrics) ++
           AlertRoutes.routes(
             auth,
@@ -486,7 +522,7 @@ object Main extends ZIOAppDefault {
       // adds `status` because it sees the response. The middleware sits *inside*
       // HttpMetrics (so the same routes it counts also get logged) and *outside*
       // the readiness gate so even a gated 503 carries its route/method context.
-      HttpMetrics.instrument(
+      val assembled = HttpMetrics.instrument(
         healthRoutes ++
           LoggingMiddleware.annotate(
             Readiness.gate(
@@ -497,5 +533,8 @@ object Main extends ZIOAppDefault {
             ),
           ),
       ) ++ metricsRoutes
+      // #1849: hand the ws registry back so the run scope can wire it as PolicyService's push sink
+      // and fork the reconcile ticker (both need the run scope, which `allRoutes` is not).
+      (assembled, wsRegistry)
     }
 }

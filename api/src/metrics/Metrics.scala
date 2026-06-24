@@ -207,6 +207,13 @@ object MetricGuard {
     // no per-mac / per-host dimension ever rides a ws metric.
     "router_ws_connections_active"              -> Set.empty[String],
     "router_ws_frames_total"                    -> Set("op", "direction", "result"),
+    // #1849 — computed-snapshot cache + push-on-change. `policy_snapshot_build_total` splits policy
+    // snapshot accesses into `result` ∈ {computed, cache_hit} (proves the cache works);
+    // `router_ws_policy_push_total` is the push fan-out, `result` ∈ {ok, channel_closed}. Both are
+    // fixed 2-value enums — bounded, no per-mac / per-host dimension. (Without these entries the
+    // firewall would reject both names as unknown_name and the series would never emit.)
+    "policy_snapshot_build_total"               -> Set("result"),
+    "router_ws_policy_push_total"               -> Set("result"),
     // #1848 — AGENT-side websocket transport metrics. The wifihaven-ws sidecar has no metrics
     // registry of its own, so it writes a cumulative tally that the agent folds into its
     // /api/router/metrics push (the server attaches router_id / installation_id, as for every
@@ -503,6 +510,21 @@ object AppMetrics {
       "router_ws_frames_total",
       Map("op" -> op, "direction" -> direction, "result" -> result),
     )
+
+  // #1849: counts policy-snapshot accesses split by whether they hit the computed-snapshot cache.
+  // `computed` = an actual PolicyService rebuild (the ~500ms #1512 work); `cache_hit` = served from
+  // the cache without rebuilding. The ratio proves the cache is working — once the reconcile ticker
+  // keeps the cache warm, REST polls and ws fan-outs should be overwhelmingly `cache_hit`, with
+  // `computed` tracking the change/tick rate rather than the poll rate. `result` is a fixed 2-value
+  // enum (bounded label, per docs/process/instrumentation.md).
+  def recordSnapshotBuild(result: String): UIO[Unit] =
+    MetricGuard.counter("policy_snapshot_build_total", Map("result" -> result))
+
+  // #1849: emitted by RouterWsRegistry.publishPolicy for each fan-out attempt of a changed snapshot.
+  // `result` ∈ {ok, channel_closed} — `ok` = the frame was handed to the channel, `channel_closed`
+  // = the send failed (a racing disconnect) and the channel is dropped. Bounded enum.
+  def recordWsPolicyPush(result: String): UIO[Unit] =
+    MetricGuard.counter("router_ws_policy_push_total", Map("result" -> result))
 
   // §5.1 — server-side histogram boundaries for the router-pushed duration histograms. The agent
   // (#1206) reports cumulative bucket counts on these same boundaries; RouterMetricsService folds

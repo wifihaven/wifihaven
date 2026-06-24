@@ -219,6 +219,10 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           ZIO.succeed(
             RouterDecisionResponse(ConnectionDecision.Block, "future_app:slack", None),
           )
+        def invalidate: UIO[Unit]                                               = ZIO.unit
+        def reevaluate: UIO[Unit]                                               = ZIO.unit
+        def setPublisher(publisher: wifihaven.api.policy.PolicySnapshotPublisher): UIO[Unit] =
+          ZIO.unit
       }
       for {
         _   <- cleanDb
@@ -249,6 +253,10 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           ZIO.dieMessage("renderBlocklist unused in this test")
         def decide(mac: String, hostname: String): Task[RouterDecisionResponse] =
           ZIO.succeed(RouterDecisionResponse(ConnectionDecision.Block, wire, None))
+        def invalidate: UIO[Unit]                                               = ZIO.unit
+        def reevaluate: UIO[Unit]                                               = ZIO.unit
+        def setPublisher(publisher: wifihaven.api.policy.PolicySnapshotPublisher): UIO[Unit] =
+          ZIO.unit
       }
       // Each entry is (wire reason string emitted by decide(), expected reasonClass).
       // The expected value is taken directly from the case's `wireKind` — if a

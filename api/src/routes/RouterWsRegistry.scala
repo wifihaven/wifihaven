@@ -1,9 +1,12 @@
 package wifihaven.api.routes
 
 import wifihaven.api.metrics.AppMetrics
+import wifihaven.api.policy.PolicySnapshotPublisher
+import wifihaven.shared.PolicySnapshot
 import wifihaven.shared.types.RouterId
 import zio.*
-import zio.http.WebSocketChannel
+import zio.http.{ChannelEvent, WebSocketChannel, WebSocketFrame}
+import zio.json.*
 
 /**
  * #1846: the per-router websocket connection registry. Tracks the live [[WebSocketChannel]]s open
@@ -35,17 +38,39 @@ trait RouterWsRegistry {
 
   /** Total open channels across all routers — backs `router_ws_connections_active`. */
   def activeCount: UIO[Int]
+
+  /**
+   * #1849: fan a freshly-changed snapshot out as one `policy` frame to every connected channel. The
+   * server-side end of push-on-change: [[wifihaven.api.policy.PolicyService.reevaluate]] calls this
+   * (via the [[PolicySnapshotPublisher]] seam) only when the snapshot's ETag actually moved, so a
+   * change is computed once and pushed, not recomputed per poll per router (#1512). A send failure
+   * (a racing disconnect) deregisters that channel and is metered `channel_closed`.
+   */
+  def publishPolicy(snap: PolicySnapshot): UIO[Unit]
+
+  /**
+   * #1849: push the current snapshot to a single freshly-connected channel (design §6.1 first-
+   * policy-on-connect), so a router that just opened the socket gets policy immediately rather than
+   * at the next change. A send failure is metered `channel_closed` (the caller's receive loop will
+   * deregister on close).
+   */
+  def pushPolicyTo(channel: WebSocketChannel, snap: PolicySnapshot): UIO[Unit]
 }
 
 object RouterWsRegistry {
 
   def make: UIO[RouterWsRegistry] =
     Ref.make(Map.empty[RouterId, Set[WebSocketChannel]]).map(new RouterWsRegistryLive(_))
+
+  /** The `{op:"policy", payload:<snapshot>}` envelope a pushed snapshot rides (design §1.2). */
+  private[routes] def policyFrameText(snap: PolicySnapshot): String =
+    s"""{"op":"policy","payload":${snap.toJson}}"""
 }
 
 final class RouterWsRegistryLive(
     state: Ref[Map[RouterId, Set[WebSocketChannel]]],
-) extends RouterWsRegistry {
+) extends RouterWsRegistry
+    with PolicySnapshotPublisher {
 
   // Recompute the live total and publish it. Called after every mutation so a deregister on
   // disconnect drives the gauge back down rather than leaving a stale high-water value.
@@ -73,4 +98,37 @@ final class RouterWsRegistryLive(
 
   def activeCount: UIO[Int] =
     state.get.map(_.valuesIterator.map(_.size).sum)
+
+  // The `PolicySnapshotPublisher` sink PolicyService.reevaluate pushes changed snapshots to.
+  def publish(snap: PolicySnapshot): UIO[Unit] = publishPolicy(snap)
+
+  def publishPolicy(snap: PolicySnapshot): UIO[Unit] =
+    state.get.flatMap { m =>
+      val frame = RouterWsRegistry.policyFrameText(snap)
+      ZIO.foreachDiscard(m.toList) { case (id, channels) =>
+        ZIO.foreachDiscard(channels)(ch => sendPolicyFrame(Some(id), ch, frame))
+      }
+    }
+
+  def pushPolicyTo(channel: WebSocketChannel, snap: PolicySnapshot): UIO[Unit] =
+    sendPolicyFrame(None, channel, RouterWsRegistry.policyFrameText(snap))
+
+  private def sendPolicyFrame(
+      id: Option[RouterId],
+      channel: WebSocketChannel,
+      frame: String,
+  ): UIO[Unit] =
+    channel
+      .send(ChannelEvent.read(WebSocketFrame.text(frame)))
+      .foldZIO(
+        _ =>
+          // A racing disconnect: meter the failed push and (when we know which router it was) drop
+          // the dead channel. The receive loop's `ensuring` also deregisters, but doing it here too
+          // keeps the gauge honest if the push raced ahead of the close event.
+          AppMetrics.recordWsPolicyPush("channel_closed") *>
+            ZIO.foreachDiscard(id)(deregister(_, channel)),
+        _ =>
+          AppMetrics.recordWsFrame("policy", "out", "ok") *>
+            AppMetrics.recordWsPolicyPush("ok"),
+      )
 }
