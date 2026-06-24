@@ -100,10 +100,17 @@ def wait_block_page(client, *, host: str = "example.com", timeout_s: float = 90)
     )
 
 
-def wait_http_succeeds(client, *, host: str = "example.com", timeout_s: float = 60):
-    """Probe HTTP success, disambiguating block-page (also 200) by body."""
+def wait_http_succeeds(
+    client, *, host: str = "example.com", timeout_s: float = 60, ipv4_only: bool = False
+):
+    """Probe HTTP success, disambiguating block-page (also 200) by body.
+
+    `ipv4_only=True` pins the probe to IPv4 (curl `-4`) so it exercises the same
+    address family the caller populated/asserted in the kernel sets — see
+    http_get for the dual-stack happy-eyeballs trap (#1929).
+    """
     def probe():
-        p = http_get(client, f"http://{host}/", timeout_s=8)
+        p = http_get(client, f"http://{host}/", timeout_s=8, ipv4_only=ipv4_only)
         if p.http_code is not None and 200 <= p.http_code < 400:
             if is_block_page_body(p.body):
                 return None
