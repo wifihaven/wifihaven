@@ -3028,9 +3028,11 @@ class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
     // Order matters only for `app_used_daily`: we INSERT-then-aggregate (so engaged_seconds sum)
     // before the cascade DELETE on `apps` would have wiped the `from` rows. Everything else is
     // safely commutative within the transaction.
+    // #1896: carry the `shared` flag through the union so a merged-in shared host isn't silently
+    // downgraded to distinctive. `to` wins on conflict, so its own flag is preserved either way.
     val unionHosts =
-      sql"""INSERT INTO app_hosts (app_id, host)
-            SELECT $to, host FROM app_hosts WHERE app_id = $from
+      sql"""INSERT INTO app_hosts (app_id, host, shared)
+            SELECT $to, host, shared FROM app_hosts WHERE app_id = $from
             ON CONFLICT DO NOTHING""".update.run
 
     val reattachAssignments =
