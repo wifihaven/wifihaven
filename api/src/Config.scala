@@ -112,7 +112,17 @@ case class CorsConfig(
 // Precursor to the DB-backed global profile in #937.
 case class PolicyConfig(
     uiAllowedHosts: String = "",
+    // #1849: how often the reconcile ticker rebuilds the cached snapshot and pushes it on an ETag
+    // move. Bounds the staleness of time/usage-dependent transitions (schedule edges, daily-limit
+    // exhaustion) on the cached REST poll path; defaulted to 5s to match the agent's
+    // `policy_poll_interval` so the cache preserves the pre-cache ~per-poll freshness exactly while
+    // moving the ~500ms build off the request path (#1512). Mutations invalidate immediately and do
+    // not wait for this tick.
+    snapshotCacheRefreshSeconds: Int = 5,
 ) {
+  val snapshotCacheRefreshInterval: zio.Duration =
+    zio.Duration.fromSeconds(snapshotCacheRefreshSeconds.toLong)
+
   val uiAllowedHostsParsed: List[Hostname] =
     uiAllowedHosts
       .split(",")

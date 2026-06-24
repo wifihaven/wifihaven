@@ -4,6 +4,7 @@ import wifihaven.api.{ErrorBoundary, Readiness}
 import wifihaven.api.db.*
 import wifihaven.api.metrics.{HttpMetrics, RouterMetricsService}
 import wifihaven.api.observability.LoggingMiddleware
+import wifihaven.api.policy.PolicyServiceLive
 import wifihaven.api.routes.*
 import wifihaven.shared.*
 import wifihaven.shared.types.*
@@ -62,16 +63,26 @@ object RouterWsSpec
       cRepo   <- ZIO.service[ConnectionEventRepo]
       aRepo   <- ZIO.service[AlertRepo]
       hsr     <- ZIO.service[HouseholdSettingsRepo]
+      pRepo   <- ZIO.service[ProfileRepo]
+      tlr     <- ZIO.service[TimeLimitRepo]
+      atlr    <- ZIO.service[AppTimeLimitRepo]
+      er      <- ZIO.service[TimeExtensionRepo]
+      ar      <- ZIO.service[AppRepo]
+      clk     <- ZIO.service[Clock]
+      blr     <- ZIO.service[BlocklistRepo]
       metrics <- RouterMetricsService.make
       reg     <- RouterWsRegistry.make
       auth   = new RouterAuthLive(rRepo)
       ingest = new RouterIngestService(rRepo, tRepo, tu, dRepo, cRepo, aRepo, hsr)
+      // #1849: a PolicyService so the ws endpoint can push the current snapshot on connect. Cache
+      // off here (the `apply` default) — the connect push reads `snapshot`, which builds fresh.
+      policy = PolicyServiceLive(pRepo, hsr, tlr, atlr, dRepo, blr, tRepo, er, ar, clk)
       // Mount the ws route through the SAME aspect stack `Main` wraps the router routes in
       // (HttpMetrics.instrument → LoggingMiddleware.annotate → Readiness.gate → ErrorBoundary.observe)
       // so the test proves the HTTP/1.1 upgrade survives the production middleware, not just the raw
       // route. These aspects are response-transparent for a websocket Response, but pinning it here
       // closes the gap between the test path and the assembled prod path.
-      raw    = RouterWsRoutes.routes(auth, reg, ingest, metrics, rRepo)
+      raw    = RouterWsRoutes.routes(auth, reg, ingest, metrics, rRepo, policy)
       routes = HttpMetrics.instrument(
         LoggingMiddleware.annotate(
           Readiness.gate(ErrorBoundary.observe(raw), ZIO.succeed(true)),
@@ -80,41 +91,48 @@ object RouterWsSpec
     } yield (routes, reg)
 
   /**
-   * Open a ws connection to the bound server, run `clientBehavior` (which drives the channel and
-   * resolves `firstServerText` with the first text frame the server sends back), and return that
-   * frame. Connects with the given bearer header.
+   * Open a ws connection to the bound server, drive it with `send` on handshake, and collect every
+   * text frame the server sends. Resolves once a frame satisfies `until` (so a test can wait for
+   * the specific `ack`/`pong`/`policy` it cares about, ignoring the others — #1849's connect push
+   * means a `policy` frame now arrives first, ahead of any ack/pong). Returns the matching frame,
+   * ALL frames received up to that point, and the probe result. Connects with the given bearer
+   * header.
    */
   private def connectAndCapture[B](
       port: Int,
       bearer: Option[String],
       send: WebSocketChannel => ZIO[Any, Throwable, Unit],
       probe: ZIO[Any, Throwable, B],
-  ): ZIO[Client, Throwable, (String, B)] =
-    Promise.make[Nothing, String].flatMap { firstServerText =>
-      val app     = Handler.webSocket { channel =>
+      until: String => Boolean = _ => true,
+  ): ZIO[Client, Throwable, (String, Chunk[String], B)] =
+    for {
+      matched <- Promise.make[Nothing, String]
+      frames  <- Ref.make(Chunk.empty[String])
+      app     = Handler.webSocket { channel =>
         channel.receiveAll {
           case ChannelEvent.UserEventTriggered(UserEvent.HandshakeComplete) =>
             send(channel)
           case ChannelEvent.Read(WebSocketFrame.Text(t))                    =>
-            firstServerText.succeed(t).unit
+            frames.update(_ :+ t) *> ZIO.when(until(t))(matched.succeed(t)).unit
           case _                                                            =>
             ZIO.unit
         }
       }
-      val headers = bearer.fold(Headers.empty)(t => Headers(Header.Authorization.Bearer(t)))
+      headers = bearer.fold(Headers.empty)(t => Headers(Header.Authorization.Bearer(t)))
       // Drive the connection in a LOCAL scope closed as soon as we have the server's reply, so the
       // ws fiber is interrupted promptly and the test does not wait on connection teardown. `probe`
       // runs INSIDE the scope (connection still open) so a registry-liveness check observes the live
       // channel rather than racing the post-scope deregister.
-      ZIO.scoped {
+      result <- ZIO.scoped {
         for {
-          _ <- app.connect(s"ws://localhost:$port/api/router/ws", headers).forkScoped
-          t <- firstServerText.await
-            .timeoutFail(new RuntimeException("no server frame within 30s"))(30.seconds)
-          b <- probe
-        } yield (t, b)
+          _   <- app.connect(s"ws://localhost:$port/api/router/ws", headers).forkScoped
+          t   <- matched.await
+            .timeoutFail(new RuntimeException("no matching server frame within 30s"))(30.seconds)
+          all <- frames.get
+          b   <- probe
+        } yield (t, all, b)
       }
-    }
+    } yield result
 
   def spec = suite("Router websocket /api/router/ws")(
     test("rejects the upgrade with 401 when the bearer token is missing or invalid") {
@@ -158,12 +176,15 @@ object RouterWsSpec
           Some(tk),
           ch => ch.send(ChannelEvent.read(WebSocketFrame.text(frame))),
           reg.isConnected(id),
+          until = _.contains("\"op\":\"ack\""),
         )
-        (ack, connected) = result
+        (ack, all, connected) = result
         rows <- tRepo.listForRouter(id, 100)
       } yield assertTrue(ack.contains("\"op\":\"ack\"")) &&
         assertTrue(ack.contains("\"status\":\"ok\"")) &&
         assertTrue(ack.contains("\"seq\":7")) &&
+        // #1849: the connect-time policy push arrives before the ack.
+        assertTrue(all.exists(_.contains("\"op\":\"policy\""))) &&
         assertTrue(rows.size == 1) &&
         assertTrue(connected)).provideSome[
         TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task],
@@ -181,9 +202,38 @@ object RouterWsSpec
           Some(tk),
           ch => ch.send(ChannelEvent.read(WebSocketFrame.text("""{"op":"ping"}"""))),
           ZIO.unit,
+          until = _.contains("\"op\":\"pong\""),
         )
         pong = result._1
       } yield assertTrue(pong.contains("\"op\":\"pong\""))).provideSome[
+        TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task],
+      ](Server.defaultWithPort(0), Client.default)
+    },
+    test("#1849: a freshly-connected router is pushed the current policy snapshot on connect") {
+      (for {
+        _           <- cleanDb
+        rRepo       <- ZIO.service[RouterRepo]
+        pRepo       <- ZIO.service[ProfileRepo]
+        dRepo       <- ZIO.service[DeviceRepo]
+        _           <- seedKnownDevice(dRepo, pRepo)
+        (_, tk)     <- seedRouter(rRepo)
+        (routes, _) <- buildWsRoutes
+        port        <- Server.install(routes)
+        // Send nothing; just wait for the server's unsolicited first-policy push.
+        result      <- connectAndCapture(
+          port,
+          Some(tk),
+          _ => ZIO.unit,
+          ZIO.unit,
+          until = _.contains("\"op\":\"policy\""),
+        )
+        policyFrame = result._1
+      } yield
+      // The pushed frame is the `{op:"policy", payload:<snapshot>}` envelope carrying the real
+      // snapshot — it must include the device the snapshot enumerates and an etag.
+      assertTrue(policyFrame.contains("\"op\":\"policy\"")) &&
+        assertTrue(policyFrame.contains("\"etag\"")) &&
+        assertTrue(policyFrame.contains(knownMac))).provideSome[
         TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task],
       ](Server.defaultWithPort(0), Client.default)
     },

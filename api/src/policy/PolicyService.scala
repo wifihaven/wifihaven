@@ -14,9 +14,41 @@ import java.time.{DayOfWeek, Instant, LocalDate}
 import java.util.concurrent.atomic.AtomicReference
 
 trait PolicyService {
+
+  /**
+   * The current policy snapshot. When the computed-snapshot cache is enabled (#1849, production
+   * wiring) this returns the cached snapshot on a hit (no rebuild — the #1512 win for the REST poll
+   * path) and only rebuilds on a cold/invalidated cache. With the cache disabled (the default for
+   * the `PolicyServiceLive.apply` test factory) it always rebuilds, so the existing snapshot specs
+   * that mutate the DB directly and re-read see fresh bytes.
+   */
   def snapshot: Task[PolicySnapshot]
   def renderBlocklist(id: BlocklistId): Task[Option[(ETag, String)]]
   def decide(mac: String, hostname: String): Task[RouterDecisionResponse]
+
+  /**
+   * #1849: drop the cached snapshot so the next [[snapshot]]/[[reevaluate]] rebuilds. Called by
+   * policy-mutating routes (pause/unpause, manual block/allow, profile/device/schedule/blocklist
+   * edits, time-extension grants) so an admin change propagates immediately rather than waiting for
+   * the reconcile ticker. A no-op when the cache is disabled.
+   */
+  def invalidate: UIO[Unit]
+
+  /**
+   * #1849: rebuild the snapshot once and, if its ETag moved since the last cached value, store it
+   * and push it to the configured [[PolicySnapshotPublisher]] (one `policy` frame per connected
+   * router). This is the single rebuild-and-publish point driven both by the time-boundary
+   * reconcile ticker (schedule edges, daily-limit/usage transitions) and immediately after an
+   * [[invalidate]]. A no-op when the cache is disabled.
+   */
+  def reevaluate: UIO[Unit]
+
+  /**
+   * #1849: install the sink that [[reevaluate]] pushes changed snapshots to. Wired once at startup
+   * (the websocket registry is constructed after the policy layer); until then the publisher is
+   * [[PolicySnapshotPublisher.noop]].
+   */
+  def setPublisher(publisher: PolicySnapshotPublisher): UIO[Unit]
 }
 
 object PolicyServiceLive {
@@ -44,6 +76,10 @@ object PolicyServiceLive {
       // (TimeStatusService) and the per-host /decision path. Defaults to the noop so the many specs
       // that don't exercise schedules keep their positional constructions unchanged.
       namedScheduleRepo: NamedScheduleRepo = NoopNamedScheduleRepo,
+      // #1849: caching is opt-in. Defaulted OFF here so the ~40 direct test constructions (which
+      // mutate repos and re-read `snapshot` expecting fresh bytes) keep building every call; the
+      // production layer turns it on so the REST poll path reads the cache (#1512).
+      cacheEnabled: Boolean = false,
   ): PolicyServiceLive = {
     val tss = new TimeStatusServiceLive(
       profileRepo,
@@ -71,6 +107,7 @@ object PolicyServiceLive {
       clock,
       uiAllowedHosts,
       namedScheduleRepo,
+      cacheEnabled,
     )
   }
 }
@@ -102,7 +139,24 @@ class PolicyServiceLive(
     // directly only for the per-host /decision fallback, where the production layer wires the real
     // one.
     namedScheduleRepo: NamedScheduleRepo = NoopNamedScheduleRepo,
+    // #1849: when true, `snapshot` reads/writes the computed-snapshot cache and `reevaluate` is
+    // active; when false (test default) every `snapshot` rebuilds and `invalidate`/`reevaluate` are
+    // no-ops. See the trait docs.
+    cacheEnabled: Boolean = false,
 ) extends PolicyService {
+
+  // #1849: the single cached `(etag, snapshot)`. Process-local `AtomicReference` (matching the
+  // existing `lastSnapshotEtag` style in this class) so the `apply` factory stays a pure
+  // constructor. For the single-household model there is exactly one global snapshot, so one slot
+  // suffices (design §6.2 ticker note). Populated on first build, refreshed by `reevaluate`, cleared
+  // by `invalidate`.
+  private val snapshotCache: AtomicReference[Option[(ETag, PolicySnapshot)]] =
+    new AtomicReference(Option.empty[(ETag, PolicySnapshot)])
+
+  // #1849: the push sink, installed at startup via `setPublisher`. Defaults to noop so a snapshot
+  // rebuilt before the registry exists (or in a test) is simply not pushed.
+  private val publisher: AtomicReference[PolicySnapshotPublisher] =
+    new AtomicReference(PolicySnapshotPublisher.noop)
 
   // #1318: the WifiHaven UI / block-page hosts are fleet-wide always-reachable
   // hosts, so they live in `global.extraAllowed` (carving out every block at the
@@ -136,7 +190,21 @@ class PolicyServiceLive(
         ),
       )
 
+  // #1849: cache-aware entry point. On a hit, return the cached snapshot and meter `cache_hit` — no
+  // rebuild, which is the #1512 win for both ws and (un-migrated) REST poll agents. On a cold or
+  // invalidated cache, rebuild once, store, and serve it. With the cache disabled, always rebuild.
+  // RED STUB (#1849): not yet implemented — always rebuilds, no cache read, no push.
   def snapshot: Task[PolicySnapshot] =
+    ZIO.succeed((cacheEnabled, snapshotCache.get)).flatMap(_ => buildSnapshot)
+
+  def invalidate: UIO[Unit] = ZIO.unit
+
+  def reevaluate: UIO[Unit] = ZIO.succeed(publisher.get).unit
+
+  def setPublisher(p: PolicySnapshotPublisher): UIO[Unit] =
+    ZIO.succeed(publisher.set(p))
+
+  private def buildSnapshot: Task[PolicySnapshot] =
     (for {
       settings <- householdSettingsRepo.get
       now      <- clock.instant
@@ -343,9 +411,13 @@ class PolicyServiceLive(
       (snap, profiles.count(_.defaultDeny))
     }).flatMap { case (snap, defaultDenyProfiles) =>
       // #1318: surface the global-section size + default-deny profile count for operators.
+      // #1849: every actual build is a `computed` sample of `policy_snapshot_build_total` — the
+      // cache-hit counterpart is metered in `snapshot`. The computed:cache_hit ratio is what proves
+      // the cache is doing its job (cache_hit should dominate once the ticker keeps it warm).
       AppMetrics
         .setGlobalPolicy(snap.global.extraAllowed.size, defaultDenyProfiles)
         .zipRight(logSnapshotChanged(snap))
+        .zipRight(AppMetrics.recordSnapshotBuild("computed"))
         .as(snap)
     }
 
@@ -697,6 +769,10 @@ object PolicyService {
         clk,
         cfg.policy.uiAllowedHostsParsed,
         nsr,
+        // #1849: production turns the computed-snapshot cache ON. The REST poll path then reads the
+        // cache (#1512), and the reconcile ticker (Main) + `invalidate` (mutating routes) keep it
+        // fresh and drive the push-on-change to connected ws routers.
+        cacheEnabled = true,
       )
   }
 
