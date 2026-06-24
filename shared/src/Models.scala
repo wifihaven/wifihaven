@@ -361,6 +361,14 @@ case class App(
 
 case class AppHost(appId: AppId, host: Hostname) derives JsonCodec
 
+/**
+ * #1896: an app's host paired with its `shared` flag (`false` == distinctive). Distinctive hosts
+ * keep the unconditional `minBy(appId)` attribution; shared hosts (multi-tenant vendor backends)
+ * are stored now and attributed only under the co-presence rule once S2-S5 land. See
+ * `docs/design/shared-host-allocation.md`.
+ */
+case class AppHostEntry(host: Hostname, shared: Boolean) derives JsonCodec
+
 case class AppPolicyAssignment(
     id: AppPolicyAssignmentId,
     appId: AppId,

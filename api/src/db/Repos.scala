@@ -2884,6 +2884,17 @@ trait AppRepo {
   def getHosts(appId: AppId): Task[List[Hostname]]
 
   /**
+   * #1896: replace the full host-set carrying each host's `shared` flag (`false` == distinctive).
+   * Same replace semantics as [[setHosts]] (which is the all-distinctive special case). The flag is
+   * stored per-`(app_id, host)` and ignored until S2-S5 — see
+   * `docs/design/shared-host-allocation.md`.
+   */
+  def setHostEntries(appId: AppId, entries: List[AppHostEntry]): Task[Unit]
+
+  /** #1896: the host-set with each host's `shared` flag, ordered by host. */
+  def getHostEntries(appId: AppId): Task[List[AppHostEntry]]
+
+  /**
    * Current `app_hosts_version` — a global counter bumped by every host-set mutation ([[setHosts]],
    * [[delete]]). The rollup writer stamps rolled rows with the value it read here; a read path
    * compares it against the value stamped on rollup rows to decide whether the pre-attributed
@@ -3087,11 +3098,16 @@ class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
       bumpHostsVersion).transact(xa).unit
   }
 
-  def setHosts(appId: AppId, hosts: List[Hostname]) = {
+  // setHosts is the all-distinctive special case of setHostEntries (#1896): every host shared=false.
+  def setHosts(appId: AppId, hosts: List[Hostname]) =
+    setHostEntries(appId, hosts.map(AppHostEntry(_, shared = false)))
+
+  def setHostEntries(appId: AppId, entries: List[AppHostEntry]) = {
     val del = sql"DELETE FROM app_hosts WHERE app_id=$appId".update.run
-    val ins = hosts.distinct.map(h =>
-      sql"INSERT INTO app_hosts(app_id,host) VALUES($appId,$h) ON CONFLICT DO NOTHING".update.run,
-    )
+    val ins = entries.distinctBy(_.host).map { e =>
+      sql"""INSERT INTO app_hosts(app_id,host,shared) VALUES($appId,${e.host},${e.shared})
+            ON CONFLICT DO NOTHING""".update.run
+    }
     (del *> ins.foldLeft(FC.unit)(_ *> _.void) *> bumpHostsVersion).transact(xa).unit
   }
 
@@ -3099,6 +3115,15 @@ class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
     DbMetrics.timed("app.getHosts")(
       sql"SELECT host FROM app_hosts WHERE app_id=$appId ORDER BY host"
         .query[Hostname]
+        .to[List]
+        .transact(xa),
+    )
+
+  def getHostEntries(appId: AppId) =
+    DbMetrics.timed("app.getHostEntries")(
+      sql"SELECT host, shared FROM app_hosts WHERE app_id=$appId ORDER BY host"
+        .query[(Hostname, Boolean)]
+        .map { case (h, s) => AppHostEntry(h, s) }
         .to[List]
         .transact(xa),
     )

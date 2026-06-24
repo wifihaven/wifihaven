@@ -81,6 +81,43 @@
 # When in doubt: block the dedicated-bytes host, leave the shared edge alone,
 # and file against #1663 rather than editing blind.
 #
+# ──────────────────────────────────────────────────────────────────────────
+# SHARED HOSTS FOR ATTRIBUTION — `shared_hosts:` (#1888 / #1896)
+# ──────────────────────────────────────────────────────────────────────────
+#
+# The collateral rule above is about NOT BLOCKING a host whose IPs you don't
+# own. `shared_hosts:` is its ATTRIBUTION sibling — the same multi-tenant
+# vendor backends are also dangerous to CREDIT, because a host listed on many
+# apps would otherwise mis-attribute its time to whichever app won the
+# minBy(appId) tiebreak. The two rules reinforce each other: a host that's
+# shared for attribution is exactly the kind of host that's dangerous to block.
+#
+#   hosts:         DISTINCTIVE — traffic here, on its own, is strong evidence
+#                  THIS app is in use (`app.feelinggreat.com`, `youtube.com`).
+#                  Keep their current unconditional attribution.
+#   shared_hosts:  SHARED — multi-tenant vendor APIs/backends several unrelated
+#                  apps legitimately depend on (`elevenlabs.io`, `launchdarkly.com`,
+#                  generic auth/CDN edges). Traffic here, in isolation, tells you
+#                  nothing about which app is running.
+#
+# `shared_hosts:` is OPTIONAL and defaults to empty — every existing template is
+# unchanged. It is enforced by the directory-wide validation test (S1b, #1896):
+#
+#   1. Every app MUST have at least one distinctive host (`hosts:` non-empty).
+#      An all-shared template could never be "demonstrably in use" and would
+#      receive zero attribution forever — almost certainly an authoring error.
+#   2. GLOBAL CONSISTENCY: a host marked `shared` on ANY template must be
+#      `shared` on EVERY template that lists it. Listing it under plain `hosts:`
+#      somewhere else re-introduces the unconditional mis-credit the flag exists
+#      to prevent. (The flag is stored per-(app, host), but distinctiveness is an
+#      emergent property of a host across the whole catalog.)
+#
+# A shared host is credited to an app ONLY while that app's distinctive hosts
+# have a live session on the same device (the co-presence rule). NOTE: as of
+# S1b the flag is STORED AND IGNORED — attribution behavior is unchanged until
+# S2-S5 land. See `docs/design/shared-host-allocation.md` (#1888) for the full
+# allocation rule.
+#
 # File names beginning with `_` are reserved for documentation (this file) and
 # the manifest (`_index.yml`) and are ignored by the template loader.
 
@@ -88,6 +125,9 @@ slug: example
 name: Example App
 icon: "🧩"
 icon_type: emoji
-hosts:
+hosts:                  # distinctive — uniquely identify this app's use
   - example.com
   - cdn.example.com
+# shared_hosts:         # optional — multi-tenant backends; credited only while a
+#   - elevenlabs.io     #   distinctive host above is active (#1888). Stored but
+#   - launchdarkly.com  #   ignored until S2-S5.
