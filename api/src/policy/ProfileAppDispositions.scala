@@ -126,6 +126,13 @@ final case class ProfileAppDispositions(
     val blocked = scala.collection.mutable.ListBuffer.empty[Hostname]
     perApp.foreach { d =>
       val hosts                      = d.hosts.map(Hostname.unsafe)
+      // #1899 (shared-hosts S4): the BLOCK side is restricted to an app's DISTINCTIVE hosts. A
+      // shared backend (e.g. `elevenlabs.io`) is listed on many apps; dropping it because THIS app
+      // is blocked would drop it for every OTHER app on the device — the #1636 collateral failure.
+      // The ALLOW side keeps the full host-set (`hosts`): over-allowing a shared backend is safe
+      // (extraAllowed already beats every block path at the router; design §"most-permissive"), and
+      // a shared host belonging to an allowed app must stay reachable for that app to work.
+      val distinctive                = d.distinctiveHosts.map(Hostname.unsafe)
       val pairs                      = schedWindows.getOrElse(d.assignmentId, Nil)
       val allowedActive              = pairs.exists { case (m, w) =>
         m == AppScheduleMode.AllowedDuring && PolicyService.windowActiveAt(w, now)
@@ -140,12 +147,12 @@ final case class ProfileAppDispositions(
         if (!(capExhausted && !d.exemptFromDaily) && !suppressedByScheduleToggle)
           allowed ++= hosts
       } else if (blockedActive) {
-        blocked ++= hosts
+        blocked ++= distinctive
       } else
         d.mode match {
           case AppMode.Allowed     =>
             if (!suppressedByScheduleToggle) allowed ++= hosts
-          case AppMode.Blocked     => blocked ++= hosts
+          case AppMode.Blocked     => blocked ++= distinctive
           case AppMode.TimeLimited => () // surfaces via the per-app cap path
         }
     }

@@ -51,6 +51,13 @@ final case class AppDayState(
     // every host so off-domain asset/CDN traffic ticks the *same* app limit and is exempted from the
     // daily total just like the apex. For a single-host app this is `List(domainPattern)`.
     hosts: List[String] = Nil,
+    // #1899 (shared-hosts S4): the subset of `hosts` whose `app_hosts.shared` flag is false — the
+    // app's DISTINCTIVE host-set. The BLOCK side of per-app cap enforcement
+    // (`PolicyService.appCapExhaustedHosts`, `timeLimitBlockFromState`) reads THIS, never `hosts`,
+    // so a shared backend is never dropped when one app's cap exhausts (the #1636 collateral
+    // failure). The exempt-carve ALLOW side (`exemptUnderCapHosts`) keeps reading `hosts` — allow
+    // wins on shared hosts. An app with no shared hosts has `distinctiveHosts == hosts`.
+    distinctiveHosts: List[String] = Nil,
     // #1564: the typed FK to apps(id) the cap/rollup surface keys on internally. `label` and
     // `domainPattern` stay as display text; `appId` is the canonical identity that joins to
     // `app_used_daily.app_id` directly — no slug round-trip.
@@ -422,10 +429,12 @@ object TimeStatusService {
    */
   private[policy] def groupAppLimits(
       appLimits: List[AppTimeLimit],
-  ): List[(AppId, String, Option[Int], Boolean, List[String], String)] =
+  ): List[(AppId, String, Option[Int], Boolean, List[String], String, List[String])] =
     ProfileAppDispositions.from(appLimits).capGroups.map { d =>
       val rep = d.hosts.minByOption(_.length).getOrElse(d.label)
-      (d.appId, d.label, d.dailyMinutes, d.exemptFromDaily, d.hosts, rep)
+      // #1899: carry the distinctive subset alongside the full host-set so the per-app cap's BLOCK
+      // side (`PolicyService.appCapExhaustedHosts`) can omit shared hosts from extraBlocked.
+      (d.appId, d.label, d.dailyMinutes, d.exemptFromDaily, d.hosts, rep, d.distinctiveHosts)
     }
 
   /**
@@ -477,7 +486,7 @@ object TimeStatusService {
       appLimits: List[AppTimeLimit],
       minutesByAppId: Map[AppId, Int],
   ): List[AppDayState] =
-    groupAppLimits(appLimits).map { case (appId, label, daily, exempt, hosts, rep) =>
+    groupAppLimits(appLimits).map { case (appId, label, daily, exempt, hosts, rep, distinctive) =>
       AppDayState(
         label = label,
         domainPattern = rep,
@@ -485,6 +494,7 @@ object TimeStatusService {
         usedMinutes = minutesByAppId.getOrElse(appId, 0),
         exemptFromDaily = exempt,
         hosts = hosts,
+        distinctiveHosts = distinctive,
         appId = appId,
       )
     }
