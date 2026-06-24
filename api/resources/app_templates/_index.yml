@@ -40,3 +40,6 @@ slugs:
   # #1889: Feeling Great CBT app (distinctive host only; shared
   # elevenlabs/launchdarkly deferred to #1888)
   - feeling-great
+  # #1922: traffic-driven catalog pass (see evidence/classification-1922.md)
+  - math-playground
+  - dance-mat-typing

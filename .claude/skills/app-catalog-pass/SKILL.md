@@ -65,12 +65,14 @@ jq '.items[] | select(.apex=="<apex>")' /tmp/apex_*.json
 rm -f /tmp/wh_token.txt   # don't leave creds on disk
 ```
 
-> **CAVEAT — the sample is IPv4-biased.** IPv6 host attribution has been broken
-> on prod (v6 recorded as bare literals / dropped — #1796, fixes #1807/#1802).
-> Do **not** conclude "no traffic" from a quiet apex; many sites (lego.com et al)
-> serve heavily over v6. **Cross-check every candidate with web research**, not
-> byte counts alone. Re-confirm whether this caveat still holds at run time
-> (check #1796/#1807/#1802 state) and update this note.
+> **CAVEAT — RESOLVED as of 2026-06-23 (#1922 run).** IPv6 host attribution
+> *was* broken on prod (v6 recorded as bare literals / dropped — #1796), making
+> the sample IPv4-biased. #1796 is now **closed** and its fixes **#1807** (NDP-
+> neighbor v6 events) and **#1802** (v6 in per-device usage) are **merged**, so
+> the sample now includes v6 traffic. **Still cross-check every candidate with
+> web research**, not byte counts alone. Re-confirm this state at run time
+> (`gh issue view 1796/1807/1802`) — if a new attribution gap appears, restore
+> the IPv4-biased warning here.
 
 ## Step 1 — Gap-check against existing apps
 
@@ -170,6 +172,23 @@ above is now wrong, fix the step too — don't just log around it.
 
 ## Learnings log (newest first)
 
+- **2026-06-23 (#1922)** — #1796 IPv6-attribution gap is FIXED (#1807/#1802
+  merged); sample is no longer IPv4-biased. Step 0 caveat updated. A site #1815
+  skipped as "below bar / IPv4-biased" (mathplayground.com, 181 kB → now 894 kB
+  visible) became a legit app this pass — re-evaluate prior-skipped educational
+  apexes now that v6 lands.
+- **2026-06-23 (#1922)** — Watch for "game"-NAMED ad-tech: `games-to-run123.com`
+  (`trk2-assets.`), `geektalesgames.com` (`tracker.`), `grandgamestech.com`
+  (`api.` RTB) are tracker/RTB endpoints, NOT game sites — skip. Classify by the
+  subdomain shape (trk/tracker/sync/prebid/rtb/exchange = ad-tech), not the
+  apex's name.
+- **2026-06-23 (#1922)** — A vendor-API backend hit ONLY at its `api.` host with
+  no branded web app the kid navigates to (e.g. `api.elevenlabs.io` at ~50 MB) is
+  shared-API collateral — skip, don't template. Bytes alone don't make an app.
+- **2026-06-23 (#1922)** — "Unblocked games" framing extends past proxy stacks to
+  single-game hosts: `emolingo.games` (Rainbow Obby) markets "works in restrictive
+  school networks" and serves rotating numbered subdomains (`rainbowobbyN.`) — the
+  evasion pattern. → `games.yml` apex block (suffix-matches all N), NOT an app.
 - **2026-06-21 (#1815)** — Host entries can be subdomains; enforcement AND
   attribution both suffix-match the entry's own subtree (`HostMatch.matchesApex`),
   so you can scope an app to a sub-experience (LEGO Builder → `*.i.lego.com` +

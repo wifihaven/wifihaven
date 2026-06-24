@@ -1,0 +1,9 @@
+slug: dance-mat-typing
+name: Dance Mat Typing
+# Emoji fallback: ⌨️
+icon: "https://icons.duckduckgo.com/ip3/dancemattypingguide.com.ico"
+icon_type: url
+# Kid touch-typing tutor hosting the BBC Dance Mat Typing course (#1922).
+# Apex covers the observed www.dancemattypingguide.com subdomain.
+hosts:
+  - dancemattypingguide.com

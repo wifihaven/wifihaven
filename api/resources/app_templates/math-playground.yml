@@ -1,0 +1,9 @@
+slug: math-playground
+name: Math Playground
+# Emoji fallback: 🧮
+icon: "https://icons.duckduckgo.com/ip3/mathplayground.com.ico"
+icon_type: url
+# COPPA-compliant K-6 educational math-games site (#1922). Apex covers the
+# observed www.mathplayground.com + tools.mathplayground.com subdomains.
+hosts:
+  - mathplayground.com
