@@ -89,6 +89,11 @@ def is_block_page_body(body: str | None) -> bool:
 
 
 def wait_block_page(client, *, host: str = "example.com", timeout_s: float = 90):
+    # No `ipv4_only` knob (cf. wait_http_succeeds): the block-path DNAT/redirect
+    # serves the block page in BOTH families (v4 DNAT → 127.0.0.1, v6 redirect →
+    # br-lan), so whichever address curl's happy-eyeballs picks for a dual-stack
+    # host still lands on the block page. Only the ALLOW path is family-sensitive
+    # — it must hit the same family whose ea_/ea6_ set the test populated (#1929).
     def probe():
         p = http_get(client, f"http://{host}/", timeout_s=8)
         if p.http_code == 200 and is_block_page_body(p.body):
