@@ -63,6 +63,35 @@ def _wait_mac_blocked(mac: str, *, timeout_s: float = 180) -> None:
     )
 
 
+def _v6_uhttpd_listener_ready() -> bool | None:
+    """True iff uhttpd's v6 block-page listener is bound (`[::]:8081` AND
+    `[::]:8443`), else None — for `wait_until`.
+
+    #1943: the round-trip below was racing uhttpd readiness. PolicyApply (#341)
+    re-runs setup-uhttpd-block-page.sh and bounces uhttpd, so there is a window
+    after the snapshot lands — and even after the MAC appears in `blocked_macs`,
+    which is all `_wait_mac_blocked` gates on — where the v6 wildcard listener
+    isn't bound yet. The #1868 redirect rewrites the dest to a br-lan v6
+    address:8081; if uhttpd hasn't (re)bound `[::]:8081` at that instant the SYN
+    lands on no listener and the probe just times out — which reads as a "v6
+    delivery regression" on a degraded-network window (the #1935 egress flake)
+    even though render, the ruleset and the listener are all correct. Gate on
+    the listener explicitly so a not-yet-bound socket is a labelled precondition
+    wait, not an opaque round-trip timeout. busybox `netstat`/`ss` render a v6
+    wildcard bind as `:::8081`; bindv6only=0 means that one socket also serves
+    v4, so we only assert the v6 form. Verified sound on a real OpenWRT box
+    (openwrt.lan, nft 1.1.6): the rendered paused ruleset's v6 `redirect` +
+    never-drop guard load via `nft -c -f -`, and a `[::]` wildcard listener
+    serves v6 to the router's real br-lan GUA (200) — so the delivery mechanism
+    is not the bug; the readiness race is."""
+    out = router_ssh(
+        "ss -ltn 2>/dev/null || netstat -ltn 2>/dev/null || true",
+        check=False, timeout=15,
+    ).stdout or ""
+    bound = lambda port: f":::{port}" in out or f"[::]:{port}" in out
+    return True if bound(8081) and bound(8443) else None
+
+
 def _v6_block_page_probe(client):
     """Return the HttpProbe iff a v6 request to a blocked dest yields the block
     page (200 + marker). None otherwise — caller polls. The bracketed v6 literal
@@ -117,14 +146,36 @@ def test_whole_mac_block_serves_block_page_over_v6(router, client, fake_api):
         f"chain was:\n{block_chain}"
     )
 
+    # #1943: gate on uhttpd's v6 listener readiness BEFORE the round-trip.
+    # PolicyApply (#341) bounces uhttpd, so `blocked_macs` membership (above) can
+    # be present while `[::]:8081`/`[::]:8443` is mid-rebind — the round-trip
+    # would then race the listener and time out opaquely. Make it a labelled
+    # precondition wait instead. (Delivery itself is sound — see the helper.)
+    try:
+        wait_until(
+            _v6_uhttpd_listener_ready,
+            timeout_s=120, interval_s=3,
+            description="uhttpd v6 block-page listener ([::]:8081 + [::]:8443) bound",
+        )
+    except AssertionError:
+        listeners = router_ssh(
+            "ss -ltn 2>/dev/null || netstat -ltn 2>/dev/null || true",
+            check=False, timeout=15,
+        ).stdout or ""
+        pytest.fail(
+            "uhttpd v6 block-page listener never bound for "
+            f"{mac} — the redirect has no v6 listener to deliver to.\n{listeners}"
+        )
+
     # The round-trip the bug broke: a v6 request from the whole-MAC-blocked
     # client must render the block page (delivered locally via redirect), not
     # hang. dnsmasq restarts on PolicyApply (#341) and the agent's apply lags
-    # the etag flip, so poll.
+    # the etag flip, so poll. Timeout has headroom (#1943) so a degraded-network
+    # window (cf. the #1935 egress flake) doesn't redden a sound delivery path.
     try:
         probe = wait_until(
             lambda: _v6_block_page_probe(client),
-            timeout_s=120, interval_s=3,
+            timeout_s=180, interval_s=3,
             description=f"v6 block page for whole-MAC-blocked {mac}",
         )
     except AssertionError:

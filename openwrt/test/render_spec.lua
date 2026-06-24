@@ -787,6 +787,46 @@ describe("render.nft #1865 block page is never dropped", function()
       "ether saddr @blocked_macs tcp dport 443 dnat ip to 127.0.0.1:8443", 1, true))
   end)
 
+  -- #1943: the exact shape the Gate-2 e2e (test_v6_block_page.py::
+  -- test_whole_mac_block_serves_block_page_over_v6) exercises — a whole-MAC
+  -- block (paused, NO ea_ carve) — must render BOTH halves of the v6
+  -- block-page delivery together: the `redirect to :8081`/`:8443` (which #1868
+  -- made actually deliver, vs the old `dnat ip6 to ::1` that forwarded out the
+  -- WAN), AND the `fib daddr type local` never-drop guard that keeps the
+  -- redirected (now router-local) packet from being dropped by the whole-MAC
+  -- forward drop. The two live in different chains (block_nat prerouting vs
+  -- wifihaven_block forward) and were pinned in separate `it` blocks above, so
+  -- an edit could drop one while keeping the other and still pass the others.
+  -- Co-lock them for the paused no-carve case so the v6 round-trip the e2e
+  -- proves can't be half-unfixed at the render layer.
+  it("#1943: whole-MAC paused block renders the v6 redirect (80+443) AND the never-drop guard together", function()
+    local s = snap_one()
+    s.profiles["3"].rules.blocked      = true
+    s.profiles["3"].rules.blockReason  = "Paused"
+    s.profiles["3"].rules.extraBlocked = {}
+    s.profiles["3"].rules.blocklistIds = {}
+    local nft = render.nft(s)
+    -- v6 block-page redirect on both ports (the delivering path, not ::1 DNAT).
+    assert.truthy(nft:find(
+      "ether saddr @blocked_macs ip6 daddr != ::1 tcp dport 80 redirect to :8081", 1, true),
+      "expected v6 block-page redirect for the paused whole-MAC block on :80")
+    assert.truthy(nft:find(
+      "ether saddr @blocked_macs ip6 daddr != ::1 tcp dport 443 redirect to :8443", 1, true),
+      "expected v6 block-page redirect for the paused whole-MAC block on :443")
+    -- The broken v6 path must be gone (it forwarded out the WAN; #1865).
+    assert.is_nil(nft:find("dnat ip6 to ::1", 1, true))
+    -- The never-drop guard must be present AND precede the whole-MAC drop, so
+    -- the redirected router-local packet is accepted before any drop fires.
+    local body = filter_chain_body(nft)
+    assert.truthy(body)
+    local guard = body:find("fib daddr type local counter accept", 1, true)
+    local drop  = body:find("counter drop", 1, true)
+    assert.truthy(guard, "expected the #1865 never-drop guard for the paused block")
+    assert.truthy(drop, "expected the whole-MAC drop for the paused block")
+    assert.is_true(guard < drop,
+      "the never-drop guard must precede the whole-MAC drop so the v6 redirect delivers")
+  end)
+
   -- #1929: #1865 (block page never dropped / v6 redirect that now DELIVERS) and
   -- #421 (extraAllowed carve under a whole-MAC block) must COEXIST: a blocked
   -- MAC's allowed host must be carved out of the block-page DNAT/redirect in
