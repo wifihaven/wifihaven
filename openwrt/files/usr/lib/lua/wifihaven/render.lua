@@ -1080,12 +1080,14 @@ function M.nft(snapshot, opts)
   end
 
   -- #1122/#1126: each drop is rendered as a pair of rules sharing one predicate
-  -- (see #1826 / `emit_drop` below):
-  --   `<predicate> limit rate 2/second burst 10 packets log prefix "wh_drop:<mac>:<reason> "`
+  -- (see #1826/#1915 / `emit_drop` below):
+  --   `<predicate> update @wh_drop_log4 { ether saddr . ip daddr limit rate 1/minute burst 5 packets } log prefix "wh_drop:<mac>:<reason> "`
   --   `<predicate> counter drop comment "wh_drop:<mac>:<reason>"`
   -- (pre-#1826 this was a single `… log prefix … counter drop` rule; the LOG is
-  -- now on its own rate-limited rule so a retry storm can't flood the kernel
-  -- ring buffer, while the drop stays unconditional).
+  -- now on its own rule so a retry storm can't flood the kernel ring buffer,
+  -- while the drop stays unconditional. #1915 made the LOG gate a per-flow
+  -- (per-(mac,dst)) limiter set instead of a flat per-rule rate — see the
+  -- emit_drop comment below for why.)
   -- The `log prefix` form writes to the kernel ring buffer (the LOG backend),
   -- so the wifihaven-nflog-tail sidecar can read the dropped-packet records
   -- straight off `logread -f` on stock OpenWRT — no NFLOG netlink consumer
