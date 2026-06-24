@@ -39,6 +39,12 @@ for f in "$MOD_DIR"/*.lua; do
   # `init` files under a subdir are loaded as the parent module name, skip.
   case "$name" in
     init) continue ;;
+    # ws_client (#1848) require()s the native cqueues + luaossl libs at load
+    # time — present only on the router target (and CI's ws-deps install), not on
+    # the dev host. Its qualified-require hygiene + live load are covered by the
+    # spike e2e (spike/ws-1845/e2e_test.sh) on a real Lua 5.1 + cqueues target, so
+    # skip it here rather than make this dev-host check depend on native deps.
+    ws_client) continue ;;
   esac
   err="$(LUA_PATH="$PROD_LUA_PATH" lua -e "require('wifihaven.$name')" 2>&1 || true)"
   if [ -z "$err" ]; then

@@ -67,3 +67,31 @@ config wifihaven 'wifihaven'
 # (#1654)
 config sni 'sni'
 	option enabled '1'
+
+# Websocket transport sidecar (wifihaven-ws) toggle + tuning (#1848). Lives in
+# its own named `config ws 'ws'` section, read as `wifihaven.ws.<opt>`. DEFAULT
+# OFF: until the persistent-ws transport is proven in the field the agent uses
+# its unchanged HTTP poll/POST path (back-compat, design §3.1). Turn on per
+# router with `uci set wifihaven.ws.enabled=1 && /etc/init.d/wifihaven restart`.
+# The init script only starts the wifihaven-ws instance when enabled=1; with it
+# off the sidecar never runs and nothing about the agent changes. This is local
+# agent config — NOT a policy-snapshot field.
+config ws 'ws'
+	option enabled '0'
+	# Heartbeat ping/pong cadence (seconds). Pinned below Render's ws idle
+	# timeout by the #1845 spike (design §5.5). The server closes a channel
+	# that misses a pong for 2× this.
+	option heartbeat_interval '30'
+	# How long (seconds) the socket may stay down before the main agent resumes
+	# HTTP polling (design §3.1 belt-and-suspenders). The agent reads the
+	# ws-health sentinel's mtime against this window.
+	option fallback_after '300'
+	# Self-imposed max bytes per outbound frame. An oversized UsageReport is
+	# split across multiple `usage` frames at this cap (the #1017 fix, §5.3).
+	option max_frame_bytes '65536'
+	# Connect + TLS-handshake timeout (seconds) per attempt.
+	option connect_timeout '10'
+	# Byte cap on the outbound frame spool (/tmp = tmpfs = RAM). The agent
+	# drops OLDEST frames first when the sidecar can't keep up, so a wedged
+	# socket can never grow tmpfs without bound (router-agent-bounded-writes).
+	option spool_max_bytes '1048576'
