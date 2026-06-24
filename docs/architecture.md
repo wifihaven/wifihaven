@@ -94,6 +94,15 @@ ignores the unknown field entirely. The curated lists live baked into the agent
 single boolean. This is the *only* DNS-negative-answer path in the system;
 every other block remains a connection-layer drop.
 
+> **Interaction note.** The NODATA half wins over any allow carve-out for the
+> *same* curated hostname: `local=/<host>/` short-circuits resolution, so if a
+> profile's `extraAllowed` (or `global.extraAllowed`) happens to name one of the
+> curated DoH/relay hosts, its `ea_`/`@global_allow` ipset never populates (no
+> resolved IP to add) and the host stays unreachable. This is intended — the
+> toggle is a deliberately heavy-handed *network-wide* control, not a per-profile
+> one — but it means an allow entry for a curated host is silently inert while
+> the toggle is on.
+
 ### 0.2 The router agent is a dumb applier
 
 The API server's `PolicyService` evaluates every policy concept — schedules,
