@@ -210,7 +210,10 @@ display the dashboard wants is `GET /api/usage/traffic` streamed:
 > whatever cadence the router sends usage data** (today ~60 s batches; sub-minute
 > and toward real-time as #1023 streams usage as the agent has it) — realtime-ness
 > is bounded by the usage-send rate, with **no bespoke high-frequency sample and no
-> router change**. (`5m`/`10m` display buckets are trivially addable later.)
+> router change**. (Note: a `raw` subscription is still **aggregated per the
+> subscription's `groupBy`** at the ingest-period granularity — the gauge gets one
+> overall/per-profile point per arriving usage period, not ungrouped per-host
+> `rawRows`.) (`5m`/`10m` display buckets are trivially addable later.)
 
 `connectionEvents` likewise reuses the `/api/logs` `QueryLog` row shape and its
 filter params — it is the `blocked`-feed generalized so the **Connection Events
