@@ -410,3 +410,103 @@ describe("quic", function()
     end)
   end)
 end)
+
+-- ---------------------------------------------------------------------------
+-- resolve_openssl — lua-openssl vs luaossl module-name collision (#1949).
+--
+-- Both feed packages claim the `openssl` Lua module name: lua-openssl (zhaozg)
+-- ships openssl.so (C, found on package.cpath) and luaossl ships openssl.lua
+-- (Lua, found on package.path). Lua's Lua-file searcher runs BEFORE the C
+-- searcher, so on any router that also has luaossl installed (the ws sidecar's
+-- dep, and the Gate-2 e2e image), a bare require"openssl" returns luaossl —
+-- whose top table has no `.cipher`/`.hmac` field — and quic.openssl_crypto
+-- crashed sni-tail in a procd respawn loop. resolve_openssl force-loads
+-- lua-openssl's openssl.so by path when that happens. Selection logic is
+-- exercised here with injected fakes (no native libs), deterministic in CI;
+-- the real-lib end-to-end assertion lives in quic_openssl_resolve_spec.sh.
+-- ---------------------------------------------------------------------------
+describe("quic.resolve_openssl (#1949 lua-openssl vs luaossl)", function()
+  -- lua-openssl (zhaozg): monolithic table carrying .cipher / .hmac directly.
+  local function lua_openssl()
+    return {
+      cipher = { get = function() return {} end },
+      hmac   = { hmac = function() end },
+    }
+  end
+  -- luaossl top module: `return require"_openssl"` → a table with neither
+  -- .cipher nor .hmac (those are separate require"openssl.cipher" submodules).
+  local function luaossl()
+    return { _VERSION = "luaossl 20220711" }
+  end
+
+  it("returns the bare require result when it is already lua-openssl (ws-off router)", function()
+    local lo = lua_openssl()
+    local scanned = false
+    local m = quic.resolve_openssl({
+      require = function(n)
+        assert.are.equal("openssl", n)
+        return lo
+      end,
+      loadlib = function() scanned = true end,
+      cpath = "/nope/?.so;;",
+      exists = function() return true end,
+    })
+    assert.are.equal(lo, m)
+    assert.is_false(scanned) -- fast path: never scanned cpath
+  end)
+
+  it("force-loads lua-openssl's openssl.so when luaossl shadows require\"openssl\"", function()
+    local lo = lua_openssl()
+    local loaded_from, loaded_fn
+    local m = quic.resolve_openssl({
+      require = function() return luaossl() end, -- shadow: no .cipher/.hmac
+      cpath = "/a/?.so;/usr/lib/lua/?.so;;",
+      exists = function(p) return p == "/usr/lib/lua/openssl.so" end,
+      loadlib = function(file, fn)
+        loaded_from, loaded_fn = file, fn
+        return function() return lo end
+      end,
+    })
+    assert.are.equal(lo, m)
+    assert.are.equal("/usr/lib/lua/openssl.so", loaded_from)
+    assert.are.equal("luaopen_openssl", loaded_fn)
+  end)
+
+  it("skips a cpath entry whose loaded module is not lua-openssl-shaped", function()
+    local lo = lua_openssl()
+    local m = quic.resolve_openssl({
+      require = function() return luaossl() end,
+      cpath = "/x/?.so;/y/?.so;;",
+      exists = function() return true end,
+      loadlib = function(file)
+        if file == "/x/openssl.so" then
+          return function() return luaossl() end -- wrong shape; must be skipped
+        end
+        return function() return lo end
+      end,
+    })
+    assert.are.equal(lo, m)
+  end)
+
+  it("tolerates a require\"openssl\" that errors (treats it as shadowed/absent)", function()
+    local lo = lua_openssl()
+    local m = quic.resolve_openssl({
+      require = function() error("module 'openssl' not found") end,
+      cpath = "/usr/lib/lua/?.so;;",
+      exists = function(p) return p == "/usr/lib/lua/openssl.so" end,
+      loadlib = function() return function() return lo end end,
+    })
+    assert.are.equal(lo, m)
+  end)
+
+  it("errors loudly when no lua-openssl is resolvable on cpath", function()
+    assert.has_error(function()
+      quic.resolve_openssl({
+        require = function() return luaossl() end,
+        cpath = "/x/?.so;;",
+        exists = function() return false end,
+        loadlib = function() return nil end,
+      })
+    end)
+  end)
+end)

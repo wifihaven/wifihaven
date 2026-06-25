@@ -32,6 +32,8 @@
 --   quic.parse_initial(eth_frame, crypto)
 --     → { dst_ip, src_mac, sni } | nil, reason
 --   quic.QUIC_V1_SALT  — HKDF salt for the v1 initial_secret derivation.
+--   quic.resolve_openssl() → the lua-openssl module, resolved even when luaossl
+--     shadows the bare `openssl` module name (#1949).
 --   quic.openssl_crypto(openssl) → crypto table backed by lua-openssl, for
 --     the sidecar to wire in.
 --
@@ -561,6 +563,75 @@ function M.parse_initial(eth_frame, crypto)
     return { dst_ip = dst_ip, src_mac = src_mac, sni = sni_str }, reason
   end
   return { dst_ip = dst_ip, src_mac = src_mac, sni = sni_str }
+end
+
+-- ---------------------------------------------------------------------------
+-- resolve_openssl([env]) — return the lua-openssl (zhaozg) monolithic module
+-- (the one whose table carries `.cipher` / `.hmac` directly), even when luaossl
+-- is also installed and shadows a bare require"openssl" (#1949).
+--
+-- Both feed packages claim the `openssl` module name:
+--   * lua-openssl (zhaozg) ships /usr/lib/lua/openssl.so   — found on cpath (C)
+--   * luaossl              ships /usr/lib/lua/openssl.lua   — found on path (Lua)
+-- Lua's Lua-file searcher (package.path) runs BEFORE the C searcher
+-- (package.cpath), so on any router that ALSO has luaossl installed (the ws
+-- sidecar's runtime dep #1848/#1845, and the Gate-2 e2e image which installs it
+-- explicitly) a bare require"openssl" returns luaossl's top table — which has no
+-- `.cipher`/`.hmac` field — and openssl_crypto below crashed sni-tail in a procd
+-- respawn loop (the QUIC SNI attribution path went dark). A default, ws-off
+-- router has only lua-openssl, so the fast path below returns it unchanged.
+--
+-- We do NOT touch DNS or remove luaossl: luaossl is required for the ws
+-- sidecar's TLS (require"openssl.ssl.context") and its submodules
+-- (require"openssl.cipher" etc.) resolve independently of which module the bare
+-- name `openssl` binds to, so they are unaffected. We simply force-load
+-- lua-openssl's openssl.so by path when the bare require is shadowed.
+--
+-- `env` is an injection seam for unit tests (require/loadlib/cpath/exists);
+-- production calls resolve_openssl() with no args.
+-- ---------------------------------------------------------------------------
+function M.resolve_openssl(env)
+  env = env or {}
+  local req     = env.require or require
+  local loadlib = env.loadlib or package.loadlib
+  local cpath   = env.cpath or package.cpath
+  local exists  = env.exists or function(p)
+    local fh = io.open(p, "rb")
+    if fh then fh:close(); return true end
+    return false
+  end
+
+  -- lua-openssl exposes the AES + HMAC primitives openssl_crypto needs as
+  -- fields on one table; luaossl's top module exposes neither.
+  local function is_lua_openssl(m)
+    return type(m) == "table" and m.cipher ~= nil and m.hmac ~= nil
+  end
+
+  -- Fast path: nothing shadows it (default ws-off router has only lua-openssl).
+  local ok, mod = pcall(req, "openssl")
+  if ok and is_lua_openssl(mod) then
+    return mod
+  end
+
+  -- Shadowed (luaossl won the bare name) or require failed: force-load
+  -- lua-openssl's monolithic C module directly off package.cpath.
+  for tmpl in cpath:gmatch("[^;]+") do
+    local file = tmpl:gsub("%?", "openssl")
+    if exists(file) then
+      local loader = loadlib(file, "luaopen_openssl")
+      if loader then
+        local okc, m = pcall(loader)
+        if okc and is_lua_openssl(m) then
+          return m
+        end
+      end
+    end
+  end
+
+  error("wifihaven(#1949): lua-openssl (monolithic require\"openssl\" exposing " ..
+    ".cipher/.hmac) not resolvable — luaossl shadows the 'openssl' module name " ..
+    "and no lua-openssl openssl.so was found on package.cpath. sni-tail needs " ..
+    "lua-openssl for QUIC Initial decryption.")
 end
 
 -- ---------------------------------------------------------------------------
