@@ -13,16 +13,22 @@ icon_type: url
 # `nftset=/<host>/` suffix-matches `app.feelinggreat.com` and its subtree but
 # not `www.feelinggreat.com` (same deliberate sub-experience scoping as lego.yml).
 #
-# SHARED HOSTS — deferred to #1888 (do NOT add as distinctive hosts here):
-#   * elevenlabs.io   — TTS API powering the AI chat voice
+# SHARED HOSTS — wired in by #1966 (the #1888 mechanism shipped: S1b parse/seed,
+# S2 engaged-min exclusion, S3 reporting allocation, S4 most-permissive
+# enforcement). Listed under `shared_hosts:` below, NOT `hosts:`, so they are:
+#   * elevenlabs.io    — TTS API powering the AI chat voice
 #   * launchdarkly.com — feature flags
 # Both are backends shared by MANY apps. The prod evidence proves it:
-# launchdarkly.com shows meaningful traffic on devices that hit feelinggreat
-# ZERO bytes (every device in the 90d sample), so listing it here would
-# mis-attribute its bytes to Feeling Great. They are the motivating case for the
-# shared-host attribution mechanism (#1888) — once that lands they'll be added
-# here marked `shared` (credited to Feeling Great only when app.feelinggreat.com
-# is also active for the same device/window). TODO(#1888): add elevenlabs.io and
-# launchdarkly.com as `shared` hosts once the mechanism ships.
+# launchdarkly.com shows meaningful traffic on devices that hit feelinggreat ZERO
+# bytes (re-confirmed 2026-06-25: Sameer Desk 431 hits, Skylight Calendar 39,
+# Rachel iPhone 10, none of which run Feeling Great), so listing it as a
+# distinctive host would mis-attribute its bytes to Feeling Great. As `shared`
+# they are credited to Feeling Great only while app.feelinggreat.com is also
+# active for the same device/window (co-presence rule, #1888), and — per S4
+# most-permissive enforcement — carve into `extraAllowed` whenever Feeling Great
+# resolves to Allowed but are NEVER added to a drop set when it is blocked.
 hosts:
   - app.feelinggreat.com
+shared_hosts:
+  - elevenlabs.io     # TTS API for the AI chat voice (apex covers api.elevenlabs.io)
+  - launchdarkly.com  # feature flags (apex covers app./events./sdk.launchdarkly.com)

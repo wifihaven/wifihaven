@@ -202,6 +202,30 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
       val b = tmpl("b", List("b.com"), List("elevenlabs.io"))
       assertTrue(AppTemplates.sharedHostViolations(List(a, b)).isEmpty)
     },
+    test("#1966 Feeling Great + Math Academy wire the known shared backends") {
+      // Pins the #1888 rollout: the four shared backends are listed under
+      // `shared_hosts:` (not distinctive `hosts:`) so S2 excludes them from
+      // engaged-minutes, S3 routes them through co-presence, and S4 keeps them
+      // out of every drop set while carving them when the app is Allowed.
+      for {
+        templates <- AppTemplates.loadAll()
+        bySlug = templates.map(t => t.slug.value -> t).toMap
+        fg     = bySlug("feeling-great")
+        ma     = bySlug("math-academy")
+      } yield assertTrue(
+        // distinctive host-sets stay branded / app-specific
+        fg.hosts == List(Hostname.unsafe("app.feelinggreat.com")),
+        ma.hosts == List(Hostname.unsafe("mathacademy.com")),
+        // shared backends are tagged shared, never distinctive
+        fg.sharedHosts.toSet ==
+          Set(Hostname.unsafe("elevenlabs.io"), Hostname.unsafe("launchdarkly.com")),
+        ma.sharedHosts.toSet ==
+          Set(Hostname.unsafe("d3js.org"), Hostname.unsafe("jsdelivr.net")),
+        // the whole catalog still satisfies the global shared/distinctive
+        // consistency invariant after wiring these in
+        AppTemplates.sharedHostViolations(templates).isEmpty,
+      )
+    },
     test("#1896 seeder persists the shared flag per host") {
       for {
         _       <- cleanDb

@@ -3,5 +3,32 @@ name: Math Academy
 # Emoji fallback: 🧮
 icon: "https://icons.duckduckgo.com/ip3/mathacademy.com.ico"
 icon_type: url
+#
+# SHARED HOSTS (#1966 / #1888). MathAcademy's lesson pages pull two generic
+# multi-tenant library CDNs that are NOT MathAcademy's own bytes — listing them
+# under `hosts:` would mis-credit every other site's use of the same CDN to
+# MathAcademy and (pre-S4) drag them into MathAcademy's drop sets. Prod evidence
+# (2026-06, Prima iPad 04:72:ef:d6:e4:5a + Kid Mac ca:ef:a1:72:6a:a3):
+#   * d3js.org      — the D3.js data-viz library CDN MathAcademy renders graphs
+#                     with. 40 hits on Prima, ALL blocked; 14 during the active
+#                     2026-06-16 14:00–14:45 session WHILE mathacademy.com was
+#                     allow-carved (the operator's motivating observation).
+#   * jsdelivr.net  — generic npm/GitHub package CDN, referenced directly in
+#                     www.mathacademy.com's page HTML (4 `cdn.jsdelivr.net` refs)
+#                     and hit 33× on Prima (blocked schedule/timeLimit).
+# WHY SHARED, NOT GLOBAL-ALLOW: the observed drops were the whole-MAC TimeLimit
+# block (Prima's daily limit exhausted) collateral-dropping these CDNs while
+# MathAcademy — an Allowed/exempt educational app — stayed carved. Tagging them
+# `shared` here makes S4's most-permissive rule carve them into `extraAllowed`
+# exactly when MathAcademy resolves to Allowed (the same disposition that already
+# carves mathacademy.com), so they track mathacademy.com's reachability precisely.
+# They are deliberately NOT added to the global infra allowlist
+# (`InfraHosts.canonical`, #1307/#1308): that list is device-level infra only and
+# explicitly excludes per-app library CDNs, and never-blocking a generic JS-host
+# would punch a hole even when MathAcademy itself is meant to be blocked. Apex
+# form covers all subdomains via HostMatch (per `_README.yml`).
 hosts:
   - mathacademy.com
+shared_hosts:
+  - d3js.org
+  - jsdelivr.net

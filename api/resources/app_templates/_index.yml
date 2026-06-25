@@ -37,8 +37,8 @@ slugs:
   - x
   # #1815: traffic-driven catalog pass (see evidence/classification-1815.md)
   - lego
-  # #1889: Feeling Great CBT app (distinctive host only; shared
-  # elevenlabs/launchdarkly deferred to #1888)
+  # #1889: Feeling Great CBT app (distinctive app.feelinggreat.com +
+  # shared elevenlabs/launchdarkly wired in by #1966)
   - feeling-great
   # #1922: traffic-driven catalog pass (see evidence/classification-1922.md)
   - math-playground
