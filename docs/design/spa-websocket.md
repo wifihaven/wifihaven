@@ -322,7 +322,10 @@ surface); class (3) invalidates.
 Because every payload is an existing REST body (§0.3), a push patches the **same
 React Query key the matching `GET` populates** — so the dashboard and the source
 page share one cache entry, and a later refetch (reconnect §6.1, or paused-poll
-fallback §3.3) reconciles against the `GET` authority:
+fallback §3.3) reconciles against the `GET` authority. (`trafficKey`/`logsKey`
+below are illustrative — they are the Traffic Usage / Connection Events pages'
+existing `useQuery` keys, to be lifted into the shared `qk` factory so the push and
+the page key are produced in one place.)
 
 ```ts
 // trafficUsage → patch the cache for the EXACT (groupBy,bucket,filter) the client subscribed,
@@ -733,7 +736,7 @@ realtime throughput):
 | **S4** | **`trafficUsage` aggregator + push** — on usage ingest, re-run the subscribed `(groupBy,bucket,filter)` traffic-usage queries and push the refreshed `TrafficUsageResponse` to matching subscribers, latest-wins per param-set (§5.3). Reuses the existing query — no new shape. (Sub-minute gauge waits on optional S0.) | yes | additive |
 | **S5** | **SPA ws client + realtime dashboard pilot** — `useWsTrafficUsage(params)` driving the overall + per-profile bandwidth gauges with the **window (bucket) selector** (re-subscribes on change, #747), `now` + `connectionEvents{blocked:true}` cache-patching (§3.1), subscription wiring (subscribe-on-mount/unsubscribe-on-unmount), `useWsLive()` indicator (§6.2), set-cookie-then-connect (§4.2), backoff + re-subscribe (§6.1), polling-as-paused-fallback. **Lights up the redesigned NOW + bandwidth + Most-Recently-Blocked** ([`dashboard-redesign.md` §8](dashboard-redesign.md), unblocks #1834/#1835). | yes (dashboard only) | additive — other views poll |
 | **S6a** | **Live time-usage push** — `timeStatus` (per-profile used/remaining) + `appUsage` (per-app minutes) class-(2) pushes (§1.2) wired to usage-credit / #1849-ticker / extension-grant (§5.2); SPA patches the time-status + per-app caches (§3.1) and pauses the adaptive ladder when `wsLive`. The `appUsage` push targets only the **live (today) window** key — past windows are immutable. Lights up the **live screen-time surface** (per-profile + per-app, /profiles). | yes | additive |
-| **S6b** | **Stream the Traffic Usage + Connection Events pages** — those pages subscribe `trafficUsage` / `connectionEvents` with *their* current filters (the same topics the dashboard uses, different params), live-updating in place; pause their polls when `wsLive`. Plus class-(3) `stale` for alerts / profiles / devices / schedules (§3.2). | yes (per-page) | additive |
+| **S6b** | **Stream the Traffic Usage + Connection Events pages** — those pages subscribe `trafficUsage` / `connectionEvents` with *their* current filters (same topics as the dashboard, different params), live-updating in place; pause their polls when `wsLive`. Streaming prepends only the **live head** (newest rows); cursor-paged history (#862) stays on the existing request/response path — the stream doesn't try to mutate older pages. Plus class-(3) `stale` for alerts / profiles / devices / schedules (§3.2). | yes (per-page) | additive |
 | **S7** | **Retire redundant `refetchInterval`s** — per migrated view, after its push path is proven; keep the `wsLive ? false : …` fallback only where a view still has no push. The only subtractive step, per-view, operator-gated. | yes, last | per-view subtractive |
 | **S8** | **(optional) SharedWorker single-socket multi-tab** — only if a deployment shows many tabs/browser (§6.4). | yes, later | additive |
 
