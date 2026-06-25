@@ -339,8 +339,9 @@ the page key are produced in one place.)
 
 ```ts
 // trafficUsage → MERGE the live-edge bucket into the GET-loaded series (history stays put);
-// replace the head bucket while it accumulates, append when it rolls over — never refetch history
-queryClient.setQueryData(trafficKey(params), prev => mergeHeadBucket(prev, liveBucket))
+// join on windowStart (TrafficUsageAggregateRow.windowStart) — replace the row with the same
+// windowStart while it accumulates, prepend when a new windowStart rolls over. Never refetch history.
+queryClient.setQueryData(trafficKey(params), prev => mergeHeadBucket(prev, liveBucket)) // by windowStart
 // connectionEvents → prepend new head rows (bounded, dedup by id); cursor-paged history untouched
 queryClient.setQueryData(logsKey(filter), prev => prependHead(prev, rows))
 // now → replace the dashboard-now cache (singular resource, pushed whole)
