@@ -104,7 +104,31 @@
           <drainOnStop>false</drainOnStop>
         </batch>
       </appender>
+      <!--
+        #1972: the <root> MUST be declared HERE, inside this top-level <if>, and
+        must NOT carry a nested <if> of its own. logback (1.5.25 — the version
+        loki4j 2.0.3 forces onto the classpath and the deployed jar runs) REJECTS
+        an <if> nested within a <root>/<logger>/<appender> element
+        ("IfNestedWithinSecondPhaseElementSC"): the nested <appender-ref ref="LOKI">
+        was silently skipped and the LOKI appender never attached to root, so a
+        deployed API shipped ZERO logs to Grafana Cloud Loki even with the
+        GRAFANA_CLOUD_LOKI_* secrets set (0 ingest). Declaring a full <root> per
+        branch keeps every <if> at the top level (which logback DOES allow) and
+        attaches LOKI deterministically when the secret is present.
+        Pinned by LokiAppenderConfigSpec, which now loads this file through the
+        real JoranConfigurator at the shipped logback version.
+      -->
+      <root level="WARN">
+        <appender-ref ref="STDOUT" />
+        <appender-ref ref="LOKI" />
+      </root>
     </then>
+    <else>
+      <!-- Local dev / `mill __.test`: no Loki secret → console only. -->
+      <root level="WARN">
+        <appender-ref ref="STDOUT" />
+      </root>
+    </else>
   </if>
 
   <!--
@@ -113,15 +137,5 @@
     /api/router/* endpoints (mac, hostname, allowed/blocked, etc.). See
     docs/install-api.md § Debugging.
   -->
-  <root level="WARN">
-    <appender-ref ref="STDOUT" />
-    <!-- #1873: attach LOKI only where the secret is present (same gate as above). -->
-    <if condition='isDefined("GRAFANA_CLOUD_LOKI_URL")'>
-      <then>
-        <appender-ref ref="LOKI" />
-      </then>
-    </if>
-  </root>
-
   <logger name="wifihaven" level="${WIFIHAVEN_LOG_LEVEL:-INFO}" />
 </configuration>

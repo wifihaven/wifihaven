@@ -78,7 +78,18 @@ object LokiDropMetrics {
   ): UIO[Unit] =
     findAppender.flatMap {
       case None      =>
-        ZIO.logDebug("LOKI appender not present; loki-drop metrics disabled (local/test).")
+        // No appender attached. Two cases: (a) local/test, where the logback `<if>` gate is false
+        // because the secret is unset — expected, debug-only; (b) a DEPLOYED env where the secret
+        // IS set but the appender failed to attach (a logback wiring regression like #1972). Case
+        // (b) is the silent 0-ingest failure mode, so surface it as a loud WARN — otherwise it is
+        // invisible (loki4j is fail-open and the drop metric never even registers).
+        if (lokiUrlConfigured)
+          ZIO.logWarning(
+            "GRAFANA_CLOUD_LOKI_URL is set but no LOKI appender is attached to the root logger — " +
+              "API logs are NOT shipping to Grafana Cloud Loki. Check logback.xml appender wiring (#1972).",
+          )
+        else
+          ZIO.logDebug("LOKI appender not present; loki-drop metrics disabled (local/test).")
       case Some(app) =>
         for {
           start    <- ZIO.succeed(app.droppedEventsTotal)

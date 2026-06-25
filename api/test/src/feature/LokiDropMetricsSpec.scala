@@ -87,7 +87,9 @@ object LokiDropMetricsSpec extends ZIOSpec[PrometheusPublisher] {
         _    <- LokiDropMetrics.loop(lokiUrlConfigured = true)
         logs <- ZTestLogger.logOutput
       } yield assertTrue(
-        logs.exists(e => e.logLevel == LogLevel.Warning && e.message().contains("not shipping")),
+        logs.exists(e =>
+          e.logLevel == LogLevel.Warning && e.message().contains("shipping to Grafana Cloud Loki"),
+        ),
       )).provide(ZTestLogger.default)
     },
   )
