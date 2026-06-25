@@ -204,16 +204,13 @@ display the dashboard wants is `GET /api/usage/traffic` streamed:
   re-streams historical buckets, so a 24 h × 1 h chart isn't re-sent every minute —
   just its newest bar advances.
 
-> **Granularity note (reconciling the 5s/1m/5m/10m ask).** `traffic_reports` is
-> period-batched from the router's ~60 s usage cycle, so the **finest aggregated
-> bucket is `1m`** — the window set the existing read model gives for free is
-> `{1m, 10m, 1h, …}`. Two follow-ups, both additive and **decided with the
-> operator** (§10 Q1): (a) `5m`/`10m` display windows are cheap re-aggregations of
-> 1 m data — add them as bucket values if wanted; (b) a true **sub-minute (5 s)
-> "instant" gauge** is *not* available from `traffic_reports` and would need the
-> optional high-frequency conntrack sample (§5.3 / §9 **S0**, kept optional, not
-> the primary path). The primary, no-new-data design streams the existing
-> `1m`-and-coarser buckets.
+> **Granularity (decided with the operator, §10 Q1).** Aggregated floor is **`1m`**
+> (the `traffic_reports` minimum), so `{1m, 10m, 1h, …}` come free. For
+> **fully-realtime**, the existing **`raw` bucket** streams the live edge **at
+> whatever cadence the router sends usage data** (today ~60 s batches; sub-minute
+> and toward real-time as #1023 streams usage as the agent has it) — realtime-ness
+> is bounded by the usage-send rate, with **no bespoke high-frequency sample and no
+> router change**. (`5m`/`10m` display buckets are trivially addable later.)
 
 `connectionEvents` likewise reuses the `/api/logs` `QueryLog` row shape and its
 filter params — it is the `blocked`-feed generalized so the **Connection Events
@@ -574,21 +571,16 @@ matching subscribers. Design:
   buckets advance less often. Latest-wins per `(groupBy,bucket,filter)` (§6.3) — a
   slow client gets the freshest head bucket, never a backlog. Recompute only for
   subscribed param-sets — no subscriber, no query.
-- **Granularity floor = the data.** Because `traffic_reports` is period-batched
-  from the router's ~60 s usage cycle, the finest *aggregated* bucket is `1m`; the
-  window set the existing read model gives for free is `{1m, 10m, 1h, …}` (§1.3).
-  `5m`/`10m` display windows are additive re-aggregations if wanted (§10 Q1).
-- **Optional sub-minute (5 s) instant gauge — only if the operator wants it
-  (§10 Q1).** A true 5 s rate is below the `traffic_reports` floor and would need a
-  dedicated lightweight per-`mac` bytes-since-last-sample frame on the router→API
-  ws (additive to #1023, from the conntrack counters the agent already reads,
-  `conntrack.lua`) feeding a small EWMA — kept as **optional** sub-issue **S0**,
-  not the primary path. The default design ships `1m`-and-coarser from the
-  existing pipeline with **no router change**.
-- **Degrades cleanly.** With no realtime usage source the aggregator still serves
-  whatever `traffic_reports` holds at the REST cadence; the optional sub-minute
-  gauge simply shows "—" until S0 lands. The endpoint + full catalog ship
-  independently of S0.
+- **Granularity floor = the data; `raw` = ingest-rate realtime (§10 Q1).** The
+  aggregated floor is `1m` (`traffic_reports` minimum), giving `{1m, 10m, 1h, …}`
+  for free. A **`raw`-bucket** subscription instead pushes the live edge **as each
+  usage report lands** — so "fully-realtime" is just the usage-send cadence (today
+  ~60 s; sub-minute and toward real-time as #1023 streams usage). **No bespoke
+  conntrack sample and no router change** — realtime-ness rides the existing usage
+  path. (`5m`/`10m` display buckets are additive re-aggregations later.)
+- **Degrades cleanly.** With usage arriving only at the REST cadence the live edge
+  simply advances that often; it gets faster automatically as #1023 streams usage.
+  Nothing here is gated on #1023.
 
 > **Single-process fan-out**, like the router path — registries, hubs, and the
 > aggregator are in-memory, single-instance (correct for the one-API-process
@@ -743,11 +735,10 @@ realtime throughput):
 
 | # | Sub-issue | Independently shippable? | Back-compat |
 |---|---|---|---|
-| **S0** | **(optional, in #1023) router→API sub-minute `throughput` sample** — additive per-mac bytes-since-last-sample frame ~every 2 s from the conntrack counters (§5.3), feeding the optional 5 s "instant" gauge. **Not required** for the `1m`-and-coarser bandwidth stream, which comes from the existing `traffic_reports`. | yes (additive frame; usage path unchanged) | additive |
 | **S1** | **API `/api/ws` endpoint + `{op,payload}` demux + `SpaWsRegistry` + subscription model** — server skeleton, envelope/demux (`hello`→`ready`, `subscribe`/`unsubscribe` with per-connection subscription state + `ack`, `ping`/`pong`, unknown-op ignore+meter), per-connection registry, server metrics §7 + `spa-ws.json`. Reuses `RouterWsRoutes` patterns. REST untouched. | yes (test ws client) | additive — new route |
 | **S2** | **Upgrade auth** — verify the `wh_ws` JWT cookie at upgrade via the existing `AuthService.verify` (no new auth surface), `Origin` allowlist (§8), `SameSite=Strict; Path=/api/ws; Secure` cookie scoping, `jwtExp` mid-connection close (§4.3), `reauth` seam, auth metrics. SPA-side: set-cookie-before-connect + clear-after helper. | yes | additive |
 | **S3** | **Change sources** — widen `PolicySnapshotPublisher` to a hub; add `SpaEventHub` fed by existing write sites; translate to subscription-gated `now`/`connectionEvents`/`stale` frames (§5.2). | yes (behavior-preserving for the router subscriber; testable via a probe client) | behavior-preserving |
-| **S4** | **`trafficUsage` aggregator + push** — on usage ingest, re-run the subscribed `(groupBy,bucket,filter)` traffic-usage queries and push the refreshed `TrafficUsageResponse` to matching subscribers, latest-wins per param-set (§5.3). Reuses the existing query — no new shape. (Sub-minute gauge waits on optional S0.) | yes | additive |
+| **S4** | **`trafficUsage` aggregator + live-edge push** — on usage ingest, recompute only the **current bucket** for subscribed `(groupBy,filter)` and push it (merge head, §3.1), latest-wins per param-set (§5.3); a `raw`-bucket subscription pushes at the usage-ingest cadence (fully-realtime, §10 Q1). Reuses the existing query — no new shape, no router change. | yes | additive |
 | **S5** | **SPA ws client + realtime dashboard pilot** — `useWsTrafficUsage(params)` driving the overall + per-profile bandwidth gauges with the **window (bucket) selector** (re-subscribes on change, #747), `now` + `connectionEvents{blocked:true}` cache-patching (§3.1), subscription wiring (subscribe-on-mount/unsubscribe-on-unmount), `useWsLive()` indicator (§6.2), set-cookie-then-connect (§4.2), backoff + re-subscribe (§6.1), polling-as-paused-fallback. **Lights up the redesigned NOW + bandwidth + Most-Recently-Blocked** ([`dashboard-redesign.md` §8](dashboard-redesign.md), unblocks #1834/#1835). | yes (dashboard only) | additive — other views poll |
 | **S6a** | **Live time-usage push** — `timeStatus` (per-profile used/remaining) + `appUsage` (per-app minutes) class-(2) pushes (§1.2) wired to usage-credit / #1849-ticker / extension-grant (§5.2); SPA patches the time-status + per-app caches (§3.1) and pauses the adaptive ladder when `wsLive`. The `appUsage` push targets only the **live (today) window** key — past windows are immutable. Lights up the **live screen-time surface** (per-profile + per-app, /profiles). | yes | additive |
 | **S6b** | **Stream the Traffic Usage + Connection Events pages** — those pages keep loading **history via their existing `GET`** (initial window + cursor paging, #862); they additionally subscribe `trafficUsage` / `connectionEvents` with *their* current filters (same topics as the dashboard, different params) for the **live edge only** — `trafficUsage` merges the head bucket, `connectionEvents` prepends new head rows; older/paged data is never mutated by the stream. Pause the page's poll when `wsLive`. Plus class-(3) `stale` for alerts / profiles / devices / schedules (§3.2). | yes (per-page) | additive |
@@ -756,9 +747,9 @@ realtime throughput):
 
 **Critical path to the operator-visible win:** S1 → S2 → S3 → S5 (dashboard NOW +
 blocked live), with **S4 → S5** adding live bandwidth from the existing
-`traffic_reports` (no router change); the optional **S0** only adds the sub-minute
-instant gauge. **Parallel:** S3/S4 can land alongside S2. **S7 is last and
-per-view-gated** — each cutover off polling is
+`traffic_reports` (no router change; realtime-ness scales with the usage-send rate
+and approaches real-time as #1023 streams usage). **Parallel:** S3/S4 can land
+alongside S2. **S7 is last and per-view-gated** — each cutover off polling is
 deliberate once that view's push path is proven, never armed automatically
 ([`pr-review-checklist.md#monitor-to-merged`](../pr-review-checklist.md)).
 
@@ -766,29 +757,36 @@ deliberate once that view's push path is proven, never armed automatically
 
 ## 10. Open questions / risks
 
-1. **Bandwidth windows = traffic buckets, and the 5 s question.** The window
-   selector maps to the existing `TrafficUsageBucket` enum, whose finest
-   *aggregated* value is **`1m`** (the `traffic_reports` floor, §1.3/§5.3) — so
-   `{1m, 10m, 1h, …}` come free with no new data path. Two operator decisions:
-   (a) add `5m`/`10m` display buckets (cheap re-aggregations of 1 m data)? and
-   (b) is a **sub-minute (5 s) "instant" gauge** wanted — which requires the
-   optional router conntrack sample (S0)? If 1 m-granular live bandwidth is
-   acceptable, S0 is unnecessary and there is **no router change** at all.
-2. **No hard #1023 dependency for bandwidth (changed).** The `1m`-and-coarser
-   bandwidth stream comes from the existing `traffic_reports` re-query (S4), so it
-   does **not** block on #1023 — it just refreshes at the current usage-ingest
-   cadence and gets *faster* (sub-minute) once #1023's realtime usage + the
-   optional S0 sample land. Earlier this doc said throughput was gated on #1023;
-   with the read-model reuse, only the *sub-minute* gauge is.
-3. **Multi-instance.** Cookie upgrade-auth is **stateless** (any instance verifies
-   the JWT — no ticket store to share), so auth is multi-instance-clean. The only
-   single-process assumption left is the in-memory registry/aggregator fan-out
-   (§5) — correct for the one-API-process household model; cross-instance pub/sub
-   is out of scope, same as the router path. Documented limit, not a TODO.
-4. **Thick-push filtering (class 2).** Per-role filtering of a pushed `now` body is
-   the one place class-(1)/(3)'s contentless safety is absent; it reuses the
-   `DashboardNowRoutes` filter (§3.1/§5.2) so there is one filter implementation,
-   bounding the risk.
-5. **Observability parity.** Per-frame structured logging (`op`/`role`/`result` on
-   the MDC, mirroring `RouterWsRoutes`' `LogContext`) so a transport fault is as
-   debuggable as REST. Built into S1.
+1. **Bandwidth windows — RESOLVED (operator, 2026-06-25).** Floor is **`1m`** (the
+   `traffic_reports` aggregated minimum), giving `{1m, 10m, 1h, …}` from the
+   existing read model with no new data path. **Plus a "raw" / ingest-rate mode for
+   fully-realtime:** the live edge is pushed **at whatever cadence the router sends
+   usage data** (today ~60 s batches; sub-minute and approaching real-time as
+   #1023 streams usage as the agent has it), surfaced via the existing `raw`
+   `TrafficUsageBucket` value. So realtime-ness is bounded by the usage-send rate,
+   **not** by a bespoke high-frequency sample — the conntrack-sample idea (former
+   S0) is **dropped** (no router-side throughput frame, nothing new on the agent).
+   `5m`/`10m` display buckets remain trivially addable later if wanted.
+2. **No hard #1023 dependency for bandwidth — confirmed.** The `1m`-and-coarser
+   stream comes from the existing `traffic_reports` (S4) and refreshes at the
+   usage-ingest cadence; it simply gets *faster* (toward the `raw` ingest-rate
+   mode) as #1023 streams usage. Nothing here blocks on #1023.
+3. **Multi-instance — FILED as [#1952](https://github.com/wifihaven/wifihaven/issues/1952).**
+   This is the **first feature whose correctness requires cross-instance
+   engineering**, so it gets its own issue rather than a buried caveat. Auth is
+   already multi-instance-clean (stateless cookie/bearer verify — no ticket store).
+   The single-process state that needs a story before a 2nd API instance: the
+   `SpaWsRegistry` + per-connection **subscription set**, the `RouterWsRegistry`,
+   the `SpaEventHub`/publisher hub, and the `trafficUsage` aggregator (§5) — a push
+   computed on instance A can't reach a client on instance B. Options (sticky
+   routing vs cross-instance pub/sub vs hybrid), and the fact that subscription
+   state rebuilds on reconnect (§6.1) so it need not be replicated, are documented
+   in #1952. Correct as-is for the single-instance deployment; #1952 is the home
+   for the scaling work.
+4. **Thick-push filtering (class 2) — accepted.** Per-role filtering of a pushed
+   `now` body is the one place class-(1)/(3)'s contentless safety is absent; it
+   reuses the `DashboardNowRoutes` filter (§3.1/§5.2) so there is one filter
+   implementation, bounding the risk.
+5. **Observability parity — accepted.** Per-frame structured logging
+   (`op`/`role`/`result` on the MDC, mirroring `RouterWsRoutes`' `LogContext`) so a
+   transport fault is as debuggable as REST. Built into S1.

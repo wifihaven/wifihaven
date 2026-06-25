@@ -375,8 +375,9 @@ only, consistent with the rev-2 "glanceable, not analytics" principle.
 > still loads its **history via the existing `GET`** and only takes the **live
 > edge** (the current bucket advancing) from the socket — the stream isn't a
 > replacement for the historical query. (Granularity floor is `1m`, the
-> `traffic_reports` bucket; a sub-minute "instant" gauge is an optional extra —
-> `spa-websocket.md` §5.3/§10 Q1.)
+> `traffic_reports` bucket; fully-realtime uses the `raw` bucket, which streams the
+> live edge at the router's usage-send cadence — no bespoke sample, no router
+> change. `spa-websocket.md` §5.3/§10 Q1.)
 
 ### 8.2 The dashboard's live data contract (what streams vs. what stays request/response)
 
@@ -419,12 +420,11 @@ source in first" step (§7.5) is now concrete:
 - **#747 bandwidth** is **no longer a deferred standalone** — it becomes part of
   the websocket dashboard pilot ([`spa-websocket.md` §9](spa-websocket.md)),
   streaming the existing `GET /api/usage/traffic` read model (`trafficUsage`
-  topic). It needs **no new backend data path** for `1m`-and-coarser bandwidth
-  (the API re-runs the existing traffic-usage query on usage ingest,
-  [`spa-websocket.md` §5.3](spa-websocket.md)); only the optional sub-minute
-  "instant" gauge depends on #1023 (a router conntrack sample). Earlier this note
-  said throughput was #1023-gated — with the read-model reuse, only the sub-minute
-  refinement is.
+  topic). It needs **no new backend data path and no router change**: the API
+  recomputes only the current bucket on usage ingest
+  ([`spa-websocket.md` §5.3](spa-websocket.md)), and fully-realtime uses the `raw`
+  bucket at the router's usage-send cadence. Earlier this note said throughput was
+  #1023-gated — it isn't; it just gets faster as #1023 streams usage.
 
 This revision records the decision; the wire/payload specifics live in
 `spa-websocket.md` (single source of truth for the protocol), and dashboard
