@@ -49,6 +49,15 @@ poll well, or at all:
 - **"Most Recently Blocked"** — the live "what just got dropped" feed
   ([#1338](https://github.com/wifihaven/wifihaven/issues/1338)), today polled
   every 10 s.
+- **Live time-usage — per-profile and per-app minutes** (used / remaining,
+  counting up as time accrues). Today this is the one surface with a hand-rolled
+  *adaptive* refetch ladder (`TIME_STATUS_REFETCH_LADDER`,
+  [`queries.ts`](../../web/src/api/queries.ts)) — polling at 10 s when a profile
+  is near its cap, slowing to 5 m otherwise — which exists *only* because there is
+  no push. The whole ladder collapses into a push: the server already computes the
+  live, continuation-adjusted minutes (`TimeStatusService.dayStateAllLive`,
+  per-app via `Presence.appSecondsForProfile`), so it can emit them when they move
+  instead of the SPA guessing a poll rate.
 
 Everything else the SPA shows — profiles, devices, schedules, blocklists, the 24 h
 rollup panels, time-status caps — is a **cacheable resource that changes
@@ -115,8 +124,8 @@ the input contract); every item is classified by **why** it is on the socket.
 | Class | What | Examples | How it rides the socket |
 |---|---|---|---|
 | **(1) Push-native realtime stream** | a *rate/stream* with no cacheable REST form | **live throughput** (overall + per-profile in/out B/s) | server pushes a `throughput` tick on a fixed cadence; client renders a live gauge — **not** in the React Query resource cache |
-| **(2) Pushed live snapshot/append** | a real REST resource that changes fast enough to push instead of poll | **NOW** (`DashboardNow`), **Most Recently Blocked** feed | server pushes the (changed) body / the new row; client patches the existing React Query cache for that key (§3) |
-| **(3) Occasionally-changing resource** | a cacheable resource that changes rarely | profiles, devices, schedules, blocklists, 24 h rollups, time-status caps | **stays request/response.** At most a `stale` nudge on a relevant mutation; many need nothing (their mutation already invalidates locally) |
+| **(2) Pushed live snapshot/append** | a real REST resource that changes fast enough to push instead of poll | **NOW** (`DashboardNow`), **Most Recently Blocked** feed, **live time-usage** (per-profile used/remaining + per-app minutes) | server pushes the (changed) body / the new row; client patches the existing React Query cache for that key (§3) |
+| **(3) Occasionally-changing resource** | a cacheable resource that changes rarely | profiles, devices, schedules, blocklists, 24 h rollup panels | **stays request/response.** At most a `stale` nudge on a relevant mutation; many need nothing (their mutation already invalidates locally) |
 
 The websocket is for **(1) and (2)**. **(3) stays on queries** — the explicit
 correction to the "invalidate everything" framing. The dashboard's "Blocking
@@ -131,7 +140,9 @@ ride the rollup tables on request/response and are *not* streamed
 | `throughput` | (1) | `ThroughputTick` (§1.3) | overall in/out gauge **+** per-profile ▲▼ on NOW card headers (#747) | API aggregator over the #1023 usage stream (§5.3) |
 | `now` | (2) | `DashboardNow` (existing body, verbatim) | NOW active cards; derived "Online now / Blocked now" KPIs | recompute on change (§5.2), reusing the `/api/dashboard/now` builder |
 | `blocked` | (2) | one blocked `QueryLog` row (existing `/api/logs` row shape) | Most Recently Blocked feed (prepend) | connection-events ingest (§5.2) |
-| `stale` | (3) | `{ topic, scope? }` (bounded `topic` enum) | invalidate a class-(3) query (profiles/devices/schedules/time-status) | the relevant write site (§5.2) |
+| `timeStatus` | (2) | `ProfileTimeStatus[]` (existing `/api/time/status` body) | per-profile **used / remaining** bars (live), "profiles over limit" KPI | usage credit + #1849 ticker + extension grant (§5.2), via `TimeStatusService.dayStateAllLive` |
+| `appUsage` | (2) | per-app engaged-minutes (existing `/api/profiles/{id}/usage-by-app` body) | per-app **minutes-used** rows (live) on the expanded profile / screen-time view | same triggers, via `Presence.appSecondsForProfile` |
+| `stale` | (3) | `{ topic, scope? }` (bounded `topic` enum) | invalidate a class-(3) query (profiles/devices/schedules/blocklists) | the relevant write site (§5.2) |
 | `ready` | — | `{ role, serverTime }` | flips the live indicator to "live" | upgrade (§4) |
 | `ping`/`pong` | — | `{}` | heartbeat (§6.2) | — |
 
@@ -247,6 +258,10 @@ the entire point is to remove the refetch RTT on the live surface:
 queryClient.setQueryData(qk.dashboardNow(), tick.payload)
 // on `blocked` → prepend the new row to the recent-blocked cache (bounded, dedup by id)
 queryClient.setQueryData(qk.recentBlocked(), prev => prependCapped(prev, row))
+// on `timeStatus` → replace the per-profile used/remaining cache with the pushed body
+queryClient.setQueryData(qk.timeStatusToday(), rows)
+// on `appUsage` → replace the per-app minutes cache for that profile/window
+queryClient.setQueryData(qk.profileUsageByApp(profileId, from, to), appRows)
 ```
 
 Justification this is safe despite (3)'s SSOT argument: the pushed body **is** the
@@ -280,9 +295,13 @@ useDashboardNow({ refetchInterval: wsLive ? false : 10_000 })
 ```
 
 Socket healthy → interval paused, pushes drive updates; socket down/reconnecting →
-interval resumes at today's cadence. The redundant intervals are retired only at
-the *end* of the rollout (§9, **S7**), per-view, after each view's push path is
-proven. Live throughput (class 1) has no poll fallback — it simply shows "—" while
+interval resumes at today's cadence. The **time-usage adaptive ladder**
+(`TIME_STATUS_REFETCH_LADDER`) is the clearest case: it stays exactly as-is as the
+disconnected fallback, but goes dormant while the `timeStatus` push is live —
+and is the prime candidate for full retirement (§9, **S7**) since its entire
+reason for existing is the absence of a push. The redundant intervals are retired
+only at the *end* of the rollout, per-view, after each view's push path is proven.
+Live throughput (class 1) has no poll fallback — it simply shows "—" while
 disconnected.
 
 ---
@@ -395,8 +414,14 @@ change — no new polling/diffing loop:
    - connection-events ingest (`RouterIngestService`, the shared handler both REST
      and router-ws ingest call) → a `blocked` push (the new row) + a `now`
      recompute trigger.
-   - usage ingest → feeds the throughput aggregator (§5.3) + a `now` trigger.
-   - policy reevaluate (#1849) → `now` recompute + `stale{time-status}`.
+   - usage ingest → feeds the throughput aggregator (§5.3); a `now` trigger; and a
+     `timeStatus` + `appUsage` recompute (newly-credited minutes move used/
+     remaining) via `TimeStatusService.dayStateAllLive` / `Presence.appSecondsForProfile`.
+   - policy reevaluate (#1849) → `now` recompute. The #1849 time-boundary **ticker**
+     (schedule boundary, cap exhaustion) → a `timeStatus` push, since those
+     transitions change remaining-minutes / over-limit without new usage.
+   - time-extension grant (`POST /api/time/extend`) → a `timeStatus` push (the
+     grant immediately changes remaining-minutes).
    - alert raised → `stale{alerts}`; profile/device/schedule mutations →
      `stale{profiles|devices|schedules}`.
    `SpaWsRegistry` translates each `SpaEvent` into role-filtered frames. **`now`
@@ -580,7 +605,8 @@ realtime throughput):
 | **S3** | **Change sources** — widen `PolicySnapshotPublisher` to a hub; add `SpaEventHub` fed by existing write sites; translate to role-filtered `stale`/`now`/`blocked` frames (§5.2). | yes (behavior-preserving for the router subscriber; testable via a probe client) | behavior-preserving |
 | **S4** | **Throughput aggregator + `throughput` push** — consume S0's samples, derive overall + per-profile B/s, push the tick (§5.3/§1.3). Emits nothing (gauge "—") until S0 lands. | yes | additive |
 | **S5** | **SPA ws client + realtime dashboard pilot** — `useWsThroughput()` (overall + per-profile gauges, #747), `now`/`blocked` cache-patching (§3.1/§3.2), `useWsLive()` indicator (§6.2), ticket-mint-then-connect, backoff (§6.1), polling-as-paused-fallback for the dashboard live sections. **This lights up the redesigned NOW + throughput + Most-Recently-Blocked** ([`dashboard-redesign.md` §8](dashboard-redesign.md), unblocks #1834/#1835). | yes (dashboard only) | additive — other views poll |
-| **S6** | **Broaden class-(3) `stale` to alerts / time-status / profiles-devices-schedules** — add topic→invalidator entries (§3.3); pause their intervals when `wsLive`. | yes (per-view) | additive |
+| **S6a** | **Live time-usage push** — `timeStatus` (per-profile used/remaining) + `appUsage` (per-app minutes) class-(2) pushes (§1.2) wired to usage-credit / #1849-ticker / extension-grant (§5.2); SPA patches the time-status + per-app caches (§3.2) and pauses the adaptive ladder when `wsLive`. Lights up the **live screen-time surface** (per-profile + per-app, /profiles). | yes | additive |
+| **S6b** | **Broaden class-(3) `stale` to alerts / profiles / devices / schedules** — add topic→invalidator entries (§3.3); pause their intervals when `wsLive`. | yes (per-view) | additive |
 | **S7** | **Retire redundant `refetchInterval`s** — per migrated view, after its push path is proven; keep the `wsLive ? false : …` fallback only where a view still has no push. The only subtractive step, per-view, operator-gated. | yes, last | per-view subtractive |
 | **S8** | **(optional) SharedWorker single-socket multi-tab** — only if a deployment shows many tabs/browser (§6.4). | yes, later | additive |
 

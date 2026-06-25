@@ -391,9 +391,18 @@ they ever diverge. Each dashboard section is classified by how it gets its data:
 | **Blocking activity (24h)** panel | request/response | rollup tables (#809); explicitly **not** streamed (rev-2 §7.5 already said so) |
 
 The rule the operator stated: **stream the things that need to move in realtime
-(throughput, NOW, just-blocked); leave everything that is genuinely a cacheable
-resource on request/response.** The websocket design (`spa-websocket.md`) is
-built around exactly this split, not a blanket "invalidate every query."
+(throughput, NOW, just-blocked, live time-usage); leave everything that is
+genuinely a cacheable resource on request/response.** The websocket design
+(`spa-websocket.md`) is built around exactly this split, not a blanket "invalidate
+every query."
+
+> **Live time-usage** (per-profile used/remaining + per-app minutes, counting up
+> in realtime) is also streamed — see [`spa-websocket.md` §1.2](spa-websocket.md)
+> (`timeStatus` / `appUsage`). Its primary home is `/profiles` (the screen-time
+> view), not a `/dashboard` section, so it isn't in the table above — but on the
+> dashboard it backs the "profiles over limit" KPI, which therefore updates live
+> off the same `timeStatus` push. It replaces today's adaptive refetch ladder
+> (`TIME_STATUS_REFETCH_LADDER`), which exists only because there was no push.
 
 ### 8.3 Effect on the locked plan (§7.4)
 
