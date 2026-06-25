@@ -371,10 +371,12 @@ only, consistent with the rev-2 "glanceable, not analytics" principle.
 > existing read model **streamed**: overall/per-profile = `groupBy ∈ {∅,profile}`,
 > the averaging window = its `bucket`, and the client derives B/s from
 > bytes-over-bucket. No new shape — see [`spa-websocket.md` §1.3](spa-websocket.md)
-> (`trafficUsage` topic). The same stream powers the **Traffic Usage page** live,
-> not just the dashboard gauge. (Granularity floor is `1m`, the `traffic_reports`
-> bucket; a sub-minute "instant" gauge is an optional extra — `spa-websocket.md`
-> §5.3/§10 Q1.)
+> (`trafficUsage` topic). The same topic powers the **Traffic Usage page**, which
+> still loads its **history via the existing `GET`** and only takes the **live
+> edge** (the current bucket advancing) from the socket — the stream isn't a
+> replacement for the historical query. (Granularity floor is `1m`, the
+> `traffic_reports` bucket; a sub-minute "instant" gauge is an optional extra —
+> `spa-websocket.md` §5.3/§10 Q1.)
 
 ### 8.2 The dashboard's live data contract (what streams vs. what stays request/response)
 

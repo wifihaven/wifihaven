@@ -137,14 +137,15 @@ the input contract); every item is classified by **why** it is on the socket.
 
 | Class | What | Examples | How it rides the socket |
 |---|---|---|---|
-| **(1) Live read-model stream** | an existing read endpoint whose result changes fast and is worth pushing as it changes | **live bandwidth** (`trafficUsage` — overall/per-profile/per-device bytes), **live connection events** (`connectionEvents`) | server re-runs the subscribed query when new data lands and pushes the refreshed body; client patches the matching React Query cache (§3) |
+| **(1) Live-edge stream over a paged read model** | an existing read endpoint whose **newest** data changes fast; history stays on the `GET` | **live bandwidth** (`trafficUsage` — overall/per-profile/per-device bytes), **live connection events** (`connectionEvents`) | the page/gauge loads its window via the existing `GET` (incl. cursor paging); the socket pushes **only the live edge** (the current bucket advancing / new head rows), which the client merges into the cached query result (§3) |
 | **(2) Pushed live snapshot/append** | a real REST resource that changes fast enough to push instead of poll | **NOW** (`DashboardNow`), **live time-usage** (per-profile used/remaining + per-app minutes) | server pushes the (changed) body / the new row; client patches the existing React Query cache for that key (§3) |
 | **(3) Occasionally-changing resource** | a cacheable resource that changes rarely | profiles, devices, schedules, blocklists, 24 h rollup panels | **stays request/response.** At most a `stale` nudge on a relevant mutation; many need nothing (their mutation already invalidates locally) |
 
-(Classes 1 and 2 are both "push the data, patch the cache" — they differ only in
-that class 1 is a *filtered query result* the client subscribes with parameters,
-while class 2 is a singular resource. The split that matters is **vs. class 3**,
-which stays on queries.) The websocket is for **(1) and (2)**; **(3) stays on
+(Classes 1 and 2 are both "push the data, patch the cache." Class 1 is a
+*live-edge delta* over a paged/filtered query the client still loads from the
+`GET` — the socket only keeps the newest slice fresh, it does **not** replace the
+historical query. Class 2 is a singular resource pushed whole. The split that
+matters is **vs. class 3**, which stays on queries.) The websocket is for **(1) and (2)**; **(3) stays on
 queries** — the correction to the "invalidate everything" framing. The dashboard's
 "Blocking activity (24 h)" panel and the "Events (1h)/Blocked (1h)" KPIs are class
 (3): rollup-backed request/response, *not* streamed
@@ -158,8 +159,8 @@ column is what the client sends in `subscribe`.
 
 | `op` | Class | Params (subscription) = the endpoint's query params | Payload (existing body) | Drives | Source |
 |---|---|---|---|---|---|
-| `trafficUsage` | (1) | `{ groupBy ∈ {∅,profile,device,…}, bucket (window), macs?, profileIds? }` (= `GET /api/usage/traffic` params) | `TrafficUsageResponse` | dashboard **overall + per-profile bandwidth** gauges (#747) **and** the **Traffic Usage page** (live) | re-run the query on usage ingest (§5.3) |
-| `connectionEvents` | (1) | `{ blocked?, macs?, profileIds?, domain? }` (= `GET /api/logs` params) | `QueryLog` rows (append/refresh) | dashboard **Most Recently Blocked** (`blocked:true`) **and** the **Connection Events page** (live) | connection-events ingest (§5.2) |
+| `trafficUsage` | (1) | `{ groupBy ∈ {∅,profile,device,…}, bucket (window), macs?, profileIds? }` (= `GET /api/usage/traffic` params) | `TrafficUsageResponse` containing **only the current/most-recent bucket** for those params (live edge) | dashboard **overall + per-profile bandwidth** gauges (#747) **and** the live tail of the **Traffic Usage page** (history via the `GET`) | recompute the current bucket on usage ingest (§5.3) |
+| `connectionEvents` | (1) | `{ blocked?, macs?, profileIds?, domain? }` (= `GET /api/logs` params) | **new head** `QueryLog` rows (append) | dashboard **Most Recently Blocked** (`blocked:true`) **and** the live head of the **Connection Events page** (history/paging via the `GET`) | connection-events ingest (§5.2) |
 | `now` | (2) | — | `DashboardNow` | NOW active cards; derived "Online/Blocked now" KPIs | recompute on change (§5.2), reusing the `/api/dashboard/now` builder |
 | `timeStatus` | (2) | — (all authorized profiles in v1; `profileId` filter is an additive future param) | `ProfileTimeStatus[]` (`/api/time/status`) | per-profile **used/remaining** bars; "over limit" KPI | usage credit + #1849 ticker + extension grant (§5.2), via `TimeStatusService.dayStateAllLive` |
 | `appUsage` | (2) | `profileId` (the expanded card) | per-app minutes (`/api/profiles/{id}/usage-by-app`) | per-app **minutes-used** rows (live) | same triggers, via `Presence.appSecondsForProfile` |
@@ -193,6 +194,15 @@ display the dashboard wants is `GET /api/usage/traffic` streamed:
   `totalBytes / bucketSeconds` (the page already does this kind of math), so the
   server stays the single source of the *bytes* and there's no second "rate"
   serializer.
+- **History is the `GET`; the socket is the live edge.** The page (and the
+  dashboard gauge) loads its window — and pages older data — via
+  `GET /api/usage/traffic` exactly as today. The `trafficUsage` push carries
+  **only the current/most-recent bucket** for the subscribed params (a
+  `TrafficUsageResponse` whose window is just that bucket); the client **merges**
+  it into the cached series — replace the head bucket while it's still
+  accumulating, append a new head when the bucket rolls over. The socket never
+  re-streams historical buckets, so a 24 h × 1 h chart isn't re-sent every minute —
+  just its newest bar advances.
 
 > **Granularity note (reconciling the 5s/1m/5m/10m ask).** `traffic_reports` is
 > period-batched from the router's ~60 s usage cycle, so the **finest aggregated
@@ -328,12 +338,12 @@ existing `useQuery` keys, to be lifted into the shared `qk` factory so the push 
 the page key are produced in one place.)
 
 ```ts
-// trafficUsage → patch the cache for the EXACT (groupBy,bucket,filter) the client subscribed,
-// i.e. the same query key the Traffic Usage page / dashboard gauge already reads for those params
-queryClient.setQueryData(trafficKey(params), body)
-// connectionEvents → prepend new rows (bounded, dedup by id) to the matching /logs query key
-queryClient.setQueryData(logsKey(filter), prev => prependCapped(prev, rows))
-// now → replace the dashboard-now cache
+// trafficUsage → MERGE the live-edge bucket into the GET-loaded series (history stays put);
+// replace the head bucket while it accumulates, append when it rolls over — never refetch history
+queryClient.setQueryData(trafficKey(params), prev => mergeHeadBucket(prev, liveBucket))
+// connectionEvents → prepend new head rows (bounded, dedup by id); cursor-paged history untouched
+queryClient.setQueryData(logsKey(filter), prev => prependHead(prev, rows))
+// now → replace the dashboard-now cache (singular resource, pushed whole)
 queryClient.setQueryData(qk.dashboardNow(), body)
 // timeStatus → replace the per-profile used/remaining cache
 queryClient.setQueryData(qk.timeStatusToday(), rows)
@@ -548,18 +558,21 @@ Live bandwidth is **not** a new data path — it is the existing
 `GET /api/usage/traffic` query, re-run when new usage lands and pushed to
 matching subscribers. Design:
 
-- **Source = the same `traffic_reports` the page reads.** When usage ingest writes
-  new `traffic_reports` rows (the shared ingest handler, fed by the REST poll or
-  the #1023 router-ws), the aggregator re-runs the **distinct `(groupBy, bucket,
-  filter)` queries that currently have ≥1 subscriber** (§1.4) and pushes the
-  refreshed `TrafficUsageResponse` to those connections. There is **one** query
-  implementation — the existing traffic-usage query — so the stream and the page's
-  `GET` can't disagree (SSOT). No bespoke rate state, no `ThroughputTick`.
-- **Cadence = bucket-appropriate**, coalesced. A `1m`-bucket subscription is
-  re-pushed at most ~once per usage-ingest cycle (~every minute, when the data
-  actually advances); coarser buckets less often. Latest-wins per
-  `(groupBy,bucket,filter)` (§6.3) — a slow client gets the freshest result, never
-  a backlog. Recompute only for subscribed param-sets — no subscriber, no query.
+- **Source = the same `traffic_reports` the page reads — but only the live edge.**
+  The page/gauge has already loaded its history via `GET /api/usage/traffic`
+  (incl. paging). When usage ingest writes new `traffic_reports` rows (the shared
+  ingest handler, fed by the REST poll or the #1023 router-ws), the aggregator
+  recomputes **only the current/most-recent bucket** for each distinct
+  `(groupBy, filter)` that has ≥1 subscriber (§1.4) and pushes that one bucket as a
+  `TrafficUsageResponse`. It does **not** re-run the full historical window — the
+  client merges the head bucket (§3.1). Still the **one** existing query
+  implementation, scoped to the head — so the stream and the page's `GET` can't
+  disagree (SSOT), and the per-push cost is one bucket, not the whole chart.
+- **Cadence = bucket-appropriate**, coalesced. The current `1m` bucket is re-pushed
+  at most ~once per usage-ingest cycle (~every minute, as it accumulates); coarser
+  buckets advance less often. Latest-wins per `(groupBy,bucket,filter)` (§6.3) — a
+  slow client gets the freshest head bucket, never a backlog. Recompute only for
+  subscribed param-sets — no subscriber, no query.
 - **Granularity floor = the data.** Because `traffic_reports` is period-batched
   from the router's ~60 s usage cycle, the finest *aggregated* bucket is `1m`; the
   window set the existing read model gives for free is `{1m, 10m, 1h, …}` (§1.3).
@@ -736,7 +749,7 @@ realtime throughput):
 | **S4** | **`trafficUsage` aggregator + push** — on usage ingest, re-run the subscribed `(groupBy,bucket,filter)` traffic-usage queries and push the refreshed `TrafficUsageResponse` to matching subscribers, latest-wins per param-set (§5.3). Reuses the existing query — no new shape. (Sub-minute gauge waits on optional S0.) | yes | additive |
 | **S5** | **SPA ws client + realtime dashboard pilot** — `useWsTrafficUsage(params)` driving the overall + per-profile bandwidth gauges with the **window (bucket) selector** (re-subscribes on change, #747), `now` + `connectionEvents{blocked:true}` cache-patching (§3.1), subscription wiring (subscribe-on-mount/unsubscribe-on-unmount), `useWsLive()` indicator (§6.2), set-cookie-then-connect (§4.2), backoff + re-subscribe (§6.1), polling-as-paused-fallback. **Lights up the redesigned NOW + bandwidth + Most-Recently-Blocked** ([`dashboard-redesign.md` §8](dashboard-redesign.md), unblocks #1834/#1835). | yes (dashboard only) | additive — other views poll |
 | **S6a** | **Live time-usage push** — `timeStatus` (per-profile used/remaining) + `appUsage` (per-app minutes) class-(2) pushes (§1.2) wired to usage-credit / #1849-ticker / extension-grant (§5.2); SPA patches the time-status + per-app caches (§3.1) and pauses the adaptive ladder when `wsLive`. The `appUsage` push targets only the **live (today) window** key — past windows are immutable. Lights up the **live screen-time surface** (per-profile + per-app, /profiles). | yes | additive |
-| **S6b** | **Stream the Traffic Usage + Connection Events pages** — those pages subscribe `trafficUsage` / `connectionEvents` with *their* current filters (same topics as the dashboard, different params), live-updating in place; pause their polls when `wsLive`. Streaming prepends only the **live head** (newest rows); cursor-paged history (#862) stays on the existing request/response path — the stream doesn't try to mutate older pages. Plus class-(3) `stale` for alerts / profiles / devices / schedules (§3.2). | yes (per-page) | additive |
+| **S6b** | **Stream the Traffic Usage + Connection Events pages** — those pages keep loading **history via their existing `GET`** (initial window + cursor paging, #862); they additionally subscribe `trafficUsage` / `connectionEvents` with *their* current filters (same topics as the dashboard, different params) for the **live edge only** — `trafficUsage` merges the head bucket, `connectionEvents` prepends new head rows; older/paged data is never mutated by the stream. Pause the page's poll when `wsLive`. Plus class-(3) `stale` for alerts / profiles / devices / schedules (§3.2). | yes (per-page) | additive |
 | **S7** | **Retire redundant `refetchInterval`s** — per migrated view, after its push path is proven; keep the `wsLive ? false : …` fallback only where a view still has no push. The only subtractive step, per-view, operator-gated. | yes, last | per-view subtractive |
 | **S8** | **(optional) SharedWorker single-socket multi-tab** — only if a deployment shows many tabs/browser (§6.4). | yes, later | additive |
 
