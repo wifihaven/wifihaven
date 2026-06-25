@@ -376,8 +376,9 @@ only, consistent with the rev-2 "glanceable, not analytics" principle.
 ### 8.2 The dashboard's live data contract (what streams vs. what stays request/response)
 
 This table is the **input to the websocket message catalog** in
-[`spa-websocket.md` §1](spa-websocket.md); the two must agree. Each dashboard
-section is classified by how it gets its data:
+[`spa-websocket.md` §1](spa-websocket.md); the two must agree, and
+[`spa-websocket.md` §1.2](spa-websocket.md) is the **authoritative `op` list** if
+they ever diverge. Each dashboard section is classified by how it gets its data:
 
 | Dashboard section | Class | Source after #1860 |
 |---|---|---|
