@@ -247,12 +247,21 @@ implementation sub-issues §5 called for were never filed. This section is autho
 ```
 Dashboard (h1)
   Banners            — NewDevicesHint, AccessRequestsBanner (only when present)
-  KPI strip          — Online now · Blocked now · Events (1h) · Blocked (1h)      [above the fold]
-  NOW                — freshness pill; active cards (top-3 devices + expander); idle-collapse row
+  KPI strip          — Online now · Blocked now · Events (1h) · Blocked (1h) · Bandwidth ▲/▼   [above the fold]
+  NOW                — freshness pill; active cards (top-3 devices + expander, per-profile ▲/▼); idle-collapse row
   Most Recently Blocked  — blocked-only trailing-hour feed (#1338), View all → /usage/events
   Blocking activity (24h) — one merged ranked-host panel; one-line empty state
   (no inline log table)
 ```
+
+**Bandwidth tile (rev 3, §8.1).** The 5th KPI tile is the **overall household
+in/out** live gauge (▲ up / ▼ down), with a small **window selector**
+(`1m · 10m · 1h · raw`, §8.1) on the tile; the selected window drives both the
+overall tile and the per-profile ▲/▼ on the NOW cards (one bandwidth window for
+the page). It's a `trafficUsage` stream (§8.2), live like the other realtime
+elements. **Mobile:** the strip is now 5 tiles, so it reflows `grid-cols-2`
+(→ 3 rows) on mobile / `md:grid-cols-5` on desktop (supersedes the rev-1 §3
+`md:grid-cols-4` note).
 
 The two recency/blocking elements sit adjacent and are intentionally distinct: **Most Recently
 Blocked** answers "what just got dropped?" (live, un-aggregated, 1h); **Blocking activity (24h)**
@@ -355,7 +364,9 @@ Rev-2 Q2 de-scoped throughput (#747) as "backend-gated, its own follow-up." **Re
 3 reverses that.** The dashboard must show, updating live:
 
 - **Overall household in/out** — aggregate ▲ upload / ▼ download **rate** (B/s),
-  the headline "how much is the house using right now" gauge.
+  the headline "how much is the house using right now" gauge. **Placement
+  (decided 2026-06-25): the 5th KPI-strip tile** (§7.2), carrying the window
+  selector (`1m · 10m · 1h · raw`) that also governs the per-profile gauges.
 - **Per-profile in/out** — the same ▲▼ **rate** on each active NOW profile-card
   header (the rev-2 §3 wireframe already drew `▲2.4 ▼18` there; rev 3 makes it
   real and live, not deferred).
@@ -388,7 +399,7 @@ they ever diverge. Each dashboard section is classified by how it gets its data:
 
 | Dashboard section | Class | Source after #1860 |
 |---|---|---|
-| **Overall in/out bandwidth** (§8.1) | **streamed read model** | `trafficUsage` (`groupBy:∅`) — streams existing `TrafficUsageResponse`; no new shape |
+| **Overall in/out bandwidth** (§8.1, **5th KPI tile** w/ window selector) | **streamed read model** | `trafficUsage` (`groupBy:∅`) — streams existing `TrafficUsageResponse`; no new shape |
 | **Per-profile in/out bandwidth** (§8.1, on NOW card headers) | **streamed read model** | same `trafficUsage` topic, `groupBy:["profile"]` |
 | **NOW** active cards (who's online / watching) | **pushed live snapshot** | `DashboardNow` body pushed on change (reuses today's `/api/dashboard/now` shape) |
 | **Most Recently Blocked** feed (#1338) | **pushed live append** | `connectionEvents{blocked:true}` — reuses the `/api/logs` row shape; same topic streams the Connection Events page |
