@@ -21,8 +21,17 @@
 #   2. status capture:      CODE=$(curl -s -o /dev/null -w '%{http_code}' ...)
 
 # Tunables (env-overridable; tests set backoff to 0 for speed).
-WH_CURL_MAX_ATTEMPTS="${WH_CURL_MAX_ATTEMPTS:-5}"
-WH_CURL_BACKOFF_SECS="${WH_CURL_BACKOFF_SECS:-1}"
+#
+# Budget sizing (#1964): a single retry round of 5 × 1s (~4s) was too short —
+# the starter-tier staging API throws transient 502 *bursts* under the smoke's
+# request load that outlast 4s, so Gate 1 still flaked after #1962. Backoff now
+# escalates (capped exponential: base, 2·base, 4·base … capped at BACKOFF_MAX),
+# and the default 8-attempt budget waits 1+2+4+8+8+8+8 ≈ 39s total before
+# giving up — enough to ride out a transient burst without masking a genuine
+# outage (a persistent 5xx still fails the gate, just ~39s later).
+WH_CURL_MAX_ATTEMPTS="${WH_CURL_MAX_ATTEMPTS:-8}"
+WH_CURL_BACKOFF_SECS="${WH_CURL_BACKOFF_SECS:-1}"   # base; doubles each retry
+WH_CURL_BACKOFF_MAX="${WH_CURL_BACKOFF_MAX:-8}"     # per-sleep cap (seconds)
 # Indirection so the unit test can point this at a deterministic mock.
 WH_CURL_BIN="${WH_CURL_BIN:-curl}"
 
@@ -98,8 +107,13 @@ curl() {
       printf '%s\n' "${err:-}" >&2
       return "$rc"
     fi
-    echo "[curl-retry] transient failure (attempt $attempt/$WH_CURL_MAX_ATTEMPTS, rc=$rc code=${code:-n/a}); retrying in ${WH_CURL_BACKOFF_SECS}s" >&2
-    sleep "$WH_CURL_BACKOFF_SECS"
+    # Capped exponential backoff: base · 2^(attempt-1), clamped to BACKOFF_MAX.
+    # With base 0 (tests) every sleep is 0, so the attempt-count assertions stay
+    # deterministic and fast.
+    local backoff=$((WH_CURL_BACKOFF_SECS * (1 << (attempt - 1))))
+    [ "$backoff" -gt "$WH_CURL_BACKOFF_MAX" ] && backoff="$WH_CURL_BACKOFF_MAX"
+    echo "[curl-retry] transient failure (attempt $attempt/$WH_CURL_MAX_ATTEMPTS, rc=$rc code=${code:-n/a}); retrying in ${backoff}s" >&2
+    sleep "$backoff"
     attempt=$((attempt + 1))
   done
 }
