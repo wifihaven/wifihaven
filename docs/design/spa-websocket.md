@@ -46,7 +46,7 @@ poll well, or at all:
   clearest reason the websocket needs to exist.
 - **"NOW" — who's online and what they're watching** (`DashboardNow`), the heart
   of the dashboard, today polled every 10 s with visible lag.
-- **"Most Recently Blocked"** — the live "what just got dropped" feed
+- **"Recently Blocked"** — the live "what just got dropped" feed
   ([#1338](https://github.com/wifihaven/wifihaven/issues/1338)), today polled
   every 10 s.
 - **Live time-usage — per-profile and per-app minutes** (used / remaining,
@@ -122,7 +122,7 @@ is a *transport for change over the existing read models*, not a new data model:
 - **The win:** because each topic *is* an existing endpoint-plus-filters, the same
   subscription powers the dashboard **and** the page it came from — `trafficUsage`
   drives the dashboard bandwidth gauge *and* live-updates the Traffic Usage page;
-  `connectionEvents` drives the dashboard "recently blocked" *and* the Connection
+  `connectionEvents` drives the dashboard "Recently Blocked" *and* the Connection
   Events page. One stream, many consumers, one schema authority (the `GET`).
 
 ---
@@ -160,7 +160,7 @@ column is what the client sends in `subscribe`.
 | `op` | Class | Params (subscription) = the endpoint's query params | Payload (existing body) | Drives | Source |
 |---|---|---|---|---|---|
 | `trafficUsage` | (1) | `{ groupBy ∈ {∅,profile,device,…}, bucket (window), macs?, profileIds? }` (= `GET /api/usage/traffic` params) | `TrafficUsageResponse` containing **only the current/most-recent bucket** for those params (live edge) | dashboard **overall + per-profile bandwidth** gauges (#747) **and** the live tail of the **Traffic Usage page** (history via the `GET`) | recompute the current bucket on usage ingest (§5.3) |
-| `connectionEvents` | (1) | `{ blocked?, macs?, profileIds?, domain? }` (= `GET /api/logs` params) | **new head** `QueryLog` rows (append) | dashboard **Most Recently Blocked** (`blocked:true`) **and** the live head of the **Connection Events page** (history/paging via the `GET`) | connection-events ingest (§5.2) |
+| `connectionEvents` | (1) | `{ blocked?, macs?, profileIds?, domain? }` (= `GET /api/logs` params) | **new head** `QueryLog` rows (append) | dashboard **Recently Blocked** (`blocked:true`) **and** the live head of the **Connection Events page** (history/paging via the `GET`) | connection-events ingest (§5.2) |
 | `now` | (2) | — | `DashboardNow` | NOW active cards; derived "Online/Blocked now" KPIs | recompute on change (§5.2), reusing the `/api/dashboard/now` builder |
 | `timeStatus` | (2) | — (all authorized profiles in v1; `profileId` filter is an additive future param) | `ProfileTimeStatus[]` (`/api/time/status`) | per-profile **used/remaining** bars; "over limit" KPI | usage credit + #1849 ticker + extension grant (§5.2), via `TimeStatusService.dayStateAllLive` |
 | `appUsage` | (2) | `profileId` (the expanded card) | per-app minutes (`/api/profiles/{id}/usage-by-app`) | per-app **minutes-used** rows (live) | same triggers, via `Presence.appSecondsForProfile` |
@@ -218,7 +218,7 @@ display the dashboard wants is `GET /api/usage/traffic` streamed:
 `connectionEvents` likewise reuses the `/api/logs` `QueryLog` row shape and its
 filter params — it is the `blocked`-feed generalized so the **Connection Events
 page** can stream too (subscribe with the page's current filters), and the
-dashboard "Most Recently Blocked" is just `connectionEvents{blocked:true}`. **Zero
+dashboard "Recently Blocked" is just `connectionEvents{blocked:true}`. **Zero
 additions to `web/src/types/api.ts`.**
 
 ### 1.4 Subscriptions — first-class, so a tab gets only what it shows
@@ -742,7 +742,7 @@ realtime throughput):
 | **S2** | **Upgrade auth** — verify the `wh_ws` JWT cookie at upgrade via the existing `AuthService.verify` (no new auth surface), `Origin` allowlist (§8), `SameSite=Strict; Path=/api/ws; Secure` cookie scoping, `jwtExp` mid-connection close (§4.3), `reauth` seam, auth metrics. SPA-side: set-cookie-before-connect + clear-after helper. | yes | additive |
 | **S3** | **Change sources** — widen `PolicySnapshotPublisher` to a hub; add `SpaEventHub` fed by existing write sites; translate to subscription-gated `now`/`connectionEvents`/`stale` frames (§5.2). | yes (behavior-preserving for the router subscriber; testable via a probe client) | behavior-preserving |
 | **S4** | **`trafficUsage` aggregator + live-edge push** — on usage ingest, recompute only the **current bucket** for subscribed `(groupBy,filter)` and push it (merge head, §3.1), latest-wins per param-set (§5.3); a `raw`-bucket subscription pushes at the usage-ingest cadence (fully-realtime, §10 Q1). Reuses the existing query — no new shape, no router change. | yes | additive |
-| **S5** | **SPA ws client + realtime dashboard pilot** — `useWsTrafficUsage(params)` driving the overall + per-profile bandwidth gauges with the **window (bucket) selector** (re-subscribes on change, #747), `now` + `connectionEvents{blocked:true}` cache-patching (§3.1), subscription wiring (subscribe-on-mount/unsubscribe-on-unmount), `useWsLive()` indicator (§6.2), set-cookie-then-connect (§4.2), backoff + re-subscribe (§6.1), polling-as-paused-fallback. **Lights up the redesigned NOW + bandwidth + Most-Recently-Blocked** ([`dashboard-redesign.md` §8](dashboard-redesign.md), unblocks #1834/#1835). | yes (dashboard only) | additive — other views poll |
+| **S5** | **SPA ws client + realtime dashboard pilot** — `useWsTrafficUsage(params)` driving the overall + per-profile bandwidth gauges with the **window (bucket) selector** (re-subscribes on change, #747), `now` + `connectionEvents{blocked:true}` cache-patching (§3.1), subscription wiring (subscribe-on-mount/unsubscribe-on-unmount), `useWsLive()` indicator (§6.2), set-cookie-then-connect (§4.2), backoff + re-subscribe (§6.1), polling-as-paused-fallback. **Lights up the redesigned NOW + bandwidth + Recently Blocked** ([`dashboard-redesign.md` §8](dashboard-redesign.md), unblocks #1834/#1835). | yes (dashboard only) | additive — other views poll |
 | **S6a** | **Live time-usage push** — `timeStatus` (per-profile used/remaining) + `appUsage` (per-app minutes) class-(2) pushes (§1.2) wired to usage-credit / #1849-ticker / extension-grant (§5.2); SPA patches the time-status + per-app caches (§3.1) and pauses the adaptive ladder when `wsLive`. The `appUsage` push targets only the **live (today) window** key — past windows are immutable. Lights up the **live screen-time surface** (per-profile + per-app, /profiles). | yes | additive |
 | **S6b** | **Stream the Traffic Usage + Connection Events pages** — those pages keep loading **history via their existing `GET`** (initial window + cursor paging, #862); they additionally subscribe `trafficUsage` / `connectionEvents` with *their* current filters (same topics as the dashboard, different params) for the **live edge only** — `trafficUsage` merges the head bucket, `connectionEvents` prepends new head rows; older/paged data is never mutated by the stream. Pause the page's poll when `wsLive`. Plus class-(3) `stale` for alerts / profiles / devices / schedules (§3.2). | yes (per-page) | additive |
 | **S7** | **Retire redundant `refetchInterval`s** — per migrated view, after its push path is proven; keep the `wsLive ? false : …` fallback only where a view still has no push. The only subtractive step, per-view, operator-gated. | yes, last | per-view subtractive |

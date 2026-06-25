@@ -90,6 +90,12 @@ Design principles:
 
 ## 3. Target layout + IA
 
+> **SUPERSEDED by [§8.4](#84-consolidated-rev-3-target-wireframe).** This rev-1
+> wireframe predates the 5th Bandwidth KPI tile, the per-profile ▲/▼ rates, and
+> the promotion of Recently Blocked to an above-the-fold diagnostic panel. It is
+> kept for the section-by-section rationale below; **for the current target
+> picture read §8.4**, which draws every decided element in one frame.
+
 Section order, top to bottom:
 
 ```
@@ -229,7 +235,7 @@ implementation sub-issues §5 called for were never filed. This section is autho
 
 ### 7.1 What shipped since revision 1 (and how the design reconciles it)
 
-- **"Most Recently Blocked" feed shipped** ([#1338](https://github.com/wifihaven/wifihaven/issues/1338)).
+- **The "Recently Blocked" feed shipped** ([#1338](https://github.com/wifihaven/wifihaven/issues/1338)).
   `DashboardPage` now renders a `RecentlyBlockedSection` — a newest-first, **blocked-only**,
   trailing-hour feed (`useRecentBlocked` → `api.logs.query({ blocked: true, hours: 1, limit: N })`,
   polled every 10s), with a "View all → /usage/events" link. **This is signal, not the firehose
@@ -243,6 +249,10 @@ implementation sub-issues §5 called for were never filed. This section is autho
   remains backend-gated (see decision Q2).
 
 ### 7.2 Updated section order (supersedes the §3 wireframe)
+
+> This is the compact section-order sketch. For the full target picture with every
+> rev-3 element drawn together, see the consolidated wireframe in
+> [§8.4](#84-consolidated-rev-3-target-wireframe).
 
 ```
 Dashboard (h1)
@@ -336,13 +346,13 @@ Precise gate — two legs, both required:
 
 The redesign is gated on **both** (effectively on #1860, which itself depends on #1023's push core).
 When work resumes, the streaming-source wiring folds into chunks 2–3 on top of #1860. Building the
-redesigned NOW / KPI / Most-Recently-Blocked sections on the polling path first would be
+redesigned NOW / KPI / Recently Blocked sections on the polling path first would be
 throwaway — the data plane changes underneath them when #1023 ships.
 
 Concretely, this revises the original real-time framing (which said the websocket "could later
 push these updates, but do not depend on it"): the redesign now **does** depend on it.
 
-- **`useDashboardNow` (NOW snapshot), `useRecentBlocked` (Most Recently Blocked), and the
+- **`useDashboardNow` (NOW snapshot), `useRecentBlocked` (Recently Blocked), and the
   derived "Online now / Blocked now" KPIs** become consumers of the streaming transport rather
   than independent 10s pollers. The single-freshness-pill decision (#825) still holds, now
   driven by last-push time instead of `dataUpdatedAt`.
@@ -454,3 +464,156 @@ source in first" step (§7.5) is now concrete:
 This revision records the decision; the wire/payload specifics live in
 `spa-websocket.md` (single source of truth for the protocol), and dashboard
 implementation stays paused on #1860 per §7.5.
+
+### 8.4 Consolidated rev-3 target wireframe
+
+The rev-3 decisions were added incrementally across §7.2 and §§8.1–8.3. This is the
+**single visual reference** — every decided element in one frame. It supersedes the
+[§3](#3-target-layout--ia) wireframe (and the compact section-order sketch in
+[§7.2](#72-updated-section-order-supersedes-the-3-wireframe)); where any earlier
+picture disagrees, **this one wins**. Desktop (≥ `md`), 1080p load:
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ Dashboard                                                                      │
+│                                                                                │
+│ [ ⚠ 1 new device → Devices ]   [ ⚠ 2 access requests → ]   ← banners (if any)  │
+│                                                                                │
+│ ┌─────────┬─────────┬─────────┬─────────┬──────────────────┐                   │
+│ │ Online  │ Blocked │ Events  │ Blocked │ Bandwidth        │  ← KPI strip       │  ABOVE
+│ │ now     │ now     │ (1h)    │ (1h)    │ ▲2.4M ▼18M /s    │    (5 tiles)       │  the fold
+│ │   3     │   1     │   18    │    0    │ [1m·10m·1h·raw]  │                    │
+│ └─────────┴─────────┴─────────┴─────────┴──────────────────┘                   │
+│                                       window selector governs ▲▼ everywhere ─┘ │
+│                                                                                │
+│ NOW                                          updated 12s ago · live ●          │  ← one freshness pill
+│ ┌──────────────────────────────┐ ┌──────────────────────────────┐             │
+│ │ Sameer            ▲2.4M ▼18M  │ │ Kids               ▲0.1M ▼3M │             │  ← active cards:
+│ │ Sameer Mac · app.warp.dev     │ │ Kid Mac · khanacademy.org·2m │             │     name + ▲▼ rate on header,
+│ │ Sameer iPhone · plex.tv       │ │                              │             │     top-3 devices by active-secs
+│ │ Sameer Desk · (active)        │ │                              │             │
+│ │ ─ show 1 more ─               │ │                              │             │
+│ └──────────────────────────────┘ └──────────────────────────────┘             │
+│ ┌──────────────────────────────┐ ┌──────────────────────────────┐             │
+│ │ Family            ▲0.3M ▼1.0M │ │ Rachel             ▲0.8M ▼6M │             │
+│ │ MacBook · 108.32.93.57        │ │ Rachel Mac · grok.x.com      │             │
+│ │ Plex Server · (active)        │ │ Rachel iPhone · (active)     │             │
+│ │ NAS · (active)                │ │                              │             │
+│ │ ─ show 8 more ─               │ │                              │             │  ← #819 cap
+│ └──────────────────────────────┘ └──────────────────────────────┘             │
+│                                                                                │
+│ Idle (3): Quintus · Prima · Octavius ▸           ← collapsed idle row (1 line) │
+│                                                                                │
+│ Recently Blocked          [ All devices ▾ ]            View all → /usage/events │  ← TOP-LEVEL
+│ ┌────────────────────────────────────────────────────────────────────────┐    │     diagnostic panel
+│ │ Kid Mac      · tiktok.com            · Schedule        14s ago          │    │     (device·host·reason),
+│ │ Sameer iPad  · doubleclick.net       · Category: Ads   1m ago           │    │     newest-first, live,
+│ │ Kid iPhone   · roblox.com            · TimeLimit       3m ago           │    │     quick device filter,
+│ │ …                                                       (cap ~8 rows)    │    │     trailing ~1h           ABOVE
+│ └────────────────────────────────────────────────────────────────────────┘    │                            the fold
+│                                                                                │
+│ ── below the fold ─────────────────────────────────────────────────────────── │
+│                                                                                │
+│ Blocking activity (24h)                              1 host · 3 blocked        │  ← merged ranked-host panel
+│ ┌────────────────────────────────────────────────────────────────────────┐    │     (rollup-backed, request/resp;
+│ │ captive.apple.com                                          3  ▸          │    │      one-line empty state when
+│ └────────────────────────────────────────────────────────────────────────┘    │      24h had zero blocks)
+│                                                                                │
+│ (no inline log table — the Connection Events surface is one click away)        │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+Section order (identical on mobile): **banners → KPI strip (5) → NOW → Recently
+Blocked → Blocking activity (24h)**. The two above-the-fold live panels are the
+health/diagnosis pair: **NOW** = "who's online," **Recently Blocked** = "what's
+being blocked, and why." Live elements (KPI bandwidth, NOW, Recently Blocked,
+derived Online/Blocked-now) are stream-sourced (§8.2); the 1h-count KPIs and the
+24h panel stay request/response.
+
+### 8.5 Tightened UX details
+
+**Bandwidth KPI tile + the page-wide window selector.**
+- The 5th tile shows the overall household rate as `▲<up> ▼<down> /s` (humanized
+  B/s — `K`/`M`), with `—` when the live edge hasn't arrived yet. It carries the
+  **window selector** (`1m · 10m · 1h · raw`); the tile is necessarily denser than
+  the four count tiles, so the selector renders as a compact segmented control on
+  the tile footer (not four full buttons) — on the narrowest widths it degrades to
+  a single cycling chip showing the active window (tap to advance), keeping the
+  tile the same height as its neighbours.
+- **One window governs the whole page.** The selected window is page-level state:
+  it sets the averaging `bucket` for the overall tile **and** every per-profile
+  ▲/▼ on the NOW cards simultaneously — there is no per-card window control. This
+  matches the protocol: the page re-subscribes `trafficUsage` (overall +
+  `groupBy:profile`) with the new `bucket` on change ([`spa-websocket.md`
+  §1.4](spa-websocket.md)). `raw` = fully-realtime (live edge at the router's
+  usage-send cadence); `1m` is the aggregated floor (§8.1). Default window: **`1m`**
+  (smooth enough to read at a glance; `raw` is opt-in for the twitchy live view).
+
+**Per-profile ▲/▼ on the NOW card — coexistence with card content.**
+- The rate sits **right-aligned on the card header row**, opposite the profile
+  name (the rev-1 §3 wireframe already reserved this slot). It does **not** add a
+  row — the device list below is unchanged (top-3 by active-seconds + expander,
+  Q6). So throughput costs zero extra vertical space per card and never competes
+  with the device rows for the cap.
+- It shows the profile-aggregate rate only (`groupBy:profile`); per-device /
+  per-host throughput stays off the dashboard (§8.1). When a profile's rate is
+  unknown (no live-edge bucket yet, or an idle profile), the header shows `—`,
+  not `▲0 ▼0`, to avoid implying a measured zero.
+
+**Recently Blocked panel — sizing, rows, filter, empty state.**
+- **Rows:** `device · host · reason · <relative time>`. `reason` is the
+  `BlockReason` the `connectionEvents` row already carries (Schedule / TimeLimit /
+  Manual / Paused for whole-MAC drops; `Category: <name>` / host-block / ip-only
+  for per-flow drops) — rendered as a short labelled chip. (These are real
+  traffic-layer drops; DNS always resolves, so this is not a DNS-event list.)
+- **Sizing / cap:** newest-first, **cap ~8 visible rows** (≈ the NOW grid's
+  height so it stays a glance panel, not a feed); overflow is reached via
+  **View all → `/usage/events?blocked=true`** (carrying the active device filter),
+  never an in-panel scroll firehose. Live: rows **prepend on push** and the oldest
+  drop off the cap; the trailing window is ~1h (the `connectionEvents` live edge,
+  §8.2). No per-row freshness timer beyond the relative-time label, consistent
+  with the single-freshness-pill rule (#825) — the NOW pill covers the page.
+- **Quick device filter:** an `All devices ▾` selector in the panel header. It
+  maps to the topic's `macs` param ([`spa-websocket.md` §1.2](spa-websocket.md)):
+  picking a device **re-subscribes** `connectionEvents{blocked:true, macs:[…]}` so
+  the live stream itself narrows (not just a client-side hide), and the row cap
+  then fills with that device's blocks. This is the core diagnostic gesture —
+  "X isn't working on my iPad" → filter to the iPad → see its drops and reasons
+  live. The device list is drawn from the NOW snapshot's known devices.
+- **Empty state:** when nothing matches the (optionally filtered) window, render a
+  **one-line** "Nothing blocked recently" (filtered: "Nothing blocked recently for
+  <device>") — never an empty card or a spinner once the stream is connected. A
+  healthy household legitimately sits empty here, and that is the reassuring
+  signal, not a defect.
+
+**Q7 (rev-2) — "Online now" counting IoT/appliances: deferred (confirmed).** The
+"Online now" KPI continues to count **all** devices active in the last 5 min,
+appliances included, for v1. Refining it to exclude IoT requires the same
+device-classification taxonomy that §7.3 Q6/Q7 deferred — none exists, and
+building one is out of this redesign's scope. The Recently Blocked panel's
+**per-device filter** is the v1 mitigation: a parent who cares about a specific
+human device filters to it directly rather than relying on the aggregate count.
+File the classification work separately if pursued (tracks with Q7).
+
+### 8.6 Mobile reflow (rev 3 — supersedes §3 "Mobile reflow")
+
+Section order is unchanged from desktop; only the grids reflow. (Live narrow
+render still couldn't be captured via the extension — operator should sanity-check
+on a real phone before the iOS IA #982 is locked, per Q5.)
+
+- **KPI strip (now 5 tiles):** `grid-cols-2` on mobile → 3 rows (2+2+1), with the
+  **Bandwidth tile spanning the full last row** (`col-span-2`) so its segmented
+  window selector has room; `md:grid-cols-5` on desktop. (Supersedes the rev-1
+  `md:grid-cols-4` / `grid-cols-2` note.)
+- **NOW:** single-column card stack; the per-profile ▲/▼ stays right-aligned on
+  each card header (no reflow needed — it's already a header-row element). Idle
+  row stays one line.
+- **Recently Blocked:** full-width single column; the `All devices ▾` filter and
+  `View all →` link stack under the panel title on the narrowest widths; rows wrap
+  `device · host` / `reason · time` onto two lines if needed, keeping the reason
+  chip visible (it's the diagnostic payload). Same ~8-row cap.
+- **Blocking activity (24h):** full-width single column, unchanged.
+- The mobile order (banners → KPI → NOW → Recently Blocked → blocking) is exactly
+  the read-only v1 iOS surface set (#982): the iOS app mirrors the KPI strip + NOW
+  + Recently Blocked (the live glance/diagnosis trio) and links out for the 24h
+  panel and full event history.
