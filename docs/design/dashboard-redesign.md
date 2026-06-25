@@ -365,13 +365,16 @@ is stream-gated. Per-**device** / per-**host** throughput stays **off** the
 dashboard (→ `/devices`, `/profiles`) — the dashboard shows overall + per-profile
 only, consistent with the rev-2 "glanceable, not analytics" principle.
 
-> Throughput is a **rate**, not a resource — there is no "current B/s" you can
-> `GET` and cache; it only exists as a stream. So unlike the NOW snapshot or the
-> blocked feed (which have REST bodies), live throughput is **push-native**: it
-> has no polling fallback beyond "no live gauge while the socket is down" (the
-> 24h volume on `/usage` covers the historical question). This is why it could
-> not ship before the stream — and why it is the clearest justification for the
-> websocket existing at all.
+> Bandwidth is **not** new data — `traffic_reports` already holds directional
+> bytes, surfaced by `GET /api/usage/traffic` (`TrafficUsageResponse`,
+> `totalBytesIn`/`totalBytesOut` per group). So live bandwidth is just that
+> existing read model **streamed**: overall/per-profile = `groupBy ∈ {∅,profile}`,
+> the averaging window = its `bucket`, and the client derives B/s from
+> bytes-over-bucket. No new shape — see [`spa-websocket.md` §1.3](spa-websocket.md)
+> (`trafficUsage` topic). The same stream powers the **Traffic Usage page** live,
+> not just the dashboard gauge. (Granularity floor is `1m`, the `traffic_reports`
+> bucket; a sub-minute "instant" gauge is an optional extra — `spa-websocket.md`
+> §5.3/§10 Q1.)
 
 ### 8.2 The dashboard's live data contract (what streams vs. what stays request/response)
 
@@ -382,16 +385,16 @@ they ever diverge. Each dashboard section is classified by how it gets its data:
 
 | Dashboard section | Class | Source after #1860 |
 |---|---|---|
-| **Overall in/out throughput** (§8.1) | **push-native stream** | `throughput` tick — NEW push-only shape (no GET); §8.1 |
-| **Per-profile in/out throughput** (§8.1, on NOW card headers) | **push-native stream** | same `throughput` tick (per-profile entries) |
+| **Overall in/out bandwidth** (§8.1) | **streamed read model** | `trafficUsage` (`groupBy:∅`) — streams existing `TrafficUsageResponse`; no new shape |
+| **Per-profile in/out bandwidth** (§8.1, on NOW card headers) | **streamed read model** | same `trafficUsage` topic, `groupBy:["profile"]` |
 | **NOW** active cards (who's online / watching) | **pushed live snapshot** | `DashboardNow` body pushed on change (reuses today's `/api/dashboard/now` shape) |
-| **Most Recently Blocked** feed (#1338) | **pushed live append** | each new blocked event pushed as it lands (reuses the `/api/logs?blocked=true` row shape) |
+| **Most Recently Blocked** feed (#1338) | **pushed live append** | `connectionEvents{blocked:true}` — reuses the `/api/logs` row shape; same topic streams the Connection Events page |
 | **KPI: Online now / Blocked now** | **derived from the NOW push** | computed client-side off the pushed `DashboardNow`; no separate stream |
 | **KPI: Events (1h) / Blocked (1h)** | request/response | small enough to leave on a slow poll / invalidate; not realtime-critical |
 | **Blocking activity (24h)** panel | request/response | rollup tables (#809); explicitly **not** streamed (rev-2 §7.5 already said so) |
 
 The rule the operator stated: **stream the things that need to move in realtime
-(throughput, NOW, just-blocked, live time-usage); leave everything that is
+(bandwidth, NOW, just-blocked, live time-usage); leave everything that is
 genuinely a cacheable resource on request/response.** The websocket design
 (`spa-websocket.md`) is built around exactly this split, not a blanket "invalidate
 every query."
@@ -411,13 +414,15 @@ source in first" step (§7.5) is now concrete:
 
 - **chunk 2/3** (NOW + KPI, #1834/#1835) consume the `DashboardNow` push and the
   derived KPIs — as already planned.
-- **#747 throughput** is **no longer a deferred standalone** — it becomes the
-  realtime-throughput pilot of the websocket rollout
-  ([`spa-websocket.md` §9](spa-websocket.md)), since it is the push-native element
-  that most exercises the stream. It still needs the backend source (§8.1): the
-  API deriving per-profile + overall byte-rate from the #1023 router→API usage
-  stream, pushed to the SPA. That backend work is specified in
-  [`spa-websocket.md` §5](spa-websocket.md) and filed as a sub-issue there.
+- **#747 bandwidth** is **no longer a deferred standalone** — it becomes part of
+  the websocket dashboard pilot ([`spa-websocket.md` §9](spa-websocket.md)),
+  streaming the existing `GET /api/usage/traffic` read model (`trafficUsage`
+  topic). It needs **no new backend data path** for `1m`-and-coarser bandwidth
+  (the API re-runs the existing traffic-usage query on usage ingest,
+  [`spa-websocket.md` §5.3](spa-websocket.md)); only the optional sub-minute
+  "instant" gauge depends on #1023 (a router conntrack sample). Earlier this note
+  said throughput was #1023-gated — with the read-model reuse, only the sub-minute
+  refinement is.
 
 This revision records the decision; the wire/payload specifics live in
 `spa-websocket.md` (single source of truth for the protocol), and dashboard
