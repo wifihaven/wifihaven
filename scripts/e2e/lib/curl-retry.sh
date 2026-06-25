@@ -117,3 +117,34 @@ curl() {
     attempt=$((attempt + 1))
   done
 }
+
+# wh_wait_for_health <base-url> — one-time readiness gate run at the START of a
+# staging smoke (#1963). Complements the per-request retry budget above: it
+# polls <base>/api/health until 200 so a single post-deploy JVM cold-start
+# (where /api/health returns 503 status=starting, the same gate as the prod
+# compose healthcheck) is absorbed ONCE up front, instead of every assertion in
+# the burst fighting the cold-start with its own ~39s retry round. Uses the REAL
+# curl binary (not the override) so the 503-while-starting poll is this loop,
+# not a nested per-call retry budget.
+#
+# Best-effort: on timeout it warns and returns 0 so the smoke still runs — the
+# per-request curl retry above is the backstop, and a genuinely-down API will
+# fail the assertions anyway. ~60s budget (30 × 2s) mirrors the cold-start window.
+WH_HEALTH_MAX_ATTEMPTS="${WH_HEALTH_MAX_ATTEMPTS:-30}"
+WH_HEALTH_INTERVAL_SECS="${WH_HEALTH_INTERVAL_SECS:-2}"
+wh_wait_for_health() {
+  local base="$1" i code
+  echo "▶ Waiting for $base/api/health (cold-start gate)" >&2
+  for ((i = 1; i <= WH_HEALTH_MAX_ATTEMPTS; i++)); do
+    code=$(command "$WH_CURL_BIN" -s -o /dev/null -w '%{http_code}' \
+      "$base/api/health" 2>/dev/null || true)
+    if [ "$code" = 200 ]; then
+      echo "  ✓ API healthy ($code) after $i poll(s)" >&2
+      return 0
+    fi
+    [ "$i" -lt "$WH_HEALTH_MAX_ATTEMPTS" ] && sleep "$WH_HEALTH_INTERVAL_SECS"
+  done
+  echo "  ! API health gate timed out (last code: ${code:-n/a}); proceeding" \
+    "— per-request retry is the backstop" >&2
+  return 0
+}

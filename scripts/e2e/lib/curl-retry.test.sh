@@ -98,5 +98,24 @@ WH_CURL_BACKOFF_SECS=1 WH_CURL_BACKOFF_MAX=8 WH_CURL_MAX_ATTEMPTS=6 \
 SCHEDULE=$(tr '\n' ' ' <"$SLEEP_LOG" | sed 's/ $//')
 check "escalating backoff capped at 8s" "$SCHEDULE" "1 2 4 8 8"
 
+echo "▶ wh_wait_for_health (#1963)"
+hrun() { # $1=mock seq → sets HRC and HEALTH_POLLS
+  WH_MOCK_CTR="$WORK/ctr-health"; : >"$WH_MOCK_CTR"; export WH_MOCK_CTR
+  export WH_MOCK_SEQ="$1"
+  WH_HEALTH_INTERVAL_SECS=0 WH_HEALTH_MAX_ATTEMPTS=5 \
+    wh_wait_for_health http://x >/dev/null 2>&1 && HRC=0 || HRC=$?
+  HEALTH_POLLS=$(cat "$WH_MOCK_CTR")
+}
+
+# 503 (still starting) then 200 → gate clears on the second poll.
+hrun "0:503:;0:200:"
+check "health gate clears on 200 (rc)" "$HRC" "0"
+check "health gate stops polling once healthy" "$HEALTH_POLLS" "2"
+
+# Persistent 503 → gate times out but returns 0 (best-effort) after the budget.
+hrun "0:503:"
+check "health gate times out best-effort (rc)" "$HRC" "0"
+check "health gate exhausts its poll budget" "$HEALTH_POLLS" "5"
+
 echo
 if [ "$FAILED" = 0 ]; then echo "ALL PASS"; else echo "FAILURES"; exit 1; fi
