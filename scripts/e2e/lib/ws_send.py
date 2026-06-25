@@ -41,7 +41,8 @@ _OPCODE_PONG = 0xA
 # snapshot change, so it can arrive interleaved with the acks for our frames.
 # These are collected and returned to the caller, but they do NOT count toward
 # the one-reply-per-sent-frame accounting below (the #1951 fix). Extend this set
-# if the transport gains further server→client push ops.
+# if the transport gains further server→client push ops — and mirror it in the
+# matching push-op filter in scripts/e2e-router.sh's ws-parity check.
 _PUSH_OPS = frozenset({"policy"})
 
 

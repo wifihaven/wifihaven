@@ -364,10 +364,14 @@ WS_REPLIES=$(printf '%s' "$PARITY" \
 WS_PARITY=$(printf '%s\n%s' "$PARITY" "$WS_REPLIES" | _py "
 import json, sys
 sent = json.loads(sys.stdin.readline()).get('ws_frames', [])
-replies = json.loads(sys.stdin.readline())
+raw = sys.stdin.readline()
+if not raw.strip():
+    print('bad: ws_send produced no output (helper crashed before any reply)'); sys.exit()
+replies = json.loads(raw)
 if not isinstance(replies, list):
     print('bad: ws_send error: ' + json.dumps(replies)); sys.exit()
 # Server→client pushes are expected #1849 traffic — partition them from the acks.
+# NB: the push-op set here must mirror ws_send.py's _PUSH_OPS (only 'policy' today).
 pushes = [r for r in replies if isinstance(r, dict) and r.get('op') == 'policy']
 acks   = [r for r in replies if isinstance(r, dict) and r.get('op') == 'ack']
 def acked_ok(op, seq):
