@@ -90,6 +90,12 @@ Design principles:
 
 ## 3. Target layout + IA
 
+> **SUPERSEDED by [§8.4](#84-consolidated-rev-3-target-wireframe).** This rev-1
+> wireframe predates the 5th Bandwidth KPI tile, the per-profile ▲/▼ rates, and
+> the promotion of Recently Blocked to an above-the-fold diagnostic panel. It is
+> kept for the section-by-section rationale below; **for the current target
+> picture read §8.4**, which draws every decided element in one frame.
+
 Section order, top to bottom:
 
 ```
@@ -229,7 +235,7 @@ implementation sub-issues §5 called for were never filed. This section is autho
 
 ### 7.1 What shipped since revision 1 (and how the design reconciles it)
 
-- **"Most Recently Blocked" feed shipped** ([#1338](https://github.com/wifihaven/wifihaven/issues/1338)).
+- **The "Recently Blocked" feed shipped** ([#1338](https://github.com/wifihaven/wifihaven/issues/1338)).
   `DashboardPage` now renders a `RecentlyBlockedSection` — a newest-first, **blocked-only**,
   trailing-hour feed (`useRecentBlocked` → `api.logs.query({ blocked: true, hours: 1, limit: N })`,
   polled every 10s), with a "View all → /usage/events" link. **This is signal, not the firehose
@@ -243,6 +249,12 @@ implementation sub-issues §5 called for were never filed. This section is autho
   remains backend-gated (see decision Q2).
 
 ### 7.2 Updated section order (supersedes the §3 wireframe)
+
+> This is the compact section-order sketch. For the **current** full target
+> picture, see the consolidated wireframe in
+> [§9.1](#91-consolidated-rev-4-target-wireframe-the-current-single-visual-reference)
+> (rev 4 — Recently Blocked at the top, clickable profile, IoT-filtered NOW). The
+> intermediate rev-3 frame is [§8.4](#84-consolidated-rev-3-target-wireframe).
 
 ```
 Dashboard (h1)
@@ -292,7 +304,7 @@ connection-layer fact — these are real traffic-layer drops, not DNS events; DN
 | Q4 | Idle / "online now" threshold | **Keep 5 min** (the current NOW activity window). "Online now" = devices active in the last 5 min. |
 | Q5 | Mobile reflow | Reflow is derived from Tailwind classes, not a live narrow render. **Operator should sanity-check on a real phone before the iOS IA (#982) is locked.** Not a code blocker. |
 | Q6 | Device ranking inside a card (#819) | **Rank by active-seconds over the NOW top-hosts window, not recency** — recency would surface a Sonos heartbeat above an actively-streaming MacBook. The top-3 cap + expander contains the IoT chatter visually. (chunk 3) |
-| Q7 | IoT-noise classification | **Out of scope for v1.** No infra/IoT device taxonomy exists; building one is larger than this redesign. The active-seconds ranking + top-3 cap (Q6) is the v1 answer. "Online now" counts all active devices including appliances for v1; refining it depends on the same future classification work. File separately if pursued. |
+| Q7 | IoT-noise classification | ~~Out of scope for v1.~~ **REVERSED by §9.3 (rev 4):** NOW filters IoT/appliances out, surfacing one only on anomalous traffic. Still needs the classification this row said was missing → now a filed-when-resumed backend sub-task (§9.3). _(Original v1 deferral: "Out of scope; no taxonomy exists; active-seconds ranking + top-3 cap is the v1 answer; Online now counts all active devices.")_ |
 | Q8 | `/usage/events` subtitle copy ("Per-query DNS / blocking decisions") | Out of scope here — minor copy fix on a different surface. Tracked as a standalone good-first-issue, not part of this arc. |
 
 ### 7.4 Locked implementation plan — filed sub-issues
@@ -336,13 +348,13 @@ Precise gate — two legs, both required:
 
 The redesign is gated on **both** (effectively on #1860, which itself depends on #1023's push core).
 When work resumes, the streaming-source wiring folds into chunks 2–3 on top of #1860. Building the
-redesigned NOW / KPI / Most-Recently-Blocked sections on the polling path first would be
+redesigned NOW / KPI / Recently Blocked sections on the polling path first would be
 throwaway — the data plane changes underneath them when #1023 ships.
 
 Concretely, this revises the original real-time framing (which said the websocket "could later
 push these updates, but do not depend on it"): the redesign now **does** depend on it.
 
-- **`useDashboardNow` (NOW snapshot), `useRecentBlocked` (Most Recently Blocked), and the
+- **`useDashboardNow` (NOW snapshot), `useRecentBlocked` (Recently Blocked), and the
   derived "Online now / Blocked now" KPIs** become consumers of the streaming transport rather
   than independent 10s pollers. The single-freshness-pill decision (#825) still holds, now
   driven by last-push time instead of `dataUpdatedAt`.
@@ -454,3 +466,348 @@ source in first" step (§7.5) is now concrete:
 This revision records the decision; the wire/payload specifics live in
 `spa-websocket.md` (single source of truth for the protocol), and dashboard
 implementation stays paused on #1860 per §7.5.
+
+### 8.4 Consolidated rev-3 target wireframe
+
+> **SUPERSEDED by [§9.1](#91-consolidated-rev-4-target-wireframe-the-current-single-visual-reference).**
+> Rev 4 moved Recently Blocked to the top, added a clickable profile column, and
+> filtered IoT out of NOW. **§9.1 is the current single visual reference.** This
+> rev-3 frame is kept for history.
+
+The rev-3 decisions were added incrementally across §7.2 and §§8.1–8.3. This is the
+**single visual reference** — every decided element in one frame. It supersedes the
+[§3](#3-target-layout--ia) wireframe (and the compact section-order sketch in
+[§7.2](#72-updated-section-order-supersedes-the-3-wireframe)); where any earlier
+picture disagrees, **this one wins**. Desktop (≥ `md`), 1080p load:
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ Dashboard                                                                      │
+│                                                                                │
+│ [ ⚠ 1 new device → Devices ]   [ ⚠ 2 access requests → ]   ← banners (if any)  │
+│                                                                                │
+│ ┌─────────┬─────────┬─────────┬─────────┬──────────────────┐                   │
+│ │ Online  │ Blocked │ Events  │ Blocked │ Bandwidth        │  ← KPI strip       │  ABOVE
+│ │ now     │ now     │ (1h)    │ (1h)    │ ▲2.4M ▼18M /s    │    (5 tiles)       │  the fold
+│ │   3     │   1     │   18    │    0    │ [1m·10m·1h·raw]  │                    │
+│ └─────────┴─────────┴─────────┴─────────┴──────────────────┘                   │
+│                                       window selector governs ▲▼ everywhere ─┘ │
+│                                                                                │
+│ NOW                                          updated 12s ago · live ●          │  ← one freshness pill
+│ ┌──────────────────────────────┐ ┌──────────────────────────────┐             │
+│ │ Sameer            ▲2.4M ▼18M  │ │ Kids               ▲0.1M ▼3M │             │  ← active cards:
+│ │ Sameer Mac · app.warp.dev     │ │ Kid Mac · khanacademy.org·2m │             │     name + ▲▼ rate on header,
+│ │ Sameer iPhone · plex.tv       │ │                              │             │     top-3 devices by active-secs
+│ │ Sameer Desk · (active)        │ │                              │             │
+│ │ ─ show 1 more ─               │ │                              │             │
+│ └──────────────────────────────┘ └──────────────────────────────┘             │
+│ ┌──────────────────────────────┐ ┌──────────────────────────────┐             │
+│ │ Family            ▲0.3M ▼1.0M │ │ Rachel             ▲0.8M ▼6M │             │
+│ │ MacBook · 108.32.93.57        │ │ Rachel Mac · grok.x.com      │             │
+│ │ Plex Server · (active)        │ │ Rachel iPhone · (active)     │             │
+│ │ NAS · (active)                │ │                              │             │
+│ │ ─ show 8 more ─               │ │                              │             │  ← #819 cap
+│ └──────────────────────────────┘ └──────────────────────────────┘             │
+│                                                                                │
+│ Idle (3): Quintus · Prima · Octavius ▸           ← collapsed idle row (1 line) │
+│                                                                                │
+│ Recently Blocked          [ All devices ▾ ]            View all → /usage/events │  ← TOP-LEVEL
+│ ┌────────────────────────────────────────────────────────────────────────┐    │     diagnostic panel
+│ │ Kid Mac      · tiktok.com            · Schedule        14s ago          │    │     (device·host·reason),
+│ │ Sameer iPad  · doubleclick.net       · Category: Ads   1m ago           │    │     newest-first, live,
+│ │ Kid iPhone   · roblox.com            · TimeLimit       3m ago           │    │     quick device filter,
+│ │ …                                                       (cap ~8 rows)    │    │     trailing ~1h           ABOVE
+│ └────────────────────────────────────────────────────────────────────────┘    │                            the fold
+│                                                                                │
+│ ── below the fold ─────────────────────────────────────────────────────────── │
+│                                                                                │
+│ Blocking activity (24h)                              1 host · 3 blocked        │  ← merged ranked-host panel
+│ ┌────────────────────────────────────────────────────────────────────────┐    │     (rollup-backed, request/resp;
+│ │ captive.apple.com                                          3  ▸          │    │      one-line empty state when
+│ └────────────────────────────────────────────────────────────────────────┘    │      24h had zero blocks)
+│                                                                                │
+│ (no inline log table — the Connection Events surface is one click away)        │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+Section order (identical on mobile): **banners → KPI strip (5) → NOW → Recently
+Blocked → Blocking activity (24h)**. The two above-the-fold live panels are the
+health/diagnosis pair: **NOW** = "who's online," **Recently Blocked** = "what's
+being blocked, and why." Live elements (KPI bandwidth, NOW, Recently Blocked,
+derived Online/Blocked-now) are stream-sourced (§8.2); the 1h-count KPIs and the
+24h panel stay request/response.
+
+### 8.5 Tightened UX details
+
+**Bandwidth KPI tile + the page-wide window selector.**
+- The 5th tile shows the overall household rate as `▲<up> ▼<down> /s` (humanized
+  B/s — `K`/`M`), with `—` when the live edge hasn't arrived yet. It carries the
+  **window selector** (`1m · 10m · 1h · raw`); the tile is necessarily denser than
+  the four count tiles, so the selector renders as a compact segmented control on
+  the tile footer (not four full buttons) — on the narrowest widths it degrades to
+  a single cycling chip showing the active window (tap to advance), keeping the
+  tile the same height as its neighbours.
+- **One window governs the whole page.** The selected window is page-level state:
+  it sets the averaging `bucket` for the overall tile **and** every per-profile
+  ▲/▼ on the NOW cards simultaneously — there is no per-card window control. This
+  matches the protocol: the page re-subscribes `trafficUsage` (overall +
+  `groupBy:profile`) with the new `bucket` on change ([`spa-websocket.md`
+  §1.4](spa-websocket.md)). `raw` = fully-realtime (live edge at the router's
+  usage-send cadence); `1m` is the aggregated floor (§8.1). Proposed default
+  window: **`1m`** (smooth enough to read at a glance; `raw` is opt-in for the
+  twitchy live view) — a design default, operator-tunable at build time.
+
+**Per-profile ▲/▼ on the NOW card — coexistence with card content.**
+- The rate sits **right-aligned on the card header row**, opposite the profile
+  name (the rev-1 §3 wireframe already reserved this slot). It does **not** add a
+  row — the device list below is unchanged (top-3 by active-seconds + expander,
+  Q6). So throughput costs zero extra vertical space per card and never competes
+  with the device rows for the cap.
+- It shows the profile-aggregate rate only (`groupBy:profile`); per-device /
+  per-host throughput stays off the dashboard (§8.1). When a profile's rate is
+  unknown (no live-edge bucket yet, or an idle profile), the header shows `—`,
+  not `▲0 ▼0`, to avoid implying a measured zero.
+
+**Recently Blocked panel — sizing, rows, filter, empty state.** (Placement +
+row shape updated by [§9](#9-revision-4-2026-06-25--recently-blocked-to-the-top-clickable-profile-iot-filtering):
+rev 4 moves this panel to the **top** and makes the row
+`device · profile↗ · host · reason · time`. The sizing / filter / empty-state
+details here still hold.)
+- **Rows:** `device · host · reason · <relative time>`. `reason` is the
+  `BlockReason` the `connectionEvents` row already carries (Schedule / TimeLimit /
+  Manual / Paused for whole-MAC drops; `Category: <name>` / host-block / ip-only
+  for per-flow drops) — rendered as a short labelled chip. (These are real
+  traffic-layer drops; DNS always resolves, so this is not a DNS-event list.)
+- **Sizing / cap:** newest-first, **cap ~8 visible rows** (a proposed value,
+  ≈ the NOW grid's height so it stays a glance panel, not a feed; tune in
+  implementation); overflow is reached via
+  **View all → `/usage/events?blocked=true`** (carrying the active device filter),
+  never an in-panel scroll firehose. Live: rows **prepend on push** and the oldest
+  drop off the cap; the trailing window is ~1h (the `connectionEvents` live edge,
+  §8.2). No per-row freshness timer beyond the relative-time label, consistent
+  with the single-freshness-pill rule (#825) — the NOW pill covers the page.
+- **Quick device filter:** an `All devices ▾` selector in the panel header. It
+  maps to the topic's `macs` param ([`spa-websocket.md` §1.2](spa-websocket.md)):
+  picking a device **re-subscribes** `connectionEvents{blocked:true, macs:[…]}` so
+  the live stream itself narrows (not just a client-side hide), and the row cap
+  then fills with that device's blocks. This is the core diagnostic gesture —
+  "X isn't working on my iPad" → filter to the iPad → see its drops and reasons
+  live. The device list is drawn from the NOW snapshot's known devices.
+- **Empty state:** when nothing matches the (optionally filtered) window, render a
+  **one-line** "Nothing blocked recently" (filtered: "Nothing blocked recently for
+  <device>") — never an empty card or a spinner once the stream is connected. A
+  healthy household legitimately sits empty here, and that is the reassuring
+  signal, not a defect.
+
+**Q7 (rev-2) — "Online now" counting IoT/appliances.** ~~Deferred (confirmed).~~
+**REVERSED by [§9.3](#93-now--filter-out-iot--appliances-surface-them-only-on-anomalous-traffic)
+(rev 4).** Rev 4 decides NOW *does* filter IoT/appliance devices out (and the
+"Online now" count follows), surfacing an appliance only when its traffic is
+anomalously high (likely-compromise signal). It needs the device classification
+this paragraph called out as missing — that becomes its own backend-gated sub-task
+(§9.3). The original deferred reasoning is kept below for history:
+
+> The "Online now" KPI continues to count **all** devices active in the last 5
+> min, appliances included, for v1. Refining it to exclude IoT requires the same
+> device-classification taxonomy that §7.3 Q6/Q7 deferred — none exists, and
+> building one is out of this redesign's scope. The Recently Blocked panel's
+> **per-device filter** is the v1 mitigation.
+
+### 8.6 Mobile reflow (rev 3 — supersedes §3 "Mobile reflow")
+
+Section order is unchanged from desktop; only the grids reflow. (Live narrow
+render still couldn't be captured via the extension — operator should sanity-check
+on a real phone before the iOS IA #982 is locked, per Q5.)
+
+- **KPI strip (now 5 tiles):** `grid-cols-2` on mobile → 3 rows (2+2+1), with the
+  **Bandwidth tile spanning the full last row** (`col-span-2`) so its segmented
+  window selector has room; `md:grid-cols-5` on desktop. (Supersedes the rev-1
+  `md:grid-cols-4` / `grid-cols-2` note.)
+- **NOW:** single-column card stack; the per-profile ▲/▼ stays right-aligned on
+  each card header (no reflow needed — it's already a header-row element). Idle
+  row stays one line.
+- **Recently Blocked:** full-width single column; the `All devices ▾` filter and
+  `View all →` link stack under the panel title on the narrowest widths; rows wrap
+  `device · host` / `reason · time` onto two lines if needed, keeping the reason
+  chip visible (it's the diagnostic payload). Same ~8-row cap.
+- **Blocking activity (24h):** full-width single column, unchanged.
+- The mobile order (banners → KPI → NOW → Recently Blocked → blocking) is exactly
+  the read-only v1 iOS surface set (#982): the iOS app mirrors the KPI strip + NOW
+  + Recently Blocked (the live glance/diagnosis trio) and links out for the 24h
+  panel and full event history.
+
+> **Order/row supersession (rev 4, §9):** this §8.6 mobile order and the §8.4/§8.5
+> Recently-Blocked placement and row shape are **superseded by [§9](#9-revision-4-2026-06-25--recently-blocked-to-the-top-clickable-profile-iot-filtering)**.
+> Rev 4 moves Recently Blocked to the **top** (above the KPI strip), adds a
+> **profile** column with a click-through to the profile editor, and **filters IoT
+> devices out of NOW**. Read §9 for the current picture.
+
+---
+
+## 9. Revision 4 (2026-06-25) — Recently Blocked to the top; clickable profile; IoT filtering
+
+Operator direction (2026-06-25), three changes on top of rev 3:
+
+1. **Recently Blocked moves to the very top** of the page (above the KPI strip),
+   not under NOW. It is the most actionable panel — "something's blocked, who and
+   why, let me fix it" — so it leads.
+2. **Recently Blocked rows carry both device *and* profile**, and the **profile is
+   a link straight to that profile in the editor** (`/profiles?id=<profileId>` —
+   the existing scroll-to-and-highlight deep-link the Logs page already uses, #298)
+   so a parent can jump from a block straight to unblocking it (unpause, adjust
+   schedule, allow the host).
+3. **NOW filters out IoT / appliance devices** (Sonos, Lutron, thermostat, garage
+   door, printers, NAS, Plex server, …) — **unless** an appliance is pushing **a
+   lot of traffic**, which is a likely-compromise signal and *should* surface,
+   flagged. This **reverses rev-2 Q7** (§7.3) and §8.5's "deferred" note.
+
+Where §9 and §§7–8 disagree, **§9 wins** (same supersede convention).
+
+### 9.1 Consolidated rev-4 target wireframe (the current single visual reference)
+
+Supersedes the [§8.4](#84-consolidated-rev-3-target-wireframe) wireframe. Desktop
+(≥ `md`), 1080p load:
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ Dashboard                                                                      │
+│                                                                                │
+│ [ ⚠ 1 new device → Devices ]   [ ⚠ 2 access requests → ]   ← banners (if any)  │
+│                                                                                │
+│ Recently Blocked          [ All devices ▾ ]            View all → /usage/events │  ← TOP panel:
+│ ┌────────────────────────────────────────────────────────────────────────┐    │     primary diagnostic /
+│ │ Kid Mac    · *Kids*    · tiktok.com         · Schedule      14s ago     │    │     quick-unblock surface.
+│ │ Sameer iPad· *Sameer*  · doubleclick.net    · Category: Ads  1m ago     │    │     row = device · PROFILE↗ ·
+│ │ Kid iPhone · *Kids*    · roblox.com         · TimeLimit      3m ago     │    │       host · reason · time
+│ │ …                                                            (cap ~8)   │    │     *profile* links → editor
+│ └────────────────────────────────────────────────────────────────────────┘    │     newest-first, live, ~1h
+│                                                                                │
+│ ┌─────────┬─────────┬─────────┬─────────┬──────────────────┐                   │
+│ │ Online  │ Blocked │ Events  │ Blocked │ Bandwidth        │  ← KPI strip       │  ABOVE
+│ │ now     │ now     │ (1h)    │ (1h)    │ ▲2.4M ▼18M /s    │    (5 tiles)       │  the fold
+│ │   3     │   1     │   18    │    0    │ [1m·10m·1h·raw]  │                    │
+│ └─────────┴─────────┴─────────┴─────────┴──────────────────┘                   │
+│                                       window selector governs ▲▼ everywhere ─┘ │
+│                                                                                │
+│ NOW                                          updated 12s ago · live ●          │  ← one freshness pill
+│ ┌──────────────────────────────┐ ┌──────────────────────────────┐             │
+│ │ Sameer            ▲2.4M ▼18M  │ │ Kids               ▲0.1M ▼3M │             │  ← active cards:
+│ │ Sameer Mac · app.warp.dev     │ │ Kid Mac · khanacademy.org·2m │             │     name + ▲▼ rate on header,
+│ │ Sameer iPhone · plex.tv       │ │                              │             │     top-3 PERSONAL devices
+│ │ Sameer Desk · (active)        │ │                              │             │     (IoT filtered out)
+│ │ ─ show 1 more ─               │ │                              │             │
+│ └──────────────────────────────┘ └──────────────────────────────┘             │
+│ ┌──────────────────────────────┐ ┌──────────────────────────────┐             │
+│ │ Family            ▲0.3M ▼1.0M │ │ Rachel             ▲0.8M ▼6M │             │
+│ │ MacBook · 108.32.93.57        │ │ Rachel Mac · grok.x.com      │             │
+│ │ ⚠ B-Hyve · 41.2M ▲ unusual    │ │ Rachel iPhone · (active)     │             │  ← IoT shown ONLY because
+│ │ ─ show 1 more ─               │ │                              │             │     traffic is anomalous
+│ └──────────────────────────────┘ └──────────────────────────────┘             │     (likely-compromise flag)
+│                                                                                │
+│ Idle (3): Quintus · Prima · Octavius ▸           ← collapsed idle row (1 line) │
+│                                                                                │
+│ ── below the fold ─────────────────────────────────────────────────────────── │
+│                                                                                │
+│ Blocking activity (24h)                              1 host · 3 blocked        │  ← merged ranked-host panel
+│ ┌────────────────────────────────────────────────────────────────────────┐    │     (rollup-backed, request/resp;
+│ │ captive.apple.com                                          3  ▸          │    │      one-line empty state when
+│ └────────────────────────────────────────────────────────────────────────┘    │      24h had zero blocks)
+│                                                                                │
+│ (no inline log table — the Connection Events surface is one click away)        │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+Section order (identical on mobile): **banners → Recently Blocked → KPI strip (5)
+→ NOW → Blocking activity (24h)**. Recently Blocked leads because it is the
+actionable diagnostic; the glance KPIs and NOW follow, all still above the fold on
+a 1080p load. Live elements (Recently Blocked, KPI bandwidth, NOW, derived
+Online/Blocked-now) are stream-sourced (§8.2 contract is unchanged); the 1h-count
+KPIs and the 24h panel stay request/response.
+
+### 9.2 Recently Blocked — device + clickable profile (quick unblock)
+
+Refines §8.5's Recently Blocked rows (all other §8.5 Recently-Blocked details —
+~8-row cap, `macs` device filter, prepend-on-push, "Nothing blocked recently"
+empty state — still hold):
+
+- **Row shape becomes `device · profile · host · reason · <relative time>`** —
+  profile is added so the parent sees *whose* policy did the blocking at a glance
+  (a device maps to exactly one profile via the household device→profile
+  assignment; the dashboard resolves it from the NOW snapshot / device list, since
+  the `connectionEvents` row carries the `mac`, not the profile).
+- **The profile is a link to its editor — `/profiles?id=<profileId>`.** This is the
+  quick-unblock path: see "Kid Mac · *Kids* · tiktok.com · Schedule" → click
+  *Kids* → land on `/profiles` scrolled to and highlighting the Kids profile, ready
+  to unpause / adjust the schedule / add an allow. It reuses the **existing**
+  scroll-to-and-highlight deep-link (`ProfilesPage` already honours `?id=` from the
+  Logs page, #298 — `ProfilesPage.tsx:174`), so it is no new route, just a new
+  caller. It saves the parent from hunting for the right profile. (The **device**
+  name keeps its existing deep-link to that device's filtered Connection Events —
+  `View all →` / clicking the device → `/usage/events?blocked=true&mac=…` — so
+  "show me everything this device hit" and "take me to the policy to change it" are
+  two distinct, both-useful click targets.)
+- **Reason** is unchanged from §8.5 (the `BlockReason` chip the `connectionEvents`
+  row already carries) — no new wire data; profile is derived client-side, so this
+  needs **no protocol change** (`spa-websocket.md` stays as-is).
+
+### 9.3 NOW — filter out IoT / appliances, surface them only on anomalous traffic
+
+This **reverses rev-2 Q7** (§7.3) and the §8.5 "Q7 deferred" note. The operator
+has decided IoT noise is worth filtering; the cost is that it needs a device
+classification, which becomes a backend-gated sub-task (below).
+
+- **Default: hide appliance/IoT devices from NOW** (and from the "Online now" KPI
+  count). NOW shows **personal** devices — the ones a human is actually using —
+  so a profile card is no longer dominated by Sonos/Lutron/thermostat chatter
+  (this is the deeper fix for #819 that the rev-1 top-3 cap only contained
+  visually). The idle-collapse row and top-3 cap still apply to what remains.
+- **Exception — surface an appliance when its traffic is anomalous.** An IoT
+  device pushing **a lot of traffic** is a likely-compromise signal (a hacked
+  camera/printer exfiltrating or in a botnet), and *that* is exactly when a parent
+  should see it. Such a device appears in its profile's NOW card with a **warning
+  affordance** (`⚠ … unusual`) and its rate, even though it is normally hidden.
+  (Showing that one device's rate here is a **deliberate, narrow exception** to
+  §8.1's "per-device throughput stays off the dashboard" — it is a security alert,
+  not the per-device volume leaderboard that belongs on `/devices`; only the
+  anomalous device's rate shows, and only because it is anomalous.)
+- **"A lot of traffic" = a threshold, operator-tunable.** Proposed definition: a
+  sustained rate above an absolute floor **or** ≥ N× the device's own rolling
+  baseline (so a normally-quiet thermostat suddenly at tens of MB/s trips it, while
+  a Plex server's habitually high streaming load does not, since its baseline is
+  already high). Exact floor / multiple are design defaults to tune in
+  implementation.
+- **"Online now" KPI** correspondingly counts **personal devices + any IoT over
+  the anomaly threshold** — no longer "all active devices." This is the rev-4
+  answer to Q7/Q4's "what counts as online."
+- **This is display classification only**, not policy. It does **not** add
+  per-device policy authoring (the two-tier global+profile rule in `AGENTS.md`
+  stands); it only decides what NOW *renders*.
+
+**New dependency (backend-gated, like #747).** Filtering needs a device
+classification that does not exist today (no IoT taxonomy — the same gap Q7
+named). This is its **own sub-task to file** when the redesign arc resumes (it is
+not part of the FE-only chunks #1833–#1836, and it sits behind the same #1860
+stream gate). Candidate mechanisms for that sub-task to choose among: OUI / MAC
+vendor inference; an additive per-`Device` `kind` / `category` field; or a
+heuristic (no human profile assigned + only bare-IP/heartbeat traffic). The
+anomaly threshold rides the same `trafficUsage` per-device rate the stream already
+carries (`groupBy:device`), so no new wire shape — only the classification is new.
+Until that sub-task lands, NOW renders all active devices as it does today (the
+rev-4 filtering is the target, gated on the classifier).
+
+### 9.4 Effect on the locked plan (§7.4)
+
+- **No change to the FE chunks #1833–#1836.** Recently-Blocked-to-the-top, the
+  profile column, and the `/profiles?id=` link land in **chunk 3/4** (the NOW +
+  Recently Blocked layout work, #1835/#1836) — they are layout + a derived field +
+  a reuse of an existing deep-link, no new route and no new data path.
+- **IoT filtering (§9.3) is a NEW backend-gated sub-task to file** (device
+  classification + anomaly threshold), peer to #747 throughput — not folded into
+  the existing chunks. Until it ships, NOW shows all devices; the filtering is
+  additive on top.
+- The **live data contract (§8.2) is unchanged** — Recently Blocked is still
+  `connectionEvents{blocked:true}`, profile is derived client-side, and the IoT
+  anomaly check reads the existing per-device `trafficUsage`. `spa-websocket.md`
+  needs no edit for rev 4.
+
+Dashboard implementation stays paused on #1860 per §7.5.
