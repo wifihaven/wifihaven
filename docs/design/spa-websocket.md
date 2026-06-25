@@ -144,7 +144,7 @@ column is what the client sends in `subscribe`.
 | `throughput` | (1) | **`window` ∈ {5s,1m,5m,10m}** | `ThroughputTick` (§1.3) | overall in/out gauge **+** per-profile ▲▼ on NOW cards (#747) | API aggregator over the #1023 usage stream (§5.3) |
 | `now` | (2) | — | `DashboardNow` (existing body) | NOW active cards; derived "Online/Blocked now" KPIs | recompute on change (§5.2), reusing the `/api/dashboard/now` builder |
 | `blocked` | (2) | — | one blocked `QueryLog` row (existing `/api/logs` shape) | Most Recently Blocked feed (prepend) | connection-events ingest (§5.2) |
-| `timeStatus` | (2) | — (all authorized profiles) | `ProfileTimeStatus[]` (existing `/api/time/status` body) | per-profile **used/remaining** bars; "over limit" KPI | usage credit + #1849 ticker + extension grant (§5.2), via `TimeStatusService.dayStateAllLive` |
+| `timeStatus` | (2) | — (all authorized profiles in v1; a `profileId` filter is an additive future param like `appUsage`'s) | `ProfileTimeStatus[]` (existing `/api/time/status` body) | per-profile **used/remaining** bars; "over limit" KPI | usage credit + #1849 ticker + extension grant (§5.2), via `TimeStatusService.dayStateAllLive` |
 | `appUsage` | (2) | **`profileId`** (the expanded card) | per-app minutes (existing `/api/profiles/{id}/usage-by-app` body) | per-app **minutes-used** rows (live) | same triggers, via `Presence.appSecondsForProfile` |
 | `stale` | (3) | — | `{ topic, scope? }` (bounded `topic` enum) | invalidate a class-(3) query | the relevant write site (§5.2) |
 | `ready` | — | — | `{ role, serverTime }` | flips the live indicator to "live" | upgrade (§4) |
@@ -228,7 +228,9 @@ narrow view subscribes little. Nothing is pushed to a connection that didn't ask
   profiles the role may view (§4.4). Subscription narrows; authz constrains.
 - **`ack` per subscribe** (`{op:"ack", topic, status:"ok"|"reject", reason?}`) so
   the client knows the subscription took (and isn't silently waiting on a topic
-  the server refused).
+  the server refused). Note this SPA `ack` is keyed by **`topic`**, not by `seq`
+  like the router path's data-frame `ack` ([`RouterWsRoutes`](../../api/src/routes/RouterWsRoutes.scala))
+  — same `op` name, different (separate-endpoint) payload.
 - **Reconnect re-subscribes.** Subscriptions are connection-scoped and **not**
   durable across a reconnect; on reconnect the client replays its current
   subscription set (§6.1) — the server starts each connection subscribed to
