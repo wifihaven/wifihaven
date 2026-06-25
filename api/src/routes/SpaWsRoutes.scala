@@ -50,12 +50,18 @@ object SpaWsRoutes {
     )
 
   /**
-   * The role resolved at upgrade time. S1 stub: every connection is [[UserRole.Admin]] until a
-   * `hello{role}` overrides it (the test handshake). S2 replaces this with the role read from the
-   * verified `wh_ws` JWT cookie (design §4.2/§4.4), captured once and authoritative for the
-   * connection's lifetime.
+   * The role resolved at upgrade time. S1 stub: every connection starts at the LEAST-privileged
+   * role ([[UserRole.Child]]) until a `hello{role}` overrides it (the test handshake).
+   * Least-privilege by default is deliberate defense-in-depth: S1 has no upgrade auth yet (that is
+   * S2 / #1969) and mounts in prod additively, so if a later step (S3/S4) ever pushed data before
+   * S2's cookie verify lands, an unauthenticated connection that never sent a `hello{role}` would
+   * see the *minimum* surface (fail closed), not Admin (fail open). The §4.4 authz gate
+   * (`SpaTopic.visibleTo`) then filters on this role. S2 replaces this stub with the role read from
+   * the verified `wh_ws` JWT cookie (design §4.2/§4.4), captured once and authoritative for the
+   * connection's lifetime — and #1969 is a hard predecessor to any data-bearing push step (S3/S4)
+   * for exactly this reason.
    */
-  private val upgradeRole: UserRole = UserRole.Admin
+  private val upgradeRole: UserRole = UserRole.Child
 
   private def socketApp(registry: SpaWsRegistry, clock: Clock): WebSocketApp[Any] =
     Handler.webSocket { channel =>
