@@ -48,6 +48,38 @@ end
 local DEBUG = os.getenv("WS_ECHO_DEBUG")
 local function dbg(...) if DEBUG then io.write("[echo] ", table.concat({...}, " "), "\n"); io.flush() end end
 
+-- WS_ECHO_FRAGMENT=<chunk>: instead of echoing a data frame in one shot, split
+-- it into <chunk>-byte RFC 6455 §5.4 fragments — a TEXT/BINARY frame with FIN=0,
+-- then CONTINUATION (0x0) frames, the last FIN=1 — and inject a PING after the
+-- first fragment. This drives the #1959 client-side reassembly path (continuation
+-- + interleaved control) over the REAL cqueues socket on the Lua-5.1 target,
+-- which the pure busted spec can't reach. Default 0 = no fragmentation.
+local FRAGMENT = tonumber(os.getenv("WS_ECHO_FRAGMENT") or "0") or 0
+
+-- Echo `payload` (opcode = the client's data opcode) back to the socket, either
+-- as one frame or as FRAGMENT-byte fragments with an interleaved ping.
+local function echo_payload(sock, opcode, payload)
+  if FRAGMENT <= 0 or #payload <= FRAGMENT then
+    sock:write(ws_frame.encode(opcode, payload)); sock:flush()
+    return
+  end
+  local pos, first = 1, true
+  while pos <= #payload do
+    local chunk = payload:sub(pos, pos + FRAGMENT - 1)
+    local last = (pos + FRAGMENT) > #payload
+    local op = first and opcode or ws_frame.OP_CONTINUATION
+    sock:write(ws_frame.encode(op, chunk, nil, last))  -- fin=last
+    sock:flush()
+    if first then
+      -- §5.4: a control frame between message fragments. The client must pong
+      -- this WITHOUT corrupting the in-progress reassembly.
+      sock:write(ws_frame.encode(ws_frame.OP_PING, "mid")); sock:flush()
+      first = false
+    end
+    pos = pos + FRAGMENT
+  end
+end
+
 local function serve(sock, crypto)
   sock:setmode("b", "b")
   if not handshake(sock, crypto) then sock:close(); return end
@@ -65,10 +97,8 @@ local function serve(sock, crypto)
       elseif frame.opcode == ws_frame.OP_PONG then
         -- ignore
       else
-        local out = ws_frame.encode(frame.opcode, frame.payload)
-        local ok, werr = sock:write(out)
-        sock:flush()
-        dbg("echoed", #out, "bytes, write ok=", tostring(ok), "err=", tostring(werr))
+        dbg("echoing", #frame.payload, "byte payload, fragment=", tostring(FRAGMENT))
+        echo_payload(sock, frame.opcode, frame.payload)
       end
     elseif frame == false then
       break

@@ -174,4 +174,75 @@ function M.new_client_key(rand16_fn, base64_fn)
   return base64_fn(rand16_fn(16))
 end
 
+-- ── message reassembly (RFC 6455 §5.4) ───────────────────────────────────────
+--
+-- decode() returns ONE frame at a time; a single application message may be
+-- split across a leading data frame (TEXT/BINARY, FIN=0) plus CONTINUATION
+-- (0x0) frames, with control frames (ping/pong/close) optionally interleaved.
+-- The server (and intermediaries — Render's edge re-fragments large outbound
+-- frames at ~4 KiB, #1959) can split a large `policy` push this way, so the
+-- agent MUST reassemble or it truncates the snapshot to garbage.
+--
+-- This is the part of the cqueues client's recv loop that has no I/O, so it
+-- lives here (PURE, no cqueues) where it is unit-tested on the dev host AND
+-- runs identically under OpenWrt Lua 5.1 — the same split the rest of this
+-- module uses. The cqueues client (ws_client:recv) feeds each decoded frame to
+-- push() and acts on the verdict.
+--
+-- reassembler() → object with push(frame) → (status, a, b):
+--   "message", opcode, payload  — a complete application message (the START
+--                                 data opcode + concatenated payload). Returned
+--                                 for an unfragmented data frame, or the final
+--                                 CONTINUATION of a fragmented one.
+--   "control", opcode, payload  — a control frame (ping/pong/close); the caller
+--                                 handles it (pong/close) and keeps reading.
+--                                 Reassembly state is untouched (§5.4 allows
+--                                 control frames between message fragments).
+--   "more"                      — fragment accepted; need more frames.
+--   "error",  reason            — a protocol violation; the caller must drop the
+--                                 connection. reason ∈ { unexpected_continuation,
+--                                 interleaved_data, fragmented_control }.
+local Reassembler = {}
+Reassembler.__index = Reassembler
+
+function M.reassembler()
+  return setmetatable({ op = nil, parts = nil }, Reassembler)
+end
+
+function Reassembler:push(frame)
+  local opcode = frame.opcode
+
+  -- Control frames (0x8..0xF) are never part of a data message and MUST NOT be
+  -- fragmented (§5.5). They pass straight through; an in-progress fragmented
+  -- data message is unaffected.
+  if opcode >= 0x8 then
+    if not frame.fin then return "error", "fragmented_control" end
+    return "control", opcode, frame.payload
+  end
+
+  if opcode == M.OP_CONTINUATION then
+    if not self.op then return "error", "unexpected_continuation" end
+    self.parts[#self.parts + 1] = frame.payload
+    if not frame.fin then return "more" end
+    local payload = table.concat(self.parts)
+    local start_op = self.op
+    self.op, self.parts = nil, nil          -- reset for the next message
+    return "message", start_op, payload
+  end
+
+  -- A data frame (TEXT/BINARY). A NEW data frame while a message is still being
+  -- assembled is illegal — only continuations and control frames may follow a
+  -- FIN=0 data frame (§5.4).
+  if self.op then return "error", "interleaved_data" end
+
+  if frame.fin then                          -- the common unfragmented case
+    return "message", opcode, frame.payload
+  end
+
+  -- Start of a fragmented message: remember the opcode, buffer the first chunk.
+  self.op = opcode
+  self.parts = { frame.payload }
+  return "more"
+end
+
 return M
