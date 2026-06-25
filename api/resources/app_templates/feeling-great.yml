@@ -27,6 +27,11 @@ icon_type: url
 # active for the same device/window (co-presence rule, #1888), and — per S4
 # most-permissive enforcement — carve into `extraAllowed` whenever Feeling Great
 # resolves to Allowed but are NEVER added to a drop set when it is blocked.
+# (`events.launchdarkly.com` also sits on the GLOBAL allow+suppress list
+# `InfraHosts.canonical` (#1503); the overlap is intentional and harmless — that
+# list handles the fleet-wide never-block + presence-suppression for the
+# analytics-events subdomain, while this `shared_hosts:` tag adds per-app
+# co-presence attribution for the rest of the launchdarkly.com surface.)
 hosts:
   - app.feelinggreat.com
 shared_hosts:
