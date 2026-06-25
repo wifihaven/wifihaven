@@ -33,6 +33,12 @@ export WH_CURL_MAX_ATTEMPTS=5
 # shellcheck source=scripts/e2e/lib/curl-retry.sh
 source "$HERE/curl-retry.sh"
 
+# Override sleep so the backoff schedule can be asserted without real waiting.
+# Records each requested duration to $SLEEP_LOG; default tests use base 0 so
+# this just records 0s harmlessly.
+SLEEP_LOG="$WORK/sleeps"; : >"$SLEEP_LOG"
+sleep() { printf '%s\n' "$1" >>"$SLEEP_LOG"; }
+
 FAILED=0
 check() { if [ "$2" = "$3" ]; then echo "  ✓ $1"; else echo "  ✗ $1: expected '$3', got '$2'" >&2; FAILED=1; fi; }
 
@@ -82,6 +88,15 @@ check "conn-reset rc 52 retries (attempts)" "$ATTEMPTS" "2"
 # Non-transient hard failure (rc 6 couldn't resolve host) → fail-fast.
 run "6::curl: (6) Could not resolve host" -fsS http://x
 check "non-transient rc 6 fails fast (attempts)" "$ATTEMPTS" "1"
+
+echo "▶ backoff schedule (#1964 — capped exponential)"
+# base=1, cap=8, 6 attempts, persistent 5xx → 5 retries with sleeps
+# 1,2,4,8,8 (the 5th is 16 capped to 8); the 6th attempt gives up, no sleep.
+: >"$SLEEP_LOG"
+WH_CURL_BACKOFF_SECS=1 WH_CURL_BACKOFF_MAX=8 WH_CURL_MAX_ATTEMPTS=6 \
+  run "0:503:" -s -o /dev/null -w '%{http_code}' http://x
+SCHEDULE=$(tr '\n' ' ' <"$SLEEP_LOG" | sed 's/ $//')
+check "escalating backoff capped at 8s" "$SCHEDULE" "1 2 4 8 8"
 
 echo
 if [ "$FAILED" = 0 ]; then echo "ALL PASS"; else echo "FAILURES"; exit 1; fi
