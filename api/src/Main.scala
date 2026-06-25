@@ -341,7 +341,11 @@ object Main extends ZIOAppDefault {
         alertRepo,
         hsRepo,
       )
-      wsRegistry <- RouterWsRegistry.make
+      wsRegistry    <- RouterWsRegistry.make
+      // #1968: the browser-facing SPA websocket registry (S1). A FORK of the router registry pattern
+      // (design §5.1), not a generalization — keyed by per-connection id + role with a subscription
+      // set. Additive: REST stays the fallback throughout the rollout (no flag day).
+      spaWsRegistry <- SpaWsRoutes.registry
       dbHealthCheck = sql"SELECT 1".query[Int].unique.transact(xa).unit
     } yield {
       // #1177: split the route composition into typed chunks. A flat `++` chain across
@@ -459,6 +463,10 @@ object Main extends ZIOAppDefault {
             policy,
           ) ++
           RouterMetricsRoutes.routes(routerAuth, routerMetrics) ++
+          // #1968: additive browser-facing websocket endpoint (`GET /api/ws`, S1). Skeleton only —
+          // envelope demux + subscription registry; upgrade auth is S2, push sources S3/S4. The SPA
+          // has no ws client yet (S5), so this reads idle in prod until then.
+          SpaWsRoutes.routes(spaWsRegistry, clock) ++
           AlertRoutes.routes(
             auth,
             alertRepo,

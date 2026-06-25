@@ -2,6 +2,7 @@ package wifihaven.api.feature
 
 import wifihaven.api.routes.{SpaWsRegistry, SpaWsRoutes}
 import wifihaven.shared.Clock
+import wifihaven.testinfra.*
 import zio.{Clock as _, *}
 import zio.http.*
 import zio.http.ChannelEvent.UserEvent

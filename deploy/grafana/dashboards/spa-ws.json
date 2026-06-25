@@ -1,0 +1,324 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "WifiHaven SPA websocket transport (#1968, design docs/design/spa-websocket.md, epic #1860): server-side health for the browser-facing /api/ws endpoint. Panels target ONLY the series the API actually emits today (S1) — spa_ws_connections_active{role} + spa_ws_subscriptions_active{topic} (SpaWsRegistry) and spa_ws_frames_total{op,direction,result} (SpaWsRoutes demux). The SPA has no ws client yet (S5), so until then these read 0/flat. Upgrade-auth (spa_ws_auth_total, S2) and push fan-out (spa_ws_push_total, S3/S4) panels land with those series. Labels are bounded enums only per the §4 cardinality firewall (no per-mac/profile/session/param label). datasource/env are templated for per-environment view.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "title": "SPA ws connections active by role (#1968)",
+      "description": "spa_ws_connections_active{role} — live count of open /api/ws channels per role (admin|adult|child), refreshed on every register/deregister so it ages out cleanly on disconnect. The \"how many browser tabs are on the ws transport right now?\" signal; 0 while the dashboard still polls means no SPA ws client has shipped yet (that is S5).",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (role) (spa_ws_connections_active{env=\"$env\"})",
+          "legendFormat": "{{role}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "title": "SPA ws subscriptions active by topic (#1968)",
+      "description": "spa_ws_subscriptions_active{topic} — live subscriptions per topic (trafficUsage|now|connectionEvents|timeStatus|appUsage|stale). Shows what the fleet is actually watching, and (once S4 lands) that the trafficUsage aggregator's query work is bounded to demand — no subscriber, no query. NOTE: no bucket/groupBy/profileId label — those params are unbounded and deliberately kept out of the metric (design §7).",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "id": 2,
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (topic) (spa_ws_subscriptions_active{env=\"$env\"})",
+          "legendFormat": "{{topic}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "title": "SPA ws frame rate by op/direction/result (#1968)",
+      "description": "sum by (op, direction, result) (rate(spa_ws_frames_total[5m])) — frame throughput across the {op,payload} demux. op ∈ {hello,ready,subscribe,unsubscribe,ack,ping,pong,unknown}; direction ∈ {in,out}; result ∈ {ok,reject,unknown_op}. A rising result=reject share means clients are sending frames the server rejects (e.g. a subscribe to a topic the role can't see); result=unknown_op is the forward-compat counter for frames whose op the server does not recognize (design §2.2).",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "id": 3,
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "cps",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "lineWidth": 1,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (op, direction, result) (rate(spa_ws_frames_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{op}} {{direction}} {{result}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "title": "SPA ws reject + unknown_op rate (#1968)",
+      "description": "sum by (op, result) (rate(spa_ws_frames_total{result=~\"reject|unknown_op\"}[5m])) — the error surface of the transport isolated. Steady non-zero here is the first sign client and server disagree on the wire: result=reject is a subscribe the server refused (unknown/forbidden topic), result=unknown_op is an op one side hasn't shipped yet (forward-compat — ignored, design §2.2).",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "id": 4,
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "cps",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (op, result) (rate(spa_ws_frames_total{env=\"$env\",result=~\"reject|unknown_op\"}[5m]))",
+          "legendFormat": "{{op}} {{result}}",
+          "refId": "A"
+        }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": [
+    "wifihaven",
+    "spa",
+    "websocket"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": true,
+          "text": "prod",
+          "value": "prod"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Environment",
+        "multi": false,
+        "name": "env",
+        "options": [
+          {
+            "selected": true,
+            "text": "prod",
+            "value": "prod"
+          },
+          {
+            "selected": false,
+            "text": "staging",
+            "value": "staging"
+          }
+        ],
+        "query": "prod,staging",
+        "skipUrlSync": false,
+        "type": "custom"
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": "grafanacloud-wifihaven-prom",
+          "value": "grafanacloud-prom"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "datasource",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "",
+  "title": "WifiHaven — SPA WS transport",
+  "uid": "wifihaven-spa-ws-transport",
+  "version": 1,
+  "weekStart": ""
+}

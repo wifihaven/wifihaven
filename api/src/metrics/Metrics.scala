@@ -80,6 +80,15 @@ object MetricGuard {
       // `usage_shared_host_attribution_total`. A fixed 3-value enum (attributed /
       // split / other); bounded, so it satisfies the §4 cardinality firewall.
       "outcome",
+      // #1968 — SPA-websocket transport (server side). `role` is the connection's
+      // resolved UserRole (admin | adult | child — a fixed 3-value enum), `topic`
+      // is the subscribable SpaTopic wire name (trafficUsage | now |
+      // connectionEvents | timeStatus | appUsage | stale — a fixed 6-value enum).
+      // Both bounded by the protocol vocabulary, NOT by user/profile/session growth
+      // (params such as profileId are deliberately kept OUT of labels, design §7),
+      // so they satisfy the §4 cardinality firewall.
+      "role",
+      "topic",
     )
 
   /**
@@ -222,6 +231,19 @@ object MetricGuard {
     // firewall would reject both names as unknown_name and the series would never emit.)
     "policy_snapshot_build_total"               -> Set("result"),
     "router_ws_policy_push_total"               -> Set("result"),
+    // #1968 — SPA-websocket transport (server side, design `docs/design/spa-websocket.md` §7).
+    // `spa_ws_connections_active` is the live count of open /api/ws channels per `role`
+    // (admin|adult|child), refreshed on every register/deregister so a role's series ages out to 0
+    // on disconnect. `spa_ws_frames_total` counts every frame demuxed/sent: `op` ∈ {hello, ready,
+    // subscribe, unsubscribe, ack, ping, pong, unknown} (the fixed SPA envelope vocabulary),
+    // `direction` ∈ {in, out}, `result` ∈ {ok, reject, unknown_op}. `spa_ws_subscriptions_active`
+    // is the live count of subscriptions per `topic` (the SpaTopic enum). All bounded enums — no
+    // per-mac / per-profile / per-session / param dimension ever rides a ws metric. (The
+    // spa_ws_auth_total / spa_ws_push_total families land with S2/S3/S4, when they are first
+    // emitted — added then, not now, so every Allowed entry maps to a live call site.)
+    "spa_ws_connections_active"                 -> Set("role"),
+    "spa_ws_frames_total"                       -> Set("op", "direction", "result"),
+    "spa_ws_subscriptions_active"               -> Set("topic"),
     // #1848 — AGENT-side websocket transport metrics. The wifihaven-ws sidecar has no metrics
     // registry of its own, so it writes a cumulative tally that the agent folds into its
     // /api/router/metrics push (the server attaches router_id / installation_id, as for every
@@ -552,6 +574,28 @@ object AppMetrics {
   // = the send failed (a racing disconnect) and the channel is dropped. Bounded enum.
   def recordWsPolicyPush(result: String): UIO[Unit] =
     MetricGuard.counter("router_ws_policy_push_total", Map("result" -> result))
+
+  // ── SPA websocket transport (#1968) ──────────────────────────────────────────
+  // The browser-facing /api/ws endpoint (design `docs/design/spa-websocket.md` §7).
+  // Set by SpaWsRegistry on every register/deregister/subscribe/unsubscribe: the
+  // live count of open channels per `role` and live subscriptions per `topic`,
+  // recomputed and re-published across the bounded role/topic enums so a label whose
+  // count fell to zero is set 0 rather than left stale. recordSpaWsFrame is emitted
+  // from SpaWsRoutes for every frame demuxed (`direction=in`) or sent (`out`); `op`
+  // is the SPA envelope discriminator, `result` ∈ {ok, reject, unknown_op}. All
+  // bounded enums — never a per-mac / per-profile / per-session / param dimension.
+
+  def setSpaWsConnectionsActive(role: String, count: Int): UIO[Unit] =
+    MetricGuard.gauge("spa_ws_connections_active", Map("role" -> role), count.toDouble)
+
+  def setSpaWsSubscriptionsActive(topic: String, count: Int): UIO[Unit] =
+    MetricGuard.gauge("spa_ws_subscriptions_active", Map("topic" -> topic), count.toDouble)
+
+  def recordSpaWsFrame(op: String, direction: String, result: String): UIO[Unit] =
+    MetricGuard.counter(
+      "spa_ws_frames_total",
+      Map("op" -> op, "direction" -> direction, "result" -> result),
+    )
 
   // §5.1 — server-side histogram boundaries for the router-pushed duration histograms. The agent
   // (#1206) reports cumulative bucket counts on these same boundaries; RouterMetricsService folds
