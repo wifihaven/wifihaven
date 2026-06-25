@@ -135,26 +135,32 @@ ride the rollup tables on request/response and are *not* streamed
 
 ### 1.2 Server→SPA message catalog
 
-| `op` | Class | Payload | Drives (dashboard element) | Source |
-|---|---|---|---|---|
-| `throughput` | (1) | `ThroughputTick` (§1.3) | overall in/out gauge **+** per-profile ▲▼ on NOW card headers (#747) | API aggregator over the #1023 usage stream (§5.3) |
-| `now` | (2) | `DashboardNow` (existing body, verbatim) | NOW active cards; derived "Online now / Blocked now" KPIs | recompute on change (§5.2), reusing the `/api/dashboard/now` builder |
-| `blocked` | (2) | one blocked `QueryLog` row (existing `/api/logs` row shape) | Most Recently Blocked feed (prepend) | connection-events ingest (§5.2) |
-| `timeStatus` | (2) | `ProfileTimeStatus[]` (existing `/api/time/status` body) | per-profile **used / remaining** bars (live), "profiles over limit" KPI | usage credit + #1849 ticker + extension grant (§5.2), via `TimeStatusService.dayStateAllLive` |
-| `appUsage` | (2) | per-app engaged-minutes (existing `/api/profiles/{id}/usage-by-app` body) | per-app **minutes-used** rows (live) on the expanded profile / screen-time view | same triggers, via `Presence.appSecondsForProfile` |
-| `stale` | (3) | `{ topic, scope? }` (bounded `topic` enum) | invalidate a class-(3) query (profiles/devices/schedules/blocklists) | the relevant write site (§5.2) |
-| `ready` | — | `{ role, serverTime }` | flips the live indicator to "live" | upgrade (§4) |
-| `ping`/`pong` | — | `{}` | heartbeat (§6.2) | — |
+Every server→SPA push is **gated on a subscription** (§1.4) — the client receives
+only the topics it asked for, with the parameters it asked for. The `Params`
+column is what the client sends in `subscribe`.
 
-SPA→server: `hello` (`{clientVersion, subscribe?:[…]}`), `reauth` (`{ticket}`,
-§4.3), `ping`/`pong`. **Unknown `op` → ignore + meter**, both directions
-(forward-compat, mirrors [`RouterWsRoutes.dispatch`](../../api/src/routes/RouterWsRoutes.scala)).
+| `op` | Class | Params (subscription) | Payload | Drives (dashboard element) | Source |
+|---|---|---|---|---|---|
+| `throughput` | (1) | **`window` ∈ {5s,1m,5m,10m}** | `ThroughputTick` (§1.3) | overall in/out gauge **+** per-profile ▲▼ on NOW cards (#747) | API aggregator over the #1023 usage stream (§5.3) |
+| `now` | (2) | — | `DashboardNow` (existing body) | NOW active cards; derived "Online/Blocked now" KPIs | recompute on change (§5.2), reusing the `/api/dashboard/now` builder |
+| `blocked` | (2) | — | one blocked `QueryLog` row (existing `/api/logs` shape) | Most Recently Blocked feed (prepend) | connection-events ingest (§5.2) |
+| `timeStatus` | (2) | — (all authorized profiles) | `ProfileTimeStatus[]` (existing `/api/time/status` body) | per-profile **used/remaining** bars; "over limit" KPI | usage credit + #1849 ticker + extension grant (§5.2), via `TimeStatusService.dayStateAllLive` |
+| `appUsage` | (2) | **`profileId`** (the expanded card) | per-app minutes (existing `/api/profiles/{id}/usage-by-app` body) | per-app **minutes-used** rows (live) | same triggers, via `Presence.appSecondsForProfile` |
+| `stale` | (3) | — | `{ topic, scope? }` (bounded `topic` enum) | invalidate a class-(3) query | the relevant write site (§5.2) |
+| `ready` | — | — | `{ role, serverTime }` | flips the live indicator to "live" | upgrade (§4) |
+| `ping`/`pong` | — | — | `{}` | heartbeat (§6.2) | — |
+
+SPA→server: `hello` (`{clientVersion}`), **`subscribe` (`{topic, params?}`)**,
+**`unsubscribe` (`{topic}`)**, `reauth` (`{ticket}`, §4.3), `ping`/`pong`.
+**Unknown `op` → ignore + meter**, both directions (forward-compat, mirrors
+[`RouterWsRoutes.dispatch`](../../api/src/routes/RouterWsRoutes.scala)).
 
 ### 1.3 The one new shape — `ThroughputTick`
 
 ```jsonc
-// op:"throughput" payload — bytes-per-second rates as of `asOf`
+// op:"throughput" payload — bytes-per-second rates averaged over `window`, as of `asOf`
 {
+  "window": "1m",                                  // which averaging window this tick is for
   "asOf": "2026-06-24T14:31:02Z",
   "overall":     { "inBps": 1840000, "outBps": 240000 },
   "perProfile": [
@@ -164,30 +170,79 @@ SPA→server: `hello` (`{clientVersion, subscribe?:[…]}`), `reauth` (`{ticket}
 }
 ```
 
-- **Rates, not cumulative bytes** — the SPA renders a gauge/sparkline, not a
-  counter; the server does the rate math once (§5.3) so every tab doesn't
+- **`window` ∈ {5s, 1m, 5m, 10m}** — the user-choosable averaging window
+  (§1.4). The rate is the mean B/s over the trailing `window`; the field tells the
+  client which display the tick is for (a client may show one window, or hold more
+  than one subscription). The 5 s window reads as near-instantaneous; the 10 m
+  window is a smooth trend.
+- **The window is a *subscription parameter*, not a payload-multiplier.** The
+  server emits only the window(s) a connection subscribed to, **at a
+  window-appropriate cadence** (a 10 m average barely moves in 5 s, so it ticks
+  ~every 30 s, while a 5 s window ticks ~every 5 s) — see §1.4/§5.3. This is the
+  concrete reason subscriptions matter: without them every client would receive
+  every window at the fastest cadence.
+- **Rates, not cumulative bytes** — the SPA renders a gauge/sparkline; the server
+  does the windowed-rate math once per window (§5.3) so every tab doesn't
   re-derive it (single-source-of-truth for the rate).
-- **Overall + per-profile only.** Per-device / per-host throughput is deliberately
+- **Overall + per-profile only.** Per-device/host throughput is deliberately
   **off** the dashboard ([`dashboard-redesign.md` §8.1](dashboard-redesign.md));
   the same tick *shape* could carry a `perDevice` array for a future `/devices`
-  live view, but v1 emits only overall + per-profile.
-- **Bounded size** — one entry per active profile (households have ≤ ~10), well
-  under any frame cap.
-- **A profile absent from `perProfile`** is idle (0 B/s) — the client zeroes it;
-  the tick never grows with history.
+  view, but v1 emits only overall + per-profile.
+- **Bounded size** — one entry per active profile (households ≤ ~10); a profile
+  absent from `perProfile` is idle (client zeroes it); the tick never grows with
+  history.
 
 This is the only addition to `web/src/types/api.ts`; `now`/`blocked`/`stale`
 payloads reuse shapes that already exist there.
 
-### 1.4 hello / subscribe
+### 1.4 Subscriptions — first-class, so a tab gets only what it shows
 
-On connect the SPA sends `hello` once. `subscribe` is an **optional** topic
-filter (a child-role tab rendering only its own time-status need not receive
-`throughput`); omitted → the server pushes everything the role is authorized for
-(§4.4). v1 ships omit-everything-authorized; the filter is the forward-compat seam
-and is honored if sent. The server replies `ready`; the client flips its
-indicator to "live" only after `ready` (a socket that upgrades but never `ready`s
-must not read as live).
+**Subscriptions are a v1 requirement, not a deferred seam.** A connection receives
+a topic **only if it has subscribed to it** (and is authorized, §4.4). This is how
+"only get the data we need over the ws" is achieved: a dashboard tab subscribes
+`throughput`/`now`/`blocked`/`timeStatus`; a `/profiles` tab subscribes
+`timeStatus` + `appUsage{profileId}` for the expanded card; a backgrounded or
+narrow view subscribes little. Nothing is pushed to a connection that didn't ask.
+
+**Protocol.**
+
+```jsonc
+// after `ready`, the client declares what it wants — and updates it as the UI changes
+{ "op": "subscribe",   "payload": { "topic": "throughput", "params": { "window": "1m" } } }
+{ "op": "subscribe",   "payload": { "topic": "appUsage",   "params": { "profileId": 3 } } }
+{ "op": "unsubscribe", "payload": { "topic": "throughput" } }
+```
+
+- **Lifecycle = the mounted UI.** A hook subscribes on mount, unsubscribes on
+  unmount (e.g. the throughput gauge subscribes `throughput{window}` and
+  **re-subscribes with the new `window` when the user picks 5s/1m/5m/10m from the
+  selector** — server replaces that connection's prior `throughput` subscription).
+  Expanding a profile card subscribes `appUsage{profileId}`; collapsing it
+  unsubscribes. So per-connection traffic tracks exactly what's on screen.
+- **Server holds subscriptions per-connection** in the channel's registry state
+  (§5.1) — `{topic → params}`. Fan-out checks the set before sending; the
+  throughput aggregator (§5.3) computes a `(scope, window)` rate only while ≥1
+  connection subscribes that window, and picks the emit cadence from the window.
+- **Authorization still gates** on top of subscription: subscribing a topic the
+  role can't see is rejected (`ack` reject); per-profile rows are filtered to the
+  profiles the role may view (§4.4). Subscription narrows; authz constrains.
+- **`ack` per subscribe** (`{op:"ack", topic, status:"ok"|"reject", reason?}`) so
+  the client knows the subscription took (and isn't silently waiting on a topic
+  the server refused).
+- **Reconnect re-subscribes.** Subscriptions are connection-scoped and **not**
+  durable across a reconnect; on reconnect the client replays its current
+  subscription set (§6.1) — the server starts each connection subscribed to
+  nothing.
+
+**Defaults.** There is no "subscribe to everything" default — the explicit
+opt-in *is* the data-minimization. A view with no subscriptions receives only
+`ready` + heartbeats. (`stale` class-(3) topics may be bundled into a single cheap
+`subscribe{topic:"stale"}` since they are contentless nudges, or subscribed
+individually; either is fine — they are tiny.)
+
+The server replies `ready` right after upgrade; the client flips its indicator to
+"live" only after `ready` (a socket that upgrades but never `ready`s must not read
+as live), then sends its `subscribe` frames.
 
 ---
 
@@ -239,13 +294,17 @@ one-size-fits-all:
 
 ### 3.1 Class (1) throughput — direct to a live store, not the resource cache
 
-A `throughput` tick is a stream sample, not a cache entry. The `useWsThroughput()`
-hook holds the latest tick (a small `useSyncExternalStore` or a dedicated query
-key updated via `setQueryData`) and feeds the overall gauge + per-profile card
+A `throughput` tick is a stream sample, not a cache entry. The
+`useWsThroughput(window)` hook **subscribes `throughput{window}` on mount and
+re-subscribes when the user changes the window selector** (5s/1m/5m/10m, §1.4),
+holds the latest tick (a small `useSyncExternalStore` or a dedicated query key
+updated via `setQueryData`), and feeds the overall gauge + per-profile card
 headers. There is nothing to invalidate and no `GET` to refetch — when the socket
 is down the gauge shows "—" (its only fallback; the 24 h volume on `/usage`
 answers the historical question). Latest-wins: a new tick replaces the prior one
-(§6.3).
+(§6.3). A tick whose `window` doesn't match the current selection is ignored
+(covers the brief overlap right after a window change before the old subscription
+is torn down).
 
 ### 3.2 Class (2) NOW + blocked — push carries data, patch the cache
 
@@ -389,14 +448,18 @@ The two differ on the three axes a registry *is*:
 | Axis | `RouterWsRegistry` (#1846) | `SpaWsRegistry` (this design) |
 |---|---|---|
 | **Key** | `RouterId` | per-connection id + `role` (a user may have N tabs, §6.4) |
-| **Fan-out payload** | full `PolicySnapshot` | the §1.2 op vocabulary (`throughput`/`now`/`blocked`/`stale`), role-filtered |
+| **Per-channel state** | just the channel | channel + **subscription set `{topic → params}`** (§1.4) + `jwtExp` |
+| **Fan-out payload** | full `PolicySnapshot` | the §1.2 op vocabulary, role-filtered **and** subscription-gated |
 | **Event vocabulary** | one event (policy changed) | several (throughput tick, NOW change, new blocked event, class-3 mutations) |
 
 Generalizing one registry across two key types + two payload vocabularies couples
 things that share only the *shape* "a `Ref` of channels with a fan-out method."
 Reuse the **pattern**, not the instance — `SpaWsRegistry` is the same
-`Ref[Map[K, Set[WebSocketChannel]]]` with SPA-appropriate K, payloads, and
-metrics. (Also holds the ticket store, §4.2.)
+`Ref[Map[K, Channel+subscriptions]]` shape with SPA-appropriate K, payloads, and
+metrics. (Also holds the ticket store, §4.2.) **Fan-out is two gates: a topic is
+sent to a channel only if the channel both *subscribed* to it (§1.4) and is
+*authorized* for it (§4.4).** The subscription set is the data-minimization
+mechanism; the registry is where it lives.
 
 ### 5.2 The change sources — consume existing write sites (don't rebuild)
 
@@ -446,13 +509,26 @@ batch. Design:
   idempotent for rollups); the `throughput` sample is high-frequency/low-fidelity
   (per-mac totals, display-only, lossy-OK). Conflating them would make `usage` too
   chatty or throughput too coarse. (Filed as a #1023 sub-issue, §9 **S0**.)
-- **Aggregate.** The API maps `mac → profile` (it already does) and maintains a
-  rolling overall + per-profile B/s (last-sample rate or short EWMA). This is the
-  **one** place the rate is computed (SSOT) — every tab consumes the same tick.
-- **Push.** Emit a `throughput` tick (§1.3) to SPA connections on a fixed cadence
-  (~2 s), latest-wins (§6.3). If #1023's realtime usage isn't available yet, the
-  aggregator simply has no input and emits nothing (the gauge shows "—") — so the
-  SPA endpoint + the rest of the catalog ship independently of S0.
+- **Aggregate into the choosable windows.** The API maps `mac → profile` (it
+  already does) and maintains, from the single ~2–5 s sample stream, a rolling
+  overall + per-profile mean B/s for **each window {5s, 1m, 5m, 10m}** (a short
+  ring buffer of recent samples, or one EWMA per window — cheap: 4 windows × small
+  fixed state). This is the **one** place the rate is computed for all windows
+  (SSOT) — every tab consumes the same windowed numbers; the client never averages
+  raw samples itself (and so can't disagree tab-to-tab, and survives reconnect
+  with no client-side history). The window set {5s,1m,5m,10m} is a small fixed
+  enum, matching the selector.
+- **Compute only subscribed windows; push at a window-appropriate cadence.** A
+  `(scope, window)` rate is maintained and pushed **only while ≥1 connection
+  subscribes that window** (§1.4) — no subscriber, no work. Emit cadence scales
+  with the window: ~5 s for the 5 s window down to ~30 s for the 10 m window (a
+  10-minute average is visually static between 5 s ticks, so ticking that fast is
+  pure waste). Each tick carries its `window` (§1.3); latest-wins per window
+  (§6.3). This per-window cadence is the payoff of making the window a
+  subscription parameter rather than shipping all four to everyone at 5 s.
+- **Degrades cleanly.** If #1023's realtime usage isn't available yet, the
+  aggregator has no input and emits nothing (gauge shows "—") — so the SPA
+  endpoint + the rest of the catalog ship independently of S0.
 
 > **Single-process fan-out**, like the router path — registries, hubs, and the
 > aggregator are in-memory, single-instance (correct for the one-API-process
@@ -468,10 +544,13 @@ batch. Design:
 Exponential backoff + jitter (1 s → 2 s → 4 s → … cap 30 s), reset on `ready`
 (not merely socket `open`). Reconnect *is* the throttle; no per-frame retry. Each
 reconnect mints a **fresh ticket** (§4.2; single-use, so a reconnect can't replay
-the old one). On reconnect the client refetches the class-(2) queries once
-(`now`/`blocked`) so a change missed while disconnected converges; the throughput
-gauge resumes on the next tick. On `4401 token-expired` it stops reconnecting and
-hands off to polling + `/login` (§4.3).
+the old one) and **replays its current subscription set** (§1.4 — subscriptions
+are connection-scoped, not durable; the server starts the new connection
+subscribed to nothing). On reconnect the client also refetches the class-(2)
+queries once (`now`/`blocked`/`timeStatus`) so a change missed while disconnected
+converges; the throughput gauge resumes on the next tick of its subscribed window.
+On `4401 token-expired` it stops reconnecting and hands off to polling + `/login`
+(§4.3).
 
 ### 6.2 Heartbeat / liveness → the real "live / reconnecting" indicator
 
@@ -530,11 +609,12 @@ router-ws families ([`websocket-transport.md` §7](websocket-transport.md)).
 | Metric | Type | Labels (bounded) | Meaning |
 |---|---|---|---|
 | `spa_ws_connections_active` | gauge | `role` (`admin`\|`adult`\|`child`) | open SPA channels, refreshed on register/deregister (ages out on disconnect) |
-| `spa_ws_frames_total` | counter | `op` (enum §1.2), `direction` (`in`\|`out`), `result` (`ok`\|`reject`\|`unknown_op`) | frame throughput + unknown-op tripwire |
+| `spa_ws_frames_total` | counter | `op` (enum §1.2, incl. `subscribe`/`unsubscribe`), `direction` (`in`\|`out`), `result` (`ok`\|`reject`\|`unknown_op`) | frame throughput + unknown-op tripwire |
+| `spa_ws_subscriptions_active` | gauge | `topic` (`throughput`\|`now`\|`blocked`\|`timeStatus`\|`appUsage`\|`stale`) | live subscriptions per topic — shows what the fleet is actually watching (and, for `throughput`, that windowed work is bounded to demand). **No `window`/`profileId` label** (window is ≤4 values but profileId is unbounded — keep params out of labels) |
 | `spa_ws_auth_total` | counter | `result` (`ticket_ok`\|`ticket_invalid`\|`ticket_expired`\|`ticket_reused`\|`jwt_expired`) | ticket handshake + mid-connection expiry (§4) |
-| `spa_ws_push_total` | counter | `op` (`throughput`\|`now`\|`blocked`\|`stale`), `result` (`ok`\|`coalesced`\|`dropped`\|`channel_closed`) | per-class fan-out health + backpressure (§6.3) |
+| `spa_ws_push_total` | counter | `op` (`throughput`\|`now`\|`blocked`\|`timeStatus`\|`appUsage`\|`stale`), `result` (`ok`\|`coalesced`\|`dropped`\|`channel_closed`) | per-class fan-out health + backpressure (§6.3) |
 
-`role`/`op`/`direction`/`result` are small fixed enums — the same
+`role`/`op`/`direction`/`result`/`topic` are small fixed enums — the same
 cardinality-firewall discipline `Metrics.scala` enforces (an attacker-supplied
 `op` collapses to the literal `unknown` for the label, real value to the log
 only). **No per-entity label.**
@@ -601,11 +681,11 @@ realtime throughput):
 | # | Sub-issue | Independently shippable? | Back-compat |
 |---|---|---|---|
 | **S0** | **(in #1023) router→API lightweight `throughput` sample** — additive per-mac bytes-since-last-sample frame every ~2 s from the conntrack counters (§5.3). The realtime source for live bandwidth. | yes (additive frame; usage path unchanged) | additive |
-| **S1** | **API `/api/ws` endpoint + `{op,payload}` demux + `SpaWsRegistry`** — server skeleton, envelope/demux (`hello`→`ready`, `ping`/`pong`, unknown-op ignore+meter), per-connection registry, server metrics §7 + `spa-ws.json`. Reuses `RouterWsRoutes` patterns. REST untouched. | yes (test ws client) | additive — new route |
+| **S1** | **API `/api/ws` endpoint + `{op,payload}` demux + `SpaWsRegistry` + subscription model** — server skeleton, envelope/demux (`hello`→`ready`, `subscribe`/`unsubscribe` with per-connection subscription state + `ack`, `ping`/`pong`, unknown-op ignore+meter), per-connection registry, server metrics §7 + `spa-ws.json`. Reuses `RouterWsRoutes` patterns. REST untouched. | yes (test ws client) | additive — new route |
 | **S2** | **Ticket handshake + auth** — `POST /api/ws/ticket` (reuses `requireAuth`), single-use short-TTL store, consume-at-upgrade, `Origin` allowlist (§8), `jwtExp` close (§4.3), `reauth` seam, auth metrics. | yes | additive |
 | **S3** | **Change sources** — widen `PolicySnapshotPublisher` to a hub; add `SpaEventHub` fed by existing write sites; translate to role-filtered `stale`/`now`/`blocked` frames (§5.2). | yes (behavior-preserving for the router subscriber; testable via a probe client) | behavior-preserving |
-| **S4** | **Throughput aggregator + `throughput` push** — consume S0's samples, derive overall + per-profile B/s, push the tick (§5.3/§1.3). Emits nothing (gauge "—") until S0 lands. | yes | additive |
-| **S5** | **SPA ws client + realtime dashboard pilot** — `useWsThroughput()` (overall + per-profile gauges, #747), `now`/`blocked` cache-patching (§3.1/§3.2), `useWsLive()` indicator (§6.2), ticket-mint-then-connect, backoff (§6.1), polling-as-paused-fallback for the dashboard live sections. **This lights up the redesigned NOW + throughput + Most-Recently-Blocked** ([`dashboard-redesign.md` §8](dashboard-redesign.md), unblocks #1834/#1835). | yes (dashboard only) | additive — other views poll |
+| **S4** | **Throughput aggregator (windowed) + `throughput` push** — consume S0's samples, maintain overall + per-profile B/s for each window {5s,1m,5m,10m}, push the subscribed window(s) at window-appropriate cadence (§5.3/§1.3/§1.4). Emits nothing (gauge "—") until S0 lands. | yes | additive |
+| **S5** | **SPA ws client + realtime dashboard pilot** — `useWsThroughput(window)` with the **5s/1m/5m/10m window selector** (re-subscribes on change, #747), `now`/`blocked` cache-patching (§3.1/§3.2), subscription wiring (subscribe-on-mount/unsubscribe-on-unmount), `useWsLive()` indicator (§6.2), ticket-mint-then-connect, backoff + re-subscribe (§6.1), polling-as-paused-fallback. **Lights up the redesigned NOW + throughput + Most-Recently-Blocked** ([`dashboard-redesign.md` §8](dashboard-redesign.md), unblocks #1834/#1835). | yes (dashboard only) | additive — other views poll |
 | **S6a** | **Live time-usage push** — `timeStatus` (per-profile used/remaining) + `appUsage` (per-app minutes) class-(2) pushes (§1.2) wired to usage-credit / #1849-ticker / extension-grant (§5.2); SPA patches the time-status + per-app caches (§3.2) and pauses the adaptive ladder when `wsLive`. The `appUsage` push targets only the **live (today) window** key — past windows are immutable. Lights up the **live screen-time surface** (per-profile + per-app, /profiles). | yes | additive |
 | **S6b** | **Broaden class-(3) `stale` to alerts / profiles / devices / schedules** — add topic→invalidator entries (§3.3); pause their intervals when `wsLive`. | yes (per-view) | additive |
 | **S7** | **Retire redundant `refetchInterval`s** — per migrated view, after its push path is proven; keep the `wsLive ? false : …` fallback only where a view still has no push. The only subtractive step, per-view, operator-gated. | yes, last | per-view subtractive |
@@ -621,9 +701,13 @@ deliberate once that view's push path is proven, never armed automatically
 
 ## 10. Open questions / risks
 
-1. **Throughput cadence vs. cost.** ~2 s tick is the proposed default; the exact
-   cadence is pinned with S0 against the router's conntrack-read cost and Render's
-   frame budget. Faster than ~1 s buys little for a human-watched gauge.
+1. **Throughput windows + per-window cadence.** The user-choosable windows are
+   {5s, 1m, 5m, 10m} (§1.3/§1.4), each a subscription with its own emit cadence
+   (~5 s for 5s … ~30 s for 10m, §5.3). The exact per-window cadences and the
+   router sample interval (S0) are pinned together against the conntrack-read cost
+   and Render's frame budget. Open sub-question for the operator: is this fixed
+   four-window set right, or do you want a different/continuous set (e.g. 30s, 1h)?
+   Adding a window is additive (a new enum value + one more EWMA).
 2. **#1023 dependency for live bandwidth.** Live throughput (S4/S5's gauge) is the
    one element gated on #1023's realtime usage source (S0). Everything else (NOW,
    blocked, the endpoint, auth) ships without it; the gauge shows "—" until S0
