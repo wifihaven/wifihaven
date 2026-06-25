@@ -652,9 +652,10 @@ Operator direction (2026-06-25), three changes on top of rev 3:
    not under NOW. It is the most actionable panel — "something's blocked, who and
    why, let me fix it" — so it leads.
 2. **Recently Blocked rows carry both device *and* profile**, and the **profile is
-   a link straight to that profile's editor** (`/profiles/:profileId`) so a parent
-   can jump from a block straight to unblocking it (unpause, adjust schedule, allow
-   the host).
+   a link straight to that profile in the editor** (`/profiles?id=<profileId>` —
+   the existing scroll-to-and-highlight deep-link the Logs page already uses, #298)
+   so a parent can jump from a block straight to unblocking it (unpause, adjust
+   schedule, allow the host).
 3. **NOW filters out IoT / appliance devices** (Sonos, Lutron, thermostat, garage
    door, printers, NAS, Plex server, …) — **unless** an appliance is pushing **a
    lot of traffic**, which is a likely-compromise signal and *should* surface,
@@ -734,10 +735,13 @@ empty state — still hold):
   (a device maps to exactly one profile via the household device→profile
   assignment; the dashboard resolves it from the NOW snapshot / device list, since
   the `connectionEvents` row carries the `mac`, not the profile).
-- **The profile is a link to its editor — `/profiles/:profileId`.** This is the
+- **The profile is a link to its editor — `/profiles?id=<profileId>`.** This is the
   quick-unblock path: see "Kid Mac · *Kids* · tiktok.com · Schedule" → click
-  *Kids* → land in the Kids profile editor to unpause / adjust the schedule / add
-  an allow. It saves the parent from hunting for the right profile. (The **device**
+  *Kids* → land on `/profiles` scrolled to and highlighting the Kids profile, ready
+  to unpause / adjust the schedule / add an allow. It reuses the **existing**
+  scroll-to-and-highlight deep-link (`ProfilesPage` already honours `?id=` from the
+  Logs page, #298 — `ProfilesPage.tsx:174`), so it is no new route, just a new
+  caller. It saves the parent from hunting for the right profile. (The **device**
   name keeps its existing deep-link to that device's filtered Connection Events —
   `View all →` / clicking the device → `/usage/events?blocked=true&mac=…` — so
   "show me everything this device hit" and "take me to the policy to change it" are
@@ -790,9 +794,9 @@ rev-4 filtering is the target, gated on the classifier).
 ### 9.4 Effect on the locked plan (§7.4)
 
 - **No change to the FE chunks #1833–#1836.** Recently-Blocked-to-the-top, the
-  profile column, and the `/profiles/:id` link land in **chunk 3/4** (the NOW +
+  profile column, and the `/profiles?id=` link land in **chunk 3/4** (the NOW +
   Recently Blocked layout work, #1835/#1836) — they are layout + a derived field +
-  a deep-link, no new data path.
+  a reuse of an existing deep-link, no new route and no new data path.
 - **IoT filtering (§9.3) is a NEW backend-gated sub-task to file** (device
   classification + anomaly threshold), peer to #747 throughput — not folded into
   the existing chunks. Until it ships, NOW shows all devices; the filtering is
