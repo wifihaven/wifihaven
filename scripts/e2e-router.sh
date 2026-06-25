@@ -348,22 +348,49 @@ for kind in events usage metrics; do
 done
 pass "REST usage/events/metrics accepted (200)"
 
-# ws leg — send all three frames over one connection; every reply must be ack ok.
+# ws leg — send all three frames over one connection; each SENT frame must get
+# a matching `ack ok` (matched by op+seq). The server ALSO pushes unsolicited
+# `{op:policy}` frames (#1849 first-policy-on-connect / push-on-change), and an
+# earlier policy mutation in this script makes one land among the replies; those
+# are expected push-on-change traffic, NOT a parity violation, so we partition
+# them out before the ack check rather than asserting "every reply is an ack"
+# (the pre-#1849 assumption that broke in #1951).
 # `|| true` so a ws_send.py failure doesn't abort under `set -e` before we can
 # surface it: on error the helper prints `{"error":…}` to stdout, which the
-# ACKS_OK parse below reports verbatim in the fail message.
+# WS_PARITY parse below reports verbatim in the fail message.
 WS_REPLIES=$(printf '%s' "$PARITY" \
   | _py "import json,sys; print(json.dumps(json.load(sys.stdin)['ws_frames']))" \
   | python3 "$WS_SEND" --url "$WS_URL" --token "$RTOK" || true)
-ACKS_OK=$(printf '%s' "$WS_REPLIES" | _py "
+WS_PARITY=$(printf '%s\n%s' "$PARITY" "$WS_REPLIES" | _py "
 import json, sys
-replies = json.load(sys.stdin)
-ok = (isinstance(replies, list) and len(replies) == 3
-      and all(r.get('op') == 'ack' and (r.get('payload') or {}).get('status') == 'ok' for r in replies))
-print('ok' if ok else 'bad: ' + json.dumps(replies))
+sent = json.loads(sys.stdin.readline()).get('ws_frames', [])
+raw = sys.stdin.readline()
+if not raw.strip():
+    print('bad: ws_send produced no output (helper crashed before any reply)'); sys.exit()
+replies = json.loads(raw)
+if not isinstance(replies, list):
+    print('bad: ws_send error: ' + json.dumps(replies)); sys.exit()
+# Server→client pushes are expected #1849 traffic — partition them from the acks.
+# NB: the push-op set here must mirror ws_send.py's _PUSH_OPS (only 'policy' today).
+pushes = [r for r in replies if isinstance(r, dict) and r.get('op') == 'policy']
+acks   = [r for r in replies if isinstance(r, dict) and r.get('op') == 'ack']
+def acked_ok(op, seq):
+    return any((a.get('payload') or {}).get('op') == op
+               and (a.get('payload') or {}).get('seq') == seq
+               and (a.get('payload') or {}).get('status') == 'ok'
+               for a in acks)
+missing = ['%s#%s' % (f['op'], f['seq']) for f in sent if not acked_ok(f['op'], f['seq'])]
+if missing:
+    print('bad: unacked ' + ','.join(missing) + ' in ' + json.dumps(replies))
+else:
+    # ok[:push-count] — surface whether the #1849 push was observed (coverage,
+    # not a gate: its arrival races frame dispatch so it may land after the acks).
+    print('ok:%d' % len(pushes))
 ")
-[ "$ACKS_OK" = ok ] || fail "ws frames not all acked ok: $ACKS_OK"
-pass "ws usage/events/metrics frames each acked ok"
+case "$WS_PARITY" in
+  ok:*) pass "ws usage/events/metrics frames each acked ok (op+seq); #1849 policy pushes observed: ${WS_PARITY#ok:}, ignored" ;;
+  *)    fail "ws frames not all acked ok: $WS_PARITY" ;;
+esac
 
 # (c) Deep parity — the connection events land identically whether posted over
 # REST or ws. Read both MACs via the public /api/logs and compare the
