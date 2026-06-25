@@ -33,7 +33,6 @@ from urllib.parse import urlparse
 
 _OPCODE_CONTINUATION = 0x0
 _OPCODE_TEXT = 0x1
-_OPCODE_BINARY = 0x2
 _OPCODE_CLOSE = 0x8
 _OPCODE_PING = 0x9
 _OPCODE_PONG = 0xA
