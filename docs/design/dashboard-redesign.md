@@ -247,17 +247,40 @@ implementation sub-issues §5 called for were never filed. This section is autho
 ```
 Dashboard (h1)
   Banners            — NewDevicesHint, AccessRequestsBanner (only when present)
-  KPI strip          — Online now · Blocked now · Events (1h) · Blocked (1h)      [above the fold]
-  NOW                — freshness pill; active cards (top-3 devices + expander); idle-collapse row
-  Most Recently Blocked  — blocked-only trailing-hour feed (#1338), View all → /usage/events
+  KPI strip          — Online now · Blocked now · Events (1h) · Blocked (1h) · Bandwidth ▲/▼   [above the fold]
+  NOW                — freshness pill; active cards (top-3 devices + expander, per-profile ▲/▼); idle-collapse row
+  Recently Blocked   — TOP-LEVEL live panel: blocked-only, newest-first, device · host · reason;
+                       quick device filter; the "why isn't this working on my device?" diagnostic   [above the fold]
+  ── below the fold ──
   Blocking activity (24h) — one merged ranked-host panel; one-line empty state
   (no inline log table)
 ```
 
-The two recency/blocking elements sit adjacent and are intentionally distinct: **Most Recently
-Blocked** answers "what just got dropped?" (live, un-aggregated, 1h); **Blocking activity (24h)**
-answers "what's been getting blocked today?" (aggregated, ranked). Neither duplicates the other,
-and neither is the firehose.
+**Bandwidth tile (rev 3, §8.1).** The 5th KPI tile is the **overall household
+in/out** live gauge (▲ up / ▼ down), with a small **window selector**
+(`1m · 10m · 1h · raw`, §8.1) on the tile; the selected window drives both the
+overall tile and the per-profile ▲/▼ on the NOW cards (one bandwidth window for
+the page). It's a `trafficUsage` stream (§8.2), live like the other realtime
+elements. **Mobile:** the strip is now 5 tiles, so it reflows `grid-cols-2`
+(→ 3 rows) on mobile / `md:grid-cols-5` on desktop (supersedes the rev-1 §3
+`md:grid-cols-4` note).
+
+The two recency/blocking elements are intentionally distinct: **Recently Blocked** answers "what
+just got dropped?" (live, un-aggregated, 1h); **Blocking activity (24h)** answers "what's been
+getting blocked today?" (aggregated, ranked). Neither duplicates the other, and neither is the
+firehose.
+
+**Recently Blocked is a top-level, above-the-fold panel (rev 3, operator 2026-06-25).** It is the
+primary *diagnostic* surface: when someone says "X isn't working on my iPad," a parent glances here
+to see — within seconds, live — whether that device's traffic is being dropped and why, instead of
+digging through `/usage/events`. To serve that, each row shows **device · host · reason** (the
+`BlockReason`, e.g. Schedule / TimeLimit / category / host-block — `connectionEvents` carries it),
+and the panel offers a **quick filter by device** (and "View all →" deep-links to the device's
+`/usage/events`). It is the live `connectionEvents{blocked:true}` stream (§8.2) — newest-first,
+prepend-on-push, trailing ~1h — so a just-now block appears immediately. Promoting it above the fold
+(right under NOW) is deliberate: NOW answers "who's online," Recently Blocked answers "what's being
+blocked," and together they are the at-a-glance health/diagnosis pair. (Reachability is a
+connection-layer fact — these are real traffic-layer drops, not DNS events; DNS always resolves.)
 
 ### 7.3 Decisions on the §6 open questions
 
@@ -337,3 +360,97 @@ streaming-source wiring into chunks 2 and 3 (the live sections) as their first s
 layout changes.
 
 This note records the decision; no further dashboard PRs until #1023 lands.
+
+---
+
+## 8. Revision 3 (2026-06-24) — realtime throughput is a primary NOW element; live data contract
+
+Operator direction while finalizing the SPA-websocket design
+([#1860](https://github.com/wifihaven/wifihaven/issues/1860),
+[`docs/design/spa-websocket.md`](spa-websocket.md)): the websocket is **not** a
+"poll faster / invalidate faster" transport for the whole page — it exists to
+**stream the live surface**. That changes one rev-2 decision and pins the live
+data contract the two docs share.
+
+### 8.1 Reversal of Q2 — live throughput is in scope, as a primary NOW element
+
+Rev-2 Q2 de-scoped throughput (#747) as "backend-gated, its own follow-up." **Rev
+3 reverses that.** The dashboard must show, updating live:
+
+- **Overall household in/out** — aggregate ▲ upload / ▼ download **rate** (B/s),
+  the headline "how much is the house using right now" gauge. **Placement
+  (decided 2026-06-25): the 5th KPI-strip tile** (§7.2), carrying the window
+  selector (`1m · 10m · 1h · raw`) that also governs the per-profile gauges.
+- **Per-profile in/out** — the same ▲▼ **rate** on each active NOW profile-card
+  header (the rev-2 §3 wireframe already drew `▲2.4 ▼18` there; rev 3 makes it
+  real and live, not deferred).
+
+This is the single most-requested live element and the main reason the dashboard
+is stream-gated. Per-**device** / per-**host** throughput stays **off** the
+dashboard (→ `/devices`, `/profiles`) — the dashboard shows overall + per-profile
+only, consistent with the rev-2 "glanceable, not analytics" principle.
+
+> Bandwidth is **not** new data — `traffic_reports` already holds directional
+> bytes, surfaced by `GET /api/usage/traffic` (`TrafficUsageResponse`,
+> `totalBytesIn`/`totalBytesOut` per group). So live bandwidth is just that
+> existing read model **streamed**: overall/per-profile = `groupBy ∈ {∅,profile}`,
+> the averaging window = its `bucket`, and the client derives B/s from
+> bytes-over-bucket. No new shape — see [`spa-websocket.md` §1.3](spa-websocket.md)
+> (`trafficUsage` topic). The same topic powers the **Traffic Usage page**, which
+> still loads its **history via the existing `GET`** and only takes the **live
+> edge** (the current bucket advancing) from the socket — the stream isn't a
+> replacement for the historical query. (Granularity floor is `1m`, the
+> `traffic_reports` bucket; fully-realtime uses the `raw` bucket, which streams the
+> live edge at the router's usage-send cadence — no bespoke sample, no router
+> change. `spa-websocket.md` §5.3/§10 Q1.)
+
+### 8.2 The dashboard's live data contract (what streams vs. what stays request/response)
+
+This table is the **input to the websocket message catalog** in
+[`spa-websocket.md` §1](spa-websocket.md); the two must agree, and
+[`spa-websocket.md` §1.2](spa-websocket.md) is the **authoritative `op` list** if
+they ever diverge. Each dashboard section is classified by how it gets its data:
+
+| Dashboard section | Class | Source after #1860 |
+|---|---|---|
+| **Overall in/out bandwidth** (§8.1, **5th KPI tile** w/ window selector) | **streamed read model** | `trafficUsage` (`groupBy:∅`) — streams existing `TrafficUsageResponse`; no new shape |
+| **Per-profile in/out bandwidth** (§8.1, on NOW card headers) | **streamed read model** | same `trafficUsage` topic, `groupBy:["profile"]` |
+| **NOW** active cards (who's online / watching) | **pushed live snapshot** | `DashboardNow` body pushed on change (reuses today's `/api/dashboard/now` shape) |
+| **Recently Blocked** — top-level diagnostic panel (#1338) | **pushed live append** | `connectionEvents{blocked:true}` — reuses the `/api/logs` row shape; the quick device filter maps to the topic's `macs` param; same topic streams the Connection Events page |
+| **KPI: Online now / Blocked now** | **derived from the NOW push** | computed client-side off the pushed `DashboardNow`; no separate stream |
+| **KPI: Events (1h) / Blocked (1h)** | request/response | small enough to leave on a slow poll / invalidate; not realtime-critical |
+| **Blocking activity (24h)** panel | request/response | rollup tables (#809); explicitly **not** streamed (rev-2 §7.5 already said so) |
+
+The rule the operator stated: **stream the things that need to move in realtime
+(bandwidth, NOW, just-blocked, live time-usage); leave everything that is
+genuinely a cacheable resource on request/response.** The websocket design
+(`spa-websocket.md`) is built around exactly this split, not a blanket "invalidate
+every query."
+
+> **Live time-usage** (per-profile used/remaining + per-app minutes, counting up
+> in realtime) is also streamed — see [`spa-websocket.md` §1.2](spa-websocket.md)
+> (`timeStatus` / `appUsage`). Its primary home is `/profiles` (the screen-time
+> view), not a `/dashboard` section, so it isn't in the table above — but on the
+> dashboard it backs the "profiles over limit" KPI, which therefore updates live
+> off the same `timeStatus` push. It replaces today's adaptive refetch ladder
+> (`TIME_STATUS_REFETCH_LADDER`), which exists only because there was no push.
+
+### 8.3 Effect on the locked plan (§7.4)
+
+No sub-issue is added or removed here; the chunk-2/chunk-3 "fold the streaming
+source in first" step (§7.5) is now concrete:
+
+- **chunk 2/3** (NOW + KPI, #1834/#1835) consume the `DashboardNow` push and the
+  derived KPIs — as already planned.
+- **#747 bandwidth** is **no longer a deferred standalone** — it becomes part of
+  the websocket dashboard pilot ([`spa-websocket.md` §9](spa-websocket.md)),
+  streaming the existing `GET /api/usage/traffic` read model (`trafficUsage`
+  topic). It needs **no new backend data path and no router change**: the API
+  recomputes only the current bucket on usage ingest
+  ([`spa-websocket.md` §5.3](spa-websocket.md)), and fully-realtime uses the `raw`
+  bucket at the router's usage-send cadence. Earlier this note said throughput was
+  #1023-gated — it isn't; it just gets faster as #1023 streams usage.
+
+This revision records the decision; the wire/payload specifics live in
+`spa-websocket.md` (single source of truth for the protocol), and dashboard
+implementation stays paused on #1860 per §7.5.
