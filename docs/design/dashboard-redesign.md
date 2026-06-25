@@ -546,8 +546,9 @@ derived Online/Blocked-now) are stream-sourced (§8.2); the 1h-count KPIs and th
   matches the protocol: the page re-subscribes `trafficUsage` (overall +
   `groupBy:profile`) with the new `bucket` on change ([`spa-websocket.md`
   §1.4](spa-websocket.md)). `raw` = fully-realtime (live edge at the router's
-  usage-send cadence); `1m` is the aggregated floor (§8.1). Default window: **`1m`**
-  (smooth enough to read at a glance; `raw` is opt-in for the twitchy live view).
+  usage-send cadence); `1m` is the aggregated floor (§8.1). Proposed default
+  window: **`1m`** (smooth enough to read at a glance; `raw` is opt-in for the
+  twitchy live view) — a design default, operator-tunable at build time.
 
 **Per-profile ▲/▼ on the NOW card — coexistence with card content.**
 - The rate sits **right-aligned on the card header row**, opposite the profile
@@ -566,8 +567,9 @@ derived Online/Blocked-now) are stream-sourced (§8.2); the 1h-count KPIs and th
   Manual / Paused for whole-MAC drops; `Category: <name>` / host-block / ip-only
   for per-flow drops) — rendered as a short labelled chip. (These are real
   traffic-layer drops; DNS always resolves, so this is not a DNS-event list.)
-- **Sizing / cap:** newest-first, **cap ~8 visible rows** (≈ the NOW grid's
-  height so it stays a glance panel, not a feed); overflow is reached via
+- **Sizing / cap:** newest-first, **cap ~8 visible rows** (a proposed value,
+  ≈ the NOW grid's height so it stays a glance panel, not a feed; tune in
+  implementation); overflow is reached via
   **View all → `/usage/events?blocked=true`** (carrying the active device filter),
   never an in-panel scroll firehose. Live: rows **prepend on push** and the oldest
   drop off the cap; the trailing window is ~1h (the `connectionEvents` live edge,
