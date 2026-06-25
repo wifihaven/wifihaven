@@ -48,7 +48,7 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
    * cross a schedule boundary), with a probe publisher attached. Returns the service, the clock
    * ref, and the probe's record.
    */
-  private def makeCachedSvc(startAt: LocalDateTime) =
+  private def makeCachedSvc(startAt: LocalDateTime, buildBarrier: UIO[Unit] = ZIO.unit) =
     for {
       pr     <- ZIO.service[ProfileRepo]
       nsr    <- ZIO.service[NamedScheduleRepo]
@@ -77,6 +77,7 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
         clk,
         namedScheduleRepo = nsr,
         cacheEnabled = true,
+        buildBarrier = buildBarrier,
       )
       pushed <- Ref.make(List.empty[PolicySnapshot])
       _      <- svc.setPublisher(new ProbePublisher(pushed))
@@ -188,6 +189,86 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
         assertTrue(blockedMacs(snapFresh) == List("aa:bb:cc:11:22:33")) &&
         assertTrue(pushes.size == 1) &&               // pushed once, on the transition
         assertTrue(blockedMacs(pushes.head) == List("aa:bb:cc:11:22:33"))
+    },
+    // #1954: the create-then-read invariant Gate 1 checks — a profile created + invalidated is in the
+    // VERY NEXT read. (Passes pre-#1954 too; pinned so the wiring can't silently regress.)
+    test("a newly created + invalidated profile is in the very next snapshot read") {
+      for {
+        _      <- cleanDb
+        triple <- makeCachedSvc(TestClock.schoolDayAfternoon)
+        (svc, _, _) = triple
+        _    <- svc.snapshot // warm the cache (no profiles yet)
+        pr   <- ZIO.service[ProfileRepo]
+        dr   <- ZIO.service[DeviceRepo]
+        pid  <- pr.create("e2e-router", Nil)
+        _    <- TestLayers.seedDevice(dr, "e2:e2:e2:8e:79:5b", "e2e-dev", pid)
+        _    <- svc.invalidate
+        snap <- svc.snapshot
+      } yield assertTrue(snap.profiles.contains(pid)) &&
+        assertTrue(
+          snap.devices
+            .get(MacAddress.unsafe("e2:e2:e2:8e:79:5b"))
+            .flatMap(_.profileId)
+            .contains(pid),
+        )
+    },
+    // #1954: deletion is equally read-after-write — a deleted profile/device is gone on the next read.
+    test("a deleted + invalidated profile disappears from the very next snapshot read") {
+      for {
+        _      <- cleanDb
+        triple <- makeCachedSvc(TestClock.schoolDayAfternoon)
+        (svc, _, _) = triple
+        pr      <- ZIO.service[ProfileRepo]
+        pid     <- pr.create("temp", Nil)
+        _       <- svc.invalidate
+        present <- svc.snapshot
+        _       <- pr.delete(pid)
+        _       <- svc.invalidate
+        gone    <- svc.snapshot
+      } yield assertTrue(present.profiles.contains(pid)) &&
+        assertTrue(!gone.profiles.contains(pid))
+    },
+    // #1954 REGRESSION PIN: the Gate-1 failure. A `buildSnapshot` that started reading the DB BEFORE a
+    // mutation must NOT be able to finish AFTER the mutation's `invalidate` and clobber the cache with
+    // pre-mutation bytes — which would make the next read a cache HIT on stale data (a just-created
+    // profile missing from the snapshot). We suspend an in-flight build with `buildBarrier`, land a
+    // create + invalidate + fresh rebuild while it is parked, then release it so its (stale) result
+    // tries to install LAST. The next read must still be fresh.
+    test(
+      "a stale in-flight build cannot clobber a fresher cache entry (read-after-write stays fresh)",
+    ) {
+      for {
+        _       <- cleanDb
+        pr      <- ZIO.service[ProfileRepo]
+        pidA    <- pr.create("A", Nil)
+        pidB    <- pr.create("B", Nil)
+        entered <- Promise.make[Nothing, Unit]
+        release <- Promise.make[Nothing, Unit]
+        armed   <- Ref.make(true)
+        // Gate the FIRST build only: it signals `entered` (with {A,B} already read) and parks on
+        // `release`; once disarmed, every later build passes straight through.
+        barrier     = armed.get.flatMap {
+          case true  => entered.succeed(()) *> release.await
+          case false => ZIO.unit
+        }
+        triple <- makeCachedSvc(TestClock.schoolDayAfternoon, buildBarrier = barrier)
+        (svc, _, _) = triple
+        // The stale in-flight build: reads {A,B} (C not yet created), then parks in the barrier.
+        staleFib <- svc.reevaluate.fork
+        _        <- entered.await
+        _        <- armed.set(false) // disarm so the fresh rebuild below is not gated
+        // A mutation lands while the stale build is parked: create C + invalidate (version bump) +
+        // a fresh rebuild that installs {A,B,C}.
+        pidC     <- pr.create("C", Nil)
+        _        <- svc.invalidate
+        _        <- svc.reevaluate   // fresh build installs {A,B,C} under the new version
+        // Now release the stale build so its pre-mutation {A,B} result tries to install LAST.
+        _        <- release.succeed(())
+        _        <- staleFib.join
+        snap     <- svc.snapshot
+      } yield assertTrue(snap.profiles.contains(pidA)) &&
+        assertTrue(snap.profiles.contains(pidB)) &&
+        assertTrue(snap.profiles.contains(pidC)) // the stale build did NOT clobber C away
     },
   ) @@ TestAspect.sequential
 }

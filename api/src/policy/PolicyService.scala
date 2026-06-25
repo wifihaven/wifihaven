@@ -11,7 +11,7 @@ import zio.json.*
 
 import java.security.MessageDigest
 import java.time.{DayOfWeek, Instant, LocalDate}
-import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.{AtomicLong, AtomicReference}
 
 trait PolicyService {
 
@@ -143,15 +143,37 @@ class PolicyServiceLive(
     // active; when false (test default) every `snapshot` rebuilds and `invalidate`/`reevaluate` are
     // no-ops. See the trait docs.
     cacheEnabled: Boolean = false,
+    // #1954: test-only barrier run at the END of every `buildSnapshot` (after the DB read, before the
+    // result is returned to the caller that installs it in the cache). Defaults to a no-op for
+    // production and the ~40 existing specs; PolicySnapshotCacheSpec wires a gate here to suspend an
+    // in-flight build deterministically and prove a stale build cannot clobber a fresher cache entry.
+    buildBarrier: UIO[Unit] = ZIO.unit,
 ) extends PolicyService {
 
-  // #1849: the single cached `(etag, snapshot)`. Process-local `AtomicReference` (matching the
-  // existing `lastSnapshotEtag` style in this class) so the `apply` factory stays a pure
-  // constructor. For the single-household model there is exactly one global snapshot, so one slot
-  // suffices (design §6.2 ticker note). Populated on first build, refreshed by `reevaluate`, cleared
-  // by `invalidate`.
-  private val snapshotCache: AtomicReference[Option[(ETag, PolicySnapshot)]] =
-    new AtomicReference(Option.empty[(ETag, PolicySnapshot)])
+  // #1849: the single cached snapshot. Process-local `AtomicReference` (matching the existing
+  // `lastSnapshotEtag` style in this class) so the `apply` factory stays a pure constructor. For the
+  // single-household model there is exactly one global snapshot, so one slot suffices (design §6.2
+  // ticker note). Populated on first build, refreshed by `reevaluate`.
+  //
+  // #1954: each entry is STAMPED with the `mutationVersion` observed at the START of its build
+  // (`builtAtVersion`, below). A reader trusts a cached entry only when its stamp is still the
+  // current version; a stamp older than the current version means a mutation landed since the build
+  // began, so the entry may predate that mutation and is treated as a miss (rebuild). This is what
+  // closes the stale-read race that the old "clear-on-invalidate" alone could not: a `buildSnapshot`
+  // that began reading the DB BEFORE a mutation could complete AFTER `invalidate` cleared the slot
+  // and repopulate it with pre-mutation bytes, so the very next read got a cache HIT on stale data
+  // (Gate-1: a just-created profile missing from `/api/router/policy`). With the version stamp, that
+  // late write lands tagged with the old version and every reader rejects it — the next read rebuilds
+  // synchronously and serves fresh bytes. See #1954.
+  private val snapshotCache: AtomicReference[Option[(Long, ETag, PolicySnapshot)]] =
+    new AtomicReference(Option.empty[(Long, ETag, PolicySnapshot)])
+
+  // #1954: monotonic counter bumped once per policy mutation (every `invalidate`). A build stamps the
+  // value it reads here BEFORE it touches the DB; a reader compares a cached stamp against the
+  // current value. Because the bump happens-after the mutation's DB commit (routes call `invalidate`
+  // after the write), any cached entry whose stamp equals the current version is guaranteed to
+  // reflect every committed mutation.
+  private val mutationVersion: AtomicLong = new AtomicLong(0L)
 
   // #1849: the push sink, installed at startup via `setPublisher`. Defaults to noop so a snapshot
   // rebuilt before the registry exists (or in a test) is simply not pushed.
@@ -200,47 +222,75 @@ class PolicyServiceLive(
       )
 
   // #1849: cache-aware entry point. On a hit, return the cached snapshot and meter `cache_hit` — no
-  // rebuild, which is the #1512 win for both ws and (un-migrated) REST poll agents. On a cold or
-  // invalidated cache, rebuild once, store, and serve it. With the cache disabled, always rebuild.
+  // rebuild, which is the #1512 win for both ws and (un-migrated) REST poll agents. On a cold,
+  // invalidated, or STALE-stamped cache, rebuild once, store, and serve it. With the cache disabled,
+  // always rebuild.
+  //
+  // #1954: a cached entry is a hit only when its stamp is still the current `mutationVersion` — an
+  // older stamp means a mutation landed after the build began, so the entry may be stale and we
+  // rebuild. `buildVersioned` captures the version BEFORE reading the DB and stores the entry under
+  // that stamp, so a build racing a concurrent mutation can never install bytes the next reader will
+  // trust as current.
   def snapshot: Task[PolicySnapshot] =
     if (!cacheEnabled) buildSnapshot
     else
       ZIO.succeed(snapshotCache.get).flatMap {
-        case Some((_, snap)) => AppMetrics.recordSnapshotBuild("cache_hit").as(snap)
-        case None            =>
-          buildSnapshot.tap(snap => ZIO.succeed(snapshotCache.set(Some((snap.etag, snap)))))
+        case Some((_, _, snap)) => // BUG(red): trusts any present entry, ignoring its version stamp
+          AppMetrics.recordSnapshotBuild("cache_hit").as(snap)
+        case _                  => buildVersioned
       }
 
   def invalidate: UIO[Unit] =
     if (!cacheEnabled) ZIO.unit
     else
-      // Clear so the next REST poll rebuilds immediately (fresh bytes), and reconcile in the
-      // background so any connected ws router is pushed the change without blocking the mutating
-      // request on a ~500ms rebuild. Clearing is safe w.r.t. the push: `reevaluate` keys its push
-      // decision off `lastPublishedEtag`, NOT off the (now-cleared, possibly poll-repopulated) cache
-      // slot — so the push still fires exactly once even if a REST poll races in. The reconcile
-      // ticker is a backstop on the same bound.
-      ZIO.succeed(snapshotCache.set(None)) *> reevaluate.forkDaemon.unit
+      // Bump the version so every cache entry built before this mutation is now stale-stamped and the
+      // next REST poll rebuilds immediately (fresh bytes), then reconcile in the background so any
+      // connected ws router is pushed the change without blocking the mutating request on a ~500ms
+      // rebuild. Bumping (rather than clearing) is what makes this race-safe: an in-flight build that
+      // began before this call and completes after it lands stamped with the OLD version, so readers
+      // reject it instead of getting a cache HIT on stale bytes (#1954). The push still fires exactly
+      // once — `reevaluate` keys its push decision off `lastPublishedEtag`, not the cache slot. The
+      // reconcile ticker is a backstop on the same bound.
+      // BUG(red): clear-on-invalidate (main's behavior) — does NOT protect against an in-flight build
+      // that began before this call repopulating the slot with pre-mutation bytes afterwards.
+      ZIO.succeed(mutationVersion.incrementAndGet()) *>
+        ZIO.succeed(snapshotCache.set(None)) *> reevaluate.forkDaemon.unit
+
+  // #1954: rebuild and install under the version observed BEFORE the DB read. The install is a CAS
+  // loop that only replaces an entry whose stamp is <= ours, so a slower build (older stamp) can
+  // never overwrite a fresher one (newer stamp) — last-writer-wins is replaced by newest-version-
+  // wins. Returns the freshly built snapshot to the caller regardless (it reflects every mutation
+  // committed before our DB read began).
+  private def buildVersioned: Task[PolicySnapshot] =
+    ZIO.succeed(mutationVersion.get).flatMap { gen =>
+      buildSnapshot.tap(snap => ZIO.succeed(installSnapshot(gen, snap)))
+    }
+
+  private def installSnapshot(gen: Long, snap: PolicySnapshot): Unit =
+    // BUG(red): unconditional last-writer-wins — a stale build can clobber a fresher entry.
+    snapshotCache.set(Some((gen, snap.etag, snap)))
 
   def reevaluate: UIO[Unit] =
     if (!cacheEnabled) ZIO.unit
     else
-      buildSnapshot.foldZIO(
-        err =>
-          // Keep the last good cache on a transient build failure (e.g. a DB blip) so the REST poll
-          // keeps serving the previous snapshot rather than a cold rebuild storm; the next tick
-          // retries.
-          ZIO.logWarning(s"policy reevaluate: snapshot rebuild failed, keeping cache: $err"),
-        snap => {
-          snapshotCache.set(Some((snap.etag, snap)))
-          // Push only when the ETag actually moved since the last PUSH — the same "change is exactly
-          // an ETag move" semantics the REST 200-vs-304 path uses (design §6.2), so we never fan out
-          // a frame the routers would treat as unchanged. Keyed off `lastPublishedEtag` (not the
-          // cache slot) so a racing REST poll repopulating the cache can't suppress the push.
-          val prevPublished = lastPublishedEtag.getAndSet(Some(snap.etag))
-          ZIO.when(!prevPublished.contains(snap.etag))(publisher.get.publish(snap)).unit
-        },
-      )
+      ZIO.succeed(mutationVersion.get).flatMap { gen =>
+        buildSnapshot.foldZIO(
+          err =>
+            // Keep the last good cache on a transient build failure (e.g. a DB blip) so the REST poll
+            // keeps serving the previous snapshot rather than a cold rebuild storm; the next tick
+            // retries.
+            ZIO.logWarning(s"policy reevaluate: snapshot rebuild failed, keeping cache: $err"),
+          snap => {
+            installSnapshot(gen, snap)
+            // Push only when the ETag actually moved since the last PUSH — the same "change is exactly
+            // an ETag move" semantics the REST 200-vs-304 path uses (design §6.2), so we never fan out
+            // a frame the routers would treat as unchanged. Keyed off `lastPublishedEtag` (not the
+            // cache slot) so a racing REST poll repopulating the cache can't suppress the push.
+            val prevPublished = lastPublishedEtag.getAndSet(Some(snap.etag))
+            ZIO.when(!prevPublished.contains(snap.etag))(publisher.get.publish(snap)).unit
+          },
+        )
+      }
 
   def setPublisher(p: PolicySnapshotPublisher): UIO[Unit] =
     ZIO.succeed(publisher.set(p))
@@ -459,6 +509,8 @@ class PolicyServiceLive(
         .setGlobalPolicy(snap.global.extraAllowed.size, defaultDenyProfiles)
         .zipRight(logSnapshotChanged(snap))
         .zipRight(AppMetrics.recordSnapshotBuild("computed"))
+        // #1954: test-only suspension point (no-op in production); see `buildBarrier`.
+        .zipLeft(buildBarrier)
         .as(snap)
     }
 
