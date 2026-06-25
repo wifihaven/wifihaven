@@ -766,6 +766,10 @@ classification, which becomes a backend-gated sub-task (below).
   camera/printer exfiltrating or in a botnet), and *that* is exactly when a parent
   should see it. Such a device appears in its profile's NOW card with a **warning
   affordance** (`⚠ … unusual`) and its rate, even though it is normally hidden.
+  (Showing that one device's rate here is a **deliberate, narrow exception** to
+  §8.1's "per-device throughput stays off the dashboard" — it is a security alert,
+  not the per-device volume leaderboard that belongs on `/devices`; only the
+  anomalous device's rate shows, and only because it is anomalous.)
 - **"A lot of traffic" = a threshold, operator-tunable.** Proposed definition: a
   sustained rate above an absolute floor **or** ≥ N× the device's own rolling
   baseline (so a normally-quiet thermostat suddenly at tens of MB/s trips it, while
