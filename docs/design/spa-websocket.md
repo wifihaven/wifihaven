@@ -425,7 +425,13 @@ SPA                                                    API
   - `SameSite=Strict` — the browser won't attach it to a cross-site-initiated
     request, which (with the `Origin` allowlist, §8) closes cross-site websocket
     hijacking (CSWSH).
-  - `Secure` — HTTPS only (dev/localhost is exempted as today).
+  - `Secure` — HTTPS only. `http://localhost` is a browser "secure context" so
+    `Secure` cookies are accepted there for dev; the self-hosted deploy is HTTPS.
+  - `Max-Age` short (e.g. 60 s) — the cookie is meant to live only across the
+    upgrade. The SPA clears it right after the socket opens, but the short
+    `Max-Age` is the belt-and-suspenders bound: if the tab is killed between
+    set and open, the lingering cookie self-expires in seconds rather than
+    persisting.
   - `Domain=wifihaven.net` in cloud so it reaches `api.` from `app.`; omitted
     (host-only) in the self-hosted same-origin case.
 - **No new persistent exposure.** The JWT already lives in `localStorage`
