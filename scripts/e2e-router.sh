@@ -53,6 +53,11 @@ E2E_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/e2e/lib" && pwd)"
 # shellcheck source=scripts/e2e/lib/curl-retry.sh
 source "$E2E_LIB/curl-retry.sh"
 
+# One-time cold-start gate (#1963): absorb a post-deploy JVM cold-start (where
+# /api/health is 503 status=starting) once up front, so the request burst below
+# isn't fighting it per-assertion. Best-effort — per-request retry is the backstop.
+wh_wait_for_health "$BASE"
+
 # ── Admin login ────────────────────────────────────────────────────────────
 # #1790: shared self-healing helper. On a fresh staging DB reset, rotates
 # the seeded 'changeme' password back to $ADMIN_PASS before returning a JWT;

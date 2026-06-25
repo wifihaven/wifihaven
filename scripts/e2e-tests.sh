@@ -36,16 +36,12 @@ _py() { python3 -c "$1"; }
 # shellcheck source=scripts/e2e/lib/curl-retry.sh
 source "$(dirname "${BASH_SOURCE[0]}")/e2e/lib/curl-retry.sh"
 
-# Quick wait for the API to come up (compose healthcheck should already gate, but be safe).
-step "Waiting for API at $BASE"
-for i in $(seq 1 60); do
-  code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
-    -H 'content-type: application/json' -d '{}' \
-    "$BASE/api/auth/login" 2>/dev/null || true)
-  if [ "$code" = 400 ] || [ "$code" = 401 ]; then pass "API responding ($code)"; break; fi
-  if [ "$i" = 60 ]; then fail "API never came up (last code: $code)"; fi
-  sleep 1
-done
+# One-time cold-start gate (#1963): poll /api/health until 200 before running
+# the assertion burst, so a post-deploy JVM cold-start (503 status=starting) is
+# absorbed once up front rather than fought per-request. Best-effort — the
+# per-request curl retry is the backstop. Replaces the old bespoke login-wait
+# loop; /api/health 200 means readiness has flipped and gated routes serve.
+wh_wait_for_health "$BASE"
 
 step "Login as admin"
 # #1790: shared self-healing helper. On a fresh staging DB reset, rotates
