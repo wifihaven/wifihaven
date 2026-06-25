@@ -260,8 +260,9 @@ queryClient.setQueryData(qk.dashboardNow(), tick.payload)
 queryClient.setQueryData(qk.recentBlocked(), prev => prependCapped(prev, row))
 // on `timeStatus` → replace the per-profile used/remaining cache with the pushed body
 queryClient.setQueryData(qk.timeStatusToday(), rows)
-// on `appUsage` → replace the per-app minutes cache for that profile/window
-queryClient.setQueryData(qk.profileUsageByApp(profileId, from, to), appRows)
+// on `appUsage` → patch only the LIVE (today) per-app cache entry; past windows
+// are immutable, so the push targets today's [from,to] key, not every cached window
+queryClient.setQueryData(qk.profileUsageByApp(profileId, todayFrom, todayTo), appRows)
 ```
 
 Justification this is safe despite (3)'s SSOT argument: the pushed body **is** the
@@ -605,7 +606,7 @@ realtime throughput):
 | **S3** | **Change sources** — widen `PolicySnapshotPublisher` to a hub; add `SpaEventHub` fed by existing write sites; translate to role-filtered `stale`/`now`/`blocked` frames (§5.2). | yes (behavior-preserving for the router subscriber; testable via a probe client) | behavior-preserving |
 | **S4** | **Throughput aggregator + `throughput` push** — consume S0's samples, derive overall + per-profile B/s, push the tick (§5.3/§1.3). Emits nothing (gauge "—") until S0 lands. | yes | additive |
 | **S5** | **SPA ws client + realtime dashboard pilot** — `useWsThroughput()` (overall + per-profile gauges, #747), `now`/`blocked` cache-patching (§3.1/§3.2), `useWsLive()` indicator (§6.2), ticket-mint-then-connect, backoff (§6.1), polling-as-paused-fallback for the dashboard live sections. **This lights up the redesigned NOW + throughput + Most-Recently-Blocked** ([`dashboard-redesign.md` §8](dashboard-redesign.md), unblocks #1834/#1835). | yes (dashboard only) | additive — other views poll |
-| **S6a** | **Live time-usage push** — `timeStatus` (per-profile used/remaining) + `appUsage` (per-app minutes) class-(2) pushes (§1.2) wired to usage-credit / #1849-ticker / extension-grant (§5.2); SPA patches the time-status + per-app caches (§3.2) and pauses the adaptive ladder when `wsLive`. Lights up the **live screen-time surface** (per-profile + per-app, /profiles). | yes | additive |
+| **S6a** | **Live time-usage push** — `timeStatus` (per-profile used/remaining) + `appUsage` (per-app minutes) class-(2) pushes (§1.2) wired to usage-credit / #1849-ticker / extension-grant (§5.2); SPA patches the time-status + per-app caches (§3.2) and pauses the adaptive ladder when `wsLive`. The `appUsage` push targets only the **live (today) window** key — past windows are immutable. Lights up the **live screen-time surface** (per-profile + per-app, /profiles). | yes | additive |
 | **S6b** | **Broaden class-(3) `stale` to alerts / profiles / devices / schedules** — add topic→invalidator entries (§3.3); pause their intervals when `wsLive`. | yes (per-view) | additive |
 | **S7** | **Retire redundant `refetchInterval`s** — per migrated view, after its push path is proven; keep the `wsLive ? false : …` fallback only where a view still has no push. The only subtractive step, per-view, operator-gated. | yes, last | per-view subtractive |
 | **S8** | **(optional) SharedWorker single-socket multi-tab** — only if a deployment shows many tabs/browser (§6.4). | yes, later | additive |
