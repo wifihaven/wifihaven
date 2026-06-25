@@ -3,7 +3,8 @@
 # deterministic mock that replays a per-attempt response sequence, so we can
 # assert exactly which transient cases retry and which 4xx cases fail-fast.
 #
-# Run: scripts/e2e/lib/curl-retry-test.sh
+# Run: scripts/e2e/lib/curl-retry.test.sh  (CI's Shell Tests job discovers
+# *.test.sh and runs it automatically).
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
