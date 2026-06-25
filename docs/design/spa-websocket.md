@@ -151,7 +151,8 @@ column is what the client sends in `subscribe`.
 | `ping`/`pong` | — | — | `{}` | heartbeat (§6.2) | — |
 
 SPA→server: `hello` (`{clientVersion}`), **`subscribe` (`{topic, params?}`)**,
-**`unsubscribe` (`{topic}`)**, `reauth` (`{ticket}`, §4.3), `ping`/`pong`.
+**`unsubscribe` (`{topic}`)**, `reauth` (`{jwt}` on the open socket, §4.3),
+`ping`/`pong`.
 **Unknown `op` → ignore + meter**, both directions (forward-compat, mirrors
 [`RouterWsRoutes.dispatch`](../../api/src/routes/RouterWsRoutes.scala)).
 
@@ -265,7 +266,9 @@ Cloudflare-Pages cloud build. The SPA derives the ws URL from the same base:
 
 ```ts
 const wsBase = (VITE_API_BASE_URL || location.origin).replace(/^http/, 'ws')
-const url = `${wsBase}/api/ws?ticket=${ticket}`   // ticket: §4.2
+// auth rides a tightly-scoped cookie set just before connect (§4.2), not the URL
+setWsAuthCookie(getToken())
+const url = `${wsBase}/api/ws`
 ```
 
 The Cloudflare-Pages-vs-Render hosting split is covered in §8.
@@ -373,44 +376,70 @@ disconnected.
 The SPA authenticates with the **operator JWT** (`AuthService` /
 [`useAuth`](../../web/src/hooks/useAuth.tsx) — `localStorage.token`, HS256,
 `{sub, role, iat, exp}`, [`AuthService.scala`](../../api/src/auth/AuthService.scala)).
-The browser `WebSocket` can't send the `Authorization` header that carries it
-(§0.2.1), so the upgrade needs a different mechanism.
+We **authorize the upgrade request itself, pre-upgrade** (exactly like the router
+path authorizes its bearer before the `101`). The only wrinkle is *how the
+credential rides that request*: the browser `WebSocket` API can't set an
+`Authorization` header (§0.2.1), so the JWT must travel in either the URL or a
+cookie — those are the only two things a browser controls on a ws upgrade.
 
-### 4.1 The three options
+### 4.1 The options
 
-| Mechanism | Why rejected / chosen |
+| Mechanism | Verdict |
 |---|---|
-| **Cookie** | **Rejected.** The SPA's auth model is a `localStorage` bearer, not cookies; an auth cookie means CSRF defenses + a second credential to sync. |
-| **Subprotocol** (JWT in `Sec-WebSocket-Protocol`) | **Rejected.** Abuses a negotiation header to carry a secret; the full JWT lands in access/proxy logs. |
-| **Short-lived single-use ticket** | **Chosen.** ✓ |
+| **`Authorization` header** | **Impossible** — the browser `WebSocket` API cannot set request headers (§0.2.1). This is the whole reason the others exist. |
+| **JWT in the query string** | **Rejected.** It *does* authorize pre-upgrade, but the full JWT lands in access/proxy logs, browser history, and `Referer` — valid for its multi-hour life if leaked. |
+| **Subprotocol** (`Sec-WebSocket-Protocol`) | **Rejected.** Abuses a negotiation header to smuggle a secret; same log-exposure problem. |
+| **Short-lived single-use ticket** (query string) | Viable — keeps the JWT out of the URL via a 30 s one-shot token, but needs an extra round-trip + a server-side ticket store. **Not chosen** (see below). |
+| **Cookie carrying the JWT** | **Chosen.** ✓ Rides the upgrade automatically → direct pre-upgrade authorization, no extra round-trip, no ticket store, JWT never in a URL. |
 
-### 4.2 Decision: short-lived, single-use ticket
+> **Why a cookie works for both deployments (the call I initially got wrong).**
+> The concern with cookies is third-party-cookie blocking. It does **not** apply
+> here: `app.wifihaven.net` and `api.wifihaven.net` are subdomains of the **same
+> registrable domain** (`wifihaven.net`), so a cookie scoped to `wifihaven.net` is
+> **first-party / same-site** for both the cloud split *and* the self-hosted
+> same-origin case. No third-party-cookie problem, so no need for the ticket's
+> URL-indirection.
+
+### 4.2 Decision: a tightly-scoped JWT cookie, set just before connect
 
 ```
-SPA                                              API
- │  POST /api/ws/ticket   Authorization: Bearer <jwt>   │  requireAuth(req) → JwtClaims
- │ ───────────────────────────────────────────────────▶ │  mint random 256-bit ticket,
- │  { "ticket": "<opaque>", "expiresInSec": 30 }         │  store {ticket → (sub, role, jwtExp)} TTL=30s, single-use
- │  GET /api/ws?ticket=<opaque>   Upgrade: websocket     │  consume ticket (atomic delete);
- │ ───────────────────────────────────────────────────▶ │  invalid/expired/used → 401, no 101
- │  101 Switching Protocols  → register channel (§5)     │  → resolve (sub, role)
+SPA                                                    API
+ │  document.cookie = "wh_ws=<jwt>; Domain=wifihaven.net;                 │
+ │                     Path=/api/ws; SameSite=Strict; Secure"             │
+ │  new WebSocket("wss://api.wifihaven.net/api/ws")  (cookie rides it)    │
+ │ ─────────────────────────────────────────────────────────────────────▶ │  authenticate(upgradeReq):
+ │                                                                         │  read wh_ws cookie → AuthService.verify
+ │  101 Switching Protocols  → register channel (§5)                       │  + Origin allowlist (§8);
+ │ ◀───────────────────────────────────────────────────────────────────── │  bad/missing/expired → 401, no 101
+ │  (SPA clears the cookie immediately after the socket opens)            │
 ```
 
-- **The ticket is not the JWT** — opaque, single-use, TTL ~30 s, stored
-  server-side (a `Ref[Map[Ticket, TicketEntry]]` in the SPA registry §5.1) bound
-  to `(sub, role, jwtExp)`. The query-string exposure that makes "JWT in the URL"
-  unacceptable is bounded to a 30 s one-shot non-JWT token. Minting reuses
-  `requireAuth` on the `POST`, so there is **one** JWT-validation implementation —
-  the ws path is not a second auth surface.
-- **Consume-at-upgrade is atomic** (delete-returns-old) → a ticket can't be used
-  twice; a URL-sniffing replayer loses the race and finds it already gone.
-- **Bad/expired/used ticket → reject the upgrade with 401** (no 101), the
-  router-path semantics, metered `spa_ws_auth_total{result=…}` (§7).
+- **The credential is the existing JWT, validated by the existing `AuthService.verify`**
+  — one JWT-validation implementation; the ws path is not a second auth surface
+  (`AGENTS.md#single-source-of-truth`). A bad/missing/expired cookie → reject the
+  upgrade with **401, no 101**, identical to the router path and to a REST 401.
+- **Cookie scoping is the security boundary, not secrecy:**
+  - `Path=/api/ws` — the cookie is sent **only** on the ws upgrade, not on every
+    REST call (REST keeps using the `localStorage` bearer, unchanged — no broad
+    cookie, so **no CSRF surface added to the REST API**).
+  - `SameSite=Strict` — the browser won't attach it to a cross-site-initiated
+    request, which (with the `Origin` allowlist, §8) closes cross-site websocket
+    hijacking (CSWSH).
+  - `Secure` — HTTPS only (dev/localhost is exempted as today).
+  - `Domain=wifihaven.net` in cloud so it reaches `api.` from `app.`; omitted
+    (host-only) in the self-hosted same-origin case.
+- **No new persistent exposure.** The JWT already lives in `localStorage`
+  (XSS-readable); a JS-set, path-scoped cookie set transiently around connect is
+  no worse, and the SPA clears it right after the socket opens so it isn't sitting
+  around. (`HttpOnly` isn't usable here because JS sets it; that's acceptable
+  given the existing `localStorage` exposure.)
+- **No ticket, no `/api/ws/ticket` endpoint, no ticket store, no extra
+  round-trip** — the simplification the cookie buys over the ticket.
 
 ### 4.3 Token expiry mid-connection + re-auth
 
-The ticket gates only the *upgrade*; the connection's authz deadline is the JWT's
-`exp`, captured at upgrade.
+The cookie authorizes only the *upgrade*; the connection's authz deadline is the
+JWT's `exp`, captured at upgrade.
 
 - **Expiry while connected.** The server tracks `jwtExp` per channel; on the
   heartbeat tick where `now ≥ jwtExp` it closes with `4401 token-expired`
@@ -420,11 +449,10 @@ The ticket gates only the *upgrade*; the connection's authz deadline is the JWT'
   means 401 → `localStorage` clear → `/login` ([`client.ts`](../../web/src/api/client.ts)).
   v1 mirrors this: on `4401` the SPA stops reconnecting, falls back to polling
   (§3.4); the next REST call 401s → the existing `/login` redirect; after
-  re-login it mints a fresh ticket and reconnects. The **`reauth` op** (§1.2) is
-  the forward-compat seam: when silent refresh lands, the SPA mints a ticket from
-  the refreshed JWT and sends `reauth` on the open socket; the server
-  validates+consumes it and advances `jwtExp` — no reconnect. v1 server may
-  `ack`-reject `reauth`.
+  re-login it re-sets the cookie and reconnects. The **`reauth` op** (§1.2) is the
+  forward-compat seam: when silent refresh lands, the SPA can present the refreshed
+  JWT on the open socket and the server advances `jwtExp` — no reconnect. v1 server
+  may `ack`-reject `reauth`.
 
 ### 4.4 Role scoping per frame
 
@@ -458,7 +486,8 @@ Generalizing one registry across two key types + two payload vocabularies couple
 things that share only the *shape* "a `Ref` of channels with a fan-out method."
 Reuse the **pattern**, not the instance — `SpaWsRegistry` is the same
 `Ref[Map[K, Channel+subscriptions]]` shape with SPA-appropriate K, payloads, and
-metrics. (Also holds the ticket store, §4.2.) **Fan-out is two gates: a topic is
+metrics. (Auth is stateless cookie-verified at upgrade, §4.2 — no ticket store to
+hold.) **Fan-out is two gates: a topic is
 sent to a channel only if the channel both *subscribed* to it (§1.4) and is
 *authorized* for it (§4.4).** The subscription set is the data-minimization
 mechanism; the registry is where it lives.
@@ -545,8 +574,8 @@ batch. Design:
 
 Exponential backoff + jitter (1 s → 2 s → 4 s → … cap 30 s), reset on `ready`
 (not merely socket `open`). Reconnect *is* the throttle; no per-frame retry. Each
-reconnect mints a **fresh ticket** (§4.2; single-use, so a reconnect can't replay
-the old one) and **replays its current subscription set** (§1.4 — subscriptions
+reconnect **re-sets the auth cookie** (§4.2) from the current JWT before opening,
+and **replays its current subscription set** (§1.4 — subscriptions
 are connection-scoped, not durable; the server starts the new connection
 subscribed to nothing). On reconnect the client also refetches the class-(2)
 queries once (`now`/`blocked`/`timeStatus`) so a change missed while disconnected
@@ -613,7 +642,7 @@ router-ws families ([`websocket-transport.md` §7](websocket-transport.md)).
 | `spa_ws_connections_active` | gauge | `role` (`admin`\|`adult`\|`child`) | open SPA channels, refreshed on register/deregister (ages out on disconnect) |
 | `spa_ws_frames_total` | counter | `op` (enum §1.2, incl. `subscribe`/`unsubscribe`), `direction` (`in`\|`out`), `result` (`ok`\|`reject`\|`unknown_op`) | frame throughput + unknown-op tripwire |
 | `spa_ws_subscriptions_active` | gauge | `topic` (`throughput`\|`now`\|`blocked`\|`timeStatus`\|`appUsage`\|`stale`) | live subscriptions per topic — shows what the fleet is actually watching (and, for `throughput`, that windowed work is bounded to demand). **No `window`/`profileId` label** (window is ≤4 values but profileId is unbounded — keep params out of labels) |
-| `spa_ws_auth_total` | counter | `result` (`ticket_ok`\|`ticket_invalid`\|`ticket_expired`\|`ticket_reused`\|`jwt_expired`) | ticket handshake + mid-connection expiry (§4) |
+| `spa_ws_auth_total` | counter | `result` (`ok`\|`no_cookie`\|`invalid_jwt`\|`expired_jwt`\|`bad_origin`\|`jwt_expired_midconn`) | upgrade-auth outcomes (cookie verify + Origin check) + mid-connection expiry (§4) |
 | `spa_ws_push_total` | counter | `op` (`throughput`\|`now`\|`blocked`\|`timeStatus`\|`appUsage`\|`stale`), `result` (`ok`\|`coalesced`\|`dropped`\|`channel_closed`) | per-class fan-out health + backpressure (§6.3) |
 
 `role`/`op`/`direction`/`result`/`topic` are small fixed enums — the same
@@ -634,7 +663,7 @@ grepped from `api/src`, not a catalog
 ([`instrumentation.md#metrics-need-a-dashboard`](../process/instrumentation.md)).
 Panels: connections-active `by (role)`; frame throughput `by (op,direction)` + an
 `unknown_op` rate stat; auth outcomes `by (result)` (alert-worthy on
-`ticket_reused`/`ticket_invalid`); push health `by (op,result)` (rising
+`bad_origin`/`invalid_jwt` spikes — a CSWSH/forgery probe); push health `by (op,result)` (rising
 `coalesced`/`dropped`/`channel_closed` ⇒ slow clients). Each phase ships its
 panels in the **same PR**; a *new* dashboard must also join the `local.dashboards`
 list in [`infra/grafana/main.tf`](../../infra/grafana/main.tf) (what the
@@ -659,13 +688,16 @@ where the ws endpoint lives:
      ([`websocket-transport.md` §3.3](websocket-transport.md)); the SPA endpoint
      inherits the same idle-timeout/heartbeat pinning (§6.2 — the 30 s heartbeat
      stays under Render's idle timeout).
-  3. **Cross-origin upgrade → an `Origin` allowlist.** Unlike the router (no
-     `Origin`), the browser sends `Origin` on the upgrade. The server checks it
-     against an allowlist (`app.wifihaven.net`, `staging.*`, `localhost` for dev)
-     and rejects a mismatch — a CSWSH defense the same-origin self-hosted case
-     gets free. The ticket (§4.2) is the primary credential; the Origin check is
-     cheap defense-in-depth and the one server-side ws config that differs by
-     hosting mode.
+  3. **Cross-origin upgrade → `Origin` allowlist + `SameSite=Strict` cookie.**
+     Unlike the router (no `Origin`), the browser sends `Origin` on the upgrade.
+     The server checks it against an allowlist (`app.wifihaven.net`, `staging.*`,
+     `localhost` for dev) and rejects a mismatch. This pairs with the
+     `SameSite=Strict` auth cookie (§4.2) as the CSWSH defense: `SameSite=Strict`
+     stops the cookie riding a cross-site-initiated upgrade, and the `Origin` check
+     is the server-side backstop. The cookie is scoped `Domain=wifihaven.net` so it
+     reaches `api.` from `app.` (same registrable domain — first-party, §4.1); the
+     self-hosted same-origin case uses a host-only cookie. The Origin allowlist is
+     the one server-side ws config that differs by hosting mode.
   4. **The SPA derives the ws host from `VITE_API_BASE_URL`** (§2.1) — the same
      env var that already points the REST client per environment, so no new
      deployment config.
@@ -684,10 +716,10 @@ realtime throughput):
 |---|---|---|---|
 | **S0** | **(in #1023) router→API lightweight `throughput` sample** — additive per-mac bytes-since-last-sample frame every ~2 s from the conntrack counters (§5.3). The realtime source for live bandwidth. | yes (additive frame; usage path unchanged) | additive |
 | **S1** | **API `/api/ws` endpoint + `{op,payload}` demux + `SpaWsRegistry` + subscription model** — server skeleton, envelope/demux (`hello`→`ready`, `subscribe`/`unsubscribe` with per-connection subscription state + `ack`, `ping`/`pong`, unknown-op ignore+meter), per-connection registry, server metrics §7 + `spa-ws.json`. Reuses `RouterWsRoutes` patterns. REST untouched. | yes (test ws client) | additive — new route |
-| **S2** | **Ticket handshake + auth** — `POST /api/ws/ticket` (reuses `requireAuth`), single-use short-TTL store, consume-at-upgrade, `Origin` allowlist (§8), `jwtExp` close (§4.3), `reauth` seam, auth metrics. | yes | additive |
+| **S2** | **Upgrade auth** — verify the `wh_ws` JWT cookie at upgrade via the existing `AuthService.verify` (no new auth surface), `Origin` allowlist (§8), `SameSite=Strict; Path=/api/ws; Secure` cookie scoping, `jwtExp` mid-connection close (§4.3), `reauth` seam, auth metrics. SPA-side: set-cookie-before-connect + clear-after helper. | yes | additive |
 | **S3** | **Change sources** — widen `PolicySnapshotPublisher` to a hub; add `SpaEventHub` fed by existing write sites; translate to role-filtered `stale`/`now`/`blocked` frames (§5.2). | yes (behavior-preserving for the router subscriber; testable via a probe client) | behavior-preserving |
 | **S4** | **Throughput aggregator (windowed) + `throughput` push** — consume S0's samples, maintain overall + per-profile B/s for each window {5s,1m,5m,10m}, push the subscribed window(s) at window-appropriate cadence (§5.3/§1.3/§1.4). Emits nothing (gauge "—") until S0 lands. | yes | additive |
-| **S5** | **SPA ws client + realtime dashboard pilot** — `useWsThroughput(window)` with the **5s/1m/5m/10m window selector** (re-subscribes on change, #747), `now`/`blocked` cache-patching (§3.1/§3.2), subscription wiring (subscribe-on-mount/unsubscribe-on-unmount), `useWsLive()` indicator (§6.2), ticket-mint-then-connect, backoff + re-subscribe (§6.1), polling-as-paused-fallback. **Lights up the redesigned NOW + throughput + Most-Recently-Blocked** ([`dashboard-redesign.md` §8](dashboard-redesign.md), unblocks #1834/#1835). | yes (dashboard only) | additive — other views poll |
+| **S5** | **SPA ws client + realtime dashboard pilot** — `useWsThroughput(window)` with the **5s/1m/5m/10m window selector** (re-subscribes on change, #747), `now`/`blocked` cache-patching (§3.1/§3.2), subscription wiring (subscribe-on-mount/unsubscribe-on-unmount), `useWsLive()` indicator (§6.2), set-cookie-then-connect (§4.2), backoff + re-subscribe (§6.1), polling-as-paused-fallback. **Lights up the redesigned NOW + throughput + Most-Recently-Blocked** ([`dashboard-redesign.md` §8](dashboard-redesign.md), unblocks #1834/#1835). | yes (dashboard only) | additive — other views poll |
 | **S6a** | **Live time-usage push** — `timeStatus` (per-profile used/remaining) + `appUsage` (per-app minutes) class-(2) pushes (§1.2) wired to usage-credit / #1849-ticker / extension-grant (§5.2); SPA patches the time-status + per-app caches (§3.2) and pauses the adaptive ladder when `wsLive`. The `appUsage` push targets only the **live (today) window** key — past windows are immutable. Lights up the **live screen-time surface** (per-profile + per-app, /profiles). | yes | additive |
 | **S6b** | **Broaden class-(3) `stale` to alerts / profiles / devices / schedules** — add topic→invalidator entries (§3.3); pause their intervals when `wsLive`. | yes (per-view) | additive |
 | **S7** | **Retire redundant `refetchInterval`s** — per migrated view, after its push path is proven; keep the `wsLive ? false : …` fallback only where a view still has no push. The only subtractive step, per-view, operator-gated. | yes, last | per-view subtractive |
@@ -714,10 +746,11 @@ deliberate once that view's push path is proven, never armed automatically
    one element gated on #1023's realtime usage source (S0). Everything else (NOW,
    blocked, the endpoint, auth) ships without it; the gauge shows "—" until S0
    lands. Sequence S0 with the #1023 epic, not as a blocker for S1–S3.
-3. **Ticket store durability.** v1's single-process in-memory ticket store (§4.2)
-   is correct for one API instance; multi-instance would need sticky routing or a
-   shared store — same single-process assumption as the registries/aggregator
-   (§5), documented limit, not a TODO.
+3. **Multi-instance.** Cookie upgrade-auth is **stateless** (any instance verifies
+   the JWT — no ticket store to share), so auth is multi-instance-clean. The only
+   single-process assumption left is the in-memory registry/aggregator fan-out
+   (§5) — correct for the one-API-process household model; cross-instance pub/sub
+   is out of scope, same as the router path. Documented limit, not a TODO.
 4. **Thick-push filtering (class 2).** Per-role filtering of a pushed `now` body is
    the one place class-(1)/(3)'s contentless safety is absent; it reuses the
    `DashboardNowRoutes` filter (§3.2/§5.2) so there is one filter implementation,
