@@ -158,4 +158,160 @@ describe("ws_frame", function()
       assert.are.equal(data, frame.apply_mask(masked, key))
     end)
   end)
+
+  -- reassembler() — the #1959 fix. A pure, stateful accumulator that turns a
+  -- stream of decoded frames (the output of decode()) into complete application
+  -- messages, reassembling RFC 6455 §5.4 fragmentation (a data frame with
+  -- FIN=0 followed by CONTINUATION frames) and passing interleaved control
+  -- frames straight through. It is the part of M:recv that the cqueues client
+  -- couldn't unit-test on macOS, lifted out so it runs identically here and on
+  -- the real Lua-5.1 target. Vectors mirror the RFC §5.4 / §5.7 fragmentation
+  -- examples.
+  describe("reassembler (RFC 6455 §5.4 fragmentation)", function()
+    -- helper: a decoded-frame table as decode() would return.
+    local function fr(opcode, payload, fin)
+      if fin == nil then fin = true end
+      return { fin = fin, opcode = opcode, payload = payload or "" }
+    end
+
+    it("passes an unfragmented text frame straight through as a message", function()
+      local r = frame.reassembler()
+      local status, opcode, payload = r:push(fr(frame.OP_TEXT, "Hello"))
+      assert.are.equal("message", status)
+      assert.are.equal(frame.OP_TEXT, opcode)
+      assert.are.equal("Hello", payload)
+    end)
+
+    it("preserves the binary opcode for an unfragmented binary frame", function()
+      local r = frame.reassembler()
+      local status, opcode = r:push(fr(frame.OP_BINARY, "\1\2\3"))
+      assert.are.equal("message", status)
+      assert.are.equal(frame.OP_BINARY, opcode)
+    end)
+
+    it("reassembles TEXT(fin=0) + CONTINUATION(fin=1) into one message", function()
+      local r = frame.reassembler()
+      assert.are.equal("more", (r:push(fr(frame.OP_TEXT, "Hel", false))))
+      local status, opcode, payload =
+        r:push(fr(frame.OP_CONTINUATION, "lo", true))
+      assert.are.equal("message", status)
+      assert.are.equal(frame.OP_TEXT, opcode)        -- the START opcode, not 0x0
+      assert.are.equal("Hello", payload)
+    end)
+
+    it("reassembles a three-fragment message in order", function()
+      local r = frame.reassembler()
+      assert.are.equal("more", (r:push(fr(frame.OP_TEXT, "abc", false))))
+      assert.are.equal("more", (r:push(fr(frame.OP_CONTINUATION, "def", false))))
+      local status, _, payload = r:push(fr(frame.OP_CONTINUATION, "ghi", true))
+      assert.are.equal("message", status)
+      assert.are.equal("abcdefghi", payload)
+    end)
+
+    it("surfaces a control frame interleaved between fragments, then completes", function()
+      local r = frame.reassembler()
+      assert.are.equal("more", (r:push(fr(frame.OP_TEXT, "Hel", false))))
+      -- §5.4: a control frame MAY appear in the middle of a fragmented message.
+      local cstatus, copcode, cpayload = r:push(fr(frame.OP_PING, "hb"))
+      assert.are.equal("control", cstatus)
+      assert.are.equal(frame.OP_PING, copcode)
+      assert.are.equal("hb", cpayload)
+      -- the fragmented data message is unaffected and still completes.
+      local status, opcode, payload =
+        r:push(fr(frame.OP_CONTINUATION, "lo", true))
+      assert.are.equal("message", status)
+      assert.are.equal(frame.OP_TEXT, opcode)
+      assert.are.equal("Hello", payload)
+    end)
+
+    it("passes a standalone control frame through as control", function()
+      local r = frame.reassembler()
+      local status, opcode = r:push(fr(frame.OP_CLOSE, ""))
+      assert.are.equal("control", status)
+      assert.are.equal(frame.OP_CLOSE, opcode)
+    end)
+
+    it("errors on a CONTINUATION with no message in progress", function()
+      local r = frame.reassembler()
+      local status, err = r:push(fr(frame.OP_CONTINUATION, "x", true))
+      assert.are.equal("error", status)
+      assert.are.equal("unexpected_continuation", err)
+    end)
+
+    it("errors on a new data frame while a message is in progress", function()
+      local r = frame.reassembler()
+      assert.are.equal("more", (r:push(fr(frame.OP_TEXT, "Hel", false))))
+      local status, err = r:push(fr(frame.OP_TEXT, "new", false))
+      assert.are.equal("error", status)
+      assert.are.equal("interleaved_data", err)
+    end)
+
+    it("errors on a fragmented (fin=0) control frame", function()
+      local r = frame.reassembler()
+      local status, err = r:push(fr(frame.OP_PING, "x", false))
+      assert.are.equal("error", status)
+      assert.are.equal("fragmented_control", err)
+    end)
+
+    it("handles a >4 KiB payload split across many continuation frames", function()
+      local r = frame.reassembler()
+      local chunk = string.rep("z", 1000)
+      local expected = ""
+      -- 1 TEXT start + 9 continuations = ~10 KiB, well past the ~4 KiB edge
+      -- re-fragmentation boundary the #1959 issue calls out.
+      r:push(fr(frame.OP_TEXT, chunk, false)); expected = expected .. chunk
+      for _ = 1, 8 do
+        r:push(fr(frame.OP_CONTINUATION, chunk, false)); expected = expected .. chunk
+      end
+      local status, _, payload = r:push(fr(frame.OP_CONTINUATION, chunk, true))
+      expected = expected .. chunk
+      assert.are.equal("message", status)
+      assert.are.equal(10000, #payload)
+      assert.are.equal(expected, payload)
+    end)
+
+    it("errors when the assembled size exceeds the cap (no unbounded growth)", function()
+      -- A tiny cap so the test stays fast; the start frame is under it, the
+      -- continuation pushes the running total over.
+      local r = frame.reassembler(10)
+      assert.are.equal("more", (r:push(fr(frame.OP_TEXT, "12345", false))))   -- 5 ≤ 10
+      local status, err = r:push(fr(frame.OP_CONTINUATION, "678901", false))  -- 11 > 10
+      assert.are.equal("error", status)
+      assert.are.equal("message_too_large", err)
+    end)
+
+    it("errors when the FIRST frame already exceeds the cap", function()
+      local r = frame.reassembler(4)
+      local status, err = r:push(fr(frame.OP_TEXT, "toolong", false))
+      assert.are.equal("error", status)
+      assert.are.equal("message_too_large", err)
+    end)
+
+    it("resets the size counter so a second large-but-ok message still passes", function()
+      local r = frame.reassembler(10)
+      r:push(fr(frame.OP_TEXT, "12345", false))
+      assert.are.equal("message", (r:push(fr(frame.OP_CONTINUATION, "67", true))))  -- 7 ≤ 10
+      -- counter reset to 0; another 7-byte message is fine, not 14 cumulative.
+      r:push(fr(frame.OP_TEXT, "abcde", false))
+      assert.are.equal("message", (r:push(fr(frame.OP_CONTINUATION, "fg", true))))
+    end)
+
+    it("errors on a control frame with a >125-byte payload (§5.5)", function()
+      local r = frame.reassembler()
+      local status, err = r:push(fr(frame.OP_PING, string.rep("x", 126)))
+      assert.are.equal("error", status)
+      assert.are.equal("oversized_control", err)
+    end)
+
+    it("can reassemble a second message after the first completes", function()
+      local r = frame.reassembler()
+      r:push(fr(frame.OP_TEXT, "one", false))
+      assert.are.equal("message", (r:push(fr(frame.OP_CONTINUATION, "1", true))))
+      -- state is reset; a fresh fragmented message reassembles cleanly.
+      r:push(fr(frame.OP_TEXT, "two", false))
+      local status, _, payload = r:push(fr(frame.OP_CONTINUATION, "2", true))
+      assert.are.equal("message", status)
+      assert.are.equal("two2", payload)
+    end)
+  end)
 end)

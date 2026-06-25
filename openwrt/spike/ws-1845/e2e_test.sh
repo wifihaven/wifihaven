@@ -46,16 +46,19 @@ trap 'kill "${SRV_PID:-}" 2>/dev/null || true; rm -rf "$WORK"' EXIT
 BASE_PORT=$(( 20000 + ($$ % 20000) ))
 FAILED=0
 
-# run_case <name> <server-args> <client-uri> <client-env>
+# run_case <name> <server-args> <client-uri> <client-env> [client-cmd] [server-env]
+# client-cmd defaults to `poc_echo.lua <uri> 4`; server-env is extra env for the
+# echo server (e.g. WS_ECHO_FRAGMENT=512 to drive the #1959 reassembly case).
 run_case() {
   name="$1"; srv_args="$2"; uri="$3"; cli_env="$4"
+  cli_cmd="${5:-poc_echo.lua $uri 4}"; srv_env="${6:-}"
   log="$WORK/$name.srv.log"
   # shellcheck disable=SC2086
-  WS_ECHO_DEBUG=1 "$LUA" run_echo_server.lua $srv_args >"$log" 2>&1 &
+  env $srv_env WS_ECHO_DEBUG=1 "$LUA" run_echo_server.lua $srv_args >"$log" 2>&1 &
   SRV_PID=$!
   sleep 1
   # shellcheck disable=SC2086
-  if env $cli_env "$LUA" poc_echo.lua "$uri" 4 >"$WORK/$name.cli.log" 2>&1 \
+  if env $cli_env "$LUA" $cli_cmd >"$WORK/$name.cli.log" 2>&1 \
        && grep -q "RESULT: PASS" "$WORK/$name.cli.log"; then
     echo "PASS  $name  ($uri)"
   else
@@ -81,6 +84,22 @@ openssl req -x509 -newkey rsa:2048 -keyout "$WORK/key.pem" -out "$WORK/cert.pem"
   -days 1 -nodes -subj /CN=localhost >/dev/null 2>&1
 run_case "wss" "$WSS_PORT tls $WORK/cert.pem $WORK/key.pem" \
   "wss://localhost:$WSS_PORT" "WS_INSECURE=1"
+
+# Case 3: #1959 fragment reassembly over ws:// — the server echoes a 12 KiB
+# payload as 512-byte §5.4 fragments (TEXT FIN=0 + CONTINUATIONs) with an
+# interleaved PING; the client must reassemble it byte-for-byte. Before #1959
+# the client returned only the first fragment and poc_fragment FAILs the length
+# check. This is the real-Lua-5.1/cqueues twin of the pure ws_frame_spec case.
+FRAG_PORT=$(( BASE_PORT + 2 ))
+run_case "frag-ws" "$FRAG_PORT" "ws://127.0.0.1:$FRAG_PORT" "" \
+  "poc_fragment.lua ws://127.0.0.1:$FRAG_PORT 12288" "WS_ECHO_FRAGMENT=512"
+
+# Case 4: the same over wss:// (TLS), since the prod re-fragmentation that
+# motivates #1959 happens at the TLS edge.
+FRAG_WSS_PORT=$(( BASE_PORT + 3 ))
+run_case "frag-wss" "$FRAG_WSS_PORT tls $WORK/cert.pem $WORK/key.pem" \
+  "wss://localhost:$FRAG_WSS_PORT" "WS_INSECURE=1" \
+  "poc_fragment.lua wss://localhost:$FRAG_WSS_PORT 12288" "WS_ECHO_FRAGMENT=512"
 
 if [ "$FAILED" -eq 0 ]; then
   echo "== ws e2e: ALL PASS =="

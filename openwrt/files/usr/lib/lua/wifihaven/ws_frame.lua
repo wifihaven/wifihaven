@@ -174,4 +174,91 @@ function M.new_client_key(rand16_fn, base64_fn)
   return base64_fn(rand16_fn(16))
 end
 
+-- ── message reassembly (RFC 6455 §5.4) ───────────────────────────────────────
+--
+-- decode() returns ONE frame at a time; a single application message may be
+-- split across a leading data frame (TEXT/BINARY, FIN=0) plus CONTINUATION
+-- (0x0) frames, with control frames (ping/pong/close) optionally interleaved.
+-- The server (and intermediaries — Render's edge re-fragments large outbound
+-- frames at ~4 KiB, #1959) can split a large `policy` push this way, so the
+-- agent MUST reassemble or it truncates the snapshot to garbage.
+--
+-- This is the part of the cqueues client's recv loop that has no I/O, so it
+-- lives here (PURE, no cqueues) where it is unit-tested on the dev host AND
+-- runs identically under OpenWrt Lua 5.1 — the same split the rest of this
+-- module uses. The cqueues client (ws_client:recv) feeds each decoded frame to
+-- push() and acts on the verdict.
+--
+-- reassembler() → object with push(frame) → (status, a, b):
+--   "message", opcode, payload  — a complete application message (the START
+--                                 data opcode + concatenated payload). Returned
+--                                 for an unfragmented data frame, or the final
+--                                 CONTINUATION of a fragmented one.
+--   "control", opcode, payload  — a control frame (ping/pong/close); the caller
+--                                 handles it (pong/close) and keeps reading.
+--                                 Reassembly state is untouched (§5.4 allows
+--                                 control frames between message fragments).
+--   "more"                      — fragment accepted; need more frames.
+--   "error",  reason            — a protocol violation; the caller must drop the
+--                                 connection. reason ∈ { unexpected_continuation,
+--                                 interleaved_data, fragmented_control,
+--                                 oversized_control, message_too_large }.
+--
+-- reassembler(max_bytes) — cap the TOTAL assembled message size (default 1 MiB).
+-- decode()'s 64-bit-length guard bounds a SINGLE frame; this bounds the sum
+-- across continuation frames so a buggy/hostile peer streaming endless
+-- continuations cannot grow self.parts unbounded and OOM the RAM-constrained
+-- router. A real `policy` snapshot is far under this.
+local Reassembler = {}
+Reassembler.__index = Reassembler
+
+local DEFAULT_MAX_BYTES = 1024 * 1024
+
+function M.reassembler(max_bytes)
+  return setmetatable(
+    { op = nil, parts = nil, size = 0, max_bytes = max_bytes or DEFAULT_MAX_BYTES },
+    Reassembler)
+end
+
+function Reassembler:push(frame)
+  local opcode = frame.opcode
+
+  -- Control frames (0x8..0xF) are never part of a data message and MUST NOT be
+  -- fragmented (§5.5) and MUST carry ≤125 payload bytes. They pass straight
+  -- through; an in-progress fragmented data message is unaffected.
+  if opcode >= 0x8 then
+    if not frame.fin then return "error", "fragmented_control" end
+    if #frame.payload > 125 then return "error", "oversized_control" end
+    return "control", opcode, frame.payload
+  end
+
+  if opcode == M.OP_CONTINUATION then
+    if not self.op then return "error", "unexpected_continuation" end
+    self.size = self.size + #frame.payload
+    if self.size > self.max_bytes then return "error", "message_too_large" end
+    self.parts[#self.parts + 1] = frame.payload
+    if not frame.fin then return "more" end
+    local payload = table.concat(self.parts)
+    local start_op = self.op
+    self.op, self.parts, self.size = nil, nil, 0   -- reset for the next message
+    return "message", start_op, payload
+  end
+
+  -- A data frame (TEXT/BINARY). A NEW data frame while a message is still being
+  -- assembled is illegal — only continuations and control frames may follow a
+  -- FIN=0 data frame (§5.4).
+  if self.op then return "error", "interleaved_data" end
+
+  if frame.fin then                          -- the common unfragmented case
+    return "message", opcode, frame.payload
+  end
+
+  -- Start of a fragmented message: remember the opcode, buffer the first chunk.
+  if #frame.payload > self.max_bytes then return "error", "message_too_large" end
+  self.op = opcode
+  self.parts = { frame.payload }
+  self.size = #frame.payload
+  return "more"
+end
+
 return M

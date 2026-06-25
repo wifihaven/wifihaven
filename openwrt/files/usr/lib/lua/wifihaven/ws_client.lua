@@ -155,20 +155,35 @@ end
 -- the whole loop. Validated on a real Lua-5.1 + packaged-cqueues (epoll) target:
 -- without the clearerr the connection dies after a few idle heartbeat cycles.
 function M:recv(timeout)
+  -- Reassemble fragmented messages (RFC 6455 §5.4): a large server push (e.g. a
+  -- #1849 `policy` snapshot, which Render's edge re-fragments at ~4 KiB) arrives
+  -- as TEXT(FIN=0) + CONTINUATION frames. Returning the first frame raw (the
+  -- pre-#1959 behaviour) truncates the snapshot to unparseable JSON. The pure
+  -- reassembler (ws_frame) accumulates fragments and passes interleaved control
+  -- frames back for us to answer; it persists across recv() calls so a message
+  -- split over multiple socket reads still completes.
+  self.reasm = self.reasm or ws_frame.reassembler()
   while true do
     local frame, consumed = ws_frame.decode(self.rxbuf)
     if frame then
       self.rxbuf = self.rxbuf:sub(consumed + 1)
-      if frame.opcode == ws_frame.OP_PING then
-        self:send_pong(frame.payload)            -- heartbeat: keepalive
-      elseif frame.opcode == ws_frame.OP_PONG then
-        -- liveness ack; caller may track it. Loop for the next real frame.
-      elseif frame.opcode == ws_frame.OP_CLOSE then
+      local status, a, b = self.reasm:push(frame)
+      if status == "control" then
+        local opcode, payload = a, b
+        if opcode == ws_frame.OP_PING then
+          self:send_pong(payload)                -- heartbeat: keepalive
+        elseif opcode == ws_frame.OP_CLOSE then
+          self.closed = true
+          return nil, "closed"
+        end
+        -- OP_PONG: liveness ack; loop for the next frame.
+      elseif status == "message" then
+        return a, b                              -- (opcode, reassembled payload)
+      elseif status == "error" then
         self.closed = true
-        return nil, "closed"
-      else
-        return frame.opcode, frame.payload       -- text/binary/continuation
+        return nil, "protocol: " .. tostring(a)
       end
+      -- "more": a fragment was buffered; keep reading for the rest.
     elseif frame == false then
       self.closed = true
       return nil, "protocol: " .. tostring(consumed)
