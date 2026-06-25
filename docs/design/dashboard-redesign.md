@@ -337,3 +337,78 @@ streaming-source wiring into chunks 2 and 3 (the live sections) as their first s
 layout changes.
 
 This note records the decision; no further dashboard PRs until #1023 lands.
+
+---
+
+## 8. Revision 3 (2026-06-24) — realtime throughput is a primary NOW element; live data contract
+
+Operator direction while finalizing the SPA-websocket design
+([#1860](https://github.com/wifihaven/wifihaven/issues/1860),
+[`docs/design/spa-websocket.md`](spa-websocket.md)): the websocket is **not** a
+"poll faster / invalidate faster" transport for the whole page — it exists to
+**stream the live surface**. That changes one rev-2 decision and pins the live
+data contract the two docs share.
+
+### 8.1 Reversal of Q2 — live throughput is in scope, as a primary NOW element
+
+Rev-2 Q2 de-scoped throughput (#747) as "backend-gated, its own follow-up." **Rev
+3 reverses that.** The dashboard must show, updating live:
+
+- **Overall household in/out** — aggregate ▲ upload / ▼ download **rate** (B/s),
+  the headline "how much is the house using right now" gauge.
+- **Per-profile in/out** — the same ▲▼ **rate** on each active NOW profile-card
+  header (the rev-2 §3 wireframe already drew `▲2.4 ▼18` there; rev 3 makes it
+  real and live, not deferred).
+
+This is the single most-requested live element and the main reason the dashboard
+is stream-gated. Per-**device** / per-**host** throughput stays **off** the
+dashboard (→ `/devices`, `/profiles`) — the dashboard shows overall + per-profile
+only, consistent with the rev-2 "glanceable, not analytics" principle.
+
+> Throughput is a **rate**, not a resource — there is no "current B/s" you can
+> `GET` and cache; it only exists as a stream. So unlike the NOW snapshot or the
+> blocked feed (which have REST bodies), live throughput is **push-native**: it
+> has no polling fallback beyond "no live gauge while the socket is down" (the
+> 24h volume on `/usage` covers the historical question). This is why it could
+> not ship before the stream — and why it is the clearest justification for the
+> websocket existing at all.
+
+### 8.2 The dashboard's live data contract (what streams vs. what stays request/response)
+
+This table is the **input to the websocket message catalog** in
+[`spa-websocket.md` §1](spa-websocket.md); the two must agree. Each dashboard
+section is classified by how it gets its data:
+
+| Dashboard section | Class | Source after #1860 |
+|---|---|---|
+| **Overall in/out throughput** (§8.1) | **push-native stream** | `throughput` tick — NEW push-only shape (no GET); §8.1 |
+| **Per-profile in/out throughput** (§8.1, on NOW card headers) | **push-native stream** | same `throughput` tick (per-profile entries) |
+| **NOW** active cards (who's online / watching) | **pushed live snapshot** | `DashboardNow` body pushed on change (reuses today's `/api/dashboard/now` shape) |
+| **Most Recently Blocked** feed (#1338) | **pushed live append** | each new blocked event pushed as it lands (reuses the `/api/logs?blocked=true` row shape) |
+| **KPI: Online now / Blocked now** | **derived from the NOW push** | computed client-side off the pushed `DashboardNow`; no separate stream |
+| **KPI: Events (1h) / Blocked (1h)** | request/response | small enough to leave on a slow poll / invalidate; not realtime-critical |
+| **Blocking activity (24h)** panel | request/response | rollup tables (#809); explicitly **not** streamed (rev-2 §7.5 already said so) |
+
+The rule the operator stated: **stream the things that need to move in realtime
+(throughput, NOW, just-blocked); leave everything that is genuinely a cacheable
+resource on request/response.** The websocket design (`spa-websocket.md`) is
+built around exactly this split, not a blanket "invalidate every query."
+
+### 8.3 Effect on the locked plan (§7.4)
+
+No sub-issue is added or removed here; the chunk-2/chunk-3 "fold the streaming
+source in first" step (§7.5) is now concrete:
+
+- **chunk 2/3** (NOW + KPI, #1834/#1835) consume the `DashboardNow` push and the
+  derived KPIs — as already planned.
+- **#747 throughput** is **no longer a deferred standalone** — it becomes the
+  realtime-throughput pilot of the websocket rollout
+  ([`spa-websocket.md` §9](spa-websocket.md)), since it is the push-native element
+  that most exercises the stream. It still needs the backend source (§8.1): the
+  API deriving per-profile + overall byte-rate from the #1023 router→API usage
+  stream, pushed to the SPA. That backend work is specified in
+  [`spa-websocket.md` §5](spa-websocket.md) and filed as a sub-issue there.
+
+This revision records the decision; the wire/payload specifics live in
+`spa-websocket.md` (single source of truth for the protocol), and dashboard
+implementation stays paused on #1860 per §7.5.

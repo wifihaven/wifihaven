@@ -3,638 +3,612 @@
 Status: **proposed** (design only — no code in this PR).
 
 Relates to [#1023](https://github.com/wifihaven/wifihaven/issues/1023) (the
-router↔API transport epic this is the browser-facing sibling of),
+router↔API transport epic — its push-on-change core and **realtime usage stream**
+are the data sources this consumes),
 [#1846](https://github.com/wifihaven/wifihaven/issues/1846) (the server
-connection registry + `{op,payload}` envelope this **consumes the pattern of**),
-[#1849](https://github.com/wifihaven/wifihaven/issues/1849) (push-on-change —
-the change-event source this **consumes**, not rebuilds), and
-[#1860](https://github.com/wifihaven/wifihaven/issues/1860) (this issue).
+connection-registry pattern this reuses),
+[#1849](https://github.com/wifihaven/wifihaven/issues/1849) (push-on-change — one
+of the event sources this consumes),
+[#747](https://github.com/wifihaven/wifihaven/issues/747) (live bytes in/out — the
+realtime throughput element this finally makes shippable),
+[#1148](https://github.com/wifihaven/wifihaven/issues/1148) /
+[`docs/design/dashboard-redesign.md`](dashboard-redesign.md) (the dashboard whose
+live sections **consume** this stream; its §8 data-contract is the input to §1
+here), and [#1860](https://github.com/wifihaven/wifihaven/issues/1860) (this issue).
 
-> **Scope of this doc.** This is the umbrella design for the SPA-websocket work.
-> It does NOT implement anything. It (a) fixes the browser-facing wire protocol,
-> (b) decides the contentious choices — auth handshake, registry reuse-vs-fork,
-> patch-vs-invalidate — with justification rather than a menu, and (c) lays out a
-> phased, independently-shippable rollout in which **polling stays the fallback
-> throughout (no flag day)**. The implementation sub-issues this doc files are
-> listed in §8.
+> **Scope of this doc.** Design only, no implementation. It (a) **specifies what
+> data flows over the socket and why each item is on it** (§1 — the heart of this
+> design), (b) decides the contentious choices — push-vs-invalidate per data
+> class, auth handshake, registry reuse-vs-fork — with justification, and (c)
+> lays out a phased rollout in which **polling stays the fallback throughout (no
+> flag day)**. Implementation sub-issues are in §9.
 
 ---
 
-## 0. Why, and the one shaping constraint
+## 0. Why, and what the socket is *for*
 
-### 0.1 What the SPA does today
+### 0.1 The socket exists to stream the live surface — not to "poll faster"
 
-The SPA live-updates by **TanStack Query `refetchInterval` polling**
-([`web/src/api/queries.ts`](../../web/src/api/queries.ts)):
+The crucial framing, because the first draft of this doc got it wrong. The SPA
+today live-updates by **TanStack Query `refetchInterval` polling**
+([`web/src/api/queries.ts`](../../web/src/api/queries.ts)): dashboard "now" every
+10 s, recent-blocked every 10 s, alerts every 30 s, an adaptive time-status
+ladder. The websocket is **not** a generic "invalidate every query faster"
+transport bolted under all of that. It exists to **stream the handful of facts
+that must move in realtime** — and most of those are *not* things the SPA can
+poll well, or at all:
 
-| Hook | Endpoint | Cadence | Pain |
-| --- | --- | --- | --- |
-| `useDashboardNow` | `GET /api/dashboard/now` | 10 s | up-to-10 s lag; a kid gets blocked, the parent's screen trails |
-| `useRecentBlocked` | `GET /api/logs?blocked=true` | 10 s | same lag on the "what just got dropped" feed |
-| `useAlerts` | `GET /api/alerts` | 30 s | a freshly-raised access request waits up to 30 s |
-| `useTimeStatus*` | `GET /api/time/status*` | adaptive 10 s–5 m ([`TIME_STATUS_REFETCH_LADDER`](../../web/src/api/queries.ts)) | the whole adaptive ladder exists *only because* there is no push |
+- **Live in/out throughput** (overall + per-profile bandwidth, B/s) — the headline
+  the dashboard redesign asks for ([#747](https://github.com/wifihaven/wifihaven/issues/747),
+  [`dashboard-redesign.md` §8.1](dashboard-redesign.md)). **This is a rate, not a
+  resource** — there is no body you can `GET` and cache; it only exists as a
+  stream. It has *no good polling implementation at all*. It is the single
+  clearest reason the websocket needs to exist.
+- **"NOW" — who's online and what they're watching** (`DashboardNow`), the heart
+  of the dashboard, today polled every 10 s with visible lag.
+- **"Most Recently Blocked"** — the live "what just got dropped" feed
+  ([#1338](https://github.com/wifihaven/wifihaven/issues/1338)), today polled
+  every 10 s.
 
-Three structural problems, all of which a push connection removes:
+Everything else the SPA shows — profiles, devices, schedules, blocklists, the 24 h
+rollup panels, time-status caps — is a **cacheable resource that changes
+occasionally**. Those stay on request/response (with at most an invalidate nudge
+on the rare change). **The websocket carries the live surface; it does not
+replace queries that should stay queries.** This split is the spine of the whole
+design (§1).
 
-- **Staleness** — bounded only by the poll cadence (≤10 s on the hot views).
-- **A fixed poll tax per open tab**, paid whether or not anything changed, that
-  scales with concurrent admins/tabs rather than with the actual change rate.
-- **No "is my data live?" signal.** A silently-dead poll (laptop asleep, API
-  unreachable, token expired) looks *identical* to "nothing changed." The
-  [`ApiUnreachableBanner`](../../web/src/components/ApiUnreachableBanner.tsx) only
-  fires on an *active* request failure ([`apiHealth`](../../web/src/api/apiHealth.ts)
-  is driven by `client.req()`); a poll that never fires because the tab is
-  backgrounded reports nothing.
+The three structural wins, restated against that framing:
+
+- **Realtime data that polling cannot serve** (throughput) becomes possible.
+- **Sub-second freshness** on NOW / blocked, vs. the 10 s poll lag.
+- **A liveness signal** — the connection's health *is* the "is my dashboard
+  live?" indicator, replacing the silent-poll ambiguity (a dead 10 s poll looks
+  identical to "nothing changed"; [`ApiUnreachableBanner`](../../web/src/components/ApiUnreachableBanner.tsx)
+  only fires on an *active* request failure, not a poll that never ran).
 
 ### 0.2 The one shaping constraint — the browser `WebSocket` is impoverished
 
-The dominant design force, stated up front so the rest follows from it. A browser
-`WebSocket` is **not** `curl` and **not** a server socket:
+A browser `WebSocket` is not `curl` and not a server socket:
 
-1. **It cannot set request headers** on the upgrade. There is no way to send
-   `Authorization: Bearer <jwt>`. This is *the* reason the SPA auth handshake
-   (§3) differs from the router's (which rides a bearer header,
-   [`docs/design/websocket-transport.md` §4.1](websocket-transport.md)). Every
-   browser-ws auth scheme is a workaround for this single fact.
-2. **It cannot send ping/pong control frames** from JS. The heartbeat (§5.2)
-   must be an application-level `{op:"ping"}` text frame, or rely on the
-   server's control-frame ping + the browser's automatic pong + `onclose`.
-3. **It is per-tab and dies on background/sleep.** Reconnect, backoff, and
-   multi-tab behavior (§5) are SPA concerns the router never had.
+1. **It cannot set request headers** on the upgrade — no `Authorization: Bearer`.
+   This is *the* reason the SPA auth handshake (§4) differs from the router's
+   bearer-on-upgrade ([`websocket-transport.md` §4.1](websocket-transport.md)).
+2. **It cannot send ping/pong control frames** from JS — the heartbeat (§6.2) is
+   an app-level text frame.
+3. **It is per-tab and dies on background/sleep** — reconnect, backoff, and
+   multi-tab behavior (§6) are SPA concerns the router never had.
 
-The server side, by contrast, is the *easy* half — `zio-http`'s
-`Handler.webSocket` already backs `GET /api/router/ws`
-([`RouterWsRoutes.scala`](../../api/src/routes/RouterWsRoutes.scala)); the SPA
-endpoint is the same machinery with a different auth gate and a different fan-out
-payload. **We therefore reuse the router transport's *patterns* (envelope, demux,
-registry shape, metric discipline) and explicitly do not reuse its *code* where
-the two genuinely differ (auth, key, payload vocabulary).**
+The server side is the easy half — `zio-http`'s `Handler.webSocket` already backs
+`GET /api/router/ws` ([`RouterWsRoutes.scala`](../../api/src/routes/RouterWsRoutes.scala)).
+We **reuse the router transport's patterns** (envelope, demux, registry shape,
+metric discipline) and **fork where the two genuinely differ** (auth, key,
+payload vocabulary) — "share patterns, not code," same call #1023 makes.
 
-### 0.3 The non-negotiable: no new read-model shapes
+### 0.3 Read-model discipline — reuse bodies for resources, ONE new shape for the stream
 
-Per the same single-source-of-truth discipline as #1023
-([`AGENTS.md#single-source-of-truth`](../../AGENTS.md), wire-shape carve-out),
-**every server→SPA payload is an existing REST response body, verbatim.** A
-push that carries data carries the *exact* JSON the matching `GET` already emits
-(`DashboardNow`, the `/api/logs` page, etc.). The socket introduces **zero** new
-serializers, DTOs, or `web/src/types/api.ts` shapes. This is what lets §2 keep
-React Query as the one client-side cache and the REST endpoints as the schema
-authority — the socket is a *transport for change*, not a parallel data model.
+Per the single-source-of-truth discipline
+([`AGENTS.md#single-source-of-truth`](../../AGENTS.md), wire-shape carve-out):
+
+- **Pushed snapshots of existing resources carry the existing REST body,
+  verbatim.** A NOW push is the exact `GET /api/dashboard/now` body
+  (`DashboardNow`, [`shared/src/Models.scala`](../../shared/src/Models.scala)); a
+  blocked-event push is the exact `/api/logs?blocked=true` row shape. **Zero new
+  serializers** for these — the `GET` stays the schema authority and a refetch
+  reconciles.
+- **The one genuinely-new shape is the throughput tick** (§1.3), and it is new
+  *because the data is new*: no REST endpoint produces a current byte-rate today
+  (`DashboardNow*` carries no bytes — confirmed in `Models.scala`). A push-native
+  telemetry stream has no existing body to reuse; inventing a minimal one is
+  correct, not a violation. It is deliberately tiny and is **not** mirrored into a
+  REST resource (you would never poll it).
 
 ---
 
-## 1. Endpoint & protocol
+## 1. What flows over the socket — the message catalog
 
-### 1.1 Endpoint
+This is the section the design turns on. Every server→SPA payload maps to a
+dashboard live element ([`dashboard-redesign.md` §8.2](dashboard-redesign.md) is
+the input contract); every item is classified by **why** it is on the socket.
+
+### 1.1 Three data classes
+
+| Class | What | Examples | How it rides the socket |
+|---|---|---|---|
+| **(1) Push-native realtime stream** | a *rate/stream* with no cacheable REST form | **live throughput** (overall + per-profile in/out B/s) | server pushes a `throughput` tick on a fixed cadence; client renders a live gauge — **not** in the React Query resource cache |
+| **(2) Pushed live snapshot/append** | a real REST resource that changes fast enough to push instead of poll | **NOW** (`DashboardNow`), **Most Recently Blocked** feed | server pushes the (changed) body / the new row; client patches the existing React Query cache for that key (§3) |
+| **(3) Occasionally-changing resource** | a cacheable resource that changes rarely | profiles, devices, schedules, blocklists, 24 h rollups, time-status caps | **stays request/response.** At most a `stale` nudge on a relevant mutation; many need nothing (their mutation already invalidates locally) |
+
+The websocket is for **(1) and (2)**. **(3) stays on queries** — the explicit
+correction to the "invalidate everything" framing. The dashboard's "Blocking
+activity (24 h)" panel and the "Events (1h)/Blocked (1h)" KPIs are class (3): they
+ride the rollup tables on request/response and are *not* streamed
+([`dashboard-redesign.md` §7.5/§8.2](dashboard-redesign.md)).
+
+### 1.2 Server→SPA message catalog
+
+| `op` | Class | Payload | Drives (dashboard element) | Source |
+|---|---|---|---|---|
+| `throughput` | (1) | `ThroughputTick` (§1.3) | overall in/out gauge **+** per-profile ▲▼ on NOW card headers (#747) | API aggregator over the #1023 usage stream (§5.3) |
+| `now` | (2) | `DashboardNow` (existing body, verbatim) | NOW active cards; derived "Online now / Blocked now" KPIs | recompute on change (§5.2), reusing the `/api/dashboard/now` builder |
+| `blocked` | (2) | one blocked `QueryLog` row (existing `/api/logs` row shape) | Most Recently Blocked feed (prepend) | connection-events ingest (§5.2) |
+| `stale` | (3) | `{ topic, scope? }` (bounded `topic` enum) | invalidate a class-(3) query (profiles/devices/schedules/time-status) | the relevant write site (§5.2) |
+| `ready` | — | `{ role, serverTime }` | flips the live indicator to "live" | upgrade (§4) |
+| `ping`/`pong` | — | `{}` | heartbeat (§6.2) | — |
+
+SPA→server: `hello` (`{clientVersion, subscribe?:[…]}`), `reauth` (`{ticket}`,
+§4.3), `ping`/`pong`. **Unknown `op` → ignore + meter**, both directions
+(forward-compat, mirrors [`RouterWsRoutes.dispatch`](../../api/src/routes/RouterWsRoutes.scala)).
+
+### 1.3 The one new shape — `ThroughputTick`
+
+```jsonc
+// op:"throughput" payload — bytes-per-second rates as of `asOf`
+{
+  "asOf": "2026-06-24T14:31:02Z",
+  "overall":     { "inBps": 1840000, "outBps": 240000 },
+  "perProfile": [
+    { "profileId": 3, "inBps": 1510000, "outBps": 90000 },
+    { "profileId": 7, "inBps":  330000, "outBps": 150000 }
+  ]
+}
+```
+
+- **Rates, not cumulative bytes** — the SPA renders a gauge/sparkline, not a
+  counter; the server does the rate math once (§5.3) so every tab doesn't
+  re-derive it (single-source-of-truth for the rate).
+- **Overall + per-profile only.** Per-device / per-host throughput is deliberately
+  **off** the dashboard ([`dashboard-redesign.md` §8.1](dashboard-redesign.md));
+  the same tick *shape* could carry a `perDevice` array for a future `/devices`
+  live view, but v1 emits only overall + per-profile.
+- **Bounded size** — one entry per active profile (households have ≤ ~10), well
+  under any frame cap.
+- **A profile absent from `perProfile`** is idle (0 B/s) — the client zeroes it;
+  the tick never grows with history.
+
+This is the only addition to `web/src/types/api.ts`; `now`/`blocked`/`stale`
+payloads reuse shapes that already exist there.
+
+### 1.4 hello / subscribe
+
+On connect the SPA sends `hello` once. `subscribe` is an **optional** topic
+filter (a child-role tab rendering only its own time-status need not receive
+`throughput`); omitted → the server pushes everything the role is authorized for
+(§4.4). v1 ships omit-everything-authorized; the filter is the forward-compat seam
+and is honored if sent. The server replies `ready`; the client flips its
+indicator to "live" only after `ready` (a socket that upgrades but never `ready`s
+must not read as live).
+
+---
+
+## 2. Endpoint & protocol
+
+### 2.1 Endpoint
 
 ```
 wss://<api-host>/api/ws
 ```
 
-One endpoint for the operator SPA (admin / adult / child — role scoping is
-applied per-frame from the authenticated claims, §3.4; there is no separate
-`/api/admin/ws`). `<api-host>` is the **same host the REST client already
-targets** — `VITE_API_BASE_URL` ([`web/src/api/client.ts`](../../web/src/api/client.ts)):
-empty (same-origin) for the JVM-bundled self-hosted build, and the absolute
-`https://api.wifihaven.net` / `https://api-staging.wifihaven.net` for the
+One endpoint for the operator SPA (role scoping applied per-frame from the
+authenticated claims, §4.4 — no separate `/api/admin/ws`). `<api-host>` is the
+**same host the REST client already targets** — `VITE_API_BASE_URL`
+([`client.ts`](../../web/src/api/client.ts)): empty (same-origin) for the
+JVM-bundled self-hosted build, absolute `https://api.wifihaven.net` for the
 Cloudflare-Pages cloud build. The SPA derives the ws URL from the same base:
 
 ```ts
 const wsBase = (VITE_API_BASE_URL || location.origin).replace(/^http/, 'ws')
-const url = `${wsBase}/api/ws?ticket=${ticket}`   // ticket: §3.2
+const url = `${wsBase}/api/ws?ticket=${ticket}`   // ticket: §4.2
 ```
 
-The Cloudflare-Pages-vs-Render hosting split is a real deployment consideration
-and is covered in §7.
+The Cloudflare-Pages-vs-Render hosting split is covered in §8.
 
-### 1.2 Frame envelope — mirror the router transport's framing discipline
+### 2.2 Frame envelope — mirror the router transport
 
 Identical envelope discipline to
-[`docs/design/websocket-transport.md` §1.2](websocket-transport.md), so the two
-share patterns (and a future shared `WsFrame` codec) without sharing semantics:
+[`websocket-transport.md` §1.2](websocket-transport.md), so the two share patterns
+(and a future shared `WsFrame` codec) without sharing semantics:
 
 ```json
-{ "op": "<string>", "payload": <existing REST JSON | small control object>, "seq": <int?> }
+{ "op": "<string>", "payload": <existing REST JSON | small control/tick object>, "seq": <int?> }
 ```
 
-- **One JSON text message per frame.** Never split a frame across messages,
-  never batch two frames into one. Same rule as the router path.
-- **`op`** — the discriminator the receiver demuxes on. Server→SPA ops name a
-  *topic that changed* (or, for a thick push, the topic whose body rides in
-  `payload`); SPA→server ops are control (`hello`, `ping`, `reauth`).
-- **`payload`** — for a thin "stale" frame, a tiny control object (the topic
-  key, optional hints). For a thick data frame (§2, the measured exception), the
-  **exact** REST body — byte-for-byte what the matching `GET` returns.
-- **`seq`** — optional monotonic per-sender counter, observability only
-  (gap/dup logging); ignored if absent (forward-compat).
-
-**Unknown `op` → ignore + meter** on both ends (forward-compat), exactly as the
-router demux does ([`RouterWsRoutes.dispatch`](../../api/src/routes/RouterWsRoutes.scala)).
-This is what lets a future topic ship without a flag day.
-
-### 1.3 Message types
-
-| `op` | Dir | Payload | Meaning / maps to |
-| --- | --- | --- | --- |
-| `hello` | SPA→S | `{clientVersion, topics?:[…]}` | first frame after connect; optional subscription filter (§1.4) |
-| `ready` | S→SPA | `{role, serverTime}` | server confirms auth + role; SPA flips the indicator to "live" |
-| `stale` | S→SPA | `{topic:"dashboard-now"\|"recent-blocked"\|"alerts"\|"time-status"\|"routers", scope?}` | **the canonical push** (§2): "this React Query key is stale, refetch it" |
-| `data` | S→SPA | `{topic, body:<exact REST body>}` | the **opt-in thick push** (§2.3), used only where measured to matter (dashboard-now) |
-| `reauth` | SPA→S | `{ticket}` | present a fresh ticket to extend the connection past JWT expiry without a reconnect (§3.3) |
-| `ping` / `pong` | both | `{}` | app-level heartbeat (§5.2) |
-
-`topic` is a **bounded enum** — it doubles as the metric label space (§6) and
-maps 1:1 to a React Query key prefix (§2.2). It is never a free-form string and
-never carries a per-entity id as a label (a `scope` field inside the payload may
-narrow *which* rows changed for a future targeted invalidation, but it is data,
-not a metric label).
-
-### 1.4 Subscribe / hello
-
-On connect the SPA sends `hello` once. `topics` is an **optional** filter — if
-present, the server only pushes those topics to this connection (a child-role tab
-that renders only its own time-status need not receive `routers` frames). If
-omitted, the server pushes every topic the connection's role is authorized for
-(§3.4). v1 ships the **omit-everything-authorized** default; the `topics` filter
-is the forward-compat seam for per-view subscriptions and is honored if sent.
-The server replies `ready` with the resolved role; the SPA flips its
-live-indicator to "live" only after `ready` (a socket that upgrades but never
-`ready`s — e.g. a wedged server — must not read as live).
+- **One JSON text message per frame.** Never split a frame across messages, never
+  batch two frames into one.
+- **`op`** — the discriminator the receiver demuxes on (§1.2). `seq` is optional,
+  observability only (gap/dup logging), ignored if absent.
+- **Unknown `op` → ignore + meter**, both ends — the forward-compat rule that lets
+  a future op ship without a flag day.
 
 ---
 
-## 2. React Query integration — **invalidate by default, thick-push by exception**
+## 3. Client integration — push-data for the live surface, invalidate for the rest
 
-This is the central client-side decision. The two candidates:
+The central client-side decision, now made **per data class** (§1.1) rather than
+one-size-fits-all:
 
-- **(A) Thin "stale" push → `queryClient.invalidateQueries`.** The frame carries
-  only the topic key; React Query refetches the canonical `GET`.
-- **(B) Thick "data" push → `queryClient.setQueryData`.** The frame carries the
-  new body; the cache is patched directly, no refetch.
+### 3.1 Class (1) throughput — direct to a live store, not the resource cache
 
-### 2.1 Decision: (A) invalidate is the canonical pattern; (B) is an opt-in optimization
+A `throughput` tick is a stream sample, not a cache entry. The `useWsThroughput()`
+hook holds the latest tick (a small `useSyncExternalStore` or a dedicated query
+key updated via `setQueryData`) and feeds the overall gauge + per-profile card
+headers. There is nothing to invalidate and no `GET` to refetch — when the socket
+is down the gauge shows "—" (its only fallback; the 24 h volume on `/usage`
+answers the historical question). Latest-wins: a new tick replaces the prior one
+(§6.3).
 
-**Recommend (A) as the default for every topic.** Justification:
+### 3.2 Class (2) NOW + blocked — push carries data, patch the cache
 
-1. **Single source of truth (the decisive reason).** With (A), the `GET`
-   endpoint stays the *only* place a read-model body is produced, and the socket
-   carries no data shape at all — it cannot drift from the REST body because it
-   contains no body. (B) creates a second producer of the same bytes; even though
-   the architecture's wire-shape carve-out *permits* reusing an existing body
-   verbatim, every thick topic is a place where a server-side filter/derivation
-   (e.g. `DashboardNow`'s per-role device visibility,
-   [`DashboardNowRoutes`](../../api/src/routes/DashboardNowRoutes.scala)) must be
-   re-applied identically on the push path or the pushed body silently differs
-   from the polled one. (A) has no such path to keep in sync.
-2. **Authz correctness for free.** A refetch goes through the normal
-   `requireAuth` + per-role visibility filter on the `GET`. A pushed body must
-   re-implement that filtering *before* fan-out (you cannot push one household's
-   `DashboardNow` to a child whose visible device set is a subset). (A) sidesteps
-   the entire "did we filter the push correctly per recipient?" risk: the server
-   pushes a *contentless* "stale" signal to every authorized connection, and each
-   client's refetch is filtered by its own token.
-3. **Coalescing is trivial.** Many rapid changes collapse to one refetch:
-   React Query dedups concurrent invalidations of the same key, and the server
-   can drop-oldest-coalesce `stale{topic}` frames in a wedged connection's
-   mailbox (§5.3) because they are identical and idempotent. Thick frames cannot
-   be coalesced as cheaply (each carries distinct bytes).
-4. **It reuses the existing, battle-tested fetch path** — `cache:'no-store'`,
-   the 10 s timeout, `apiHealth` reporting, the 401→/login redirect
-   ([`client.ts`](../../web/src/api/client.ts)) — none of which a thick push
-   would exercise.
-
-The cost of (A) is **one refetch round-trip of latency** after the signal. For
-the household model (LAN or a nearby cloud region, sub-100 ms RTT) this is
-negligible against the 10 s poll lag it replaces.
-
-### 2.2 The canonical handler
-
-A single `useWsInvalidation()` hook, mounted once in the app shell, owns the
-socket and maps `stale{topic}` → the right invalidation. The topic→key map is the
-**one** place the mapping lives (single-source-of-truth), reusing the existing
-`qk` key factory and `useInvalidators` helpers in
-[`queries.ts`](../../web/src/api/queries.ts):
+For the live snapshots we **push the data and patch the React Query cache**
+directly — the *opposite* of the default for class (3), and correct here because
+the entire point is to remove the refetch RTT on the live surface:
 
 ```ts
-// topic (bounded enum, §1.3) → React Query key prefix (reuses qk/useInvalidators)
-const TOPIC_INVALIDATORS: Record<WsTopic, (qc: QueryClient) => Promise<unknown>> = {
-  'dashboard-now':  qc => qc.invalidateQueries({ queryKey: qk.dashboardNow() }),
-  'recent-blocked': qc => qc.invalidateQueries({ queryKey: qk.recentBlocked() }),
-  'alerts':         qc => qc.invalidateQueries({ queryKey: ['alerts'] }),
-  'time-status':    qc => qc.invalidateQueries({ queryKey: ['time', 'status'] }),
-  'routers':        qc => qc.invalidateQueries({ queryKey: ['admin', 'routers'] }),
-}
+// on `now`  → replace the dashboard-now cache with the pushed body
+queryClient.setQueryData(qk.dashboardNow(), tick.payload)
+// on `blocked` → prepend the new row to the recent-blocked cache (bounded, dedup by id)
+queryClient.setQueryData(qk.recentBlocked(), prev => prependCapped(prev, row))
 ```
 
-`invalidateQueries` only refetches **mounted** queries (and marks unmounted ones
-stale for their next mount), so a `stale{time-status}` while the dashboard isn't
-open costs nothing — the exact "poll only what's visible" property the adaptive
-ladder hand-rolls, now for free.
+Justification this is safe despite (3)'s SSOT argument: the pushed body **is** the
+exact `GET` body (§0.3), written through the **same** query key, so a later
+refetch (on reconnect, §6.1, or the paused-poll fallback, §3.4) reconciles against
+the authority. The server applies the *same* per-role visibility filter the `GET`
+uses before fan-out (§4.4 / §5.2) — for the household's small fan-out this is one
+filtered build, not a per-recipient risk surface. The derived KPIs ("Online now /
+Blocked now") are computed client-side off the pushed `DashboardNow`, so they
+update with the same push — no separate stream.
 
-> Four of the five topics map to an existing polled hook in
-> [`queries.ts`](../../web/src/api/queries.ts) (`useDashboardNow`,
-> `useRecentBlocked`, `useAlerts`, `useTimeStatus*`). **`routers` is the
-> exception:** the admin router list is a plain `api.routers.list()` call today,
-> not a TanStack-cached poll, so the `['admin','routers']` key above is
-> *forward-looking* — the `routers` topic (router connect/disconnect, fed by
-> `RouterWsRegistry` register/deregister, §4.2) implies first wrapping the router
-> list/status in a query, not pausing an existing interval. Noted for S5 so the
-> implementer doesn't assume a poll to retire.
+### 3.3 Class (3) everything else — `stale` → invalidate (or nothing)
 
-### 2.3 The thick-push exception (deferred, measured)
+For occasionally-changing resources, a `stale{topic}` frame triggers
+`queryClient.invalidateQueries` on the mapped key, reusing the existing `qk`
+factory / `useInvalidators` ([`queries.ts`](../../web/src/api/queries.ts)). The
+topic→key map is the one place the mapping lives. `invalidateQueries` only
+refetches **mounted** queries, so a `stale{time-status}` while that view is closed
+costs nothing. Many class-(3) changes already invalidate locally via a mutation's
+`onSuccess` and need no socket frame at all — the `stale` op is for the case where
+*another* operator/tab made the change. **No thick push for class (3):** it keeps
+the `GET` as the sole producer and gets per-recipient authz for free.
 
-`data{topic, body}` exists in the protocol (§1.3) for **one** future case:
-`dashboard-now`, the hottest view, where the push body *is already* the exact
-`GET /api/dashboard/now` output and the refetch RTT is the visible lag. It is
-**not built in v1.** It is enumerated as a later, independently-shippable
-optimization (§8, sub-issue **S5**) gated on a measurement showing the refetch
-RTT actually matters, and even then it writes through `setQueryData` for the
-**same** query key so a subsequent refetch reconciles — the `GET` stays the
-schema authority. Shipping (A) first and (B) only-if-measured is the cautious
-order; we do not pay (B)'s per-recipient-filtering complexity speculatively.
+### 3.4 Polling stays the paused fallback
 
-### 2.4 Polling stays as the paused fallback
-
-`refetchInterval` is **not removed** — it is made conditional on socket health.
-A small `useWsLive()` signal (§5.2) gates the interval:
+`refetchInterval` is **not removed** — it is gated on socket health via a
+`useWsLive()` signal (§6.2):
 
 ```ts
 useDashboardNow({ refetchInterval: wsLive ? false : 10_000 })
 ```
 
-When the socket is healthy, the interval is `false` (paused) and pushes drive
-updates; when the socket is down/reconnecting, the interval resumes at its
-current cadence so the view keeps updating exactly as today. This is
-belt-and-suspenders: an un-migrated view, an offline window, or a server that
-stops pushing all degrade to polling with no user-visible cliff. The redundant
-intervals are retired only at the *end* of the rollout (§8, **S6**), per-view,
-after the push path is proven for that view.
+Socket healthy → interval paused, pushes drive updates; socket down/reconnecting →
+interval resumes at today's cadence. The redundant intervals are retired only at
+the *end* of the rollout (§9, **S7**), per-view, after each view's push path is
+proven. Live throughput (class 1) has no poll fallback — it simply shows "—" while
+disconnected.
 
 ---
 
-## 3. Auth
+## 4. Auth
 
 The SPA authenticates with the **operator JWT** (`AuthService` /
 [`useAuth`](../../web/src/hooks/useAuth.tsx) — `localStorage.token`, HS256,
-`{sub, role, iat, exp}`,
-[`AuthService.scala`](../../api/src/auth/AuthService.scala)). The browser
-`WebSocket` cannot send the `Authorization` header that carries it (§0.2.1), so
-the upgrade needs a different mechanism.
+`{sub, role, iat, exp}`, [`AuthService.scala`](../../api/src/auth/AuthService.scala)).
+The browser `WebSocket` can't send the `Authorization` header that carries it
+(§0.2.1), so the upgrade needs a different mechanism.
 
-### 3.1 The three options
+### 4.1 The three options
 
-| Mechanism | How | Why rejected / chosen |
-| --- | --- | --- |
-| **Cookie** | Set an auth cookie; browser sends it on the ws upgrade automatically | **Rejected.** The SPA's whole auth model is a `localStorage` bearer token, not cookies ([`client.ts`](../../web/src/api/client.ts)). Introducing an auth cookie means CSRF defenses, a `Set-Cookie`/SameSite story, and a second credential to keep in sync with the bearer — a large surface for one endpoint. |
-| **Subprotocol** | Smuggle the JWT in `Sec-WebSocket-Protocol` (the one header `new WebSocket(url, protocols)` can set) | **Rejected.** Abuses a negotiation header to carry a secret; the full JWT lands in server access logs and proxy logs; awkward to echo back the selected subprotocol correctly. Works, but it's a hack with a long-lived-secret-in-logs footgun. |
-| **Short-lived single-use ticket** | Authenticated `POST /api/ws/ticket` (normal bearer) → opaque short-TTL ticket → `wss://…/api/ws?ticket=…` | **Chosen.** ✓ |
+| Mechanism | Why rejected / chosen |
+|---|---|
+| **Cookie** | **Rejected.** The SPA's auth model is a `localStorage` bearer, not cookies; an auth cookie means CSRF defenses + a second credential to sync. |
+| **Subprotocol** (JWT in `Sec-WebSocket-Protocol`) | **Rejected.** Abuses a negotiation header to carry a secret; the full JWT lands in access/proxy logs. |
+| **Short-lived single-use ticket** | **Chosen.** ✓ |
 
-### 3.2 Decision: short-lived, single-use ticket
+### 4.2 Decision: short-lived, single-use ticket
 
 ```
 SPA                                              API
- │  POST /api/ws/ticket   Authorization: Bearer <jwt>   │  requireAuth(req)  → JwtClaims
- │ ───────────────────────────────────────────────────▶ │  mint ticket: random 256-bit,
- │                                                       │  store {ticket → (sub, role, jwtExp)} TTL=30s, single-use
- │  { "ticket": "<opaque>", "expiresInSec": 30 }         │
- │ ◀─────────────────────────────────────────────────── │
- │                                                       │
+ │  POST /api/ws/ticket   Authorization: Bearer <jwt>   │  requireAuth(req) → JwtClaims
+ │ ───────────────────────────────────────────────────▶ │  mint random 256-bit ticket,
+ │  { "ticket": "<opaque>", "expiresInSec": 30 }         │  store {ticket → (sub, role, jwtExp)} TTL=30s, single-use
  │  GET /api/ws?ticket=<opaque>   Upgrade: websocket     │  consume ticket (atomic delete);
  │ ───────────────────────────────────────────────────▶ │  invalid/expired/used → 401, no 101
- │  101 Switching Protocols                              │  → resolve (sub, role) → register channel (§4)
- │ ◀─────────────────────────────────────────────────── │
+ │  101 Switching Protocols  → register channel (§5)     │  → resolve (sub, role)
 ```
 
-- **The ticket is not the JWT.** It is an opaque random token, single-use, TTL
-  ~30 s, stored server-side (a `Ref[Map[Ticket, TicketEntry]]` in the SPA
-  registry — single-process is fine for the household model, §4) bound to the
-  authenticated `(sub, role)` and the originating JWT's `exp`. The query-string
-  exposure that makes "JWT in the URL" unacceptable is bounded to a 30 s,
-  one-shot, non-replayable, non-JWT token. Minting reuses the existing
-  `requireAuth` on the `POST`, so there is **one** JWT-validation implementation
-  (single-source-of-truth) — the ws path is not a second auth surface.
-- **Consume-at-upgrade is atomic** (delete-returns-old) so a ticket cannot be
-  used twice (a replay attacker who sniffs the URL loses the race with the
-  legitimate upgrade, and after either consumes it the ticket is gone).
-- **A bad/expired/used ticket → reject the upgrade with 401** (no 101), exactly
-  the router-path semantics ([`RouterWsRoutes`](../../api/src/routes/RouterWsRoutes.scala)).
-  Metered `spa_ws_auth_total{result=ticket_invalid|ticket_expired}` (§6).
+- **The ticket is not the JWT** — opaque, single-use, TTL ~30 s, stored
+  server-side (a `Ref[Map[Ticket, TicketEntry]]` in the SPA registry §5.1) bound
+  to `(sub, role, jwtExp)`. The query-string exposure that makes "JWT in the URL"
+  unacceptable is bounded to a 30 s one-shot non-JWT token. Minting reuses
+  `requireAuth` on the `POST`, so there is **one** JWT-validation implementation —
+  the ws path is not a second auth surface.
+- **Consume-at-upgrade is atomic** (delete-returns-old) → a ticket can't be used
+  twice; a URL-sniffing replayer loses the race and finds it already gone.
+- **Bad/expired/used ticket → reject the upgrade with 401** (no 101), the
+  router-path semantics, metered `spa_ws_auth_total{result=…}` (§7).
 
-### 3.3 Token expiry mid-connection + re-auth
+### 4.3 Token expiry mid-connection + re-auth
 
-The ticket gates only the *upgrade*; the **connection's authz deadline is the
-JWT's `exp`**, captured at upgrade (`TicketEntry.jwtExp`). Two cases:
+The ticket gates only the *upgrade*; the connection's authz deadline is the JWT's
+`exp`, captured at upgrade.
 
 - **Expiry while connected.** The server tracks `jwtExp` per channel; on the
-  heartbeat tick where `now ≥ jwtExp`, it closes the channel with a
-  `4401 token-expired` close code and metered `spa_ws_auth_total{result=jwt_expired}`.
-  The bound on stale-authz carry-over is one heartbeat interval — same property
-  the router path gives for token revocation
-  ([`docs/design/websocket-transport.md` §4.2](websocket-transport.md)).
-- **Re-auth.** Today the SPA has **no silent token refresh** — an expired JWT
-  means a 401 → `localStorage` clear → `/login`
-  ([`client.ts`](../../web/src/api/client.ts)). The ws design mirrors this exactly
-  and adds a seam for when refresh lands:
-  - **v1 (no refresh):** on `4401 token-expired`, the SPA stops reconnecting and
-    falls back to polling (§2.4); the next REST call 401s and triggers the
-    existing `/login` redirect. The user re-logs in; on the new session the SPA
-    mints a fresh ticket and reconnects. No new logout path is invented.
-  - **Forward-compat (`reauth` op):** when a future silent-refresh mechanism
-    exists, the SPA mints a new ticket from the refreshed JWT and sends
-    `{op:"reauth", payload:{ticket}}` on the **open** socket; the server
-    validates+consumes it and advances the channel's `jwtExp` — extending the
-    connection without a reconnect. The op is in the protocol now (§1.3) so the
-    server can accept it the moment refresh exists; v1 server may `ack`-reject it.
+  heartbeat tick where `now ≥ jwtExp` it closes with `4401 token-expired`
+  (metered `jwt_expired`). Stale-authz carry-over is bounded by one heartbeat
+  interval — same property the router path gives for revocation.
+- **Re-auth.** The SPA has **no silent token refresh** today — an expired JWT
+  means 401 → `localStorage` clear → `/login` ([`client.ts`](../../web/src/api/client.ts)).
+  v1 mirrors this: on `4401` the SPA stops reconnecting, falls back to polling
+  (§3.4); the next REST call 401s → the existing `/login` redirect; after
+  re-login it mints a fresh ticket and reconnects. The **`reauth` op** (§1.2) is
+  the forward-compat seam: when silent refresh lands, the SPA mints a ticket from
+  the refreshed JWT and sends `reauth` on the open socket; the server
+  validates+consumes it and advances `jwtExp` — no reconnect. v1 server may
+  `ack`-reject `reauth`.
 
-### 3.4 Role scoping per frame
+### 4.4 Role scoping per frame
 
-The resolved `role` (from the ticket → claims) is captured on the channel at
-upgrade and is the authz key for fan-out: the server only pushes a topic to a
-connection whose role may see it (e.g. `routers` → admin only, matching the
-`requireAdmin` on `GET /api/admin/routers`). Because the canonical push is the
-*contentless* `stale` signal (§2.1), the worst case of a fan-out bug is a
-needless refetch that the `GET`'s own `requireAuth`/role-filter then rejects or
-scopes — defense in depth, not a leak. Thick pushes (§2.3), if ever built, must
-filter the body per recipient role *before* sending; this asymmetry is a further
-reason (A) is the default.
+The resolved `role` is captured on the channel at upgrade and is the fan-out authz
+key: the server only pushes a topic to a connection whose role may see it
+(`stale{...}` for an admin-only resource → admin connections only; per-profile
+throughput → filtered to the profiles the role may view). For class-(2) thick
+pushes the body is filtered per-role *before* send, exactly as the matching `GET`
+filters (§3.2 / §5.2). For class-(3) `stale` signals the worst case of a fan-out
+bug is a needless refetch the `GET`'s own `requireAuth` then scopes — defense in
+depth.
 
 ---
 
-## 4. Reuse vs. separate registry — **separate `SpaWsRegistry`, shared event source**
+## 5. Server side — registries, change sources, the throughput aggregator
 
-### 4.1 Decision
+### 5.1 Decision: fork a parallel `SpaWsRegistry`; share the change sources
 
-**Fork a parallel `SpaWsRegistry`; do not generalize
+**Fork `SpaWsRegistry`; do not generalize
 [`RouterWsRegistry`](../../api/src/routes/RouterWsRegistry.scala) to hold both.**
-Justification — the two registries differ on the three axes a registry *is*:
+The two differ on the three axes a registry *is*:
 
 | Axis | `RouterWsRegistry` (#1846) | `SpaWsRegistry` (this design) |
-| --- | --- | --- |
-| **Key** | `RouterId` | a session/connection id, with `role` for authz fan-out (keyed per-connection, not per-user — a user may have N tabs, §5.4) |
-| **Fan-out payload** | full `PolicySnapshot` as a `policy` frame | contentless `stale{topic}` frames (§2.1), role-filtered (§3.4) |
-| **Event vocabulary** | one event: "policy snapshot changed" | several: policy change, new connection event, usage tick, router connected/disconnected |
+|---|---|---|
+| **Key** | `RouterId` | per-connection id + `role` (a user may have N tabs, §6.4) |
+| **Fan-out payload** | full `PolicySnapshot` | the §1.2 op vocabulary (`throughput`/`now`/`blocked`/`stale`), role-filtered |
+| **Event vocabulary** | one event (policy changed) | several (throughput tick, NOW change, new blocked event, class-3 mutations) |
 
-Generalizing one registry to two key types, two payload vocabularies, and two
-fan-out filters would couple two things that share only the *shape* of "a `Ref`
-of channels with a fan-out method." The `RouterWsRegistry` is a clean, small,
-single-purpose class
-([`RouterWsRegistry.scala`](../../api/src/routes/RouterWsRegistry.scala)); the
-right reuse is **the pattern, not the instance** — `SpaWsRegistry` is the same
-`Ref[Map[K, Set[WebSocketChannel]]]` shape with SPA-appropriate K, payload, and
-metrics. (Same call the router doc makes: "share patterns, not code.")
+Generalizing one registry across two key types + two payload vocabularies couples
+things that share only the *shape* "a `Ref` of channels with a fan-out method."
+Reuse the **pattern**, not the instance — `SpaWsRegistry` is the same
+`Ref[Map[K, Set[WebSocketChannel]]]` with SPA-appropriate K, payloads, and
+metrics. (Also holds the ticket store, §4.2.)
 
-### 4.2 What IS shared — the change-event source (consume #1849, don't rebuild)
+### 5.2 The change sources — consume existing write sites (don't rebuild)
 
-The reuse point is the **event source**, not the registry. #1849's
-push-on-change ([`PolicyService.reevaluate`](../../api/src/policy/PolicyService.scala)
-→ [`PolicySnapshotPublisher`](../../api/src/policy/PolicySnapshotPublisher.scala))
-already fires exactly when policy changes. The SPA needs that signal **plus**
-three others the router never cared about (new connection events, usage ticks,
-router connect/disconnect). So:
+The reuse point is the **event source**, not the registry. The SPA registry
+subscribes to changes published at write sites that already run on the relevant
+change — no new polling/diffing loop:
 
-1. **Generalize the single-sink `PolicySnapshotPublisher` into a small
-   multi-subscriber hub.** Today it is an `AtomicReference[PolicySnapshotPublisher]`
-   with one sink ([`PolicyService.setPublisher`](../../api/src/policy/PolicyService.scala)).
-   Replace the single sink with a ZIO `Hub` (or a subscriber list) so **both**
-   the `RouterWsRegistry` (which wants the full snapshot) **and** the
-   `SpaWsRegistry` (which wants a `stale{topic:"time-status"|"dashboard-now"}`
-   derived from "policy changed") subscribe. This is a behavior-preserving
-   widening of an existing seam — the router subscriber is unchanged.
-2. **Introduce a server-side `SpaEventHub`** (a `Hub[SpaTopic]`) that the SPA
-   registry subscribes to, fed by the existing write paths — each is a one-line
-   publish at a point that *already* runs on the relevant change:
-   - policy reevaluate (#1849) → `time-status`, `dashboard-now`
-   - connection-events ingest (`RouterIngestService`, the same handler the REST
-     and router-ws paths share) → `recent-blocked`, `dashboard-now`
-   - usage ingest → `dashboard-now`
-   - alert raised (access-request created) → `alerts`
-   - `RouterWsRegistry` register/deregister → `routers`
-   The hub is the **one** place "a thing the SPA renders changed" is named;
-   `SpaWsRegistry` translates a `SpaTopic` into role-filtered `stale` frames.
-   This keeps the change-detection logic at the existing write sites (no new
-   polling/diffing loop) — it consumes #1849's discipline and extends it to the
-   non-policy topics.
+1. **Generalize the single-sink `PolicySnapshotPublisher` to a multi-subscriber
+   hub.** Today it's an `AtomicReference[PolicySnapshotPublisher]` with one sink
+   ([`PolicyService.setPublisher`](../../api/src/policy/PolicyService.scala)).
+   Widen to a `Hub` so both `RouterWsRegistry` (wants the full snapshot) and
+   `SpaWsRegistry` (wants `stale{topic:"time-status"|...}` derived from "policy
+   changed") subscribe. Behavior-preserving for the router subscriber.
+2. **A `SpaEventHub`** (`Hub[SpaEvent]`) fed by existing write sites, each a
+   one-line publish:
+   - connection-events ingest (`RouterIngestService`, the shared handler both REST
+     and router-ws ingest call) → a `blocked` push (the new row) + a `now`
+     recompute trigger.
+   - usage ingest → feeds the throughput aggregator (§5.3) + a `now` trigger.
+   - policy reevaluate (#1849) → `now` recompute + `stale{time-status}`.
+   - alert raised → `stale{alerts}`; profile/device/schedule mutations →
+     `stale{profiles|devices|schedules}`.
+   `SpaWsRegistry` translates each `SpaEvent` into role-filtered frames. **`now`
+   pushes reuse the existing `DashboardNowRoutes` builder** (one implementation of
+   the NOW snapshot — SSOT), recomputed on change rather than per-poll.
 
-> **Single-process fan-out, like the router path.** Both registries and the hub
-> are in-memory, single-instance. This is correct for the single-household model
-> (one API process); cross-instance pub/sub is explicitly out of scope, same as
-> [`docs/design/websocket-transport.md` §6.1](websocket-transport.md).
+### 5.3 The throughput aggregator — derive the rate from the #1023 usage stream
+
+Live throughput is the one element needing a genuinely new server path, and it
+**depends on [#1023](https://github.com/wifihaven/wifihaven/issues/1023)** — the
+router→API leg that pushes usage as the agent has it, rather than the ~60 s REST
+batch. Design:
+
+- **Source.** The router already accounts directional bytes per `(mac, host)` —
+  `UsageRecord{bytesIn,bytesOut}` ([`Models.scala`](../../shared/src/Models.scala)).
+  The ~60 s `usage` batch is too coarse for a live gauge. **Recommend a dedicated
+  lightweight `throughput` sample on the router→API ws** (additive to #1023):
+  per-`mac` bytes-since-last-sample, every ~2 s, sourced from the conntrack byte
+  counters the agent already reads (`conntrack.lua`). This separates concerns —
+  the `usage` records stay low-frequency/high-fidelity (per-host, period-accurate,
+  idempotent for rollups); the `throughput` sample is high-frequency/low-fidelity
+  (per-mac totals, display-only, lossy-OK). Conflating them would make `usage` too
+  chatty or throughput too coarse. (Filed as a #1023 sub-issue, §9 **S0**.)
+- **Aggregate.** The API maps `mac → profile` (it already does) and maintains a
+  rolling overall + per-profile B/s (last-sample rate or short EWMA). This is the
+  **one** place the rate is computed (SSOT) — every tab consumes the same tick.
+- **Push.** Emit a `throughput` tick (§1.3) to SPA connections on a fixed cadence
+  (~2 s), latest-wins (§6.3). If #1023's realtime usage isn't available yet, the
+  aggregator simply has no input and emits nothing (the gauge shows "—") — so the
+  SPA endpoint + the rest of the catalog ship independently of S0.
+
+> **Single-process fan-out**, like the router path — registries, hubs, and the
+> aggregator are in-memory, single-instance (correct for the one-API-process
+> household model; cross-instance pub/sub is out of scope, same as
+> [`websocket-transport.md` §6.1](websocket-transport.md)).
 
 ---
 
-## 5. Reliability
+## 6. Reliability
 
-### 5.1 Reconnect / backoff (browser)
+### 6.1 Reconnect / backoff (browser)
 
-The SPA ws client reconnects with **exponential backoff + jitter** (1 s → 2 s →
-4 s → … cap 30 s), reset on a successful `ready` (not merely the socket
-`open` — a socket that opens but never `ready`s, e.g. ticket consumed but server
-wedged, must not reset the backoff). Reconnect *is* the throttle; there is no
-per-frame retry. On `4401 token-expired` (§3.3) the client stops reconnecting and
-hands off to polling + the existing `/login` path; on any other close it backs
-off and retries. Each reconnect mints a **fresh ticket** (§3.2) — tickets are
-single-use, so a reconnect cannot replay the old one.
+Exponential backoff + jitter (1 s → 2 s → 4 s → … cap 30 s), reset on `ready`
+(not merely socket `open`). Reconnect *is* the throttle; no per-frame retry. Each
+reconnect mints a **fresh ticket** (§4.2; single-use, so a reconnect can't replay
+the old one). On reconnect the client refetches the class-(2) queries once
+(`now`/`blocked`) so a change missed while disconnected converges; the throughput
+gauge resumes on the next tick. On `4401 token-expired` it stops reconnecting and
+hands off to polling + `/login` (§4.3).
 
-### 5.2 Heartbeat / liveness → the real "live / reconnecting" indicator
+### 6.2 Heartbeat / liveness → the real "live / reconnecting" indicator
 
-This is the payoff that the silent poll cannot give (§0.1).
+The payoff the silent poll can't give (§0.1).
 
-- **Heartbeat.** App-level `{op:"ping"}`/`{op:"pong"}` every ~30 s (the browser
-  can't send WS control-frame pings, §0.2.2). The server also sends control-frame
-  pings; the browser auto-pongs and surfaces a drop via `onclose`. A missed
-  app-level `pong` for `2×interval` → the client treats the socket as dead and
-  reconnects (§5.1); server-side, a missed pong closes + deregisters the channel.
-- **The indicator.** A `useWsLive()` hook exposes `'live' | 'reconnecting' |
-  'offline'`, driven by the socket state machine (`ready` → live; backoff →
-  reconnecting; gave-up/expired → offline). This **replaces the silent-poll
-  ambiguity**: the UI shows a small "Live"/"Reconnecting…" badge, and the
-  signal also gates the polling fallback (§2.4) and feeds
+- **Heartbeat.** App-level `{op:"ping"}`/`{op:"pong"}` ~30 s (browsers can't send
+  WS control pings, §0.2.2); the server also control-pings and the browser
+  auto-pongs, surfacing drops via `onclose`. A missed app-pong for `2×interval` →
+  client treats the socket as dead and reconnects; server-side a missed pong
+  closes + deregisters.
+- **The indicator.** `useWsLive()` exposes `'live' | 'reconnecting' | 'offline'`
+  from the socket state machine. It backs a small "Live / Reconnecting…" badge on
+  the dashboard, gates the polling fallback (§3.4), and feeds
   [`ApiUnreachableBanner`](../../web/src/components/ApiUnreachableBanner.tsx):
-  - socket reconnecting **and** REST polls failing (`apiHealth.unreachable`) →
-    the existing red "can't reach the API" banner (unchanged).
-  - socket reconnecting **but** REST polls succeeding → a softer "Reconnecting
-    live updates… (still refreshing every 10 s)" state — *degraded, not down*,
-    a distinction the current banner cannot draw. (Implementation folds a
-    `wsLive` input into `apiHealth`/the banner; the banner's existing
-    `unreachable` path is untouched.)
+  - socket reconnecting **and** REST polls failing → the existing red banner.
+  - socket reconnecting **but** polls succeeding → a softer "Reconnecting live
+    updates…" state — *degraded, not down*, a distinction the current banner
+    can't draw.
 
-### 5.3 Backpressure
+### 6.3 Backpressure
 
-- **Server outbound.** Each channel has a **bounded mailbox**; because the
-  canonical frame is the idempotent contentless `stale{topic}` (§2.1), a slow
-  client's mailbox **coalesces by topic** — N pending `stale{dashboard-now}`
-  collapse to one (the newest is all that matters). A persistently-wedged channel
-  (mailbox full of *distinct* topics and not draining) is closed and left to
-  reconnect, metered `spa_ws_policy_push_total{result=channel_closed}`-style
-  (§6). This is strictly simpler than the router path's snapshot mailbox because
-  the payloads are coalescible signals, not distinct bytes.
-- **Inbound (SPA→server).** Only tiny control frames (`hello`/`ping`/`reauth`);
-  no inbound backpressure concern.
+- **`throughput`** — latest-wins: a slow client's mailbox keeps only the newest
+  tick (older rates are worthless). Never queues.
+- **`now`** — coalesce to the latest snapshot (same: only the freshest matters).
+- **`blocked`** — small append frames; a bounded per-channel mailbox, drop-oldest
+  past the cap (the feed is "recent" anyway), metered. A persistently-wedged
+  channel is closed and left to reconnect.
+- **`stale`** — idempotent; coalesce by topic (N `stale{X}` → one).
+- **Inbound (SPA→server)** — tiny control frames only; no concern.
 
-### 5.4 Multi-tab — **socket per tab (v1); SharedWorker deferred**
+### 6.4 Multi-tab — socket per tab (v1); SharedWorker deferred
 
-**Recommend one socket per tab for v1.** Justification:
+**One socket per tab for v1.** Each tab has its own `QueryClient`, so a per-tab
+socket maps cleanly to "patch *this* tab's cache." A SharedWorker (one socket for
+N tabs + broadcast) is more machinery (worker lifecycle, `BroadcastChannel`,
+per-tab role routing) for a tiny workload — a household has a handful of admin
+tabs, and per-tab cost is one idle socket + a 30 s heartbeat + coalesced
+latest-wins ticks. **SharedWorker is the documented future optimization** (§9,
+**S8**), recorded with its tradeoff, not a TODO.
 
-- Each tab has its own React Query cache (`QueryClient`); a per-tab socket maps
-  cleanly to "invalidate *this* tab's cache." A SharedWorker would hold one
-  socket for N tabs and then must broadcast each `stale` to every tab's client —
-  more moving parts (worker lifecycle, `BroadcastChannel`, message routing) for a
-  workload that is tiny: a household has a handful of admin tabs, and the
-  per-connection cost is one idle socket + a ~30 s heartbeat + coalesced
-  contentless signals. The poll tax this removes scaled per-tab too, so per-tab
-  sockets are already strictly better than today.
-- **SharedWorker is the documented future optimization** (§8, **S7**), worth it
-  only if a deployment shows many tabs per browser; its tradeoff (one socket,
-  fewer server connections, but broadcast complexity + no clean per-tab role
-  story when tabs differ) is recorded, not a TODO.
+### 6.5 Failure independence
 
-### 5.5 Failure independence
-
-A dead socket never breaks the app: it degrades to the polling that runs today
-(§2.4). There is no enforcement or correctness dependency on the socket — it is a
-pure latency/UX optimization over a REST baseline that stays fully live.
+A dead socket never breaks the app: class (2)/(3) degrade to today's polling
+(§3.4); class (1) throughput shows "—". No enforcement or correctness depends on
+the socket — it is a latency/UX layer over a fully-live REST baseline.
 
 ---
 
-## 6. Metrics
+## 7. Metrics
 
-All via the `AppMetrics`/`MetricGuard` facade
-([`api/src/metrics/Metrics.scala`](../../api/src/metrics/Metrics.scala)),
-**bounded labels only — never per-user / per-session / per-mac**
+Via `AppMetrics`/`MetricGuard` ([`Metrics.scala`](../../api/src/metrics/Metrics.scala)),
+**bounded labels only — never per-user/session/mac/profile**
 ([`docs/process/instrumentation.md`](../process/instrumentation.md)). Mirrors the
-router-ws metric families ([`websocket-transport.md` §7](websocket-transport.md))
-so the two dashboards read alike.
+router-ws families ([`websocket-transport.md` §7](websocket-transport.md)).
 
 | Metric | Type | Labels (bounded) | Meaning |
-| --- | --- | --- | --- |
-| `spa_ws_connections_active` | gauge | `role` (`admin`\|`adult`\|`child`) | currently-open SPA channels, refreshed on every register/deregister so it ages out on disconnect (same discipline as `router_ws_connections_active`) |
-| `spa_ws_frames_total` | counter | `op` (bounded enum §1.3), `direction` (`in`\|`out`), `result` (`ok`\|`reject`\|`unknown_op`) | frame throughput + the unknown-op forward-compat counter |
-| `spa_ws_auth_total` | counter | `result` (`ticket_ok`\|`ticket_invalid`\|`ticket_expired`\|`ticket_reused`\|`jwt_expired`) | the ticket-handshake + mid-connection-expiry outcomes (§3) |
-| `spa_ws_push_total` | counter | `topic` (bounded enum), `result` (`ok`\|`coalesced`\|`channel_closed`) | per-topic fan-out health + backpressure coalescing (§5.3) |
+|---|---|---|---|
+| `spa_ws_connections_active` | gauge | `role` (`admin`\|`adult`\|`child`) | open SPA channels, refreshed on register/deregister (ages out on disconnect) |
+| `spa_ws_frames_total` | counter | `op` (enum §1.2), `direction` (`in`\|`out`), `result` (`ok`\|`reject`\|`unknown_op`) | frame throughput + unknown-op tripwire |
+| `spa_ws_auth_total` | counter | `result` (`ticket_ok`\|`ticket_invalid`\|`ticket_expired`\|`ticket_reused`\|`jwt_expired`) | ticket handshake + mid-connection expiry (§4) |
+| `spa_ws_push_total` | counter | `op` (`throughput`\|`now`\|`blocked`\|`stale`), `result` (`ok`\|`coalesced`\|`dropped`\|`channel_closed`) | per-class fan-out health + backpressure (§6.3) |
 
-`role`, `op`, `direction`, `result`, `topic` are all small fixed enums — the same
-cardinality-firewall discipline `Metrics.scala` already enforces (an
-attacker-supplied `op` is collapsed to the literal `unknown` for the label, real
-value to the log only, exactly as `RouterWsRoutes` does). **No `router_id`-style
-per-entity label** — the SPA has no fleet-bounded entity, so unlike
-`router_connected` there is no per-id gauge here.
+`role`/`op`/`direction`/`result` are small fixed enums — the same
+cardinality-firewall discipline `Metrics.scala` enforces (an attacker-supplied
+`op` collapses to the literal `unknown` for the label, real value to the log
+only). **No per-entity label.**
 
-> **Registration (S1/S6 implementer note):** each new `spa_ws_*` series needs its
-> `(name -> allowed keys)` entry added to `MetricGuard.Allowed`
-> ([`api/src/metrics/Metrics.scala`](../../api/src/metrics/Metrics.scala), the
-> `Allowed` map) or `MetricGuard` rejects the emit — exactly as the `router_ws_*`
-> families were registered. Do not rely on the discipline being implicit.
+> **Registration (implementer note):** each new `spa_ws_*` series needs its
+> `(name -> allowed keys)` entry in `MetricGuard.Allowed`
+> ([`Metrics.scala`](../../api/src/metrics/Metrics.scala)) or the emit is rejected
+> — exactly as the `router_ws_*` families were registered.
 
-### 6.1 Grafana panel
+### 7.1 Grafana panel
 
-Add a **`spa-ws.json`** dashboard under
-[`deploy/grafana/dashboards/`](../../deploy/grafana/dashboards/) (sibling to the
-existing `router-ws-transport.json`), authored against the series above —
-**grepped from `api/src`, not a design-doc catalog**
-([`docs/process/instrumentation.md#metrics-need-a-dashboard`](../process/instrumentation.md)).
-Panels:
-
-1. **SPA connections active** — `sum(spa_ws_connections_active)` stat + a
-   `by (role)` timeseries (the "how many browser tabs are live right now" signal,
-   the SPA analogue of router connections active).
-2. **Frame throughput** — `sum by (op,direction) (rate(spa_ws_frames_total[5m]))`
-   timeseries; a separate stat on
-   `rate(spa_ws_frames_total{result="unknown_op"}[5m])` (forward-compat tripwire).
-3. **Auth outcomes** — `sum by (result) (rate(spa_ws_auth_total[5m]))`; alert-worthy
-   if `ticket_invalid`/`ticket_reused` spikes (replay attempt) — noted for the
-   alerting epic, not built here.
-4. **Push health** — `sum by (topic,result) (rate(spa_ws_push_total[5m]))`; a
-   rising `coalesced`/`channel_closed` rate flags slow/wedged clients (§5.3).
-
-The dashboard ships in the **same PR** as the metric-emitting code for each
-phase, targeting only series that phase actually emits (no no-data panels), per
-the dashboard rule. CI gate: `grafana-terraform`. As a *new* dashboard,
-`spa-ws.json` must also be added to the `local.dashboards` list in
-[`infra/grafana/main.tf`](../../infra/grafana/main.tf) (sibling to the existing
-`router-ws-transport` entry) — that list is what the `grafana-terraform` gate
-provisions from.
+Add **`spa-ws.json`** under [`deploy/grafana/dashboards/`](../../deploy/grafana/dashboards/)
+(sibling to `router-ws-transport.json`), authored against the series above —
+grepped from `api/src`, not a catalog
+([`instrumentation.md#metrics-need-a-dashboard`](../process/instrumentation.md)).
+Panels: connections-active `by (role)`; frame throughput `by (op,direction)` + an
+`unknown_op` rate stat; auth outcomes `by (result)` (alert-worthy on
+`ticket_reused`/`ticket_invalid`); push health `by (op,result)` (rising
+`coalesced`/`dropped`/`channel_closed` ⇒ slow clients). Each phase ships its
+panels in the **same PR**; a *new* dashboard must also join the `local.dashboards`
+list in [`infra/grafana/main.tf`](../../infra/grafana/main.tf) (what the
+`grafana-terraform` gate provisions from).
 
 ---
 
-## 7. Deployment consideration — Cloudflare-Pages-vs-Render hosting split
+## 8. Deployment — Cloudflare-Pages-vs-Render hosting split
 
-The SPA hosting split ([`AGENTS.md`](../../AGENTS.md) "SPA hosting split")
-directly shapes where the ws endpoint lives:
+The SPA hosting split ([`AGENTS.md`](../../AGENTS.md) "SPA hosting split") shapes
+where the ws endpoint lives:
 
-- **Self-hosted (JVM-bundled SPA).** The SPA is served by the API process at the
-  same origin (`VITE_API_BASE_URL` empty). `wss://<same-origin>/api/ws` is
-  same-origin; no CORS, no cross-host concern. The common case, upgrades cleanly.
-- **Cloud (SPA on Cloudflare Pages, API on Render).** The SPA is static assets on
-  `app.wifihaven.net` (Cloudflare Pages); the API — and therefore the ws
-  endpoint — is on `api.wifihaven.net` (Render). Consequences:
-  1. **The ws connection goes browser → Render directly**, *not* through
-     Cloudflare Pages (Pages serves static assets only; it does not proxy the
-     `/api/*` origin). So Cloudflare Pages config is irrelevant to the socket —
-     it is purely a Render concern.
-  2. **Render terminates websockets** — confirmed for the router transport on the
-     Render web-service plan ([`websocket-transport.md` §3.3](websocket-transport.md));
-     the SPA endpoint inherits that, including the same idle-timeout/heartbeat
-     pinning (§5.2). The 30 s app-level heartbeat must stay under Render's idle
-     timeout, the same constant the router path pins.
-  3. **Cross-origin upgrade → an `Origin` allowlist.** Unlike the router (a
-     non-browser client that sends no `Origin`), the browser **does** send an
-     `Origin` header on the ws upgrade. The server should check it against an
-     allowlist (`app.wifihaven.net`, `staging.*`, `localhost` for dev) and reject
-     a mismatched origin at upgrade — a CSWSH (cross-site websocket hijacking)
-     defense the same-origin self-hosted case gets for free. The ticket (§3.2)
-     is the primary credential, but the Origin check is cheap defense-in-depth
-     and is the one server-side ws config that differs by hosting mode.
-  4. **The SPA derives the ws host from `VITE_API_BASE_URL`** (§1.1) — the same
-     env var that already points the REST client at the right API host per
-     environment ([`client.ts`](../../web/src/api/client.ts)), so no new
-     deployment config is introduced; the ws URL falls out of the existing one.
+- **Self-hosted (JVM-bundled SPA).** Served by the API at the same origin
+  (`VITE_API_BASE_URL` empty). `wss://<same-origin>/api/ws` is same-origin — no
+  CORS, no cross-host concern. The common case; upgrades cleanly.
+- **Cloud (SPA on Cloudflare Pages, API on Render).** SPA static assets on
+  `app.wifihaven.net`; the API — and the ws endpoint — on `api.wifihaven.net`:
+  1. **The ws goes browser → Render directly**, *not* through Cloudflare Pages
+     (Pages serves static assets, doesn't proxy `/api/*`). So CF Pages config is
+     irrelevant to the socket — purely a Render concern.
+  2. **Render terminates websockets** — confirmed for the router transport
+     ([`websocket-transport.md` §3.3](websocket-transport.md)); the SPA endpoint
+     inherits the same idle-timeout/heartbeat pinning (§6.2 — the 30 s heartbeat
+     stays under Render's idle timeout).
+  3. **Cross-origin upgrade → an `Origin` allowlist.** Unlike the router (no
+     `Origin`), the browser sends `Origin` on the upgrade. The server checks it
+     against an allowlist (`app.wifihaven.net`, `staging.*`, `localhost` for dev)
+     and rejects a mismatch — a CSWSH defense the same-origin self-hosted case
+     gets free. The ticket (§4.2) is the primary credential; the Origin check is
+     cheap defense-in-depth and the one server-side ws config that differs by
+     hosting mode.
+  4. **The SPA derives the ws host from `VITE_API_BASE_URL`** (§2.1) — the same
+     env var that already points the REST client per environment, so no new
+     deployment config.
 
 ---
 
-## 8. Phased, independently-shippable rollout
+## 9. Phased, independently-shippable rollout
 
-Each phase **ships independently and back-compat**: polling stays live
-throughout (§2.4), the ws path is purely additive until the final per-view
-retirement, and **no phase is a flag day**. Server-first (exercisable by a test
-ws client before any SPA code), then one pilot view, then broaden, then retire
-redundant intervals last. Sub-issues to file against this doc:
+Each phase **ships independently and back-compat**: polling stays live throughout
+(§3.4), the ws path is additive until the final per-view retirement, **no flag
+day**. The pilot is the **realtime dashboard surface** (the actual goal), not an
+arbitrary view. Sub-issues to file against this doc (+ the #1023 dependency for
+realtime throughput):
 
 | # | Sub-issue | Independently shippable? | Back-compat |
-| --- | --- | --- | --- |
-| **S1** | **API `/api/ws` endpoint + `{op,payload}` demux + `SpaWsRegistry`** — the server half: ticket-less skeleton refused for now, envelope/demux (`hello`→`ready`, `ping`/`pong`, unknown-op ignore+meter), per-connection registry keyed by session, server metrics §6, `spa-ws.json` panels for the series it emits. Reuses the `RouterWsRoutes` patterns. REST untouched. | yes (test ws client) | additive — new route only |
-| **S2** | **Ticket handshake + auth** — `POST /api/ws/ticket` (reuses `requireAuth`), single-use short-TTL ticket store, consume-at-upgrade, `Origin` allowlist (§7), mid-connection `jwtExp` close (§3.3), `reauth` op accepted (or ack-rejected) as the forward-compat seam, auth metrics. | yes (completes server auth; still no SPA client) | additive |
-| **S3** | **Generalize the change-event source** — widen `PolicySnapshotPublisher`'s single sink to a multi-subscriber hub so both registries consume #1849; add `SpaEventHub` (`Hub[SpaTopic]`) fed by the existing write sites (policy reevaluate, events/usage ingest, alert raise, router connect/disconnect); `SpaWsRegistry` translates topics → role-filtered `stale` frames (§4.2). | yes (the hub + fan-out are exercisable by a test client; behavior-preserving for the router subscriber) | behavior-preserving |
-| **S4** | **SPA ws client + pilot view (dashboard "now") off polling** — the `useWsInvalidation()` hook (§2.2), ticket-mint-then-connect, reconnect/backoff (§5.1), heartbeat + `useWsLive()` indicator (§5.2), polling-as-paused-fallback wiring for **dashboard-now only** (§2.4). One view migrated; everything else still polls. | yes (one view) | additive — other views unchanged |
-| **S5** | **Broaden to recent-blocked, alerts, time-status** — add their topic→invalidator entries (§2.2) and pause their intervals when `wsLive`; optionally the **thick-push** measurement + `data{topic}` for dashboard-now *iff* the refetch RTT is shown to matter (§2.3). | yes (per-view) | additive |
-| **S6** | **Retire redundant `refetchInterval`s** — per migrated view, after its push path is proven on the fleet, drop the now-paused interval (keep the `wsLive ? false : …` fallback only where a view still has no push). The only "removal" step; per-view, operator-gated, never a flag day. | yes, last | the only subtractive step, gated per-view |
-| **S7** | **(optional) SharedWorker single-socket multi-tab** — only if a deployment shows many tabs/browser (§5.4). Records the broadcast-complexity tradeoff; not a TODO. | yes, later | additive |
+|---|---|---|---|
+| **S0** | **(in #1023) router→API lightweight `throughput` sample** — additive per-mac bytes-since-last-sample frame every ~2 s from the conntrack counters (§5.3). The realtime source for live bandwidth. | yes (additive frame; usage path unchanged) | additive |
+| **S1** | **API `/api/ws` endpoint + `{op,payload}` demux + `SpaWsRegistry`** — server skeleton, envelope/demux (`hello`→`ready`, `ping`/`pong`, unknown-op ignore+meter), per-connection registry, server metrics §7 + `spa-ws.json`. Reuses `RouterWsRoutes` patterns. REST untouched. | yes (test ws client) | additive — new route |
+| **S2** | **Ticket handshake + auth** — `POST /api/ws/ticket` (reuses `requireAuth`), single-use short-TTL store, consume-at-upgrade, `Origin` allowlist (§8), `jwtExp` close (§4.3), `reauth` seam, auth metrics. | yes | additive |
+| **S3** | **Change sources** — widen `PolicySnapshotPublisher` to a hub; add `SpaEventHub` fed by existing write sites; translate to role-filtered `stale`/`now`/`blocked` frames (§5.2). | yes (behavior-preserving for the router subscriber; testable via a probe client) | behavior-preserving |
+| **S4** | **Throughput aggregator + `throughput` push** — consume S0's samples, derive overall + per-profile B/s, push the tick (§5.3/§1.3). Emits nothing (gauge "—") until S0 lands. | yes | additive |
+| **S5** | **SPA ws client + realtime dashboard pilot** — `useWsThroughput()` (overall + per-profile gauges, #747), `now`/`blocked` cache-patching (§3.1/§3.2), `useWsLive()` indicator (§6.2), ticket-mint-then-connect, backoff (§6.1), polling-as-paused-fallback for the dashboard live sections. **This lights up the redesigned NOW + throughput + Most-Recently-Blocked** ([`dashboard-redesign.md` §8](dashboard-redesign.md), unblocks #1834/#1835). | yes (dashboard only) | additive — other views poll |
+| **S6** | **Broaden class-(3) `stale` to alerts / time-status / profiles-devices-schedules** — add topic→invalidator entries (§3.3); pause their intervals when `wsLive`. | yes (per-view) | additive |
+| **S7** | **Retire redundant `refetchInterval`s** — per migrated view, after its push path is proven; keep the `wsLive ? false : …` fallback only where a view still has no push. The only subtractive step, per-view, operator-gated. | yes, last | per-view subtractive |
+| **S8** | **(optional) SharedWorker single-socket multi-tab** — only if a deployment shows many tabs/browser (§6.4). | yes, later | additive |
 
-**Critical path:** S1 → S2 → S4 (the first user-visible win). **Parallel:** S3
-(the event source) can land alongside S2 since it improves nothing user-facing
-until S4 consumes it, but is independently testable. **S6 is last and
-per-view-gated** — the cutover off polling for each view is a deliberate step
-once that view's push path is proven, never armed automatically
-([`docs/pr-review-checklist.md#monitor-to-merged`](../pr-review-checklist.md)
-discipline).
+**Critical path to the operator-visible win:** S1 → S2 → S5 (dashboard NOW +
+blocked live), with **S0 → S4 → S5** adding live throughput. **Parallel:** S3 can
+land alongside S2. **S7 is last and per-view-gated** — each cutover off polling is
+deliberate once that view's push path is proven, never armed automatically
+([`pr-review-checklist.md#monitor-to-merged`](../pr-review-checklist.md)).
 
 ---
 
-## 9. Open questions / risks
+## 10. Open questions / risks
 
-1. **Ticket store durability.** v1's single-process in-memory ticket store
-   (§3.2) is correct for one API instance; a multi-instance API would need the
-   ticket validated on the instance that terminates the upgrade (sticky routing
-   or a shared store). Same single-process assumption as the registries (§4) —
-   documented limit, not a TODO, and consistent with the router path.
-2. **Thick-push filtering (if S5 ever builds it).** Per-recipient role filtering
-   of a thick `data{dashboard-now}` body is the one place (A)'s
-   contentless-signal safety is lost; the measurement gate (§2.3) and the
-   "writes through the same key, GET reconciles" rule bound the risk, but it is
-   the riskiest optional piece and stays deferred until measured.
-3. **Render idle-timeout vs. heartbeat.** The 30 s app-level heartbeat (§5.2)
-   must stay under Render's ws idle timeout — pinned to the same constant the
-   router transport's D0 spike established, re-confirmed for the SPA endpoint.
-4. **Observability parity.** Per-frame structured logging
-   (`op`/`role`/`result` on the MDC, mirroring `RouterWsRoutes`' `LogContext`
-   annotations) so a transport fault is as debuggable as the REST path. Built
-   into S1.
+1. **Throughput cadence vs. cost.** ~2 s tick is the proposed default; the exact
+   cadence is pinned with S0 against the router's conntrack-read cost and Render's
+   frame budget. Faster than ~1 s buys little for a human-watched gauge.
+2. **#1023 dependency for live bandwidth.** Live throughput (S4/S5's gauge) is the
+   one element gated on #1023's realtime usage source (S0). Everything else (NOW,
+   blocked, the endpoint, auth) ships without it; the gauge shows "—" until S0
+   lands. Sequence S0 with the #1023 epic, not as a blocker for S1–S3.
+3. **Ticket store durability.** v1's single-process in-memory ticket store (§4.2)
+   is correct for one API instance; multi-instance would need sticky routing or a
+   shared store — same single-process assumption as the registries/aggregator
+   (§5), documented limit, not a TODO.
+4. **Thick-push filtering (class 2).** Per-role filtering of a pushed `now` body is
+   the one place class-(1)/(3)'s contentless safety is absent; it reuses the
+   `DashboardNowRoutes` filter (§3.2/§5.2) so there is one filter implementation,
+   bounding the risk.
+5. **Observability parity.** Per-frame structured logging (`op`/`role`/`result` on
+   the MDC, mirroring `RouterWsRoutes`' `LogContext`) so a transport fault is as
+   debuggable as REST. Built into S1.
