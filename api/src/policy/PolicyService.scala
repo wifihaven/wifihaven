@@ -235,9 +235,9 @@ class PolicyServiceLive(
     if (!cacheEnabled) buildSnapshot
     else
       ZIO.succeed(snapshotCache.get).flatMap {
-        case Some((_, _, snap)) => // BUG(red): trusts any present entry, ignoring its version stamp
+        case Some((builtAt, _, snap)) if builtAt == mutationVersion.get =>
           AppMetrics.recordSnapshotBuild("cache_hit").as(snap)
-        case _                  => buildVersioned
+        case _                                                          => buildVersioned
       }
 
   def invalidate: UIO[Unit] =
@@ -251,10 +251,7 @@ class PolicyServiceLive(
       // reject it instead of getting a cache HIT on stale bytes (#1954). The push still fires exactly
       // once — `reevaluate` keys its push decision off `lastPublishedEtag`, not the cache slot. The
       // reconcile ticker is a backstop on the same bound.
-      // BUG(red): clear-on-invalidate (main's behavior) — does NOT protect against an in-flight build
-      // that began before this call repopulating the slot with pre-mutation bytes afterwards.
-      ZIO.succeed(mutationVersion.incrementAndGet()) *>
-        ZIO.succeed(snapshotCache.set(None)) *> reevaluate.forkDaemon.unit
+      ZIO.succeed(mutationVersion.incrementAndGet()) *> reevaluate.forkDaemon.unit
 
   // #1954: rebuild and install under the version observed BEFORE the DB read. The install is a CAS
   // loop that only replaces an entry whose stamp is <= ours, so a slower build (older stamp) can
@@ -266,9 +263,18 @@ class PolicyServiceLive(
       buildSnapshot.tap(snap => ZIO.succeed(installSnapshot(gen, snap)))
     }
 
-  private def installSnapshot(gen: Long, snap: PolicySnapshot): Unit =
-    // BUG(red): unconditional last-writer-wins — a stale build can clobber a fresher entry.
-    snapshotCache.set(Some((gen, snap.etag, snap)))
+  private def installSnapshot(gen: Long, snap: PolicySnapshot): Unit = {
+    var swapped = false
+    while (!swapped) {
+      val cur = snapshotCache.get
+      cur match {
+        case Some((builtAt, _, _)) if builtAt > gen =>
+          swapped = true // a newer-version entry is already present — don't clobber it
+        case _                                      =>
+          swapped = snapshotCache.compareAndSet(cur, Some((gen, snap.etag, snap)))
+      }
+    }
+  }
 
   def reevaluate: UIO[Unit] =
     if (!cacheEnabled) ZIO.unit
