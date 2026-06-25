@@ -249,7 +249,9 @@ Dashboard (h1)
   Banners            — NewDevicesHint, AccessRequestsBanner (only when present)
   KPI strip          — Online now · Blocked now · Events (1h) · Blocked (1h) · Bandwidth ▲/▼   [above the fold]
   NOW                — freshness pill; active cards (top-3 devices + expander, per-profile ▲/▼); idle-collapse row
-  Most Recently Blocked  — blocked-only trailing-hour feed (#1338), View all → /usage/events
+  Recently Blocked   — TOP-LEVEL live panel: blocked-only, newest-first, device · host · reason;
+                       quick device filter; the "why isn't this working on my device?" diagnostic   [above the fold]
+  ── below the fold ──
   Blocking activity (24h) — one merged ranked-host panel; one-line empty state
   (no inline log table)
 ```
@@ -263,10 +265,22 @@ elements. **Mobile:** the strip is now 5 tiles, so it reflows `grid-cols-2`
 (→ 3 rows) on mobile / `md:grid-cols-5` on desktop (supersedes the rev-1 §3
 `md:grid-cols-4` note).
 
-The two recency/blocking elements sit adjacent and are intentionally distinct: **Most Recently
-Blocked** answers "what just got dropped?" (live, un-aggregated, 1h); **Blocking activity (24h)**
-answers "what's been getting blocked today?" (aggregated, ranked). Neither duplicates the other,
-and neither is the firehose.
+The two recency/blocking elements are intentionally distinct: **Recently Blocked** answers "what
+just got dropped?" (live, un-aggregated, 1h); **Blocking activity (24h)** answers "what's been
+getting blocked today?" (aggregated, ranked). Neither duplicates the other, and neither is the
+firehose.
+
+**Recently Blocked is a top-level, above-the-fold panel (rev 3, operator 2026-06-25).** It is the
+primary *diagnostic* surface: when someone says "X isn't working on my iPad," a parent glances here
+to see — within seconds, live — whether that device's traffic is being dropped and why, instead of
+digging through `/usage/events`. To serve that, each row shows **device · host · reason** (the
+`BlockReason`, e.g. Schedule / TimeLimit / category / host-block — `connectionEvents` carries it),
+and the panel offers a **quick filter by device** (and "View all →" deep-links to the device's
+`/usage/events`). It is the live `connectionEvents{blocked:true}` stream (§8.2) — newest-first,
+prepend-on-push, trailing ~1h — so a just-now block appears immediately. Promoting it above the fold
+(right under NOW) is deliberate: NOW answers "who's online," Recently Blocked answers "what's being
+blocked," and together they are the at-a-glance health/diagnosis pair. (Reachability is a
+connection-layer fact — these are real traffic-layer drops, not DNS events; DNS always resolves.)
 
 ### 7.3 Decisions on the §6 open questions
 
@@ -402,7 +416,7 @@ they ever diverge. Each dashboard section is classified by how it gets its data:
 | **Overall in/out bandwidth** (§8.1, **5th KPI tile** w/ window selector) | **streamed read model** | `trafficUsage` (`groupBy:∅`) — streams existing `TrafficUsageResponse`; no new shape |
 | **Per-profile in/out bandwidth** (§8.1, on NOW card headers) | **streamed read model** | same `trafficUsage` topic, `groupBy:["profile"]` |
 | **NOW** active cards (who's online / watching) | **pushed live snapshot** | `DashboardNow` body pushed on change (reuses today's `/api/dashboard/now` shape) |
-| **Most Recently Blocked** feed (#1338) | **pushed live append** | `connectionEvents{blocked:true}` — reuses the `/api/logs` row shape; same topic streams the Connection Events page |
+| **Recently Blocked** — top-level diagnostic panel (#1338) | **pushed live append** | `connectionEvents{blocked:true}` — reuses the `/api/logs` row shape; the quick device filter maps to the topic's `macs` param; same topic streams the Connection Events page |
 | **KPI: Online now / Blocked now** | **derived from the NOW push** | computed client-side off the pushed `DashboardNow`; no separate stream |
 | **KPI: Events (1h) / Blocked (1h)** | request/response | small enough to leave on a slow poll / invalidate; not realtime-critical |
 | **Blocking activity (24h)** panel | request/response | rollup tables (#809); explicitly **not** streamed (rev-2 §7.5 already said so) |
