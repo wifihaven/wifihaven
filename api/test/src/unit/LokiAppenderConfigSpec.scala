@@ -6,6 +6,11 @@ import java.nio.file.{Files, Paths}
 import javax.xml.parsers.DocumentBuilderFactory
 import org.w3c.dom.{Element, Node}
 
+import ch.qos.logback.classic.LoggerContext
+import ch.qos.logback.classic.joran.JoranConfigurator
+import ch.qos.logback.core.status.Status
+import scala.jdk.CollectionConverters.*
+
 /**
  * #1873 (epic #1831): pins the structural contract of the Grafana Cloud Loki appender in
  * `api/resources/logback.xml`. Logback `<if>` conditions resolve against the JVM environment, which
@@ -78,6 +83,62 @@ object LokiAppenderConfigSpec extends ZIOSpecDefault {
       .find(_.getAttribute("name") == "LOKI")
       .getOrElse(throw new AssertionError("no <appender name=\"LOKI\"> in logback.xml"))
 
+  /**
+   * The shipped logback.xml URL. Prefer the checked-in source file (so a local edit is exercised
+   * without a rebuild); fall back to the classpath copy — which is what `mill __.test` and the
+   * deployed jar actually load. Either way JoranConfigurator runs the REAL config, not a copy.
+   */
+  private val logbackUrl: java.net.URL = {
+    val srcFile = Paths.get("api/resources/logback.xml")
+    if (Files.exists(srcFile)) srcFile.toUri.toURL
+    else
+      Option(getClass.getClassLoader.getResource("logback.xml"))
+        .getOrElse(throw new IllegalStateException("logback.xml not found on classpath"))
+  }
+
+  /**
+   * #1972: drive logback's real [[JoranConfigurator]] over the shipped `logback.xml` with the
+   * GRAFANA_CLOUD_LOKI_* secrets present (via system properties — logback's `isDefined`/`${...}`
+   * resolve those), into a private [[LoggerContext]] (never the global one). Returns the recorded
+   * Joran status list plus whether a "LOKI" appender ended up attached to the ROOT logger.
+   *
+   * This is the gap the DOM-shape assertions above could not cover: the original config nested the
+   * root's `<appender-ref ref="LOKI">` inside an `<if>`, which logback (1.5.25, the version loki4j
+   * 2.0.3 forces and prod runs) forbids INSIDE `<root>`/`<logger>`/`<appender>` — so the appender
+   * silently never attached (0 Loki ingest) even though every shape assertion passed. Only running
+   * Joran at the shipped logback version surfaces that.
+   */
+  private def loadConfig(): (List[Status], Boolean) = {
+    val keys  = List(
+      "GRAFANA_CLOUD_LOKI_URL"      -> "http://localhost:3100/loki/api/v1/push",
+      "GRAFANA_CLOUD_LOKI_USER"     -> "12345",
+      "GRAFANA_CLOUD_LOKI_PASSWORD" -> "test-token",
+      "WIFIHAVEN_ENV"               -> "test",
+    )
+    val saved = keys.map { case (k, _) => k -> Option(System.getProperty(k)) }
+    keys.foreach { case (k, v) => System.setProperty(k, v) }
+    val ctx   = new LoggerContext()
+    try {
+      val configurator = new JoranConfigurator()
+      configurator.setContext(ctx)
+      configurator.doConfigure(logbackUrl)
+      val statuses     = ctx.getStatusManager.getCopyOfStatusList.asScala.toList
+      val attached     = ctx
+        .getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME)
+        .iteratorForAppenders()
+        .asScala
+        .exists(_.getName == "LOKI")
+      (statuses, attached)
+    } finally {
+      // drainOnStop=false keeps this quick; releases loki4j's background sender threads.
+      ctx.stop()
+      saved.foreach {
+        case (k, Some(v)) => System.setProperty(k, v)
+        case (k, None)    => System.clearProperty(k)
+      }
+    }
+  }
+
   def spec = suite("LokiAppenderConfigSpec")(
     test("the LOKI appender is gated on the GRAFANA_CLOUD_LOKI_URL secret (deployed envs only)") {
       assertTrue(gatedByLokiSecret(lokiAppender))
@@ -104,6 +165,22 @@ object LokiAppenderConfigSpec extends ZIOSpecDefault {
       val smEl = elements(lokiAppender, "structuredMetadata").head
       // `* = %%mdc` expands every MDC entry into structured metadata, not labels.
       assertTrue(smEl.getTextContent.replaceAll("\\s", "").contains("*=%%mdc"))
+    },
+    test("logback actually loads the config and ATTACHES the LOKI appender to root (#1972)") {
+      val (statuses, attached) = loadConfig()
+      val errors               = statuses.filter(_.getEffectiveLevel == Status.ERROR)
+      // logback rejects `<if>` nested in <root>/<logger>/<appender> with this WARN, then fails to
+      // find the appender the broken ref pointed at — the exact #1972 failure signature.
+      val nestedIfRejected     =
+        statuses.exists(s => Option(s.getMessage).exists(_.contains("cannot be nested")))
+      val failedToFindLoki     =
+        statuses.exists(s =>
+          Option(s.getMessage).exists(_.contains("Failed to find appender named [LOKI]")),
+        )
+      assertTrue(attached) &&
+      assertTrue(!nestedIfRejected) &&
+      assertTrue(!failedToFindLoki) &&
+      assertTrue(errors.isEmpty)
     },
     test("fail-open: bounded send queue (drop-on-backpressure) and no drain-on-stop") {
       val batchEl     = elements(lokiAppender, "batch").head

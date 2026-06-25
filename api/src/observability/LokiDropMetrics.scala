@@ -72,7 +72,10 @@ object LokiDropMetrics {
    * delta; otherwise log once and return (local/test). `lastSeen` is seeded with the count at start
    * so a pre-existing total isn't replayed as one large spike. Never fails; fork as a daemon.
    */
-  def loop(interval: Duration = DefaultInterval): UIO[Unit] =
+  def loop(
+      interval: Duration = DefaultInterval,
+      lokiUrlConfigured: => Boolean = sys.env.contains("GRAFANA_CLOUD_LOKI_URL"),
+  ): UIO[Unit] =
     findAppender.flatMap {
       case None      =>
         ZIO.logDebug("LOKI appender not present; loki-drop metrics disabled (local/test).")

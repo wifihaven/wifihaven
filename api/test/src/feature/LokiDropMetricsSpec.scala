@@ -78,5 +78,17 @@ object LokiDropMetricsSpec extends ZIOSpec[PrometheusPublisher] {
         value    <- awaitValue(25.0)
       } yield assertTrue(value == 25.0)
     } @@ TestAspect.withLiveClock @@ TestAspect.timeout(30.seconds),
+    test("warns loudly when the Loki URL is set but no appender is attached (#1972)") {
+      // findAppender returns None in-test (no LOKI appender on the test logger), so this exercises
+      // the misconfiguration branch: a deployed env that has GRAFANA_CLOUD_LOKI_URL but, due to a
+      // logback wiring regression, never attached the appender — the silent 0-ingest mode #1972
+      // hit. The branch must surface a WARN so the next recurrence is diagnosable, not invisible.
+      (for {
+        _    <- LokiDropMetrics.loop(lokiUrlConfigured = true)
+        logs <- ZTestLogger.logOutput
+      } yield assertTrue(
+        logs.exists(e => e.logLevel == LogLevel.Warning && e.message().contains("not shipping")),
+      )).provide(ZTestLogger.default)
+    },
   )
 }
