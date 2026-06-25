@@ -36,6 +36,14 @@ _OPCODE_CLOSE = 0x8
 _OPCODE_PING = 0x9
 _OPCODE_PONG = 0xA
 
+# Ops the server sends UNSOLICITED — not a reply to any frame we sent. #1849
+# pushes `{op:"policy"}` on connect (first-policy-on-connect) and on every
+# snapshot change, so it can arrive interleaved with the acks for our frames.
+# These are collected and returned to the caller, but they do NOT count toward
+# the one-reply-per-sent-frame accounting below (the #1951 fix). Extend this set
+# if the transport gains further server→client push ops.
+_PUSH_OPS = frozenset({"policy"})
+
 
 class UpgradeRejected(Exception):
     def __init__(self, status: int, detail: str = ""):
@@ -160,23 +168,41 @@ def _close(sock: socket.socket) -> None:
 
 
 def send_frames(url: str, token: str | None, frames: list[dict], timeout: float) -> list[dict]:
+    """Send every frame, then read replies until each sent frame has a reply.
+
+    Returns the server's TEXT frames in receive order — the solicited reply
+    (`ack`/`pong`) for each sent frame PLUS any unsolicited server pushes
+    (`_PUSH_OPS`, e.g. #1849's `{op:policy}`) that landed in between. The caller
+    matches replies to its sent frames (by op+seq) and ignores the pushes; the
+    pushes do NOT gate completion, so an interleaved push can no longer displace
+    a frame's reply or leave the last ack unread (#1951).
+    """
     sock, buf = _open(url, token, timeout)
     sock.settimeout(timeout)
+    # Send all frames up front, then drain replies. Reading is decoupled from
+    # sending so a push that arrives before/among the acks is simply collected
+    # rather than mistaken for a specific frame's reply.
     replies: list[dict] = []
+    solicited_expected = len(frames)
+    solicited_seen = 0
     try:
         for frame in frames:
             _send_text(sock, json.dumps(frame))
-            # Read the next data (text) frame, answering any control frames.
-            while True:
-                opcode, data = _recv_frame(sock, buf)
-                if opcode == _OPCODE_TEXT:
-                    replies.append(json.loads(data.decode("utf-8")))
-                    break
-                if opcode == _OPCODE_PING:
-                    continue  # benign; server-initiated control ping
-                if opcode == _OPCODE_CLOSE:
-                    raise RuntimeError("server closed the socket before replying")
-                # ignore pong / continuation
+        while solicited_seen < solicited_expected:
+            opcode, data = _recv_frame(sock, buf)
+            if opcode == _OPCODE_TEXT:
+                msg = json.loads(data.decode("utf-8"))
+                replies.append(msg)
+                op = msg.get("op") if isinstance(msg, dict) else None
+                if op not in _PUSH_OPS:
+                    # A reply to one of our frames (ack / pong) — counts toward done.
+                    solicited_seen += 1
+                continue
+            if opcode == _OPCODE_PING:
+                continue  # benign; server-initiated control ping
+            if opcode == _OPCODE_CLOSE:
+                raise RuntimeError("server closed the socket before replying")
+            # ignore pong / continuation control frames
     finally:
         _close(sock)
     return replies
