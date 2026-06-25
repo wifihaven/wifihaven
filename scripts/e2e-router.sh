@@ -47,6 +47,12 @@ _py() { python3 -c "$1"; }
 # read-back so the typed-BlockReason wire contract has one source of truth.
 E2E_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/e2e/lib" && pwd)"
 
+# Retry transient 502/503/504 + connection failures from the starter-tier
+# staging API (#1961). Drop-in `curl` override; expected-4xx assertions still
+# fail-fast. Sourced before any curl (including admin-auth.sh's logins).
+# shellcheck source=scripts/e2e/lib/curl-retry.sh
+source "$E2E_LIB/curl-retry.sh"
+
 # ── Admin login ────────────────────────────────────────────────────────────
 # #1790: shared self-healing helper. On a fresh staging DB reset, rotates
 # the seeded 'changeme' password back to $ADMIN_PASS before returning a JWT;

@@ -30,6 +30,12 @@ fail() { echo "  ✗ $*" >&2; exit 1; }
 step() { echo; echo "▶ $*"; }
 _py() { python3 -c "$1"; }
 
+# Retry transient 502/503/504 + connection failures from the starter-tier
+# staging API (#1961). Drop-in `curl` override; expected-4xx assertions still
+# fail-fast. Sourced before any curl (including admin-auth.sh's logins).
+# shellcheck source=scripts/e2e/lib/curl-retry.sh
+source "$(dirname "${BASH_SOURCE[0]}")/e2e/lib/curl-retry.sh"
+
 # Quick wait for the API to come up (compose healthcheck should already gate, but be safe).
 step "Waiting for API at $BASE"
 for i in $(seq 1 60); do
