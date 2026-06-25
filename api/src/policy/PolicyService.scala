@@ -155,8 +155,9 @@ class PolicyServiceLive(
   // single-household model there is exactly one global snapshot, so one slot suffices (design §6.2
   // ticker note). Populated on first build, refreshed by `reevaluate`.
   //
-  // #1954: each entry is STAMPED with the `mutationVersion` observed at the START of its build
-  // (`builtAtVersion`, below). A reader trusts a cached entry only when its stamp is still the
+  // #1954: each entry is STAMPED with the `mutationVersion` observed at the START of its build (the
+  // leading `Long` of the tuple — the `gen` captured in `buildVersioned`/`reevaluate`). A reader
+  // trusts a cached entry only when its stamp is still the
   // current version; a stamp older than the current version means a mutation landed since the build
   // began, so the entry may predate that mutation and is treated as a miss (rebuild). This is what
   // closes the stale-read race that the old "clear-on-invalidate" alone could not: a `buildSnapshot`
