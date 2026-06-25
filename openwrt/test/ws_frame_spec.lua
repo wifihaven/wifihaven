@@ -270,6 +270,39 @@ describe("ws_frame", function()
       assert.are.equal(expected, payload)
     end)
 
+    it("errors when the assembled size exceeds the cap (no unbounded growth)", function()
+      -- A tiny cap so the test stays fast; the start frame is under it, the
+      -- continuation pushes the running total over.
+      local r = frame.reassembler(10)
+      assert.are.equal("more", (r:push(fr(frame.OP_TEXT, "12345", false))))   -- 5 ≤ 10
+      local status, err = r:push(fr(frame.OP_CONTINUATION, "678901", false))  -- 11 > 10
+      assert.are.equal("error", status)
+      assert.are.equal("message_too_large", err)
+    end)
+
+    it("errors when the FIRST frame already exceeds the cap", function()
+      local r = frame.reassembler(4)
+      local status, err = r:push(fr(frame.OP_TEXT, "toolong", false))
+      assert.are.equal("error", status)
+      assert.are.equal("message_too_large", err)
+    end)
+
+    it("resets the size counter so a second large-but-ok message still passes", function()
+      local r = frame.reassembler(10)
+      r:push(fr(frame.OP_TEXT, "12345", false))
+      assert.are.equal("message", (r:push(fr(frame.OP_CONTINUATION, "67", true))))  -- 7 ≤ 10
+      -- counter reset to 0; another 7-byte message is fine, not 14 cumulative.
+      r:push(fr(frame.OP_TEXT, "abcde", false))
+      assert.are.equal("message", (r:push(fr(frame.OP_CONTINUATION, "fg", true))))
+    end)
+
+    it("errors on a control frame with a >125-byte payload (§5.5)", function()
+      local r = frame.reassembler()
+      local status, err = r:push(fr(frame.OP_PING, string.rep("x", 126)))
+      assert.are.equal("error", status)
+      assert.are.equal("oversized_control", err)
+    end)
+
     it("can reassemble a second message after the first completes", function()
       local r = frame.reassembler()
       r:push(fr(frame.OP_TEXT, "one", false))

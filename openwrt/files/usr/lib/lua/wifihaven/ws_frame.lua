@@ -201,32 +201,46 @@ end
 --   "more"                      — fragment accepted; need more frames.
 --   "error",  reason            — a protocol violation; the caller must drop the
 --                                 connection. reason ∈ { unexpected_continuation,
---                                 interleaved_data, fragmented_control }.
+--                                 interleaved_data, fragmented_control,
+--                                 oversized_control, message_too_large }.
+--
+-- reassembler(max_bytes) — cap the TOTAL assembled message size (default 1 MiB).
+-- decode()'s 64-bit-length guard bounds a SINGLE frame; this bounds the sum
+-- across continuation frames so a buggy/hostile peer streaming endless
+-- continuations cannot grow self.parts unbounded and OOM the RAM-constrained
+-- router. A real `policy` snapshot is far under this.
 local Reassembler = {}
 Reassembler.__index = Reassembler
 
-function M.reassembler()
-  return setmetatable({ op = nil, parts = nil }, Reassembler)
+local DEFAULT_MAX_BYTES = 1024 * 1024
+
+function M.reassembler(max_bytes)
+  return setmetatable(
+    { op = nil, parts = nil, size = 0, max_bytes = max_bytes or DEFAULT_MAX_BYTES },
+    Reassembler)
 end
 
 function Reassembler:push(frame)
   local opcode = frame.opcode
 
   -- Control frames (0x8..0xF) are never part of a data message and MUST NOT be
-  -- fragmented (§5.5). They pass straight through; an in-progress fragmented
-  -- data message is unaffected.
+  -- fragmented (§5.5) and MUST carry ≤125 payload bytes. They pass straight
+  -- through; an in-progress fragmented data message is unaffected.
   if opcode >= 0x8 then
     if not frame.fin then return "error", "fragmented_control" end
+    if #frame.payload > 125 then return "error", "oversized_control" end
     return "control", opcode, frame.payload
   end
 
   if opcode == M.OP_CONTINUATION then
     if not self.op then return "error", "unexpected_continuation" end
+    self.size = self.size + #frame.payload
+    if self.size > self.max_bytes then return "error", "message_too_large" end
     self.parts[#self.parts + 1] = frame.payload
     if not frame.fin then return "more" end
     local payload = table.concat(self.parts)
     local start_op = self.op
-    self.op, self.parts = nil, nil          -- reset for the next message
+    self.op, self.parts, self.size = nil, nil, 0   -- reset for the next message
     return "message", start_op, payload
   end
 
@@ -240,8 +254,10 @@ function Reassembler:push(frame)
   end
 
   -- Start of a fragmented message: remember the opcode, buffer the first chunk.
+  if #frame.payload > self.max_bytes then return "error", "message_too_large" end
   self.op = opcode
   self.parts = { frame.payload }
+  self.size = #frame.payload
   return "more"
 end
 
