@@ -35,10 +35,15 @@
 -- quic.parse_initial. Dispatch is on the IPv4 protocol byte.
 
 local uci     = require("uci")
-local openssl = require("openssl")
 local sni     = require("wifihaven.sni")
 local reasm   = require("wifihaven.sni_reassembly")
 local quic    = require("wifihaven.quic")
+-- #1949: resolve lua-openssl explicitly (NOT a bare require"openssl"). When the
+-- ws sidecar's luaossl is also installed it ships its own openssl.lua, which the
+-- Lua-file searcher finds before lua-openssl's openssl.so and returns a table
+-- with no `.cipher`/`.hmac` — crashing openssl_crypto in a procd respawn loop.
+-- resolve_openssl force-loads lua-openssl's C module past that shadow.
+local openssl = quic.resolve_openssl()
 local log     = require("wifihaven.log")
 local paths   = require("wifihaven.paths")
 local dns_log = require("wifihaven.dns_log")
