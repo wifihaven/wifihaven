@@ -4,8 +4,10 @@ import com.github.loki4j.logback.MeteredLoki4jAppender
 import wifihaven.api.metrics.AppMetrics
 import org.slf4j.LoggerFactory
 import ch.qos.logback.classic.LoggerContext
+import ch.qos.logback.core.status.{Status, StatusListener}
 import zio.*
 
+import java.util.concurrent.atomic.AtomicLong
 import scala.jdk.CollectionConverters.*
 
 /**
@@ -29,11 +31,48 @@ import scala.jdk.CollectionConverters.*
  * `isDefined("GRAFANA_CLOUD_LOKI_URL")` in `logback.xml`, so on local dev / `mill __.test` it is
  * never instantiated. [[findAppender]] returns `None` there and [[loop]] no-ops — same presence
  * gate as the appender, no duplicated env check.
+ *
+ * #1972 extends this with TWO more observability hooks for the *other* ways shipping can fail
+ * silently — both invisible to the drop counter, which only sees queue-full backpressure:
+ *   - When the secret IS set but the appender never attached (a logback wiring regression like the
+ *     `<if>`-nested-in-`<root>` bug #1972 fixed), [[loop]] logs a loud WARN instead of a silent
+ *     debug, so the 0-ingest cause is named in the API's own logs.
+ *   - A [[SendErrorCountingListener]] on the logback StatusManager counts loki4j SEND errors
+ *     (401/403 wrong-scope token, 4xx/5xx, timeouts) into `loki_logs_send_errors_total`. loki4j is
+ *     fail-open and reports these only to the StatusManager, so a misscoped access-policy token
+ *     would otherwise reject every line with no metric moving at all.
  */
 object LokiDropMetrics {
 
   /** Poll cadence. Drops accrue slowly relative to scrape interval; 30s keeps the series cheap. */
   val DefaultInterval: Duration = 30.seconds
+
+  /**
+   * #1972: classify a logback status as a loki4j send-side error. loki4j routes its HTTP failures
+   * (401/403 wrong-scope token, 4xx/5xx, connection/timeout) to the logback StatusManager via
+   * `InternalLogger.error(...)`, with the originating loki4j object as the status origin. We count
+   * ERROR-level statuses whose origin class lives under `com.github.loki4j` — capturing the silent
+   * auth failure that left `loki_logs_dropped_total` flat at 0 while every line was rejected at the
+   * send boundary. Pure (takes the origin's class name) so it is unit-testable without loki4j.
+   */
+  def isLokiSendError(level: Int, originClassName: Option[String]): Boolean =
+    level == Status.ERROR && originClassName.exists(_.startsWith("com.github.loki4j"))
+
+  /**
+   * Logback [[StatusListener]] holding a monotonic count of loki4j send errors (see
+   * [[isLokiSendError]]). Reset-resistant so it survives a logback reconfigure. The poll loop reads
+   * [[errorsTotal]] and diffs it into `loki_logs_send_errors_total`, exactly as the drop counter is
+   * polled — keeping the zio-metrics bridge on the ZIO side, off the logback callback thread.
+   */
+  final class SendErrorCountingListener extends StatusListener {
+    private val errors                                = new AtomicLong(0L)
+    override def isResetResistant: Boolean            = true
+    override def addStatusEvent(status: Status): Unit =
+      if (isLokiSendError(status.getLevel, Option(status.getOrigin).map(_.getClass.getName))) {
+        val _ = errors.incrementAndGet()
+      }
+    def errorsTotal: Long                             = errors.get()
+  }
 
   /**
    * Locate the [[MeteredLoki4jAppender]] attached to the logback root logger, if any. `None` when
@@ -67,6 +106,31 @@ object LokiDropMetrics {
       _    <- AppMetrics.recordLokiDropped(cur - prev)
     } yield ()
 
+  /** Same monotonic-delta shape as [[emitDelta]], for the send-error counter (#1972). */
+  def emitSendErrorDelta(read: UIO[Long], lastSeen: Ref[Long]): UIO[Unit] =
+    for {
+      cur  <- read
+      prev <- lastSeen.getAndSet(cur)
+      _    <- AppMetrics.recordLokiSendErrors(cur - prev)
+    } yield ()
+
+  /**
+   * Register a [[SendErrorCountingListener]] on the logback root context's StatusManager so loki4j
+   * send errors are counted, returning it for polling. `None` when logback isn't a
+   * [[LoggerContext]] (defensive). Installed only when the LOKI appender is present (the caller
+   * gates on that).
+   */
+  def installSendErrorListener: UIO[Option[SendErrorCountingListener]] =
+    ZIO.succeed {
+      LoggerFactory.getILoggerFactory match {
+        case ctx: LoggerContext =>
+          val listener = new SendErrorCountingListener
+          ctx.getStatusManager.add(listener)
+          Some(listener)
+        case _                  => None
+      }
+    }
+
   /**
    * Fiber loop: if the LOKI appender is present, poll its drop count every `interval` and emit the
    * delta; otherwise log once and return (local/test). `lastSeen` is seeded with the count at start
@@ -92,10 +156,16 @@ object LokiDropMetrics {
           ZIO.logDebug("LOKI appender not present; loki-drop metrics disabled (local/test).")
       case Some(app) =>
         for {
-          start    <- ZIO.succeed(app.droppedEventsTotal)
-          lastSeen <- Ref.make(start)
-          _        <- ZIO.logInfo("loki-drop metrics fiber polling MeteredLoki4jAppender")
-          _        <- emitDelta(ZIO.succeed(app.droppedEventsTotal), lastSeen)
+          start        <- ZIO.succeed(app.droppedEventsTotal)
+          lastSeen     <- Ref.make(start)
+          // #1972: also poll loki4j send errors (401/4xx/5xx) so an auth/scope failure that sheds
+          // every line at the send boundary is visible — it never touches the queue-full drop count.
+          sendListener <- installSendErrorListener
+          errStart = sendListener.fold(0L)(_.errorsTotal)
+          lastErrSeen <- Ref.make(errStart)
+          _           <- ZIO.logInfo("loki-drop metrics fiber polling MeteredLoki4jAppender")
+          _           <- (emitDelta(ZIO.succeed(app.droppedEventsTotal), lastSeen) *>
+            emitSendErrorDelta(ZIO.succeed(sendListener.fold(0L)(_.errorsTotal)), lastErrSeen))
             .repeat(Schedule.fixed(interval))
             .unit
         } yield ()
