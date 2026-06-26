@@ -2,19 +2,21 @@ package wifihaven.api.routes
 
 import wifihaven.api.db.*
 import wifihaven.api.observability.LogContext
-import wifihaven.shared.Clock
+import wifihaven.api.usage.{AppMembership, UsageTraffic, UsageTrafficQuery}
+import wifihaven.shared.{Clock, Device, TrafficUsageResponse}
+import wifihaven.shared.types.{MacAddress, ProfileId}
 import zio.{Clock as _, *}
 import zio.json.*
 import zio.json.ast.Json
 
-import java.time.{Duration, Instant}
+import java.time.{Duration, Instant, ZoneId}
 
 /**
- * #1970 (S3, SPA-websocket design `docs/design/spa-websocket.md` §5.2): the single consumer fiber
- * that drains the [[SpaEventBus]] and translates each [[SpaEvent]] into subscription-gated,
- * role-filtered server→SPA frames via [[SpaWsRegistry]]. This is the "translate" half of the change
- * sources — the write sites publish (one-liners), this fiber rebuilds the affected body through its
- * canonical builder and fans it out.
+ * #1970 (S3) / #1971 (S4), SPA-websocket design `docs/design/spa-websocket.md` §5.2/§5.3: the
+ * single consumer fiber that drains the [[SpaEventBus]] and translates each [[SpaEvent]] into
+ * subscription-gated, role-filtered server→SPA frames via [[SpaWsRegistry]]. This is the
+ * "translate" half of the change sources — the write sites publish (one-liners), this fiber
+ * rebuilds the affected body through its canonical builder and fans it out.
  *
  *   - [[SpaEvent.NowChanged]] → rebuild [[wifihaven.shared.DashboardNow]] ONCE via the shared
  *     [[DashboardNowRoutes.computeNow]] builder (SSOT — the same code `GET /api/dashboard/now`
@@ -27,6 +29,17 @@ import java.time.{Duration, Instant}
  *     the event's `since`), and let the registry append them to each `connectionEvents` subscriber
  *     whose filter matches.
  *   - [[SpaEvent.Stale]] → fan a contentless nudge to `stale` subscribers.
+ *   - [[SpaEvent.UsageIngested]] → #1971 (S4): for each DISTINCT subscribed `trafficUsage`
+ *     `(groupBy, bucket, filter)` param-set, recompute ONLY the current/most-recent bucket via the
+ *     shared [[UsageTrafficQuery.aggregate]] (the exact query the `GET /api/usage/traffic`
+ *     aggregated path runs — SSOT) scoped to the head window, and push that one bucket as a
+ *     `TrafficUsageResponse` live edge (design §5.3). No subscriber for a param-set → no query.
+ *
+ * Cadence / backpressure (design §6.3): the drain loop COALESCES — it takes the first buffered
+ * event then drains everything else currently queued and de-duplicates the contentless triggers
+ * ([[SpaEvent.NowChanged]] / [[SpaEvent.UsageIngested]]), so a burst of usage ingests collapses to
+ * a single freshest head-bucket recompute per param-set (latest-wins), never a backlog. A slow
+ * consumer thus serves the freshest state, not a queue of stale snapshots.
  *
  * The loop NEVER fails: each event's build is wrapped so a transient repo error is logged and
  * skipped (the push surface is a latency/UX layer, design §6.5 — a missed push self-heals on the
@@ -44,38 +57,87 @@ object SpaPush {
       bus: SpaEventBus,
       registry: SpaWsRegistry,
       trafficRepo: TrafficReportRepo,
+      rollupRepo: RollupRepo,
       connRepo: ConnectionEventRepo,
       deviceRepo: DeviceRepo,
       profileRepo: ProfileRepo,
+      appRepo: AppRepo,
       appTimeLimitRepo: AppTimeLimitRepo,
       clock: Clock,
   ): ZIO[Scope, Nothing, Unit] =
     bus.subscribe.flatMap { queue =>
-      queue.take
-        .flatMap(
-          handle(
-            _,
-            registry,
-            trafficRepo,
-            connRepo,
-            deviceRepo,
-            profileRepo,
-            appTimeLimitRepo,
-            clock,
-          ),
-        )
-        .forever
-        .forkScoped
-        .unit
+      drainBatch(
+        queue,
+        registry,
+        trafficRepo,
+        rollupRepo,
+        connRepo,
+        deviceRepo,
+        profileRepo,
+        appRepo,
+        appTimeLimitRepo,
+        clock,
+      ).forever.forkScoped.unit
     }
+
+  /**
+   * Drain one coalesced batch: block for the first event, then sweep up everything else already
+   * buffered and de-dup the contentless triggers (design §6.3) so a burst of ingests does ONE
+   * recompute per topic, not N. `distinct` preserves first-occurrence order; the
+   * `ConnectionEventsIngested(since)` events keep their distinct `since` (their head re-read is
+   * cheap and the `since` floor matters), only the contentless `NowChanged`/`UsageIngested`
+   * collapse.
+   */
+  private def drainBatch(
+      queue: Dequeue[SpaEvent],
+      registry: SpaWsRegistry,
+      trafficRepo: TrafficReportRepo,
+      rollupRepo: RollupRepo,
+      connRepo: ConnectionEventRepo,
+      deviceRepo: DeviceRepo,
+      profileRepo: ProfileRepo,
+      appRepo: AppRepo,
+      appTimeLimitRepo: AppTimeLimitRepo,
+      clock: Clock,
+  ): UIO[Unit] =
+    for {
+      first <- queue.take
+      more  <- queue.takeAll
+      batch = coalesce(first +: more)
+      _ <- ZIO.foreachDiscard(batch)(
+        handle(
+          _,
+          registry,
+          trafficRepo,
+          rollupRepo,
+          connRepo,
+          deviceRepo,
+          profileRepo,
+          appRepo,
+          appTimeLimitRepo,
+          clock,
+        ),
+      )
+    } yield ()
+
+  /**
+   * Coalesce a drained batch (design §6.3 latest-wins): de-dup so the contentless triggers
+   * ([[SpaEvent.NowChanged]] / [[SpaEvent.UsageIngested]]) each fire ONE recompute regardless of
+   * burst size, while distinctly-`since`d [[SpaEvent.ConnectionEventsIngested]] are kept (each
+   * names a different new-row floor). `distinct` preserves first-occurrence order. Exposed for unit
+   * coverage of the collapse logic.
+   */
+  private[api] def coalesce(events: Chunk[SpaEvent]): Chunk[SpaEvent] = events.distinct
 
   private def handle(
       event: SpaEvent,
       registry: SpaWsRegistry,
       trafficRepo: TrafficReportRepo,
+      rollupRepo: RollupRepo,
       connRepo: ConnectionEventRepo,
       deviceRepo: DeviceRepo,
       profileRepo: ProfileRepo,
+      appRepo: AppRepo,
       appTimeLimitRepo: AppTimeLimitRepo,
       clock: Clock,
   ): UIO[Unit] =
@@ -89,6 +151,19 @@ object SpaPush {
       case SpaEvent.Stale(topic, scope)             =>
         LogContext.annotate(LogContext.Op, "stale") {
           registry.fanOutStale(topic, scope)
+        }
+      case SpaEvent.UsageIngested                   =>
+        LogContext.annotate(LogContext.Op, "trafficUsage") {
+          pushTrafficUsage(
+            registry,
+            trafficRepo,
+            rollupRepo,
+            deviceRepo,
+            profileRepo,
+            appRepo,
+            clock,
+          )
+            .catchAllCause(c => ZIO.logErrorCause("spa ws push: trafficUsage recompute failed", c))
         }
     }
 
@@ -140,6 +215,145 @@ object SpaPush {
       _ <- ZIO.when(fresh.nonEmpty)(registry.fanOutConnectionEvents(fresh))
     } yield ()
 
+  /**
+   * #1971 (S4): the `trafficUsage` live-edge aggregator (design §5.3). For each DISTINCT subscribed
+   * param-set, recompute ONLY the current/most-recent bucket via the shared
+   * [[UsageTrafficQuery.aggregate]] (the same query the `GET` runs) scoped to the head window, and
+   * push it as a `TrafficUsageResponse`. The device/profile maps are loaded ONCE and shared across
+   * param-sets; app memberships are loaded only when some param-set groups by app. No subscriber →
+   * empty param-set → nothing computed.
+   */
+  private def pushTrafficUsage(
+      registry: SpaWsRegistry,
+      trafficRepo: TrafficReportRepo,
+      rollupRepo: RollupRepo,
+      deviceRepo: DeviceRepo,
+      profileRepo: ProfileRepo,
+      appRepo: AppRepo,
+      clock: Clock,
+  ): Task[Unit] =
+    registry.trafficUsageParamSets.flatMap { paramSets =>
+      ZIO
+        .when(paramSets.nonEmpty) {
+          for {
+            now      <- clock.instant
+            devices  <- deviceRepo.listAll
+            profiles <- profileRepo.listAll
+            devByMac  = devices.iterator.map(d => d.mac -> d).toMap
+            profNames = profiles.iterator.map(p => p.id -> p.name).toMap
+            // App memberships are only needed if some subscribed param-set groups by app; load once.
+            wantsApp  = paramSets.exists(p =>
+              decodeParams(p).exists(_.groupBySet.contains(UsageTraffic.GroupBy.App)),
+            )
+            appsByHost <-
+              if (wantsApp) loadAppsByHost(appRepo)
+              else ZIO.succeed(Map.empty[String, List[AppMembership]])
+            _          <- ZIO.foreachDiscard(paramSets.toList)(p =>
+              pushOneParamSet(
+                p,
+                registry,
+                trafficRepo,
+                rollupRepo,
+                devices,
+                devByMac,
+                profNames,
+                appsByHost,
+                now,
+              ),
+            )
+          } yield ()
+        }
+        .unit
+    }
+
+  /**
+   * Compute + push the head bucket for ONE param-set. A param-set whose `groupBy`/`bucket` can't be
+   * parsed (or names `apex`, which the read model can't render yet) is skipped — a real subscriber
+   * never sends one. A non-empty mac/profile filter that resolves to zero visible devices pushes an
+   * empty head (never widens to the whole household — `macs = Nil` would mean "all" at the repo).
+   */
+  private def pushOneParamSet(
+      params: Json,
+      registry: SpaWsRegistry,
+      trafficRepo: TrafficReportRepo,
+      rollupRepo: RollupRepo,
+      devices: List[Device],
+      devByMac: Map[MacAddress, Device],
+      profNames: Map[ProfileId, String],
+      appsByHost: Map[String, List[AppMembership]],
+      now: Instant,
+  ): Task[Unit] =
+    decodeParams(params) match {
+      case None         =>
+        ZIO.logDebug(s"spa ws push: skipping unrenderable trafficUsage params ${params.toJson}")
+      case Some(parsed) =>
+        val headStart    = UsageTraffic.floorTo(now, parsed.bucket, parsed.zone)
+        // The head window is [headStart, now): all rows in it floor to `headStart`, so the aggregate
+        // carries exactly the current/most-recent bucket (one windowStart). On the rare tick where
+        // `now` lands exactly on a bucket boundary the window is empty and the push is an empty head
+        // (the client then merges nothing) — the next ingest advances it.
+        val resolvedMacs = resolveMacs(parsed, devices)
+        val filterEmpty  = parsed.filterRequested && resolvedMacs.isEmpty
+        val aggregate    =
+          if (filterEmpty) ZIO.succeed(List.empty)
+          else
+            UsageTrafficQuery.aggregate(
+              trafficRepo,
+              rollupRepo,
+              resolvedMacs,
+              headStart,
+              now,
+              parsed.bucket,
+              parsed.groupBySet,
+              parsed.zone,
+              devByMac,
+              profNames,
+              appsByHost,
+            )
+        aggregate.flatMap { rows =>
+          val body = TrafficUsageResponse(
+            bucket = parsed.bucket.code,
+            groupBy = parsed.groupBySet.toList.map(_.code).sorted,
+            from = headStart.toString,
+            to = now.toString,
+            tz = parsed.zone.getId,
+            rawRows = Nil,
+            aggregateRows = rows,
+            nextCursor = None,
+          )
+          registry.fanOutTrafficUsage(params, body.toJsonAST.getOrElse(Json.Obj()))
+        }
+    }
+
+  /**
+   * Resolve the param-set's mac/profile filter to a device-mac set, mirroring the `GET` handler.
+   */
+  private def resolveMacs(
+      parsed: TrafficSubParamsResolved,
+      devices: List[Device],
+  ): List[MacAddress] =
+    if (parsed.macs.nonEmpty) {
+      val byMac = devices.filter(d => parsed.macs.contains(d.mac))
+      if (parsed.profileIds.isEmpty) byMac.map(_.mac)
+      else byMac.filter(d => d.profileId.exists(parsed.profileIds.contains)).map(_.mac)
+    } else if (parsed.profileIds.nonEmpty)
+      devices.filter(d => d.profileId.exists(parsed.profileIds.contains)).map(_.mac)
+    else devices.map(_.mac)
+
+  /** Load the (host → app memberships) map for app grouping, exactly as `UsageRoutes` does. */
+  private def loadAppsByHost(appRepo: AppRepo): Task[Map[String, List[AppMembership]]] =
+    for {
+      apps <- appRepo.listAll
+      byId = apps.iterator.map(a => a.id -> a).toMap
+      mappings <- appRepo.listAllHostMappings
+    } yield mappings
+      .flatMap(m =>
+        byId
+          .get(m.appId)
+          .map(a => m.host.value -> AppMembership(a.slug, a.name, a.icon, Some(a.id))),
+      )
+      .groupMap(_._1)(_._2)
+
   // True iff the `/api/logs` row timestamp is at/after `since` (the genuinely-new edge). The row ts
   // is always ISO-8601 UTC ("…Z", ConnectionEventRepo `to_char(... 'Z')`), so a parse never fails in
   // practice; on the impossible malformed case KEEP the row rather than silently drop a real new one.
@@ -149,4 +363,56 @@ object SpaPush {
   // Head-row cap per connectionEvents push. Matches the `/api/logs` default page; the client dedups
   // by id and the feed is "recent" anyway, so the newest 200 is plenty for the live edge (§3.1).
   private val ConnEventHeadLimit = 200
+
+  /**
+   * #1971 (S4): the decoded `trafficUsage` subscription params — the verbatim `GET
+   * /api/usage/traffic` query params (§1.4 / §0.3). All optional; unknown fields ignored
+   * (forward-compat). `groupBy` is a list of breakdown columns (empty = overall household);
+   * `bucket` is the averaging window (defaults to `1m`, the aggregated floor, design §1.3); `tz`
+   * defaults to UTC like the GET.
+   */
+  private final case class TrafficSubParams(
+      groupBy: List[String] = Nil,
+      bucket: Option[String] = None,
+      macs: Option[List[String]] = None,
+      profileIds: Option[List[ProfileId]] = None,
+      tz: Option[String] = None,
+  ) derives JsonDecoder
+
+  /** A fully-resolved, renderable param-set (parse failures are dropped upstream). */
+  private final case class TrafficSubParamsResolved(
+      bucket: UsageTraffic.Bucket,
+      groupBySet: Set[UsageTraffic.GroupBy],
+      macs: List[MacAddress],
+      profileIds: List[ProfileId],
+      zone: ZoneId,
+      filterRequested: Boolean,
+  )
+
+  /**
+   * Decode + validate a `trafficUsage` param blob into a renderable shape, or `None` if it names a
+   * bucket/groupBy the read model can't render (`apex`, or any unparseable value) — those never
+   * come from a real subscriber, so skipping is correct (the `GET` would 400 them).
+   */
+  private def decodeParams(params: Json): Option[TrafficSubParamsResolved] =
+    params.toJson.fromJson[TrafficSubParams].toOption.flatMap { p =>
+      val groupByParsed = p.groupBy.map(UsageTraffic.GroupBy.parse)
+      for {
+        bucket  <- UsageTraffic.Bucket.parse(p.bucket.getOrElse("1m"))
+        groupBy <- if (groupByParsed.contains(None)) None else Some(groupByParsed.flatten.toSet)
+        if !groupBy.contains(UsageTraffic.GroupBy.Apex)
+        zone    <- p.tz.fold(Option(ZoneId.of("UTC")))(s => scala.util.Try(ZoneId.of(s)).toOption)
+      } yield {
+        val macAddrs = p.macs.getOrElse(Nil).map(s => MacAddress.unsafe(normalizeMac(s)))
+        val pids     = p.profileIds.getOrElse(Nil)
+        TrafficSubParamsResolved(
+          bucket = bucket,
+          groupBySet = groupBy,
+          macs = macAddrs,
+          profileIds = pids,
+          zone = zone,
+          filterRequested = macAddrs.nonEmpty || pids.nonEmpty,
+        )
+      }
+    }
 }

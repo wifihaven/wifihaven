@@ -87,8 +87,10 @@ final class RouterIngestService(
         _        <- handleUsage(router.id, ps, pe, records, settings)
         _        <- routerRepo.touch(router.id, None, None).mapError(ApiError.Db(_))
         // #1970 (S3): newly-credited usage moves last_seen / per-device activity, so the dashboard
-        // NOW surface may have changed — trigger a `now` recompute (trafficUsage/timeStatus pushes
-        // are S4/S6a; this step only emits the event). One-liner, never fails ingest.
+        // NOW surface may have changed — trigger a `now` recompute. #1971 (S4): the same ingest is
+        // the `trafficUsage` write site — `UsageIngested` drives the live-edge head-bucket recompute
+        // for subscribed `(groupBy,bucket,filter)` param-sets (design §5.3). Both are one-liners that
+        // never block or fail ingest (sliding hub, UIO). timeStatus/appUsage pushes are S6a.
         _        <- ZIO.when(records.nonEmpty)(bus.publish(SpaEvent.NowChanged))
       } yield ()
     }
