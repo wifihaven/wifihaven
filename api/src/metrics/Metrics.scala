@@ -161,6 +161,15 @@ object MetricGuard {
     // §4 cardinality firewall (service/env/level already ride the Loki stream
     // labels, not this Prometheus series).
     "loki_logs_dropped_total"                   -> Set.empty[String],
+    // #1972 — log batches the loki4j appender SENT to Grafana Cloud Loki that came
+    // back as an error (HTTP 401/403 wrong-scope token, 4xx/5xx, connection/timeout).
+    // Distinct from loki_logs_dropped_total, which only counts queue-full drops on
+    // the way IN: a misscoped access-policy token (logs:write missing) sheds every
+    // line at the SEND boundary, leaving drops flat at 0 — that auth failure was the
+    // invisible second half of #1972. loki4j is fail-open and routes these to the
+    // logback StatusManager only, so without this counter the loss is silent.
+    // Unlabelled (same cardinality firewall as the drop series).
+    "loki_logs_send_errors_total"               -> Set.empty[String],
     // §5.1 router-sourced, pushed via POST /api/router/metrics (#1205). Every one carries the
     // server-attached `router_id` + `installation_id` plus its own bounded enum label.
     "dnsmasq_restarts_total"                    -> Set("reason", "router_id", "installation_id"),
@@ -539,6 +548,15 @@ object AppMetrics {
     ZIO
       .when(delta > 0)(
         MetricGuard.counter("loki_logs_dropped_total", Map.empty, delta),
+      )
+      .unit
+
+  // #1972 — loki4j send-side errors (401/403/4xx/5xx/timeout) the appender reported
+  // to the logback StatusManager. Unlabelled; only emits when `delta > 0`.
+  def recordLokiSendErrors(delta: Long): UIO[Unit] =
+    ZIO
+      .when(delta > 0)(
+        MetricGuard.counter("loki_logs_send_errors_total", Map.empty, delta),
       )
       .unit
 

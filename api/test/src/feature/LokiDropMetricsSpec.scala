@@ -8,6 +8,7 @@ import zio.*
 import zio.http.*
 import zio.metrics.connectors.prometheus.PrometheusPublisher
 import zio.test.*
+import ch.qos.logback.core.status.{ErrorStatus, Status}
 
 /**
  * #1885: the poller side of the loki-drop metric. [[LokiDropMetrics.emitDelta]] reads the
@@ -78,5 +79,50 @@ object LokiDropMetricsSpec extends ZIOSpec[PrometheusPublisher] {
         value    <- awaitValue(25.0)
       } yield assertTrue(value == 25.0)
     } @@ TestAspect.withLiveClock @@ TestAspect.timeout(30.seconds),
+    test("warns loudly when the Loki URL is set but no appender is attached (#1972)") {
+      // findAppender returns None in-test (no LOKI appender on the test logger), so this exercises
+      // the misconfiguration branch: a deployed env that has GRAFANA_CLOUD_LOKI_URL but, due to a
+      // logback wiring regression, never attached the appender — the silent 0-ingest mode #1972
+      // hit. The branch must surface a WARN so the next recurrence is diagnosable, not invisible.
+      (for {
+        _    <- LokiDropMetrics.loop(lokiUrlConfigured = true)
+        logs <- ZTestLogger.logOutput
+      } yield assertTrue(
+        logs.exists(e =>
+          e.logLevel == LogLevel.Warning && e.message().contains("shipping to Grafana Cloud Loki"),
+        ),
+      )).provide(ZTestLogger.default)
+    },
+    test("send-error classifier counts loki4j ERROR statuses, ignores others (#1972)") {
+      // The 401 'invalid scope requested' that a misscoped token returns arrives as an ERROR-level
+      // logback status whose origin is a com.github.loki4j.* object. Anything else must NOT count.
+      assertTrue(
+        LokiDropMetrics
+          .isLokiSendError(Status.ERROR, Some("com.github.loki4j.logback.MeteredLoki4jAppender")),
+        LokiDropMetrics.isLokiSendError(
+          Status.ERROR,
+          Some("com.github.loki4j.client.pipeline.AsyncBufferPipeline"),
+        ),
+        !LokiDropMetrics
+          .isLokiSendError(Status.WARN, Some("com.github.loki4j.logback.MeteredLoki4jAppender")),
+        !LokiDropMetrics.isLokiSendError(Status.ERROR, Some("ch.qos.logback.core.ConsoleAppender")),
+        !LokiDropMetrics.isLokiSendError(Status.ERROR, None),
+      )
+    },
+    test("send-error counting listener increments on a loki4j ERROR status (#1972)") {
+      val listener = new LokiDropMetrics.SendErrorCountingListener
+      // Simulate loki4j reporting a 401 to the StatusManager.
+      val origin   = new com.github.loki4j.logback.MeteredLoki4jAppender
+      listener.addStatusEvent(
+        new ErrorStatus(
+          "Loki responded with non-success status 401 ... invalid scope requested",
+          origin,
+        ),
+      )
+      listener.addStatusEvent(
+        new ErrorStatus("unrelated", new ch.qos.logback.core.ConsoleAppender[Any]),
+      )
+      assertTrue(listener.errorsTotal == 1L, listener.isResetResistant)
+    },
   )
 }

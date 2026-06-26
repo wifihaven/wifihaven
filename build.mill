@@ -44,7 +44,15 @@ val flywayVersion      = "10.17.3"
 val jwtVersion         = "10.0.1"
 val bcryptVersion      = "0.10.2"
 val postgresVersion    = "42.7.4"
-val logbackVersion     = "1.5.8"
+// #1972: pin to the version loki4j 2.0.3 transitively forces (1.5.25). The old
+// 1.5.8 pin was silently bumped to 1.5.25 by coursier conflict resolution, so the
+// declared number did not match what actually resolved/shipped (`showMvnDepsTree`
+// printed `1.5.8 -> 1.5.25`). Aligning the declaration removes that confusion and
+// the "Found logback version ?" / "versions are different" noise. NB the two
+// versions differ on a config nuance that bit us here: 1.5.25 REJECTS an `<if>`
+// nested inside `<root>` ("IfNestedWithinSecondPhaseElementSC") where 1.5.8
+// tolerated it — see logback.xml and LokiAppenderConfigSpec.
+val logbackVersion     = "1.5.25"
 // #1873: loki4j ships API app logs straight to Grafana Cloud Loki via a
 // logback appender (deployed envs only). 2.0.x requires logback 1.5.x — matches
 // `logbackVersion` above. janino backs the `<if>` conditional in logback.xml that

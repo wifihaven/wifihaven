@@ -617,6 +617,36 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Loki log shipping send errors (#1972)",
+      "description": "sum(rate(loki_logs_send_errors_total[5m])) — log batches the loki4j appender SENT to Grafana Cloud Loki that came back as an error (HTTP 401/403 wrong-scope access-policy token, other 4xx/5xx, connection/timeout). Counted by a logback StatusListener (LokiDropMetrics.SendErrorCountingListener) since loki4j routes these only to the StatusManager and is fail-open. DISTINCT from the drops panel: drops are queue-full on the way IN; this is rejection at the SEND boundary, which leaves drops flat at 0. A sustained rate with 0 ingest means the GRAFANA_CLOUD_LOKI_PASSWORD token lacks logs:write scope (the #1972 failure) — re-issue the access policy token. Should be flat zero in steady state.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 48 },
+      "id": 19,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 20, "showPoints": "never", "lineWidth": 1 },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 0.001 }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(rate(loki_logs_send_errors_total{env=\"$env\"}[5m]))",
+          "legendFormat": "send errors/s",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",
