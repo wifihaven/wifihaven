@@ -9,6 +9,7 @@ import wifihaven.api.usage.{
   RetentionSweepJob,
   UsageSeries,
   UsageTraffic,
+  UsageTrafficQuery,
 }
 import wifihaven.shared.*
 import wifihaven.shared.types.*
@@ -1021,6 +1022,11 @@ object UsageRoutes {
       // When both lists are non-empty, intersect: devices that match any
       // selected mac AND belong to any selected profile.
       allDevices <- deviceRepo.listAll.mapError(ApiError.Db(_))
+      // #1971: the device-set RESULT is computed by the shared
+      // `UsageTrafficQuery.resolveMacs` (one source, also used by the S4 live-edge stream so the two
+      // can't drift on filter semantics). This handler keeps the HTTP-only guards around it: a
+      // requested mac that doesn't exist is a 404, the selected profiles must pass
+      // `requireProfileReadAccess`, and the no-filter ("all devices") set is admin/adult-only.
       macs       <- (macsRaw, profileIds) match {
         case (ms, _) if ms.nonEmpty     =>
           for {
@@ -1031,21 +1037,16 @@ object UsageRoutes {
             }
             _    <- ZIO.foreach(devs.flatMap(_.profileId).distinct) { pid =>
               requireProfileReadAccess(claims, Some(pid), userProfileRepo)
-
             }
-          } yield
-            if (profileIds.isEmpty) devs.map(_.mac)
-            else devs.filter(d => d.profileId.exists(profileIds.contains)).map(_.mac)
+          } yield UsageTrafficQuery.resolveMacs(ms, profileIds, allDevices)
         case (_, pids) if pids.nonEmpty =>
-          for {
-            _ <- ZIO.foreach(pids)(pid =>
-              requireProfileReadAccess(claims, Some(pid), userProfileRepo),
-            )
-          } yield allDevices.filter(d => d.profileId.exists(pids.contains)).map(_.mac)
+          ZIO
+            .foreach(pids)(pid => requireProfileReadAccess(claims, Some(pid), userProfileRepo))
+            .as(UsageTrafficQuery.resolveMacs(Nil, pids, allDevices))
         case _                          =>
           // No filter: admin/adult only. Children must scope to their profile.
           if (claims.role == "admin" || claims.role == "adult")
-            ZIO.succeed(allDevices.map(_.mac))
+            ZIO.succeed(UsageTrafficQuery.resolveMacs(Nil, Nil, allDevices))
           else
             ZIO.fail(
               ApiError.Forbidden("mac or profileId required for non-admin"),
@@ -1149,7 +1150,7 @@ object UsageRoutes {
               if (macs.isEmpty && (macsRaw.nonEmpty || profileIds.nonEmpty))
                 ZIO.succeed(List.empty[TrafficUsageAggregateRow])
               else
-                wifihaven.api.usage.UsageTrafficQuery
+                UsageTrafficQuery
                   .aggregate(
                     trafficRepo,
                     rollupRepo,

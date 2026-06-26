@@ -63,6 +63,29 @@ object UsageTrafficQuery {
     }
 
   /**
+   * Resolve a `(macs, profileIds)` filter to the device-mac set it selects, given the household's
+   * devices. The single source of truth for "which devices does this traffic filter cover" — shared
+   * by the `GET /api/usage/traffic` handler (which wraps it with per-mac `NotFound` + per-profile
+   * `requireProfileReadAccess` auth) and the S4 `trafficUsage` live-edge aggregator (whose authz is
+   * the upstream `visibleTo` role gate), so the two can't drift on the filter semantics. Pure:
+   *   - `macs` non-empty → those devices, further narrowed to `profileIds` if also given;
+   *   - else `profileIds` non-empty → devices in those profiles;
+   *   - else → all devices (the "no filter" set; callers gate who may request it).
+   */
+  def resolveMacs(
+      macs: List[MacAddress],
+      profileIds: List[ProfileId],
+      devices: List[Device],
+  ): List[MacAddress] =
+    if (macs.nonEmpty) {
+      val byMac = devices.filter(d => macs.contains(d.mac))
+      if (profileIds.isEmpty) byMac.map(_.mac)
+      else byMac.filter(d => d.profileId.exists(profileIds.contains)).map(_.mac)
+    } else if (profileIds.nonEmpty)
+      devices.filter(d => d.profileId.exists(profileIds.contains)).map(_.mac)
+    else devices.map(_.mac)
+
+  /**
    * Fetch raw / rollup rows for `macs` over `[from, to)` at the tier the bucket+window selects,
    * then aggregate into `TrafficUsageAggregateRow`s (one per (window, grouped-column-values)).
    * `macs = Nil` means "all macs" at the repo level — callers that resolved a NON-EMPTY filter down

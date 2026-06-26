@@ -292,7 +292,7 @@ object SpaPush {
         // carries exactly the current/most-recent bucket (one windowStart). On the rare tick where
         // `now` lands exactly on a bucket boundary the window is empty and the push is an empty head
         // (the client then merges nothing) — the next ingest advances it.
-        val resolvedMacs = resolveMacs(parsed, devices)
+        val resolvedMacs = UsageTrafficQuery.resolveMacs(parsed.macs, parsed.profileIds, devices)
         val filterEmpty  = parsed.filterRequested && resolvedMacs.isEmpty
         val aggregate    =
           if (filterEmpty) ZIO.succeed(List.empty)
@@ -324,21 +324,6 @@ object SpaPush {
           registry.fanOutTrafficUsage(params, body.toJsonAST.getOrElse(Json.Obj()))
         }
     }
-
-  /**
-   * Resolve the param-set's mac/profile filter to a device-mac set, mirroring the `GET` handler.
-   */
-  private def resolveMacs(
-      parsed: TrafficSubParamsResolved,
-      devices: List[Device],
-  ): List[MacAddress] =
-    if (parsed.macs.nonEmpty) {
-      val byMac = devices.filter(d => parsed.macs.contains(d.mac))
-      if (parsed.profileIds.isEmpty) byMac.map(_.mac)
-      else byMac.filter(d => d.profileId.exists(parsed.profileIds.contains)).map(_.mac)
-    } else if (parsed.profileIds.nonEmpty)
-      devices.filter(d => d.profileId.exists(parsed.profileIds.contains)).map(_.mac)
-    else devices.map(_.mac)
 
   /** Load the (host → app memberships) map for app grouping, exactly as `UsageRoutes` does. */
   private def loadAppsByHost(appRepo: AppRepo): Task[Map[String, List[AppMembership]]] =
