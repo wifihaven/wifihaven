@@ -5,6 +5,7 @@ import wifihaven.api.AppTemplate
 import wifihaven.api.AppTemplates
 import wifihaven.api.auth.*
 import wifihaven.api.db.*
+import wifihaven.api.policy.AppBlocklistOverlap
 import wifihaven.shared.*
 import wifihaven.shared.types.*
 import zio.*
@@ -44,28 +45,45 @@ object AppRoutes {
       }
   }
 
-  private def detail(appRepo: AppRepo, a: App): Task[AppDetail] =
+  private def detail(appRepo: AppRepo, blocklistRepo: BlocklistRepo, a: App): Task[AppDetail] =
     for {
-      hosts <- appRepo.getHosts(a.id)
-      asgn  <- appRepo.listAssignmentsForApp(a.id)
-    } yield AppDetail(a, hosts, asgn)
+      hosts       <- appRepo.getHosts(a.id)
+      asgn        <- appRepo.listAssignmentsForApp(a.id)
+      // #1983: per-host category-blocklist overlap so the SPA can warn.
+      blocklisted <- AppBlocklistOverlap.forHosts(blocklistRepo, a.id, hosts)
+    } yield AppDetail(a, hosts, asgn, blocklisted)
 
   def routes(
       auth: AuthService,
       appRepo: AppRepo,
       profileRepo: ProfileRepo,
       userProfileRepo: UserProfileRepo,
+      blocklistRepo: BlocklistRepo,
       templates: Map[AppTemplateId, AppTemplate] = Map.empty,
   ): Routes[Any, Response] =
     Routes(
       Method.GET / "api" / "apps"                                                ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _        <- requireAuth(req, auth)
-            apps     <- appRepo.listAll.mapError(ApiError.Db(_))
-            detailed <- ZIO
-              .foreach(apps)(detail(appRepo, _))
+            _       <- requireAuth(req, auth)
+            apps    <- appRepo.listAll.mapError(ApiError.Db(_))
+            // Fetch hosts + assignments per app, then compute the blocklist
+            // overlap for ALL apps in a single batched query (#1983) rather
+            // than one categoriesForDomains round-trip per app.
+            base    <- ZIO
+              .foreach(apps) { a =>
+                for {
+                  hosts <- appRepo.getHosts(a.id)
+                  asgn  <- appRepo.listAssignmentsForApp(a.id)
+                } yield (a, hosts, asgn)
+              }
               .mapError(ApiError.Db(_))
+            overlap <- AppBlocklistOverlap
+              .forApps(blocklistRepo, base.map((a, hosts, _) => a.id -> hosts).toMap)
+              .mapError(ApiError.Db(_))
+            detailed = base.map { (a, hosts, asgn) =>
+              AppDetail(a, hosts, asgn, overlap.getOrElse(a.id, Nil))
+            }
           } yield Response.json(detailed.toJson)
           handle.mapError(ErrorMapper.errorToResponse)
         },
@@ -78,7 +96,7 @@ object AppRoutes {
               .findById(aid)
               .mapError(ApiError.Db(_))
               .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("App not found")))
-            d <- detail(appRepo, a).mapError(ApiError.Db(_))
+            d <- detail(appRepo, blocklistRepo, a).mapError(ApiError.Db(_))
           } yield Response.json(d.toJson)
           handle.mapError(ErrorMapper.errorToResponse)
         },
@@ -204,7 +222,7 @@ object AppRoutes {
                 ),
               )
             _    <- appRepo.setHosts(aid, tmpl.hosts).mapError(ApiError.Db(_))
-            d    <- detail(appRepo, app).mapError(ApiError.Db(_))
+            d    <- detail(appRepo, blocklistRepo, app).mapError(ApiError.Db(_))
           } yield Response.json(d.toJson)
           handle.mapError(ErrorMapper.errorToResponse)
         },

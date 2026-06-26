@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '@/api/client'
-import { useProfiles } from '@/api/queries'
+import { useBlocklists, useProfiles } from '@/api/queries'
 import type { AppDetail } from '@/types/api'
 import { PageLoader } from './DashboardPage'
 import { AppIcon } from '@/components/AppIcon'
 import { EmptyState } from '@/components/EmptyState'
+import { AppBlocklistWarningBadge, AppBlocklistWarningDetail } from '@/components/AppBlocklistWarning'
 
 // #1798 — app *definitions* (name, slug, icon, host-set) are authored only via
 // the built-in `AppTemplates` in code (which seed/reconcile server-side); the
@@ -17,12 +18,20 @@ export function AppsPage() {
   const [expandedId, setExpandedId] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
   const { data: profiles = [] } = useProfiles()
+  // #1983 — map blocklist id (category slug) → display name for the warnings.
+  const { data: blocklists = [] } = useBlocklists()
 
   const profileNameById = useMemo(() => {
     const m = new Map<number, string>()
     for (const p of profiles) m.set(p.profile.id, p.profile.name)
     return m
   }, [profiles])
+
+  const blocklistNameById = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const b of blocklists) m.set(b.id, b.name)
+    return m
+  }, [blocklists])
 
   useEffect(() => {
     api.apps
@@ -70,7 +79,10 @@ export function AppsPage() {
                         <AppIcon icon={a.app.icon} iconType={a.app.iconType} size="lg" />
                       </span>
                       <div className="flex-1 min-w-0">
-                        <p className="font-medium text-brand-ink truncate">{a.app.name}</p>
+                        <p className="font-medium text-brand-ink truncate flex items-center gap-2">
+                          {a.app.name}
+                          <AppBlocklistWarningBadge blocklisted={a.blocklisted} nameById={blocklistNameById} />
+                        </p>
                         <p className="text-xs text-brand-text-muted mt-0.5 font-mono">{a.app.slug}</p>
                       </div>
                       <div className="text-right text-xs text-brand-text shrink-0">
@@ -84,7 +96,11 @@ export function AppsPage() {
                     </div>
                   </button>
                   {expanded && (
-                    <AppDetailView detail={a} profileNameById={profileNameById} />
+                    <AppDetailView
+                      detail={a}
+                      profileNameById={profileNameById}
+                      blocklistNameById={blocklistNameById}
+                    />
                   )}
                 </div>
               )
@@ -97,9 +113,10 @@ export function AppsPage() {
 
 // #1798 — read-only detail for an expanded app row: its host set and the
 // profiles it's assigned to. No editing controls.
-function AppDetailView({ detail, profileNameById }: {
+function AppDetailView({ detail, profileNameById, blocklistNameById }: {
   detail: AppDetail
   profileNameById: Map<number, string>
+  blocklistNameById: Map<string, string>
 }) {
   const assignedProfiles = useMemo(() => {
     const ids = new Set(detail.assignments.map(a => a.profileId))
@@ -122,6 +139,8 @@ function AppDetailView({ detail, profileNameById }: {
               ))}
         </div>
       </div>
+
+      <AppBlocklistWarningDetail blocklisted={detail.blocklisted} nameById={blocklistNameById} />
 
       <p className="text-xs text-brand-text-muted">
         Used by {assignedProfiles.length === 0

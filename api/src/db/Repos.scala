@@ -340,6 +340,14 @@ trait BlocklistRepo {
   def loadCategory(cat: BlocklistId): Task[Set[Hostname]]
   def loadAll: Task[Map[BlocklistId, Set[Hostname]]]
 
+  // #1983: for each of the given EXACT domains, which category blocklists
+  // contain it. The caller passes the bounded set of app-host apex candidates
+  // (each host + its parent suffixes), so this is O(candidates) index probes on
+  // `idx_blocklist_domain` — NOT an O(apps × hosts × domains) scan of the large
+  // blocklist_domains table. Returns only domains that matched at least one
+  // category; absent keys mean "in no blocklist".
+  def categoriesForDomains(domains: List[String]): Task[Map[String, List[BlocklistId]]]
+
   // #958: metadata-table operations backing the SPA management page and
   // the bundled-list startup seeder. `summaries` joins blocklists with
   // a count from blocklist_domains so the SPA renders host counts
@@ -1361,6 +1369,18 @@ class BlocklistRepoLive(xa: Transactor[Task]) extends BlocklistRepo {
     .to[List]
     .transact(xa)
     .map(_.groupBy(_._1).map((k, vs) => k -> vs.map(_._2).toSet))
+
+  def categoriesForDomains(domains: List[String]) =
+    if domains.isEmpty then ZIO.succeed(Map.empty)
+    else
+      DbMetrics.timed("blocklist.categoriesForDomains") {
+        val arr = domains.distinct.toArray
+        sql"SELECT domain, category FROM blocklist_domains WHERE domain = ANY($arr)"
+          .query[(String, BlocklistId)]
+          .to[List]
+          .transact(xa)
+          .map(_.groupBy(_._1).map((d, vs) => d -> vs.map(_._2).distinct.sorted))
+      }
 
   def upsertMeta(
       id: BlocklistId,

@@ -14,6 +14,7 @@ import type {
   UpsertAppAssignmentRequest, UpsertProfileRequest, User,
 } from '@/types/api'
 import { AppIcon } from '@/components/AppIcon'
+import { AppBlocklistWarningBadge } from '@/components/AppBlocklistWarning'
 import { ProfileTimelineChart } from '@/components/usage/ProfileTimelineChart'
 import { ProfileUsageBreakdown } from '@/components/usage/ProfileUsageBreakdown'
 import { EmptyState } from '@/components/EmptyState'
@@ -1649,6 +1650,13 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
   // Unassigned apps stay manageable via the "+ Add app" picker below.
   const [pickerOpen, setPickerOpen] = useState(false)
   const [pickerFilter, setPickerFilter] = useState('')
+  // #1983 — blocklist id → display name for the per-app overlap warning badges.
+  const { data: blocklists = [] } = useBlocklists()
+  const blocklistNameById = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const b of blocklists) m.set(b.id, b.name)
+    return m
+  }, [blocklists])
   const assigned = useMemo(
     () => (profileId == null ? [] : apps.filter(a => findAssignment(a, profileId) != null)),
     [apps, profileId],
@@ -1746,6 +1754,7 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
               profileId={profileId}
               onChanged={onChanged}
               usedMins={usedMinsByAppId?.get(a.app.id)}
+              blocklistNameById={blocklistNameById}
             />
           ))}
           {pickerOpen && (
@@ -1780,6 +1789,7 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
                     >
                       <AppIcon icon={a.app.icon} iconType={a.app.iconType} size="sm" className="w-5 text-center" />
                       <span className="text-sm text-brand-ink flex-1 truncate">{a.app.name}</span>
+                      <AppBlocklistWarningBadge blocklisted={a.blocklisted} nameById={blocklistNameById} />
                       <span className="text-xs text-brand-text-muted">{a.hosts.length} host{a.hosts.length === 1 ? '' : 's'}</span>
                     </button>
                   ))}
@@ -1793,7 +1803,7 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
   )
 }
 
-function AppRow({ app, profileId, onChanged, usedMins }: {
+function AppRow({ app, profileId, onChanged, usedMins, blocklistNameById }: {
   app: AppDetail
   profileId: number
   onChanged: () => void | Promise<void>
@@ -1801,6 +1811,8 @@ function AppRow({ app, profileId, onChanged, usedMins }: {
   // profile. Undefined → not loaded yet (e.g. subsection just opened); the
   // bar simply doesn't render until the value arrives.
   usedMins?: number
+  // #1983 — blocklist id → display name for the overlap-warning badge.
+  blocklistNameById?: Map<string, string>
 }) {
   // #1086 — app-policy edits (mode switch, exemptFromDaily toggle, removal)
   // feed the server-side daily-cap math, so a successful write must invalidate
@@ -1989,7 +2001,10 @@ function AppRow({ app, profileId, onChanged, usedMins }: {
           <AppIcon icon={app.app.icon} iconType={app.app.iconType} size="md" />
         </span>
         <div className="flex-1 min-w-0">
-          <p className="text-sm text-brand-ink font-medium truncate">{app.app.name}</p>
+          <p className="text-sm text-brand-ink font-medium truncate flex items-center gap-2">
+            {app.app.name}
+            <AppBlocklistWarningBadge blocklisted={app.blocklisted} nameById={blocklistNameById} />
+          </p>
           <p className="text-xs text-brand-text-muted font-mono truncate">{app.hosts.length} host{app.hosts.length === 1 ? '' : 's'}</p>
         </div>
         {mode != null && (
