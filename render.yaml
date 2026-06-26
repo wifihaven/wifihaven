@@ -38,8 +38,9 @@ services:
     # regression #1268 originally fixed (free → starter). starter (~$7/mo) is
     # the minimum non-spin-down JVM-capable tier; any future staging cost trim
     # must come from a different lever (e.g. suspend staging when not
-    # deploying), NOT from dropping to free. Bump to `standard` if OOM appears
-    # in the logs (RAM is 512 MB on both free and starter; -Xmx384m heap).
+    # deploying), NOT from dropping to free. RAM is 512 MB on starter; the
+    # JVM envelope is fully bounded to fit it (see JVM_HEAP_OPTS below, #1984).
+    # Bump to `standard` only if a bounded OOM reappears after that tuning.
     plan: starter
     region: oregon
     numInstances: 1
@@ -82,13 +83,31 @@ services:
       # ample and stays well clear of Render's reserved connections.
       - key: WIFIHAVEN_DB_POOL_SIZE
         value: "8"
-      # #590 / #1268 / #1389: free tier is 512 MB. Leave headroom for OS +
-      # JIT + native heap; this -Xmx384m envelope started clean on free
-      # before #1268 and stays unchanged across the free → starter → free
-      # round-trip. Raise the heap (and move to `plan: standard`, 2 GB) only
-      # if OOM appears in logs.
+      # #1984: starter is a HARD 512 MB cgroup cap and the JVM was only
+      # bounding HEAP (-Xmx384m). Everything else off-heap was on JVM defaults:
+      # crucially -XX:MaxDirectMemorySize defaults to ~= -Xmx, so Netty's
+      # direct/pooled buffers could grow another ~384 MB on top of heap. Under
+      # the (grown) CD smoke burst that pushed RSS well past 512 MB and Render
+      # OOM-killed the container ~2 min after each deploy (server_failed /
+      # oomKilled events), reddening Gate 1 / 3a / 3b. Cold-start was already
+      # handled by #1967's /api/health gate — this is the distinct second
+      # failure. The fix is to bound EVERY region so total RSS fits 512 MB with
+      # headroom, not just the heap:
+      #   heap      -Xmx288m              (smoke is light; 288 MB is ample)
+      #   metaspace -XX:MaxMetaspaceSize=128m   (Scala 3 / ZIO load many classes)
+      #   code      -XX:ReservedCodeCacheSize=64m
+      #   direct    -XX:MaxDirectMemorySize=64m + -Dio.netty.maxDirectMemory
+      #             (belt-and-suspenders: cap both the JVM ceiling AND Netty's
+      #              own arena accounting at 64 MB = 67108864 bytes)
+      #   GC        -XX:+UseSerialGC      (lowest-footprint GC; starter is 0.5
+      #             CPU so the JVM picks Serial anyway — make it deterministic
+      #             regardless of container CPU detection)
+      # Budget: 288 + 128 + 64 + 64 + ~25 (stacks) + ~30 (native) caps; these
+      # maxima don't co-commit, so realistic RSS lands ~420-470 MB. Raise the
+      # heap and/or move to `plan: standard` (2 GB) only if a *bounded* OOM
+      # (heap / metaspace / direct exhaustion in logs) reappears after this.
       - key: JVM_HEAP_OPTS
-        value: "-Xms256m -Xmx384m"
+        value: "-Xms192m -Xmx288m -XX:MaxMetaspaceSize=128m -XX:ReservedCodeCacheSize=64m -XX:MaxDirectMemorySize=64m -Dio.netty.maxDirectMemory=67108864 -XX:+UseSerialGC"
       # Staging runs DEBUG so issues are visible in the Render log stream.
       - key: WIFIHAVEN_LOG_LEVEL
         value: DEBUG
