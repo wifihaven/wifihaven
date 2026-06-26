@@ -235,7 +235,8 @@ object MetricGuard {
     // `spa_ws_connections_active` is the live count of open /api/ws channels per `role`
     // (admin|adult|child), refreshed on every register/deregister so a role's series ages out to 0
     // on disconnect. `spa_ws_frames_total` counts every frame demuxed/sent: `op` ∈ {hello, ready,
-    // subscribe, unsubscribe, ack, ping, pong, unknown} (the fixed SPA envelope vocabulary),
+    // subscribe, unsubscribe, ack, ping, pong, reauth, unknown} (the fixed SPA envelope vocabulary;
+    // `reauth` added by #1969 — the forward-compat reject seam),
     // `direction` ∈ {in, out}, `result` ∈ {ok, reject, unknown_op}. `spa_ws_subscriptions_active`
     // is the live count of subscriptions per `topic` (the SpaTopic enum). All bounded enums — no
     // per-mac / per-profile / per-session / param dimension ever rides a ws metric. (The

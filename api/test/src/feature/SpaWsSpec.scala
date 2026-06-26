@@ -237,6 +237,41 @@ object SpaWsSpec
         TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task],
       ](Server.defaultWithPort(0), Client.default)
     },
+    test("unsubscribe removes the held subscription (no further ack; ping confirms liveness)") {
+      (for {
+        _     <- cleanDb
+        clock <- ZIO.service[Clock]
+        auth  <- makeAuth(clock)
+        tok   <- adminToken(auth)
+        reg   <- SpaWsRegistry.make
+        routes = SpaWsRoutes.routes(auth, reg, clock, enforcedCfg)
+        port <- Server.install(routes)
+        // subscribe (acked), then unsubscribe (no ack), then ping — the pong (sent only after the
+        // unsubscribe was processed) proves the socket stayed live AND the subscription was removed:
+        // the post-pong registry probe must show an empty subscription set.
+        res  <- connectAndCapture(
+          port,
+          cookieAndOrigin(tok, "http://localhost"),
+          ch =>
+            sendFrames(
+              ch,
+              """{"op":"hello"}""",
+              """{"op":"subscribe","payload":{"topic":"now"}}""",
+              """{"op":"unsubscribe","payload":{"topic":"now"}}""",
+              """{"op":"ping"}""",
+            ),
+          until = _.contains("\"op\":\"pong\""),
+          probe = reg.subscriptionsFor(onlyConn),
+        )
+        (pong, all, subs) = res
+      } yield assertTrue(pong.contains("\"op\":\"pong\"")) &&
+        assertTrue(
+          all.exists(f => f.contains("\"op\":\"ack\"") && f.contains("\"status\":\"ok\"")),
+        ) &&
+        assertTrue(subs.isEmpty)).provideSome[
+        TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task],
+      ](Server.defaultWithPort(0), Client.default)
+    },
     test("reauth is acked reject (forward-compat seam; v1 has no silent refresh)") {
       (for {
         _     <- cleanDb
