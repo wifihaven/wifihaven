@@ -344,18 +344,22 @@ object SpaWsSpec
         before <- authCount("jwt_expired_midconn")
         readyP <- Promise.make[Nothing, Unit]
         closeP <- Promise.make[Nothing, Int]
-        app            = Handler.webSocket { channel =>
-          channel.receiveAll {
-            case ChannelEvent.UserEventTriggered(UserEvent.HandshakeComplete)                =>
-              channel.send(ChannelEvent.read(WebSocketFrame.text("""{"op":"hello"}""")))
-            case ChannelEvent.Read(WebSocketFrame.Text(t)) if t.contains("\"op\":\"ready\"") =>
-              readyP.succeed(()).unit
-            case ChannelEvent.Read(WebSocketFrame.Close(code, _))                            =>
-              closeP.succeed(code).unit
-            case _                                                                           =>
-              ZIO.unit
+        // forwardCloseFrames so the server's `4401` Close is delivered to this handler as a Read
+        // (the default config handles close frames internally and would not surface the code).
+        app            = Handler
+          .webSocket { channel =>
+            channel.receiveAll {
+              case ChannelEvent.UserEventTriggered(UserEvent.HandshakeComplete)                =>
+                channel.send(ChannelEvent.read(WebSocketFrame.text("""{"op":"hello"}""")))
+              case ChannelEvent.Read(WebSocketFrame.Text(t)) if t.contains("\"op\":\"ready\"") =>
+                readyP.succeed(()).unit
+              case ChannelEvent.Read(WebSocketFrame.Close(code, _))                            =>
+                closeP.succeed(code).unit
+              case _                                                                           =>
+                ZIO.unit
+            }
           }
-        }
+          .withConfig(WebSocketConfig.default.forwardCloseFrames(true))
         result <- ZIO.scoped {
           for {
             _      <- app

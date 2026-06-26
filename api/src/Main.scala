@@ -463,10 +463,11 @@ object Main extends ZIOAppDefault {
             policy,
           ) ++
           RouterMetricsRoutes.routes(routerAuth, routerMetrics) ++
-          // #1968: additive browser-facing websocket endpoint (`GET /api/ws`, S1). Skeleton only —
-          // envelope demux + subscription registry; upgrade auth is S2, push sources S3/S4. The SPA
-          // has no ws client yet (S5), so this reads idle in prod until then.
-          SpaWsRoutes.routes(spaWsRegistry, clock) ++
+          // #1968/#1969: additive browser-facing websocket endpoint (`GET /api/ws`). S2 (#1969)
+          // authorizes the upgrade via the `wh_ws` cookie (existing AuthService.verify) + the §8
+          // Origin allowlist (cfg.ws); push sources are S3/S4. The SPA has no ws client yet (S5), so
+          // this reads idle in prod until then.
+          SpaWsRoutes.routes(auth, spaWsRegistry, clock, cfg.ws) ++
           AlertRoutes.routes(
             auth,
             alertRepo,

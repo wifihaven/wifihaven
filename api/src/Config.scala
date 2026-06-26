@@ -13,6 +13,7 @@ case class AppConfig(
     cors: CorsConfig,
     policy: PolicyConfig = PolicyConfig(),
     metrics: MetricsConfig = MetricsConfig(),
+    ws: WsConfig = WsConfig(),
 ) {
   // WIFIHAVEN_DEBUG env var: when set to a non-empty, non-"0"/"false"/"no"
   // value, mounts the read-only /api/debug/* endpoints (loopback only).
@@ -143,6 +144,55 @@ case class PolicyConfig(
           )
       }
       .toList
+}
+
+// #1969 — SPA-websocket upgrade auth for the browser-facing `GET /api/ws` (design
+// docs/design/spa-websocket.md §4/§8). The cookie/JWT verify reuses the existing
+// AuthService (no second auth surface); the only ws-specific server config here is
+// the `Origin` allowlist — "the one server-side ws config that differs by hosting
+// mode" (§8).
+//
+// `allowedOrigins` is a comma-separated list of allowed Origin HOSTS (scheme/port
+// ignored — the design's allowlist is host-based: app.wifihaven.net, staging.*,
+// localhost). Matched case-insensitively, with two wildcard forms: a leading
+// `*.suffix` matches any subdomain of `suffix` (and `suffix` itself), and a
+// trailing `prefix.*` matches `prefix` and any host starting `prefix.`. EMPTY
+// disables the cross-origin check entirely — the self-hosted same-origin default,
+// where SameSite=Strict on the wh_ws cookie (§4.2) is the CSWSH guard; cloud/
+// staging set the allowlist so a cross-site upgrade is rejected pre-101 (§8).
+case class WsConfig(
+    allowedOrigins: String = "",
+    // §4.3 — cadence at which each open connection re-checks `now ≥ jwtExp` and, once
+    // crossed, closes with `4401 token-expired`. Bounds mid-connection stale-authz
+    // carry-over to one tick (mirrors the design's ~30s app-level heartbeat). Clamped
+    // to a 1s floor so a misconfigured 0/negative can't become a no-delay tight loop.
+    expiryCheckSeconds: Int = 30,
+) {
+  val allowedOriginHosts: List[String] =
+    allowedOrigins.split(",").iterator.map(_.trim.toLowerCase).filter(_.nonEmpty).toList
+
+  val expiryCheckInterval: zio.Duration =
+    zio.Duration.fromSeconds(math.max(1, expiryCheckSeconds).toLong)
+
+  /**
+   * Whether `host` (the Origin header's host, lower-cased) is permitted. An empty allowlist returns
+   * `true` for every host — the self-hosted same-origin mode where the cross-origin check is off.
+   * When the allowlist is non-empty the check is enforced (an absent Origin is handled by the
+   * caller, which has no host to pass here).
+   */
+  def originAllowed(host: String): Boolean =
+    allowedOriginHosts.isEmpty || {
+      val h = host.toLowerCase
+      allowedOriginHosts.exists { pat =>
+        if pat.startsWith("*.") then { val s = pat.drop(2); h == s || h.endsWith("." + s) }
+        else if pat.endsWith(".*") then {
+          val p = pat.dropRight(2); h == p || h.startsWith(p + ".")
+        } else h == pat
+      }
+    }
+
+  /** Origin enforcement is on only when an allowlist is configured (cloud/staging). */
+  val enforceOrigin: Boolean = allowedOriginHosts.nonEmpty
 }
 
 object AppConfig {

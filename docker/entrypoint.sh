@@ -19,6 +19,10 @@ set -euo pipefail
 : "${WIFIHAVEN_DEBUG:=}"
 : "${WIFIHAVEN_ALLOWED_ORIGINS:=}"
 : "${WIFIHAVEN_UI_ALLOWED_HOSTS:=}"
+# #1969: SPA-websocket Origin allowlist (design §8). Comma-separated Origin HOSTS
+# allowed to upgrade GET /api/ws. Empty = cross-origin check off (self-hosted
+# same-origin). Cloud/staging set it so a cross-site upgrade is rejected pre-101.
+: "${WIFIHAVEN_WS_ALLOWED_ORIGINS:=}"
 : "${WIFIHAVEN_METRICS_ENABLED:=true}"
 : "${WIFIHAVEN_METRICS_SCRAPE_TOKEN:=}"
 
@@ -54,6 +58,9 @@ wifihaven {
   }
   policy {
     uiAllowedHosts = "${WIFIHAVEN_UI_ALLOWED_HOSTS}"
+  }
+  ws {
+    allowedOrigins = "${WIFIHAVEN_WS_ALLOWED_ORIGINS}"
   }
   metrics {
     enabled     = ${WIFIHAVEN_METRICS_ENABLED}
