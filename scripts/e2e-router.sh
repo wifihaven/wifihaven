@@ -91,6 +91,12 @@ pass "profile id=$PID name=$PROFILE_NAME"
 EXTRA_DEVICES=()
 EXTRA_PROFILES=()
 
+# Original household blockEncryptedDns, captured by the #1912 step before it
+# round-trips the singleton, so cleanup() can restore staging to as-we-found-it
+# regardless of the starting value (it is a shared, persistent DB — we must not
+# assume, or leave behind, a particular default). Empty until the step runs.
+BED_ORIG=""
+
 # Register cleanup so test data is removed even on failure.
 cleanup() {
   echo
@@ -104,6 +110,13 @@ cleanup() {
   for p in "${EXTRA_PROFILES[@]:-}"; do
     [ -n "$p" ] && curl -s -X DELETE "$BASE/api/profiles/$p" "${AUTH[@]}" >/dev/null 2>&1 || true
   done
+  # Restore the household blockEncryptedDns singleton to its pre-run value (#1912
+  # round-trips it). Skipped if the step never ran or it was already as-found.
+  if [ -n "$BED_ORIG" ]; then
+    curl -s -X PATCH "$BASE/api/household/settings" "${AUTH[@]}" \
+      -H 'content-type: application/json' \
+      -d "{\"blockEncryptedDns\":$BED_ORIG}" >/dev/null 2>&1 || true
+  fi
   pass "test profile + device + router removed"
 }
 trap cleanup EXIT
@@ -1286,11 +1299,17 @@ pass "#932: /api/usage/series returns topHosts + buckets arrays"
 # as the additive top-level boolean `blockEncryptedDns` (sibling of global /
 # devices / profiles / blocklists). The router agent (#1911) bakes the curated
 # relay/DoH host + resolver-IP lists itself; the API only ships the boolean.
-# Assert: default is false, flipping the household setting flips the wire flag,
-# and we reset it so the run is idempotent against persistent staging.
+#
+# What "reflects the household setting" means is the *round-trip*: flipping the
+# household setting flips the wire flag, both ways. We deliberately do NOT assert
+# an ambient default here — blockEncryptedDns is a household SINGLETON in a
+# shared, persistent staging DB, so its starting value is whatever a prior run /
+# manual test left (#1995 — it was left `true` after #1919/#1921 testing). We
+# capture the starting value, drive it to both states explicitly, and restore it
+# in cleanup() so the run is idempotent regardless of where it started.
 step "#1912: blockEncryptedDns reflects the household setting"
 
-read_bed() {  # → "true"/"false" from a fresh /api/router/policy read
+read_bed() {  # → "true"/"false"/"MISSING" from a fresh /api/router/policy read
   curl -fsS "${RAUTH[@]}" "$BASE/api/router/policy" >"$TMP/snap_bed.json"
   _py "
 import json
@@ -1299,42 +1318,35 @@ print('true' if snap.get('blockEncryptedDns') is True else ('false' if snap.get(
 "
 }
 
-# Default (household setting untouched this run) must be a present, false bool —
-# never absent (the field is non-optional on the wire).
-BED0="$(read_bed)"
-[ "$BED0" = "false" ] || fail "#1912: expected default blockEncryptedDns=false, got: $BED0"
-pass "#1912: default blockEncryptedDns=false"
+# Set the household singleton and poll the wire until it reflects the new value
+# (staging Render rollover may briefly serve a stale instance — same pattern as
+# the TimeLimit step above). Args: <want true|false>.
+set_bed() {
+  local want="$1" got=""
+  curl -fsS -X PATCH "$BASE/api/household/settings" "${AUTH[@]}" \
+    -H 'content-type: application/json' \
+    -d "{\"blockEncryptedDns\":$want}" >/dev/null
+  local deadline=$(( $(date +%s) + 15 ))
+  while (( $(date +%s) < deadline )); do
+    got="$(read_bed)"
+    [ "$got" = "$want" ] && return 0
+    sleep 1
+  done
+  fail "#1912: expected blockEncryptedDns=$want on the wire, got: $got"
+}
 
-curl -fsS -X PATCH "$BASE/api/household/settings" "${AUTH[@]}" \
-  -H 'content-type: application/json' \
-  -d '{"blockEncryptedDns":true}' >/dev/null
-pass "#1912: household setting → blockEncryptedDns=true"
+# Capture the starting value first — it is a present, non-optional bool, never
+# absent — and stash it so cleanup() restores staging as-we-found-it.
+BED_ORIG="$(read_bed)"
+[ "$BED_ORIG" = "true" ] || [ "$BED_ORIG" = "false" ] \
+  || fail "#1912: blockEncryptedDns missing/non-bool on the wire, got: $BED_ORIG"
+pass "#1912: blockEncryptedDns present on the wire (starting value=$BED_ORIG)"
 
-# Poll (staging Render rollover may briefly serve a stale instance — same
-# pattern as the TimeLimit step above).
-BED1=""
-deadline=$(( $(date +%s) + 15 ))
-while (( $(date +%s) < deadline )); do
-  BED1="$(read_bed)"
-  [ "$BED1" = "true" ] && break
-  sleep 1
-done
-[ "$BED1" = "true" ] || fail "#1912: expected blockEncryptedDns=true after toggle, got: $BED1"
-pass "#1912: snapshot blockEncryptedDns=true after enabling"
-
-# Reset to false so persistent staging is left as we found it.
-curl -fsS -X PATCH "$BASE/api/household/settings" "${AUTH[@]}" \
-  -H 'content-type: application/json' \
-  -d '{"blockEncryptedDns":false}' >/dev/null
-BED2=""
-deadline=$(( $(date +%s) + 15 ))
-while (( $(date +%s) < deadline )); do
-  BED2="$(read_bed)"
-  [ "$BED2" = "false" ] && break
-  sleep 1
-done
-[ "$BED2" = "false" ] || fail "#1912: expected blockEncryptedDns=false after reset, got: $BED2"
-pass "#1912: snapshot blockEncryptedDns=false after disabling"
+# Round-trip both ways — this is the actual contract under test.
+set_bed false
+pass "#1912: household setting → wire blockEncryptedDns=false"
+set_bed true
+pass "#1912: household setting → wire blockEncryptedDns=true"
 
 echo
 echo "All router e2e checks passed."
