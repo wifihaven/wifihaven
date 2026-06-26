@@ -38,10 +38,19 @@ services:
     # regression #1268 originally fixed (free → starter). starter (~$7/mo) is
     # the minimum non-spin-down JVM-capable tier; any future staging cost trim
     # must come from a different lever (e.g. suspend staging when not
-    # deploying), NOT from dropping to free. RAM is 512 MB on starter; the
-    # JVM envelope is fully bounded to fit it (see JVM_HEAP_OPTS below, #1984).
-    # Bump to `standard` only if a bounded OOM reappears after that tuning.
-    plan: starter
+    # deploying), NOT from dropping to free.
+    #
+    # #1989: bumped starter → standard (2 GB). #1984/#1988 tried to fit the
+    # JVM into starter's HARD 512 MB cgroup cap by bounding every memory
+    # region, but it STILL OOM-killed under the (grown) CD smoke burst:
+    # organic push run 28239722872 (post-#1988-deploy) saw staging
+    # server_failed/oomKilled at 2026-06-26T13:17:41Z mid-Gate-1, surfacing as
+    # `curl (22) 502` after the retry budget → Gate 1 / 3a / 3b red. Honest
+    # tuning could not fit 512 MB, so per the operator's pre-authorized
+    # fallback ("try JVM tuning, bump if needed") we move to standard — which
+    # also makes staging memory-representative of prod. JVM_HEAP_OPTS below
+    # now mirror prod rather than the (removed) 512 MB-fit envelope.
+    plan: standard
     region: oregon
     numInstances: 1
     healthCheckPath: /api/health
@@ -83,31 +92,15 @@ services:
       # ample and stays well clear of Render's reserved connections.
       - key: WIFIHAVEN_DB_POOL_SIZE
         value: "8"
-      # #1984: starter is a HARD 512 MB cgroup cap and the JVM was only
-      # bounding HEAP (-Xmx384m). Everything else off-heap was on JVM defaults:
-      # crucially -XX:MaxDirectMemorySize defaults to ~= -Xmx, so Netty's
-      # direct/pooled buffers could grow another ~384 MB on top of heap. Under
-      # the (grown) CD smoke burst that pushed RSS well past 512 MB and Render
-      # OOM-killed the container ~2 min after each deploy (server_failed /
-      # oomKilled events), reddening Gate 1 / 3a / 3b. Cold-start was already
-      # handled by #1967's /api/health gate — this is the distinct second
-      # failure. The fix is to bound EVERY region so total RSS fits 512 MB with
-      # headroom, not just the heap:
-      #   heap      -Xmx288m              (smoke is light; 288 MB is ample)
-      #   metaspace -XX:MaxMetaspaceSize=128m   (Scala 3 / ZIO load many classes)
-      #   code      -XX:ReservedCodeCacheSize=64m
-      #   direct    -XX:MaxDirectMemorySize=64m + -Dio.netty.maxDirectMemory
-      #             (belt-and-suspenders: cap both the JVM ceiling AND Netty's
-      #              own arena accounting at 64 MB = 67108864 bytes)
-      #   GC        -XX:+UseSerialGC      (lowest-footprint GC; starter is 0.5
-      #             CPU so the JVM picks Serial anyway — make it deterministic
-      #             regardless of container CPU detection)
-      # Budget: 288 + 128 + 64 + 64 + ~25 (stacks) + ~30 (native) caps; these
-      # maxima don't co-commit, so realistic RSS lands ~420-470 MB. Raise the
-      # heap and/or move to `plan: standard` (2 GB) only if a *bounded* OOM
-      # (heap / metaspace / direct exhaustion in logs) reappears after this.
+      # #1989: now that staging is `standard` (2 GB, see plan note above) the
+      # API no longer needs the cramped 512 MB-fit envelope #1984/#1988 added
+      # (heap 288m + hard metaspace/codecache/direct caps + SerialGC) — which
+      # proved insufficient anyway: it still OOM-killed under the CD smoke at
+      # starter's 512 MB cap. Mirror prod's heap profile instead (see
+      # wifihaven-api-prod JVM_HEAP_OPTS below) so staging is memory-
+      # representative and the CD smoke runs against a prod-shaped heap.
       - key: JVM_HEAP_OPTS
-        value: "-Xms192m -Xmx288m -XX:MaxMetaspaceSize=128m -XX:ReservedCodeCacheSize=64m -XX:MaxDirectMemorySize=64m -Dio.netty.maxDirectMemory=67108864 -XX:+UseSerialGC"
+        value: "-Xms512m -Xmx1400m"
       # Staging runs DEBUG so issues are visible in the Render log stream.
       - key: WIFIHAVEN_LOG_LEVEL
         value: DEBUG
