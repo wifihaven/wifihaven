@@ -191,6 +191,22 @@ The ETag stays the snapshot's identity, but the *transfer* inverts:
 The `etag` field and `PolicyService.computeEtag` are unchanged — they remain the
 change-detection key the server uses to decide *whether* to push (§6.2).
 
+> **Implementation note (#1945).** "The agent applies it" is split across the two
+> agent processes to keep a *single enforcement owner*. The `wifihaven-ws` sidecar
+> (the only ws process) merely **persists** a pushed `policy` frame to
+> `/etc/wifihaven/policy.json` via the atomic `policy.save_snapshot` (tmp→rename);
+> it never touches nft/dnsmasq. The **main agent** owns enforcement: an
+> apply-on-push tick in its `on_tick` loop re-reads that file on a short cadence
+> (`wifihaven.ws.apply_interval`, default 2 s) and runs it through the *same*
+> apply pipeline the HTTP poll uses (`refresh_blocklists` → `policy.apply` →
+> `render.update_shared`) **iff the on-disk `etag` differs** from the
+> currently-applied one. The `etag` is the single dedup key shared by the poll
+> and the push, so even while the poll still runs (it is deprecated separately in
+> [#1850](https://github.com/wifihaven/wifihaven/issues/1850)) a snapshot is
+> applied exactly once and there is no two-writer race on the enforcement plane.
+> Before #1945 the sidecar saved the file but nothing re-applied it mid-run, so a
+> push was a no-op for live enforcement until the next poll/restart.
+
 ---
 
 ## 2. Capability negotiation (re-examining #376)

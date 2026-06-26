@@ -122,6 +122,14 @@ end
 local ws_enabled        = uci_get_ws("enabled", "0")
 local ws_fallback_after = tonumber(uci_get_ws("fallback_after", "300"))
 local ws_spool_max      = tonumber(uci_get_ws("spool_max_bytes", "1048576"))
+-- #1945: apply-on-push cadence (seconds). When ws is enabled the sidecar writes
+-- pushed snapshots to /etc/wifihaven/policy.json (the IN channel); the running
+-- agent must APPLY them live, not only at startup. The on_tick loop re-reads the
+-- on-disk snapshot on this cadence and re-applies when its etag changed (a cheap
+-- read+compare otherwise). 2 s keeps push→enforce latency low while staying well
+-- above the cost of one snapshot parse (the HTTP poll already parses one every
+-- ~5 s in non-ws mode). No-op unless ws_enabled == "1".
+local ws_apply_int      = tonumber(uci_get_ws("apply_interval", "2"))
 
 log.init({ debug = debug_opt })
 -- #771: PKG_VERSION baked at install time into /usr/lib/wifihaven/VERSION.
@@ -681,6 +689,39 @@ do
   if f then f:write(block_page_url); f:close() end
 end
 
+-- ── Shared apply pipeline (#1945) ─────────────────────────────────────────────
+-- apply_and_publish(snap, reason) → applied:bool
+-- The single "push this snapshot onto the enforcement plane" sequence, factored
+-- out of on_tick so the HTTP-poll path, the blocklist-refresh path, AND the new
+-- ws apply-on-push path share ONE apply+publish block (single-source-of-truth)
+-- and so on_tick stays under the Lua 5.1 60-upvalue load limit (#1930): the heavy
+-- render / shared-table / metrics upvalues live HERE, not in the on_tick closure.
+--
+-- It does the enforcement-plane work only — capture-before-reset drop counters,
+-- policy.apply (dnsmasq conf + nft), then render.update_shared to rebuild the
+-- conntrack/usage-side per-MAC tables. It deliberately does NOT touch
+-- ts.current_etag / ts.last_snapshot / mark_poll_success / save_snapshot: those
+-- differ per trigger (the poll persists its fetch; the ws path must NOT re-save
+-- the file the sidecar already wrote), so each caller owns them. `reason` flows
+-- to record_apply for dnsmasq_restarts_total{reason}; the ws path reuses
+-- "policy_change" (it IS a policy change — no new bounded label is minted).
+local function apply_and_publish(snap, reason)
+  -- #1325: capture the about-to-reset enforcement-drop counters before apply
+  -- rebuilds the ruleset and zeroes them.
+  fold_enforcement_drops()
+  local at0 = clock.monotonic_seconds()
+  local applied = policy.apply(snap, write_file, run_cmd, log,
+                               { on_apply = record_apply(reason) })
+  metrics.observe(mreg, "policy_apply_duration_seconds", {},
+                  clock.monotonic_seconds() - at0)
+  if applied then
+    render.update_shared(snap, nft_sets, blocked_macs, blocked_reason,
+                         eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac,
+                         make_bl_member_iterator(snap))
+  end
+  return applied
+end
+
 -- ── Timer state ───────────────────────────────────────────────────────────────
 
 -- #1930: all mutable per-tick scheduler state lives in ONE table so the big
@@ -706,6 +747,7 @@ local ts = {
   last_metrics_run   = 0,
   last_blocklist_run  = 0,  -- #1412: category blocklist refresh cadence
   last_eb_refresh_run = 0,  -- #1658: eb_/bl_ ipset re-resolve cadence
+  last_ws_apply_run   = 0,  -- #1945: ws apply-on-push poll-of-disk cadence
   last_activity_sample = 0,
   last_nflog_run      = 0,  -- #1126: nflog drop-spool drain cadence
   -- Wall-clock anchor for usage report periodStart. Updated each time the usage
@@ -811,6 +853,7 @@ do
   ts.last_metrics_run       = mono
   ts.last_blocklist_run     = mono
   ts.last_eb_refresh_run    = mono
+  ts.last_ws_apply_run      = mono
   ts.last_activity_sample   = mono
   ts.last_nflog_run         = mono
 end
@@ -999,21 +1042,17 @@ conntrack.watch({
 
         -- Apply with no failover opts. If we were in failover, this
         -- apply already emits a clean ruleset (no failover chain), so we
-        -- just need to clear the flag below.
-        -- #1325: capture the enforcement-drop counters this apply is about to
-        -- reset (the ruleset is fully rebuilt) before they're discarded.
-        fold_enforcement_drops()
-        local at0 = clock.monotonic_seconds()
-        local applied = policy.apply(snap, write_file, run_cmd, log,
-                                     { on_apply = record_apply("policy_change") })
-        metrics.observe(mreg, "policy_apply_duration_seconds", {},
-                        clock.monotonic_seconds() - at0)
-        if applied then
-          render.update_shared(snap, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac, make_bl_member_iterator(snap))
+        -- just need to clear the flag below. #1945: the apply+publish block
+        -- (drop-counter capture, policy.apply, render.update_shared) is shared
+        -- with the ws apply-on-push path via apply_and_publish.
+        if apply_and_publish(snap, "policy_change") then
           ts.current_etag = etag
           ts.last_snapshot = snap
           policy.mark_poll_success(wall)
           policy.save_snapshot(snap, write_file, rename_file, log)
+          -- #1945: refresh the ws apply-on-push cadence anchor so the disk-read
+          -- tick doesn't immediately re-apply the snapshot this poll just wrote.
+          ts.last_ws_apply_run = mono
           log.debug("policy timer: applied snapshot etag=%s", tostring(etag))
           fetch_ok = true
         end
@@ -1079,6 +1118,43 @@ conntrack.watch({
       end
     end
 
+    -- ws apply-on-push timer (#1945). When the ws sidecar is enabled it writes
+    -- server-pushed snapshots to /etc/wifihaven/policy.json (the IN channel,
+    -- #1849); the running agent must APPLY them live, not just at startup. The
+    -- HTTP poll above stays the sole transport when ws is OFF, so this block is a
+    -- pure no-op then. When ON, re-read the on-disk snapshot on a short cadence
+    -- and, if its etag differs from the applied one, run it through the SAME
+    -- apply pipeline the poll uses (refresh_blocklists → apply_and_publish).
+    --
+    -- The etag is the single dedup key shared by both appliers: a snapshot the
+    -- poll just applied carries the etag we already hold, so this skips it (and
+    -- vice-versa) — so even with the poll still running there is no double-apply,
+    -- and the agent remains the SINGLE enforcement owner (the sidecar only
+    -- delivers + persists the file; it never touches nft/dnsmasq). We do NOT
+    -- save_snapshot here — the sidecar already wrote the file we just read. A
+    -- torn/missing read returns nil and is retried next tick; the atomic
+    -- tmp→rename the sidecar uses means a reader sees either the old or the new
+    -- complete file, never a partial one. Skipped while in failover (the
+    -- failover chain owns the plane until the poll recovers).
+    if ws_enabled == "1" and not ts.in_failover_render
+       and (mono - ts.last_ws_apply_run) >= ws_apply_int then
+      ts.last_ws_apply_run = mono
+      local pushed = policy.load_snapshot(read_file, log)
+      if pushed and pushed.etag and pushed.etag ~= ts.current_etag then
+        -- Populate category/extraBlocked shards before the apply, exactly as the
+        -- poll path does, so the rendered conf-file= directives resolve.
+        refresh_blocklists(pushed)
+        ts.last_blocklist_run = mono
+        if apply_and_publish(pushed, "policy_change") then
+          ts.current_etag  = pushed.etag
+          ts.last_snapshot = pushed
+          policy.mark_poll_success(wall)
+          log.info("ws apply: applied pushed snapshot etag=%s (poll-independent)",
+                   tostring(pushed.etag))
+        end
+      end
+    end
+
     -- Blocklist refresh timer (#1412). Category ipset population must NOT be
     -- coupled to a snapshot change: the policy poll returns 304 in steady state,
     -- so the only way the old code (re)fetched a blocklist was an admin policy
@@ -1119,16 +1195,8 @@ conntrack.watch({
         end
       end
       if changed then
-        fold_enforcement_drops()
-        local bt0 = clock.monotonic_seconds()
-        local applied = policy.apply(ts.last_snapshot, write_file, run_cmd, log,
-                                     { on_apply = record_apply("policy_change") })
-        metrics.observe(mreg, "policy_apply_duration_seconds", {},
-                        clock.monotonic_seconds() - bt0)
-        if applied then
-          render.update_shared(ts.last_snapshot, nft_sets, blocked_macs, blocked_reason,
-                               eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac,
-                               make_bl_member_iterator(ts.last_snapshot))
+        -- #1945: shared apply+publish block (see apply_and_publish).
+        if apply_and_publish(ts.last_snapshot, "policy_change") then
           log.info("blocklist timer: list version(s) changed, re-applied ruleset")
         end
       end

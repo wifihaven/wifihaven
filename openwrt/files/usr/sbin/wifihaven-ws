@@ -149,13 +149,18 @@ local function split_usage(frame)
   return out
 end
 
--- Apply a pushed `policy` frame: write it to the snapshot file the main agent
--- reads/applies (etag-guarded apply unchanged). Dormant until the server pushes
--- on connect (#1849); wired here so #1849 is purely server-side.
+-- Persist a pushed `policy` frame: write it atomically to the snapshot file the
+-- main agent reads. The sidecar is the IN channel + the single PERSISTER; it
+-- never touches nft/dnsmasq. The running agent's apply-on-push tick (#1945)
+-- picks the file up on its next cadence and applies it etag-guarded — so the
+-- agent stays the single enforcement owner and there is no two-writer race on
+-- the plane. save_snapshot is tmp→rename atomic, so the agent's read sees the
+-- old or the new complete file, never a torn one.
 local function on_policy(snapshot)
   if type(snapshot) ~= "table" then return end
   policy.save_snapshot(snapshot, write_file, rename_file, log)
-  log.info("wifihaven-ws: applied pushed policy snapshot etag=%s", tostring(snapshot.etag))
+  log.info("wifihaven-ws: persisted pushed policy snapshot etag=%s (agent applies on next tick)",
+           tostring(snapshot.etag))
 end
 
 -- ── run the loop under a cqueues controller ──────────────────────────────────

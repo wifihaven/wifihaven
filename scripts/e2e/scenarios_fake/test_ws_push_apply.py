@@ -18,17 +18,20 @@ two legs of the push path end-to-end through the real agent:
     to the new value — and because the HTTP poll interval is widened to 3600s for
     this scenario, that flip can ONLY have arrived over the websocket, not a poll.
 
-SCOPE (per #1939 + the operator's "test-only, defer wiring" decision): this
-verifies the push *transport* reaches the real agent and the snapshot is
-*saved*. It deliberately does NOT assert a live enforcement flip from the push:
-the running agent applies policy only from its HTTP poll (the sidecar's on_policy
-saves the snapshot file but the agent never re-reads it mid-run), so a pushed
-snapshot does not change nft/dnsmasq state until the next poll or a restart.
-Wiring agent-side apply-on-push (and extending this scenario with an
-enforcement-flip assertion) is tracked in #1945.
-Asserting only local file/metric observables also keeps the scenario clear of the
-known intermittent runner→public-resolver egress flake (#1935) — no external
-reachability is probed.
+The save-only legs (#1939) prove the push *transport* reaches the real agent and
+the snapshot is *saved* to flash.
+
+#1945 adds a third test — `test_ws_policy_push_applies_enforcement_live` — that
+asserts a live *enforcement* flip from the push alone: with the poll frozen, a
+pushed paused snapshot installs a per-MAC `wh_drop:<mac>:Paused` forward-drop in
+nft, which only happens if the running agent re-reads + applies the snapshot the
+sidecar wrote (the apply-on-push tick). Before #1945 the sidecar saved the file
+but the agent applied policy only from its HTTP poll, so the snapshot never
+changed nft/dnsmasq until the next poll or a restart.
+
+All three tests assert only router-side file/metric/nft observables (no external
+reachability is probed), keeping the scenario clear of the known intermittent
+runner→public-resolver egress flake (#1935).
 """
 from __future__ import annotations
 
@@ -132,13 +135,25 @@ def _ws_health_present() -> bool:
     return (res.stdout or "").strip() == "yes"
 
 
-def _blocked_macs_set() -> str:
-    """Dump the inet wifihaven @blocked_macs nft set (empty string if absent)."""
+def _paused_drop_rule_present(mac: str) -> bool:
+    """True iff the live nft ruleset carries a whole-MAC *paused* forward-drop.
+
+    A paused profile collapses to BlockRules.blocked=true, which render.lua emits
+    as a per-MAC forward-drop labelled `wh_drop:<mac>:Paused`. We key on the
+    `:Paused` reason rather than the @blocked_macs set because a global allowlist
+    (the infra allow set is always present in real deployments, #1307/#1308)
+    routes blocked MACs to per-MAC rules carrying a `!= @global_allow` carve-out
+    instead of the family-agnostic @blocked_macs set — so the set can be empty
+    while the device is fully blocked. The `:Paused` drop is the unambiguous,
+    config-independent enforcement signal, and it is absent for an un-paused
+    device regardless of its extraBlocked/blocklist rules (those carry different
+    drop reasons).
+    """
     res = router_ssh(
-        "nft list set inet wifihaven blocked_macs 2>/dev/null || true",
+        f'nft list table inet wifihaven 2>/dev/null | grep -F "wh_drop:{mac}:Paused" || true',
         check=False, timeout=10,
     )
-    return (res.stdout or "")
+    return bool((res.stdout or "").strip())
 
 
 def test_ws_policy_push_received_and_saved(router, fake_api):
@@ -203,11 +218,11 @@ def test_ws_policy_push_applies_enforcement_live(router, fake_api):
     thing that can move nft state mid-run is the agent's apply-on-push tick
     reading the snapshot the sidecar wrote.
 
-    Observable: the device's MAC appears in the inet wifihaven @blocked_macs set.
-    That set is rendered directly from BlockRules.blocked (a paused profile),
-    needs no client traffic / DNS resolve / external egress, and so dodges the
-    intermittent runner→resolver flake (#1935). It flips ONLY if the agent
-    actually re-rendered + reloaded nft from the pushed snapshot.
+    Observable: a per-MAC `wh_drop:<mac>:Paused` forward-drop rule in the live
+    nft ruleset. It is rendered directly from BlockRules.blocked (a paused
+    profile), needs no client traffic / DNS resolve / external egress (so it
+    dodges the intermittent runner→resolver flake #1935), and flips ONLY if the
+    agent actually re-rendered + reloaded nft from the pushed snapshot.
     """
     # ── On-connect baseline — device assigned, NOT paused ───────────────────
     fake_api.serve_snapshot(
@@ -216,15 +231,15 @@ def test_ws_policy_push_applies_enforcement_live(router, fake_api):
     _enable_ws_and_freeze_poll()
     fake_api.wait_for_ws_connected(timeout_s=180)
 
-    # The one startup poll applies the base snapshot; the device must NOT be in
-    # @blocked_macs yet (nothing is blocking it).
+    # The one startup poll applies the base snapshot; the device must NOT carry a
+    # paused-drop yet (nothing is whole-MAC blocking it).
     wait_until(
         lambda: True if _router_snapshot_etag() == ETAG_ENFORCE_BASE else None,
         timeout_s=90, interval_s=3,
         description=f"base snapshot applied (etag {ETAG_ENFORCE_BASE})",
     )
-    assert DEV_MAC not in _blocked_macs_set(), (
-        "device should not be in @blocked_macs at the un-paused baseline"
+    assert not _paused_drop_rule_present(DEV_MAC), (
+        "device should carry no paused-drop rule at the un-paused baseline"
     )
 
     # ── Push a PAUSED snapshot — poll frozen, so push is the only delivery ───
@@ -234,14 +249,15 @@ def test_ws_policy_push_applies_enforcement_live(router, fake_api):
     assert push == ETAG_ENFORCE_PAUSED
 
     # Enforcement flips from the push ALONE: the agent's apply-on-push tick reads
-    # the sidecar-written snapshot and re-renders nft, landing the MAC in
-    # @blocked_macs. Pre-#1945 (save-only) this never happens until the next poll
-    # — frozen here at 3600s — so the assertion is the live-apply proof.
+    # the sidecar-written snapshot and re-renders nft, installing the per-MAC
+    # `wh_drop:<mac>:Paused` forward-drop. Pre-#1945 (save-only) this never
+    # happens until the next poll — frozen here at 3600s — so the assertion is
+    # the live-apply proof.
     wait_until(
-        lambda: True if DEV_MAC in _blocked_macs_set() else None,
+        lambda: True if _paused_drop_rule_present(DEV_MAC) else None,
         timeout_s=120, interval_s=3,
-        description="nft @blocked_macs gains the MAC via the ws push with the "
-                    "poll frozen — live apply-on-push (#1945)",
+        description="nft gains a wh_drop:<mac>:Paused forward-drop via the ws "
+                    "push with the poll frozen — live apply-on-push (#1945)",
     )
     # Sanity: the same push also advanced the on-disk snapshot etag.
     assert _router_snapshot_etag() == ETAG_ENFORCE_PAUSED
