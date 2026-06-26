@@ -47,19 +47,32 @@ SNAPSHOT_PATH = "/etc/wifihaven/policy.json"
 WS_METRICS_PATH = "/tmp/wifihaven-ws-metrics.txt"
 WS_HEALTH_PATH = "/tmp/wifihaven-ws-health"
 
-# A phantom device MAC — no client VM is booted because this scenario asserts
-# router-side file/metric observables only (snapshot saved + frame received), not
-# client traffic enforcement.
+# A phantom device MAC — no client VM is booted because these scenarios assert
+# router-side file/metric/nft observables only (snapshot saved + frame received +
+# the @blocked_macs set membership), not client traffic enforcement.
 DEV_MAC = "02:e2:9c:00:19:39"
 PID = 1939
 ETAG_ON_CONNECT = '"sha256:ws-push-onconnect-v1"'
 ETAG_ON_CHANGE = '"sha256:ws-push-onchange-v2"'
+# #1945 — distinct etags for the live-apply scenario so its on-disk + nft proofs
+# can't be confused with the save-only scenario above.
+ETAG_ENFORCE_BASE = '"sha256:ws-push-enforce-base-v1"'
+ETAG_ENFORCE_PAUSED = '"sha256:ws-push-enforce-paused-v2"'
 
 
-def _snapshot(*, etag: str, extra_blocked: list[str]) -> dict:
+def _snapshot(*, etag: str, extra_blocked: list[str], paused: bool = False) -> dict:
     return (
         SnapshotBuilder()
-        .add_profile(id=PID, name="e2e-ws-push", extra_blocked=extra_blocked)
+        .add_profile(
+            id=PID,
+            name="e2e-ws-push",
+            # #1945: a paused profile collapses to BlockRules.blocked=true, which
+            # renders the device's MAC into the nft @blocked_macs set — a
+            # client-free enforcement observable the live-apply test asserts on.
+            blocked=paused,
+            block_reason="Paused" if paused else None,
+            extra_blocked=extra_blocked,
+        )
         .add_device(mac=DEV_MAC, name="e2e-ws-push-dev", profile_id=PID)
         .build(etag=etag)
     )
@@ -119,6 +132,15 @@ def _ws_health_present() -> bool:
     return (res.stdout or "").strip() == "yes"
 
 
+def _blocked_macs_set() -> str:
+    """Dump the inet wifihaven @blocked_macs nft set (empty string if absent)."""
+    res = router_ssh(
+        "nft list set inet wifihaven blocked_macs 2>/dev/null || true",
+        check=False, timeout=10,
+    )
+    return (res.stdout or "")
+
+
 def test_ws_policy_push_received_and_saved(router, fake_api):
     # The fake serves the on-connect snapshot before the sidecar upgrades.
     fake_api.serve_snapshot(
@@ -170,3 +192,56 @@ def test_ws_policy_push_received_and_saved(router, fake_api):
         timeout_s=60, interval_s=3,
         description="sidecar receives a second policy frame (push-on-change)",
     )
+
+
+def test_ws_policy_push_applies_enforcement_live(router, fake_api):
+    """#1945 — a ws-pushed snapshot is APPLIED live, not just saved.
+
+    The save-only test above proves the push reaches the agent and lands on
+    flash; this proves the running agent then re-applies it to the enforcement
+    plane (nft) WITHOUT an HTTP poll. With the poll frozen at 3600s, the only
+    thing that can move nft state mid-run is the agent's apply-on-push tick
+    reading the snapshot the sidecar wrote.
+
+    Observable: the device's MAC appears in the inet wifihaven @blocked_macs set.
+    That set is rendered directly from BlockRules.blocked (a paused profile),
+    needs no client traffic / DNS resolve / external egress, and so dodges the
+    intermittent runner→resolver flake (#1935). It flips ONLY if the agent
+    actually re-rendered + reloaded nft from the pushed snapshot.
+    """
+    # ── On-connect baseline — device assigned, NOT paused ───────────────────
+    fake_api.serve_snapshot(
+        _snapshot(etag=ETAG_ENFORCE_BASE, extra_blocked=["example.com"])
+    )
+    _enable_ws_and_freeze_poll()
+    fake_api.wait_for_ws_connected(timeout_s=180)
+
+    # The one startup poll applies the base snapshot; the device must NOT be in
+    # @blocked_macs yet (nothing is blocking it).
+    wait_until(
+        lambda: True if _router_snapshot_etag() == ETAG_ENFORCE_BASE else None,
+        timeout_s=90, interval_s=3,
+        description=f"base snapshot applied (etag {ETAG_ENFORCE_BASE})",
+    )
+    assert DEV_MAC not in _blocked_macs_set(), (
+        "device should not be in @blocked_macs at the un-paused baseline"
+    )
+
+    # ── Push a PAUSED snapshot — poll frozen, so push is the only delivery ───
+    push = fake_api.serve_snapshot(
+        _snapshot(etag=ETAG_ENFORCE_PAUSED, extra_blocked=["example.com"], paused=True)
+    )
+    assert push == ETAG_ENFORCE_PAUSED
+
+    # Enforcement flips from the push ALONE: the agent's apply-on-push tick reads
+    # the sidecar-written snapshot and re-renders nft, landing the MAC in
+    # @blocked_macs. Pre-#1945 (save-only) this never happens until the next poll
+    # — frozen here at 3600s — so the assertion is the live-apply proof.
+    wait_until(
+        lambda: True if DEV_MAC in _blocked_macs_set() else None,
+        timeout_s=120, interval_s=3,
+        description="nft @blocked_macs gains the MAC via the ws push with the "
+                    "poll frozen — live apply-on-push (#1945)",
+    )
+    # Sanity: the same push also advanced the on-disk snapshot etag.
+    assert _router_snapshot_etag() == ETAG_ENFORCE_PAUSED
