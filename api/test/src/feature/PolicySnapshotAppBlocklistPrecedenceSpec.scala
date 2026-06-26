@@ -195,6 +195,34 @@ object PolicySnapshotAppBlocklistPrecedenceSpec
       } yield assertTrue(main.decision == ConnectionDecision.Allow) &&
         assertTrue(shared.decision == ConnectionDecision.Allow)
     },
+    test("default-deny profile: within-budget app host still carves into extraAllowed") {
+      // The carve flows into the default-deny branch too: a TimeLimited app within budget is an
+      // explicit allow, so it must survive the block-all baseline (consistent with how Allowed-mode
+      // / exempt apps carve under default-deny). state.blocked stays false for a pure default-deny
+      // profile (no pause/schedule/daily-limit), so the #1980 gate lets the carve through.
+      val mac = "aa:bb:cc:dd:ee:84"
+      for {
+        _    <- cleanDb
+        pr   <- ZIO.service[ProfileRepo]
+        dr   <- ZIO.service[DeviceRepo]
+        ar   <- ZIO.service[AppRepo]
+        blr  <- ZIO.service[BlocklistRepo]
+        kid  <- TestLayers.seedKidsProfile(pr)
+        p    <- pr.findById(kid).map(_.get)
+        _    <- pr.update(p.copy(defaultDeny = true))
+        _    <- pr.setBlockedCategories(kid, List(BlocklistId.unsafe("games")))
+        _    <- TestLayers.seedDevice(dr, mac, "kid-ipad", kid)
+        _    <- seedGamesBlocklist(blr)
+        _    <- seedGimkit(ar, kid, Some(10))
+        svc  <- makePsAt(TestClock.schoolDayAfternoon)
+        snap <- svc.snapshot
+        rules = snap.profiles(kid).rules
+        ea    = rules.extraAllowed.map(_.value).toSet
+      } yield assertTrue(rules.blocked) &&
+        assertTrue(rules.blockReason.contains(MacBlockReason.DefaultDeny)) &&
+        assertTrue(ea.contains("gimkit.com")) &&
+        assertTrue(ea.contains("gameshared.example"))
+    },
     test("/decision agrees: budget exhausted → the distinctive app host is blocked") {
       val mac = "aa:bb:cc:dd:ee:83"
       for {
