@@ -470,7 +470,7 @@ object Main extends ZIOAppDefault {
             notifier,
             clock,
           ) ++
-          AppRoutes.routes(auth, appRepo, profileRepo, upRepo, templates) ++
+          AppRoutes.routes(auth, appRepo, profileRepo, upRepo, blRepo, templates) ++
           AdminDebugRoutes.routes(auth, policy) ++
           DebugRoutes.routes(
             cfg.debugEnabled,

@@ -897,10 +897,20 @@ export interface AppPolicyAssignment {
   allowedDuringScheduleBlock?: boolean
 }
 
+// #1983 — one app host that is a member of one or more shipped category
+// blocklists, with the blocklist id(s) it appears on. Drives the "this app
+// contains blocklisted hosts" warning on the Apps page + app selector.
+export interface AppBlocklistedHost {
+  host: string
+  blocklists: string[]
+}
+
 export interface AppDetail {
   app: App
   hosts: string[]
   assignments: AppPolicyAssignment[]
+  // #1983 — additive; omitted by older APIs → treat as empty.
+  blocklisted?: AppBlocklistedHost[]
 }
 
 // #1798 — app *definitions* (name/slug/icon/host-set/create) are authored only

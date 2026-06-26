@@ -38,8 +38,9 @@ object AppApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
       appRepo     <- ZIO.service[AppRepo]
       profileRepo <- ZIO.service[ProfileRepo]
       upRepo      <- ZIO.service[UserProfileRepo]
+      blRepo      <- ZIO.service[BlocklistRepo]
       auth        <- makeAuth
-    } yield AppRoutes.routes(auth, appRepo, profileRepo, upRepo)
+    } yield AppRoutes.routes(auth, appRepo, profileRepo, upRepo, blRepo)
 
   private def adminToken =
     for {
@@ -160,6 +161,74 @@ object AppApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         assertTrue(
           detail.hosts.toSet == Set(Hostname.unsafe("youtube.com"), Hostname.unsafe("ytimg.com")),
         )
+    },
+    // #1983: an app whose host (or an apex parent of it) is a member of a
+    // shipped category blocklist is flagged in `AppDetail.blocklisted`, naming
+    // every blocklist that host appears on. Membership is global (host ∈ ANY
+    // shipped list). Hosts on no list never appear.
+    test("GET list+detail flags app hosts that overlap category blocklists") {
+      for {
+        _       <- cleanDb
+        token   <- adminToken
+        rs      <- makeRoutes
+        appRepo <- ZIO.service[AppRepo]
+        blRepo  <- ZIO.service[BlocklistRepo]
+        // games + social blocklists; gimkit.com is on games (the #1980 case),
+        // a parent apex (example.com) is on social, fine.com is on nothing.
+        _       <- blRepo.insertBatch(
+          List(
+            "gimkit.com"  -> "games",
+            "roblox.com"  -> "games",
+            "example.com" -> "social",
+          ),
+        )
+        id      <- appRepo.create("Gimkit", "gimkit", None, None)
+        _       <- appRepo.setHosts(
+          id,
+          List(
+            Hostname.unsafe("gimkit.com"),
+            Hostname.unsafe("play.example.com"), // apex parent example.com is on social
+            Hostname.unsafe("fine.com"),         // on no list
+          ),
+        )
+        one     <- rs.runZIO(
+          Request
+            .get(url(s"/api/apps/${id.value}"))
+            .addHeader(Header.Authorization.Bearer(token)),
+        )
+        oneBody <- one.body.asString
+        d       <- ZIO.fromEither(oneBody.fromJson[AppDetail])
+        byHost = d.blocklisted.map(b => b.host -> b.blocklists).toMap
+      } yield assertTrue(one.status == Status.Ok) &&
+        assertTrue(
+          byHost.get(Hostname.unsafe("gimkit.com")).contains(List(BlocklistId.unsafe("games"))),
+        ) &&
+        assertTrue(
+          byHost
+            .get(Hostname.unsafe("play.example.com"))
+            .contains(List(BlocklistId.unsafe("social"))),
+        ) &&
+        assertTrue(!byHost.contains(Hostname.unsafe("fine.com"))) &&
+        assertTrue(d.blocklisted.size == 2)
+    },
+    test("GET list returns empty blocklisted when no hosts overlap") {
+      for {
+        _       <- cleanDb
+        token   <- adminToken
+        rs      <- makeRoutes
+        appRepo <- ZIO.service[AppRepo]
+        blRepo  <- ZIO.service[BlocklistRepo]
+        _       <- blRepo.insertBatch(List("gambling-site.example" -> "gambling"))
+        id      <- appRepo.create("Clean", "clean", None, None)
+        _       <- appRepo.setHosts(id, List(Hostname.unsafe("clean.com")))
+        list    <- rs.runZIO(
+          Request.get(url("/api/apps")).addHeader(Header.Authorization.Bearer(token)),
+        )
+        body    <- list.body.asString
+        details <- ZIO.fromEither(body.fromJson[List[AppDetail]])
+      } yield assertTrue(list.status == Status.Ok) &&
+        assertTrue(details.length == 1) &&
+        assertTrue(details.head.blocklisted.isEmpty)
     },
     test("GET /api/apps without token returns 401") {
       for {

@@ -449,10 +449,24 @@ case class UpsertAppAssignmentRequest(
     allowedDuringScheduleBlock: Option[Boolean] = None,
 ) derives JsonCodec
 
+// #1983: one app host that is a member of one or more shipped category
+// blocklists, plus the blocklist(s) it appears on. Surfaced so the SPA can warn
+// — on the Apps page and the app selector — that allowing this app overlaps a
+// category that would otherwise drop the host (see #1980 for the policy-layer
+// precedence). Membership is GLOBAL: a host is flagged if it (or an apex parent)
+// is in ANY blocklist we ship, not scoped to the blocklists enabled for a given
+// profile — the simplest correct shape per #1983 (the warning is about the app
+// definition, which is profile-independent).
+case class AppBlocklistedHost(host: Hostname, blocklists: List[BlocklistId]) derives JsonCodec
+
 case class AppDetail(
     app: App,
     hosts: List[Hostname],
     assignments: List[AppPolicyAssignment],
+    // #1983: additive — hosts of this app that overlap a category blocklist.
+    // Existing clients omit it; it decodes to `Nil`, so the wire stays
+    // back-compatible.
+    blocklisted: List[AppBlocklistedHost] = Nil,
 ) derives JsonCodec
 
 // #766: recently-visited-hosts picker for the apps create/edit flow. The

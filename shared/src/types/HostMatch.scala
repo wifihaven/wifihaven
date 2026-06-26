@@ -32,6 +32,26 @@ object HostMatch {
   }
 
   /**
+   * The dot-separated tails of `host` that the apex predicates test, in order from the full host
+   * down to its shallowest parent: `host :: parent :: grandparent :: …`, bounded by `maxHops`
+   * (FQDNs deeper than ~5 labels are rare). This is the single source of the host→apex walk —
+   * [[hasApexMatch]], [[lookupApex]], and the #1983 app↔blocklist overlap all consume it so the
+   * walk (and its `maxHops`) cannot drift between enforcement and the surfaces that describe it.
+   *
+   * `host` is expected to be a bare FQDN (no `*.`).
+   */
+  def apexTails(host: String, maxHops: Int = 5): List[String] = {
+    @annotation.tailrec
+    def loop(h: String, hops: Int, acc: List[String]): List[String] = {
+      val acc2 = h :: acc
+      val dot  = h.indexOf('.')
+      if (dot < 0 || hops <= 0) acc2.reverse
+      else loop(h.substring(dot + 1), hops - 1, acc2)
+    }
+    loop(host, maxHops, Nil)
+  }
+
+  /**
    * Walk the dot-separated tails of `host` and return the first one present in `apexes` (or its
    * full-host exact match). Bounded by `maxHops` since FQDNs deeper than ~5 labels are rare and
    * each step is a hash lookup. Returns None for hosts that match no apex (caller decides whether
@@ -40,18 +60,8 @@ object HostMatch {
    * `host` is expected to be a bare FQDN (no `*.`). IP-literal callers should filter before calling
    * — `192.168.1.1` will walk tails harmlessly but the result is never useful.
    */
-  def lookupApex[T](host: String, apexes: Map[String, T], maxHops: Int = 5): Option[T] = {
-    @annotation.tailrec
-    def loop(h: String, hops: Int): Option[T] =
-      apexes.get(h) match {
-        case some @ Some(_) => some
-        case None           =>
-          val dot = h.indexOf('.')
-          if (dot < 0 || hops <= 0) None
-          else loop(h.substring(dot + 1), hops - 1)
-      }
-    loop(host, maxHops)
-  }
+  def lookupApex[T](host: String, apexes: Map[String, T], maxHops: Int = 5): Option[T] =
+    apexTails(host, maxHops).iterator.flatMap(apexes.get).nextOption()
 
   /**
    * #1560: `host` matches at least one pattern in `patterns` under [[matchesPattern]] semantics.
@@ -69,15 +79,6 @@ object HostMatch {
     )
 
   /** Boolean variant of [[lookupApex]] over a set of apexes. */
-  def hasApexMatch(host: String, apexes: Set[String], maxHops: Int = 5): Boolean = {
-    @annotation.tailrec
-    def loop(h: String, hops: Int): Boolean =
-      if (apexes.contains(h)) true
-      else {
-        val dot = h.indexOf('.')
-        if (dot < 0 || hops <= 0) false
-        else loop(h.substring(dot + 1), hops - 1)
-      }
-    loop(host, maxHops)
-  }
+  def hasApexMatch(host: String, apexes: Set[String], maxHops: Int = 5): Boolean =
+    apexTails(host, maxHops).exists(apexes.contains)
 }

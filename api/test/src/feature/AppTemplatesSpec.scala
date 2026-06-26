@@ -73,8 +73,9 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
       appRepo     <- ZIO.service[AppRepo]
       profileRepo <- ZIO.service[ProfileRepo]
       upRepo      <- ZIO.service[UserProfileRepo]
+      blRepo      <- ZIO.service[BlocklistRepo]
       auth        <- makeAuth
-    } yield AppRoutes.routes(auth, appRepo, profileRepo, upRepo, templates)
+    } yield AppRoutes.routes(auth, appRepo, profileRepo, upRepo, blRepo, templates)
 
   private def createUser(
       userRepo: UserRepo,
