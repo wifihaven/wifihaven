@@ -18,6 +18,9 @@ vi.mock('@/api/client', () => ({
     devices: {
       list: vi.fn(),
     },
+    blocklists: {
+      list: vi.fn(),
+    },
   },
 }))
 
@@ -72,10 +75,21 @@ const reddit: AppDetail = {
   assignments: [],
 }
 
+// #1983 — Gimkit's host is also on the "games" blocklist (the #1980 case).
+const gimkit: AppDetail = {
+  ...makeApp({ id: 12, name: 'Gimkit', slug: 'gimkit' }),
+  hosts: ['gimkit.com', 'fine.com'],
+  assignments: [],
+  blocklisted: [{ host: 'gimkit.com', blocklists: ['games'] }],
+}
+
 beforeEach(() => {
   vi.resetAllMocks()
   ;(api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtube, reddit])
   ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([kidsProfile, adultsProfile])
+  ;(api.blocklists.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+    { id: 'games', name: 'Games', bundled: true, hostCount: 1 },
+  ])
   ;(api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
     { id: 1, mac: 'aa:bb:cc:dd:ee:01', name: 'iPad', profileId: 1, profileName: 'Kids',
       lastSeenIp: '192.168.1.10', lastSeenAt: '2026-05-24T18:00:00Z' },
@@ -93,6 +107,23 @@ describe('AppsPage — read-only list', () => {
     const rdRow = screen.getByRole('button', { name: /reddit/i })
     expect(within(rdRow).getByText(/1 host/i)).toBeInTheDocument()
     expect(within(rdRow).getByText(/no profiles/i)).toBeInTheDocument()
+  })
+
+  it('warns on apps whose hosts are on a blocklist and names the list when expanded', async () => {
+    const user = userEvent.setup()
+    ;(api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([gimkit, reddit])
+    render(withQuery(<AppsPage />))
+    const gkRow = await screen.findByRole('button', { name: /gimkit/i })
+    // Row carries a warning badge…
+    expect(within(gkRow).getByTestId('app-blocklist-badge')).toBeInTheDocument()
+    // …and Reddit (no overlap) does not.
+    const rdRow = screen.getByRole('button', { name: /reddit/i })
+    expect(within(rdRow).queryByTestId('app-blocklist-badge')).not.toBeInTheDocument()
+    // Expanding lists the offending host + the named blocklist.
+    await user.click(gkRow)
+    const detail = await screen.findByTestId('app-blocklist-detail')
+    expect(within(detail).getByText('gimkit.com')).toBeInTheDocument()
+    expect(within(detail).getByText('Games')).toBeInTheDocument()
   })
 
   it('shows an empty-state when there are no apps', async () => {
