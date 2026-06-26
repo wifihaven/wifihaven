@@ -802,12 +802,19 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
         assertTrue(ea.contains("mathacademy.com"))
     },
     test("#1105: same app assigned to two profiles with different exempt flags → independent") {
+      // The exempt flag only differentiates behaviour under a whole-MAC block: an exempt app under
+      // cap carves around it (`exemptUnderCapHosts`, unconditional), a non-exempt one does NOT (its
+      // within-budget carve is gated on `!state.blocked`; #1980). Pause both profiles so the
+      // distinction is visible — within budget and unblocked, BOTH would now carry the host in
+      // extraAllowed (#1980), so the host-set alone no longer distinguishes the exempt flag.
       for {
         _     <- cleanDb
         pr    <- ZIO.service[ProfileRepo]
         ar    <- ZIO.service[AppRepo]
         kid   <- TestLayers.seedKidsProfile(pr)
         adult <- TestLayers.seedAdultsProfile(pr)
+        _     <- pr.setPaused(kid, true)
+        _     <- pr.setPaused(adult, true)
         appId <- ar.create("Khan", "khan", None, None)
         _     <- ar.setHosts(appId, List(Hostname.unsafe("khanacademy.org")))
         _     <- ar.upsertAssignment(appId, kid, AppMode.TimeLimited, Some(60), true)
@@ -816,7 +823,10 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
         snap  <- svc.snapshot
         kidEa   = snap.profiles(kid).rules.extraAllowed.map(_.value).toSet
         adultEa = snap.profiles(adult).rules.extraAllowed.map(_.value).toSet
-      } yield assertTrue(kidEa.contains("khanacademy.org")) &&
+      } yield assertTrue(snap.profiles(kid).rules.blocked) &&
+        assertTrue(snap.profiles(adult).rules.blocked) &&
+        // exempt app beats the pause; non-exempt app does not (its #1980 carve is gated off here).
+        assertTrue(kidEa.contains("khanacademy.org")) &&
         assertTrue(!adultEa.contains("khanacademy.org"))
     },
     // ── #1899 (shared-hosts S4): most-permissive enforcement for shared hosts ──

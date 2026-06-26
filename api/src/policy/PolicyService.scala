@@ -710,6 +710,25 @@ class PolicyServiceLive(
                       else
                         timeLimitBlockFromState(h, now, settings, dayState) match {
                           case Some(r) => ZIO.succeed(r)
+                          // #1980: a TimeLimited app host still within its own budget beats a
+                          // category-blocklist drop. Checked AFTER pause / schedule / blocked-app /
+                          // time_limit (so it stays subordinate to every whole-MAC and per-app cap
+                          // block — the ordering is the /decision analogue of the snapshot's
+                          // `!state.blocked` gate) but BEFORE `categoryBlock`, mirroring the
+                          // snapshot's `extraAllowed`-beats-`bl_` precedence. Shares the single
+                          // `timeLimitedUnderCapHosts` definition with the snapshot (#1532).
+                          case None
+                              if matchesAny(
+                                h,
+                                PolicyService.timeLimitedUnderCapHosts(dayState),
+                              ) =>
+                            ZIO.succeed(
+                              RouterDecisionResponse(
+                                ConnectionDecision.Allow,
+                                BlockReason.asWire(BlockReason.ExtraAllowed),
+                                None,
+                              ),
+                            )
                           case None    =>
                             categoryBlock(p.blockedCategories, h).map {
                               case Some(cat) =>
@@ -1017,9 +1036,20 @@ object PolicyService {
     // `global.extraAllowed`, the top of the router's precedence ladder (#1319) —
     // so a hard pause remains a true off-switch for every per-profile carve-out,
     // sparing only the fleet-wide always-reachable set.
+    // #1980: a TimeLimited app still within its own per-app budget carves its FULL host-set (main +
+    // shared) into extraAllowed so it beats category-blocklist membership at the router (#421). Gated
+    // on the profile NOT being whole-MAC blocked: unlike the exempt carve above (which beats
+    // pause/schedule/daily-limit), this allow only outranks the per-host blocklist drop and stays
+    // subordinate to the whole-MAC block paths — the time budget governs *when* the host is
+    // reachable, the blocklist never *whether*. When the app's own cap exhausts it drops out of
+    // `timeLimitedUnderCapHosts` and `appLimitExtraBlocked` takes over (the redundant blocklist drop
+    // is fine).
+    val timeLimitedUnderCap =
+      if (state.blocked) Nil else timeLimitedUnderCapHosts(state)
+
     val profileExtraAllowed =
       if (isHardPause) Nil
-      else (appExtraAllowed ++ appExemptAllowedHosts).distinct
+      else (appExtraAllowed ++ appExemptAllowedHosts ++ timeLimitedUnderCap).distinct
 
     if (profile.defaultDeny)
       // #1318: default-deny baseline. Block-all with only the profile/device
@@ -1097,6 +1127,31 @@ object PolicyService {
       // two cannot disagree on what "exhausted" means (AGENTS.md §single-
       // source-of-truth).
       case sd if sd.exemptFromDaily && sd.dailyLimitMinutes.forall(sd.usedMinutes < _) =>
+        sd.hosts.map(Hostname.unsafe)
+    }.flatten
+
+  /**
+   * #1980: the full host-set (main + shared) of every TimeLimited app still UNDER its own per-app
+   * cap — the allow-side complement of [[appCapExhaustedHosts]] across the same `state.perApp` (the
+   * TimeLimited-only subset; see [[TimeStatusService.appDayStates]]). Carved into `extraAllowed` so
+   * a within-budget app host beats category-blocklist membership (`bl_`) at the router (#421,
+   * `feedback_extraallowed_beats_blocked`), which is the #1980 fix: a TimeLimited app contributes
+   * nothing to `extraAllowed` on its own, so without this an app host that is also a blocklist
+   * member (e.g. `gimkit.com` in the `games` list) is dropped during the app's allowed window.
+   *
+   * Unlike [[exemptUnderCapHosts]] (which carves UNCONDITIONALLY so an exempt app beats whole-MAC
+   * blocks), this carve is gated by the caller on the profile NOT being whole-MAC blocked
+   * (`!state.blocked` in [[computeBlockRules]]; the precedence ordering in `decide`). So it beats
+   * the per-host blocklist drop but stays subordinate to paused / schedule / profile-daily-limit
+   * blocks — the time budget governs *when* the host is reachable, the blocklist never *whether*
+   * (the app assignment is an explicit, authoritative allow). The full host-set is used (not just
+   * distinctive) because a shared backend belonging to an allowed app must stay reachable too, and
+   * over-allowing a shared host is safe — `extraAllowed` beats every drop. Shared by the snapshot
+   * and the /decision fallback so the two cannot diverge (#1532).
+   */
+  private[policy] def timeLimitedUnderCapHosts(state: ProfileDayState): List[Hostname] =
+    state.perApp.collect {
+      case sd if sd.dailyLimitMinutes.forall(lim => sd.usedMinutes < lim) =>
         sd.hosts.map(Hostname.unsafe)
     }.flatten
 
