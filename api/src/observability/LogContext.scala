@@ -39,6 +39,11 @@ object LogContext {
   val NotMod    = "notModified"
   val BatchSize = "batchSize"
   val Rejected  = "rejected"
+  // #1968 — SPA-websocket per-frame structured logging (design §10.5). `role` is the
+  // connection's resolved UserRole; `result` is the per-frame outcome (ok | reject |
+  // unknown_op), mirroring the `spa_ws_frames_total` result label. Both bounded enums.
+  val Role      = "role"
+  val Result    = "result"
 
   // ── Helpers ──────────────────────────────────────────────────────────────
 
