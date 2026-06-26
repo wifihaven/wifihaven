@@ -111,7 +111,8 @@ cleanup() {
     [ -n "$p" ] && curl -s -X DELETE "$BASE/api/profiles/$p" "${AUTH[@]}" >/dev/null 2>&1 || true
   done
   # Restore the household blockEncryptedDns singleton to its pre-run value (#1912
-  # round-trips it). Skipped if the step never ran or it was already as-found.
+  # round-trips it). Skipped only if the step never ran (BED_ORIG unset); when it
+  # ran we re-assert the captured value (an idempotent no-op if already as-found).
   if [ -n "$BED_ORIG" ]; then
     curl -s -X PATCH "$BASE/api/household/settings" "${AUTH[@]}" \
       -H 'content-type: application/json' \
