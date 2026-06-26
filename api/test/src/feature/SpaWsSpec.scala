@@ -1,55 +1,102 @@
 package wifihaven.api.feature
 
+import wifihaven.api.JwtConfig
+import wifihaven.api.WsConfig
+import wifihaven.api.auth.*
+import wifihaven.api.db.*
 import wifihaven.api.routes.{SpaConnId, SpaTopic, SpaWsRegistry, SpaWsRoutes}
 import wifihaven.shared.Clock
+import wifihaven.shared.Clock.TestClock
 import wifihaven.testinfra.*
+import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
+import doobie.*
 import zio.{Clock as _, *}
 import zio.http.*
 import zio.http.ChannelEvent.UserEvent
+import zio.metrics.*
 import zio.test.*
 
 import java.time.LocalDateTime
 
 /**
- * #1968 (S1 of the SPA-websocket rollout, design `docs/design/spa-websocket.md`): the
- * browser-facing `GET /api/ws` skeleton. Exercises the real endpoint end to end — a real [[Server]]
- * on an ephemeral port and a real ws [[Client]] — to prove the `{op, payload, seq?}` envelope
- * demux, the control ops (`hello`→`ready`, `subscribe`/`unsubscribe` with per-connection
- * subscription state + topic-keyed `ack`, `ping`/`pong`), the role-gated subscription
- * authorization, and the unknown-op ignore+meter rule. Mirrors the [[RouterWsSpec]] round-trip
- * recipe (drive the ws client inside a LOCAL `ZIO.scoped`, not forkScoped on the test scope).
+ * #1969 (S2 of the SPA-websocket rollout, design `docs/design/spa-websocket.md` §4/§8): upgrade
+ * auth for the browser-facing `GET /api/ws`. Exercises the real endpoint end to end — a real
+ * [[Server]] on an ephemeral port and a real ws [[Client]] for the success paths, and
+ * `routes.runZIO` directly for the reject paths (the upgrade is refused with a plain 401/403 BEFORE
+ * the 101, so no handshake is needed to observe it).
  *
- * S1 has no upgrade auth (that is S2 / #1969) — the connection registers with a stub
- * least-privilege (`Child`) role at upgrade and the `hello` payload's `{role}` is the
- * test-handshake override, so the subscription machinery is exercised without a real cookie. REST
- * is untouched.
+ * The credential is the existing operator JWT, validated by the EXISTING [[AuthService.verify]] (no
+ * second auth surface, `AGENTS.md#single-source-of-truth`) — tests issue a REAL token via the same
+ * `AuthServiceLive` the app uses, never a mock. It rides a `wh_ws` cookie on the upgrade (the
+ * browser `WebSocket` API can't set headers, design §0.2.1); the role is resolved from the verified
+ * claims, NOT from the S1 `hello{role}` stub. The `Origin` allowlist (§8) is the one server-side ws
+ * config that differs by hosting mode. Mid-connection the connection's authz deadline is the JWT's
+ * `exp`: on the heartbeat tick where `now ≥ jwtExp` the channel is closed `4401 token-expired`
+ * (§4.3). Every outcome increments `spa_ws_auth_total{result}` (§7).
  */
-object SpaWsSpec extends ZIOSpec[Clock] {
+object SpaWsSpec
+    extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task]] {
 
   private val testClockAt: LocalDateTime = LocalDateTime.of(2026, 6, 25, 14, 0, 0)
 
-  override val bootstrap: ULayer[Clock] = TestLayers.withClock(testClockAt)
+  override val bootstrap =
+    TestDatabase.layer ++ TestLayers.withClock(testClockAt)
 
-  private def buildRoutes: ZIO[Clock, Nothing, (Routes[Any, Response], SpaWsRegistry)] =
-    for {
-      clock <- ZIO.service[Clock]
-      reg   <- SpaWsRegistry.make
-    } yield (SpaWsRoutes.routes(reg, clock), reg)
+  private val jwtCfg = JwtConfig(secret = "test-secret-at-least-32-chars!!", expiryHours = 1)
+
+  // Origin enforcement ON (cloud/staging shape): `localhost` is the dev allowlist entry, so a
+  // ws upgrade whose Origin host is localhost passes and any other host is rejected. A short
+  // expiry-check interval keeps the mid-connection-expiry test fast (the 1s floor is fine under the
+  // 90s suite timeout).
+  private val enforcedCfg = WsConfig(allowedOrigins = "localhost", expiryCheckSeconds = 1)
+  // Origin enforcement OFF (self-hosted same-origin shape): an empty allowlist disables the
+  // cross-origin check — SameSite=Strict on the cookie (§4.2) is the CSWSH guard there.
+  private val openCfg     = WsConfig(allowedOrigins = "", expiryCheckSeconds = 1)
+
+  private val cleanDb = TestDatabase.cleanAndMigrate
 
   // Each test builds a FRESH registry with one connection, so the first (and only) connection is
-  // deterministically assigned SpaConnId(1) — the seq counter starts at 0 and increments to 1 on the
-  // single register. Lets a test inspect that connection's server-side subscription state directly.
+  // deterministically SpaConnId(1) — the seq counter starts at 0 and increments to 1 on register.
   private val onlyConn: SpaConnId = SpaConnId(1L)
 
+  /** A real `AuthServiceLive` over the per-spec DB + the given clock (never a mock — SSOT). */
+  private def makeAuth(clock: Clock): URIO[UserRepo, AuthServiceLive] =
+    ZIO.serviceWith[UserRepo](ur => AuthServiceLive(ur, jwtCfg, clock))
+
+  /** Issue a real operator JWT for a freshly-created user with the given role. */
+  private def tokenFor(
+      auth: AuthService,
+      role: String,
+      username: String,
+  ): ZIO[UserRepo, Throwable, String] =
+    for {
+      hash <- auth.hashPassword("pass")
+      _    <- ZIO.serviceWithZIO[UserRepo](_.create(username, hash, role))
+      tok  <- auth.login(username, "pass").mapError(e => new RuntimeException(s"login: $e"))
+    } yield tok.token.value
+
+  /** The seeded admin (`admin`/`changeme`, must_change_password cleared in the test template). */
+  private def adminToken(auth: AuthService): ZIO[Any, Throwable, String] =
+    auth
+      .login("admin", "changeme")
+      .mapError(e => new RuntimeException(s"login: $e"))
+      .map(_.token.value)
+
+  private def cookieAndOrigin(token: String, origin: String): Headers =
+    Headers("Cookie", s"wh_ws=$token") ++ Headers("Origin", origin)
+
+  private def authCount(result: String): UIO[Double] =
+    Metric.counter("spa_ws_auth_total").tagged("result", result).value.map(_.count)
+
   /**
-   * Open a ws connection to the bound server, drive it with `send` on handshake, and collect every
-   * text frame the server sends. Resolves once a frame satisfies `until`, then runs `probe` while
-   * the connection is still open (so a registry-state check observes the live channel, not the
-   * post-scope deregister). Returns the matching frame, ALL frames received up to that point, and
-   * the probe.
+   * Open a ws connection (with the upgrade headers) to the bound server, drive it with `send` on
+   * handshake, and collect every text frame the server sends. Resolves once a frame satisfies
+   * `until`, then runs `probe` while still open. Returns the matching frame, all frames so far, and
+   * the probe result.
    */
   private def connectAndCapture[B](
       port: Int,
+      headers: Headers,
       send: WebSocketChannel => ZIO[Any, Throwable, Unit],
       until: String => Boolean,
       probe: ZIO[Any, Throwable, B] = ZIO.unit,
@@ -69,7 +116,7 @@ object SpaWsSpec extends ZIOSpec[Clock] {
       }
       result <- ZIO.scoped {
         for {
-          _   <- app.connect(s"ws://localhost:$port/api/ws").forkScoped
+          _   <- app.connect(s"ws://localhost:$port/api/ws", headers).forkScoped
           t   <- matched.await
             .timeoutFail(new RuntimeException("no matching server frame within 30s"))(30.seconds)
           all <- frames.get
@@ -82,67 +129,74 @@ object SpaWsSpec extends ZIOSpec[Clock] {
   private def sendFrames(channel: WebSocketChannel, frames: String*): ZIO[Any, Throwable, Unit] =
     ZIO.foreachDiscard(frames)(f => channel.send(ChannelEvent.read(WebSocketFrame.text(f))))
 
-  def spec = suite("SPA websocket /api/ws")(
-    test("hello is answered with ready carrying the role + serverTime") {
+  private def get(path: String, headers: Headers): Request =
+    Request.get(URL.decode(path).toOption.get).addHeaders(headers)
+
+  def spec = suite("SPA websocket /api/ws upgrade auth (#1969)")(
+    // ── success paths (real client, 101 + ready) ────────────────────────────────
+    test("valid cookie + allowed Origin → 101 + ready carrying the JWT's role (not the stub)") {
       (for {
-        rr <- buildRoutes
-        (routes, _) = rr
+        _     <- cleanDb
+        clock <- ZIO.service[Clock]
+        auth  <- makeAuth(clock)
+        tok   <- adminToken(auth)
+        reg   <- SpaWsRegistry.make
+        routes = SpaWsRoutes.routes(auth, reg, clock, enforcedCfg)
+        port          <- Server.install(routes)
+        before        <- authCount("ok")
+        (ready, _, _) <- connectAndCapture(
+          port,
+          cookieAndOrigin(tok, "http://localhost"),
+          ch => sendFrames(ch, """{"op":"hello"}"""),
+          until = _.contains("\"op\":\"ready\""),
+        )
+        after         <- authCount("ok")
+      } yield assertTrue(ready.contains("\"op\":\"ready\"")) &&
+        // role is the cookie's role (admin), NOT the S1 least-privilege Child stub.
+        assertTrue(ready.contains("\"role\":\"admin\"")) &&
+        assertTrue(ready.contains("\"serverTime\":\"2026-06-25T14:00:00Z\"")) &&
+        assertTrue(after - before >= 1.0)).provideSome[
+        TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task],
+      ](Server.defaultWithPort(0), Client.default)
+    },
+    test("self-hosted same-origin (empty allowlist) → ok with no Origin header") {
+      (for {
+        _     <- cleanDb
+        clock <- ZIO.service[Clock]
+        auth  <- makeAuth(clock)
+        tok   <- adminToken(auth)
+        reg   <- SpaWsRegistry.make
+        routes = SpaWsRoutes.routes(auth, reg, clock, openCfg)
         port          <- Server.install(routes)
         (ready, _, _) <- connectAndCapture(
           port,
-          ch => sendFrames(ch, """{"op":"hello","payload":{"role":"admin"}}"""),
+          Headers("Cookie", s"wh_ws=$tok"), // no Origin — self-hosted same-origin
+          ch => sendFrames(ch, """{"op":"hello"}"""),
           until = _.contains("\"op\":\"ready\""),
         )
       } yield assertTrue(ready.contains("\"op\":\"ready\"")) &&
-        assertTrue(ready.contains("\"role\":\"admin\"")) &&
-        // serverTime comes from the injected test clock (2026-06-25T14:00:00Z), never wall-clock.
-        assertTrue(ready.contains("\"serverTime\":\"2026-06-25T14:00:00Z\""))).provideSome[Clock](
-        Server.defaultWithPort(0),
-        Client.default,
-      )
+        assertTrue(ready.contains("\"role\":\"admin\""))).provideSome[
+        TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task],
+      ](Server.defaultWithPort(0), Client.default)
     },
-    test("subscribe to an authorized topic is acked ok and the subscription is held server-side") {
+    test(
+      "a child cookie's subscribe to a household topic is acked reject (role scoping per frame)",
+    ) {
       (for {
-        rr <- buildRoutes
-        (routes, reg) = rr
+        _     <- cleanDb
+        clock <- ZIO.service[Clock]
+        auth  <- makeAuth(clock)
+        tok   <- tokenFor(auth, "child", "kid")
+        reg   <- SpaWsRegistry.make
+        routes = SpaWsRoutes.routes(auth, reg, clock, enforcedCfg)
         port <- Server.install(routes)
-        // Probe the registry AFTER the ack arrives (still in-scope): the ack is sent only after
-        // SpaWsRegistry.subscribe completes, so an ack-ok that failed to actually store the
-        // subscription would be caught here — not just on the wire.
         res  <- connectAndCapture(
           port,
+          cookieAndOrigin(tok, "http://localhost"),
           ch =>
             sendFrames(
               ch,
-              """{"op":"hello","payload":{"role":"admin"}}""",
-              """{"op":"subscribe","payload":{"topic":"trafficUsage","params":{"groupBy":["profile"]}}}""",
-            ),
-          until = _.contains("\"op\":\"ack\""),
-          probe = reg.subscriptionsFor(onlyConn),
-        )
-        (ack, _, subs) = res
-      } yield assertTrue(ack.contains("\"op\":\"ack\"")) &&
-        assertTrue(ack.contains("\"topic\":\"trafficUsage\"")) &&
-        assertTrue(ack.contains("\"status\":\"ok\"")) &&
-        assertTrue(subs.keySet == Set(SpaTopic.TrafficUsage))).provideSome[Clock](
-        Server.defaultWithPort(0),
-        Client.default,
-      )
-    },
-    test("subscribe to a topic the role can't see is acked reject and not held") {
-      (for {
-        rr <- buildRoutes
-        (routes, reg) = rr
-        port <- Server.install(routes)
-        // A child role may see only its own time topics, never the household-wide connectionEvents
-        // feed (S1 placeholder authz, §4.4 — refined by S2's real cookie auth). The rejected
-        // subscription must NOT be stored.
-        res  <- connectAndCapture(
-          port,
-          ch =>
-            sendFrames(
-              ch,
-              """{"op":"hello","payload":{"role":"child"}}""",
+              """{"op":"hello"}""",
               """{"op":"subscribe","payload":{"topic":"connectionEvents"}}""",
             ),
           until = _.contains("\"op\":\"ack\""),
@@ -152,65 +206,196 @@ object SpaWsSpec extends ZIOSpec[Clock] {
       } yield assertTrue(ack.contains("\"op\":\"ack\"")) &&
         assertTrue(ack.contains("\"topic\":\"connectionEvents\"")) &&
         assertTrue(ack.contains("\"status\":\"reject\"")) &&
-        assertTrue(subs.isEmpty)).provideSome[Clock](
-        Server.defaultWithPort(0),
-        Client.default,
-      )
+        assertTrue(subs.isEmpty)).provideSome[
+        TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task],
+      ](Server.defaultWithPort(0), Client.default)
     },
-    test("unsubscribe removes the held subscription (no further ack, ping confirms liveness)") {
+    test("an admin cookie's subscribe to a household topic is acked ok and held server-side") {
       (for {
-        rr <- buildRoutes
-        (routes, reg) = rr
+        _     <- cleanDb
+        clock <- ZIO.service[Clock]
+        auth  <- makeAuth(clock)
+        tok   <- adminToken(auth)
+        reg   <- SpaWsRegistry.make
+        routes = SpaWsRoutes.routes(auth, reg, clock, enforcedCfg)
         port <- Server.install(routes)
-        // subscribe (acked), then unsubscribe (no ack), then ping — the pong (sent only after the
-        // unsubscribe was processed) proves the socket stayed live AND the subscription was removed:
-        // the post-pong registry probe must show an empty subscription set.
         res  <- connectAndCapture(
           port,
+          cookieAndOrigin(tok, "http://localhost"),
           ch =>
             sendFrames(
               ch,
-              """{"op":"hello","payload":{"role":"admin"}}""",
-              """{"op":"subscribe","payload":{"topic":"now"}}""",
-              """{"op":"unsubscribe","payload":{"topic":"now"}}""",
-              """{"op":"ping"}""",
+              """{"op":"hello"}""",
+              """{"op":"subscribe","payload":{"topic":"trafficUsage"}}""",
             ),
-          until = _.contains("\"op\":\"pong\""),
+          until = _.contains("\"op\":\"ack\""),
           probe = reg.subscriptionsFor(onlyConn),
         )
-        (pong, all, subs) = res
-      } yield assertTrue(pong.contains("\"op\":\"pong\"")) &&
-        assertTrue(
-          all.exists(f => f.contains("\"op\":\"ack\"") && f.contains("\"status\":\"ok\"")),
-        ) &&
-        assertTrue(subs.isEmpty)).provideSome[Clock](
-        Server.defaultWithPort(0),
-        Client.default,
-      )
+        (ack, _, subs) = res
+      } yield assertTrue(ack.contains("\"status\":\"ok\"")) &&
+        assertTrue(subs.keySet == Set(SpaTopic.TrafficUsage))).provideSome[
+        TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task],
+      ](Server.defaultWithPort(0), Client.default)
     },
+    test("reauth is acked reject (forward-compat seam; v1 has no silent refresh)") {
+      (for {
+        _     <- cleanDb
+        clock <- ZIO.service[Clock]
+        auth  <- makeAuth(clock)
+        tok   <- adminToken(auth)
+        reg   <- SpaWsRegistry.make
+        routes = SpaWsRoutes.routes(auth, reg, clock, enforcedCfg)
+        port <- Server.install(routes)
+        res  <- connectAndCapture(
+          port,
+          cookieAndOrigin(tok, "http://localhost"),
+          ch => sendFrames(ch, """{"op":"reauth","payload":{"jwt":"whatever"}}"""),
+          until = _.contains("\"op\":\"ack\""),
+        )
+        (ack, _, _) = res
+      } yield assertTrue(ack.contains("\"topic\":\"reauth\"")) &&
+        assertTrue(ack.contains("\"status\":\"reject\""))).provideSome[
+        TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task],
+      ](Server.defaultWithPort(0), Client.default)
+    },
+    // ── reject paths (no 101) ───────────────────────────────────────────────────
+    test("missing cookie → 401, no 101, metered no_cookie") {
+      for {
+        _     <- cleanDb
+        clock <- ZIO.service[Clock]
+        auth  <- makeAuth(clock)
+        reg   <- SpaWsRegistry.make
+        routes = SpaWsRoutes.routes(auth, reg, clock, enforcedCfg)
+        before <- authCount("no_cookie")
+        resp   <- routes.runZIO(get("/api/ws", Headers("Origin", "http://localhost")))
+        after  <- authCount("no_cookie")
+      } yield assertTrue(resp.status == Status.Unauthorized) &&
+        assertTrue(after - before >= 1.0)
+    },
+    test("forged/garbage cookie → 401, no 101, metered invalid_jwt") {
+      for {
+        _     <- cleanDb
+        clock <- ZIO.service[Clock]
+        auth  <- makeAuth(clock)
+        reg   <- SpaWsRegistry.make
+        routes = SpaWsRoutes.routes(auth, reg, clock, enforcedCfg)
+        before <- authCount("invalid_jwt")
+        resp   <- routes.runZIO(
+          get("/api/ws", cookieAndOrigin("not-a-real-jwt", "http://localhost")),
+        )
+        after  <- authCount("invalid_jwt")
+      } yield assertTrue(resp.status == Status.Unauthorized) &&
+        assertTrue(after - before >= 1.0)
+    },
+    test("already-expired JWT → 401, no 101, metered expired_jwt") {
+      for {
+        _         <- cleanDb
+        (clk, tc) <- TestClock.makeWithControl(testClockAt)
+        auth      <- makeAuth(clk)
+        tok       <- adminToken(auth)
+        _         <- tc.advance(java.time.Duration.ofHours(2)) // exp was now+1h → now past it
+        reg       <- SpaWsRegistry.make
+        routes = SpaWsRoutes.routes(auth, reg, clk, enforcedCfg)
+        before <- authCount("expired_jwt")
+        resp   <- routes.runZIO(get("/api/ws", cookieAndOrigin(tok, "http://localhost")))
+        after  <- authCount("expired_jwt")
+      } yield assertTrue(resp.status == Status.Unauthorized) &&
+        assertTrue(after - before >= 1.0)
+    },
+    test("disallowed Origin (valid cookie) → reject, no 101, metered bad_origin") {
+      for {
+        _     <- cleanDb
+        clock <- ZIO.service[Clock]
+        auth  <- makeAuth(clock)
+        tok   <- adminToken(auth)
+        reg   <- SpaWsRegistry.make
+        routes = SpaWsRoutes.routes(auth, reg, clock, enforcedCfg)
+        before <- authCount("bad_origin")
+        resp   <- routes.runZIO(get("/api/ws", cookieAndOrigin(tok, "http://evil.example.com")))
+        after  <- authCount("bad_origin")
+      } yield assertTrue(resp.status != Status.SwitchingProtocols) &&
+        assertTrue(resp.status == Status.Forbidden) &&
+        assertTrue(after - before >= 1.0)
+    },
+    test("absent Origin under an enforced allowlist → reject, metered bad_origin") {
+      for {
+        _     <- cleanDb
+        clock <- ZIO.service[Clock]
+        auth  <- makeAuth(clock)
+        tok   <- adminToken(auth)
+        reg   <- SpaWsRegistry.make
+        routes = SpaWsRoutes.routes(auth, reg, clock, enforcedCfg)
+        before <- authCount("bad_origin")
+        resp   <- routes.runZIO(get("/api/ws", Headers("Cookie", s"wh_ws=$tok")))
+        after  <- authCount("bad_origin")
+      } yield assertTrue(resp.status == Status.Forbidden) &&
+        assertTrue(after - before >= 1.0)
+    },
+    // ── mid-connection expiry (§4.3) ────────────────────────────────────────────
+    test("JWT exp crossing mid-connection → 4401 close + deregister, metered jwt_expired_midconn") {
+      (for {
+        _         <- cleanDb
+        (clk, tc) <- TestClock.makeWithControl(testClockAt)
+        auth      <- makeAuth(clk)
+        tok       <- adminToken(auth)
+        reg       <- SpaWsRegistry.make
+        routes = SpaWsRoutes.routes(auth, reg, clk, enforcedCfg)
+        port   <- Server.install(routes)
+        before <- authCount("jwt_expired_midconn")
+        readyP <- Promise.make[Nothing, Unit]
+        closeP <- Promise.make[Nothing, Int]
+        app            = Handler.webSocket { channel =>
+          channel.receiveAll {
+            case ChannelEvent.UserEventTriggered(UserEvent.HandshakeComplete)                =>
+              channel.send(ChannelEvent.read(WebSocketFrame.text("""{"op":"hello"}""")))
+            case ChannelEvent.Read(WebSocketFrame.Text(t)) if t.contains("\"op\":\"ready\"") =>
+              readyP.succeed(()).unit
+            case ChannelEvent.Read(WebSocketFrame.Close(code, _))                            =>
+              closeP.succeed(code).unit
+            case _                                                                           =>
+              ZIO.unit
+          }
+        }
+        result <- ZIO.scoped {
+          for {
+            _      <- app
+              .connect(s"ws://localhost:$port/api/ws", cookieAndOrigin(tok, "http://localhost"))
+              .forkScoped
+            _      <- readyP.await.timeoutFail(new RuntimeException("no ready"))(30.seconds)
+            _      <- tc.advance(java.time.Duration.ofHours(2)) // cross exp mid-connection
+            code   <- closeP.await.timeoutFail(new RuntimeException("no 4401 close"))(30.seconds)
+            active <- reg.activeCount
+          } yield (code, active)
+        }
+        (code, active) = result
+        after <- authCount("jwt_expired_midconn")
+      } yield assertTrue(code == 4401) &&
+        assertTrue(active == 0) &&
+        assertTrue(after - before >= 1.0)).provideSome[
+        TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task],
+      ](Server.defaultWithPort(0), Client.default)
+    },
+    // ── forward-compat (unchanged from S1) ──────────────────────────────────────
     test("an unknown op is ignored (no reply) while a known op still answers") {
       (for {
-        rr <- buildRoutes
-        (routes, _) = rr
+        _     <- cleanDb
+        clock <- ZIO.service[Clock]
+        auth  <- makeAuth(clock)
+        tok   <- adminToken(auth)
+        reg   <- SpaWsRegistry.make
+        routes = SpaWsRoutes.routes(auth, reg, clock, enforcedCfg)
         port           <- Server.install(routes)
-        // Send an unknown op, then a ping. The unknown op must produce no frame; the pong proves the
-        // socket survived (ignore + meter, forward-compat — design §2.2).
         (pong, all, _) <- connectAndCapture(
           port,
+          cookieAndOrigin(tok, "http://localhost"),
           ch =>
-            sendFrames(
-              ch,
-              """{"op":"definitelyNotARealOp","payload":{}}""",
-              """{"op":"ping"}""",
-            ),
+            sendFrames(ch, """{"op":"definitelyNotARealOp","payload":{}}""", """{"op":"ping"}"""),
           until = _.contains("\"op\":\"pong\""),
         )
       } yield assertTrue(pong.contains("\"op\":\"pong\"")) &&
-        // The only server frame is the pong — the unknown op generated no reply.
-        assertTrue(all.count(_.contains("\"op\":")) == 1)).provideSome[Clock](
-        Server.defaultWithPort(0),
-        Client.default,
-      )
+        assertTrue(all.count(_.contains("\"op\":")) == 1)).provideSome[
+        TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task],
+      ](Server.defaultWithPort(0), Client.default)
     },
   ) @@ TestAspect.withLiveClock @@ TestAspect.sequential @@ TestAspect.timeout(90.seconds)
 }
