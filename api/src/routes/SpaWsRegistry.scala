@@ -154,6 +154,27 @@ trait SpaWsRegistry {
    * `spa_ws_push_total{op="stale", ...}`.
    */
   def fanOutStale(topic: StaleTopic, scope: Option[String]): UIO[Unit]
+
+  /**
+   * #1971 (S4): the DISTINCT `trafficUsage` subscription param-sets across every connection that
+   * BOTH subscribed to `TrafficUsage` AND whose role may see it (§4.4 — `SpaTopic.visibleTo`). The
+   * [[SpaPush]] aggregator recomputes the head bucket ONCE per distinct param-set (design §5.3); an
+   * empty result means no subscriber, so no query runs ("don't compute what nobody watches"). The
+   * params are the verbatim `GET /api/usage/traffic` query params (§1.4 / §0.3), opaque here.
+   */
+  def trafficUsageParamSets: UIO[Set[Json]]
+
+  /**
+   * #1971 (S4): push the live-edge `TrafficUsageResponse` computed for `params` to every connection
+   * whose `TrafficUsage` subscription params EQUAL `params` and whose role may see it (§4.4). The
+   * body is built ONCE by the caller ([[SpaPush]], via the shared `UsageTrafficQuery.aggregate` —
+   * the same query the `GET` runs, so the stream and the page can't disagree); `TrafficUsage` is
+   * visible only to admin/adult (full-visibility roles, exactly as the GET treats them), so one
+   * body is correct for every recipient and the role gate is the per-role filter — mirroring
+   * [[fanOut]] for `now`. Latest-wins per param-set (design §6.3): a re-push carries the freshest
+   * head, never a backlog. Metered per send like [[fanOut]].
+   */
+  def fanOutTrafficUsage(params: Json, payload: Json): UIO[Unit]
 }
 
 object SpaWsRegistry {
@@ -264,6 +285,30 @@ final class SpaWsRegistryLive(
               sendPush(id, s.channel, op, frameText(op, matched.toJson)),
             )
         }
+      }
+    }
+
+  def trafficUsageParamSets: UIO[Set[Json]] =
+    state.get.map(
+      _.values.iterator
+        .collect {
+          case s
+              if s.subscriptions.contains(SpaTopic.TrafficUsage) &&
+                SpaTopic.visibleTo(SpaTopic.TrafficUsage, s.role) =>
+            s.subscriptions(SpaTopic.TrafficUsage)
+        }
+        .toSet,
+    )
+
+  def fanOutTrafficUsage(params: Json, payload: Json): UIO[Unit] =
+    state.get.flatMap { m =>
+      val op    = SpaTopic.wire(SpaTopic.TrafficUsage)
+      val frame = frameText(op, payload.toJson)
+      ZIO.foreachDiscard(m.toList) { case (id, s) =>
+        ZIO.when(
+          s.subscriptions.get(SpaTopic.TrafficUsage).contains(params) &&
+            SpaTopic.visibleTo(SpaTopic.TrafficUsage, s.role),
+        )(sendPush(id, s.channel, op, frame))
       }
     }
 

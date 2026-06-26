@@ -262,9 +262,11 @@ object Main extends ZIOAppDefault {
           spaEventBus,
           spaWsRegistry,
           trafficRepoForJ,
+          rollupRepo,
           connRepoForJobs,
           deviceRepoForJ,
           profileRepoForJ,
+          appRepoForSeed,
           stlRepoForJ,
           clockForJobs,
         )

@@ -2,7 +2,6 @@ package wifihaven.api.routes
 
 import wifihaven.api.auth.*
 import wifihaven.api.db.*
-import wifihaven.api.db.{RollupRepo, RollupRow}
 import wifihaven.api.metrics.AppMetrics
 import wifihaven.api.usage.{
   AppMembership,
@@ -10,6 +9,7 @@ import wifihaven.api.usage.{
   RetentionSweepJob,
   UsageSeries,
   UsageTraffic,
+  UsageTrafficQuery,
 }
 import wifihaven.shared.*
 import wifihaven.shared.types.*
@@ -932,43 +932,9 @@ object UsageRoutes {
   //     so the read touches ~50 rows per host instead of millions.
   // Examples: bucket=10m over 30d → raw (fine, paginated); bucket=1h over a 2h
   // window → raw (fresh); bucket=1d over 90d → daily rollup (cheap).
-  private enum SourceTier {
-    case Raw, Hourly, Daily
-  }
-
-  private def grainToTier(g: BucketGrain): SourceTier = g match {
-    case BucketGrain.Raw    => SourceTier.Raw
-    case BucketGrain.Hourly => SourceTier.Hourly
-    case BucketGrain.Daily  => SourceTier.Daily
-  }
-
-  private def pickTier(b: UsageTraffic.Bucket, window: java.time.Duration): SourceTier = {
-    // Cap: coarsest grain that can render the bucket without losing resolution.
-    // Pref: coarseness the window justifies on cost grounds — never coarsens
-    // the bucket itself. Finer of (cap, pref) wins. Both inputs and the rank
-    // ordering live in `wifihaven.shared.BucketPolicy` so this picker and
-    // `LogRoutes.seriesGrain` can't drift on the thresholds (#1744).
-    val cap  = BucketPolicy.grainForBucket(b.code)
-    val pref = BucketPolicy.windowGrain(window.toHours)
-    grainToTier(if (BucketPolicy.rank(pref) <= BucketPolicy.rank(cap)) pref else cap)
-  }
-
-  // Convert rollup rows back into the shape buildAggregate consumes. The
-  // hostname is already post-resolved by the rollup writer, so no extra
-  // LATERAL join is needed at read time — this is the whole point of the
-  // rollup tables.
-  private def asDbRows(rows: List[RollupRow]): List[wifihaven.api.usage.TrafficUsageDbRow] =
-    rows.map { r =>
-      wifihaven.api.usage.TrafficUsageDbRow(
-        mac = r.mac,
-        host = r.host,
-        periodStart = r.bucketStart,
-        periodEnd = r.bucketEnd,
-        activeSeconds = r.activeSeconds,
-        bytesIn = r.bytesIn,
-        bytesOut = r.bytesOut,
-      )
-    }
+  // #1971: the tier picker + fetch + aggregate now live in
+  // `wifihaven.api.usage.UsageTrafficQuery.aggregate`, shared verbatim with the
+  // S4 `trafficUsage` live-edge stream so the two can't drift (SSOT).
 
   private def trafficHandler(
       req: Request,
@@ -1056,6 +1022,11 @@ object UsageRoutes {
       // When both lists are non-empty, intersect: devices that match any
       // selected mac AND belong to any selected profile.
       allDevices <- deviceRepo.listAll.mapError(ApiError.Db(_))
+      // #1971: the device-set RESULT is computed by the shared
+      // `UsageTrafficQuery.resolveMacs` (one source, also used by the S4 live-edge stream so the two
+      // can't drift on filter semantics). This handler keeps the HTTP-only guards around it: a
+      // requested mac that doesn't exist is a 404, the selected profiles must pass
+      // `requireProfileReadAccess`, and the no-filter ("all devices") set is admin/adult-only.
       macs       <- (macsRaw, profileIds) match {
         case (ms, _) if ms.nonEmpty     =>
           for {
@@ -1066,21 +1037,16 @@ object UsageRoutes {
             }
             _    <- ZIO.foreach(devs.flatMap(_.profileId).distinct) { pid =>
               requireProfileReadAccess(claims, Some(pid), userProfileRepo)
-
             }
-          } yield
-            if (profileIds.isEmpty) devs.map(_.mac)
-            else devs.filter(d => d.profileId.exists(profileIds.contains)).map(_.mac)
+          } yield UsageTrafficQuery.resolveMacs(ms, profileIds, allDevices)
         case (_, pids) if pids.nonEmpty =>
-          for {
-            _ <- ZIO.foreach(pids)(pid =>
-              requireProfileReadAccess(claims, Some(pid), userProfileRepo),
-            )
-          } yield allDevices.filter(d => d.profileId.exists(pids.contains)).map(_.mac)
+          ZIO
+            .foreach(pids)(pid => requireProfileReadAccess(claims, Some(pid), userProfileRepo))
+            .as(UsageTrafficQuery.resolveMacs(Nil, pids, allDevices))
         case _                          =>
           // No filter: admin/adult only. Children must scope to their profile.
           if (claims.role == "admin" || claims.role == "adult")
-            ZIO.succeed(allDevices.map(_.mac))
+            ZIO.succeed(UsageTrafficQuery.resolveMacs(Nil, Nil, allDevices))
           else
             ZIO.fail(
               ApiError.Forbidden("mac or profileId required for non-admin"),
@@ -1175,29 +1141,30 @@ object UsageRoutes {
           // Aggregated path: source table = finer of (bucket cap, window cost
           // preference) (#1262). The requested bucket is always honored; the
           // range can only steer the read toward finer/fresher data, never
-          // coarsen the bucket.
-          val tier = pickTier(bucket, Duration.between(fromI, toI))
+          // coarsen the bucket. #1971: the fetch+tier+aggregate core is
+          // `UsageTrafficQuery.aggregate`, shared verbatim with the S4
+          // `trafficUsage` live-edge stream (SSOT — the stream and this GET
+          // can't disagree). The keyset cursor paging stays here on top.
           for {
-            rows      <-
+            allAgg    <-
               if (macs.isEmpty && (macsRaw.nonEmpty || profileIds.nonEmpty))
-                ZIO.succeed(List.empty[wifihaven.api.usage.TrafficUsageDbRow])
+                ZIO.succeed(List.empty[TrafficUsageAggregateRow])
               else
-                tier match {
-                  case SourceTier.Raw    =>
-                    trafficRepo
-                      .listRawInRange(macs, fromI, toI)
-                      .mapError(ApiError.Db(_))
-                  case SourceTier.Hourly =>
-                    rollupRepo
-                      .listHourlyInRange(macs, fromI, toI)
-                      .map(asDbRows)
-                      .mapError(ApiError.Db(_))
-                  case SourceTier.Daily  =>
-                    rollupRepo
-                      .listDailyInRange(macs, fromI, toI)
-                      .map(asDbRows)
-                      .mapError(ApiError.Db(_))
-                }
+                UsageTrafficQuery
+                  .aggregate(
+                    trafficRepo,
+                    rollupRepo,
+                    macs,
+                    fromI,
+                    toI,
+                    bucket,
+                    effectiveGroupBy,
+                    zone,
+                    devByMac,
+                    profNames,
+                    appsByHost,
+                  )
+                  .mapError(ApiError.Db(_))
             cursorOpt <- req.url.queryParam("cursor") match {
               case None    => ZIO.succeed(Option.empty[wifihaven.api.db.Cursor.AggCursor])
               case Some(s) =>
@@ -1207,18 +1174,8 @@ object UsageRoutes {
                   )
                   .mapBoth(ApiError.BadRequest(_), Some(_))
             }
-            allAgg = UsageTraffic
-              .buildAggregate(
-                rows,
-                bucket,
-                zone,
-                effectiveGroupBy,
-                devByMac,
-                profNames,
-                appsByHost,
-              )
-            keyOf  = (r: TrafficUsageAggregateRow) => UsageTraffic.aggGroupKey(r, effectiveGroupBy)
-            sorted = allAgg.sortBy(r =>
+            keyOf = (r: TrafficUsageAggregateRow) => UsageTraffic.aggGroupKey(r, effectiveGroupBy)
+            sorted   = allAgg.sortBy(r =>
               (-java.time.Instant.parse(r.windowStart).toEpochMilli, keyOf(r)),
             )
             filtered = cursorOpt match {

@@ -195,9 +195,11 @@ object SpaWsS3Spec
       clock       <- ZIO.service[Clock]
       auth        <- makeAuth(clock)
       trafficRepo <- ZIO.service[TrafficReportRepo]
+      rollupRepo  <- ZIO.service[RollupRepo]
       connRepo    <- ZIO.service[ConnectionEventRepo]
       deviceRepo  <- ZIO.service[DeviceRepo]
       profileRepo <- ZIO.service[ProfileRepo]
+      appRepo     <- ZIO.service[AppRepo]
       atlRepo     <- ZIO.service[AppTimeLimitRepo]
       usageRepo   <- ZIO.service[TimeUsageRepo]
       alertRepo   <- ZIO.service[AlertRepo]
@@ -220,7 +222,18 @@ object SpaWsS3Spec
       routes = SpaWsRoutes.routes(auth, reg, clock, openCfg)
       port <- Server.install(routes)
       out  <- ZIO.scoped {
-        SpaPush.run(bus, reg, trafficRepo, connRepo, deviceRepo, profileRepo, atlRepo, clock) *>
+        SpaPush.run(
+          bus,
+          reg,
+          trafficRepo,
+          rollupRepo,
+          connRepo,
+          deviceRepo,
+          profileRepo,
+          appRepo,
+          atlRepo,
+          clock,
+        ) *>
           body(port, ingest, bus, router)
       }
     } yield out).provideSome[BootstrapEnv](Server.defaultWithPort(0), Client.default)

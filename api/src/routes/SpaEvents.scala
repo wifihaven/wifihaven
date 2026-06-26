@@ -25,11 +25,18 @@ import java.time.Instant
  *   - [[SpaEvent.Stale]] — a class-(3) occasionally-changing resource mutated; the consumer fans a
  *     contentless `{topic, scope?}` nudge to `stale` subscribers so they invalidate the mapped
  *     query (§3.2). Coalescing-friendly (idempotent).
+ *   - [[SpaEvent.UsageIngested]] — #1971 (S4): new `traffic_reports` rows landed. The consumer
+ *     re-runs the EXISTING `GET /api/usage/traffic` query (via `UsageTrafficQuery.aggregate`)
+ *     scoped to the current/most-recent bucket for each distinct subscribed `(groupBy, bucket,
+ *     filter)` param-set and pushes that one bucket as a `TrafficUsageResponse` live edge (design
+ *     §5.3). Contentless trigger — the head is recomputed from the DB, latest-wins (§6.3), and a
+ *     param-set with no subscriber is never queried.
  */
 enum SpaEvent {
   case NowChanged
   case ConnectionEventsIngested(since: Instant)
   case Stale(topic: StaleTopic, scope: Option[String] = None)
+  case UsageIngested
 }
 
 /**
