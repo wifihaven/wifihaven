@@ -248,8 +248,8 @@ object MetricGuard {
     // `reauth` added by #1969 — the forward-compat reject seam),
     // `direction` ∈ {in, out}, `result` ∈ {ok, reject, unknown_op}. `spa_ws_subscriptions_active`
     // is the live count of subscriptions per `topic` (the SpaTopic enum). All bounded enums — no
-    // per-mac / per-profile / per-session / param dimension ever rides a ws metric. (The
-    // spa_ws_push_total lands with S3/S4, when first emitted.)
+    // per-mac / per-profile / per-session / param dimension ever rides a ws metric. (#1970 added
+    // spa_ws_push_total{op,result} below for the S3 change-source fan-out.)
     "spa_ws_connections_active"                 -> Set("role"),
     "spa_ws_frames_total"                       -> Set("op", "direction", "result"),
     "spa_ws_subscriptions_active"               -> Set("topic"),
@@ -259,6 +259,12 @@ object MetricGuard {
     // fixed 6-value enum; bounded, no per-user/session dimension. A spike in
     // bad_origin/invalid_jwt is the CSWSH/forgery-probe tripwire (alert in spa-ws.json).
     "spa_ws_auth_total"                         -> Set("result"),
+    // #1970 (S3) — per-topic fan-out health for the change-source push path (design §6.3/§7).
+    // `op` ∈ {now, connectionEvents, stale} today (trafficUsage/timeStatus/appUsage land with
+    // S4/S6a as those topics start pushing); `result` ∈ {ok, coalesced, dropped, channel_closed}.
+    // Both bounded enums — no per-mac / per-profile / per-session / param dimension. A rising
+    // channel_closed/dropped is the slow-client tripwire surfaced by spa-ws.json's push-health panel.
+    "spa_ws_push_total"                         -> Set("op", "result"),
     // #1848 — AGENT-side websocket transport metrics. The wifihaven-ws sidecar has no metrics
     // registry of its own, so it writes a cumulative tally that the agent folds into its
     // /api/router/metrics push (the server attaches router_id / installation_id, as for every
@@ -627,6 +633,12 @@ object AppMetrics {
   // dimension. The verify itself reuses AuthService (SSOT); this only labels the outcome.
   def recordSpaWsAuth(result: String): UIO[Unit] =
     MetricGuard.counter("spa_ws_auth_total", Map("result" -> result))
+
+  // #1970 (S3) — emitted from SpaWsRegistry on every change-source fan-out (design §5.2/§6.3).
+  // `op` is the pushed topic (now|connectionEvents|stale today), `result` ∈
+  // {ok, coalesced, dropped, channel_closed} — a fixed bounded enum, never a per-entity dimension.
+  def recordSpaWsPush(op: String, result: String): UIO[Unit] =
+    MetricGuard.counter("spa_ws_push_total", Map("op" -> op, "result" -> result))
 
   // §5.1 — server-side histogram boundaries for the router-pushed duration histograms. The agent
   // (#1206) reports cumulative bucket counts on these same boundaries; RouterMetricsService folds

@@ -67,8 +67,8 @@ object Main extends ZIOAppDefault {
         templatesById = templates.map(t => t.slug -> t).toMap
         bundledById   = bundled.map(b => b.id -> b).toMap
         routesAndRegistry <- allRoutes(templatesById, bundledById, readyRef.get)
-        (routes, wsRegistry) = routesAndRegistry
-        withCors             = Cors.wrap(routes, cfg.cors)
+        (routes, wsRegistry, spaWsRegistry, spaEventBus) = routesAndRegistry
+        withCors                                         = Cors.wrap(routes, cfg.cors)
         _ <- ZIO
           .logInfo(s"CORS enabled for origins: ${cfg.cors.origins.mkString(", ")}")
           .when(cfg.cors.origins.nonEmpty)
@@ -187,14 +187,29 @@ object Main extends ZIOAppDefault {
         // already loads and sleep until then, so the ~2.5s build runs at real transitions instead of
         // every tick.
         policyForPush <- ZIO.service[PolicyService]
-        _ <- policyForPush.setPublisher(new wifihaven.api.policy.PolicySnapshotPublisher {
-          def publish(snap: wifihaven.shared.PolicySnapshot): UIO[Unit] =
-            wsRegistry.publishPolicy(snap)
-        })
-        _ <- policyForPush.reevaluate
+        // #1970 (S3): the publisher is now MULTI-subscriber (design §5.2.1). Sink 1 is the router
+        // registry (full snapshot → `policy` frame), unchanged and synchronous so the #1846/#1849
+        // router push timing is behavior-PRESERVED. Sink 2 bridges "policy changed" into the SPA
+        // change bus as a `now` recompute trigger (a reevaluate can flip who's blocked/online), so
+        // the SPA `now` push stays fresh on schedule edges / cap exhaustion / unpause without a poll.
+        _             <- policyForPush.setPublisher(
+          wifihaven.api.policy.PolicySnapshotPublisher.broadcast(
+            List(
+              new wifihaven.api.policy.PolicySnapshotPublisher {
+                def publish(snap: wifihaven.shared.PolicySnapshot): UIO[Unit] =
+                  wsRegistry.publishPolicy(snap)
+              },
+              new wifihaven.api.policy.PolicySnapshotPublisher {
+                def publish(snap: wifihaven.shared.PolicySnapshot): UIO[Unit] =
+                  spaEventBus.publish(SpaEvent.NowChanged)
+              },
+            ),
+          ),
+        )
+        _             <- policyForPush.reevaluate
           .repeat(Schedule.fixed(cfg.policy.snapshotCacheRefreshInterval))
           .forkScoped
-        _ <- RollupJobs.hourlyLoop(rollupRepo, appRepoForSeed, clockForJobs).forkScoped
+        _             <- RollupJobs.hourlyLoop(rollupRepo, appRepoForSeed, clockForJobs).forkScoped
         _ <- RollupJobs.dailyLoop(rollupRepo, appRepoForSeed, clockForJobs, tz).forkScoped
         // #1265: connection-event rollup tier — same cadence/lookback as the
         // traffic rollups, re-rolling the trailing windows into
@@ -237,6 +252,23 @@ object Main extends ZIOAppDefault {
         _                 <- ZIO.logInfo(
           "rollup fibers forked (hourly + daily + time_used_daily + conn_events_hourly + conn_events_daily)",
         )
+        // #1970 (S3): fork the SPA-websocket change-source consumer. It drains the SpaEventBus and
+        // fans out subscription-gated, role-filtered `now`/`connectionEvents`/`stale` frames over
+        // `/api/ws` (design §5.2). forkScoped (inside `run`) so it is interrupted before the Hikari
+        // pool closes on shutdown, like the rollup loops. `now` rebuilds via the shared
+        // DashboardNowRoutes.computeNow builder (SSOT). No SPA ws client ships until S5, so this
+        // reads idle in prod until then; it is additive and never blocks ingest.
+        _                 <- SpaPush.run(
+          spaEventBus,
+          spaWsRegistry,
+          trafficRepoForJ,
+          connRepoForJobs,
+          deviceRepoForJ,
+          profileRepoForJ,
+          stlRepoForJ,
+          clockForJobs,
+        )
+        _                 <- ZIO.logInfo("spa-ws push consumer fiber forked")
         // #1243: poll the HikariCP MXBean into the Prometheus pool gauges. forkDaemon so it lives
         // for the process and never blocks startup.
         dbPool            <- ZIO.service[Database.DbPool]
@@ -330,8 +362,13 @@ object Main extends ZIOAppDefault {
       promPublisher  <- ZIO.service[PrometheusPublisher]
       routerAuth = new RouterAuthLive(routerRepo)
       routerMetrics <- RouterMetricsService.make
+      // #1970 (S3): the SPA-websocket change-source bus (design §5.2.2). The write sites publish
+      // change events here; the SpaPush consumer (forked in the run scope) drains it and fans out
+      // role-filtered, subscription-gated `now`/`connectionEvents`/`stale` frames.
+      spaEventBus   <- SpaEventBus.make
       // #1846: the transport-agnostic ingest service shared by the REST ingest routes and the new
-      // websocket transport, plus the per-router ws connection registry.
+      // websocket transport, plus the per-router ws connection registry. #1970: it also publishes
+      // SPA change events (new connection-events head + `now` trigger + `stale{alerts}`) to the bus.
       routerIngest = new RouterIngestService(
         routerRepo,
         trafficRepo,
@@ -340,6 +377,7 @@ object Main extends ZIOAppDefault {
         connRepo,
         alertRepo,
         hsRepo,
+        spaEventBus,
       )
       wsRegistry    <- RouterWsRegistry.make
       // #1968: the browser-facing SPA websocket registry (S1). A FORK of the router registry pattern
@@ -385,11 +423,24 @@ object Main extends ZIOAppDefault {
             // per-profile time-status entry instead of leaving a stale "paused for schedule".
             timeCache,
             // #1849: bust the computed-snapshot cache on a profile/schedule mutation.
-            policy.invalidate,
+            // #1970 (S3): also nudge `stale{profiles}` so an open SPA re-fetches the class-(3)
+            // profiles resource (design §3.2) — composed onto the existing invalidate callback, so
+            // every profile mutation publishes without touching the route's signature.
+            policy.invalidate <* spaEventBus.publish(SpaEvent.Stale(StaleTopic.Profiles)),
           ) ++
-          ScheduleRoutes.routes(auth, namedSchedRepo, policy.invalidate) ++
+          ScheduleRoutes.routes(
+            auth,
+            namedSchedRepo,
+            policy.invalidate <* spaEventBus.publish(SpaEvent.Stale(StaleTopic.Schedules)),
+          ) ++
           HouseholdSettingsRoutes.routes(auth, hsRepo, policy.invalidate) ++
-          DeviceRoutes.routes(auth, deviceRepo, upRepo, profileRepo, policy.invalidate)
+          DeviceRoutes.routes(
+            auth,
+            deviceRepo,
+            upRepo,
+            profileRepo,
+            policy.invalidate <* spaEventBus.publish(SpaEvent.Stale(StaleTopic.Devices)),
+          )
 
       val statsRoutes: Routes[Any, Response] =
         TimeRoutes.routes(
@@ -544,6 +595,8 @@ object Main extends ZIOAppDefault {
       ) ++ metricsRoutes
       // #1849: hand the ws registry back so the run scope can wire it as PolicyService's push sink
       // and fork the reconcile ticker (both need the run scope, which `allRoutes` is not).
-      (assembled, wsRegistry)
+      // #1970 (S3): also hand back the SPA registry + change-source bus so the run scope can fork the
+      // SpaPush consumer and add the SPA `now`-trigger sink to the (now multi-subscriber) publisher.
+      (assembled, wsRegistry, spaWsRegistry, spaEventBus)
     }
 }
