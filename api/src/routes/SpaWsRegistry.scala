@@ -318,7 +318,19 @@ private final case class LogSubParams(
     domain: Option[String] = None,
 ) derives JsonDecoder {
 
-  /** True iff `row` passes every present narrowing (mirrors `LogFilter`'s AND-of-clauses). */
+  /**
+   * True iff `row` passes every present narrowing (an absent field matches everything). This is the
+   * in-memory twin of the `/api/logs` SQL filter in `ConnectionEventRepo.query` — the fan-out can't
+   * round-trip SQL per subscriber, so the predicate is duplicated, an ACCEPT-divergence (no single
+   * collapse point). It MUST stay byte-aligned with that SQL's clauses:
+   *   - `blocked` ↔ `ce.allowed = !b` (QueryLog.blocked = NOT allowed)
+   *   - `macs` ↔ `ce.mac IN (...)` (exact match on the mac string)
+   *   - `profileIds` ↔ `d.profile_id IN (...)` (exact match on the joined profile)
+   *   - `domain` ↔ `COALESCE(resolved_host_value, host_value) ILIKE '%d%'` (case-insensitive
+   *     substring; `QueryLog.host` is already the coalesced resolved-or-host value, so matching on
+   *     `row.host.value` is equivalent).
+   * If the SQL filter grows a clause, mirror it here (and extend `SpaWsS3Spec`'s coverage).
+   */
   def matches(row: QueryLog): Boolean =
     blocked.forall(_ == row.blocked) &&
       macs.forall(ms => ms.isEmpty || row.mac.exists(m => ms.contains(m.value))) &&

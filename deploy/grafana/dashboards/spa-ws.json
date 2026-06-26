@@ -142,7 +142,7 @@
         "uid": "${datasource}"
       },
       "title": "SPA ws frame rate by op/direction/result (#1968)",
-      "description": "sum by (op, direction, result) (rate(spa_ws_frames_total[5m])) — frame throughput across the {op,payload} demux. op ∈ {hello,ready,subscribe,unsubscribe,ack,ping,pong,unknown}; direction ∈ {in,out}; result ∈ {ok,reject,unknown_op}. A rising result=reject share means clients are sending frames the server rejects (e.g. a subscribe to a topic the role can't see); result=unknown_op is the forward-compat counter for frames whose op the server does not recognize (design §2.2).",
+      "description": "sum by (op, direction, result) (rate(spa_ws_frames_total[5m])) — frame throughput across the {op,payload} demux. op ∈ {hello,ready,subscribe,unsubscribe,ack,ping,pong,unknown} plus the S3 push ops {now,connectionEvents,stale} (sent as direction=out frames by SpaWsRegistry.sendPush); direction ∈ {in,out}; result ∈ {ok,reject,unknown_op}. A rising result=reject share means clients are sending frames the server rejects (e.g. a subscribe to a topic the role can't see); result=unknown_op is the forward-compat counter for frames whose op the server does not recognize (design §2.2).",
       "type": "timeseries",
       "gridPos": {
         "h": 8,
