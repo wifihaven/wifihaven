@@ -22,18 +22,6 @@ import zio.*
  */
 object AppBlocklistOverlap {
 
-  /** Mirror of [[HostMatch.hasApexMatch]]'s walk: the host plus each apex parent it would test. */
-  def apexCandidates(host: String, maxHops: Int = 5): List[String] = {
-    @annotation.tailrec
-    def loop(h: String, hops: Int, acc: List[String]): List[String] = {
-      val acc2 = h :: acc
-      val dot  = h.indexOf('.')
-      if (dot < 0 || hops <= 0) acc2
-      else loop(h.substring(dot + 1), hops - 1, acc2)
-    }
-    loop(host, maxHops, Nil)
-  }
-
   /**
    * For each app id, the subset of its hosts that overlap a category blocklist, with the matching
    * blocklist ids (sorted). Apps with no overlap are absent from the result map.
@@ -43,11 +31,12 @@ object AppBlocklistOverlap {
       hostsByApp: Map[AppId, List[Hostname]],
   ): Task[Map[AppId, List[AppBlocklistedHost]]] = {
     val allCandidates =
-      hostsByApp.values.flatten.flatMap(h => apexCandidates(h.value)).toList.distinct
+      hostsByApp.values.flatten.flatMap(h => HostMatch.apexTails(h.value)).toList.distinct
     blocklistRepo.categoriesForDomains(allCandidates).map { catsByDomain =>
       hostsByApp.flatMap { (appId, hosts) =>
         val flagged = hosts.flatMap { host =>
-          val cats = apexCandidates(host.value)
+          val cats = HostMatch
+            .apexTails(host.value)
             .flatMap(c => catsByDomain.getOrElse(c, Nil))
             .distinct
             .sorted
