@@ -135,6 +135,28 @@ def _ws_health_present() -> bool:
     return (res.stdout or "").strip() == "yes"
 
 
+def _nudge_conntrack() -> None:
+    """Emit one LAN-side flow so the agent's conntrack-driven `on_tick` fires.
+
+    The agent's cooperative scheduler — the policy poll, usage/metrics timers,
+    and the #1945 apply-on-push tick — all run inside `conntrack.watch`'s loop,
+    which calls `on_tick` only after a blocking read returns a `conntrack -E NEW`
+    line (conntrack.lua). `conntrack -E -e NEW` is unfiltered, so ANY new flow —
+    including a router-originated one — drives a tick. This phantom-device
+    scenario boots no client VM, so nothing else reliably generates flows and
+    `on_tick` would be starved; a short HTTP GET to the API the agent already
+    reaches opens a fresh tracked connection → a NEW event → an `on_tick` pass,
+    exactly as a live network's traffic does continuously. The GET carries NO
+    policy (the HTTP poll stays frozen at 3600s, and a bare /healthz hit is not a
+    snapshot fetch), so the enforcement flip remains attributable to the ws push.
+    """
+    router_ssh(
+        'curl -s -m 3 -o /dev/null "$(uci get wifihaven.wifihaven.api_url)/healthz" '
+        "2>/dev/null || true",
+        check=False, timeout=10,
+    )
+
+
 def _paused_drop_rule_present(mac: str) -> bool:
     """True iff the live nft ruleset carries a whole-MAC *paused* forward-drop.
 
@@ -252,10 +274,15 @@ def test_ws_policy_push_applies_enforcement_live(router, fake_api):
     # the sidecar-written snapshot and re-renders nft, installing the per-MAC
     # `wh_drop:<mac>:Paused` forward-drop. Pre-#1945 (save-only) this never
     # happens until the next poll — frozen here at 3600s — so the assertion is
-    # the live-apply proof.
+    # the live-apply proof. Each poll iteration first nudges a flow so the
+    # agent's conntrack-driven `on_tick` (which the apply-on-push tick rides) runs.
+    def _nudged_drop_present() -> bool | None:
+        _nudge_conntrack()
+        return True if _paused_drop_rule_present(DEV_MAC) else None
+
     wait_until(
-        lambda: True if _paused_drop_rule_present(DEV_MAC) else None,
-        timeout_s=120, interval_s=3,
+        _nudged_drop_present,
+        timeout_s=180, interval_s=5,
         description="nft gains a wh_drop:<mac>:Paused forward-drop via the ws "
                     "push with the poll frozen — live apply-on-push (#1945)",
     )
