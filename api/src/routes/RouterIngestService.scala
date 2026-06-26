@@ -32,6 +32,13 @@ final class RouterIngestService(
     connEventRepo: ConnectionEventRepo,
     alertRepo: AlertRepo,
     householdSettingsRepo: HouseholdSettingsRepo,
+    // #1970 (S3): the SPA-websocket change-source bus. Each ingest is also a write site that may move
+    // the browser's live surface, so it publishes a one-line change event (design §5.2.2) — a `now`
+    // recompute trigger, the new connection-events head, an `alerts` stale nudge. Defaults to
+    // [[SpaEventBus.noop]] so the REST/router-ws ingest call sites and tests that don't exercise the
+    // push path are unchanged; `Main` wires the real bus. Publishing NEVER blocks or fails ingest
+    // (sliding hub, UIO) — the push surface is a latency/UX layer over the authoritative write.
+    bus: SpaEventBus = SpaEventBus.noop,
 ) {
   import RouterIngestService.*
 
@@ -79,6 +86,10 @@ final class RouterIngestService(
         settings <- householdSettingsRepo.get.mapError(ApiError.Db(_))
         _        <- handleUsage(router.id, ps, pe, records, settings)
         _        <- routerRepo.touch(router.id, None, None).mapError(ApiError.Db(_))
+        // #1970 (S3): newly-credited usage moves last_seen / per-device activity, so the dashboard
+        // NOW surface may have changed — trigger a `now` recompute (trafficUsage/timeStatus pushes
+        // are S4/S6a; this step only emits the event). One-liner, never fails ingest.
+        _        <- ZIO.when(records.nonEmpty)(bus.publish(SpaEvent.NowChanged))
       } yield ()
     }
 
@@ -354,6 +365,14 @@ final class RouterIngestService(
       // moments later").
       _         <- ZIO.foreachDiscard(enriched)(backfillFromFqdn)
       _         <- ZIO.foreachDiscard(events)(applyDhcpOrFirstSeen)
+      // #1970 (S3): a successful connection-events ingest is the `connectionEvents` write site —
+      // push the new head (carrying the earliest inserted ts so SpaPush re-reads exactly the new
+      // rows via the GET query) plus a `now` recompute trigger (a fresh connection = device
+      // activity). Only when ≥1 row was genuinely new (replays insert 0). Never fails ingest.
+      _         <- ZIO.when(inserted > 0) {
+        val since = enriched.map(_.ts).min
+        bus.publish(SpaEvent.ConnectionEventsIngested(since)) *> bus.publish(SpaEvent.NowChanged)
+      }
     } yield ()
   }
 
@@ -428,7 +447,11 @@ final class RouterIngestService(
                   .unit *>
                   alertRepo
                     .raiseNewDevice(mac, ts)
-                    .mapError(ApiError.Db(_))
+                    .mapError(ApiError.Db(_)) *>
+                  // #1970 (S3): a raised alert is a class-(3) write site → nudge `stale{alerts}`
+                  // so an open dashboard re-fetches the alerts list. Idempotent on `mac`, so a
+                  // replayed event won't re-nudge a meaningful change. Never fails ingest.
+                  bus.publish(SpaEvent.Stale(StaleTopic.Alerts))
             }
           } yield ()
       }

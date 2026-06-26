@@ -1,9 +1,11 @@
 package wifihaven.api.routes
 
 import wifihaven.api.metrics.AppMetrics
-import wifihaven.shared.UserRole
+import wifihaven.shared.{QueryLog, UserRole}
+import wifihaven.shared.types.ProfileId
 import zio.*
-import zio.http.WebSocketChannel
+import zio.http.{ChannelEvent, WebSocketChannel, WebSocketFrame}
+import zio.json.*
 import zio.json.ast.Json
 
 import java.time.Instant
@@ -124,6 +126,34 @@ trait SpaWsRegistry {
 
   /** Total open channels across all connections — backs `spa_ws_connections_active`. */
   def activeCount: UIO[Int]
+
+  /**
+   * #1970 (S3): fan a class-(2) thick push (`now`) out to every connection that BOTH subscribed to
+   * `topic` (§1.4) AND whose role may see it (§4.4 — `SpaTopic.visibleTo`). The body is built ONCE
+   * by the caller ([[SpaPush]], via the shared `DashboardNowRoutes.computeNow` builder) and sent
+   * verbatim; the role gate is the per-role filter (the topics pushed this way — `now` — are
+   * visible only to roles the matching GET shows everything to, so one body is correct for all
+   * recipients). A send failure (racing disconnect) is metered
+   * `spa_ws_push_total{result="channel_closed"}` and deregisters the dead channel; a success is
+   * metered `result="ok"`.
+   */
+  def fanOut(topic: SpaTopic, payload: Json): UIO[Unit]
+
+  /**
+   * #1970 (S3): append new `connectionEvents` head rows (class-(1) live edge). For each connection
+   * subscribed to `ConnectionEvents` and authorized, the rows are filtered by THAT connection's
+   * subscription params (the verbatim `/api/logs` filter — `blocked`/`macs`/`profileIds`/`domain`,
+   * §1.4); a frame is sent only if ≥1 row matches, so an ingest that doesn't match a subscriber's
+   * filter pushes nothing to it. Metered per send like [[fanOut]].
+   */
+  def fanOutConnectionEvents(rows: List[QueryLog]): UIO[Unit]
+
+  /**
+   * #1970 (S3): fan a contentless class-(3) `stale{topic, scope?}` nudge to every connection
+   * subscribed to `Stale` and authorized (§3.2 — the client invalidates the mapped query). Metered
+   * `spa_ws_push_total{op="stale", ...}`.
+   */
+  def fanOutStale(topic: StaleTopic, scope: Option[String]): UIO[Unit]
 }
 
 object SpaWsRegistry {
@@ -198,4 +228,107 @@ final class SpaWsRegistryLive(
 
   def activeCount: UIO[Int] =
     state.get.map(_.size)
+
+  // ── #1970 (S3) change-source fan-out ────────────────────────────────────────────────────────
+  // Each fan-out snapshots the connection map once and sends to the gated subset. The two gates are
+  // independent (design §5.1): a connection receives a topic only if it SUBSCRIBED to it (§1.4) AND
+  // its role is AUTHORIZED for it (§4.4 — `SpaTopic.visibleTo`). A send failure means the channel
+  // raced a disconnect: meter `channel_closed` and drop it (the receive loop's `ensuring` also
+  // deregisters; doing it here keeps the gauges honest if the push won the race).
+
+  def fanOut(topic: SpaTopic, payload: Json): UIO[Unit] =
+    state.get.flatMap { m =>
+      val op    = SpaTopic.wire(topic)
+      val frame = frameText(op, payload.toJson)
+      ZIO.foreachDiscard(m.toList) { case (id, s) =>
+        ZIO.when(s.subscriptions.contains(topic) && SpaTopic.visibleTo(topic, s.role))(
+          sendPush(id, s.channel, op, frame),
+        )
+      }
+    }
+
+  def fanOutConnectionEvents(rows: List[QueryLog]): UIO[Unit] =
+    state.get.flatMap { m =>
+      val op = SpaTopic.wire(SpaTopic.ConnectionEvents)
+      ZIO.foreachDiscard(m.toList) { case (id, s) =>
+        val gated =
+          s.subscriptions.get(SpaTopic.ConnectionEvents).filter { _ =>
+            SpaTopic.visibleTo(SpaTopic.ConnectionEvents, s.role)
+          }
+        gated match {
+          case None         => ZIO.unit
+          case Some(params) =>
+            val filter  = LogSubParams.decode(params)
+            val matched = rows.filter(filter.matches)
+            ZIO.when(matched.nonEmpty)(
+              sendPush(id, s.channel, op, frameText(op, matched.toJson)),
+            )
+        }
+      }
+    }
+
+  def fanOutStale(topic: StaleTopic, scope: Option[String]): UIO[Unit] =
+    state.get.flatMap { m =>
+      val op      = SpaTopic.wire(SpaTopic.Stale)
+      val payload = scope match {
+        case Some(sc) => s"""{"topic":"${StaleTopic.wire(topic)}","scope":${Json.Str(sc).toJson}}"""
+        case None     => s"""{"topic":"${StaleTopic.wire(topic)}"}"""
+      }
+      val frame   = frameText(op, payload)
+      ZIO.foreachDiscard(m.toList) { case (id, s) =>
+        ZIO.when(
+          s.subscriptions.contains(SpaTopic.Stale) && SpaTopic.visibleTo(SpaTopic.Stale, s.role),
+        )(
+          sendPush(id, s.channel, op, frame),
+        )
+      }
+    }
+
+  /** The `{op, payload}` push envelope (design §2.2), payload already serialized. */
+  private def frameText(op: String, payloadJson: String): String =
+    s"""{"op":"$op","payload":$payloadJson}"""
+
+  private def sendPush(
+      id: SpaConnId,
+      channel: WebSocketChannel,
+      op: String,
+      frame: String,
+  ): UIO[Unit] =
+    channel
+      .send(ChannelEvent.read(WebSocketFrame.text(frame)))
+      .foldZIO(
+        _ => AppMetrics.recordSpaWsPush(op, "channel_closed") *> deregister(id),
+        _ =>
+          AppMetrics.recordSpaWsPush(op, "ok") *>
+            AppMetrics.recordSpaWsFrame(op, "out", "ok"),
+      )
+}
+
+/**
+ * #1970 (S3): the decoded `connectionEvents` subscription params — the verbatim `/api/logs` filter
+ * vocabulary (§1.4 / §0.3). Each field is an OPTIONAL narrowing; an absent field matches
+ * everything, so the dashboard's `{blocked:true}` keeps only blocked rows while the Connection
+ * Events page's richer filter narrows by mac/profile/domain too. Unknown params are ignored
+ * (forward-compat).
+ */
+private final case class LogSubParams(
+    blocked: Option[Boolean] = None,
+    macs: Option[List[String]] = None,
+    profileIds: Option[List[ProfileId]] = None,
+    domain: Option[String] = None,
+) derives JsonDecoder {
+
+  /** True iff `row` passes every present narrowing (mirrors `LogFilter`'s AND-of-clauses). */
+  def matches(row: QueryLog): Boolean =
+    blocked.forall(_ == row.blocked) &&
+      macs.forall(ms => ms.isEmpty || row.mac.exists(m => ms.contains(m.value))) &&
+      profileIds.forall(ps => ps.isEmpty || row.profileId.exists(ps.contains)) &&
+      domain.forall(d => row.host.value.toLowerCase.contains(d.toLowerCase))
+}
+
+private object LogSubParams {
+
+  /** Decode a subscribe-params blob; a missing/garbage blob is the match-everything default. */
+  def decode(params: Json): LogSubParams =
+    params.toJson.fromJson[LogSubParams].getOrElse(LogSubParams())
 }

@@ -54,47 +54,78 @@ object DashboardNowRoutes {
             visibleDevs <- filterDevices(claims, allDevices, userProfileRepo)
             allProfiles <- profileRepo.listAll.mapError(ApiError.Db(_))
             visibleProf <- visibleProfiles(claims, allProfiles, userProfileRepo)
-            visibleMacs = visibleDevs.map(_.mac)
-            // Both inputs in parallel.
-            since       = now.minus(TopHostsWindow)
-            connSince   = now.minus(RecentActivityWindow)
-            lastSeenF  <- connRepo.lastSeenByMacSince(connSince).fork
-            rowsF      <- trafficRepo
-              .listTrafficRollupRows(
-                TrafficRollupFilter(
-                  macs = Some(visibleMacs),
-                  host = None,
-                  since = Some(since),
-                  until = None,
-                ),
-              )
-              .fork
-            // #1559: per-profile active-app host-set, fed into [[dropBackground]] so an
-            // app-attributed background-pattern host stays in the ranking (attribution beats
-            // suppression, same #1506 contract counting surfaces use). Read through the
-            // canonical [[ProfileAppDispositions]] fold so the dashboard cannot disagree
-            // with the counting paths on what "active app host" means (#1532 / #1560).
-            appLimitsF <- appTimeLimitRepo.listAll.fork
-            lastSeen   <- lastSeenF.join.mapError(ApiError.Db(_))
-            rows       <- rowsF.join.mapError(ApiError.Db(_))
-            appLimits  <- appLimitsF.join.mapError(ApiError.Db(_))
-            appHostPatternsByProfile = appLimits
-              .groupBy(_.profileId)
-              .view
-              .mapValues(ProfileAppDispositions.from(_).appHostPatterns)
-              .toMap
-            response                 = buildResponse(
-              now = now,
-              profiles = visibleProf,
-              devices = visibleDevs,
-              lastSeen = lastSeen,
-              rows = rows,
-              appHostPatternsByProfile = appHostPatternsByProfile,
+            // #1970: the gather-and-assemble is shared with the SPA-websocket `now` push (S3) so the
+            // streamed body and this GET body are produced by ONE builder (SSOT) — recomputed on
+            // change for the push, per-request here.
+            response    <- computeNow(
+              now,
+              visibleProf,
+              visibleDevs,
+              trafficRepo,
+              connRepo,
+              appTimeLimitRepo,
             )
+              .mapError(ApiError.Db(_))
           } yield Response.json(response.toJson)
           handle.mapError(ErrorMapper.errorToResponse)
         },
     )
+
+  /**
+   * #1970: gather the NOW inputs and assemble the [[DashboardNow]] body. The single implementation
+   * of the NOW snapshot (design `docs/design/spa-websocket.md` §5.2 / `AGENTS.md`
+   * single-source-of-truth) — the `GET /api/dashboard/now` handler calls it per-request, and the
+   * SPA websocket `now` push ([[SpaPush]]) calls it on change. `profiles`/`devices` are the
+   * caller's already-visibility-filtered lists (the GET filters by claims; the push passes the full
+   * set since `now` is visible only to roles the GET shows everything to, §4.4), so this method is
+   * agnostic to the authz model. Reads run in parallel; a repo failure surfaces as the
+   * [[Throwable]].
+   *
+   * #1559: per-profile active-app host-set is read through the canonical [[ProfileAppDispositions]]
+   * fold so the dashboard cannot disagree with the counting paths on what "active app host" means
+   * (#1532 / #1560).
+   */
+  def computeNow(
+      now: Instant,
+      profiles: List[Profile],
+      devices: List[Device],
+      trafficRepo: TrafficReportRepo,
+      connRepo: ConnectionEventRepo,
+      appTimeLimitRepo: AppTimeLimitRepo,
+  ): Task[DashboardNow] = {
+    val visibleMacs = devices.map(_.mac)
+    val since       = now.minus(TopHostsWindow)
+    val connSince   = now.minus(RecentActivityWindow)
+    for {
+      lastSeenF  <- connRepo.lastSeenByMacSince(connSince).fork
+      rowsF      <- trafficRepo
+        .listTrafficRollupRows(
+          TrafficRollupFilter(
+            macs = Some(visibleMacs),
+            host = None,
+            since = Some(since),
+            until = None,
+          ),
+        )
+        .fork
+      appLimitsF <- appTimeLimitRepo.listAll.fork
+      lastSeen   <- lastSeenF.join
+      rows       <- rowsF.join
+      appLimits  <- appLimitsF.join
+      appHostPatternsByProfile = appLimits
+        .groupBy(_.profileId)
+        .view
+        .mapValues(ProfileAppDispositions.from(_).appHostPatterns)
+        .toMap
+    } yield buildResponse(
+      now = now,
+      profiles = profiles,
+      devices = devices,
+      lastSeen = lastSeen,
+      rows = rows,
+      appHostPatternsByProfile = appHostPatternsByProfile,
+    )
+  }
 
   /**
    * Pure assembly — exposed for unit tests.

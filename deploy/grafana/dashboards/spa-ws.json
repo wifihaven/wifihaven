@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "WifiHaven SPA websocket transport (#1968/#1969, design docs/design/spa-websocket.md, epic #1860): server-side health for the browser-facing /api/ws endpoint. Panels target ONLY the series the API actually emits today (S1+S2) — spa_ws_connections_active{role} + spa_ws_subscriptions_active{topic} (SpaWsRegistry), spa_ws_frames_total{op,direction,result} (SpaWsRoutes demux), and spa_ws_auth_total{result} (S2 upgrade auth). The SPA has no ws client yet (S5), so until then these read 0/flat. Push fan-out (spa_ws_push_total, S3/S4) panels land with that series. Labels are bounded enums only per the §4 cardinality firewall (no per-mac/profile/session/param label). datasource/env are templated for per-environment view.",
+  "description": "WifiHaven SPA websocket transport (#1968/#1969, design docs/design/spa-websocket.md, epic #1860): server-side health for the browser-facing /api/ws endpoint. Panels target ONLY the series the API actually emits today (S1+S2) — spa_ws_connections_active{role} + spa_ws_subscriptions_active{topic} (SpaWsRegistry), spa_ws_frames_total{op,direction,result} (SpaWsRoutes demux), and spa_ws_auth_total{result} (S2 upgrade auth). #1970 (S3) adds spa_ws_push_total{op,result} (SpaWsRegistry change-source fan-out — now/connectionEvents/stale). The SPA has no ws client yet (S5), so until then these read 0/flat; trafficUsage (S4) + timeStatus/appUsage (S6a) join the push panel as those topics start pushing. Labels are bounded enums only per the §4 cardinality firewall (no per-mac/profile/session/param label). datasource/env are templated for per-environment view.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -388,6 +388,63 @@
           },
           "expr": "sum by (result) (rate(spa_ws_auth_total{env=\"$env\",result=~\"bad_origin|invalid_jwt\"}[5m]))",
           "legendFormat": "{{result}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "title": "SPA ws push fan-out health by op,result (#1970)",
+      "description": "sum by (op, result) (rate(spa_ws_push_total[5m])) — the change-source fan-out health (design §5.2/§6.3). op is the pushed topic: now|connectionEvents|stale ship in S3 (trafficUsage in S4, timeStatus|appUsage in S6a — they appear here as those topics start pushing). result ∈ {ok, coalesced, dropped, channel_closed}: ok dominates once the SPA ws client ships (S5); rising channel_closed/dropped is the slow-client/backpressure tripwire — a wedged browser whose mailbox overflowed or whose socket the server gave up on. coalesced is the latest-wins/coalesce-by-topic saving (a slow client served only the freshest now/stale). Until S5 there are no subscribers, so this reads 0/flat.",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 24
+      },
+      "id": 7,
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "cps",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (op, result) (rate(spa_ws_push_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{op}} {{result}}",
           "refId": "A"
         }
       ]
