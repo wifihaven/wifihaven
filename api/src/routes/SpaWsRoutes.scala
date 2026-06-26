@@ -1,5 +1,7 @@
 package wifihaven.api.routes
 
+import wifihaven.api.WsConfig
+import wifihaven.api.auth.{AuthError, AuthService}
 import wifihaven.api.metrics.AppMetrics
 import wifihaven.api.observability.LogContext
 import wifihaven.shared.{Clock, UserRole}
@@ -9,71 +11,177 @@ import zio.http.ChannelEvent.UserEvent
 import zio.json.*
 import zio.json.ast.Json
 
+import java.time.Instant
+
 /**
- * #1968: the browser-facing websocket transport, `GET /api/ws`. This is step S1 of the
- * SPA-websocket rollout ([`docs/design/spa-websocket.md`](../../../docs/design/spa-websocket.md)
- * §9, design #1860; umbrella #1955) — the SERVER skeleton: the `{op, payload, seq?}` envelope
- * demux, the control ops (`hello`→`ready`, `subscribe`/`unsubscribe` with per-connection
- * subscription state + topic-keyed `ack`, `ping`/`pong`), and the forked per-connection
- * [[SpaWsRegistry]]. Purely additive: REST stays the fallback throughout the whole rollout (design
- * §3.3, §9), and the SPA has no ws client yet (that is S5). The endpoint is exercisable by a test
- * ws client today.
+ * #1968 / #1969: the browser-facing websocket transport, `GET /api/ws`. S1 (#1968) shipped the
+ * SERVER skeleton — the `{op, payload, seq?}` envelope demux, the control ops (`hello`→`ready`,
+ * `subscribe`/`unsubscribe` with per-connection subscription state + topic-keyed `ack`,
+ * `ping`/`pong`, unknown-op ignore+meter), and the forked per-connection [[SpaWsRegistry]]. S2
+ * (#1969) plugs in UPGRADE AUTH (design
+ * [`docs/design/spa-websocket.md`](../../../docs/design/spa-websocket.md) §4/§8): the connection is
+ * authorized BEFORE the 101, exactly like the router path.
  *
- * MIRRORS the router transport ([[RouterWsRoutes]], #1846) — same envelope discipline (one JSON
- * text message per frame), same demux shape, same unknown-op-ignore+meter forward-compat rule
- * (design §2.2) — but FORKS where the two genuinely differ (design §5.1): a per-connection id keyed
- * registry with a subscription set (not a `RouterId`→snapshot registry), the SPA op vocabulary, and
- * a topic-keyed `ack` (not the router's seq-keyed data-frame ack).
+ * Auth (design §4.2): the browser `WebSocket` constructor can't set an `Authorization` header
+ * (§0.2.1), so the operator JWT rides a tightly-scoped `wh_ws` cookie set just before connect. On
+ * the upgrade we (a) check the `Origin` against the configured allowlist (§8 — the one server-side
+ * ws config that differs by hosting mode), then (b) read the `wh_ws` cookie and verify it with the
+ * EXISTING [[AuthService.verify]] (no second auth surface — `AGENTS.md#single-source-of-truth`). A
+ * bad/missing/expired cookie or disallowed Origin → reject with a plain 401/403 (no 101), identical
+ * to a REST 401 and the router path. The resolved [[UserRole]] is captured at upgrade and is the
+ * fan-out authz key (§4.4); the JWT's `exp` is captured as the connection's authz deadline (§4.3) —
+ * a per-connection watcher closes the channel with `4401 token-expired` on the tick where `now ≥
+ * jwtExp`. Every upgrade outcome is metered `spa_ws_auth_total{result}` (§7).
  *
- * Auth is OUT OF SCOPE for S1 — the browser cannot set an `Authorization` header on the ws upgrade
- * (design §0.2.1), so S2 (#1969) authorizes the upgrade by verifying a tightly-scoped JWT cookie
- * via the existing [[wifihaven.api.auth.AuthService]] (no second auth surface). For S1 the
- * connection registers with a stub [[UserRole.Admin]] resolved at upgrade ([[upgradeRole]] — the
- * clear seam S2 plugs the cookie verify into), and the `hello` payload's optional `{role}` is the
- * test-handshake override that lets the subscription/authz machinery be exercised without a real
- * cookie.
+ * `reauth` is a forward-compat seam (§4.3): v1 has no silent token refresh, so the op is `ack`
+ * rejected — the SPA falls back to polling + `/login` on `4401`.
+ *
+ * MIRRORS the router transport ([[RouterWsRoutes]], #1846) — same envelope discipline, same
+ * pre-upgrade auth shape — but FORKS where the two genuinely differ (design §5.1): a cookie (not a
+ * bearer header) carries the credential, a per-connection id keyed registry with a subscription
+ * set, the SPA op vocabulary, and a topic-keyed `ack`.
  */
 object SpaWsRoutes {
 
   /** Convenience for callers that need a registry instance (Main wiring, tests). */
   def registry: UIO[SpaWsRegistry] = SpaWsRegistry.make
 
-  def routes(registry: SpaWsRegistry, clock: Clock): Routes[Any, Response] =
+  def routes(
+      auth: AuthService,
+      registry: SpaWsRegistry,
+      clock: Clock,
+      cfg: WsConfig,
+  ): Routes[Any, Response] =
     Routes(
       Method.GET / "api" / "ws" ->
-        handler { (_: Request) =>
-          // S1: no upgrade auth — complete the upgrade unconditionally with the stub role. S2 (#1969)
-          // verifies the `wh_ws` cookie + Origin allowlist here and rejects a bad/missing/expired
-          // credential with a 401 (no 101), exactly like the router path and a REST 401.
-          socketApp(registry, clock).toResponse
+        handler { (req: Request) =>
+          // Authorize the upgrade BEFORE completing it (design §4.2). On any rejection, meter the
+          // outcome and return the plain 401/403 Response (no 101) — the SPA treats a ws reject like
+          // a REST 401. On success, register with the resolved role + jwtExp and complete the upgrade.
+          authorizeUpgrade(req, auth, cfg).foldZIO(
+            reject =>
+              LogContext.annotate(LogContext.Result, reject.metric) {
+                AppMetrics.recordSpaWsAuth(reject.metric) *>
+                  ZIO.logWarning(s"spa ws: upgrade rejected (${reject.metric})") *>
+                  ZIO.succeed(reject.response)
+              },
+            authd =>
+              AppMetrics.recordSpaWsAuth("ok") *>
+                socketApp(registry, clock, authd, cfg).toResponse,
+          )
         },
     )
 
   /**
-   * The role resolved at upgrade time. S1 stub: every connection starts at the LEAST-privileged
-   * role ([[UserRole.Child]]) until a `hello{role}` overrides it (the test handshake).
-   * Least-privilege by default is deliberate defense-in-depth: S1 has no upgrade auth yet (that is
-   * S2 / #1969) and mounts in prod additively, so if a later step (S3/S4) ever pushed data before
-   * S2's cookie verify lands, an unauthenticated connection that never sent a `hello{role}` would
-   * see the *minimum* surface (fail closed), not Admin (fail open). The §4.4 authz gate
-   * (`SpaTopic.visibleTo`) then filters on this role. S2 replaces this stub with the role read from
-   * the verified `wh_ws` JWT cookie (design §4.2/§4.4), captured once and authoritative for the
-   * connection's lifetime — and #1969 is a hard predecessor to any data-bearing push step (S3/S4)
-   * for exactly this reason.
+   * The least-privileged role ([[UserRole.Child]]). S2 resolves the real role from the verified
+   * cookie at upgrade, so this is only a defensive fallback for the (impossible-post-auth) case
+   * where `roleFor` finds no registration for an active connection — fail closed, not open.
    */
-  private val upgradeRole: UserRole = UserRole.Child
+  private val fallbackRole: UserRole = UserRole.Child
 
-  private def socketApp(registry: SpaWsRegistry, clock: Clock): WebSocketApp[Any] =
+  /**
+   * The resolved upgrade identity captured once and authoritative for the connection's lifetime.
+   */
+  private final case class Authorized(role: UserRole, jwtExp: Instant)
+
+  /**
+   * Why an upgrade was refused. Each case carries its `spa_ws_auth_total{result}` label and the
+   * plain HTTP `Response` returned in place of the 101 — cookie failures map to 401 (mirroring a
+   * REST 401 / the router bearer path), a disallowed Origin to 403.
+   */
+  private enum UpgradeReject(val metric: String) {
+    case NoCookie   extends UpgradeReject("no_cookie")
+    case InvalidJwt extends UpgradeReject("invalid_jwt")
+    case ExpiredJwt extends UpgradeReject("expired_jwt")
+    case BadOrigin  extends UpgradeReject("bad_origin")
+
+    def response: Response = this match {
+      case NoCookie   => Response.unauthorized("missing wh_ws cookie")
+      case InvalidJwt => Response.unauthorized("invalid token")
+      case ExpiredJwt => Response.unauthorized("token expired")
+      case BadOrigin  => Response.forbidden("origin not allowed")
+    }
+  }
+
+  /**
+   * Resolve the upgrade to an [[Authorized]] identity, or fail with the reason it was refused.
+   * Origin first (cheap, no crypto), then the cookie verify (design §4.2). The verify is delegated
+   * to [[AuthService.verify]] — the SAME implementation REST uses — so the ws path adds no second
+   * JWT-validation surface.
+   */
+  private def authorizeUpgrade(
+      req: Request,
+      auth: AuthService,
+      cfg: WsConfig,
+  ): IO[UpgradeReject, Authorized] =
+    checkOrigin(req, cfg) *> verifyCookie(req, auth)
+
+  private def checkOrigin(req: Request, cfg: WsConfig): IO[UpgradeReject, Unit] =
+    if !cfg.enforceOrigin then ZIO.unit // self-hosted same-origin: cross-origin check off (§8)
+    else
+      originHost(req) match {
+        case Some(host) if cfg.originAllowed(host) => ZIO.unit
+        case _                                     => ZIO.fail(UpgradeReject.BadOrigin)
+      }
+
+  /** The Origin header's host (lower-cased), if the header is present and parseable. */
+  private def originHost(req: Request): Option[String] =
+    req
+      .rawHeader("Origin")
+      .flatMap(o => URL.decode(o).toOption)
+      .flatMap(_.host)
+      .map(_.toLowerCase)
+
+  private def verifyCookie(
+      req: Request,
+      auth: AuthService,
+  ): IO[UpgradeReject, Authorized] =
+    req.cookie("wh_ws").map(_.content) match {
+      case None        => ZIO.fail(UpgradeReject.NoCookie)
+      case Some(token) =>
+        auth
+          .verify(token)
+          .mapError {
+            case AuthError.TokenExpired => UpgradeReject.ExpiredJwt
+            case _                      => UpgradeReject.InvalidJwt
+          }
+          .map { claims =>
+            Authorized(
+              role = UserRole.parse(claims.role).getOrElse(fallbackRole),
+              jwtExp = Instant.ofEpochSecond(claims.exp),
+            )
+          }
+    }
+
+  private def socketApp(
+      registry: SpaWsRegistry,
+      clock: Clock,
+      authd: Authorized,
+      cfg: WsConfig,
+  ): WebSocketApp[Any] =
     Handler.webSocket { channel =>
       // The connection id is assigned at HandshakeComplete (register) and read by every later frame;
-      // events are delivered in order so the id is set before any Read. Deregister unconditionally on
-      // exit so the registry + gauges never leak a dead channel.
-      Ref.make(Option.empty[SpaConnId]).flatMap { idRef =>
-        channel
+      // events are delivered in order so the id is set before any Read. A per-connection expiry
+      // watcher is forked at register and interrupted on exit. Deregister unconditionally on exit so
+      // the registry + gauges never leak a dead channel.
+      for {
+        idRef    <- Ref.make(Option.empty[SpaConnId])
+        fiberRef <- Ref.make(Option.empty[Fiber.Runtime[Nothing, Unit]])
+        _        <- channel
           .receiveAll {
             case ChannelEvent.UserEventTriggered(UserEvent.HandshakeComplete) =>
-              registry.register(channel, upgradeRole, None).flatMap(id => idRef.set(Some(id))) *>
-                ZIO.logInfo("spa ws: connected")
+              registry.register(channel, authd.role, Some(authd.jwtExp)).flatMap { id =>
+                idRef.set(Some(id)) *>
+                  watchExpiry(
+                    channel,
+                    id,
+                    authd.jwtExp,
+                    registry,
+                    clock,
+                    cfg.expiryCheckInterval,
+                  ).forkDaemon
+                    .flatMap(f => fiberRef.set(Some(f)))
+              } *> ZIO.logInfo("spa ws: connected")
             case ChannelEvent.Read(WebSocketFrame.Text(text))                 =>
               idRef.get.flatMap {
                 case Some(id) =>
@@ -90,11 +198,48 @@ object SpaWsRoutes {
               ZIO.unit
           }
           .ensuring(
-            idRef.get.flatMap(ZIO.foreachDiscard(_)(registry.deregister)) *>
+            fiberRef.get.flatMap(ZIO.foreachDiscard(_)(_.interrupt)) *>
+              idRef.get.flatMap(ZIO.foreachDiscard(_)(registry.deregister)) *>
               ZIO.logInfo("spa ws: disconnected"),
           )
-      }
+      } yield ()
     }
+
+  /**
+   * The per-connection authz-deadline watcher (design §4.3). On each tick it reads the INJECTED
+   * clock; once `now ≥ jwtExp` it closes the channel with `4401 token-expired`, deregisters, and
+   * meters `jwt_expired_midconn`, then stops. Until then it sleeps one `interval` and re-checks, so
+   * stale-authz carry-over is bounded by one tick. Never fails; interrupted on connection close.
+   */
+  private def watchExpiry(
+      channel: WebSocketChannel,
+      id: SpaConnId,
+      jwtExp: Instant,
+      registry: SpaWsRegistry,
+      clock: Clock,
+      interval: Duration,
+  ): UIO[Unit] = {
+    def loop: UIO[Unit] =
+      clock.instant.flatMap { now =>
+        if !now.isBefore(jwtExp) then closeExpired(channel, id, registry)
+        else loop.delay(interval)
+      }
+    loop
+  }
+
+  private def closeExpired(
+      channel: WebSocketChannel,
+      id: SpaConnId,
+      registry: SpaWsRegistry,
+  ): UIO[Unit] =
+    AppMetrics.recordSpaWsAuth("jwt_expired_midconn") *>
+      ZIO.logInfo("spa ws: closing expired connection (4401 token-expired)") *>
+      registry.deregister(id) *>
+      // Send the close frame and let the handshake drive teardown (the peer echoes Close, then the
+      // server's receive loop ends and `.ensuring` runs). Do NOT `channel.shutdown` here — aborting
+      // the transport immediately after the send can truncate the Close frame before it flushes, so
+      // the client would see an abnormal 1006 instead of the `4401 token-expired` code (§4.3).
+      channel.send(ChannelEvent.read(WebSocketFrame.close(4401, Some("token-expired")))).ignore
 
   /**
    * Demux one inbound text frame (design §2.2). A frame that does not parse as the envelope, or
@@ -115,13 +260,21 @@ object SpaWsRoutes {
           ZIO.logWarning(s"spa ws: undecodable frame: $err")
       case Right(frame) =>
         registry.roleFor(id).flatMap { roleOpt =>
-          val role = roleOpt.getOrElse(upgradeRole)
+          val role = roleOpt.getOrElse(fallbackRole)
           LogContext
             .annotateAll(LogContext.Op -> frame.op, LogContext.Role -> UserRole.asString(role)) {
               frame.op match {
-                case "hello"       => handleHello(id, channel, frame, registry, clock)
+                case "hello"       => handleHello(id, channel, registry, clock)
                 case "subscribe"   => handleSubscribe(id, channel, frame, role, registry)
                 case "unsubscribe" => handleUnsubscribe(id, frame, registry)
+                case "reauth"      =>
+                  // Forward-compat seam (design §4.3): v1 has NO silent refresh, so reject. The SPA
+                  // falls back to polling + /login on `4401`; when refresh lands, the server will
+                  // advance jwtExp here instead.
+                  LogContext.annotate(LogContext.Result, "reject") {
+                    AppMetrics.recordSpaWsFrame("reauth", "in", "reject") *>
+                      sendAck(channel, "reauth", "reject", Some("reauth_unsupported"))
+                  }
                 case "ping"        =>
                   AppMetrics.recordSpaWsFrame("ping", "in", "ok") *>
                     send(channel, SpaWsFrame("pong", Some(Json.Obj()))) *>
@@ -143,22 +296,18 @@ object SpaWsRoutes {
     }
 
   /**
-   * `hello`→`ready` (design §1.2). S1: the optional payload `{role}` is the test-handshake override
-   * that sets the connection's role (S2 ignores it — the role comes from the verified cookie).
-   * Reply `ready{role, serverTime}`; `serverTime` is read from the INJECTED clock (never
-   * wall-clock).
+   * `hello`→`ready` (design §1.2). The connection's role was fixed at upgrade from the verified
+   * cookie (§4.2), so `hello` carries no role override — it just elicits `ready{role, serverTime}`.
+   * `serverTime` is read from the INJECTED clock (never wall-clock).
    */
   private def handleHello(
       id: SpaConnId,
       channel: WebSocketChannel,
-      frame: SpaWsFrame,
       registry: SpaWsRegistry,
       clock: Clock,
-  ): ZIO[Any, Throwable, Unit] = {
-    val requested = decode[HelloPayload](frame).toOption.flatMap(_.role).flatMap(UserRole.parse)
+  ): ZIO[Any, Throwable, Unit] =
     for {
-      _    <- ZIO.foreachDiscard(requested)(registry.setRole(id, _))
-      role <- registry.roleFor(id).map(_.getOrElse(upgradeRole))
+      role <- registry.roleFor(id).map(_.getOrElse(fallbackRole))
       now  <- clock.instant
       _    <- AppMetrics.recordSpaWsFrame("hello", "in", "ok")
       _    <- send(
@@ -170,7 +319,6 @@ object SpaWsRoutes {
       )
       _    <- AppMetrics.recordSpaWsFrame("ready", "out", "ok")
     } yield ()
-  }
 
   /**
    * `subscribe{topic, params?}` → topic-keyed `ack` (design §1.4). Fan-out is two gates (subscribe
@@ -258,9 +406,6 @@ object SpaWsRoutes {
    */
   private case class SpaWsFrame(op: String, payload: Option[Json] = None, seq: Option[Int] = None)
       derives JsonCodec
-
-  /** `hello` payload — `{role?}` is the S1 test-handshake override (S2 ignores it). */
-  private case class HelloPayload(role: Option[String]) derives JsonCodec
 
   /** `ready` payload (design §1.2): the resolved role + the server's (injected-clock) time. */
   private case class ReadyPayload(role: String, serverTime: String) derives JsonCodec

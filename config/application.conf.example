@@ -68,6 +68,26 @@ wifihaven {
     uiAllowedHosts = ""
   }
 
+  ws {
+    # #1969: SPA-websocket upgrade-auth Origin allowlist (design §8 — the one
+    # server-side ws config that differs by hosting mode). Comma-separated Origin
+    # HOSTS (scheme/port ignored) allowed to upgrade GET /api/ws. Wildcards: a
+    # leading "*.suffix" matches any subdomain of suffix; a trailing "prefix.*"
+    # matches prefix and prefix.<anything>. EMPTY disables the cross-origin check
+    # entirely — the self-hosted same-origin default, where SameSite=Strict on the
+    # wh_ws cookie is the CSWSH guard. Set on cloud/staging so a cross-site upgrade
+    # is rejected before the 101.
+    # Example (prod):    "app.wifihaven.net"
+    # Example (staging): "app-staging.wifihaven.net,staging.wifihaven.net"
+    # Example (dev):     "localhost"
+    allowedOrigins = ""
+
+    # #1969: cadence (seconds) at which each open ws connection re-checks the JWT's
+    # exp and closes with 4401 token-expired once crossed (design §4.3). Clamped to
+    # a 1s floor. Default 30s mirrors the app-level heartbeat.
+    # expiryCheckSeconds = 30
+  }
+
   metrics {
     # #1242: Prometheus exposition at GET /metrics (JVM + runtime + app
     # gauges/counters). enabled=false leaves the route unmounted.

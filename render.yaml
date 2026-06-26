@@ -126,6 +126,11 @@ services:
       # #1840: app-staging.wifihaven.net added additively (#1832 rename).
       - key: WIFIHAVEN_UI_ALLOWED_HOSTS
         value: "staging.wifihaven.net,api-staging.wifihaven.net,app-staging.wifihaven.net"
+      # #1969: SPA-websocket Origin allowlist (design §8). HOSTS only (scheme/port
+      # ignored) — the cross-site-upgrade backstop that pairs with the SameSite=Strict
+      # wh_ws cookie. Staging-only hosts; mirrors the SPA origins above.
+      - key: WIFIHAVEN_WS_ALLOWED_ORIGINS
+        value: "staging.wifihaven.net,app-staging.wifihaven.net"
       # #614: SPA is served by the wifihaven-spa-staging Static Site (CDN).
       # The JVM still bundles a copy as a self-hosted fallback, but the API
       # origin must not serve it here — non-/api/* paths return 404.
@@ -248,6 +253,11 @@ services:
       # #1840: app.wifihaven.net added additively (#1832 rename).
       - key: WIFIHAVEN_UI_ALLOWED_HOSTS
         value: "wifihaven.net,www.wifihaven.net,api.wifihaven.net,app.wifihaven.net"
+      # #1969: SPA-websocket Origin allowlist (design §8). HOSTS only (scheme/port
+      # ignored) — the cross-site-upgrade backstop that pairs with the SameSite=Strict
+      # wh_ws cookie. Mirrors the SPA origins above (where the dashboard ws client runs).
+      - key: WIFIHAVEN_WS_ALLOWED_ORIGINS
+        value: "wifihaven.net,www.wifihaven.net,app.wifihaven.net"
       # #614: SPA is served by the wifihaven-spa-prod Static Site (CDN).
       # The JVM still bundles a copy as a self-hosted fallback, but the API
       # origin must not serve it here — non-/api/* paths return 404.

@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "WifiHaven SPA websocket transport (#1968, design docs/design/spa-websocket.md, epic #1860): server-side health for the browser-facing /api/ws endpoint. Panels target ONLY the series the API actually emits today (S1) — spa_ws_connections_active{role} + spa_ws_subscriptions_active{topic} (SpaWsRegistry) and spa_ws_frames_total{op,direction,result} (SpaWsRoutes demux). The SPA has no ws client yet (S5), so until then these read 0/flat. Upgrade-auth (spa_ws_auth_total, S2) and push fan-out (spa_ws_push_total, S3/S4) panels land with those series. Labels are bounded enums only per the §4 cardinality firewall (no per-mac/profile/session/param label). datasource/env are templated for per-environment view.",
+  "description": "WifiHaven SPA websocket transport (#1968/#1969, design docs/design/spa-websocket.md, epic #1860): server-side health for the browser-facing /api/ws endpoint. Panels target ONLY the series the API actually emits today (S1+S2) — spa_ws_connections_active{role} + spa_ws_subscriptions_active{topic} (SpaWsRegistry), spa_ws_frames_total{op,direction,result} (SpaWsRoutes demux), and spa_ws_auth_total{result} (S2 upgrade auth). The SPA has no ws client yet (S5), so until then these read 0/flat. Push fan-out (spa_ws_push_total, S3/S4) panels land with that series. Labels are bounded enums only per the §4 cardinality firewall (no per-mac/profile/session/param label). datasource/env are templated for per-environment view.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -250,6 +250,144 @@
           },
           "expr": "sum by (op, result) (rate(spa_ws_frames_total{env=\"$env\",result=~\"reject|unknown_op\"}[5m]))",
           "legendFormat": "{{op}} {{result}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "title": "SPA ws upgrade-auth outcomes by result (#1969)",
+      "description": "sum by (result) (rate(spa_ws_auth_total[5m])) — outcomes of the /api/ws upgrade auth (design §4): the cookie verify (existing AuthService) + the §8 Origin allowlist, plus the mid-connection expiry close. result ∈ {ok, no_cookie, invalid_jwt, expired_jwt, bad_origin, jwt_expired_midconn}. ok should dominate once the SPA ws client ships (S5); a steady stream of no_cookie/expired_jwt is benign (an unauthenticated/expired tab), while bad_origin/invalid_jwt is the security-relevant surface broken out in the next panel.",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "id": 5,
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "cps",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "lineWidth": 1,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (result) (rate(spa_ws_auth_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{result}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "title": "SPA ws auth tripwire — bad_origin + invalid_jwt (#1969)",
+      "description": "sum (rate(spa_ws_auth_total{result=~\"bad_origin|invalid_jwt\"}[5m])) — the CSWSH/forgery-probe surface isolated (design §4/§7). bad_origin = an upgrade whose Origin failed the §8 allowlist; invalid_jwt = a wh_ws cookie that failed AuthService.verify (forged/garbage). Both are ~0 in normal operation: a sustained spike means something is hammering /api/ws with cross-site or forged upgrades and is alert-worthy. (no_cookie/expired_jwt are deliberately EXCLUDED here — those are benign unauthenticated/expired tabs, not an attack signal.) Threshold: amber > 0, red on a sustained climb.",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "id": 6,
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "cps",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "showPoints": "never",
+            "lineWidth": 2,
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.001
+              },
+              {
+                "color": "red",
+                "value": 0.1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (result) (rate(spa_ws_auth_total{env=\"$env\",result=~\"bad_origin|invalid_jwt\"}[5m]))",
+          "legendFormat": "{{result}}",
           "refId": "A"
         }
       ]
