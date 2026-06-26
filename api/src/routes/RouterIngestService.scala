@@ -91,7 +91,9 @@ final class RouterIngestService(
         // the `trafficUsage` write site — `UsageIngested` drives the live-edge head-bucket recompute
         // for subscribed `(groupBy,bucket,filter)` param-sets (design §5.3). Both are one-liners that
         // never block or fail ingest (sliding hub, UIO). timeStatus/appUsage pushes are S6a.
-        _        <- ZIO.when(records.nonEmpty)(bus.publish(SpaEvent.NowChanged))
+        _        <- ZIO.when(records.nonEmpty)(
+          bus.publish(SpaEvent.NowChanged) *> bus.publish(SpaEvent.UsageIngested),
+        )
       } yield ()
     }
 
