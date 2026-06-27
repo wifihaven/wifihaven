@@ -82,7 +82,9 @@ object SpaWsRoutes {
   /**
    * The resolved upgrade identity captured once and authoritative for the connection's lifetime.
    */
-  private final case class Authorized(role: UserRole, jwtExp: Instant)
+  // #1974 (S6a): `username` (JWT `sub`) is captured alongside the role so the class-(2)
+  // `timeStatus`/`appUsage` pushes can reuse the GET's per-child profile filter (design §4.4).
+  private final case class Authorized(role: UserRole, jwtExp: Instant, username: String)
 
   /**
    * Why an upgrade was refused. Each case carries its `spa_ws_auth_total{result}` label and the
@@ -149,6 +151,7 @@ object SpaWsRoutes {
             Authorized(
               role = UserRole.parse(claims.role).getOrElse(fallbackRole),
               jwtExp = Instant.ofEpochSecond(claims.exp),
+              username = claims.sub,
             )
           }
     }
@@ -170,18 +173,20 @@ object SpaWsRoutes {
         _        <- channel
           .receiveAll {
             case ChannelEvent.UserEventTriggered(UserEvent.HandshakeComplete) =>
-              registry.register(channel, authd.role, Some(authd.jwtExp)).flatMap { id =>
-                idRef.set(Some(id)) *>
-                  watchExpiry(
-                    channel,
-                    id,
-                    authd.jwtExp,
-                    registry,
-                    clock,
-                    cfg.expiryCheckInterval,
-                  ).forkDaemon
-                    .flatMap(f => fiberRef.set(Some(f)))
-              } *> ZIO.logInfo("spa ws: connected")
+              registry
+                .register(channel, authd.role, Some(authd.jwtExp), Some(authd.username))
+                .flatMap { id =>
+                  idRef.set(Some(id)) *>
+                    watchExpiry(
+                      channel,
+                      id,
+                      authd.jwtExp,
+                      registry,
+                      clock,
+                      cfg.expiryCheckInterval,
+                    ).forkDaemon
+                      .flatMap(f => fiberRef.set(Some(f)))
+                } *> ZIO.logInfo("spa ws: connected")
             case ChannelEvent.Read(WebSocketFrame.Text(text))                 =>
               idRef.get.flatMap {
                 case Some(id) =>

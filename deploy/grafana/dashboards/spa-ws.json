@@ -397,8 +397,8 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "title": "SPA ws push fan-out health by op,result (#1970)",
-      "description": "sum by (op, result) (rate(spa_ws_push_total[5m])) — the change-source fan-out health (design §5.2/§6.3). op is the pushed topic: now|connectionEvents|stale ship in S3, trafficUsage in S4 (#1971) (timeStatus|appUsage in S6a — they appear here as those topics start pushing). result ∈ {ok, coalesced, dropped, channel_closed}: ok dominates once the SPA ws client ships (S5); rising channel_closed/dropped is the slow-client/backpressure tripwire — a wedged browser whose mailbox overflowed or whose socket the server gave up on. coalesced is the latest-wins/coalesce-by-topic saving (a slow client served only the freshest now/stale). Until S5 there are no subscribers, so this reads 0/flat.",
+      "title": "SPA ws push fan-out health by op,result (#1970/#1974)",
+      "description": "sum by (op, result) (rate(spa_ws_push_total[5m])) — the change-source fan-out health (design §5.2/§6.3). op is the pushed topic: now|connectionEvents|stale ship in S3, trafficUsage in S4 (#1971), timeStatus|appUsage in S6a (#1974 — emitted by SpaWsRegistry.deliver on the per-recipient time-usage pushes). result ∈ {ok, coalesced, dropped, channel_closed}: ok dominates once a ws client is subscribed (timeStatus on the dashboard/profiles views, appUsage on an expanded profile card); rising channel_closed/dropped is the slow-client/backpressure tripwire — a wedged browser whose mailbox overflowed or whose socket the server gave up on. coalesced is the latest-wins/coalesce-by-topic saving (a slow client served only the freshest now/stale). With no subscriber for a topic, that op reads 0/flat (no query runs).",
       "type": "timeseries",
       "gridPos": {
         "h": 8,

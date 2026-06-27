@@ -836,6 +836,11 @@ object TimeRoutes {
       // drop the computed-snapshot cache so the fleet sees the unblock at once. Defaulted to a no-op
       // for test call sites; production passes `policy.invalidate`.
       invalidateSnapshot: UIO[Unit] = ZIO.unit,
+      // #1974 (SPA-ws S6a): a +Time grant immediately changes remaining-minutes, so it is a
+      // `timeStatus` push write site (design §5.2). One-liner publish on the SPA change bus; never
+      // blocks/fails the grant (sliding hub, UIO). Defaulted to the noop for test call sites that
+      // don't exercise the push path.
+      spaBus: SpaEventBus = SpaEventBus.noop,
   ): Routes[Any, Response] =
     Routes(
       // #777 — collapsed accordion summary. One batched presence query over ALL devices
@@ -1181,6 +1186,9 @@ object TimeRoutes {
             // #1849: a grant can lift a TimeLimit block — snapshot content — so drop the
             // computed-snapshot cache too.
             _  <- invalidateSnapshot
+            // #1974 (S6a): the grant changed remaining-minutes — push fresh `timeStatus`/`appUsage`
+            // to live SPA subscribers (design §5.2). Contentless trigger; the consumer rebuilds.
+            _  <- spaBus.publish(SpaEvent.TimeStatusChanged)
           } yield Response.json(s"""{"id":${id.value},"grantedMinutes":${ger.extraMinutes}}""")
           handle.mapError(ErrorMapper.errorToResponse)
         },
@@ -1248,59 +1256,12 @@ object TimeRoutes {
       )
       presence  <- trafficRepo.listPresenceRows(macs, date)
       appLimits <- appTimeLimitRepo.listForProfile(profile.id)
-      // #1546: per-device minutes come from the canonical per-mac decomposition of the headline
-      // total, so they share one exempt-pattern + overlap definition with `state.usedMinutes` and
-      // cannot drift from it (no open-coded `totalMinutesByMac` recompute). Under Dedup this is a
-      // disjoint attribution of the union, so the summaries reconcile with the headline instead of
-      // summing to >100%.
-      perMacSeconds   = wifihaven.api.policy.TimeStatusService
-        .usedSecondsByMac(profile, devices, appLimits, presence, settings)
-      appUsage        = state.perApp.map { s =>
-        AppUsage(
-          s.label,
-          s.domainPattern,
-          s.dailyLimitMinutes,
-          s.usedMinutes,
-          s.dailyLimitMinutes.map(lim => (lim - s.usedMinutes).max(0)),
-        )
-      }
-      deviceSummaries = devices.map { d =>
-        DeviceUsageSummary(d.mac, d.name, (perMacSeconds.getOrElse(d.mac, 0L) / 60L).toInt)
-      }
-      // #262 — top-N host attribution across all profile devices for the day.
-      // `usedMins` is bucket-presence and `proportionalMins` is the #715
-      // byte-share-weighted attribution; UI defaults to the latter. Hosts
-      // with zero presence are dropped so the top-10 list isn't padded by
-      // hosts that exist only because the bucket touched them at all.
-      hostUsage       = {
-        val presenceMins =
-          wifihaven.api.presence.Presence.hostMinutes(presence, settings.heartbeatFilter)
-        val proportional = wifihaven.api.presence.Presence
-          .proportionalHostMinutes(
-            presence,
-            profile.crossDeviceOverlapMode,
-            settings.heartbeatFilter,
-            settings.presenceContinuationSeconds,
-          )
-        presenceMins.iterator
-          .filter(_._2 > 0)
-          .map { case (h, m) => HostUsage(h, m, proportional.getOrElse(h, 0)) }
-          .toList
-          .sortBy(hu => (-hu.proportionalMins, -hu.usedMins, hu.host.value))
-          .take(10)
-      }
-    } yield ProfileTimeStatus(
-      profile.id,
-      profile.name,
-      state.date.toString,
-      state.dailyLimitMinutes,
-      state.usedMinutes,
-      state.extensionMinutes,
-      state.remainingMinutes,
-      appUsage,
-      deviceSummaries,
-      hostUsage,
-    )
+      // #1974: the wire shape is assembled by the SINGLE shared builder so the live `timeStatus` ws
+      // push and this GET produce byte-identical bodies (AGENTS.md §single-source-of-truth). It reads
+      // `state`'s cap/used/remaining verbatim (no minute recompute) and folds in the presence-derived
+      // per-device + top-N host views the snapshot doesn't carry.
+    } yield wifihaven.api.policy.TimeStatusService
+      .assembleProfileTimeStatus(profile, devices, state, presence, appLimits, settings)
   }
 
   /**
