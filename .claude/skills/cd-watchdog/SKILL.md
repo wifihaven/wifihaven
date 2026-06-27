@@ -72,8 +72,44 @@ but a test in that shared gate — identify which it actually is.
 
 ## Step 3 — INFRA-FLAKE TRIAGE (do this BEFORE treating anything as a code bug)
 
-Classify the failure. It is an **INFRASTRUCTURE / ENVIRONMENT flake** (NOT a
-code bug) if the failing step shows things like:
+### 3.0 — FIRST check the run history, not just the latest commit
+
+**Do NOT call a red a flake just because the commit that triggered the failing
+run is unrelated to the failing test.** The triggering commit only tells you
+what *ran*, not what *introduced* the break. A pure-content commit (e.g. an
+app-template YAML add) can be the run that first surfaces a REAL regression from
+an EARLIER merge whose own CD failed-but-merged-anyway or was cancelled before
+the failing gate ran.
+
+Before classifying, pull the history and find the **last GREEN** run:
+
+```bash
+gh run list --workflow=<file>.yml --branch main --limit 12 \
+  --json conclusion,headSha,displayTitle,databaseId,createdAt
+```
+
+- **Sustained red** — the SAME gate/test has failed across **≥2 consecutive
+  runs on different commits** since some merge → almost certainly a **real
+  regression**, regardless of what the latest commit touched. Identify the
+  FIRST red and what IT merged (check whether its own run failed/was cancelled
+  before this gate ran) — that commit is the suspect, not the latest one.
+  Go to Step 4/5; do **not** re-run it as a flake.
+- **Endpoint/test-specific** — if earlier probes in the same test pass and only
+  one endpoint/test times out, the service is healthy and it's a real code bug,
+  not environmental.
+- **Isolated + varied** — a single isolated red, or a *different* test/arm
+  failing each run with a known infra signature (below) → genuine flake; proceed
+  with re-run triage.
+
+> Caught this way 2026-06-27: Gate 3b was red on the unrelated A-Z Animals YAML
+> commit (#2010). History showed Gate 3b red for 3 consecutive runs since #1974
+> (a `/api/time/status` rewrite that merged despite its own CD failing) — a real
+> regression (#2012), not a flake. Re-running would have looped forever.
+
+### 3.1 — Infra-flake signals
+
+Once 3.0 says the red looks isolated, classify it. It is an **INFRASTRUCTURE /
+ENVIRONMENT flake** (NOT a code bug) if the failing step shows things like:
 
 - **"docker daemon not responding"** / "restart Docker Desktop" / a Docker stall
   on the self-hosted (plex) runner.
