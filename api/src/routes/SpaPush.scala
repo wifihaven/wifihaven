@@ -465,8 +465,12 @@ object SpaPush {
    * #1974 (S6a): the `appUsage` push (design §1.2/§3.1, class-(2)). For each DISTINCT subscribed +
    * ENTITLED `profileId`, rebuild the `/api/profiles/{id}/usage-by-app` today body via the shared
    * [[UsageRoutes.buildUsageByApp]] (SSOT — the same repo-load + compute the GET runs) and deliver
-   * it to the matching recipients. `from == to == clock.today` (the GET's today default). A child
-   * only receives a profileId it is linked to (design §4.4). No subscriber → no query.
+   * it to the matching recipients. `from == to ==` the HOUSEHOLD-LOCAL today (same as the
+   * `timeStatus` push, [[PolicyService.householdLocalDate]]) — the household-tz day the browser's
+   * own local-today maps to, so the pushed body lands on the same per-app cache window the card
+   * renders even for non-UTC households (a UTC `clock.today` would skew a tz-crossing household by
+   * a day until refetch). A child only receives a profileId it is linked to (design §4.4). No
+   * subscriber → no query.
    */
   private def pushAppUsage(
       registry: SpaWsRegistry,
@@ -490,8 +494,9 @@ object SpaPush {
                 Option.when(visible.forall(_.contains(pid)))(r -> pid)
               }
             }
-            today <- clock.today
+            now <- clock.instant
             settings <- deps.hsRepo.get
+            today        = PolicyService.householdLocalDate(now, settings)
             distinctPids = entitled.map(_._2).distinct
             // Build each entitled profile's body ONCE; a NotFound/etc. drops that profile's push only.
             bodies <- ZIO.foreach(distinctPids) { pid =>

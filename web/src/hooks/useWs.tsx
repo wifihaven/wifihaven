@@ -207,8 +207,15 @@ export function useWsTimeStatus(): void {
  * (subscription = mounted UI, §1.4). The server pushes the per-app `/api/profiles/{id}/usage-by-app`
  * body for TODAY; we patch ONLY the live today-window key `profileUsageByApp(profileId, from, to)`
  * — past windows are immutable, so the push never touches them (§3.1). `from`/`to` are the card's
- * today window (the same local-today the page's query uses), so the patch lands on exactly the key
- * the breakdown renders. Refetched once on reconnect.
+ * today window (the same local-today the page's query uses); the server computes its body for the
+ * household-local today, which the browser's local-today maps to, so the patch lands on the key the
+ * breakdown renders. Refetched once on reconnect.
+ *
+ * v1 LIMITATION: the transport holds ONE subscription per topic (wsClient.subs), so with several
+ * profile cards expanded at once only the most-recently-mounted card's `appUsage` streams (and a
+ * collapse can drop a sibling's). It degrades gracefully — each card still shows its initial
+ * `useProfileUsageByApp` fetch (no wrong data), and live-updates resume when a single card is open.
+ * Multi-subscription-per-topic is the SharedWorker direction (design §6.4/S8).
  */
 export function useWsAppUsage(profileId: number, from: string, to: string, enabled = true): void {
   const qc = useQueryClient()
