@@ -136,7 +136,7 @@ def _ws_health_present() -> bool:
 
 
 def _nudge_conntrack() -> None:
-    """Emit one LAN-side flow so the agent's conntrack-driven `on_tick` fires.
+    """Emit a small burst of LAN-side flows so the agent's `on_tick` fires.
 
     The agent's cooperative scheduler — the policy poll, usage/metrics timers,
     and the #1945 apply-on-push tick — all run inside `conntrack.watch`'s loop,
@@ -149,11 +149,21 @@ def _nudge_conntrack() -> None:
     exactly as a live network's traffic does continuously. The GET carries NO
     policy (the HTTP poll stays frozen at 3600s, and a bare /healthz hit is not a
     snapshot fetch), so the enforcement flip remains attributable to the ws push.
+
+    #2001: we fire a *burst* (not a single GET) because `conntrack -E`'s stdout
+    is block-buffered when piped (no `stdbuf` on OpenWRT), so under VM load a lone
+    sparse event can sit in conntrack's ~4 KiB buffer for tens of seconds before
+    it flushes to the agent's reader — starving `on_tick` and stretching the
+    apply latency. A handful of flows per wait-iteration fills that buffer sooner,
+    so `on_tick` (and the apply-on-push tick it rides) runs promptly. Still bounded
+    and policy-free, so the push remains the sole enforcement source.
     """
     router_ssh(
-        'curl -s -m 3 -o /dev/null "$(uci get wifihaven.wifihaven.api_url)/healthz" '
-        "2>/dev/null || true",
-        check=False, timeout=10,
+        'u="$(uci get wifihaven.wifihaven.api_url)"; '
+        "for _ in 1 2 3 4 5; do "
+        'curl -s -m 2 -o /dev/null "$u/healthz" 2>/dev/null || true; '
+        "done",
+        check=False, timeout=20,
     )
 
 

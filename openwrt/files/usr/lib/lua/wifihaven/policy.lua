@@ -364,14 +364,39 @@ end
 
 local SNAPSHOT_PATH = "/etc/wifihaven/policy.json"
 
--- save_snapshot(snap, write_fn, rename_fn) → bool
+-- save_snapshot(snap, write_fn, rename_fn, log[, read_fn, expect_etag]) → bool
 --   write_fn(path, content)  → ok, err
 --   rename_fn(from_path, to) → ok[, err]
+--   read_fn(path)            → content|nil  (optional — enables the #2001 guard)
+--   expect_etag              → string|nil   (the etag we fetched against)
 -- Atomic: writes to <path>.tmp then renames over <path>. Skips the rename
 -- if the write fails, so a torn or partial write never replaces a good
 -- on-disk snapshot.
-function M.save_snapshot(snap, write_fn, rename_fn, log)
+--
+-- #2001 compare-and-swap guard: when ws push is the IN channel (#1849/#1945)
+-- the sidecar ALSO writes policy.json. A poll/startup save that fetched an
+-- OLDER snapshot must not clobber a NEWER one the sidecar persisted while the
+-- (slow, under-load) apply was in flight — otherwise the frozen-poll agent
+-- never re-applies the push and enforcement silently reverts. When a `read_fn`
+-- is supplied we re-read the on-disk etag just before the rename and SKIP the
+-- write (returning true — the fresher file is intentionally kept) iff the
+-- on-disk etag is a different, non-nil value than both `expect_etag` (what we
+-- fetched against) and the snapshot we're about to write. With no `read_fn`
+-- the behaviour is the unconditional write legacy callers/tests expect.
+function M.save_snapshot(snap, write_fn, rename_fn, log, read_fn, expect_etag)
   log = log or default_log()
+  if read_fn then
+    local on_disk = M.load_snapshot(read_fn, log)
+    local disk_etag = on_disk and on_disk.etag or nil
+    if disk_etag ~= nil
+       and disk_etag ~= expect_etag
+       and disk_etag ~= (snap and snap.etag) then
+      log.info("policy.save_snapshot: on-disk etag=%s differs from expected=%s "
+               .. "and from to-write=%s — keeping the fresher (ws-pushed) snapshot (#2001)",
+               tostring(disk_etag), tostring(expect_etag), tostring(snap and snap.etag))
+      return true
+    end
+  end
   local jsonc = require("luci.jsonc")
   local body = jsonc.stringify(snap)
   local tmp = SNAPSHOT_PATH .. ".tmp"
