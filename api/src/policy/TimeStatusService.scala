@@ -723,6 +723,74 @@ object TimeStatusService {
    * `presence` must already be scoped to the profile's devices (as the live read paths and the
    * routes both do).
    */
+  /**
+   * #1974 (SPA-ws S6a): the SINGLE place that assembles the `/api/time/status` per-profile wire
+   * shape ([[ProfileTimeStatus]]) from a canonical [[ProfileDayState]] plus the day's presence
+   * rows. Both the REST `GET /api/time/status` builder (`TimeRoutes.buildProfileTimeStatus`) and
+   * the live `timeStatus` ws push ([[wifihaven.api.routes.SpaPush]]) call this, so the streamed
+   * body is byte-identical to what the GET returns (AGENTS.md §single-source-of-truth). The
+   * cap/used/ remaining/extension numbers come verbatim off `state` — this NEVER recomputes
+   * minutes; only the presence-derived per-device and top-N host views (which the snapshot doesn't
+   * carry) are folded in here, exactly as before. `presence` must already be scoped to the
+   * profile's devices.
+   */
+  def assembleProfileTimeStatus(
+      profile: Profile,
+      devices: List[Device],
+      state: ProfileDayState,
+      presence: List[PresenceRow],
+      appLimits: List[AppTimeLimit],
+      settings: HouseholdSettings,
+  ): ProfileTimeStatus = {
+    // #1546: per-device minutes come from the canonical per-mac decomposition of the headline total,
+    // so they share one exempt-pattern + overlap definition with `state.usedMinutes` and cannot drift
+    // from it.
+    val perMacSeconds   = usedSecondsByMac(profile, devices, appLimits, presence, settings)
+    val appUsage        = state.perApp.map { s =>
+      AppUsage(
+        s.label,
+        s.domainPattern,
+        s.dailyLimitMinutes,
+        s.usedMinutes,
+        s.dailyLimitMinutes.map(lim => (lim - s.usedMinutes).max(0)),
+      )
+    }
+    val deviceSummaries = devices.map { d =>
+      DeviceUsageSummary(d.mac, d.name, (perMacSeconds.getOrElse(d.mac, 0L) / 60L).toInt)
+    }
+    // #262 — top-N host attribution across all profile devices for the day. `usedMins` is bucket-
+    // presence and `proportionalMins` is the #715 byte-share-weighted attribution; UI defaults to the
+    // latter. Hosts with zero presence are dropped so the top-10 isn't padded by buckets the host
+    // merely touched.
+    val hostUsage       = {
+      val presenceMins = Presence.hostMinutes(presence, settings.heartbeatFilter)
+      val proportional = Presence.proportionalHostMinutes(
+        presence,
+        profile.crossDeviceOverlapMode,
+        settings.heartbeatFilter,
+        settings.presenceContinuationSeconds,
+      )
+      presenceMins.iterator
+        .filter(_._2 > 0)
+        .map { case (h, m) => HostUsage(h, m, proportional.getOrElse(h, 0)) }
+        .toList
+        .sortBy(hu => (-hu.proportionalMins, -hu.usedMins, hu.host.value))
+        .take(10)
+    }
+    ProfileTimeStatus(
+      profile.id,
+      profile.name,
+      state.date.toString,
+      state.dailyLimitMinutes,
+      state.usedMinutes,
+      state.extensionMinutes,
+      state.remainingMinutes,
+      appUsage,
+      deviceSummaries,
+      hostUsage,
+    )
+  }
+
   def usedSecondsByMac(
       profile: Profile,
       devices: List[Device],

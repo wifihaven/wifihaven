@@ -201,7 +201,13 @@ object Main extends ZIOAppDefault {
               },
               new wifihaven.api.policy.PolicySnapshotPublisher {
                 def publish(snap: wifihaven.shared.PolicySnapshot): UIO[Unit] =
-                  spaEventBus.publish(SpaEvent.NowChanged)
+                  // #1974 (S6a): the #1849 reevaluate (fixed-interval ticker + every policy mutation)
+                  // can change a profile's remaining-minutes / over-limit WITHOUT new usage (schedule
+                  // boundary, cap exhaustion, unpause, +Time), so it is a `timeStatus`/`appUsage` push
+                  // write site too (design §5.2). `now` for the dashboard, `TimeStatusChanged` for the
+                  // live screen-time surface.
+                  spaEventBus.publish(SpaEvent.NowChanged) *>
+                    spaEventBus.publish(SpaEvent.TimeStatusChanged)
               },
             ),
           ),
@@ -256,8 +262,11 @@ object Main extends ZIOAppDefault {
         // fans out subscription-gated, role-filtered `now`/`connectionEvents`/`stale` frames over
         // `/api/ws` (design §5.2). forkScoped (inside `run`) so it is interrupted before the Hikari
         // pool closes on shutdown, like the rollup loops. `now` rebuilds via the shared
-        // DashboardNowRoutes.computeNow builder (SSOT). No SPA ws client ships until S5, so this
-        // reads idle in prod until then; it is additive and never blocks ingest.
+        // DashboardNowRoutes.computeNow builder (SSOT). #1974 (S6a): the same consumer also drives the
+        // live `timeStatus`/`appUsage` pushes — wire its extra deps (canonical minutes, settings, the
+        // per-child profile filter). It is additive and never blocks ingest.
+        timeStatusForPush <- ZIO.service[wifihaven.api.policy.TimeStatusService]
+        upRepoForPush     <- ZIO.service[UserProfileRepo]
         _                 <- SpaPush.run(
           spaEventBus,
           spaWsRegistry,
@@ -269,6 +278,7 @@ object Main extends ZIOAppDefault {
           appRepoForSeed,
           stlRepoForJ,
           clockForJobs,
+          Some(SpaPush.TimeUsageDeps(timeStatusForPush, hsRepo, upRepoForPush)),
         )
         _                 <- ZIO.logInfo("spa-ws push consumer fiber forked")
         // #1243: poll the HikariCP MXBean into the Prometheus pool gauges. forkDaemon so it lives
@@ -460,6 +470,8 @@ object Main extends ZIOAppDefault {
           timeCache,
           // #1849: a +Time grant can lift a TimeLimit block, so bust the computed-snapshot cache.
           policy.invalidate,
+          // #1974 (S6a): the grant changes remaining-minutes — push fresh timeStatus/appUsage live.
+          spaEventBus,
         ) ++
           LogRoutes.routes(auth, connRepo, upRepo) ++
           UsageRoutes.routes(

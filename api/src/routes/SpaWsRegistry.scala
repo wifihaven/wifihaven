@@ -75,6 +75,26 @@ final case class SpaConnState(
     role: UserRole,
     subscriptions: Map[SpaTopic, Json],
     jwtExp: Option[Instant],
+    // #1974 (S6a): the authenticated username (JWT `sub`), captured at upgrade. Needed to reuse the
+    // GET's per-child profile filter for the class-(2) `timeStatus`/`appUsage` thick pushes (design
+    // §4.4 — "the body is filtered per-role before send, exactly as the matching GET filters"): an
+    // admin/adult sees all profiles, a child only the profiles they're linked to
+    // (`UserProfileRepo.listProfilesForUsername`). `None` only for pre-auth/test registrations.
+    username: Option[String] = None,
+)
+
+/**
+ * #1974 (S6a): a connection eligible to receive a class-(2) `timeStatus`/`appUsage` push — it
+ * SUBSCRIBED to the topic AND its role may see it (§4.4). Carries the identity the per-recipient
+ * GET filter needs (`role` + `username`) and the subscription `params` (e.g. `appUsage`'s
+ * `profileId`). [[SpaPush]] resolves each recipient's visible-profile set and delivers the filtered
+ * body.
+ */
+final case class SpaRecipient(
+    id: SpaConnId,
+    role: UserRole,
+    username: Option[String],
+    params: Json,
 )
 
 /**
@@ -98,8 +118,17 @@ final case class SpaConnState(
  */
 trait SpaWsRegistry {
 
-  /** Record a freshly-upgraded channel with its resolved role; returns its connection id. */
-  def register(channel: WebSocketChannel, role: UserRole, jwtExp: Option[Instant]): UIO[SpaConnId]
+  /**
+   * Record a freshly-upgraded channel with its resolved role + (S6a) authenticated username;
+   * returns its connection id. The username is the JWT `sub`, captured so the class-(2)
+   * `timeStatus`/ `appUsage` pushes can reuse the GET's per-child profile filter (design §4.4).
+   */
+  def register(
+      channel: WebSocketChannel,
+      role: UserRole,
+      jwtExp: Option[Instant],
+      username: Option[String] = None,
+  ): UIO[SpaConnId]
 
   /** Drop a closed/closing connection. Idempotent. Refreshes the gauges. */
   def deregister(id: SpaConnId): UIO[Unit]
@@ -175,6 +204,34 @@ trait SpaWsRegistry {
    * head, never a backlog. Metered per send like [[fanOut]].
    */
   def fanOutTrafficUsage(params: Json, payload: Json): UIO[Unit]
+
+  /**
+   * #1974 (S6a): the connections eligible for a `timeStatus` push — subscribed to `TimeStatus` AND
+   * role-visible (§4.4). Each carries the `(role, username)` the per-child GET filter needs;
+   * [[SpaPush]] builds the full `ProfileTimeStatus[]` once, then delivers each recipient its
+   * role-visible subset (admin/adult: all; child: their linked profiles). Empty ⇒ no subscriber ⇒
+   * no `dayStateAllLive` query ("don't compute what nobody watches").
+   */
+  def timeStatusRecipients: UIO[List[SpaRecipient]]
+
+  /**
+   * #1974 (S6a): the connections eligible for an `appUsage` push — subscribed to `AppUsage` AND
+   * role-visible (§4.4). Each recipient's `params` carries the subscribed `{profileId}` (the
+   * expanded card). [[SpaPush]] builds the per-app body once per DISTINCT entitled `profileId` and
+   * delivers it to the matching recipients. Empty ⇒ no subscriber ⇒ no query.
+   */
+  def appUsageRecipients: UIO[List[SpaRecipient]]
+
+  /**
+   * #1974 (S6a): deliver a pre-built class-(2) frame to ONE connection (the per-recipient body the
+   * `timeStatus`/`appUsage` thick pushes need — each recipient may receive a differently-filtered
+   * body, so the fan-out can't share one frame). Looks up the live channel; a no-longer-registered
+   * id is a no-op. Metered exactly like the other pushes (`spa_ws_push_total{op,result}` + frames-
+   * out on success); a send failure (racing disconnect) meters `channel_closed` and deregisters.
+   * The caller is responsible for the subscription + role gate (it got `id` from
+   * [[timeStatusRecipients]]/[[appUsageRecipients]]).
+   */
+  def deliver(id: SpaConnId, op: String, payload: Json): UIO[Unit]
 }
 
 object SpaWsRegistry {
@@ -207,11 +264,18 @@ final class SpaWsRegistryLive(
       )
   }
 
-  def register(channel: WebSocketChannel, role: UserRole, jwtExp: Option[Instant]): UIO[SpaConnId] =
+  def register(
+      channel: WebSocketChannel,
+      role: UserRole,
+      jwtExp: Option[Instant],
+      username: Option[String] = None,
+  ): UIO[SpaConnId] =
     for {
       n <- seq.updateAndGet(_ + 1)
       id = SpaConnId(n)
-      m <- state.updateAndGet(_.updated(id, SpaConnState(channel, role, Map.empty, jwtExp)))
+      m <- state.updateAndGet(
+        _.updated(id, SpaConnState(channel, role, Map.empty, jwtExp, username)),
+      )
       _ <- publishGauges(m)
     } yield id
 
@@ -326,6 +390,36 @@ final class SpaWsRegistryLive(
         )(
           sendPush(id, s.channel, op, frame),
         )
+      }
+    }
+
+  // ── #1974 (S6a) timeStatus / appUsage recipients + per-recipient delivery ──────────────────────
+  // These class-(2) thick pushes filter the body PER recipient (admin/adult see all profiles, a
+  // child only their linked ones — design §4.4), so unlike `now`/`trafficUsage` the fan-out can't
+  // share one frame. The registry exposes the gated recipient list (subscription AND role) plus a
+  // per-connection `deliver`; SpaPush owns the body build + the userProfileRepo-backed filter.
+
+  def timeStatusRecipients: UIO[List[SpaRecipient]] =
+    recipientsFor(SpaTopic.TimeStatus)
+
+  def appUsageRecipients: UIO[List[SpaRecipient]] =
+    recipientsFor(SpaTopic.AppUsage)
+
+  private def recipientsFor(topic: SpaTopic): UIO[List[SpaRecipient]] =
+    state.get.map(
+      _.iterator
+        .collect {
+          case (id, s) if s.subscriptions.contains(topic) && SpaTopic.visibleTo(topic, s.role) =>
+            SpaRecipient(id, s.role, s.username, s.subscriptions(topic))
+        }
+        .toList,
+    )
+
+  def deliver(id: SpaConnId, op: String, payload: Json): UIO[Unit] =
+    state.get.flatMap { m =>
+      m.get(id) match {
+        case Some(s) => sendPush(id, s.channel, op, frameText(op, payload.toJson))
+        case None    => ZIO.unit // raced a disconnect — nothing to deliver to
       }
     }
 

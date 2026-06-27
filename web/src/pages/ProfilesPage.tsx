@@ -4,6 +4,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
 import { useBlocklists, useGlobalProfile, useProfiles, useDevices, useInvalidators, useNamedSchedules, useProfileUsageByApp, useTimeStatusSummary } from '@/api/queries'
 import { useAuth } from '@/hooks/useAuth'
+import { useWsTimeStatus, useWsTopicLive } from '@/hooks/useWs'
 import { useDebouncedSave, type SaveStatus } from '@/hooks/useDebouncedSave'
 import { SaveStatusBadge } from '@/components/SaveStatusBadge'
 import { SchedulePicker } from '@/components/SchedulePicker'
@@ -122,7 +123,12 @@ export function ProfilesPage() {
   // admin and the page already gates most editing on `isAdmin`).
   const globalProfileQuery = useGlobalProfile({ enabled: isAdmin })
   const devicesQuery  = useDevices()
-  const summariesQuery = useTimeStatusSummary()
+  // #1974 (SPA-ws S6a): subscribe the live `timeStatus` push (patches the summary cache off the
+  // pushed body), and pause the summary's adaptive ladder while that push is streaming (§3.3 — the
+  // ladder stays the disconnected fallback, it is not removed until S7).
+  useWsTimeStatus()
+  const timeStatusLive = useWsTopicLive('timeStatus')
+  const summariesQuery = useTimeStatusSummary({ wsLive: timeStatusLive })
   const profiles  = useMemo(() => {
     const list = profilesQuery.data ?? []
     const g    = globalProfileQuery.data

@@ -2,14 +2,15 @@ package wifihaven.api.routes
 
 import wifihaven.api.db.*
 import wifihaven.api.observability.LogContext
+import wifihaven.api.policy.{PolicyService, TimeStatusService}
 import wifihaven.api.usage.{AppMembership, UsageTraffic, UsageTrafficQuery}
-import wifihaven.shared.{Clock, Device, TrafficUsageResponse}
+import wifihaven.shared.{Clock, Device, Profile, ProfileTimeStatus, TrafficUsageResponse, UserRole}
 import wifihaven.shared.types.{MacAddress, ProfileId}
 import zio.{Clock as _, *}
 import zio.json.*
 import zio.json.ast.Json
 
-import java.time.{Duration, Instant, ZoneId}
+import java.time.{Duration, Instant, LocalDate, ZoneId}
 
 /**
  * #1970 (S3) / #1971 (S4), SPA-websocket design `docs/design/spa-websocket.md` §5.2/§5.3: the
@@ -51,6 +52,19 @@ import java.time.{Duration, Instant, ZoneId}
 object SpaPush {
 
   /**
+   * #1974 (S6a): the extra services the `timeStatus`/`appUsage` pushes need, bundled `Option`al so
+   * the S3/S4 harnesses (which never publish [[SpaEvent.TimeStatusChanged]]) construct `run`
+   * without them. `timeStatusService` provides the canonical `dayStateAllLive` minutes; `hsRepo`
+   * the household settings (today/heartbeat); `userProfileRepo` the per-child profile filter the
+   * GET uses (design §4.4). Production always passes `Some(...)`.
+   */
+  final case class TimeUsageDeps(
+      timeStatusService: TimeStatusService,
+      hsRepo: HouseholdSettingsRepo,
+      userProfileRepo: UserProfileRepo,
+  )
+
+  /**
    * Subscribe to the bus and process events forever in a forked fiber. Scoped: the Hub subscription
    * and the fiber are released when the enclosing scope closes (forkScoped, like the rollup loops
    * in `Main`). Returns once subscribed + forked, so events published after `run` returns are seen.
@@ -66,6 +80,7 @@ object SpaPush {
       appRepo: AppRepo,
       appTimeLimitRepo: AppTimeLimitRepo,
       clock: Clock,
+      timeUsage: Option[TimeUsageDeps] = None,
   ): ZIO[Scope, Nothing, Unit] =
     bus.subscribe.flatMap { queue =>
       drainBatch(
@@ -79,6 +94,7 @@ object SpaPush {
         appRepo,
         appTimeLimitRepo,
         clock,
+        timeUsage,
       ).forever.forkScoped.unit
     }
 
@@ -100,6 +116,7 @@ object SpaPush {
       appRepo: AppRepo,
       appTimeLimitRepo: AppTimeLimitRepo,
       clock: Clock,
+      timeUsage: Option[TimeUsageDeps],
   ): UIO[Unit] =
     for {
       first <- queue.take
@@ -117,6 +134,7 @@ object SpaPush {
           appRepo,
           appTimeLimitRepo,
           clock,
+          timeUsage,
         ),
       )
     } yield ()
@@ -159,6 +177,7 @@ object SpaPush {
       appRepo: AppRepo,
       appTimeLimitRepo: AppTimeLimitRepo,
       clock: Clock,
+      timeUsage: Option[TimeUsageDeps],
   ): UIO[Unit] =
     event match {
       case SpaEvent.NowChanged                      =>
@@ -183,6 +202,43 @@ object SpaPush {
             periodStart,
           )
             .catchAllCause(c => ZIO.logErrorCause("spa ws push: trafficUsage recompute failed", c))
+        }
+      case SpaEvent.TimeStatusChanged               =>
+        // #1974 (S6a): the same change drives BOTH live time-usage topics (design §5.2). Each is
+        // independently subscriber-gated (no subscriber → no query) and wrapped so a transient repo
+        // error on one never blocks the other or crashes the consumer.
+        timeUsage match {
+          case None       => ZIO.unit // S3/S4 harness — no time-usage deps wired
+          case Some(deps) =>
+            LogContext.annotate(LogContext.Op, "timeStatus") {
+              pushTimeStatus(
+                registry,
+                deviceRepo,
+                profileRepo,
+                trafficRepo,
+                appTimeLimitRepo,
+                clock,
+                deps,
+              )
+                .catchAllCause(c =>
+                  ZIO.logErrorCause("spa ws push: timeStatus recompute failed", c),
+                )
+            } *>
+              LogContext.annotate(LogContext.Op, "appUsage") {
+                pushAppUsage(
+                  registry,
+                  deviceRepo,
+                  profileRepo,
+                  trafficRepo,
+                  appRepo,
+                  appTimeLimitRepo,
+                  clock,
+                  deps,
+                )
+                  .catchAllCause(c =>
+                    ZIO.logErrorCause("spa ws push: appUsage recompute failed", c),
+                  )
+              }
         }
     }
 
@@ -356,6 +412,185 @@ object SpaPush {
           registry.fanOutTrafficUsage(params, body.toJsonAST.getOrElse(Json.Obj()))
         }
     }
+
+  /**
+   * #1974 (S6a): the `timeStatus` push (design §1.2/§3.1, class-(2) thick push). For each
+   * subscribed connection, push the `/api/time/status` `ProfileTimeStatus[]` body — built ONCE over
+   * all profiles via the canonical [[TimeStatusService.dayStateAllLive]] minutes + the shared
+   * [[TimeStatusService.assembleProfileTimeStatus]] wire-shape builder (SSOT — byte-identical to
+   * the GET) — then DELIVERED per recipient with the GET's per-child profile filter (design §4.4):
+   * an admin/adult gets all profiles, a child only their linked ones. No subscriber → no
+   * `dayStateAllLive` query.
+   */
+  private def pushTimeStatus(
+      registry: SpaWsRegistry,
+      deviceRepo: DeviceRepo,
+      profileRepo: ProfileRepo,
+      trafficRepo: TrafficReportRepo,
+      appTimeLimitRepo: AppTimeLimitRepo,
+      clock: Clock,
+      deps: TimeUsageDeps,
+  ): Task[Unit] =
+    registry.timeStatusRecipients.flatMap { recipients =>
+      ZIO
+        .when(recipients.nonEmpty) {
+          for {
+            now      <- clock.instant
+            settings <- deps.hsRepo.get
+            date = PolicyService.householdLocalDate(now, settings)
+            states   <- deps.timeStatusService.dayStateAllLive(now, date, settings)
+            profiles <- profileRepo.listAll
+            devices  <- deviceRepo.listAll
+            devsByPid = devices.groupBy(_.profileId).collect { case (Some(pid), ds) => pid -> ds }
+            // The full per-profile body, in profileRepo.listAll order (the GET's order). Built once;
+            // each recipient receives its role-visible subset of it (design §4.4).
+            rows          <- ZIO.foreach(profiles) { p =>
+              val devs = devsByPid.getOrElse(p.id, Nil)
+              buildOneTimeStatus(
+                p,
+                devs,
+                states.get(p.id),
+                trafficRepo,
+                appTimeLimitRepo,
+                date,
+                settings,
+              )
+                .map(p.id -> _)
+            }
+            visibleByUser <- resolveVisibleSets(recipients, deps.userProfileRepo)
+            _             <- ZIO.foreachDiscard(recipients) { r =>
+              val visible = visibleByUser(visibilityKey(r))
+              val body    = rows.collect { case (pid, ts) if visible.forall(_.contains(pid)) => ts }
+              registry.deliver(r.id, "timeStatus", body.toJsonAST.getOrElse(Json.Arr()))
+            }
+          } yield ()
+        }
+        .unit
+    }
+
+  /** Build one profile's `ProfileTimeStatus` exactly as the GET does (shared assembler — SSOT). */
+  private def buildOneTimeStatus(
+      profile: Profile,
+      devices: List[Device],
+      state: Option[wifihaven.api.policy.ProfileDayState],
+      trafficRepo: TrafficReportRepo,
+      appTimeLimitRepo: AppTimeLimitRepo,
+      date: LocalDate,
+      settings: wifihaven.shared.HouseholdSettings,
+  ): Task[ProfileTimeStatus] =
+    for {
+      presence  <- trafficRepo.listPresenceRows(devices.map(_.mac), date)
+      appLimits <- appTimeLimitRepo.listForProfile(profile.id)
+      st = state.getOrElse(
+        wifihaven.api.policy.ProfileDayState(profile.id, date, None, 0, 0, None, false, None, Nil),
+      )
+    } yield TimeStatusService.assembleProfileTimeStatus(
+      profile,
+      devices,
+      st,
+      presence,
+      appLimits,
+      settings,
+    )
+
+  /**
+   * #1974 (S6a): the `appUsage` push (design §1.2/§3.1, class-(2)). For each DISTINCT subscribed +
+   * ENTITLED `profileId`, rebuild the `/api/profiles/{id}/usage-by-app` today body via the shared
+   * [[UsageRoutes.buildUsageByApp]] (SSOT — the same repo-load + compute the GET runs) and deliver
+   * it to the matching recipients. `from == to ==` the HOUSEHOLD-LOCAL today (same as the
+   * `timeStatus` push, [[PolicyService.householdLocalDate]]) — the household-tz day the browser's
+   * own local-today maps to, so the pushed body lands on the same per-app cache window the card
+   * renders even for non-UTC households (a UTC `clock.today` would skew a tz-crossing household by
+   * a day until refetch). A child only receives a profileId it is linked to (design §4.4). No
+   * subscriber → no query.
+   */
+  private def pushAppUsage(
+      registry: SpaWsRegistry,
+      deviceRepo: DeviceRepo,
+      profileRepo: ProfileRepo,
+      trafficRepo: TrafficReportRepo,
+      appRepo: AppRepo,
+      appTimeLimitRepo: AppTimeLimitRepo,
+      clock: Clock,
+      deps: TimeUsageDeps,
+  ): Task[Unit] =
+    registry.appUsageRecipients.flatMap { recipients =>
+      ZIO
+        .when(recipients.nonEmpty) {
+          for {
+            visibleByUser <- resolveVisibleSets(recipients, deps.userProfileRepo)
+            // (recipient, subscribed profileId) pairs the recipient is entitled to see.
+            entitled = recipients.flatMap { r =>
+              decodeAppUsageProfileId(r.params).flatMap { pid =>
+                val visible = visibleByUser(visibilityKey(r))
+                Option.when(visible.forall(_.contains(pid)))(r -> pid)
+              }
+            }
+            now <- clock.instant
+            settings <- deps.hsRepo.get
+            today        = PolicyService.householdLocalDate(now, settings)
+            distinctPids = entitled.map(_._2).distinct
+            // Build each entitled profile's body ONCE; a NotFound/etc. drops that profile's push only.
+            bodies <- ZIO.foreach(distinctPids) { pid =>
+              UsageRoutes
+                .buildUsageByApp(
+                  pid,
+                  today,
+                  today,
+                  profileRepo,
+                  deviceRepo,
+                  trafficRepo,
+                  appRepo,
+                  appTimeLimitRepo,
+                  settings,
+                )
+                .map(b => Some(pid -> b))
+                .catchAll(e =>
+                  ZIO.logWarning(s"spa ws push: appUsage build failed for $pid: $e").as(None),
+                )
+            }
+            byPid = bodies.flatten.toMap
+            _      <- ZIO.foreachDiscard(entitled) { case (r, pid) =>
+              byPid.get(pid) match {
+                case Some(body) =>
+                  registry.deliver(r.id, "appUsage", body.toJsonAST.getOrElse(Json.Obj()))
+                case None       => ZIO.unit
+              }
+            }
+          } yield ()
+        }
+        .unit
+    }
+
+  /**
+   * #1974 (S6a): resolve each recipient's visible-profile set, reusing the GET's filter (design
+   * §4.4). Admin/adult see ALL profiles (`None` = no restriction); a child sees only the profiles
+   * linked to its username (`UserProfileRepo.listProfilesForUsername`). Keyed by [[visibilityKey]]
+   * so the per-child repo lookup runs once per distinct child, not once per connection.
+   */
+  private def resolveVisibleSets(
+      recipients: List[SpaRecipient],
+      userProfileRepo: UserProfileRepo,
+  ): Task[Map[(UserRole, Option[String]), Option[Set[ProfileId]]]] =
+    ZIO
+      .foreach(recipients.map(visibilityKey).distinct) {
+        case key @ (UserRole.Admin | UserRole.Adult, _) =>
+          ZIO.succeed(key -> Option.empty[Set[ProfileId]])
+        case key @ (UserRole.Child, username)           =>
+          username
+            .fold(ZIO.succeed(List.empty[ProfileId]))(userProfileRepo.listProfilesForUsername)
+            .map(pids => key -> Some(pids.toSet))
+      }
+      .map(_.toMap)
+
+  private def visibilityKey(r: SpaRecipient): (UserRole, Option[String]) = (r.role, r.username)
+
+  /** Decode the `appUsage` subscription's `{profileId}` param (the expanded card). */
+  private def decodeAppUsageProfileId(params: Json): Option[ProfileId] =
+    params.toJson.fromJson[AppUsageSubParams].toOption.map(p => ProfileId(p.profileId))
+
+  /** The `appUsage` subscription params — just the expanded card's `profileId` (§1.2). */
+  private final case class AppUsageSubParams(profileId: Long) derives JsonDecoder
 
   /** Load the (host → app memberships) map for app grouping, exactly as `UsageRoutes` does. */
   private def loadAppsByHost(appRepo: AppRepo): Task[Map[String, List[AppMembership]]] =

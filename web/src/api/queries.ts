@@ -277,14 +277,19 @@ export function useRecentBlocked(opts?: QueryOpts<QueryLog[]>) {
   })
 }
 
-export function useTimeStatusToday(opts?: QueryOpts<ProfileTimeStatus[]>) {
+// #1974 (SPA-ws S6a, §3.3): when the `timeStatus` push is live (`wsLive`), the adaptive ladder goes
+// DORMANT — the push keeps the cache fresh, so polling is redundant. The ladder is NOT removed
+// (that's S7); it stays the disconnected fallback, resuming the instant the socket drops. The
+// caller passes `wsLive` from `useWsTopicLive('timeStatus')`.
+export function useTimeStatusToday(opts?: QueryOpts<ProfileTimeStatus[]> & { wsLive?: boolean }) {
+  const { wsLive, ...rest } = opts ?? {}
   return useQuery({
     queryKey: qk.timeStatusToday(),
     queryFn: () => api.time.statusAll(),
     staleTime: STALE.timeStatusToday,
-    refetchInterval: q => timeStatusRefetchInterval(q.state.data),
+    refetchInterval: wsLive ? false : q => timeStatusRefetchInterval(q.state.data),
     refetchIntervalInBackground: false,
-    ...opts,
+    ...rest,
   })
 }
 
@@ -311,14 +316,17 @@ export function useTimeStatusWeek(
 }
 
 // #777 — summary endpoints: lightweight rollups for the collapsed accordion view.
-export function useTimeStatusSummary(opts?: QueryOpts<ProfileTimeSummary[]>) {
+export function useTimeStatusSummary(opts?: QueryOpts<ProfileTimeSummary[]> & { wsLive?: boolean }) {
+  // #1974 (S6a): pause the adaptive ladder while the `timeStatus` push is live (§3.3) — the push
+  // patches this (summary-projected) cache, so polling is redundant; it resumes on disconnect.
+  const { wsLive, ...rest } = opts ?? {}
   return useQuery({
     queryKey: qk.timeStatusSummaryToday(),
     queryFn: () => api.time.summaryAll(),
     staleTime: STALE.timeStatusToday,
-    refetchInterval: q => timeStatusRefetchInterval(q.state.data),
+    refetchInterval: wsLive ? false : q => timeStatusRefetchInterval(q.state.data),
     refetchIntervalInBackground: false,
-    ...opts,
+    ...rest,
   })
 }
 
@@ -338,15 +346,18 @@ export function useTimeStatusSummaryWeek(
 // The query stays cached for the page mount so collapse + re-expand doesn't refetch.
 export function useTimeStatusProfileToday(
   profileId: number,
-  opts?: QueryOpts<ProfileTimeStatus | undefined>,
+  opts?: QueryOpts<ProfileTimeStatus | undefined> & { wsLive?: boolean },
 ) {
+  // #1974 (S6a): pause the ladder while the `timeStatus` push is live (§3.3); the push patches this
+  // per-profile-today key off the same body, so it stays fresh without polling.
+  const { wsLive, ...rest } = opts ?? {}
   return useQuery({
     queryKey: qk.timeStatusProfileToday(profileId),
     queryFn: () => api.time.statusAll(undefined, profileId).then(rows => rows[0]),
     staleTime: STALE.timeStatusToday,
-    refetchInterval: q => timeStatusRefetchInterval(q.state.data),
+    refetchInterval: wsLive ? false : q => timeStatusRefetchInterval(q.state.data),
     refetchIntervalInBackground: false,
-    ...opts,
+    ...rest,
   })
 }
 

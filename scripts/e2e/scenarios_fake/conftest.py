@@ -313,6 +313,27 @@ def pytest_runtest_makereport(item, call):
             sections.append(("router agent log", (r.stdout or "") + (r.stderr or "")))
         except Exception as e:  # noqa: BLE001
             sections.append(("router agent log", f"<unavailable: {e}>"))
+        # #2001: the on-disk snapshot etag + the live per-MAC drop rules. The
+        # absence of these two facts (was policy.json BASE or PAUSED? was any
+        # wh_drop installed?) is exactly what made the ws apply-on-push flake so
+        # hard to diagnose — capture them so any future enforcement/snapshot
+        # divergence is a one-look read rather than a re-run.
+        try:
+            r = router_ssh(
+                "echo 'policy.json etag:'; "
+                # The etag value is itself a quoted HTTP etag (\"\\\"sha256:..\\\"\"),
+                # so match to the field delimiter (comma), not the next quote, or we
+                # truncate at the escaped inner quote and never show BASE vs PAUSED.
+                "grep -o '\"etag\":[^,]*' /etc/wifihaven/policy.json 2>/dev/null "
+                "|| echo '(policy.json absent/unreadable)'; "
+                "echo 'wh_drop rules:'; "
+                "nft list table inet wifihaven 2>/dev/null | grep -F 'wh_drop:' "
+                "|| echo '(no wh_drop rules)'",
+                check=False, timeout=10,
+            )
+            sections.append(("router policy.json + nft drops", (r.stdout or "") + (r.stderr or "")))
+        except Exception as e:  # noqa: BLE001
+            sections.append(("router policy.json + nft drops", f"<unavailable: {e}>"))
         try:
             fake = item.funcargs.get("fake_api")
             client_obj = item.funcargs.get("client")
