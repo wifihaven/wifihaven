@@ -7,6 +7,7 @@ import {
   bucketSeconds,
   deriveNowKpis,
   headBucketRows,
+  mergeAggregateHeadRows,
   mergeHeadBucket,
   overallRate,
   prependHead,
@@ -94,6 +95,58 @@ describe('mergeHeadBucket (#1973 §3.1)', () => {
   })
 })
 
+describe('mergeAggregateHeadRows (#1975 S6b §3.1) — page-level row merge', () => {
+  // The Traffic Usage page holds its aggregated series as a bare
+  // TrafficUsageAggregateRow[] in component state (not React Query), so the live
+  // edge merges at the rows level. Same join-on-windowStart semantics that back
+  // mergeHeadBucket — replace the head window in place, prepend on rollover,
+  // never touch paged history.
+  it('replaces the head window in place, leaving older paged rows untouched', () => {
+    const prev = [
+      aggRow({ windowStart: '2026-06-26T10:05:00Z', totalBytesIn: 100 }),
+      aggRow({ windowStart: '2026-06-26T10:04:00Z', totalBytesIn: 999 }),
+      aggRow({ windowStart: '2026-06-26T10:03:00Z', totalBytesIn: 7 }),
+    ]
+    const live = [aggRow({ windowStart: '2026-06-26T10:05:00Z', totalBytesIn: 250 })]
+    const merged = mergeAggregateHeadRows(prev, live)
+    expect(merged.map(r => r.windowStart)).toEqual([
+      '2026-06-26T10:05:00Z',
+      '2026-06-26T10:04:00Z',
+      '2026-06-26T10:03:00Z',
+    ])
+    expect(merged[0].totalBytesIn).toBe(250)
+    // paged history is byte-identical (never mutated)
+    expect(merged[1]).toBe(prev[1])
+    expect(merged[2]).toBe(prev[2])
+  })
+
+  it('prepends a fresh head when the window rolls over', () => {
+    const prev = [aggRow({ windowStart: '2026-06-26T10:05:00Z', totalBytesIn: 100 })]
+    const live = [aggRow({ windowStart: '2026-06-26T10:06:00Z', totalBytesIn: 5 })]
+    expect(mergeAggregateHeadRows(prev, live).map(r => r.windowStart)).toEqual([
+      '2026-06-26T10:06:00Z',
+      '2026-06-26T10:05:00Z',
+    ])
+  })
+
+  it('keeps every prior row on an empty live edge', () => {
+    const prev = [aggRow({ windowStart: '2026-06-26T10:05:00Z', totalBytesIn: 100 })]
+    expect(mergeAggregateHeadRows(prev, [])).toBe(prev)
+  })
+
+  it('keeps all rows sharing the head windowStart (groupBy:profile)', () => {
+    const prev = [
+      aggRow({ windowStart: '2026-06-26T10:05:00Z', groups: { profile: 'Kids' }, totalBytesIn: 1 }),
+      aggRow({ windowStart: '2026-06-26T10:05:00Z', groups: { profile: 'Adults' }, totalBytesIn: 2 }),
+    ]
+    const live = [
+      aggRow({ windowStart: '2026-06-26T10:05:00Z', groups: { profile: 'Kids' }, totalBytesIn: 10 }),
+      aggRow({ windowStart: '2026-06-26T10:05:00Z', groups: { profile: 'Adults' }, totalBytesIn: 20 }),
+    ]
+    expect(mergeAggregateHeadRows(prev, live).map(r => r.totalBytesIn)).toEqual([10, 20])
+  })
+})
+
 describe('headBucketRows', () => {
   it('returns only the newest windowStart rows', () => {
     const s = series([
@@ -174,6 +227,23 @@ describe('prependHead (#1973 §3.1)', () => {
 
   it('handles an undefined prior cache', () => {
     expect(prependHead(undefined, [row(1)], 20).map(r => r.id)).toEqual([1])
+  })
+
+  // #1975 S6b: the Connection Events page pages its history with infinite scroll,
+  // so prepending the live head must NOT truncate the loaded history — the limit
+  // is optional and omitted there. (The dashboard's "Recently Blocked" feed still
+  // caps to RECENT_BLOCKED_LIMIT.)
+  it('does not truncate history when no limit is given', () => {
+    const prev = Array.from({ length: 25 }, (_, i) => row(25 - i)) // ids 25..1
+    const out = prependHead(prev, [row(27), row(26)])
+    expect(out).toHaveLength(27)
+    expect(out.slice(0, 3).map(r => r.id)).toEqual([27, 26, 25])
+    expect(out[out.length - 1].id).toBe(1)
+  })
+
+  it('still dedups by id with no limit', () => {
+    const out = prependHead([row(2), row(1)], [row(3), row(2)])
+    expect(out.map(r => r.id)).toEqual([3, 2, 1])
   })
 })
 

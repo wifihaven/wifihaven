@@ -18,11 +18,12 @@ import {
   type ReactNode,
 } from 'react'
 import { useQueryClient, type QueryClient } from '@tanstack/react-query'
-import { qk, RECENT_BLOCKED_LIMIT } from '@/api/queries'
+import { qk, RECENT_BLOCKED_LIMIT, useInvalidators } from '@/api/queries'
 import { useAuth } from '@/hooks/useAuth'
 import { SpaWsClient, type SpaTopicName, type WsStatus } from '@/api/wsClient'
 import {
   headBucketRows,
+  mergeAggregateHeadRows,
   mergeHeadBucket,
   overallRate,
   prependHead,
@@ -296,4 +297,148 @@ function useCachedQueryData<T>(qc: QueryClient, key: readonly unknown[]): T | un
   // not a dep — keyHash is its serialized identity.
   const getSnapshot = useCallback(() => qc.getQueryData<T>(key), [qc, keyHash])
   return useSyncExternalStore(subscribe, getSnapshot)
+}
+
+// ── #1975 (S6b): stream the live edge of the Traffic Usage + Connection Events PAGES ──
+//
+// Same topics as the dashboard, the page's own filters (§1.4 / §0.3 — one stream, many
+// consumers). Unlike the dashboard, these pages don't hold their data in React Query —
+// they page history themselves (initial window + cursor paging, #862) and accumulate it
+// in component state. So the live edge merges into a SETTER the page owns, via the pure
+// wsCache helpers, rather than into a query cache. The history GET is untouched; the
+// socket only keeps the newest slice fresh (§3.1). Neither page polls (no refetchInterval
+// to pause, §3.3) — the live edge IS the freshness.
+
+export interface TrafficUsageLiveArgs {
+  groupBy: TrafficUsageGroupBy[]
+  bucket: TrafficUsageBucket
+  macs: string[]
+  profileIds: number[]
+  /** The right-edge anchor; non-null means a past window is pinned → no live edge. */
+  until: string | null
+}
+
+/**
+ * Subscribe `trafficUsage` with the Traffic Usage page's CURRENT params and merge the
+ * pushed head bucket into the page's aggregate-row state by `windowStart` (§3.1). The
+ * page passes its own `setAggRows`. Re-subscribes whenever groupBy / bucket / filters
+ * change (the params change → `useWsSubscription` sends unsubscribe-then-subscribe).
+ *
+ * Streaming is gated to the AGGREGATED view anchored at "now": the push carries
+ * `aggregateRows` (one point per group per ingest period, design §1.3) — the page's `raw`
+ * bucket renders per-host `rawRows`, a different shape the live edge can't merge into; and
+ * a pinned `until` window is history, with no live edge to stream. Returns whether the
+ * topic is actually streaming (acked) for an optional "Live" indicator.
+ */
+export function useWsTrafficUsageLiveEdge(
+  args: TrafficUsageLiveArgs,
+  setRows: (fn: (prev: TrafficUsageAggregateRow[]) => TrafficUsageAggregateRow[]) => void,
+): boolean {
+  const enabled = args.until == null && args.bucket !== 'raw'
+  const params = useMemo(
+    () => ({
+      groupBy: args.groupBy,
+      bucket: args.bucket,
+      ...(args.macs.length ? { macs: args.macs } : {}),
+      ...(args.profileIds.length ? { profileIds: args.profileIds } : {}),
+    }),
+    [args.groupBy, args.bucket, args.macs, args.profileIds],
+  )
+  const setRowsRef = useRef(setRows)
+  setRowsRef.current = setRows
+  useWsSubscription(
+    'trafficUsage',
+    params,
+    payload => {
+      const rows = (payload as TrafficUsageResponse).aggregateRows ?? []
+      if (rows.length) setRowsRef.current(prev => mergeAggregateHeadRows(prev, rows))
+    },
+    undefined,
+    enabled,
+  )
+  const streaming = useWsTopicLive('trafficUsage')
+  return streaming && enabled
+}
+
+export interface ConnectionEventsLiveArgs {
+  /** undefined = no status filter (All); the GET's `blocked` param. */
+  blocked: boolean | undefined
+  macs: string[]
+  profileIds: number[]
+  /** Non-null means a past window is pinned → no live edge. */
+  until: string | null
+}
+
+/**
+ * Subscribe `connectionEvents` with the Connection Events page's CURRENT filters and
+ * PREPEND the pushed head rows (dedup by id) onto the page's raw-log state (§3.1). The
+ * page passes its own `setLogs`. No cap — `prependHead` keeps the paged history intact
+ * (the page pages older rows on scroll). Re-subscribes when the filters change. Gated to
+ * the live ("now") window; a pinned `until` is history. Returns whether the topic streams.
+ */
+export function useWsConnectionEventsLiveEdge(
+  args: ConnectionEventsLiveArgs,
+  setRows: (fn: (prev: QueryLog[]) => QueryLog[]) => void,
+): boolean {
+  const enabled = args.until == null
+  const params = useMemo(
+    () => ({
+      ...(args.blocked !== undefined ? { blocked: args.blocked } : {}),
+      ...(args.macs.length ? { macs: args.macs } : {}),
+      ...(args.profileIds.length ? { profileIds: args.profileIds } : {}),
+    }),
+    [args.blocked, args.macs, args.profileIds],
+  )
+  const setRowsRef = useRef(setRows)
+  setRowsRef.current = setRows
+  useWsSubscription(
+    'connectionEvents',
+    params,
+    payload => {
+      const rows = (payload as QueryLog[]) ?? []
+      if (rows.length) setRowsRef.current(prev => prependHead(prev, rows))
+    },
+    undefined,
+    enabled,
+  )
+  const streaming = useWsTopicLive('connectionEvents')
+  return streaming && enabled
+}
+
+// ── #1975 (S6b §3.2): class-(3) `stale` → invalidate the mapped, mounted query ────────
+//
+// Occasionally-changing resources (alerts / profiles / devices / schedules) stay on
+// request/response; when ANOTHER operator/tab mutates one, the server pushes a contentless
+// `stale{topic}` nudge and we `invalidateQueries` the mapped key (reusing the existing
+// `qk` / `useInvalidators` — the GET stays the sole producer, and per-recipient authz
+// comes free). `invalidateQueries` only refetches MOUNTED queries, so a `stale` for a
+// closed view costs nothing. The topic→invalidator map below is the ONE place the mapping
+// lives. Mounted once globally (WsStaleInvalidator, App.tsx).
+export function useWsStale(): void {
+  const inv = useInvalidators()
+  // `useWsSubscription` captures the latest onPush closure each render, so we read the
+  // current `inv` directly and build the (tiny) topic→invalidator map on the rare push.
+  useWsSubscription('stale', undefined, payload => {
+    const topic = (payload as { topic?: unknown })?.topic
+    if (typeof topic !== 'string') return
+    // The single topic→key mapping (§3.2). A bounded enum mirroring the server's `stale`
+    // topics; an unknown topic is ignored (forward-compat).
+    const map: Record<string, () => void> = {
+      alerts: () => void inv.alerts(),
+      profiles: () => void inv.profiles(),
+      devices: () => void inv.devices(),
+      schedules: () => void inv.schedules(),
+    }
+    map[topic]?.()
+  })
+}
+
+/**
+ * Mounts the global `stale` subscription (§3.2). Rendered inside `WsProvider` (App.tsx),
+ * alongside `AlertsNotifier`, so class-(3) invalidation is live for the whole session —
+ * it only refetches whatever class-(3) view happens to be mounted.
+ */
+export function WsStaleInvalidator(): null {
+  useWsStale()
+  return null
 }

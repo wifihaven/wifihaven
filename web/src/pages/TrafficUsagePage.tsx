@@ -27,6 +27,8 @@ import {
   localTime,
 } from '@/components/usage/usageHelpers'
 import { useInfiniteScroll } from '@/hooks/useInfiniteScroll'
+import { useWsTrafficUsageLiveEdge } from '@/hooks/useWs'
+import { LiveBadge } from '@/components/dashboard/LiveBadge'
 
 // #846 — Traffic Usage page. Raw + aggregated views over traffic_reports.
 // Column headers double as groupBy toggles (Host=domain, Device=device,
@@ -175,6 +177,15 @@ export function TrafficUsagePage() {
     onLoadMore: () => { if (cursor) void load(cursor) },
   })
 
+  // #1975 (S6b): stream the live edge of the aggregated series — subscribe `trafficUsage`
+  // with the page's current params and merge the pushed head bucket into `aggRows` by
+  // windowStart (the helper gates itself to the aggregated, anchored-at-now view; the GET
+  // still owns history + paging). Re-subscribes when groupBy / bucket / filters change.
+  const liveStreaming = useWsTrafficUsageLiveEdge(
+    { groupBy, bucket, macs, profileIds, until },
+    setAggRows,
+  )
+
   function toggleGroup(key: string) {
     setGroupBy(prev => {
       const next = prev.includes(key as TrafficUsageGroupBy)
@@ -191,7 +202,10 @@ export function TrafficUsagePage() {
   return (
     <div className="space-y-4 min-w-0" data-testid="traffic-usage-page">
       <header>
-        <h1 className="text-xl sm:text-2xl font-bold text-brand-ink">Traffic Usage</h1>
+        <div className="flex items-center gap-2">
+          <h1 className="text-xl sm:text-2xl font-bold text-brand-ink">Traffic Usage</h1>
+          {liveStreaming && <LiveBadge />}
+        </div>
         <p className="text-xs sm:text-sm text-brand-text-muted">
           Raw <code className="text-brand-accent">traffic_reports</code> rows plus on-the-fly
           aggregation. Click a column header (Host / Device / Profile) to add it to the
