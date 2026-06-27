@@ -54,6 +54,25 @@ M._ranges = {
   { cidr = "1.0.0.1/32",     label = "cloudflare-dns" },
 }
 
+-- IPv6 ranges. Each entry: { cidr, label }. Host /128 entries are the common
+-- case — clients that bypass the local resolver pin these literals.
+--
+-- 2606:4700:4700::1111, ::1001 — Cloudflare Public DNS (the v6 siblings of
+--                      1.1.1.1 / 1.0.0.1).
+--                      <https://developers.cloudflare.com/1.1.1.1/ip-addresses/>
+-- 2001:4860:4860::8888, ::8844 — Google Public DNS (the v6 siblings of
+--                      8.8.8.8 / 8.8.4.4).
+--                      <https://developers.google.com/speed/public-dns/docs/using>
+--
+-- Apple's v6 push ranges (e.g. 2620:149::/32) are intentionally NOT included
+-- yet — larger/messier, deferred to a follow-up with prod evidence (#2006).
+M._ranges_v6 = {
+  { cidr = "2606:4700:4700::1111/128", label = "cloudflare-dns" },
+  { cidr = "2606:4700:4700::1001/128", label = "cloudflare-dns" },
+  { cidr = "2001:4860:4860::8888/128", label = "google-dns"     },
+  { cidr = "2001:4860:4860::8844/128", label = "google-dns"     },
+}
+
 -- Parse "a.b.c.d" → 32-bit unsigned integer, or nil on malformed input.
 local function ipv4_to_uint(ip)
   if type(ip) ~= "string" then return nil end
@@ -94,20 +113,126 @@ for _, entry in ipairs(M._ranges) do
   end
 end
 
+-- Parse a v6 literal → array of 8 hextets (each 0..65535), or nil on
+-- malformed input. We deliberately keep each hextet as a 16-bit Lua double
+-- (NOT a 128-bit int / bit32) so the prefix math below works on Lua 5.1,
+-- which has neither. `::` compression is expanded to fill the address to 8
+-- groups; a leading/trailing/embedded `::` is handled. IPv4-embedded forms
+-- (`::ffff:1.2.3.4`) are NOT supported — the curated map is pure hex, so any
+-- dot is treated as malformed.
+local function parse_group_list(s)
+  -- "" → empty list (the side of a leading/trailing `::`). A dangling colon
+  -- or an empty / over-long / non-hex token is malformed.
+  local out = {}
+  if s == "" then return out end
+  if s:sub(1, 1) == ":" or s:sub(-1) == ":" then return nil end
+  local start = 1
+  while true do
+    local colon = s:find(":", start, true)
+    local tok = colon and s:sub(start, colon - 1) or s:sub(start)
+    -- 1..4 hex digits ⇒ a hextet ≤ 0xFFFF (fits a double). Rejects "",
+    -- non-hex ("gggg"), and >16-bit ("12345") tokens.
+    if not tok:match("^%x%x?%x?%x?$") then return nil end
+    out[#out + 1] = tonumber(tok, 16)
+    if not colon then break end
+    start = colon + 1
+  end
+  return out
+end
+
+local function ipv6_to_hextets(ip)
+  if type(ip) ~= "string" then return nil end
+  if ip:find(".", 1, true) then return nil end -- no IPv4-embedded form
+  local dc_start, dc_end = ip:find("::", 1, true)
+  if dc_start then
+    -- A second "::" is illegal.
+    if ip:find("::", dc_end + 1, true) then return nil end
+    local left = parse_group_list(ip:sub(1, dc_start - 1))
+    local right = parse_group_list(ip:sub(dc_end + 1))
+    if not left or not right then return nil end
+    local nfill = 8 - (#left + #right)
+    if nfill < 1 then return nil end -- "::" must stand for ≥1 zero group
+    local hextets = {}
+    for i = 1, #left do hextets[#hextets + 1] = left[i] end
+    for _ = 1, nfill do hextets[#hextets + 1] = 0 end
+    for i = 1, #right do hextets[#hextets + 1] = right[i] end
+    return hextets
+  end
+  local groups = parse_group_list(ip)
+  if not groups or #groups ~= 8 then return nil end
+  return groups
+end
+
+-- Parse "<v6 addr>/N" → { hextets = {..8}, full, rem }, or nil on malformed.
+-- `full` = number of whole 16-bit hextets the prefix covers; `rem` = the
+-- leftover bit count in the partial hextet. The partial network hextet is
+-- masked here at compile time so the hot path is a plain equality compare.
+local function parse_cidr_v6(cidr)
+  local addr, prefix = cidr:match("^(.+)/(%d+)$")
+  if not addr then return nil end
+  local hextets = ipv6_to_hextets(addr)
+  prefix = tonumber(prefix)
+  -- prefix=0 would match every v6 address (::/0); reject it for the same
+  -- reason as the v4 /0 guard above. Valid v6 prefix is 1..128.
+  if not hextets or not prefix or prefix < 1 or prefix > 128 then return nil end
+  local full = math.floor(prefix / 16)
+  local rem = prefix % 16
+  if rem > 0 then
+    local shift = 2 ^ (16 - rem)
+    hextets[full + 1] = hextets[full + 1] - (hextets[full + 1] % shift)
+  end
+  return { hextets = hextets, full = full, rem = rem }
+end
+
+-- Pre-compile the v6 ranges once at module load, parallel-array style like
+-- compiled_v4 so first-match-wins ordering holds. Malformed entries are
+-- skipped (mirrors the v4 compile step).
+local compiled_v6 = {}
+for _, entry in ipairs(M._ranges_v6) do
+  local parsed = parse_cidr_v6(entry.cidr)
+  if parsed then
+    compiled_v6[#compiled_v6 + 1] = {
+      hextets = parsed.hextets,
+      full    = parsed.full,
+      rem     = parsed.rem,
+      label   = entry.label,
+    }
+  end
+end
+
 -- lookup(ip) → (label, source) | (nil)
 --
--- Returns the first matching (label, M.SOURCE) pair, or nil. v4-only for
--- now; v6 is parsed off (returns nil) so callers can wire it in safely.
--- To add a v6 entry later, extend M._ranges with `family = "v6"` rows and
--- add an ipv6_to_uint128 path here.
+-- Returns the first matching (label, M.SOURCE) pair, or nil. Handles both
+-- v4 and v6 literals (a colon selects the v6 path). Same M.SOURCE wire
+-- string for both families.
 --
 -- Returning the source alongside the label keeps the caller from having to
 -- know which module produced the attribution: build_event can branch on the
 -- presence of a source value to emit type='label' vs type='fqdn'.
 function M.lookup(ip)
   if type(ip) ~= "string" or ip == "" then return nil end
-  -- v6 literals always contain a colon; punt for now (returns nil).
-  if ip:find(":", 1, true) then return nil end
+  -- v6 literals always contain a colon.
+  if ip:find(":", 1, true) then
+    local addr = ipv6_to_hextets(ip)
+    if not addr then return nil end
+    for _, range in ipairs(compiled_v6) do
+      local net = range.hextets
+      local ok = true
+      -- Compare the full hextets the prefix covers.
+      for i = 1, range.full do
+        if addr[i] ~= net[i] then ok = false; break end
+      end
+      -- Then the partial hextet under a modulo mask, if the prefix isn't a
+      -- whole multiple of 16 (no-op for the /128 host entries here).
+      if ok and range.rem > 0 then
+        local shift = 2 ^ (16 - range.rem)
+        local masked = addr[range.full + 1] - (addr[range.full + 1] % shift)
+        if masked ~= net[range.full + 1] then ok = false end
+      end
+      if ok then return range.label, M.SOURCE end
+    end
+    return nil
+  end
   local n = ipv4_to_uint(ip)
   if not n then return nil end
   for _, range in ipairs(compiled_v4) do

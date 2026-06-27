@@ -35,9 +35,35 @@ describe("static_ip_labels.lookup", function()
     assert.is_nil(labels.lookup("256.0.0.1"))         -- out-of-range octet
   end)
 
-  it("returns nil for IPv6 (punted for now)", function()
+  it("returns the well-known DNS labels for IPv6 resolver IPs", function()
+    local l, s
+    l, s = labels.lookup("2606:4700:4700::1111"); assert.equal("cloudflare-dns", l); assert.equal("static-ip-range", s)
+    l, s = labels.lookup("2606:4700:4700::1001"); assert.equal("cloudflare-dns", l); assert.equal("static-ip-range", s)
+    l, s = labels.lookup("2001:4860:4860::8888"); assert.equal("google-dns",     l); assert.equal("static-ip-range", s)
+    l, s = labels.lookup("2001:4860:4860::8844"); assert.equal("google-dns",     l); assert.equal("static-ip-range", s)
+  end)
+
+  it("matches the same IPv6 address whether ::-compressed or fully expanded", function()
+    -- 2606:4700:4700::1001 == 2606:4700:4700:0:0:0:0:1001
+    assert.equal("cloudflare-dns", (labels.lookup("2606:4700:4700::1001")))
+    assert.equal("cloudflare-dns", (labels.lookup("2606:4700:4700:0:0:0:0:1001")))
+    -- 2001:4860:4860::8888 == 2001:4860:4860:0000:0000:0000:0000:8888
+    assert.equal("google-dns", (labels.lookup("2001:4860:4860::8888")))
+    assert.equal("google-dns", (labels.lookup("2001:4860:4860:0:0:0:0:8888")))
+  end)
+
+  it("returns nil for an IPv6 address outside every range", function()
     assert.is_nil(labels.lookup("fe80::1"))
-    assert.is_nil(labels.lookup("2001:4860:4860::8888"))
+    assert.is_nil(labels.lookup("2620:fe::fe"))            -- Quad9, not in map
+    assert.is_nil(labels.lookup("2606:4700:4700::1112"))  -- one past cloudflare
+    assert.is_nil(labels.lookup("::1"))                   -- loopback
+  end)
+
+  it("returns nil for malformed IPv6 literals", function()
+    assert.is_nil(labels.lookup("2606:4700:4700::gggg"))  -- non-hex
+    assert.is_nil(labels.lookup("2606:4700:4700:::1001")) -- triple colon
+    assert.is_nil(labels.lookup("1:2:3:4:5:6:7:8:9"))     -- too many groups
+    assert.is_nil(labels.lookup("12345::1"))              -- hextet > 16 bits
   end)
 
   it("exposes the canonical source string", function()
@@ -59,5 +85,9 @@ describe("static_ip_labels.lookup", function()
     -- Growing it is fine — bump this number alongside the new entry.
     assert.is_true(#labels._ranges <= 10,
       "static_ip_labels._ranges should stay <= 10 entries (operator-curated)")
+    -- Same curation guard for the v6 map — keeps a follow-up PR from quietly
+    -- bloating the last-resort v6 map. Growing it is fine; bump alongside.
+    assert.is_true(#labels._ranges_v6 <= 10,
+      "static_ip_labels._ranges_v6 should stay <= 10 entries (operator-curated)")
   end)
 end)
