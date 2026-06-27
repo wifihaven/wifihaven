@@ -77,7 +77,17 @@ jobs:
     # while the ipk arm passed at 32m30s. The pack itself is healthy (per-step
     # times unchanged); the cap just needs to grow with the scenario count.
     # 50m restores ~10m headroom on the slow arm without masking a regression.
-    timeout-minutes: 50
+    #
+    # Bumped 50→75m (#1999) after #1945 (PR #1994) added the
+    # test_ws_push_apply.py push→apply→enforce scenario: that extra ~2m
+    # snapshot-restore + boot + enforcement-flip cost tipped the slower ipk
+    # arm past the cap, which was cancelled at exactly 50m twice in a row
+    # (Master Router CD runs ~00:09→00:59Z) while the apk arm fit in ~35m.
+    # ipk is consistently slower (packaging/boot overhead + shared-host load
+    # on api.lan), and the pack had already run as close as 49m44s before this
+    # scenario landed. 75m re-establishes ~20m+ headroom on the slow arm
+    # without masking a regression in the scenario pack itself.
+    timeout-minutes: 75
     # #685: matrix over ipk-23.05 and apk-25.12 router images. fail-fast=false
     # so a regression in one flavor still reports the other arm's status
     # (needed to surface apk-only regressions like the #531 history case).
