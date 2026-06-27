@@ -120,10 +120,22 @@ object SpaWsS4Spec
       router: Router,
       records: UsageRecord*,
   ): Task[Unit] =
+    ingestUsagePeriod(ingest, router, periodStart, periodEnd, records*)
+
+  // #2004: ingest with an EXPLICIT period (not the module default) so a test can place the report in
+  // a bucket that precedes the current wall-clock minute — the real prod cadence (a ~60s report
+  // covers the *prior* minute, so its `period_start` floors to the previous bucket, not `floor(now)`).
+  private def ingestUsagePeriod(
+      ingest: RouterIngestService,
+      router: Router,
+      ps: String,
+      pe: String,
+      records: UsageRecord*,
+  ): Task[Unit] =
     ingest
       .ingestUsage(
         router,
-        UsageReport(router.id, periodStart, periodEnd, records.toList).toJson,
+        UsageReport(router.id, ps, pe, records.toList).toJson,
       )
       .mapError(e => new RuntimeException(s"ingest: $e"))
 
@@ -325,6 +337,49 @@ object SpaWsS4Spec
           assertTrue(pushed.aggregateRows.toSet == got.aggregateRows.toSet) &&
           assertTrue(pushed.bucket == "1m" && pushed.groupBy == List("profile")) &&
           // It is the AGGREGATE shape (per-group rows), never raw per-host rows.
+          assertTrue(pushed.rawRows.isEmpty)
+      }
+    },
+    test(
+      "REGRESSION #2004: a ~60s report whose period PRECEDES the current wall-clock minute still " +
+        "pushes a NON-EMPTY head bucket (anchor the head on the ingested period, not floor(now))",
+    ) {
+      // The injected clock is fixed at 14:00:30. A real router posts every ~60s, so the report that
+      // lands at ~14:00:30 covers the PRIOR minute [13:59:00, 14:00:00) — its `period_start` is
+      // 13:59:00, which floors to the 13:59 bucket, NOT the current `floor(now,1m) = 14:00` bucket.
+      // The buggy code scoped the push window to `[floor(now), now) = [14:00:00, 14:00:30)`, which
+      // EXCLUDES the just-ingested row → an empty head bucket → the dashboard's LIVE BANDWIDTH panel
+      // stays at 0 B/s despite live traffic (#2004). The fix anchors the head bucket on the ingested
+      // period, so the push carries the 13:59 bucket with the real bytes.
+      withHarness { (port, ingest, router) =>
+        for {
+          tok    <- ZIO.serviceWithZIO[Clock](makeAuth).flatMap(adminToken)
+          frames <- collect(
+            port,
+            tok,
+            List(
+              """{"op":"subscribe","payload":{"topic":"trafficUsage","params":{"groupBy":["profile"],"bucket":"1m"}}}""",
+            ),
+            trigger = ingestUsagePeriod(
+              ingest,
+              router,
+              "2026-06-25T13:59:00Z",
+              "2026-06-25T14:00:00Z",
+              usageRecord("youtube.com", 4242, 1313),
+            ),
+            wait = 4.seconds,
+          )
+          tFrames = trafficFrames(frames)
+          pushed <- ZIO.fromEither(parsePush(tFrames.last)).mapError(e => new RuntimeException(e))
+        } yield assertTrue(tFrames.nonEmpty) &&
+          // The pushed head bucket is the one the data actually landed in (13:59), carrying its bytes.
+          assertTrue(
+            pushed.aggregateRows.map(_.windowStart).distinct == List("2026-06-25T13:59:00Z"),
+          ) &&
+          assertTrue(
+            pushed.aggregateRows.exists(r => r.totalBytesIn == 4242 && r.totalBytesOut == 1313),
+          ) &&
+          assertTrue(pushed.bucket == "1m" && pushed.groupBy == List("profile")) &&
           assertTrue(pushed.rawRows.isEmpty)
       }
     },
