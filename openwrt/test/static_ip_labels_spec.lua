@@ -50,8 +50,6 @@ describe("static_ip_labels.lookup", function()
     -- 2001:4860:4860::8888 == 2001:4860:4860:0000:0000:0000:0000:8888
     assert.equal("google-dns", (labels.lookup("2001:4860:4860::8888")))
     assert.equal("google-dns", (labels.lookup("2001:4860:4860:0:0:0:0:8888")))
-    -- Mixed-case hextets normalise too.
-    assert.equal("google-dns", (labels.lookup("2001:4860:4860::8888")))
   end)
 
   it("returns nil for an IPv6 address outside every range", function()
@@ -87,5 +85,9 @@ describe("static_ip_labels.lookup", function()
     -- Growing it is fine — bump this number alongside the new entry.
     assert.is_true(#labels._ranges <= 10,
       "static_ip_labels._ranges should stay <= 10 entries (operator-curated)")
+    -- Same curation guard for the v6 map — keeps a follow-up PR from quietly
+    -- bloating the last-resort v6 map. Growing it is fine; bump alongside.
+    assert.is_true(#labels._ranges_v6 <= 10,
+      "static_ip_labels._ranges_v6 should stay <= 10 entries (operator-curated)")
   end)
 end)
