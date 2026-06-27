@@ -792,9 +792,14 @@ end
 -- so enforcement resumes within seconds instead of waiting on the first
 -- successful poll. The boot-time default-deny skeleton (#308) stays in
 -- effect until apply() succeeds.
+-- #2001: the etag the agent last observed on flash, so the startup save below
+-- can detect a concurrent ws-sidecar push that arrived during the (slow) apply
+-- and avoid clobbering it. nil when there is no cached snapshot.
+local startup_disk_etag = nil
 do
   local cached = policy.load_snapshot(read_file, log)
   if cached then
+    startup_disk_etag = cached.etag
     local t0 = clock.monotonic_seconds()
     local applied = policy.apply(cached, write_file, run_cmd, log,
                                  { on_apply = record_apply("boot") })
@@ -836,7 +841,9 @@ do
       ts.current_etag = etag
       ts.last_snapshot = snap
       policy.mark_poll_success(os.time())
-      policy.save_snapshot(snap, write_file, rename_file, log)
+      -- #2001: don't clobber a fresher snapshot the ws sidecar persisted while
+      -- this initial apply was in flight (we fetched against `startup_disk_etag`).
+      policy.save_snapshot(snap, write_file, rename_file, log, read_file, startup_disk_etag)
       log.info("startup: applied initial policy etag=%s", tostring(etag))
     end
   else
@@ -1030,6 +1037,9 @@ conntrack.watch({
       metrics.observe(mreg, "snapshot_poll_duration_seconds", {},
                       clock.monotonic_seconds() - pt0)
       local fetch_ok
+      -- #2001: the etag we fetched against (If-None-Match); the save below uses
+      -- it to detect a concurrent ws-sidecar push and avoid clobbering it.
+      local prev_etag = ts.current_etag
       if snap then
         record_poll("200")
         -- 200: fetch + cache blocklists, attach hosts to snapshot for render.
@@ -1049,7 +1059,7 @@ conntrack.watch({
           ts.current_etag = etag
           ts.last_snapshot = snap
           policy.mark_poll_success(wall)
-          policy.save_snapshot(snap, write_file, rename_file, log)
+          policy.save_snapshot(snap, write_file, rename_file, log, read_file, prev_etag)
           -- #1945: refresh the ws apply-on-push cadence anchor so the disk-read
           -- tick doesn't immediately re-apply the snapshot this poll just wrote.
           ts.last_ws_apply_run = mono

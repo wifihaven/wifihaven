@@ -645,6 +645,97 @@ describe("policy.save_snapshot", function()
 
 end)
 
+-- ── policy.save_snapshot compare-and-swap guard (#2001) ──────────────────
+--
+-- When the ws sidecar (#1849/#1945) is the IN channel, two writers touch
+-- policy.json: the agent's poll/startup `save_snapshot` AND the sidecar's
+-- atomic push-persist. If a poll fetched snapshot S (slow apply under load)
+-- while the sidecar concurrently persisted a NEWER pushed snapshot P, the
+-- poll's save must NOT clobber P back to S — otherwise the frozen-poll agent
+-- never re-applies P and enforcement silently reverts (the #2001 Gate-2
+-- flake: startup save of BASE landed after the sidecar wrote PAUSED, so the
+-- apply-on-push tick saw BASE==current_etag forever and the drop never
+-- installed). The guard: when a `read_fn` is supplied, skip the write if the
+-- on-disk etag is a DIFFERENT, non-nil value than both the `expect_etag` we
+-- fetched against and the snapshot we're about to write.
+describe("policy.save_snapshot clobber guard (#2001)", function()
+
+  local SNAPSHOT_PATH = "/etc/wifihaven/policy.json"
+
+  local function decode_snap()
+    local json = require("cjson")
+    return json.decode(SNAPSHOT_JSON)
+  end
+
+  -- A read_fn that returns a snapshot JSON carrying `etag` (nil → absent file).
+  local function disk_with_etag(etag)
+    return function(_path)
+      if etag == nil then return nil end
+      local json = require("cjson")
+      return json.encode({ etag = etag, profiles = {}, devices = {}, blocklists = {} })
+    end
+  end
+
+  local function save_guarded(snap, read_fn, expect_etag)
+    local writes, renames = {}, {}
+    local ok = policy.save_snapshot(snap,
+      function(path, content) writes[path] = content; return true, nil end,
+      function(from, to) table.insert(renames, { from = from, to = to }); return true end,
+      nil, read_fn, expect_etag)
+    return ok, writes, renames
+  end
+
+  it("skips the write when the on-disk etag is a fresher concurrent push", function()
+    -- poll fetched snap (etag sha256:abc123) against expect "sha256:old", but
+    -- the sidecar already persisted "sha256:ws-pushed" → don't clobber it.
+    local ok, _writes, renames = save_guarded(
+      decode_snap(), disk_with_etag("sha256:ws-pushed"), "sha256:old")
+    assert.is_true(ok)            -- not an error; the fresher file is intentionally kept
+    assert.equal(0, #renames)     -- nothing written / renamed
+  end)
+
+  it("skips the write at startup (expect=nil) when disk holds a pushed snapshot", function()
+    -- The exact #2001 race: startup had no cached policy (expect=nil) and
+    -- fetched BASE (sha256:abc123), but the sidecar wrote PAUSED first.
+    local ok, _writes, renames = save_guarded(
+      decode_snap(), disk_with_etag("sha256:ws-pushed-paused"), nil)
+    assert.is_true(ok)
+    assert.equal(0, #renames)
+  end)
+
+  it("writes when the on-disk etag matches expect_etag (no concurrent writer)", function()
+    local ok, _writes, renames = save_guarded(
+      decode_snap(), disk_with_etag("sha256:old"), "sha256:old")
+    assert.is_true(ok)
+    assert.equal(1, #renames)
+    assert.equal(SNAPSHOT_PATH, renames[1].to)
+  end)
+
+  it("writes when the on-disk file is absent (fresh install / ws off)", function()
+    local ok, _writes, renames = save_guarded(decode_snap(), disk_with_etag(nil), nil)
+    assert.is_true(ok)
+    assert.equal(1, #renames)
+  end)
+
+  it("writes (idempotent) when the on-disk etag already equals the snapshot's", function()
+    -- decode_snap()'s etag is sha256:abc123; disk already holds it.
+    local ok, _writes, renames = save_guarded(
+      decode_snap(), disk_with_etag("sha256:abc123"), "sha256:old")
+    assert.is_true(ok)
+    assert.equal(1, #renames)
+  end)
+
+  it("writes unconditionally when no read_fn is supplied (legacy callers)", function()
+    local renames = {}
+    local ok = policy.save_snapshot(decode_snap(),
+      function(_p, _c) return true, nil end,
+      function(from, to) table.insert(renames, { from = from, to = to }); return true end)
+    assert.is_true(ok)
+    assert.equal(1, #renames)
+  end)
+
+end)
+
 describe("policy.load_snapshot", function()
 
   it("returns the decoded snapshot when the read returns valid JSON", function()
