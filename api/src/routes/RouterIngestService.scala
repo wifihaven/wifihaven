@@ -92,7 +92,7 @@ final class RouterIngestService(
         // for subscribed `(groupBy,bucket,filter)` param-sets (design §5.3). Both are one-liners that
         // never block or fail ingest (sliding hub, UIO). timeStatus/appUsage pushes are S6a.
         _        <- ZIO.when(records.nonEmpty)(
-          bus.publish(SpaEvent.NowChanged) *> bus.publish(SpaEvent.UsageIngested),
+          bus.publish(SpaEvent.NowChanged) *> bus.publish(SpaEvent.UsageIngested(ps)),
         )
       } yield ()
     }

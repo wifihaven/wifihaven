@@ -38,9 +38,10 @@ import java.time.{Instant, LocalDateTime}
  *     no frame is ever pushed (admin/adult are full-visibility, so one body serves all recipients —
  *     the per-profile role filter is the visibleTo gate, exactly as `now`).
  *
- * The injected [[Clock]] is fixed at 14:00:30 — deliberately OFF a 1m boundary so the head window
- * `[floor(now,1m)=14:00:00, now=14:00:30)` is non-empty and the seeded period-14:00:00 row lands in
- * it.
+ * The injected [[Clock]] is fixed at 14:00:30. #2004: the head bucket is anchored on the ingested
+ * `periodStart` (not wall-clock `now`), so the seeded period-14:00:00 row lands in the 14:00 bucket
+ * `[14:00:00, 14:01:00)` regardless of the clock; the REGRESSION case below seeds a prior-minute
+ * period to prove the head follows the data, not `floor(now)`.
  */
 object SpaWsS4Spec
     extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task]] {
@@ -458,21 +459,30 @@ object SpaWsS4Spec
     test(
       "coalesce collapses a burst of contentless triggers to one recompute each (latest-wins logic)",
     ) {
-      val t1    = Instant.parse("2026-06-25T13:59:00Z")
-      val t2    = Instant.parse("2026-06-25T13:59:30Z")
-      val burst = Chunk(
+      val t1     = Instant.parse("2026-06-25T13:59:00Z")
+      val t2     = Instant.parse("2026-06-25T13:59:30Z")
+      // #2004: UsageIngested now carries the batch's periodStart. A burst must collapse to the ONE
+      // with the LATEST period (latest-wins) so the live edge never regresses to a stale bucket.
+      val pEarly = Instant.parse("2026-06-25T13:58:00Z")
+      val pMid   = Instant.parse("2026-06-25T13:59:00Z")
+      val pLate  = Instant.parse("2026-06-25T14:00:00Z")
+      val burst  = Chunk(
         SpaEvent.NowChanged,
-        SpaEvent.UsageIngested,
-        SpaEvent.UsageIngested,
+        SpaEvent.UsageIngested(pMid),
+        SpaEvent.UsageIngested(pLate),
         SpaEvent.NowChanged,
-        SpaEvent.UsageIngested,
+        SpaEvent.UsageIngested(pEarly),
         SpaEvent.ConnectionEventsIngested(t1),
         SpaEvent.ConnectionEventsIngested(t1),
         SpaEvent.ConnectionEventsIngested(t2),
       )
-      val out   = SpaPush.coalesce(burst)
+      val out    = SpaPush.coalesce(burst)
       ZIO.succeed(
-        assertTrue(out.count(_ == SpaEvent.UsageIngested) == 1) &&
+        // Exactly one UsageIngested survives, and it carries the LATEST period (not first-seen).
+        assertTrue(
+          out.collect { case e: SpaEvent.UsageIngested => e }.toList ==
+            List(SpaEvent.UsageIngested(pLate)),
+        ) &&
           assertTrue(out.count(_ == SpaEvent.NowChanged) == 1) &&
           // Distinct `since`d connection-event events are NOT collapsed (their head re-read differs).
           assertTrue(out.count(_ == SpaEvent.ConnectionEventsIngested(t1)) == 1) &&

@@ -30,16 +30,18 @@ import java.time.{Duration, Instant, ZoneId}
  *     whose filter matches.
  *   - [[SpaEvent.Stale]] → fan a contentless nudge to `stale` subscribers.
  *   - [[SpaEvent.UsageIngested]] → #1971 (S4): for each DISTINCT subscribed `trafficUsage`
- *     `(groupBy, bucket, filter)` param-set, recompute ONLY the current/most-recent bucket via the
- *     shared [[UsageTrafficQuery.aggregate]] (the exact query the `GET /api/usage/traffic`
- *     aggregated path runs — SSOT) scoped to the head window, and push that one bucket as a
- *     `TrafficUsageResponse` live edge (design §5.3). No subscriber for a param-set → no query.
+ *     `(groupBy, bucket, filter)` param-set, recompute ONLY the bucket the just-ingested rows
+ *     landed in — the one containing the event's `periodStart` (#2004) — via the shared
+ *     [[UsageTrafficQuery.aggregate]] (the exact query the `GET /api/usage/traffic` aggregated path
+ *     runs — SSOT) scoped to that single bucket, and push it as a `TrafficUsageResponse` live edge
+ *     (design §5.3). No subscriber for a param-set → no query.
  *
  * Cadence / backpressure (design §6.3): the drain loop COALESCES — it takes the first buffered
- * event then drains everything else currently queued and de-duplicates the contentless triggers
- * ([[SpaEvent.NowChanged]] / [[SpaEvent.UsageIngested]]), so a burst of usage ingests collapses to
- * a single freshest head-bucket recompute per param-set (latest-wins), never a backlog. A slow
- * consumer thus serves the freshest state, not a queue of stale snapshots.
+ * event then drains everything else currently queued and de-duplicates the triggers
+ * ([[SpaEvent.NowChanged]] to one, [[SpaEvent.UsageIngested]] to the freshest `periodStart`), so a
+ * burst of usage ingests collapses to a single freshest head-bucket recompute per param-set
+ * (latest-wins), never a backlog. A slow consumer thus serves the freshest state, not a queue of
+ * stale snapshots.
  *
  * The loop NEVER fails: each event's build is wrapped so a transient repo error is logged and
  * skipped (the push surface is a latency/UX layer, design §6.5 — a missed push self-heals on the
@@ -82,11 +84,10 @@ object SpaPush {
 
   /**
    * Drain one coalesced batch: block for the first event, then sweep up everything else already
-   * buffered and de-dup the contentless triggers (design §6.3) so a burst of ingests does ONE
-   * recompute per topic, not N. `distinct` preserves first-occurrence order; the
-   * `ConnectionEventsIngested(since)` events keep their distinct `since` (their head re-read is
-   * cheap and the `since` floor matters), only the contentless `NowChanged`/`UsageIngested`
-   * collapse.
+   * buffered and coalesce (design §6.3) so a burst of ingests does ONE recompute per topic, not N.
+   * The `ConnectionEventsIngested(since)` events keep their distinct `since` (their head re-read is
+   * cheap and the `since` floor matters); `NowChanged` collapses to one and `UsageIngested` to the
+   * freshest `periodStart` (latest-wins).
    */
   private def drainBatch(
       queue: Dequeue[SpaEvent],
@@ -121,13 +122,31 @@ object SpaPush {
     } yield ()
 
   /**
-   * Coalesce a drained batch (design §6.3 latest-wins): de-dup so the contentless triggers
-   * ([[SpaEvent.NowChanged]] / [[SpaEvent.UsageIngested]]) each fire ONE recompute regardless of
-   * burst size, while distinctly-`since`d [[SpaEvent.ConnectionEventsIngested]] are kept (each
-   * names a different new-row floor). `distinct` preserves first-occurrence order. Exposed for unit
-   * coverage of the collapse logic.
+   * Coalesce a drained batch (design §6.3 latest-wins): de-dup so a burst of triggers fires ONE
+   * recompute per topic regardless of burst size, while distinctly-`since`d
+   * [[SpaEvent.ConnectionEventsIngested]] are kept (each names a different new-row floor).
+   *   - [[SpaEvent.NowChanged]] → collapses to one (contentless).
+   *   - [[SpaEvent.UsageIngested]] → collapses to the one with the LATEST `periodStart` (#2004):
+   *     the head bucket is anchored on the ingested period, so a burst must converge on the
+   *     freshest period (latest-wins) — a plain `distinct` would keep N distinct-period events and
+   *     recompute each, and an older period must never overwrite the live edge with a stale bucket.
+   *   - [[SpaEvent.ConnectionEventsIngested]] → distinct `since`s kept (their head re-read
+   *     differs).
+   * `distinct` preserves first-occurrence order. Exposed for unit coverage of the collapse logic.
    */
-  private[api] def coalesce(events: Chunk[SpaEvent]): Chunk[SpaEvent] = events.distinct
+  private[api] def coalesce(events: Chunk[SpaEvent]): Chunk[SpaEvent] = {
+    val latestUsage: Option[Instant] =
+      events
+        .collect { case SpaEvent.UsageIngested(p) => p }
+        .foldLeft(Option.empty[Instant])((acc, p) =>
+          Some(acc.fold(p)(a => if (p.isAfter(a)) p else a)),
+        )
+    val withoutUsage                 = events.filter {
+      case SpaEvent.UsageIngested(_) => false
+      case _                         => true
+    }.distinct
+    latestUsage.fold(withoutUsage)(p => withoutUsage :+ SpaEvent.UsageIngested(p))
+  }
 
   private def handle(
       event: SpaEvent,
@@ -152,7 +171,7 @@ object SpaPush {
         LogContext.annotate(LogContext.Op, "stale") {
           registry.fanOutStale(topic, scope)
         }
-      case SpaEvent.UsageIngested                   =>
+      case SpaEvent.UsageIngested(periodStart)      =>
         LogContext.annotate(LogContext.Op, "trafficUsage") {
           pushTrafficUsage(
             registry,
@@ -161,7 +180,7 @@ object SpaPush {
             deviceRepo,
             profileRepo,
             appRepo,
-            clock,
+            periodStart,
           )
             .catchAllCause(c => ZIO.logErrorCause("spa ws push: trafficUsage recompute failed", c))
         }
@@ -217,11 +236,18 @@ object SpaPush {
 
   /**
    * #1971 (S4): the `trafficUsage` live-edge aggregator (design §5.3). For each DISTINCT subscribed
-   * param-set, recompute ONLY the current/most-recent bucket via the shared
-   * [[UsageTrafficQuery.aggregate]] (the same query the `GET` runs) scoped to the head window, and
-   * push it as a `TrafficUsageResponse`. The device/profile maps are loaded ONCE and shared across
-   * param-sets; app memberships are loaded only when some param-set groups by app. No subscriber →
-   * empty param-set → nothing computed.
+   * param-set, recompute ONLY the bucket the just-ingested rows landed in via the shared
+   * [[UsageTrafficQuery.aggregate]] (the same query the `GET` runs) scoped to that single bucket,
+   * and push it as a `TrafficUsageResponse`. The device/profile maps are loaded ONCE and shared
+   * across param-sets; app memberships are loaded only when some param-set groups by app. No
+   * subscriber → empty param-set → nothing computed.
+   *
+   * #2004: `anchor` is the ingested batch's `periodStart` (traffic rows are bucketed by
+   * `period_start`, `UsageTrafficQuery.listRawInRange`), NOT wall-clock `now`. A ~60s router report
+   * covers the *prior* minute, so its `period_start` floors to the previous bucket; anchoring the
+   * head on `now` left `[floor(now), now)` perpetually empty (the fresh row sits one bucket back)
+   * and the dashboard LIVE BANDWIDTH panel stuck at 0 B/s. Anchoring on the period pushes the
+   * bucket the data is actually in.
    */
   private def pushTrafficUsage(
       registry: SpaWsRegistry,
@@ -230,13 +256,12 @@ object SpaPush {
       deviceRepo: DeviceRepo,
       profileRepo: ProfileRepo,
       appRepo: AppRepo,
-      clock: Clock,
+      anchor: Instant,
   ): Task[Unit] =
     registry.trafficUsageParamSets.flatMap { paramSets =>
       ZIO
         .when(paramSets.nonEmpty) {
           for {
-            now      <- clock.instant
             devices  <- deviceRepo.listAll
             profiles <- profileRepo.listAll
             devByMac  = devices.iterator.map(d => d.mac -> d).toMap
@@ -258,7 +283,7 @@ object SpaPush {
                 devByMac,
                 profNames,
                 appsByHost,
-                now,
+                anchor,
               ),
             )
           } yield ()
@@ -281,17 +306,20 @@ object SpaPush {
       devByMac: Map[MacAddress, Device],
       profNames: Map[ProfileId, String],
       appsByHost: Map[String, List[AppMembership]],
-      now: Instant,
+      anchor: Instant,
   ): Task[Unit] =
     decodeParams(params) match {
       case None         =>
         ZIO.logDebug(s"spa ws push: skipping unrenderable trafficUsage params ${params.toJson}")
       case Some(parsed) =>
-        val headStart    = UsageTraffic.floorTo(now, parsed.bucket, parsed.zone)
-        // The head window is [headStart, now): all rows in it floor to `headStart`, so the aggregate
-        // carries exactly the current/most-recent bucket (one windowStart). On the rare tick where
-        // `now` lands exactly on a bucket boundary the window is empty and the push is an empty head
-        // (the client then merges nothing) — the next ingest advances it.
+        // #2004: anchor the head bucket on the ingested `periodStart`, then scope to exactly that ONE
+        // bucket `[headStart, headEnd)` where `headEnd = headStart + bucketWidth`. Rows are bucketed
+        // by `period_start`, so this captures precisely the bucket the fresh rows landed in (one
+        // `windowStart`) — the client's single-bucket head-merge (`wsCache.mergeHeadBucket`) requires
+        // a single window. Anchoring on wall-clock `now` instead left this window empty in steady
+        // state (a ~60s report's period sits one bucket back), the prod defect this fixes.
+        val headStart    = UsageTraffic.floorTo(anchor, parsed.bucket, parsed.zone)
+        val headEnd      = headStart.plus(UsageTraffic.stepOf(parsed.bucket))
         val resolvedMacs = UsageTrafficQuery.resolveMacs(parsed.macs, parsed.profileIds, devices)
         val filterEmpty  = parsed.filterRequested && resolvedMacs.isEmpty
         val aggregate    =
@@ -302,7 +330,7 @@ object SpaPush {
               rollupRepo,
               resolvedMacs,
               headStart,
-              now,
+              headEnd,
               parsed.bucket,
               parsed.groupBySet,
               parsed.zone,
@@ -315,7 +343,7 @@ object SpaPush {
             bucket = parsed.bucket.code,
             groupBy = parsed.groupBySet.toList.map(_.code).sorted,
             from = headStart.toString,
-            to = now.toString,
+            to = headEnd.toString,
             tz = parsed.zone.getId,
             rawRows = Nil,
             aggregateRows = rows,
