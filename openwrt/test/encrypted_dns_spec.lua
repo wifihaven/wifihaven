@@ -83,6 +83,18 @@ describe("encrypted_dns module — curated lists", function()
     assert.is_true(set["2001:4860:4860::8844"])
     assert.is_true(set["2620:fe::fe"])
   end)
+
+  it("exposes a Cloudflare-ONLY IPv6 DoH :443 subset (no Google/Quad9) (#2005)", function()
+    local set = {}
+    for _, ip in ipairs(encrypted_dns.CF_DOH_IPS_V6) do set[ip] = true end
+    -- exactly the two Cloudflare v6 literals
+    assert.is_true(set["2606:4700:4700::1111"])
+    assert.is_true(set["2606:4700:4700::1001"])
+    -- Google / Quad9 must NOT leak into the :443 subset
+    assert.is_nil(set["2001:4860:4860::8888"])
+    assert.is_nil(set["2001:4860:4860::8844"])
+    assert.is_nil(set["2620:fe::fe"])
+  end)
 end)
 
 -- ── dnsmasq NODATA directives (module) ───────────────────────────────────────
@@ -121,10 +133,43 @@ describe("encrypted_dns.nft_rules", function()
     assert.truthy(joined:find("2606:4700:4700::1111", 1, true))
   end)
 
-  it("does NOT drop :443 or ICMP to the resolver IPs (connectivity probes survive)", function()
+  it("does NOT drop ICMP to the resolver IPs (connectivity probes survive)", function()
     local joined = table.concat(encrypted_dns.nft_rules(), "\n")
-    assert.is_nil(joined:find("443", 1, true))
     assert.is_nil(joined:find("icmp", 1, true))
+  end)
+
+  -- #2005: hardcoded-IP DoH on :443 to Cloudflare's v6 resolver literals is the
+  -- observed leak. Scoped to Cloudflare IPv6 ONLY — see the rule's rationale.
+  it("drops Cloudflare IPv6 DoH on :443 (BOTH tcp and udp) (#2005)", function()
+    local tcp443, udp443 = false, false
+    for _, rule in ipairs(encrypted_dns.nft_rules()) do
+      if rule:find("dport 443", 1, true) then
+        -- every :443 rule must be v6 and target ONLY the Cloudflare v6 literals
+        assert.truthy(rule:find("ip6 daddr", 1, true), ":443 rule not v6 — " .. rule)
+        assert.truthy(rule:find("2606:4700:4700::1111", 1, true)
+          and rule:find("2606:4700:4700::1001", 1, true),
+          ":443 rule not Cloudflare-v6 — " .. rule)
+        if rule:find("tcp dport 443", 1, true) then tcp443 = true end
+        if rule:find("udp dport 443", 1, true) then udp443 = true end
+      end
+    end
+    assert.is_true(tcp443, "missing Cloudflare v6 tcp/443 drop")
+    assert.is_true(udp443, "missing Cloudflare v6 udp/443 drop (HTTP/3 DoH)")
+  end)
+
+  it("emits NO :443 rule containing any v4 IP or any Google/Quad9 IP (#2005)", function()
+    local forbidden = {
+      "1.1.1.1", "1.0.0.1", "8.8.8.8", "8.8.4.4", "9.9.9.9", "149.112.112.112",
+      "2001:4860:4860::8888", "2001:4860:4860::8844", "2620:fe::fe",
+    }
+    for _, rule in ipairs(encrypted_dns.nft_rules()) do
+      if rule:find("dport 443", 1, true) then
+        for _, ip in ipairs(forbidden) do
+          assert.is_nil(rule:find(ip, 1, true),
+            ":443 rule must not contain " .. ip .. " — " .. rule)
+        end
+      end
+    end
   end)
 
   it("does NOT emit a blanket all-traffic drop to the resolver IPs", function()

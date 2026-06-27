@@ -74,6 +74,22 @@ M.RESOLVER_IPS_V6 = {
   "2620:fe::fe",                                    -- Quad9
 }
 
+-- ── Cloudflare IPv6 DoH-on-:443 subset → drop :443 (tcp+udp) ─────────────────
+-- The ONE place we drop :443 to a resolver IP (#2005, epic #1903). Deliberately
+-- IPv6-Cloudflare-ONLY — v4 :443 and Google/Quad9 :443 are intentionally
+-- EXCLUDED, for the same dual-use reason the :53 rules are port-scoped above:
+-- 1.1.1.1 / 8.8.8.8 / 9.9.9.9 are the world's most common "am I online?"
+-- connectivity-check targets, and Cloudflare serves a real HTTPS site on
+-- 1.1.1.1 — a :443 drop there would strand probing devices. A v6 :443
+-- connection to a resolver literal carries none of that collateral: generic
+-- connectivity checks never target the resolver's v6 literal, so it is
+-- near-pure DoH signal (the observed prod leak: 2606:4700:4700::1001 = 1.0.0.1
+-- as unattributed v6 traffic). Cloudflare only here per the operator decision
+-- in #2005; v4 :443 is a possible follow-up, not in this subset.
+M.CF_DOH_IPS_V6 = {
+  "2606:4700:4700::1111", "2606:4700:4700::1001",  -- Cloudflare only
+}
+
 -- dnsmasq_lines() → { "local=/<host>/", ... }
 -- `local=/<host>/` answers the domain authoritatively-empty (NODATA) instead of
 -- forwarding it upstream — the negative answer Apple's Private-Relay disable
@@ -113,6 +129,17 @@ function M.nft_rules()
     "ip6 daddr { %s } udp dport 53 counter drop comment \"wh_encrypted_dns:resolver53\"", v6)
   rules[#rules + 1] = string.format(
     "ip6 daddr { %s } tcp dport 53 counter drop comment \"wh_encrypted_dns:resolver53\"", v6)
+  -- Hardcoded-IP DoH on :443 to Cloudflare's v6 resolver literals (#2005). The
+  -- one sanctioned :443 resolver drop — Cloudflare IPv6 ONLY (see CF_DOH_IPS_V6
+  -- for why v4 :443 and Google/Quad9 :443 are deliberately excluded). BOTH
+  -- tcp/443 and udp/443: Cloudflare serves DoH over HTTP/3, so udp/443 must be
+  -- covered too. Non-`wh_drop:` comment so the per-MAC attribution parsers
+  -- ignore it, consistent with the resolver53 rules above.
+  local cfv6 = table.concat(M.CF_DOH_IPS_V6, ", ")
+  rules[#rules + 1] = string.format(
+    "ip6 daddr { %s } tcp dport 443 counter drop comment \"wh_encrypted_dns:cf_doh443_v6\"", cfv6)
+  rules[#rules + 1] = string.format(
+    "ip6 daddr { %s } udp dport 443 counter drop comment \"wh_encrypted_dns:cf_doh443_v6\"", cfv6)
   return rules
 end
 
