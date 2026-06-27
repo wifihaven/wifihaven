@@ -43,3 +43,5 @@ slugs:
   # #1922: traffic-driven catalog pass (see evidence/classification-1922.md)
   - math-playground
   - dance-mat-typing
+  # operator request: A-Z Animals reference site
+  - a-z-animals

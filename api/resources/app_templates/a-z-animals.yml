@@ -1,0 +1,6 @@
+slug: a-z-animals
+name: A-Z Animals
+icon: "https://icons.duckduckgo.com/ip3/a-z-animals.com.ico"
+icon_type: url
+hosts:
+  - a-z-animals.com
