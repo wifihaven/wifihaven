@@ -416,22 +416,20 @@ export function useWsConnectionEventsLiveEdge(
 // lives. Mounted once globally (WsStaleInvalidator, App.tsx).
 export function useWsStale(): void {
   const inv = useInvalidators()
-  // The single topic→key mapping (§3.2). A bounded enum mirroring the server's `stale`
-  // topics; an unknown topic is ignored (forward-compat).
-  const map = useMemo<Record<string, () => void>>(
-    () => ({
+  // `useWsSubscription` captures the latest onPush closure each render, so we read the
+  // current `inv` directly and build the (tiny) topic→invalidator map on the rare push.
+  useWsSubscription('stale', undefined, payload => {
+    const topic = (payload as { topic?: unknown })?.topic
+    if (typeof topic !== 'string') return
+    // The single topic→key mapping (§3.2). A bounded enum mirroring the server's `stale`
+    // topics; an unknown topic is ignored (forward-compat).
+    const map: Record<string, () => void> = {
       alerts: () => void inv.alerts(),
       profiles: () => void inv.profiles(),
       devices: () => void inv.devices(),
       schedules: () => void inv.schedules(),
-    }),
-    [inv],
-  )
-  const mapRef = useRef(map)
-  mapRef.current = map
-  useWsSubscription('stale', undefined, payload => {
-    const topic = (payload as { topic?: unknown })?.topic
-    if (typeof topic === 'string') mapRef.current[topic]?.()
+    }
+    map[topic]?.()
   })
 }
 
