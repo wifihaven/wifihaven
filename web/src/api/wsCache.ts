@@ -29,9 +29,6 @@ export function mergeHeadBucket(
   // merge nothing — keep prior series, or seed with the empty live shape if first.
   if (!live.aggregateRows || live.aggregateRows.length === 0) return prev ?? live
   if (!prev) return live
-  const headStart = live.aggregateRows[0].windowStart
-  // Drop any prior rows in the head window (replace-in-place); keep all older buckets.
-  const kept = prev.aggregateRows.filter(r => r.windowStart !== headStart)
   return {
     // Carry the live response's window/bucket metadata (the freshest edge) but keep the
     // full merged series. `to` advances to the live edge; `from` stays the GET's window
@@ -39,8 +36,26 @@ export function mergeHeadBucket(
     ...prev,
     bucket: live.bucket,
     to: live.to,
-    aggregateRows: [...live.aggregateRows, ...kept],
+    aggregateRows: mergeAggregateHeadRows(prev.aggregateRows, live.aggregateRows),
   }
+}
+
+// The rows-level head merge (#1975 S6b). The dashboard merges over a whole
+// TrafficUsageResponse (mergeHeadBucket above); the Traffic Usage PAGE holds its
+// aggregated series as a bare TrafficUsageAggregateRow[] in component state (it
+// pages history itself, not via React Query), so its live edge merges at the rows
+// level. ONE join-on-windowStart implementation backs both (SSOT): replace the
+// rows of the head window in place while it accumulates, prepend a fresh head on
+// rollover, never touch paged history. The series is newest-first.
+export function mergeAggregateHeadRows(
+  prev: TrafficUsageAggregateRow[],
+  live: TrafficUsageAggregateRow[],
+): TrafficUsageAggregateRow[] {
+  if (live.length === 0) return prev
+  const headStart = live[0].windowStart
+  // Drop any prior rows in the head window (replace-in-place); keep all older buckets.
+  const kept = prev.filter(r => r.windowStart !== headStart)
+  return [...live, ...kept]
 }
 
 // The head (newest) bucket's rows — the slice the live gauge reads. The series is
@@ -122,12 +137,14 @@ export function overallRate(
 //
 // The push carries the genuinely-new head rows (newest-first); cursor-paged history is
 // untouched. We prepend, dedup by id (a row already in the cache is never duplicated —
-// the GET and the push can overlap at the boundary), and cap to `limit` so the live
-// feed stays bounded.
+// the GET and the push can overlap at the boundary). `limit` bounds the live feed where
+// it must stay small (the dashboard's "Recently Blocked", RECENT_BLOCKED_LIMIT); the
+// Connection Events PAGE (#1975 S6b) pages its history with infinite scroll, so it omits
+// `limit` — prepending the live head must NOT truncate the loaded history.
 export function prependHead(
   prev: QueryLog[] | undefined,
   rows: QueryLog[],
-  limit: number,
+  limit?: number,
 ): QueryLog[] {
   const merged = [...rows, ...(prev ?? [])]
   const seen = new Set<number>()
@@ -137,7 +154,7 @@ export function prependHead(
     seen.add(r.id)
     out.push(r)
   }
-  return out.slice(0, limit)
+  return limit === undefined ? out : out.slice(0, limit)
 }
 
 // ── now: derived KPIs computed client-side off the pushed DashboardNow (§3.1) ───────

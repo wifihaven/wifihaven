@@ -10,6 +10,8 @@ import { HeaderFilter } from '@/components/usage/HeaderFilter'
 import { FilterShelf } from './TrafficUsagePage'
 import { localTime } from '@/components/usage/usageHelpers'
 import { useInfiniteScroll } from '@/hooks/useInfiniteScroll'
+import { useWsConnectionEventsLiveEdge } from '@/hooks/useWs'
+import { LiveBadge } from '@/components/dashboard/LiveBadge'
 
 // #862: infinite scroll page sizes + lookback. The /api/logs endpoint still
 // requires `hours`, so we ask for a wide band and let the row cap bound.
@@ -302,10 +304,25 @@ function RawEventsView({
     onLoadMore: () => { if (cursor) void load(cursor) },
   })
 
+  // #1975 (S6b): stream the live head of the Connection Events feed — subscribe
+  // `connectionEvents` with the page's current filters and prepend new rows (dedup by id)
+  // onto `logs` without truncating the paged history (the GET still owns paging). Re-
+  // subscribes when the status / device / profile filters change; only while anchored at
+  // "now" (a pinned `until` is history).
+  const liveStreaming = useWsConnectionEventsLiveEdge(
+    { blocked, macs, profileIds, until },
+    setLogs,
+  )
+
   if (error) return <ErrorBanner message={error} />
 
   return (
     <>
+    {liveStreaming && (
+      <div className="flex justify-end">
+        <LiveBadge />
+      </div>
+    )}
     <div className="overflow-x-auto" data-testid="ce-raw-table">
       <table className="min-w-full text-sm">
         <thead className="text-xs uppercase">
