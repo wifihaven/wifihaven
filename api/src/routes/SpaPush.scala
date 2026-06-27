@@ -339,6 +339,10 @@ object SpaPush {
               appsByHost,
             )
         aggregate.flatMap { rows =>
+          // `from`/`to` describe the head BUCKET window `[headStart, headEnd)` — not wall-clock
+          // "live edge time". `to` is therefore the bucket end and can sit slightly ahead of `now`
+          // for an in-progress bucket; it's metadata only (the client merges by `windowStart` and
+          // derives B/s from the bucket width, never from this `to`).
           val body = TrafficUsageResponse(
             bucket = parsed.bucket.code,
             groupBy = parsed.groupBySet.toList.map(_.code).sorted,
