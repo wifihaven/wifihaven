@@ -26,11 +26,14 @@ import {
   mergeHeadBucket,
   overallRate,
   prependHead,
+  projectTimeStatusToSummary,
   rateFor,
   type BandwidthRate,
 } from '@/api/wsCache'
 import type {
   DashboardNow,
+  ProfileTimeStatus,
+  ProfileUsageByApp,
   QueryLog,
   TrafficUsageAggregateRow,
   TrafficUsageBucket,
@@ -170,6 +173,52 @@ export function useWsRecentBlocked(): void {
       )
     },
     qk.recentBlocked(),
+  )
+}
+
+/**
+ * `timeStatus` (§3.1, class 2): the server pushes the whole `/api/time/status`
+ * `ProfileTimeStatus[]` body whenever a profile's used/remaining minutes move (usage credit /
+ * #1849 boundary tick / +Time grant). We patch every cache the live screen-time surface reads off
+ * the ONE pushed body (SSOT — no recompute):
+ *   - `timeStatusToday()` (the full list, design §3.1),
+ *   - `timeStatusSummaryToday()` (the lighter /profiles collapsed shape, projected — so its
+ *     adaptive ladder can pause while the push is live, §3.3, without the bars freezing),
+ *   - `timeStatusProfileToday(pid)` per row (the expanded per-profile detail).
+ * Refetched once on reconnect via the summary key (the surface the page actively renders).
+ */
+export function useWsTimeStatus(): void {
+  const qc = useQueryClient()
+  useWsSubscription(
+    'timeStatus',
+    undefined,
+    payload => {
+      const rows = (payload as ProfileTimeStatus[]) ?? []
+      qc.setQueryData(qk.timeStatusToday(), rows)
+      qc.setQueryData(qk.timeStatusSummaryToday(), projectTimeStatusToSummary(rows))
+      for (const r of rows) qc.setQueryData(qk.timeStatusProfileToday(r.profileId), r)
+    },
+    qk.timeStatusSummaryToday(),
+  )
+}
+
+/**
+ * `appUsage{profileId}` (§3.1, class 2): subscribed while a profile card is expanded
+ * (subscription = mounted UI, §1.4). The server pushes the per-app `/api/profiles/{id}/usage-by-app`
+ * body for TODAY; we patch ONLY the live today-window key `profileUsageByApp(profileId, from, to)`
+ * — past windows are immutable, so the push never touches them (§3.1). `from`/`to` are the card's
+ * today window (the same local-today the page's query uses), so the patch lands on exactly the key
+ * the breakdown renders. Refetched once on reconnect.
+ */
+export function useWsAppUsage(profileId: number, from: string, to: string, enabled = true): void {
+  const qc = useQueryClient()
+  const key = qk.profileUsageByApp(profileId, from, to)
+  useWsSubscription(
+    'appUsage',
+    { profileId },
+    payload => qc.setQueryData(key, payload as ProfileUsageByApp),
+    key,
+    enabled,
   )
 }
 

@@ -6,6 +6,8 @@
 
 import type {
   DashboardNow,
+  ProfileTimeStatus,
+  ProfileTimeSummary,
   QueryLog,
   TrafficUsageAggregateRow,
   TrafficUsageBucket,
@@ -153,4 +155,25 @@ export function deriveNowKpis(now: DashboardNow | undefined | null): NowKpis {
   const activeDevices = profiles.flatMap(p => p.activeDevices)
   const blocked = profiles.filter(p => p.paused).flatMap(p => p.activeDevices)
   return { onlineNow: activeDevices.length, blockedNow: blocked.length }
+}
+
+// ── timeStatus: project the pushed ProfileTimeStatus[] onto the lighter summary shape ───
+//
+// #1974 (S6a, §3.1): the `timeStatus` push carries the full `/api/time/status`
+// ProfileTimeStatus[] body. The /profiles collapsed list reads the lighter
+// `/api/time/status/summary` shape (ProfileTimeSummary[], #777). ProfileTimeSummary is a
+// strict field-subset of ProfileTimeStatus, so we PROJECT the one pushed body onto it (no
+// recompute — pure field selection) and patch the summary cache too, so the collapsed bars
+// live-update AND their adaptive ladder can safely go dormant while the push is live (§3.3).
+// One pushed body is the single source for both caches.
+export function projectTimeStatusToSummary(rows: ProfileTimeStatus[]): ProfileTimeSummary[] {
+  return rows.map(r => ({
+    profileId: r.profileId,
+    profileName: r.profileName,
+    date: r.date,
+    dailyLimitMins: r.dailyLimitMins,
+    usedMins: r.usedMins,
+    extensionMins: r.extensionMins,
+    remainingMins: r.remainingMins,
+  }))
 }
