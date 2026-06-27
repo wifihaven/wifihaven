@@ -31,12 +31,22 @@ import java.time.Instant
  *     filter)` param-set and pushes that one bucket as a `TrafficUsageResponse` live edge (design
  *     §5.3). Contentless trigger — the head is recomputed from the DB, latest-wins (§6.3), and a
  *     param-set with no subscriber is never queried.
+ *   - [[SpaEvent.TimeStatusChanged]] — #1974 (S6a): a profile's used/remaining minutes moved. The
+ *     consumer rebuilds the `/api/time/status` `ProfileTimeStatus[]` body (via
+ *     `TimeStatusService.dayStateAllLive`, role-filtered like the GET) and pushes it to
+ *     `timeStatus` subscribers, and rebuilds the per-app `/api/profiles/{id}/usage-by-app` body
+ *     (via the shared `UsageRoutes.buildUsageByApp`) for each subscribed `appUsage{profileId}`
+ *     (design §1.2/§3.1). Published from THREE write sites (§5.2): usage credit (new minutes), the
+ *     #1849 time-boundary ticker (schedule boundary / cap exhaustion change remaining without new
+ *     usage), and the `POST /api/time/extend` grant. Contentless trigger — bodies are recomputed
+ *     from the DB, latest-wins (§6.3), and a topic with no subscriber is never queried.
  */
 enum SpaEvent {
   case NowChanged
   case ConnectionEventsIngested(since: Instant)
   case Stale(topic: StaleTopic, scope: Option[String] = None)
   case UsageIngested
+  case TimeStatusChanged
 }
 
 /**

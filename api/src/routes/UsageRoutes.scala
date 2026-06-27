@@ -471,7 +471,12 @@ object UsageRoutes {
   // same proportionalSeconds/presenceSeconds units as an app row, so the SPA
   // can render them side-by-side with real apps. "Other" only ever appears as
   // a top-N display rollup at the SPA layer.
-  private def buildUsageByApp(
+  // #1974 (SPA-ws S6a): `private[routes]` (was object-private) so the `appUsage` ws push
+  // ([[SpaPush]], same package) rebuilds the per-app body through the EXACT same repo-load + compute
+  // path the GET runs — the streamed body is byte-identical to `GET /api/profiles/{id}/usage-by-app`
+  // (AGENTS.md §single-source-of-truth). The push calls it with `from == to == clock.today` (the
+  // GET's today default).
+  private[routes] def buildUsageByApp(
       pid: ProfileId,
       from: LocalDate,
       to: LocalDate,

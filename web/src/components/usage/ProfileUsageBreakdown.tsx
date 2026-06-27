@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useProfileUsageByApp } from '@/api/queries'
+import { useWsAppUsage } from '@/hooks/useWs'
 import type {
   HostUsage, OrphanHostUsage, ProfileAppUsage, ProfileUsageByApp,
 } from '@/types/api'
@@ -35,6 +36,13 @@ export function ProfileUsageBreakdown({ profileId, enabled = true, from, to }: {
   const f = from ?? today()
   const t = to ?? f
   const q = useProfileUsageByApp(profileId, f, t, { enabled })
+  // #1974 (SPA-ws S6a, §3.1): while this card is expanded on the LIVE (today) window, subscribe the
+  // per-app `appUsage{profileId}` push so the minutes-used rows update live; collapsing unmounts
+  // this component and the subscription effect's cleanup unsubscribes (subscription = mounted UI,
+  // §1.4). Only the today window is streamed — past windows are immutable, so the push never
+  // touches them; the subscription is gated on `enabled && f === t === today`.
+  const isLiveWindow = enabled && f === today() && t === today()
+  useWsAppUsage(profileId, f, t, isLiveWindow)
 
   if (!enabled) return null
   if (q.isLoading) {

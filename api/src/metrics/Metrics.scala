@@ -259,11 +259,12 @@ object MetricGuard {
     // fixed 6-value enum; bounded, no per-user/session dimension. A spike in
     // bad_origin/invalid_jwt is the CSWSH/forgery-probe tripwire (alert in spa-ws.json).
     "spa_ws_auth_total"                         -> Set("result"),
-    // #1970 (S3) — per-topic fan-out health for the change-source push path (design §6.3/§7).
-    // `op` ∈ {now, connectionEvents, stale} today (trafficUsage/timeStatus/appUsage land with
-    // S4/S6a as those topics start pushing); `result` ∈ {ok, coalesced, dropped, channel_closed}.
-    // Both bounded enums — no per-mac / per-profile / per-session / param dimension. A rising
-    // channel_closed/dropped is the slow-client tripwire surfaced by spa-ws.json's push-health panel.
+    // #1970 (S3) / #1974 (S6a) — per-topic fan-out health for the change-source push path (design
+    // §6.3/§7). `op` ∈ {now, connectionEvents, stale} (S3), trafficUsage (S4), timeStatus, appUsage
+    // (S6a — the per-recipient time-usage pushes via SpaWsRegistry.deliver); `result` ∈ {ok,
+    // coalesced, dropped, channel_closed}. Both bounded enums — no per-mac / per-profile /
+    // per-session / param dimension. A rising channel_closed/dropped is the slow-client tripwire
+    // surfaced by spa-ws.json's push-health panel.
     "spa_ws_push_total"                         -> Set("op", "result"),
     // #1848 — AGENT-side websocket transport metrics. The wifihaven-ws sidecar has no metrics
     // registry of its own, so it writes a cumulative tally that the agent folds into its
