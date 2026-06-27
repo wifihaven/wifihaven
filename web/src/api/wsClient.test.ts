@@ -154,6 +154,48 @@ describe('connect + handshake (§4.2/§1.4)', () => {
   })
 })
 
+describe('subscription ack / topicActive (§1.4)', () => {
+  it('topicActive is true only after an ok ack while live', () => {
+    const h = makeClient()
+    h.client.start()
+    last().open()
+    last().emit({ op: 'ready', payload: {} })
+    h.client.subscribe('now', undefined, { onPush: () => {} })
+    expect(h.client.topicActive('now')).toBe(false) // pending ack
+    last().emit({ op: 'ack', payload: { topic: 'now', status: 'ok' } })
+    expect(h.client.topicActive('now')).toBe(true)
+  })
+
+  it('a rejected subscription stays inactive (the consumer keeps polling)', () => {
+    const h = makeClient()
+    h.client.start()
+    last().open()
+    last().emit({ op: 'ready', payload: {} })
+    h.client.subscribe('now', undefined, { onPush: () => {} })
+    last().emit({ op: 'ack', payload: { topic: 'now', status: 'reject', reason: 'forbidden' } })
+    expect(h.client.topicActive('now')).toBe(false)
+  })
+
+  it('topicActive drops to false when the socket goes down, and is pending again after reconnect', () => {
+    const h = makeClient()
+    h.client.start()
+    last().open()
+    last().emit({ op: 'ready', payload: {} })
+    h.client.subscribe('now', undefined, { onPush: () => {} })
+    last().emit({ op: 'ack', payload: { topic: 'now', status: 'ok' } })
+    expect(h.client.topicActive('now')).toBe(true)
+    last().onclose?.({ code: 1006 })
+    expect(h.client.topicActive('now')).toBe(false)
+    vi.advanceTimersByTime(500)
+    last().open()
+    last().emit({ op: 'ready', payload: {} })
+    // re-subscribed on reconnect → pending again until the new ack
+    expect(h.client.topicActive('now')).toBe(false)
+    last().emit({ op: 'ack', payload: { topic: 'now', status: 'ok' } })
+    expect(h.client.topicActive('now')).toBe(true)
+  })
+})
+
 describe('re-subscribe on param change (#747)', () => {
   it('sends unsubscribe then subscribe when the bucket changes', () => {
     const h = makeClient()

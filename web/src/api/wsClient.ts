@@ -105,6 +105,11 @@ export class SpaWsClient {
   private status: WsStatus = 'offline'
   private readonly statusListeners = new Set<() => void>()
   private readonly subs = new Map<SpaTopicName, Subscription>()
+  // Per-topic subscription `ack` outcome (§1.4). A topic is only actually *streaming* once
+  // the server accepts the subscription (`ok`) — a role-rejected topic (e.g. a Child
+  // subscribing `now`) gets `reject` and never receives pushes, so consumers must keep
+  // polling for it even while the socket is live. Cleared (→ pending) on (re)subscribe.
+  private readonly acks = new Map<SpaTopicName, 'ok' | 'reject'>()
   private subToken = 0
   private attempt = 0
   /** True once a `ready` has been seen — distinguishes the first connect from a reconnect. */
@@ -141,10 +146,23 @@ export class SpaWsClient {
     }
   }
 
+  /**
+   * Whether a topic is actually *streaming* right now: the socket is live AND the server
+   * accepted the subscription (`ack:ok`). Consumers gate their poll-pause on THIS, not on
+   * bare connection liveness — a role-rejected topic (e.g. Child + `now`) is live-socket
+   * but never pushed, so its poll must keep running. Notifies via `subscribeStatus`.
+   */
+  topicActive = (topic: SpaTopicName): boolean =>
+    this.status === 'live' && this.acks.get(topic) === 'ok'
+
+  private notify(): void {
+    for (const l of this.statusListeners) l()
+  }
+
   private setStatus(next: WsStatus): void {
     if (this.status === next) return
     this.status = next
-    for (const l of this.statusListeners) l()
+    this.notify()
   }
 
   // ── lifecycle ─────────────────────────────────────────────────────────────────────
@@ -188,7 +206,11 @@ export class SpaWsClient {
     this.socket = socket
     socket.onopen = () => this.handleOpen()
     socket.onmessage = ev => this.handleFrame(ev.data)
-    socket.onclose = ev => this.handleClose(ev?.code ?? 1006)
+    // Guard by socket identity: a late close from a SUPERSEDED socket must not tear down
+    // the current one. (Practically unreachable given the ≥1s backoff, but provably safe.)
+    socket.onclose = ev => {
+      if (this.socket === socket) this.handleClose(ev?.code ?? 1006)
+    }
     socket.onerror = () => {
       // Let onclose drive reconnect; closing here makes the error path deterministic.
       try {
@@ -267,10 +289,17 @@ export class SpaWsClient {
       case 'ping':
         this.send({ op: 'pong', payload: {} })
         return
-      case 'ack':
-        // Subscription confirmation (§1.4) — keyed by topic. Tracked server-side; the
-        // client doesn't gate on it in v1 (a reject just means no pushes arrive).
+      case 'ack': {
+        // Subscription confirmation (§1.4) — keyed by topic. Record ok/reject so consumers
+        // can tell an actually-streaming topic from a role-rejected one (topicActive).
+        const ack = frame.payload as { topic?: unknown; status?: unknown }
+        const topic = typeof ack?.topic === 'string' ? (ack.topic as SpaTopicName) : undefined
+        if (topic && this.subs.has(topic)) {
+          this.acks.set(topic, ack.status === 'ok' ? 'ok' : 'reject')
+          this.notify()
+        }
         return
+      }
       default: {
         // A push frame: op === topic. Route to the registered handler, if any.
         const sub = this.subs.get(op as SpaTopicName)
@@ -343,18 +372,23 @@ export class SpaWsClient {
       // cleanup-then-resubscribe race when params change.
       if (cur && cur.token === token) {
         this.subs.delete(topic)
+        this.acks.delete(topic)
         if (this.status === 'live') this.sendUnsubscribe(topic)
       }
     }
   }
 
   private sendSubscribe(topic: SpaTopicName, params: unknown): void {
+    // Pending until the server acks — clear any prior outcome so topicActive reads false
+    // until this subscription is confirmed (also resets it across a reconnect replay).
+    this.acks.delete(topic)
     const payload =
       params === undefined ? { topic } : { topic, params }
     this.send({ op: 'subscribe', payload })
   }
 
   private sendUnsubscribe(topic: SpaTopicName): void {
+    this.acks.delete(topic)
     this.send({ op: 'unsubscribe', payload: { topic } })
   }
 

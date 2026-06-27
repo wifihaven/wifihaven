@@ -91,6 +91,22 @@ export function useWsLive(): WsStatus {
 }
 
 /**
+ * Whether `topic` is actually STREAMING — the socket is live AND the server accepted this
+ * connection's subscription (`ack:ok`). This is what a poll-pause gates on (§3.3), NOT bare
+ * `useWsLive()`: a role-rejected topic (e.g. a Child subscribing `now`/`connectionEvents`,
+ * `SpaTopic.visibleTo`) is live-socket but never pushed, so its query must keep polling.
+ */
+export function useWsTopicLive(topic: SpaTopicName): boolean {
+  const client = useContext(WsContext)
+  const subscribe = client ? client.subscribeStatus : offlineSubscribe
+  const getSnapshot = useCallback(
+    () => (client ? client.topicActive(topic) : false),
+    [client, topic],
+  )
+  return useSyncExternalStore(subscribe, getSnapshot)
+}
+
+/**
  * Subscribe to a topic for the lifetime of the calling component (§1.4 — subscription
  * lifecycle = mounted UI). Re-subscribes when `params` change (the effect cleanup sends
  * `unsubscribe`, the re-run sends `subscribe` — the wire sees unsubscribe-then-subscribe,
@@ -183,7 +199,9 @@ export function useWsTrafficUsage(initialBucket: TrafficUsageBucket = '1m'): WsT
   const groupBy = useMemo<TrafficUsageGroupBy[]>(() => ['profile'], [])
   const params = useMemo(() => ({ groupBy, bucket }), [groupBy, bucket])
   const key = qk.trafficUsageLive(params)
-  const liveStatus = useWsLive()
+  // "live" here = trafficUsage actually streaming (acked), not bare socket liveness — so a
+  // role that can't see trafficUsage shows "—" rather than a misleading "live" with no data.
+  const streaming = useWsTopicLive('trafficUsage')
 
   useWsSubscription(
     'trafficUsage',
@@ -201,7 +219,7 @@ export function useWsTrafficUsage(initialBucket: TrafficUsageBucket = '1m'): WsT
   const data = useCachedQueryData<TrafficUsageResponse>(qc, key)
   const rows = headBucketRows(data)
   return {
-    live: liveStatus === 'live',
+    live: streaming,
     bucket,
     setBucket,
     rows,

@@ -12,7 +12,7 @@ vi.mock('@/api/client', () => ({
 }))
 
 import { SpaWsClient, type WsSocketLike } from '@/api/wsClient'
-import { WsProvider, useWsLive, useWsNow, useWsRecentBlocked, useWsTrafficUsage } from './useWs'
+import { WsProvider, useWsLive, useWsTopicLive, useWsNow, useWsRecentBlocked, useWsTrafficUsage } from './useWs'
 import { useDashboardNow, qk } from '@/api/queries'
 import { AuthProvider } from '@/hooks/useAuth'
 import type { DashboardNow, QueryLog, TrafficUsageResponse } from '@/types/api'
@@ -144,6 +144,8 @@ describe('useWsTrafficUsage (§3.1/#747)', () => {
     // subscribed with groupBy:profile + bucket
     const sub = last().frames().find(f => f.op === 'subscribe' && f.payload.topic === 'trafficUsage')
     expect(sub.payload.params).toEqual({ groupBy: ['profile'], bucket: '1m' })
+    // server accepts the subscription → topic streams (drives the `live` flag)
+    act(() => last().emit({ op: 'ack', payload: { topic: 'trafficUsage', status: 'ok' } }))
 
     const push: TrafficUsageResponse = {
       bucket: '1m', groupBy: ['profile'], from: 'a', to: 'b', tz: 'UTC', rawRows: [],
@@ -174,30 +176,57 @@ describe('useWsTrafficUsage (§3.1/#747)', () => {
   })
 })
 
-describe('polling pauses while live (§3.3)', () => {
-  it('gates refetchInterval off when wsLive', async () => {
+describe('polling pauses only while the topic streams (§3.3)', () => {
+  it('pauses the poll once the `now` subscription is acked, not on bare socket liveness', async () => {
     vi.useFakeTimers()
     const { api } = await import('@/api/client')
     const nowSpy = api.dashboard.now as unknown as ReturnType<typeof vi.fn>
     const { client, wrapper } = setup()
-    // a component that gates the poll on the live indicator, exactly like NowSection
+    // mirrors NowSection: subscribe `now` + gate the poll on the topic actually streaming
     const { result } = renderHook(
       () => {
-        const live = useWsLive() === 'live'
-        useDashboardNow({ refetchInterval: live ? false : 5_000 })
-        return live
+        const streaming = useWsTopicLive('now')
+        useWsNow()
+        useDashboardNow({ refetchInterval: streaming ? false : 5_000 })
+        return streaming
       },
       { wrapper },
     )
     await act(async () => { await vi.advanceTimersByTimeAsync(0) })
     expect(nowSpy).toHaveBeenCalledTimes(1) // initial fetch
-    // not live yet → polls
+    // socket live but not yet acked → still polling
+    act(() => { client.start(); last().open(); last().emit({ op: 'ready', payload: {} }) })
+    expect(result.current).toBe(false)
     await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
     expect(nowSpy).toHaveBeenCalledTimes(2)
-    // go live → polling pauses
-    act(() => { client.start(); last().open(); last().emit({ op: 'ready', payload: {} }) })
+    // server acks the subscription → topic streaming → polling pauses
+    act(() => { last().emit({ op: 'ack', payload: { topic: 'now', status: 'ok' } }) })
     expect(result.current).toBe(true)
     await act(async () => { await vi.advanceTimersByTimeAsync(20_000) })
-    expect(nowSpy).toHaveBeenCalledTimes(2) // no further polls while live
+    expect(nowSpy).toHaveBeenCalledTimes(2) // no further polls while streaming
+  })
+
+  it('keeps polling when the subscription is REJECTED (role can not see the topic)', async () => {
+    vi.useFakeTimers()
+    const { api } = await import('@/api/client')
+    const nowSpy = api.dashboard.now as unknown as ReturnType<typeof vi.fn>
+    const { client, wrapper } = setup()
+    const { result } = renderHook(
+      () => {
+        const streaming = useWsTopicLive('now')
+        useWsNow()
+        useDashboardNow({ refetchInterval: streaming ? false : 5_000 })
+        return streaming
+      },
+      { wrapper },
+    )
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    act(() => { client.start(); last().open(); last().emit({ op: 'ready', payload: {} }) })
+    // socket live but the server rejects the subscription → must NOT pause the poll
+    act(() => { last().emit({ op: 'ack', payload: { topic: 'now', status: 'reject', reason: 'forbidden' } }) })
+    expect(result.current).toBe(false)
+    const before = nowSpy.mock.calls.length
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+    expect(nowSpy.mock.calls.length).toBe(before + 1) // still polling despite a live socket
   })
 })
