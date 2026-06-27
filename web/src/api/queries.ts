@@ -12,7 +12,7 @@ import type {
   ProfileTimeStatus,
   ProfileAppWeeklyUsage,
   ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek, ProfileUsageByApp,
-  QueryLog, UsageConfig, UsageSeriesResponse,
+  QueryLog, TrafficUsageBucket, TrafficUsageGroupBy, UsageConfig, UsageSeriesResponse,
 } from '@/types/api'
 
 const MIN = 60_000
@@ -131,6 +131,16 @@ export const qk = {
   // tracks the daily rollup the per-app cap reads.
   profileAppWeekly: (profileId: number, to?: string) =>
     ['profiles', profileId, 'usage', 'app', 'weekly', to ?? 'current'] as const,
+  // #1973 (SPA-ws S5): the live trafficUsage series key (design §3.1). The ws push
+  // (live edge) and the future S6b Traffic Usage page produce the key HERE so they
+  // share one cache entry — the push patches exactly the key the page renders.
+  trafficUsageLive: (params: { groupBy: TrafficUsageGroupBy[]; bucket: TrafficUsageBucket }) =>
+    ['usage', 'traffic', 'live', params.bucket, [...params.groupBy].sort().join(',')] as const,
+  // #1973: the live connectionEvents feed key (design §3.1). The dashboard's "Recently
+  // Blocked" panel keeps its own `recentBlocked()` key (the 15-min window view); this
+  // is the shared key the future S6b Connection Events page streams into.
+  connectionEventsLive: (filter: Record<string, unknown>) =>
+    ['logs', 'live', JSON.stringify(filter)] as const,
 }
 
 type QueryOpts<T> = Omit<UseQueryOptions<T, Error, T, readonly unknown[]>, 'queryKey' | 'queryFn'>

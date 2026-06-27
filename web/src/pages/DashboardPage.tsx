@@ -12,6 +12,10 @@ import { HostCell } from '@/components/HostCell'
 import { EmptyState } from '@/components/EmptyState'
 import { AccessRequestsBanner, NewDevicesHint } from '@/components/AlertsPanel'
 import { blockReasonText } from '@/types/blockReason'
+import { useWsTopicLive, useWsNow, useWsRecentBlocked } from '@/hooks/useWs'
+import { deriveNowKpis } from '@/api/wsCache'
+import { LiveBadge } from '@/components/dashboard/LiveBadge'
+import { BandwidthGauges } from '@/components/dashboard/BandwidthGauges'
 
 export function DashboardPage() {
   const [stats,  setStats]  = useState<DashboardStats | null>(null)
@@ -35,6 +39,8 @@ export function DashboardPage() {
       <AccessRequestsBanner />
 
       <RecentlyBlockedSection />
+
+      <BandwidthGauges />
 
       <NowSection />
 
@@ -107,7 +113,13 @@ export function DashboardPage() {
 // React Query polling + JWT/household scoping via useRecentBlocked.
 
 export function RecentlyBlockedSection() {
-  const { data = null } = useRecentBlocked()
+  // #1973: subscribe `connectionEvents{blocked:true}` — pushes prepend into the same
+  // `recentBlocked()` cache this query reads (§3.1). Polling stays the PAUSED fallback
+  // (§3.3): gated off only while the topic is actually STREAMING (subscribed + acked), so
+  // a role whose subscription the server rejects keeps polling instead of going stale.
+  const streaming = useWsTopicLive('connectionEvents')
+  useWsRecentBlocked()
+  const { data = null } = useRecentBlocked({ refetchInterval: streaming ? false : 10_000 })
 
   return (
     <section data-testid="recently-blocked-section" className="bg-white rounded-2xl border border-brand-border overflow-hidden">
@@ -166,11 +178,26 @@ function formatRelativeTime(tsIso: string): string {
 // imperative setInterval / try-catch from before is gone.
 
 export function NowSection() {
-  const { data = null } = useDashboardNow()
+  // #1973: `now` is pushed whole (§3.1) — replace the dashboard-now cache live. Derived
+  // "Online now" KPI recomputes client-side off the pushed body. Polling stays the paused
+  // fallback (§3.3), gated on the `now` topic actually STREAMING (subscribed + acked) — a
+  // role whose `now` subscription is server-rejected keeps polling rather than freezing.
+  const streaming = useWsTopicLive('now')
+  useWsNow()
+  const { data = null } = useDashboardNow({ refetchInterval: streaming ? false : 10_000 })
+  const kpis = deriveNowKpis(data)
 
   return (
     <section data-testid="now-section" className="space-y-3">
-      <h2 className="text-sm font-semibold text-brand-text uppercase tracking-wider">Now</h2>
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="text-sm font-semibold text-brand-text uppercase tracking-wider">Now</h2>
+        <div className="flex items-center gap-3">
+          <span data-testid="now-kpi-online" className="text-xs text-brand-text-muted">
+            Online now: <span className="font-semibold text-brand-ink tabular-nums">{kpis.onlineNow}</span>
+          </span>
+          <LiveBadge />
+        </div>
+      </div>
       {data === null
         ? <p className="text-brand-text-muted text-sm">Loading live activity…</p>
         : data.profiles.length === 0
