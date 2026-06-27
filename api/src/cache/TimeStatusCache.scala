@@ -192,7 +192,9 @@ object TimeStatusCache {
           Promise.make[Throwable, AnyRef].flatMap { mine =>
             Option(inFlight.putIfAbsent(key, mine)) match {
               case Some(existing) =>
-                existing.await.map(_.asInstanceOf[V])
+                // Served off the in-flight load — no DB work — so it counts as a hit, keeping the
+                // periodic hit-rate stats representative of how much load the cache actually saved.
+                ZIO.succeed(hits.increment()) *> existing.await.map(_.asInstanceOf[V])
               case None           =>
                 ZIO.succeed(misses.increment()) *>
                   load
