@@ -21,6 +21,27 @@
 
 local M = {}
 
+-- The SOLE freshness rule for "is the ws link live enough to be the transport":
+-- the sidecar writes os.time() into the health sentinel on every successful
+-- send/recv, so a sentinel timestamp within fallback_after of now means the
+-- link is healthy. A nil timestamp (absent sentinel) is never fresh. The
+-- boundary is inclusive (exactly fallback_after old still counts as fresh) — the
+-- tee falls back only once now-h is STRICTLY past the window.
+local function fresh(h, now_val, fallback_after)
+  return h ~= nil and (now_val - h) <= fallback_after
+end
+
+-- is_healthy(opts) → bool. The single definition of "the ws link is healthy",
+-- consulted by BOTH the outbound tee (M.make, below) and the agent's policy-poll
+-- dormancy gate (#2037), so the two cannot drift. True iff ws is enabled AND the
+-- health sentinel is fresh.
+--   opts: enabled bool, health_read fn()→number|nil, now fn()→number,
+--         fallback_after number
+function M.is_healthy(opts)
+  if not opts.enabled then return false end
+  return fresh(opts.health_read(), opts.now(), opts.fallback_after)
+end
+
 -- make(opts) → post_fn(url, body, headers) → status, resp_body, err
 --
 -- opts:
@@ -49,8 +70,8 @@ function M.make(opts)
       return http_post(url, body, headers)
     end
     -- Fall back to HTTP if the link has been down past the fallback window.
-    local h = health_read()
-    if not h or (now() - h) > fallback_after then
+    -- Same freshness rule as the policy-poll dormancy gate (#2037).
+    if not fresh(health_read(), now(), fallback_after) then
       metrics_inc("http_fallback")
       return http_post(url, body, headers)
     end
