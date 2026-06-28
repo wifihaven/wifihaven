@@ -105,10 +105,10 @@ in [#1561](https://github.com/wifihaven/wifihaven/issues/1561).
   `MetricsExportSpec` forked the rollup loop, `ZIO.sleep(600.millis)`,
   interrupted, slept again, then asserted; it passed in isolation but flaked
   an unrelated PR's CI under 14-worker contention. The standing rule lives in
-  [`docs/process/testing.md`](process/testing.md) ("Clock is always injected —
-  use `Clock.TestClock`"); this dimension enforces it at review. Legitimate
-  live-clock uses (measuring *real* elapsed duration) are exempt but must say
-  why inline.
+  [`docs/process/testing.md`](process/testing.md) ("Clock is always
+  injected") — use `Clock.TestClock` in tests; this dimension enforces it at
+  review. Legitimate live-clock uses (measuring *real* elapsed duration) are
+  exempt but must say why inline.
 - **Bug fix → regression test that FAILS without the fix.** Confirm the test
   actually pins the bug, not just adjacent behavior.
 
