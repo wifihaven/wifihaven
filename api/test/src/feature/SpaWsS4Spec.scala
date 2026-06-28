@@ -186,6 +186,9 @@ object SpaWsS4Spec
             ackP.await.timeoutFail(new RuntimeException("no subscribe ack"))(20.seconds),
           )
           _   <- trigger
+          // Live clock (suite-level `withLiveClock`): this awaits a real push frame traversing
+          // the actual Netty WS socket against a live server — not a timer the TestClock can
+          // advance — so it stays a wall-clock settle.
           _   <- ZIO.sleep(wait)
           all <- frames.get
         } yield all

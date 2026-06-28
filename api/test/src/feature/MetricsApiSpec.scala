@@ -15,9 +15,17 @@ import zio.test.*
 // registry → publisher → text-exposition path production uses.
 object MetricsApiSpec extends ZIOSpecDefault {
 
-  // Short poll interval so the publisher's background snapshot is fresh well
-  // within the per-test sleep below; live clock required for the fiber to tick.
+  // Poll interval for the publisher's background snapshot fiber; tests advance
+  // the TestClock by exactly this much to drive a deterministic scrape.
   private val pollInterval = 100.millis
+
+  // #2042: deterministically fire ONE scrape of the shared Prometheus publisher fiber. The key is
+  // waiting until that background fiber has actually re-parked on the TestClock (its `Schedule.fixed`
+  // sleep is registered) BEFORE advancing — under parallel CI load a bare `adjust` can slip past a
+  // fiber that's momentarily mid-flight and never trigger the scrape (the original flake, relocated).
+  // Once it's parked, advancing exactly one interval fires exactly one registry snapshot.
+  private val tickPublisher: UIO[Unit] =
+    zio.test.TestClock.sleeps.repeatUntil(_.nonEmpty) *> zio.test.TestClock.adjust(pollInterval)
 
   private def scrape(
       cfg: MetricsConfig,
@@ -44,7 +52,9 @@ object MetricsApiSpec extends ZIOSpecDefault {
             // it were just listed in `.provide`.
             _    <- DefaultJvmMetrics.live.build
             _    <- probe.update(1L)
-            _    <- ZIO.sleep(800.millis)
+            // Drive one deterministic snapshot of the publisher fiber (runs on the
+            // TestClock) so the exposition reflects the metrics registered above.
+            _    <- tickPublisher
             resp <- scrape(MetricsConfig(enabled = true), None).merge
             body <- resp.body.asString
             ct = resp.header(Header.ContentType).map(_.renderedValue).getOrElse("")
@@ -56,11 +66,12 @@ object MetricsApiSpec extends ZIOSpecDefault {
             assertTrue(body.contains("wifihaven_test_probe_total"))
         }
         .provide(MetricsRuntime.prometheus(pollInterval))
-    } @@ TestAspect.withLiveClock,
+    },
     test("with a scrape token configured, no/invalid bearer is 401 and the right bearer is 200") {
       val cfg = MetricsConfig(enabled = true, scrapeToken = "s3cret-token")
+      // Auth gating is evaluated before the exposition is rendered, so this test
+      // doesn't depend on a snapshot having run — no clock advance needed.
       (for {
-        _       <- ZIO.sleep(300.millis)
         noAuth  <- scrape(cfg, None).merge
         badAuth <- scrape(cfg, Some("wrong")).merge
         okAuth  <- scrape(cfg, Some("s3cret-token")).merge
@@ -68,7 +79,7 @@ object MetricsApiSpec extends ZIOSpecDefault {
         assertTrue(badAuth.status == Status.Unauthorized) &&
         assertTrue(okAuth.status == Status.Ok))
         .provide(MetricsRuntime.prometheus(pollInterval))
-    } @@ TestAspect.withLiveClock,
+    },
     test("metrics.enabled = false serves no /metrics route") {
       val cfg = MetricsConfig(enabled = false)
       (for {
@@ -77,6 +88,6 @@ object MetricsApiSpec extends ZIOSpecDefault {
         resp <- routes(Request.get("/metrics")).merge
       } yield assertTrue(resp.status == Status.NotFound))
         .provide(MetricsRuntime.prometheus(pollInterval))
-    } @@ TestAspect.withLiveClock,
+    },
   )
 }

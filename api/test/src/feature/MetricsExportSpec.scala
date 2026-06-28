@@ -23,6 +23,14 @@ object MetricsExportSpec
 
   private val pollInterval = 100.millis
 
+  // #2042: deterministically fire ONE scrape of the Prometheus publisher fiber. The key is waiting
+  // until that background fiber has actually re-parked on the TestClock (its `Schedule.fixed` sleep
+  // is registered) BEFORE advancing — under parallel CI load a bare `adjust` can slip past a fiber
+  // that's momentarily mid-flight and never trigger the scrape (the original wall-clock flake, just
+  // relocated). Once it's parked, advancing exactly one interval fires exactly one registry snapshot.
+  private val tickPublisher: UIO[Unit] =
+    zio.test.TestClock.sleeps.repeatUntil(_.nonEmpty) *> zio.test.TestClock.adjust(pollInterval)
+
   private def exposition: ZIO[PrometheusPublisher, Nothing, String] =
     ZIO.serviceWithZIO[PrometheusPublisher](_.get)
 
@@ -58,7 +66,10 @@ object MetricsExportSpec
             _  <- DbPoolMetrics.pollOnce(ds, maxSize = 7)
           } yield ()
         }
-        _    <- ZIO.sleep(400.millis)
+        // The connector's snapshot fiber runs on ZIO's Clock (the TestClock under
+        // TestEnvironment), so advancing by exactly one poll interval drives a
+        // deterministic scrape that captures the gauges set above — no wall-clock race.
+        _    <- tickPublisher
         body <- exposition
       } yield assertTrue(body.contains("wifihaven_db_pool_active_connections")) &&
         assertTrue(body.contains("wifihaven_db_pool_idle_connections")) &&
@@ -74,7 +85,7 @@ object MetricsExportSpec
         .provideSome[TestDatabase.AllRepos & EmbeddedPostgres & Transactor[Task]](
           MetricsRuntime.prometheus(pollInterval),
         )
-    } @@ TestAspect.withLiveClock,
+    },
     test("driving a rollup tick emits the rollup counter/histogram/gauge series") {
       (for {
         _              <- cleanDb
@@ -88,24 +99,28 @@ object MetricsExportSpec
         trafficRepo    <- ZIO.service[TrafficReportRepo]
         hsRepo         <- ZIO.service[HouseholdSettingsRepo]
         clock          <- ZIO.service[Clock]
-        // The loop runs one tick immediately (repeat runs the body before scheduling),
-        // which records a run via RollupRepo.recordRun — the metric-emission site.
-        fiber          <- TimeUsedRollupJob
-          .loop(
-            timeRollupRepo,
-            appRollupRepo,
-            rollupRepo,
-            profileRepo,
-            deviceRepo,
-            atlRepo,
-            trafficRepo,
-            hsRepo,
-            clock,
-          )
-          .fork
-        _              <- ZIO.sleep(600.millis)
-        _              <- fiber.interrupt
-        _              <- ZIO.sleep(300.millis)
+        // Drive exactly one tick synchronously through the metric-emission site
+        // (`runOnce` → `RollupRepo.recordRun`) instead of forking the looping fiber
+        // and racing wall time. This is the same code path the production loop body
+        // runs each tick.
+        _              <- TimeUsedRollupJob.runOnce(
+          rollupRepo,
+          clock,
+          now =>
+            TimeUsedRollupJob.oneTickForTest(
+              timeRollupRepo,
+              appRollupRepo,
+              profileRepo,
+              deviceRepo,
+              atlRepo,
+              trafficRepo,
+              hsRepo,
+              now,
+            ),
+        )
+        // Advance one poll interval so the connector's snapshot fiber (running on the
+        // TestClock) scrapes the just-recorded series deterministically.
+        _              <- tickPublisher
         body           <- exposition
       } yield assertTrue(body.contains("wifihaven_rollup_runs_total")) &&
         assertTrue(body.contains("wifihaven_rollup_duration_seconds")) &&
@@ -118,6 +133,6 @@ object MetricsExportSpec
           MetricsRuntime.prometheus(pollInterval),
           Clock.live,
         )
-    } @@ TestAspect.withLiveClock,
+    },
   ) @@ TestAspect.sequential
 }

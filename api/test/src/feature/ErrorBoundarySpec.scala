@@ -31,16 +31,29 @@ import java.util.UUID
  */
 object ErrorBoundarySpec
     extends ZIOSpec[
-      TestDatabase.AllRepos & EmbeddedPostgres & Clock & PrometheusPublisher,
+      TestDatabase.AllRepos & EmbeddedPostgres & Clock,
     ] {
 
   // Pin Clock so PolicyService date math in the ingest path is stable (matches RouterIngestSpec).
   private val testClockAt = java.time.LocalDateTime.of(2026, 5, 7, 14, 0, 0)
 
+  // Poll interval for the Prometheus snapshot fiber; tests that assert on the exposition advance
+  // the zio TestClock by exactly this much to drive one deterministic scrape.
+  private val pollInterval = 100.millis
+
+  // #2042: deterministically fire ONE scrape of the Prometheus publisher fiber. The publisher
+  // layer is provided PER TEST (suite-level `provideSomeLayer` below, not `bootstrap`) so the
+  // snapshot fiber is a supervised descendant of the test fiber — that is what lets `TestClock`
+  // await it. We wait until it parks on the TestClock, then advance exactly one interval, which
+  // fires exactly one registry snapshot. (A bootstrap-scope fiber is invisible to
+  // `TestClock.adjust`'s `awaitSuspended`, so a bare advance would race the scrape — the original
+  // flake.)
+  private val tickPublisher: UIO[Unit] =
+    zio.test.TestClock.sleeps.repeatUntil(_.nonEmpty) *> zio.test.TestClock.adjust(pollInterval)
+
   override val bootstrap =
     TestDatabase.layer ++
-      TestLayers.withClock(testClockAt) ++
-      MetricsRuntime.prometheus(100.millis)
+      TestLayers.withClock(testClockAt)
 
   private val cleanDb = TestDatabase.cleanAndMigrate
 
@@ -166,7 +179,7 @@ object ErrorBoundarySpec
     test("boundary logs a 4xx response at WARN with a body snippet and meters api_errors_total") {
       (for {
         resp <- runSynthetic("/api/eb/client")
-        _    <- ZIO.sleep(700.millis)
+        _    <- tickPublisher
         body <- scrape.catchAll(r => bodyText(r))
         logs <- ZTestLogger.logOutput
       } yield assertTrue(resp.status == Status.BadRequest) &&
@@ -179,11 +192,11 @@ object ErrorBoundarySpec
         .provideSome[TestDatabase.AllRepos & EmbeddedPostgres & Clock & PrometheusPublisher](
           ZTestLogger.default,
         )
-    } @@ TestAspect.withLiveClock,
+    },
     test("boundary logs a 5xx response at ERROR and meters it") {
       (for {
         resp <- runSynthetic("/api/eb/server")
-        _    <- ZIO.sleep(700.millis)
+        _    <- tickPublisher
         body <- scrape.catchAll(r => bodyText(r))
         logs <- ZTestLogger.logOutput
       } yield assertTrue(resp.status == Status.ServiceUnavailable) &&
@@ -193,7 +206,7 @@ object ErrorBoundarySpec
         .provideSome[TestDatabase.AllRepos & EmbeddedPostgres & Clock & PrometheusPublisher](
           ZTestLogger.default,
         )
-    } @@ TestAspect.withLiveClock,
+    },
     test(
       "boundary observes errors raised on the ERROR channel (failed handler), not just returned",
     ) {
@@ -205,7 +218,7 @@ object ErrorBoundarySpec
         .provideSome[TestDatabase.AllRepos & EmbeddedPostgres & Clock & PrometheusPublisher](
           ZTestLogger.default,
         )
-    } @@ TestAspect.withLiveClock,
+    },
     test(
       "boundary covers the SPA catch-all: an unmatched /api/* path 404s and is logged + metered",
     ) {
@@ -215,7 +228,7 @@ object ErrorBoundarySpec
       val spa = ErrorBoundary.observe(StaticRoutes.routes("/tmp/wifihaven-no-such-static-dir"))
       (for {
         resp <- spa.runZIO(Request.get(URL.decode("/api/does-not-exist").toOption.get))
-        _    <- ZIO.sleep(700.millis)
+        _    <- tickPublisher
         body <- scrape.catchAll(r => bodyText(r))
         logs <- ZTestLogger.logOutput
       } yield assertTrue(resp.status == Status.NotFound) &&
@@ -231,11 +244,11 @@ object ErrorBoundarySpec
         .provideSome[TestDatabase.AllRepos & EmbeddedPostgres & Clock & PrometheusPublisher](
           ZTestLogger.default,
         )
-    } @@ TestAspect.withLiveClock,
+    },
     test("boundary leaves a 2xx alone — no error log, no api_errors_total series for that route") {
       (for {
         resp <- runSynthetic("/api/eb/ok")
-        _    <- ZIO.sleep(700.millis)
+        _    <- tickPublisher
         body <- scrape.catchAll(r => bodyText(r))
         logs <- ZTestLogger.logOutput
       } yield assertTrue(resp.status == Status.Ok) &&
@@ -245,7 +258,7 @@ object ErrorBoundarySpec
         .provideSome[TestDatabase.AllRepos & EmbeddedPostgres & Clock & PrometheusPublisher](
           ZTestLogger.default,
         )
-    } @@ TestAspect.withLiveClock,
+    },
 
     // ── #1569 regression pin: usage decode failures are now LOGGED ─────────────
     test(
@@ -262,7 +275,7 @@ object ErrorBoundarySpec
         routes   <- buildIngest
         (_, tk)  <- seedRouter(rRepo)
         resp     <- postIngest(routes, "/api/router/usage", "this is not json", tk)
-        _        <- ZIO.sleep(700.millis)
+        _        <- tickPublisher
         body     <- scrape.catchAll(r => bodyText(r))
         respBody <- bodyText(resp)
         logs     <- ZTestLogger.logOutput
@@ -278,7 +291,7 @@ object ErrorBoundarySpec
         .provideSome[TestDatabase.AllRepos & EmbeddedPostgres & Clock & PrometheusPublisher](
           ZTestLogger.default,
         )
-    } @@ TestAspect.withLiveClock,
+    },
     test(
       "a /api/router/events decode failure is logged at WARN (parity with usage — single emitter)",
     ) {
@@ -295,7 +308,7 @@ object ErrorBoundarySpec
         .provideSome[TestDatabase.AllRepos & EmbeddedPostgres & Clock & PrometheusPublisher](
           ZTestLogger.default,
         )
-    } @@ TestAspect.withLiveClock,
+    },
     test("an invalid router bearer is mapped to 401 and logged at WARN by the boundary") {
       (for {
         _      <- cleanDb
@@ -313,6 +326,8 @@ object ErrorBoundarySpec
         .provideSome[TestDatabase.AllRepos & EmbeddedPostgres & Clock & PrometheusPublisher](
           ZTestLogger.default,
         )
-    } @@ TestAspect.withLiveClock,
+    },
+  ).provideSomeLayer[TestDatabase.AllRepos & EmbeddedPostgres & Clock](
+    MetricsRuntime.prometheus(pollInterval),
   ) @@ TestAspect.sequential
 }
