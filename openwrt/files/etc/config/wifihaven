@@ -55,6 +55,19 @@ config wifihaven 'wifihaven'
 	# yields 6 samples per report). See docs/router-tuning.md.
 	option activity_sample_int '10'
 
+	# #2024 idle-heartbeat cadence (seconds). The conntrack watcher's
+	# cooperative timers — the usage flush AND activity_sample_int above, plus
+	# the policy poll, nflog drain, and metrics push — all run inside on_tick,
+	# which fires once per `conntrack -E -e NEW` line. On a quiet LAN (one
+	# device on a long-lived websocket/stream emits no NEW events) on_tick
+	# would stall for minutes, ballooning the usage window and starving the
+	# sampler (the #2016 over-count). The watcher multiplexes a heartbeat line
+	# into the conntrack stream every conntrack_tick_interval seconds so
+	# on_tick fires on a wall-clock cadence regardless of traffic. Keep this
+	# well below activity_sample_int so sampling stays on-cadence. Default 1.
+	# See docs/router-tuning.md.
+	option conntrack_tick_interval '1'
+
 # SNI sidecar (wifihaven-sni-tail) toggle. Lives in its own `config sni`
 # section, distinct from the `config wifihaven 'wifihaven'` anchor above —
 # the init script reads it as `wifihaven.sni.enabled` via

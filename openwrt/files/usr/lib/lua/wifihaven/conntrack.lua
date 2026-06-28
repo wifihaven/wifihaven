@@ -26,6 +26,41 @@ local M = {}
 local static_ip_labels = require("wifihaven.static_ip_labels")
 local host_norm        = require("wifihaven.host_norm")
 
+-- #2024 idle-heartbeat cadence. watch()'s cooperative timers (usage flush, the
+-- 10 s activity sampler, policy poll, nflog drain, metrics) all run inside
+-- cfg.on_tick, which was driven ONLY by an incoming `conntrack -E -e NEW` line.
+-- On a quiet LAN (one device on a long-lived websocket/stream emits no NEW
+-- events) on_tick stalled for minutes: the usage window ballooned to span the
+-- whole un-monitored gap and the sampler starved — the root cause of the #2016
+-- over-count. The watcher now multiplexes a wall-clock heartbeat: a shell loop
+-- echoes this sentinel line into the conntrack popen stream every
+-- tick_interval seconds (see watch()'s popen command), and the read loop treats
+-- a sentinel as an inert tick — it skips flow parsing but STILL drives on_tick,
+-- so the timers fire on a wall-clock cadence regardless of conntrack traffic.
+-- The leading control byte (0x01, SOH) guarantees the sentinel can never
+-- collide with a printable-ASCII conntrack line, so parse_conntrack_line never
+-- mistakes it for a flow.
+M.TICK_SENTINEL = "\001wh_tick"
+
+-- sanitize_tick_interval(v) -> int >= 1  (#2024)
+--
+-- The heartbeat cadence reaches BOTH string.format("%d", n) (the popen command
+-- builder) and shell `sleep n`, each of which needs a positive integer. On the
+-- Lua 5.1 target string.format("%d", 2.5) is a HARD ERROR
+-- (`integer expected, got number`) — which, raised inside watch()'s foreground
+-- loop, would crash the agent into a procd respawn storm — and `sleep 0`
+-- busy-loops. Every other cadence knob is only ever used in float-safe `>=`
+-- arithmetic, so this is the one value that must be floored + clamped. A
+-- fractional / zero / negative / non-numeric UCI value collapses to the 1 s
+-- default rather than bricking or spinning the watcher.
+function M.sanitize_tick_interval(v)
+  local n = tonumber(v)
+  if not n then return 1 end
+  n = math.floor(n)
+  if n < 1 then return 1 end
+  return n
+end
+
 -- ---------------------------------------------------------------------------
 -- eb_san(host) -> string
 --
@@ -1109,8 +1144,15 @@ function M.watch(cfg)
   -- then flush conntrack and nflog events together.
   if cfg.register_batcher then cfg.register_batcher(batcher) end
 
-  log.info("conntrack: starting watcher lan_prefix=%s lan_prefix_v6=%s max_batch=%d flush_interval=%ds",
-           lan_prefix, lan_prefix_v6, max_batch, flush_int)
+  -- #2024 idle-heartbeat cadence (seconds). The shell wrapper below echoes
+  -- M.TICK_SENTINEL into the popen stream every tick_int seconds so the read
+  -- loop wakes — and drives on_tick — even when conntrack is silent. Sanitize
+  -- to a positive integer: tick_int feeds string.format("%d") and shell `sleep`
+  -- (a fractional value is a hard error on Lua 5.1; 0 busy-loops).
+  local tick_int = M.sanitize_tick_interval(cfg.tick_interval)
+
+  log.info("conntrack: starting watcher lan_prefix=%s lan_prefix_v6=%s max_batch=%d flush_interval=%ds tick_interval=%ds",
+           lan_prefix, lan_prefix_v6, max_batch, flush_int, tick_int)
   -- #1688: NO `-f` family flag. conntrack(8) documents the default as ipv4,
   -- but for `-E` (events) conntrack-tools opens the netlink socket with
   -- NFCT_ALL_CT_GROUPS — a family-agnostic subscription — and the `-f` flag
@@ -1119,7 +1161,30 @@ function M.watch(cfg)
   -- v6 attribution path: the Gate 2 e2e suite (`test_v6_*.py`) verifies it
   -- end-to-end, and `+kmod-nf-conntrack6` in the package DEPENDS ensures the
   -- kernel-side v6 hooks the netlink stream pulls from are present.
-  local handle = io.popen("conntrack -E -e NEW 2>/dev/null", "r")
+  --
+  -- #2024: conntrack is backgrounded and a heartbeat loop echoes the sentinel
+  -- alongside it, so read("*l") returns at least once per tick_int even with
+  -- zero NEW events. Both processes write to the same popen pipe; sentinel and
+  -- conntrack lines are far under PIPE_BUF (4096 B), so writes are atomic and
+  -- never tear. Notes on the wrapper:
+  --   * conntrack's argv stays EXACTLY `conntrack -E -e NEW` (the redirect and
+  --     `&` are shell syntax, not argv), so the #1716 orphan sweeper — which
+  --     matches that exact /proc cmdline at ppid==1 — still reaps a conntrack
+  --     left behind across a procd restart.
+  --   * `kill -0 $ct` guards the heartbeat: when conntrack dies the loop exits,
+  --     the wrapper closes the pipe, read() returns nil, and watch() breaks
+  --     (then procd respawns the agent). Without this guard the live heartbeat
+  --     would hold the pipe open and MASK a conntrack crash — never restarting.
+  --   * `echo ... || break` exits the wrapper when the agent closes the read
+  --     end (SIGPIPE on echo), so the wrapper does not linger.
+  local open_reader = cfg.open_reader or function()
+    local cmd = string.format(
+      "conntrack -E -e NEW 2>/dev/null & ct=$!; "
+        .. "while kill -0 \"$ct\" 2>/dev/null; do echo '%s' || break; sleep %d; done",
+      M.TICK_SENTINEL, tick_int)
+    return io.popen(cmd, "r")
+  end
+  local handle = open_reader()
   if not handle then
     log.err("conntrack: cannot start conntrack -E -e NEW")
     return
@@ -1145,7 +1210,10 @@ function M.watch(cfg)
     local line = handle:read("*l")
     if not line then break end
 
-    local flow = M.parse_conntrack_line(line)
+    -- #2024: a heartbeat sentinel is an inert wake — skip flow parsing but fall
+    -- through to batcher.tick() / event-queue drain / on_tick below so the
+    -- cooperative timers fire on the wall-clock cadence even with no NEW flows.
+    local flow = (line ~= M.TICK_SENTINEL) and M.parse_conntrack_line(line) or nil
     -- Only v6 needs the neighbor set for the LAN-source decision; v4 stays on
     -- the prefix and pays no per-line table cost.
     local lan_ip_set = (flow and flow.src_ip:find(":", 1, true)) and neighbor_table() or nil

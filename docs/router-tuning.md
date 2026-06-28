@@ -61,6 +61,36 @@ How often (seconds) the agent samples per-MAC conntrack activity to compute
   at startup if the values are inconsistent and continues with degraded
   accuracy.
 
+### `conntrack_tick_interval` (default `1`)
+
+How often (seconds) the agent's idle heartbeat drives `on_tick` — the
+cooperative dispatcher that runs the usage flush, the `activity_sample_int`
+sampler, the policy poll, the nflog drain, and the metrics push.
+
+Before #2024 those timers fired only when a `conntrack -E -e NEW` line
+arrived. On a quiet LAN — a single device on a long-lived connection (a kid
+alone on a websocket game, one device streaming) emits almost no NEW events —
+`on_tick` stalled for minutes: the usage window ballooned to span the whole
+un-monitored gap (the server's session-stitch then credited it all as
+presence → the #2016 over-count) and the activity sampler starved. The
+watcher now multiplexes a heartbeat line into the conntrack popen stream every
+`conntrack_tick_interval` seconds, so `on_tick` fires on a wall-clock cadence
+regardless of traffic.
+
+- **Lower** → tighter worst-case latency on every cooperative timer when the
+  LAN is idle; marginally more CPU (one extra `on_tick` per second is a few
+  microseconds of monotonic-diff comparisons that early-return — the agent is
+  niced below dnsmasq, #1864).
+- **Raise** → fewer idle wakes; the activity sampler and usage flush can run
+  up to `conntrack_tick_interval` seconds late, so keep this **well below**
+  `activity_sample_int` (a value ≥ `activity_sample_int` reintroduces sampling
+  starvation, the exact failure this knob fixes).
+- **Leading indicator**: the `usage_window_stall_total` metric increments
+  whenever a reported window still exceeds 2× `usage_report_interval` — i.e.
+  the heartbeat failed to keep `on_tick` alive. A healthy fleet holds it flat
+  at 0 (see the "Usage window stalls per router" panel on the router-fleet
+  Grafana dashboard).
+
 ### `event_batch_size` (default `50`)
 
 How many `connection_attempt` events the agent buffers before flushing to
@@ -92,7 +122,8 @@ Force-flush the event buffer after this many seconds even if
 |---|---|---|---|
 | `policy_poll_interval` | 5 | 3–30 | — |
 | `usage_report_interval` | 60 | 30–300 | `activity_sample_int` (must divide evenly) |
-| `activity_sample_int` | 10 | 5–30 | `usage_report_interval` |
+| `activity_sample_int` | 10 | 5–30 | `usage_report_interval`, `conntrack_tick_interval` |
+| `conntrack_tick_interval` | 1 | 1–5 | `activity_sample_int` (must stay well below) |
 | `event_batch_size` | 50 | 10–200 | `event_flush_interval` |
 | `event_flush_interval` | 10 | 5–60 | `event_batch_size` |
 

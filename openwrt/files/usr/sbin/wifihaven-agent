@@ -111,6 +111,18 @@ local eb_refresh_int = tonumber(uci_get("eb_refresh_interval", "1800"))
 -- bounding /tmp usage per shard (tmpfs = RAM on OpenWRT).
 local blocklist_max_bytes = tonumber(uci_get("blocklist_max_list_bytes", "10485760"))
 local activity_sample_int = tonumber(uci_get("activity_sample_int", "10"))
+-- #2024: idle-heartbeat cadence (seconds). The conntrack watcher's cooperative
+-- timers (usage flush, the activity sampler above, policy poll, nflog drain,
+-- metrics) run inside on_tick, which was driven only by an incoming
+-- `conntrack -E -e NEW` line. On a quiet LAN (one device on a long-lived
+-- websocket/stream) no NEW events arrive, so on_tick stalled for minutes — the
+-- usage window ballooned and the sampler starved (root cause of the #2016
+-- over-count). The watcher now multiplexes a heartbeat sentinel into the popen
+-- stream every conntrack_tick_interval seconds so on_tick fires on a wall-clock
+-- cadence regardless of traffic. Default 1 s: at most one wake/sec on an idle
+-- agent (microseconds of mono-diff early-returns, niced below dnsmasq), which
+-- keeps the activity sampler within ~1 s of its 10 s cadence.
+local tick_int      = tonumber(uci_get("conntrack_tick_interval", "1"))
 local debug_opt     = uci_get("debug",                            "0")
 -- #1848: ws transport config (named `config ws 'ws'` section). DEFAULT OFF.
 -- These only affect behaviour when ws_enabled == "1"; the sidecar (a separate
@@ -1013,6 +1025,9 @@ conntrack.watch({
   lan_prefix_v6   = lan_prefix_v6,
   max_batch       = max_batch,
   flush_interval  = flush_int,
+  -- #2024: idle-heartbeat cadence — drives on_tick on a wall-clock tick even
+  -- when conntrack is silent, so the usage flush + activity sampler never stall.
+  tick_interval   = tick_int,
   -- #1848: events POST goes through the ws outbound tee (default-off → identical
   -- to http_post). The tee routes /api/router/events to the spool only when ws
   -- is enabled+healthy; everything else passes straight through.
@@ -1298,6 +1313,24 @@ conntrack.watch({
       -- periodStart/periodEnd are wall-clock RFC3339: the API expects UTC.
       local period_end   = os.date("!%Y-%m-%dT%H:%M:%SZ", wall)
       local period_start = os.date("!%Y-%m-%dT%H:%M:%SZ", ts.last_usage_wall_ts)
+      -- #2024 stall indicator. With the idle heartbeat firing on_tick on a
+      -- wall-clock cadence the usage window stays ≈usage_report_interval; a
+      -- window that runs past 2× the interval means on_tick stalled anyway
+      -- (heartbeat wedged / clock jump) and the bucket spans un-monitored time
+      -- — exactly the #2016 over-count condition. Count it as a leading
+      -- indicator so a regression surfaces on the fleet dashboard before it
+      -- shows up as inflated usedMinutes. Guard the backward-clock case (#336):
+      -- a negative span is a wall-clock jump, not a stall. A large FORWARD jump
+      -- (NTP step) can still trip this as a false positive — accepted: it's a
+      -- best-effort diagnostic counter with no enforcement impact, and a forward
+      -- step also genuinely inflates the reported window, so flagging it is not
+      -- wrong.
+      local window_seconds = wall - ts.last_usage_wall_ts
+      if window_seconds > 2 * usage_int then
+        metrics.inc_counter(mreg, "usage_window_stall_total", {})
+        log.warn("usage timer: window=%ds exceeds 2x usage_report_interval (%ds) — on_tick stalled (#2024)",
+                 window_seconds, usage_int)
+      end
       ts.last_usage_run     = mono
       ts.last_usage_wall_ts = wall
 
