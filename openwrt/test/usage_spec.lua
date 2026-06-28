@@ -237,6 +237,42 @@ describe("usage.merge_counters", function()
 
 end)
 
+-- ── bounded_period_start (#2016) ────────────────────────────────────────────
+
+describe("usage.bounded_period_start", function()
+  -- The usage flush is driven by the conntrack `on_tick` callback, which only
+  -- fires on a `conntrack -E -e NEW` line. A device on a long-lived connection
+  -- (e.g. a websocket game) emits few NEW events, so `on_tick` — and the usage
+  -- flush — can stall for minutes. period_end = now / period_start = last flush
+  -- then describes a window far wider than the intended bucket, and the server
+  -- presence model (#1464 session-stitch) credits that *entire* wall-clock
+  -- window as continuous engaged time (the #2016 over-count: active≈20s but
+  -- period=517s read as ~8.6 min). We never sampled activity across the stall
+  -- (the sampler also only runs inside on_tick), so it must not be credited.
+  --
+  -- bounded_period_start clamps the reported window to at most max_window so a
+  -- delayed flush credits only the intended bucket, never the unmonitored gap.
+
+  it("returns last_flush unchanged for a timely flush (gap <= max_window)", function()
+    -- normal ~70s jitter under a 60s interval / 120s max window: window kept whole
+    assert.equal(1000, usage.bounded_period_start(1000, 1070, 120))
+  end)
+
+  it("clamps the window to max_window for a stalled flush (gap >> max_window)", function()
+    -- 517s stall, 120s max window → start pulled up to now - 120, dropping 397s
+    assert.equal(1583, usage.bounded_period_start(1100, 1700, 120))
+  end)
+
+  it("keeps the window exactly at the max_window boundary", function()
+    assert.equal(1000, usage.bounded_period_start(1000, 1120, 120))
+  end)
+
+  it("never returns a start after now (degenerate/backward-clock guard)", function()
+    -- last_flush already in the future of now: clamp to now (zero-length window)
+    assert.equal(1700, usage.bounded_period_start(1800, 1700, 120))
+  end)
+end)
+
 -- ── build_report ──────────────────────────────────────────────────────────
 
 describe("usage.build_report", function()
