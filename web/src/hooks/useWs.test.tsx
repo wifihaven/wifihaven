@@ -12,6 +12,12 @@ vi.mock('@/api/client', () => ({
     dashboard: { now: vi.fn().mockResolvedValue({ asOf: 'x', profiles: [] }) },
     profiles: { list: vi.fn().mockResolvedValue([]) },
     devices: { list: vi.fn().mockResolvedValue([]) },
+    // #2017: the dashboard gauge seeds its series with one GET on mount / bucket change.
+    usage: {
+      traffic: vi.fn().mockResolvedValue({
+        bucket: '1m', groupBy: ['profile'], from: 'a', to: 'b', tz: 'UTC', rawRows: [], aggregateRows: [],
+      }),
+    },
   },
 }))
 
@@ -187,6 +193,89 @@ describe('useWsTrafficUsage (§3.1/#747)', () => {
     expect(i1).toBeGreaterThanOrEqual(0)
     expect(iU).toBeGreaterThan(i1)
     expect(i2).toBeGreaterThan(iU)
+  })
+})
+
+// ── #2017: the dashboard gauge seeds via a GET so it shows data instantly ─────────────
+//
+// Regression: S5 (#1973) shipped the ws-only series with NO initial GET, so the gauge was
+// blank ("No live traffic right now") for up to ~70s after each load / bucket switch —
+// until the first usage-ingest push. The design (§3.1/§5.3) loads the window via the GET
+// and lets the socket push only the live edge. These prove the one-shot seed.
+describe('useWsTrafficUsage seeds via GET (#2017)', () => {
+  // newest-first head-bucket response (the GET orders windowStart DESC).
+  const seedResp = (
+    bucket: TrafficUsageResponse['bucket'],
+    rows: { profile: string; windowStart: string; bytesIn?: number; bytesOut?: number }[],
+  ): TrafficUsageResponse => ({
+    bucket, groupBy: ['profile'], from: 'a', to: 'b', tz: 'UTC', rawRows: [],
+    aggregateRows: rows.map(r => ({
+      groups: { profile: r.profile },
+      windowStart: r.windowStart,
+      windowEnd: '2026-06-26T10:06:00Z',
+      totalBytesIn: r.bytesIn ?? 0,
+      totalBytesOut: r.bytesOut ?? 0,
+      totalSeconds: 60,
+    })),
+  })
+
+  it('shows the seeded head-bucket rate immediately, before any trafficUsage push', async () => {
+    const { api } = await import('@/api/client')
+    const trafficSpy = api.usage.traffic as unknown as ReturnType<typeof vi.fn>
+    trafficSpy.mockClear()
+    trafficSpy.mockResolvedValue(seedResp('1m', [{ profile: 'Kids', windowStart: '2026-06-26T10:05:00Z', bytesIn: 600 }]))
+    const { client, wrapper } = setup()
+    const { result } = renderHook(() => useWsTrafficUsage('1m'), { wrapper })
+    goLive(client)
+    act(() => last().emit({ op: 'ack', payload: { topic: 'trafficUsage', status: 'ok' } }))
+
+    // The series populates from the GET alone — NO ws push emitted.
+    await waitFor(() => expect(result.current.rows).toHaveLength(1))
+    expect(result.current.live).toBe(true)
+    expect(result.current.overall.bytesInPerSec).toBe(10) // 600 bytes / 60s
+
+    // One GET for the current head window: groupBy:profile, the selected bucket, a from/to span.
+    expect(trafficSpy).toHaveBeenCalledTimes(1)
+    const arg = trafficSpy.mock.calls[0][0]
+    expect(arg.bucket).toBe('1m')
+    expect(arg.groupBy).toEqual(['profile'])
+    expect(typeof arg.from).toBe('string')
+    expect(typeof arg.to).toBe('string')
+    expect(new Date(arg.from).getTime()).toBeLessThanOrEqual(new Date(arg.to).getTime())
+  })
+
+  it('merges a later ws push on top of the GET seed (mergeHeadBucket)', async () => {
+    const { api } = await import('@/api/client')
+    const trafficSpy = api.usage.traffic as unknown as ReturnType<typeof vi.fn>
+    trafficSpy.mockClear()
+    trafficSpy.mockResolvedValue(seedResp('1m', [{ profile: 'Kids', windowStart: '2026-06-26T10:05:00Z', bytesIn: 600 }]))
+    const { client, wrapper } = setup()
+    const { result } = renderHook(() => useWsTrafficUsage('1m'), { wrapper })
+    goLive(client)
+    act(() => last().emit({ op: 'ack', payload: { topic: 'trafficUsage', status: 'ok' } }))
+    await waitFor(() => expect(result.current.rows).toHaveLength(1))
+
+    // A push for the SAME head window with higher cumulative bytes replaces the head in place.
+    act(() => last().emit({ op: 'trafficUsage', payload: seedResp('1m', [{ profile: 'Kids', windowStart: '2026-06-26T10:05:00Z', bytesIn: 1200 }]) }))
+    expect(result.current.rows).toHaveLength(1)
+    expect(result.current.overall.bytesInPerSec).toBe(20) // 1200 bytes / 60s — push merged on the seed
+  })
+
+  it('re-seeds via a fresh GET when the bucket changes', async () => {
+    const { api } = await import('@/api/client')
+    const trafficSpy = api.usage.traffic as unknown as ReturnType<typeof vi.fn>
+    trafficSpy.mockClear()
+    trafficSpy.mockImplementation((p: { bucket: TrafficUsageResponse['bucket'] }) =>
+      Promise.resolve(seedResp(p.bucket, [{ profile: 'Kids', windowStart: '2026-06-26T10:05:00Z', bytesIn: 600 }])))
+    const { client, wrapper } = setup()
+    const { result } = renderHook(() => useWsTrafficUsage('1m'), { wrapper })
+    goLive(client)
+    await waitFor(() => expect(trafficSpy).toHaveBeenCalledTimes(1))
+    expect(trafficSpy.mock.calls[0][0].bucket).toBe('1m')
+
+    act(() => result.current.setBucket('10m'))
+    await waitFor(() => expect(trafficSpy).toHaveBeenCalledTimes(2))
+    expect(trafficSpy.mock.calls[1][0].bucket).toBe('10m')
   })
 })
 
