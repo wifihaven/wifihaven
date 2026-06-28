@@ -26,13 +26,19 @@ if [ ! -x "$HELPER" ]; then
 fi
 
 # (c) Regression pins. lua-openssl was the live #1717 miss; kmod-nf-conntrack6
-# was its #1690 sibling that also escaped the stale builders.
+# was its #1690 sibling that also escaped the stale builders. cqueues +
+# luaossl (#2036) are the wifihaven-ws sidecar's runtime deps — shipping them
+# in DEPENDS makes enabling ws a pure `uci set wifihaven.ws.enabled=1` with no
+# manual `apk add`; pin them so a future "lean install" revert can't silently
+# drop them and reintroduce the prod-cutover footgun. Note luaossl
+# (daurnimator, `openssl.ssl.context`) is distinct from lua-openssl (zhaozg,
+# monolithic `openssl.so`); both must be present (#1949 coexistence).
 lines=$("$HELPER" lines || true)
 if [ -z "$lines" ]; then
     echo "FAIL: depends-list.sh emitted nothing — openwrt/Makefile DEPENDS unparsable?" >&2
     exit 1
 fi
-for required in lua-openssl kmod-nf-conntrack6 tcpdump-mini kmod-nf-log kmod-nf-log6; do
+for required in lua-openssl kmod-nf-conntrack6 tcpdump-mini kmod-nf-log kmod-nf-log6 cqueues luaossl; do
     if ! printf '%s\n' "$lines" | grep -qx "$required"; then
         echo "FAIL: canonical DEPENDS missing $required (regression-pinned by #1717)" >&2
         echo "  current list:" >&2
