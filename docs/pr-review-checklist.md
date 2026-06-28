@@ -86,12 +86,19 @@ in [#1561](https://github.com/wifihaven/wifihaven/issues/1561).
   gates, so the gate only holds if test weakening is caught here.)
 - **Is the new behavior actually asserted** — not merely compiled or exercised
   without a check? Are negative / edge / boundary cases covered?
-- **Right level.** Feature tests through the full stack
-  (HTTP → route → service → repo → embedded Postgres) are preferred; unit tests
-  are reserved for pure edge cases (policy logic, schedule boundaries, pattern
-  matching, time arithmetic).
-- **No forbidden mocks.** Never mock repositories, `AuthService`, or `Clock`.
-  `Clock` comes via `TestClock`; the DB layer uses real embedded Postgres.
+- **Tests conform to [`docs/process/testing.md`](process/testing.md)** — that
+  file is the authoritative source for how tests are written; **read it and
+  check the diff against it, don't re-derive its rules here.** The ones that
+  most often surface as findings: **right level** (feature test through the full
+  stack vs unit only for the edge cases it enumerates), **mocks — external I/O
+  only** (never a repo / `AuthService` / `Clock`; CI-runnable code uses the real
+  thing), **`Clock` injected via `TestClock`** — including **no wall-clock
+  `ZIO.sleep` waits** for a background fiber / poller / cache to catch up (the
+  [#2042](https://github.com/wifihaven/wifihaven/issues/2042) flaky class) — and
+  **ZIO primitives for mutable state**. A test that breaks a rule there is a
+  finding — **BLOCKER** when it hides a regression (mocked SQL/auth, weakened
+  assertion) or gates an enforcement / metric path (a flaky wall-clock wait),
+  otherwise SHOULD-FIX.
 - **Bug fix → regression test that FAILS without the fix.** Confirm the test
   actually pins the bug, not just adjacent behavior.
 
