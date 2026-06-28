@@ -162,7 +162,7 @@ describe('DashboardPage', () => {
 
   it('does not render the unfiltered Recent Queries firehose (#823)', async () => {
     render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
-    await screen.findByText('1234')
+    await screen.findByTestId('kpi-strip')
     expect(screen.queryByText('Recent Queries')).not.toBeInTheDocument()
     // The firehose's unfiltered fetch (one fewer network call on load) is gone.
     expect(api.logs.query).not.toHaveBeenCalledWith({ limit: 30 })

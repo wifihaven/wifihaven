@@ -33,6 +33,8 @@ export function DashboardPage() {
     <div className="space-y-6">
       <h1 className="text-xl font-bold text-brand-ink">Dashboard</h1>
 
+      {stats && <KpiStrip stats={stats} />}
+
       <NewDevicesHint />
 
       <AccessRequestsBanner />
@@ -45,13 +47,6 @@ export function DashboardPage() {
 
       {stats && (
         <>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <StatCard label="Events today"   value={stats.totalToday}   accent="emerald" />
-            <StatCard label="Blocked today"  value={stats.blockedToday} accent="red" />
-            <StatCard label="Events (1h)"    value={stats.totalHour}    accent="emerald" />
-            <StatCard label="Blocked (1h)"   value={stats.blockedHour}  accent="yellow" />
-          </div>
-
           <div className="grid md:grid-cols-2 gap-6">
             <section className="bg-white rounded-2xl border border-brand-border p-5">
               <h2 className="text-sm font-semibold text-brand-text uppercase tracking-wider mb-4">
@@ -281,6 +276,27 @@ function formatDuration(seconds: number): string {
   const h = Math.floor(mins / 60)
   const m = mins % 60
   return m === 0 ? `${h}h` : `${h}h ${m}m`
+}
+
+// #1834: status-first KPI strip, rendered immediately under the <h1> and ABOVE the
+// NOW section (design docs/design/dashboard-redesign.md §7.3 Q1). "Online now" /
+// "Blocked now" derive from the live NOW snapshot via deriveNowKpis — the same
+// dashboard-now cache NowSection populates (10s poll + `now` ws push, wsCache §3.1)
+// — so this is a pure cache reader: no new endpoint and no second poller
+// (refetchInterval:false; NowSection drives the refresh, both observers re-render).
+// The cumulative "today" volume tiles are dropped: daily volume is analytics and
+// lives on /usage/events (design §2 non-goals).
+function KpiStrip({ stats }: { stats: DashboardStats }) {
+  const { data: now = null } = useDashboardNow({ refetchInterval: false })
+  const kpis = deriveNowKpis(now)
+  return (
+    <div data-testid="kpi-strip" className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <StatCard label="Online now"   value={kpis.onlineNow}  accent="emerald" />
+      <StatCard label="Blocked now"  value={kpis.blockedNow} accent="red" />
+      <StatCard label="Events (1h)"  value={stats.totalHour}  accent="emerald" />
+      <StatCard label="Blocked (1h)" value={stats.blockedHour} accent="yellow" />
+    </div>
+  )
 }
 
 function StatCard({ label, value, accent }: { label: string; value: number; accent: string }) {
