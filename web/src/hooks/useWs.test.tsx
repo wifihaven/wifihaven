@@ -279,6 +279,12 @@ describe('useWsTrafficUsage seeds via GET (#2017)', () => {
     act(() => result.current.setBucket('10m'))
     await waitFor(() => expect(trafficSpy).toHaveBeenCalledTimes(2))
     expect(trafficSpy.mock.calls[1][0].bucket).toBe('10m')
+
+    // Returning to a previously-selected bucket re-seeds too (gcTime:0 drops the switched-away
+    // series, so the gauge never shows a stale head window from minutes ago — review SHOULD-FIX).
+    act(() => result.current.setBucket('1m'))
+    await waitFor(() => expect(trafficSpy).toHaveBeenCalledTimes(3))
+    expect(trafficSpy.mock.calls[2][0].bucket).toBe('1m')
   })
 })
 

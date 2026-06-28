@@ -294,7 +294,14 @@ export function useWsTrafficUsage(initialBucket: TrafficUsageBucket = '1m'): WsT
       const live = qc.getQueryData<TrafficUsageResponse>(key)
       return live ? mergeHeadBucket(body, live) : body
     },
+    // One-shot seed, then socket-driven: `staleTime: Infinity` so the active bucket never
+    // auto-refetches (no poll, §3.3) — the push keeps it live and a reconnect invalidates the
+    // key for a single reseed. `gcTime: 0` so a bucket switched AWAY from is dropped, and
+    // returning to it always re-seeds with a fresh GET (without it, a re-visited bucket within
+    // the gc window would render a stale head window until the next push). The active bucket's
+    // query has an observer, so gcTime never collects it mid-use.
     staleTime: Infinity,
+    gcTime: 0,
     refetchInterval: false,
   })
 
