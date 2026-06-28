@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, act, waitFor } from '@testing-library/react'
+import { render, screen, act, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import type { DashboardNow, DashboardStats, QueryLog } from '@/types/api'
 
@@ -77,6 +77,33 @@ const liveNow: DashboardNow = {
   ],
 }
 
+// #1834: a snapshot exercising the status-first KPI derivation — `deriveNowKpis`
+// counts every active device as "Online now" and the active devices of *paused*
+// profiles as "Blocked now". Kids is paused with 1 active device (blocked); Adults
+// is active with 2. So onlineNow = 3, blockedNow = 1.
+const kpiNow: DashboardNow = {
+  asOf: '2026-05-13T10:00:00Z',
+  profiles: [
+    {
+      id: 1,
+      name: 'Kids',
+      paused: true,
+      activeDevices: [
+        { id: 10, name: 'iPhone', mac: 'aa:bb:cc:dd:ee:01', lastSeenSeconds: 30, topHosts: [] },
+      ],
+    },
+    {
+      id: 2,
+      name: 'Adults',
+      paused: false,
+      activeDevices: [
+        { id: 20, name: 'MacBook', mac: 'aa:bb:cc:dd:ee:02', lastSeenSeconds: 10, topHosts: [] },
+        { id: 21, name: 'iPad', mac: 'aa:bb:cc:dd:ee:03', lastSeenSeconds: 45, topHosts: [] },
+      ],
+    },
+  ],
+}
+
 const mockStats = () => api.logs.stats as unknown as ReturnType<typeof vi.fn>
 const mockQuery = () => api.logs.query as unknown as ReturnType<typeof vi.fn>
 const mockNow   = () => api.dashboard.now as unknown as ReturnType<typeof vi.fn>
@@ -100,12 +127,10 @@ beforeEach(() => {
 })
 
 describe('DashboardPage', () => {
-  it('renders stat cards, top-blocked, and per-device', async () => {
+  it('renders the 1h KPI tiles, top-blocked, and per-device', async () => {
     render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
-    expect(await screen.findByText('1234')).toBeInTheDocument()
-    expect(screen.getByText('56')).toBeInTheDocument()
-    expect(screen.getByText('78')).toBeInTheDocument()
-    expect(screen.getByText('9')).toBeInTheDocument()
+    expect(await screen.findByText('78')).toBeInTheDocument()  // Events (1h)
+    expect(screen.getByText('9')).toBeInTheDocument()          // Blocked (1h)
     expect(screen.getByText('evil.com')).toBeInTheDocument()
     expect(screen.getByText('42')).toBeInTheDocument()
     expect(screen.getAllByText("Kid's iPad").length).toBeGreaterThan(0)
@@ -113,9 +138,31 @@ describe('DashboardPage', () => {
     expect(screen.getByText('20 blocked')).toBeInTheDocument()
   })
 
+  it('restates the KPI tiles status-first: Online now / Blocked now / Events (1h) / Blocked (1h) (#1834)', async () => {
+    mockNow().mockResolvedValue(kpiNow)
+    render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
+    const strip = await screen.findByTestId('kpi-strip')
+    for (const label of ['Online now', 'Blocked now', 'Events (1h)', 'Blocked (1h)']) {
+      expect(within(strip).getByText(label)).toBeInTheDocument()
+    }
+    // Online now / Blocked now derive from the NOW snapshot via deriveNowKpis
+    // (onlineNow = 3 active devices, blockedNow = 1 active device in a paused profile).
+    await waitFor(() => expect(within(strip).getByText('3')).toBeInTheDocument())
+    expect(within(strip).getByText('1')).toBeInTheDocument()
+    expect(within(strip).getByText('78')).toBeInTheDocument()  // Events (1h) = stats.totalHour
+    expect(within(strip).getByText('9')).toBeInTheDocument()   // Blocked (1h) = stats.blockedHour
+  })
+
+  it('drops the cumulative "today" KPI tiles from the dashboard (#1834)', async () => {
+    render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
+    await screen.findByTestId('kpi-strip')
+    expect(screen.queryByText('Events today')).not.toBeInTheDocument()
+    expect(screen.queryByText('Blocked today')).not.toBeInTheDocument()
+  })
+
   it('does not render the unfiltered Recent Queries firehose (#823)', async () => {
     render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
-    await screen.findByText('1234')
+    await screen.findByTestId('kpi-strip')
     expect(screen.queryByText('Recent Queries')).not.toBeInTheDocument()
     // The firehose's unfiltered fetch (one fewer network call on load) is gone.
     expect(api.logs.query).not.toHaveBeenCalledWith({ limit: 30 })
@@ -123,8 +170,7 @@ describe('DashboardPage', () => {
 
   it('uses connection-event terminology, never "queries" (#299)', async () => {
     render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
-    await screen.findByText('1234')
-    expect(screen.getByText('Events today')).toBeInTheDocument()
+    await screen.findByTestId('kpi-strip')
     expect(screen.getByText('Events (1h)')).toBeInTheDocument()
     expect(screen.queryByText(/queries/i)).not.toBeInTheDocument()
   })
@@ -135,14 +181,12 @@ describe('DashboardPage', () => {
     expect(await screen.findByText(/No blocked events yet/)).toBeInTheDocument()
   })
 
-  it('renders Now section above stat cards', async () => {
+  it('renders the KPI strip above the NOW section (#1834)', async () => {
     mockNow().mockResolvedValue(liveNow)
     render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
-    await screen.findByText('1234')
-    await waitFor(() => expect(screen.getByTestId('now-profile-1')).toBeInTheDocument())
-    const nowHeading = screen.getByText('Now')
-    const statsCard  = screen.getByText('Events today')
-    const comparison = nowHeading.compareDocumentPosition(statsCard)
+    const strip = await screen.findByTestId('kpi-strip')
+    const now   = await screen.findByTestId('now-section')
+    const comparison = strip.compareDocumentPosition(now)
     expect(comparison & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
