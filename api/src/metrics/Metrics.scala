@@ -223,6 +223,13 @@ object MetricGuard {
     // usage reports flowing or are they stacking up?" without grepping the ring-buffer syslog.
     "usage_queue_depth"                         -> Set("router_id", "installation_id"),
     "usage_post_total"                          -> Set("result", "router_id", "installation_id"),
+    // #2016 — count of usage flushes whose reported window was clamped because the
+    // conntrack-driven on_tick stalled (sparse NEW events on long-lived connections),
+    // so period_start..period_end would otherwise span un-monitored time the server's
+    // #1464 session-stitch credits as presence. A rising rate means stalls are common
+    // and the `usage_max_window_seconds` bound is doing real work (the #2016 over-count
+    // mitigation). Unlabelled beyond the standard router identity pair.
+    "usage_window_clamped_total"                -> Set("router_id", "installation_id"),
     // Server-side ingest health for POST /api/router/metrics (#1205). Concrete, emitted now.
     "router_metrics_batches_total"              -> Set("status"),
     // #1846 — websocket router transport (server side). `router_ws_connections_active` is the live

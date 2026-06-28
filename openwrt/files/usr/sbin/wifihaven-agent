@@ -377,6 +377,16 @@ if activity_sample_int <= 0 or usage_int % activity_sample_int ~= 0 then
            activity_sample_int, usage_int)
 end
 
+-- #2016: usage_max_window_seconds below the report interval would clamp even a
+-- timely (non-stalled) flush, under-counting normal presence. Raise it to the
+-- interval and warn — same spirit as the divisor check above (don't crash on a
+-- misconfig, but don't silently under-count either).
+if usage_max_window < usage_int then
+  log.warn("usage_max_window_seconds=%d is below usage_report_interval=%d; raising to the interval so timely flushes aren't clamped. See docs/router-tuning.md.",
+           usage_max_window, usage_int)
+  usage_max_window = usage_int
+end
+
 -- #896: self-heal the wifihaven-update cron entry. apk v3 skips post-install
 -- on same-version reinstall, so any router that had the package before #869
 -- shipped would never get the cron line otherwise. Idempotent; logs only when
@@ -1313,6 +1323,11 @@ conntrack.watch({
       -- The server reads [period_start, period_end] as continuous presence
       -- (#1464); the dropped slack was never sampled, so it must not count.
       local ps_wall      = usage.bounded_period_start(ts.last_usage_wall_ts, wall, usage_max_window)
+      -- #2016: count clamped flushes so operators can see how often on_tick stalls
+      -- and whether the window bound is biting (the over-count mitigation working).
+      if ps_wall > ts.last_usage_wall_ts then
+        metrics.inc_counter(mreg, "usage_window_clamped_total", {})
+      end
       local period_end   = os.date("!%Y-%m-%dT%H:%M:%SZ", wall)
       local period_start = os.date("!%Y-%m-%dT%H:%M:%SZ", ps_wall)
       ts.last_usage_run     = mono

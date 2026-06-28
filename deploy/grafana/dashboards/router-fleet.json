@@ -755,6 +755,35 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Usage window clamped (on_tick stalls) rate",
+      "description": "sum (rate(usage_window_clamped_total[5m])) — rate of usage flushes whose reported [period_start, period_end] window was clamped to usage_max_window_seconds because the conntrack-driven on_tick stalled (#2016). on_tick — and the usage flush + activity sampler it carries — fires only on a `conntrack -E -e NEW` line, so a device on a long-lived connection (a websocket game, a stream) emits few NEW events and the flush stalls; the un-monitored gap would otherwise be credited as presence by the server's #1464 session-stitch (the #2016 over-count). A non-zero rate means the bound is doing real work; a sustained HIGH rate means on_tick stalls are common on this fleet — consider raising usage_max_window_seconds only if the stalls reflect genuinely-coarse-but-monitored reporting, else it confirms the over-count mitigation is firing as intended.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 88 },
+      "id": 24,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 20, "showPoints": "never", "lineWidth": 1 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum (rate(usage_window_clamped_total{env=\"$env\"}[5m]))",
+          "legendFormat": "clamped/s",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",
