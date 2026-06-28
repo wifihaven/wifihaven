@@ -168,11 +168,23 @@ function formatRelativeTime(tsIso: string): string {
 // before the card switches to "show N more".
 const NOW_DEVICE_CAP = 3
 
+// #1835 (#825) — a device row is "materially stale" (and keeps its inline "Xs ago"
+// flag despite the section freshness pill) when last seen more than this many
+// seconds before the snapshot's asOf. The >60s window is the #825 design call.
+const NOW_STALE_SECONDS = 60
+
 // #1835 — a device's rank inside its card is its summed top-hosts active-seconds
 // over the NOW window, NOT recency (design §7 Q6): recency would float a Sonos
 // heartbeat above an actively-streaming MacBook.
 function deviceActiveSeconds(d: DashboardNowDevice): number {
   return d.topHosts.reduce((sum, h) => sum + h.activeSeconds, 0)
+}
+
+// #1835 — a profile is idle when it has zero active devices. The snapshot's
+// activeDevices is already the last-5-min set (§7 Q4), so this is the whole test;
+// paused-and-idle profiles are idle too (the paused tag is preserved on render).
+function profileIsIdle(p: DashboardNowProfile): boolean {
+  return p.activeDevices.length === 0
 }
 
 // #1835 — per-session UI toggle (top-N expander, idle collapse) backed by
@@ -207,8 +219,8 @@ export function NowSection() {
   // #1835: split active from idle. A profile is idle when it has zero active
   // devices (the snapshot's activeDevices is already the last-5-min set, §7 Q4);
   // paused-and-idle profiles fall here too. Active order is preserved as-is.
-  const active = data?.profiles.filter(p => p.activeDevices.length > 0) ?? []
-  const idle = data?.profiles.filter(p => p.activeDevices.length === 0) ?? []
+  const active = data?.profiles.filter(p => !profileIsIdle(p)) ?? []
+  const idle = data?.profiles.filter(profileIsIdle) ?? []
 
   return (
     <section data-testid="now-section" className="space-y-3">
@@ -255,7 +267,7 @@ function FreshnessPill({ updatedAt }: { updatedAt: number }) {
 }
 
 function NowProfileCard({ profile, dimmed = false }: { profile: DashboardNowProfile; dimmed?: boolean }) {
-  const idle = profile.activeDevices.length === 0
+  const idle = profileIsIdle(profile)
   const muted = dimmed || idle
   return (
     <div
@@ -331,7 +343,7 @@ function NowDeviceRow({ device }: { device: DashboardNowDevice }) {
   // #1835 (#825): no per-row timestamp — the section's single freshness pill
   // covers freshness. The exception: a row materially staler than the snapshot
   // (lastSeenSeconds is measured against the snapshot's asOf) still flags inline.
-  const stale = device.lastSeenSeconds > 60
+  const stale = device.lastSeenSeconds > NOW_STALE_SECONDS
   return (
     <div data-testid={`now-device-${device.mac}`} className="border-t border-brand-border first:border-0 pt-3 first:pt-0">
       <div className="flex items-baseline justify-between gap-2">
