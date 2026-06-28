@@ -1096,7 +1096,14 @@ object UsageRoutes {
       // time bucket"). No implicit default.
       effectiveGroupBy = groupBySet
       resp <- bucket match {
-        case UsageTraffic.Bucket.Raw =>
+        // #2040: `raw` WITHOUT a groupBy is the page's per-host raw inspector → `rawRows`. `raw`
+        // WITH a groupBy (e.g. the dashboard gauge's `groupBy=profile`) falls through to the
+        // aggregate path below, which rolls each ingest period up per the groupBy at the row's REAL
+        // `[periodStart, periodEnd)` window (`buildAggregate` floors `raw` to the row itself, #2018)
+        // — one `aggregateRows` point per (period, group), per design §1.3. Without this guard a
+        // `raw&groupBy=profile` read returned per-host `rawRows` and empty `aggregateRows`, leaving
+        // the gauge (which reads `aggregateRows`) blank.
+        case UsageTraffic.Bucket.Raw if effectiveGroupBy.isEmpty =>
           for {
             rawCursor <- req.url.queryParam("cursor") match {
               case None    => ZIO.succeed(Option.empty[RawTrafficCursorKey])
@@ -1142,7 +1149,7 @@ object UsageRoutes {
             rawRowsTruncated = false,
             nextCursor = nextCur,
           )
-        case _                       =>
+        case _                                                   =>
           // Aggregated path: source table = finer of (bucket cap, window cost
           // preference) (#1262). The requested bucket is always honored; the
           // range can only steer the read toward finer/fresher data, never

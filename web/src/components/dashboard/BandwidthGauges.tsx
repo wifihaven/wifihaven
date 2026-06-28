@@ -26,8 +26,19 @@ function RateLine({ rate }: { rate: BandwidthRate }) {
   )
 }
 
+// #2041: a shimmer bar stands in for a not-yet-loaded rate, so the gauge never flashes a misleading
+// "0 B/s" before the first data resolves.
+function SkeletonBar({ className = '', testId }: { className?: string; testId?: string }) {
+  return (
+    <span
+      data-testid={testId}
+      className={`inline-block h-4 rounded bg-brand-border/70 animate-pulse ${className}`}
+    />
+  )
+}
+
 export function BandwidthGauges() {
-  const { live, bucket, setBucket, rows, overall, rate } = useWsTrafficUsage('1m')
+  const { live, loading, bucket, setBucket, rows, overall, rate } = useWsTrafficUsage('1m')
 
   // Profile label: groupBy:profile puts the profile name in `groups.profile`.
   const profileLabel = (row: TrafficUsageAggregateRow) =>
@@ -44,33 +55,47 @@ export function BandwidthGauges() {
 
       <div className="flex items-baseline justify-between gap-3 border-b border-brand-border pb-3">
         <span className="text-sm font-medium text-brand-ink">Overall</span>
-        {live
-          ? <RateLine rate={overall} />
-          : <span data-testid="bandwidth-overall-idle" className="font-mono text-sm text-brand-text-muted">—</span>}
+        {/* #2041: three states — loading (skeleton, never "0"), live (rate), or paused ("—"). */}
+        {loading
+          ? <SkeletonBar testId="bandwidth-overall-loading" className="w-28" />
+          : live
+            ? <RateLine rate={overall} />
+            : <span data-testid="bandwidth-overall-idle" className="font-mono text-sm text-brand-text-muted">—</span>}
       </div>
 
-      {!live
+      {loading
         ? (
-          <p className="text-xs text-brand-text-muted">
-            Live throughput pauses while the connection is down.
-          </p>
+          <ul data-testid="bandwidth-loading" className="space-y-2" aria-hidden="true">
+            {[0, 1].map(i => (
+              <li key={i} className="flex items-baseline justify-between gap-3">
+                <SkeletonBar className="w-24" />
+                <SkeletonBar className="w-28" />
+              </li>
+            ))}
+          </ul>
         )
-        : rows.length === 0
-          ? <EmptyState variant="inline" title="No live traffic right now" />
-          : (
-            <ul className="space-y-2">
-              {rows.map(row => (
-                <li
-                  key={row.groups.profile ?? `${row.windowStart}`}
-                  data-testid={`bandwidth-profile-${row.groups.profile ?? 'unknown'}`}
-                  className="flex items-baseline justify-between gap-3"
-                >
-                  <span className="text-sm text-brand-text truncate">{profileLabel(row)}</span>
-                  <RateLine rate={rate(row)} />
-                </li>
-              ))}
-            </ul>
+        : !live
+          ? (
+            <p className="text-xs text-brand-text-muted">
+              Live throughput pauses while the connection is down.
+            </p>
           )
+          : rows.length === 0
+            ? <EmptyState variant="inline" title="No live traffic right now" />
+            : (
+              <ul className="space-y-2">
+                {rows.map(row => (
+                  <li
+                    key={row.groups.profile ?? `${row.windowStart}`}
+                    data-testid={`bandwidth-profile-${row.groups.profile ?? 'unknown'}`}
+                    className="flex items-baseline justify-between gap-3"
+                  >
+                    <span className="text-sm text-brand-text truncate">{profileLabel(row)}</span>
+                    <RateLine rate={rate(row)} />
+                  </li>
+                ))}
+              </ul>
+            )
       }
     </section>
   )

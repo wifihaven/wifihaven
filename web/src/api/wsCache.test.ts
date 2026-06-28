@@ -5,8 +5,8 @@
 import { describe, it, expect } from 'vitest'
 import {
   bucketSeconds,
+  completeHeadBucketRows,
   deriveNowKpis,
-  headBucketRows,
   mergeAggregateHeadRows,
   mergeHeadBucket,
   overallRate,
@@ -147,18 +147,44 @@ describe('mergeAggregateHeadRows (#1975 S6b §3.1) — page-level row merge', ()
   })
 })
 
-describe('headBucketRows', () => {
-  it('returns only the newest windowStart rows', () => {
+describe('completeHeadBucketRows (#2040)', () => {
+  const now = new Date('2026-06-26T10:07:30Z').getTime()
+
+  it('returns all rows of the newest COMPLETE window (windowEnd <= now)', () => {
     const s = series([
-      aggRow({ windowStart: '2026-06-26T10:06:00Z', groups: { profile: 'Kids' } }),
-      aggRow({ windowStart: '2026-06-26T10:06:00Z', groups: { profile: 'Adults' } }),
-      aggRow({ windowStart: '2026-06-26T10:05:00Z', groups: { profile: 'Kids' } }),
+      // newest, but IN-PROGRESS (windowEnd in the future) — must be skipped.
+      aggRow({ windowStart: '2026-06-26T10:07:00Z', windowEnd: '2026-06-26T10:08:00Z', groups: { profile: 'Kids' } }),
+      // most-recent COMPLETE 1m bucket (ended 10:07:00, in the past).
+      aggRow({ windowStart: '2026-06-26T10:06:00Z', windowEnd: '2026-06-26T10:07:00Z', groups: { profile: 'Kids' } }),
+      aggRow({ windowStart: '2026-06-26T10:06:00Z', windowEnd: '2026-06-26T10:07:00Z', groups: { profile: 'Adults' } }),
+      aggRow({ windowStart: '2026-06-26T10:05:00Z', windowEnd: '2026-06-26T10:06:00Z', groups: { profile: 'Kids' } }),
     ])
-    expect(headBucketRows(s)).toHaveLength(2)
+    const head = completeHeadBucketRows(s, now)
+    expect(head).toHaveLength(2)
+    expect(head.every(r => r.windowStart === '2026-06-26T10:06:00Z')).toBe(true)
   })
+
+  it('selects the newest row for raw (every stored ingest period is complete)', () => {
+    const s = series(
+      [
+        aggRow({ windowStart: '2026-06-26T10:06:20Z', windowEnd: '2026-06-26T10:07:20Z', groups: { profile: 'Kids' }, totalBytesIn: 600 }),
+        aggRow({ windowStart: '2026-06-26T10:05:10Z', windowEnd: '2026-06-26T10:06:15Z', groups: { profile: 'Kids' } }),
+      ],
+      { bucket: 'raw' },
+    )
+    expect(completeHeadBucketRows(s, now).map(r => r.windowStart)).toEqual(['2026-06-26T10:06:20Z'])
+  })
+
+  it('empty when every window is still in progress (no complete bucket yet)', () => {
+    const s = series([
+      aggRow({ windowStart: '2026-06-26T10:07:00Z', windowEnd: '2026-06-26T10:08:00Z', groups: { profile: 'Kids' } }),
+    ])
+    expect(completeHeadBucketRows(s, now)).toEqual([])
+  })
+
   it('empty for an empty/undefined series', () => {
-    expect(headBucketRows(undefined)).toEqual([])
-    expect(headBucketRows(series([]))).toEqual([])
+    expect(completeHeadBucketRows(undefined, now)).toEqual([])
+    expect(completeHeadBucketRows(series([]), now)).toEqual([])
   })
 })
 
