@@ -179,6 +179,16 @@ shape, wire JSON examples, and the enforcement model.
 > [#1334](https://github.com/wifihaven/wifihaven/issues/1334) fixed the
 > agent's blocklist-fetch call.)
 
+### Stating facts about the system — verify and cite, never confabulate {#verify-and-cite}
+
+Any statement of a constant's value, a cadence / interval / window, a schema
+fact, or "how subsystem X works" must be traced to and cited from its
+authoritative source in the repo (config, the code that sets it, the migration)
+— **not** from a comment (a comment can be the bug), from memory, or from
+inference. A single-sourced value is read/derived, never re-hardcoded; when you
+can't verify, say "unknown / unverified" and stop rather than confabulating a
+plausible explanation. → see [`docs/process/verify-and-cite.md`](docs/process/verify-and-cite.md)
+
 ## Where to look — topic TOC
 
 Each entry below summarizes one previously-inline AGENTS.md section. Anchors
