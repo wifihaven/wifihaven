@@ -315,6 +315,38 @@ function M.tracker_reset(tracker)
 end
 
 -- ---------------------------------------------------------------------------
+-- usage.bounded_period_start(last_flush_wall, now_wall, max_window_seconds)
+-- ---------------------------------------------------------------------------
+-- #2016: clamp the reported usage window so a delayed flush credits only the
+-- intended bucket, never the unmonitored stall gap.
+--
+-- The usage flush runs inside the conntrack `on_tick` callback, which fires
+-- only on a `conntrack -E -e NEW` line. A device on a long-lived connection
+-- (a websocket game, a streaming socket) emits few NEW events, so on_tick — and
+-- both the usage flush AND the activity sampler that lives in it — can stall for
+-- minutes. period_start (= last flush wall) to period_end (= now) then spans far
+-- more than the configured `usage_report_interval`, while activeSeconds (capped
+-- at the interval, and only sampled when on_tick ran) stays small. The server's
+-- #1464 session-stitch model credits the *entire* [period_start, period_end]
+-- window as continuous engaged time, so the unmonitored gap inflates usedMinutes
+-- (prod #2016: active≈20s but period=517s read as ~8.6 min of presence).
+--
+-- We never sampled activity across the stall, so we must not claim presence for
+-- it. Bounding period_start to `now - max_window` keeps a faithful (timely)
+-- flush whole — its window is well under `max_window` — and drops only the
+-- un-monitored slack of a stalled one. The accumulated bytes are still reported
+-- in full (real traffic); only the time window the server reads for presence is
+-- bounded. Result is clamped to `now` so a backward wall-clock jump can never
+-- produce a start after end (a zero-length, harmless window).
+function M.bounded_period_start(last_flush_wall, now_wall, max_window_seconds)
+  local earliest = now_wall - max_window_seconds
+  local start = last_flush_wall
+  if start < earliest then start = earliest end
+  if start > now_wall then start = now_wall end
+  return start
+end
+
+-- ---------------------------------------------------------------------------
 -- usage.build_report(counters, nft_sets, period_start, period_end, router_id,
 --                    leases, lookup_hostname, tracker,
 --                    sample_seconds, bucket_seconds)

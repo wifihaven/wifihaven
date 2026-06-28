@@ -42,6 +42,17 @@ config wifihaven 'wifihaven'
 	# How often (seconds) to POST usage counters
 	option usage_report_interval '60'
 
+	# #2016: max reported usage window (seconds). The usage flush is driven by
+	# the conntrack on_tick callback, which only fires on a `conntrack -E -e NEW`
+	# line, so a device on a long-lived connection (a websocket game, a stream)
+	# can stall the flush for minutes. period_start..period_end would then span
+	# the whole unmonitored gap, and the server's session-stitch presence model
+	# (#1464) credits that entire window as engaged time — the #2016 over-count.
+	# A delayed flush is clamped to credit at most this many seconds of presence;
+	# the accumulated bytes are still reported in full. Defaults to 2×
+	# usage_report_interval when unset. See docs/router-tuning.md.
+	# option usage_max_window_seconds '120'
+
 	# How often (seconds) to push the agent's cumulative observability metrics
 	# (counters/gauges/histograms) to /api/router/metrics. Runs on its own timer,
 	# independent of the policy poll. Counters are never reset on the agent — a

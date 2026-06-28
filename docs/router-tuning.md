@@ -45,6 +45,27 @@ How often (seconds) the agent scrapes nftables counters and POSTs
   `usage_report_interval` evenly. With defaults (10 / 60) every report
   carries 6 samples.
 
+### `usage_max_window_seconds` (default `2 × usage_report_interval`)
+
+Caps the wall-clock window a single usage POST may report as presence
+(`#2016`). The usage flush runs inside the conntrack `on_tick` callback, which
+fires only on a `conntrack -E -e NEW` line. A device sitting on a long-lived
+connection (a websocket game, a stream) emits few NEW events, so `on_tick` — and
+both the usage flush and the `activity_sample_int` sampler it carries — can
+stall for minutes. Without this cap, `period_start..period_end` then spans the
+whole unmonitored gap, and the server's session-stitch presence model (#1464)
+credits that **entire** window as continuous engaged time — the #2016 daily
+over-count (observed: `activeSeconds≈20` but `period=517s` read as ~8.6 min).
+
+- A delayed flush is clamped to report at most this many seconds of presence;
+  the **accumulated bytes are still POSTed in full** (real traffic is never
+  lost) — only the presence time-window is bounded.
+- **Lower** → tighter bound on stall inflation; risks slightly under-counting a
+  genuinely-coarse fleet whose `on_tick` legitimately fires less often than this
+  window. **Raise** → looser bound (more of a stall counts as presence).
+- **Couples with** `usage_report_interval`: keep it ≥ the interval. The default
+  (2×) keeps the normal `on_tick` jitter band whole while bounding a real stall.
+
 ### `activity_sample_int` (default `10`)
 
 How often (seconds) the agent samples per-MAC conntrack activity to compute
@@ -92,6 +113,7 @@ Force-flush the event buffer after this many seconds even if
 |---|---|---|---|
 | `policy_poll_interval` | 5 | 3–30 | — |
 | `usage_report_interval` | 60 | 30–300 | `activity_sample_int` (must divide evenly) |
+| `usage_max_window_seconds` | 2×interval | interval–600 | `usage_report_interval` (keep ≥ it) |
 | `activity_sample_int` | 10 | 5–30 | `usage_report_interval` |
 | `event_batch_size` | 50 | 10–200 | `event_flush_interval` |
 | `event_flush_interval` | 10 | 5–60 | `event_batch_size` |

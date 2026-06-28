@@ -259,8 +259,8 @@ describe("usage.bounded_period_start", function()
   end)
 
   it("clamps the window to max_window for a stalled flush (gap >> max_window)", function()
-    -- 517s stall, 120s max window → start pulled up to now - 120, dropping 397s
-    assert.equal(1583, usage.bounded_period_start(1100, 1700, 120))
+    -- 600s stall, 120s max window → start pulled up to now - 120, dropping 480s
+    assert.equal(1580, usage.bounded_period_start(1100, 1700, 120))
   end)
 
   it("keeps the window exactly at the max_window boundary", function()

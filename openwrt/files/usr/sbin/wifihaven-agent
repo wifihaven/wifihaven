@@ -78,6 +78,18 @@ local max_batch     = tonumber(uci_get("event_batch_size",        "50"))
 local flush_int     = tonumber(uci_get("event_flush_interval",    "10"))
 local policy_int    = tonumber(uci_get("policy_poll_interval",    "5"))
 local usage_int     = tonumber(uci_get("usage_report_interval",   "60"))
+-- #2016: the usage flush is driven by the conntrack on_tick callback, which only
+-- fires on a `conntrack -E -e NEW` line. A device on a long-lived connection
+-- (a websocket game, a stream) emits few NEW events, so on_tick — and the usage
+-- flush + activity sampler it carries — can stall for minutes. period_end=now /
+-- period_start=last-flush then describes a window far wider than this interval,
+-- and the server's #1464 session-stitch credits that whole unmonitored window as
+-- engaged time (the #2016 over-count). Clamp the reported window to at most this
+-- many seconds so a delayed flush credits only the intended bucket, not the gap.
+-- Default 2× the interval: wide enough to keep the normal on_tick jitter band
+-- whole, tight enough to bound a real stall. (Bytes are still reported in full;
+-- only the presence time-window is bounded.)
+local usage_max_window = tonumber(uci_get("usage_max_window_seconds", tostring(usage_int * 2)))
 -- #1206: observability push runs on its OWN timer, decoupled from the ~5 s
 -- policy poll. Cumulative counters are shipped to /api/router/metrics every
 -- 60 s by default (matches usage_report_interval cadence but is a separate
@@ -1296,8 +1308,13 @@ conntrack.watch({
     -- Usage timer
     if (mono - ts.last_usage_run) >= usage_int then
       -- periodStart/periodEnd are wall-clock RFC3339: the API expects UTC.
+      -- #2016: clamp the window so a stalled flush (sparse on_tick on long-lived
+      -- connections) credits only the intended bucket, not the unmonitored gap.
+      -- The server reads [period_start, period_end] as continuous presence
+      -- (#1464); the dropped slack was never sampled, so it must not count.
+      local ps_wall      = usage.bounded_period_start(ts.last_usage_wall_ts, wall, usage_max_window)
       local period_end   = os.date("!%Y-%m-%dT%H:%M:%SZ", wall)
-      local period_start = os.date("!%Y-%m-%dT%H:%M:%SZ", ts.last_usage_wall_ts)
+      local period_start = os.date("!%Y-%m-%dT%H:%M:%SZ", ps_wall)
       ts.last_usage_run     = mono
       ts.last_usage_wall_ts = wall
 
