@@ -1,0 +1,32 @@
+-- V63__traffic_rollups_active_window.sql
+-- #2025 (bandwidth follow-up): carry the real activity-window duration into the
+-- traffic_hourly / traffic_daily rollups so the Traffic Usage / live-bandwidth
+-- read path can compute accurate bandwidth (bytes ÷ real active duration) at the
+-- rollup tiers, not just the raw tier.
+--
+-- Background: V62 added traffic_reports.active_start/active_end (the real
+-- activity envelope per bucket). The screen-time path already uses it
+-- (Presence.spanOf). The Traffic Usage aggregate (UsageTrafficQuery) tiers its
+-- reads across raw traffic_reports + these two rollups; at the rollup tiers the
+-- only duration available is the SAMPLED active_seconds, which under-samples
+-- during a flush stall (#2016) and the flush window over-states elapsed — so a
+-- bandwidth rate computed from either is wrong. This column stores, per
+-- (router, mac, hostname, bucket), the summed real active-window seconds
+-- (Σ active_end-active_start, falling back to the flush window per row when the
+-- envelope is absent — pre-V62 rows / pre-#2025 agents), which the reroll writes
+-- and the read path divides bytes by.
+--
+-- Why nullable: additive, written only by the post-#2025 reroll. Existing rolled
+-- rows have no value; the read path falls back to active_seconds for those, so
+-- behavior degrades gracefully exactly as before. Backfill happens naturally as
+-- the rollup fiber re-rolls recent windows.
+--
+-- Migration cost at prod scale: traffic_hourly / traffic_daily are derived
+-- growth tables. ADD COLUMN ... BIGINT NULL is metadata-only (Postgres stores a
+-- NULL default, no table rewrite, no per-row work), so it is safe on the startup
+-- critical path even against the full prod rollup history. No index: the column
+-- is only ever read alongside the existing per-(mac, bucket) rollup SELECTs,
+-- never filtered or joined on.
+
+ALTER TABLE traffic_hourly ADD COLUMN active_window_seconds BIGINT;
+ALTER TABLE traffic_daily ADD COLUMN active_window_seconds BIGINT;
