@@ -223,6 +223,15 @@ object MetricGuard {
     // usage reports flowing or are they stacking up?" without grepping the ring-buffer syslog.
     "usage_queue_depth"                         -> Set("router_id", "installation_id"),
     "usage_post_total"                          -> Set("result", "router_id", "installation_id"),
+    // #2024 — idle-heartbeat stall indicator. The agent now drives its
+    // cooperative timers (usage flush, activity sampler, …) on a wall-clock
+    // heartbeat so on_tick fires even when conntrack is silent. This counter
+    // increments when a reported usage window still ran past 2× the configured
+    // usage_report_interval — i.e. on_tick stalled anyway (heartbeat wedged /
+    // clock jump) and the bucket spanned un-monitored time, the #2016
+    // over-count condition. A healthy fleet holds this flat at 0; a climbing
+    // rate is the leading signal of the over-count regressing.
+    "usage_window_stall_total"                  -> Set("router_id", "installation_id"),
     // Server-side ingest health for POST /api/router/metrics (#1205). Concrete, emitted now.
     "router_metrics_batches_total"              -> Set("status"),
     // #1846 — websocket router transport (server side). `router_ws_connections_active` is the live

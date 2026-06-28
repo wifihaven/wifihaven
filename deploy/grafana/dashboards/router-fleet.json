@@ -755,6 +755,48 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Usage window stalls per router (#2024)",
+      "description": "sum by (router_id) (rate(usage_window_stall_total[5m])) — per-router rate of usage buckets whose reported window ran past 2× usage_report_interval, i.e. on_tick stalled even though the #2024 idle heartbeat should keep it firing on a wall-clock cadence. A stalled bucket spans un-monitored time and the server's session-stitch credits the whole window as presence — the #2016 over-count (a kid alone on a long-lived websocket/stream read as tens of minutes from ~1 min of real activity). Steady-state value MUST be 0: a non-zero series means that router's heartbeat is wedged (or its wall clock jumped) and its usedMinutes are inflating right now.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 88 },
+      "id": 24,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 30,
+            "showPoints": "always",
+            "lineWidth": 2,
+            "thresholdsStyle": { "mode": "line" }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 0.0000001 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (router_id) (rate(usage_window_stall_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{router_id}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",
