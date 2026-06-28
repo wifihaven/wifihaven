@@ -13,7 +13,9 @@
       "activeSeconds" : 240,
       "bytesIn" : 8388608,
       "bytesOut" : 1048576,
-      "destIp" : "151.101.65.69"
+      "destIp" : "151.101.65.69",
+      "activeStart" : "2026-05-17T13:56:00Z",
+      "activeEnd" : "2026-05-17T13:59:20Z"
     },
     {
       "mac" : "76:2d:95:47:d1:8e",

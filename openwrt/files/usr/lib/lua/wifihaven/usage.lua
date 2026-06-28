@@ -283,14 +283,32 @@ end
 local function tracker_key(mac, dst_ip) return mac .. "|" .. dst_ip end
 
 function M.new_tracker()
-  return { last = {}, active_samples = {} }
+  -- first_active / last_active record the wall-clock (epoch seconds) of the
+  -- FIRST and LAST sample tick that observed byte growth for a (mac, dst_ip)
+  -- key — the real activity envelope build_report emits as activeStart/
+  -- activeEnd (issue #2025), distinct from the [period_start, period_end]
+  -- flush window the envelope sits inside.
+  return { last = {}, active_samples = {}, first_active = {}, last_active = {} }
 end
 
 -- Compare each counter to its previous byte total; an increase counts as one
 -- active sample.  A counter that went DOWN is treated as a fresh start
 -- (element expired and reappeared, or counters reset out-of-band); we still
 -- count it as an active sample if the new value is > 0.
-function M.tracker_sample(tracker, counters)
+--
+-- `now` (wall-clock epoch seconds) is optional. When supplied, the first and
+-- last active tick per key are recorded so build_report can emit the real
+-- activity window (#2025). Absent (old callers / unit tests that don't thread
+-- a clock), only the sample COUNT is tracked and build_report omits
+-- activeStart/activeEnd — the server then falls back to the flush window.
+function M.tracker_sample(tracker, counters, now)
+  local function mark_active(key)
+    tracker.active_samples[key] = (tracker.active_samples[key] or 0) + 1
+    if now then
+      if tracker.first_active[key] == nil then tracker.first_active[key] = now end
+      tracker.last_active[key] = now
+    end
+  end
   for _, c in ipairs(counters or {}) do
     local key   = tracker_key(c.mac, c.dst_ip)
     local prev  = tracker.last[key] or 0
@@ -298,11 +316,11 @@ function M.tracker_sample(tracker, counters)
     -- (device→remote) or bytes_out (remote→device) marks an active sample.
     local total = (c.bytes or 0) + (c.bytes_out or 0)
     if total > prev then
-      tracker.active_samples[key] = (tracker.active_samples[key] or 0) + 1
+      mark_active(key)
       tracker.last[key] = total
     elseif total < prev then
       if total > 0 then
-        tracker.active_samples[key] = (tracker.active_samples[key] or 0) + 1
+        mark_active(key)
       end
       tracker.last[key] = total
     end
@@ -312,6 +330,8 @@ end
 function M.tracker_reset(tracker)
   tracker.last           = {}
   tracker.active_samples = {}
+  tracker.first_active   = {}
+  tracker.last_active    = {}
 end
 
 -- ---------------------------------------------------------------------------
@@ -330,7 +350,8 @@ function M.build_report(counters, nft_sets, period_start, period_end, router_id,
 
   for _, c in ipairs(counters or {}) do
     local host    = host_for_ip(c.dst_ip, nft_sets, lookup_hostname)
-    local samples = tracker.active_samples[tracker_key(c.mac, c.dst_ip)] or 0
+    local key     = tracker_key(c.mac, c.dst_ip)
+    local samples = tracker.active_samples[key] or 0
     local active_seconds
     if samples > 0 then
       active_seconds = math.min(sample_seconds * samples, bucket_seconds)
@@ -362,6 +383,18 @@ function M.build_report(counters, nft_sets, period_start, period_end, router_id,
         -- it for write-time FQDN backfill against connection_events.
         destIp        = c.dst_ip,
       }
+      -- #2025: the REAL activity envelope — wall-clock (RFC3339, UTC, same
+      -- format as periodStart/periodEnd) of the first and last sample tick that
+      -- saw byte growth for this (mac, dst_ip). Emitted only when the tracker
+      -- recorded a window (i.e. at least one growth tick was sampled with a
+      -- clock); the no-sample byte>0 fallback above has no window, so we omit
+      -- the fields and the server falls back to [periodStart, periodEnd].
+      local first_active = tracker.first_active and tracker.first_active[key]
+      local last_active  = tracker.last_active and tracker.last_active[key]
+      if first_active and last_active then
+        rec.activeStart = os.date("!%Y-%m-%dT%H:%M:%SZ", first_active)
+        rec.activeEnd   = os.date("!%Y-%m-%dT%H:%M:%SZ", last_active)
+      end
       if leases then
         rec.ip = leases[c.mac]  -- may be nil if MAC not in lease table
       end

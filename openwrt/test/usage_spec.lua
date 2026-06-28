@@ -678,6 +678,42 @@ describe("usage.tracker", function()
     assert.equal(1, t.active_samples["aa:bb:cc:11:22:33|1.2.3.4"])
   end)
 
+  -- #2025: when a wall-clock `now` is threaded, the tracker records the real
+  -- activity envelope (first/last growth tick) per key.
+  it("records first_active/last_active wall-clock for the first and last growth tick (#2025)", function()
+    local t = usage.new_tracker()
+    usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4",  100) }, 1000)  -- +1, first
+    usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4",  100) }, 1010)  -- no growth
+    usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4",  500) }, 1020)  -- +1, last so far
+    usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4",  500) }, 1030)  -- no growth
+    assert.equal(1000, t.first_active["aa:bb:cc:11:22:33|1.2.3.4"])
+    assert.equal(1020, t.last_active["aa:bb:cc:11:22:33|1.2.3.4"])
+  end)
+
+  it("a counter decrease with bytes>0 extends the activity envelope (#2025)", function()
+    local t = usage.new_tracker()
+    usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 500) }, 2000)  -- +1, first
+    usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4",  50) }, 2050)  -- reset, bytes>0 → +1
+    assert.equal(2000, t.first_active["aa:bb:cc:11:22:33|1.2.3.4"])
+    assert.equal(2050, t.last_active["aa:bb:cc:11:22:33|1.2.3.4"])
+  end)
+
+  it("omits the envelope entirely when no wall-clock is threaded (old callers)", function()
+    local t = usage.new_tracker()
+    usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 100) })  -- no `now`
+    assert.equal(1, t.active_samples["aa:bb:cc:11:22:33|1.2.3.4"])
+    assert.is_nil(t.first_active["aa:bb:cc:11:22:33|1.2.3.4"])
+    assert.is_nil(t.last_active["aa:bb:cc:11:22:33|1.2.3.4"])
+  end)
+
+  it("tracker_reset clears the activity envelope too (#2025)", function()
+    local t = usage.new_tracker()
+    usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 100) }, 3000)
+    usage.tracker_reset(t)
+    assert.is_nil(next(t.first_active))
+    assert.is_nil(next(t.last_active))
+  end)
+
 end)
 
 describe("usage.build_report with tracker", function()
@@ -763,6 +799,31 @@ describe("usage.build_report with tracker", function()
     for _, rec in ipairs(r.records) do by_mac[rec.mac] = rec end
     assert.equal(10, by_mac["aa:bb:cc:11:22:33"].activeSeconds)
     assert.equal(40, by_mac["de:ad:be:ef:00:01"].activeSeconds)
+  end)
+
+  -- #2025: when the tracker recorded a wall-clock activity envelope, build_report
+  -- emits it as RFC3339 activeStart/activeEnd (same format as periodStart).
+  it("emits activeStart/activeEnd from the tracker's activity envelope (#2025)", function()
+    local t = usage.new_tracker()
+    -- Two growth ticks 20s apart, both well inside the 5-min flush window.
+    usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 100) }, 1715176900)
+    usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 500) }, 1715176920)
+    local r = usage.build_report(
+      { s("aa:bb:cc:11:22:33", "1.2.3.4", 500) },
+      NF_SETS, P_START, P_END, ROUTER, nil, nil, t, SAMPLE_S, BUCKET_S)
+    assert.equal(os.date("!%Y-%m-%dT%H:%M:%SZ", 1715176900), r.records[1].activeStart)
+    assert.equal(os.date("!%Y-%m-%dT%H:%M:%SZ", 1715176920), r.records[1].activeEnd)
+  end)
+
+  it("omits activeStart/activeEnd when the tracker has no envelope (old agent) (#2025)", function()
+    local t = usage.new_tracker()
+    -- Sampled WITHOUT a wall-clock, so no envelope recorded.
+    usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 500) })
+    local r = usage.build_report(
+      { s("aa:bb:cc:11:22:33", "1.2.3.4", 500) },
+      NF_SETS, P_START, P_END, ROUTER, nil, nil, t, SAMPLE_S, BUCKET_S)
+    assert.is_nil(r.records[1].activeStart)
+    assert.is_nil(r.records[1].activeEnd)
   end)
 
 end)
