@@ -194,6 +194,46 @@ are a public contract — API and agents deploy independently.
 - **New routes enforce auth + role.** JWT-authenticated, with the correct
   Admin / ReadOnly check via the middleware.
 
+## 9. Unsourced facts & magic constants
+
+The reviewer that APPROVED the wrong 5-minute `raw` window
+([#2018](https://github.com/wifihaven/wifihaven/issues/2018)) missed a
+behavior-driving magic number and several "how it works" comments that were
+**asserted without being traced to their authoritative source**. Treat every
+comment, docstring, and PR-body claim as a **claim to verify, not a fact** —
+and, where cheap, spend a tool call to actually check the asserted source (grep
+the config / constant) before deciding. Cross-references the
+[verify-and-cite convention](../AGENTS.md#verify-and-cite) and
+[single-source-of-truth](../AGENTS.md#single-source-of-truth).
+
+- **Magic constants not traced to source.** A new literal encoding a cadence /
+  interval / window / size / limit, where the diff doesn't show it derived from
+  or cited to an authoritative source (a config option, the data, an existing
+  named constant). Durations are the highest-risk class — `% 300`,
+  `ofMinutes(5)`, bare `300`, `60`. SHOULD-FIX by default; **BLOCKER when the
+  constant drives behavior** (as the `raw` window did).
+- **Re-hardcoding a single-sourced value = BLOCKER when it can drift.** A value
+  that already lives in one authoritative place (the agent
+  `usage_report_interval`, a config option, a shared constant) copied as a
+  literal elsewhere. The router↔API usage period is the worked example: it is
+  single-sourced at the agent (`usage_report_interval`, default 60s) and rides
+  every row as `period_start`/`period_end`; an API-side `300` / `ofMinutes(5)`
+  copy is exactly the #2018 bug.
+- **Comment / doc asserts behavior the diff doesn't substantiate.** A comment,
+  docstring, or PR-body claim about a cadence, granularity, invariant, or "how
+  subsystem X works" that the code in the diff doesn't back up (or contradicts).
+  Flag it and ask for the citation — don't take the comment's word for it.
+- **Comment contradicts the code it annotates** — e.g. a "5-min boundaries"
+  comment next to logic that no longer matches. The false comment *"source rows
+  are at UTC 5-min boundaries already"* is what cemented the #2018 wrong model.
+
+Worked example: the #2018 `% 300` raw window — a stale agent default
+([#101](https://github.com/wifihaven/wifihaven/issues/101)'s `300`) re-hardcoded
+into the API in [#846](https://github.com/wifihaven/wifihaven/issues/846)
+*after* [#529](https://github.com/wifihaven/wifihaven/issues/529) had moved the
+agent to 60s, cemented by a false comment. A behavior-driving, unsourced,
+re-hardcoded constant — a BLOCKER under this dimension.
+
 ---
 
 ## Output format
@@ -263,7 +303,7 @@ gh pr comment <n> --repo wifihaven/wifihaven --body-file /tmp/pr-review-body.md
 1. Resolve the PR head SHA: `gh pr view <n> --json headRefOid -q .headRefOid`
    (or `git rev-parse HEAD` when reviewing the checked-out branch).
 2. Review the **full merge-base diff** `git diff origin/main...HEAD`
-   (three-dot — never two-dot) against the 8 dimensions above.
+   (three-dot — never two-dot) against the 9 dimensions above.
 3. Post the marked comment for that SHA.
 
 ### Re-run (a prior marked comment exists)

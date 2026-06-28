@@ -11,7 +11,10 @@ section, which is authoritative:
 
 Target PR: `$ARGUMENTS` (a PR number, or the current branch's PR if empty).
 
-Apply the checklist's 8 dimensions to the diff, cite `file:line`, classify every
+Apply the checklist's 9 dimensions to the diff (the 9th, **Unsourced facts &
+magic constants**, catches the #2018 class — behavior-driving magic numbers and
+"how it works" comments asserted without tracing to an authoritative source),
+cite `file:line`, classify every
 finding BLOCKER / SHOULD-FIX / NIT, do **not** modify files, and end with
 VERDICT: APPROVE or REQUEST-CHANGES (never APPROVE with an open BLOCKER) plus a
 3-line summary. Then post per the algorithm below.
@@ -33,7 +36,7 @@ VERDICT: APPROVE or REQUEST-CHANGES (never APPROVE with an open BLOCKER) plus a
    ```
 
    - **Empty / null → first run.** Review the full merge-base diff
-     `git diff origin/main...HEAD` (three-dot, never two-dot) against the 8
+     `git diff origin/main...HEAD` (three-dot, never two-dot) against the 9
      dimensions.
    - **Found → re-run.** Extract its prior SHA
      (`grep -oE 'reviewed-sha=[0-9a-f]+' | head -1`) and its findings, then:
