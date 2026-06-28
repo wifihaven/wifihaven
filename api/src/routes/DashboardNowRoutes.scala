@@ -187,9 +187,12 @@ object DashboardNowRoutes {
   }
 
   /**
-   * Per-device "what is this device watching right now". Reads rows from the latest populated 5-min
-   * bucket and returns its top host. If earlier consecutive buckets share the same top host,
-   * reports a `minutes` run (capped at 60); otherwise `minutes = None`. See #852.
+   * Per-device "what is this device watching right now". Reads rows from the latest populated
+   * usage-report-period bucket (the agent's `usage_report_interval`, ~60s — not a fixed 5-min
+   * window; the streak math below derives its seconds from each row's `period_start`/`period_end`,
+   * so it is granularity-agnostic) and returns its top host. If earlier consecutive buckets share
+   * the same top host, reports a `minutes` run (capped at 60); otherwise `minutes = None`. See
+   * #852.
    */
   def nowActivityFromRows(
       rows: List[TrafficRollupRow],
@@ -209,8 +212,8 @@ object DashboardNowRoutes {
           math.max(0L, e - s)
         }.sum
         val minutes    = math.min(NowActivityMaxMinutes, math.max(1, (streakSecs / 60L).toInt))
-        // Only attach a duration once we have a multi-bucket signal — a single 5-min bucket isn't
-        // strong enough to claim "watching for N minutes".
+        // Only attach a duration once we have a multi-bucket signal — a single usage-report-period
+        // bucket isn't strong enough to claim "watching for N minutes".
         val mins       = if (streakRest.nonEmpty) Some(minutes) else None
         DashboardNowActivity(topHost = top, minutes = mins)
       }

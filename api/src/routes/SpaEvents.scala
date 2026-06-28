@@ -33,9 +33,11 @@ import java.time.Instant
  *     as a `TrafficUsageResponse` live edge (design §5.3). #2004: the head MUST be anchored on the
  *     ingested `periodStart`, NOT wall-clock `now` — a ~60s report covers the *prior* minute, so
  *     its `period_start` floors to the previous bucket; scoping to `floor(now)` left the head
- *     perpetually empty and the dashboard LIVE BANDWIDTH panel stuck at 0 B/s. Latest-wins (§6.3):
- *     a burst coalesces to the freshest `periodStart`, and a param-set with no subscriber is never
- *     queried.
+ *     perpetually empty and the dashboard LIVE BANDWIDTH panel stuck at 0 B/s. #2018: the event
+ *     carries the WHOLE period `[periodStart, periodEnd)` because for the `raw` bucket the head
+ *     window IS that real report period (the agent's `usage_report_interval`), not a synthetic
+ *     fixed window — the head scoping uses `UsageTraffic.windowFor`. Latest-wins (§6.3): a burst
+ *     coalesces to the freshest `periodStart`, and a param-set with no subscriber is never queried.
  *   - [[SpaEvent.TimeStatusChanged]] — #1974 (S6a): a profile's used/remaining minutes moved. The
  *     consumer rebuilds the `/api/time/status` `ProfileTimeStatus[]` body (via
  *     `TimeStatusService.dayStateAllLive`, role-filtered like the GET) and pushes it to
@@ -50,7 +52,7 @@ enum SpaEvent {
   case NowChanged
   case ConnectionEventsIngested(since: Instant)
   case Stale(topic: StaleTopic, scope: Option[String] = None)
-  case UsageIngested(periodStart: Instant)
+  case UsageIngested(periodStart: Instant, periodEnd: Instant)
   case TimeStatusChanged
 }
 

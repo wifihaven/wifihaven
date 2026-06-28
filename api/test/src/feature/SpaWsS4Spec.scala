@@ -426,8 +426,9 @@ object SpaWsS4Spec
           assertTrue(
             pushed.aggregateRows.exists(r => r.totalBytesIn == 500 && r.totalBytesOut == 600),
           ) &&
-          // raw floors to the 5-min boundary.
-          assertTrue(pushed.aggregateRows.head.windowStart == "2026-06-25T14:00:00Z")
+          // #2018: raw's window is the REAL report period [periodStart, periodEnd), not a 5-min grid.
+          assertTrue(pushed.aggregateRows.head.windowStart == periodStart) &&
+          assertTrue(pushed.aggregateRows.head.windowEnd == periodEnd)
       }
     },
     test(
@@ -505,29 +506,33 @@ object SpaWsS4Spec
     test(
       "coalesce collapses a burst of contentless triggers to one recompute each (latest-wins logic)",
     ) {
-      val t1     = Instant.parse("2026-06-25T13:59:00Z")
-      val t2     = Instant.parse("2026-06-25T13:59:30Z")
-      // #2004: UsageIngested now carries the batch's periodStart. A burst must collapse to the ONE
-      // with the LATEST period (latest-wins) so the live edge never regresses to a stale bucket.
-      val pEarly = Instant.parse("2026-06-25T13:58:00Z")
-      val pMid   = Instant.parse("2026-06-25T13:59:00Z")
-      val pLate  = Instant.parse("2026-06-25T14:00:00Z")
-      val burst  = Chunk(
+      val t1                                            = Instant.parse("2026-06-25T13:59:00Z")
+      val t2                                            = Instant.parse("2026-06-25T13:59:30Z")
+      // #2004: UsageIngested carries the batch's period. A burst must collapse to the ONE with the
+      // LATEST period (latest-wins) so the live edge never regresses to a stale bucket. #2018: the
+      // event carries the WHOLE `[periodStart, periodEnd)` (raw's head window is the real period), so
+      // the surviving event must keep BOTH bounds of the freshest period.
+      def usage(start: Instant): SpaEvent.UsageIngested =
+        SpaEvent.UsageIngested(start, start.plusSeconds(60))
+      val pEarly                                        = Instant.parse("2026-06-25T13:58:00Z")
+      val pMid                                          = Instant.parse("2026-06-25T13:59:00Z")
+      val pLate                                         = Instant.parse("2026-06-25T14:00:00Z")
+      val burst                                         = Chunk(
         SpaEvent.NowChanged,
-        SpaEvent.UsageIngested(pMid),
-        SpaEvent.UsageIngested(pLate),
+        usage(pMid),
+        usage(pLate),
         SpaEvent.NowChanged,
-        SpaEvent.UsageIngested(pEarly),
+        usage(pEarly),
         SpaEvent.ConnectionEventsIngested(t1),
         SpaEvent.ConnectionEventsIngested(t1),
         SpaEvent.ConnectionEventsIngested(t2),
       )
-      val out    = SpaPush.coalesce(burst)
+      val out                                           = SpaPush.coalesce(burst)
       ZIO.succeed(
         // Exactly one UsageIngested survives, and it carries the LATEST period (not first-seen).
         assertTrue(
           out.collect { case e: SpaEvent.UsageIngested => e }.toList ==
-            List(SpaEvent.UsageIngested(pLate)),
+            List(usage(pLate)),
         ) &&
           assertTrue(out.count(_ == SpaEvent.NowChanged) == 1) &&
           // Distinct `since`d connection-event events are NOT collapsed (their head re-read differs).

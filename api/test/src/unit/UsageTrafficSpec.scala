@@ -7,9 +7,13 @@ import zio.test.*
 import java.time.{Duration, Instant, ZoneOffset}
 
 /**
- * #901: pin Traffic Usage aggregation stride. Regression for "10m bucket shows window starts 20
- * minutes apart, not 10". Tests use a deterministic raw-row layout (router cadence of 5 min,
- * period_starts aligned to UTC minute boundaries) so the floor + group step is unambiguous.
+ * #901: pin Traffic Usage *display*-bucket aggregation stride. Regression for "10m bucket shows
+ * window starts 20 minutes apart, not 10". The display-bucket tests use a deterministic raw-row
+ * layout (synthetic period_starts a fixed 5 min apart, aligned to UTC minute boundaries) ONLY so
+ * the floor + group step is unambiguous — it is NOT a claim about the real report cadence, which is
+ * the agent's `usage_report_interval` (~60s, configurable) carried per-row. The #2018 raw pinning
+ * test below seeds DIFFERENT, non-5-min periods precisely to prove raw never assumes a fixed
+ * granularity.
  */
 object UsageTrafficSpec extends ZIOSpecDefault {
 
@@ -129,7 +133,8 @@ object UsageTrafficSpec extends ZIOSpecDefault {
       )
       assertTrue(buckets.forall { b =>
         val start = UsageTraffic.floorTo(sample, b, UTC)
-        val step  = UsageTraffic.stepOf(b)
+        // Display buckets always have a fixed step; raw (None) is excluded from this list.
+        val step  = UsageTraffic.stepOf(b).getOrElse(Duration.ZERO)
         !start.isAfter(sample) && start.plus(step).isAfter(sample)
       })
     },
@@ -181,6 +186,18 @@ object UsageTrafficSpec extends ZIOSpecDefault {
       assertTrue(
         (a2.totalBytesIn + a2.totalBytesOut) / spanSeconds(a2.windowStart, a2.windowEnd) == 120L,
       )
+    },
+    test("windowFor: raw is the real period; a display bucket is the floored grid cell") {
+      val ps = Instant.parse("2026-05-13T00:01:13Z")
+      val pe = ps.plusSeconds(37)
+      assertTrue(UsageTraffic.windowFor(ps, pe, UsageTraffic.Bucket.Raw, UTC) == (ps, pe)) &&
+      assertTrue(
+        UsageTraffic.windowFor(ps, pe, UsageTraffic.Bucket.OneMin, UTC) ==
+          (Instant.parse("2026-05-13T00:01:00Z"), Instant.parse("2026-05-13T00:02:00Z")),
+      ) &&
+      // stepOf is None for raw (no fixed width), Some for display buckets.
+      assertTrue(UsageTraffic.stepOf(UsageTraffic.Bucket.Raw).isEmpty) &&
+      assertTrue(UsageTraffic.stepOf(UsageTraffic.Bucket.OneMin).contains(Duration.ofMinutes(1)))
     },
   )
 }

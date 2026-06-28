@@ -1405,11 +1405,12 @@ object TimeRoutes {
   /**
    * Roll the range's presence rows up to hourly UTC buckets aligned at `offsetMin` minutes past the
    * hour (#794). Caller passes the offset that makes each bucket fall fully within one local day (0
-   * for whole-hour zones, 30 for half-hour zones, 15/45 for the quarter-hour zones). Each 5-min
-   * `period_start` falls in exactly one hour slot of the chosen grid; per-slot minutes go through
-   * `Presence.totalMinutesByMac` for per-mac bucket-dedup + heartbeat filter, then sum across macs.
-   * Empty slots are omitted (the SPA fills gaps with zero when grouping by local day). Returned
-   * list is sorted by `bucketStart` ascending.
+   * for whole-hour zones, 30 for half-hour zones, 15/45 for the quarter-hour zones). Each
+   * usage-report-period `period_start` (the agent's `usage_report_interval`, ~60s) falls in exactly
+   * one hour slot of the chosen grid; per-slot minutes go through `Presence.totalMinutesByMac` for
+   * per-mac bucket-dedup + heartbeat filter, then sum across macs. Empty slots are omitted (the SPA
+   * fills gaps with zero when grouping by local day). Returned list is sorted by `bucketStart`
+   * ascending.
    */
   private def bucketHourlyAligned(
       presence: List[wifihaven.api.presence.PresenceRow],

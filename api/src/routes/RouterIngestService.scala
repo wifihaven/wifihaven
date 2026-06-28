@@ -94,7 +94,7 @@ final class RouterIngestService(
         // the `timeStatus`/`appUsage` push (design §5.2). All one-liners that never block or fail
         // ingest (sliding hub, UIO).
         _        <- ZIO.when(records.nonEmpty)(
-          bus.publish(SpaEvent.NowChanged) *> bus.publish(SpaEvent.UsageIngested(ps)) *>
+          bus.publish(SpaEvent.NowChanged) *> bus.publish(SpaEvent.UsageIngested(ps, pe)) *>
             bus.publish(SpaEvent.TimeStatusChanged),
         )
       } yield ()

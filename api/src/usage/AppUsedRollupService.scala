@@ -30,8 +30,10 @@ import java.time.{Instant, LocalDate}
  *     ([[wifihaven.api.policy.TimeStatusService.appDayStates]] /
  *     `Presence.patternGroupMinutesForProfile`) — same primitive, same floor-of-sum.
  *   - '''rolled+tail ⇄ live''' (EXACT): rolled + tail equals the all-live computation in seconds,
- *     because presence buckets are 5-min granular and disjoint on either side of the watermark
- *     (same argument as `time_used_daily`; watermarks land in idle gaps so no session straddles).
+ *     because presence buckets are per-report-period granular (the agent's `usage_report_interval`,
+ *     ~60s) and disjoint on either side of the watermark — the exactness argument holds at any
+ *     granularity (same argument as `time_used_daily`; watermarks land in idle gaps so no session
+ *     straddles).
  *   - '''per-app sum ⇄ profile total''' (RESTRICTED equality): `Σ_app engagedSeconds(app)` equals
  *     the profile daily total ([[TimeStatusService.usedSecondsForProfile]]) ONLY when every counted
  *     second belongs to a single, non-exempt-from-daily app and the apps do not overlap in

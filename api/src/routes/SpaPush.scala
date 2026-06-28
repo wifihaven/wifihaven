@@ -153,17 +153,19 @@ object SpaPush {
    * `distinct` preserves first-occurrence order. Exposed for unit coverage of the collapse logic.
    */
   private[api] def coalesce(events: Chunk[SpaEvent]): Chunk[SpaEvent] = {
-    val latestUsage: Option[Instant] =
+    // #2018: keep the WHOLE freshest-period event (start + end) — for `raw` the head window IS the
+    // real `[periodStart, periodEnd)`, so the end must survive coalescing, not just the start.
+    val latestUsage: Option[SpaEvent.UsageIngested] =
       events
-        .collect { case SpaEvent.UsageIngested(p) => p }
-        .foldLeft(Option.empty[Instant])((acc, p) =>
-          Some(acc.fold(p)(a => if (p.isAfter(a)) p else a)),
+        .collect { case u: SpaEvent.UsageIngested => u }
+        .foldLeft(Option.empty[SpaEvent.UsageIngested])((acc, u) =>
+          Some(acc.fold(u)(a => if (u.periodStart.isAfter(a.periodStart)) u else a)),
         )
-    val withoutUsage                 = events.filter {
-      case SpaEvent.UsageIngested(_) => false
+    val withoutUsage                                = events.filter {
+      case _: SpaEvent.UsageIngested => false
       case _                         => true
     }.distinct
-    latestUsage.fold(withoutUsage)(p => withoutUsage :+ SpaEvent.UsageIngested(p))
+    latestUsage.fold(withoutUsage)(u => withoutUsage :+ u)
   }
 
   private def handle(
@@ -180,17 +182,17 @@ object SpaPush {
       timeUsage: Option[TimeUsageDeps],
   ): UIO[Unit] =
     event match {
-      case SpaEvent.NowChanged                      =>
+      case SpaEvent.NowChanged                            =>
         pushNow(registry, trafficRepo, connRepo, deviceRepo, profileRepo, appTimeLimitRepo, clock)
           .catchAllCause(c => ZIO.logErrorCause("spa ws push: now recompute failed", c))
-      case SpaEvent.ConnectionEventsIngested(since) =>
+      case SpaEvent.ConnectionEventsIngested(since)       =>
         pushConnectionEvents(registry, connRepo, clock, since)
           .catchAllCause(c => ZIO.logErrorCause("spa ws push: connectionEvents fan-out failed", c))
-      case SpaEvent.Stale(topic, scope)             =>
+      case SpaEvent.Stale(topic, scope)                   =>
         LogContext.annotate(LogContext.Op, "stale") {
           registry.fanOutStale(topic, scope)
         }
-      case SpaEvent.UsageIngested(periodStart)      =>
+      case SpaEvent.UsageIngested(periodStart, periodEnd) =>
         LogContext.annotate(LogContext.Op, "trafficUsage") {
           pushTrafficUsage(
             registry,
@@ -200,10 +202,11 @@ object SpaPush {
             profileRepo,
             appRepo,
             periodStart,
+            periodEnd,
           )
             .catchAllCause(c => ZIO.logErrorCause("spa ws push: trafficUsage recompute failed", c))
         }
-      case SpaEvent.TimeStatusChanged               =>
+      case SpaEvent.TimeStatusChanged                     =>
         // #1974 (S6a): the same change drives BOTH live time-usage topics (design §5.2). Each is
         // independently subscriber-gated (no subscriber → no query) and wrapped so a transient repo
         // error on one never blocks the other or crashes the consumer.
@@ -312,7 +315,8 @@ object SpaPush {
       deviceRepo: DeviceRepo,
       profileRepo: ProfileRepo,
       appRepo: AppRepo,
-      anchor: Instant,
+      periodStart: Instant,
+      periodEnd: Instant,
   ): Task[Unit] =
     registry.trafficUsageParamSets.flatMap { paramSets =>
       ZIO
@@ -339,7 +343,8 @@ object SpaPush {
                 devByMac,
                 profNames,
                 appsByHost,
-                anchor,
+                periodStart,
+                periodEnd,
               ),
             )
           } yield ()
@@ -362,20 +367,27 @@ object SpaPush {
       devByMac: Map[MacAddress, Device],
       profNames: Map[ProfileId, String],
       appsByHost: Map[String, List[AppMembership]],
-      anchor: Instant,
+      periodStart: Instant,
+      periodEnd: Instant,
   ): Task[Unit] =
     decodeParams(params) match {
       case None         =>
         ZIO.logDebug(s"spa ws push: skipping unrenderable trafficUsage params ${params.toJson}")
       case Some(parsed) =>
-        // #2004: anchor the head bucket on the ingested `periodStart`, then scope to exactly that ONE
-        // bucket `[headStart, headEnd)` where `headEnd = headStart + bucketWidth`. Rows are bucketed
-        // by `period_start`, so this captures precisely the bucket the fresh rows landed in (one
-        // `windowStart`) — the client's single-bucket head-merge (`wsCache.mergeHeadBucket`) requires
-        // a single window. Anchoring on wall-clock `now` instead left this window empty in steady
-        // state (a ~60s report's period sits one bucket back), the prod defect this fixes.
-        val headStart    = UsageTraffic.floorTo(anchor, parsed.bucket, parsed.zone)
-        val headEnd      = headStart.plus(UsageTraffic.stepOf(parsed.bucket))
+        // #2004: anchor the head window on the ingested period, then scope the query to exactly that
+        // ONE bucket `[headStart, headEnd)`. Rows are bucketed by `period_start`, so this captures
+        // precisely the bucket the fresh rows landed in (one `windowStart`) — the client's
+        // single-bucket head-merge (`wsCache.mergeHeadBucket`) requires a single window. Anchoring on
+        // wall-clock `now` instead left this window empty in steady state (a ~60s report's period
+        // sits one bucket back), the prod defect #2004 fixed.
+        //
+        // #2018: the window comes from the shared `UsageTraffic.windowFor` SSOT — for a fixed display
+        // bucket it floors `periodStart` and adds the bucket width; for `raw` it is the REAL report
+        // period `[periodStart, periodEnd)` (the agent's `usage_report_interval`), NOT a synthetic
+        // 5-min window. The client derives B/s from this `[windowStart, windowEnd)` span, so raw must
+        // carry the true interval.
+        val (headStart, headEnd) =
+          UsageTraffic.windowFor(periodStart, periodEnd, parsed.bucket, parsed.zone)
         val resolvedMacs = UsageTrafficQuery.resolveMacs(parsed.macs, parsed.profileIds, devices)
         val filterEmpty  = parsed.filterRequested && resolvedMacs.isEmpty
         val aggregate    =

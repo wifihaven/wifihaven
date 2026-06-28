@@ -48,8 +48,10 @@ object TimeUsedRollupJob {
    * Refresh cadence. The read path's tail aggregation (`TimeStatusServiceLive`, buckets with
    * `period_start >= rolled_through`) makes the screen-time figure exact regardless of cadence, so
    * this interval only bounds the tail's size — it is not a freshness knob. #1230 widened it from
-   * 3m to 15m to cut DB churn on the 256 MB prod instance (#1228): at 5-min bucket granularity the
-   * tail tops out at ~3 rows per profile, a negligible per-read cost for ~5× fewer recompute ticks.
+   * 3m to 15m to cut DB churn on the 256 MB prod instance (#1228): the tail is roughly `Interval /
+   * report-cadence` rows per profile (the cadence is the agent's `usage_report_interval`, ~60s and
+   * configurable — so ~15 rows at 60s; it was ~3 back when the cadence was 5-min), a negligible
+   * per-read cost for ~5× fewer recompute ticks.
    */
   val Interval: Duration = Duration.ofMinutes(15)
 
@@ -152,8 +154,9 @@ object TimeUsedRollupJob {
   // The cached row covers presence buckets with `period_start < rolled_through`. Setting
   // `rolled_through = now` makes the read path's tail-load filter (`period_start >= rolled_through`)
   // pick up any bucket that lands after this tick — including buckets that finish during the tick
-  // itself but arrive at the DB after the snapshot read. The double-counting risk is bounded by
-  // bucket granularity (5 min); the next tick re-rolls with a fresh `now` and supersedes the row.
+  // itself but arrive at the DB after the snapshot read. The double-counting risk is bounded by the
+  // report-period granularity (the agent's `usage_report_interval`, ~60s); the next tick re-rolls
+  // with a fresh `now` and supersedes the row.
   private def doTick(
       rollup: TimeUsedRollupRepo,
       appRollup: AppUsedRollupRepo,

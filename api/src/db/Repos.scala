@@ -59,8 +59,10 @@ case class TrafficRollupFilter(
 )
 
 /**
- * One row per 5-min traffic_reports period (with ipv4/ipv6 hosts resolved to their attributed FQDN
- * when possible). Used by [[DashboardNowRoutes]] to compute per-device top hosts.
+ * One row per traffic_reports usage-report period (the agent's `usage_report_interval`, ~60s and
+ * configurable — NOT a fixed 5-min bucket; the real span is `period_start`/`period_end`), with
+ * ipv4/ipv6 hosts resolved to their attributed FQDN when possible. Used by [[DashboardNowRoutes]]
+ * to compute per-device top hosts.
  */
 case class TrafficRollupRow(
     routerId: RouterId,
@@ -519,9 +521,10 @@ trait TrafficReportRepo {
   def listForRouter(routerId: RouterId, limit: Int): Task[List[TrafficReport]]
 
   /**
-   * Per-5-min traffic_reports rows for aggregation: returned ordered by (router_id, mac, hostname,
-   * date, period_start). Filters are AND-composed. `macs = Some(Nil)` returns an empty list (no
-   * devices match).
+   * Per-usage-report-period traffic_reports rows for aggregation (one row per agent report period,
+   * `usage_report_interval` — ~60s, configurable; not a fixed 5-min bucket): returned ordered by
+   * (router_id, mac, hostname, date, period_start). Filters are AND-composed. `macs = Some(Nil)`
+   * returns an empty list (no devices match).
    */
   def listTrafficRollupRows(f: TrafficRollupFilter): Task[List[TrafficRollupRow]]
 
@@ -597,8 +600,8 @@ trait TrafficReportRepo {
   /**
    * #766: per-host aggregates for one device over `[from, to)`, restricted to FQDN-typed rows
    * (after the IP→FQDN LATERAL resolve). One row per resolved hostname, with total `bytes_in +
-   * bytes_out` and the hit count (number of 5-min buckets the host was observed in). Used by the
-   * apps create/edit recently-visited-hosts picker; PSL apex collapse happens in Scala.
+   * bytes_out` and the hit count (number of usage-report periods the host was observed in). Used by
+   * the apps create/edit recently-visited-hosts picker; PSL apex collapse happens in Scala.
    */
   def listFqdnHostAggregatesForDevice(
       mac: MacAddress,
