@@ -36,13 +36,6 @@ const stats: DashboardStats = {
   ],
 }
 
-const recent: QueryLog = {
-  id: 1, mac: 'aa:bb:cc:dd:ee:01', deviceName: "Kid's iPad",
-  profileId: 1, profileName: 'Kids',
-  host: { type: 'fqdn', value: 'example.com' }, qtype: 1, blocked: false, reason: { kind: 'allow' },
-  location: 'home', ts: '2026-05-07T10:15:30Z',
-}
-
 // #1338: a recent connection-layer drop, returned by /api/logs?blocked=true.
 // ts must be inside the panel's 15-min recency window, so derive it from now.
 const recentBlockedTs = () => new Date(Date.now() - 12_000).toISOString() // 12s ago
@@ -93,14 +86,13 @@ const mockAlerts = () => api.alerts.list as unknown as ReturnType<typeof vi.fn>
 beforeEach(() => {
   vi.resetAllMocks()
   mockStats().mockResolvedValue(stats)
-  // #1338: the "Most recently blocked" panel and the "Recent Queries" table
-  // both hit api.logs.query; split the canned response by the blocked filter so
-  // each surface renders its own (distinct) fixture.
+  // #1833: the unfiltered "Recent Queries" firehose is gone; only the
+  // "Most recently blocked" panel hits api.logs.query (blocked=true).
   mockQuery().mockImplementation((params?: { blocked?: boolean }) =>
     Promise.resolve(
       params?.blocked
         ? { rows: [blockedRow], nextCursor: null }
-        : { rows: [recent], nextCursor: null },
+        : { rows: [], nextCursor: null },
     ),
   )
   mockNow().mockResolvedValue(emptyNow)
@@ -108,7 +100,7 @@ beforeEach(() => {
 })
 
 describe('DashboardPage', () => {
-  it('renders stat cards, top-blocked, per-device, and recent queries', async () => {
+  it('renders stat cards, top-blocked, and per-device', async () => {
     render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
     expect(await screen.findByText('1234')).toBeInTheDocument()
     expect(screen.getByText('56')).toBeInTheDocument()
@@ -117,24 +109,30 @@ describe('DashboardPage', () => {
     expect(screen.getByText('evil.com')).toBeInTheDocument()
     expect(screen.getByText('42')).toBeInTheDocument()
     expect(screen.getAllByText("Kid's iPad").length).toBeGreaterThan(0)
-    expect(screen.getByText('500 queries')).toBeInTheDocument()
+    expect(screen.getByText('500 events')).toBeInTheDocument()
     expect(screen.getByText('20 blocked')).toBeInTheDocument()
-    expect(screen.getByText('example.com')).toBeInTheDocument()
-
-    expect(api.logs.query).toHaveBeenCalledWith({ limit: 30 })
   })
 
-  it('shows empty state when no blocked queries', async () => {
+  it('does not render the unfiltered Recent Queries firehose (#823)', async () => {
+    render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
+    await screen.findByText('1234')
+    expect(screen.queryByText('Recent Queries')).not.toBeInTheDocument()
+    // The firehose's unfiltered fetch (one fewer network call on load) is gone.
+    expect(api.logs.query).not.toHaveBeenCalledWith({ limit: 30 })
+  })
+
+  it('uses connection-event terminology, never "queries" (#299)', async () => {
+    render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
+    await screen.findByText('1234')
+    expect(screen.getByText('Events today')).toBeInTheDocument()
+    expect(screen.getByText('Events (1h)')).toBeInTheDocument()
+    expect(screen.queryByText(/queries/i)).not.toBeInTheDocument()
+  })
+
+  it('shows empty state when no blocked events', async () => {
     mockStats().mockResolvedValue({ ...stats, topBlocked: [] })
     render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
-    expect(await screen.findByText(/No blocked queries yet/)).toBeInTheDocument()
-  })
-
-  it('recent activity Time column renders in viewer local time (not UTC slice)', async () => {
-    render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
-    await screen.findByText('example.com')
-    const expected = new Date(recent.ts).toLocaleTimeString()
-    expect(screen.getByText(expected)).toBeInTheDocument()
+    expect(await screen.findByText(/No blocked events yet/)).toBeInTheDocument()
   })
 
   it('renders Now section above stat cards', async () => {
@@ -143,7 +141,7 @@ describe('DashboardPage', () => {
     await screen.findByText('1234')
     await waitFor(() => expect(screen.getByTestId('now-profile-1')).toBeInTheDocument())
     const nowHeading = screen.getByText('Now')
-    const statsCard  = screen.getByText('Queries today')
+    const statsCard  = screen.getByText('Events today')
     const comparison = nowHeading.compareDocumentPosition(statsCard)
     expect(comparison & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
