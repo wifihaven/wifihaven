@@ -22,6 +22,15 @@ case class PresenceRow(
     activeSeconds: Int,
     bytes: Long,
     periodSeconds: Int,
+    // #2025: the REAL activity envelope for this bucket — the wall-clock of the
+    // first and last sample tick the agent observed byte growth on, as opposed
+    // to the `[periodStart, periodStart + periodSeconds]` FLUSH window the
+    // envelope sits inside. Both present ⇒ [[spanOf]] uses them; either absent
+    // (pre-#2025 agents, NULL columns) ⇒ it falls back to the flush window, so
+    // the over-count defense degrades gracefully. See `traffic_reports`
+    // active_start / active_end (V62).
+    activeStart: Option[Instant] = None,
+    activeEnd: Option[Instant] = None,
 )
 
 /**
@@ -86,25 +95,48 @@ object Presence {
   }
 
   /**
-   * Each non-heartbeat `traffic_reports` row contributes its full `[period_start, period_end]`
-   * interval as evidence of activity (design §4.1) — NOT its sampled `activeSeconds`, which is the
-   * undercount driver. The trailing edge carries up to one report-interval of uncertainty until the
-   * `connection_events`-anchored timing lands (#1466).
+   * The wall-clock activity span a row contributes as evidence (design §4.1).
+   *
+   * #2025: when the row carries a self-describing activity envelope (`activeStart`/`activeEnd` —
+   * the first/last sample tick that saw byte growth), that envelope IS the span: a wide flush
+   * window with a 20 s activity burst contributes a 20 s span, not the whole window. This makes the
+   * #2016 over-count (a stalled flush ballooning `[period_start, period_end]` to cover an
+   * un-monitored gap) structurally impossible — the server no longer trusts the flush window
+   * blindly.
+   *
+   * Falling back to the full `[period_start, period_end]` interval when the envelope is absent
+   * (pre-#2025 agents, or NULL columns) preserves the prior behavior exactly — NOT the sampled
+   * `activeSeconds`, which is the undercount driver. The trailing edge then carries up to one
+   * report-interval of uncertainty until the `connection_events`-anchored timing lands (#1466).
    */
-  def spanOf(r: PresenceRow): Span = {
-    val start = r.periodStart.getEpochSecond
-    Span(start, start + r.periodSeconds.toLong.max(0L))
-  }
+  def spanOf(r: PresenceRow): Span =
+    (r.activeStart, r.activeEnd) match {
+      case (Some(s), Some(e)) =>
+        val start = s.getEpochSecond
+        Span(start, e.getEpochSecond.max(start))
+      case _                  =>
+        val start = r.periodStart.getEpochSecond
+        Span(start, start + r.periodSeconds.toLong.max(0L))
+    }
 
   /**
    * The idle gap actually used: the configured `N`, raised to the `2 × R` collapse guard (design
-   * §4.4 invariant 1). `R` is read from the data (`period_seconds`), never assumed to be 60 s. When
-   * `N < R` contiguous reporting windows stop merging and presence collapses to ~0 (§2d (ii));
-   * clamping up to `2 × R` keeps a misconfigured / coarse-reporting fleet from silently zeroing
-   * out.
+   * §4.4 invariant 1). `R` is the resolution of the EVIDENCE — the widest span a row contributes
+   * via [[spanOf]] — never assumed to be 60 s. When `N < R` contiguous reporting windows stop
+   * merging and presence collapses to ~0 (§2d (ii)); clamping up to `2 × R` keeps a misconfigured /
+   * coarse-reporting fleet from silently zeroing out.
+   *
+   * #2025: `R` is taken from `spanOf` (the activity envelope when present, else the flush window),
+   * NOT from `period_seconds` directly. This is the load-bearing half of the over-count defense:
+   * with a wide flush window and a tight activity envelope, deriving `R` from `period_seconds`
+   * would clamp the gap up to `2 × period_seconds` and BRIDGE the idle gaps between bursts —
+   * re-chaining exactly the inflation [[spanOf]] removed. Reading `R` from the (now tight) evidence
+   * span keeps the gap at the configured `N`, so genuinely idle stretches between bursts split into
+   * separate sessions. For old agents / NULL envelopes `spanOf` returns the flush window, so `R`
+   * equals `period_seconds` and the prior behavior is preserved exactly.
    */
   def effectiveGap(rows: Iterable[PresenceRow], continuationSeconds: Int): Long = {
-    val r = rows.iterator.map(_.periodSeconds.toLong).maxOption.getOrElse(0L)
+    val r = rows.iterator.map(row => spanOf(row).seconds).maxOption.getOrElse(0L)
     continuationSeconds.toLong.max(2L * r)
   }
 

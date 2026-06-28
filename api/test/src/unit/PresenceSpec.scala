@@ -103,6 +103,32 @@ object PresenceSpec extends ZIOSpecDefault {
       periodSeconds,
     )
 
+  /**
+   * #2025: a row whose FLUSH window `[period_start, period_start+periodSeconds]` is wide (a stalled
+   * flush) but whose REAL activity envelope `[activeStart, activeEnd]` is tight. `spanOf` must
+   * credit the tight envelope, not the wide window — the structural #2016 over-count defense.
+   */
+  private def windowedRow(
+      mac: MacAddress,
+      periodStartSec: Long,
+      host: String,
+      periodSeconds: Int,
+      activeStartSec: Long,
+      activeEndSec: Long,
+      bytes: Long = 1_000_000L,
+  ) =
+    PresenceRow(
+      mac,
+      baseDate,
+      base.plusSeconds(periodStartSec),
+      HostId.Fqdn(Hostname.unsafe(host)),
+      activeSeconds = math.min((activeEndSec - activeStartSec).toInt, periodSeconds),
+      bytes,
+      periodSeconds,
+      activeStart = Some(base.plusSeconds(activeStartSec)),
+      activeEnd = Some(base.plusSeconds(activeEndSec)),
+    )
+
   def spec = suite("Presence")(
     suite("totalMinutesByMac")(
       test("collapses multiple hostnames in the same bucket to one count") {
@@ -1409,6 +1435,66 @@ object PresenceSpec extends ZIOSpecDefault {
         val (spans, _) = Presence.appSpansForProfileWithDropCount(rows, List(group))
         val aliasSpans = Presence.appSpansForProfile(rows, List(group))
         assertTrue(spans == aliasSpans)
+      },
+    ),
+    suite("#2025 self-describing activity window")(
+      test("spanOf uses the activity envelope when present (tight burst in a wide window)") {
+        // 517s flush window (the prod #2016 stall), 20s real activity burst.
+        val r = windowedRow(
+          mac1,
+          0L,
+          "www.gimkit.com",
+          periodSeconds = 517,
+          activeStartSec = 100L,
+          activeEndSec = 120L,
+        )
+        assertTrue(Presence.spanOf(r).seconds == 20L)
+      },
+      test("spanOf falls back to the flush window when the envelope is absent (old agent)") {
+        val r = row(mac1, 0, "www.gimkit.com", periodSeconds = 517)
+        assertTrue(Presence.spanOf(r).seconds == 517L)
+      },
+      test("spanOf clamps a backwards envelope (activeEnd < activeStart) to zero, never negative") {
+        val r = windowedRow(
+          mac1,
+          0L,
+          "a.com",
+          periodSeconds = 300,
+          activeStartSec = 200L,
+          activeEndSec = 100L,
+        )
+        assertTrue(Presence.spanOf(r).seconds == 0L)
+      },
+      test("a half-present envelope (only activeStart) falls back to the flush window") {
+        val r = row(mac1, 0, "a.com", periodSeconds = 300)
+          .copy(activeStart = Some(base.plusSeconds(10L)), activeEnd = None)
+        assertTrue(Presence.spanOf(r).seconds == 300L)
+      },
+      test("STALL FIXTURE: wide windows with tight envelopes give bounded usedMinutes") {
+        // Mirror the prod #2016 stall shape: 5 consecutive ~500s flush windows (the conntrack-
+        // gated loop stalling on a quiet LAN, sibling #2024), each carrying only ~20s of real
+        // activity. The OLD model (full flush window) chains these into 40+ min; the envelope
+        // model credits only the real activity. Assert the envelope path is bounded well under
+        // the flush-window path — the over-count is structurally impossible.
+        val windowed    = (0 until 5).toList.map { i =>
+          val ps = i.toLong * 500L
+          windowedRow(
+            mac1,
+            ps,
+            "www.gimkit.com",
+            periodSeconds = 500,
+            activeStartSec = ps,
+            activeEndSec = ps + 20L,
+          )
+        }
+        val flushOnly   = windowed.map(_.copy(activeStart = None, activeEnd = None))
+        val boundedMins = Presence.totalMinutesByMac(windowed, Nil).getOrElse(mac1, 0)
+        val balloonMins = Presence.totalMinutesByMac(flushOnly, Nil).getOrElse(mac1, 0)
+        assertTrue(
+          boundedMins <= 2,         // ~100s of real activity → <2 min
+          balloonMins >= 30,        // the un-defended flush-window over-count
+          boundedMins < balloonMins,// the envelope path is strictly tighter
+        )
       },
     ),
   )

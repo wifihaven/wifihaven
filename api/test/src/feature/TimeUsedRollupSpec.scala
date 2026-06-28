@@ -76,6 +76,41 @@ object TimeUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
       tr.insertBatch(inserts).unit
     }
 
+  // #2025: seed `count` consecutive WIDE flush windows of `periodSec` each (the conntrack-stall
+  // shape, #2024) on one device/host, where each carries only `activeSec` of REAL activity at its
+  // leading edge via the self-describing active_start/active_end columns. Starts at midnight UTC.
+  private def seedStallTraffic(
+      routerId: RouterId,
+      mac: String,
+      hostname: String,
+      date: LocalDate,
+      count: Int,
+      periodSec: Int,
+      activeSec: Int,
+  ): ZIO[TrafficReportRepo, Throwable, Unit] =
+    ZIO.serviceWithZIO[TrafficReportRepo] { tr =>
+      val day0    = date.atStartOfDay(ZoneOffset.UTC).toInstant
+      val inserts = (0 until count).map { i =>
+        val start = day0.plusSeconds(i.toLong * periodSec.toLong)
+        TrafficReportInsert(
+          routerId,
+          MacAddress.unsafe(mac),
+          None,
+          HostId.Fqdn(Hostname.unsafe(hostname)),
+          date,
+          start,
+          start.plusSeconds(periodSec.toLong),
+          math.min(activeSec, periodSec),
+          500_000L,
+          500_000L,
+          None,
+          Some(start),
+          Some(start.plusSeconds(activeSec.toLong)),
+        )
+      }.toList
+      tr.insertBatch(inserts).unit
+    }
+
   private def setTz(hsr: HouseholdSettingsRepo, tz: String): Task[HouseholdSettings] =
     for {
       cur <- hsr.get
@@ -271,6 +306,40 @@ object TimeUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         _   <- setTz(hsr, "America/Denver")
         post <- ru.getDayMap(today)
       } yield assertTrue(pre.contains(kid)) && assertTrue(!post.contains(kid))
+    },
+    test(
+      "#2025 stall shape: rollup tick == live AND usedMinutes bounded by the activity envelope",
+    ) {
+      // The prod #2016 shape through the REAL rollup path: 5 contiguous 500 s flush windows (the
+      // conntrack stall, #2024) each carrying only 20 s of real activity. The self-describing
+      // active_start/active_end bound the credit to the ~100 s envelope (<2 min), where the
+      // un-defended flush window would have chained to ~41 min. Crucially the rollup tick + read
+      // must still equal the all-live computation — a refactor that re-inflates one path but not
+      // the other fails here.
+      for {
+        _   <- cleanDb
+        hsr <- ZIO.service[HouseholdSettingsRepo]
+        pr  <- ZIO.service[ProfileRepo]
+        dr  <- ZIO.service[DeviceRepo]
+        ru  <- ZIO.service[TimeUsedRollupRepo]
+        aru <- ZIO.service[AppUsedRollupRepo]
+        trr <- ZIO.service[TrafficReportRepo]
+        stl <- ZIO.service[AppTimeLimitRepo]
+        s   <- setTz(hsr, "UTC")
+        kid <- TestLayers.seedKidsProfile(pr)
+        _   <- TestLayers.seedDevice(dr, "aa:bb:cc:dd:ee:60", "kid-a", kid)
+        rid <- seedRouterRow
+        today = LocalDate.of(2025, 1, 6)
+        _ <- seedStallTraffic(rid, "aa:bb:cc:dd:ee:60", "gimkit.com", today, 5, 500, 20)
+        now = LocalDateTime.of(2025, 1, 6, 12, 0).toInstant(ZoneOffset.UTC)
+        svc    <- makeService
+        live   <- svc.dayStateAllLive(now, today, s)
+        _      <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, stl, trr, hsr, now)
+        cached <- svc.dayStateAll(now, today, s)
+      } yield assertTrue(
+        cached(kid).usedMinutes == live(kid).usedMinutes, // rollup ⇄ live equivalence
+        live(kid).usedMinutes <= 2,                       // bounded by the activity envelope
+      )
     },
   ) @@ TestAspect.sequential
 }

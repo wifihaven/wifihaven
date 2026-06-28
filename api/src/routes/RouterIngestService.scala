@@ -211,6 +211,12 @@ final class RouterIngestService(
           r.bytesIn,
           r.bytesOut,
           r.destIp,
+          // #2025: persist the real activity envelope when the agent supplied it
+          // (and it parses). A malformed timestamp is dropped to None rather
+          // than failing the batch — Presence.spanOf then falls back to the
+          // [period_start, period_end] flush window for that row.
+          parseInstantOpt(r.activeStart),
+          parseInstantOpt(r.activeEnd),
         ),
       )
       // Idempotency: ON CONFLICT DO NOTHING returns the count of NEW rows.
@@ -265,6 +271,12 @@ final class RouterIngestService(
             bytesIn = a.bytesIn + b.bytesIn,
             bytesOut = a.bytesOut + b.bytesOut,
             destIp = a.destIp.orElse(b.destIp),
+            // #2025: union the two records' activity envelopes — earliest start,
+            // latest end. The wire timestamps are fixed-width RFC3339 UTC ("…Z"),
+            // so lexical min/max is chronological (same property the agent's
+            // retry queue relies on for periodEnd ordering).
+            activeStart = minIso(a.activeStart, b.activeStart),
+            activeEnd = maxIso(a.activeEnd, b.activeEnd),
           )
         }
       }
@@ -493,6 +505,30 @@ object RouterIngestService {
   // #1570: a bad timestamp is a typed BadRequest (400) mapped centrally; the boundary logs it.
   private def parseInstant(s: String): IO[ApiError, Instant] =
     ZIO.attempt(Instant.parse(s)).orElseFail(ApiError.BadRequest(s"invalid timestamp: $s"))
+
+  // #2025: best-effort parse of an OPTIONAL activity-envelope timestamp. Unlike
+  // the envelope timestamps above, a malformed/absent value here is NOT a 400 —
+  // it degrades to None so the row simply falls back to its flush window in
+  // Presence.spanOf. The additive wire field must never harden an old/odd agent
+  // into a rejected batch.
+  private def parseInstantOpt(s: Option[String]): Option[Instant] =
+    s.flatMap(v => scala.util.Try(Instant.parse(v)).toOption)
+
+  // #2025: lexical min/max over optional RFC3339 UTC ("…Z") timestamps — used to
+  // union two collapsed records' activity envelopes (earliest start, latest end)
+  // before insert. Fixed-width "…Z" makes lexical order chronological. `None`
+  // is absorbing-free: a present value always wins over an absent one.
+  private def minIso(a: Option[String], b: Option[String]): Option[String] =
+    (a, b) match {
+      case (Some(x), Some(y)) => Some(if (x <= y) x else y)
+      case _                  => a.orElse(b)
+    }
+
+  private def maxIso(a: Option[String], b: Option[String]): Option[String] =
+    (a, b) match {
+      case (Some(x), Some(y)) => Some(if (x >= y) x else y)
+      case _                  => a.orElse(b)
+    }
 
   /**
    * #1569 / #1757: shared per-record skip helper used by both the `usage` (records → UsageRecord)

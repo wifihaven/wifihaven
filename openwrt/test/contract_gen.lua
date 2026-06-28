@@ -220,7 +220,10 @@ end
 -- a leases table so the first record carries `ip` and the second omits it.
 
 local USAGE_FIELD_ORDER = {
-  "mac", "ip", "host", "activeSeconds", "bytesIn", "bytesOut",
+  "mac", "ip", "host", "activeSeconds", "bytesIn", "bytesOut", "destIp",
+  -- #2025: additive activity-envelope fields (present on the first record,
+  -- omitted on the second to document the optional/backward-compat shape).
+  "activeStart", "activeEnd",
 }
 
 local function build_usage_report()
@@ -239,11 +242,21 @@ local function build_usage_report()
   local leases = { ["aa:bb:cc:11:22:33"] = "192.168.10.50" }
   -- usage.lua: active_seconds = sample_seconds (10) × samples, capped at bucket_seconds.
   -- Pick 24 → 240s for the first record; pin the second to 60s with 6 samples.
+  -- #2025: the first record carries a real activity envelope (first/last growth
+  -- tick wall-clock, within the [13:55, 14:00] period); the second omits it so
+  -- the golden documents both the populated and the backward-compat shapes.
+  -- 1779026160 = 2026-05-17T13:56:00Z, 1779026360 = 2026-05-17T13:59:20Z.
   local tracker = {
-    last = {},
+    last           = {},
     active_samples = {
       ["aa:bb:cc:11:22:33|151.101.65.69"] = 24,
       ["76:2d:95:47:d1:8e|192.168.10.99"] = 6,
+    },
+    first_active   = {
+      ["aa:bb:cc:11:22:33|151.101.65.69"] = 1779026160,
+    },
+    last_active    = {
+      ["aa:bb:cc:11:22:33|151.101.65.69"] = 1779026360,
     },
   }
   local report = usage.build_report(

@@ -331,6 +331,27 @@ presence and event-anchoring would zero it out. The `N ≥ 2 × R` guard (§4.4
 invariant 1) supplies the rate-independence the model needs without per-request
 timestamps.
 
+**Self-describing buckets (#2025, #2016 server-robustness).** The
+`[period_start, period_end]` interval above is the *flush* window — "time since
+the agent last flushed", not "time the device was active". When a flush stalls
+(the conntrack-gated agent loop on a quiet LAN, [#2024](https://github.com/wifihaven/wifihaven/issues/2024)),
+that window balloons to cover the un-monitored gap and the model credits the
+whole thing — the [#2016](https://github.com/wifihaven/wifihaven/issues/2016)
+over-count (a ~20 s burst in a 517 s window read as ~8.6 min). The fix makes the
+bucket *self-describing*: the agent emits the real activity envelope
+`activeStart`/`activeEnd` (the wall-clock of the first and last sample tick that
+saw byte growth) as additive, optional wire fields, persisted on
+`traffic_reports.active_start`/`active_end` (V62). `Presence.spanOf` then uses
+`[activeStart, activeEnd]` when present — a wide flush window with a tight burst
+contributes the burst, not the window — falling back to
+`[period_start, period_end]` only when the envelope is absent (pre-#2025 agents),
+so old agents behave exactly as before. Crucially `effectiveGap` derives `R` from
+`spanOf` too, not from `period_seconds`: otherwise the `2 × R` clamp would raise
+the idle gap to `2 × period_seconds` and *bridge* the idle stretches between
+bursts, re-chaining the very inflation `spanOf` removed. With both halves, the
+over-count is structurally impossible regardless of flush cadence. (This, with
+the agent-side stall fix #2024, supersedes the #2022 window clamp.)
+
 Both outputs come from the same sessions and follow the same two-level rule:
 **within a device, always union; across devices, apply the profile's existing
 `crossDeviceOverlapMode`** (`Sum` default — double-count; `Dedup` — union, #751).

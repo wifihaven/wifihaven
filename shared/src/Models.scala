@@ -1431,6 +1431,15 @@ case class UsageRecord(
     // backward-compat with pre-#730 agents that do not emit the field; the
     // API stores NULL on traffic_reports.dest_ip when absent.
     destIp: Option[IpAddress] = None,
+    // #2025: the REAL activity envelope of this bucket — the wall-clock (RFC3339,
+    // UTC, same format as periodStart/periodEnd) of the first and last sample
+    // tick the agent observed byte growth on for this (mac, dst_ip), distinct
+    // from the [periodStart, periodEnd] FLUSH window the envelope sits inside.
+    // Additive + optional: pre-#2025 agents omit them and the API stores NULL on
+    // traffic_reports.active_start / active_end, with the server falling back to
+    // the flush window in Presence.spanOf. Both must be present to be used.
+    activeStart: Option[String] = None,
+    activeEnd: Option[String] = None,
 ) derives JsonCodec
 
 case class UsageReport(

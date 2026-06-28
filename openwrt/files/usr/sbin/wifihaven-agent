@@ -1304,7 +1304,10 @@ conntrack.watch({
       ts.last_activity_sample = mono
       local counters = read_nft_counters()
       if counters then
-        usage.tracker_sample(activity_tracker, counters)
+        -- #2025: pass wall-clock so the tracker records the real activity
+        -- envelope (first/last growth tick) build_report emits as
+        -- activeStart/activeEnd.
+        usage.tracker_sample(activity_tracker, counters, wall)
       end
     end
 
@@ -1344,7 +1347,9 @@ conntrack.watch({
       if counters then
         -- Final sample at flush so set elements that appeared after the
         -- last activity_sample_int tick still get an active sample counted.
-        usage.tracker_sample(activity_tracker, counters)
+        -- #2025: thread wall-clock so this final tick extends the activity
+        -- envelope build_report emits.
+        usage.tracker_sample(activity_tracker, counters, wall)
         ts.last_activity_sample = mono
         local report = usage.build_report(
           counters, nft_sets, period_start, period_end, router_id,
