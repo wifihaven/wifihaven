@@ -38,7 +38,18 @@ define Package/wifihaven
   # HKDF-derived from the destination connection ID + v1 salt; the payload is
   # AEAD-encrypted with AES-128-GCM and the header bits are protected with an
   # AES-128-ECB mask. ~464 KiB installed — additive, attribution-only.
-  DEPENDS:=+lua +libuci-lua +luci-lib-jsonc +conntrack +curl +uhttpd-mod-lua +kmod-nf-log +kmod-nf-log6 +kmod-nf-conntrack6 +libustream-mbedtls +openssl-util +tcpdump-mini +lua-openssl
+  # #2036: cqueues + luaossl are the wifihaven-ws sidecar's runtime deps.
+  # Shipping them in DEPENDS makes enabling ws a pure
+  # `uci set wifihaven.ws.enabled=1` + restart with no manual `apk add` — the
+  # prod-cutover gate for #1023. Marginal cost is ~0.5 MB (cqueues 328 KiB +
+  # luaossl 205 KiB) and ZERO new transitive packages: their dep closure
+  # (libc/liblua5.1.5/libopenssl3) is already pulled by +lua / +lua-openssl /
+  # +openssl-util. luaossl (daurnimator) provides the `openssl.ssl.context`
+  # submodule API the sidecar needs; it is DISTINCT from lua-openssl (zhaozg,
+  # monolithic `openssl.so`) above — both are required, and the #1949
+  # coexistence (quic.resolve_openssl() force-loads lua-openssl's .so even
+  # though luaossl shadows the bare require("openssl")) still holds.
+  DEPENDS:=+lua +libuci-lua +luci-lib-jsonc +conntrack +curl +uhttpd-mod-lua +kmod-nf-log +kmod-nf-log6 +kmod-nf-conntrack6 +libustream-mbedtls +openssl-util +tcpdump-mini +lua-openssl +cqueues +luaossl
   PKGARCH:=all
 endef
 
@@ -61,10 +72,10 @@ define Package/wifihaven/install
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/usr/sbin/wifihaven-nflog-tail $(1)/usr/sbin/
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/usr/sbin/wifihaven-sni-tail $(1)/usr/sbin/
 	# #1848: websocket transport sidecar. Default-off (UCI wifihaven.ws.enabled);
-	# the init script only starts it when enabled. Needs cqueues + luaossl at
-	# runtime, which the operator installs when turning ws on (see
-	# docs/design/websocket-transport.md / the ws UCI section) — NOT a hard
-	# DEPENDS, so a default (ws-off) install stays lean.
+	# the init script only starts it when enabled. Its runtime deps cqueues +
+	# luaossl are shipped as hard DEPENDS (#2036), so enabling ws is purely
+	# `uci set wifihaven.ws.enabled=1` + restart with no manual `apk add` (see
+	# docs/design/websocket-transport.md / the ws UCI section).
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/usr/sbin/wifihaven-ws $(1)/usr/sbin/
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/usr/sbin/wifihaven-update $(1)/usr/sbin/
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/usr/sbin/wifihaven-rotate-dnsmasq-log $(1)/usr/sbin/
