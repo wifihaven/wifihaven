@@ -616,6 +616,63 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "title": "Policy poll suppressed while ws healthy (#2037)",
+      "description": "sum by (reason) (rate(policy_poll_skipped_total[5m])) — the agent-side dormancy gate (design §3.1). When ws is enabled AND its health sentinel is fresh (within ws_fallback_after), the agent's 5 s HTTP GET /api/router/policy poll goes dormant (reason=ws_healthy) — the push channel is the live transport, so the server stops recomputing the snapshot per poll (#1512). This is the agent-side complement of the 'Policy snapshot builds: computed vs cache_hit' panel above: a climbing skip rate on ws routers alongside a flat snapshot_poll_total is the load win of enabling ws being realized. A skip rate that drops to 0 while ws_state stays 1 means the dormancy gate regressed (poll running despite a healthy link).",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 40
+      },
+      "id": 11,
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "cps",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (reason) (rate(policy_poll_skipped_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{reason}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",

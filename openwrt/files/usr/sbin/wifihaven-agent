@@ -490,6 +490,25 @@ local usage_events_post = ws_outbound.make({
   fallback_after = ws_fallback_after,
 })
 
+-- #2037: ws-health gate for the policy-poll dormancy. While the ws sidecar is
+-- enabled AND its health sentinel is fresh (within ws_fallback_after), the
+-- persistent push link is the live policy transport, so the 5 s HTTP policy
+-- poll goes DORMANT (the apply-on-push tick keeps enforcement current from
+-- server pushes, and the server touches routers.last_seen_at on every ws
+-- heartbeat frame — RouterWsRoutes.touch — so liveness never staled). The poll
+-- RESUMES — today's behaviour, including the #331/#422 failover render on a
+-- failed poll — when ws is disabled OR the sentinel is stale/absent past
+-- ws_fallback_after. Reuses the SAME freshness predicate as the outbound tee
+-- (ws_outbound.is_healthy) so the two gates cannot drift (design §3.1).
+local function ws_link_healthy()
+  return ws_outbound.is_healthy({
+    enabled        = (ws_enabled == "1"),
+    health_read    = ws_health_read,
+    now            = os.time,
+    fallback_after = ws_fallback_after,
+  })
+end
+
 local function http_get(url, headers)
   local hdr_args = ""
   for k, v in pairs(headers or {}) do
@@ -1047,6 +1066,15 @@ conntrack.watch({
     -- Policy timer
     if (mono - ts.last_policy_run) >= policy_int then
       ts.last_policy_run = mono
+      if ws_link_healthy() then
+        -- #2037: ws is the live policy transport — skip the HTTP poll (dormant).
+        -- Advancing ts.last_policy_run above keeps the cadence anchor moving so
+        -- we re-check once per policy_int; the ws apply-on-push tick below keeps
+        -- enforcement current. The moment the sentinel goes stale past
+        -- ws_fallback_after this gate flips and the poll (and its failover
+        -- render path) resumes on the next tick.
+        metrics.inc_counter(mreg, "policy_poll_skipped_total", { reason = "ws_healthy" })
+      else
       local pt0 = clock.monotonic_seconds()
       local snap, etag = policy.fetch(api_url, router_token, ts.current_etag, http_get, log, policy_opts)
       metrics.observe(mreg, "snapshot_poll_duration_seconds", {},
@@ -1141,6 +1169,7 @@ conntrack.watch({
         end
         ts.in_failover_render = new_in_failover
       end
+      end  -- #2037: close the `else` (ws link not healthy → poll ran)
     end
 
     -- ws apply-on-push timer (#1945). When the ws sidecar is enabled it writes

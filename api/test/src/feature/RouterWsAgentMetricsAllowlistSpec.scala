@@ -39,6 +39,12 @@ object RouterWsAgentMetricsAllowlistSpec extends ZIOSpecDefault {
       hasEntry("ws_frames_sent_total", Set("op")) &&
       hasEntry("ws_frames_recv_total", Set("op"))
     },
+    // #2037 — policy-poll dormancy. The agent emits this once per HTTP poll it
+    // suppressed because the ws link was healthy; the firewall must permit the
+    // name + its bounded `reason` enum, else the whole push is rejected.
+    test("policy_poll_skipped_total carries reason (the dormancy gate enum)") {
+      hasEntry("policy_poll_skipped_total", Set("reason"))
+    },
     test("a forbidden per-mac label on a ws series is rejected") {
       val rejected = Metric.counter("metrics_rejected_total").tagged("reason", "forbidden_label")
       for {

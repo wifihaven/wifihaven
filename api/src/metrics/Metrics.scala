@@ -177,6 +177,15 @@ object MetricGuard {
     "policy_apply_duration_seconds"             -> Set("router_id", "installation_id"),
     "snapshot_poll_total"                       -> Set("result", "router_id", "installation_id"),
     "snapshot_poll_duration_seconds"            -> Set("router_id", "installation_id"),
+    // #2037 — policy-poll dormancy. When the ws transport is enabled AND its
+    // health sentinel is fresh (within ws_fallback_after), the agent's 5 s HTTP
+    // `GET /api/router/policy` poll goes dormant — the push channel is the live
+    // transport, so the snapshot is no longer recomputed per poll (#1512). This
+    // counter increments once per suppressed poll so the server-side load win of
+    // enabling ws is directly visible (a climbing rate on a ws router with a flat
+    // snapshot_poll_total is the dormancy working). `reason` is a fixed 1-value
+    // enum today (`ws_healthy`) — bounded, no per-mac/host dimension.
+    "policy_poll_skipped_total"                 -> Set("reason", "router_id", "installation_id"),
     "agent_uptime_seconds"                      -> Set("router_id", "installation_id"),
     "agent_version"                             -> Set("version", "router_id", "installation_id"),
     "dns_queries_total"                         -> Set("result", "router_id", "installation_id"),
