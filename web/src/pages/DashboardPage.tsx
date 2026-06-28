@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '@/api/client'
 import { useDashboardNow, useRecentBlocked } from '@/api/queries'
@@ -162,6 +162,38 @@ function formatRelativeTime(tsIso: string): string {
 // (it keeps the previous `data` reference when a refetch errors), so the
 // imperative setInterval / try-catch from before is gone.
 
+// #1835 — top-N device cap. Cards show only the 3 most active devices by default,
+// the rest behind an in-place expander, so a card full of chatty IoT devices no
+// longer dominates the page (the prod `Family` card listed ~11). Device count
+// before the card switches to "show N more".
+const NOW_DEVICE_CAP = 3
+
+// #1835 — a device's rank inside its card is its summed top-hosts active-seconds
+// over the NOW window, NOT recency (design §7 Q6): recency would float a Sonos
+// heartbeat above an actively-streaming MacBook.
+function deviceActiveSeconds(d: DashboardNowDevice): number {
+  return d.topHosts.reduce((sum, h) => sum + h.activeSeconds, 0)
+}
+
+// #1835 — per-session UI toggle (top-N expander, idle collapse) backed by
+// sessionStorage, so it survives SPA navigation within the tab session but resets
+// when the tab/session ends (unlike localStorage, which would persist forever).
+function useSessionToggle(key: string, initial = false): [boolean, (v: boolean) => void] {
+  const [on, setOn] = useState<boolean>(() => {
+    try {
+      const raw = sessionStorage.getItem(key)
+      return raw === null ? initial : raw === '1'
+    } catch {
+      return initial
+    }
+  })
+  const set = useCallback((v: boolean) => {
+    setOn(v)
+    try { sessionStorage.setItem(key, v ? '1' : '0') } catch { /* storage unavailable */ }
+  }, [key])
+  return [on, set]
+}
+
 export function NowSection() {
   // #1973: `now` is pushed whole (§3.1) — replace the dashboard-now cache live. Derived
   // "Online now" KPI recomputes client-side off the pushed body. Polling stays the paused
@@ -169,8 +201,14 @@ export function NowSection() {
   // role whose `now` subscription is server-rejected keeps polling rather than freezing.
   const streaming = useWsTopicLive('now')
   useWsNow()
-  const { data = null } = useDashboardNow({ refetchInterval: streaming ? false : 10_000 })
+  const { data = null, dataUpdatedAt } = useDashboardNow({ refetchInterval: streaming ? false : 10_000 })
   const kpis = deriveNowKpis(data)
+
+  // #1835: split active from idle. A profile is idle when it has zero active
+  // devices (the snapshot's activeDevices is already the last-5-min set, §7 Q4);
+  // paused-and-idle profiles fall here too. Active order is preserved as-is.
+  const active = data?.profiles.filter(p => p.activeDevices.length > 0) ?? []
+  const idle = data?.profiles.filter(p => p.activeDevices.length === 0) ?? []
 
   return (
     <section data-testid="now-section" className="space-y-3">
@@ -180,6 +218,7 @@ export function NowSection() {
           <span data-testid="now-kpi-online" className="text-xs text-brand-text-muted">
             Online now: <span className="font-semibold text-brand-ink tabular-nums">{kpis.onlineNow}</span>
           </span>
+          {data !== null && <FreshnessPill updatedAt={dataUpdatedAt} />}
           <LiveBadge />
         </div>
       </div>
@@ -188,21 +227,40 @@ export function NowSection() {
         : data.profiles.length === 0
           ? <EmptyState variant="inline" title="No profiles configured yet." />
           : (
-            <div className="grid md:grid-cols-2 gap-4">
-              {data.profiles.map(p => <NowProfileCard key={p.id} profile={p} />)}
-            </div>
+            <>
+              {active.length > 0 && (
+                <div className="grid md:grid-cols-2 gap-4">
+                  {active.map(p => <NowProfileCard key={p.id} profile={p} />)}
+                </div>
+              )}
+              {idle.length > 0 && <IdleCollapseRow profiles={idle} />}
+            </>
           )
       }
     </section>
   )
 }
 
-function NowProfileCard({ profile }: { profile: DashboardNowProfile }) {
+// #1835 (#825): single freshness indicator for the whole NOW section, sourced from
+// TanStack Query's `dataUpdatedAt` (the last successful fetch/push), NOT a
+// per-component self-timer. Elapsed is recomputed at render; the section re-renders
+// on every poll/ws push (≤10s), so the label stays current without its own timer.
+function FreshnessPill({ updatedAt }: { updatedAt: number }) {
+  const elapsed = Math.max(0, (Date.now() - updatedAt) / 1000)
+  return (
+    <span data-testid="now-freshness" className="text-xs text-brand-text-muted tabular-nums">
+      updated {formatLastSeen(elapsed)}
+    </span>
+  )
+}
+
+function NowProfileCard({ profile, dimmed = false }: { profile: DashboardNowProfile; dimmed?: boolean }) {
   const idle = profile.activeDevices.length === 0
+  const muted = dimmed || idle
   return (
     <div
       data-testid={`now-profile-${profile.id}`}
-      className={`bg-white rounded-2xl border p-5 ${idle ? 'border-brand-border opacity-60' : 'border-brand-accent-dark/50'}`}
+      className={`bg-white rounded-2xl border p-5 ${muted ? 'border-brand-border opacity-60' : 'border-brand-accent-dark/50'}`}
     >
       <div className="flex items-center gap-2 mb-3">
         <h3 className="text-base font-semibold text-brand-ink">{profile.name}</h3>
@@ -214,22 +272,73 @@ function NowProfileCard({ profile }: { profile: DashboardNowProfile }) {
       </div>
       {idle
         ? <EmptyState variant="inline" title="No activity in the last 5 minutes" />
-        : (
-          <div className="space-y-3">
-            {profile.activeDevices.map(d => <NowDeviceRow key={d.mac} device={d} />)}
-          </div>
-        )
+        : <NowDeviceList profile={profile} />
       }
     </div>
   )
 }
 
+// #1835 (#819): rank by active-seconds, cap at top-3, expander for the rest.
+function NowDeviceList({ profile }: { profile: DashboardNowProfile }) {
+  const [expanded, setExpanded] = useSessionToggle(`wh.now.card.${profile.id}`)
+  const ranked = [...profile.activeDevices].sort(
+    (a, b) => deviceActiveSeconds(b) - deviceActiveSeconds(a),
+  )
+  const overflow = ranked.length - NOW_DEVICE_CAP
+  const shown = expanded ? ranked : ranked.slice(0, NOW_DEVICE_CAP)
+  return (
+    <div className="space-y-3">
+      {shown.map(d => <NowDeviceRow key={d.mac} device={d} />)}
+      {overflow > 0 && (
+        <button
+          type="button"
+          onClick={() => setExpanded(!expanded)}
+          className="text-xs text-brand-accent-dark hover:underline"
+        >
+          {expanded ? 'show fewer' : `show ${overflow} more`}
+        </button>
+      )}
+    </div>
+  )
+}
+
+// #1835 (#820): collapse all zero-active profiles into one line below the active
+// grid, expandable in place to the full dimmed cards (paused tags preserved).
+function IdleCollapseRow({ profiles }: { profiles: DashboardNowProfile[] }) {
+  const [expanded, setExpanded] = useSessionToggle('wh.now.idle')
+  return (
+    <div data-testid="now-idle-collapse">
+      <button
+        type="button"
+        onClick={() => setExpanded(!expanded)}
+        aria-expanded={expanded}
+        className="text-sm text-brand-text-muted hover:text-brand-text w-full text-left"
+      >
+        <span className="font-medium text-brand-text">Idle ({profiles.length}):</span>{' '}
+        <span className="truncate">{profiles.map(p => p.name).join(' · ')}</span>{' '}
+        <span aria-hidden>{expanded ? '▾' : '▸'}</span>
+      </button>
+      {expanded && (
+        <div className="grid md:grid-cols-2 gap-4 mt-3">
+          {profiles.map(p => <NowProfileCard key={p.id} profile={p} dimmed />)}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function NowDeviceRow({ device }: { device: DashboardNowDevice }) {
+  // #1835 (#825): no per-row timestamp — the section's single freshness pill
+  // covers freshness. The exception: a row materially staler than the snapshot
+  // (lastSeenSeconds is measured against the snapshot's asOf) still flags inline.
+  const stale = device.lastSeenSeconds > 60
   return (
     <div data-testid={`now-device-${device.mac}`} className="border-t border-brand-border first:border-0 pt-3 first:pt-0">
       <div className="flex items-baseline justify-between gap-2">
         <p className="text-sm font-medium text-brand-ink truncate">{device.name}</p>
-        <p className="text-xs text-brand-text-muted shrink-0">{formatLastSeen(device.lastSeenSeconds)}</p>
+        {stale && (
+          <p className="text-xs text-brand-text-muted shrink-0">{formatLastSeen(device.lastSeenSeconds)}</p>
+        )}
       </div>
       <NowActivityLine device={device} />
       {device.topHosts.length > 0 && (
