@@ -16,7 +16,8 @@ import java.time.{Instant, LocalDate, ZoneOffset}
 //
 // Pre-aggregated counterparts of traffic_reports, written by the scheduled
 // fibers in RollupJobs. Read by /api/usage/traffic when the requested window
-// is wider than what raw 5-min rows can serve in <200 ms (#813).
+// is wider than what raw per-report-period rows (the agent's
+// `usage_report_interval`, ~60s) can serve in <200 ms (#813).
 //
 // Hostnames in both tables are post-resolved — bare ipv4/ipv6 host_value rows
 // were promoted to their resolved fqdn at rollup-write time via the same
@@ -65,7 +66,7 @@ case class RollupRun(
 // `/api/usage/traffic`, which doesn't filter heartbeats — so the rollup sums
 // match what the endpoint would have computed from raw rows. If a future
 // change wants heartbeat filtering on `/api/usage/traffic`, the rollups
-// can't apply it post-hoc — the per-5-min `active_seconds/period_seconds`
+// can't apply it post-hoc — the per-report-period `active_seconds/period_seconds`
 // ratio is summed away. That work would need a parallel `heartbeat_seconds`
 // column in the rollups, written at reroll time with the current household
 // filter settings.

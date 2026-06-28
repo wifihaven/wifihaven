@@ -399,6 +399,44 @@ jobs:
         if: steps.label.outputs.skip != 'true'
         run: bash .github/scripts/check-migration-isolation.sh "${{ steps.base.outputs.sha }}"
 
+  # ── Usage period: forbid hardcoding the data-derived report period ───────
+  # The usage-report period is single-sourced at the agent (usage_report_interval)
+  # and rides each traffic_reports row as period_start/period_end. The API must
+  # never hold its own copy — #846 did (a hardcoded 5-min raw window) and it
+  # silently drifted off the real 60s cadence (#2018). This guard fails a PR that
+  # ADDS a hardcoded usage-period literal to the scoped usage/traffic + rollup
+  # paths. See docs/process/single-source-of-truth.md and #2020.
+  usage-period-hardcode:
+    name: Usage Period Hardcode Check
+    needs: changes
+    # Path-gated on Scala changes; the script narrows to specific usage/traffic
+    # files. PR + merge_group only (push is redundant post-merge).
+    if: |
+      needs.changes.outputs.scala == 'true'
+      && (github.event_name == 'pull_request' || github.event_name == 'merge_group')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      # Check out the REAL PR head (not the synthetic merge ref) so the
+      # three-dot `BASE...HEAD` diff resolves the true merge-base — same
+      # rationale as the migration jobs above.
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Resolve base SHA
+        id: base
+        run: |
+          case "${{ github.event_name }}" in
+            pull_request) echo "sha=${{ github.event.pull_request.base.sha }}" >> "$GITHUB_OUTPUT" ;;
+            merge_group)  echo "sha=${{ github.event.merge_group.base_sha }}"  >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Reject new hardcoded usage-period literals
+        run: bash .github/scripts/check-usage-period-hardcode.sh "${{ steps.base.outputs.sha }}"
+
   # ── Shell test discovery ─────────────────────────────────────────────────
   # Auto-discovers and runs every *.test.sh in the repo. Add a new test by
   # dropping a *.test.sh file alongside the script/hook it covers — no CI
@@ -765,6 +803,7 @@ jobs:
       - scala
       - migrations-immutable
       - migration-isolation
+      - usage-period-hardcode
       - shell-tests
       - lua-tests
       - contract-tests

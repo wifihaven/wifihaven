@@ -97,8 +97,9 @@ object DebugRoutes {
                 .snapshotAll(today)
                 .mapError(ApiError.Db(_))
               // Per-host minutes from `time_usage` over-count wall-clock time when a
-              // single 5-min agent bucket touches multiple hosts (each host row holds
-              // ~60s for that bucket, summing them inflates "online minutes"). Surface
+              // single usage-report-period bucket (the agent's `usage_report_interval`,
+              // ~60s) touches multiple hosts (each host row holds that period's active
+              // seconds, summing them inflates "online minutes"). Surface
               // the bucket-deduplicated per-mac total alongside each row so callers
               // measuring device-online time can read a single value instead of summing.
               // (#474)
@@ -109,7 +110,8 @@ object DebugRoutes {
               // Surface raw active-seconds (sum of max-per-bucket activeSeconds) as well as
               // the floor-divided minute count. The e2e D2 minute-granularity test (#516)
               // ceil-divides this to get tight bounds; bucket-counting via floor(/60) drifts
-              // when activity straddles 5-min agent buckets.
+              // when activity straddles usage-report-period buckets (the agent's
+              // `usage_report_interval`, ~60s).
               totalSecs = wifihaven.api.presence.Presence
                 .totalSecondsByMac(presence, exemptPatterns = Nil)
             } yield Response.json(

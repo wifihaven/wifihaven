@@ -51,3 +51,39 @@ hand-mirrored the whole snapshot fold),
 strings in three hand-written copies, fixing a live mislabel), and
 [#1546](https://github.com/wifihaven/wifihaven/issues/1546) (per-device totals
 recomputed off the canonical total, fixing a live over-count).
+
+### Worked example — the usage-report period lives at the agent, never in the API
+
+The usage-report **period** — how often a router posts a `traffic_reports`
+batch — is single-sourced at the agent:
+`openwrt/files/etc/config/wifihaven` → `usage_report_interval` (default
+**60s**, configurable; heading sub-minute as #1023 streams usage). The real
+per-report window then rides **every** stored row as
+`period_start`/`period_end`. **The API must never hold its own copy of that
+period.**
+
+It once did, and it drifted exactly as this rule predicts. The original agent
+default was `300` (5 min, #101); #529 changed it to 60s; then
+[#846](https://github.com/wifihaven/wifihaven/issues/846) hardcoded a
+**5-minute** `raw` window into the API
+(`UsageTraffic.floorTo(Raw) … % 300`, `stepOf(Raw) = ofMinutes(5)`) — five
+days **after** the agent had moved off 300s. A false comment ("source rows are
+at UTC 5-min boundaries already") cemented the wrong mental model. The API copy
+silently disagreed with the real cadence, and the dashboard `raw` bandwidth
+gauge read ~5× smoothed and divorced from `1m`
+([#2018](https://github.com/wifihaven/wifihaven/issues/2018)).
+
+The fix is the rule: derive the window from the row's real
+`[period_start, period_end)` span — one helper, `UsageTraffic.windowFor`,
+shared (COLLAPSE) by the `GET /api/usage/traffic` aggregate path and the
+websocket live-edge push so they cannot disagree; `stepOf(Raw)` returns `None`
+(raw has no fixed width) so callers *must* use the row span. A pinning test
+(TEST-PIN) seeds two different report periods (37s and 90s) and asserts the
+streamed/queried `raw` window equals each, failing the moment a fixed window is
+re-hardcoded. A narrow CI guard
+(`.github/scripts/check-usage-period-hardcode.sh`) rejects a newly-added
+`% 300` / `ofMinutes(5)` / bare `300` literal in the usage/traffic bucket +
+rollup paths, pointing back here
+([#2020](https://github.com/wifihaven/wifihaven/issues/2020)). Same shape as a
+display bucket (10m/1h/…) is a legitimate *display* constant — only the
+*source-period* must never be copied.

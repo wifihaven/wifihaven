@@ -1009,7 +1009,7 @@ object UsageRoutes {
       // #862/#809: the prior 31-day window cap is gone. The aggregated path
       // routes coarse buckets to traffic_hourly / traffic_daily (see
       // `tierForBucket` below) so a 90-day, 1d query reads ~50 daily rows per
-      // host instead of millions of 5-min rows. A fine bucket reads raw at any
+      // host instead of millions of per-report-period rows. A fine bucket reads raw at any
       // range, with keyset paging keeping its wide-window cost bounded by the
       // page cap.
       // #865: mac and profileId are comma-separated multi-value lists. A

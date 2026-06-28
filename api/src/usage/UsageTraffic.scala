@@ -51,16 +51,18 @@ case class RawTrafficCursorKey(ts: Instant, mac: String, host: String)
 
 /**
  * #846 — Traffic Usage page. Two views over `traffic_reports`:
- *   - Raw: one row per (period_start, mac, host) — the underlying 5-minute bucket as-stored.
- *   - Aggregated: rolled up into wider windows (10m / 1h / 12h / 1d / 1w) grouped by `domain` (the
- *     bucket's host as-is). Per-apex / per-app grouping is reserved for when PSL/apps tracks land —
- *     endpoint rejects them up-front with a typed message.
+ *   - Raw: one row per (period_start, mac, host) — one agent usage-report period as-stored. The
+ *     period span is whatever the agent's `usage_report_interval` is (~60s today; configurable, and
+ *     heading sub-minute via #1023). It is NOT a fixed 5-min bucket — the real `[periodStart,
+ *     periodEnd)` rides every row and is the single source of truth for the window (#2018/#2020).
+ *   - Aggregated: rolled up into wider *display* windows (10m / 1h / 12h / 1d / 1w) grouped by
+ *     `domain` (the bucket's host as-is). Per-apex / per-app grouping is reserved for when PSL/apps
+ *     tracks land — endpoint rejects them up-front with a typed message.
  *
- * Bucket selection comes from the SPA. `raw` is the storage-native 5m bucket. `1m` is reserved for
- * a future router-side cadence bump (#846 mentions); endpoint rejects with a typed message.
- * Rollup-table-backed paths (#809) are not yet wired — every bucket reads on-the-fly from
- * `traffic_reports`. The on-the-fly path has a window cap so wide ranges return 503 rather than
- * melting the DB.
+ * Bucket selection comes from the SPA. `raw` is the storage-native per-report-period view (the
+ * finest, most real-time). `1m` and coarser are synthetic *display* buckets. Rollup-table-backed
+ * paths (#809) are not yet wired — every bucket reads on-the-fly from `traffic_reports`. The
+ * on-the-fly path has a window cap so wide ranges return 503 rather than melting the DB.
  */
 object UsageTraffic {
 
@@ -121,13 +123,19 @@ object UsageTraffic {
   val maxOnTheFlyDuration: Duration = Duration.ofDays(31)
 
   /**
-   * Align an instant to the start of its bucket in the given zone. Sub-day buckets use UTC
-   * alignment (the source rows are at UTC 5-min boundaries already so this is a no-op for those);
-   * day / week use the household-local zone so calendar boundaries match human intuition.
+   * Align an instant to the start of its *display* bucket in the given zone. Sub-day buckets use
+   * UTC alignment; day / week use the household-local zone so calendar boundaries match human
+   * intuition.
+   *
+   * `Raw` is NOT floored to any synthetic grid (#2018): the row's real `periodStart` — the agent's
+   * actual usage-report period (`usage_report_interval`, data-derived) — IS the window start.
+   * Flooring raw onto a fixed 5-min grid (the old `% 300`) re-snapped it to a dead constant
+   * divorced from the configurable report cadence, which is the bug #2018 fixed. Use [[windowFor]]
+   * to get the full `[start, end)` window for a row — it is the single source of truth shared by
+   * the GET aggregate path and the ws live-edge push.
    */
   def floorTo(instant: Instant, bucket: Bucket, zone: ZoneId): Instant = bucket match {
-    case Bucket.Raw        =>
-      instant.truncatedTo(ChronoUnit.MINUTES).minusSeconds(instant.getEpochSecond % 300)
+    case Bucket.Raw        => instant
     case Bucket.OneMin     => instant.truncatedTo(ChronoUnit.MINUTES)
     case Bucket.TenMin     =>
       val sec = instant.getEpochSecond
@@ -145,15 +153,48 @@ object UsageTraffic {
         .toInstant
   }
 
-  def stepOf(bucket: Bucket): Duration = bucket match {
-    case Bucket.Raw        => Duration.ofMinutes(5)
-    case Bucket.OneMin     => Duration.ofMinutes(1)
-    case Bucket.TenMin     => Duration.ofMinutes(10)
-    case Bucket.OneHour    => Duration.ofHours(1)
-    case Bucket.TwelveHour => Duration.ofHours(12)
-    case Bucket.OneDay     => Duration.ofDays(1)
-    case Bucket.OneWeek    => Duration.ofDays(7)
+  /**
+   * The fixed width of a *display* bucket. `Raw` has NO fixed width — its window is the row's real
+   * `[periodStart, periodEnd)` report period (data-derived from the agent's
+   * `usage_report_interval`, #2018/#2020), so it returns `None` and callers MUST derive raw's
+   * `windowEnd` from the row span, never from a constant. (The old `Bucket.Raw =>
+   * Duration.ofMinutes(5)` baked the dead 300s agent default into the API and is exactly what #2018
+   * fixed.)
+   */
+  def stepOf(bucket: Bucket): Option[Duration] = bucket match {
+    case Bucket.Raw        => None
+    case Bucket.OneMin     => Some(Duration.ofMinutes(1))
+    case Bucket.TenMin     => Some(Duration.ofMinutes(10))
+    case Bucket.OneHour    => Some(Duration.ofHours(1))
+    case Bucket.TwelveHour => Some(Duration.ofHours(12))
+    case Bucket.OneDay     => Some(Duration.ofDays(1))
+    case Bucket.OneWeek    => Some(Duration.ofDays(7))
   }
+
+  /**
+   * The `[windowStart, windowEnd)` a usage row falls in for `bucket` — the single source of truth
+   * shared by the `GET /api/usage/traffic` aggregate path ([[buildAggregate]]) and the ws live-edge
+   * push (`SpaPush.pushOneParamSet`), so the two can never disagree (#2018/#2020).
+   *
+   *   - `raw` → the row's REAL report period `[periodStart, periodEnd)` (the agent's
+   *     `usage_report_interval`); the client divides bytes by this span to get the instantaneous
+   *     rate, so the window must be the true interval, not a synthetic 5-min cell.
+   *   - any fixed display bucket → the floored grid cell `[floor(periodStart), floor + step)`.
+   */
+  def windowFor(
+      periodStart: Instant,
+      periodEnd: Instant,
+      bucket: Bucket,
+      zone: ZoneId,
+  ): (Instant, Instant) =
+    stepOf(bucket) match {
+      case Some(step) =>
+        val start = floorTo(periodStart, bucket, zone)
+        (start, start.plus(step))
+      case None       =>
+        // raw: the real report period rides the row; never a constant window.
+        (periodStart, periodEnd)
+    }
 
   /**
    * Build raw rows for the page. Each `TrafficReport` becomes one `TrafficUsageRawRow`, decorated
@@ -216,7 +257,6 @@ object UsageTraffic {
       // (synthesized in `membershipsFor`), not a shared `__other__` bucket.
       appsByHost: Map[String, List[AppMembership]] = Map.empty,
   ): List[TrafficUsageAggregateRow] = {
-    val step = stepOf(bucket)
 
     def deviceLabel(mac: MacAddress): String              =
       deviceByMac.get(mac).map(_.name).getOrElse(mac.value)
@@ -263,6 +303,12 @@ object UsageTraffic {
     grouped.toList
       .map { case ((windowStart, groupsMap), bucketPairs) =>
         val bucketRows    = bucketPairs.map(_._1)
+        // #2018: windowEnd via the shared `windowFor` SSOT — a fixed display step for 1m/10m/…, or
+        // the row's REAL report period end for raw. All rows in a raw group share one period (the
+        // group key is `periodStart`); take the max defensively.
+        val maxPeriodEnd  =
+          bucketRows.iterator.map(_.periodEnd).reduceLeft((a, b) => if (b.isAfter(a)) b else a)
+        val windowEnd     = windowFor(windowStart, maxPeriodEnd, bucket, zone)._2
         val devices       = bucketRows.iterator.map(r => deviceLabel(r.mac)).toSet
         val profiles      = bucketRows.iterator.map(r => profileLabel(r.mac)).toSet
         val domains       = bucketRows.iterator.map(_.host.value).toSet
@@ -298,7 +344,7 @@ object UsageTraffic {
         TrafficUsageAggregateRow(
           groups = groupsMap,
           windowStart = windowStart.toString,
-          windowEnd = windowStart.plus(step).toString,
+          windowEnd = windowEnd.toString,
           totalBytesIn = totalBytesIn,
           totalBytesOut = totalBytesOut,
           totalSeconds = totalSeconds,
