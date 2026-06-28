@@ -58,16 +58,28 @@ export function mergeAggregateHeadRows(
   return [...live, ...kept]
 }
 
-// The head (newest) bucket's rows — the slice the live gauge reads. The series is
-// newest-first (GET orders windowStart DESC, mergeHeadBucket prepends the live edge),
-// so the head windowStart is row[0]'s.
-export function headBucketRows(
+// The most-recent COMPLETE bucket's rows — the slice the live gauge reads (#2040). The series is
+// newest-first (GET orders windowStart DESC, mergeHeadBucket prepends the live edge), so we walk
+// from the newest window and take the first one whose full span has already elapsed
+// (`windowEnd <= now`), then return every row (one per group) sharing that windowStart.
+//
+// Why "complete", not just "newest" (the old behavior):
+//   - Fixed buckets (1m/10m/…): the newest window is the still-accumulating IN-PROGRESS cell — it
+//     holds only the elapsed fraction of `bucketWidth`, so `bytes / bucketWidth` understates the
+//     rate. Its `windowEnd` is in the future, so it's skipped; the prior, full-width bucket wins.
+//   - `raw`: every stored row is a closed ingest period (`windowEnd` = the real period end, already
+//     past), so the newest row is selected — fixing the perpetually-empty `[floor(now), now)` seed
+//     (a ~60s report covers the PRIOR period, #2004).
+// `nowMs` is the caller's current time; `windowEnd` is the server's `windowFor` end (SSOT).
+export function completeHeadBucketRows(
   series: TrafficUsageResponse | undefined,
+  nowMs: number,
 ): TrafficUsageAggregateRow[] {
   const rows = series?.aggregateRows ?? []
   if (rows.length === 0) return []
-  const headStart = rows[0].windowStart
-  return rows.filter(r => r.windowStart === headStart)
+  const head = rows.find(r => new Date(r.windowEnd).getTime() <= nowMs)
+  if (!head) return []
+  return rows.filter(r => r.windowStart === head.windowStart)
 }
 
 // ── B/s derivation: client divides bytes-over-bucket (§1.3) — server stays the source ──

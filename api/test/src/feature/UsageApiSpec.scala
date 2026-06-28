@@ -882,6 +882,106 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           assertTrue(out.rawRows.forall(_.profileName.contains("Kids"))) &&
           assertTrue(out.rawRows.map(_.host.value).toSet == Set("youtube.com", "google.com"))
       },
+      // #2040: a `raw` request WITH a groupBy aggregates per the groupBy at the row's real ingest
+      // period (one point per (periodStart, group)) — it must NOT fall through to the ungrouped
+      // per-host `rawRows` shape (which left the dashboard LIVE BANDWIDTH gauge, reading
+      // `aggregateRows`, perpetually blank). The ungrouped raw inspector (no groupBy) still returns
+      // `rawRows` (covered by the test above).
+      test(
+        "raw view WITH groupBy=profile aggregates per profile on the row's real period (#2040)",
+      ) {
+        val today = TestClock.schoolDayAfternoon.toLocalDate
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
+          _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
+          routerId    <- seedRouter
+          // Two hosts in the SAME ingest period (14:00, 300s) so they roll up into ONE per-profile
+          // point; a third host in a LATER period (14:05) makes a second point.
+          start1 = today.atStartOfDay(ZoneOffset.UTC).toInstant.plusSeconds(14 * 3600L)
+          start2 = start1.plusSeconds(300)
+          _  <- ZIO.serviceWithZIO[TrafficReportRepo](
+            _.insertBatch(
+              List(
+                TrafficReportInsert(
+                  routerId,
+                  MacAddress.unsafe(testMac),
+                  None,
+                  HostId.Fqdn(Hostname.unsafe("youtube.com")),
+                  today,
+                  start1,
+                  start1.plusSeconds(300),
+                  300,
+                  1000L,
+                  2000L,
+                ),
+                TrafficReportInsert(
+                  routerId,
+                  MacAddress.unsafe(testMac),
+                  None,
+                  HostId.Fqdn(Hostname.unsafe("google.com")),
+                  today,
+                  start1,
+                  start1.plusSeconds(300),
+                  300,
+                  500L,
+                  1500L,
+                ),
+                TrafficReportInsert(
+                  routerId,
+                  MacAddress.unsafe(testMac),
+                  None,
+                  HostId.Fqdn(Hostname.unsafe("netflix.com")),
+                  today,
+                  start2,
+                  start2.plusSeconds(300),
+                  300,
+                  300L,
+                  700L,
+                ),
+              ),
+            ),
+          )
+          rb <- buildRoutes
+          (routes, auth) = rb
+          token <- auth.login("admin", "changeme").map(_.token.value)
+          from = today.atStartOfDay(ZoneOffset.UTC).toInstant.toString
+          to   = today.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant.toString
+          req  = Request
+            .get(
+              URL
+                .decode(
+                  s"/api/usage/traffic?mac=$testMac&from=$from&to=$to&bucket=raw&groupBy=profile",
+                )
+                .toOption
+                .get,
+            )
+            .addHeader(Header.Authorization.Bearer(token))
+          resp <- routes.runZIO(req)
+          body <- resp.body.asString
+          out  <- ZIO.fromEither(body.fromJson[TrafficUsageResponse])
+        } yield assertTrue(resp.status == Status.Ok) &&
+          assertTrue(out.bucket == "raw") &&
+          assertTrue(out.groupBy == List("profile")) &&
+          // Aggregated, NOT raw per-host rows — the dashboard gauge reads `aggregateRows`.
+          assertTrue(out.rawRows.isEmpty) &&
+          // One point per (period, profile): period1 (youtube+google) + period2 (netflix) = 2.
+          assertTrue(out.aggregateRows.length == 2) &&
+          assertTrue(out.aggregateRows.forall(_.groups.get("profile").contains("Kids"))) &&
+          // The window is the row's REAL [periodStart, periodEnd) (#2018), not a synthetic grid cell.
+          assertTrue(
+            out.aggregateRows.map(r => (r.windowStart, r.windowEnd)).toSet ==
+              Set(
+                (start1.toString, start1.plusSeconds(300).toString),
+                (start2.toString, start2.plusSeconds(300).toString),
+              ),
+          ) &&
+          // period1 sums both hosts' bytes (1000+500 in, 2000+1500 out); totals match the raw bytes.
+          assertTrue(out.aggregateRows.map(_.totalBytesIn).sum == 1800L) &&
+          assertTrue(out.aggregateRows.map(_.totalBytesOut).sum == 4200L)
+      },
       test(
         "1h aggregated view with groupBy=domain groups by domain and sums bytes/seconds; matches raw sums",
       ) {

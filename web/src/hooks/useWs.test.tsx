@@ -288,6 +288,121 @@ describe('useWsTrafficUsage seeds via GET (#2017)', () => {
   })
 })
 
+// ── #2040: the gauge shows the most-recent COMPLETE bucket + renders aggregated raw ───────────────
+//
+// Old behavior requested `[floor(now), now)` and read the NEWEST window: empty for 1m/raw (data
+// lands in the prior period), partial/understated for 10m+ (in-progress cell). These prove the
+// gauge now seeds a wider window and renders the most-recent COMPLETE bucket at full width.
+describe('useWsTrafficUsage shows the most-recent COMPLETE bucket (#2040)', () => {
+  const FUTURE = '2099-01-01T00:00:00Z' // an in-progress bucket: windowEnd not yet elapsed
+  const aggRow = (
+    profile: string,
+    windowStart: string,
+    windowEnd: string,
+    bytesIn = 0,
+    bytesOut = 0,
+  ): TrafficUsageAggregateRow => ({
+    groups: { profile }, windowStart, windowEnd,
+    totalBytesIn: bytesIn, totalBytesOut: bytesOut, totalSeconds: 60,
+  })
+  const resp = (
+    bucket: TrafficUsageResponse['bucket'],
+    rows: TrafficUsageAggregateRow[],
+  ): TrafficUsageResponse => ({
+    bucket, groupBy: ['profile'], from: 'a', to: 'b', tz: 'UTC', rawRows: [], aggregateRows: rows,
+  })
+
+  it('skips the in-progress newest bucket and renders the prior COMPLETE one', async () => {
+    const { api } = await import('@/api/client')
+    const trafficSpy = api.usage.traffic as unknown as ReturnType<typeof vi.fn>
+    trafficSpy.mockClear()
+    // Newest window is still in progress (windowEnd in the future); the prior 1m bucket is complete.
+    trafficSpy.mockResolvedValue(resp('1m', [
+      aggRow('Kids', '2026-06-26T10:06:00Z', FUTURE, 99999),
+      aggRow('Kids', '2026-06-26T10:05:00Z', '2026-06-26T10:06:00Z', 600),
+    ]))
+    const { client, wrapper } = setup()
+    const { result } = renderHook(() => useWsTrafficUsage('1m'), { wrapper })
+    goLive(client)
+    act(() => last().emit({ op: 'ack', payload: { topic: 'trafficUsage', status: 'ok' } }))
+
+    await waitFor(() => expect(result.current.rows).toHaveLength(1))
+    expect(result.current.rows[0].windowStart).toBe('2026-06-26T10:05:00Z')
+    expect(result.current.overall.bytesInPerSec).toBe(10) // 600 / 60s — the complete bucket, not 99999
+  })
+
+  it('seeds a window wide enough (>= 2 bucket widths) to contain the complete bucket', async () => {
+    const { api } = await import('@/api/client')
+    const trafficSpy = api.usage.traffic as unknown as ReturnType<typeof vi.fn>
+    trafficSpy.mockClear()
+    trafficSpy.mockResolvedValue(resp('10m', []))
+    const { client, wrapper } = setup()
+    renderHook(() => useWsTrafficUsage('10m'), { wrapper })
+    goLive(client)
+    await waitFor(() => expect(trafficSpy).toHaveBeenCalledTimes(1))
+    const { from, to } = trafficSpy.mock.calls[0][0]
+    // 10m bucket → lookback = max(2×600s, 10min) = 20 min.
+    expect(new Date(to).getTime() - new Date(from).getTime()).toBeGreaterThanOrEqual(20 * 60 * 1000)
+  })
+
+  it('derives the 10m rate over the FULL bucket width (bytes / 600), not elapsed time', async () => {
+    const { api } = await import('@/api/client')
+    const trafficSpy = api.usage.traffic as unknown as ReturnType<typeof vi.fn>
+    trafficSpy.mockClear()
+    // A complete 10m bucket carrying 6000 bytes in → 6000 / 600s = 10 B/s.
+    trafficSpy.mockResolvedValue(resp('10m', [
+      aggRow('Kids', '2026-06-26T10:00:00Z', '2026-06-26T10:10:00Z', 6000),
+    ]))
+    const { client, wrapper } = setup()
+    const { result } = renderHook(() => useWsTrafficUsage('10m'), { wrapper })
+    goLive(client)
+    act(() => last().emit({ op: 'ack', payload: { topic: 'trafficUsage', status: 'ok' } }))
+    await waitFor(() => expect(result.current.rows).toHaveLength(1))
+    expect(result.current.overall.bytesInPerSec).toBe(10)
+  })
+
+  it('renders raw from aggregated rows over the row real period span', async () => {
+    const { api } = await import('@/api/client')
+    const trafficSpy = api.usage.traffic as unknown as ReturnType<typeof vi.fn>
+    trafficSpy.mockClear()
+    // raw aggregate: a 60s ingest period carrying 600 bytes in → 600 / 60s = 10 B/s.
+    trafficSpy.mockResolvedValue(resp('raw', [
+      aggRow('Kids', '2026-06-26T10:05:00Z', '2026-06-26T10:06:00Z', 600),
+    ]))
+    const { client, wrapper } = setup()
+    const { result } = renderHook(() => useWsTrafficUsage('raw'), { wrapper })
+    goLive(client)
+    act(() => last().emit({ op: 'ack', payload: { topic: 'trafficUsage', status: 'ok' } }))
+    await waitFor(() => expect(result.current.rows).toHaveLength(1))
+    expect(result.current.overall.bytesInPerSec).toBe(10)
+  })
+})
+
+// ── #2041: loading state, not a 0 flash ───────────────────────────────────────────────────────────
+describe('useWsTrafficUsage loading state (#2041)', () => {
+  it('is loading until the seed resolves, then not loading once data is present', async () => {
+    const { api } = await import('@/api/client')
+    const trafficSpy = api.usage.traffic as unknown as ReturnType<typeof vi.fn>
+    trafficSpy.mockClear()
+    let resolveSeed: (r: TrafficUsageResponse) => void = () => {}
+    trafficSpy.mockImplementation(() => new Promise<TrafficUsageResponse>(res => { resolveSeed = res }))
+    const { client, wrapper } = setup()
+    const { result } = renderHook(() => useWsTrafficUsage('1m'), { wrapper })
+    goLive(client)
+
+    // Seed in flight, no push yet → loading (the gauge shows a skeleton, never "0 B/s").
+    await waitFor(() => expect(result.current.loading).toBe(true))
+    expect(result.current.rows).toHaveLength(0)
+
+    // Seed resolves with no recent traffic → no longer loading; rows empty = genuinely idle.
+    act(() => resolveSeed({
+      bucket: '1m', groupBy: ['profile'], from: 'a', to: 'b', tz: 'UTC', rawRows: [], aggregateRows: [],
+    }))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    expect(result.current.rows).toHaveLength(0)
+  })
+})
+
 describe('polling pauses only while the topic streams (§3.3)', () => {
   it('pauses the poll once the `now` subscription is acked, not on bare socket liveness', async () => {
     vi.useFakeTimers()

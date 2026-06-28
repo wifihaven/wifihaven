@@ -24,7 +24,7 @@ import { useAuth } from '@/hooks/useAuth'
 import { SpaWsClient, type SpaTopicName, type WsStatus } from '@/api/wsClient'
 import {
   bucketSeconds,
-  headBucketRows,
+  completeHeadBucketRows,
   mergeAggregateHeadRows,
   mergeHeadBucket,
   overallRate,
@@ -234,9 +234,15 @@ export function useWsAppUsage(profileId: number, from: string, to: string, enabl
 
 export interface WsTrafficUsage {
   live: boolean
+  /**
+   * True until the first bandwidth data resolves (the GET seed in flight AND no push yet) — the
+   * gauge shows a loading skeleton, not a misleading "0 B/s" (#2041). Once any data is present this
+   * is false; an empty `rows` then means genuinely-idle, not "still loading".
+   */
+  loading: boolean
   bucket: TrafficUsageBucket
   setBucket: (b: TrafficUsageBucket) => void
-  /** The head (current) bucket's per-profile rows (one per profile, groupBy:profile). */
+  /** The most-recent COMPLETE bucket's per-profile rows (one per profile, groupBy:profile). */
   rows: TrafficUsageAggregateRow[]
   /** The household total rate (sum of the per-profile head rows). */
   overall: BandwidthRate
@@ -283,7 +289,7 @@ export function useWsTrafficUsage(initialBucket: TrafficUsageBucket = '1m'): WsT
 
   // The GET seed (#2017). A real query observer (not a passive cache read) so it fetches on
   // mount / key change AND receives the push's `setQueryData` cache updates on the same key.
-  const { data } = useQuery({
+  const { data, isLoading } = useQuery({
     queryKey: key,
     queryFn: async () => {
       const { from, to } = headWindow(bucket)
@@ -305,9 +311,12 @@ export function useWsTrafficUsage(initialBucket: TrafficUsageBucket = '1m'): WsT
     refetchInterval: false,
   })
 
-  const rows = headBucketRows(data)
+  // The most-recent COMPLETE bucket (#2040), selected against the current time. `data === undefined`
+  // means neither the GET seed nor a push has landed yet → loading (#2041).
+  const rows = completeHeadBucketRows(data, Date.now())
   return {
     live: streaming,
+    loading: data === undefined && isLoading,
     bucket,
     setBucket,
     rows,
@@ -316,17 +325,22 @@ export function useWsTrafficUsage(initialBucket: TrafficUsageBucket = '1m'): WsT
   }
 }
 
-/**
- * The current head-bucket window `[floor(now, bucket), now]` for the seed GET (#2017).
- * Flooring `from` to the bucket boundary makes the GET return exactly the current (head)
- * window, so `headBucketRows` lands on it and the rate is right. `raw` has no fixed width —
- * we floor to the nominal ~60s edge (`bucketSeconds('raw')`), giving the most-recent slice.
- */
+// The seed GET (#2017) requests a recent window WIDE ENOUGH to contain the most-recent COMPLETE
+// bucket, then `completeHeadBucketRows` selects it (#2040). The lookback must clear both failure
+// modes the old `[floor(now), now)` window had:
+//   - the in-progress fixed bucket is empty/partial → look back ≥ 2 bucket widths so a full prior
+//     bucket is present;
+//   - fine buckets (1m/raw) can sit several reports back — a ~60s `usage_report_interval` covers the
+//     PRIOR period (#2004) and reports can gap — so floor the lookback at `SEED_LOOKBACK_MIN_MS` so
+//     the seed reaches past those gaps. Coarse buckets are dominated by `2 × width` (a 1d/1w bucket
+//     rarely gaps within its own width), keeping their window to ~2 buckets rather than minutes-of-
+//     slack. The selection (not the window) is what guarantees a COMPLETE bucket is shown.
+const SEED_LOOKBACK_MIN_MS = 10 * 60 * 1000 // 10 min — clears multi-minute fine-bucket report gaps
 function headWindow(bucket: TrafficUsageBucket): { from: string; to: string } {
   const nowMs = Date.now()
-  const secs = bucketSeconds(bucket)
-  const fromMs = Math.floor(nowMs / 1000 / secs) * secs * 1000
-  return { from: new Date(fromMs).toISOString(), to: new Date(nowMs).toISOString() }
+  const widthMs = bucketSeconds(bucket) * 1000
+  const lookbackMs = Math.max(widthMs * 2, SEED_LOOKBACK_MIN_MS)
+  return { from: new Date(nowMs - lookbackMs).toISOString(), to: new Date(nowMs).toISOString() }
 }
 
 // ── #1975 (S6b): stream the live edge of the Traffic Usage + Connection Events PAGES ──
