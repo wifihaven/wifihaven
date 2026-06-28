@@ -118,7 +118,7 @@ object UsageTrafficSpec extends ZIOSpecDefault {
       assertTrue(appSlugs == Set(hostA.value, hostB.value))
     },
     test("floorTo and stepOf agree for each sub-day bucket (no 2× stride anywhere)") {
-      // For every sub-day bucket: flooring an instant inside the bucket should
+      // For every sub-day display bucket: flooring an instant inside the bucket should
       // never produce a window wider than `stepOf(bucket)` — i.e. `start +
       // step` must be strictly after the original instant.
       val sample  = Instant.parse("2026-05-13T07:23:17Z")
@@ -132,6 +132,55 @@ object UsageTrafficSpec extends ZIOSpecDefault {
         val step  = UsageTraffic.stepOf(b)
         !start.isAfter(sample) && start.plus(step).isAfter(sample)
       })
+    },
+    // #2018/#2020 PINNING: `raw` must derive its window from the row's REAL report period
+    // `[periodStart, periodEnd)` (the agent's `usage_report_interval`, data-derived) — NEVER a
+    // synthetic fixed grid. Seed two DIFFERENT, non-5-min-aligned periods (37 s and 90 s) and
+    // assert the aggregated raw window equals each row's actual period and the derived B/s equals
+    // bytes / span. This FAILS the moment anyone re-hardcodes a fixed raw window (e.g. `% 300` /
+    // `ofMinutes(5)`), which is exactly how #2018 regressed.
+    test(
+      "#2018: raw window equals the row's real report period (37 s and 90 s), B/s = bytes/span",
+    ) {
+      // Periods deliberately NOT aligned to any 5-min boundary so a synthetic floor would diverge.
+      val p1Start = Instant.parse("2026-05-13T00:01:13Z")
+      val p1End   = p1Start.plusSeconds(37)
+      val p2Start = Instant.parse("2026-05-13T00:07:41Z")
+      val p2End   = p2Start.plusSeconds(90)
+
+      val row1 = TrafficUsageDbRow(mac1, host, p1Start, p1End, 37, 3700L, 740L)
+      val row2 = TrafficUsageDbRow(mac1, host, p2Start, p2End, 90, 9000L, 1800L)
+
+      def aggOf(r: TrafficUsageDbRow) = UsageTraffic
+        .buildAggregate(
+          rows = List(r),
+          bucket = UsageTraffic.Bucket.Raw,
+          zone = UTC,
+          groupBy = Set(UsageTraffic.GroupBy.Domain),
+          deviceByMac = Map.empty,
+          profileNameById = Map.empty,
+        )
+        .head
+
+      val a1 = aggOf(row1)
+      val a2 = aggOf(row2)
+
+      def spanSeconds(windowStart: String, windowEnd: String): Long =
+        Duration.between(Instant.parse(windowStart), Instant.parse(windowEnd)).getSeconds
+
+      assertTrue(a1.windowStart == p1Start.toString) &&
+      assertTrue(a1.windowEnd == p1End.toString) &&
+      assertTrue(spanSeconds(a1.windowStart, a1.windowEnd) == 37L) &&
+      // derived rate = (bytesIn + bytesOut) / span
+      assertTrue(
+        (a1.totalBytesIn + a1.totalBytesOut) / spanSeconds(a1.windowStart, a1.windowEnd) == 120L,
+      ) &&
+      assertTrue(a2.windowStart == p2Start.toString) &&
+      assertTrue(a2.windowEnd == p2End.toString) &&
+      assertTrue(spanSeconds(a2.windowStart, a2.windowEnd) == 90L) &&
+      assertTrue(
+        (a2.totalBytesIn + a2.totalBytesOut) / spanSeconds(a2.windowStart, a2.windowEnd) == 120L,
+      )
     },
   )
 }

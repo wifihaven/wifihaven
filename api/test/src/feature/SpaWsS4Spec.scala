@@ -431,6 +431,52 @@ object SpaWsS4Spec
       }
     },
     test(
+      // #2018/#2020 PINNING: the streamed `raw` head window MUST equal the actual ingested report
+      // period `[periodStart, periodEnd)` (the agent's `usage_report_interval`), NOT a synthetic
+      // fixed 5-min window. Ingest a non-5-min-aligned 37 s period and assert the pushed window is
+      // exactly that period (windowEnd - windowStart == 37 s, and the response `from`/`to` match),
+      // so the client's span-based B/s comes out correct. FAILS if anyone re-hardcodes a fixed raw
+      // window.
+      "raw head window equals the real ingested report period [periodStart, periodEnd) (not 5-min)",
+    ) {
+      // A period deliberately off every 5-min boundary so a synthetic floor would diverge.
+      val rawPs = "2026-06-25T13:58:11Z"
+      val rawPe = "2026-06-25T13:58:48Z" // +37s
+      withHarness { (port, ingest, router) =>
+        for {
+          tok    <- ZIO.serviceWithZIO[Clock](makeAuth).flatMap(a => tokenFor(a, "adult", "mom"))
+          frames <- collect(
+            port,
+            tok,
+            List(
+              """{"op":"subscribe","payload":{"topic":"trafficUsage","params":{"groupBy":["profile"],"bucket":"raw"}}}""",
+            ),
+            trigger = ingestUsagePeriod(
+              ingest,
+              router,
+              rawPs,
+              rawPe,
+              usageRecord("youtube.com", 3700, 740),
+            ),
+            wait = 4.seconds,
+          )
+          tFrames = trafficFrames(frames)
+          pushed <- ZIO.fromEither(parsePush(tFrames.last)).mapError(e => new RuntimeException(e))
+          row      = pushed.aggregateRows.head
+          spanSecs = java.time.Duration
+            .between(Instant.parse(row.windowStart), Instant.parse(row.windowEnd))
+            .getSeconds
+        } yield assertTrue(pushed.bucket == "raw") &&
+          // The window is the REAL report period, not a 5-min grid cell.
+          assertTrue(row.windowStart == rawPs) &&
+          assertTrue(row.windowEnd == rawPe) &&
+          assertTrue(spanSecs == 37L) &&
+          // Response envelope `from`/`to` agree with the period (the scoped head bucket).
+          assertTrue(pushed.from == rawPs && pushed.to == rawPe) &&
+          assertTrue(row.totalBytesIn == 3700 && row.totalBytesOut == 740)
+      }
+    },
+    test(
       "a burst of ingests converges on the freshest cumulative head bucket (latest-wins, §6.3)",
     ) {
       withHarness { (port, ingest, router) =>
