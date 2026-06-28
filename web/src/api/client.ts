@@ -30,18 +30,52 @@ function getToken(): string | null {
 // don't leak signal across calls.
 const REQUEST_TIMEOUT_MS = 10_000
 
+// #2047 — a request the *caller* cancelled (e.g. the Traffic Usage page
+// superseding its in-flight load on a bucket switch / filter change). This is
+// categorically NOT an API-health signal: the API is fine, the client just
+// stopped caring about the old answer. It must never trip the unreachable
+// banner, and callers swallow it rather than rendering the cryptic
+// "signal is aborted without reason". Distinct from the 10s timeout abort
+// (a genuine "API is hung" signal), which keeps reporting unreachable.
+export class RequestCanceledError extends Error {
+  constructor() {
+    super('request canceled')
+    this.name = 'RequestCanceledError'
+  }
+}
+
+export function isCanceledError(e: unknown): boolean {
+  return e instanceof RequestCanceledError
+}
+
 async function req<T>(
   method: string,
   path: string,
   body?: unknown,
   skipAuth = false,
+  signal?: AbortSignal,
 ): Promise<T> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   const token = getToken()
   if (!skipAuth && token) headers['Authorization'] = `Bearer ${token}`
 
+  // #2047: one fetch-scoped controller fed by two sources — our 10s timeout and
+  // the caller's optional supersede signal. `timedOut` records which one fired
+  // so the catch can tell a genuine timeout (report unreachable) from a caller
+  // cancellation (silent). The caller's abort is forwarded to our controller so
+  // the in-flight fetch is actually torn down.
   const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+  let timedOut = false
+  const timeoutId = setTimeout(() => { timedOut = true; controller.abort() }, REQUEST_TIMEOUT_MS)
+  const onCallerAbort = () => controller.abort()
+  if (signal) {
+    if (signal.aborted) controller.abort()
+    else signal.addEventListener('abort', onCallerAbort)
+  }
+  const cleanup = () => {
+    clearTimeout(timeoutId)
+    if (signal) signal.removeEventListener('abort', onCallerAbort)
+  }
 
   let res: Response
   try {
@@ -59,14 +93,17 @@ async function req<T>(
       cache: 'no-store',
     })
   } catch (e) {
-    clearTimeout(timeoutId)
-    // Network error or abort (timeout). Either way the API isn't reachable
+    cleanup()
+    // #2047: caller cancellation (supersede) — the API is fine, don't light the
+    // banner. Surface a typed cancellation the caller swallows.
+    if (signal?.aborted && !timedOut) throw new RequestCanceledError()
+    // Network error or timeout abort. Either way the API isn't reachable
     // right now — light up the global banner via apiHealth.
     const aborted = e instanceof DOMException && e.name === 'AbortError'
     apiHealth.reportFailure(aborted ? 'timeout' : 'network')
     throw e
   }
-  clearTimeout(timeoutId)
+  cleanup()
 
   if (res.status === 401) {
     // 401 is an auth-state outcome, not an API-down signal. The API answered.
@@ -319,6 +356,11 @@ export const api = {
       tz?: string
       limit?: number
       cursor?: string
+      // #2047: the page passes its load-lifecycle signal so a superseded
+      // request (bucket switch / filter change) is cancelled cleanly rather
+      // than left in flight to resolve stale data — or to time out and trip
+      // the unreachable banner.
+      signal?: AbortSignal
     }) => {
       const qs = new URLSearchParams()
       if (params.macs?.length)             qs.set('mac', params.macs.join(','))
@@ -330,7 +372,7 @@ export const api = {
       if (params.tz)                       qs.set('tz', params.tz)
       if (params.limit !== undefined)      qs.set('limit', String(params.limit))
       if (params.cursor)                   qs.set('cursor', params.cursor)
-      return req<TrafficUsageResponse>('GET', `/usage/traffic?${qs}`)
+      return req<TrafficUsageResponse>('GET', `/usage/traffic?${qs}`, undefined, false, params.signal)
     },
   },
 

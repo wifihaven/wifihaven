@@ -22,6 +22,9 @@ vi.mock('@/api/client', () => ({
     profiles: { list:    vi.fn() },
     apps:     { list:    vi.fn() },
   },
+  // #2047: the page swallows caller-cancellation errors via this predicate.
+  isCanceledError: (e: unknown) =>
+    e instanceof Error && e.name === 'RequestCanceledError',
 }))
 
 import { api } from '@/api/client'
