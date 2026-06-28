@@ -6,6 +6,7 @@ import zio.*
 
 import java.time.LocalDate
 import java.time.Duration as JDuration
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.LongAdder
 
 import com.github.benmanes.caffeine.cache.{Cache, Caffeine}
@@ -141,6 +142,16 @@ object TimeStatusCache {
     private val hits   = new LongAdder
     private val misses = new LongAdder
 
+    // #2012: per-key single-flight. Without it, concurrent missers for the SAME (profileId, date)
+    // each independently run the O(N-profile) `load` and stampede the small DB pool — which timed
+    // out `/api/time/status` when CD Gate 1 + Gate 3b hit a freshly-deployed, cold-cache staging
+    // in parallel (reproduced: 1 cold call ~5s, 3 concurrent ~13s, 10 concurrent >30s). With it,
+    // the caller that wins `putIfAbsent` runs `load`; every other concurrent caller awaits that one
+    // in-flight Promise and does no DB work. The slot is always freed on completion (success,
+    // failure, OR interrupt) so a failed/interrupted load never wedges followers or caches a bad
+    // value — followers just see the same outcome and the next caller re-loads.
+    private val inFlight = new ConcurrentHashMap[Key, Promise[Throwable, AnyRef]]()
+
     def getOrLoadDaily(
         profileId: ProfileId,
         date: LocalDate,
@@ -173,10 +184,26 @@ object TimeStatusCache {
       val cache = if isTodayMode then todayCache else pastCache
       ZIO.succeed(Option(cache.getIfPresent(key))).flatMap {
         case Some(v) =>
-          ZIO.succeed(hits.increment()) *> ZIO.succeed(v.asInstanceOf[V])
+          ZIO.succeed(hits.increment()).as(v.asInstanceOf[V])
         case None    =>
-          ZIO.succeed(misses.increment()) *>
-            load.tap(v => ZIO.succeed(cache.put(key, v)))
+          // #2012 single-flight: register an in-flight Promise for this key. The caller that wins
+          // `putIfAbsent` owns the load; concurrent missers await its result instead of stampeding
+          // the DB pool with N redundant builds.
+          Promise.make[Throwable, AnyRef].flatMap { mine =>
+            Option(inFlight.putIfAbsent(key, mine)) match {
+              case Some(existing) =>
+                // Served off the in-flight load — no DB work — so it counts as a hit, keeping the
+                // periodic hit-rate stats representative of how much load the cache actually saved.
+                ZIO.succeed(hits.increment()) *> existing.await.map(_.asInstanceOf[V])
+              case None           =>
+                ZIO.succeed(misses.increment()) *>
+                  load
+                    .tap(v => ZIO.succeed(cache.put(key, v)))
+                    // Always free the slot and publish the outcome to followers — even on failure
+                    // or interrupt — so the in-flight entry can never wedge waiters or leak.
+                    .onExit(exit => ZIO.succeed(inFlight.remove(key, mine)) *> mine.done(exit))
+            }
+          }
       }
     }
 
