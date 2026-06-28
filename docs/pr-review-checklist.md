@@ -90,8 +90,19 @@ in [#1561](https://github.com/wifihaven/wifihaven/issues/1561).
   (HTTP → route → service → repo → embedded Postgres) are preferred; unit tests
   are reserved for pure edge cases (policy logic, schedule boundaries, pattern
   matching, time arithmetic).
-- **No forbidden mocks.** Never mock repositories, `AuthService`, or `Clock`.
-  `Clock` comes via `TestClock`; the DB layer uses real embedded Postgres.
+- **Mocks: external I/O only.** Only mock what genuinely can't run in CI — the
+  router agents' network I/O, injected as function parameters (`get_fn` /
+  `write_fn` / `exec_fn`), never a stubbed HTTP client. **Never** mock
+  repositories, `AuthService`, or `Clock`: repos run against real embedded
+  Postgres (`zonkyio/embedded-postgres` via `TestDatabase.layer`) so the actual
+  SQL is exercised, and `Clock` comes via `Clock.TestClock`. A test that mocks a
+  repo / `AuthService` / `Clock`, or stubs something runnable in CI, is a
+  **finding** (BLOCKER when it lets a regression through untested SQL or auth).
+- **ZIO primitives for mutable state.** Test (and prod) mutable state uses ZIO
+  primitives — `Ref` / `Ref.Synchronized` / `Queue` / `Hub` — not raw mutable
+  Scala collections. A `mutable.HashMap`/`var`/`ArrayBuffer` shared across
+  fibers or effects is a finding (race-prone); a tight single-fiber inner loop
+  is the only exemption and must document why inline.
 - **No wall-clock waits / timing-sensitive tests.** A test that `ZIO.sleep`s
   (or otherwise blocks on real wall-time) to *wait for* a background fiber,
   poller, cache refresh, or scheduled effect to land — typically under
