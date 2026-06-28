@@ -92,6 +92,23 @@ in [#1561](https://github.com/wifihaven/wifihaven/issues/1561).
   matching, time arithmetic).
 - **No forbidden mocks.** Never mock repositories, `AuthService`, or `Clock`.
   `Clock` comes via `TestClock`; the DB layer uses real embedded Postgres.
+- **No wall-clock waits / timing-sensitive tests.** A test that `ZIO.sleep`s
+  (or otherwise blocks on real wall-time) to *wait for* a background fiber,
+  poller, cache refresh, or scheduled effect to land — typically under
+  `@@ TestAspect.withLiveClock` / a `Clock.live` layer — is **flaky by
+  construction** and a **finding** (SHOULD-FIX, or BLOCKER if it gates an
+  enforcement / metric path). The clock is injected: drive async work to
+  completion **synchronously** (call the single-tick function directly, not
+  `.fork` + sleep) and advance time **deterministically** with
+  `TestClock.adjust`. A bare `ZIO.sleep` in a test body is the tell. Worked
+  example: [#2042](https://github.com/wifihaven/wifihaven/issues/2042) —
+  `MetricsExportSpec` forked the rollup loop, `ZIO.sleep(600.millis)`,
+  interrupted, slept again, then asserted; it passed in isolation but flaked
+  an unrelated PR's CI under 14-worker contention. The standing rule lives in
+  [`docs/process/testing.md`](process/testing.md) ("Clock is always injected —
+  use `Clock.TestClock`"); this dimension enforces it at review. Legitimate
+  live-clock uses (measuring *real* elapsed duration) are exempt but must say
+  why inline.
 - **Bug fix → regression test that FAILS without the fix.** Confirm the test
   actually pins the bug, not just adjacent behavior.
 
