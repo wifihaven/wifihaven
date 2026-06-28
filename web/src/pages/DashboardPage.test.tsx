@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, act, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import type { DashboardNow, DashboardStats, QueryLog } from '@/types/api'
 
@@ -20,7 +21,7 @@ vi.mock('@/api/client', () => ({
 
 import { api } from '@/api/client'
 import { DashboardPage, NowSection, RecentlyBlockedSection } from './DashboardPage'
-import { withQuery } from '@/test/queryWrapper'
+import { withQuery, makeTestQueryClient } from '@/test/queryWrapper'
 
 const stats: DashboardStats = {
   totalToday: 1234,
@@ -104,6 +105,79 @@ const kpiNow: DashboardNow = {
   ],
 }
 
+// ── #1835 fixtures: device ranking, top-N cap, idle collapse ──────────────────
+type Dev = DashboardNow['profiles'][number]['activeDevices'][number]
+const dev = (name: string, lastSeenSeconds: number, activeSeconds: number): Dev => ({
+  id: Number(name.replace(/\D/g, '')) || name.charCodeAt(0),
+  name,
+  mac: `aa:bb:cc:dd:ff:${name.slice(0, 2)}`,
+  lastSeenSeconds,
+  topHosts: activeSeconds > 0
+    ? [{ host: { type: 'fqdn', value: `${name.toLowerCase()}.example` }, activeSeconds }]
+    : [],
+})
+
+// An 11-device "Family" card. Ranked by active-seconds DESC, the top 3 are
+// Streamer (900) · Browser (600) · Music (300). "Recent" is the *newest* device
+// (lastSeenSeconds 1) but has the LOWEST active-seconds (5) — so a recency rank
+// would float it to the top, while the active-seconds rank (#1835/Q6) sinks it
+// behind the expander. That contrast is the regression this fixture pins.
+const familyNow: DashboardNow = {
+  asOf: '2026-05-13T10:00:00Z',
+  profiles: [
+    {
+      id: 5,
+      name: 'Family',
+      paused: false,
+      activeDevices: [
+        dev('Recent', 1, 5),
+        dev('Streamer', 50, 900),
+        dev('Browser', 40, 600),
+        dev('Music', 45, 300),
+        dev('Dev05', 60, 250),
+        dev('Dev06', 60, 240),
+        dev('Dev07', 60, 230),
+        dev('Dev08', 60, 220),
+        dev('Dev09', 60, 210),
+        dev('Dev10', 60, 200),
+        dev('Dev11', 60, 190),
+      ],
+    },
+  ],
+}
+
+// One active profile + three idle profiles (one paused). Idle = zero active
+// devices; the paused-and-idle profile lives in the idle group too, tagged paused
+// when expanded.
+const idleNow: DashboardNow = {
+  asOf: '2026-05-13T10:00:00Z',
+  profiles: [
+    {
+      id: 1,
+      name: 'Kids',
+      paused: false,
+      activeDevices: [dev('iPhone', 30, 120)],
+    },
+    { id: 2, name: 'Adults', paused: false, activeDevices: [] },
+    { id: 3, name: 'Guest', paused: true, activeDevices: [] },
+    { id: 4, name: 'IoT', paused: false, activeDevices: [] },
+  ],
+}
+
+// Fresh row (30s) vs materially-stale row (120s, >60s vs the snapshot). Only the
+// stale row keeps its inline "Xs ago" flag (#825).
+const staleNow: DashboardNow = {
+  asOf: '2026-05-13T10:00:00Z',
+  profiles: [
+    {
+      id: 1,
+      name: 'Kids',
+      paused: false,
+      activeDevices: [dev('Fresh', 30, 120), dev('Stale', 120, 90)],
+    },
+  ],
+}
+
 const mockStats = () => api.logs.stats as unknown as ReturnType<typeof vi.fn>
 const mockQuery = () => api.logs.query as unknown as ReturnType<typeof vi.fn>
 const mockNow   = () => api.dashboard.now as unknown as ReturnType<typeof vi.fn>
@@ -112,6 +186,9 @@ const mockAlerts = () => api.alerts.list as unknown as ReturnType<typeof vi.fn>
 
 beforeEach(() => {
   vi.resetAllMocks()
+  // #1835: expander/idle-collapse state is per-session in sessionStorage; reset
+  // it between tests so one test's expansion doesn't leak into the next.
+  sessionStorage.clear()
   mockStats().mockResolvedValue(stats)
   // #1833: the unfiltered "Recent Queries" firehose is gone; only the
   // "Most recently blocked" panel hits api.logs.query (blocked=true).
@@ -255,25 +332,135 @@ describe('RecentlyBlockedSection (#1338)', () => {
 })
 
 describe('NowSection', () => {
-  it('renders one card per profile in id order, idle profiles dimmed', async () => {
+  it('renders an active card for an active profile; idle profiles collapse below', async () => {
     mockNow().mockResolvedValue(liveNow)
     render(withQuery(<NowSection />))
-    const kids   = await screen.findByTestId('now-profile-1')
-    const adults = screen.getByTestId('now-profile-2')
+    const kids = await screen.findByTestId('now-profile-1')
     expect(kids).toBeInTheDocument()
-    expect(adults).toHaveClass('opacity-60')
-    expect(screen.getByText(/No activity in the last 5 minutes/)).toBeInTheDocument()
+    // The idle "Adults" profile is no longer a top-level dimmed card — it lives in
+    // the idle-collapse row (#820), so it isn't rendered as its own card by default.
+    expect(screen.queryByTestId('now-profile-2')).not.toBeInTheDocument()
+    const collapse = screen.getByTestId('now-idle-collapse')
+    expect(within(collapse).getByText(/Idle \(1\)/)).toBeInTheDocument()
+    expect(within(collapse).getByText(/Adults/)).toBeInTheDocument()
   })
 
-  it('shows device name, last-seen, and top hosts', async () => {
+  it('shows device name and top hosts; no per-row timestamp for a fresh row (#825)', async () => {
     mockNow().mockResolvedValue(liveNow)
     render(withQuery(<NowSection />))
     await screen.findByTestId('now-device-aa:bb:cc:dd:ee:01')
     expect(screen.getByText('iPhone')).toBeInTheDocument()
-    expect(screen.getByText('30s ago')).toBeInTheDocument()
+    // iPhone's lastSeenSeconds (30) is not materially stale vs the snapshot, so no
+    // inline "Xs ago" — the single freshness pill in the header covers freshness.
+    expect(screen.queryByText('30s ago')).not.toBeInTheDocument()
     expect(screen.getAllByText('youtube.com').length).toBeGreaterThan(0)
     expect(screen.getByText('tiktok.com')).toBeInTheDocument()
     expect(screen.getByText('14m')).toBeInTheDocument()
+  })
+
+  // ── #1835: top-N device cap (#819) ──────────────────────────────────────────
+  it('caps an active card at the top-3 devices ranked by active-seconds, not recency (#819/Q6)', async () => {
+    mockNow().mockResolvedValue(familyNow)
+    render(withQuery(<NowSection />))
+    const card = await screen.findByTestId('now-profile-5')
+    // Top 3 by summed active-seconds: Streamer (900) · Browser (600) · Music (300).
+    expect(within(card).getByText('Streamer')).toBeInTheDocument()
+    expect(within(card).getByText('Browser')).toBeInTheDocument()
+    expect(within(card).getByText('Music')).toBeInTheDocument()
+    // "Recent" is the newest device but the least active — a recency rank would
+    // surface it; the active-seconds rank keeps it hidden behind the expander.
+    expect(within(card).queryByText('Recent')).not.toBeInTheDocument()
+    expect(within(card).queryByText('Dev11')).not.toBeInTheDocument()
+  })
+
+  it('renders a "show 8 more" expander on an 11-device card and reveals the rest in place (#819)', async () => {
+    const user = userEvent.setup()
+    mockNow().mockResolvedValue(familyNow)
+    render(withQuery(<NowSection />))
+    const card = await screen.findByTestId('now-profile-5')
+    const more = within(card).getByRole('button', { name: /show 8 more/i })
+    expect(more).toBeInTheDocument()
+    await user.click(more)
+    // Expanding reveals the rest in the same card (no modal / new section).
+    expect(within(card).getByText('Recent')).toBeInTheDocument()
+    expect(within(card).getByText('Dev11')).toBeInTheDocument()
+    expect(within(card).getByRole('button', { name: /show fewer/i })).toBeInTheDocument()
+  })
+
+  it('persists the card expander across remounts via sessionStorage (#819)', async () => {
+    const user = userEvent.setup()
+    mockNow().mockResolvedValue(familyNow)
+    const client = makeTestQueryClient()
+    const { unmount } = render(withQuery(<NowSection />, client))
+    const card = await screen.findByTestId('now-profile-5')
+    await user.click(within(card).getByRole('button', { name: /show 8 more/i }))
+    expect(sessionStorage.getItem('wh.now.card.5')).toBe('1')
+    // Remount (e.g. SPA navigation away and back) — expanded state survives.
+    unmount()
+    render(withQuery(<NowSection />, client))
+    const reCard = await screen.findByTestId('now-profile-5')
+    expect(within(reCard).getByText('Recent')).toBeInTheDocument()
+    expect(within(reCard).getByRole('button', { name: /show fewer/i })).toBeInTheDocument()
+  })
+
+  // ── #1835: idle-profile collapse (#820) ─────────────────────────────────────
+  it('collapses zero-active profiles into one row, expandable to dimmed cards with paused tags (#820)', async () => {
+    const user = userEvent.setup()
+    mockNow().mockResolvedValue(idleNow)
+    render(withQuery(<NowSection />))
+    await screen.findByTestId('now-profile-1') // active "Kids" card
+    const collapse = screen.getByTestId('now-idle-collapse')
+    // One ≤1-line row naming the three idle profiles.
+    expect(within(collapse).getByText(/Idle \(3\)/)).toBeInTheDocument()
+    for (const name of ['Adults', 'Guest', 'IoT']) {
+      expect(within(collapse).getByText(new RegExp(name))).toBeInTheDocument()
+    }
+    // Collapsed: no dimmed cards yet.
+    expect(screen.queryByTestId('now-profile-3')).not.toBeInTheDocument()
+    // Expand in place → full dimmed cards; the paused-and-idle "Guest" keeps its tag.
+    await user.click(within(collapse).getByRole('button'))
+    const guest = await screen.findByTestId('now-profile-3')
+    expect(guest).toHaveClass('opacity-60')
+    expect(within(guest).getByText('Paused')).toBeInTheDocument()
+    expect(screen.getByTestId('now-profile-2')).toHaveClass('opacity-60')
+  })
+
+  it('does not reorder active profiles when idle ones collapse (#820)', async () => {
+    mockNow().mockResolvedValue(idleNow)
+    render(withQuery(<NowSection />))
+    const kids = await screen.findByTestId('now-profile-1')
+    const collapse = screen.getByTestId('now-idle-collapse')
+    // Active card precedes the idle-collapse row in document order.
+    expect(kids.compareDocumentPosition(collapse) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('persists the idle-collapse expansion via sessionStorage (#820)', async () => {
+    const user = userEvent.setup()
+    mockNow().mockResolvedValue(idleNow)
+    render(withQuery(<NowSection />))
+    const collapse = await screen.findByTestId('now-idle-collapse')
+    await user.click(within(collapse).getByRole('button'))
+    expect(sessionStorage.getItem('wh.now.idle')).toBe('1')
+  })
+
+  // ── #1835: single freshness pill (#825) ─────────────────────────────────────
+  it('shows exactly one freshness pill in the header, sourced from dataUpdatedAt (#825)', async () => {
+    mockNow().mockResolvedValue(liveNow)
+    render(withQuery(<NowSection />))
+    const pill = await screen.findByTestId('now-freshness')
+    expect(pill).toHaveTextContent(/updated .*ago/i)
+    // It's the ONE freshness indicator — typical device rows carry no timestamp.
+    expect(screen.getByTestId('now-device-aa:bb:cc:dd:ee:01')).toBeInTheDocument()
+    expect(screen.queryByText('30s ago')).not.toBeInTheDocument()
+  })
+
+  it('still flags a materially-stale row (>60s vs snapshot) inline (#825)', async () => {
+    mockNow().mockResolvedValue(staleNow)
+    render(withQuery(<NowSection />))
+    await screen.findByText('Stale')
+    // The fresh row (30s) has no inline timestamp; the stale row (120s) does.
+    expect(screen.getByText('2m ago')).toBeInTheDocument()
+    expect(screen.queryByText('30s ago')).not.toBeInTheDocument()
   })
 
   it('renders "watching X · Nm" activity line for an active device', async () => {
