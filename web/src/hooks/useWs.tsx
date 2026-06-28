@@ -17,11 +17,13 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from 'react'
-import { useQueryClient, type QueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { api } from '@/api/client'
 import { qk, RECENT_BLOCKED_LIMIT, useInvalidators } from '@/api/queries'
 import { useAuth } from '@/hooks/useAuth'
 import { SpaWsClient, type SpaTopicName, type WsStatus } from '@/api/wsClient'
 import {
+  bucketSeconds,
   headBucketRows,
   mergeAggregateHeadRows,
   mergeHeadBucket,
@@ -246,9 +248,18 @@ export interface WsTrafficUsage {
  * `trafficUsage{groupBy:profile, bucket}` (§3.1, class 1): the live bandwidth gauge.
  * Subscribes with the chosen window (bucket); re-subscribes when the selector changes
  * (#747). The push carries only the live-edge bucket — we MERGE it into the cached
- * series by `windowStart` (§3.1). The series is ws-only (no poll fallback, §3.3): it
- * lives purely in the React Query cache, written by the push and read passively here, so
- * it shows "—" (empty rows) until the first push lands and while disconnected.
+ * series by `windowStart` (§3.1).
+ *
+ * #2017: the series is GET-seeded then ws-kept-live, per the design (§3.1/§5.3 — "the
+ * gauge loads its window via the existing GET … the socket pushes only the live edge").
+ * On mount and on every bucket change (the cache key changes → a fresh query) we issue
+ * ONE `GET /api/usage/traffic` for the current head window, so the gauge shows data
+ * instantly instead of blank until the first usage-ingest push (~up to ~70s). The `useQuery`
+ * observer writes — and re-renders on — the SAME `qk.trafficUsageLive(key)` the push patches,
+ * so the push's `mergeHeadBucket` keeps it live on top of the seed. This is a one-shot seed,
+ * NOT a poll (class-1 keeps no poll fallback, §3.3): `staleTime: Infinity` + no
+ * `refetchInterval` — it fetches on mount / key change only, and a reconnect invalidates the
+ * key (refetchKey) for a single reseed.
  */
 export function useWsTrafficUsage(initialBucket: TrafficUsageBucket = '1m'): WsTrafficUsage {
   const qc = useQueryClient()
@@ -270,10 +281,23 @@ export function useWsTrafficUsage(initialBucket: TrafficUsageBucket = '1m'): WsT
     key,
   )
 
-  // Passive cache reader: never fetches (§3.3 — no poll fallback for the live rate), just
-  // re-renders when the push writes the series cache. A disabled `useQuery` observer does
-  // NOT get cache-update notifications, so subscribe to the cache directly.
-  const data = useCachedQueryData<TrafficUsageResponse>(qc, key)
+  // The GET seed (#2017). A real query observer (not a passive cache read) so it fetches on
+  // mount / key change AND receives the push's `setQueryData` cache updates on the same key.
+  const { data } = useQuery({
+    queryKey: key,
+    queryFn: async () => {
+      const { from, to } = headWindow(bucket)
+      const body = await api.usage.traffic({ groupBy, bucket, from, to })
+      // A push can write the live edge while the GET is in flight; keep it on top so a
+      // late-resolving seed never clobbers fresher live data (the push's head ≥ the GET's
+      // for the same window). mergeHeadBucket keeps the GET's history, the push's head.
+      const live = qc.getQueryData<TrafficUsageResponse>(key)
+      return live ? mergeHeadBucket(body, live) : body
+    },
+    staleTime: Infinity,
+    refetchInterval: false,
+  })
+
   const rows = headBucketRows(data)
   return {
     live: streaming,
@@ -286,17 +310,16 @@ export function useWsTrafficUsage(initialBucket: TrafficUsageBucket = '1m'): WsT
 }
 
 /**
- * Subscribe to a single React Query key's cached data WITHOUT fetching — re-renders when
- * a `setQueryData` writes it (a disabled `useQuery` observer doesn't receive those). Used
- * for the ws-only trafficUsage series, which has no GET fallback (§3.3).
+ * The current head-bucket window `[floor(now, bucket), now]` for the seed GET (#2017).
+ * Flooring `from` to the bucket boundary makes the GET return exactly the current (head)
+ * window, so `headBucketRows` lands on it and the rate is right. `raw` has no fixed width —
+ * we floor to the nominal ~60s edge (`bucketSeconds('raw')`), giving the most-recent slice.
  */
-function useCachedQueryData<T>(qc: QueryClient, key: readonly unknown[]): T | undefined {
-  const keyHash = JSON.stringify(key)
-  const subscribe = useCallback((cb: () => void) => qc.getQueryCache().subscribe(cb), [qc])
-  // Re-read when the key changes (keyHash), not on every render. `key` is intentionally
-  // not a dep — keyHash is its serialized identity.
-  const getSnapshot = useCallback(() => qc.getQueryData<T>(key), [qc, keyHash])
-  return useSyncExternalStore(subscribe, getSnapshot)
+function headWindow(bucket: TrafficUsageBucket): { from: string; to: string } {
+  const nowMs = Date.now()
+  const secs = bucketSeconds(bucket)
+  const fromMs = Math.floor(nowMs / 1000 / secs) * secs * 1000
+  return { from: new Date(fromMs).toISOString(), to: new Date(nowMs).toISOString() }
 }
 
 // ── #1975 (S6b): stream the live edge of the Traffic Usage + Connection Events PAGES ──

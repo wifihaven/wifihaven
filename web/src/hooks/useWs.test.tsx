@@ -157,7 +157,7 @@ describe('useWsRecentBlocked (§3.1)', () => {
 })
 
 describe('useWsTrafficUsage (§3.1/#747)', () => {
-  it('merges the live-edge bucket into the series cache and subscribes with the bucket', () => {
+  it('merges the live-edge bucket into the series cache and subscribes with the bucket', async () => {
     const { qc, client, wrapper } = setup()
     const { result } = renderHook(() => useWsTrafficUsage('1m'), { wrapper })
     goLive(client)
@@ -176,9 +176,11 @@ describe('useWsTrafficUsage (§3.1/#747)', () => {
     act(() => last().emit({ op: 'trafficUsage', payload: push }))
     const key = qk.trafficUsageLive({ groupBy: ['profile'], bucket: '1m' })
     expect(qc.getQueryData<TrafficUsageResponse>(key)?.aggregateRows).toHaveLength(1)
-    // hook surfaces the derived overall rate (600 bytes / 60s = 10 B/s)
+    // hook surfaces the derived overall rate (600 bytes / 60s = 10 B/s). #2017: the gauge now
+    // reads via a `useQuery` observer (GET-seeded), which re-renders one tick after the push's
+    // setQueryData (vs the old synchronous cache read) — so await the derived value.
     expect(result.current.live).toBe(true)
-    expect(result.current.overall.bytesInPerSec).toBe(10)
+    await waitFor(() => expect(result.current.overall.bytesInPerSec).toBe(10))
   })
 
   it('re-subscribes (unsubscribe+subscribe) when the bucket selector changes', () => {
@@ -254,11 +256,12 @@ describe('useWsTrafficUsage seeds via GET (#2017)', () => {
     goLive(client)
     act(() => last().emit({ op: 'ack', payload: { topic: 'trafficUsage', status: 'ok' } }))
     await waitFor(() => expect(result.current.rows).toHaveLength(1))
+    expect(result.current.overall.bytesInPerSec).toBe(10) // seed: 600 / 60s
 
     // A push for the SAME head window with higher cumulative bytes replaces the head in place.
     act(() => last().emit({ op: 'trafficUsage', payload: seedResp('1m', [{ profile: 'Kids', windowStart: '2026-06-26T10:05:00Z', bytesIn: 1200 }]) }))
+    await waitFor(() => expect(result.current.overall.bytesInPerSec).toBe(20)) // 1200 / 60s — push merged on the seed
     expect(result.current.rows).toHaveLength(1)
-    expect(result.current.overall.bytesInPerSec).toBe(20) // 1200 bytes / 60s — push merged on the seed
   })
 
   it('re-seeds via a fresh GET when the bucket changes', async () => {
