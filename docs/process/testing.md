@@ -63,6 +63,19 @@ for
 yield ...
 ```
 
+**Never wait on wall-clock time for async work.** A test must not `ZIO.sleep`
+(or otherwise block on real wall-time) to *wait for* a background fiber, poller,
+cache refresh, or scheduled effect to land — typically under
+`@@ TestAspect.withLiveClock` or a `Clock.live` layer. That shape is flaky by
+construction: it passed `MetricsExportSpec` in isolation (it forked the rollup
+loop, `ZIO.sleep(600.millis)`, interrupted, slept again, then asserted) but
+flaked an unrelated PR's CI under 14-worker contention
+([#2042](https://github.com/wifihaven/wifihaven/issues/2042)). Drive async work
+to completion **synchronously** (call the single-tick function directly, not
+`.fork` + sleep) and advance time **deterministically** with `TestClock.adjust`.
+Measuring *real* elapsed duration is the only legitimate live-clock use, and it
+must say why inline.
+
 ### ZIO primitives for mutable state
 
 Use ZIO primitives everywhere except tight inner loops:

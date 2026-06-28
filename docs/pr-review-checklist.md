@@ -86,40 +86,19 @@ in [#1561](https://github.com/wifihaven/wifihaven/issues/1561).
   gates, so the gate only holds if test weakening is caught here.)
 - **Is the new behavior actually asserted** — not merely compiled or exercised
   without a check? Are negative / edge / boundary cases covered?
-- **Right level.** Feature tests through the full stack
-  (HTTP → route → service → repo → embedded Postgres) are preferred; unit tests
-  are reserved for pure edge cases (policy logic, schedule boundaries, pattern
-  matching, time arithmetic).
-- **Mocks: external I/O only.** Only mock what genuinely can't run in CI — the
-  router agents' network I/O, injected as function parameters (`get_fn` /
-  `write_fn` / `exec_fn`), never a stubbed HTTP client. **Never** mock
-  repositories, `AuthService`, or `Clock`: repos run against real embedded
-  Postgres (`zonkyio/embedded-postgres` via `TestDatabase.layer`) so the actual
-  SQL is exercised, and `Clock` comes via `Clock.TestClock`. A test that mocks a
-  repo / `AuthService` / `Clock`, or stubs something runnable in CI, is a
-  **finding** (BLOCKER when it lets a regression through untested SQL or auth).
-- **ZIO primitives for mutable state.** Test (and prod) mutable state uses ZIO
-  primitives — `Ref` / `Ref.Synchronized` / `Queue` / `Hub` — not raw mutable
-  Scala collections. A `mutable.HashMap`/`var`/`ArrayBuffer` shared across
-  fibers or effects is a finding (race-prone); a tight single-fiber inner loop
-  is the only exemption and must document why inline.
-- **No wall-clock waits / timing-sensitive tests.** A test that `ZIO.sleep`s
-  (or otherwise blocks on real wall-time) to *wait for* a background fiber,
-  poller, cache refresh, or scheduled effect to land — typically under
-  `@@ TestAspect.withLiveClock` / a `Clock.live` layer — is **flaky by
-  construction** and a **finding** (SHOULD-FIX, or BLOCKER if it gates an
-  enforcement / metric path). The clock is injected: drive async work to
-  completion **synchronously** (call the single-tick function directly, not
-  `.fork` + sleep) and advance time **deterministically** with
-  `TestClock.adjust`. A bare `ZIO.sleep` in a test body is the tell. Worked
-  example: [#2042](https://github.com/wifihaven/wifihaven/issues/2042) —
-  `MetricsExportSpec` forked the rollup loop, `ZIO.sleep(600.millis)`,
-  interrupted, slept again, then asserted; it passed in isolation but flaked
-  an unrelated PR's CI under 14-worker contention. The standing rule lives in
-  [`docs/process/testing.md`](process/testing.md) ("Clock is always
-  injected") — use `Clock.TestClock` in tests; this dimension enforces it at
-  review. Legitimate live-clock uses (measuring *real* elapsed duration) are
-  exempt but must say why inline.
+- **Tests conform to [`docs/process/testing.md`](process/testing.md)** — that
+  file is the authoritative source for how tests are written; **read it and
+  check the diff against it, don't re-derive its rules here.** The ones that
+  most often surface as findings: **right level** (feature test through the full
+  stack vs unit only for the edge cases it enumerates), **mocks — external I/O
+  only** (never a repo / `AuthService` / `Clock`; CI-runnable code uses the real
+  thing), **`Clock` injected via `TestClock`** — including **no wall-clock
+  `ZIO.sleep` waits** for a background fiber / poller / cache to catch up (the
+  [#2042](https://github.com/wifihaven/wifihaven/issues/2042) flaky class) — and
+  **ZIO primitives for mutable state**. A test that breaks a rule there is a
+  finding — **BLOCKER** when it hides a regression (mocked SQL/auth, weakened
+  assertion) or gates an enforcement / metric path (a flaky wall-clock wait),
+  otherwise SHOULD-FIX.
 - **Bug fix → regression test that FAILS without the fix.** Confirm the test
   actually pins the bug, not just adjacent behavior.
 
