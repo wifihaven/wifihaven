@@ -175,6 +175,9 @@ _wait_lan_bridge_ready() {
   local flags_file="${WH_SYS_CLASS_NET:-/sys/class/net}/${WH_LAN_BRIDGE}/flags"
   [[ -r "${flags_file}" ]] || return 0
   local flags
+  # ~10s budget (20 × 0.5s) — deliberately short vs. the 90s boot budget: the
+  # bridge is already created+brought-up by router-up.sh, so this only absorbs
+  # a brief IFF_UP/carrier lag under shared-host load, not a real bring-up.
   for _ in $(seq 1 20); do
     flags="$(cat "${flags_file}" 2>/dev/null || echo 0)"
     if (( (flags & 0x1) != 0 )); then
