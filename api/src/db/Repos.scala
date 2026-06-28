@@ -471,6 +471,12 @@ case class TrafficReportInsert(
     // pre-#730 agents do not emit it; stored as NULL on traffic_reports.dest_ip
     // for those records.
     destIp: Option[IpAddress] = None,
+    // #2025: the real activity envelope (first/last growth-sample wall-clock).
+    // Optional because pre-#2025 agents do not emit it; stored as NULL on
+    // traffic_reports.active_start / active_end for those records, and
+    // Presence.spanOf falls back to the [period_start, period_end] flush window.
+    activeStart: Option[Instant] = None,
+    activeEnd: Option[Instant] = None,
 )
 
 case class BlockEventInsert(
@@ -1762,7 +1768,7 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
   def insertBatch(reports: List[TrafficReportInsert]) =
     DbMetrics.timed("traffic.insertBatch")(
       Update[TrafficReportInsert](
-        "INSERT INTO traffic_reports(router_id,mac,ip,host_type,host_value,date,period_start,period_end,active_seconds,bytes_in,bytes_out,dest_ip) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(router_id,period_start,mac,host_type,host_value) DO NOTHING",
+        "INSERT INTO traffic_reports(router_id,mac,ip,host_type,host_value,date,period_start,period_end,active_seconds,bytes_in,bytes_out,dest_ip,active_start,active_end) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(router_id,period_start,mac,host_type,host_value) DO NOTHING",
       ).updateMany(reports).transact(xa),
     )
   // TODO(#730): remove this read-side join once usage records carry dest_ip.
@@ -1825,7 +1831,19 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
       fromInstant: Instant,
       toInstant: Instant,
   ): Task[List[wifihaven.api.presence.PresenceRow]] = {
-    type Row = (MacAddress, LocalDate, Instant, HostId, Int, Long, Long, Instant, Instant)
+    type Row = (
+        MacAddress,
+        LocalDate,
+        Instant,
+        HostId,
+        Int,
+        Long,
+        Long,
+        Instant,
+        Instant,
+        Option[Instant],
+        Option[Instant],
+    )
     macs match {
       case Nil => ZIO.succeed(List.empty[wifihaven.api.presence.PresenceRow])
       case ms  =>
@@ -1841,7 +1859,8 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
                            THEN 'fqdn' ELSE tr.host_type END,
                       COALESCE(CASE WHEN tr.host_type IN ('ipv4','ipv6') THEN ce.resolved_host_value END,
                                tr.host_value),
-                      tr.active_seconds, tr.bytes_in, tr.bytes_out, tr.period_start, tr.period_end
+                      tr.active_seconds, tr.bytes_in, tr.bytes_out, tr.period_start, tr.period_end,
+                      tr.active_start, tr.active_end
                FROM traffic_reports tr
                ${SqlFragments.resolvedHostLateral}
                WHERE tr.period_start >= $fromInstant AND tr.period_start < $toInstant
@@ -1849,9 +1868,10 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
                  AND """ ++ Fragments.in(fr"tr.mac", nel)
         val cio =
           q.query[Row]
-            .map { case (m, d, ps, host, secs, bin, bout, pStart, pEnd) =>
+            .map { case (m, d, ps, host, secs, bin, bout, pStart, pEnd, aStart, aEnd) =>
               val periodSeconds = math.max(0L, pEnd.getEpochSecond - pStart.getEpochSecond).toInt
-              wifihaven.api.presence.PresenceRow(m, d, ps, host, secs, bin + bout, periodSeconds)
+              wifihaven.api.presence
+                .PresenceRow(m, d, ps, host, secs, bin + bout, periodSeconds, aStart, aEnd)
             }
             .to[List]
         // Bound each per-request read: a pathological window fails fast with a typed
@@ -1868,7 +1888,19 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
       to: LocalDate,
       since: Option[Instant] = None,
   ) = {
-    type Row = (MacAddress, LocalDate, Instant, HostId, Int, Long, Long, Instant, Instant)
+    type Row = (
+        MacAddress,
+        LocalDate,
+        Instant,
+        HostId,
+        Int,
+        Long,
+        Long,
+        Instant,
+        Instant,
+        Option[Instant],
+        Option[Instant],
+    )
     macs match {
       case Nil => ZIO.succeed(List.empty[wifihaven.api.presence.PresenceRow])
       case ms  =>
@@ -1879,7 +1911,8 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
                            THEN 'fqdn' ELSE tr.host_type END,
                       COALESCE(CASE WHEN tr.host_type IN ('ipv4','ipv6') THEN ce.resolved_host_value END,
                                tr.host_value),
-                      tr.active_seconds, tr.bytes_in, tr.bytes_out, tr.period_start, tr.period_end
+                      tr.active_seconds, tr.bytes_in, tr.bytes_out, tr.period_start, tr.period_end,
+                      tr.active_start, tr.active_end
                FROM traffic_reports tr
                ${SqlFragments.resolvedHostLateral}
                WHERE tr.date BETWEEN $from AND $to
@@ -1888,9 +1921,10 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
             since.fold(fr"")(s => fr"AND tr.period_start >= $s")
         DbMetrics.timed("traffic.listPresenceRows")(
           q.query[Row]
-            .map { case (m, d, ps, host, secs, bin, bout, pStart, pEnd) =>
+            .map { case (m, d, ps, host, secs, bin, bout, pStart, pEnd, aStart, aEnd) =>
               val periodSeconds = math.max(0L, pEnd.getEpochSecond - pStart.getEpochSecond).toInt
-              wifihaven.api.presence.PresenceRow(m, d, ps, host, secs, bin + bout, periodSeconds)
+              wifihaven.api.presence
+                .PresenceRow(m, d, ps, host, secs, bin + bout, periodSeconds, aStart, aEnd)
             }
             .to[List]
             .transact(xa),

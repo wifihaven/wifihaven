@@ -102,6 +102,47 @@ object TimeStatusServiceSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
       tr.insertBatch(inserts).unit
     }
 
+  /**
+   * #2025: seed `count` consecutive WIDE flush windows of `periodSec` each (the conntrack-stall
+   * shape, sibling #2024) for one device/host, where each window carries only `activeSec` of REAL
+   * activity at its leading edge via the self-describing `active_start`/`active_end` columns. This
+   * is the prod #2016 shape: a ~20 s burst inside a ~500 s flush window. With the activity envelope
+   * the server credits only the real activity; without it (the `withEnvelope = false` arm) it
+   * credits the whole ballooned flush window. Starts at midnight UTC on `date`.
+   */
+  private def seedStallTraffic(
+      routerId: RouterId,
+      mac: String,
+      hostname: String,
+      date: LocalDate,
+      count: Int,
+      periodSec: Int,
+      activeSec: Int,
+      withEnvelope: Boolean = true,
+  ): ZIO[TrafficReportRepo, Throwable, Unit] =
+    ZIO.serviceWithZIO[TrafficReportRepo] { tr =>
+      val day0    = date.atStartOfDay(ZoneOffset.UTC).toInstant
+      val inserts = (0 until count).map { i =>
+        val start = day0.plusSeconds(i.toLong * periodSec.toLong)
+        TrafficReportInsert(
+          routerId,
+          MacAddress.unsafe(mac),
+          None,
+          HostId.Fqdn(Hostname.unsafe(hostname)),
+          date,
+          start,
+          start.plusSeconds(periodSec.toLong),
+          math.min(activeSec, periodSec),
+          500_000L,
+          500_000L,
+          None,
+          if (withEnvelope) Some(start) else None,
+          if (withEnvelope) Some(start.plusSeconds(activeSec.toLong)) else None,
+        )
+      }.toList
+      tr.insertBatch(inserts).unit
+    }
+
   private def settingsWithTz(
       hsr: HouseholdSettingsRepo,
       tz: String,
@@ -322,6 +363,115 @@ object TimeStatusServiceSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
             ),
           ),
         )
+    },
+    test("#2025 STALL: wide flush windows with tight activity envelopes give bounded usedMinutes") {
+      // The prod #2016 shape: 5 contiguous 500 s flush windows (the conntrack-gated loop stalling
+      // on a quiet LAN, sibling #2024) each carrying only 20 s of REAL activity. Pre-#2025 the
+      // server credited the whole 2500 s (~41 min) as continuous presence; with self-describing
+      // buckets it credits only the ~100 s activity envelope (<2 min). The withEnvelope=false arm
+      // reproduces the un-defended over-count, pinning that the envelope path is strictly tighter.
+      for {
+        _   <- cleanDb
+        hsr <- ZIO.service[HouseholdSettingsRepo]
+        pr  <- ZIO.service[ProfileRepo]
+        dr  <- ZIO.service[DeviceRepo]
+        s   <- settingsWithTz(hsr, "UTC")
+        kid <- TestLayers.seedKidsProfile(pr)
+        _   <- TestLayers.seedDevice(dr, "aa:bb:cc:dd:ee:30", "kid-ipad", kid)
+        rid <- seedRouterRow
+        today = LocalDate.of(2025, 1, 6)
+        _   <- seedStallTraffic(rid, "aa:bb:cc:dd:ee:30", "gimkit.com", today, 5, 500, 20)
+        svc <- makeService
+        now = LocalDateTime.of(2025, 1, 6, 12, 0).toInstant(ZoneOffset.UTC)
+        bounded <- svc.dayStateLive(now, today, s, kid)
+        // Re-seed the SAME shape without the envelope (an old agent) to show the over-count it
+        // structurally prevents.
+        _       <- cleanDb
+        s2      <- settingsWithTz(hsr, "UTC")
+        kid2    <- TestLayers.seedKidsProfile(pr)
+        _       <- TestLayers.seedDevice(dr, "aa:bb:cc:dd:ee:31", "kid-ipad", kid2)
+        rid2    <- seedRouterRow
+        _       <- seedStallTraffic(
+          rid2,
+          "aa:bb:cc:dd:ee:31",
+          "gimkit.com",
+          today,
+          5,
+          500,
+          20,
+          withEnvelope = false,
+        )
+        svc2    <- makeService
+        balloon <- svc2.dayStateLive(now, today, s2, kid2)
+      } yield assertTrue(
+        bounded.exists(_.usedMinutes <= 2),
+        balloon.exists(_.usedMinutes >= 30),
+        bounded.map(_.usedMinutes).getOrElse(0) < balloon.map(_.usedMinutes).getOrElse(0),
+      )
+    },
+    test("#2025 invariant: per-app usedMinutes ⊆ profile usedMinutes for a non-exempt app") {
+      // A NON-exempt app's engaged minutes can never exceed the profile's total — the per-app
+      // surface and the daily total derive from the same #1464 session-stitch primitive, and a
+      // non-exempt app's buckets are a subset of the counted set. (Exempt apps are excluded from
+      // the total and may exceed it — that's the documented carve-out, not tested here.) Pinned
+      // under the stall shape so a refactor that re-inflates one surface but not the other fails.
+      for {
+        _   <- cleanDb
+        hsr <- ZIO.service[HouseholdSettingsRepo]
+        pr  <- ZIO.service[ProfileRepo]
+        dr  <- ZIO.service[DeviceRepo]
+        ar  <- ZIO.service[AppRepo]
+        s   <- settingsWithTz(hsr, "UTC")
+        kid <- TestLayers.seedKidsProfile(pr)
+        _   <- TestLayers.seedDevice(dr, "aa:bb:cc:dd:ee:32", "kid-ipad", kid)
+        _   <- TestLayers.seedAppAssignment(
+          ar,
+          kid,
+          "gimkit.com",
+          AppMode.TimeLimited,
+          dailyMinutes = Some(120),
+          exemptFromDaily = false,
+        )
+        rid <- seedRouterRow
+        today = LocalDate.of(2025, 1, 6)
+        _   <- seedStallTraffic(rid, "aa:bb:cc:dd:ee:32", "www.gimkit.com", today, 5, 500, 20)
+        svc <- makeService
+        now = LocalDateTime.of(2025, 1, 6, 12, 0).toInstant(ZoneOffset.UTC)
+        stOpt <- svc.dayStateLive(now, today, s, kid)
+      } yield assertTrue(
+        stOpt.exists { st =>
+          val appMins = st.perApp.find(_.domainPattern == "gimkit.com").map(_.usedMinutes)
+          appMins.forall(_ <= st.usedMinutes)
+        },
+      )
+    },
+    test("#2025 invariant: Dedup-mode profile usedMinutes ≤ elapsed wall-clock and ≤ 1440") {
+      // A single profile's presence can never exceed real elapsed wall-clock under Dedup (one human
+      // can't be present longer than the day so far). Two devices on the SAME stalled windows: Sum
+      // would double them, but Dedup unions them — and with the activity envelope the union is the
+      // ~100 s of real activity, comfortably under both the elapsed-since-midnight bound and 1440.
+      for {
+        _    <- cleanDb
+        hsr  <- ZIO.service[HouseholdSettingsRepo]
+        pr   <- ZIO.service[ProfileRepo]
+        dr   <- ZIO.service[DeviceRepo]
+        s    <- settingsWithTz(hsr, "UTC")
+        kid  <- TestLayers.seedKidsProfile(pr)
+        prof <- pr.findById(kid).map(_.get)
+        _    <- pr.update(prof.copy(crossDeviceOverlapMode = CrossDeviceOverlapMode.Dedup))
+        _    <- TestLayers.seedDevice(dr, "aa:bb:cc:dd:ee:33", "kid-a", kid)
+        _    <- TestLayers.seedDevice(dr, "aa:bb:cc:dd:ee:34", "kid-b", kid)
+        rid  <- seedRouterRow
+        today = LocalDate.of(2025, 1, 6)
+        _   <- seedStallTraffic(rid, "aa:bb:cc:dd:ee:33", "gimkit.com", today, 5, 500, 20)
+        _   <- seedStallTraffic(rid, "aa:bb:cc:dd:ee:34", "gimkit.com", today, 5, 500, 20)
+        svc <- makeService
+        // now = 00:45 — elapsed wall-clock since midnight is 45 min.
+        now = LocalDateTime.of(2025, 1, 6, 0, 45).toInstant(ZoneOffset.UTC)
+        stOpt <- svc.dayStateLive(now, today, s, kid)
+      } yield assertTrue(
+        stOpt.exists(st => st.usedMinutes <= 45 && st.usedMinutes <= 1440),
+      )
     },
   ) @@ TestAspect.sequential
 }
