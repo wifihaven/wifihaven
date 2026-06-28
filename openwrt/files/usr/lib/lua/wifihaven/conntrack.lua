@@ -42,6 +42,25 @@ local host_norm        = require("wifihaven.host_norm")
 -- mistakes it for a flow.
 M.TICK_SENTINEL = "\001wh_tick"
 
+-- sanitize_tick_interval(v) -> int >= 1  (#2024)
+--
+-- The heartbeat cadence reaches BOTH string.format("%d", n) (the popen command
+-- builder) and shell `sleep n`, each of which needs a positive integer. On the
+-- Lua 5.1 target string.format("%d", 2.5) is a HARD ERROR
+-- (`integer expected, got number`) — which, raised inside watch()'s foreground
+-- loop, would crash the agent into a procd respawn storm — and `sleep 0`
+-- busy-loops. Every other cadence knob is only ever used in float-safe `>=`
+-- arithmetic, so this is the one value that must be floored + clamped. A
+-- fractional / zero / negative / non-numeric UCI value collapses to the 1 s
+-- default rather than bricking or spinning the watcher.
+function M.sanitize_tick_interval(v)
+  local n = tonumber(v)
+  if not n then return 1 end
+  n = math.floor(n)
+  if n < 1 then return 1 end
+  return n
+end
+
 -- ---------------------------------------------------------------------------
 -- eb_san(host) -> string
 --
@@ -1127,8 +1146,10 @@ function M.watch(cfg)
 
   -- #2024 idle-heartbeat cadence (seconds). The shell wrapper below echoes
   -- M.TICK_SENTINEL into the popen stream every tick_int seconds so the read
-  -- loop wakes — and drives on_tick — even when conntrack is silent.
-  local tick_int = cfg.tick_interval or 1
+  -- loop wakes — and drives on_tick — even when conntrack is silent. Sanitize
+  -- to a positive integer: tick_int feeds string.format("%d") and shell `sleep`
+  -- (a fractional value is a hard error on Lua 5.1; 0 busy-loops).
+  local tick_int = M.sanitize_tick_interval(cfg.tick_interval)
 
   log.info("conntrack: starting watcher lan_prefix=%s lan_prefix_v6=%s max_batch=%d flush_interval=%ds tick_interval=%ds",
            lan_prefix, lan_prefix_v6, max_batch, flush_int, tick_int)

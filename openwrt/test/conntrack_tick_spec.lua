@@ -49,6 +49,20 @@ describe("watch() idle heartbeat cadence (#2024)", function()
     return cfg
   end
 
+  it("sanitizes tick_interval to a positive integer (#2024 BLOCKER)", function()
+    -- tick_int feeds string.format("%d") + shell `sleep`; on Lua 5.1 a
+    -- fractional value is a hard error and 0 busy-loops. Anything not a
+    -- positive integer must collapse to the 1 s default.
+    assert.are.equal(3, conntrack.sanitize_tick_interval(3))
+    assert.are.equal(2, conntrack.sanitize_tick_interval(2.5))   -- floored
+    assert.are.equal(5, conntrack.sanitize_tick_interval("5"))    -- numeric string
+    assert.are.equal(1, conntrack.sanitize_tick_interval(0))      -- no sleep 0 spin
+    assert.are.equal(1, conntrack.sanitize_tick_interval(-5))     -- negative
+    assert.are.equal(1, conntrack.sanitize_tick_interval(0.4))    -- floors to 0 -> clamp
+    assert.are.equal(1, conntrack.sanitize_tick_interval(nil))    -- unset
+    assert.are.equal(1, conntrack.sanitize_tick_interval("abc"))  -- non-numeric
+  end)
+
   it("exposes a stable TICK_SENTINEL distinct from any conntrack line", function()
     assert.is_string(conntrack.TICK_SENTINEL)
     -- A real conntrack -E NEW line begins with optional spaces then a protocol

@@ -1320,7 +1320,11 @@ conntrack.watch({
       -- — exactly the #2016 over-count condition. Count it as a leading
       -- indicator so a regression surfaces on the fleet dashboard before it
       -- shows up as inflated usedMinutes. Guard the backward-clock case (#336):
-      -- a negative span is a wall-clock jump, not a stall.
+      -- a negative span is a wall-clock jump, not a stall. A large FORWARD jump
+      -- (NTP step) can still trip this as a false positive — accepted: it's a
+      -- best-effort diagnostic counter with no enforcement impact, and a forward
+      -- step also genuinely inflates the reported window, so flagging it is not
+      -- wrong.
       local window_seconds = wall - ts.last_usage_wall_ts
       if window_seconds > 2 * usage_int then
         metrics.inc_counter(mreg, "usage_window_stall_total", {})
