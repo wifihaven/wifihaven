@@ -1,0 +1,38 @@
+-- V62__traffic_reports_active_window.sql
+-- #2025: add `active_start TIMESTAMPTZ NULL` and `active_end TIMESTAMPTZ NULL`
+-- to traffic_reports so router→api UsageRecords can carry the REAL activity
+-- envelope of the bucket — the wall-clock of the first and last sample tick
+-- that observed byte growth — separate from the `[period_start, period_end]`
+-- FLUSH window.
+--
+-- Why: the #1464 server session-stitch (`Presence.spanOf`) credits each row's
+-- full `[period_start, period_end]` interval as continuous engaged presence.
+-- That window is "time since the last flush", not "time the device was active".
+-- When a flush stalls (the conntrack-gated loop on a quiet LAN — sibling #2024)
+-- the window balloons and the server over-counts screen-time (prod #2016: a
+-- ~20s activity burst in a 517s window read as ~8.6 min). With the real
+-- activity window on the row, `spanOf` can use `[active_start, active_end]`
+-- and the over-count becomes structurally impossible.
+--
+-- Why nullable: this is the foundational schema bump (migrations are isolated
+-- PRs — see AGENTS.md §migrations-back-compat); the follow-up code PR adds the
+-- wire field, the agent emission, the API persist path, and the read into
+-- PresenceRow. Pre-existing rows have no activity window and post-PR1
+-- image-(N-1) inserts do not supply one. The columns stay NULL for those; the
+-- server falls back to `[period_start, period_end]` exactly as before, so the
+-- decode/read path tolerates absence (additive wire — both sides ignore
+-- absent fields). Only new agents (after the follow-up code PR ships)
+-- populate them.
+--
+-- Migration cost at prod scale (traffic_reports is an unbounded-growth,
+-- weekly-partitioned table — see V41 / docs/design/db-partitioning.md):
+-- ADD COLUMN ... TIMESTAMPTZ NULL on a partitioned parent table propagates to
+-- every partition as a metadata-only change (Postgres stores a NULL default,
+-- no table rewrite, no row-by-row work). Safe on the startup critical path
+-- even against the full prod history. No index is added: these columns are
+-- read only via the existing per-(mac, period_start) presence SELECTs that
+-- already prune on the `period_start` partition key, never filtered or joined
+-- on directly.
+
+ALTER TABLE traffic_reports ADD COLUMN active_start TIMESTAMPTZ;
+ALTER TABLE traffic_reports ADD COLUMN active_end TIMESTAMPTZ;
