@@ -2838,17 +2838,42 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
     withRollupLock(RollupLockKeys.ConnEventsDaily)(q.update.run)
   }
 
+  // #1837: the 24h aggregations (totalToday / blockedToday / topBlocked) read the
+  // pre-aggregated `connection_events_hourly` rollup (#1265 / #809) instead of a raw
+  // 24h scan of the unbounded, weekly-partitioned `connection_events` table — the
+  // #1098 perceived-latency fix. The window is hour-bucket-granular (24 buckets via
+  // the idx_ce_hourly_bucket_start range scan); the dashboard 24h panel is
+  // explicitly request/response, not realtime (design dashboard-redesign.md §8.2),
+  // so the up-to-one-hour tail lag of the hourly reroll (RollupJobs.HourlyInterval)
+  // is acceptable. Two behavioural notes vs the old raw scan, both intentional:
+  //   - the rollup excludes multicast/broadcast at write time (#1265 PR3), so these
+  //     totals omit multicast the raw scan counted — arguably more honest for a
+  //     "connection events" number, and equal to raw on a multicast-free window;
+  //   - the rollup stores only `hostname` (COALESCE(resolved_host_value, host_value)),
+  //     dropping the host_type discriminator, so topBlocked re-infers the HostId kind
+  //     from the string (hostIdFromRollup).
+  // The 1h tiles (totalHour / blockedHour) and the "Most Recently Blocked" recency
+  // feed legitimately need the live raw tail and stay on `connection_events`.
+  // perDevice was dropped from the dashboard in #1836 (per-device volume belongs on
+  // /devices + /profiles), so its raw 24h scan is removed entirely, not re-pointed.
   def stats =
     for {
-      tt  <- sql"SELECT COUNT(*)::INT FROM connection_events WHERE ts > NOW()-INTERVAL '24 hours'"
-        .query[Int]
-        .unique
-        .transact(xa)
-      bt  <-
-        sql"SELECT COUNT(*)::INT FROM connection_events WHERE ts > NOW()-INTERVAL '24 hours' AND NOT allowed"
+      tt  <- DbMetrics.timed("stats.total24h")(
+        sql"""SELECT COALESCE(SUM(count_succeeded + count_blocked), 0)::INT
+              FROM connection_events_hourly
+              WHERE bucket_start > NOW() - INTERVAL '24 hours'"""
           .query[Int]
           .unique
-          .transact(xa)
+          .transact(xa),
+      )
+      bt  <- DbMetrics.timed("stats.blocked24h")(
+        sql"""SELECT COALESCE(SUM(count_blocked), 0)::INT
+              FROM connection_events_hourly
+              WHERE bucket_start > NOW() - INTERVAL '24 hours'"""
+          .query[Int]
+          .unique
+          .transact(xa),
+      )
       th  <- sql"SELECT COUNT(*)::INT FROM connection_events WHERE ts > NOW()-INTERVAL '1 hour'"
         .query[Int]
         .unique
@@ -2858,31 +2883,31 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
           .query[Int]
           .unique
           .transact(xa)
-      top <- sql"""SELECT CASE WHEN resolved_host_value IS NOT NULL THEN 'fqdn' ELSE host_type END,
-                          COALESCE(resolved_host_value, host_value),
-                          COUNT(*)::INT
-                   FROM connection_events
-                   WHERE NOT allowed AND ts > NOW()-INTERVAL '24 hours'
-                   GROUP BY 1, 2 ORDER BY COUNT(*) DESC LIMIT 10"""
-        .query[(HostId, Int)]
-        .map(DomainCount.apply)
-        .to[List]
-        .transact(xa)
-      dev <- sql"""SELECT ce.mac::TEXT,
-                          COALESCE(d.name, ce.mac),
-                          COUNT(*)::INT,
-                          SUM(CASE WHEN NOT ce.allowed THEN 1 ELSE 0 END)::INT
-                   FROM connection_events ce
-                   LEFT JOIN devices d ON d.mac = ce.mac
-                   WHERE ce.ts > NOW()-INTERVAL '24 hours'
-                     AND ce.mac IS NOT NULL
-                   GROUP BY ce.mac, d.name
-                   ORDER BY COUNT(*) DESC LIMIT 20"""
-        .query[(MacAddress, String, Int, Int)]
-        .map(DeviceStats.apply)
-        .to[List]
-        .transact(xa)
-    } yield DashboardStats(tt, bt, th, bh, top, dev)
+      top <- DbMetrics.timed("stats.topBlocked24h")(
+        sql"""SELECT hostname, SUM(count_blocked)::INT AS c
+              FROM connection_events_hourly
+              WHERE bucket_start > NOW() - INTERVAL '24 hours'
+              GROUP BY hostname HAVING SUM(count_blocked) > 0
+              ORDER BY c DESC LIMIT 10"""
+          .query[(String, Int)]
+          .map { case (h, c) => DomainCount(hostIdFromRollup(h), c) }
+          .to[List]
+          .transact(xa),
+      )
+    } yield DashboardStats(tt, bt, th, bh, top)
+
+  // #1837: reconstruct a HostId from the rollup's bare `hostname` string. The
+  // hourly/daily rollups drop host_type, so re-infer it: an IP literal → IPv4/IPv6,
+  // a parseable hostname → Fqdn, otherwise a synthetic Label (the rare static-ip-
+  // range attribution, #1708, which is never pattern-matched). IP is tried first
+  // because some IP literals also parse as bare hostname labels.
+  private def hostIdFromRollup(s: String): HostId =
+    IpAddress
+      .parse(s)
+      .toOption
+      .map(HostId.ip)
+      .orElse(Hostname.parse(s).toOption.map(HostId.fqdn))
+      .getOrElse(HostId.Label(s))
 
   def topBlocked(hours: Int, lim: Int) =
     sql"""SELECT CASE WHEN resolved_host_value IS NOT NULL THEN 'fqdn' ELSE host_type END,

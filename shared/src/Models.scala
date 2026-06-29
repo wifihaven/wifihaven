@@ -822,18 +822,19 @@ case class GrantExtensionRequest(
     note: Option[String],
 ) derives JsonCodec
 
+// #1837: `perDevice` (per-device 24h volume leaderboard) was dropped from the
+// dashboard in #1836 — that data belongs on /devices + /profiles, not a security
+// panel. The field and its now-dead raw 24h scan are removed; the 24h aggregations
+// below ride the connection_events rollup (see ConnectionEventRepoLive.stats).
 case class DashboardStats(
     totalToday: Int,
     blockedToday: Int,
     totalHour: Int,
     blockedHour: Int,
     topBlocked: List[DomainCount],
-    perDevice: List[DeviceStats],
 ) derives JsonCodec
 
 case class DomainCount(host: HostId, count: Int) derives JsonCodec
-case class DeviceStats(mac: MacAddress, deviceName: String, total: Int, blocked: Int)
-    derives JsonCodec
 
 // ── Connection-events aggregation (#847) ───────────────────────────────────
 // Bucket widths supported by /api/connection-events/series. "off" = caller

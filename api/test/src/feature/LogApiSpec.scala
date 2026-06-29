@@ -346,6 +346,9 @@ object LogApiSpec
             ),
           ),
         )
+        // #1837: 24h aggregations now read connection_events_hourly — roll the
+        // just-inserted events into the hourly tier so the rollup-backed read sees them.
+        _        <- connRepo.rerollConnEventsHourly(Instant.now().minusSeconds(7200))
         routes = LogRoutes.routes(auth, connRepo, upRepo)
         resp  <- getJson(routes, "/api/stats", token)
         body  <- resp.body.asString
@@ -478,6 +481,8 @@ object LogApiSpec
             ),
           ),
         )
+        // #1837: topBlocked now reads connection_events_hourly — roll first.
+        _        <- connRepo.rerollConnEventsHourly(Instant.now().minusSeconds(7200))
         routes = LogRoutes.routes(auth, connRepo, upRepo)
         resp  <- getJson(routes, "/api/stats", token)
         body  <- resp.body.asString
