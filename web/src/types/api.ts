@@ -277,7 +277,6 @@ export interface DashboardStats {
   totalHour: number
   blockedHour: number
   topBlocked: DomainCount[]
-  perDevice: DeviceStats[]
 }
 
 export interface DashboardNowHost {
@@ -316,13 +315,6 @@ export interface DashboardNow {
 export interface DomainCount {
   host: HostId
   count: number
-}
-
-export interface DeviceStats {
-  mac: string
-  deviceName: string
-  total: number
-  blocked: number
 }
 
 export interface AppUsage {
