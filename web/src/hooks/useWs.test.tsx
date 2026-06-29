@@ -35,7 +35,7 @@ import {
 } from './useWs'
 import { useDashboardNow, useProfiles, useDevices, qk } from '@/api/queries'
 import { AuthProvider } from '@/hooks/useAuth'
-import type { DashboardNow, QueryLog, TrafficUsageAggregateRow, TrafficUsageResponse } from '@/types/api'
+import type { DashboardNow, QueryLog, TrafficUsageAggregateRow, TrafficUsageRawRow, TrafficUsageResponse } from '@/types/api'
 
 class MockSocket implements WsSocketLike {
   static instances: MockSocket[] = []
@@ -472,20 +472,40 @@ const trafficPush = (rows: TrafficUsageAggregateRow[]): TrafficUsageResponse => 
   bucket: '1h', groupBy: ['profile'], from: 'a', to: 'b', tz: 'UTC', rawRows: [], aggregateRows: rows,
 })
 
+// #2048: a raw row + a raw push envelope (per-host rows, no aggregateRows).
+const rawRow = (o: { periodStart: string; mac: string; host: string; bytesIn?: number }): TrafficUsageRawRow => ({
+  mac: o.mac, deviceName: undefined, profileId: undefined, profileName: undefined,
+  host: { type: 'fqdn', value: o.host },
+  bytesIn: o.bytesIn ?? 0, bytesOut: 0, activeSeconds: 0,
+  periodStart: o.periodStart, periodEnd: o.periodStart,
+})
+const rawPush = (rows: TrafficUsageRawRow[]): TrafficUsageResponse => ({
+  bucket: 'raw', groupBy: [], from: 'a', to: 'b', tz: 'UTC', rawRows: rows, aggregateRows: [],
+})
+// Drives the hook with both setters; returns the live mutable state arrays the page would own.
+function liveSetters() {
+  const state = { agg: [] as TrafficUsageAggregateRow[], raw: [] as TrafficUsageRawRow[] }
+  return {
+    state,
+    setters: {
+      setAggRows: (fn: (prev: TrafficUsageAggregateRow[]) => TrafficUsageAggregateRow[]) => { state.agg = fn(state.agg) },
+      setRawRows: (fn: (prev: TrafficUsageRawRow[]) => TrafficUsageRawRow[]) => { state.raw = fn(state.raw) },
+    },
+  }
+}
+
 describe('useWsTrafficUsageLiveEdge (#1975 S6b §3.1)', () => {
   it('subscribes with the page params and merges the head bucket by windowStart, history untouched', () => {
     const { client, wrapper } = setup()
     // paged history loaded by the GET (newest-first); the page owns it in component state.
-    let rows: TrafficUsageAggregateRow[] = [
+    const { state, setters } = liveSetters()
+    state.agg = [
       aggRow({ windowStart: '2026-06-26T10:05:00Z', totalBytesIn: 100 }),
       aggRow({ windowStart: '2026-06-26T10:04:00Z', totalBytesIn: 999 }),
     ]
-    const setRows = (fn: (prev: TrafficUsageAggregateRow[]) => TrafficUsageAggregateRow[]) => {
-      rows = fn(rows)
-    }
     renderHook(
       () => useWsTrafficUsageLiveEdge(
-        { groupBy: ['profile'], bucket: '1h', macs: ['aa'], profileIds: [3], until: null }, setRows,
+        { groupBy: ['profile'], bucket: '1h', macs: ['aa'], profileIds: [3], until: null }, setters,
       ),
       { wrapper },
     )
@@ -495,26 +515,67 @@ describe('useWsTrafficUsageLiveEdge (#1975 S6b §3.1)', () => {
 
     act(() => last().emit({ op: 'trafficUsage', payload: trafficPush([aggRow({ windowStart: '2026-06-26T10:05:00Z', totalBytesIn: 250 })]) }))
     // head replaced, older paged bucket untouched
-    expect(rows.map(r => r.windowStart)).toEqual(['2026-06-26T10:05:00Z', '2026-06-26T10:04:00Z'])
-    expect(rows[0].totalBytesIn).toBe(250)
-    expect(rows[1].totalBytesIn).toBe(999)
+    expect(state.agg.map(r => r.windowStart)).toEqual(['2026-06-26T10:05:00Z', '2026-06-26T10:04:00Z'])
+    expect(state.agg[0].totalBytesIn).toBe(250)
+    expect(state.agg[1].totalBytesIn).toBe(999)
   })
 
-  it('does not subscribe in raw mode (push carries aggregate rows, not per-host rawRows)', () => {
+  // #2048: the DEFAULT raw view now streams — subscribes WITHOUT groupBy (so the server takes its
+  // ungrouped-raw → rawRows path) and PREPENDS the pushed per-host rows, dedup, history untouched.
+  it('subscribes in raw mode (no groupBy) and prepends the pushed rawRows, dedup, history untouched', () => {
     const { client, wrapper } = setup()
+    const { state, setters } = liveSetters()
+    // paged history loaded by the GET (newest-first).
+    state.raw = [
+      rawRow({ periodStart: '2026-06-26T10:04:00Z', mac: 'aa', host: 'youtube.com', bytesIn: 100 }),
+      rawRow({ periodStart: '2026-06-26T10:03:00Z', mac: 'aa', host: 'tiktok.com', bytesIn: 999 }),
+    ]
     renderHook(
-      () => useWsTrafficUsageLiveEdge({ groupBy: [], bucket: 'raw', macs: [], profileIds: [], until: null }, () => {}),
+      () => useWsTrafficUsageLiveEdge(
+        // groupBy carried in page state (e.g. set on an aggregate view) MUST be dropped for raw.
+        { groupBy: ['device'], bucket: 'raw', macs: ['aa'], profileIds: [3], until: null }, setters,
+      ),
+      { wrapper },
+    )
+    goLive(client)
+    const sub = last().frames().find(f => f.op === 'subscribe' && f.payload.topic === 'trafficUsage')
+    expect(sub.payload.params).toEqual({ bucket: 'raw', macs: ['aa'], profileIds: [3] })
+
+    // push overlaps the GET boundary (the 10:04 youtube row is already present) → dedup by identity.
+    act(() => last().emit({ op: 'trafficUsage', payload: rawPush([
+      rawRow({ periodStart: '2026-06-26T10:05:00Z', mac: 'aa', host: 'netflix.com', bytesIn: 250 }),
+      rawRow({ periodStart: '2026-06-26T10:04:00Z', mac: 'aa', host: 'youtube.com', bytesIn: 100 }),
+    ]) }))
+    // new rows prepended (newest-first), the boundary row deduped, paged history intact.
+    expect(state.raw.map(r => `${r.periodStart}|${r.host.value}`)).toEqual([
+      '2026-06-26T10:05:00Z|netflix.com',
+      '2026-06-26T10:04:00Z|youtube.com',
+      '2026-06-26T10:03:00Z|tiktok.com',
+    ])
+    expect(state.raw).toHaveLength(3)
+    expect(state.agg).toHaveLength(0) // the aggregate state is never touched in raw mode
+  })
+
+  it('does not subscribe while anchored to a past window (until set — no live edge)', () => {
+    const { client, wrapper } = setup()
+    const { setters } = liveSetters()
+    renderHook(
+      () => useWsTrafficUsageLiveEdge(
+        { groupBy: ['profile'], bucket: '1h', macs: [], profileIds: [], until: '2026-01-01T00:00:00Z' }, setters,
+      ),
       { wrapper },
     )
     goLive(client)
     expect(last().frames().find(f => f.op === 'subscribe' && f.payload.topic === 'trafficUsage')).toBeUndefined()
   })
 
-  it('does not subscribe while anchored to a past window (until set — no live edge)', () => {
+  // #2048: pinning a past window stays GET-only even on the raw view.
+  it('does not subscribe in raw mode while anchored to a past window (until set)', () => {
     const { client, wrapper } = setup()
+    const { setters } = liveSetters()
     renderHook(
       () => useWsTrafficUsageLiveEdge(
-        { groupBy: ['profile'], bucket: '1h', macs: [], profileIds: [], until: '2026-01-01T00:00:00Z' }, () => {},
+        { groupBy: [], bucket: 'raw', macs: [], profileIds: [], until: '2026-01-01T00:00:00Z' }, setters,
       ),
       { wrapper },
     )
@@ -524,9 +585,10 @@ describe('useWsTrafficUsageLiveEdge (#1975 S6b §3.1)', () => {
 
   it('re-subscribes (unsubscribe+subscribe) when the bucket changes', () => {
     const { client, wrapper } = setup()
+    const { setters } = liveSetters()
     const { rerender } = renderHook(
       ({ bucket }: { bucket: '1h' | '10m' }) =>
-        useWsTrafficUsageLiveEdge({ groupBy: ['profile'], bucket, macs: [], profileIds: [], until: null }, () => {}),
+        useWsTrafficUsageLiveEdge({ groupBy: ['profile'], bucket, macs: [], profileIds: [], until: null }, setters),
       { wrapper, initialProps: { bucket: '1h' as '1h' | '10m' } },
     )
     goLive(client)
@@ -538,6 +600,28 @@ describe('useWsTrafficUsageLiveEdge (#1975 S6b §3.1)', () => {
     expect(i1).toBeGreaterThanOrEqual(0)
     expect(iU).toBeGreaterThan(i1)
     expect(i2).toBeGreaterThan(iU)
+  })
+
+  // #2048: switching raw → 1m re-subscribes and flips the push target from rawRows to the
+  // aggregated head-merge (the raw push path is no longer used once a fixed bucket is selected).
+  it('re-subscribes raw → 1m and switches from rawRows-prepend to aggregate head-merge', () => {
+    const { client, wrapper } = setup()
+    const { state, setters } = liveSetters()
+    const { rerender } = renderHook(
+      ({ bucket }: { bucket: 'raw' | '1m' }) =>
+        useWsTrafficUsageLiveEdge({ groupBy: [], bucket, macs: [], profileIds: [], until: null }, setters),
+      { wrapper, initialProps: { bucket: 'raw' as 'raw' | '1m' } },
+    )
+    goLive(client)
+    // raw push → prepends into raw state.
+    act(() => last().emit({ op: 'trafficUsage', payload: rawPush([rawRow({ periodStart: '2026-06-26T10:05:00Z', mac: 'aa', host: 'a.com', bytesIn: 1 })]) }))
+    expect(state.raw).toHaveLength(1)
+
+    act(() => rerender({ bucket: '1m' }))
+    // now a 1m aggregate push merges into agg state, raw state untouched.
+    act(() => last().emit({ op: 'trafficUsage', payload: { ...trafficPush([aggRow({ windowStart: '2026-06-26T10:05:00Z', totalBytesIn: 7 })]), bucket: '1m' } }))
+    expect(state.agg).toHaveLength(1)
+    expect(state.raw).toHaveLength(1) // unchanged — the raw row from before
   })
 })
 

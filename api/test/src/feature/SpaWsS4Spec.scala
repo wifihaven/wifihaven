@@ -435,6 +435,47 @@ object SpaWsS4Spec
       }
     },
     test(
+      // #2048: the Traffic Usage page's DEFAULT view subscribes `raw` WITHOUT a groupBy (the
+      // per-host inspector). Unlike `raw`+groupBy (the gauge, aggregated above), this must push the
+      // new per-host `rawRows` for the ingest period — the rows the page prepends — NOT aggregated
+      // points. SSOT: the streamed rawRows are byte-identical to the `GET /api/usage/traffic`
+      // `bucket=raw` (no groupBy) body for the same window.
+      "ungrouped raw subscription pushes the new rawRows for the ingest period, equal to the GET (SSOT)",
+    ) {
+      withHarness { (port, ingest, router) =>
+        for {
+          tok    <- ZIO.serviceWithZIO[Clock](makeAuth).flatMap(adminToken)
+          frames <- collect(
+            port,
+            tok,
+            List(
+              """{"op":"subscribe","payload":{"topic":"trafficUsage","params":{"bucket":"raw"}}}""",
+            ),
+            trigger = ingestUsage(ingest, router, usageRecord("youtube.com", 1234, 567)),
+            wait = 4.seconds,
+          )
+          tFrames = trafficFrames(frames)
+          pushed <- ZIO.fromEither(parsePush(tFrames.last)).mapError(e => new RuntimeException(e))
+          got    <- getTraffic(port, tok, s"bucket=raw&from=$headFrom&to=$headTo&tz=UTC")
+        } yield assertTrue(tFrames.nonEmpty) &&
+          assertTrue(pushed.bucket == "raw") &&
+          assertTrue(pushed.groupBy.isEmpty) &&
+          // The ungrouped raw push carries per-host rawRows, NOT aggregated points.
+          assertTrue(pushed.aggregateRows.isEmpty) &&
+          assertTrue(pushed.rawRows.nonEmpty) &&
+          assertTrue(
+            pushed.rawRows.exists(r =>
+              r.host == HostId.Fqdn(Hostname.unsafe("youtube.com")) &&
+                r.bytesIn == 1234 && r.bytesOut == 567,
+            ),
+          ) &&
+          // SSOT: the streamed rawRows equal the GET's rawRows for the same window.
+          assertTrue(pushed.rawRows.toSet == got.rawRows.toSet) &&
+          // raw's window is the REAL report period [periodStart, periodEnd).
+          assertTrue(pushed.from == periodStart && pushed.to == periodEnd)
+      }
+    },
+    test(
       // #2018/#2020 PINNING: the streamed `raw` head window MUST equal the actual ingested report
       // period `[periodStart, periodEnd)` (the agent's `usage_report_interval`), NOT a synthetic
       // fixed 5-min window. Ingest a non-5-min-aligned 37 s period and assert the pushed window is

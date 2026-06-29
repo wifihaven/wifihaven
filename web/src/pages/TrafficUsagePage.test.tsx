@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -29,6 +29,9 @@ vi.mock('@/api/client', () => ({
 
 import { api } from '@/api/client'
 import { TrafficUsagePage } from './TrafficUsagePage'
+import { SpaWsClient, type WsSocketLike } from '@/api/wsClient'
+import { WsProvider } from '@/hooks/useWs'
+import { AuthProvider } from '@/hooks/useAuth'
 
 const rawResp: TrafficUsageResponse = {
   bucket: 'raw',
@@ -401,5 +404,124 @@ describe('TrafficUsagePage', () => {
     await waitFor(() => expect(screen.getByTestId('aggregate-table')).toBeInTheDocument())
     expect(screen.queryByText(/aborted/i)).not.toBeInTheDocument()
     expect(screen.queryByTestId('error')).not.toBeInTheDocument()
+  })
+})
+
+// ── #2048: the DEFAULT raw view streams live — subscribe, Live badge, prepend new rawRows ──
+//
+// End-to-end over a real SpaWsClient + mock socket: the page wired to WsProvider subscribes
+// `trafficUsage{bucket:raw}` at the live edge, shows the <LiveBadge>, and prepends the pushed
+// per-host rawRows above the GET-loaded history. A pinned past window (`?until=`) stays GET-only.
+describe('TrafficUsagePage raw live-edge (#2048)', () => {
+  class MockSocket implements WsSocketLike {
+    static instances: MockSocket[] = []
+    sent: string[] = []
+    onopen: ((ev?: unknown) => void) | null = null
+    onclose: ((ev: { code: number; reason?: string }) => void) | null = null
+    onmessage: ((ev: { data: string }) => void) | null = null
+    onerror: ((ev?: unknown) => void) | null = null
+    constructor(public url: string) { MockSocket.instances.push(this) }
+    send(d: string) { this.sent.push(d) }
+    close() { this.onclose?.({ code: 1006 }) }
+    open() { this.onopen?.() }
+    emit(frame: Record<string, unknown>) { this.onmessage?.({ data: JSON.stringify(frame) }) }
+    frames() { return this.sent.map(s => JSON.parse(s)) }
+  }
+  const last = () => MockSocket.instances[MockSocket.instances.length - 1]
+
+  beforeEach(() => {
+    // The page test suite fakes Date; the ws path doesn't depend on it, but keep the seeds stable.
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-05-22T12:00:00Z'))
+    vi.clearAllMocks()
+    MockSocket.instances = []
+    localStorage.clear()
+    localStorage.setItem('token', 'jwt')
+    ;(api.devices.list as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.profiles.list as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.apps.list as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.usage.traffic as ReturnType<typeof vi.fn>).mockResolvedValue(rawResp)
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    localStorage.clear()
+  })
+
+  function renderWithWs(initialEntries: string[] = ['/']) {
+    const client = new SpaWsClient({
+      apiBaseUrl: 'https://api.x',
+      origin: 'https://app.x',
+      getToken: () => 'jwt',
+      socketFactory: url => new MockSocket(url),
+      setCookie: () => {},
+      clearCookie: () => {},
+      invalidateQuery: () => {},
+      heartbeatMs: 100000,
+    })
+    render(
+      <QueryClientProvider client={makeQueryClient()}>
+        <AuthProvider>
+          <WsProvider client={client}>
+            <MemoryRouter initialEntries={initialEntries}>
+              <TrafficUsagePage />
+            </MemoryRouter>
+          </WsProvider>
+        </AuthProvider>
+      </QueryClientProvider>,
+    )
+    return { client }
+  }
+
+  function goLive(client: SpaWsClient) {
+    act(() => client.start())
+    act(() => last().open())
+    act(() => last().emit({ op: 'ready', payload: { role: 'admin', serverTime: 't' } }))
+    act(() => last().emit({ op: 'ack', payload: { topic: 'trafficUsage', status: 'ok' } }))
+  }
+
+  it('subscribes trafficUsage{bucket:raw}, shows the Live badge, and prepends the pushed raw rows', async () => {
+    const { client } = renderWithWs()
+    await waitFor(() => expect(api.usage.traffic).toHaveBeenCalled())
+    await waitFor(() => expect(screen.getByText('youtube.com')).toBeInTheDocument())
+
+    goLive(client)
+
+    // Subscribed with the raw params — no groupBy (the server's ungrouped-raw → rawRows path).
+    const sub = last().frames().find(f => f.op === 'subscribe' && f.payload.topic === 'trafficUsage')
+    expect(sub.payload.params).toEqual({ bucket: 'raw' })
+    // The Live badge renders once the topic is acked + streaming.
+    await waitFor(() => expect(screen.getByTestId('ws-live-badge')).toBeInTheDocument())
+
+    // A push of a NEW per-host row prepends above the GET-loaded history — no manual refresh.
+    const push: TrafficUsageResponse = {
+      ...rawResp,
+      rawRows: [
+        {
+          mac: 'aa:bb:cc:dd:ee:02',
+          deviceName: 'Adult Laptop',
+          profileId: 2,
+          profileName: 'Adults',
+          host: { type: 'fqdn', value: 'netflix.com' },
+          bytesIn: 5000,
+          bytesOut: 90,
+          activeSeconds: 60,
+          periodStart: '2026-05-21T14:05:00Z',
+          periodEnd: '2026-05-21T14:06:00Z',
+        },
+      ],
+    }
+    act(() => last().emit({ op: 'trafficUsage', payload: push }))
+    await waitFor(() => expect(screen.getByText('netflix.com')).toBeInTheDocument())
+    // The GET-loaded history row is still present (never mutated).
+    expect(screen.getByText('youtube.com')).toBeInTheDocument()
+  })
+
+  it('stays GET-only on a pinned past window (?until=): no subscribe, no Live badge', async () => {
+    const seed = '2026-05-21T14:00:00.000Z'
+    const { client } = renderWithWs([`/?until=${encodeURIComponent(seed)}`])
+    await waitFor(() => expect(api.usage.traffic).toHaveBeenCalled())
+    goLive(client)
+    expect(last().frames().find(f => f.op === 'subscribe' && f.payload.topic === 'trafficUsage')).toBeUndefined()
+    expect(screen.queryByTestId('ws-live-badge')).not.toBeInTheDocument()
   })
 })

@@ -11,12 +11,14 @@ import {
   mergeHeadBucket,
   overallRate,
   prependHead,
+  prependRawHead,
   rateFor,
 } from './wsCache'
 import type {
   DashboardNow,
   QueryLog,
   TrafficUsageAggregateRow,
+  TrafficUsageRawRow,
   TrafficUsageResponse,
 } from '@/types/api'
 
@@ -270,6 +272,77 @@ describe('prependHead (#1973 §3.1)', () => {
   it('still dedups by id with no limit', () => {
     const out = prependHead([row(2), row(1)], [row(3), row(2)])
     expect(out.map(r => r.id)).toEqual([3, 2, 1])
+  })
+})
+
+// #2048: the Traffic Usage page's raw view prepends new per-host rows, keyed by the same
+// (periodStart, mac, host) identity the server reports them on. Never truncates paged history.
+describe('prependRawHead (#2048)', () => {
+  const raw = (
+    periodStart: string,
+    mac: string,
+    host: string,
+    bytesIn = 0,
+  ): TrafficUsageRawRow => ({
+    mac,
+    deviceName: undefined,
+    profileId: undefined,
+    profileName: undefined,
+    host: { type: 'fqdn', value: host },
+    bytesIn,
+    bytesOut: 0,
+    activeSeconds: 0,
+    periodStart,
+    periodEnd: periodStart,
+  })
+
+  it('prepends new rows, newest first', () => {
+    const out = prependRawHead(
+      [raw('2026-06-26T10:04:00Z', 'aa', 'a.com'), raw('2026-06-26T10:03:00Z', 'aa', 'b.com')],
+      [raw('2026-06-26T10:06:00Z', 'aa', 'c.com'), raw('2026-06-26T10:05:00Z', 'aa', 'd.com')],
+    )
+    expect(out.map(r => `${r.periodStart}|${r.host.value}`)).toEqual([
+      '2026-06-26T10:06:00Z|c.com',
+      '2026-06-26T10:05:00Z|d.com',
+      '2026-06-26T10:04:00Z|a.com',
+      '2026-06-26T10:03:00Z|b.com',
+    ])
+  })
+
+  it('dedups by (periodStart, mac, host) on a GET/push boundary overlap', () => {
+    const out = prependRawHead(
+      [raw('2026-06-26T10:04:00Z', 'aa', 'a.com', 100)],
+      [raw('2026-06-26T10:05:00Z', 'aa', 'b.com'), raw('2026-06-26T10:04:00Z', 'aa', 'a.com', 100)],
+    )
+    expect(out.map(r => `${r.periodStart}|${r.host.value}`)).toEqual([
+      '2026-06-26T10:05:00Z|b.com',
+      '2026-06-26T10:04:00Z|a.com',
+    ])
+  })
+
+  it('keeps same-period rows distinct by mac and host', () => {
+    const out = prependRawHead(
+      [],
+      [
+        raw('2026-06-26T10:05:00Z', 'aa', 'a.com'),
+        raw('2026-06-26T10:05:00Z', 'bb', 'a.com'),
+        raw('2026-06-26T10:05:00Z', 'aa', 'b.com'),
+      ],
+    )
+    expect(out).toHaveLength(3)
+  })
+
+  it('handles an undefined prior list', () => {
+    expect(prependRawHead(undefined, [raw('2026-06-26T10:05:00Z', 'aa', 'a.com')])).toHaveLength(1)
+  })
+
+  it('never truncates paged history (no cap)', () => {
+    const prev = Array.from({ length: 25 }, (_, i) =>
+      raw(`2026-06-26T10:${String(i).padStart(2, '0')}:00Z`, 'aa', `h${i}.com`),
+    )
+    const out = prependRawHead(prev, [raw('2026-06-26T11:00:00Z', 'aa', 'new.com')])
+    expect(out).toHaveLength(26)
+    expect(out[0].host.value).toBe('new.com')
   })
 })
 

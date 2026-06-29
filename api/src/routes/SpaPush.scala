@@ -388,41 +388,74 @@ object SpaPush {
         // carry the true interval.
         val (headStart, headEnd) =
           UsageTraffic.windowFor(periodStart, periodEnd, parsed.bucket, parsed.zone)
-        val resolvedMacs = UsageTrafficQuery.resolveMacs(parsed.macs, parsed.profileIds, devices)
-        val filterEmpty  = parsed.filterRequested && resolvedMacs.isEmpty
-        val aggregate    =
-          if (filterEmpty) ZIO.succeed(List.empty)
-          else
-            UsageTrafficQuery.aggregate(
-              trafficRepo,
-              rollupRepo,
-              resolvedMacs,
-              headStart,
-              headEnd,
-              parsed.bucket,
-              parsed.groupBySet,
-              parsed.zone,
-              devByMac,
-              profNames,
-              appsByHost,
+        val resolvedMacs   = UsageTrafficQuery.resolveMacs(parsed.macs, parsed.profileIds, devices)
+        val filterEmpty    = parsed.filterRequested && resolvedMacs.isEmpty
+        // #2048: `raw` WITHOUT a groupBy is the Traffic Usage page's per-host inspector (its DEFAULT
+        // view) — it renders per-host `rawRows`, so its live edge must carry the NEW rawRows for the
+        // ingest period (the rows the page prepends), NOT aggregated points. This mirrors the
+        // `GET /api/usage/traffic` split exactly (`UsageRoutes`: `Bucket.Raw if effectiveGroupBy
+        // .isEmpty` → `buildRaw`, else aggregate), so the stream and the GET stay SSOT. `raw` WITH a
+        // groupBy (the dashboard gauge's `groupBy=profile`) keeps the aggregate path below.
+        val isUngroupedRaw = parsed.bucket == UsageTraffic.Bucket.Raw && parsed.groupBySet.isEmpty
+        val computeBody: Task[TrafficUsageResponse] =
+          if (isUngroupedRaw) {
+            // The head window for `raw` IS the real report period `[periodStart, periodEnd)`
+            // (`UsageTraffic.windowFor`), so reading raw rows over `[headStart, headEnd)` returns
+            // exactly the just-ingested period's rows. No cursor/limit: a single ingest period is
+            // naturally bounded by its distinct `(mac, host)` rows (the page pages OLDER history via
+            // the GET; the push only delivers the fresh head). Built via the shared `buildRaw` (SSOT).
+            val rawZ =
+              if (filterEmpty) ZIO.succeed(List.empty[wifihaven.api.usage.TrafficUsageDbRow])
+              else trafficRepo.listRawInRange(resolvedMacs, headStart, headEnd)
+            rawZ.map(rows =>
+              TrafficUsageResponse(
+                bucket = parsed.bucket.code,
+                groupBy = Nil,
+                from = headStart.toString,
+                to = headEnd.toString,
+                tz = parsed.zone.getId,
+                rawRows = UsageTraffic.buildRaw(rows, devByMac, profNames),
+                aggregateRows = Nil,
+                nextCursor = None,
+              ),
             )
-        aggregate.flatMap { rows =>
-          // `from`/`to` describe the head BUCKET window `[headStart, headEnd)` — not wall-clock
-          // "live edge time". `to` is therefore the bucket end and can sit slightly ahead of `now`
-          // for an in-progress bucket; it's metadata only (the client merges by `windowStart` and
-          // derives B/s from the bucket width, never from this `to`).
-          val body = TrafficUsageResponse(
-            bucket = parsed.bucket.code,
-            groupBy = parsed.groupBySet.toList.map(_.code).sorted,
-            from = headStart.toString,
-            to = headEnd.toString,
-            tz = parsed.zone.getId,
-            rawRows = Nil,
-            aggregateRows = rows,
-            nextCursor = None,
-          )
-          registry.fanOutTrafficUsage(params, body.toJsonAST.getOrElse(Json.Obj()))
-        }
+          } else {
+            val aggZ =
+              if (filterEmpty) ZIO.succeed(List.empty[wifihaven.shared.TrafficUsageAggregateRow])
+              else
+                UsageTrafficQuery.aggregate(
+                  trafficRepo,
+                  rollupRepo,
+                  resolvedMacs,
+                  headStart,
+                  headEnd,
+                  parsed.bucket,
+                  parsed.groupBySet,
+                  parsed.zone,
+                  devByMac,
+                  profNames,
+                  appsByHost,
+                )
+            aggZ.map(rows =>
+              // `from`/`to` describe the head BUCKET window `[headStart, headEnd)` — not wall-clock
+              // "live edge time". `to` is therefore the bucket end and can sit slightly ahead of
+              // `now` for an in-progress bucket; it's metadata only (the client merges by
+              // `windowStart` and derives B/s from the bucket width, never from this `to`).
+              TrafficUsageResponse(
+                bucket = parsed.bucket.code,
+                groupBy = parsed.groupBySet.toList.map(_.code).sorted,
+                from = headStart.toString,
+                to = headEnd.toString,
+                tz = parsed.zone.getId,
+                rawRows = Nil,
+                aggregateRows = rows,
+                nextCursor = None,
+              ),
+            )
+          }
+        computeBody.flatMap(body =>
+          registry.fanOutTrafficUsage(params, body.toJsonAST.getOrElse(Json.Obj())),
+        )
     }
 
   /**
