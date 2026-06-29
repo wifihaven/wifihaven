@@ -38,66 +38,26 @@ const STALE = {
   devices: 5 * MIN,
 } as const
 
-// #1871 — live time-used surfaces must poll in the foreground so the displayed
-// "minutes left" can't lag enforcement. The router recomputes block state on
-// every ~5s snapshot poll and blocks within seconds of the cap, but a query
-// with only a staleTime never refetches on its own — it stays frozen from page
-// load until a manual trigger (reload / window refocus). Without a background
-// poll the UI shows minutes remaining while the profile is already blocked.
+// #1871 / #1976 (SPA-ws S7) — the live time-used surfaces must stay fresh so the displayed
+// "minutes left" can't lag enforcement (the router blocks within seconds of the cap, but a query
+// with only a staleTime never refetches on its own). Freshness is now driven by the S6a
+// `timeStatus` push (design §3.1) whenever the socket is live — and the hooks below PAUSE polling
+// in that case (`wsLive ? false : …`, §3.3). The adaptive refetch ladder this replaced
+// (`TIME_STATUS_REFETCH_LADDER`, keyed on the most-urgent profile's remaining minutes) existed
+// ONLY because there was no push to deliver near-cap urgency promptly; with the push proven it is
+// retired (#1976/S7).
 //
-// The cadence is *adaptive*: we only need a tight poll when a profile is close
-// to its daily cap (where a stale display would visibly disagree with
-// enforcement). With lots of time left, a fast poll is wasted load — so we slow
-// down. The ladder is keyed on the *most-urgent* profile's remaining minutes
-// (the one closest to its cap drives the whole list's cadence). Foreground-only
-// (refetchIntervalInBackground: false) so hidden tabs don't poll.
+// What remains is the DISCONNECTED fallback: while the push is down (`wsLive === false`) the live
+// surfaces poll at this single FLAT cadence so a near-cap "minutes left" can't lag enforcement
+// during a socket outage. It is a constant — no longer adaptive — because the push (not a poll) is
+// the freshness when connected, so the fallback only has to keep the degraded mode honest.
+// Foreground-only (`refetchIntervalInBackground: false`) so hidden tabs don't poll.
 //
-// `[thresholdMins, intervalMs]`, evaluated low-to-high — first row whose
-// threshold the remaining time is at/under wins.
-export const TIME_STATUS_REFETCH_LADDER: ReadonlyArray<readonly [number, number]> = [
-  [5, 10_000],   // ≤5m left  → poll every 10s
-  [10, 60_000],  // ≤10m left → poll every 1m
-  [30, 300_000], // ≤30m left → poll every 5m
-] as const
-// >30m left, or no daily limit at all (nothing counting down) → slow baseline.
-export const TIME_STATUS_REFETCH_MAX_MS = 300_000
-
-// Map a profile's remaining minutes to its poll interval. `null`/`undefined`
-// remaining means no daily limit is in force → baseline cadence. A profile at
-// or past its cap (remaining ≤ 0) lands in the fastest bucket so a time
-// extension / unblock shows up within seconds.
-export function timeStatusRefetchMs(remainingMins: number | null | undefined): number {
-  if (remainingMins == null) return TIME_STATUS_REFETCH_MAX_MS
-  const remaining = Math.max(0, remainingMins)
-  for (const [thresholdMins, intervalMs] of TIME_STATUS_REFETCH_LADDER) {
-    if (remaining <= thresholdMins) return intervalMs
-  }
-  return TIME_STATUS_REFETCH_MAX_MS
-}
-
-// The cadence-relevant slice of a time-status row — both ProfileTimeStatus and
-// ProfileTimeSummary carry these, and they're all we read to pick a poll rate.
-type CadenceRow = { dailyLimitMins?: number | null; remainingMins?: number | null }
-
-// The most-urgent (least remaining) capped profile across a freshly-fetched
-// time-status payload — `null` when no row has a daily limit. A row without a
-// `dailyLimitMins` isn't counting down, so it never drives the cadence.
-function minRemainingMins(rows: ReadonlyArray<CadenceRow>): number | null {
-  let min: number | null = null
-  for (const row of rows) {
-    if (row.dailyLimitMins == null) continue
-    const remaining = row.remainingMins ?? 0
-    if (min == null || remaining < min) min = remaining
-  }
-  return min
-}
-
-// react-query refetchInterval callback: normalize the query data (single row,
-// array of rows, or not-yet-loaded) and pick the adaptive interval.
-function timeStatusRefetchInterval(data: unknown): number {
-  const rows = (Array.isArray(data) ? data : data ? [data] : []) as ReadonlyArray<CadenceRow>
-  return timeStatusRefetchMs(minRemainingMins(rows))
-}
+// This is the ONE source for the live-surface disconnected fallback cadence (§0.1 — NOW,
+// Recently-Blocked, time-status): the dashboard NOW / Recently-Blocked hooks (`DashboardPage`) and
+// the time-status hooks below all reference it, so every live surface degrades to the same cadence
+// by construction rather than by hand-synced literals.
+export const LIVE_SURFACE_FALLBACK_REFETCH_MS = 10_000
 
 export const qk = {
   profiles: () => ['profiles'] as const,
@@ -277,17 +237,18 @@ export function useRecentBlocked(opts?: QueryOpts<QueryLog[]>) {
   })
 }
 
-// #1974 (SPA-ws S6a, §3.3): when the `timeStatus` push is live (`wsLive`), the adaptive ladder goes
-// DORMANT — the push keeps the cache fresh, so polling is redundant. The ladder is NOT removed
-// (that's S7); it stays the disconnected fallback, resuming the instant the socket drops. The
-// caller passes `wsLive` from `useWsTopicLive('timeStatus')`.
+// #1974 (S6a) / #1976 (S7, §3.3): when the `timeStatus` push is live (`wsLive`), polling pauses —
+// the push keeps the cache fresh. When the socket is down, the flat disconnected fallback
+// (`LIVE_SURFACE_FALLBACK_REFETCH_MS`) resumes the instant the socket drops; the adaptive ladder it
+// replaced was retired in S7 (the push delivers near-cap urgency when live). The caller passes
+// `wsLive` from `useWsTopicLive('timeStatus')`.
 export function useTimeStatusToday(opts?: QueryOpts<ProfileTimeStatus[]> & { wsLive?: boolean }) {
   const { wsLive, ...rest } = opts ?? {}
   return useQuery({
     queryKey: qk.timeStatusToday(),
     queryFn: () => api.time.statusAll(),
     staleTime: STALE.timeStatusToday,
-    refetchInterval: wsLive ? false : q => timeStatusRefetchInterval(q.state.data),
+    refetchInterval: wsLive ? false : LIVE_SURFACE_FALLBACK_REFETCH_MS,
     refetchIntervalInBackground: false,
     ...rest,
   })
@@ -317,14 +278,14 @@ export function useTimeStatusWeek(
 
 // #777 — summary endpoints: lightweight rollups for the collapsed accordion view.
 export function useTimeStatusSummary(opts?: QueryOpts<ProfileTimeSummary[]> & { wsLive?: boolean }) {
-  // #1974 (S6a): pause the adaptive ladder while the `timeStatus` push is live (§3.3) — the push
-  // patches this (summary-projected) cache, so polling is redundant; it resumes on disconnect.
+  // #1974 (S6a) / #1976 (S7): pause the poll while the `timeStatus` push is live (§3.3) — the push
+  // patches this (summary-projected) cache; on disconnect the flat fallback resumes.
   const { wsLive, ...rest } = opts ?? {}
   return useQuery({
     queryKey: qk.timeStatusSummaryToday(),
     queryFn: () => api.time.summaryAll(),
     staleTime: STALE.timeStatusToday,
-    refetchInterval: wsLive ? false : q => timeStatusRefetchInterval(q.state.data),
+    refetchInterval: wsLive ? false : LIVE_SURFACE_FALLBACK_REFETCH_MS,
     refetchIntervalInBackground: false,
     ...rest,
   })
@@ -348,14 +309,14 @@ export function useTimeStatusProfileToday(
   profileId: number,
   opts?: QueryOpts<ProfileTimeStatus | undefined> & { wsLive?: boolean },
 ) {
-  // #1974 (S6a): pause the ladder while the `timeStatus` push is live (§3.3); the push patches this
-  // per-profile-today key off the same body, so it stays fresh without polling.
+  // #1974 (S6a) / #1976 (S7): pause the poll while the `timeStatus` push is live (§3.3); the push
+  // patches this per-profile-today key off the same body. On disconnect the flat fallback resumes.
   const { wsLive, ...rest } = opts ?? {}
   return useQuery({
     queryKey: qk.timeStatusProfileToday(profileId),
     queryFn: () => api.time.statusAll(undefined, profileId).then(rows => rows[0]),
     staleTime: STALE.timeStatusToday,
-    refetchInterval: wsLive ? false : q => timeStatusRefetchInterval(q.state.data),
+    refetchInterval: wsLive ? false : LIVE_SURFACE_FALLBACK_REFETCH_MS,
     refetchIntervalInBackground: false,
     ...rest,
   })

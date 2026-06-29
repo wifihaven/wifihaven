@@ -1,7 +1,8 @@
 // #1974 (SPA-ws S6a): the live time-usage hooks (design §3.1/§3.3). Proves the `timeStatus` push
 // patches the time-status caches off the one pushed body, the `appUsage` push patches ONLY the
-// live today-window key (past windows immutable), the adaptive ladder goes dormant while the
-// `timeStatus` push streams, and expanding/collapsing a card subscribes/unsubscribes `appUsage`.
+// live today-window key (past windows immutable), the disconnected fallback poll pauses while the
+// `timeStatus` push streams (the adaptive ladder it replaced was retired in #1976/S7), and
+// expanding/collapsing a card subscribes/unsubscribes `appUsage`.
 // Driven by the real SpaWsClient over a mock socket so the wire→cache path is exercised end to end.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
@@ -17,7 +18,7 @@ vi.mock('@/api/client', () => ({
 
 import { SpaWsClient, type WsSocketLike } from '@/api/wsClient'
 import { WsProvider, useWsTopicLive, useWsTimeStatus, useWsAppUsage } from './useWs'
-import { useTimeStatusSummary, qk } from '@/api/queries'
+import { useTimeStatusSummary, qk, LIVE_SURFACE_FALLBACK_REFETCH_MS } from '@/api/queries'
 import { AuthProvider } from '@/hooks/useAuth'
 import type { ProfileTimeStatus, ProfileUsageByApp } from '@/types/api'
 
@@ -67,7 +68,7 @@ function setup() {
     setCookie: () => {},
     clearCookie: () => {},
     invalidateQuery: key => qc.invalidateQueries({ queryKey: key as readonly unknown[] }),
-    // Huge so the 5-minute ladder advance below never trips the heartbeat's missed-pong reconnect
+    // Huge so the timer advances below never trip the heartbeat's missed-pong reconnect
     // (which would clear acks and break the streaming-state assertion). Heartbeat is not under test.
     heartbeatMs: 100_000_000,
   })
@@ -180,7 +181,7 @@ describe('useWsAppUsage (§3.1)', () => {
   })
 })
 
-describe('adaptive ladder pauses while timeStatus streams (§3.3)', () => {
+describe('disconnected fallback poll pauses while timeStatus streams (§3.3)', () => {
   it('pauses the summary poll once the timeStatus subscription is acked, resumes if never acked', async () => {
     vi.useFakeTimers()
     const { api } = await import('@/api/client')
@@ -199,16 +200,16 @@ describe('adaptive ladder pauses while timeStatus streams (§3.3)', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(0) })
     expect(summarySpy).toHaveBeenCalledTimes(1) // initial fetch
 
-    // socket live but not yet acked → ladder still runs (baseline 5m cadence, remaining=90 → 5m)
+    // socket live but not yet acked → the flat disconnected fallback still runs (#1976/S7)
     act(() => { client.start(); last().open(); last().emit({ op: 'ready', payload: {} }) })
     expect(result.current).toBe(false)
-    await act(async () => { await vi.advanceTimersByTimeAsync(300_000) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(LIVE_SURFACE_FALLBACK_REFETCH_MS) })
     expect(summarySpy).toHaveBeenCalledTimes(2)
 
-    // server acks the subscription → topic streaming → ladder dormant
+    // server acks the subscription → topic streaming → fallback poll dormant
     act(() => { last().emit({ op: 'ack', payload: { topic: 'timeStatus', status: 'ok' } }) })
     expect(result.current).toBe(true)
-    await act(async () => { await vi.advanceTimersByTimeAsync(1_200_000) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(LIVE_SURFACE_FALLBACK_REFETCH_MS * 100) })
     expect(summarySpy).toHaveBeenCalledTimes(2) // no further polls while streaming
   })
 })

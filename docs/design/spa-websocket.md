@@ -389,13 +389,18 @@ useDashboardNow({ refetchInterval: wsLive ? false : 10_000 })
 
 Socket healthy → interval paused, pushes drive updates; socket down/reconnecting →
 interval resumes at today's cadence. The **time-usage adaptive ladder**
-(`TIME_STATUS_REFETCH_LADDER`) is the clearest case: it stays exactly as-is as the
-disconnected fallback, but goes dormant while the `timeStatus` push is live —
-and is the prime candidate for full retirement (§9, **S7**) since its entire
-reason for existing is the absence of a push. The redundant intervals are retired
-only at the *end* of the rollout, per-view, after each view's push path is proven.
-Live throughput (class 1) has no poll fallback — it simply shows "—" while
-disconnected.
+(formerly `TIME_STATUS_REFETCH_LADDER`) was the clearest case: it stayed the
+disconnected fallback through S6a but went dormant while the `timeStatus` push was
+live — and was retired in **S7** ([#1976](https://github.com/wifihaven/wifihaven/issues/1976)),
+its entire reason for existing being the absence of a push. **Post-S7 the
+time-status fallback is a single flat cadence** (`TIME_STATUS_FALLBACK_REFETCH_MS`,
+10 s — the dashboard live-surface fallback cadence) while disconnected: the push
+delivers near-cap urgency when live, so the fallback only keeps the degraded mode
+honest and no longer needs the ladder's adaptivity. The redundant intervals were
+retired only at the *end* of the rollout, per-view, after each view's push path was
+proven; the dashboard NOW / Recently-Blocked and the Traffic/Connection pages keep
+their `wsLive`-gated (or push-only, no-poll) freshness unchanged. Live throughput
+(class 1) has no poll fallback — it simply shows "—" while disconnected.
 
 ---
 
