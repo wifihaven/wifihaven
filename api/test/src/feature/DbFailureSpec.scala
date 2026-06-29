@@ -278,5 +278,22 @@ object DbFailureSpec extends ZIOSpecDefault {
         resp <- routes.runZIO(req)
       } yield assertTrue(resp.status == Status.Unauthorized)
     },
+    test(
+      "dbCauseChain surfaces the underlying PSQL message behind a BatchUpdateException (#2053)",
+    ) {
+      // The 2026-06-29 incident: the partition-missing PSQLException was reachable only via
+      // SQLException.getNextException, so logs showed only `BatchUpdateException`. The chain
+      // renderer must walk getNextException (and getCause) to expose the real reason — for the LOG,
+      // never the response body (the SQL-leak guard above pins the body stays class-name-only).
+      val underlying = new SQLException(
+        "ERROR: no partition of relation \"traffic_reports\" found for row",
+      )
+      val batch      = new java.sql.BatchUpdateException("Batch entry 0 INSERT … failed", Array(0))
+      batch.setNextException(underlying)
+      val chain      = ErrorMapper.dbCauseChain(batch)
+      assertTrue(chain.contains("BatchUpdateException")) &&
+      assertTrue(chain.contains("PSQLException") || chain.contains("SQLException")) &&
+      assertTrue(chain.contains("no partition of relation"))
+    },
   )
 }

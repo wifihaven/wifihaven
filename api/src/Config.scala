@@ -14,6 +14,7 @@ case class AppConfig(
     policy: PolicyConfig = PolicyConfig(),
     metrics: MetricsConfig = MetricsConfig(),
     ws: WsConfig = WsConfig(),
+    partition: PartitionConfig = PartitionConfig(),
 ) {
   // WIFIHAVEN_DEBUG env var: when set to a non-empty, non-"0"/"false"/"no"
   // value, mounts the read-only /api/debug/* endpoints (loopback only).
@@ -193,6 +194,18 @@ case class WsConfig(
 
   /** Origin enforcement is on only when an allowlist is configured (cloud/staging). */
   val enforceOrigin: Boolean = allowedOriginHosts.nonEmpty
+}
+
+// #808 — in-process weekly-partition auto-create job (durable fix for the 2026-06-29 P0 #2053).
+// `weeksAhead` is how many weeks of future partitions the job keeps provisioned ahead of the
+// current ISO week on each RANGE-partitioned ingest table. Default 6 (design §"Open operator
+// decisions" recommends ≥ 2 weeks of lead; 6 leaves comfortable runway for a multi-day outage of
+// the API/job). Clamped to a floor of 2 so a misconfigured 0/1 can't reduce the runway to the
+// danger zone the runway alert pages on. Absent HOCON block uses the defaults.
+case class PartitionConfig(
+    weeksAhead: Int = 6,
+) {
+  val weeksAheadClamped: Int = math.max(2, weeksAhead)
 }
 
 object AppConfig {

@@ -89,6 +89,10 @@ object MetricGuard {
       // so they satisfy the §4 cardinality firewall.
       "role",
       "topic",
+      // #808 — partitioned-table name for `partition_weeks_ahead`. A fixed 2-value enum
+      // (traffic_reports | connection_events — PartitionRepo.PartitionedTables); bounded by
+      // the schema, not by user/device/flow growth, so it satisfies the §4 cardinality firewall.
+      "table",
     )
 
   /**
@@ -326,6 +330,13 @@ object MetricGuard {
     // #1069 named-schedule CRUD — `op` ∈ {create, update, delete}, a fixed enum. Lets an operator
     // see schedule edits land (and rate-alert on a runaway delete loop) without grepping logs.
     "wifihaven_schedule_mutations_total"   -> Set("op"),
+    // #808 — partition runway gauge. `partition_weeks_ahead{table}` is the count of consecutive
+    // weekly partitions present from the current ISO week for each RANGE-partitioned ingest table
+    // (set each run by PartitionMaintenanceJob). `table` is the bounded 2-value enum above. The
+    // runway alert pages when this drops below 2 — the "never silently exhaust again" guard for the
+    // 2026-06-29 P0 (#2053). Without this entry the firewall would reject the name as unknown_name
+    // and the series would never emit.
+    "partition_weeks_ahead"                -> Set("table"),
     // #1243/#1221 HikariCP pool gauges — no labels.
     "wifihaven_db_pool_active_connections" -> Set.empty[String],
     "wifihaven_db_pool_idle_connections"   -> Set.empty[String],
@@ -700,6 +711,16 @@ object AppMetrics {
         RollupDurationBoundaries,
       ) *>
       MetricGuard.gauge("wifihaven_rollup_rows_upserted", Map("rollup_job" -> job), rows.toDouble)
+
+  // ── Partition runway (#808) ──────────────────────────────────────────────────
+  // Set by PartitionMaintenanceJob each run: per partitioned table, the number of consecutive
+  // weekly partitions present starting at the current ISO week (the write runway). A value of 0
+  // means even the current week has no partition — the 2026-06-29 P0 (#2053) state. The runway
+  // alert pages when the worst table drops below 2, so the fixed runway can never silently exhaust
+  // again. `table` is a bounded 2-value enum (the PartitionRepo.PartitionedTables names).
+
+  def setPartitionWeeksAhead(table: String, weeksAhead: Int): UIO[Unit] =
+    MetricGuard.gauge("partition_weeks_ahead", Map("table" -> table), weeksAhead.toDouble)
 
   // ── DB connection pool (#1243, #1221) ───────────────────────────────────────
   // Set from the polling fiber in DbPoolMetrics. threads_awaiting was the

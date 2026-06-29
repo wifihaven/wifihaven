@@ -220,6 +220,50 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 21 },
+      "id": 200,
+      "panels": [],
+      "title": "Partition runway (#808 / #2053)",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Weekly-partition runway (weeks ahead) per table",
+      "description": "partition_weeks_ahead{table,env=\"$env\"} — the number of consecutive weekly partitions present from the current ISO week on each RANGE-partitioned ingest table (traffic_reports V41, connection_events V42). Set each run by PartitionMaintenanceJob (#808). The fixed 5-week runway V41/V42 seeded ran out at ISO week 2026-27 and 503'd all ingest (#2053); this job keeps it topped up and this panel makes the runway visible. RED below 2 weeks = the page-now zone (critical alert C8). A value of 0 means even the current week has no partition — the incident state.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 22 },
+      "id": 5,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "always", "lineWidth": 2, "thresholdsStyle": { "mode": "line" } },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 2 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "min"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "partition_weeks_ahead{env=\"$env\"}",
+          "legendFormat": "{{table}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",
@@ -263,6 +307,6 @@
   "timezone": "",
   "title": "WifiHaven — DB health",
   "uid": "wifihaven-db-health",
-  "version": 1,
+  "version": 2,
   "weekStart": ""
 }
