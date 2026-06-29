@@ -17,6 +17,7 @@ import wifihaven.api.observability.LoggingMiddleware
 import wifihaven.api.observability.LokiDropMetrics
 import wifihaven.api.policy.*
 import wifihaven.api.routes.*
+import wifihaven.api.usage.PartitionMaintenanceJob
 import wifihaven.api.usage.RetentionSweepJob
 import wifihaven.api.usage.RollupJobs
 import wifihaven.api.usage.TimeUsedRollupJob
@@ -310,6 +311,17 @@ object Main extends ZIOAppDefault {
         // the tick rather than racing on the same DELETE.
         xaForJobs         <- ZIO.service[Transactor[Task]]
         _                 <- RetentionSweepJob.start(xaForJobs)
+        // #808: durable fix for the 2026-06-29 P0 (#2053). Auto-creates the next
+        // cfg.partition.weeksAhead weekly partitions on traffic_reports + connection_events at
+        // startup and every 24h, so the fixed runway V41/V42 seeded can never silently exhaust.
+        // Emits partition_weeks_ahead{table} for the runway alert. Advisory-locked (multi-instance
+        // safe), forkDaemon inside start.
+        partitionRepo     <- ZIO.service[PartitionRepo]
+        _                 <- PartitionMaintenanceJob.start(
+          partitionRepo,
+          cfg.partition.weeksAheadClamped,
+          clockForJobs,
+        )
         // Keep the process alive on the already-bound server fiber; exits if it dies.
         _                 <- serverFiber.join
       } yield ())

@@ -64,7 +64,7 @@ object RouterIngestRoutes {
               body   <- req.body.asString.orElseFail(ApiError.BadRequest(""))
               _      <- ingest.ingestUsage(router, body)
             } yield Response.ok
-          handle.mapError(ErrorMapper.errorToResponse)
+          handle.tapError(logDbCause).mapError(ErrorMapper.errorToResponse)
         },
       Method.POST / "api" / "router" / "events" ->
         handler { (req: Request) =>
@@ -74,7 +74,22 @@ object RouterIngestRoutes {
               body   <- req.body.asString.orElseFail(ApiError.BadRequest(""))
               _      <- ingest.ingestEvents(router, body)
             } yield Response.ok
-          handle.mapError(ErrorMapper.errorToResponse)
+          handle.tapError(logDbCause).mapError(ErrorMapper.errorToResponse)
         },
     )
+
+  /**
+   * #1570 / #2053 observability fix: when an ingest fails with a DB error, log the full PSQL cause
+   * chain at ERROR before [[ErrorMapper.errorToResponse]] collapses it to the class-name-only 503
+   * body the wire contract mandates. [[wifihaven.api.ErrorBoundary]] still logs the response-level
+   * summary (route/status/body); this adds the diagnostic detail that body deliberately omits, so a
+   * future partition/SQL failure shows the real reason (`no partition of relation … found for row`)
+   * instead of a bare `BatchUpdateException`. Non-DB errors carry their detail in the body the
+   * boundary already logs, so only the `Db` case needs this.
+   */
+  private def logDbCause(e: ApiError): UIO[Unit] = e match {
+    case ApiError.Db(cause) =>
+      ZIO.logError(s"router ingest DB failure: ${ErrorMapper.dbCauseChain(cause)}")
+    case _                  => ZIO.unit
+  }
 }

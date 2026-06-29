@@ -141,6 +141,17 @@ locals {
       env       = "prod"
       summary   = "agent_connected_routers{env=\"prod\"} == 0 for 10m (expressed as lt 1 over the integer gauge — Grafana evaluators have no eq). Server-computed from last_seen_at over a 10m window (DB-backed, trustworthy today — unlike the router-pushed family, §2 caveat). At household scale 0 means the single gateway agent stopped reporting entirely: no policy polls, no usage, no events. `for: 10m` aligns with the gauge's own window so it fires once the window has genuinely emptied, not on one missed poll."
     }
+    c8 = {
+      title     = "C8 Partition runway exhausting"
+      expr      = "min(partition_weeks_ahead{env=\"prod\"})"
+      window_s  = 3600
+      op        = "lt"
+      threshold = 2
+      for       = "1h"
+      severity  = "critical"
+      env       = "prod"
+      summary   = "Fewer than 2 weeks of pre-created weekly partitions remain on a RANGE-partitioned ingest table (min across traffic_reports/connection_events, partition_weeks_ahead{env=\"prod\"}, set by PartitionMaintenanceJob #808). This is the standing guard against a repeat of the 2026-06-29 P0 (#2053): V41/V42 seeded only a fixed 5-week runway and the auto-create job never shipped, so the runway silently exhausted at ISO week 2026-27 and 100% of POST /api/router/{usage,events} inserts 503'd. The job keeps ~6 weeks ahead and runs daily; this firing means it has been failing/skipped long enough that runway dropped below 2 weeks — still ~2 weeks of lead time to fix before writes start dropping. `for: 1h` rides over the daily gauge cadence without flapping. min() over the integer gauge (no eq in Grafana evaluators); the API being down makes the series absent → no-data → OK (C5 owns API-down). To force-test: drop the +1/+2-week partitions on staging and wait a tick."
+    }
   }
 }
 

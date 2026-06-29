@@ -49,4 +49,28 @@ object ErrorMapper {
       .json(s"""{"status":"error","db":"$label"}""")
       .status(Status.ServiceUnavailable)
       .addHeader("Retry-After", "30")
+
+  /**
+   * #1570 / #2053: render a DB throwable's FULL cause chain as a one-line diagnostic string for the
+   * server LOG (never the response body — the body stays class-name-only per the wire contract and
+   * the SQL-leak guard in DbFailureSpec). The 2026-06-29 P0 cost diagnosis time because the 503
+   * body + logs surfaced only `BatchUpdateException`; the real reason (`no partition of relation …
+   * found for row`) was a `PSQLException` reachable only via `SQLException.getNextException`, which
+   * neither the body nor a plain `Cause.fail` stack render. This walks BOTH the standard `getCause`
+   * chain and the JDBC `getNextException` chain (deduping to avoid cycles) so the underlying PSQL
+   * message is always logged at the ingest boundary.
+   */
+  def dbCauseChain(t: Throwable): String = {
+    val seen                     = scala.collection.mutable.LinkedHashSet.empty[Throwable]
+    def walk(x: Throwable): Unit =
+      if x != null && seen.add(x) then {
+        walk(x.getCause)
+        x match {
+          case s: java.sql.SQLException => walk(s.getNextException)
+          case _                        => ()
+        }
+      }
+    walk(t)
+    seen.iterator.map(e => s"${e.getClass.getSimpleName}: ${e.getMessage}").mkString(" <- ")
+  }
 }
