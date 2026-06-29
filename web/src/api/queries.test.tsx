@@ -20,7 +20,7 @@ import { api } from '@/api/client'
 import {
   useProfiles, useDevices, useTimeStatusToday, useTimeStatusSummary,
   useTimeStatusProfileToday, useInvalidators, qk,
-  timeStatusRefetchMs, TIME_STATUS_REFETCH_MAX_MS,
+  TIME_STATUS_FALLBACK_REFETCH_MS,
 } from './queries'
 
 function makeWrapper(client: QueryClient) {
@@ -107,109 +107,96 @@ describe('SWR caching (#803)', () => {
   })
 })
 
-// #1871: the live time-used surfaces must poll in the foreground so the
-// displayed "minutes left" can't lag enforcement (the router blocks within
-// seconds of the cap, but a query with only a staleTime never refetches on its
-// own). The cadence is ADAPTIVE — fast near a profile's cap, slow with lots of
-// time left. The immutable 'past'/'week' hooks must NOT poll.
-describe('time-used adaptive poll cadence (#1871)', () => {
-  // The ladder the operator asked for: ≤5m → 10s, ≤10m → 1m, ≤30m → 5m,
-  // beyond that (or no daily limit) → the 5m baseline.
-  it('maps remaining minutes to the poll interval', () => {
-    expect(timeStatusRefetchMs(0)).toBe(10_000)
-    expect(timeStatusRefetchMs(3)).toBe(10_000)
-    expect(timeStatusRefetchMs(5)).toBe(10_000)
-    expect(timeStatusRefetchMs(6)).toBe(60_000)
-    expect(timeStatusRefetchMs(10)).toBe(60_000)
-    expect(timeStatusRefetchMs(11)).toBe(300_000)
-    expect(timeStatusRefetchMs(30)).toBe(300_000)
-    expect(timeStatusRefetchMs(31)).toBe(TIME_STATUS_REFETCH_MAX_MS)
-    expect(timeStatusRefetchMs(120)).toBe(TIME_STATUS_REFETCH_MAX_MS)
-  })
-
-  it('treats no-daily-limit and past-cap edges sensibly', () => {
-    // No limit in force (null/undefined remaining) → slow baseline, not a tight poll.
-    expect(timeStatusRefetchMs(null)).toBe(TIME_STATUS_REFETCH_MAX_MS)
-    expect(timeStatusRefetchMs(undefined)).toBe(TIME_STATUS_REFETCH_MAX_MS)
-    // At/over the cap (a blocked profile) → fastest bucket, so a time extension
-    // or unblock surfaces within seconds.
-    expect(timeStatusRefetchMs(-5)).toBe(10_000)
-  })
-
-  // Behavioural: with fake timers, a hook fetched with a near-cap profile polls
-  // again after the fast 10s bucket. freshClient's long staleTime means an
-  // interval-driven refetch is the ONLY thing that can produce a second network
-  // call, so a missing/false refetchInterval makes the assertion fail.
+// #1976 (SPA-ws S7): the adaptive refetch ladder (TIME_STATUS_REFETCH_LADDER) is RETIRED.
+// The S6a `timeStatus` push (§3.1) drives freshness whenever the socket is live, so the
+// near-cap fast-poll the ladder existed for is redundant. What remains is a FLAT disconnected
+// fallback: while `wsLive` is false the live time-used hooks poll at a constant
+// TIME_STATUS_FALLBACK_REFETCH_MS so a near-cap "minutes left" can't lag enforcement during a
+// socket outage (#1871). While `wsLive` is true the poll is paused entirely (the push is the
+// freshness). The immutable 'past'/'week' hooks never poll.
+describe('time-used disconnected fallback poll (#1976 — adaptive ladder retired)', () => {
+  // Behavioural: freshClient's long staleTime means an interval-driven refetch is the ONLY
+  // thing that can produce a second network call, so a missing/false refetchInterval makes the
+  // assertion fail. The fallback is now FLAT — remaining-minutes no longer change the cadence.
   const nearCap = [{ profileId: 1, dailyLimitMins: 60, usedMins: 58, remainingMins: 2 }]
+  const farFromCap = [{ profileId: 1, dailyLimitMins: 240, usedMins: 10, remainingMins: 230 }]
 
-  async function expectFastPoll(
+  async function expectFlatPoll(
     seed: (v: unknown) => void,
+    rows: unknown,
     render: () => void,
     fetchSpy: ReturnType<typeof vi.fn>,
   ): Promise<void> {
-    seed(nearCap)
+    seed(rows)
     vi.useFakeTimers()
     try {
       render()
       await vi.advanceTimersByTimeAsync(0) // initial fetch resolves
       expect(fetchSpy).toHaveBeenCalledTimes(1)
-      await vi.advanceTimersByTimeAsync(10_000) // one fast-bucket interval
+      await vi.advanceTimersByTimeAsync(TIME_STATUS_FALLBACK_REFETCH_MS) // one flat interval
       expect(fetchSpy).toHaveBeenCalledTimes(2)
     } finally {
       vi.useRealTimers()
     }
   }
 
-  it('useTimeStatusToday polls fast near the cap', async () => {
+  it('useTimeStatusToday polls at the flat fallback when disconnected — near cap', async () => {
     const statusAll = api.time.statusAll as unknown as ReturnType<typeof vi.fn>
     const wrapper = makeWrapper(freshClient())
-    await expectFastPoll(
-      v => statusAll.mockResolvedValue(v),
+    await expectFlatPoll(
+      v => statusAll.mockResolvedValue(v), nearCap,
       () => renderHook(() => useTimeStatusToday(), { wrapper }),
       statusAll,
     )
   })
 
-  it('useTimeStatusSummary polls fast near the cap', async () => {
+  // No backoff anymore: far-from-cap polls at the SAME flat cadence as near-cap. Pre-S7 the
+  // ladder backed this case off to a 5m baseline; that adaptivity is gone (the push handles
+  // near-cap urgency when live, so the disconnected fallback is a single flat cadence).
+  it('useTimeStatusToday polls at the flat fallback when disconnected — far from cap (no backoff)', async () => {
+    const statusAll = api.time.statusAll as unknown as ReturnType<typeof vi.fn>
+    const wrapper = makeWrapper(freshClient())
+    await expectFlatPoll(
+      v => statusAll.mockResolvedValue(v), farFromCap,
+      () => renderHook(() => useTimeStatusToday(), { wrapper }),
+      statusAll,
+    )
+  })
+
+  it('useTimeStatusSummary polls at the flat fallback when disconnected', async () => {
     const summaryAll = api.time.summaryAll as unknown as ReturnType<typeof vi.fn>
     const wrapper = makeWrapper(freshClient())
-    await expectFastPoll(
-      v => summaryAll.mockResolvedValue(v),
+    await expectFlatPoll(
+      v => summaryAll.mockResolvedValue(v), nearCap,
       () => renderHook(() => useTimeStatusSummary(), { wrapper }),
       summaryAll,
     )
   })
 
-  it('useTimeStatusProfileToday polls fast near the cap', async () => {
+  it('useTimeStatusProfileToday polls at the flat fallback when disconnected', async () => {
     const statusAll = api.time.statusAll as unknown as ReturnType<typeof vi.fn>
     const wrapper = makeWrapper(freshClient())
-    await expectFastPoll(
+    await expectFlatPoll(
       // single-row shape (the hook takes rows[0])
-      v => statusAll.mockResolvedValue(v),
+      v => statusAll.mockResolvedValue(v), nearCap,
       () => renderHook(() => useTimeStatusProfileToday(1), { wrapper }),
       statusAll,
     )
   })
 
-  // Adaptivity: with lots of time left, the hook does NOT poll on the fast
-  // cadence — it stays quiet until the slow baseline elapses.
-  it('backs off to the slow baseline with lots of time left', async () => {
+  // The push being live (`wsLive: true`) pauses the fallback entirely (§3.3) — no poll at all,
+  // even sitting right at a cap. The push, not a poll, is the freshness while connected.
+  it('pauses the fallback poll while the timeStatus push is live (wsLive)', async () => {
     const statusAll = api.time.statusAll as unknown as ReturnType<typeof vi.fn>
-    statusAll.mockResolvedValue([
-      { profileId: 1, dailyLimitMins: 240, usedMins: 10, remainingMins: 230 },
-    ])
+    statusAll.mockResolvedValue(nearCap)
     const wrapper = makeWrapper(freshClient())
     vi.useFakeTimers()
     try {
-      renderHook(() => useTimeStatusToday(), { wrapper })
+      renderHook(() => useTimeStatusToday({ wsLive: true }), { wrapper })
       await vi.advanceTimersByTimeAsync(0)
-      expect(statusAll).toHaveBeenCalledTimes(1)
-      // Fast-bucket interval elapses — still no refetch, because we're far from the cap.
-      await vi.advanceTimersByTimeAsync(60_000)
-      expect(statusAll).toHaveBeenCalledTimes(1)
-      // The slow baseline elapses — now it polls.
-      await vi.advanceTimersByTimeAsync(TIME_STATUS_REFETCH_MAX_MS)
-      expect(statusAll).toHaveBeenCalledTimes(2)
+      expect(statusAll).toHaveBeenCalledTimes(1) // initial fetch only
+      await vi.advanceTimersByTimeAsync(TIME_STATUS_FALLBACK_REFETCH_MS * 5)
+      expect(statusAll).toHaveBeenCalledTimes(1) // push drives freshness; no poll
     } finally {
       vi.useRealTimers()
     }
