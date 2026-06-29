@@ -2,7 +2,9 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, act, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
-import type { DashboardNow, DashboardStats, QueryLog } from '@/types/api'
+import type { DashboardNow, DashboardStats, QueryLog, TrafficUsageAggregateRow } from '@/types/api'
+import type { WsTrafficUsage } from '@/hooks/useWs'
+import type { BandwidthRate } from '@/api/wsCache'
 
 vi.mock('@/api/client', () => ({
   api: {
@@ -16,7 +18,24 @@ vi.mock('@/api/client', () => ({
     alerts: {
       list: vi.fn(),
     },
+    usage: {
+      traffic: vi.fn(),
+    },
   },
+}))
+
+// #2056: control the single page-wide bandwidth source so the KPI Bandwidth tile and the NOW
+// card ▲▼ can be asserted to read the SAME window. All other useWs hooks stay real (no-ops
+// without a WsProvider), exactly as the pre-#2056 tests relied on.
+const ZERO_RATE: BandwidthRate = { bytesInPerSec: 0, bytesOutPerSec: 0, bytesPerSec: 0 }
+const idleBandwidth: WsTrafficUsage = {
+  live: false, loading: false, bucket: '1m', setBucket: vi.fn(),
+  rows: [], overall: ZERO_RATE, rate: () => ZERO_RATE,
+}
+const mockUseWsTrafficUsage = vi.fn<() => WsTrafficUsage>(() => idleBandwidth)
+vi.mock('@/hooks/useWs', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/hooks/useWs')>()),
+  useWsTrafficUsage: () => mockUseWsTrafficUsage(),
 }))
 
 import { api } from '@/api/client'
@@ -198,6 +217,21 @@ beforeEach(() => {
   )
   mockNow().mockResolvedValue(emptyNow)
   mockAlerts().mockResolvedValue([])
+  ;(api.usage.traffic as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+    bucket: '1m', from: '', to: '', tz: 'UTC', rawRows: [], aggregateRows: [],
+  })
+  mockUseWsTrafficUsage.mockReturnValue(idleBandwidth)
+})
+
+// #2056: a live per-profile bandwidth head row (groupBy:profile keys the profile name in
+// `groups.profile`). rateFor divides bytes-over-bucket, so the displayed ▲▼ depends on the
+// window — the lever the "global selector governs ▲▼" assertion pulls.
+const profileRow = (profile: string, bytesIn: number, bytesOut: number): TrafficUsageAggregateRow => ({
+  groups: { profile }, windowStart: 'w', windowEnd: 'w',
+  totalBytesIn: bytesIn, totalBytesOut: bytesOut, totalSeconds: 60,
+})
+const liveBandwidth = (overrides: Partial<WsTrafficUsage> = {}): WsTrafficUsage => ({
+  ...idleBandwidth, live: true, ...overrides,
 })
 
 describe('DashboardPage', () => {
@@ -340,17 +374,102 @@ describe('DashboardPage', () => {
     expect(cmp & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(await screen.findByText('connectivitycheck.gstatic.com')).toBeInTheDocument()
   })
+
+  // ── #2056 §9.1: section order — Recently Blocked LEADS, above the KPI strip ──
+  it('orders the page banners → Recently Blocked → KPI strip → NOW → Blocking activity (§9.1)', async () => {
+    mockNow().mockResolvedValue(liveNow)
+    render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
+    const blocked = await screen.findByTestId('recently-blocked-section')
+    const strip   = await screen.findByTestId('kpi-strip')
+    const now     = await screen.findByTestId('now-section')
+    const activity = await screen.findByText('Blocking activity (24h)')
+    // Recently Blocked is FIRST (rev-4 moved it to the top as the primary diagnostic),
+    // then the KPI strip, then NOW, then the below-fold 24h panel.
+    expect(blocked.compareDocumentPosition(strip) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(strip.compareDocumentPosition(now) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(now.compareDocumentPosition(activity) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  // ── #2056 §9.1: FIVE-tile KPI strip incl. the Bandwidth tile + window selector ──
+  it('renders a 5-tile KPI strip including a Bandwidth tile with the window selector (§9.1)', async () => {
+    mockUseWsTrafficUsage.mockReturnValue(liveBandwidth({
+      overall: { bytesInPerSec: 18 * 1024 * 1024, bytesOutPerSec: 2 * 1024 * 1024, bytesPerSec: 20 * 1024 * 1024 },
+    }))
+    render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
+    const strip = await screen.findByTestId('kpi-strip')
+    for (const label of ['Online now', 'Blocked now', 'Events (1h)', 'Blocked (1h)', 'Bandwidth']) {
+      expect(within(strip).getByText(label)).toBeInTheDocument()
+    }
+    // The Bandwidth tile carries the live ▲▼ rate AND the [raw·1m·10m·1h] window selector —
+    // the standalone "Live Bandwidth" panel is gone.
+    expect(within(strip).getByTestId('kpi-bandwidth-rate')).toBeInTheDocument()
+    for (const b of ['raw', '1m', '10m', '1h']) {
+      expect(within(strip).getByTestId(`bucket-${b}`)).toBeInTheDocument()
+    }
+    // The 12h/1d/1w history buckets do NOT appear on the live gauge.
+    expect(within(strip).queryByTestId('bucket-1d')).not.toBeInTheDocument()
+    // The separate "Live Bandwidth" panel was folded in (no second gauge).
+    expect(screen.queryByText('Live Bandwidth')).not.toBeInTheDocument()
+  })
+
+  // ── #2056 §8.5: ONE window selector governs ▲▼ EVERYWHERE (global selection) ──
+  it('drives both the KPI Bandwidth tile and the NOW card ▲▼ off the one shared window (§8.5)', async () => {
+    const setBucket = vi.fn()
+    mockNow().mockResolvedValue(liveNow) // a "Kids" profile card
+    mockUseWsTrafficUsage.mockReturnValue(liveBandwidth({
+      bucket: '1m',
+      setBucket,
+      rows: [profileRow('Kids', 8 * 1024 * 1024, 1024 * 1024)],
+      overall: { bytesInPerSec: 8 * 1024 * 1024 / 60, bytesOutPerSec: 1024 * 1024 / 60, bytesPerSec: 0 },
+    }))
+    const user = userEvent.setup()
+    render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
+    const strip = await screen.findByTestId('kpi-strip')
+    // Both surfaces render a live ▲▼ rate from the SAME bandwidth source.
+    expect(within(strip).getByTestId('kpi-bandwidth-rate')).toHaveTextContent('▲')
+    const card = await screen.findByTestId('now-profile-1')
+    expect(within(card).getByTestId('now-profile-rate-1')).toHaveTextContent('▲')
+    // The strip's selector is the single global control — switching it re-subscribes the one
+    // shared trafficUsage stream (the same setter the NOW cards' window reads).
+    await user.click(within(strip).getByTestId('bucket-10m'))
+    expect(setBucket).toHaveBeenCalledWith('10m')
+  })
 })
 
 describe('RecentlyBlockedSection (#1338)', () => {
-  it('renders blocked rows: host, device + profile, and reason', async () => {
+  it('renders blocked rows: device, profile, host, and reason (§9.2 shape)', async () => {
     render(withQuery(<MemoryRouter><RecentlyBlockedSection /></MemoryRouter>))
     expect(await screen.findByText('connectivitycheck.gstatic.com')).toBeInTheDocument()
-    expect(screen.getByText(/Kid's iPad · Kids/)).toBeInTheDocument()
+    // §9.2: device · profile↗ · host · reason · time — device and profile are now distinct
+    // (separately deep-linked) elements, not one text node.
+    expect(screen.getByText("Kid's iPad")).toBeInTheDocument()
+    expect(screen.getByText(/Kids/)).toBeInTheDocument()
     expect(screen.getByText('category: ads')).toBeInTheDocument()
     // Reuses the blocked=true read, capped to 20 (RECENT_BLOCKED_LIMIT), 1h fetch
     // window (trimmed to 15 min client-side).
     expect(api.logs.query).toHaveBeenCalledWith({ blocked: true, limit: 20, hours: 1 })
+  })
+
+  it('§9.2 — the profile is a clickable deep-link to /profiles?id=<profileId> (quick unblock)', async () => {
+    render(withQuery(<MemoryRouter><RecentlyBlockedSection /></MemoryRouter>))
+    await screen.findByText('connectivitycheck.gstatic.com')
+    // blockedRow.profileId = 1 → the profile chip links straight to the Kids profile editor,
+    // reusing the existing ?id= scroll-to-highlight deep-link (#298).
+    const profileLink = screen.getByTestId('recently-blocked-profile-99')
+    expect(profileLink).toHaveAttribute('href', '/profiles?id=1')
+    expect(profileLink).toHaveTextContent(/Kids/)
+  })
+
+  it('§9.2 — the device name keeps its own deep-link to the device-filtered Connection Events', async () => {
+    render(withQuery(<MemoryRouter><RecentlyBlockedSection /></MemoryRouter>))
+    await screen.findByText('connectivitycheck.gstatic.com')
+    // blockedRow.mac = aa:bb:cc:dd:ee:01 → "show everything this device hit" is a distinct
+    // target from the profile (policy) link.
+    const deviceLink = screen.getByText("Kid's iPad").closest('a')
+    expect(deviceLink).toHaveAttribute(
+      'href',
+      '/usage/events?blocked=true&mac=aa%3Abb%3Acc%3Add%3Aee%3A01',
+    )
   })
 
   it('drops blocks older than the 15-min recency window (#1338)', async () => {
@@ -618,5 +737,98 @@ describe('NowSection', () => {
     mockNow().mockResolvedValue(emptyNow)
     render(withQuery(<NowSection />))
     expect(await screen.findByText(/No profiles configured yet/)).toBeInTheDocument()
+  })
+
+  // ── #2056 §8.5: per-profile ▲▼ rate on the card header, driven by the global window ──
+  it('renders the per-profile ▲▼ rate on the card header, keyed by profile name (§8.5)', async () => {
+    mockNow().mockResolvedValue(liveNow) // a "Kids" profile card
+    render(withQuery(<NowSection bandwidth={liveBandwidth({
+      bucket: '1m',
+      rows: [profileRow('Kids', 6 * 1024 * 1024, 1024 * 1024)],
+    })} />))
+    const card = await screen.findByTestId('now-profile-1')
+    const rate = within(card).getByTestId('now-profile-rate-1')
+    expect(rate).toHaveTextContent('▲')
+    expect(rate).toHaveTextContent('▼')
+  })
+
+  it('shows "—" (not ▲0 ▼0) on the header when a profile has no live-edge rate (§8.5)', async () => {
+    mockNow().mockResolvedValue(liveNow)
+    // Live socket, but no row for "Kids" → unknown rate → em-dash, not a measured zero.
+    render(withQuery(<NowSection bandwidth={liveBandwidth({ rows: [] })} />))
+    const card = await screen.findByTestId('now-profile-1')
+    const rate = within(card).getByTestId('now-profile-rate-1')
+    expect(rate).toHaveTextContent('—')
+    expect(rate).not.toHaveTextContent('▲')
+  })
+
+  it('re-derives the header ▲▼ when the global window changes (smaller rate at 10m than 1m) (§8.5)', async () => {
+    mockNow().mockResolvedValue(liveNow)
+    const rows = [profileRow('Kids', 600 * 1024 * 1024, 0)]
+    const { rerender } = render(withQuery(<NowSection bandwidth={liveBandwidth({ bucket: '1m', rows })} />))
+    const at1m = within(await screen.findByTestId('now-profile-1')).getByTestId('now-profile-rate-1').textContent
+    rerender(withQuery(<NowSection bandwidth={liveBandwidth({ bucket: '10m', rows })} />))
+    const at10m = within(await screen.findByTestId('now-profile-1')).getByTestId('now-profile-rate-1').textContent
+    // Same bytes ÷ a 10× wider bucket ⇒ a visibly smaller rate: the NOW card reads the
+    // page-wide window, not a per-card one.
+    expect(at1m).not.toEqual(at10m)
+  })
+
+  // ── #2056 §9.3: IoT/appliance filtering — hidden unless anomalous ──
+  it('hides a non-anomalous appliance device from the NOW card (§9.3)', async () => {
+    mockNow().mockResolvedValue({
+      asOf: '2026-05-13T10:00:00Z',
+      profiles: [{
+        id: 1, name: 'Family', paused: false,
+        activeDevices: [
+          dev('MacBook', 20, 300),
+          { ...dev('Sonos', 30, 500), kind: 'appliance' },
+        ],
+      }],
+    })
+    render(withQuery(<NowSection />))
+    const card = await screen.findByTestId('now-profile-1')
+    expect(within(card).getByText('MacBook')).toBeInTheDocument()
+    // The appliance is filtered out of the personal-device list (the §9.4 gate is OFF here
+    // because the fixture supplies the classification the server will eventually send).
+    expect(within(card).queryByText('Sonos')).not.toBeInTheDocument()
+  })
+
+  it('surfaces an appliance ONLY when its traffic is anomalous, flagged ⚠ unusual (§9.3)', async () => {
+    mockNow().mockResolvedValue({
+      asOf: '2026-05-13T10:00:00Z',
+      profiles: [{
+        id: 1, name: 'Family', paused: false,
+        activeDevices: [
+          dev('MacBook', 20, 300),
+          { ...dev('B-Hyve', 30, 500), kind: 'appliance', anomalous: true },
+        ],
+      }],
+    })
+    render(withQuery(<NowSection />))
+    const card = await screen.findByTestId('now-profile-1')
+    // The anomalous appliance surfaces (likely-compromise signal), flagged as unusual.
+    expect(within(card).getByText(/B-Hyve/)).toBeInTheDocument()
+    expect(within(card).getByText(/unusual/)).toBeInTheDocument()
+  })
+
+  it('collapses a profile whose only activity is hidden appliance chatter into the idle row (§9.3)', async () => {
+    mockNow().mockResolvedValue({
+      asOf: '2026-05-13T10:00:00Z',
+      profiles: [
+        { id: 1, name: 'Kids', paused: false, activeDevices: [dev('iPhone', 30, 120)] },
+        {
+          id: 2, name: 'IoT', paused: false,
+          activeDevices: [{ ...dev('Printer', 30, 60), kind: 'appliance' }],
+        },
+      ],
+    })
+    render(withQuery(<NowSection />))
+    await screen.findByTestId('now-profile-1')
+    // The IoT-only profile has no VISIBLE devices → it is idle, not an empty active card.
+    expect(screen.queryByTestId('now-profile-2')).not.toBeInTheDocument()
+    const collapse = screen.getByTestId('now-idle-collapse')
+    expect(within(collapse).getByText(/Idle \(1\)/)).toBeInTheDocument()
+    expect(within(collapse).getByText(/IoT/)).toBeInTheDocument()
   })
 })
