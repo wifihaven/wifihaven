@@ -7,6 +7,13 @@ icon_type: url
 # workers.dev subdomain is the actual game runtime — included specifically
 # because it's account-scoped (NOT the shared workers.dev apex, which would
 # be a #1661 violation).
+# eaglercraft.com added from prod evidence (#2058 app-catalog pass): a direct
+# game mirror of the same Eaglercraft browser-Minecraft project (serves the
+# launcher at eaglercraft.com/play), observed in active kid use but unattributed
+# to this app. It's a game host, not an "unblocked games" proxy portal, so it
+# extends the app host-set (not games.yml) per the operator's #1705 decision
+# that Eaglercraft is a time-limited app, not a block target.
 hosts:
   - eaglercraft.dev
+  - eaglercraft.com
   - eaglercraft-99f.workers.dev
