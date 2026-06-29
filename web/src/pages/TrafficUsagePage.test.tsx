@@ -22,6 +22,9 @@ vi.mock('@/api/client', () => ({
     profiles: { list:    vi.fn() },
     apps:     { list:    vi.fn() },
   },
+  // #2047: the page swallows caller-cancellation errors via this predicate.
+  isCanceledError: (e: unknown) =>
+    e instanceof Error && e.name === 'RequestCanceledError',
 }))
 
 import { api } from '@/api/client'
@@ -353,5 +356,50 @@ describe('TrafficUsagePage', () => {
     trafficMock.mockRejectedValueOnce(new Error('window_too_large'))
     renderPage()
     await waitFor(() => expect(screen.getByTestId('error')).toHaveTextContent('window_too_large'))
+  })
+
+  // #2047 — a cancelled/aborted in-flight request ("signal is aborted without
+  // reason") is a client-side cancellation, NOT a server failure. It must never
+  // be surfaced as a user-facing table error (the prod regression: the whole
+  // page showed the AbortError + "No rows in window.").
+  it('does not surface an AbortError as a user-facing error (#2047)', async () => {
+    const trafficMock = api.usage.traffic as ReturnType<typeof vi.fn>
+    trafficMock.mockRejectedValueOnce(
+      new DOMException('signal is aborted without reason', 'AbortError'),
+    )
+    renderPage()
+    await waitFor(() => expect(api.usage.traffic).toHaveBeenCalled())
+    // The page recovers to a clean empty state (the abort is swallowed).
+    await waitFor(() => expect(screen.getByText('No rows in window.')).toBeInTheDocument())
+    expect(screen.queryByText(/aborted/i)).not.toBeInTheDocument()
+    expect(screen.queryByTestId('error')).not.toBeInTheDocument()
+  })
+
+  // #2047 — switching bucket supersedes the in-flight request. When the
+  // superseded request later rejects with an abort, the page must NOT surface
+  // it as an error: the replacement load owns the view.
+  it('superseding a request (bucket switch) cancels cleanly without an error (#2047)', async () => {
+    const trafficMock = api.usage.traffic as ReturnType<typeof vi.fn>
+    const aggEmptyResp: TrafficUsageResponse = {
+      ...aggResp,
+      groupBy: [],
+      aggregateRows: [{ ...aggResp.aggregateRows[0], groups: {} }],
+    }
+    let rejectFirst: (e: unknown) => void = () => {}
+    trafficMock
+      .mockReturnValueOnce(new Promise<TrafficUsageResponse>((_, rej) => { rejectFirst = rej }))
+      .mockResolvedValueOnce(aggEmptyResp)
+    renderPage()
+    await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(1))
+
+    await userEvent.click(screen.getByTestId('bucket-1m'))
+    await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(2))
+
+    // The superseded raw request now aborts — the page must swallow it.
+    rejectFirst(new DOMException('signal is aborted without reason', 'AbortError'))
+
+    await waitFor(() => expect(screen.getByTestId('aggregate-table')).toBeInTheDocument())
+    expect(screen.queryByText(/aborted/i)).not.toBeInTheDocument()
+    expect(screen.queryByTestId('error')).not.toBeInTheDocument()
   })
 })

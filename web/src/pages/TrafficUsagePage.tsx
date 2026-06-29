@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { api } from '@/api/client'
+import { api, isCanceledError } from '@/api/client'
 import { useUsageConfig } from '@/api/queries'
 import type {
   Device,
@@ -82,6 +82,12 @@ export function TrafficUsagePage() {
   // #769: surface the "no apps yet" empty-state on group-by=app.
   const [appCount, setAppCount] = useState<number | null>(null)
   const sentinelRef             = useRef<HTMLDivElement | null>(null)
+  // #2047: one AbortController per load-lifecycle (per filterKey). The reset
+  // effect rotates it — aborting the prior in-flight load — so a bucket switch
+  // / filter change supersedes its predecessor cleanly. Crucially it lives in a
+  // ref created only on filterKey change, NOT per render, so live-edge pushes
+  // (`setAggRows` → re-render) never abort the active request.
+  const abortRef                = useRef<AbortController | null>(null)
 
   useEffect(() => {
     api.devices.list().then(setDevices).catch(() => setDevices([]))
@@ -128,6 +134,10 @@ export function TrafficUsagePage() {
 
   const load = useCallback(
     async (curs: string | null) => {
+      // The controller for THIS load-lifecycle (set by the reset effect). A
+      // paging load reuses it; a superseded load is the one whose controller
+      // already aborted.
+      const controller = abortRef.current
       setLoading(true)
       setError(null)
       try {
@@ -144,6 +154,7 @@ export function TrafficUsagePage() {
           groupBy: bucket === 'raw' ? undefined : groupBy,
           limit,
           cursor: curs ?? undefined,
+          signal: controller?.signal,
         })
         if (bucket === 'raw') {
           setRawRows(prev => curs ? prev.concat(resp.rawRows) : resp.rawRows)
@@ -153,22 +164,38 @@ export function TrafficUsagePage() {
         setCursor(resp.nextCursor ?? null)
         setHasMore(!!resp.nextCursor)
       } catch (e) {
+        // #2047: a cancelled/superseded request (the page aborted it on a
+        // bucket switch / filter change, or it raced a teardown) is not a
+        // failure — the replacement load owns the view. Never surface it as a
+        // table error, never stop paging. The replacement load already set its
+        // own loading state, so leave loading alone if this load is stale.
+        if (isCanceledError(e) || (e instanceof DOMException && e.name === 'AbortError')) {
+          return
+        }
         setError((e as Error).message || 'failed to load')
         setHasMore(false)
       } finally {
-        setLoading(false)
+        // Only the still-current load owns the spinner; a superseded load's
+        // late settle must not clear the spinner its replacement just raised.
+        if (abortRef.current === controller) setLoading(false)
       }
     },
     [bucket, groupBy, macs, profileIds, until],
   )
 
   useEffect(() => {
+    // Supersede any in-flight load, then start a fresh lifecycle.
+    abortRef.current?.abort()
+    abortRef.current = new AbortController()
     setRawRows([])
     setAggRows([])
     setCursor(null)
     setHasMore(true)
     void load(null)
   }, [filterKey])
+
+  // Abort the active load on unmount so a late settle can't touch unmounted state.
+  useEffect(() => () => abortRef.current?.abort(), [])
 
   useInfiniteScroll({
     sentinelRef,
