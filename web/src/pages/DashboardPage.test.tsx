@@ -204,15 +204,39 @@ beforeEach(() => {
 })
 
 describe('DashboardPage', () => {
-  it('renders the 1h KPI tiles, top-blocked, and per-device', async () => {
+  it('renders the 1h KPI tiles and the merged Blocking activity panel (#1836)', async () => {
     render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
     expect(await screen.findByText('78')).toBeInTheDocument()  // Events (1h)
     expect(screen.getByText('9')).toBeInTheDocument()          // Blocked (1h)
+    // The ranked blocked-host list (existing topBlocked shape) is the body.
     expect(screen.getByText('evil.com')).toBeInTheDocument()
     expect(screen.getByText('42')).toBeInTheDocument()
-    expect(screen.getAllByText("Kid's iPad").length).toBeGreaterThan(0)
-    expect(screen.getByText('500 events')).toBeInTheDocument()
-    expect(screen.getByText('20 blocked')).toBeInTheDocument()
+    expect(screen.getByText('ads.example')).toBeInTheDocument()
+    expect(screen.getByText('17')).toBeInTheDocument()
+  })
+
+  // ── #1836: merge Top Blocked + Per Device → one "Blocking activity (24h)" panel ──
+  it('renders ONE "Blocking activity (24h)" panel, replacing Top Blocked + Per Device (#1836)', async () => {
+    render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
+    expect(await screen.findByText('Blocking activity (24h)')).toBeInTheDocument()
+    // The two old panels are gone.
+    expect(screen.queryByText('Top Blocked (24h)')).not.toBeInTheDocument()
+    expect(screen.queryByText('Per Device (24h)')).not.toBeInTheDocument()
+  })
+
+  it('subtitles the panel "N hosts · M blocked events" derived from stats (#1836)', async () => {
+    render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
+    // topBlocked = [evil.com·42, ads.example·17] → 2 hosts, 42+17 = 59 events.
+    expect(await screen.findByText('2 hosts · 59 blocked events')).toBeInTheDocument()
+  })
+
+  it('never renders a "0 blocked" row and drops per-device volume (#1836)', async () => {
+    render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
+    await screen.findByText('Blocking activity (24h)')
+    expect(screen.queryByText(/0 blocked/)).not.toBeInTheDocument()
+    // Per-device volume (events / N blocked) belongs on /devices + /profiles, not here.
+    expect(screen.queryByText('500 events')).not.toBeInTheDocument()
+    expect(screen.queryByText('20 blocked')).not.toBeInTheDocument()
   })
 
   it('restates the KPI tiles status-first: Online now / Blocked now / Events (1h) / Blocked (1h) (#1834)', async () => {
@@ -252,10 +276,14 @@ describe('DashboardPage', () => {
     expect(screen.queryByText(/queries/i)).not.toBeInTheDocument()
   })
 
-  it('shows empty state when no blocked events', async () => {
+  it('renders a one-line empty state (not two cards) when 24h had zero blocks (#1836)', async () => {
     mockStats().mockResolvedValue({ ...stats, topBlocked: [] })
     render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
-    expect(await screen.findByText(/No blocked events yet/)).toBeInTheDocument()
+    expect(
+      await screen.findByText('No blocked connection events in the last 24h'),
+    ).toBeInTheDocument()
+    // Zero hosts, zero events — the subtitle stays honest.
+    expect(screen.getByText('0 hosts · 0 blocked events')).toBeInTheDocument()
   })
 
   it('renders the KPI strip above the NOW section (#1834)', async () => {
