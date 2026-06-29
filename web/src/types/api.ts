@@ -298,7 +298,23 @@ export interface DashboardNowDevice {
   topHosts: DashboardNowHost[]
   // zio-json omits None — field is absent on the wire (treat absent as idle).
   nowActivity?: DashboardNowActivity | null
+  // #2056 / §9.3 — IoT/appliance display classification. ADDITIVE + backend-gated:
+  // the server does NOT populate these today, so they are absent on the wire and the
+  // dashboard renders every active device exactly as it does now (the §9.4 "render all
+  // until the classifier lands" gate). When the classifier sub-task ships, `kind`
+  // marks appliances (Sonos/printer/NAS/…) so NOW can filter them out, and
+  // `anomalous` surfaces one ANYWAY — flagged — when its traffic is a likely-compromise
+  // signal (the narrow §9.3 exception to "per-device throughput stays off the dashboard").
+  // Absent ⇒ personal device, always shown. The server-side signal is #2061.
+  kind?: DeviceKind | null
+  anomalous?: boolean | null
 }
+
+// #2056 / §9.3 — display classification only, NOT policy (the two-tier global+profile
+// rule in AGENTS.md stands; this never authors per-device policy). `appliance` = IoT /
+// appliance (filtered out of NOW unless anomalous); `personal` (or absent) = a device a
+// human uses (always shown).
+export type DeviceKind = 'personal' | 'appliance'
 
 export interface DashboardNowProfile {
   id: number

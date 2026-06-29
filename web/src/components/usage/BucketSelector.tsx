@@ -29,10 +29,16 @@ interface Props {
   // the chosen date range. A disabled bucket is greyed (not hidden) and its
   // `reason` is surfaced as the tooltip.
   gates?: Partial<Record<TrafficUsageBucket, BucketGate>>
+  // #2056: restrict to (and order by) a subset of windows — the dashboard
+  // Bandwidth tile offers only the live-relevant `1m · 10m · 1h · raw` (§8.5),
+  // not the 12h/1d/1w history buckets that make no sense for a live B/s gauge.
+  only?: TrafficUsageBucket[]
 }
 
-export function BucketSelector({ value, onChange, hideRaw, gates }: Props) {
-  const buckets = hideRaw ? BUCKETS.filter(b => b.value !== 'raw') : BUCKETS
+export function BucketSelector({ value, onChange, hideRaw, gates, only }: Props) {
+  const buckets = only
+    ? only.flatMap(v => BUCKETS.filter(b => b.value === v))
+    : hideRaw ? BUCKETS.filter(b => b.value !== 'raw') : BUCKETS
   return (
     <div className="flex flex-wrap gap-2" role="group" aria-label="bucket-selector">
       {buckets.map(b => {
