@@ -204,13 +204,14 @@ export function TrafficUsagePage() {
     onLoadMore: () => { if (cursor) void load(cursor) },
   })
 
-  // #1975 (S6b): stream the live edge of the aggregated series — subscribe `trafficUsage`
-  // with the page's current params and merge the pushed head bucket into `aggRows` by
-  // windowStart (the helper gates itself to the aggregated, anchored-at-now view; the GET
-  // still owns history + paging). Re-subscribes when groupBy / bucket / filters change.
+  // #1975 (S6b) / #2048: stream the live edge of the page with the current params. The hook
+  // splices the push into whichever row state the bucket renders — aggregated head-merge into
+  // `aggRows` for 1m/10m/…, or PREPEND new per-host `rawRows` into `rawRows` for the default
+  // `raw` view (#2048). The GET still owns history + paging; a pinned `until` stays GET-only.
+  // Re-subscribes when groupBy / bucket / filters change.
   const liveStreaming = useWsTrafficUsageLiveEdge(
     { groupBy, bucket, macs, profileIds, until },
-    setAggRows,
+    { setAggRows, setRawRows },
   )
 
   function toggleGroup(key: string) {
@@ -541,8 +542,10 @@ function RawTable({
               </td>
             </tr>
           )}
-          {rows.map((r, i) => (
-            <tr key={i} className="border-t border-brand-border">
+          {rows.map(r => (
+            // #2048: key on the row's stable identity (periodStart, mac, host) — not the array
+            // index — so the live-edge PREPEND reconciles correctly instead of reusing rows by slot.
+            <tr key={`${r.periodStart}|${r.mac}|${r.host.value}`} className="border-t border-brand-border">
               <td className="px-2 py-1 font-mono text-xs whitespace-nowrap">{localTime(r.periodStart)}</td>
               <td className="px-2 py-1">{r.deviceName ?? r.mac}</td>
               <td className="px-2 py-1 hidden md:table-cell">{r.profileName ?? '-'}</td>

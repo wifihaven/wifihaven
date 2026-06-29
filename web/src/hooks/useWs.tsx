@@ -29,6 +29,7 @@ import {
   mergeHeadBucket,
   overallRate,
   prependHead,
+  prependRawHead,
   projectTimeStatusToSummary,
   rateFor,
   type BandwidthRate,
@@ -41,6 +42,7 @@ import type {
   TrafficUsageAggregateRow,
   TrafficUsageBucket,
   TrafficUsageGroupBy,
+  TrafficUsageRawRow,
   TrafficUsageResponse,
 } from '@/types/api'
 
@@ -362,40 +364,61 @@ export interface TrafficUsageLiveArgs {
   until: string | null
 }
 
+/** The page's two row-state setters: the live edge writes into whichever the bucket renders. */
+export interface TrafficUsageLiveSetters {
+  setAggRows: (fn: (prev: TrafficUsageAggregateRow[]) => TrafficUsageAggregateRow[]) => void
+  setRawRows: (fn: (prev: TrafficUsageRawRow[]) => TrafficUsageRawRow[]) => void
+}
+
 /**
- * Subscribe `trafficUsage` with the Traffic Usage page's CURRENT params and merge the
- * pushed head bucket into the page's aggregate-row state by `windowStart` (§3.1). The
- * page passes its own `setAggRows`. Re-subscribes whenever groupBy / bucket / filters
- * change (the params change → `useWsSubscription` sends unsubscribe-then-subscribe).
+ * Subscribe `trafficUsage` with the Traffic Usage page's CURRENT params and splice the pushed
+ * live edge into the page's row state (§3.1). The page passes both its `setAggRows` and
+ * `setRawRows`; which one the edge writes depends on the bucket. Re-subscribes whenever
+ * groupBy / bucket / filters change (the params change → `useWsSubscription` sends
+ * unsubscribe-then-subscribe).
  *
- * Streaming is gated to the AGGREGATED view anchored at "now": the push carries
- * `aggregateRows` (one point per group per ingest period, design §1.3) — the page's `raw`
- * bucket renders per-host `rawRows`, a different shape the live edge can't merge into; and
- * a pinned `until` window is history, with no live edge to stream. Returns whether the
- * topic is actually streaming (acked) for an optional "Live" indicator.
+ * Two shapes, gated by the bucket — exactly mirroring the GET split (`UsageRoutes`):
+ *   - `raw` (the page's DEFAULT, no groupBy): the push carries the NEW per-host `rawRows` for the
+ *     ingest period (#2048). We PREPEND them (dedup by `(periodStart, mac, host)`) into `setRawRows`,
+ *     like the connectionEvents feed — paged history (#862) is never mutated. The subscription omits
+ *     `groupBy` so the server takes its ungrouped-raw → rawRows path (SSOT with the GET).
+ *   - `1m`/`10m`/…: the push carries `aggregateRows` (one point per group per ingest period, design
+ *     §1.3); we MERGE the head bucket by `windowStart` into `setAggRows`.
+ *
+ * A pinned `until` window is history (no live edge), so both modes stay GET-only there. Returns
+ * whether the topic is actually streaming (acked) for the page's "Live" indicator.
  */
 export function useWsTrafficUsageLiveEdge(
   args: TrafficUsageLiveArgs,
-  setRows: (fn: (prev: TrafficUsageAggregateRow[]) => TrafficUsageAggregateRow[]) => void,
+  setters: TrafficUsageLiveSetters,
 ): boolean {
-  const enabled = args.until == null && args.bucket !== 'raw'
+  const enabled = args.until == null
+  const isRaw = args.bucket === 'raw'
   const params = useMemo(
     () => ({
-      groupBy: args.groupBy,
+      // `raw` (no groupBy) is the per-host inspector → omit groupBy so the server pushes rawRows,
+      // matching the GET (which drops groupBy for raw). Aggregated buckets carry the page's groupBy.
+      ...(isRaw ? {} : { groupBy: args.groupBy }),
       bucket: args.bucket,
       ...(args.macs.length ? { macs: args.macs } : {}),
       ...(args.profileIds.length ? { profileIds: args.profileIds } : {}),
     }),
-    [args.groupBy, args.bucket, args.macs, args.profileIds],
+    [isRaw, args.groupBy, args.bucket, args.macs, args.profileIds],
   )
-  const setRowsRef = useRef(setRows)
-  setRowsRef.current = setRows
+  const settersRef = useRef(setters)
+  settersRef.current = setters
   useWsSubscription(
     'trafficUsage',
     params,
     payload => {
-      const rows = (payload as TrafficUsageResponse).aggregateRows ?? []
-      if (rows.length) setRowsRef.current(prev => mergeAggregateHeadRows(prev, rows))
+      const body = payload as TrafficUsageResponse
+      if (isRaw) {
+        const rows = body.rawRows ?? []
+        if (rows.length) settersRef.current.setRawRows(prev => prependRawHead(prev, rows))
+      } else {
+        const rows = body.aggregateRows ?? []
+        if (rows.length) settersRef.current.setAggRows(prev => mergeAggregateHeadRows(prev, rows))
+      }
     },
     undefined,
     enabled,

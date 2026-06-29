@@ -11,6 +11,7 @@ import type {
   QueryLog,
   TrafficUsageAggregateRow,
   TrafficUsageBucket,
+  TrafficUsageRawRow,
   TrafficUsageResponse,
 } from '@/types/api'
 
@@ -167,6 +168,33 @@ export function prependHead(
     out.push(r)
   }
   return limit === undefined ? out : out.slice(0, limit)
+}
+
+// ── trafficUsage raw: prepend new per-host rawRows, dedup by stable identity (#2048) ──
+//
+// The Traffic Usage page's DEFAULT view is `raw` (per-host rows), excluded from the
+// aggregated head-merge above because rawRows are a different shape. Its live edge instead
+// PREPENDS the pushed new rows — like the connectionEvents feed — keyed by the same
+// `(periodStart, mac, host)` identity the server reports a row on, so a GET/push overlap at
+// the boundary dedups to one. No cap: the page pages OLDER history via the GET (#862), so
+// prepending the live head must never truncate the loaded history (newest-first).
+function rawRowKey(r: TrafficUsageRawRow): string {
+  return `${r.periodStart}|${r.mac}|${r.host.type}:${r.host.value}`
+}
+export function prependRawHead(
+  prev: TrafficUsageRawRow[] | undefined,
+  rows: TrafficUsageRawRow[],
+): TrafficUsageRawRow[] {
+  const merged = [...rows, ...(prev ?? [])]
+  const seen = new Set<string>()
+  const out: TrafficUsageRawRow[] = []
+  for (const r of merged) {
+    const k = rawRowKey(r)
+    if (seen.has(k)) continue
+    seen.add(k)
+    out.push(r)
+  }
+  return out
 }
 
 // ── now: derived KPIs computed client-side off the pushed DashboardNow (§3.1) ───────
