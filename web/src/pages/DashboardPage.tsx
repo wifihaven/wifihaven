@@ -45,45 +45,45 @@ export function DashboardPage() {
 
       <NowSection />
 
-      {stats && (
-        <>
-          <div className="grid md:grid-cols-2 gap-6">
-            <section className="bg-white rounded-2xl border border-brand-border p-5">
-              <h2 className="text-sm font-semibold text-brand-text uppercase tracking-wider mb-4">
-                Top Blocked (24h)
-              </h2>
-              {stats.topBlocked.length === 0
-                ? <EmptyState variant="inline" title="No blocked events yet" />
-                : stats.topBlocked.map(d => (
-                    <div key={`${d.host.type}:${d.host.value}`} className="flex justify-between items-center py-2 border-b border-brand-border last:border-0">
-                      <span className="font-mono text-sm text-brand-text truncate"><HostCell host={d.host} /></span>
-                      <span className="text-red-700 font-mono text-sm ml-4 shrink-0">{d.count}</span>
-                    </div>
-                  ))
-              }
-            </section>
-
-            <section className="bg-white rounded-2xl border border-brand-border p-5">
-              <h2 className="text-sm font-semibold text-brand-text uppercase tracking-wider mb-4">
-                Per Device (24h)
-              </h2>
-              {stats.perDevice.map(d => (
-                <div key={d.mac} className="flex items-center gap-3 py-2 border-b border-brand-border last:border-0">
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-brand-ink truncate">{d.deviceName}</p>
-                    <p className="text-xs text-brand-text-muted font-mono">{d.mac}</p>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <p className="text-sm text-brand-text">{d.total} events</p>
-                    <p className="text-xs text-red-700">{d.blocked} blocked</p>
-                  </div>
-                </div>
-              ))}
-            </section>
-          </div>
-        </>
-      )}
+      {stats && <BlockingActivitySection stats={stats} />}
     </div>
+  )
+}
+
+// ── "Blocking activity (24h)" — merged ranked-blocked-host panel ─────────────
+//
+// #1836 (#822): one panel replaces the old "Top Blocked (24h)" + "Per Device
+// (24h)" pair. Per-device traffic *volume* was a leaderboard wearing a security-
+// panel hat (17-of-18 rows reading "0 blocked" on prod) — it belongs on /devices
+// and /profiles, so the dashboard no longer consumes `stats.perDevice`. The body
+// is the ranked blocked-host list (existing `topBlocked` shape); the subtitle
+// counts the ranked hosts and sums their blocked events. No "0 blocked" row ever:
+// an empty 24h renders a single honest line, not two empty cards (design §7).
+// Per-host → "which devices triggered it" expansion is out of scope for v1 —
+// `topBlocked` carries no per-device linkage (design §7 Q3).
+function BlockingActivitySection({ stats }: { stats: DashboardStats }) {
+  const hostCount = stats.topBlocked.length
+  const eventCount = stats.topBlocked.reduce((sum, d) => sum + d.count, 0)
+  return (
+    <section className="bg-white rounded-2xl border border-brand-border p-5">
+      <div className="flex items-baseline justify-between gap-3 mb-4">
+        <h2 className="text-sm font-semibold text-brand-text uppercase tracking-wider">
+          Blocking activity (24h)
+        </h2>
+        <span className="text-xs text-brand-text-muted shrink-0">
+          {hostCount} {hostCount === 1 ? 'host' : 'hosts'} · {eventCount} blocked events
+        </span>
+      </div>
+      {hostCount === 0
+        ? <p className="text-sm text-brand-text-muted">No blocked connection events in the last 24h</p>
+        : stats.topBlocked.map(d => (
+            <div key={`${d.host.type}:${d.host.value}`} className="flex justify-between items-center py-2 border-b border-brand-border last:border-0">
+              <span className="font-mono text-sm text-brand-text truncate"><HostCell host={d.host} /></span>
+              <span className="text-red-700 font-mono text-sm ml-4 shrink-0">{d.count}</span>
+            </div>
+          ))
+      }
+    </section>
   )
 }
 
