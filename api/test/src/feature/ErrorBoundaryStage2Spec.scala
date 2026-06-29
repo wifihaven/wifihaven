@@ -34,13 +34,25 @@ import zio.test.*
  * Stage-1's [[ErrorBoundarySpec]] proves the boundary mechanism + the ingest routes; this is the
  * Stage-2 analogue for the admin/SPA-facing families.
  */
-object ErrorBoundaryStage2Spec
-    extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock & PrometheusPublisher] {
+object ErrorBoundaryStage2Spec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock] {
+
+  // Poll interval for the Prometheus snapshot fiber; tests advance the zio TestClock by exactly
+  // this much to drive one deterministic scrape.
+  private val pollInterval = 100.millis
+
+  // #2042: deterministically fire ONE scrape of the shared Prometheus publisher fiber. The key is
+  // waiting until that background fiber has actually re-parked on the TestClock (its `Schedule.fixed`
+  // sleep is registered) BEFORE advancing — under parallel CI load a bare `adjust` can slip past a
+  // momentarily mid-flight and never trigger the scrape. The publisher layer is provided PER TEST
+  // (suite-level `provideSomeLayer` below) so its snapshot fiber is a supervised descendant of the
+  // test fiber — only then does `TestClock.adjust` await it (a bootstrap-scope fiber is invisible to
+  // its `awaitSuspended`). Once parked, advancing one interval fires exactly one registry snapshot.
+  private val tickPublisher: UIO[Unit] =
+    zio.test.TestClock.sleeps.repeatUntil(_.nonEmpty) *> zio.test.TestClock.adjust(pollInterval)
 
   override val bootstrap =
     TestDatabase.layer ++
-      TestLayers.withClock(TestClock.schoolDayAfternoon) ++
-      MetricsRuntime.prometheus(100.millis)
+      TestLayers.withClock(TestClock.schoolDayAfternoon)
 
   private val jwtCfg = JwtConfig(secret = "test-secret-at-least-32-chars!!", expiryHours = 1)
 
@@ -105,7 +117,7 @@ object ErrorBoundaryStage2Spec
         _       <- post(rs, "/api/schedules", body, token)
         dupe    <- post(rs, "/api/schedules", body, token)
         dBody   <- bodyText(dupe)
-        _       <- ZIO.sleep(700.millis)
+        _       <- tickPublisher
         scrapeB <- scrape.catchAll(r => bodyText(r))
         logs    <- ZTestLogger.logOutput
       } yield assertTrue(dupe.status == Status.Conflict) &&
@@ -116,7 +128,7 @@ object ErrorBoundaryStage2Spec
         .provideSome[TestDatabase.AllRepos & EmbeddedPostgres & Clock & PrometheusPublisher](
           ZTestLogger.default,
         )
-    } @@ TestAspect.withLiveClock,
+    },
     test("Schedules: GET unknown id is 404 'Schedule not found', logged at WARN + metered") {
       (for {
         _       <- cleanDb
@@ -124,7 +136,7 @@ object ErrorBoundaryStage2Spec
         rs      <- scheduleRoutes
         resp    <- get(rs, "/api/schedules/99999", token)
         rBody   <- bodyText(resp)
-        _       <- ZIO.sleep(700.millis)
+        _       <- tickPublisher
         scrapeB <- scrape.catchAll(r => bodyText(r))
         logs    <- ZTestLogger.logOutput
       } yield assertTrue(resp.status == Status.NotFound) &&
@@ -134,10 +146,12 @@ object ErrorBoundaryStage2Spec
         .provideSome[TestDatabase.AllRepos & EmbeddedPostgres & Clock & PrometheusPublisher](
           ZTestLogger.default,
         )
-    } @@ TestAspect.withLiveClock,
+    },
     // #1798: the Apps slug_taken case rode the now-removed `POST /api/apps`
     // definition-create route; app definitions are authored via templates only.
     // The ErrorBoundary mechanism stays covered by the Schedules cases above
     // and Stage-1's ErrorBoundarySpec.
+  ).provideSomeLayer[TestDatabase.AllRepos & EmbeddedPostgres & Clock](
+    MetricsRuntime.prometheus(pollInterval),
   ) @@ TestAspect.sequential
 }

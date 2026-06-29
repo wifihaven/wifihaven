@@ -27,13 +27,26 @@ import zio.test.*
  */
 object RouterMetricsIngestSpec
     extends ZIOSpec[
-      TestDatabase.AllRepos & EmbeddedPostgres & Clock & PrometheusPublisher,
+      TestDatabase.AllRepos & EmbeddedPostgres & Clock,
     ] {
+
+  // Poll interval for the Prometheus snapshot fiber. Tests advance the zio TestClock by exactly
+  // this much to drive one deterministic scrape after ingesting a batch — no wall-clock race.
+  private val pollInterval = 100.millis
+
+  // #2042: deterministically fire ONE scrape of the Prometheus publisher fiber. The publisher
+  // layer is provided PER TEST (suite-level `provideSomeLayer` below, not `bootstrap`) so the
+  // snapshot fiber is a supervised descendant of the test fiber — that is what lets `TestClock`
+  // await it. We wait until it has parked on the TestClock (its `Schedule.fixed` sleep is
+  // registered), then advance exactly one interval, which fires exactly one registry snapshot.
+  // (A bootstrap-scope fiber is invisible to `TestClock.adjust`'s `awaitSuspended`, so a bare
+  // advance would race the scrape — the cause of the original flake.)
+  private val tickPublisher: UIO[Unit] =
+    zio.test.TestClock.sleeps.repeatUntil(_.nonEmpty) *> zio.test.TestClock.adjust(pollInterval)
 
   override val bootstrap =
     TestDatabase.layer ++
-      TestLayers.withClock(TestClock.schoolDayAfternoon) ++
-      wifihaven.api.metrics.MetricsRuntime.prometheus(100.millis)
+      TestLayers.withClock(TestClock.schoolDayAfternoon)
 
   private val cleanDb = TestDatabase.cleanAndMigrate
 
@@ -130,7 +143,7 @@ object RouterMetricsIngestSpec
           ),
         )
         resp <- post(routes, tok, body)
-        _       <- ZIO.sleep(700.millis)
+        _       <- tickPublisher
         scraped <- scrape.catchAll(r => r.body.asString.orDie)
       } yield {
         val ridStr = rid.value.toString
@@ -182,7 +195,7 @@ object RouterMetricsIngestSpec
              |  } ]
              |}""".stripMargin
         resp    <- post(routes, tok, body)
-        _       <- ZIO.sleep(700.millis)
+        _       <- tickPublisher
         scraped <- scrape.catchAll(r => r.body.asString.orDie)
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(
@@ -225,7 +238,7 @@ object RouterMetricsIngestSpec
           ),
         )
         resp <- post(routes, tok, body)
-        _       <- ZIO.sleep(700.millis)
+        _       <- tickPublisher
         scraped <- scrape.catchAll(r => r.body.asString.orDie)
       } yield {
         val ridStr = rid.value.toString
@@ -301,7 +314,7 @@ object RouterMetricsIngestSpec
         )
         _ <- post(routes, tok, body)
         _       <- post(routes, tok, body) // identical replay
-        _       <- ZIO.sleep(700.millis)
+        _       <- tickPublisher
         scraped <- scrape.catchAll(r => r.body.asString.orDie)
       } yield assertTrue(
         seriesValue(
@@ -331,7 +344,7 @@ object RouterMetricsIngestSpec
         )
         _ <- post(routes, tok, genA)
         _       <- post(routes, tok, genB)
-        _       <- ZIO.sleep(700.millis)
+        _       <- tickPublisher
         scraped <- scrape.catchAll(r => r.body.asString.orDie)
       } yield
       // 100 (gen A) + 5 (re-based gen B) = 105 — climbed, never went negative.
@@ -360,7 +373,7 @@ object RouterMetricsIngestSpec
           ),
         )
         resp <- post(routes, tok, body)
-        _       <- ZIO.sleep(700.millis)
+        _       <- tickPublisher
         scraped <- scrape.catchAll(r => r.body.asString.orDie)
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(!scraped.contains("totally_made_up_metric")) &&
@@ -371,5 +384,7 @@ object RouterMetricsIngestSpec
             .exists(_ >= 1.0),
         )
     },
-  ) @@ TestAspect.sequential @@ TestAspect.withLiveClock
+  ).provideSomeLayer[TestDatabase.AllRepos & EmbeddedPostgres & Clock](
+    wifihaven.api.metrics.MetricsRuntime.prometheus(pollInterval),
+  ) @@ TestAspect.sequential
 }

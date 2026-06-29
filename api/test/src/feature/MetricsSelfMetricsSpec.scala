@@ -33,13 +33,26 @@ import java.time.Instant
  */
 object MetricsSelfMetricsSpec
     extends ZIOSpec[
-      TestDatabase.AllRepos & EmbeddedPostgres & Clock & PrometheusPublisher,
+      TestDatabase.AllRepos & EmbeddedPostgres & Clock,
     ] {
+
+  // Poll interval for the Prometheus snapshot fiber; tests advance the zio TestClock by exactly
+  // this much to drive one deterministic scrape.
+  private val pollInterval = 100.millis
+
+  // #2042: deterministically fire ONE scrape of the Prometheus publisher fiber. The publisher
+  // layer is provided PER TEST (suite-level `provideSomeLayer` below, not `bootstrap`) so the
+  // snapshot fiber is a supervised descendant of the test fiber — that is what lets `TestClock`
+  // await it. We wait until it parks on the TestClock, then advance exactly one interval, which
+  // fires exactly one registry snapshot. (A bootstrap-scope fiber is invisible to
+  // `TestClock.adjust`'s `awaitSuspended`, so a bare advance would race the scrape — the original
+  // flake.)
+  private val tickPublisher: UIO[Unit] =
+    zio.test.TestClock.sleeps.repeatUntil(_.nonEmpty) *> zio.test.TestClock.adjust(pollInterval)
 
   override val bootstrap =
     TestDatabase.layer ++
-      TestLayers.withClock(TestClock.schoolDayAfternoon) ++
-      MetricsRuntime.prometheus(100.millis)
+      TestLayers.withClock(TestClock.schoolDayAfternoon)
 
   private val adminJwt = JwtConfig(secret = "test-secret-at-least-32-chars!!", expiryHours = 1)
   private def makeAuth =
@@ -140,8 +153,8 @@ object MetricsSelfMetricsSpec
           .addHeader(Header.Authorization.Bearer(routerToken))
         _ <- routes.runZIO(usageReq)
 
-        // Let the publisher snapshot the registry (poll is 100ms; live clock keeps the fiber ticking).
-        _    <- ZIO.sleep(700.millis)
+        // Advance one poll interval so the publisher fiber (on the TestClock) snapshots the registry.
+        _    <- tickPublisher
         body <- scrape.catchAll(resp => resp.body.asString.orDie)
 
         httpLines = seriesLines(body, "http_requests_total")
@@ -162,7 +175,7 @@ object MetricsSelfMetricsSpec
         assertTrue(!httpLines.exists(_.contains("ip="))) &&
         assertTrue(!httpLines.exists(_.contains("domain="))) &&
         assertTrue(!httpLines.exists(_.contains("path=")))
-    } @@ TestAspect.withLiveClock,
+    },
     test(
       "DbMetrics.timed records db_queries_total{op,status} — ok on success, error on failure — so the per-op DB success-rate panel has data",
     ) {
@@ -170,7 +183,7 @@ object MetricsSelfMetricsSpec
         _    <- DbMetrics.timed("test.dbOk")(ZIO.succeed(1))
         // A failing query must still be counted, tagged status=error (not swallowed).
         _    <- DbMetrics.timed("test.dbErr")(ZIO.fail(new RuntimeException("boom"))).either
-        _    <- ZIO.sleep(700.millis)
+        _    <- tickPublisher
         body <- scrape.catchAll(resp => resp.body.asString.orDie)
         lines = seriesLines(body, "db_queries_total")
       } yield assertTrue(
@@ -183,6 +196,8 @@ object MetricsSelfMetricsSpec
         assertTrue(
           !lines.exists(l => l.contains("""op="test.dbErr"""") && l.contains("""status="ok"""")),
         )
-    } @@ TestAspect.withLiveClock,
+    },
+  ).provideSomeLayer[TestDatabase.AllRepos & EmbeddedPostgres & Clock](
+    MetricsRuntime.prometheus(pollInterval),
   ) @@ TestAspect.sequential
 }

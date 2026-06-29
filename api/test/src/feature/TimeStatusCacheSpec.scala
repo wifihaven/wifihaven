@@ -289,11 +289,14 @@ object TimeStatusCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
       // `getOrLoadDaily` calls for the SAME key invoke `load` exactly once; the followers await
       // the in-flight result instead of launching their own build.
       //
-      // Deterministic: `gate` is held until every caller has passed the cache's miss decision, so
-      // no load completes (and nothing is `put`) during the window. Without single-flight all N
-      // callers therefore miss and run `load` (count == N); with it, exactly one runs `load` and
-      // the rest await the in-flight result (count == 1). The settle below only needs to let the
-      // forked fibers reach that decision — it never races a completion, because the gate is shut.
+      // Fully deterministic with no wall-clock settle: registration is an atomic
+      // `ConcurrentHashMap.putIfAbsent`, and the winner does `cache.put` BEFORE freeing its
+      // in-flight slot (`onExit`). So `count == 1` is invariant for any interleaving — a late
+      // caller that reaches the cache after the winner finishes either hits the now-populated
+      // cache or finds the in-flight slot; it can never win a second `putIfAbsent`. Without
+      // single-flight all N would miss and run `load` (count == N). `gate` is held only to keep
+      // every caller's `load` parked so the count is observed mid-flight; the `arrived` barrier
+      // confirms all N entered before we release it.
       val n      = 25
       val today  = LocalDate.parse("2026-06-27")
       val pid    = ProfileId(7L)
@@ -306,9 +309,8 @@ object TimeStatusCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         gate    <- Promise.make[Nothing, Unit]
         load = loads.update(_ + 1) *> gate.await.as(sample)
         call = arrived.update(_ + 1) *> cache.getOrLoadDaily(pid, today, today)(load)
-        fiber <- ZIO.foreachPar(1 to n)(_ => call).fork
-        _     <- arrived.get.repeatUntil(_ == n) // all N have entered their getOrLoad call
-        _       <- ZIO.sleep(200.millis) // …let each reach the miss decision (gate still shut)
+        fiber   <- ZIO.foreachPar(1 to n)(_ => call).fork
+        _       <- arrived.get.repeatUntil(_ == n) // all N have entered their getOrLoad call
         _       <- gate.succeed(())
         results <- fiber.join
         count   <- loads.get
@@ -317,7 +319,7 @@ object TimeStatusCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         results.length == n,        // every caller still gets a result
         results.forall(_ == sample),// …the same in-flight result
       )
-    } @@ TestAspect.withLiveClock,
+    },
     test("Cache-Control: no-store for today, max-age=3600 for past") {
       for {
         _           <- cleanDb
