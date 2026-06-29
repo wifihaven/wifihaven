@@ -412,6 +412,27 @@ describe('DashboardPage', () => {
     expect(screen.queryByText('Live Bandwidth')).not.toBeInTheDocument()
   })
 
+  // ── #2056 §8.5/#2041: the Bandwidth tile's three states (re-homed from BandwidthGauges) ──
+  it('shows a loading skeleton on the Bandwidth tile — never "0" — while the rate loads (#2041)', async () => {
+    mockUseWsTrafficUsage.mockReturnValue(liveBandwidth({ loading: true }))
+    render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
+    const strip = await screen.findByTestId('kpi-strip')
+    expect(within(strip).getByTestId('kpi-bandwidth-loading')).toBeInTheDocument()
+    // Never a misleading measured zero while loading.
+    expect(within(strip).queryByTestId('kpi-bandwidth-rate')).not.toBeInTheDocument()
+    expect(within(within(strip).getByTestId('kpi-bandwidth')).queryByText(/0 B\/s|▲ 0 ▼ 0/)).not.toBeInTheDocument()
+  })
+
+  it('shows "—" (not ▲0 ▼0) on the Bandwidth tile when the socket is not live (#2041)', async () => {
+    mockUseWsTrafficUsage.mockReturnValue(liveBandwidth({ live: false, loading: false }))
+    render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
+    const strip = await screen.findByTestId('kpi-strip')
+    expect(within(strip).getByTestId('kpi-bandwidth-idle')).toHaveTextContent('—')
+    expect(within(strip).queryByTestId('kpi-bandwidth-rate')).not.toBeInTheDocument()
+    // The selector still renders so the user can change the window even while paused.
+    expect(within(strip).getByTestId('bucket-1m')).toBeInTheDocument()
+  })
+
   // ── #2056 §8.5: ONE window selector governs ▲▼ EVERYWHERE (global selection) ──
   it('drives both the KPI Bandwidth tile and the NOW card ▲▼ off the one shared window (§8.5)', async () => {
     const setBucket = vi.fn()
@@ -487,7 +508,7 @@ describe('RecentlyBlockedSection (#1338)', () => {
   it('links to the full Connection Events page', async () => {
     render(withQuery(<MemoryRouter><RecentlyBlockedSection /></MemoryRouter>))
     await screen.findByText('connectivitycheck.gstatic.com')
-    expect(screen.getByText(/View all/).closest('a')).toHaveAttribute('href', '/usage/events')
+    expect(screen.getByText(/View all/).closest('a')).toHaveAttribute('href', '/usage/events?blocked=true')
   })
 
   it('shows an empty state when nothing is blocked', async () => {

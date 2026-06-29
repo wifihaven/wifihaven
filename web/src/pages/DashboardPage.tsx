@@ -147,7 +147,7 @@ export function RecentlyBlockedSection() {
         <h2 className="text-sm font-semibold text-brand-text uppercase tracking-wider">
           Recently Blocked
         </h2>
-        <Link to="/usage/events" className="text-xs text-brand-accent-dark hover:underline shrink-0">
+        <Link to="/usage/events?blocked=true" className="text-xs text-brand-accent-dark hover:underline shrink-0">
           View all →
         </Link>
       </div>
