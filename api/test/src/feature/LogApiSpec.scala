@@ -346,6 +346,9 @@ object LogApiSpec
             ),
           ),
         )
+        // #1837: 24h aggregations now read connection_events_hourly — roll the
+        // just-inserted events into the hourly tier so the rollup-backed read sees them.
+        _        <- connRepo.rerollConnEventsHourly(Instant.now().minusSeconds(7200))
         routes = LogRoutes.routes(auth, connRepo, upRepo)
         resp  <- getJson(routes, "/api/stats", token)
         body  <- resp.body.asString
@@ -355,6 +358,80 @@ object LogApiSpec
         assertTrue(stats.blockedToday == 2) &&
         assertTrue(stats.topBlocked.exists(_.host.value == "badsite.com")) &&
         assertTrue(stats.topBlocked.find(_.host.value == "badsite.com").exists(_.count == 2))
+    },
+    // ── #1837: the 24h aggregations ride the connection_events_hourly rollup ────
+    // (not a raw 24h scan of the unbounded connection_events table). Proof: roll
+    // the just-inserted events into the hourly tier, WIPE raw, and assert /api/stats
+    // still returns the 24h totals — only the rollup could have served them. The
+    // 1h tiles (totalHour/blockedHour) legitimately stay on raw, so they read 0
+    // here after the wipe; this test asserts only the rollup-backed 24h fields.
+    test("GET /api/stats 24h aggregations are served from the rollup, not a raw scan (#1837)") {
+      for {
+        _        <- cleanDb
+        routerId <- seedRouter()
+        connRepo <- ZIO.service[ConnectionEventRepo]
+        upRepo   <- ZIO.service[UserProfileRepo]
+        auth     <- makeAuth
+        token    <- auth.login("admin", "changeme").map(_.token.value)
+        _        <- connRepo.insertBatch(
+          List(
+            ceFqdn(routerId, "aa:bb:cc:00:00:01", "google.com", allowed = true),
+            ceFqdn(routerId, "aa:bb:cc:00:00:01", "badsite.com", allowed = false),
+            ceFqdn(routerId, "aa:bb:cc:00:00:01", "badsite.com", allowed = false),
+          ),
+        )
+        _        <- connRepo.rerollConnEventsHourly(Instant.now().minusSeconds(7200))
+        xa       <- ZIO.service[Transactor[Task]]
+        _        <- sql"DELETE FROM connection_events".update.run.transact(xa)
+        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        resp  <- getJson(routes, "/api/stats", token)
+        body  <- resp.body.asString
+        stats <- ZIO.fromEither(body.fromJson[DashboardStats])
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(stats.totalToday == 3) &&
+        assertTrue(stats.blockedToday == 2) &&
+        assertTrue(stats.topBlocked.find(_.host.value == "badsite.com").exists(_.count == 2))
+    },
+    // #1837: cross-check the rollup-backed 24h counts equal the legacy raw 24h
+    // scan for a stable window — the "no accuracy regression" guard. All events
+    // sit in one recent hour bucket and are non-multicast, so the hourly SUM
+    // equals the raw COUNT exactly.
+    test("GET /api/stats 24h counts equal the raw 24h scan for a stable window (#1837)") {
+      for {
+        _          <- cleanDb
+        routerId   <- seedRouter()
+        connRepo   <- ZIO.service[ConnectionEventRepo]
+        upRepo     <- ZIO.service[UserProfileRepo]
+        auth       <- makeAuth
+        token      <- auth.login("admin", "changeme").map(_.token.value)
+        _          <- connRepo.insertBatch(
+          List(
+            ceFqdn(routerId, "aa:bb:cc:00:00:01", "google.com", allowed = true),
+            ceFqdn(routerId, "aa:bb:cc:00:00:01", "youtube.com", allowed = true),
+            ceFqdn(routerId, "aa:bb:cc:00:00:02", "badsite.com", allowed = false),
+            ceFqdn(routerId, "aa:bb:cc:00:00:02", "badsite.com", allowed = false),
+            ceFqdn(routerId, "aa:bb:cc:00:00:02", "ads.example", allowed = false),
+          ),
+        )
+        xa         <- ZIO.service[Transactor[Task]]
+        rawTotal   <-
+          sql"SELECT COUNT(*)::INT FROM connection_events WHERE ts > NOW()-INTERVAL '24 hours'"
+            .query[Int]
+            .unique
+            .transact(xa)
+        rawBlocked <-
+          sql"SELECT COUNT(*)::INT FROM connection_events WHERE ts > NOW()-INTERVAL '24 hours' AND NOT allowed"
+            .query[Int]
+            .unique
+            .transact(xa)
+        _          <- connRepo.rerollConnEventsHourly(Instant.now().minusSeconds(7200))
+        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        resp  <- getJson(routes, "/api/stats", token)
+        body  <- resp.body.asString
+        stats <- ZIO.fromEither(body.fromJson[DashboardStats])
+      } yield assertTrue(stats.totalToday == rawTotal) &&
+        assertTrue(stats.blockedToday == rawBlocked) &&
+        assertTrue(stats.totalToday == 5 && stats.blockedToday == 3)
     },
     test("GET /api/stats topBlocked is sorted by frequency descending") {
       for {
@@ -404,6 +481,8 @@ object LogApiSpec
             ),
           ),
         )
+        // #1837: topBlocked now reads connection_events_hourly — roll first.
+        _        <- connRepo.rerollConnEventsHourly(Instant.now().minusSeconds(7200))
         routes = LogRoutes.routes(auth, connRepo, upRepo)
         resp  <- getJson(routes, "/api/stats", token)
         body  <- resp.body.asString

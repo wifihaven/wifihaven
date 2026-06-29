@@ -469,6 +469,59 @@
       .qrow .bk {
         color: var(--red);
       }
+      /* #1837 redesign mirror: freshness pill, live bandwidth, blocking-activity rows */
+      .lbl .fresh {
+        font-family: 'Inter', sans-serif;
+        font-weight: 400;
+        text-transform: none;
+        letter-spacing: 0;
+        color: var(--muted);
+        font-size: 11px;
+        margin-left: 8px;
+      }
+      .bw {
+        display: flex;
+        gap: 16px;
+        align-items: center;
+        background: #fff;
+        border: 1px solid var(--b);
+        border-radius: 14px;
+        padding: 10px 14px;
+        margin-bottom: 18px;
+        font-family: ui-monospace, Menlo, monospace;
+        font-size: 13px;
+        color: var(--slate);
+      }
+      .bw .k {
+        font-family: 'Inter', sans-serif;
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .barow {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 8px 14px;
+        border-bottom: 1px solid rgba(229, 221, 201, 0.6);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+      }
+      .barow:last-child {
+        border-bottom: 0;
+      }
+      .barow .h {
+        color: var(--slate);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .barow .bk {
+        color: var(--red);
+        font-weight: 600;
+      }
       /* Block-page preview */
       .blockpage {
         background: var(--offwhite);
@@ -676,39 +729,43 @@
                   </div>
                   <div class="app-body">
                     <h1 class="app-h1">Dashboard</h1>
-                    <p class="lbl">Now</p>
+                    <!-- Status-first KPI strip, above NOW (#1834): Online now / Blocked now / Events (1h) / Blocked (1h). -->
+                    <div class="stats">
+                      <div class="stat"><p class="k">Online now</p><p class="v acc">3</p></div>
+                      <div class="stat"><p class="k">Blocked now</p><p class="v red">1</p></div>
+                      <div class="stat"><p class="k">Events (1h)</p><p class="v">540</p></div>
+                      <div class="stat"><p class="k">Blocked (1h)</p><p class="v amb">22</p></div>
+                    </div>
+                    <!-- Live household bandwidth (#747). -->
+                    <div class="bw"><span class="k">Bandwidth</span><span>▲ 2.4 MB/s</span><span>▼ 18 MB/s</span></div>
+                    <p class="lbl">Now <span class="fresh">updated 12s ago · live ●</span></p>
                     <div class="pcards">
                       <div class="pcard live">
                         <h4>Kids</h4>
                         <div class="dev">
-                          <div class="row"><span class="nm">Maya's iPad</span><span class="ago">2m ago</span></div>
+                          <div class="row"><span class="nm">Maya's iPad</span></div>
                           <p class="watch">watching <b>youtube.com</b> · 14m</p>
                         </div>
                       </div>
                       <div class="pcard live">
                         <h4>Teens</h4>
                         <div class="dev">
-                          <div class="row"><span class="nm">Leo's Laptop</span><span class="ago">just now</span></div>
+                          <div class="row"><span class="nm">Leo's Laptop</span></div>
                           <p class="watch">watching <b>discord.com</b> · 3m</p>
                         </div>
                       </div>
                     </div>
-                    <div class="stats">
-                      <div class="stat"><p class="k">Queries today</p><p class="v acc">8,412</p></div>
-                      <div class="stat"><p class="k">Blocked today</p><p class="v red">326</p></div>
-                      <div class="stat"><p class="k">Queries (1h)</p><p class="v">540</p></div>
-                      <div class="stat"><p class="k">Blocked (1h)</p><p class="v amb">22</p></div>
-                    </div>
+                    <!-- Merged ranked-blocked-host panel (#1836), rollup-backed over 24h (#1837). -->
                     <div class="qtable">
-                      <div class="qh">Recent queries</div>
-                      <div class="qrow"><span class="t">4:12:08</span><span class="d">Maya's iPad</span><span class="h">i.ytimg.com</span><span class="ok">✓ ok</span></div>
-                      <div class="qrow"><span class="t">4:12:03</span><span class="d">Leo's Laptop</span><span class="h">tiktok.com</span><span class="bk">✗ blocked</span></div>
-                      <div class="qrow"><span class="t">4:11:54</span><span class="d">Living Room TV</span><span class="h">api.netflix.com</span><span class="ok">✓ ok</span></div>
+                      <div class="qh">Blocking activity (24h)</div>
+                      <div class="barow"><span class="h">tiktok.com</span><span class="bk">42</span></div>
+                      <div class="barow"><span class="h">doubleclick.net</span><span class="bk">17</span></div>
+                      <div class="barow"><span class="h">roblox.com</span><span class="bk">9</span></div>
                     </div>
                   </div>
                 </div>
               </div>
-              <p class="preview-cap">The household dashboard — live activity, daily counts, and a rolling query feed.</p>
+              <p class="preview-cap">The household dashboard — who's online now, live bandwidth, and the day's blocking activity at a glance.</p>
             </div>
 
             <!-- Kid-side block page -->

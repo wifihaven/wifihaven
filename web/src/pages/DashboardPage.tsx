@@ -18,22 +18,23 @@ import { LiveBadge } from '@/components/dashboard/LiveBadge'
 import { BandwidthGauges } from '@/components/dashboard/BandwidthGauges'
 
 export function DashboardPage() {
-  const [stats,  setStats]  = useState<DashboardStats | null>(null)
-  const [loading, setLoading] = useState(true)
+  // #1837 (#1098): per-section skeletons replace the page-level PageLoader that
+  // gated the WHOLE render on api.logs.stats(). The live sections (NOW, Recently
+  // Blocked, Bandwidth) are independently sourced (ws push + poll) and paint
+  // immediately; only the stats-backed 24h panel and the 1h KPI tiles wait on
+  // `stats`, and they show skeletons — never placeholder zeros (the #1098
+  // anti-pattern) — until it resolves. `stats === null` is the loading state.
+  const [stats, setStats] = useState<DashboardStats | null>(null)
 
   useEffect(() => {
-    api.logs.stats()
-      .then(setStats)
-      .finally(() => setLoading(false))
+    api.logs.stats().then(setStats).catch(() => { /* keep skeleton on error */ })
   }, [])
-
-  if (loading) return <PageLoader />
 
   return (
     <div className="space-y-6">
       <h1 className="text-xl font-bold text-brand-ink">Dashboard</h1>
 
-      {stats && <KpiStrip stats={stats} />}
+      <KpiStrip stats={stats} />
 
       <NewDevicesHint />
 
@@ -45,7 +46,7 @@ export function DashboardPage() {
 
       <NowSection />
 
-      {stats && <BlockingActivitySection stats={stats} />}
+      <BlockingActivitySection stats={stats} />
     </div>
   )
 }
@@ -61,7 +62,27 @@ export function DashboardPage() {
 // an empty 24h renders a single honest line, not two empty cards (design §7).
 // Per-host → "which devices triggered it" expansion is out of scope for v1 —
 // `topBlocked` carries no per-device linkage (design §7 Q3).
-function BlockingActivitySection({ stats }: { stats: DashboardStats }) {
+function BlockingActivitySection({ stats }: { stats: DashboardStats | null }) {
+  // #1837: until the (now rollup-backed) 24h stats resolve, show a skeleton — not
+  // a "0 hosts · 0 blocked events" subtitle, which would flash a false all-clear
+  // before the real numbers arrive (#1098). The header stays so the panel doesn't
+  // jump on resolve.
+  if (stats === null) {
+    return (
+      <section className="bg-white rounded-2xl border border-brand-border p-5">
+        <div className="flex items-baseline justify-between gap-3 mb-4">
+          <h2 className="text-sm font-semibold text-brand-text uppercase tracking-wider">
+            Blocking activity (24h)
+          </h2>
+        </div>
+        <div data-testid="blocking-activity-skeleton" className="space-y-2" aria-hidden>
+          <div className="h-5 bg-brand-border/60 rounded animate-pulse" />
+          <div className="h-5 bg-brand-border/60 rounded animate-pulse w-4/5" />
+          <div className="h-5 bg-brand-border/60 rounded animate-pulse w-3/5" />
+        </div>
+      </section>
+    )
+  }
   const hostCount = stats.topBlocked.length
   const eventCount = stats.topBlocked.reduce((sum, d) => sum + d.count, 0)
   return (
@@ -407,20 +428,24 @@ function formatDuration(seconds: number): string {
 // (refetchInterval:false; NowSection drives the refresh, both observers re-render).
 // The cumulative "today" volume tiles are dropped: daily volume is analytics and
 // lives on /usage/events (design §2 non-goals).
-function KpiStrip({ stats }: { stats: DashboardStats }) {
+function KpiStrip({ stats }: { stats: DashboardStats | null }) {
   const { data: now = null } = useDashboardNow({ refetchInterval: false })
   const kpis = deriveNowKpis(now)
+  // #1837: every tile passes `null` until its source resolves and renders a
+  // skeleton rather than a placeholder "0" (the #1098 false-all-clear) — Online
+  // now / Blocked now until the NOW snapshot arrives, Events(1h)/Blocked(1h) until
+  // `stats` does. Both sources are independent, so each tile paints on its own.
   return (
     <div data-testid="kpi-strip" className="grid grid-cols-2 md:grid-cols-4 gap-4">
-      <StatCard label="Online now"   value={kpis.onlineNow}  accent="emerald" />
-      <StatCard label="Blocked now"  value={kpis.blockedNow} accent="red" />
-      <StatCard label="Events (1h)"  value={stats.totalHour}  accent="emerald" />
-      <StatCard label="Blocked (1h)" value={stats.blockedHour} accent="yellow" />
+      <StatCard label="Online now"   value={now === null ? null : kpis.onlineNow}  accent="emerald" />
+      <StatCard label="Blocked now"  value={now === null ? null : kpis.blockedNow} accent="red" />
+      <StatCard label="Events (1h)"  value={stats?.totalHour ?? null}   accent="emerald" />
+      <StatCard label="Blocked (1h)" value={stats?.blockedHour ?? null} accent="yellow" />
     </div>
   )
 }
 
-function StatCard({ label, value, accent }: { label: string; value: number; accent: string }) {
+function StatCard({ label, value, accent }: { label: string; value: number | null; accent: string }) {
   const colors: Record<string, string> = {
     emerald: 'text-brand-accent',
     red: 'text-red-700',
@@ -429,7 +454,10 @@ function StatCard({ label, value, accent }: { label: string; value: number; acce
   return (
     <div className="bg-white rounded-2xl border border-brand-border p-5">
       <p className="text-xs font-semibold text-brand-text-muted uppercase tracking-wider mb-2">{label}</p>
-      <p className={`text-3xl font-bold ${colors[accent] ?? 'text-brand-ink'}`}>{value}</p>
+      {value === null
+        ? <div data-testid="stat-skeleton" className="h-9 w-16 bg-brand-border/60 rounded animate-pulse" aria-hidden />
+        : <p className={`text-3xl font-bold ${colors[accent] ?? 'text-brand-ink'}`}>{value}</p>
+      }
     </div>
   )
 }

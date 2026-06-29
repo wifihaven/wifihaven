@@ -647,6 +647,35 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Dashboard /api/stats 24h query p95 (rollup-backed, #1837)",
+      "description": "histogram_quantile(0.95, ...) of db_query_duration_seconds_bucket for the dashboard's rollup-backed 24h aggregations — op ∈ {stats.total24h, stats.blocked24h, stats.topBlocked24h}, emitted by DbMetrics.timed in ConnectionEventRepoLive.stats. #1837 (#1098) re-pointed these from a raw 24h scan of the weekly-partitioned connection_events table to the connection_events_hourly rollup (#809/#1265); prod EXPLAIN: single idx_ce_hourly_bucket_start index scan (~1.8ms) vs the old per-partition bitmap fan-out (~7.9ms planning + 4.8ms exec). A sustained climb here is the leading indicator the rollup read regressed (e.g. a missing index after a schema change) — the same #809-class regression the by-op panels above watch generically, isolated to the stats path that gates dashboard render.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 48 },
+      "id": 30,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "s",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 0, "showPoints": "never", "lineWidth": 1 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "histogram_quantile(0.95, sum by (le, op) (rate(db_query_duration_seconds_bucket{op=~\"stats\\\\..*24h\", env=\"$env\"}[5m])))",
+          "legendFormat": "{{op}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",
