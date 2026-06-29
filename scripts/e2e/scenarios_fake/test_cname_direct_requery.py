@@ -82,11 +82,15 @@ nft set membership is checked as a DIAGNOSTIC secondary assertion, not the prima
 """
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from ._observers import (
+    EGRESS_CONTROL_HOSTS,
     bl_set_name,
     dig_ipv4_answers,
+    dns_egress_degraded,
     ea_set_name,
     eb_set_name,
     mac_in_blocked_set,
@@ -156,7 +160,7 @@ def _resolve_chain(client) -> list[str]:
     return [l for l in lines if ipv4.match(l)]
 
 
-def _requery_leaf_directly(client) -> list[str]:
+def _requery_leaf_directly(client, *, attempts: int = 6, interval_s: float = 3) -> list[str]:
     """Re-query the leaf CNAME target directly, simulating Apple device behavior.
 
     This is step (2): the client issues `dig e2e-edge.wifihaven.net` as a fresh,
@@ -164,8 +168,52 @@ def _requery_leaf_directly(client) -> list[str]:
     dnsmasq's nftset= callback does not fire for the leaf name. dns-tail's
     maybe_populate_ea/eb must recover the branded ancestor from the alias map and
     add the IP to the correct ea_/eb_ set inline (#1346/#1349).
+
+    #2034: `dns_query` is single-shot (`dig +tries=1 +time=2`), so a lone egress
+    blip here — immediately after the 120s chain poll already succeeded — would
+    empty the answer and hard-fail the `assert leaf_ips` at the call site. Retry
+    a handful of times to absorb a transient blip; the answer is normally
+    immediate (dnsmasq already has the chain cached from step 1). This does not
+    change what the step proves — it is still a fresh, standalone direct query of
+    the leaf — only its resilience to a flaky shared-host egress.
     """
-    return dig_ipv4_answers(client, LEAF_HOST)
+    last: list[str] = []
+    for i in range(attempts):
+        last = dig_ipv4_answers(client, LEAF_HOST)
+        if last:
+            return last
+        if i < attempts - 1:
+            time.sleep(interval_s)
+    return last
+
+
+def _skip_if_egress_degraded(client, what: str) -> None:
+    """Skip (not fail) the calling test when external DNS egress is degraded.
+
+    #2034 (Mode 2 of #2033): this suite resolves the REAL wifihaven.net CNAME
+    chain through the router VM's dnsmasq upstream, which depends on the shared CD
+    host's intermittently-flaky external egress (#1935). When a resolution step
+    comes back empty we must distinguish two cases via a control probe through the
+    SAME client→router→upstream path (`dns_egress_degraded`):
+
+      * control apexes ALSO fail to resolve → external egress is down right now →
+        environmental blip, NOT an enforcement regression → ``pytest.skip``.
+      * control apexes resolve but our records don't → a genuine missing-zone /
+        terraform regression (#1351) → return, letting the caller's hard
+        assertion fire with its existing diagnostic.
+
+    Enforcement assertions (block page, eb_/ea_/bl_ membership) are NEVER guarded
+    by this — they run only after a successful resolution and remain hard, so a
+    real enforcement regression still red-gates.
+    """
+    if dns_egress_degraded(client):
+        pytest.skip(
+            f"external DNS egress degraded (#2034): {what} did not resolve, and "
+            f"neither did control hosts {EGRESS_CONTROL_HOSTS} "
+            f"through the router upstream — an environmental egress blip on the "
+            f"shared CD host, not an enforcement regression. Enforcement "
+            f"assertions left intact; re-run to pick up a healthy egress window."
+        )
 
 
 def _wait_for_chain_resolution(client, *, timeout_s: float = 120) -> list[str]:
@@ -174,16 +222,25 @@ def _wait_for_chain_resolution(client, *, timeout_s: float = 120) -> list[str]:
     If the Terraform records haven't propagated yet (TTL or just-applied)
     this guard surfaces the root cause (NXDOMAIN / empty answer) rather than
     letting the test hang at the next step.
+
+    #2034: on timeout, classify the failure before propagating. A degraded
+    external-egress window (the dominant Gate-2 flake) is skipped, not failed; a
+    genuine missing-zone regression (control hosts resolve, ours don't) still
+    raises so the caller's `assert chain_ips` red-gates with the #1351 hint.
     """
-    return wait_until(
-        lambda: _resolve_chain(client) or None,
-        timeout_s=timeout_s,
-        interval_s=5,
-        description=(
-            f"dig {BRAND_HOST} to return at least one IPv4 answer "
-            f"(requires terraform apply for infra/cloudflare)"
-        ),
-    )
+    try:
+        return wait_until(
+            lambda: _resolve_chain(client) or None,
+            timeout_s=timeout_s,
+            interval_s=5,
+            description=(
+                f"dig {BRAND_HOST} to return at least one IPv4 answer "
+                f"(requires terraform apply for infra/cloudflare)"
+            ),
+        )
+    except TimeoutError:
+        _skip_if_egress_degraded(client, f"chain head {BRAND_HOST}")
+        raise
 
 
 def _xfail_if_leaf_unreachable(client) -> None:
@@ -275,6 +332,11 @@ def test_eb_direct_requery_blocked(router, client, fake_api):
 
     # Step 2: re-query the leaf CNAME target directly (simulates Apple device).
     leaf_ips = _requery_leaf_directly(client)
+    # #2034: an empty answer here after the chain already resolved is almost
+    # always a transient egress blip — skip on degraded egress, fail (below) only
+    # if egress is healthy (a real missing-leaf / propagation regression).
+    if not leaf_ips:
+        _skip_if_egress_degraded(client, f"leaf {LEAF_HOST}")
     assert leaf_ips, (
         f"direct dig {LEAF_HOST} returned no IPv4 — leaf A record missing or "
         f"not yet propagated (terraform apply required)"
@@ -358,6 +420,11 @@ def test_ea_direct_requery_allowed_under_blocked_mac(router, client, fake_api):
 
     # Step 2: re-query the leaf directly.
     leaf_ips = _requery_leaf_directly(client)
+    # #2034: an empty answer here after the chain already resolved is almost
+    # always a transient egress blip — skip on degraded egress, fail (below) only
+    # if egress is healthy (a real missing-leaf / propagation regression).
+    if not leaf_ips:
+        _skip_if_egress_degraded(client, f"leaf {LEAF_HOST}")
     assert leaf_ips, (
         f"direct dig {LEAF_HOST} returned no IPv4 — leaf A record missing"
     )
@@ -435,6 +502,11 @@ def test_attribution_reports_branded_host_after_direct_requery(router, client, f
 
     # Step 2: direct re-query of the leaf target.
     leaf_ips = _requery_leaf_directly(client)
+    # #2034: an empty answer here after the chain already resolved is almost
+    # always a transient egress blip — skip on degraded egress, fail (below) only
+    # if egress is healthy (a real missing-leaf / propagation regression).
+    if not leaf_ips:
+        _skip_if_egress_degraded(client, f"leaf {LEAF_HOST}")
     assert leaf_ips, (
         f"direct dig {LEAF_HOST} returned no IPv4 — leaf A record missing"
     )
@@ -560,6 +632,11 @@ def test_bl_direct_requery_blocked(router, client, fake_api):
     # log line, resolves the name → BRAND_HOST via the alias map, finds it in
     # the bl-member-index, and calls `nft add element bl_<id> {ip}`.
     leaf_ips = _requery_leaf_directly(client)
+    # #2034: an empty answer here after the chain already resolved is almost
+    # always a transient egress blip — skip on degraded egress, fail (below) only
+    # if egress is healthy (a real missing-leaf / propagation regression).
+    if not leaf_ips:
+        _skip_if_egress_degraded(client, f"leaf {LEAF_HOST}")
     assert leaf_ips, (
         f"direct dig {LEAF_HOST} returned no IPv4 — leaf A record missing or "
         f"not yet propagated (terraform apply required)"
