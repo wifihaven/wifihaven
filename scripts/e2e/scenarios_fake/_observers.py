@@ -140,6 +140,31 @@ def dig_ipv4_answers(client, host: str) -> list[str]:
     return [l for l in lines if _IPV4.match(l)]
 
 
+# ── External-DNS-egress health (#2034, Mode 2 of #2033) ──────────────────────
+#
+# Scenarios that resolve the REAL wifihaven.net zone (e.g. the #1351 CNAME-chain
+# suite) go client → router dnsmasq → upstream (WH_ROUTER_LAN_RESOLVER) → ISP →
+# Cloudflare. On the shared CD host that egress is intermittently degraded
+# (#1935/#2034): a whole resolution window returns nothing and the suite reddens
+# even though the enforcement path is sound. A degraded-egress window must NOT be
+# confused with a genuine zone/terraform regression (our e2e records missing),
+# so callers distinguish the two with a control probe through the SAME
+# client→router→upstream path:
+#   * control hosts resolve, our records don't → real zone problem → fail
+#   * control hosts also fail to resolve       → egress degraded   → skip
+# These controls are stable third-party apexes that do NOT depend on
+# infra/cloudflare; they answer whenever upstream egress is healthy.
+EGRESS_CONTROL_HOSTS = ("one.one.one.one", "example.com")
+
+
+def dns_egress_degraded(client) -> bool:
+    """True iff NONE of the third-party control apexes resolve through the
+    router's upstream — i.e. external DNS egress is down right now, independent
+    of our e2e zone. False as soon as any control resolves (egress is healthy;
+    a failure to resolve OUR records is then a real zone/terraform problem)."""
+    return not any(dig_ipv4_answers(client, h) for h in EGRESS_CONTROL_HOSTS)
+
+
 def dig_ipv6_answers(client, host: str) -> list[str]:
     """Return the IPv6 (AAAA) answer lines from `dig +short AAAA <host>`.
 

@@ -74,12 +74,33 @@ class State:
     @classmethod
     def fresh(cls) -> "State":
         snap = load_initial_snapshot()
-        return cls(
+        st = cls(
             initial_snapshot=copy.deepcopy(snap),
             snapshot=copy.deepcopy(snap),
             router_id=str(uuid.uuid4()),
             router_token="rt_" + uuid.uuid4().hex,
         )
+        st._seed_initial_blocklists()
+        return st
+
+    def _seed_initial_blocklists(self) -> None:
+        """Seed empty in-memory content for every blocklist id the initial
+        snapshot references (#2034).
+
+        The base/initial snapshot (the contract golden) carries category
+        blocklists (e.g. ``ads``, ``adult``) whose ``GET /api/blocklists/<id>``
+        would otherwise 404 in fake mode — the ids are never registered, and
+        ``adult`` originally pointed at external egress (now localized in
+        ``fixtures._localize_blocklist_urls``). An unregistered id makes the
+        agent's base-session blocklist fetch fail (``status=404``), polluting the
+        logs and coupling the suite to external egress. Seeding empty content
+        makes the fetch deterministically succeed (200, zero members) without
+        enforcing anything; a scenario that needs real members registers its own
+        via ``POST /test/blocklist``. ``setdefault`` so a pre-registered id is
+        never clobbered.
+        """
+        for bl_id in (self.initial_snapshot.get("blocklists") or {}):
+            self.blocklists.setdefault(bl_id, "")
 
     @property
     def etag(self) -> str:
