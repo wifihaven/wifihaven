@@ -19,10 +19,11 @@ object MetricsApiSpec extends ZIOSpecDefault {
   // the TestClock by exactly this much to drive a deterministic scrape.
   private val pollInterval = 100.millis
 
-  // #2042: deterministically fire ONE scrape of the shared Prometheus publisher fiber. The key is
-  // waiting until that background fiber has actually re-parked on the TestClock (its `Schedule.fixed`
-  // sleep is registered) BEFORE advancing — under parallel CI load a bare `adjust` can slip past a
-  // fiber that's momentarily mid-flight and never trigger the scrape (the original flake, relocated).
+  // #2042: deterministically fire ONE scrape of the Prometheus publisher fiber (provided per-test
+  // via `.provide` below, so it is a supervised test descendant). The key is waiting until that
+  // background fiber has actually re-parked on the TestClock (its `Schedule.fixed` sleep is
+  // registered) BEFORE advancing — under parallel CI load a bare `adjust` can slip past a fiber
+  // that's momentarily mid-flight and never trigger the scrape (the original flake, relocated).
   // Once it's parked, advancing exactly one interval fires exactly one registry snapshot.
   private val tickPublisher: UIO[Unit] =
     zio.test.TestClock.sleeps.repeatUntil(_.nonEmpty) *> zio.test.TestClock.adjust(pollInterval)
