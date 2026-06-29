@@ -431,14 +431,14 @@ function formatDuration(seconds: number): string {
 function KpiStrip({ stats }: { stats: DashboardStats | null }) {
   const { data: now = null } = useDashboardNow({ refetchInterval: false })
   const kpis = deriveNowKpis(now)
-  // #1837: Online now / Blocked now derive from the NOW snapshot and paint as soon
-  // as that resolves — independent of `stats`. The Events(1h)/Blocked(1h) tiles are
-  // stats-backed, so they pass `null` until stats resolves and render a skeleton
-  // rather than a placeholder "0" (the #1098 false-all-clear).
+  // #1837: every tile passes `null` until its source resolves and renders a
+  // skeleton rather than a placeholder "0" (the #1098 false-all-clear) — Online
+  // now / Blocked now until the NOW snapshot arrives, Events(1h)/Blocked(1h) until
+  // `stats` does. Both sources are independent, so each tile paints on its own.
   return (
     <div data-testid="kpi-strip" className="grid grid-cols-2 md:grid-cols-4 gap-4">
-      <StatCard label="Online now"   value={kpis.onlineNow}  accent="emerald" />
-      <StatCard label="Blocked now"  value={kpis.blockedNow} accent="red" />
+      <StatCard label="Online now"   value={now === null ? null : kpis.onlineNow}  accent="emerald" />
+      <StatCard label="Blocked now"  value={now === null ? null : kpis.blockedNow} accent="red" />
       <StatCard label="Events (1h)"  value={stats?.totalHour ?? null}   accent="emerald" />
       <StatCard label="Blocked (1h)" value={stats?.blockedHour ?? null} accent="yellow" />
     </div>
