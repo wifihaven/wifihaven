@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '@/api/client'
-import { useDashboardNow, useRecentBlocked } from '@/api/queries'
+import { useDashboardNow, useRecentBlocked, LIVE_SURFACE_FALLBACK_REFETCH_MS } from '@/api/queries'
 import type {
   DashboardNowDevice,
   DashboardNowProfile,
@@ -125,7 +125,7 @@ export function RecentlyBlockedSection() {
   // a role whose subscription the server rejects keeps polling instead of going stale.
   const streaming = useWsTopicLive('connectionEvents')
   useWsRecentBlocked()
-  const { data = null } = useRecentBlocked({ refetchInterval: streaming ? false : 10_000 })
+  const { data = null } = useRecentBlocked({ refetchInterval: streaming ? false : LIVE_SURFACE_FALLBACK_REFETCH_MS })
 
   return (
     <section data-testid="recently-blocked-section" className="bg-white rounded-2xl border border-brand-border overflow-hidden">
@@ -234,7 +234,7 @@ export function NowSection() {
   // role whose `now` subscription is server-rejected keeps polling rather than freezing.
   const streaming = useWsTopicLive('now')
   useWsNow()
-  const { data = null, dataUpdatedAt } = useDashboardNow({ refetchInterval: streaming ? false : 10_000 })
+  const { data = null, dataUpdatedAt } = useDashboardNow({ refetchInterval: streaming ? false : LIVE_SURFACE_FALLBACK_REFETCH_MS })
   const kpis = deriveNowKpis(data)
 
   // #1835: split active from idle. A profile is idle when it has zero active

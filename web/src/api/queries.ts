@@ -47,14 +47,17 @@ const STALE = {
 // ONLY because there was no push to deliver near-cap urgency promptly; with the push proven it is
 // retired (#1976/S7).
 //
-// What remains is the DISCONNECTED fallback: while the push is down (`wsLive === false`) the hooks
-// poll at this single FLAT cadence so a near-cap "minutes left" can't lag enforcement during a
-// socket outage. It is a constant — no longer adaptive — because the push (not a poll) is the
-// freshness when connected, so the fallback only has to keep the degraded mode honest. Foreground-
-// only (`refetchIntervalInBackground: false`) so hidden tabs don't poll. 10s matches the dashboard
-// NOW / Recently-Blocked disconnected fallback (DashboardPage `streaming ? false : 10_000`) — the
-// other live surfaces (design §0.1) — so every live surface degrades to the same cadence.
-export const TIME_STATUS_FALLBACK_REFETCH_MS = 10_000
+// What remains is the DISCONNECTED fallback: while the push is down (`wsLive === false`) the live
+// surfaces poll at this single FLAT cadence so a near-cap "minutes left" can't lag enforcement
+// during a socket outage. It is a constant — no longer adaptive — because the push (not a poll) is
+// the freshness when connected, so the fallback only has to keep the degraded mode honest.
+// Foreground-only (`refetchIntervalInBackground: false`) so hidden tabs don't poll.
+//
+// This is the ONE source for the live-surface disconnected fallback cadence (§0.1 — NOW,
+// Recently-Blocked, time-status): the dashboard NOW / Recently-Blocked hooks (`DashboardPage`) and
+// the time-status hooks below all reference it, so every live surface degrades to the same cadence
+// by construction rather than by hand-synced literals.
+export const LIVE_SURFACE_FALLBACK_REFETCH_MS = 10_000
 
 export const qk = {
   profiles: () => ['profiles'] as const,
@@ -236,7 +239,7 @@ export function useRecentBlocked(opts?: QueryOpts<QueryLog[]>) {
 
 // #1974 (S6a) / #1976 (S7, §3.3): when the `timeStatus` push is live (`wsLive`), polling pauses —
 // the push keeps the cache fresh. When the socket is down, the flat disconnected fallback
-// (`TIME_STATUS_FALLBACK_REFETCH_MS`) resumes the instant the socket drops; the adaptive ladder it
+// (`LIVE_SURFACE_FALLBACK_REFETCH_MS`) resumes the instant the socket drops; the adaptive ladder it
 // replaced was retired in S7 (the push delivers near-cap urgency when live). The caller passes
 // `wsLive` from `useWsTopicLive('timeStatus')`.
 export function useTimeStatusToday(opts?: QueryOpts<ProfileTimeStatus[]> & { wsLive?: boolean }) {
@@ -245,7 +248,7 @@ export function useTimeStatusToday(opts?: QueryOpts<ProfileTimeStatus[]> & { wsL
     queryKey: qk.timeStatusToday(),
     queryFn: () => api.time.statusAll(),
     staleTime: STALE.timeStatusToday,
-    refetchInterval: wsLive ? false : TIME_STATUS_FALLBACK_REFETCH_MS,
+    refetchInterval: wsLive ? false : LIVE_SURFACE_FALLBACK_REFETCH_MS,
     refetchIntervalInBackground: false,
     ...rest,
   })
@@ -282,7 +285,7 @@ export function useTimeStatusSummary(opts?: QueryOpts<ProfileTimeSummary[]> & { 
     queryKey: qk.timeStatusSummaryToday(),
     queryFn: () => api.time.summaryAll(),
     staleTime: STALE.timeStatusToday,
-    refetchInterval: wsLive ? false : TIME_STATUS_FALLBACK_REFETCH_MS,
+    refetchInterval: wsLive ? false : LIVE_SURFACE_FALLBACK_REFETCH_MS,
     refetchIntervalInBackground: false,
     ...rest,
   })
@@ -313,7 +316,7 @@ export function useTimeStatusProfileToday(
     queryKey: qk.timeStatusProfileToday(profileId),
     queryFn: () => api.time.statusAll(undefined, profileId).then(rows => rows[0]),
     staleTime: STALE.timeStatusToday,
-    refetchInterval: wsLive ? false : TIME_STATUS_FALLBACK_REFETCH_MS,
+    refetchInterval: wsLive ? false : LIVE_SURFACE_FALLBACK_REFETCH_MS,
     refetchIntervalInBackground: false,
     ...rest,
   })

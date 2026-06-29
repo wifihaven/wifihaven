@@ -20,7 +20,7 @@ import { api } from '@/api/client'
 import {
   useProfiles, useDevices, useTimeStatusToday, useTimeStatusSummary,
   useTimeStatusProfileToday, useInvalidators, qk,
-  TIME_STATUS_FALLBACK_REFETCH_MS,
+  LIVE_SURFACE_FALLBACK_REFETCH_MS,
 } from './queries'
 
 function makeWrapper(client: QueryClient) {
@@ -111,7 +111,7 @@ describe('SWR caching (#803)', () => {
 // The S6a `timeStatus` push (§3.1) drives freshness whenever the socket is live, so the
 // near-cap fast-poll the ladder existed for is redundant. What remains is a FLAT disconnected
 // fallback: while `wsLive` is false the live time-used hooks poll at a constant
-// TIME_STATUS_FALLBACK_REFETCH_MS so a near-cap "minutes left" can't lag enforcement during a
+// LIVE_SURFACE_FALLBACK_REFETCH_MS so a near-cap "minutes left" can't lag enforcement during a
 // socket outage (#1871). While `wsLive` is true the poll is paused entirely (the push is the
 // freshness). The immutable 'past'/'week' hooks never poll.
 describe('time-used disconnected fallback poll (#1976 — adaptive ladder retired)', () => {
@@ -133,7 +133,7 @@ describe('time-used disconnected fallback poll (#1976 — adaptive ladder retire
       render()
       await vi.advanceTimersByTimeAsync(0) // initial fetch resolves
       expect(fetchSpy).toHaveBeenCalledTimes(1)
-      await vi.advanceTimersByTimeAsync(TIME_STATUS_FALLBACK_REFETCH_MS) // one flat interval
+      await vi.advanceTimersByTimeAsync(LIVE_SURFACE_FALLBACK_REFETCH_MS) // one flat interval
       expect(fetchSpy).toHaveBeenCalledTimes(2)
     } finally {
       vi.useRealTimers()
@@ -195,7 +195,7 @@ describe('time-used disconnected fallback poll (#1976 — adaptive ladder retire
       renderHook(() => useTimeStatusToday({ wsLive: true }), { wrapper })
       await vi.advanceTimersByTimeAsync(0)
       expect(statusAll).toHaveBeenCalledTimes(1) // initial fetch only
-      await vi.advanceTimersByTimeAsync(TIME_STATUS_FALLBACK_REFETCH_MS * 5)
+      await vi.advanceTimersByTimeAsync(LIVE_SURFACE_FALLBACK_REFETCH_MS * 5)
       expect(statusAll).toHaveBeenCalledTimes(1) // push drives freshness; no poll
     } finally {
       vi.useRealTimers()

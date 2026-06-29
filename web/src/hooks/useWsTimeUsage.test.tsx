@@ -18,7 +18,7 @@ vi.mock('@/api/client', () => ({
 
 import { SpaWsClient, type WsSocketLike } from '@/api/wsClient'
 import { WsProvider, useWsTopicLive, useWsTimeStatus, useWsAppUsage } from './useWs'
-import { useTimeStatusSummary, qk, TIME_STATUS_FALLBACK_REFETCH_MS } from '@/api/queries'
+import { useTimeStatusSummary, qk, LIVE_SURFACE_FALLBACK_REFETCH_MS } from '@/api/queries'
 import { AuthProvider } from '@/hooks/useAuth'
 import type { ProfileTimeStatus, ProfileUsageByApp } from '@/types/api'
 
@@ -203,13 +203,13 @@ describe('disconnected fallback poll pauses while timeStatus streams (§3.3)', (
     // socket live but not yet acked → the flat disconnected fallback still runs (#1976/S7)
     act(() => { client.start(); last().open(); last().emit({ op: 'ready', payload: {} }) })
     expect(result.current).toBe(false)
-    await act(async () => { await vi.advanceTimersByTimeAsync(TIME_STATUS_FALLBACK_REFETCH_MS) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(LIVE_SURFACE_FALLBACK_REFETCH_MS) })
     expect(summarySpy).toHaveBeenCalledTimes(2)
 
     // server acks the subscription → topic streaming → fallback poll dormant
     act(() => { last().emit({ op: 'ack', payload: { topic: 'timeStatus', status: 'ok' } }) })
     expect(result.current).toBe(true)
-    await act(async () => { await vi.advanceTimersByTimeAsync(TIME_STATUS_FALLBACK_REFETCH_MS * 100) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(LIVE_SURFACE_FALLBACK_REFETCH_MS * 100) })
     expect(summarySpy).toHaveBeenCalledTimes(2) // no further polls while streaming
   })
 })
