@@ -230,6 +230,15 @@ describe('DashboardPage', () => {
     expect(await screen.findByText('2 hosts · 59 blocked events')).toBeInTheDocument()
   })
 
+  it('uses the singular "host" when exactly one host was blocked (#1836)', async () => {
+    mockStats().mockResolvedValue({
+      ...stats,
+      topBlocked: [{ host: { type: 'fqdn', value: 'captive.apple.com' }, count: 3 }],
+    })
+    render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
+    expect(await screen.findByText('1 host · 3 blocked events')).toBeInTheDocument()
+  })
+
   it('never renders a "0 blocked" row and drops per-device volume (#1836)', async () => {
     render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
     await screen.findByText('Blocking activity (24h)')
