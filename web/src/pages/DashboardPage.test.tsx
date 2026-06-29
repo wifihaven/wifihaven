@@ -32,9 +32,6 @@ const stats: DashboardStats = {
     { host: { type: 'fqdn', value: 'evil.com' }, count: 42 },
     { host: { type: 'fqdn', value: 'ads.example' }, count: 17 },
   ],
-  perDevice: [
-    { mac: 'aa:bb:cc:dd:ee:01', deviceName: "Kid's iPad", total: 500, blocked: 20 },
-  ],
 }
 
 // #1338: a recent connection-layer drop, returned by /api/logs?blocked=true.
@@ -302,6 +299,37 @@ describe('DashboardPage', () => {
     const now   = await screen.findByTestId('now-section')
     const comparison = strip.compareDocumentPosition(now)
     expect(comparison & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  // ── #1837 (#1098): per-section skeletons — NOW paints independent of stats ──
+  it('paints NOW independently — does not gate the whole page on stats (#1837/#1098)', async () => {
+    // stats never resolves; the page must NOT block on it (the old page-level
+    // PageLoader gated the whole render on Promise resolution).
+    mockStats().mockReturnValue(new Promise<DashboardStats>(() => {}))
+    mockNow().mockResolvedValue(liveNow)
+    render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
+    // NOW + its live card paint without waiting on stats.
+    expect(await screen.findByTestId('now-section')).toBeInTheDocument()
+    expect(await screen.findByTestId('now-profile-1')).toBeInTheDocument()
+    // The 24h Blocking activity panel shows a skeleton — never placeholder zeros
+    // or a premature "zero blocks" empty state (the #1098 anti-pattern).
+    expect(screen.getByTestId('blocking-activity-skeleton')).toBeInTheDocument()
+    expect(screen.queryByText(/0 hosts/)).not.toBeInTheDocument()
+    expect(
+      screen.queryByText('No blocked connection events in the last 24h'),
+    ).not.toBeInTheDocument()
+  })
+
+  it('shows a skeleton (never "0") on the stats-backed 1h tiles until stats resolves (#1837)', async () => {
+    mockStats().mockReturnValue(new Promise<DashboardStats>(() => {}))
+    mockNow().mockResolvedValue(kpiNow)
+    render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
+    const strip = await screen.findByTestId('kpi-strip')
+    // Live KPIs derived from the NOW snapshot paint immediately (onlineNow=3).
+    await waitFor(() => expect(within(strip).getByText('3')).toBeInTheDocument())
+    // The stats-backed Events(1h)/Blocked(1h) tiles render a skeleton, not "0".
+    expect(within(strip).queryByText('0')).not.toBeInTheDocument()
+    expect(within(strip).getAllByTestId('stat-skeleton').length).toBeGreaterThan(0)
   })
 
   it('renders the Most Recently Blocked panel above the Now section (#1338)', async () => {
