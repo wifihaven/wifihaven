@@ -155,6 +155,8 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
           "dance-mat-typing",
           // operator request: A-Z Animals reference site
           "a-z-animals",
+          // operator request: Prodigy kids' educational math game
+          "prodigy",
         )
         val slugs    = templates.map(_.slug.value).toSet
         assertTrue(slugs == expected) &&
