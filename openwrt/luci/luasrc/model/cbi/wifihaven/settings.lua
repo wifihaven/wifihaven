@@ -66,4 +66,18 @@ local debug_opt = s:option(Flag, "debug", translate("Verbose logging"),
   translate("Emit debug-level entries to syslog."))
 debug_opt.default = "0"
 
+-- ── WebSocket transport (see #1023 / #2037) ─────────────────────────────────
+-- The ws sidecar toggle lives in its own named `config ws 'ws'` section
+-- (read as wifihaven.ws.<opt>), so it needs a NamedSection distinct from the
+-- anonymous default `wifihaven` section above. Flipping this replaces the CLI
+-- `uci set wifihaven.ws.enabled=1`; the init script only starts the sidecar
+-- when enabled=1, so a service restart is required (same note as the cadences).
+local ws = m:section(NamedSection, "ws", "ws", translate("WebSocket transport (experimental)"))
+ws.addremove = false
+
+local ws_enabled = ws:option(Flag, "enabled", translate("Enable WebSocket transport"),
+  translate("When on, the agent maintains a persistent WebSocket to the API for live policy push plus usage/event upload, and the HTTP poll goes dormant (see #2037). Default off; requires a wifihaven service restart to take effect."))
+ws_enabled.default = "0"
+ws_enabled.rmempty = false
+
 return m
