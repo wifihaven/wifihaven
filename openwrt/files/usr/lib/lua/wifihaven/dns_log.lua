@@ -612,4 +612,55 @@ function M.load_table(text, ttl_seconds, now)
   return out
 end
 
+-- ---------------------------------------------------------------------------
+-- new_cache_resolver(opts) -> function(ip) -> hostname | nil   (#2068)
+-- ---------------------------------------------------------------------------
+-- A memoized `ip -> hostname` resolver over the dns-tail snapshot file.
+--
+-- The agent's old `lookup_hostname` re-read AND re-parsed the ENTIRE snapshot
+-- (`M.load_table`) on every call. `usage.build_report` calls the resolver once
+-- per (mac, dst_ip) counter — thousands at prod scale — so a single usage flush
+-- re-parsed the whole cache thousands of times: O(counters × cache_size)
+-- pure-Lua work that wedged the agent's cooperative `on_tick` loop for minutes.
+-- With `on_tick` starved the activity sampler ran once per window, so every
+-- traffic_reports bucket collapsed to a single zero-width sample
+-- (`active_start == active_end`) and `Presence.spanOf` credited ~0 minutes —
+-- screen-time went to zero and time limits stopped firing (#2068).
+--
+-- This factory returns a closure that reads the file cheaply on each call (a
+-- bounded, atomic-rewrite snapshot — a page-cache hit) but only RE-PARSES when
+-- the file CONTENT changed, so a flush that resolves N counters against an
+-- unchanged snapshot parses ONCE, not N times. Keying on content (not a wall-
+-- clock TTL) preserves the #583 attribution-race retry: the instant dns-tail
+-- rewrites the snapshot with a freshly-resolved IP, the next lookup re-parses
+-- and sees it. The entry TTL is still applied by `load_table` on each re-parse.
+--
+--   opts.path     snapshot file path (used by the default reader).
+--   opts.ttl      entry TTL seconds passed to load_table (default 3600).
+--   opts.read_fn  injectable reader -> text | nil (default reads opts.path).
+--   opts.now_fn   injectable clock -> epoch seconds (default os.time).
+function M.new_cache_resolver(opts)
+  opts = opts or {}
+  local ttl     = opts.ttl or 3600
+  local path    = opts.path
+  local read_fn = opts.read_fn or function()
+    local f = io.open(path, "r")
+    if not f then return nil end
+    local t = f:read("*a")
+    f:close()
+    return t
+  end
+  local now_fn = opts.now_fn or os.time
+  local memo_text                 -- last raw text we parsed (nil until first read)
+  local memo_tbl   = {}           -- parsed { canon_ip -> hostname } for memo_text
+  return function(ip)
+    local text = read_fn() or ""
+    if text ~= memo_text then
+      memo_text = text
+      memo_tbl  = M.load_table(text, ttl, now_fn())
+    end
+    return memo_tbl[host_norm.canon_ip(ip)]
+  end
+end
+
 return M
