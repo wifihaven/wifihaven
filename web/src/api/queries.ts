@@ -8,7 +8,7 @@
 import { useQuery, useQueryClient, type UseQueryOptions } from '@tanstack/react-query'
 import { api } from '@/api/client'
 import type {
-  Alert, BlocklistSummary, DashboardNow, Device, HouseholdSettings, NamedSchedule, ProfileDetail,
+  Alert, BlocklistSummary, DashboardNow, Device, HouseholdSettings, MeResponse, NamedSchedule, ProfileDetail,
   ProfileTimeStatus,
   ProfileAppWeeklyUsage,
   ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek, ProfileUsageByApp,
@@ -60,6 +60,7 @@ const STALE = {
 export const LIVE_SURFACE_FALLBACK_REFETCH_MS = 10_000
 
 export const qk = {
+  me: () => ['me'] as const,
   profiles: () => ['profiles'] as const,
   devices: () => ['devices'] as const,
   alerts: (includeAll: boolean) => ['alerts', includeAll] as const,
@@ -94,8 +95,12 @@ export const qk = {
   // #1973 (SPA-ws S5): the live trafficUsage series key (design §3.1). The ws push
   // (live edge) and the future S6b Traffic Usage page produce the key HERE so they
   // share one cache entry — the push patches exactly the key the page renders.
-  trafficUsageLive: (params: { groupBy: TrafficUsageGroupBy[]; bucket: TrafficUsageBucket }) =>
-    ['usage', 'traffic', 'live', params.bucket, [...params.groupBy].sort().join(',')] as const,
+  // #2069: `profileIds` scopes the key so a child's linked-profile-scoped series is a
+  // distinct cache entry from the admin/adult household-wide one (and the scoped GET
+  // seed / ws push patch the same key). Empty = unscoped (admin/adult), the prior shape.
+  trafficUsageLive: (params: { groupBy: TrafficUsageGroupBy[]; bucket: TrafficUsageBucket; profileIds?: number[] }) =>
+    ['usage', 'traffic', 'live', params.bucket, [...params.groupBy].sort().join(','),
+      [...(params.profileIds ?? [])].sort((a, b) => a - b).join(',')] as const,
   // #1973: the live connectionEvents feed key (design §3.1). The dashboard's "Recently
   // Blocked" panel keeps its own `recentBlocked()` key (the 15-min window view); this
   // is the shared key the future S6b Connection Events page streams into.
@@ -104,6 +109,21 @@ export const qk = {
 }
 
 type QueryOpts<T> = Omit<UseQueryOptions<T, Error, T, readonly unknown[]>, 'queryKey' | 'queryFn'>
+
+// #2069 — the authenticated caller's own identity: role + the profile ids they
+// are linked to. A non-admin (child) must scope every data request to these
+// profile ids because the API serves non-admins only when scoped (an unscoped
+// `/api/usage/traffic` is a 403 for a child). Cached indefinitely — a session's
+// role/linkage doesn't change under it — and only fetched when a caller needs
+// it (see `useDataScope`, which enables it for non-admins).
+export function useMe(opts?: QueryOpts<MeResponse>) {
+  return useQuery({
+    queryKey: qk.me(),
+    queryFn: () => api.auth.me(),
+    staleTime: Infinity,
+    ...opts,
+  })
+}
 
 export function useProfiles(opts?: QueryOpts<ProfileDetail[]>) {
   return useQuery({

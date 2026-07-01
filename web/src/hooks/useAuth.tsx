@@ -97,3 +97,10 @@ export function useAuth(): AuthContextValue {
   if (!ctx) throw new Error('useAuth must be used within AuthProvider')
   return ctx
 }
+
+// Non-throwing variant for infrastructure hooks that may run outside a provider
+// (e.g. `useDataScope`, rendered by page-level unit tests that mount a page bare).
+// Returns null when there is no AuthProvider above; callers pick a safe default.
+export function useAuthOptional(): AuthContextValue | null {
+  return useContext(AuthContext)
+}

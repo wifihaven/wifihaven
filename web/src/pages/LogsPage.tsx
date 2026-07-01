@@ -11,6 +11,7 @@ import { FilterShelf } from './TrafficUsagePage'
 import { localTime } from '@/components/usage/usageHelpers'
 import { useInfiniteScroll } from '@/hooks/useInfiniteScroll'
 import { useWsConnectionEventsLiveEdge } from '@/hooks/useWs'
+import { useDataScope } from '@/hooks/useDataScope'
 import { LiveBadge } from '@/components/dashboard/LiveBadge'
 
 // #862: infinite scroll page sizes + lookback. The /api/logs endpoint still
@@ -119,6 +120,16 @@ export function LogsPage() {
     api.apps.list().then(xs => setAppCount(xs.length)).catch(() => setAppCount(0))
   }, [])
 
+  // #2069 — the aggregated `/connection-events/series` view is admin/adult-only;
+  // a child's only child-safe view is raw `/api/logs` (the server post-filters it
+  // to the child's visible profiles). Offer only the raw bucket to a child, and
+  // coerce back to raw if anything else is selected, so a child never fires the
+  // aggregate 403.
+  const scope = useDataScope()
+  useEffect(() => {
+    if (scope.isChild && bucket !== 'raw') setBucket('raw')
+  }, [scope.isChild, bucket])
+
   function setUntil(next: string | null) {
     setUntilState(next)
     const sp = new URLSearchParams(searchParams)
@@ -165,6 +176,7 @@ export function LogsPage() {
         profileIds={profileIds}
         bucket={bucket}
         until={until}
+        onlyBuckets={scope.isChild ? ['raw'] : undefined}
         onMacsChange={setMacs}
         onProfileIdsChange={setProfileIds}
         onBucketChange={setBucket}

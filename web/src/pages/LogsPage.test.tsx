@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, useLocation } from 'react-router-dom'
@@ -10,11 +10,14 @@ vi.mock('@/api/client', () => ({
     devices:  { list:  vi.fn() },
     profiles: { list:  vi.fn() },
     apps:     { list:  vi.fn() },
+    auth:     { me:    vi.fn() },
   },
 }))
 
 import { api } from '@/api/client'
 import { LogsPage } from './LogsPage'
+import { withQuery } from '@/test/queryWrapper'
+import { AuthProvider } from '@/hooks/useAuth'
 
 const log1: QueryLog = {
   id: 1, mac: 'aa:bb:cc:dd:ee:01', deviceName: "Kid's iPad",
@@ -50,11 +53,16 @@ function LocationProbe() {
 }
 
 function renderAt(path = '/usage/events') {
+  // #2069: LogsPage now reads `useDataScope` (→ `useMe` via React Query), so the
+  // harness must provide a QueryClient. `useMe` stays disabled here (no auth
+  // provider ⇒ not a child), so no `/api/me` fetch is issued.
   return render(
-    <MemoryRouter initialEntries={[path]}>
-      <LogsPage />
-      <LocationProbe />
-    </MemoryRouter>,
+    withQuery(
+      <MemoryRouter initialEntries={[path]}>
+        <LogsPage />
+        <LocationProbe />
+      </MemoryRouter>,
+    ),
   )
 }
 
@@ -370,5 +378,44 @@ describe('LogsPage — jump-to-date (#951)', () => {
     await userEvent.click(screen.getByTestId('bucket-1h'))
     await waitFor(() => expect(seriesMock).toHaveBeenCalled())
     expect(seriesMock.mock.calls[0][0].until).toBe(seed)
+  })
+})
+
+// ── #2069: a CHILD only gets the raw `/api/logs` view ──
+//
+// The aggregated `/connection-events/series` is admin/adult-only; a child hitting it 403s.
+// So a child is offered ONLY the raw bucket, and the aggregated series is never requested.
+// (Raw `/api/logs` is child-safe: the server post-filters it to the child's visible profiles.)
+describe('LogsPage child scoping (#2069)', () => {
+  function renderAsChild(path = '/usage/events') {
+    localStorage.setItem('token', 'tok')
+    localStorage.setItem('username', 'octavius')
+    localStorage.setItem('role', 'child')
+    ;(api.auth.me as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      username: 'octavius', role: 'child', profileIds: [1],
+    })
+    return render(
+      withQuery(
+        <AuthProvider>
+          <MemoryRouter initialEntries={[path]}>
+            <LogsPage />
+          </MemoryRouter>
+        </AuthProvider>,
+      ),
+    )
+  }
+
+  afterEach(() => localStorage.clear())
+
+  it('offers only the raw bucket and never calls /connection-events/series', async () => {
+    renderAsChild()
+    // raw view loads (child-safe /api/logs)…
+    await waitFor(() => expect(api.logs.query).toHaveBeenCalled())
+    // …and the aggregated bucket options are not offered.
+    expect(screen.getByTestId('bucket-raw')).toBeInTheDocument()
+    expect(screen.queryByTestId('bucket-1m')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('bucket-1h')).not.toBeInTheDocument()
+    // the admin/adult-only aggregate series is never requested.
+    expect(api.logs.series).not.toHaveBeenCalled()
   })
 })

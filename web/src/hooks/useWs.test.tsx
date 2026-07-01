@@ -286,6 +286,35 @@ describe('useWsTrafficUsage seeds via GET (#2017)', () => {
     await waitFor(() => expect(trafficSpy).toHaveBeenCalledTimes(3))
     expect(trafficSpy.mock.calls[2][0].bucket).toBe('1m')
   })
+
+  // #2069 — a non-admin (child) session scopes the seed GET to its linked profile ids so the
+  // API serves it (an unscoped `/api/usage/traffic` is a 403 for a child).
+  it('scopes the seed GET to the given profileIds (#2069)', async () => {
+    const { api } = await import('@/api/client')
+    const trafficSpy = api.usage.traffic as unknown as ReturnType<typeof vi.fn>
+    trafficSpy.mockClear()
+    trafficSpy.mockResolvedValue(seedResp('1m', [{ profile: 'Kids', windowStart: '2026-06-26T10:05:00Z', bytesIn: 600 }]))
+    const { client, wrapper } = setup()
+    renderHook(() => useWsTrafficUsage('1m', { profileIds: [3], enabled: true }), { wrapper })
+    goLive(client)
+    await waitFor(() => expect(trafficSpy).toHaveBeenCalledTimes(1))
+    expect(trafficSpy.mock.calls[0][0].profileIds).toEqual([3])
+  })
+
+  // #2069 — with nothing to scope to (child with no linked profile), the seed is disabled: no GET
+  // fires, so there's no unscoped 403 to hot-retry. The gauge shows "—" (not live).
+  it('issues NO seed GET when disabled (#2069)', async () => {
+    const { api } = await import('@/api/client')
+    const trafficSpy = api.usage.traffic as unknown as ReturnType<typeof vi.fn>
+    trafficSpy.mockClear()
+    const { client, wrapper } = setup()
+    const { result } = renderHook(() => useWsTrafficUsage('1m', { enabled: false }), { wrapper })
+    goLive(client)
+    // Give any effect a tick; the disabled query must not fetch.
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    expect(trafficSpy).not.toHaveBeenCalled()
+    expect(result.current.live).toBe(false)
+  })
 })
 
 // ── #2040: the gauge shows the most-recent COMPLETE bucket + renders aggregated raw ───────────────

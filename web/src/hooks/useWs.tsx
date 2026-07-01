@@ -269,11 +269,40 @@ export interface WsTrafficUsage {
  * `refetchInterval` — it fetches on mount / key change only, and a reconnect invalidates the
  * key (refetchKey) for a single reseed.
  */
-export function useWsTrafficUsage(initialBucket: TrafficUsageBucket = '1m'): WsTrafficUsage {
+/**
+ * #2069 — scoping for a non-admin (child) session. The API serves `/api/usage/traffic` to a
+ * non-admin ONLY when scoped to a `profileId`/`mac` it may read; an unscoped GET is a 403. So a
+ * child dashboard passes its linked `profileIds` here to scope the seed (and subscription); when
+ * the child has no linked profile there is nothing to scope to, so the caller passes
+ * `enabled: false` to hold the request rather than fire an unscoped 403. Admin/adult omit both and
+ * keep the unscoped household-wide behaviour.
+ */
+export interface WsTrafficUsageScope {
+  profileIds?: number[]
+  enabled?: boolean
+}
+
+export function useWsTrafficUsage(
+  initialBucket: TrafficUsageBucket = '1m',
+  scope: WsTrafficUsageScope = {},
+): WsTrafficUsage {
   const qc = useQueryClient()
+  const enabled = scope.enabled ?? true
+  const scopeProfileIds = scope.profileIds
   const [bucket, setBucket] = useState<TrafficUsageBucket>(initialBucket)
   const groupBy = useMemo<TrafficUsageGroupBy[]>(() => ['profile'], [])
-  const params = useMemo(() => ({ groupBy, bucket }), [groupBy, bucket])
+  // The scope key is stable per set of ids (not per array identity) so re-renders don't churn subs.
+  const scopeKey = (scopeProfileIds ?? []).join(',')
+  const params = useMemo(
+    () => ({
+      groupBy,
+      bucket,
+      ...(scopeProfileIds?.length ? { profileIds: scopeProfileIds } : {}),
+    }),
+    // scopeKey captures scopeProfileIds by value so an identity-fresh-but-equal
+    // array doesn't churn the subscription.
+    [groupBy, bucket, scopeKey],
+  )
   const key = qk.trafficUsageLive(params)
   // "live" here = trafficUsage actually streaming (acked), not bare socket liveness — so a
   // role that can't see trafficUsage shows "—" rather than a misleading "live" with no data.
@@ -287,15 +316,24 @@ export function useWsTrafficUsage(initialBucket: TrafficUsageBucket = '1m'): WsT
       qc.setQueryData(key, (prev: TrafficUsageResponse | undefined) => mergeHeadBucket(prev, body))
     },
     key,
+    // Don't subscribe when there's nothing scoped to show (child with no linked profile).
+    enabled,
   )
 
   // The GET seed (#2017). A real query observer (not a passive cache read) so it fetches on
   // mount / key change AND receives the push's `setQueryData` cache updates on the same key.
   const { data, isLoading } = useQuery({
     queryKey: key,
+    enabled,
     queryFn: async () => {
       const { from, to } = headWindow(bucket)
-      const body = await api.usage.traffic({ groupBy, bucket, from, to })
+      const body = await api.usage.traffic({
+        groupBy,
+        bucket,
+        from,
+        to,
+        ...(scopeProfileIds?.length ? { profileIds: scopeProfileIds } : {}),
+      })
       // A push can write the live edge while the GET is in flight; keep it on top so a
       // late-resolving seed never clobbers fresher live data (the push's head ≥ the GET's
       // for the same window). mergeHeadBucket keeps the GET's history, the push's head.

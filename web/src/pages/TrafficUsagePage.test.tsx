@@ -21,6 +21,7 @@ vi.mock('@/api/client', () => ({
     devices:  { list:    vi.fn() },
     profiles: { list:    vi.fn() },
     apps:     { list:    vi.fn() },
+    auth:     { me:      vi.fn() },
   },
   // #2047: the page swallows caller-cancellation errors via this predicate.
   isCanceledError: (e: unknown) =>
@@ -404,6 +405,62 @@ describe('TrafficUsagePage', () => {
     await waitFor(() => expect(screen.getByTestId('aggregate-table')).toBeInTheDocument())
     expect(screen.queryByText(/aborted/i)).not.toBeInTheDocument()
     expect(screen.queryByTestId('error')).not.toBeInTheDocument()
+  })
+})
+
+// ── #2069: a CHILD session must scope `/api/usage/traffic` to its linked profiles ──
+//
+// The API serves `/api/usage/traffic` to a non-admin ONLY when scoped to a profileId it may
+// read; unscoped is a 403. These prove the page reads the child's linked profiles (via
+// `/api/me`) and passes them, and shows a needs-linking notice (no fetch) when there are none.
+describe('TrafficUsagePage child scoping (#2069)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    localStorage.clear()
+    localStorage.setItem('token', 'tok')
+    localStorage.setItem('username', 'octavius')
+    localStorage.setItem('role', 'child')
+    ;(api.devices.list as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.profiles.list as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.usage.traffic as ReturnType<typeof vi.fn>).mockResolvedValue(rawResp)
+    ;(api.apps.list as ReturnType<typeof vi.fn>).mockResolvedValue([])
+  })
+
+  afterEach(() => {
+    localStorage.clear()
+  })
+
+  function renderAsChild() {
+    return render(
+      <QueryClientProvider client={makeQueryClient()}>
+        <AuthProvider>
+          <MemoryRouter>
+            <TrafficUsagePage />
+          </MemoryRouter>
+        </AuthProvider>
+      </QueryClientProvider>,
+    )
+  }
+
+  it('scopes the usage/traffic request to the child’s linked profile ids', async () => {
+    (api.auth.me as ReturnType<typeof vi.fn>).mockResolvedValue({
+      username: 'octavius', role: 'child', profileIds: [1],
+    })
+    renderAsChild()
+    await waitFor(() => expect(api.usage.traffic).toHaveBeenCalled())
+    // every call carries the child's profileIds — never an unscoped GET (which would 403).
+    for (const call of (api.usage.traffic as ReturnType<typeof vi.fn>).mock.calls) {
+      expect(call[0].profileIds).toEqual([1])
+    }
+  })
+
+  it('shows a needs-linking notice and issues NO request when the child has no linked profile', async () => {
+    (api.auth.me as ReturnType<typeof vi.fn>).mockResolvedValue({
+      username: 'octavius', role: 'child', profileIds: [],
+    })
+    renderAsChild()
+    await waitFor(() => expect(screen.getByTestId('usage-needs-linking')).toBeInTheDocument())
+    expect(api.usage.traffic).not.toHaveBeenCalled()
   })
 })
 
