@@ -980,3 +980,85 @@ describe("v6 cache-key canonicalization (#1793)", function()
     assert.equal(0, c.size())
   end)
 end)
+
+-- ---------------------------------------------------------------------------
+-- new_cache_resolver (#2068)
+-- ---------------------------------------------------------------------------
+-- The agent's lookup_hostname re-read AND re-parsed the ENTIRE dns-cache file
+-- on every call; usage.build_report calls it once per (mac, dst_ip) counter
+-- (thousands at prod scale), so one usage flush re-parsed the whole cache
+-- thousands of times — O(counters × cache_size) pure-Lua work that wedged the
+-- agent's cooperative on_tick loop for minutes, starving the activity sampler
+-- and collapsing traffic_reports to a single zero-width sample per window
+-- (screen-time ≈ 0, time limits disabled). new_cache_resolver memoizes the
+-- parsed table, re-parsing ONLY when the cache file content changed.
+describe("new_cache_resolver (#2068)", function()
+  local COMPRESSED = "2607:f8b0:400f:801::2002"
+  local EXPANDED   = "2607:f8b0:400f:0801:0000:0000:0000:2002"
+
+  local function row(ip, host, ts) return ip .. "\t" .. host .. "\t" .. ts .. "\n" end
+
+  it("parses the cache once across many lookups against unchanged content", function()
+    local now = 1000
+    local text = row("1.2.3.4", "host.example", now) .. row("5.6.7.8", "other.example", now)
+    local reads = 0
+    local read_fn = function() reads = reads + 1; return text end
+
+    -- Spy on load_table to count parses.
+    local orig_load = dns_log.load_table
+    local parses = 0
+    dns_log.load_table = function(...) parses = parses + 1; return orig_load(...) end
+
+    local resolve = dns_log.new_cache_resolver({
+      read_fn = read_fn, now_fn = function() return now end, ttl = 3600,
+    })
+    for _ = 1, 100 do
+      assert.equal("host.example", resolve("1.2.3.4"))
+      assert.equal("other.example", resolve("5.6.7.8"))
+    end
+    dns_log.load_table = orig_load
+
+    assert.equal(1, parses)     -- the whole point: parse once, not per call
+    assert.is_true(reads >= 1)  -- reads are cheap; the parse is what we memoize
+  end)
+
+  it("re-parses and surfaces new entries when the cache content changes (#583 preserved)", function()
+    local now = 2000
+    local text = row("1.2.3.4", "old.example", now)
+    local read_fn = function() return text end
+    local orig_load = dns_log.load_table
+    local parses = 0
+    dns_log.load_table = function(...) parses = parses + 1; return orig_load(...) end
+
+    local resolve = dns_log.new_cache_resolver({
+      read_fn = read_fn, now_fn = function() return now end, ttl = 3600,
+    })
+    assert.equal("old.example", resolve("1.2.3.4"))
+    assert.equal(1, parses)
+    -- dns-tail rewrites the snapshot with a fresh resolution: the very next
+    -- lookup must see it (this is what makes the #583 attribution-race retry
+    -- still work under the memo — content change, not a time TTL, invalidates).
+    text = row("1.2.3.4", "new.example", now)
+    assert.equal("new.example", resolve("1.2.3.4"))
+    assert.equal(2, parses)
+    dns_log.load_table = orig_load
+  end)
+
+  it("returns nil for an unresolved ip and canonicalizes the v6 query key", function()
+    local now = 3000
+    -- Store under the expanded key; query with the compressed spelling.
+    local text = EXPANDED .. "\tpagead2.googlesyndication.com\t" .. now .. "\n"
+    local resolve = dns_log.new_cache_resolver({
+      read_fn = function() return text end, now_fn = function() return now end,
+    })
+    assert.is_nil(resolve("9.9.9.9"))
+    assert.equal("pagead2.googlesyndication.com", resolve(COMPRESSED))
+  end)
+
+  it("tolerates a missing cache file (read_fn returns nil) → nil lookups", function()
+    local resolve = dns_log.new_cache_resolver({
+      read_fn = function() return nil end, now_fn = function() return 0 end,
+    })
+    assert.is_nil(resolve("1.2.3.4"))
+  end)
+end)
