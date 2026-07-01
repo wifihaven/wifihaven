@@ -1454,7 +1454,10 @@ object PresenceSpec extends ZIOSpecDefault {
         val r = row(mac1, 0, "www.gimkit.com", periodSeconds = 517)
         assertTrue(Presence.spanOf(r).seconds == 517L)
       },
-      test("spanOf clamps a backwards envelope (activeEnd < activeStart) to zero, never negative") {
+      test("a backwards envelope (activeEnd < activeStart) with real bytes falls back (#2068)") {
+        // A backwards envelope is a degenerate (≤0-width) window; a real agent never emits one
+        // (last_active ≥ first_active), so this is the defensive path. With real bytes the #2068
+        // fallback credits the flush window rather than a zero span — never negative, never zero.
         val r = windowedRow(
           mac1,
           0L,
@@ -1463,7 +1466,7 @@ object PresenceSpec extends ZIOSpecDefault {
           activeStartSec = 200L,
           activeEndSec = 100L,
         )
-        assertTrue(Presence.spanOf(r).seconds == 0L)
+        assertTrue(Presence.spanOf(r).seconds == 300L)
       },
       test("a half-present envelope (only activeStart) falls back to the flush window") {
         val r = row(mac1, 0, "a.com", periodSeconds = 300)
@@ -1495,6 +1498,85 @@ object PresenceSpec extends ZIOSpecDefault {
           balloonMins >= 30,        // the un-defended flush-window over-count
           boundedMins < balloonMins,// the envelope path is strictly tighter
         )
+      },
+    ),
+    suite("#2068 degenerate activity window fallback")(
+      test("zero-width envelope with real bytes falls back to the flush window (never 0)") {
+        // The prod #2068 shape: on_tick wedged so the agent sampled the bucket exactly once at
+        // flush time → activeStart == activeEnd. Crediting that literal zero-width span zeroes
+        // screen time and disables time limits. A row with real bytes must credit the flush window.
+        val r = windowedRow(
+          mac1,
+          0L,
+          "www.lego.com",
+          periodSeconds = 300,
+          activeStartSec = 300L, // == period_end, == activeEnd → zero-width
+          activeEndSec = 300L,
+          bytes = 5_700_000L,
+        )
+        assertTrue(Presence.spanOf(r).seconds == 300L)
+      },
+      test("zero-width envelope with active_seconds>0 but zero bytes still falls back") {
+        val r = PresenceRow(
+          mac1,
+          baseDate,
+          base,
+          HostId.Fqdn(Hostname.unsafe("a.com")),
+          activeSeconds = 10,
+          bytes = 0L,
+          periodSeconds = 300,
+          activeStart = Some(base.plusSeconds(120L)),
+          activeEnd = Some(base.plusSeconds(120L)),
+        )
+        assertTrue(Presence.spanOf(r).seconds == 300L)
+      },
+      test("zero-width envelope with NO activity (0 bytes, 0 active_seconds) credits nothing") {
+        // A genuinely idle bucket must NOT be rescued — the fallback is only for rows that show
+        // real activity, so it can't manufacture screen time out of an empty window.
+        val r = PresenceRow(
+          mac1,
+          baseDate,
+          base,
+          HostId.Fqdn(Hostname.unsafe("a.com")),
+          activeSeconds = 0,
+          bytes = 0L,
+          periodSeconds = 300,
+          activeStart = Some(base.plusSeconds(120L)),
+          activeEnd = Some(base.plusSeconds(120L)),
+        )
+        assertTrue(Presence.spanOf(r).seconds == 0L)
+      },
+      test("a normal spanning envelope is unchanged (no #2016 over-count regression)") {
+        val r = windowedRow(
+          mac1,
+          0L,
+          "www.gimkit.com",
+          periodSeconds = 517,
+          activeStartSec = 100L,
+          activeEndSec = 120L,
+        )
+        assertTrue(Presence.spanOf(r).seconds == 20L)
+      },
+      test("INCIDENT FIXTURE: single-sample zero-width buckets credit the period, not zero") {
+        // Reproduce the prod traffic_reports rows exactly: 300s flush window,
+        // active_start == active_end == period_end, active_seconds = 10, real bytes. Before the
+        // fallback these credited 0 min (time limits disabled); now each bucket credits its window.
+        val rows = (0 until 3).toList.map { i =>
+          val ps = i.toLong * 300L
+          PresenceRow(
+            mac1,
+            baseDate,
+            base.plusSeconds(ps),
+            HostId.Fqdn(Hostname.unsafe("www.lego.com")),
+            activeSeconds = 10,
+            bytes = 5_700_000L,
+            periodSeconds = 300,
+            activeStart = Some(base.plusSeconds(ps + 300L)),
+            activeEnd = Some(base.plusSeconds(ps + 300L)),
+          )
+        }
+        // Three contiguous 300s windows stitch into one [0, 900] session → 15 min, not 0.
+        assertTrue(Presence.totalMinutesByMac(rows, Nil) == Map(mac1 -> 15))
       },
     ),
   )
