@@ -108,16 +108,42 @@ object Presence {
    * (pre-#2025 agents, or NULL columns) preserves the prior behavior exactly — NOT the sampled
    * `activeSeconds`, which is the undercount driver. The trailing edge then carries up to one
    * report-interval of uncertainty until the `connection_events`-anchored timing lands (#1466).
+   *
+   * #2068: a present-but-DEGENERATE envelope (`activeStart == activeEnd`, or a backwards `activeEnd
+   * < activeStart`) on a row with real activity (bytes > 0 or active_seconds > 0) also falls back
+   * to the flush window. A degenerate envelope means the agent sampled the bucket exactly once (its
+   * `on_tick` wedged, so first/last active collapsed to flush time); crediting the literal
+   * zero-width span zeroed prod screen-time and disabled time limits. This is belt-and-suspenders
+   * defense that can never manufacture time (an idle degenerate bucket with no bytes/active_seconds
+   * still credits nothing) and leaves the #2016 defense intact (a normal end > start envelope is
+   * untouched).
    */
-  def spanOf(r: PresenceRow): Span =
+  def spanOf(r: PresenceRow): Span = {
+    def flushWindow: Span = {
+      val start = r.periodStart.getEpochSecond
+      Span(start, start + r.periodSeconds.toLong.max(0L))
+    }
     (r.activeStart, r.activeEnd) match {
       case (Some(s), Some(e)) =>
         val start = s.getEpochSecond
-        Span(start, e.getEpochSecond.max(start))
+        val end   = e.getEpochSecond
+        // #2068: a DEGENERATE envelope (zero-width `activeStart == activeEnd`, or a backwards
+        // `activeEnd < activeStart` a real agent never emits) on a row that shows REAL activity
+        // (bytes > 0 or active_seconds > 0) means the agent sampled the bucket exactly once — its
+        // on_tick wedged, so `first_active == last_active == flush time`. Crediting that literal
+        // zero-width span zeroes screen time and effectively DISABLES time limits (the prod
+        // incident). Fall back to the flush window — the pre-#2025 behavior — so a single-sample
+        // bucket can never credit zero. Bounded once the agent emits ~1-min periods again.
+        //
+        // A NORMAL spanning envelope (end > start) is untouched, preserving the #2016 over-count
+        // defense; and a genuinely idle degenerate bucket (no bytes, no active_seconds) still
+        // credits nothing, so the fallback can't manufacture screen time out of an empty window.
+        if (end <= start && (r.bytes > 0L || r.activeSeconds > 0)) flushWindow
+        else Span(start, end.max(start))
       case _                  =>
-        val start = r.periodStart.getEpochSecond
-        Span(start, start + r.periodSeconds.toLong.max(0L))
+        flushWindow
     }
+  }
 
   /**
    * The idle gap actually used: the configured `N`, raised to the `2 × R` collapse guard (design
