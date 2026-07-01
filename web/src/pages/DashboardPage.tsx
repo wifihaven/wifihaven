@@ -13,6 +13,7 @@ import { EmptyState } from '@/components/EmptyState'
 import { AccessRequestsBanner, NewDevicesHint } from '@/components/AlertsPanel'
 import { blockReasonText } from '@/types/blockReason'
 import { useWsTopicLive, useWsNow, useWsRecentBlocked, useWsTrafficUsage } from '@/hooks/useWs'
+import { useDataScope } from '@/hooks/useDataScope'
 import type { WsTrafficUsage } from '@/hooks/useWs'
 import { deriveNowKpis, profileRateMap, nowVisibleDevices, isAnomalousAppliance } from '@/api/wsCache'
 import type { BandwidthRate } from '@/api/wsCache'
@@ -33,16 +34,30 @@ export function DashboardPage() {
   // anti-pattern) — until it resolves. `stats === null` is the loading state.
   const [stats, setStats] = useState<DashboardStats | null>(null)
 
+  // #2069 — role scoping. `/api/stats` is admin-only, so a non-admin must not
+  // call it (the prod 403 storm); the stats-backed panels are admin-only too.
+  // The live surfaces below (NOW, Recently Blocked via `/api/dashboard/*`) are
+  // already role-filtered server-side, so every role sees them.
+  const scope = useDataScope()
+
   useEffect(() => {
+    if (!scope.isAdmin) return
     api.logs.stats().then(setStats).catch(() => { /* keep skeleton on error */ })
-  }, [])
+  }, [scope.isAdmin])
 
   // #2056 (§8.5) — ONE `trafficUsage{groupBy:profile, bucket}` subscription drives the whole
   // page: the selected window (`bucket`) is page-level state that governs BOTH the Bandwidth
   // KPI tile's overall ▲▼ AND every per-profile ▲▼ on the NOW cards (there is no per-card
   // window control). Lifting the hook here is what makes the selection global — the KPI strip
   // and NOW both read this same instance.
-  const bandwidth = useWsTrafficUsage('1m')
+  // #2069: `/api/usage/traffic` needs a `profileId` for a non-admin. A child scopes to its
+  // linked profiles; with none linked (or while `/api/me` loads) the seed is disabled so it
+  // never fires an unscoped 403 — the tile shows "—". Admin/adult stay unscoped.
+  const bandwidthEnabled = scope.isChild ? (scope.childProfileIds?.length ?? 0) > 0 : true
+  const bandwidth = useWsTrafficUsage('1m', {
+    profileIds: scope.isChild ? scope.childProfileIds ?? undefined : undefined,
+    enabled: bandwidthEnabled,
+  })
 
   // §9.1 section order: banners → Recently Blocked (TOP) → KPI strip (5 tiles) → NOW →
   // Blocking activity (24h). Recently Blocked leads as the actionable diagnostic.
@@ -56,11 +71,12 @@ export function DashboardPage() {
 
       <RecentlyBlockedSection />
 
-      <KpiStrip stats={stats} bandwidth={bandwidth} />
+      <KpiStrip stats={stats} bandwidth={bandwidth} showStats={scope.isAdmin} />
 
       <NowSection bandwidth={bandwidth} />
 
-      <BlockingActivitySection stats={stats} />
+      {/* #2069: the 24h blocking-activity panel is backed by admin-only `/api/stats`. */}
+      {scope.isAdmin && <BlockingActivitySection stats={stats} />}
     </div>
   )
 }
@@ -491,7 +507,7 @@ function formatDuration(seconds: number): string {
 // (refetchInterval:false; NowSection drives the refresh, both observers re-render).
 // The cumulative "today" volume tiles are dropped: daily volume is analytics and
 // lives on /usage/events (design §2 non-goals).
-function KpiStrip({ stats, bandwidth }: { stats: DashboardStats | null; bandwidth?: WsTrafficUsage }) {
+function KpiStrip({ stats, bandwidth, showStats = true }: { stats: DashboardStats | null; bandwidth?: WsTrafficUsage; showStats?: boolean }) {
   const { data: now = null } = useDashboardNow({ refetchInterval: false })
   const kpis = deriveNowKpis(now)
   // #1837: every tile passes `null` until its source resolves and renders a
@@ -501,12 +517,14 @@ function KpiStrip({ stats, bandwidth }: { stats: DashboardStats | null; bandwidt
   // #2056 (§9.1): FIVE tiles — the Bandwidth gauge + its window selector fold into the strip as
   // the 5th tile (the standalone LIVE BANDWIDTH panel is gone), and the selected window governs
   // ▲▼ everywhere (here AND the NOW cards).
+  // #2069: the Events(1h)/Blocked(1h) tiles are backed by admin-only `/api/stats`; a non-admin
+  // (`showStats=false`) drops them rather than skeleton-forever (the #1098 false-loading trap).
   return (
-    <div data-testid="kpi-strip" className="grid grid-cols-2 md:grid-cols-5 gap-4">
+    <div data-testid="kpi-strip" className={`grid grid-cols-2 gap-4 ${showStats ? 'md:grid-cols-5' : 'md:grid-cols-3'}`}>
       <StatCard label="Online now"   value={now === null ? null : kpis.onlineNow}  accent="emerald" />
       <StatCard label="Blocked now"  value={now === null ? null : kpis.blockedNow} accent="red" />
-      <StatCard label="Events (1h)"  value={stats?.totalHour ?? null}   accent="emerald" />
-      <StatCard label="Blocked (1h)" value={stats?.blockedHour ?? null} accent="yellow" />
+      {showStats && <StatCard label="Events (1h)"  value={stats?.totalHour ?? null}   accent="emerald" />}
+      {showStats && <StatCard label="Blocked (1h)" value={stats?.blockedHour ?? null} accent="yellow" />}
       <BandwidthTile bandwidth={bandwidth} />
     </div>
   )

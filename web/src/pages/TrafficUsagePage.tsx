@@ -28,6 +28,7 @@ import {
 } from '@/components/usage/usageHelpers'
 import { useInfiniteScroll } from '@/hooks/useInfiniteScroll'
 import { useWsTrafficUsageLiveEdge } from '@/hooks/useWs'
+import { useDataScope } from '@/hooks/useDataScope'
 import { LiveBadge } from '@/components/dashboard/LiveBadge'
 
 // #846 — Traffic Usage page. Raw + aggregated views over traffic_reports.
@@ -95,9 +96,26 @@ export function TrafficUsagePage() {
     api.apps.list().then(xs => setAppCount(xs.length)).catch(() => setAppCount(0))
   }, [])
 
+  // #2069 — `/api/usage/traffic` is served to a non-admin ONLY when scoped to a
+  // profileId it may read; unscoped is a 403. A child scopes to its linked
+  // profiles (or a selected subset of them); with none linked there is nothing
+  // to scope to, so we hold the request and show a needs-linking notice rather
+  // than firing an unscoped 403 in a loop. Admin/adult stay unscoped.
+  const scope = useDataScope()
+  const effectiveProfileIds = useMemo(
+    () => (scope.isChild
+      ? (profileIds.length ? profileIds : scope.childProfileIds ?? [])
+      : profileIds),
+    [scope.isChild, scope.childProfileIds, profileIds],
+  )
+  // Child with no linked profile (or while `/api/me` is still loading) can't
+  // scope — don't fetch. Admin/adult always can.
+  const canQuery = !scope.isChild || (scope.childProfileIds?.length ?? 0) > 0
+  const needsLinking = scope.isChild && scope.childProfileIds?.length === 0
+
   // Filter key drives the reset effect — when any of these change, the cursor
   // walk restarts from None.
-  const filterKey = `${bucket}|${groupBy.join(',')}|${macs.join(',')}|${profileIds.join(',')}|${until ?? ''}`
+  const filterKey = `${bucket}|${groupBy.join(',')}|${macs.join(',')}|${effectiveProfileIds.join(',')}|${until ?? ''}|${canQuery}`
 
   function setUntil(next: string | null) {
     setUntilState(next)
@@ -146,8 +164,8 @@ export function TrafficUsagePage() {
         const anchor = until ?? new Date().toISOString()
         const from   = new Date(new Date(anchor).getTime() - band).toISOString()
         const resp: TrafficUsageResponse = await api.usage.traffic({
-          macs:       macs.length       ? macs       : undefined,
-          profileIds: profileIds.length ? profileIds : undefined,
+          macs:       macs.length                 ? macs                 : undefined,
+          profileIds: effectiveProfileIds.length  ? effectiveProfileIds  : undefined,
           from,
           to: anchor,
           bucket,
@@ -180,7 +198,7 @@ export function TrafficUsagePage() {
         if (abortRef.current === controller) setLoading(false)
       }
     },
-    [bucket, groupBy, macs, profileIds, until],
+    [bucket, groupBy, macs, effectiveProfileIds, until],
   )
 
   useEffect(() => {
@@ -191,6 +209,13 @@ export function TrafficUsagePage() {
     setAggRows([])
     setCursor(null)
     setHasMore(true)
+    // #2069: hold the fetch when a child can't scope (no linked profile / `/api/me`
+    // still loading) — firing unscoped would 403 in a loop.
+    if (!canQuery) {
+      setLoading(false)
+      setHasMore(false)
+      return
+    }
     void load(null)
   }, [filterKey])
 
@@ -257,7 +282,17 @@ export function TrafficUsagePage() {
 
       {error && <ErrorBanner message={error} />}
 
-      {bucket === 'raw' && (
+      {needsLinking && (
+        <div
+          data-testid="usage-needs-linking"
+          className="rounded border border-brand-border bg-white/40 p-4 text-sm text-brand-text-muted"
+        >
+          Your account isn’t linked to a profile yet, so there’s no usage to show. Ask an admin to
+          link your account to a profile.
+        </div>
+      )}
+
+      {!needsLinking && bucket === 'raw' && (
         <RawTable
           rows={rawRows}
           loading={loading}
@@ -269,7 +304,7 @@ export function TrafficUsagePage() {
           onProfileIdsChange={setProfileIds}
         />
       )}
-      {bucket !== 'raw' && groupBy.includes('app') && appCount === 0 && (
+      {!needsLinking && bucket !== 'raw' && groupBy.includes('app') && appCount === 0 && (
         <div
           data-testid="traffic-app-empty"
           className="rounded border border-brand-accent-dark bg-brand-accent/30 p-4 text-sm text-brand-accent"
@@ -278,7 +313,7 @@ export function TrafficUsagePage() {
           traffic by app.
         </div>
       )}
-      {bucket !== 'raw' && !(groupBy.includes('app') && appCount === 0) && (
+      {!needsLinking && bucket !== 'raw' && !(groupBy.includes('app') && appCount === 0) && (
         <AggregateTable
           rows={aggRows}
           loading={loading}
@@ -326,6 +361,10 @@ interface ShelfProps {
   // #814: per-bucket retention gating. Omitted by consumers (e.g. the
   // connection-events log) whose source has a single flat retention horizon.
   bucketGates?: Record<TrafficUsageBucket, BucketGate>
+  // #2069: restrict the offered buckets. The Connection Events page passes
+  // `['raw']` for a child, whose only child-safe view is raw `/api/logs`
+  // (the aggregated `/connection-events/series` is admin/adult-only).
+  onlyBuckets?: TrafficUsageBucket[]
   onMacsChange: (v: string[]) => void
   onProfileIdsChange: (v: number[]) => void
   onBucketChange: (b: TrafficUsageBucket) => void
@@ -338,7 +377,7 @@ interface ShelfProps {
 // #951: Jump-to-Date sits next to the bucket selector — re-anchors the
 // infinite-scroll cursor at the chosen instant (cleared = "now").
 export function FilterShelf({
-  devices, profiles, macs, profileIds, bucket, until, bucketGates,
+  devices, profiles, macs, profileIds, bucket, until, bucketGates, onlyBuckets,
   onMacsChange, onProfileIdsChange, onBucketChange, onUntilChange,
 }: ShelfProps) {
   const deviceLabel = (m: string) => devices.find(d => d.mac === m)?.name ?? m
@@ -348,7 +387,7 @@ export function FilterShelf({
   return (
     <div className="space-y-3 bg-white/40 rounded p-3 border border-brand-border">
       <div className="flex flex-wrap items-end gap-4">
-        <BucketSelector value={bucket} onChange={onBucketChange} gates={bucketGates} />
+        <BucketSelector value={bucket} onChange={onBucketChange} gates={bucketGates} only={onlyBuckets} />
         <JumpToDate value={until} onChange={onUntilChange} />
       </div>
       {hasChips && (

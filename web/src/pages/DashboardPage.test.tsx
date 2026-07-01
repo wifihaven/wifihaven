@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, act, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
@@ -21,6 +21,9 @@ vi.mock('@/api/client', () => ({
     usage: {
       traffic: vi.fn(),
     },
+    auth: {
+      me: vi.fn(),
+    },
   },
 }))
 
@@ -41,6 +44,7 @@ vi.mock('@/hooks/useWs', async (importOriginal) => ({
 import { api } from '@/api/client'
 import { DashboardPage, NowSection, RecentlyBlockedSection } from './DashboardPage'
 import { withQuery, makeTestQueryClient } from '@/test/queryWrapper'
+import { AuthProvider } from '@/hooks/useAuth'
 
 const stats: DashboardStats = {
   totalToday: 1234,
@@ -851,5 +855,41 @@ describe('NowSection', () => {
     const collapse = screen.getByTestId('now-idle-collapse')
     expect(within(collapse).getByText(/Idle \(1\)/)).toBeInTheDocument()
     expect(within(collapse).getByText(/IoT/)).toBeInTheDocument()
+  })
+})
+
+// ── #2069: a CHILD dashboard must not call admin-only `/api/stats` ──
+//
+// `/api/stats` is admin-only; a child hitting it 403s (the prod storm). So a child never
+// requests it, and the stats-backed panels (the Events/Blocked (1h) tiles + the 24h Blocking
+// activity panel) are dropped rather than skeleton-forever. The child-safe live surfaces
+// (Online now / Blocked now from `/api/dashboard/now`) still render.
+describe('DashboardPage child role (#2069)', () => {
+  afterEach(() => localStorage.clear())
+
+  function renderAsChild() {
+    localStorage.setItem('token', 'tok')
+    localStorage.setItem('username', 'octavius')
+    localStorage.setItem('role', 'child')
+    ;(api.auth.me as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      username: 'octavius', role: 'child', profileIds: [1],
+    })
+    return render(
+      withQuery(<AuthProvider><MemoryRouter><DashboardPage /></MemoryRouter></AuthProvider>),
+    )
+  }
+
+  it('never calls admin-only /api/stats and drops the stats-backed panels', async () => {
+    renderAsChild()
+    // the child-safe KPI strip still renders (Online now / Blocked now from /api/dashboard/now).
+    const strip = await screen.findByTestId('kpi-strip')
+    expect(within(strip).getByText('Online now')).toBeInTheDocument()
+    expect(within(strip).getByText('Blocked now')).toBeInTheDocument()
+    // admin-only /api/stats is never requested…
+    expect(api.logs.stats).not.toHaveBeenCalled()
+    // …and its panels/tiles are absent.
+    expect(screen.queryByText('Events (1h)')).not.toBeInTheDocument()
+    expect(screen.queryByText('Blocked (1h)')).not.toBeInTheDocument()
+    expect(screen.queryByText('Blocking activity (24h)')).not.toBeInTheDocument()
   })
 })

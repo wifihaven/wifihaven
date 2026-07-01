@@ -48,6 +48,23 @@ export function isCanceledError(e: unknown): boolean {
   return e instanceof RequestCanceledError
 }
 
+// #2069: a 403 is a terminal authorization outcome, not a transient failure —
+// retrying it just hot-loops the same denial (the prod child-account 403 storm).
+// Throwing a typed error lets the React Query retry policy (queryClient.ts) skip
+// it while still retrying genuine 5xx / network blips. `status` is carried so
+// callers/tests can branch on it without string-matching the body.
+export class ForbiddenError extends Error {
+  readonly status = 403
+  constructor(message: string) {
+    super(message)
+    this.name = 'ForbiddenError'
+  }
+}
+
+export function isForbiddenError(e: unknown): boolean {
+  return e instanceof ForbiddenError
+}
+
 async function req<T>(
   method: string,
   path: string,
@@ -122,7 +139,8 @@ async function req<T>(
       window.location.href = '/account'
       throw new Error('password_change_required')
     }
-    throw new Error(text || `HTTP 403`)
+    // #2069: typed so React Query never hot-retries an authorization denial.
+    throw new ForbiddenError(text || `HTTP 403`)
   }
 
   // #1191: 5xx is the canonical "API is broken" signal — surface the banner.
