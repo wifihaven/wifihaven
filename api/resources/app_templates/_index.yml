@@ -45,3 +45,5 @@ slugs:
   - dance-mat-typing
   # operator request: A-Z Animals reference site
   - a-z-animals
+  # operator request: Prodigy kids' educational math game
+  - prodigy

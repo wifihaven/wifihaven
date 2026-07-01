@@ -1,0 +1,6 @@
+slug: prodigy
+name: Prodigy
+icon: "https://icons.duckduckgo.com/ip3/prodigygame.com.ico"
+icon_type: url
+hosts:
+  - prodigygame.com
