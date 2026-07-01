@@ -6,6 +6,7 @@
 
 import type {
   DashboardNow,
+  DashboardNowDevice,
   ProfileTimeStatus,
   ProfileTimeSummary,
   QueryLog,
@@ -146,6 +147,23 @@ export function overallRate(
   )
 }
 
+// #2056 (§8.5) — per-profile B/s keyed by profile NAME, so the NOW card headers and the
+// Bandwidth KPI tile read the SAME `groupBy:profile` head-bucket rows under the SAME global
+// window (`bucket`). A profile absent from the map has no live-edge bucket → its card shows
+// `—` (not a measured zero). `groups.profile` carries the name when profile is in groupBy;
+// `soleProfile` is the single-profile fallback.
+export function profileRateMap(
+  rows: TrafficUsageAggregateRow[],
+  bucket: TrafficUsageBucket,
+): Map<string, BandwidthRate> {
+  const m = new Map<string, BandwidthRate>()
+  for (const r of rows) {
+    const name = r.groups.profile ?? r.soleProfile
+    if (name) m.set(name, rateFor(r, bucket))
+  }
+  return m
+}
+
 // ── connectionEvents: prepend new head rows, bounded + dedup by id (§3.1) ───────────
 //
 // The push carries the genuinely-new head rows (newest-first); cursor-paged history is
@@ -209,9 +227,38 @@ export interface NowKpis {
 
 export function deriveNowKpis(now: DashboardNow | undefined | null): NowKpis {
   const profiles = now?.profiles ?? []
-  const activeDevices = profiles.flatMap(p => p.activeDevices)
-  const blocked = profiles.filter(p => p.paused).flatMap(p => p.activeDevices)
+  // §9.3 — "Online now" counts PERSONAL active devices (+ any anomalous appliance), not
+  // appliance chatter. Backend-gated: `kind`/`anomalous` are absent on the wire today, so
+  // `nowVisibleDevices` returns every device and this stays "all active" until the classifier
+  // lands (§9.4). Blocked-now is the active devices of paused profiles (paused ⇒ all dropped).
+  const activeDevices = profiles.flatMap(p => nowVisibleDevices(p.activeDevices))
+  const blocked = profiles.filter(p => p.paused).flatMap(p => nowVisibleDevices(p.activeDevices))
   return { onlineNow: activeDevices.length, blockedNow: blocked.length }
+}
+
+// ── #2056 / §9.3: NOW IoT/appliance filtering (display classification, not policy) ──
+//
+// An appliance is hidden from NOW UNLESS its traffic is anomalous (a likely-compromise signal
+// that a parent SHOULD see, flagged). Both `kind` and `anomalous` are ADDITIVE, backend-gated
+// fields the server does not populate yet — so today every device is "visible" and NOW renders
+// exactly as before (the §9.4 gate). When the classifier sub-task (#2061) ships, this filters
+// with zero further FE change. `isApplianceDevice` is the single predicate both the device lists
+// and the "Online now" KPI read.
+export function isApplianceDevice(d: DashboardNowDevice): boolean {
+  return d.kind === 'appliance'
+}
+
+// True when an appliance should be SURFACED despite the filter — its traffic is anomalous
+// (§9.3 likely-compromise exception). Personal devices are never "anomalous-surfaced"; they
+// are simply always shown.
+export function isAnomalousAppliance(d: DashboardNowDevice): boolean {
+  return isApplianceDevice(d) && d.anomalous === true
+}
+
+// The devices NOW renders for a profile: every personal device, plus any appliance whose
+// traffic is anomalous (shown flagged). Hidden = a non-anomalous appliance.
+export function nowVisibleDevices(devices: DashboardNowDevice[]): DashboardNowDevice[] {
+  return devices.filter(d => !isApplianceDevice(d) || isAnomalousAppliance(d))
 }
 
 // ── timeStatus: project the pushed ProfileTimeStatus[] onto the lighter summary shape ───

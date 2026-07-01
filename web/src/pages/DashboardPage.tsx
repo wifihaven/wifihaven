@@ -12,10 +12,17 @@ import { HostCell } from '@/components/HostCell'
 import { EmptyState } from '@/components/EmptyState'
 import { AccessRequestsBanner, NewDevicesHint } from '@/components/AlertsPanel'
 import { blockReasonText } from '@/types/blockReason'
-import { useWsTopicLive, useWsNow, useWsRecentBlocked } from '@/hooks/useWs'
-import { deriveNowKpis } from '@/api/wsCache'
+import { useWsTopicLive, useWsNow, useWsRecentBlocked, useWsTrafficUsage } from '@/hooks/useWs'
+import type { WsTrafficUsage } from '@/hooks/useWs'
+import { deriveNowKpis, profileRateMap, nowVisibleDevices, isAnomalousAppliance } from '@/api/wsCache'
+import type { BandwidthRate } from '@/api/wsCache'
 import { LiveBadge } from '@/components/dashboard/LiveBadge'
-import { BandwidthGauges } from '@/components/dashboard/BandwidthGauges'
+import { RateBadge } from '@/components/dashboard/RateBadge'
+import { BucketSelector } from '@/components/usage/BucketSelector'
+
+// #2056 (§8.5) — the live-bandwidth windows offered on the dashboard. The 12h/1d/1w history
+// buckets make no sense for a live B/s gauge; default `1m` (smooth glance, `raw` opt-in).
+const BANDWIDTH_WINDOWS = ['raw', '1m', '10m', '1h'] as const
 
 export function DashboardPage() {
   // #1837 (#1098): per-section skeletons replace the page-level PageLoader that
@@ -30,11 +37,18 @@ export function DashboardPage() {
     api.logs.stats().then(setStats).catch(() => { /* keep skeleton on error */ })
   }, [])
 
+  // #2056 (§8.5) — ONE `trafficUsage{groupBy:profile, bucket}` subscription drives the whole
+  // page: the selected window (`bucket`) is page-level state that governs BOTH the Bandwidth
+  // KPI tile's overall ▲▼ AND every per-profile ▲▼ on the NOW cards (there is no per-card
+  // window control). Lifting the hook here is what makes the selection global — the KPI strip
+  // and NOW both read this same instance.
+  const bandwidth = useWsTrafficUsage('1m')
+
+  // §9.1 section order: banners → Recently Blocked (TOP) → KPI strip (5 tiles) → NOW →
+  // Blocking activity (24h). Recently Blocked leads as the actionable diagnostic.
   return (
     <div className="space-y-6">
       <h1 className="text-xl font-bold text-brand-ink">Dashboard</h1>
-
-      <KpiStrip stats={stats} />
 
       <NewDevicesHint />
 
@@ -42,9 +56,9 @@ export function DashboardPage() {
 
       <RecentlyBlockedSection />
 
-      <BandwidthGauges />
+      <KpiStrip stats={stats} bandwidth={bandwidth} />
 
-      <NowSection />
+      <NowSection bandwidth={bandwidth} />
 
       <BlockingActivitySection stats={stats} />
     </div>
@@ -131,9 +145,9 @@ export function RecentlyBlockedSection() {
     <section data-testid="recently-blocked-section" className="bg-white rounded-2xl border border-brand-border overflow-hidden">
       <div className="px-5 py-4 border-b border-brand-border flex items-center justify-between gap-3">
         <h2 className="text-sm font-semibold text-brand-text uppercase tracking-wider">
-          Most Recently Blocked
+          Recently Blocked
         </h2>
-        <Link to="/usage/events" className="text-xs text-brand-accent-dark hover:underline shrink-0">
+        <Link to="/usage/events?blocked=true" className="text-xs text-brand-accent-dark hover:underline shrink-0">
           View all →
         </Link>
       </div>
@@ -151,20 +165,46 @@ export function RecentlyBlockedSection() {
   )
 }
 
+// §9.2 row shape: `device · *profile*↗ · host · reason · <relative time>`. The PROFILE is a
+// quick-unblock deep-link to its editor — `/profiles?id=<profileId>` reuses the existing
+// scroll-to-and-highlight `?id=` deep-link ProfilesPage already honours (#298), so a parent
+// jumps from a block straight to unpausing / adjusting the schedule / adding an allow. The
+// `connectionEvents` row already carries `profileId`/`profileName` (no protocol change — the
+// profile is NOT re-derived client-side). The DEVICE keeps its own deep-link to that device's
+// filtered Connection Events, so "change the policy" and "see everything this device hit" are
+// two distinct, both-useful targets.
 function RecentlyBlockedRow({ row }: { row: QueryLog }) {
   const who = row.deviceName ?? row.mac ?? 'unknown device'
   return (
-    <li data-testid={`recently-blocked-${row.id}`} className="px-5 py-2.5 flex items-center gap-3">
-      <span className="text-xs text-brand-text-muted shrink-0 w-16 tabular-nums">
-        {formatRelativeTime(row.ts)}
-      </span>
-      <span className="font-mono text-sm text-brand-ink truncate flex-1 min-w-0">
+    <li data-testid={`recently-blocked-${row.id}`} className="px-5 py-2.5 flex items-center gap-2 text-sm">
+      <Link
+        to={`/usage/events?blocked=true${row.mac ? `&mac=${encodeURIComponent(row.mac)}` : ''}`}
+        className="text-brand-ink hover:underline truncate shrink-0 max-w-[28%]"
+      >
+        {who}
+      </Link>
+      <span className="text-brand-text-muted shrink-0" aria-hidden>·</span>
+      {row.profileId != null
+        ? (
+          <Link
+            to={`/profiles?id=${row.profileId}`}
+            data-testid={`recently-blocked-profile-${row.id}`}
+            className="italic text-brand-accent-dark hover:underline shrink-0 max-w-[20%] truncate"
+            title={`Open ${row.profileName ?? 'profile'} in the editor`}
+          >
+            {row.profileName ?? 'profile'} ↗
+          </Link>
+        )
+        : <span className="italic text-brand-text-muted shrink-0">{row.profileName ?? '—'}</span>
+      }
+      <span className="text-brand-text-muted shrink-0" aria-hidden>·</span>
+      <span className="font-mono text-brand-ink truncate flex-1 min-w-0">
         <HostCell host={row.host} />
       </span>
-      <span className="text-xs text-brand-text-muted truncate hidden sm:block max-w-[40%]">
-        {who}{row.profileName ? ` · ${row.profileName}` : ''}
-      </span>
       <span className="text-xs text-red-700 shrink-0">{blockReasonText(row.reason)}</span>
+      <span className="text-xs text-brand-text-muted shrink-0 tabular-nums w-14 text-right">
+        {formatRelativeTime(row.ts)}
+      </span>
     </li>
   )
 }
@@ -201,11 +241,13 @@ function deviceActiveSeconds(d: DashboardNowDevice): number {
   return d.topHosts.reduce((sum, h) => sum + h.activeSeconds, 0)
 }
 
-// #1835 — a profile is idle when it has zero active devices. The snapshot's
-// activeDevices is already the last-5-min set (§7 Q4), so this is the whole test;
-// paused-and-idle profiles are idle too (the paused tag is preserved on render).
+// #1835 — a profile is idle when it has zero VISIBLE active devices. The snapshot's
+// activeDevices is already the last-5-min set (§7 Q4); §9.3 then filters appliances out, so a
+// profile whose only activity is hidden IoT chatter (no personal device, no anomalous
+// appliance) collapses into the idle row rather than showing an empty active card. Paused-and-
+// idle profiles are idle too (the paused tag is preserved on render).
 function profileIsIdle(p: DashboardNowProfile): boolean {
-  return p.activeDevices.length === 0
+  return nowVisibleDevices(p.activeDevices).length === 0
 }
 
 // #1835 — per-session UI toggle (top-N expander, idle collapse) backed by
@@ -227,7 +269,7 @@ function useSessionToggle(key: string, initial = false): [boolean, (v: boolean) 
   return [on, set]
 }
 
-export function NowSection() {
+export function NowSection({ bandwidth }: { bandwidth?: WsTrafficUsage }) {
   // #1973: `now` is pushed whole (§3.1) — replace the dashboard-now cache live. Derived
   // "Online now" KPI recomputes client-side off the pushed body. Polling stays the paused
   // fallback (§3.3), gated on the `now` topic actually STREAMING (subscribed + acked) — a
@@ -236,6 +278,12 @@ export function NowSection() {
   useWsNow()
   const { data = null, dataUpdatedAt } = useDashboardNow({ refetchInterval: streaming ? false : LIVE_SURFACE_FALLBACK_REFETCH_MS })
   const kpis = deriveNowKpis(data)
+
+  // §8.5 — the per-profile ▲▼ on each card header is keyed by profile NAME against the SAME
+  // global window the KPI Bandwidth tile uses (`bandwidth.bucket`). A profile with no live-edge
+  // row resolves to `null` → the header shows `—`, not a measured zero.
+  const rates = bandwidth ? profileRateMap(bandwidth.rows, bandwidth.bucket) : new Map<string, BandwidthRate>()
+  const rateFor = (name: string): BandwidthRate | null => (bandwidth?.live ? rates.get(name) ?? null : null)
 
   // #1835: split active from idle. A profile is idle when it has zero active
   // devices (the snapshot's activeDevices is already the last-5-min set, §7 Q4);
@@ -263,7 +311,7 @@ export function NowSection() {
             <>
               {active.length > 0 && (
                 <div className="grid md:grid-cols-2 gap-4">
-                  {active.map(p => <NowProfileCard key={p.id} profile={p} />)}
+                  {active.map(p => <NowProfileCard key={p.id} profile={p} rate={rateFor(p.name)} />)}
                 </div>
               )}
               {idle.length > 0 && <IdleCollapseRow profiles={idle} />}
@@ -287,7 +335,7 @@ function FreshnessPill({ updatedAt }: { updatedAt: number }) {
   )
 }
 
-function NowProfileCard({ profile, dimmed = false }: { profile: DashboardNowProfile; dimmed?: boolean }) {
+function NowProfileCard({ profile, dimmed = false, rate = null }: { profile: DashboardNowProfile; dimmed?: boolean; rate?: BandwidthRate | null }) {
   const idle = profileIsIdle(profile)
   const muted = dimmed || idle
   return (
@@ -295,13 +343,19 @@ function NowProfileCard({ profile, dimmed = false }: { profile: DashboardNowProf
       data-testid={`now-profile-${profile.id}`}
       className={`bg-white rounded-2xl border p-5 ${muted ? 'border-brand-border opacity-60' : 'border-brand-accent-dark/50'}`}
     >
-      <div className="flex items-center gap-2 mb-3">
-        <h3 className="text-base font-semibold text-brand-ink">{profile.name}</h3>
-        {profile.paused && (
-          <span className="text-[10px] font-bold uppercase tracking-wider bg-amber-100/60 text-amber-700 px-2 py-0.5 rounded">
-            Paused
-          </span>
-        )}
+      {/* §8.5 — name on the left, the per-profile ▲▼ rate right-aligned on the SAME header row
+          (no extra row; the device list below is unchanged). The rate is governed by the
+          page-wide window selector. */}
+      <div className="flex items-center justify-between gap-2 mb-3">
+        <div className="flex items-center gap-2 min-w-0">
+          <h3 className="text-base font-semibold text-brand-ink truncate">{profile.name}</h3>
+          {profile.paused && (
+            <span className="text-[10px] font-bold uppercase tracking-wider bg-amber-100/60 text-amber-700 px-2 py-0.5 rounded shrink-0">
+              Paused
+            </span>
+          )}
+        </div>
+        <RateBadge rate={rate} testId={`now-profile-rate-${profile.id}`} />
       </div>
       {idle
         ? <EmptyState variant="inline" title="No activity in the last 5 minutes" />
@@ -312,9 +366,12 @@ function NowProfileCard({ profile, dimmed = false }: { profile: DashboardNowProf
 }
 
 // #1835 (#819): rank by active-seconds, cap at top-3, expander for the rest.
+// §9.3 — appliances are filtered out first (nowVisibleDevices), so a card of Sonos/Lutron/
+// printer chatter no longer dominates; an appliance reappears only when its traffic is
+// anomalous, rendered with a ⚠ flag (NowDeviceRow).
 function NowDeviceList({ profile }: { profile: DashboardNowProfile }) {
   const [expanded, setExpanded] = useSessionToggle(`wh.now.card.${profile.id}`)
-  const ranked = [...profile.activeDevices].sort(
+  const ranked = nowVisibleDevices(profile.activeDevices).sort(
     (a, b) => deviceActiveSeconds(b) - deviceActiveSeconds(a),
   )
   const overflow = ranked.length - NOW_DEVICE_CAP
@@ -365,10 +422,16 @@ function NowDeviceRow({ device }: { device: DashboardNowDevice }) {
   // covers freshness. The exception: a row materially staler than the snapshot
   // (lastSeenSeconds is measured against the snapshot's asOf) still flags inline.
   const stale = device.lastSeenSeconds > NOW_STALE_SECONDS
+  // §9.3 — an appliance surfaced here is, by construction, an ANOMALOUS one (a non-anomalous
+  // appliance is filtered out upstream): flag it as a likely-compromise signal.
+  const anomalous = isAnomalousAppliance(device)
   return (
     <div data-testid={`now-device-${device.mac}`} className="border-t border-brand-border first:border-0 pt-3 first:pt-0">
       <div className="flex items-baseline justify-between gap-2">
-        <p className="text-sm font-medium text-brand-ink truncate">{device.name}</p>
+        <p className={`text-sm font-medium truncate ${anomalous ? 'text-amber-700' : 'text-brand-ink'}`}>
+          {anomalous && <span aria-hidden>⚠ </span>}{device.name}
+          {anomalous && <span className="ml-1 text-xs font-normal text-amber-700">· unusual</span>}
+        </p>
         {stale && (
           <p className="text-xs text-brand-text-muted shrink-0">{formatLastSeen(device.lastSeenSeconds)}</p>
         )}
@@ -428,19 +491,51 @@ function formatDuration(seconds: number): string {
 // (refetchInterval:false; NowSection drives the refresh, both observers re-render).
 // The cumulative "today" volume tiles are dropped: daily volume is analytics and
 // lives on /usage/events (design §2 non-goals).
-function KpiStrip({ stats }: { stats: DashboardStats | null }) {
+function KpiStrip({ stats, bandwidth }: { stats: DashboardStats | null; bandwidth?: WsTrafficUsage }) {
   const { data: now = null } = useDashboardNow({ refetchInterval: false })
   const kpis = deriveNowKpis(now)
   // #1837: every tile passes `null` until its source resolves and renders a
   // skeleton rather than a placeholder "0" (the #1098 false-all-clear) — Online
   // now / Blocked now until the NOW snapshot arrives, Events(1h)/Blocked(1h) until
   // `stats` does. Both sources are independent, so each tile paints on its own.
+  // #2056 (§9.1): FIVE tiles — the Bandwidth gauge + its window selector fold into the strip as
+  // the 5th tile (the standalone LIVE BANDWIDTH panel is gone), and the selected window governs
+  // ▲▼ everywhere (here AND the NOW cards).
   return (
-    <div data-testid="kpi-strip" className="grid grid-cols-2 md:grid-cols-4 gap-4">
+    <div data-testid="kpi-strip" className="grid grid-cols-2 md:grid-cols-5 gap-4">
       <StatCard label="Online now"   value={now === null ? null : kpis.onlineNow}  accent="emerald" />
       <StatCard label="Blocked now"  value={now === null ? null : kpis.blockedNow} accent="red" />
       <StatCard label="Events (1h)"  value={stats?.totalHour ?? null}   accent="emerald" />
       <StatCard label="Blocked (1h)" value={stats?.blockedHour ?? null} accent="yellow" />
+      <BandwidthTile bandwidth={bandwidth} />
+    </div>
+  )
+}
+
+// #2056 (§8.5) — the 5th KPI tile: the overall household ▲▼ /s with the page-wide window
+// selector on the footer. Three states, mirroring the old gauge (#2041): loading (skeleton,
+// never "0 B/s"), live (rate), or paused/no-edge ("—"). The window selector here IS the global
+// control — changing it re-subscribes `trafficUsage` and re-derives every ▲▼ on the page.
+function BandwidthTile({ bandwidth }: { bandwidth?: WsTrafficUsage }) {
+  return (
+    <div data-testid="kpi-bandwidth" className="bg-white rounded-2xl border border-brand-border p-5 flex flex-col gap-3">
+      <p className="text-xs font-semibold text-brand-text-muted uppercase tracking-wider">Bandwidth</p>
+      <div className="min-h-[2.25rem] flex items-center">
+        {bandwidth == null
+          ? <span className="font-mono text-sm text-brand-text-muted">—</span>
+          : bandwidth.loading
+            ? <span data-testid="kpi-bandwidth-loading" className="inline-block h-5 w-28 rounded bg-brand-border/70 animate-pulse" aria-hidden />
+            : bandwidth.live
+              ? <RateBadge rate={bandwidth.overall} testId="kpi-bandwidth-rate" />
+              : <span data-testid="kpi-bandwidth-idle" className="font-mono text-sm text-brand-text-muted">—</span>}
+      </div>
+      {bandwidth != null && (
+        <BucketSelector
+          value={bandwidth.bucket}
+          onChange={bandwidth.setBucket}
+          only={[...BANDWIDTH_WINDOWS]}
+        />
+      )}
     </div>
   )
 }
