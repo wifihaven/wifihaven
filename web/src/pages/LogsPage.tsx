@@ -72,6 +72,13 @@ function StatusHeaderFilter({
   )
 }
 
+// #2073/#2062: seed the device filter from `?mac=` so a deep-link (e.g. the dashboard's
+// Recently-Blocked "View all →" / device link) lands already narrowed to that device. Comma or
+// repeated-param form, matching how `api.logs.query` serializes the `mac` list.
+function parseMacs(sp: URLSearchParams): string[] {
+  return sp.getAll('mac').flatMap(v => v.split(',')).map(v => v.trim()).filter(Boolean)
+}
+
 function parseEventsGroupBy(sp: URLSearchParams): EventsGroupBy[] {
   // #917: repeated ?groupBy=device&groupBy=domain serialization; comma form
   // still accepted for back-compat.
@@ -100,8 +107,9 @@ export function LogsPage() {
   const [bucket, setBucket]     = useState<EventsBucket>('raw')
   // #917: default groupBy = [] — one row per time bucket. Toggles strictly add rows.
   const [groupBy, setGroupBy]   = useState<EventsGroupBy[]>(() => parseEventsGroupBy(searchParams))
-  // #865: multi-select filters. Empty = no filter on that column.
-  const [macs, setMacs]                 = useState<string[]>([])
+  // #865: multi-select filters. Empty = no filter on that column. #2073: seed from `?mac=` so a
+  // device deep-link lands pre-filtered (device selection is not otherwise round-tripped to URL).
+  const [macs, setMacs]                 = useState<string[]>(() => parseMacs(searchParams))
   const [profileIds, setProfileIds]     = useState<number[]>([])
   // #951: optional anchor for the right edge of the window. null = "now".
   // Round-trips through ?until=<ISO> in the URL.

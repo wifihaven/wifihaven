@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '@/api/client'
 import { useDashboardNow, useRecentBlocked, LIVE_SURFACE_FALLBACK_REFETCH_MS } from '@/api/queries'
 import type {
+  DashboardNow,
   DashboardNowDevice,
   DashboardNowProfile,
   DashboardStats,
@@ -59,11 +60,16 @@ export function DashboardPage() {
     enabled: bandwidthEnabled,
   })
 
-  // §9.1 section order: banners → Recently Blocked (TOP) → KPI strip (5 tiles) → NOW →
-  // Blocking activity (24h). Recently Blocked leads as the actionable diagnostic.
+  // §9.1 section order: header (title + global window selector) → banners → Recently Blocked
+  // (TOP) → KPI strip (5 tiles) → NOW. Recently Blocked leads as the actionable diagnostic.
+  // #2073: the "Blocking activity (24h)" panel is removed (operator review — not useful); the
+  // window/bucket selector is lifted OUT of the Bandwidth tile into a page-global header control.
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-bold text-brand-ink">Dashboard</h1>
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <h1 className="text-xl font-bold text-brand-ink">Dashboard</h1>
+        <DashboardWindowSelector bandwidth={bandwidth} />
+      </div>
 
       <NewDevicesHint />
 
@@ -74,67 +80,28 @@ export function DashboardPage() {
       <KpiStrip stats={stats} bandwidth={bandwidth} showStats={scope.isAdmin} />
 
       <NowSection bandwidth={bandwidth} />
-
-      {/* #2069: the 24h blocking-activity panel is backed by admin-only `/api/stats`. */}
-      {scope.isAdmin && <BlockingActivitySection stats={stats} />}
     </div>
   )
 }
 
-// ── "Blocking activity (24h)" — merged ranked-blocked-host panel ─────────────
-//
-// #1836 (#822): one panel replaces the old "Top Blocked (24h)" + "Per Device
-// (24h)" pair. Per-device traffic *volume* was a leaderboard wearing a security-
-// panel hat (17-of-18 rows reading "0 blocked" on prod) — it belongs on /devices
-// and /profiles, so the dashboard no longer consumes `stats.perDevice`. The body
-// is the ranked blocked-host list (existing `topBlocked` shape); the subtitle
-// counts the ranked hosts and sums their blocked events. No "0 blocked" row ever:
-// an empty 24h renders a single honest line, not two empty cards (design §7).
-// Per-host → "which devices triggered it" expansion is out of scope for v1 —
-// `topBlocked` carries no per-device linkage (design §7 Q3).
-function BlockingActivitySection({ stats }: { stats: DashboardStats | null }) {
-  // #1837: until the (now rollup-backed) 24h stats resolve, show a skeleton — not
-  // a "0 hosts · 0 blocked events" subtitle, which would flash a false all-clear
-  // before the real numbers arrive (#1098). The header stays so the panel doesn't
-  // jump on resolve.
-  if (stats === null) {
-    return (
-      <section className="bg-white rounded-2xl border border-brand-border p-5">
-        <div className="flex items-baseline justify-between gap-3 mb-4">
-          <h2 className="text-sm font-semibold text-brand-text uppercase tracking-wider">
-            Blocking activity (24h)
-          </h2>
-        </div>
-        <div data-testid="blocking-activity-skeleton" className="space-y-2" aria-hidden>
-          <div className="h-5 bg-brand-border/60 rounded animate-pulse" />
-          <div className="h-5 bg-brand-border/60 rounded animate-pulse w-4/5" />
-          <div className="h-5 bg-brand-border/60 rounded animate-pulse w-3/5" />
-        </div>
-      </section>
-    )
-  }
-  const hostCount = stats.topBlocked.length
-  const eventCount = stats.topBlocked.reduce((sum, d) => sum + d.count, 0)
+// #2073 — the window/bucket selector is a PAGE-GLOBAL control, not a Bandwidth-tile widget. The
+// selected window governs the overall ▲▼ on the Bandwidth KPI tile AND every per-profile ▲▼ on
+// the NOW cards (one shared `trafficUsage` subscription, §8.5). Homing it in the page header —
+// right of the <h1>, labelled "Window:" — makes that scope legible: it visibly sits above
+// everything it drives, instead of hiding inside one tile as if it only governed bandwidth. The
+// live-relevant windows only (`raw · 1m · 10m · 1h`), not the 12h/1d/1w history buckets.
+function DashboardWindowSelector({ bandwidth }: { bandwidth: WsTrafficUsage }) {
   return (
-    <section className="bg-white rounded-2xl border border-brand-border p-5">
-      <div className="flex items-baseline justify-between gap-3 mb-4">
-        <h2 className="text-sm font-semibold text-brand-text uppercase tracking-wider">
-          Blocking activity (24h)
-        </h2>
-        <span className="text-xs text-brand-text-muted shrink-0">
-          {hostCount} {hostCount === 1 ? 'host' : 'hosts'} · {eventCount} blocked events
-        </span>
-      </div>
-      {hostCount === 0
-        ? <p className="text-sm text-brand-text-muted">No blocked connection events in the last 24h</p>
-        : stats.topBlocked.map(d => (
-            <div key={`${d.host.type}:${d.host.value}`} className="flex justify-between items-center py-2 border-b border-brand-border last:border-0">
-              <span className="font-mono text-sm text-brand-text truncate"><HostCell host={d.host} /></span>
-              <span className="text-red-700 font-mono text-sm ml-4 shrink-0">{d.count}</span>
-            </div>
-          ))
-      }
-    </section>
+    <div data-testid="dashboard-window-selector" className="flex items-center gap-2">
+      <span className="text-xs font-semibold text-brand-text-muted uppercase tracking-wider">
+        Window:
+      </span>
+      <BucketSelector
+        value={bandwidth.bucket}
+        onChange={bandwidth.setBucket}
+        only={[...BANDWIDTH_WINDOWS]}
+      />
+    </div>
   )
 }
 
@@ -148,14 +115,44 @@ function BlockingActivitySection({ stats }: { stats: DashboardStats | null }) {
 // resolves (memory/blocking_is_traffic_layer_not_dns.md). Reuses the dashboard's
 // React Query polling + JWT/household scoping via useRecentBlocked.
 
+// #2073 — a compact fixed max-height so the panel scrolls WITHIN itself and stays a glance panel,
+// not a feed that dominates the page (operator review). ≈ the NOW grid's height; overflow is the
+// "View all →" deep-link, per §8.5.
+const RECENTLY_BLOCKED_MAX_H = 'max-h-72'
+
 export function RecentlyBlockedSection() {
-  // #1973: subscribe `connectionEvents{blocked:true}` — pushes prepend into the same
-  // `recentBlocked()` cache this query reads (§3.1). Polling stays the PAUSED fallback
+  // #2062 — the "All devices ▾" quick device filter. Picking a device narrows BOTH the live
+  // subscription (server-side, §8.5) and the fallback poll to that mac; `null` = all devices.
+  const [selectedMac, setSelectedMac] = useState<string | null>(null)
+
+  // §8.5 — the device options are drawn from the NOW snapshot's known devices. Passive read
+  // (refetchInterval:false): NowSection's poll / `now` push drives the fetch, this just renders
+  // the current list, so the two share one cache entry and no second poller runs.
+  const { data: now = null } = useDashboardNow({ refetchInterval: false })
+  const devices = useMemo(() => nowDeviceList(now), [now])
+  const selectedName = selectedMac
+    ? devices.find(d => d.mac === selectedMac)?.name ?? selectedMac
+    : null
+
+  // #1973: subscribe `connectionEvents{blocked:true, macs?}` — pushes prepend into the same
+  // `recentBlocked(mac)` cache this query reads (§3.1). Polling stays the PAUSED fallback
   // (§3.3): gated off only while the topic is actually STREAMING (subscribed + acked), so
   // a role whose subscription the server rejects keeps polling instead of going stale.
   const streaming = useWsTopicLive('connectionEvents')
-  useWsRecentBlocked()
-  const { data = null } = useRecentBlocked({ refetchInterval: streaming ? false : LIVE_SURFACE_FALLBACK_REFETCH_MS })
+  useWsRecentBlocked(selectedMac)
+  const { data = null } = useRecentBlocked(selectedMac, {
+    refetchInterval: streaming ? false : LIVE_SURFACE_FALLBACK_REFETCH_MS,
+  })
+
+  // #2073 — group the flat feed under a per-profile header, preserving newest-first order both
+  // across groups (by first appearance) and within each group.
+  const groups = useMemo(() => groupByProfile(data ?? []), [data])
+  // #2073/#2062 — "View all →" lands on the Connection Events page pre-filtered to blocked. The
+  // page reads `?status=blocked` (LogsPage.parseStatus) — NOT `?blocked=true` — and `?mac=` when
+  // a device filter is active, so the destination lands already filtered.
+  const viewAllHref = `/usage/events?status=blocked${
+    selectedMac ? `&mac=${encodeURIComponent(selectedMac)}` : ''
+  }`
 
   return (
     <section data-testid="recently-blocked-section" className="bg-white rounded-2xl border border-brand-border overflow-hidden">
@@ -163,56 +160,135 @@ export function RecentlyBlockedSection() {
         <h2 className="text-sm font-semibold text-brand-text uppercase tracking-wider">
           Recently Blocked
         </h2>
-        <Link to="/usage/events?blocked=true" className="text-xs text-brand-accent-dark hover:underline shrink-0">
-          View all →
-        </Link>
+        <div className="flex items-center gap-3 shrink-0">
+          {devices.length > 0 && (
+            <select
+              data-testid="recently-blocked-device-filter"
+              aria-label="Filter recently blocked by device"
+              value={selectedMac ?? ''}
+              onChange={e => setSelectedMac(e.target.value || null)}
+              className="text-xs bg-brand-alt text-brand-text border border-brand-border rounded px-2 py-1 max-w-[10rem]"
+            >
+              <option value="">All devices</option>
+              {devices.map(d => (
+                <option key={d.mac} value={d.mac}>{d.name}</option>
+              ))}
+            </select>
+          )}
+          <Link to={viewAllHref} className="text-xs text-brand-accent-dark hover:underline">
+            View all →
+          </Link>
+        </div>
       </div>
       {data === null
         ? <p className="px-5 py-4 text-brand-text-muted text-sm">Loading recent blocks…</p>
         : data.length === 0
-          ? <div className="px-5 py-4"><EmptyState variant="inline" title="Nothing blocked recently" /></div>
+          ? (
+            <div className="px-5 py-4">
+              <EmptyState
+                variant="inline"
+                title={selectedName ? `Nothing blocked recently for ${selectedName}` : 'Nothing blocked recently'}
+              />
+            </div>
+          )
           : (
-            <ul className="divide-y divide-brand-border">
-              {data.map(row => <RecentlyBlockedRow key={row.id} row={row} />)}
-            </ul>
+            <div
+              data-testid="recently-blocked-scroll"
+              className={`${RECENTLY_BLOCKED_MAX_H} overflow-y-auto divide-y divide-brand-border`}
+            >
+              {groups.map(g => (
+                <div key={g.profileId ?? 'none'}>
+                  <RecentlyBlockedGroupHeader group={g} />
+                  <ul className="divide-y divide-brand-border">
+                    {g.rows.map(row => <RecentlyBlockedRow key={row.id} row={row} />)}
+                  </ul>
+                </div>
+              ))}
+            </div>
           )
       }
     </section>
   )
 }
 
-// §9.2 row shape: `device · *profile*↗ · host · reason · <relative time>`. The PROFILE is a
-// quick-unblock deep-link to its editor — `/profiles?id=<profileId>` reuses the existing
-// scroll-to-and-highlight `?id=` deep-link ProfilesPage already honours (#298), so a parent
-// jumps from a block straight to unpausing / adjusting the schedule / adding an allow. The
-// `connectionEvents` row already carries `profileId`/`profileName` (no protocol change — the
-// profile is NOT re-derived client-side). The DEVICE keeps its own deep-link to that device's
-// filtered Connection Events, so "change the policy" and "see everything this device hit" are
-// two distinct, both-useful targets.
+// #2073 — the blocked rows grouped under one profile. `profileId == null` (an unattributed drop)
+// buckets into a headerless "No profile" group rather than vanishing.
+interface BlockedGroup {
+  profileId: number | null
+  profileName: string | null
+  rows: QueryLog[]
+}
+
+// Group newest-first rows by profile, preserving order: groups appear in first-seen order, rows
+// stay in feed order within each group.
+function groupByProfile(rows: QueryLog[]): BlockedGroup[] {
+  const order: (number | null)[] = []
+  const byProfile = new Map<number | null, BlockedGroup>()
+  for (const r of rows) {
+    let g = byProfile.get(r.profileId)
+    if (!g) {
+      g = { profileId: r.profileId, profileName: r.profileName, rows: [] }
+      byProfile.set(r.profileId, g)
+      order.push(r.profileId)
+    }
+    g.rows.push(r)
+  }
+  return order.map(k => byProfile.get(k)!)
+}
+
+// The dedup'd, name-sorted device list from the NOW snapshot (§8.5) — the "All devices ▾" options.
+function nowDeviceList(now: DashboardNow | null): { mac: string; name: string }[] {
+  if (!now) return []
+  const byMac = new Map<string, string>()
+  for (const p of now.profiles) {
+    for (const d of p.activeDevices) {
+      if (!byMac.has(d.mac)) byMac.set(d.mac, d.name)
+    }
+  }
+  return [...byMac.entries()]
+    .map(([mac, name]) => ({ mac, name }))
+    .sort((a, b) => a.name.localeCompare(b.name))
+}
+
+// §9.2 (#2073) — the per-profile GROUP HEADER is the quick-unblock deep-link to its editor:
+// `/profiles?id=<profileId>` reuses the existing scroll-to-and-highlight `?id=` deep-link
+// ProfilesPage already honours (#298), so a parent jumps from a block straight to unpausing /
+// adjusting the schedule / adding an allow. The `connectionEvents` row already carries
+// `profileId`/`profileName` (no protocol change — the profile is NOT re-derived client-side).
+function RecentlyBlockedGroupHeader({ group }: { group: BlockedGroup }) {
+  const label = group.profileName ?? 'No profile'
+  return (
+    <div className="px-5 py-1.5 bg-brand-alt/50 sticky top-0 z-10 border-b border-brand-border text-xs font-semibold uppercase tracking-wider">
+      {group.profileId != null
+        ? (
+          <Link
+            to={`/profiles?id=${group.profileId}`}
+            data-testid={`recently-blocked-group-${group.profileId}`}
+            className="text-brand-accent-dark hover:underline"
+            title={`Open ${label} in the editor`}
+          >
+            {label} ↗
+          </Link>
+        )
+        : <span className="text-brand-text-muted">{label}</span>
+      }
+    </div>
+  )
+}
+
+// §9.2 row shape (under its profile group): `device · host · reason · <relative time>`. The DEVICE
+// deep-links to that device's blocked Connection Events (`?status=blocked&mac=`) — "see everything
+// this device hit" — a distinct target from the group header's profile (policy) link.
 function RecentlyBlockedRow({ row }: { row: QueryLog }) {
   const who = row.deviceName ?? row.mac ?? 'unknown device'
   return (
     <li data-testid={`recently-blocked-${row.id}`} className="px-5 py-2.5 flex items-center gap-2 text-sm">
       <Link
-        to={`/usage/events?blocked=true${row.mac ? `&mac=${encodeURIComponent(row.mac)}` : ''}`}
-        className="text-brand-ink hover:underline truncate shrink-0 max-w-[28%]"
+        to={`/usage/events?status=blocked${row.mac ? `&mac=${encodeURIComponent(row.mac)}` : ''}`}
+        className="text-brand-ink hover:underline truncate shrink-0 max-w-[30%]"
       >
         {who}
       </Link>
-      <span className="text-brand-text-muted shrink-0" aria-hidden>·</span>
-      {row.profileId != null
-        ? (
-          <Link
-            to={`/profiles?id=${row.profileId}`}
-            data-testid={`recently-blocked-profile-${row.id}`}
-            className="italic text-brand-accent-dark hover:underline shrink-0 max-w-[20%] truncate"
-            title={`Open ${row.profileName ?? 'profile'} in the editor`}
-          >
-            {row.profileName ?? 'profile'} ↗
-          </Link>
-        )
-        : <span className="italic text-brand-text-muted shrink-0">{row.profileName ?? '—'}</span>
-      }
       <span className="text-brand-text-muted shrink-0" aria-hidden>·</span>
       <span className="font-mono text-brand-ink truncate flex-1 min-w-0">
         <HostCell host={row.host} />
@@ -514,9 +590,10 @@ function KpiStrip({ stats, bandwidth, showStats = true }: { stats: DashboardStat
   // skeleton rather than a placeholder "0" (the #1098 false-all-clear) — Online
   // now / Blocked now until the NOW snapshot arrives, Events(1h)/Blocked(1h) until
   // `stats` does. Both sources are independent, so each tile paints on its own.
-  // #2056 (§9.1): FIVE tiles — the Bandwidth gauge + its window selector fold into the strip as
-  // the 5th tile (the standalone LIVE BANDWIDTH panel is gone), and the selected window governs
-  // ▲▼ everywhere (here AND the NOW cards).
+  // #2056 (§9.1): FIVE tiles — the Bandwidth gauge folds into the strip as the 5th tile (the
+  // standalone LIVE BANDWIDTH panel is gone). #2073: its window selector moved OUT to the page-
+  // global DashboardWindowSelector in the header; the selected window still governs ▲▼ everywhere
+  // (this tile AND the NOW cards) via the one shared `bandwidth` instance.
   // #2069: the Events(1h)/Blocked(1h) tiles are backed by admin-only `/api/stats`; a non-admin
   // (`showStats=false`) drops them rather than skeleton-forever (the #1098 false-loading trap).
   return (
@@ -530,13 +607,14 @@ function KpiStrip({ stats, bandwidth, showStats = true }: { stats: DashboardStat
   )
 }
 
-// #2056 (§8.5) — the 5th KPI tile: the overall household ▲▼ /s with the page-wide window
-// selector on the footer. Three states, mirroring the old gauge (#2041): loading (skeleton,
-// never "0 B/s"), live (rate), or paused/no-edge ("—"). The window selector here IS the global
-// control — changing it re-subscribes `trafficUsage` and re-derives every ▲▼ on the page.
+// #2056 (§8.5) — the 5th KPI tile: the overall household ▲▼ /s. Three states, mirroring the old
+// gauge (#2041): loading (skeleton, never "0 B/s"), live (rate), or paused/no-edge ("—").
+// #2073: the window selector no longer lives here — it moved to the page-global
+// DashboardWindowSelector in the header, since it governs every rate on the page, not just this
+// tile. The rate shown here still reads the same shared `bandwidth.bucket` that selector sets.
 function BandwidthTile({ bandwidth }: { bandwidth?: WsTrafficUsage }) {
   return (
-    <div data-testid="kpi-bandwidth" className="bg-white rounded-2xl border border-brand-border p-5 flex flex-col gap-3">
+    <div data-testid="kpi-bandwidth" className="bg-white rounded-2xl border border-brand-border p-5 flex flex-col gap-2">
       <p className="text-xs font-semibold text-brand-text-muted uppercase tracking-wider">Bandwidth</p>
       <div className="min-h-[2.25rem] flex items-center">
         {bandwidth == null
@@ -547,13 +625,6 @@ function BandwidthTile({ bandwidth }: { bandwidth?: WsTrafficUsage }) {
               ? <RateBadge rate={bandwidth.overall} testId="kpi-bandwidth-rate" />
               : <span data-testid="kpi-bandwidth-idle" className="font-mono text-sm text-brand-text-muted">—</span>}
       </div>
-      {bandwidth != null && (
-        <BucketSelector
-          value={bandwidth.bucket}
-          onChange={bandwidth.setBucket}
-          only={[...BANDWIDTH_WINDOWS]}
-        />
-      )}
     </div>
   )
 }

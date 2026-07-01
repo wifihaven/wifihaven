@@ -326,6 +326,18 @@ describe('LogsPage — status filter (#1432)', () => {
     expect(screen.getByTestId('ce-filter-status-count')).toBeInTheDocument()
   })
 
+  // #2073/#2062: the dashboard's Recently-Blocked device deep-link is `?status=blocked&mac=<mac>`.
+  it('initializes from ?status=blocked&mac=<mac> and lands filtered to that blocked device', async () => {
+    const queryMock = api.logs.query as unknown as ReturnType<typeof vi.fn>
+    renderAt('/usage/events?status=blocked&mac=aa:bb:cc:dd:ee:01')
+    // devices load, then the raw view maps the mac → deviceId (10) and fetches blocked-only.
+    await waitFor(() => {
+      const last = queryMock.mock.calls[queryMock.mock.calls.length - 1][0]
+      expect(last.blocked).toBe(true)
+      expect(last.deviceIds).toEqual([10])
+    })
+  })
+
   it('aggregated view also passes the blocked filter to /connection-events/series', async () => {
     const seriesMock = api.logs.series as unknown as ReturnType<typeof vi.fn>
     renderAt('/usage/events?status=blocked')
