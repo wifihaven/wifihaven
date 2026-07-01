@@ -133,6 +133,16 @@ export function RecentlyBlockedSection() {
   const selectedName = selectedMac
     ? devices.find(d => d.mac === selectedMac)?.name ?? selectedMac
     : null
+  // If the filtered device ages out of the NOW snapshot (goes idle > 5 min) while its filter is
+  // still active, keep it as a sticky option so the control keeps showing it as selected and the
+  // list stays narrowed — rather than the <select> snapping back to "All devices" while the feed
+  // is still filtered.
+  const deviceOptions = useMemo(
+    () => (selectedMac && !devices.some(d => d.mac === selectedMac)
+      ? [{ mac: selectedMac, name: selectedName ?? selectedMac }, ...devices]
+      : devices),
+    [devices, selectedMac, selectedName],
+  )
 
   // #1973: subscribe `connectionEvents{blocked:true, macs?}` — pushes prepend into the same
   // `recentBlocked(mac)` cache this query reads (§3.1). Polling stays the PAUSED fallback
@@ -161,7 +171,7 @@ export function RecentlyBlockedSection() {
           Recently Blocked
         </h2>
         <div className="flex items-center gap-3 shrink-0">
-          {devices.length > 0 && (
+          {deviceOptions.length > 0 && (
             <select
               data-testid="recently-blocked-device-filter"
               aria-label="Filter recently blocked by device"
@@ -170,7 +180,7 @@ export function RecentlyBlockedSection() {
               className="text-xs bg-brand-alt text-brand-text border border-brand-border rounded px-2 py-1 max-w-[10rem]"
             >
               <option value="">All devices</option>
-              {devices.map(d => (
+              {deviceOptions.map(d => (
                 <option key={d.mac} value={d.mac}>{d.name}</option>
               ))}
             </select>

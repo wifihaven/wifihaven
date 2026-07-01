@@ -560,6 +560,22 @@ describe('RecentlyBlockedSection (#1338 / #2073 / #2062)', () => {
     )
   })
 
+  it('keeps the filtered device as a sticky option when it ages out of the NOW snapshot (#2062)', async () => {
+    // NOW starts with the device, then the next snapshot drops it (idle > 5 min) — the filter
+    // must stay applied and the control keep showing it, not snap back to "All devices".
+    mockNow().mockResolvedValueOnce(nowWithDevices).mockResolvedValue(emptyNow)
+    mockQuery().mockImplementation((p?: { macs?: string[] }) =>
+      Promise.resolve({ rows: p?.macs?.length ? [blockedRow] : [blockedRow, blockedRow2], nextCursor: null }),
+    )
+    const user = userEvent.setup()
+    render(withQuery(<MemoryRouter><RecentlyBlockedSection /></MemoryRouter>))
+    const filter = await screen.findByTestId('recently-blocked-device-filter')
+    await user.selectOptions(filter, 'aa:bb:cc:dd:ee:01')
+    // The now-absent device is still a selectable option and remains selected.
+    expect((filter as HTMLSelectElement).value).toBe('aa:bb:cc:dd:ee:01')
+    expect(within(filter).getByRole('option', { name: "Kid's iPad" })).toBeInTheDocument()
+  })
+
   it('shows a device-scoped empty state when the filtered device has no recent blocks (#2062)', async () => {
     mockNow().mockResolvedValue(nowWithDevices)
     mockQuery().mockImplementation((p?: { macs?: string[] }) =>
