@@ -2456,5 +2456,74 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           assertTrue(state.blocked)
       },
     ) @@ TestAspect.sequential,
+    suite("GET /api/presence/ambient-hosts (#2077)")(
+      test("returns the learned window with ambient flags per the thresholds") {
+        for {
+          _               <- cleanDb
+          profileRepo     <- ZIO.service[ProfileRepo]
+          tlRepo          <- ZIO.service[TimeLimitRepo]
+          atlRepo         <- ZIO.service[AppTimeLimitRepo]
+          deviceRepo      <- ZIO.service[DeviceRepo]
+          trafficRepo     <- ZIO.service[TrafficReportRepo]
+          extRepo         <- ZIO.service[TimeExtensionRepo]
+          userProfileRepo <- ZIO.service[UserProfileRepo]
+          hsRepo          <- ZIO.service[HouseholdSettingsRepo]
+          ahr             <- ZIO.service[AmbientHostsRepo]
+          clock           <- ZIO.service[Clock]
+          auth            <- makeAuth
+          token           <- auth.login("admin", "changeme").map(_.token.value)
+          settings        <- hsRepo.get
+          now             <- clock.instant
+          today = wifihaven.api.policy.PolicyService.householdLocalDate(now, settings)
+          // valid.apple.com isolated on 3 days (ambient at the default threshold);
+          // known-issues.apple.com on 1 day (candidate only).
+          _ <- ZIO.foreachDiscard(1 to 3)(i =>
+            ahr.upsertDay(today.minusDays(i.toLong), Map("valid.apple.com" -> 2)),
+          )
+          _ <- ahr.upsertDay(today.minusDays(1), Map("known-issues.apple.com" -> 1))
+          tss    = new wifihaven.api.policy.TimeStatusServiceLive(
+            profileRepo,
+            tlRepo,
+            atlRepo,
+            deviceRepo,
+            trafficRepo,
+            extRepo,
+          )
+          routes = TimeRoutes.routes(
+            auth,
+            deviceRepo,
+            tlRepo,
+            atlRepo,
+            trafficRepo,
+            extRepo,
+            profileRepo,
+            userProfileRepo,
+            hsRepo,
+            tss,
+            clock,
+            ambientRepo = ahr,
+          )
+          resp   <- routes.runZIO(
+            Request
+              .get(URL.decode("/api/presence/ambient-hosts").toOption.get)
+              .addHeader(Header.Authorization.Bearer(token)),
+          )
+          body   <- resp.body.asString
+          parsed <- ZIO.fromEither(body.fromJson[AmbientHostsResponse])
+        } yield assertTrue(resp.status == Status.Ok) &&
+          assertTrue(!parsed.gateEnabled) &&
+          assertTrue(parsed.minIsolatedDays == 3) &&
+          assertTrue(parsed.learningWindowDays == 14) &&
+          assertTrue(
+            parsed.hosts.exists(h =>
+              h.host == "valid.apple.com" && h.ambient && h.isolatedDays == 3,
+            ),
+          ) &&
+          assertTrue(
+            parsed.hosts
+              .exists(h => h.host == "known-issues.apple.com" && !h.ambient && h.isolatedDays == 1),
+          )
+      },
+    ) @@ TestAspect.sequential,
   ) @@ TestAspect.sequential
 }

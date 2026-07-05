@@ -996,6 +996,124 @@ object Presence {
     (alloc.toMap, counts)
   }
 
+  /**
+   * #2077: the engagement-anchor gate over the isolation-learned ambient-host baseline
+   * (docs/design/idle-traffic-discrimination.md). A device-level merged presence span counts toward
+   * screen time iff it contains at least one ANCHOR row: app-attributed (the #1506 seam — an active
+   * app's traffic is engagement by definition) or a host NOT in the learned ambient set. Rows whose
+   * every containing span is unanchored are removed; anchored spans keep ALL their rows — ambient
+   * rows inside a real session still contribute their seconds, so the gate can only ever REMOVE
+   * minutes, never shave an anchored session (the #1446/#2068 undercount class stays closed).
+   *
+   * Span topology is derived exactly the way the daily total derives it — non-heartbeat rows
+   * ([[isHeartbeat]], so InfraHosts rows and sub-byte-floor keepalives are not evidence and can
+   * neither anchor nor bridge), per-(mac, host) stitch on the [[effectiveGap]], then the per-mac
+   * overlap-merge — so "the span the gate drops" is the same span the counting surfaces would have
+   * credited. Ambient membership is an exact `HostId.value` match: the learned entries are the
+   * concrete hosts observed in isolation, and exact matching means the gate can never absorb a
+   * sibling subdomain the way an apex pattern could (IP-literal peers — the FaceTime shape — are
+   * never learned, so they always anchor).
+   *
+   * Heartbeat rows pass through untouched (downstream surfaces already classify and drop them; the
+   * suppressed-host debug view must keep seeing them). Exempt-from-daily filtering is NOT applied
+   * here — an exempt app's traffic is still evidence that the device is in use.
+   *
+   * The Int is the count of unanchored (dropped) merged spans — the over-suppression watchdog
+   * consumed by `presence_ambient_spans_dropped_total` (see AppMetrics), mirroring the #1676
+   * pattern for the app-session anchor guard.
+   */
+  def ambientGatedRowsWithDropCount(
+      rows: List[PresenceRow],
+      ambient: AmbientGate,
+      filter: HeartbeatFilter,
+      continuationSeconds: Int,
+      appHostPatterns: List[String],
+  ): (List[PresenceRow], Int) =
+    if (!ambient.enabled || rows.isEmpty) (rows, 0)
+    else {
+      val active = rows.filterNot(r => isHeartbeat(r, filter, appHostPatterns))
+      if (active.isEmpty) (rows, 0)
+      else {
+        val gap                                        = effectiveGap(active, continuationSeconds)
+        def isAnchor(r: PresenceRow): Boolean          =
+          isAppAttributed(r, appHostPatterns) || !ambient.hosts.contains(r.host.value)
+        def overlaps(s: Span, r: PresenceRow): Boolean = {
+          val rs = spanOf(r)
+          rs.startEpoch <= s.endEpoch && rs.endEpoch >= s.startEpoch
+        }
+        var dropped                                    = 0
+        val keptByMac: Map[MacAddress, List[Span]]     = active
+          .groupBy(_.mac)
+          .view
+          .mapValues { macRows =>
+            val merged             = mergeSpans(sessionSpans(macRows, gap))
+            val (anchored, unanch) =
+              merged.partition(s => macRows.exists(r => overlaps(s, r) && isAnchor(r)))
+            dropped += unanch.size
+            anchored
+          }
+          .toMap
+        val kept                                       = rows.filter { r =>
+          isHeartbeat(r, filter, appHostPatterns) ||
+          keptByMac.getOrElse(r.mac, Nil).exists(s => overlaps(s, r))
+        }
+        (kept, dropped)
+      }
+    }
+
+  def ambientGatedRows(
+      rows: List[PresenceRow],
+      ambient: AmbientGate,
+      filter: HeartbeatFilter,
+      continuationSeconds: Int,
+      appHostPatterns: List[String],
+  ): List[PresenceRow] =
+    ambientGatedRowsWithDropCount(rows, ambient, filter, continuationSeconds, appHostPatterns)._1
+
+  /**
+   * #2077: the isolation learning primitive — which hosts appeared in ISOLATED device spans, and in
+   * how many. A merged device span is *isolated* when it touches at most `isolationMaxHosts`
+   * distinct hosts and contains no app-attributed row. "Habitually alone ⇒ background": real usage
+   * essentially always co-occurs with other traffic, so an engagement host doesn't accumulate
+   * isolated appearances, while OS/telemetry/sync hosts that fire on their own do — day after day.
+   *
+   * Only non-heartbeat rows are evidence (same [[isHeartbeat]] contract as the gate and every
+   * counting surface: InfraHosts and sub-byte-floor rows are already suppressed, so they neither
+   * form spans nor get re-learned). The daily learner job calls this per household-local day and
+   * upserts one `ambient_host_days` row per returned host; the read side thresholds on distinct
+   * days (`ambient_min_isolated_days` within `ambient_learning_window_days`) to produce the
+   * [[AmbientGate]] host set. Counts are per-span (diagnostic, for the explain surface), not
+   * load-bearing for the threshold.
+   */
+  def isolatedSpanHosts(
+      rows: List[PresenceRow],
+      isolationMaxHosts: Int,
+      filter: HeartbeatFilter,
+      continuationSeconds: Int,
+      appHostPatterns: List[String],
+  ): Map[HostId, Int] = {
+    val active = rows.filterNot(r => isHeartbeat(r, filter, appHostPatterns))
+    if (active.isEmpty) Map.empty
+    else {
+      val gap = effectiveGap(active, continuationSeconds)
+      val acc = scala.collection.mutable.Map.empty[HostId, Int]
+      for ((_, macRows) <- active.groupBy(_.mac)) {
+        val merged = mergeSpans(sessionSpans(macRows, gap))
+        for (s <- merged) {
+          val inSpan = macRows.filter { r =>
+            val rs = spanOf(r)
+            rs.startEpoch <= s.endEpoch && rs.endEpoch >= s.startEpoch
+          }
+          val hosts  = inSpan.iterator.map(_.host).toSet
+          val hasApp = inSpan.exists(r => isAppAttributed(r, appHostPatterns))
+          if (hosts.sizeIs <= isolationMaxHosts && !hasApp)
+            hosts.foreach(h => acc.updateWith(h)(p => Some(p.getOrElse(0) + 1)))
+        }
+      }
+      acc.toMap
+    }
+  }
+
   /** Convenience: floor-divided minute view of [[proportionalHostSeconds]]. */
   def proportionalHostMinutes(
       rows: List[PresenceRow],

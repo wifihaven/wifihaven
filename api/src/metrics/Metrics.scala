@@ -152,6 +152,9 @@ object MetricGuard {
     // too aggressive (real sessions vanishing), a flat zero while phantom
     // inflation returns means it is too lax.
     "presence_app_sessions_dropped_total"       -> Set.empty[String],
+    // #2077 ambient anchor-gate observability (unlabelled).
+    "presence_ambient_spans_dropped_total"      -> Set.empty[String],
+    "presence_ambient_hosts"                    -> Set.empty[String],
     // #1898 — outcome of attributing a SHARED host's stitched span in usage-by-app
     // by temporal co-presence with apps' distinctive sessions. `outcome` is a
     // bounded 3-value enum (attributed / split / other); no per-mac/host/app label.
@@ -527,6 +530,30 @@ object AppMetrics {
         ),
       )
       .unit
+
+  // ── #2077: ambient anchor-gate observability ─────────────────────────────────
+  // `presence_ambient_spans_dropped_total` is emitted from the TimeUsedRollupJob
+  // tick (same single-cadence rationale as the #1676 counter above): device
+  // presence spans dropped because they contained no engagement anchor. A
+  // sustained rise with flat screen-time means the learner is eating real
+  // sessions (over-suppression); a flat zero while phantom idle-time returns
+  // means the thresholds are too lax. `presence_ambient_hosts` is the size of
+  // the learned ambient set, set on each AmbientLearnJob run. Both unlabelled —
+  // per-host/mac labels would breach the cardinality firewall.
+
+  def recordAmbientSpansDropped(count: Int): UIO[Unit] =
+    ZIO
+      .when(count > 0)(
+        MetricGuard.counter(
+          "presence_ambient_spans_dropped_total",
+          Map.empty,
+          count.toLong,
+        ),
+      )
+      .unit
+
+  def setAmbientHosts(count: Int): UIO[Unit] =
+    MetricGuard.gauge("presence_ambient_hosts", Map.empty, count.toDouble)
 
   // ── #1898: shared-host reporting attribution outcome ─────────────────────────
   // Emitted from UsageRoutes.buildUsageByApp, counted per shared-host stitched span:

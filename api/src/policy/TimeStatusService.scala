@@ -1,7 +1,7 @@
 package wifihaven.api.policy
 
 import wifihaven.api.db.*
-import wifihaven.api.presence.{Presence, PresenceRow}
+import wifihaven.api.presence.{AmbientGate, Presence, PresenceRow}
 import wifihaven.api.usage.{AppUsedRollupService, NoopAppUsedRollupService}
 import wifihaven.shared.{Schedule as DbSchedule, *}
 import wifihaven.shared.types.*
@@ -146,7 +146,18 @@ class TimeStatusServiceLive(
     // all-live path. Defaults to the noop: the all-live path (cache miss / past date) never consults
     // it, and the many test constructions over `NoopTimeUsedRollupRepo` stay all-live.
     appUsedRollupService: AppUsedRollupService = NoopAppUsedRollupService,
+    // #2077: the isolation-learned ambient baseline behind the engagement-anchor
+    // gate. Defaults to the noop (gate Off) so existing direct constructions and
+    // tests that don't exercise the gate keep their arity and semantics.
+    ambientRepo: AmbientHostsRepo = NoopAmbientHostsRepo,
 ) extends TimeStatusService {
+
+  // #2077: the AmbientGate for a request — Off (no DB touch) unless the master
+  // switch is on. The learned window is always evaluated as of the household-local
+  // TODAY, even for historical-date reads: the ambient set is a rolling property
+  // of the fleet's background behavior, not a per-day snapshot.
+  private def ambientGateFor(now: Instant, settings: HouseholdSettings): Task[AmbientGate] =
+    ambientRepo.gateFor(settings, PolicyService.householdLocalDate(now, settings))
 
   // #1069/#1482: a profile's effective downtime schedules = the windows of every named schedule
   // attached to it as a block schedule (via `profile_schedule_rules`, mode=blocked_during). Named
@@ -197,6 +208,7 @@ class TimeStatusServiceLive(
           atls      <- appTimeLimitRepo.listForProfile(profileId)
           devices   <- deviceRepo.listAll.map(_.filter(_.profileId.contains(profileId)))
           presence  <- trafficRepo.listPresenceRows(devices.map(_.mac), date)
+          ambient   <- ambientGateFor(now, settings)
           extMins   <- extRepo.getProfileTotalExtension(profileId, date)
         } yield Some(
           TimeStatusService.fold(
@@ -205,7 +217,7 @@ class TimeStatusServiceLive(
             devices = devices,
             dailyLimit = tl.map(_.dailyMinutes),
             appLimits = atls,
-            presence = presence,
+            presence = TimeStatusService.gatedPresence(atls, presence, settings, ambient),
             extensionMinutes = extMins,
             date = date,
             now = now,
@@ -236,6 +248,7 @@ class TimeStatusServiceLive(
       tlsP     <- ZIO.foreach(profiles)(p => timeLimitRepo.findForProfile(p.id).map(p.id -> _))
       atlsP    <- ZIO.foreach(profiles)(p => appTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
       presence <- trafficRepo.listPresenceRows(devices.map(_.mac), date)
+      ambient  <- ambientGateFor(now, settings)
       exts     <- extRepo.snapshotAllByProfile(date)
     } yield {
       val schedMap =
@@ -247,7 +260,13 @@ class TimeStatusServiceLive(
       profiles.iterator.map { p =>
         val devs    = devsByP.getOrElse(p.id, Nil)
         val macSet  = devs.map(_.mac).toSet
-        val pPres   = presence.filter(r => macSet.contains(r.mac))
+        val atls    = atlMap.getOrElse(p.id, Nil)
+        val pPres   = TimeStatusService.gatedPresence(
+          atls,
+          presence.filter(r => macSet.contains(r.mac)),
+          settings,
+          ambient,
+        )
         val extMins = exts.getOrElse(p.id, 0)
         p.id -> TimeStatusService.fold(
           profile = p,
@@ -283,13 +302,20 @@ class TimeStatusServiceLive(
           atls      <- appTimeLimitRepo.listForProfile(profileId)
           devices   <- deviceRepo.listAll.map(_.filter(_.profileId.contains(profileId)))
           tail <- trafficRepo.listPresenceRowsSince(devices.map(_.mac), date, rolled.rolledThrough)
+          ambient    <- ambientGateFor(now, settings)
           extMins    <- extRepo.getProfileTotalExtension(profileId, date)
           // #1515: per-app cap usage from the #1510 per-app rollup + live tail, so the per-app cap
           // enforces on the rollup path identically to the all-live path.
           perAppMins <- appUsedRollupService.appCapMinutesByAppId(now, date, settings, profileId)
         } yield {
+          // #2077: the rolled part was gated at rollup-write time; gate the live tail the same
+          // way. Gating only the tail slice can transiently drop an ambient-only tail of a real
+          // session whose anchor row is already rolled — bounded (≤ one rollup interval,
+          // self-heals when the next tick re-gates the whole day) and it only ever REMOVES
+          // minutes, mirroring the #1666 per-slice anchor behavior.
+          val gatedTail   = TimeStatusService.gatedPresence(atls, tail, settings, ambient)
           val tailSeconds =
-            TimeStatusService.usedSecondsForProfile(p, devices, atls, tail, settings)
+            TimeStatusService.usedSecondsForProfile(p, devices, atls, gatedTail, settings)
           val totalUsed   = ((rolled.usedSeconds + tailSeconds) / 60L).toInt
           Some(
             TimeStatusService.assemble(
@@ -340,6 +366,7 @@ class TimeStatusServiceLive(
       tlsP       <- ZIO.foreach(profiles)(p => timeLimitRepo.findForProfile(p.id).map(p.id -> _))
       atlsP      <- ZIO.foreach(profiles)(p => appTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
       tail       <- trafficRepo.listPresenceRowsSince(devices.map(_.mac), date, watermark)
+      ambient    <- ambientGateFor(now, settings)
       exts       <- extRepo.snapshotAllByProfile(date)
       // #1515: per-app cap usage per profile from the #1510 per-app rollup + live tail. Keyed by the
       // `app:<slug>` cap-group label so it joins to each profile's per-app cap groups below.
@@ -360,10 +387,14 @@ class TimeStatusServiceLive(
         val pRolled     = rolled(p.id)
         // Per-profile watermark may exceed the batch min (e.g. a newer tick partially completed)
         // — filter the over-fetched tail rows back to the row's own boundary.
-        val pTail       =
+        val pTail       = TimeStatusService.gatedPresence(
+          atlMap.getOrElse(p.id, Nil),
           tail.filter(r =>
             devs.exists(_.mac == r.mac) && !r.periodStart.isBefore(pRolled.rolledThrough),
-          )
+          ),
+          settings,
+          ambient,
+        )
         val tailSeconds =
           TimeStatusService.usedSecondsForProfile(
             p,
@@ -398,7 +429,8 @@ object TimeStatusService {
 
   val layer: ZLayer[
     ProfileRepo & TimeLimitRepo & AppTimeLimitRepo & DeviceRepo & TrafficReportRepo &
-      TimeExtensionRepo & TimeUsedRollupRepo & NamedScheduleRepo & AppUsedRollupService,
+      TimeExtensionRepo & TimeUsedRollupRepo & NamedScheduleRepo & AppUsedRollupService &
+      AmbientHostsRepo,
     Nothing,
     TimeStatusService,
   ] = ZLayer.fromFunction {
@@ -412,7 +444,8 @@ object TimeStatusService {
         ru: TimeUsedRollupRepo,
         nsr: NamedScheduleRepo,
         aur: AppUsedRollupService,
-    ) => new TimeStatusServiceLive(pr, tlr, atlr, dr, trr, er, ru, nsr, aur)
+        ahr: AmbientHostsRepo,
+    ) => new TimeStatusServiceLive(pr, tlr, atlr, dr, trr, er, ru, nsr, aur, ahr)
   }
 
   /**
@@ -667,8 +700,45 @@ object TimeStatusService {
    * [[Presence.countedRows]] (attribution only prevents suppression, not exemption), so an exempt
    * app's host is still excluded — it is simply no longer mis-classified as a heartbeat first.
    */
-  private[policy] def appHostPatterns(appLimits: List[AppTimeLimit]): List[String] =
+  // #2077: widened from private[policy] — the ambient learner (AmbientLearnJob) derives its
+  // app-attribution context through this same seam so learning and gating cannot diverge.
+  def appHostPatterns(appLimits: List[AppTimeLimit]): List[String] =
     ProfileAppDispositions.from(appLimits).appHostPatterns
+
+  /**
+   * #2077: apply the engagement-anchor gate ([[Presence.ambientGatedRowsWithDropCount]]) to a
+   * profile-scoped presence batch, deriving the app-attribution patterns from the profile's
+   * assignments via the same [[appHostPatterns]] seam every counting surface uses. This is the ONE
+   * assembly point between "rows loaded from traffic_reports" and "rows fed to counting" — every
+   * production load site (the Live day-state paths, the rollup jobs, the time-status routes, the
+   * usage-series builders, the SPA ws push) gates through here, so the gate cannot be applied with
+   * two different attribution derivations (§single-source-of-truth). Gate `Off` is the identity.
+   *
+   * The Int is the count of dropped (unanchored) spans — the over-suppression watchdog the rollup
+   * tick emits as `presence_ambient_spans_dropped_total` (mirroring the #1676 pattern).
+   */
+  def gatedPresenceWithDropCount(
+      appLimits: List[AppTimeLimit],
+      presence: List[PresenceRow],
+      settings: HouseholdSettings,
+      ambient: AmbientGate,
+  ): (List[PresenceRow], Int) =
+    Presence.ambientGatedRowsWithDropCount(
+      presence,
+      ambient,
+      settings.heartbeatFilter,
+      settings.presenceContinuationSeconds,
+      appHostPatterns(appLimits),
+    )
+
+  /** Rows-only projection of [[gatedPresenceWithDropCount]] for read paths without a metric. */
+  def gatedPresence(
+      appLimits: List[AppTimeLimit],
+      presence: List[PresenceRow],
+      settings: HouseholdSettings,
+      ambient: AmbientGate,
+  ): List[PresenceRow] =
+    gatedPresenceWithDropCount(appLimits, presence, settings, ambient)._1
 
   def usedSecondsForProfile(
       profile: Profile,

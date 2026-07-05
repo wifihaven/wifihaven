@@ -841,6 +841,8 @@ object TimeRoutes {
       // blocks/fails the grant (sliding hub, UIO). Defaulted to the noop for test call sites that
       // don't exercise the push path.
       spaBus: SpaEventBus = SpaEventBus.noop,
+      // #2077: the ambient anchor gate input. Noop (gate Off) keeps test call sites inert.
+      ambientRepo: AmbientHostsRepo = NoopAmbientHostsRepo,
   ): Routes[Any, Response] =
     Routes(
       // #777 — collapsed accordion summary. One batched presence query over ALL devices
@@ -900,8 +902,11 @@ object TimeRoutes {
               allProfiles <- profileRepo.listAll.mapError(ApiError.Db(_))
               allDevices  <- deviceRepo.listAll.mapError(ApiError.Db(_))
               allLimits   <- timeLimitRepo.listAll.mapError(ApiError.Db(_))
+              allAppLims  <- appTimeLimitRepo.listAll.mapError(ApiError.Db(_))
+              ambient     <- ambientRepo.gateFor(settings, today).mapError(ApiError.Db(_))
               visible     <- visibleProfiles(claims, allProfiles, userProfileRepo)
               devicesByPid = allDevices.groupBy(_.profileId)
+              appLimsByPid = allAppLims.groupBy(_.profileId)
               allMacs      = visible.iterator
                 .flatMap(p => devicesByPid.getOrElse(Some(p.id), Nil))
                 .map(_.mac)
@@ -915,7 +920,14 @@ object TimeRoutes {
                 .map { p =>
                   val devices = devicesByPid.getOrElse(Some(p.id), Nil)
                   val macSet  = devices.map(_.mac).toSet
-                  val pRows   = presence.filter(r => macSet.contains(r.mac))
+                  // #2077: gate the weekly rows with the same profile app-attribution context
+                  // as the daily headline, so the weekly bars reconcile with the daily view.
+                  val pRows   = wifihaven.api.policy.TimeStatusService.gatedPresence(
+                    appLimsByPid.getOrElse(p.id, Nil),
+                    presence.filter(r => macSet.contains(r.mac)),
+                    settings,
+                    ambient,
+                  )
                   val perMac  = wifihaven.api.presence.Presence
                     .totalMinutesByMac(
                       pRows,
@@ -990,6 +1002,7 @@ object TimeRoutes {
                         timeStatusService,
                         trafficRepo,
                         appTimeLimitRepo,
+                        ambientRepo,
                       )
                     }
                 }
@@ -1027,6 +1040,7 @@ object TimeRoutes {
                 case None      => visible
               }
               devicesByPid = allDevices.groupBy(_.profileId)
+              ambient  <- ambientRepo.gateFor(settings, today).mapError(ApiError.Db(_))
               statuses <- ZIO
                 .foreach(scoped) { p =>
                   // #802: weekly cache keyed by (profileId, from, to, bucketOffsetMin). Same TTL
@@ -1044,6 +1058,9 @@ object TimeRoutes {
                         trafficRepo,
                         settings.heartbeatFilter,
                         bucketOffsetMin,
+                        settings,
+                        appTimeLimitRepo,
+                        ambient,
                       )
                     }
                 }
@@ -1071,6 +1088,7 @@ object TimeRoutes {
               .mapError(ApiError.Db(_))
               .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Device not found")))
             _               <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
+            ambient         <- ambientRepo.gateFor(settings, today).mapError(ApiError.Db(_))
             status          <- buildDeviceTimeStatusWeek(
               device,
               from,
@@ -1080,6 +1098,9 @@ object TimeRoutes {
               trafficRepo,
               settings.heartbeatFilter,
               bucketOffsetMin,
+              settings,
+              appTimeLimitRepo,
+              ambient,
             )
               .mapError(ApiError.Db(_))
           } yield Response.json(status.toJson)
@@ -1109,9 +1130,44 @@ object TimeRoutes {
               timeStatusService,
               trafficRepo,
               appTimeLimitRepo,
+              ambientRepo,
             )
               .mapError(ApiError.Db(_))
           } yield Response.json(status.toJson)
+          handle.mapError(ErrorMapper.errorToResponse)
+        },
+      // #2077: the ambient-baseline explain surface — the learned (and candidate)
+      // ambient hosts with distinct-day counts over the trailing learning window.
+      // Operators inspect this before flipping `ambientGateEnabled` on, mirroring
+      // the heartbeat-explain tune-before-enable workflow below. Admin-only: the
+      // list is household-wide background telemetry, not per-profile data.
+      Method.GET / "api" / "presence" / "ambient-hosts"                 ->
+        handler { (req: Request) =>
+          val handle: ZIO[Any, ApiError, Response] =
+            for {
+              _        <- requireAdmin(req, auth)
+              settings <- hsRepo.get.mapError(ApiError.Db(_))
+              now      <- clock.instant
+              today = wifihaven.api.policy.PolicyService.householdLocalDate(now, settings)
+              rows    <- ambientRepo.listWindow(settings, today).mapError(ApiError.Db(_))
+              ambient <- ambientRepo.ambientHosts(settings, today).mapError(ApiError.Db(_))
+            } yield Response.json(
+              AmbientHostsResponse(
+                gateEnabled = settings.ambientGateEnabled,
+                isolationMaxHosts = settings.ambientIsolationMaxHosts,
+                minIsolatedDays = settings.ambientMinIsolatedDays,
+                learningWindowDays = settings.ambientLearningWindowDays,
+                hosts = rows.map(r =>
+                  AmbientHostEntry(
+                    host = r.host,
+                    isolatedDays = r.isolatedDays,
+                    lastIsolatedDay = r.lastIsolatedDay.toString,
+                    isolatedSpanCount = r.isolatedSpanCount,
+                    ambient = ambient.contains(r.host),
+                  ),
+                ),
+              ).toJson,
+            )
           handle.mapError(ErrorMapper.errorToResponse)
         },
       Method.GET / "api" / "time" / "heartbeat-explain" / string("mac") ->
@@ -1247,6 +1303,7 @@ object TimeRoutes {
       timeStatusService: wifihaven.api.policy.TimeStatusService,
       trafficRepo: TrafficReportRepo,
       appTimeLimitRepo: AppTimeLimitRepo,
+      ambientRepo: AmbientHostsRepo,
   ): Task[ProfileTimeStatus] = {
     val macs = devices.map(_.mac)
     for {
@@ -1254,8 +1311,16 @@ object TimeRoutes {
       state = stateOpt.getOrElse(
         wifihaven.api.policy.ProfileDayState(profile.id, date, None, 0, 0, None, false, None, Nil),
       )
-      presence  <- trafficRepo.listPresenceRows(macs, date)
+      raw       <- trafficRepo.listPresenceRows(macs, date)
       appLimits <- appTimeLimitRepo.listForProfile(profile.id)
+      ambient   <- ambientRepo.gateFor(
+        settings,
+        wifihaven.api.policy.PolicyService.householdLocalDate(now, settings),
+      )
+      // #2077: gate the presence-derived views (per-device summaries, top-N hosts) with the same
+      // definition the headline `state.usedMinutes` was computed under.
+      presence = wifihaven.api.policy.TimeStatusService
+        .gatedPresence(appLimits, raw, settings, ambient)
       // #1974: the wire shape is assembled by the SINGLE shared builder so the live `timeStatus` ws
       // push and this GET produce byte-identical bodies (AGENTS.md §single-source-of-truth). It reads
       // `state`'s cap/used/remaining verbatim (no minute recompute) and folds in the presence-derived
@@ -1279,11 +1344,19 @@ object TimeRoutes {
       trafficRepo: TrafficReportRepo,
       heartbeatFilter: HeartbeatFilter,
       bucketOffsetMin: Int,
+      settings: HouseholdSettings,
+      appTimeLimitRepo: AppTimeLimitRepo,
+      ambient: wifihaven.api.presence.AmbientGate,
   ): Task[ProfileTimeStatusWeek] = {
     val macs = devices.map(_.mac)
     for {
-      tl       <- tlRepo.findForProfile(profile.id)
-      presence <- trafficRepo.listPresenceRows(macs, from, to)
+      tl        <- tlRepo.findForProfile(profile.id)
+      raw       <- trafficRepo.listPresenceRows(macs, from, to)
+      appLimits <- appTimeLimitRepo.listForProfile(profile.id)
+      // #2077: gate with the same profile app-attribution context as the daily view so the
+      // weekly bars reconcile with the daily headline.
+      presence        = wifihaven.api.policy.TimeStatusService
+        .gatedPresence(appLimits, raw, settings, ambient)
       // Range aggregates: bucket-dedup across the full range, no exempt-pattern filtering
       // (weekly view is informational). Heartbeat filter applied for symmetry with the daily
       // view (#714). Per-FQDN attribution caveats from #715 still apply.
@@ -1343,15 +1416,23 @@ object TimeRoutes {
       trafficRepo: TrafficReportRepo,
       heartbeatFilter: HeartbeatFilter,
       bucketOffsetMin: Int,
+      settings: HouseholdSettings,
+      appTimeLimitRepo: AppTimeLimitRepo,
+      ambient: wifihaven.api.presence.AmbientGate,
   ): Task[DeviceTimeStatusWeek] = {
     val pid  = device.profileId
     val macs = List(device.mac)
     for {
-      tl       <- pid.fold(ZIO.succeed(Option.empty[TimeLimit]))(tlRepo.findForProfile)
-      profile  <- pid.fold(ZIO.succeed("No profile"))(p =>
+      tl        <- pid.fold(ZIO.succeed(Option.empty[TimeLimit]))(tlRepo.findForProfile)
+      profile   <- pid.fold(ZIO.succeed("No profile"))(p =>
         profileRepo.findById(p).map(_.map(_.name).getOrElse("Unknown")),
       )
-      presence <- trafficRepo.listPresenceRows(macs, from, to)
+      raw       <- trafficRepo.listPresenceRows(macs, from, to)
+      appLimits <- pid.fold(ZIO.succeed(List.empty[AppTimeLimit]))(
+        appTimeLimitRepo.listForProfile,
+      )
+      presence  = wifihaven.api.policy.TimeStatusService
+        .gatedPresence(appLimits, raw, settings, ambient)
       perMac    = wifihaven.api.presence.Presence
         .totalMinutesByMac(presence, Nil, heartbeatFilter)
       totalUsed = perMac.getOrElse(device.mac, 0)
@@ -1463,17 +1544,24 @@ object TimeRoutes {
       timeStatusService: wifihaven.api.policy.TimeStatusService,
       trafficRepo: TrafficReportRepo,
       appTimeLimitRepo: AppTimeLimitRepo,
+      ambientRepo: AmbientHostsRepo,
   ): Task[DeviceTimeStatus] = {
     val pid = device.profileId
     for {
       stateOpt   <- pid.fold(ZIO.succeed(Option.empty[wifihaven.api.policy.ProfileDayState]))(p =>
         timeStatusService.dayState(now, date, settings, p),
       )
-      presence   <- trafficRepo.listPresenceRows(List(device.mac), date)
+      raw        <- trafficRepo.listPresenceRows(List(device.mac), date)
       profileOpt <- pid.fold(ZIO.succeed(Option.empty[Profile]))(profileRepo.findById)
       appLimits  <- pid.fold(ZIO.succeed(List.empty[AppTimeLimit]))(
         appTimeLimitRepo.listForProfile,
       )
+      ambient    <- ambientRepo.gateFor(
+        settings,
+        wifihaven.api.policy.PolicyService.householdLocalDate(now, settings),
+      )
+      presence  = wifihaven.api.policy.TimeStatusService
+        .gatedPresence(appLimits, raw, settings, ambient)
       profile   = profileOpt.map(_.name).getOrElse(if (pid.isEmpty) "No profile" else "Unknown")
       // #1546: the per-device headline reads the same per-mac decomposition the profile view's
       // summaries do, so its exempt-pattern + overlap definition matches the canonical
@@ -1882,6 +1970,10 @@ object HouseholdSettingsRoutes {
                   upd.unmanagedMacPolicy,
                   upd.presenceContinuationSeconds,
                   upd.blockEncryptedDns,
+                  upd.ambientGateEnabled,
+                  upd.ambientIsolationMaxHosts,
+                  upd.ambientMinIsolatedDays,
+                  upd.ambientLearningWindowDays,
                 ),
               )
               .mapError(ApiError.Db(_))
@@ -1916,6 +2008,18 @@ object HouseholdSettingsRoutes {
             _         <- bedPatch match {
               case FieldPatch.Cleared =>
                 ZIO.fail(ApiError.BadRequest("blockEncryptedDns cannot be cleared"))
+              case _                  => ZIO.unit
+            }
+            // #2077: same top-level-boolean PATCH semantics for the ambient-gate
+            // master switch (the SPA autosave toggle). The three ambient
+            // thresholds are API/config-side knobs with no SPA surface — PATCH
+            // preserves them, mirroring presenceContinuationSeconds below.
+            agPatch   <- ZIO
+              .fromEither(FieldPatch.from[Boolean](obj, "ambientGateEnabled"))
+              .mapError(ApiError.BadRequest(_))
+            _         <- agPatch match {
+              case FieldPatch.Cleared =>
+                ZIO.fail(ApiError.BadRequest("ambientGateEnabled cannot be cleared"))
               case _                  => ZIO.unit
             }
             _         <- timePatch match {
@@ -1954,6 +2058,10 @@ object HouseholdSettingsRoutes {
               unmanagedMacPolicy = mergedUmm,
               presenceContinuationSeconds = existing.presenceContinuationSeconds,
               blockEncryptedDns = bedPatch.applyTo(existing.blockEncryptedDns),
+              ambientGateEnabled = agPatch.applyTo(existing.ambientGateEnabled),
+              ambientIsolationMaxHosts = existing.ambientIsolationMaxHosts,
+              ambientMinIsolatedDays = existing.ambientMinIsolatedDays,
+              ambientLearningWindowDays = existing.ambientLearningWindowDays,
             )
             _            <- repo.update(merged).mapError(ApiError.Db(_))
             _            <- invalidateSnapshot

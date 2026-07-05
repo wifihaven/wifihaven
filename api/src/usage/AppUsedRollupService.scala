@@ -102,6 +102,8 @@ class AppUsedRollupServiceLive(
     appTimeLimitRepo: AppTimeLimitRepo,
     trafficRepo: TrafficReportRepo,
     rollupRepo: AppUsedRollupRepo,
+    // #2077: the ambient anchor gate input; Noop (gate Off) keeps test constructions inert.
+    ambientRepo: AmbientHostsRepo = NoopAmbientHostsRepo,
 ) extends AppUsedRollupService {
 
   def appEngagedMinutes(
@@ -146,10 +148,16 @@ class AppUsedRollupServiceLive(
             atls    <- appTimeLimitRepo.listForProfile(profileId)
             devices <- deviceRepo.listAll.map(_.filter(_.profileId.contains(profileId)))
             macs = devices.map(_.mac)
-            presence <- rolled.values.iterator.map(_.rolledThrough).minOption match {
+            raw     <- rolled.values.iterator.map(_.rolledThrough).minOption match {
               case Some(watermark) => trafficRepo.listPresenceRowsSince(macs, date, watermark)
               case None            => trafficRepo.listPresenceRows(macs, date)
             }
+            // #2077: gate the live slice the same way the rollup write path gates its input, so
+            // rolled + tail compose over one active-minute definition. Gating only the slice can
+            // transiently drop an ambient-only tail of a session whose anchor is already rolled —
+            // bounded (self-heals on the next whole-day tick) and only ever removes minutes.
+            ambient <- ambientRepo.gateFor(settings, today)
+            presence = TimeStatusService.gatedPresence(atls, raw, settings, ambient)
           } yield {
             // #1676: the dropped-session counter is emitted from the
             // periodic TimeUsedRollupJob tick (one clean cadence), NOT from
@@ -171,8 +179,9 @@ class AppUsedRollupServiceLive(
 
 object AppUsedRollupService {
   val layer: ZLayer[
-    ProfileRepo & DeviceRepo & AppTimeLimitRepo & TrafficReportRepo & AppUsedRollupRepo,
+    ProfileRepo & DeviceRepo & AppTimeLimitRepo & TrafficReportRepo & AppUsedRollupRepo &
+      AmbientHostsRepo,
     Nothing,
     AppUsedRollupService,
-  ] = ZLayer.fromFunction(AppUsedRollupServiceLive(_, _, _, _, _))
+  ] = ZLayer.fromFunction(AppUsedRollupServiceLive(_, _, _, _, _, _))
 }

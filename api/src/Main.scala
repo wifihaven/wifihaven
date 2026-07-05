@@ -243,10 +243,28 @@ object Main extends ZIOAppDefault {
         deviceRepoForJ    <- ZIO.service[wifihaven.api.db.DeviceRepo]
         stlRepoForJ       <- ZIO.service[wifihaven.api.db.AppTimeLimitRepo]
         trafficRepoForJ   <- ZIO.service[wifihaven.api.db.TrafficReportRepo]
+        ambientRepoForJ   <- ZIO.service[wifihaven.api.db.AmbientHostsRepo]
         _                 <- TimeUsedRollupJob
           .loop(
             timeRollupRepo,
             appRollupRepoForJ,
+            rollupRepo,
+            profileRepoForJ,
+            deviceRepoForJ,
+            stlRepoForJ,
+            trafficRepoForJ,
+            hsRepo,
+            clockForJobs,
+            ambientRepoForJ,
+          )
+          .forkScoped
+        // #2077: the ambient-host learner — recomputes yesterday's isolated-span host counts
+        // (idempotent upsert), prunes days that aged out of the learning window, refreshes the
+        // presence_ambient_hosts gauge. Runs regardless of ambient_gate_enabled so the operator
+        // can inspect the would-be ambient set before flipping the gate on.
+        _                 <- wifihaven.api.usage.AmbientLearnJob
+          .loop(
+            ambientRepoForJ,
             rollupRepo,
             profileRepoForJ,
             deviceRepoForJ,
@@ -268,6 +286,7 @@ object Main extends ZIOAppDefault {
         // per-child profile filter). It is additive and never blocks ingest.
         timeStatusForPush <- ZIO.service[wifihaven.api.policy.TimeStatusService]
         upRepoForPush     <- ZIO.service[UserProfileRepo]
+        ambientRepoPush   <- ZIO.service[wifihaven.api.db.AmbientHostsRepo]
         _                 <- SpaPush.run(
           spaEventBus,
           spaWsRegistry,
@@ -279,7 +298,7 @@ object Main extends ZIOAppDefault {
           appRepoForSeed,
           stlRepoForJ,
           clockForJobs,
-          Some(SpaPush.TimeUsageDeps(timeStatusForPush, hsRepo, upRepoForPush)),
+          Some(SpaPush.TimeUsageDeps(timeStatusForPush, hsRepo, upRepoForPush, ambientRepoPush)),
         )
         _                 <- ZIO.logInfo("spa-ws push consumer fiber forked")
         // #1243: poll the HikariCP MXBean into the Prometheus pool gauges. forkDaemon so it lives
@@ -376,6 +395,7 @@ object Main extends ZIOAppDefault {
       alertRepo      <- ZIO.service[AlertRepo]
       appRepo        <- ZIO.service[AppRepo]
       appRollupRepo  <- ZIO.service[wifihaven.api.db.AppUsedRollupRepo]
+      ambientRepoR   <- ZIO.service[wifihaven.api.db.AmbientHostsRepo]
       notifier       <- ZIO.service[Notifier]
       policy         <- ZIO.service[PolicyService]
       timeStatus     <- ZIO.service[wifihaven.api.policy.TimeStatusService]
@@ -484,6 +504,7 @@ object Main extends ZIOAppDefault {
           policy.invalidate,
           // #1974 (S6a): the grant changes remaining-minutes — push fresh timeStatus/appUsage live.
           spaEventBus,
+          ambientRepoR,
         ) ++
           LogRoutes.routes(auth, connRepo, upRepo) ++
           UsageRoutes.routes(
@@ -498,6 +519,7 @@ object Main extends ZIOAppDefault {
             atlRepo,
             appRollupRepo,
             clock,
+            ambientRepoR,
           ) ++
           DashboardNowRoutes.routes(
             auth,

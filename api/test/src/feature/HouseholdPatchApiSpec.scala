@@ -224,6 +224,37 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         resp         <- patch(routes, tk, """{"unmanagedMacPolicy":null}""")
       } yield assertTrue(resp.status == Status.BadRequest)
     },
+    test("#2077 PATCH {ambientGateEnabled:true} round-trips; thresholds preserved") {
+      for {
+        _            <- setupHousehold
+        (routes, tk) <- routesAndToken
+        resp         <- patch(routes, tk, """{"ambientGateEnabled":true}""")
+        repo         <- ZIO.service[HouseholdSettingsRepo]
+        after        <- repo.get
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(after.ambientGateEnabled) &&
+        // the three thresholds are not patchable; they keep their stored values.
+        assertTrue(after.ambientIsolationMaxHosts == 2) &&
+        assertTrue(after.ambientMinIsolatedDays == 3) &&
+        assertTrue(after.ambientLearningWindowDays == 14)
+    },
+    test("#2077 PATCH that omits ambientGateEnabled preserves the stored value") {
+      for {
+        _            <- setupHousehold
+        (routes, tk) <- routesAndToken
+        _            <- patch(routes, tk, """{"ambientGateEnabled":true}""")
+        resp         <- patch(routes, tk, """{"dailyResetTime":"01:30"}""")
+        repo         <- ZIO.service[HouseholdSettingsRepo]
+        after        <- repo.get
+      } yield assertTrue(resp.status == Status.Ok) && assertTrue(after.ambientGateEnabled)
+    },
+    test("#2077 null ambientGateEnabled returns 400") {
+      for {
+        _            <- setupHousehold
+        (routes, tk) <- routesAndToken
+        resp         <- patch(routes, tk, """{"ambientGateEnabled":null}""")
+      } yield assertTrue(resp.status == Status.BadRequest)
+    },
     test("#1912 blockEncryptedDns defaults to false") {
       for {
         _     <- cleanDb
