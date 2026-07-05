@@ -5,6 +5,17 @@
 # luci-app-wifihaven (the LuCI UI) on each run. Each package has its own
 # version stamp so they can move at different rates.
 #
+# Signature verification (#2078): every release asset the router CD publishes
+# is signed with usign (ed25519). Before installing a downloaded package this
+# script fetches its `.sig` sidecar and verifies it against the baked-in
+# release public key ($RELEASE_PUBKEY). Any failure — usign missing, the
+# sidecar failing to download, or a bad signature — refuses the install
+# (fail closed) rather than falling through to apk/opkg. This replaces the
+# old `apk add --allow-untrusted` provenance gap: apk's own trust store
+# doesn't know this key (packages aren't built with apk's native ADB
+# signing), so --allow-untrusted is still required for apk to accept a loose
+# file, but the usign check above it is what actually gates provenance now.
+#
 # Pulls from the latest non-prerelease `v<X.Y.Z>` GitHub Release. The
 # rolling `openwrt-latest` pre-release is excluded from `/releases/latest`
 # because it's published with prerelease:true.
@@ -30,6 +41,7 @@ set -u
 API_URL="https://api.github.com/repos/wifihaven/wifihaven/releases/latest"
 INSTALLED_VERSION_FILE=/usr/lib/wifihaven/VERSION
 STATE_DIR=/var/lib/wifihaven
+RELEASE_PUBKEY=/etc/wifihaven/keys/release.pub
 
 log() { logger -t wifihaven "update: $*"; }
 
@@ -201,6 +213,28 @@ update_package() {
     rm -f "$_tmp"
     return 1
   fi
+
+  # ── signature verification (#2078) ─────────────────────────────────────────
+  # Fail closed on any of: usign missing, .sig download failure, bad signature.
+  # An unverifiable package must never reach apk/opkg.
+  if ! command -v usign >/dev/null 2>&1; then
+    log "$_pkg: usign not installed; refusing to install unverified package (#2078)"
+    rm -f "$_tmp"
+    return 1
+  fi
+  _sig_tmp="${_tmp}.sig"
+  if ! curl -fsSL -o "$_sig_tmp" "${_latest_url}.sig"; then
+    log "$_pkg: signature download failed: ${_latest_url}.sig; refusing to install unverified package"
+    rm -f "$_tmp" "$_sig_tmp"
+    return 1
+  fi
+  if ! usign -V -q -m "$_tmp" -p "$RELEASE_PUBKEY" -x "$_sig_tmp"; then
+    log "$_pkg: signature verification FAILED for $_latest_url; refusing to install (#2078)"
+    rm -f "$_tmp" "$_sig_tmp"
+    return 1
+  fi
+  log "$_pkg: signature verified"
+  rm -f "$_sig_tmp"
 
   case "$PM" in
     apk)

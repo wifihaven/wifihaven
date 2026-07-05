@@ -10,3 +10,4 @@ This was originally in AGENTS.md §"Security notes"; see AGENTS.md for the TOC.
 - Admin vs ReadOnly enforced via JWT claims + middleware
 - SQL injection impossible via Doobie parameterized queries
 - Config file contains DB credentials — never commit it (in .gitignore)
+- Router auto-update packages are signed (usign) and verified before install — see [`docs/process/release-signing.md`](release-signing.md) (#2078)

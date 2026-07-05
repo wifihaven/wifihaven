@@ -98,6 +98,10 @@ jobs:
             release/wifihaven_*.apk
             release/luci-app-wifihaven_*.ipk
             release/luci-app-wifihaven_*.apk
+            release/wifihaven_*.ipk.sig
+            release/wifihaven_*.apk.sig
+            release/luci-app-wifihaven_*.ipk.sig
+            release/luci-app-wifihaven_*.apk.sig
             release/wifihaven-router-openwrt-*-ipk.tar.gz
             release/wifihaven-router-openwrt-*-apk.tar.gz
             release/wifihaven-router-images.sha256
@@ -161,6 +165,10 @@ jobs:
             release/wifihaven_*.apk
             release/luci-app-wifihaven_*.ipk
             release/luci-app-wifihaven_*.apk
+            release/wifihaven_*.ipk.sig
+            release/wifihaven_*.apk.sig
+            release/luci-app-wifihaven_*.ipk.sig
+            release/luci-app-wifihaven_*.apk.sig
             release/versioned/wifihaven-router-openwrt-*-ipk.tar.gz
             release/versioned/wifihaven-router-openwrt-*-apk.tar.gz
             release/versioned/wifihaven-router-images.sha256
