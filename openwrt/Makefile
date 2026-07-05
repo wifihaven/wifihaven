@@ -49,7 +49,16 @@ define Package/wifihaven
   # monolithic `openssl.so`) above — both are required, and the #1949
   # coexistence (quic.resolve_openssl() force-loads lua-openssl's .so even
   # though luaossl shadows the bare require("openssl")) still holds.
-  DEPENDS:=+lua +libuci-lua +luci-lib-jsonc +conntrack +curl +uhttpd-mod-lua +kmod-nf-log +kmod-nf-log6 +kmod-nf-conntrack6 +libustream-mbedtls +openssl-util +tcpdump-mini +lua-openssl +cqueues +luaossl
+  # #2078: usign verifies the release signature on every downloaded update
+  # asset before wifihaven-update installs it (was previously unverified,
+  # apk add --allow-untrusted / opkg install --force-reinstall). usign is
+  # OpenWrt's own signing tool (used for sysupgrade image verification) and
+  # was confirmed present at /usr/bin/usign on a live apk-based router
+  # (OpenWrt 25.12.3, openwrt.lan) without this package installed — but that
+  # was only checked on the apk target, not the ipk/23.05 one, so it's pinned
+  # here as an explicit DEPENDS regardless of what any given base image ships,
+  # closing that gap either way.
+  DEPENDS:=+lua +libuci-lua +luci-lib-jsonc +conntrack +curl +uhttpd-mod-lua +kmod-nf-log +kmod-nf-log6 +kmod-nf-conntrack6 +libustream-mbedtls +openssl-util +tcpdump-mini +lua-openssl +cqueues +luaossl +usign
   PKGARCH:=all
 endef
 
@@ -65,6 +74,15 @@ define Package/wifihaven/conffiles
 /etc/config/wifihaven
 endef
 
+# NOTE: this install stanza is not exercised by the actual release pipeline —
+# build-ipk.sh / build-apk.sh (invoked from build-release-artifacts.yml) build
+# every shipped package without the full OpenWrt SDK, staging openwrt/files/
+# wholesale instead of listing files here (no CI job builds via this
+# Makefile's Package/wifihaven/install; grepped .github/workflows/ for any SDK
+# feeds usage of it, found none). New files under files/ (e.g. #2078's
+# etc/wifihaven/keys/release.pub) are NOT added here for that reason — if this
+# stanza is ever wired back into a real SDK/feeds build, audit it against the
+# current files/ tree first.
 define Package/wifihaven/install
 	$(INSTALL_DIR) $(1)/usr/sbin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/usr/sbin/wifihaven-agent $(1)/usr/sbin/

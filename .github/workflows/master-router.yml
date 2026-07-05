@@ -114,6 +114,9 @@ jobs:
     # otherwise produce an apk-invalid -dev.<sha> version and fail the build.
     with:
       publish_release: true
+    # #2078: WIFIHAVEN_RELEASE_SIGNING_KEY must reach the reusable workflow's
+    # signing step. Reusable workflows get zero secrets by default.
+    secrets: inherit
 
   # Gate 2 (#654/#686): router enforcement in qemu OpenWRT + Alpine client
   # against an in-process fake API serving snapshot fixtures. Runs on the

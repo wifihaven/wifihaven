@@ -111,6 +111,14 @@ if [ -n "$write_code" ]; then
   printf '200'
   exit 0
 fi
+case "$url" in
+  *.sig)
+    if [ -n "$out" ]; then
+      printf 'fakesig' > "$out"
+      exit 0
+    fi
+    ;;
+esac
 if [ -n "$out" ]; then
   printf '%s\n' "$url" >> "$ASSET_LOG"
   printf 'fakepkg' > "$out"
@@ -118,6 +126,15 @@ if [ -n "$out" ]; then
 fi
 emit_meta
 CURL_EOF
+
+  # #2078: default usign mock — permissive stub, same rationale as
+  # update_spec.sh. Verification behavior itself is covered by
+  # update_signature_verify_spec.sh.
+  cat > "$BINDIR/usign" <<EOF
+#!/bin/sh
+exit \${MOCK_USIGN_EXIT:-0}
+EOF
+  chmod +x "$BINDIR/usign"
 
   # jsonfilter mock matching wifihaven-update usage patterns.
   cat > "$BINDIR/jsonfilter" <<'EOF'

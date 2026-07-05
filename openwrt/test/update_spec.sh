@@ -202,6 +202,14 @@ if [ -n "$write_code" ]; then
   printf '%s' "$code"
   exit 0
 fi
+case "$url" in
+  *.sig)
+    if [ -n "$out" ]; then
+      printf 'fakesig' > "$out"
+      exit 0
+    fi
+    ;;
+esac
 if [ -n "$out" ]; then
   if [ "${CURL_DOWNLOAD_FAIL:-0}" = "1" ]; then exit 22; fi
   printf '%s\n' "$url" >> "$ASSET_LOG"
@@ -211,6 +219,16 @@ fi
 # Bare GET — fallback openwrt-latest fetch.
 emit_meta
 CURL_EOF
+
+  # #2078: default usign mock — signature verification succeeds unless a
+  # specific test opts into failure via MOCK_USIGN_EXIT. These tests predate
+  # signature verification and aren't exercising it, so they get a permissive
+  # stub; update_signature_verify_spec.sh covers the verification behavior.
+  cat > "$BINDIR/usign" <<EOF
+#!/bin/sh
+exit \${MOCK_USIGN_EXIT:-0}
+EOF
+  chmod +x "$BINDIR/usign"
 
   # Real-ish jsonfilter mock: reads stdin and extracts tag_name or
   # @.assets[N].browser_download_url. Supports only the queries used by

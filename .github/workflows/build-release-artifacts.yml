@@ -304,6 +304,53 @@ jobs:
           echo "--- release/ contents ---"
           ls -lh release/ release/versioned/
 
+      # #2078: sign every installable package (.ipk/.apk) with usign so
+      # wifihaven-update can verify provenance before installing as root.
+      # usign isn't packaged for Ubuntu; build the small upstream C tool from
+      # source (a few seconds, no external deps beyond cmake/make already on
+      # the runner image). Pinned to a commit SHA (usign has no version tags)
+      # — same rationale as build-apk.sh's pinned APK_TOOLS_REF: this PR's
+      # whole point is closing a provenance gap, so the tool that signs every
+      # release package must not itself float on an unpinned upstream default
+      # branch. Bump USIGN_REF deliberately (verify the new commit first) to
+      # pick up upstream fixes.
+      #
+      # Soft-fails (warns, does not block the build) when the signing key
+      # secret isn't configured yet, so Router CD isn't bricked mid-rollout
+      # of this feature — but router-side verification (wifihaven-update)
+      # refuses to install any package it can't verify, so an unsigned
+      # publish is effectively un-installable by any router once that side
+      # ships. See docs/process/release-signing.md.
+      - name: Sign release packages (#2078)
+        env:
+          WIFIHAVEN_RELEASE_SIGNING_KEY: ${{ secrets.WIFIHAVEN_RELEASE_SIGNING_KEY }}
+          USIGN_REF: c4c72b1b07945ee192361dc751291a7c98d6adcd
+        run: |
+          set -euo pipefail
+          if [ -z "${WIFIHAVEN_RELEASE_SIGNING_KEY:-}" ]; then
+            echo "::warning::WIFIHAVEN_RELEASE_SIGNING_KEY is not set — publishing UNSIGNED release packages. wifihaven-update refuses to install unverified packages (#2078), so routers will NOT be able to auto-update from this release until the secret is configured. See docs/process/release-signing.md."
+            exit 0
+          fi
+
+          git clone https://github.com/openwrt/usign.git /tmp/usign-src
+          git -C /tmp/usign-src checkout "$USIGN_REF"
+          cmake -S /tmp/usign-src -B /tmp/usign-build -DCMAKE_BUILD_TYPE=Release
+          cmake --build /tmp/usign-build
+          USIGN=/tmp/usign-build/usign
+
+          SECKEY="$(mktemp)"
+          printf '%s\n' "$WIFIHAVEN_RELEASE_SIGNING_KEY" > "$SECKEY"
+          trap 'rm -f "$SECKEY"' EXIT
+
+          for pkg in release/*.ipk release/*.apk; do
+            [ -f "$pkg" ] || continue
+            "$USIGN" -S -m "$pkg" -s "$SECKEY" -x "$pkg.sig" -c "wifihaven ${{ steps.ver.outputs.version }}"
+            echo "signed: $pkg -> $pkg.sig"
+          done
+
+          echo "--- release/ contents (signed) ---"
+          ls -lh release/
+
       # Raw .img uploads consumed by the gates. Named per flavor (no version /
       # sha in the name) — artifacts are already scoped to this workflow run,
       # so a bare name is unambiguous and lets the gates download by an exact,
