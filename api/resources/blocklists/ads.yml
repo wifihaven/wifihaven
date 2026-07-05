@@ -142,3 +142,56 @@ hosts:
   - mgid.com
   - creativecdn.com
   - demdex.net
+  # traffic-driven additions (#2064): observed but unblocked ad/RTB/tracker infra.
+  # Sourced from a 30-day prod recent-apexes sweep (26 devices, 2026-06-30).
+  # Cross-checked against the StevenBlack ads-extended feed — every apex below is
+  # a GENUINE GAP that even ads-extended misses entirely, and is unambiguously
+  # ad-dedicated (RTB exchange / bidder / ad server / impression-measurement
+  # tracker), so collateral risk is low. Dual-use / wrong-category SKIPPED:
+  # zetaglobal.io (marketing-cloud/CRM), minutemediaservices.com (content
+  # publisher), smartborad.com (flagged malware, not clearly ad-RTB),
+  # app-ads-services.com / app-analytics-services.com (Google GA4/Firebase, per
+  # #1923), applemediaservices.com (Apple), opentrackr.org / popcorn-tracker.org
+  # (BitTorrent trackers, not ads). See evidence/ads-classification-2064.md for
+  # per-apex hits + what-it-is.
+  # RTB exchanges / bidders / DSPs (gaps not in ads-extended)
+  - rtbhouse.com
+  - bid-algorix.com
+  - amxrtb.com
+  - coldbidder.com
+  - smarterbidder.com
+  - tmbid.com
+  - rtbuniverse.com
+  - rtbrain.app
+  - openrtbx.com
+  - rtblab.net
+  - one-bid.com
+  - ortb.net
+  - bidgx.com
+  - omsrtb.com
+  - rtbscale.com
+  - rtbanalytics.com
+  - rtbwise.com
+  - iqzonertb.live
+  - bidbrain.app
+  - bm-ads.io
+  - rtb-adv.com
+  # Ad servers / tags / impression + attribution trackers (gaps not in ads-extended)
+  - antibanads.com
+  - adkit-advertising.amazon
+  - oneadtag.com
+  - lacunads.com
+  - cleanmediaadserver.com
+  - mobidriven.com
+  - imptracking.com
+  - measureadv.com
+  - iionads.com
+  - liftdsp.com
+  - valorousadvertising.com
+  - rapidtag.net
+  # Sibling apexes of already-curated ad vendors (gaps not in ads-extended)
+  - adjust.io
+  - adnxs.net
+  - adsappier.com
+  - sharethru.com
+  - tiktokpangle-b.us

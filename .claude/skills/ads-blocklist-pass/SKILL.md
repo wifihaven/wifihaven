@@ -125,6 +125,35 @@ that edit in the same PR.** If a step above is now wrong, fix the step too.
 
 ## Learnings log (newest first)
 
+- **2026-06-30** (#2064) — **RTB/bidder/exchange genuine-gaps are the richest
+  vein, and they're low-collateral by construction.** This pass added 38 apexes,
+  almost all `*rtb*` / `*bid*` / `*-ads` / `oneadtag` / `imptracking`-class names
+  the `ads-extended` feed misses entirely. These are safe to add in bulk (not
+  just "a handful") because the *name is the function* — no product or shared
+  traffic rides `coldbidder.com` / `rtblab.net` / `openrtbx.com`, so the
+  collateral rule that governs dual-use hosts simply doesn't bite. Reserve the
+  "handful" caution for *covered* apexes (low marginal value) and for
+  dual-use/ambiguous names — not for clearly-ad genuine gaps.
+- **2026-06-30** (#2064) — **BitTorrent trackers recur as high-hit decoys —
+  always check `open*tracker*` / `*-tracker.org` before adding.** `opentrackr.org`
+  (4,485 hits) and `popcorn-tracker.org` (1,212 hits) both *out-hit* every real
+  ad apex this pass but are BitTorrent trackers, not ad infra (same class as
+  #1923's `demonii.com`). A `track`-substring match is NOT an ad signal; classify
+  by what the apex *is*.
+- **2026-06-30** (#2064) — **`antibanads.com` is real ad infra, not an
+  ad-blocker.** Despite the "anti-ban-ads" name it's BIGO Ads' ad-delivery
+  backend, deliberately named + multi-cloud-fronted to survive domain bans
+  (security-research confirmed). When a name reads like an *anti*-ad tool, verify
+  — it may be ad-serving infra wearing camouflage.
+- **2026-06-30** (#2064) — **New dual-use / wrong-category SKIPs seen this pass:**
+  `zetaglobal.io` (Zeta Global marketing-cloud/CRM — first-party customer
+  marketing, dual-use), `minutemediaservices.com` (Minute Media is a *content*
+  publisher; only its `minutemedia-prebid` sibling is ad-specific),
+  `smartborad.com` (scamadviser-flagged malware, unclear identity — belongs to
+  the malware list if anywhere, not ads), `ottadvisors.com` / `advolve.io`
+  (AdOps consultancy / AI-marketing platform — apex is the corporate site, ad
+  -serving ambiguous; held out). Verify ownership before trusting an ad-ish name;
+  unverified apexes are held out, not added.
 - **2026-06-23** (#1923) — **Diff candidates against the StevenBlack
   `ads-extended` feed before adding.** Fetch
   `raw.githubusercontent.com/StevenBlack/hosts/master/hosts`, extract the
