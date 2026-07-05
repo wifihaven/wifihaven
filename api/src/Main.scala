@@ -310,7 +310,7 @@ object Main extends ZIOAppDefault {
         // Multi-instance-safe via Postgres advisory lock — losing instances skip
         // the tick rather than racing on the same DELETE.
         xaForJobs         <- ZIO.service[Transactor[Task]]
-        _                 <- RetentionSweepJob.start(xaForJobs)
+        _                 <- RetentionSweepJob.start(xaForJobs, clockForJobs)
         // #808: durable fix for the 2026-06-29 P0 (#2053). Auto-creates the next
         // cfg.partition.weeksAhead weekly partitions on traffic_reports + connection_events at
         // startup and every 24h, so the fixed runway V41/V42 seeded can never silently exhaust.

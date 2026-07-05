@@ -57,21 +57,27 @@ where `BlockRules` is:
   [#1615](https://github.com/wifihaven/wifihaven/issues/1615) /
   [#1617](https://github.com/wifihaven/wifihaven/issues/1617) /
   [#1618](https://github.com/wifihaven/wifihaven/issues/1618)).
-  `MacBlockReason` is a `sealed trait extends BlockReason` whose cases are
-  `Paused`, `Schedule`, `TimeLimit`, `Manual` — the only reasons a
-  whole-MAC block can come from `PolicyService`. Per-flow drop reasons
-  (host-block, category-block, ip-only-block) are emitted by the router at
-  drop time and never appear in the snapshot; they live on `BlockReason`
-  but not `MacBlockReason`, so the type system prevents them from being
-  assigned here. **The router cannot derive this locally**, and re-deriving
-  it API-side at ingest is wrong: the schedule / time-used / paused-flag /
-  manual-block state behind these four cases lives in `PolicyService` and
-  is deliberately NOT shipped on the snapshot per the minimal-functional-
-  shape rule below — so the router only sees `blocked=true` and can't tell
-  the cases apart; and `PolicyService.decide` run at ingest time evaluates
-  *current* policy, which can change between drop and ingest (e.g. a profile
-  unpaused in the interim would mislabel the historical event). The drop-
-  time reason has to ride the snapshot.
+  `MacBlockReason` is a `sealed trait extends BlockReason` with six cases:
+  `Paused`, `Schedule`, `TimeLimit`, `Manual`, `Unmanaged` (#1122 — device has
+  no profile assignment under a `block` household policy), `DefaultDeny`
+  (#1316/#1308 — profile is in default-deny mode; lowest precedence) — the
+  only reasons a whole-MAC block can come from `PolicyService`.
+  **`Manual` has no producer today** — nothing in `api/src` ever sets it, only
+  defensive consumer-side handling exists (`BlockedRoutes.scala`,
+  `nft_drops.lua`); it is reserved vocabulary, not a shipped feature
+  ([#2087](https://github.com/wifihaven/wifihaven/issues/2087)). Per-flow drop
+  reasons (host-block, category-block, ip-only-block) are emitted by the
+  router at drop time and never appear in the snapshot; they live on
+  `BlockReason` but not `MacBlockReason`, so the type system prevents them
+  from being assigned here. **The router cannot derive this locally**, and
+  re-deriving it API-side at ingest is wrong: the schedule / time-used /
+  paused-flag / no-profile-assignment / default-deny-mode state behind these
+  cases lives in `PolicyService` and is deliberately NOT shipped on the
+  snapshot per the minimal-functional-shape rule below — so the router only
+  sees `blocked=true` and can't tell the cases apart; and `PolicyService.decide`
+  run at ingest time evaluates *current* policy, which can change between drop
+  and ingest (e.g. a profile unpaused in the interim would mislabel the
+  historical event). The drop-time reason has to ride the snapshot.
 - `extraBlocked: List[Hostname]` — hosts blocked for this MAC. Enforced
   via nftables drop on `(mac, dst ip ∈ ipset(host))`, where the ipset is
   populated by dnsmasq's `--ipset=` callback at resolution time.
