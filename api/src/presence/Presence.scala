@@ -996,6 +996,37 @@ object Presence {
     (alloc.toMap, counts)
   }
 
+  /** #2077: the engagement-anchor gate. TDD stub — implementation lands with the green commit. */
+  def ambientGatedRowsWithDropCount(
+      rows: List[PresenceRow],
+      ambient: AmbientGate,
+      filter: HeartbeatFilter,
+      continuationSeconds: Int,
+      appHostPatterns: List[String],
+  ): (List[PresenceRow], Int) =
+    (rows, 0)
+
+  def ambientGatedRows(
+      rows: List[PresenceRow],
+      ambient: AmbientGate,
+      filter: HeartbeatFilter,
+      continuationSeconds: Int,
+      appHostPatterns: List[String],
+  ): List[PresenceRow] =
+    ambientGatedRowsWithDropCount(rows, ambient, filter, continuationSeconds, appHostPatterns)._1
+
+  /**
+   * #2077: the isolation learning primitive. TDD stub — implementation lands with the green commit.
+   */
+  def isolatedSpanHosts(
+      rows: List[PresenceRow],
+      isolationMaxHosts: Int,
+      filter: HeartbeatFilter,
+      continuationSeconds: Int,
+      appHostPatterns: List[String],
+  ): Map[HostId, Int] =
+    Map.empty
+
   /** Convenience: floor-divided minute view of [[proportionalHostSeconds]]. */
   def proportionalHostMinutes(
       rows: List[PresenceRow],
