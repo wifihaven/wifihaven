@@ -172,6 +172,24 @@ above is now wrong, fix the step too — don't just log around it.
 
 ## Learnings log (newest first)
 
+- **2026-06-29 (#2058)** — A mature catalog means the typical pass yields ZERO
+  new apps: every >1 MB uncovered apex was shared infra/CDN, ad-tech/RTB,
+  shared corporate (Adobe/Autodesk), or analytics/support. The valuable finding
+  was an **existing**-app host-set gap — a *mirror domain* of an already-templated
+  game (`eaglercraft.com` vs the templated `eaglercraft.dev`) the kids hit but
+  that was unattributed. Always run the coverage sweep against `_index.yml` slugs
+  AND the per-app host-sets, not just slugs: a covered slug can still be missing
+  observed brand domains. Extending an app's host-set is a fully valid pass outcome.
+- **2026-06-29 (#2058)** — Distinguish a "game host" from an "unblocked-games
+  proxy portal" before routing. A single-game mirror that serves the game
+  directly (eaglercraft.com/play) extends the app; only multi-proxy / filter-bypass
+  hubs (TitaniumNetwork stack, now.gg, duckmath) go to `games.yml`-only. When a
+  brand the operator already chose to template as an app (#1705) shows a new mirror
+  apex, keep it in the app for consistency — don't reclassify it to a blocklist.
+- **2026-06-29 (#2058)** — YouTube-to-MP3 rippers (`ytmp3.gg`) surface as
+  high-byte / very-low-hit (3.5 MB, 1 hit = one download). No clean piracy
+  category list exists; treat as below-bar incidental and skip-with-note rather
+  than forcing it into games/ads.
 - **2026-06-23 (#1922)** — #1796 IPv6-attribution gap is FIXED (#1807/#1802
   merged); sample is no longer IPv4-biased. Step 0 caveat updated. A site #1815
   skipped as "below bar / IPv4-biased" (mathplayground.com, 181 kB → now 894 kB
