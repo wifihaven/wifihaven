@@ -12,11 +12,24 @@ with [#793](https://github.com/wifihaven/wifihaven/issues/793) (partitioning) an
 | Events | `connection_events` | per-DNS-decision row | **30 days** | sweep `DELETE` (or `DROP PARTITION` if #793 partitions it too) |
 | Hourly | new `traffic_hourly` | 1 h × (router, mac, host) | **3 months** | API-side ZIO cron, every 5 min, UPSERT from raw |
 | Daily | new `traffic_daily` | 1 day × (router, mac, host) | **6 months** | API-side ZIO cron, daily at 00:15 local, UPSERT from raw |
-| Quota | existing `time_usage` | 1 day × (mac, host) bucket-deduped wall-clock | unchanged (forever) | unchanged — written at ingest |
+| Quota | existing `time_usage` | 1 day × (mac, host) bucket-deduped wall-clock | **30 days** ([#2086](https://github.com/wifihaven/wifihaven/issues/2086)) | sweep `DELETE` on `date` |
+| Block events | existing `block_events` | per-block-decision row | **30 days** ([#2086](https://github.com/wifihaven/wifihaven/issues/2086)) | sweep `DELETE` on `ts` |
 
 `/api/usage/series` picks the tier by window width: `≤ 6 h → raw`, `≤ 14 d → hourly`,
 `> 14 d → daily`. SPA date pickers expose the 30-day horizon for 5-min mode, 3 months
 for hourly, 6 months for daily.
+
+**`time_usage` / `block_events` retention (#2086, 2026-07):** this doc originally
+(2026-05) called `time_usage` "unchanged (forever)" and didn't mention
+`block_events` at all — both were, in fact, unbounded, the same latent class as
+the #2053 partition-runway P0. Every `time_usage` read site queries a single
+`date` ("today" — see `Repos.scala`'s `getSecondsUsed` / `listForDevice` /
+`snapshotAll`), so 30 days is generous headroom over actual demand rather than a
+tight bound; `block_events`' reads (`recent`, `listForMac`) are `LIMIT`-bounded,
+not date-bounded, so 30 days mirrors `connection_events`' raw horizon. Neither
+table is partitioned (V41/V42 partitioned only `traffic_reports` /
+`connection_events`), so both sweep via plain `DELETE`, same as the other
+non-partitioned tiers above.
 
 **Sessions are no longer a surface.** The session-stitching endpoint was removed in
 [#845](https://github.com/wifihaven/wifihaven/issues/845); the replacement (Connection
@@ -26,8 +39,9 @@ inherits their retention. See umbrella [#844](https://github.com/wifihaven/wifih
 ## 1. Raw retention — 30 days
 
 `traffic_reports` is the 5-minute, per-(router, mac, host) fact table the router posts
-into ([V2__openwrt.sql](../../api/resources/db/migration/V2__openwrt.sql)). It is the
-only growth-unbounded table in the schema.
+into ([V2__openwrt.sql](../../api/resources/db/migration/V2__openwrt.sql)). At the time
+this doc was written it was believed to be the only growth-unbounded table in the
+schema; `time_usage` and `block_events` were also unbounded (fixed in #2086 above).
 
 **Chosen:** 30 days. Reasons:
 

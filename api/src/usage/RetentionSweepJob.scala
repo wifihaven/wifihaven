@@ -4,10 +4,13 @@ import cats.implicits.*
 import doobie.*
 import doobie.free.connection.{pure as cpure, raiseError as craiseError}
 import doobie.implicits.*
+import doobie.postgres.implicits.*
+import wifihaven.shared.Clock
 import zio.*
 import zio.interop.catz.*
 
-import java.time.{Duration as JDuration, ZoneOffset, ZonedDateTime}
+import java.time.{Duration as JDuration, Instant, ZoneOffset, ZonedDateTime}
+import java.time.temporal.ChronoUnit
 
 /**
  * Daily retention sweep (#811). Per [docs/design/usage-retention.md] §9:
@@ -19,12 +22,20 @@ import java.time.{Duration as JDuration, ZoneOffset, ZonedDateTime}
  *   - `connection_events_hourly` — drop rows older than 90 days (#1265; gated on V47 table
  *     presence)
  *   - `connection_events_daily` — drop rows older than 180 days (#1265; gated; `date` col)
+ *   - `time_usage` — drop rows older than 30 days (#2086; every read site queries a single `date`,
+ *     so this is generous headroom over actual demand, and mirrors the raw
+ *     traffic_reports/connection_events horizon)
+ *   - `block_events` — drop rows older than 30 days (#2086; aligned with connection_events)
  *
  * Multi-instance-safe via a session-scoped Postgres advisory lock. Losing the race makes the tick a
  * no-op. The lock auto-releases if the connection drops, so a crashing instance can't wedge it.
  *
  * v1 uses a plain `DELETE` per the design doc's "if #793 doesn't land" fallback; the partition-drop
  * variant is a follow-up gated on #793 landing.
+ *
+ * All cutoffs are computed from the injected [[wifihaven.shared.Clock]] (#2089) rather than
+ * `ZonedDateTime.now()` / SQL `NOW()`, so the sweep's horizon boundaries are deterministically
+ * testable with `Clock.TestClock`.
  */
 object RetentionSweepJob {
 
@@ -44,6 +55,13 @@ object RetentionSweepJob {
   // already covered by EventsRetentionDays; hourly 3mo / daily 6mo here).
   val ConnEventsHourlyRetentionDays: Int = 90
   val ConnEventsDailyRetentionDays: Int  = 180
+  // #2086: neither table had any retention path before this. time_usage's only
+  // read sites query a single `date` (today) — see Repos.scala getSecondsUsed /
+  // listForDevice / snapshotAll — so 30d is generous headroom, not a tight bound.
+  // block_events' reads (`recent`, `listForMac`) are LIMIT-bounded rather than
+  // date-bounded; 30d mirrors connection_events' raw horizon.
+  val TimeUsageRetentionDays: Int        = 30
+  val BlockEventsRetentionDays: Int      = 30
 
   // Daily run hour (UTC). Design doc prefers router-local, but the API is
   // multi-household so picking *a* local zone is ill-defined. v1 = UTC; revisit
@@ -60,15 +78,18 @@ object RetentionSweepJob {
    *
    * Rollup tables from #809 are gated on `to_regclass(...)` — until that migration lands the sweep
    * silently skips them.
+   *
+   * `now` is supplied by the caller (the [[wifihaven.shared.Clock]] in `start`, a fixed instant in
+   * tests) — every cutoff is `now - horizon`, never `NOW()` computed inside SQL (#2089).
    */
-  def sweepOnce(xa: Transactor[Task]): Task[Option[List[SweepResult]]] = {
+  def sweepOnce(xa: Transactor[Task], now: Instant): Task[Option[List[SweepResult]]] = {
     val cio: ConnectionIO[Option[List[SweepResult]]] =
       sql"SELECT pg_try_advisory_lock($AdvisoryLockKey)".query[Boolean].unique.flatMap {
         case false => cpure(Option.empty[List[SweepResult]])
         case true  =>
           // Run the sweep; release the lock on the same connection whether the
           // sweep succeeds or fails. Re-raise any error after releasing.
-          sweepAllTables.attempt.flatMap { res =>
+          sweepAllTables(now).attempt.flatMap { res =>
             sql"SELECT pg_advisory_unlock($AdvisoryLockKey)".query[Boolean].unique.flatMap { _ =>
               res match {
                 case Right(rs) => cpure(Some(rs))
@@ -80,29 +101,38 @@ object RetentionSweepJob {
     cio.transact(xa)
   }
 
-  private def sweepAllTables: ConnectionIO[List[SweepResult]] =
+  private def sweepAllTables(now: Instant): ConnectionIO[List[SweepResult]] = {
+    def cutoff(days: Int): Instant = now.minus(days.toLong, ChronoUnit.DAYS)
     for {
-      raw      <- deleteOlderThan("traffic_reports", "period_start", RawRetentionDays)
-      events   <- deleteOlderThan("connection_events", "ts", EventsRetentionDays)
-      hourly   <- ifTableExists("traffic_hourly") {
-        deleteOlderThan("traffic_hourly", "bucket_start", HourlyRetentionDays)
+      raw         <- deleteOlderThan("traffic_reports", "period_start", cutoff(RawRetentionDays))
+      events      <- deleteOlderThan("connection_events", "ts", cutoff(EventsRetentionDays))
+      hourly      <- ifTableExists("traffic_hourly") {
+        deleteOlderThan("traffic_hourly", "bucket_start", cutoff(HourlyRetentionDays))
       }
-      daily    <- ifTableExists("traffic_daily") {
+      daily       <- ifTableExists("traffic_daily") {
         // V38's traffic_daily uses `date` (DATE), not `bucket_start` — see
         // docs/design/usage-retention.md §3.
-        deleteOlderThan("traffic_daily", "date", DailyRetentionDays)
+        deleteOlderThan("traffic_daily", "date", cutoff(DailyRetentionDays))
       }
-      ceHourly <- ifTableExists("connection_events_hourly") {
-        deleteOlderThan("connection_events_hourly", "bucket_start", ConnEventsHourlyRetentionDays)
+      ceHourly    <- ifTableExists("connection_events_hourly") {
+        deleteOlderThan(
+          "connection_events_hourly",
+          "bucket_start",
+          cutoff(ConnEventsHourlyRetentionDays),
+        )
       }
-      ceDaily  <- ifTableExists("connection_events_daily") {
+      ceDaily     <- ifTableExists("connection_events_daily") {
         // V47's connection_events_daily uses `date` (DATE), not `bucket_start`.
-        deleteOlderThan("connection_events_daily", "date", ConnEventsDailyRetentionDays)
+        deleteOlderThan("connection_events_daily", "date", cutoff(ConnEventsDailyRetentionDays))
       }
+      timeUsage   <- deleteOlderThan("time_usage", "date", cutoff(TimeUsageRetentionDays))
+      blockEvents <- deleteOlderThan("block_events", "ts", cutoff(BlockEventsRetentionDays))
     } yield {
       val base = List(
         SweepResult("traffic_reports", raw),
         SweepResult("connection_events", events),
+        SweepResult("time_usage", timeUsage),
+        SweepResult("block_events", blockEvents),
       )
       val h    = hourly.map(SweepResult("traffic_hourly", _)).toList
       val d    = daily.map(SweepResult("traffic_daily", _)).toList
@@ -110,6 +140,7 @@ object RetentionSweepJob {
       val ceD  = ceDaily.map(SweepResult("connection_events_daily", _)).toList
       base ++ h ++ d ++ ceH ++ ceD
     }
+  }
 
   private def ifTableExists[A](table: String)(body: => ConnectionIO[A]): ConnectionIO[Option[A]] =
     sql"SELECT to_regclass($table) IS NOT NULL".query[Boolean].unique.flatMap {
@@ -117,17 +148,20 @@ object RetentionSweepJob {
       case false => cpure(Option.empty[A])
     }
 
-  // table/col/days come exclusively from compile-time constants above — no
-  // user-supplied input ever reaches Fragment.const.
-  private def deleteOlderThan(table: String, col: String, days: Int): ConnectionIO[Int] =
-    Fragment.const(s"DELETE FROM $table WHERE $col < NOW() - INTERVAL '$days days'").update.run
+  // table/col come exclusively from compile-time constants above — no
+  // user-supplied input ever reaches Fragment.const. `cutoff` is bound as a
+  // query parameter, never string-interpolated.
+  private def deleteOlderThan(table: String, col: String, cutoff: Instant): ConnectionIO[Int] =
+    (Fragment.const(s"DELETE FROM $table WHERE $col < ") ++ fr"$cutoff").update.run
 
   /**
    * Fork a daemon fiber that runs the sweep daily at 03:00 UTC. Subsequent ticks fire every 24 h.
+   * `clock` supplies both the initial-delay calculation and each tick's cutoff instant, so the
+   * schedule honours the shared injected clock (#2089).
    */
-  def start(xa: Transactor[Task]): UIO[Fiber.Runtime[Throwable, Long]] = {
+  def start(xa: Transactor[Task], clock: Clock): UIO[Fiber.Runtime[Throwable, Long]] = {
     val tick =
-      sweepOnce(xa).either.flatMap {
+      clock.instant.flatMap(sweepOnce(xa, _)).either.flatMap {
         case Right(None)     =>
           ZIO.logInfo("RetentionSweepJob: advisory lock held by another instance — tick skipped")
         case Right(Some(rs)) =>
@@ -137,14 +171,13 @@ object RetentionSweepJob {
           ZIO.logErrorCause("RetentionSweepJob: tick failed", Cause.fail(e))
       }
     for {
-      delay <- ZIO
-        .attempt(initialDelay(ZonedDateTime.now(ZoneOffset.UTC)))
-        .orElseSucceed(24.hours)
-      _     <- ZIO.logInfo(
+      nowUtc <- clock.instant.map(_.atZone(ZoneOffset.UTC))
+      delay  <- ZIO.attempt(initialDelay(nowUtc)).orElseSucceed(24.hours)
+      _      <- ZIO.logInfo(
         s"RetentionSweepJob scheduled: first tick in ${delay.render}, then every 24h at " +
           s"${"%02d".format(DailyRunHourUtc)}:00 UTC",
       )
-      fiber <- (ZIO.sleep(delay) *> tick.repeat(Schedule.fixed(24.hours))).forkDaemon
+      fiber  <- (ZIO.sleep(delay) *> tick.repeat(Schedule.fixed(24.hours))).forkDaemon
     } yield fiber
   }
 

@@ -1,9 +1,10 @@
 # Router-based enforcement architecture
 
-Status: **partially implemented.**
-- §5.1–5.5 and §9 schema in production (issues #67, #68/#98, #69/#97).
-- §5.6 pending (#70).
-- OpenWRT agent (#72) and OpnSense agent (#94) pending.
+Status: **implemented for OpenWRT; OPNsense partial.** (Refreshed 2026-07 — #2088.)
+- §5.1–§5.6 and §9 schema in production (issues #67, #68/#98, #69/#97, #70).
+- OpenWRT agent (#72) has been in production for over a month.
+- OPNsense agent event-emission (#94) is done, but its deploy plan (#89) is
+  still open — OPNsense is not yet a supported production target.
 
 > **Read this first.** The "Enforcement model" section below is the canonical
 > architecture. Some current code deviates from it (called out inline and in
@@ -196,7 +197,8 @@ object MacBlockReason:
   case object Paused      extends MacBlockReason
   case object Schedule    extends MacBlockReason
   case object TimeLimit   extends MacBlockReason
-  case object Manual      extends MacBlockReason
+  case object Manual      extends MacBlockReason   // reserved — no producer; see #2087
+  case object Unmanaged   extends MacBlockReason   // no profile assignment under `block` policy (#1122)
   case object DefaultDeny extends MacBlockReason   // profile is default-deny baseline (§0.3)
 
 object BlockReason:
@@ -363,20 +365,23 @@ mode (`blocked = true` baseline + `MacBlockReason.DefaultDeny`, with
 > global carve-out, exactly as the old per-(MAC) `ea_` copies did, with no
 > per-profile duplication and a single ETag-moving source.
 
-> **Known deviations from this model as of May 2026** (tracked follow-ups,
-> not the canonical design):
+> **May-2026 deviations from this model — all resolved as of this refresh
+> (2026-07, #2088).** At the time this doc was first written, three gaps were
+> tracked as follow-ups; all three have since landed and are retired here
+> (see the "Implementation status" callout in §3.4 for the fuller picture):
 >
-> - `extraBlocked` is IPv4-only — dnsmasq populates the `eb_<host>` set on
->   A records, but AAAA replies are not captured into a parallel `eb6_<host>`
->   v6 set, so a blocked host that resolves over v6 escapes the drop (#392).
-> - `blocklistIds` / category blocking is not applied on the router at all.
->   `render.lua` and `wifihaven-agent` do not fetch RPZ files or render
->   category rules. `PolicyService.decide` uses categories only on the
->   fallback `POST /api/router/decision` endpoint (#352).
-> - `blockIpOnly` is carried in the snapshot but not yet enforced (#353).
-> - `failureMode` lives on each `ProfilePolicy` rather than at the snapshot
->   top level — the DB column is per-profile and we keep it that way until
->   there's a reason to consolidate.
+> - `extraBlocked` was IPv4-only; the v6 sibling ipset (`eb6_<host>`) now
+>   exists alongside `eb_<host>` (`render.lua:213-220`, #392).
+> - Category blocklist enforcement now renders `bl_`/`bl6_` nftables sets on
+>   the router (`render.lua`, #352) — no longer fallback-only via
+>   `PolicyService.decide`.
+> - `blockIpOnly` is enforced via per-MAC `resolved_`/`resolved6_` nftables
+>   sets (`render.lua:241`, #353).
+>
+> `failureMode` still lives on each `ProfilePolicy` rather than at the
+> snapshot top level — the DB column is per-profile and we keep it that way
+> until there's a reason to consolidate. This one remains current, not a
+> deviation.
 
 ### 0.3 The snapshot is a minimal functional shape, not a policy model
 
@@ -495,11 +500,11 @@ protocol, regardless of router OS:
 |----------|---------|--------|
 | `POST /api/router/register` | Exchange enrollment token for bearer token | implemented |
 | `GET /api/router/policy` | Pull enforcement snapshot | implemented |
-| `GET /api/blocklists/<cat>.rpz` | Fetch RPZ blocklist | implemented |
+| `GET /api/blocklists/<id>` | Fetch plain hostname-list blocklist (ETag-cached) — **not RPZ** | implemented |
 | `POST /api/router/usage` | Push per-(mac, hostname) traffic records | implemented (#97) |
 | `POST /api/router/events` | Push DHCP lease + DNS query events | implemented (#97) |
-| `POST /api/router/decision` | Per-hostname fallback decision | pending #70 |
-| `GET /blocked` | Public block page | pending #70 |
+| `POST /api/router/decision` | Per-hostname fallback decision | implemented (#70) |
+| `GET /blocked` | Public block page | implemented (#70) |
 
 The policy snapshot JSON shape (§5.2), usage record shape (§5.4), and event
 shape (§5.5) are identical across all agent platforms. An agent author only
@@ -599,7 +604,7 @@ the profile's general schedule. This is a `PolicyService`-only feature with
 **no wire or router change**: at snapshot-compute time the window is evaluated
 (reusing `scheduleActiveAt`, household-local zone via the injected `Clock`) and
 collapsed into the *existing* fields — `allowed_during` while active → the app's
-hosts in `extraAllowed` (which beats Schedule/Paused/Manual whole-MAC blocks per
+hosts in `extraAllowed` (which beats Schedule/Paused/TimeLimit whole-MAC blocks per
 #421; whether it also beats the *daily time limit* is a server-side choice keyed
 on the app's `exemptFromDaily` flag, not a router behaviour), `blocked_during`
 while active → `extraBlocked`. The agent never learns that per-app schedules
@@ -722,8 +727,8 @@ Modified` if the client's ETag still matches.
     }
   },
   "blocklists": {
-    "ads":   { "version": "2026-04-29", "url": "/api/blocklists/ads.rpz" },
-    "adult": { "version": "2026-04-29", "url": "/api/blocklists/adult.rpz" }
+    "ads":   { "version": "2026-04-29", "url": "/api/blocklists/ads" },
+    "adult": { "version": "2026-04-29", "url": "/api/blocklists/adult" }
   }
 }
 ```
@@ -753,23 +758,26 @@ Notes:
   happened server-side in `PolicyService` and is reflected in
   `blocked` / `blockReason` / `extraBlocked` / `blocklistIds`.
 
-> **Implementation status (post-#354).** The snapshot wire format now
-> matches the target shape above. Server-side evaluation of pause /
-> schedule / time-limit collapses into per-profile `BlockRules.blocked`;
-> the agent never sees raw schedules or daily-minute counters. Three
-> consumer fixes are still in flight to fully realise §0.2 enforcement:
-> #351 (per-MAC nft drop for `extraBlocked` replacing the legacy
+> **Implementation status (post-#354, refreshed 2026-07 #2088).** The
+> snapshot wire format matches the target shape above. Server-side
+> evaluation of pause / schedule / time-limit collapses into per-profile
+> `BlockRules.blocked`; the agent never sees raw schedules or daily-minute
+> counters. The three consumer fixes originally tracked here have all
+> landed: #351 (per-MAC nft drop for `extraBlocked`, replacing the legacy
 > `address=/host/#` NXDOMAIN), #352 (per-blocklist ipset drop for
-> `blocklistIds`), and #353 (`blockIpOnly` enforcement). Until they land
-> the agent still uses dnsmasq NXDOMAIN for `extraBlocked` and ignores
-> `blocklistIds` / `blockIpOnly` — but the snapshot ships them, so each
-> consumer fix can light up cleanly.
+> `blocklistIds`), and #353 (`blockIpOnly` enforcement). §0.2 enforcement is
+> fully realised — the agent no longer uses dnsmasq NXDOMAIN for
+> `extraBlocked` and no longer ignores `blocklistIds` / `blockIpOnly`.
 
-### 6.3 `GET /api/blocklists/<category>.rpz`
+### 6.3 `GET /api/blocklists/<id>`
 
-Returns an RPZ-formatted blocklist for the named category. Versioned and
-ETagged. The agent caches by `version` from the policy snapshot and only
-refetches when the version changes.
+Returns a plain-text, newline-separated hostname list for the named
+blocklist id — **not RPZ format**; RPZ (a DNS-enforcement mechanism) never
+shipped, per Truth #1 (`PolicyService.renderBlocklist`,
+`api/src/policy/PolicyService.scala:551-565`). Versioned and ETagged. The
+agent caches by `version` from the policy snapshot and only refetches when
+the version changes, resolving member hosts into the `bl_`/`bl6_` nftables
+ipsets at DNS time.
 
 ### 6.4 `POST /api/router/usage`
 
@@ -849,7 +857,7 @@ unknown-device list and feed device autodetection.
 
 **Response 200**: empty body.
 
-### 6.6 `POST /api/router/decision`  *(optional fallback, pending #70)*
+### 6.6 `POST /api/router/decision`  *(optional fallback, implemented — #70)*
 
 For hostnames not in the most recent snapshot. This endpoint is FQDN-only
 by design: the request carries `hostname: Hostname` (a resolved name from
@@ -860,7 +868,7 @@ are handled by nftables enforcement, not by a per-flow API call.
 
 **Response 200**: `{ "allow": false, "reason": "category:adult", "expiresAt": "..." }`
 
-### 6.7 `GET /blocked`  *(public, no auth, pending #70)*
+### 6.7 `GET /blocked`  *(public, no auth, implemented — #70)*
 
 Query params: `mac`, `host`, `reason`. Renders a page showing why the request
 was blocked and offering a "request extension" button gated on parent login.
@@ -1047,10 +1055,11 @@ are added to that MAC's `extraBlocked`. **The agent does no time arithmetic.**
 > it only ever appears as a **display rollup** of the long tail (e.g. a usage
 > view shows the top-5 apps and folds the remainder into "Other"). A host
 > landing in that rollup means "low on the list," **not** "part of an Other
-> app." The current `__other__` synthetic membership in the attribution code is
-> the legacy spelling of this and will be reworked to the single-host-app model
-> (and the lingering "site"/`SiteTimeLimit` naming renamed to "app") — see the
-> follow-up rename issue (#1526).
+> app." This rework landed in #1526 (closed): unmatched hosts are now their own
+> single-host `AppMembership` (`AppMembership.forUnmatchedHost`,
+> `api/src/usage/UsageTraffic.scala:27`), keyed by the host itself so two
+> unmatched hosts produce two distinct memberships rather than one shared
+> `__other__` bucket.
 >
 > The per-app count is computed with the #1464 session-stitch primitive (#1504,
 > via `Presence.patternGroupMinutesForProfile`) — engaged wall-clock time across
@@ -1070,10 +1079,14 @@ overshoot is one usage-report interval (~60 s) plus one policy-poll interval
 nftables `dnat` on TCP/80 to `127.0.0.1:8081` (uhttpd) AND on TCP/443 to
 `127.0.0.1:8443` (uhttpd with a self-signed cert). The lua handler at
 `/www/wifihaven/handler.lua` reads the requested host from the
-`HTTP_HOST` env, the client MAC from the kernel ARP table keyed by
-`REMOTE_ADDR`, and the per-MAC reason from the agent-written IPC files
-under `/var/run/wifihaven/`. It renders the block page directly — no
-external 302 — so it works when the API is unreachable.
+`HTTP_HOST` env and the client MAC from the kernel ARP table keyed by
+`REMOTE_ADDR`. It renders the block page directly with just `?mac=&host=` —
+no external 302, and (post-#679/#1617/#1618) no per-MAC reason lookup at
+all here: the handler no longer reads any agent-written IPC file under
+`/var/run/wifihaven/`, and the SPA derives the canonical block reason
+separately via `GET /api/blocked` (which re-runs `PolicyService.decide`).
+This still works when the API is unreachable because the page itself
+renders locally; only the reason text depends on the API being reachable.
 
 #### HTTPS variant (#383)
 
@@ -1117,7 +1130,7 @@ predicate can drift between the two ports.
 Still traffic-layer enforcement — DNS resolves normally; the redirect
 happens at nftables prerouting, exactly the same as HTTP/80.
 
-## 8. OpnSense agent design  *(pending #94)*
+## 8. OpnSense agent design  *(agent code done — #94; deploy plan #89 still open)*
 
 This section describes the OpnSense-specific rendering layer. The wire protocol
 (§6) is unchanged; only the platform primitives differ.
@@ -1197,14 +1210,14 @@ DNS server as the source).
 | #67 | V2 migration + repos | done |
 | #68 | `GET /api/router/policy`, blocklists, enrollment, admin UI | done (#98) |
 | #69 | `POST /api/router/usage` + `POST /api/router/events` | done (#97) |
-| #70 | `POST /api/router/decision` + public `/blocked` page | pending |
+| #70 | `POST /api/router/decision` + public `/blocked` page | done |
 | #71 | Delete `dns/` and `traffic/` modules | done (#125) |
-| #72 | OpenWRT agent (Lua, opkg) | pending |
-| #73 | e2e fake-router in staging compose | pending |
-| #88 | OpenWRT deploy plan (`openwrt/README.md`, `openwrt/build-ipk.sh`, CI `.ipk` build) | pending |
-| #89 | Cloud deploy plan | pending |
-| #93 | (see issue) | pending |
-| #94 | OpnSense agent (Python, OPNsense plugin) | pending |
+| #72 | OpenWRT agent (Lua, opkg) | done — in production |
+| #73 | e2e fake-router in staging compose | done |
+| #88 | OpenWRT deploy plan (`openwrt/README.md`, `openwrt/build-ipk.sh`, CI `.ipk` build) | done |
+| #89 | OPNsense deploy plan | open — OPNsense not yet a supported production target |
+| #93 | OpenWRT agent: emit `connection_attempt` events per new outbound flow | done |
+| #94 | OpnSense agent (Python, OPNsense plugin) — event emission | done |
 
 Steps #67–#70 land before #71: the old enforcement stack is not deleted until
 the new API surface is addressable.
@@ -1263,7 +1276,7 @@ Connection-level enforcement and per-device usage tracking run on the gateway ro
 Key API surface (under `/api/router/*` and `/api/blocklists/*`):
 - `POST /api/router/register` — one-time enrollment
 - `GET  /api/router/policy`   — ETag-polled enforcement snapshot
-- `GET  /api/blocklists/<cat>.rpz` — RPZ blocklist per category
+- `GET  /api/blocklists/<id>` — plain hostname-list blocklist per category (not RPZ)
 - `POST /api/router/usage`    — per-(mac, hostname) traffic records
 - `POST /api/router/events`   — DHCP lease + connection attempt events
 
@@ -1275,7 +1288,7 @@ Key API surface (under `/api/router/*` and `/api/blocklists/*`):
 - **TimeLimit** — daily total minutes allowed per profile (e.g. 120 min/day total screen time).
 - **App** — a named bundle of host patterns (a **host-set**: apex + off-domain asset/CDN domains) with a per-profile policy (allowed / blocked / time-limited). Apps are the unit usage and time limits are framed around — **the model is app-focused, not site-focused.** App *definitions* (name, slug, icon, host-set) are **authored only via the built-in `AppTemplates` in code** — there is no operator-facing create/edit/delete of definitions. To add or change an app, update `AppTemplates` and let the seed/reconcile pass apply it; admin routes `POST /api/apps/seed-from-templates`, `POST /api/apps/:id/reset-to-template`, and `POST /api/admin/apps/reconcile-templates` are the editing path. Authoring definitions in the SPA was removed in [#1798](https://github.com/wifihaven/wifihaven/issues/1798) (it was the root of the duplicate-app slug-collision churn, #1777/#1794); the SPA Apps page is now a read-only directory. **Policy assignment** (assigning an app to a profile, with mode + schedule/daily flags) stays operator-driven via `PUT/DELETE /api/apps/:id/policy/:profileId` on the Profiles page. `DELETE /api/apps/:id` survives as an **admin-only** route (stray-row cleanup) but is no longer surfaced in the SPA.
 - **App time limit** — daily minutes for an *app*, counted against its **whole host-set aggregated as one budget** (#1505), tracked *separately* from the main daily limit (e.g. 30 min YouTube across `youtube.com` + `ytimg.com` + `googlevideo.com`, not counted in the 120 min total). A host belonging to no configured app **is its own single-host app**; there is no semantic catch-all "Other" app. "Other" only ever appears as a **display rollup** of the long tail (top-N + remainder) — a host there is *low on the list*, not *part of an Other app*.
-  > Naming debt: a few residual `SiteUsage` / `SiteDayState` / `perSite` spellings remain in code, and the `__other__` synthetic membership is still present. The reason token and BlockReason JSON kind were renamed to `app_time_limit:` / `appTimeLimit` in #1518 — both are SPA-API surfaces (the router treats `BlockReason` wire strings as opaque pass-through, so renaming was safe even pre-#376). `BlockReason.fromWire` only parses the new `app_time_limit:` text — routers echo back whatever they receive, and the dual-written `reason_text` column is consumed by older-image rollback only, never re-parsed here, so no live caller needs the legacy text alias. `JsonDecoder[BlockReason]` does still accept the legacy `siteTimeLimit` kind because V40-migrated `block_events.reason` / `connection_events.reason` JSONB rows persist that kind; the encoder canonicalizes them to `appTimeLimit` on read so the SPA never sees the legacy form on the wire.
+  > Naming debt: a few residual `SiteUsage` / `SiteDayState` / `perSite` spellings remain in code. The `__other__` synthetic-membership sentinel itself is gone (#1526, closed) — unmatched hosts are now per-host `AppMembership` rows (`UsageTraffic.scala:27,257`); only comments and tests referencing the old name (and asserting its absence) remain. The reason token and BlockReason JSON kind were renamed to `app_time_limit:` / `appTimeLimit` in #1518 — both are SPA-API surfaces (the router treats `BlockReason` wire strings as opaque pass-through, so renaming was safe even pre-#376). `BlockReason.fromWire` only parses the new `app_time_limit:` text — routers echo back whatever they receive, and the dual-written `reason_text` column is consumed by older-image rollback only, never re-parsed here, so no live caller needs the legacy text alias. `JsonDecoder[BlockReason]` does still accept the legacy `siteTimeLimit` kind because V40-migrated `block_events.reason` / `connection_events.reason` JSONB rows persist that kind; the encoder canonicalizes them to `appTimeLimit` on read so the SPA never sees the legacy form on the wire.
 - **TimeUsage** — per-(device, domain, date) minutes accumulated, reset at midnight. Updated by traffic monitor.
 - **TimeExtension** — admin-granted extra minutes for a device on a specific day, with audit trail.
 - **BlocklistDomain** — domain → category mapping. Loaded into memory cache, refreshed every 15 min.
@@ -1294,11 +1307,20 @@ Order matters because earlier conditions short-circuit:
 2. Schedule active for current time → `blocked = true`, reason `Schedule`
 3. Daily time limit reached (`time_used_today >= daily_minutes + extensions_today`) → `blocked = true`, reason `TimeLimit`
 4. Per-app time limit reached (an app's usage, aggregated across its whole host-set, hits its limit) → **every** host in that app's host-set added to `extraBlocked` for this MAC
-5. Manual admin block → `blocked = true`, reason `Manual`
-6. Profile / device `extraBlocked` hostnames → `extraBlocked` for this MAC
-7. Profile / device `extraAllowed` hostnames → `extraAllowed` for this MAC (carves out blocks above)
-8. Profile / device assigned categories → `blocklistIds` for this MAC
-9. `blockIpOnly` flag for the profile / device → set as-is
+5. Profile / device `extraBlocked` hostnames → `extraBlocked` for this MAC
+6. Profile / device `extraAllowed` hostnames → `extraAllowed` for this MAC (carves out blocks above)
+7. Profile / device assigned categories → `blocklistIds` for this MAC
+8. `blockIpOnly` flag for the profile / device → set as-is
+
+Two `MacBlockReason` cases sit outside this per-request short-circuit chain
+rather than being a numbered step: `Unmanaged` (#1122) is the baseline for a
+device with no profile assignment under a `block` household policy, and
+`DefaultDeny` (§0.3) is the lowest-precedence baseline for a profile in
+default-deny mode — either can still be overridden by a higher-precedence
+step above reporting a stronger reason. `Manual` is reserved vocabulary with
+no producer today — no step in `PolicyService` ever emits it (see
+[#2087](https://github.com/wifihaven/wifihaven/issues/2087)); AGENTS.md's
+Architectural model section and §0.2 above list the full six-case ADT.
 
 The router never re-evaluates any of this. It receives the resolved
 `BlockRules` and applies them mechanically.

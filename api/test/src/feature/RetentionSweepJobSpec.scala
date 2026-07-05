@@ -3,18 +3,24 @@ package wifihaven.api.feature
 import wifihaven.api.db.*
 import wifihaven.api.db.TypeMeta.given
 import wifihaven.api.usage.RetentionSweepJob
+import wifihaven.shared.Clock
 import wifihaven.shared.types.*
 import wifihaven.testinfra.*
 import doobie.Transactor
 import doobie.implicits.*
+import doobie.postgres.implicits.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 import zio.*
 import zio.interop.catz.*
 import zio.test.*
 
+import java.time.{Instant, LocalDateTime, ZoneOffset, ZonedDateTime}
+
 /**
  * #811: tests for the daily retention sweep — row deletion, advisory-lock multi-instance safety,
- * and graceful no-op for rollup tables (#809) before their migration lands.
+ * and graceful no-op for rollup tables (#809) before their migration lands. #2086 extends coverage
+ * to `time_usage` / `block_events`; #2089 pins horizon boundaries against a fixed `Instant` (via
+ * `Clock.TestClock`) instead of relying on wall-clock `NOW()`.
  */
 object RetentionSweepJobSpec
     extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Transactor[Task]] {
@@ -67,6 +73,44 @@ object RetentionSweepJobSpec
   private def countEvents(xa: Transactor[Task]): Task[Int] =
     sql"SELECT count(*) FROM connection_events".query[Int].unique.transact(xa)
 
+  // #2086: insert a time_usage row at a configurable `date` offset from a
+  // fixed `now` (not SQL NOW()), so tests can pin the cutoff independent of
+  // wall-clock time.
+  private def insertTimeUsage(
+      xa: Transactor[Task],
+      mac: String,
+      now: Instant,
+      ageDays: Int,
+  ): Task[Unit] = {
+    val date = now
+      .minus(ageDays.toLong, java.time.temporal.ChronoUnit.DAYS)
+      .atZone(ZoneOffset.UTC)
+      .toLocalDate
+    sql"""INSERT INTO time_usage
+            (device_mac, host_type, host_value, date, seconds_used, bytes_in, bytes_out)
+          VALUES
+            ($mac, 'fqdn', 'example.com', $date, 60, 1, 1)""".update.run.transact(xa).unit
+  }
+
+  private def insertBlockEvent(
+      xa: Transactor[Task],
+      mac: String,
+      now: Instant,
+      ageDays: Int,
+  ): Task[Unit] = {
+    val ts = now.minus(ageDays.toLong, java.time.temporal.ChronoUnit.DAYS)
+    sql"""INSERT INTO block_events (mac, host_type, host_value, reason, ts)
+          VALUES ($mac, 'fqdn', 'example.com', '{"kind":"blocked"}'::jsonb, $ts)""".update.run
+      .transact(xa)
+      .unit
+  }
+
+  private def countTimeUsage(xa: Transactor[Task]): Task[Int] =
+    sql"SELECT count(*) FROM time_usage".query[Int].unique.transact(xa)
+
+  private def countBlockEvents(xa: Transactor[Task]): Task[Int] =
+    sql"SELECT count(*) FROM block_events".query[Int].unique.transact(xa)
+
   def spec = suite("RetentionSweepJob")(
     test("deletes traffic_reports older than 30d and leaves recent rows intact") {
       for {
@@ -77,7 +121,7 @@ object RetentionSweepJobSpec
         _    <- insertTraffic(xa, rid, "aa:aa:aa:aa:aa:02", ageDays = 31) // expired
         _    <- insertTraffic(xa, rid, "aa:aa:aa:aa:aa:03", ageDays = 29) // kept
         _    <- insertTraffic(xa, rid, "aa:aa:aa:aa:aa:04", ageDays = 0)  // kept
-        res  <- RetentionSweepJob.sweepOnce(xa)
+        res  <- RetentionSweepJob.sweepOnce(xa, Instant.now())
         rows <- countTraffic(xa)
       } yield assertTrue(rows == 2) &&
         assertTrue(res.exists(_.exists(r => r.table == "traffic_reports" && r.rowsDeleted == 2)))
@@ -90,7 +134,7 @@ object RetentionSweepJobSpec
         _    <- insertEvent(xa, rid, "bb:bb:bb:bb:bb:01", ageDays = 60)
         _    <- insertEvent(xa, rid, "bb:bb:bb:bb:bb:02", ageDays = 31)
         _    <- insertEvent(xa, rid, "bb:bb:bb:bb:bb:03", ageDays = 1)
-        res  <- RetentionSweepJob.sweepOnce(xa)
+        res  <- RetentionSweepJob.sweepOnce(xa, Instant.now())
         rows <- countEvents(xa)
       } yield assertTrue(rows == 1) &&
         assertTrue(res.exists(_.exists(r => r.table == "connection_events" && r.rowsDeleted == 2)))
@@ -106,7 +150,7 @@ object RetentionSweepJobSpec
         xa  <- ZIO.service[Transactor[Task]]
         _   <- sql"DROP TABLE traffic_hourly CASCADE".update.run.transact(xa)
         _   <- sql"DROP TABLE traffic_daily CASCADE".update.run.transact(xa)
-        res <- RetentionSweepJob.sweepOnce(xa)
+        res <- RetentionSweepJob.sweepOnce(xa, Instant.now())
       } yield assertTrue(
         res.exists(rs =>
           rs.exists(_.table == "traffic_reports") &&
@@ -139,7 +183,7 @@ object RetentionSweepJobSpec
                         (NOW() - INTERVAL '200 days')::date, 1, 1, 1, 1),
                        ($rid, 'ee:ee:ee:ee:ee:02', 'example.com',
                         (NOW() - INTERVAL '179 days')::date, 1, 1, 1, 1)""".update.run.transact(xa)
-        res  <- RetentionSweepJob.sweepOnce(xa)
+        res  <- RetentionSweepJob.sweepOnce(xa, Instant.now())
         hRow <- sql"SELECT count(*) FROM traffic_hourly".query[Int].unique.transact(xa)
         dRow <- sql"SELECT count(*) FROM traffic_daily".query[Int].unique.transact(xa)
       } yield assertTrue(hRow == 1) && assertTrue(dRow == 1) &&
@@ -169,7 +213,7 @@ object RetentionSweepJobSpec
                         (NOW() - INTERVAL '200 days')::date, 1, 0, 1),
                        ($rid, 'ee:ee:ee:ee:ee:02', 'example.com',
                         (NOW() - INTERVAL '179 days')::date, 1, 0, 1)""".update.run.transact(xa)
-        res  <- RetentionSweepJob.sweepOnce(xa)
+        res  <- RetentionSweepJob.sweepOnce(xa, Instant.now())
         hRow <- sql"SELECT count(*) FROM connection_events_hourly".query[Int].unique.transact(xa)
         dRow <- sql"SELECT count(*) FROM connection_events_daily".query[Int].unique.transact(xa)
       } yield assertTrue(hRow == 1) && assertTrue(dRow == 1) &&
@@ -186,8 +230,8 @@ object RetentionSweepJobSpec
       for {
         _  <- cleanDb
         xa <- ZIO.service[Transactor[Task]]
-        r1 <- RetentionSweepJob.sweepOnce(xa)
-        r2 <- RetentionSweepJob.sweepOnce(xa)
+        r1 <- RetentionSweepJob.sweepOnce(xa, Instant.now())
+        r2 <- RetentionSweepJob.sweepOnce(xa, Instant.now())
       } yield assertTrue(r1.isDefined) && assertTrue(r2.isDefined)
     },
     test("second sweep is skipped while another session holds the advisory lock") {
@@ -220,14 +264,64 @@ object RetentionSweepJobSpec
           } finally c.close()
         }.fork
         _      <- ZIO.attemptBlocking(acquired.await())
-        res    <- RetentionSweepJob.sweepOnce(xa)
+        res    <- RetentionSweepJob.sweepOnce(xa, Instant.now())
         rows   <- countTraffic(xa)
         _      <- ZIO.succeed(release.countDown())
         _      <- holder.join
       } yield assertTrue(res.isEmpty) && assertTrue(rows == 1)
     },
+    test("deletes time_usage older than 30d and leaves recent rows intact (#2086)") {
+      for {
+        _  <- cleanDb
+        xa <- ZIO.service[Transactor[Task]]
+        now = Instant.now()
+        _    <- insertTimeUsage(xa, "aa:aa:aa:aa:aa:01", now, ageDays = 45) // expired
+        _    <- insertTimeUsage(xa, "aa:aa:aa:aa:aa:02", now, ageDays = 31) // expired
+        _    <- insertTimeUsage(xa, "aa:aa:aa:aa:aa:03", now, ageDays = 29) // kept
+        _    <- insertTimeUsage(xa, "aa:aa:aa:aa:aa:04", now, ageDays = 0)  // kept
+        res  <- RetentionSweepJob.sweepOnce(xa, now)
+        rows <- countTimeUsage(xa)
+      } yield assertTrue(rows == 2) &&
+        assertTrue(res.exists(_.exists(r => r.table == "time_usage" && r.rowsDeleted == 2)))
+    },
+    test("deletes block_events older than 30d and leaves recent rows intact (#2086)") {
+      for {
+        _  <- cleanDb
+        xa <- ZIO.service[Transactor[Task]]
+        now = Instant.now()
+        _    <- insertBlockEvent(xa, "bb:bb:bb:bb:bb:01", now, ageDays = 60)
+        _    <- insertBlockEvent(xa, "bb:bb:bb:bb:bb:02", now, ageDays = 31)
+        _    <- insertBlockEvent(xa, "bb:bb:bb:bb:bb:03", now, ageDays = 1)
+        res  <- RetentionSweepJob.sweepOnce(xa, now)
+        rows <- countBlockEvents(xa)
+      } yield assertTrue(rows == 1) &&
+        assertTrue(res.exists(_.exists(r => r.table == "block_events" && r.rowsDeleted == 2)))
+    },
+    test(
+      "honours a fixed TestClock instant for the horizon boundary, independent of wall-clock NOW() (#2089)",
+    ) {
+      // Pin `now` to a value far from the actual wall clock. If sweepOnce (or
+      // anything it calls) still reached for real NOW() anywhere, the
+      // wall-clock-relative ages below would land on the wrong side of the
+      // 30-day cutoff and this test would fail regardless of which way the
+      // bug pointed.
+      val fixedNow: LocalDateTime = LocalDateTime.of(2030, 1, 1, 3, 0, 0)
+      for {
+        _     <- cleanDb
+        xa    <- ZIO.service[Transactor[Task]]
+        clock <- Clock.TestClock.makeWithControl(fixedNow)
+        (_, tc) = clock
+        now    <- tc.instant
+        _      <- insertTimeUsage(xa, "cc:cc:cc:cc:cc:01", now, ageDays = 31)  // expired
+        _      <- insertBlockEvent(xa, "cc:cc:cc:cc:cc:02", now, ageDays = 31) // expired
+        _      <- insertTimeUsage(xa, "cc:cc:cc:cc:cc:03", now, ageDays = 29)  // kept
+        _      <- insertBlockEvent(xa, "cc:cc:cc:cc:cc:04", now, ageDays = 29) // kept
+        _      <- RetentionSweepJob.sweepOnce(xa, now)
+        tuRows <- countTimeUsage(xa)
+        beRows <- countBlockEvents(xa)
+      } yield assertTrue(tuRows == 1) && assertTrue(beRows == 1)
+    },
     test("computes initial delay to next 03:00 UTC tick") {
-      import java.time.{ZoneOffset, ZonedDateTime}
       val before  = ZonedDateTime.of(2026, 5, 26, 1, 0, 0, 0, ZoneOffset.UTC)
       val after   = ZonedDateTime.of(2026, 5, 26, 5, 0, 0, 0, ZoneOffset.UTC)
       val atRun   = ZonedDateTime.of(2026, 5, 26, 3, 0, 0, 0, ZoneOffset.UTC)
