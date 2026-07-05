@@ -164,20 +164,25 @@ export function useWsNow(): void {
 /**
  * `connectionEvents{blocked:true}` (§3.1, class 1): the server pushes the new head rows;
  * we prepend them (bounded, dedup by id) into the dashboard's "Recently Blocked" cache —
- * the same `recentBlocked()` key `useRecentBlocked` reads. Refetched once on reconnect.
+ * the same `recentBlocked(mac)` key `useRecentBlocked` reads. Refetched once on reconnect.
+ *
+ * #2062: an optional `mac` (the "All devices ▾" quick filter) narrows the subscription to that
+ * device (`connectionEvents{blocked:true, macs:[mac]}`) so the live stream itself filters
+ * server-side (not a client-side hide, §8.5), and keys the patch on `recentBlocked(mac)` so it
+ * lands on the active filtered cache entry.
  */
-export function useWsRecentBlocked(): void {
+export function useWsRecentBlocked(mac: string | null = null): void {
   const qc = useQueryClient()
   useWsSubscription(
     'connectionEvents',
-    { blocked: true },
+    { blocked: true, ...(mac ? { macs: [mac] } : {}) },
     payload => {
       const rows = (payload as QueryLog[]) ?? []
-      qc.setQueryData(qk.recentBlocked(), (prev: QueryLog[] | undefined) =>
+      qc.setQueryData(qk.recentBlocked(mac), (prev: QueryLog[] | undefined) =>
         prependHead(prev, rows, RECENT_BLOCKED_LIMIT),
       )
     },
-    qk.recentBlocked(),
+    qk.recentBlocked(mac),
   )
 }
 

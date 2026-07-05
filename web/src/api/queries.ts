@@ -66,7 +66,10 @@ export const qk = {
   alerts: (includeAll: boolean) => ['alerts', includeAll] as const,
   schedules: () => ['schedules'] as const,
   dashboardNow: () => ['dashboard', 'now'] as const,
-  recentBlocked: () => ['dashboard', 'recent-blocked'] as const,
+  // #2062: an optional `mac` narrows the feed to one device; the ws patcher
+  // (useWsRecentBlocked) MUST key on the same mac so its prepend lands on the
+  // active (filtered) cache entry, not the unfiltered one.
+  recentBlocked: (mac?: string | null) => ['dashboard', 'recent-blocked', mac ?? null] as const,
   timeStatusToday: () => ['time', 'status', 'today'] as const,
   timeStatusDate: (date: string) => ['time', 'status', 'date', date] as const,
   timeStatusWeek: (to?: string, bucketOffsetMin?: number) =>
@@ -241,11 +244,16 @@ export function useDashboardNow(opts?: QueryOpts<DashboardNow>) {
 // 10s cadence as the "now" snapshot so a just-now block surfaces immediately.
 // NB a row here is a real traffic-layer drop, not a DNS event (DNS always
 // resolves) — see memory/blocking_is_traffic_layer_not_dns.md.
-export function useRecentBlocked(opts?: QueryOpts<QueryLog[]>) {
+// #2062: an optional `mac` narrows the feed to one device (the "All devices ▾" quick filter),
+// threaded into BOTH the cache key and the /api/logs `mac` filter so the fallback poll narrows
+// server-side, matching the narrowed live subscription (useWsRecentBlocked).
+export function useRecentBlocked(mac: string | null = null, opts?: QueryOpts<QueryLog[]>) {
   return useQuery({
-    queryKey: qk.recentBlocked(),
+    queryKey: qk.recentBlocked(mac),
     queryFn: () =>
-      api.logs.query({ blocked: true, limit: RECENT_BLOCKED_LIMIT, hours: 1 }).then(p => p.rows),
+      api.logs
+        .query({ blocked: true, limit: RECENT_BLOCKED_LIMIT, hours: 1, ...(mac ? { macs: [mac] } : {}) })
+        .then(p => p.rows),
     select: (rows: QueryLog[]) => {
       const cutoff = Date.now() - RECENT_BLOCKED_WINDOW_MS
       return rows.filter(r => new Date(r.ts).getTime() >= cutoff)

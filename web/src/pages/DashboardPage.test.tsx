@@ -68,7 +68,30 @@ const blockedRow: QueryLog = {
   location: 'home', ts: recentBlockedTs(),
 }
 
+// #2073 — a second recent drop under a DIFFERENT profile, to pin the per-profile grouping.
+const blockedRow2: QueryLog = {
+  id: 100, mac: 'aa:bb:cc:dd:ee:02', deviceName: 'Dad Laptop',
+  profileId: 2, profileName: 'Adults',
+  host: { type: 'fqdn', value: 'doubleclick.net' }, qtype: 1,
+  blocked: true, reason: { kind: 'manual' },
+  location: 'home', ts: recentBlockedTs(),
+}
+
 const emptyNow: DashboardNow = { asOf: '2026-05-13T10:00:00Z', profiles: [] }
+
+// #2062 — the Recently-Blocked device filter draws its options from the NOW snapshot's known
+// devices; this snapshot names the two devices the blocked rows above belong to.
+const nowWithDevices: DashboardNow = {
+  asOf: '2026-05-13T10:00:00Z',
+  profiles: [
+    { id: 1, name: 'Kids', paused: false, activeDevices: [
+      { id: 10, name: "Kid's iPad", mac: 'aa:bb:cc:dd:ee:01', lastSeenSeconds: 30, topHosts: [] },
+    ] },
+    { id: 2, name: 'Adults', paused: false, activeDevices: [
+      { id: 20, name: 'Dad Laptop', mac: 'aa:bb:cc:dd:ee:02', lastSeenSeconds: 20, topHosts: [] },
+    ] },
+  ],
+}
 
 const liveNow: DashboardNow = {
   asOf: '2026-05-13T10:00:00Z',
@@ -239,48 +262,20 @@ const liveBandwidth = (overrides: Partial<WsTrafficUsage> = {}): WsTrafficUsage 
 })
 
 describe('DashboardPage', () => {
-  it('renders the 1h KPI tiles and the merged Blocking activity panel (#1836)', async () => {
+  it('renders the status-first 1h KPI tiles (#1834)', async () => {
     render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
     expect(await screen.findByText('78')).toBeInTheDocument()  // Events (1h)
     expect(screen.getByText('9')).toBeInTheDocument()          // Blocked (1h)
-    // The ranked blocked-host list (existing topBlocked shape) is the body.
-    expect(screen.getByText('evil.com')).toBeInTheDocument()
-    expect(screen.getByText('42')).toBeInTheDocument()
-    expect(screen.getByText('ads.example')).toBeInTheDocument()
-    expect(screen.getByText('17')).toBeInTheDocument()
   })
 
-  // ── #1836: merge Top Blocked + Per Device → one "Blocking activity (24h)" panel ──
-  it('renders ONE "Blocking activity (24h)" panel, replacing Top Blocked + Per Device (#1836)', async () => {
+  // ── #2073: the "Blocking activity (24h)" panel is removed from the dashboard ──
+  it('does NOT render the "Blocking activity (24h)" panel (#2073)', async () => {
     render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
-    expect(await screen.findByText('Blocking activity (24h)')).toBeInTheDocument()
-    // The two old panels are gone.
-    expect(screen.queryByText('Top Blocked (24h)')).not.toBeInTheDocument()
-    expect(screen.queryByText('Per Device (24h)')).not.toBeInTheDocument()
-  })
-
-  it('subtitles the panel "N hosts · M blocked events" derived from stats (#1836)', async () => {
-    render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
-    // topBlocked = [evil.com·42, ads.example·17] → 2 hosts, 42+17 = 59 events.
-    expect(await screen.findByText('2 hosts · 59 blocked events')).toBeInTheDocument()
-  })
-
-  it('uses the singular "host" when exactly one host was blocked (#1836)', async () => {
-    mockStats().mockResolvedValue({
-      ...stats,
-      topBlocked: [{ host: { type: 'fqdn', value: 'captive.apple.com' }, count: 3 }],
-    })
-    render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
-    expect(await screen.findByText('1 host · 3 blocked events')).toBeInTheDocument()
-  })
-
-  it('never renders a "0 blocked" row and drops per-device volume (#1836)', async () => {
-    render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
-    await screen.findByText('Blocking activity (24h)')
-    expect(screen.queryByText(/0 blocked/)).not.toBeInTheDocument()
-    // Per-device volume (events / N blocked) belongs on /devices + /profiles, not here.
-    expect(screen.queryByText('500 events')).not.toBeInTheDocument()
-    expect(screen.queryByText('20 blocked')).not.toBeInTheDocument()
+    await screen.findByTestId('kpi-strip')
+    expect(screen.queryByText('Blocking activity (24h)')).not.toBeInTheDocument()
+    // …and its ranked-host body (the topBlocked shape) no longer appears anywhere.
+    expect(screen.queryByText('evil.com')).not.toBeInTheDocument()
+    expect(screen.queryByText('ads.example')).not.toBeInTheDocument()
   })
 
   it('restates the KPI tiles status-first: Online now / Blocked now / Events (1h) / Blocked (1h) (#1834)', async () => {
@@ -320,16 +315,6 @@ describe('DashboardPage', () => {
     expect(screen.queryByText(/queries/i)).not.toBeInTheDocument()
   })
 
-  it('renders a one-line empty state (not two cards) when 24h had zero blocks (#1836)', async () => {
-    mockStats().mockResolvedValue({ ...stats, topBlocked: [] })
-    render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
-    expect(
-      await screen.findByText('No blocked connection events in the last 24h'),
-    ).toBeInTheDocument()
-    // Zero hosts, zero events — the subtitle stays honest.
-    expect(screen.getByText('0 hosts · 0 blocked events')).toBeInTheDocument()
-  })
-
   it('renders the KPI strip above the NOW section (#1834)', async () => {
     mockNow().mockResolvedValue(liveNow)
     render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
@@ -349,13 +334,6 @@ describe('DashboardPage', () => {
     // NOW + its live card paint without waiting on stats.
     expect(await screen.findByTestId('now-section')).toBeInTheDocument()
     expect(await screen.findByTestId('now-profile-1')).toBeInTheDocument()
-    // The 24h Blocking activity panel shows a skeleton — never placeholder zeros
-    // or a premature "zero blocks" empty state (the #1098 anti-pattern).
-    expect(screen.getByTestId('blocking-activity-skeleton')).toBeInTheDocument()
-    expect(screen.queryByText(/0 hosts/)).not.toBeInTheDocument()
-    expect(
-      screen.queryByText('No blocked connection events in the last 24h'),
-    ).not.toBeInTheDocument()
   })
 
   it('shows a skeleton (never "0") on the stats-backed 1h tiles until stats resolves (#1837)', async () => {
@@ -379,23 +357,22 @@ describe('DashboardPage', () => {
     expect(await screen.findByText('connectivitycheck.gstatic.com')).toBeInTheDocument()
   })
 
-  // ── #2056 §9.1: section order — Recently Blocked LEADS, above the KPI strip ──
-  it('orders the page banners → Recently Blocked → KPI strip → NOW → Blocking activity (§9.1)', async () => {
+  // ── #2073 §9.1: section order — Recently Blocked leads, above KPI strip → NOW; no 24h panel ──
+  it('orders the page banners → Recently Blocked → KPI strip → NOW, with no 24h panel (#2073)', async () => {
     mockNow().mockResolvedValue(liveNow)
     render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
     const blocked = await screen.findByTestId('recently-blocked-section')
     const strip   = await screen.findByTestId('kpi-strip')
     const now     = await screen.findByTestId('now-section')
-    const activity = await screen.findByText('Blocking activity (24h)')
     // Recently Blocked is FIRST (rev-4 moved it to the top as the primary diagnostic),
-    // then the KPI strip, then NOW, then the below-fold 24h panel.
+    // then the KPI strip, then NOW. The below-fold 24h panel is gone (#2073).
     expect(blocked.compareDocumentPosition(strip) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(strip.compareDocumentPosition(now) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    expect(now.compareDocumentPosition(activity) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.queryByText('Blocking activity (24h)')).not.toBeInTheDocument()
   })
 
-  // ── #2056 §9.1: FIVE-tile KPI strip incl. the Bandwidth tile + window selector ──
-  it('renders a 5-tile KPI strip including a Bandwidth tile with the window selector (§9.1)', async () => {
+  // ── #2056 §9.1: FIVE-tile KPI strip incl. the Bandwidth tile (selector now global, #2073) ──
+  it('renders a 5-tile KPI strip including a Bandwidth tile (§9.1)', async () => {
     mockUseWsTrafficUsage.mockReturnValue(liveBandwidth({
       overall: { bytesInPerSec: 18 * 1024 * 1024, bytesOutPerSec: 2 * 1024 * 1024, bytesPerSec: 20 * 1024 * 1024 },
     }))
@@ -404,16 +381,31 @@ describe('DashboardPage', () => {
     for (const label of ['Online now', 'Blocked now', 'Events (1h)', 'Blocked (1h)', 'Bandwidth']) {
       expect(within(strip).getByText(label)).toBeInTheDocument()
     }
-    // The Bandwidth tile carries the live ▲▼ rate AND the [raw·1m·10m·1h] window selector —
-    // the standalone "Live Bandwidth" panel is gone.
+    // The Bandwidth tile carries the live ▲▼ rate; the standalone "Live Bandwidth" panel is gone.
     expect(within(strip).getByTestId('kpi-bandwidth-rate')).toBeInTheDocument()
-    for (const b of ['raw', '1m', '10m', '1h']) {
-      expect(within(strip).getByTestId(`bucket-${b}`)).toBeInTheDocument()
-    }
-    // The 12h/1d/1w history buckets do NOT appear on the live gauge.
-    expect(within(strip).queryByTestId('bucket-1d')).not.toBeInTheDocument()
-    // The separate "Live Bandwidth" panel was folded in (no second gauge).
+    // #2073: the window selector no longer lives INSIDE the Bandwidth tile.
+    expect(within(strip).queryByTestId('bucket-1m')).not.toBeInTheDocument()
     expect(screen.queryByText('Live Bandwidth')).not.toBeInTheDocument()
+  })
+
+  // ── #2073: the window/bucket selector is relocated to a clearly-global spot ──
+  it('relocates the window selector to a global control, out of the Bandwidth tile (#2073)', async () => {
+    mockUseWsTrafficUsage.mockReturnValue(liveBandwidth({ bucket: '1m' }))
+    render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
+    // The global selector renders its live-window buttons in one clearly-labelled place…
+    const selector = await screen.findByTestId('dashboard-window-selector')
+    expect(within(selector).getByText(/Window/i)).toBeInTheDocument()
+    for (const b of ['raw', '1m', '10m', '1h']) {
+      expect(within(selector).getByTestId(`bucket-${b}`)).toBeInTheDocument()
+    }
+    // …the 12h/1d/1w history buckets do NOT appear on the live control.
+    expect(within(selector).queryByTestId('bucket-1d')).not.toBeInTheDocument()
+    // …and it is NOT inside the Bandwidth KPI tile.
+    const bandwidth = screen.getByTestId('kpi-bandwidth')
+    expect(within(bandwidth).queryByTestId('bucket-1m')).not.toBeInTheDocument()
+    // It sits above the KPI strip, governing every rate below it.
+    const strip = screen.getByTestId('kpi-strip')
+    expect(selector.compareDocumentPosition(strip) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   // ── #2056 §8.5/#2041: the Bandwidth tile's three states (re-homed from BandwidthGauges) ──
@@ -433,8 +425,8 @@ describe('DashboardPage', () => {
     const strip = await screen.findByTestId('kpi-strip')
     expect(within(strip).getByTestId('kpi-bandwidth-idle')).toHaveTextContent('—')
     expect(within(strip).queryByTestId('kpi-bandwidth-rate')).not.toBeInTheDocument()
-    // The selector still renders so the user can change the window even while paused.
-    expect(within(strip).getByTestId('bucket-1m')).toBeInTheDocument()
+    // The (now global) selector still renders so the user can change the window even while paused.
+    expect(within(screen.getByTestId('dashboard-window-selector')).getByTestId('bucket-1m')).toBeInTheDocument()
   })
 
   // ── #2056 §8.5: ONE window selector governs ▲▼ EVERYWHERE (global selection) ──
@@ -454,46 +446,63 @@ describe('DashboardPage', () => {
     expect(within(strip).getByTestId('kpi-bandwidth-rate')).toHaveTextContent('▲')
     const card = await screen.findByTestId('now-profile-1')
     expect(within(card).getByTestId('now-profile-rate-1')).toHaveTextContent('▲')
-    // The strip's selector is the single global control — switching it re-subscribes the one
-    // shared trafficUsage stream (the same setter the NOW cards' window reads).
-    await user.click(within(strip).getByTestId('bucket-10m'))
+    // The global window selector is the single control — switching it re-subscribes the one
+    // shared trafficUsage stream (the same setter the KPI tile AND the NOW cards' window read).
+    const selector = screen.getByTestId('dashboard-window-selector')
+    await user.click(within(selector).getByTestId('bucket-10m'))
     expect(setBucket).toHaveBeenCalledWith('10m')
   })
 })
 
-describe('RecentlyBlockedSection (#1338)', () => {
-  it('renders blocked rows: device, profile, host, and reason (§9.2 shape)', async () => {
+describe('RecentlyBlockedSection (#1338 / #2073 / #2062)', () => {
+  it('renders blocked rows: device, host, and reason under a per-profile group (§9.2 shape)', async () => {
     render(withQuery(<MemoryRouter><RecentlyBlockedSection /></MemoryRouter>))
     expect(await screen.findByText('connectivitycheck.gstatic.com')).toBeInTheDocument()
-    // §9.2: device · profile↗ · host · reason · time — device and profile are now distinct
-    // (separately deep-linked) elements, not one text node.
+    // §9.2 (#2073): the row is device · host · reason · time; the profile is the GROUP header now.
     expect(screen.getByText("Kid's iPad")).toBeInTheDocument()
     expect(screen.getByText(/Kids/)).toBeInTheDocument()
     expect(screen.getByText('category: ads')).toBeInTheDocument()
     // Reuses the blocked=true read, capped to 20 (RECENT_BLOCKED_LIMIT), 1h fetch
-    // window (trimmed to 15 min client-side).
+    // window (trimmed to 15 min client-side). No `macs` when unfiltered.
     expect(api.logs.query).toHaveBeenCalledWith({ blocked: true, limit: 20, hours: 1 })
   })
 
-  it('§9.2 — the profile is a clickable deep-link to /profiles?id=<profileId> (quick unblock)', async () => {
+  // ── #2073: group the blocked rows under a per-profile header (the clickable deep-link) ──
+  it('groups rows by profile; the profile header deep-links to /profiles?id=<profileId> (#2073)', async () => {
+    mockQuery().mockResolvedValue({ rows: [blockedRow, blockedRow2], nextCursor: null })
     render(withQuery(<MemoryRouter><RecentlyBlockedSection /></MemoryRouter>))
     await screen.findByText('connectivitycheck.gstatic.com')
-    // blockedRow.profileId = 1 → the profile chip links straight to the Kids profile editor,
-    // reusing the existing ?id= scroll-to-highlight deep-link (#298).
-    const profileLink = screen.getByTestId('recently-blocked-profile-99')
-    expect(profileLink).toHaveAttribute('href', '/profiles?id=1')
-    expect(profileLink).toHaveTextContent(/Kids/)
+    // One group header per profile, each a link to that profile's editor (reusing the ?id=
+    // scroll-to-highlight deep-link, #298) — NOT a per-row profile chip.
+    const kids = screen.getByTestId('recently-blocked-group-1')
+    expect(kids).toHaveAttribute('href', '/profiles?id=1')
+    expect(kids).toHaveTextContent(/Kids/)
+    const adults = screen.getByTestId('recently-blocked-group-2')
+    expect(adults).toHaveAttribute('href', '/profiles?id=2')
+    expect(adults).toHaveTextContent(/Adults/)
+    // The two devices' drops land under their respective groups.
+    expect(screen.getByText("Kid's iPad")).toBeInTheDocument()
+    expect(screen.getByText('Dad Laptop')).toBeInTheDocument()
   })
 
-  it('§9.2 — the device name keeps its own deep-link to the device-filtered Connection Events', async () => {
+  // ── #2073: the panel is compact — it scrolls WITHIN a fixed max-height, not down the page ──
+  it('caps the panel height and scrolls internally (#2073)', async () => {
     render(withQuery(<MemoryRouter><RecentlyBlockedSection /></MemoryRouter>))
     await screen.findByText('connectivitycheck.gstatic.com')
-    // blockedRow.mac = aa:bb:cc:dd:ee:01 → "show everything this device hit" is a distinct
-    // target from the profile (policy) link.
+    const scroller = screen.getByTestId('recently-blocked-scroll')
+    expect(scroller.className).toMatch(/overflow-y-auto/)
+    expect(scroller.className).toMatch(/max-h-/)
+  })
+
+  it('§9.2 — the device name keeps its own deep-link to the device-filtered blocked events (#2073)', async () => {
+    render(withQuery(<MemoryRouter><RecentlyBlockedSection /></MemoryRouter>))
+    await screen.findByText('connectivitycheck.gstatic.com')
+    // blockedRow.mac = aa:bb:cc:dd:ee:01 → the Connection Events page reads ?status=blocked (the
+    // verified param, NOT ?blocked=true) plus ?mac= for the device.
     const deviceLink = screen.getByText("Kid's iPad").closest('a')
     expect(deviceLink).toHaveAttribute(
       'href',
-      '/usage/events?blocked=true&mac=aa%3Abb%3Acc%3Add%3Aee%3A01',
+      '/usage/events?status=blocked&mac=aa%3Abb%3Acc%3Add%3Aee%3A01',
     )
   })
 
@@ -509,16 +518,74 @@ describe('RecentlyBlockedSection (#1338)', () => {
     expect(screen.queryByText('connectivitycheck.gstatic.com')).not.toBeInTheDocument()
   })
 
-  it('links to the full Connection Events page', async () => {
+  // ── #2073: "View all →" lands on Connection Events pre-filtered to blocked (verified param) ──
+  it('links "View all" to the Connection Events page pre-filtered to blocked (#2073)', async () => {
     render(withQuery(<MemoryRouter><RecentlyBlockedSection /></MemoryRouter>))
     await screen.findByText('connectivitycheck.gstatic.com')
-    expect(screen.getByText(/View all/).closest('a')).toHaveAttribute('href', '/usage/events?blocked=true')
+    // The page parses ?status=blocked (LogsPage.parseStatus), so that is the param — not ?blocked=.
+    expect(screen.getByText(/View all/).closest('a')).toHaveAttribute('href', '/usage/events?status=blocked')
   })
 
   it('shows an empty state when nothing is blocked', async () => {
     mockQuery().mockResolvedValue({ rows: [], nextCursor: null })
     render(withQuery(<MemoryRouter><RecentlyBlockedSection /></MemoryRouter>))
     expect(await screen.findByText(/Nothing blocked recently/)).toBeInTheDocument()
+  })
+
+  // ── #2062: the "All devices ▾" quick device filter narrows the (grouped) list by mac ──
+  it('narrows the list to a device and re-fetches the fallback poll by mac (#2062)', async () => {
+    mockNow().mockResolvedValue(nowWithDevices)
+    mockQuery().mockImplementation((p?: { macs?: string[] }) =>
+      Promise.resolve({
+        rows: p?.macs?.length ? [blockedRow] : [blockedRow, blockedRow2],
+        nextCursor: null,
+      }),
+    )
+    const user = userEvent.setup()
+    render(withQuery(<MemoryRouter><RecentlyBlockedSection /></MemoryRouter>))
+    // Unfiltered: both devices' drops show.
+    await screen.findByText('doubleclick.net')
+    // Pick Kid's iPad from the device filter (options drawn from the NOW snapshot).
+    const filter = await screen.findByTestId('recently-blocked-device-filter')
+    await user.selectOptions(filter, 'aa:bb:cc:dd:ee:01')
+    // The fallback poll re-fetches narrowed to that mac (the live subscription narrows too).
+    await waitFor(() =>
+      expect(api.logs.query).toHaveBeenCalledWith({ blocked: true, limit: 20, hours: 1, macs: ['aa:bb:cc:dd:ee:01'] }),
+    )
+    // The other device's drop drops out of the narrowed list.
+    await waitFor(() => expect(screen.queryByText('doubleclick.net')).not.toBeInTheDocument())
+    // View all carries the active device filter.
+    expect(screen.getByText(/View all/).closest('a')).toHaveAttribute(
+      'href', '/usage/events?status=blocked&mac=aa%3Abb%3Acc%3Add%3Aee%3A01',
+    )
+  })
+
+  it('keeps the filtered device as a sticky option when it ages out of the NOW snapshot (#2062)', async () => {
+    // NOW starts with the device, then the next snapshot drops it (idle > 5 min) — the filter
+    // must stay applied and the control keep showing it, not snap back to "All devices".
+    mockNow().mockResolvedValueOnce(nowWithDevices).mockResolvedValue(emptyNow)
+    mockQuery().mockImplementation((p?: { macs?: string[] }) =>
+      Promise.resolve({ rows: p?.macs?.length ? [blockedRow] : [blockedRow, blockedRow2], nextCursor: null }),
+    )
+    const user = userEvent.setup()
+    render(withQuery(<MemoryRouter><RecentlyBlockedSection /></MemoryRouter>))
+    const filter = await screen.findByTestId('recently-blocked-device-filter')
+    await user.selectOptions(filter, 'aa:bb:cc:dd:ee:01')
+    // The now-absent device is still a selectable option and remains selected.
+    expect((filter as HTMLSelectElement).value).toBe('aa:bb:cc:dd:ee:01')
+    expect(within(filter).getByRole('option', { name: "Kid's iPad" })).toBeInTheDocument()
+  })
+
+  it('shows a device-scoped empty state when the filtered device has no recent blocks (#2062)', async () => {
+    mockNow().mockResolvedValue(nowWithDevices)
+    mockQuery().mockImplementation((p?: { macs?: string[] }) =>
+      Promise.resolve({ rows: p?.macs?.length ? [] : [blockedRow, blockedRow2], nextCursor: null }),
+    )
+    const user = userEvent.setup()
+    render(withQuery(<MemoryRouter><RecentlyBlockedSection /></MemoryRouter>))
+    await screen.findByText('doubleclick.net')
+    await user.selectOptions(await screen.findByTestId('recently-blocked-device-filter'), 'aa:bb:cc:dd:ee:01')
+    expect(await screen.findByText("Nothing blocked recently for Kid's iPad")).toBeInTheDocument()
   })
 
   it('polls and updates the list on refetch', async () => {
