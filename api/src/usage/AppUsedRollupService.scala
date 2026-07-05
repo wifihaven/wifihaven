@@ -153,7 +153,9 @@ class AppUsedRollupServiceLive(
               case None            => trafficRepo.listPresenceRows(macs, date)
             }
             // #2077: gate the live slice the same way the rollup write path gates its input, so
-            // rolled + tail compose over one active-minute definition.
+            // rolled + tail compose over one active-minute definition. Gating only the slice can
+            // transiently drop an ambient-only tail of a session whose anchor is already rolled —
+            // bounded (self-heals on the next whole-day tick) and only ever removes minutes.
             ambient <- ambientRepo.gateFor(settings, today)
             presence = TimeStatusService.gatedPresence(atls, raw, settings, ambient)
           } yield {

@@ -308,7 +308,11 @@ class TimeStatusServiceLive(
           // enforces on the rollup path identically to the all-live path.
           perAppMins <- appUsedRollupService.appCapMinutesByAppId(now, date, settings, profileId)
         } yield {
-          // #2077: the rolled part was gated at rollup-write time; gate the live tail the same way.
+          // #2077: the rolled part was gated at rollup-write time; gate the live tail the same
+          // way. Gating only the tail slice can transiently drop an ambient-only tail of a real
+          // session whose anchor row is already rolled — bounded (≤ one rollup interval,
+          // self-heals when the next tick re-gates the whole day) and it only ever REMOVES
+          // minutes, mirroring the #1666 per-slice anchor behavior.
           val gatedTail   = TimeStatusService.gatedPresence(atls, tail, settings, ambient)
           val tailSeconds =
             TimeStatusService.usedSecondsForProfile(p, devices, atls, gatedTail, settings)

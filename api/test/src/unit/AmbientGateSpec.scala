@@ -165,6 +165,22 @@ object AmbientGateSpec extends ZIOSpecDefault {
       val g    = gate("valid.apple.com")
       assertTrue(gatedMinutes(rows, g) == 0)
     },
+    test("fail-open: an ENABLED gate with an empty learned set drops nothing") {
+      // Fresh install / learner not yet run: every host anchors, so the gate is the identity
+      // over its input and behavior degrades to the status quo, never to over-suppression.
+      val rows         = List(
+        row(mac1, 0, "valid.apple.com"),
+        row(mac1, 30, "weatherkit.apple.com"),
+      )
+      val (out, drops) = Presence.ambientGatedRowsWithDropCount(
+        rows,
+        AmbientGate(enabled = true, Set.empty),
+        filter,
+        120,
+        Nil,
+      )
+      assertTrue(out == rows, drops == 0)
+    },
     test("isolatedSpanHosts learns isolated hosts and never diverse or app-attributed ones") {
       val isolated = List(row(mac1, 0, "valid.apple.com"), row(mac1, 1, "valid.apple.com"))
       val diverse  = (30 until 40).toList.flatMap { m =>

@@ -138,8 +138,11 @@ object AmbientLearnJob {
       acc.toMap
     }
     _ <- ambientRepo.upsertDay(yesterday, counts)
+    // Prune exactly the days the window reads exclude: the reads keep
+    // `day > today - windowDays` (strict), so everything at or before that
+    // boundary is dead weight — delete `day < boundary + 1`.
     _       <- ambientRepo.pruneBefore(
-      today.minusDays(settings.ambientLearningWindowDays.max(1).toLong),
+      today.minusDays(settings.ambientLearningWindowDays.max(1).toLong).plusDays(1L),
     )
     ambient <- ambientRepo.ambientHosts(settings, today)
     _       <- AppMetrics.setAmbientHosts(ambient.size)
