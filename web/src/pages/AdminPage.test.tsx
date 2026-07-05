@@ -35,6 +35,10 @@ beforeEach(() => {
     heartbeatFilter: { ...DEFAULT_HF },
     unmanagedMacPolicy: { ...DEFAULT_UMM },
     blockEncryptedDns: false,
+    ambientGateEnabled: false,
+    ambientIsolationMaxHosts: 2,
+    ambientMinIsolatedDays: 3,
+    ambientLearningWindowDays: 14,
   }
   ;(api.household.get as unknown as ReturnType<typeof vi.fn>).mockImplementation(
     async () => ({
@@ -227,6 +231,29 @@ describe('AdminPage — block-encrypted-DNS toggle (#1913)', () => {
     // value must come back checked.
     await waitFor(() =>
       expect((screen.getByTestId('block-encrypted-dns-enabled') as HTMLInputElement).checked).toBe(true),
+    )
+  })
+})
+
+describe('AdminPage — ambient anchor-gate toggle (#2077)', () => {
+  it('renders the toggle reflecting the stored setting (off by default)', async () => {
+    render(<AdminPage />)
+    const toggle = await screen.findByTestId('ambient-gate-enabled') as HTMLInputElement
+    expect(toggle.checked).toBe(false)
+  })
+
+  it('toggling on fires PATCH {ambientGateEnabled:true} and persists', async () => {
+    const user = userEvent.setup()
+    render(<AdminPage />)
+    await screen.findByTestId('ambient-gate-enabled')
+
+    await user.click(screen.getByTestId('ambient-gate-enabled'))
+
+    await waitFor(() =>
+      expect(api.household.patch).toHaveBeenCalledWith({ ambientGateEnabled: true }),
+    )
+    await waitFor(() =>
+      expect((screen.getByTestId('ambient-gate-enabled') as HTMLInputElement).checked).toBe(true),
     )
   })
 })

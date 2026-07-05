@@ -729,10 +729,28 @@ case class HouseholdSettings(
     // dnsmasq answers network-wide only. Default false (migration V61). The
     // curated host/IP lists are baked in the agent, never shipped on the wire.
     blockEncryptedDns: Boolean = false,
+    // #2077: the engagement-anchor gate over the isolation-learned ambient-host
+    // baseline (docs/design/idle-traffic-discrimination.md). `ambientGateEnabled`
+    // is the master switch (default off — the learner runs regardless so the
+    // operator can inspect the would-be ambient set via
+    // GET /api/presence/ambient-hosts before enabling). The three thresholds
+    // mirror migration V63: a device span with <= `ambientIsolationMaxHosts`
+    // distinct hosts and no app-attributed row is "isolated" for learning; a
+    // host isolated on >= `ambientMinIsolatedDays` distinct days within the
+    // trailing `ambientLearningWindowDays` becomes ambient.
+    ambientGateEnabled: Boolean = false,
+    ambientIsolationMaxHosts: Int = HouseholdSettings.DefaultAmbientIsolationMaxHosts,
+    ambientMinIsolatedDays: Int = HouseholdSettings.DefaultAmbientMinIsolatedDays,
+    ambientLearningWindowDays: Int = HouseholdSettings.DefaultAmbientLearningWindowDays,
 ) derives JsonCodec
 
 object HouseholdSettings {
   val DefaultPresenceContinuationSeconds: Int = 120
+  // #2077: defaults mirror migration V63 (causally validated on prod — see
+  // docs/design/idle-traffic-discrimination.md).
+  val DefaultAmbientIsolationMaxHosts: Int    = 2
+  val DefaultAmbientMinIsolatedDays: Int      = 3
+  val DefaultAmbientLearningWindowDays: Int   = 14
 }
 
 case class UpdateHouseholdSettingsRequest(
@@ -745,6 +763,14 @@ case class UpdateHouseholdSettingsRequest(
     // to the default (false), so a full-replace PUT never silently clears it for
     // a peer that doesn't know about it yet.
     blockEncryptedDns: Boolean = false,
+    // #2077: additive for the same reason. NOTE the ambient THRESHOLDS default to
+    // the V63 values (not "preserve stored") on a full-replace PUT, matching the
+    // presenceContinuationSeconds precedent above; the SPA autosave path uses
+    // PATCH, which preserves absent fields.
+    ambientGateEnabled: Boolean = false,
+    ambientIsolationMaxHosts: Int = HouseholdSettings.DefaultAmbientIsolationMaxHosts,
+    ambientMinIsolatedDays: Int = HouseholdSettings.DefaultAmbientMinIsolatedDays,
+    ambientLearningWindowDays: Int = HouseholdSettings.DefaultAmbientLearningWindowDays,
 ) derives JsonCodec
 
 /**
@@ -786,6 +812,28 @@ object HeartbeatFilter {
   val Off: HeartbeatFilter =
     HeartbeatFilter(enabled = false, bytesThreshold = 0, heartbeatHostPatterns = Nil)
 }
+
+/**
+ * #2077: response body for `GET /api/presence/ambient-hosts`. The isolation-learned ambient-host
+ * baseline with per-host day counts — the tune-before-enable explain surface (the operator inspects
+ * the would-be ambient set, then flips `ambientGateEnabled`). `hosts` includes below-threshold
+ * candidates (`ambient=false`) so threshold changes can be previewed.
+ */
+case class AmbientHostEntry(
+    host: String,
+    isolatedDays: Int,
+    lastIsolatedDay: String,
+    isolatedSpanCount: Int,
+    ambient: Boolean,
+) derives JsonCodec
+
+case class AmbientHostsResponse(
+    gateEnabled: Boolean,
+    isolationMaxHosts: Int,
+    minIsolatedDays: Int,
+    learningWindowDays: Int,
+    hosts: List[AmbientHostEntry],
+) derives JsonCodec
 
 /**
  * #714: response body for `GET /api/time/heartbeat-explain/{mac}?date=`. Returns the live filter

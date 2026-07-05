@@ -62,6 +62,9 @@ object SpaPush {
       timeStatusService: TimeStatusService,
       hsRepo: HouseholdSettingsRepo,
       userProfileRepo: UserProfileRepo,
+      // #2077: the ambient anchor gate input for the presence-derived views in the
+      // timeStatus push body. Noop (gate Off) keeps test constructions inert.
+      ambientRepo: AmbientHostsRepo = NoopAmbientHostsRepo,
   )
 
   /**
@@ -484,6 +487,7 @@ object SpaPush {
             settings <- deps.hsRepo.get
             date = PolicyService.householdLocalDate(now, settings)
             states   <- deps.timeStatusService.dayStateAllLive(now, date, settings)
+            ambient  <- deps.ambientRepo.gateFor(settings, date)
             profiles <- profileRepo.listAll
             devices  <- deviceRepo.listAll
             devsByPid = devices.groupBy(_.profileId).collect { case (Some(pid), ds) => pid -> ds }
@@ -499,6 +503,7 @@ object SpaPush {
                 appTimeLimitRepo,
                 date,
                 settings,
+                ambient,
               )
                 .map(p.id -> _)
             }
@@ -522,11 +527,13 @@ object SpaPush {
       appTimeLimitRepo: AppTimeLimitRepo,
       date: LocalDate,
       settings: wifihaven.shared.HouseholdSettings,
+      ambient: wifihaven.api.presence.AmbientGate,
   ): Task[ProfileTimeStatus] =
     for {
-      presence  <- trafficRepo.listPresenceRows(devices.map(_.mac), date)
+      raw       <- trafficRepo.listPresenceRows(devices.map(_.mac), date)
       appLimits <- appTimeLimitRepo.listForProfile(profile.id)
-      st = state.getOrElse(
+      presence = TimeStatusService.gatedPresence(appLimits, raw, settings, ambient)
+      st       = state.getOrElse(
         wifihaven.api.policy.ProfileDayState(profile.id, date, None, 0, 0, None, false, None, Nil),
       )
     } yield TimeStatusService.assembleProfileTimeStatus(
@@ -588,6 +595,7 @@ object SpaPush {
                   appRepo,
                   appTimeLimitRepo,
                   settings,
+                  deps.ambientRepo,
                 )
                 .map(b => Some(pid -> b))
                 .catchAll(e =>

@@ -668,6 +668,104 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Ambient anchor-gate spans dropped — rate (#2077)",
+      "description": "rate(presence_ambient_spans_dropped_total[5m]) — device presence spans dropped by the #2077 engagement-anchor gate because they contained no anchor row (app-attributed or non-ambient host). Emitted once per TimeUsedRollupJob tick (~15 min). A sustained rise with flat screen-time means the isolation learner is eating real sessions (over-suppression); a flat zero while phantom idle-time returns means the thresholds are too lax. Unlabelled; from AppMetrics.recordAmbientSpansDropped.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 10, "x": 0, "y": 72 },
+      "id": 19,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 20, "showPoints": "never", "lineWidth": 1 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "rate(presence_ambient_spans_dropped_total{env=\"$env\"}[5m])",
+          "legendFormat": "spans dropped/s",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Ambient spans dropped (last 24h)",
+      "description": "sum(increase(presence_ambient_spans_dropped_total[24h])) — total presence spans the #2077 ambient anchor gate excluded from screen-time in the trailing 24h. Design-doc prod baseline: a handful of background spans per device per day.",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 7, "x": 10, "y": 72 },
+      "id": 20,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(increase(presence_ambient_spans_dropped_total{env=\"$env\"}[24h]))",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Learned ambient hosts (#2077)",
+      "description": "presence_ambient_hosts — size of the isolation-learned ambient host set, refreshed by each AmbientLearnJob run (~6h). Prod baseline from the design-doc sample: ~20-40 hosts. A sudden jump means the learner started absorbing a new host class — inspect GET /api/presence/ambient-hosts before trusting the gate.",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 7, "x": 17, "y": 72 },
+      "id": 21,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "presence_ambient_hosts{env=\"$env\"}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",

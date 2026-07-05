@@ -943,20 +943,39 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
                  heartbeat_filter_enabled, heartbeat_bytes_threshold,
                  unmanaged_mac_policy::text,
                  presence_continuation_seconds,
-                 block_encrypted_dns
+                 block_encrypted_dns,
+                 ambient_gate_enabled, ambient_isolation_max_hosts,
+                 ambient_min_isolated_days, ambient_learning_window_days
             FROM household_settings WHERE id=1"""
-        .query[(LocalTime, ZoneId, Boolean, Int, String, Int, Boolean)]
+        .query[(LocalTime, ZoneId, Boolean, Int, String, Int, Boolean, Boolean, Int, Int, Int)]
         .unique
-        .map { case (t, z, hbEnabled, hbBytes, ummJson, presenceCont, blockEncDns) =>
-          val umm = ummJson.fromJson[UnmanagedMacPolicy].getOrElse(UnmanagedMacPolicy.Default)
-          HouseholdSettings(
-            t,
-            z,
-            HeartbeatFilter(hbEnabled, hbBytes, Nil),
-            umm,
-            presenceCont,
-            blockEncDns,
-          )
+        .map {
+          case (
+                t,
+                z,
+                hbEnabled,
+                hbBytes,
+                ummJson,
+                presenceCont,
+                blockEncDns,
+                ambEnabled,
+                ambIso,
+                ambMinDays,
+                ambWindow,
+              ) =>
+            val umm = ummJson.fromJson[UnmanagedMacPolicy].getOrElse(UnmanagedMacPolicy.Default)
+            HouseholdSettings(
+              t,
+              z,
+              HeartbeatFilter(hbEnabled, hbBytes, Nil),
+              umm,
+              presenceCont,
+              blockEncDns,
+              ambEnabled,
+              ambIso,
+              ambMinDays,
+              ambWindow,
+            )
         }
         .transact(xa),
     )
@@ -968,7 +987,8 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
     // the heartbeat filter, or the presence session-stitch knob
     // (`presence_continuation_seconds`) changes the active-minute definition for
     // every cached day; deleting the cache forces the next rollup tick to refill
-    // from first principles. The DELETE is wholesale because all of these fields
+    // from first principles. #2077: the ambient-gate knobs (`ambient_*`) gate the
+    // same aggregation, so they ride the same wholesale invalidation. The DELETE is wholesale because all of these fields
     // gate the same aggregation — fine-grained invalidation would only add risk
     // of missing a code path that mutates one of them.
     // #1525: `heartbeat_host_patterns` is no longer written — the column has a NOT NULL DEFAULT
@@ -989,6 +1009,10 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
                   unmanaged_mac_policy=${ummJson}::jsonb,
                   presence_continuation_seconds=${s.presenceContinuationSeconds},
                   block_encrypted_dns=${s.blockEncryptedDns},
+                  ambient_gate_enabled=${s.ambientGateEnabled},
+                  ambient_isolation_max_hosts=${s.ambientIsolationMaxHosts},
+                  ambient_min_isolated_days=${s.ambientMinIsolatedDays},
+                  ambient_learning_window_days=${s.ambientLearningWindowDays},
                   updated_at=NOW()
             WHERE id=1""".update.run
     val invalidate    = sql"DELETE FROM time_used_daily".update.run
@@ -3475,6 +3499,7 @@ object Repos {
   val timeUsedRollupRepo    = ZLayer.fromFunction(TimeUsedRollupRepoLive(_))
   val appUsedRollupRepo     = ZLayer.fromFunction(AppUsedRollupRepoLive(_))
   val partitionRepo         = ZLayer.fromFunction(PartitionRepoLive(_))
+  val ambientHostsRepo      = ZLayer.fromFunction(AmbientHostsRepoLive(_))
   val all                   =
-    userRepo ++ userProfileRepo ++ profileRepo ++ namedScheduleRepo ++ householdSettingsRepo ++ timeLimitRepo ++ appTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ rollupRepo ++ timeUsedRollupRepo ++ appUsedRollupRepo ++ partitionRepo
+    userRepo ++ userProfileRepo ++ profileRepo ++ namedScheduleRepo ++ householdSettingsRepo ++ timeLimitRepo ++ appTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ rollupRepo ++ timeUsedRollupRepo ++ appUsedRollupRepo ++ partitionRepo ++ ambientHostsRepo
 }

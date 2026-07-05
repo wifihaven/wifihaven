@@ -1,10 +1,12 @@
 package wifihaven.api.usage
 
 import wifihaven.api.db.{
+  AmbientHostsRepo,
   AppTimeLimitRepo,
   AppUsedRollupRepo,
   DeviceRepo,
   HouseholdSettingsRepo,
+  NoopAmbientHostsRepo,
   ProfileRepo,
   RolledAppDay,
   RolledDay,
@@ -12,6 +14,7 @@ import wifihaven.api.db.{
   TimeUsedRollupRepo,
   TrafficReportRepo,
 }
+import wifihaven.api.presence.AmbientGate
 import wifihaven.api.metrics.AppMetrics
 import wifihaven.api.policy.{PolicyService, TimeStatusService}
 import wifihaven.shared.Clock
@@ -68,6 +71,7 @@ object TimeUsedRollupJob {
       trafficRepo: TrafficReportRepo,
       hs: HouseholdSettingsRepo,
       clock: Clock,
+      ambientRepo: AmbientHostsRepo = NoopAmbientHostsRepo,
   ): UIO[Unit] =
     runOnce(
       runs,
@@ -82,6 +86,7 @@ object TimeUsedRollupJob {
           trafficRepo,
           hs,
           now,
+          ambientRepo,
         ),
     )
       .repeat(Schedule.fixed(Interval))
@@ -101,6 +106,7 @@ object TimeUsedRollupJob {
       trafficRepo: TrafficReportRepo,
       hs: HouseholdSettingsRepo,
       now: Instant,
+      ambientRepo: AmbientHostsRepo = NoopAmbientHostsRepo,
   ): Task[Int] =
     doTick(
       rollup,
@@ -111,6 +117,7 @@ object TimeUsedRollupJob {
       trafficRepo,
       hs,
       now,
+      ambientRepo,
     )
 
   // ── internals ──────────────────────────────────────────────────────────────
@@ -166,6 +173,7 @@ object TimeUsedRollupJob {
       trafficRepo: TrafficReportRepo,
       hs: HouseholdSettingsRepo,
       now: Instant,
+      ambientRepo: AmbientHostsRepo,
   ): Task[Int] = for {
     settings <- hs.get
     today = PolicyService.householdLocalDate(now, settings)
@@ -173,11 +181,16 @@ object TimeUsedRollupJob {
     devices  <- deviceRepo.listAll
     atlsP    <- ZIO.foreach(profiles)(p => appTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
     presence <- trafficRepo.listPresenceRows(devices.map(_.mac), today)
-    rolls = computeRolls(profiles, devices, atlsP.toMap, presence, settings, now)
+    ambient  <- ambientRepo.gateFor(settings, today)
+    rolls = computeRolls(profiles, devices, atlsP.toMap, presence, settings, now, ambient)
     // #1676: each tick emits the count of per-(mac, app) sessions silently
     // dropped by the #1666 anchor-row guard so an operator can rate-alert on
     // threshold drift. Summed across profiles since the metric is unlabelled.
     _ <- AppMetrics.recordAppSessionsDropped(rolls._3)
+    // #2077: same cadence for the ambient anchor gate's dropped-span watchdog —
+    // a sustained rise with flat screen-time means the learner is eating real
+    // sessions; a flat zero with returning phantom means it is too lax.
+    _ <- AppMetrics.recordAmbientSpansDropped(rolls._4)
     n <- rollup.upsertBatch(today, rolls._1)
     _ <- appRollup.upsertBatch(today, rolls._2)
   } yield n
@@ -196,13 +209,29 @@ object TimeUsedRollupJob {
       presence: List[wifihaven.api.presence.PresenceRow],
       settings: wifihaven.shared.HouseholdSettings,
       now: Instant,
-  ): (Map[ProfileId, RolledDay], Map[(ProfileId, AppId), RolledAppDay], Int) = {
-    val devsByP                                                           =
+      ambient: AmbientGate = AmbientGate.Off,
+  ): (Map[ProfileId, RolledDay], Map[(ProfileId, AppId), RolledAppDay], Int, Int) = {
+    val devsByP                                                                         =
       devices.groupBy(_.profileId).collect { case (Some(pid), devs) => pid -> devs }
-    def presFor(pid: ProfileId): List[wifihaven.api.presence.PresenceRow] = {
-      val mac = devsByP.getOrElse(pid, Nil).map(_.mac).toSet
-      presence.filter(r => mac.contains(r.mac))
-    }
+    // #2077: gate each profile's slice ONCE per tick (the write side of the rollup is the
+    // canonical active-minute definition), accumulating the dropped-span watchdog count.
+    // Precomputed per profile so the two consumers below (per-profile total, per-app roll)
+    // share one gating pass and the drop count isn't double-counted.
+    val gatedByProfile: Map[ProfileId, (List[wifihaven.api.presence.PresenceRow], Int)] =
+      profiles.iterator.map { p =>
+        val mac    = devsByP.getOrElse(p.id, Nil).map(_.mac).toSet
+        val scoped = presence.filter(r => mac.contains(r.mac))
+        p.id -> TimeStatusService.gatedPresenceWithDropCount(
+          atlMap.getOrElse(p.id, Nil),
+          scoped,
+          settings,
+          ambient,
+        )
+      }.toMap
+    val ambientDropped                                                                  =
+      gatedByProfile.valuesIterator.map(_._2).sum
+    def presFor(pid: ProfileId): List[wifihaven.api.presence.PresenceRow]               =
+      gatedByProfile.get(pid).map(_._1).getOrElse(Nil)
     val perProfile    = profiles.iterator.map { p =>
       val secs = TimeStatusService.usedSecondsForProfile(
         p,
@@ -230,6 +259,6 @@ object TimeUsedRollupJob {
     }.toList
     val perApp = perAppEntries.foldLeft(Map.empty[(ProfileId, AppId), RolledAppDay])(_ ++ _._1)
     val droppedTotal = perAppEntries.foldLeft(0)(_ + _._2)
-    (perProfile, perApp, droppedTotal)
+    (perProfile, perApp, droppedTotal, ambientDropped)
   }
 }

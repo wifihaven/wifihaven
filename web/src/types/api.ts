@@ -108,6 +108,14 @@ export interface HouseholdSettings {
   // public DoH/DoT hostnames, connection-layer drops for hardcoded resolver IPs)
   // so filtering and hostname attribution work. Household-wide, not per-profile.
   blockEncryptedDns: boolean
+  // #2077 — the engagement-anchor gate over the isolation-learned ambient-host
+  // baseline: idle background traffic (OS sync/telemetry bursts that habitually
+  // appear alone) stops crediting as screen time. The three thresholds are
+  // API-side tuning knobs with no SPA editor (like presenceContinuationSeconds).
+  ambientGateEnabled: boolean
+  ambientIsolationMaxHosts: number
+  ambientMinIsolatedDays: number
+  ambientLearningWindowDays: number
 }
 
 export interface TimeLimit {

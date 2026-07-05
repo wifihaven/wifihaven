@@ -43,6 +43,8 @@ object UsageRoutes {
       appTimeLimitRepo: AppTimeLimitRepo,
       appUsedRollupRepo: AppUsedRollupRepo,
       clock: Clock,
+      // #2077: the ambient anchor gate input. Noop (gate Off) keeps test call sites inert.
+      ambientRepo: AmbientHostsRepo = NoopAmbientHostsRepo,
   ): Routes[Any, Response] =
     Routes(
       // #1743 + #1740: client-facing usage config the SPA reads at boot. Carries
@@ -172,6 +174,7 @@ object UsageRoutes {
               appRepo,
               appTimeLimitRepo,
               settings,
+              ambientRepo,
             )
           } yield Response.json(resp.toJson)
           handle.mapError(ErrorMapper.errorToResponse)
@@ -293,6 +296,8 @@ object UsageRoutes {
                   groupByApp,
                   appLookup,
                   settings,
+                  appTimeLimitRepo,
+                  ambientRepo,
                 )
               case (_, Some(pid)) =>
                 buildForProfile(
@@ -309,6 +314,7 @@ object UsageRoutes {
                   groupByApp,
                   appLookup,
                   settings,
+                  ambientRepo,
                 )
               case _              => ZIO.fail(ApiError.BadRequest("unreachable"))
             }
@@ -357,6 +363,7 @@ object UsageRoutes {
               groupByApp,
               appLookup,
               settings,
+              ambientRepo,
             )
           } yield Response.json(resp.toJson)
           handle.mapError(ErrorMapper.errorToResponse)
@@ -382,37 +389,44 @@ object UsageRoutes {
       groupByApp: Boolean,
       appLookup: UsageSeries.AppAxis,
       settings: HouseholdSettings,
+      ambientRepo: AmbientHostsRepo,
   ): IO[ApiError, UsageSeriesBatchResponse] =
     for {
       _ <- ZIO.foreachDiscard(pids)(pid => requireProfileReadAccess(claims, pid, userProfileRepo))
-      profiles    <- ZIO.foreach(pids) { pid =>
+      profiles     <- ZIO.foreach(pids) { pid =>
         profileRepo
           .findById(pid)
           .mapError(ApiError.Db(_))
           .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Profile not found")))
       }
-      allDevices  <- deviceRepo.listAll.mapError(ApiError.Db(_))
+      allDevices   <- deviceRepo.listAll.mapError(ApiError.Db(_))
       // #1492: exempt-from-daily site patterns must match the headline daily total exactly, so
       // load them per profile (same input `usedSecondsForProfile` uses) and carve them out.
-      exemptByPid <- ZIO
-        .foreach(pids) { pid =>
-          appTimeLimitRepo
-            .listForProfile(pid)
-            .map(sl => pid -> sl.filter(_.exemptFromDaily).map(_.domainPattern))
-        }
+      appLimsByPid <- ZIO
+        .foreach(pids)(pid => appTimeLimitRepo.listForProfile(pid).map(pid -> _))
         .map(_.toMap)
         .mapError(ApiError.Db(_))
+      exemptByPid = appLimsByPid.view
+        .mapValues(sl => sl.filter(_.exemptFromDaily).map(_.domainPattern))
+        .toMap
+      ambient      <- ambientRepo.gateFor(settings, date).mapError(ApiError.Db(_))
       devicesByPid = pids.iterator
         .map(pid => pid -> allDevices.filter(_.profileId.contains(pid)))
         .toMap
-      allMacs = devicesByPid.valuesIterator.flatten.map(_.mac).toList.distinct
-      rows        <- fetchPresenceDayWindow(trafficRepo, allMacs, date, zone)
+      allMacs      = devicesByPid.valuesIterator.flatten.map(_.mac).toList.distinct
+      rows <- fetchPresenceDayWindow(trafficRepo, allMacs, date, zone)
     } yield {
       val series = profiles.map { profile =>
         val devices   = devicesByPid.getOrElse(profile.id, Nil)
         val macSet    = devices.iterator.map(_.mac).toSet
         val nameByMac = devices.iterator.map(d => d.mac -> d.name).toMap
-        val pRows     = rows.filter(r => macSet.contains(r.mac))
+        // #2077: gate each profile's slice with its own app-attribution context.
+        val pRows     = wifihaven.api.policy.TimeStatusService.gatedPresence(
+          appLimsByPid.getOrElse(profile.id, Nil),
+          rows.filter(r => macSet.contains(r.mac)),
+          settings,
+          ambient,
+        )
         val exempt    = exemptByPid.getOrElse(profile.id, Nil)
         val (topHosts, bucketsByHost, topDevices, bucketsByDevice, presenceTotalMins) =
           UsageSeries.buildProfile(
@@ -486,6 +500,7 @@ object UsageRoutes {
       appRepo: AppRepo,
       appTimeLimitRepo: AppTimeLimitRepo,
       settings: HouseholdSettings,
+      ambientRepo: AmbientHostsRepo,
   ): IO[ApiError, ProfileUsageByApp] = {
     val filter              = settings.heartbeatFilter
     val continuationSeconds = settings.presenceContinuationSeconds
@@ -496,8 +511,8 @@ object UsageRoutes {
         .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Profile not found")))
       allDevs <- deviceRepo.listAll.mapError(ApiError.Db(_))
       macs = allDevs.collect { case d if d.profileId.contains(pid) => d.mac }
-      presence  <- (if (macs.isEmpty) ZIO.succeed(Nil)
-                   else trafficRepo.listPresenceRows(macs, from, to))
+      raw       <- (if (macs.isEmpty) ZIO.succeed(Nil)
+              else trafficRepo.listPresenceRows(macs, from, to))
         .mapError(ApiError.Db(_))
       appList   <- appRepo.listAll.mapError(ApiError.Db(_))
       mappings  <- appRepo.listAllHostMappings.mapError(ApiError.Db(_))
@@ -505,6 +520,11 @@ object UsageRoutes {
       // `distinctiveSpansByApp` can partition each app's host-set; classification of which traffic
       // hosts are shared comes from the GLOBAL `mappings` above (a catalog-wide property).
       appLimits <- appTimeLimitRepo.listForProfile(pid).mapError(ApiError.Db(_))
+      // #2077: gate with the profile's app-attribution context (window anchored on `to`, the
+      // GET's today default) so the per-app/orphan breakdown reconciles with the daily headline.
+      ambient   <- ambientRepo.gateFor(settings, to).mapError(ApiError.Db(_))
+      presence       = wifihaven.api.policy.TimeStatusService
+        .gatedPresence(appLimits, raw, settings, ambient)
       built          = computeUsageByApp(
         pid,
         from,
@@ -765,14 +785,25 @@ object UsageRoutes {
       groupByApp: Boolean,
       appLookup: UsageSeries.AppAxis,
       settings: HouseholdSettings,
+      appTimeLimitRepo: AppTimeLimitRepo,
+      ambientRepo: AmbientHostsRepo,
   ): IO[ApiError, UsageSeriesResponse] =
     for {
-      device <- deviceRepo
+      device    <- deviceRepo
         .findByMac(mac)
         .mapError(ApiError.Db(_))
         .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Device not found")))
-      _      <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
-      rows   <- fetchPresenceDayWindow(trafficRepo, List(mac), date, zone)
+      _         <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
+      raw       <- fetchPresenceDayWindow(trafficRepo, List(mac), date, zone)
+      appLimits <- device.profileId
+        .fold(ZIO.succeed(List.empty[wifihaven.shared.AppTimeLimit]))(pid =>
+          appTimeLimitRepo.listForProfile(pid),
+        )
+        .mapError(ApiError.Db(_))
+      // #2077: gate the presence-derived series with the same definition as the daily headline.
+      ambient   <- ambientRepo.gateFor(settings, date).mapError(ApiError.Db(_))
+      rows                                   = wifihaven.api.policy.TimeStatusService
+        .gatedPresence(appLimits, raw, settings, ambient)
       (topHosts, buckets, presenceTotalMins) =
         UsageSeries.build(
           rows,
@@ -835,6 +866,7 @@ object UsageRoutes {
       groupByApp: Boolean,
       appLookup: UsageSeries.AppAxis,
       settings: HouseholdSettings,
+      ambientRepo: AmbientHostsRepo,
   ): IO[ApiError, UsageSeriesResponse] =
     for {
       _         <- requireProfileReadAccess(claims, pid, userProfileRepo)
@@ -852,7 +884,11 @@ object UsageRoutes {
       devices   = all.filter(_.profileId.contains(pid))
       macs      = devices.map(_.mac)
       nameByMac = devices.iterator.map(d => d.mac -> d.name).toMap
-      rows <- fetchPresenceDayWindow(trafficRepo, macs, date, zone)
+      raw     <- fetchPresenceDayWindow(trafficRepo, macs, date, zone)
+      // #2077: gate the presence-derived series with the same definition as the daily headline.
+      ambient <- ambientRepo.gateFor(settings, date).mapError(ApiError.Db(_))
+      rows = wifihaven.api.policy.TimeStatusService
+        .gatedPresence(appLimits, raw, settings, ambient)
       (topHosts, bucketsByHost, topDevices, bucketsByDevice, presenceTotalMins) =
         UsageSeries.buildProfile(
           rows,

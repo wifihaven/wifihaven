@@ -35,6 +35,7 @@ export function AdminPage() {
       {hs && <DailyResetCard value={hs} reload={reload} />}
       {hs && <HeartbeatFilterCard value={hs} reload={reload} />}
       {hs && <BlockEncryptedDnsCard value={hs} reload={reload} />}
+      {hs && <AmbientGateCard value={hs} reload={reload} />}
       {hs && <UnmanagedMacPolicyCard value={hs} reload={reload} />}
     </div>
   )
@@ -183,6 +184,63 @@ function BlockEncryptedDnsCard({
           className="h-4 w-4"
         />
         Block encrypted DNS &amp; relays
+      </label>
+    </div>
+  )
+}
+
+// #2077 — the ambient anchor gate: screen time only counts when a device shows an
+// engagement signature (an assigned app's traffic, or a host outside the learned
+// ambient baseline). The learner runs regardless of the toggle so the would-be
+// ambient set is inspectable (GET /api/presence/ambient-hosts) before enabling.
+function AmbientGateCard({
+  value, reload,
+}: {
+  value: HouseholdSettings
+  reload: () => Promise<void>
+}) {
+  const [enabled, setEnabled] = useState(value.ambientGateEnabled)
+  useEffect(() => { setEnabled(value.ambientGateEnabled) }, [value.ambientGateEnabled])
+
+  const save = useDebouncedSave(
+    enabled,
+    async (next) => {
+      await api.household.patch({ ambientGateEnabled: next })
+      await reload()
+    },
+  )
+
+  return (
+    <div
+      data-testid="ambient-gate-card"
+      className="bg-white rounded-2xl border border-brand-border p-5 space-y-3"
+    >
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="font-bold text-brand-ink">Ignore idle background traffic</h2>
+        <SaveStatusBadge
+          testId="ambient-gate-save-status"
+          status={save.status}
+          error={save.error}
+          onRetry={save.retry}
+        />
+      </div>
+
+      <p className="text-xs text-brand-text">
+        Devices sitting unused still phone home (iCloud sync, photo uploads, OS updates,
+        widget refreshes) and that background chatter can read as screen time. When enabled,
+        time only counts while a device shows real engagement — traffic from an assigned app,
+        or a host outside its learned idle baseline. The baseline learns automatically from
+        traffic that habitually appears on its own.
+      </p>
+      <label className="flex items-center gap-2 text-sm text-brand-ink">
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={e => setEnabled(e.target.checked)}
+          data-testid="ambient-gate-enabled"
+          className="h-4 w-4"
+        />
+        Ignore idle background traffic
       </label>
     </div>
   )
