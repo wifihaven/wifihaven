@@ -998,10 +998,14 @@ function M.nft(snapshot, opts)
   -- / #1929-class transient v6 drop of cdn.jsdelivr.net). nft does NOT refresh
   -- an element's timeout on a duplicate `add` (verified on nft 1.1.6), so live
   -- re-resolution can't keep an actively-used carve alive — only a long
-  -- timeout can. Memory stays bounded: these sets exist only for the small
-  -- per-MAC extraAllowed list and the whole table is delete+recreated on every
-  -- policy apply (policy.apply's `nft -f`), which also re-seeds them via the
-  -- #2095 apply-time backfill.
+  -- timeout can. Memory stays bounded: per set the element count is
+  -- (distinct resolved IPs for that host over the timeout window); the number
+  -- of sets is (carved MACs × their small extraAllowed lists); and the whole
+  -- table is delete+recreated on every policy apply (policy.apply's `nft -f`,
+  -- which also re-seeds via the #2095 apply-time backfill), so accumulation is
+  -- capped by the inter-apply interval, not device uptime. 24h (vs 1h) trades a
+  -- handful of extra CDN IPs per carved host for surviving a full day of a
+  -- stable block without a re-resolve — the exact #2094 scenario.
   local EA_CARVE_TIMEOUT = "24h"
   local ea_by_mac = ea_by_mac_early
   do

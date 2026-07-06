@@ -46,11 +46,16 @@ local paths    = require("wifihaven.paths")
 local dns_log  = require("wifihaven.dns_log")       -- #2095: dns_cache parse
 local dns_sets = require("wifihaven.dns_tail_sets") -- #2095: ea_/ea6_ backfill
 
--- #2095: horizon for the apply-time ea_/ea6_ backfill's dns_cache read.
--- Mirrors the dns-tail sidecar's cache TTL and the agent's dns_cache_ttl
--- (both 1h) — resolutions older than this are already dropped from the file
--- by the sidecar's dump filter, so re-filtering here is just belt-and-braces.
-local DNS_CACHE_TTL = 3600
+-- #2095: the apply-time ea_/ea6_ backfill consumes paths.dns_cache verbatim.
+-- The dns-tail sidecar is the SINGLE authority on cache freshness — it drops
+-- resolutions older than its own ttl (dns_tail_sets header / wifihaven-dns-tail
+-- `dns_log.new{ttl_seconds=...}`) at dump time, so the on-disk file only ever
+-- holds fresh entries. We deliberately do NOT re-encode that horizon here (it
+-- would be a second copy of the 1h that could drift, #2018-class); load_table
+-- is called with a permissive ttl so it accepts whatever the pre-filtered file
+-- holds. Backfilling a briefly-stale IP into an ALLOW set is fail-closed-safe
+-- anyway — worst case an explicitly-allowed host stays reachable a bit longer.
+local DNS_CACHE_ACCEPT_ALL = math.huge
 
 -- log is injectable for tests; default uses the real logger wrapper.
 local function default_log()
@@ -363,7 +368,7 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
     if next(carve) then
       local now_fn     = opts.now_fn or os.time
       local cache_text = read_fn(paths.dns_cache)
-      local cache      = dns_log.load_table(cache_text or "", DNS_CACHE_TTL, now_fn())
+      local cache      = dns_log.load_table(cache_text or "", DNS_CACHE_ACCEPT_ALL, now_fn())
       ea_backfilled = dns_sets.backfill_ea(cache, carve, {
         nft_table = "inet wifihaven",
         exec_fn   = reload_fn,
