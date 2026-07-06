@@ -72,8 +72,54 @@ object PartitionMaintenanceJob {
       }
 
   /**
-   * Fork a daemon fiber that runs the pass at startup and every 24 h. `weeksAhead` comes from
-   * config; `clock` supplies each tick's `now` so the schedule honours the shared injected clock.
+   * #812: one retention-drop pass. DETACHes + DROPs every weekly partition that has aged past its
+   * table's retention window (metadata-only — see [[PartitionRepo.dropExpiredPartitions]]), logs
+   * each drop at INFO with its row count, and increments `partitions_dropped_total{table}`. Never
+   * fails — DB errors are logged (pool-closed-during-shutdown is benign, logged at DEBUG); the
+   * fiber stays alive. `now` is supplied by the caller (the [[Clock]] in `start`, a fixed instant
+   * in tests).
+   */
+  def runDropPass(repo: PartitionRepo, now: Instant): UIO[Unit] =
+    repo
+      .dropExpiredPartitions(now)
+      .either
+      .flatMap {
+        case Right(None)                               =>
+          ZIO.logDebug(
+            "PartitionMaintenanceJob: retention-drop lock held by another instance — tick skipped",
+          )
+        case Right(Some(results))                      =>
+          ZIO.foreachDiscard(results) { r =>
+            r.skippedReason match {
+              case Some(reason) =>
+                ZIO.logWarning(
+                  s"PartitionMaintenanceJob: retention-drop skipped ${r.table}: $reason",
+                )
+              case None         =>
+                val droppedLog =
+                  ZIO
+                    .logInfo(
+                      s"PartitionMaintenanceJob: dropped partitions for ${r.table}: " +
+                        r.dropped.map(d => s"${d.name}(${d.rows} rows)").mkString(", "),
+                    )
+                    .when(r.dropped.nonEmpty)
+                    .unit
+                droppedLog *> AppMetrics.incrementPartitionsDropped(r.table, r.dropped.size)
+            }
+          }
+        case Left(e) if RollupShutdown.isPoolClosed(e) =>
+          ZIO.logDebug(
+            "PartitionMaintenanceJob: retention-drop tick aborted (pool closed during shutdown)",
+          )
+        case Left(e)                                   =>
+          ZIO.logErrorCause("PartitionMaintenanceJob: retention-drop tick failed", Cause.fail(e))
+      }
+
+  /**
+   * Fork a daemon fiber that runs both the create-future pass and the retention-drop pass (#812) at
+   * startup and every 24 h — the same scheduled job drives both, per the design. `weeksAhead` comes
+   * from config; `clock` supplies each tick's `now` so the schedule honours the shared injected
+   * clock.
    */
   def start(repo: PartitionRepo, weeksAhead: Int, clock: Clock): UIO[Fiber.Runtime[Nothing, Long]] =
     for {
@@ -82,7 +128,7 @@ object PartitionMaintenanceJob {
           s"(keeping $weeksAhead weeks of partitions ahead)",
       )
       fiber <- clock.instant
-        .flatMap(runOnce(repo, weeksAhead, _))
+        .flatMap(now => runOnce(repo, weeksAhead, now) *> runDropPass(repo, now))
         .repeat(Schedule.fixed(Interval))
         .forkDaemon
     } yield fiber

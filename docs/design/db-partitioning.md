@@ -3,6 +3,12 @@
 Closes design portion of #793. Companion to #725 (retention) and supersedes a
 few indexes from #796.
 
+**Implementation status (2026-07):** the auto-create half (#808) and the
+retention-drop half (#812) described below have both landed —
+`PartitionMaintenanceJob` runs both passes on the same daily fiber
+(`api/src/usage/PartitionMaintenanceJob.scala`), each behind its own advisory
+lock (`PartitionRepo.AdvisoryLockKey` / `PartitionRepo.RetentionDropAdvisoryLockKey`).
+
 ## Tables in scope
 
 | Table | Decision | Why |

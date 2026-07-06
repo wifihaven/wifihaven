@@ -30,8 +30,14 @@ import java.time.temporal.ChronoUnit
  * Multi-instance-safe via a session-scoped Postgres advisory lock. Losing the race makes the tick a
  * no-op. The lock auto-releases if the connection drops, so a crashing instance can't wedge it.
  *
- * v1 uses a plain `DELETE` per the design doc's "if #793 doesn't land" fallback; the partition-drop
- * variant is a follow-up gated on #793 landing.
+ * Uses a plain `DELETE` for every table here, including `traffic_reports` / `connection_events`
+ * even though both are now RANGE-partitioned (#793) and have their own metadata-only DETACH+DROP
+ * retention pass (#812, `PartitionRepo.dropExpiredPartitions` / `PartitionMaintenanceJob`). This
+ * DELETE is redundant-but-harmless for those two once #812 has run — the partitions its rows would
+ * have lived in are already gone, so the DELETE finds nothing and is a cheap no-op. It stays as a
+ * belt-and-suspenders trim for the one week partition-drop can't fully clear: partition-drop only
+ * removes WHOLE weekly partitions past the cutoff, so the still-partial boundary week can carry a
+ * few rows past the exact day-granularity cutoff until a later run rounds that week away too.
  *
  * All cutoffs are computed from the injected [[wifihaven.shared.Clock]] (#2089) rather than
  * `ZonedDateTime.now()` / SQL `NOW()`, so the sweep's horizon boundaries are deterministically
