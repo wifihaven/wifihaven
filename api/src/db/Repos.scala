@@ -27,7 +27,9 @@ case class DbUser(
     // #2105 (multi-tenant sub-issue B): the user's tenancy key (users.household_id,
     // V65). Minted into the JWT `hh` claim at login. Defaults to household 1 — the
     // single existing install / default household backfilled by V65 — so pre-#2105
-    // callers that don't set it stay in the default tenant.
+    // callers that don't set it stay in the default tenant. #2106 also reads it
+    // in the router-enrollment path to stamp a new router with the creating
+    // admin's household.
     householdId: HouseholdId = HouseholdId.Default,
 )
 // #865: mac/deviceId/profileId became multi-valued so the SPA's column-header
@@ -519,7 +521,15 @@ trait RouterRepo {
   def findById(id: RouterId): Task[Option[Router]]
   def findByEnrollmentTokenHash(h: Sha256Hex): Task[Option[Router]]
   def findByTokenHash(h: Sha256Hex): Task[Option[Router]]
-  def create(name: String, enrollmentTokenHash: Sha256Hex): Task[RouterId]
+  // #2106: `householdId` stamps the new router with the creating admin's
+  // household (resolved from their JWT at the enrollment-creation route).
+  // Defaults to the single-install backfill household so pre-multi-tenant
+  // callers stay tenant-safe.
+  def create(
+      name: String,
+      enrollmentTokenHash: Sha256Hex,
+      householdId: HouseholdId = HouseholdId.Default,
+  ): Task[RouterId]
   def completeEnrollment(id: RouterId, tokenHash: Sha256Hex): Task[Unit]
   def touch(id: RouterId, etag: Option[ETag], agentVersion: Option[String]): Task[Unit]
 
@@ -1723,8 +1733,9 @@ class RouterRepoLive(xa: Transactor[Task]) extends RouterRepo {
         Instant,
         Option[String],
         Option[Instant],
+        HouseholdId,
     )
-  private def toR(r: R)                                                     =
+  private def toR(r: R)                       =
     Router(
       r._1,
       r._2,
@@ -1735,18 +1746,19 @@ class RouterRepoLive(xa: Transactor[Task]) extends RouterRepo {
       r._7.toString,
       r._8,
       r._9.map(_.toString),
+      r._10,
     )
-  private val cols                                                          =
-    fr"id,name,enrollment_token_hash,token_hash,last_seen_at,last_etag,created_at,agent_version,enrollment_expires_at"
+  private val cols                            =
+    fr"id,name,enrollment_token_hash,token_hash,last_seen_at,last_etag,created_at,agent_version,enrollment_expires_at,household_id"
   // #2083: default TTL for a freshly-created enrollment token.
-  private val EnrollmentTtl                                                 = fr"INTERVAL '1 hour'"
-  def listAll                                                               =
+  private val EnrollmentTtl                   = fr"INTERVAL '1 hour'"
+  def listAll                                 =
     (fr"SELECT " ++ cols ++ fr" FROM routers ORDER BY created_at")
       .query[R]
       .map(toR)
       .to[List]
       .transact(xa)
-  def findById(id: RouterId)                                                =
+  def findById(id: RouterId)                  =
     (fr"SELECT " ++ cols ++ fr" FROM routers WHERE id=$id")
       .query[R]
       .map(toR)
@@ -1755,14 +1767,14 @@ class RouterRepoLive(xa: Transactor[Task]) extends RouterRepo {
   // #2083: an enrollment token past its TTL no longer matches, even though the hash
   // column itself isn't cleared until first use — a leaked but never-redeemed token
   // stops being valid after 1h instead of indefinitely.
-  def findByEnrollmentTokenHash(h: Sha256Hex)                               =
+  def findByEnrollmentTokenHash(h: Sha256Hex) =
     (fr"SELECT " ++ cols ++
       fr" FROM routers WHERE enrollment_token_hash=$h AND enrollment_expires_at > NOW()")
       .query[R]
       .map(toR)
       .option
       .transact(xa)
-  def findByTokenHash(h: Sha256Hex)                                         =
+  def findByTokenHash(h: Sha256Hex)           =
     DbMetrics.timed("router.findByTokenHash")(
       (fr"SELECT " ++ cols ++ fr" FROM routers WHERE token_hash=$h")
         .query[R]
@@ -1770,17 +1782,17 @@ class RouterRepoLive(xa: Transactor[Task]) extends RouterRepo {
         .option
         .transact(xa),
     )
-  def create(name: String, enrollmentTokenHash: Sha256Hex)                  =
-    (fr"INSERT INTO routers(name,enrollment_token_hash,enrollment_expires_at)" ++
-      fr"VALUES($name,$enrollmentTokenHash,NOW() + " ++ EnrollmentTtl ++ fr") RETURNING id")
+  def create(name: String, enrollmentTokenHash: Sha256Hex, householdId: HouseholdId) =
+    (fr"INSERT INTO routers(name,enrollment_token_hash,enrollment_expires_at,household_id)" ++
+      fr"VALUES($name,$enrollmentTokenHash,NOW() + " ++ EnrollmentTtl ++ fr",$householdId) RETURNING id")
       .query[RouterId]
       .unique
       .transact(xa)
-  def completeEnrollment(id: RouterId, tokenHash: Sha256Hex)                =
+  def completeEnrollment(id: RouterId, tokenHash: Sha256Hex)                         =
     sql"UPDATE routers SET token_hash=$tokenHash, enrollment_token_hash=NULL, last_seen_at=NOW() WHERE id=$id".update.run
       .transact(xa)
       .unit
-  def touch(id: RouterId, etag: Option[ETag], agentVersion: Option[String]) =
+  def touch(id: RouterId, etag: Option[ETag], agentVersion: Option[String])          =
     DbMetrics.timed("router.touch")(
       sql"""UPDATE routers
           SET last_seen_at=NOW(),
@@ -1790,14 +1802,14 @@ class RouterRepoLive(xa: Transactor[Task]) extends RouterRepo {
         .transact(xa)
         .unit,
     )
-  def countSeenSince(cutoff: Instant)                                       =
+  def countSeenSince(cutoff: Instant)                                                =
     DbMetrics.timed("router.countSeenSince")(
       sql"SELECT count(*) FROM routers WHERE last_seen_at >= $cutoff"
         .query[Int]
         .unique
         .transact(xa),
     )
-  def delete(id: RouterId)                                                  =
+  def delete(id: RouterId)                                                           =
     sql"DELETE FROM routers WHERE id=$id".update.run.transact(xa).unit
 }
 

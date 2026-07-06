@@ -201,6 +201,7 @@ object AdminRouterRoutes {
   def routes(
       auth: AuthService,
       routerRepo: RouterRepo,
+      userRepo: UserRepo,
   ): Routes[Any, Response] =
     Routes(
       Method.POST / "api" / "admin" / "routers"                  ->
@@ -216,6 +217,7 @@ object AdminRouterRoutes {
               .when(cr.name.trim.isEmpty)
             enrollmentToken = EnrollmentToken.unsafe(newEnrollmentToken())
             etHash          = PolicyService.hashToken(enrollmentToken.value)
+            // TODO(#2106): stamp the creating admin's household here (green).
             id <- routerRepo
               .create(cr.name.trim, etHash)
               .mapError(ApiError.Db(_))
