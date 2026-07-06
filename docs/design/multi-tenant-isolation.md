@@ -83,6 +83,20 @@ join — we do **not** denormalize `household_id` onto every leaf table.
 
 The MAC-keyed screen-time tables are the one subtlety — see [§3.4](#34-the-mac-keyed-screen-time-tables).
 
+> **Two global uniqueness constraints must be relaxed to per-household**, or the
+> tenancy key is defeated at the schema level:
+> - `devices.mac TEXT NOT NULL UNIQUE`
+>   ([`V1__init.sql:55`](../../api/resources/db/migration/V1__init.sql)) →
+>   `UNIQUE(household_id, mac)`. Two households can legitimately present the same
+>   MAC (randomized-MAC clients, guest devices), and the §3.4 "join through
+>   `devices`" isolation only holds if each household has its *own* device row for
+>   that MAC. Under the global constraint, household B's device would collide with
+>   A's row and one tenant would silently attach to the other's screen-time.
+> - `users.username TEXT NOT NULL UNIQUE`
+>   ([`V1__init.sql:6`](../../api/resources/db/migration/V1__init.sql)) →
+>   `UNIQUE(household_id, username)`, so two households can each have an `admin`
+>   login. (Login then resolves username *within* a household — see [§4.1](#41-user-jwt-household-claim).)
+
 ### 0.2 What stays global (deliberately not tenant-scoped)
 
 - **Category blocklists** (`blocklist_domains`,
@@ -374,7 +388,16 @@ ALTER TABLE routers  ALTER COLUMN household_id SET NOT NULL;
 ALTER TABLE profiles ALTER COLUMN household_id SET NOT NULL;
 ALTER TABLE devices  ALTER COLUMN household_id SET NOT NULL;
 
--- household_settings: single-row → one-row-per-household.
+-- Relax the two GLOBAL uniqueness constraints to per-household (§0.1). Without
+-- this, cross-household MAC/username collisions defeat the tenancy key.
+ALTER TABLE devices DROP CONSTRAINT devices_mac_key;        -- global UNIQUE(mac)
+ALTER TABLE devices ADD CONSTRAINT uq_devices_household_mac UNIQUE (household_id, mac);
+ALTER TABLE users   DROP CONSTRAINT users_username_key;     -- global UNIQUE(username)
+ALTER TABLE users   ADD CONSTRAINT uq_users_household_username UNIQUE (household_id, username);
+
+-- household_settings: single-row (CHECK (id = 1), V16) → one-row-per-household.
+-- Drop the hard singleton CHECK and re-key by household_id.
+ALTER TABLE household_settings DROP CONSTRAINT household_settings_id_check;
 ALTER TABLE household_settings ADD COLUMN household_id BIGINT REFERENCES households(id);
 UPDATE household_settings SET household_id = 1;
 ALTER TABLE household_settings ALTER COLUMN household_id SET NOT NULL;
@@ -520,6 +543,12 @@ Explicitly **out of scope for the isolation substrate (v1)**:
 ## 10. Sub-issue decomposition
 
 Filed against this doc; each references #2085 and #622. Ordered per §8.
+Filed: **A** = [#2104](https://github.com/wifihaven/wifihaven/issues/2104),
+**B** = [#2105](https://github.com/wifihaven/wifihaven/issues/2105),
+**C** = [#2106](https://github.com/wifihaven/wifihaven/issues/2106),
+**D** = [#2107](https://github.com/wifihaven/wifihaven/issues/2107),
+**E** = [#2108](https://github.com/wifihaven/wifihaven/issues/2108),
+**F** = [#2109](https://github.com/wifihaven/wifihaven/issues/2109).
 
 - **A — schema + backfill (`households` table + `household_id` on the four roots).**
   Schema-only migration PR (migration SQL + this doc's §5 only, no source), per
