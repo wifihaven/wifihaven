@@ -38,8 +38,8 @@ The whole design serves one invariant:
 > a household-B row.**
 
 Everything below — the tenancy key, the per-query predicate, the router→household
-binding, the ingest MAC check, the test pins — exists to make that invariant
-hold by construction and keep it held by CI.
+binding, the constructively-scoped ingest writes, the test pins — exists to make
+that invariant hold by construction and keep it held by CI.
 
 ### 0.1 The tenancy key: `household_id`, rooted in a `households` table
 
@@ -184,8 +184,10 @@ router could report usage or connection events for **another household's device
 MAC**, corrupting that device's screen-time and connection history (which are
 MAC-keyed — see [§3.4](#34-the-mac-keyed-screen-time-tables)).
 
-**Fix:** bind `routers.household_id`, then validate every payload `mac` against
-"is a device in this router's household" at ingest. See sub-issues **C** + **E**.
+**Fix:** bind `routers.household_id`, then make every MAC-keyed ingest write
+**constructively scoped** to `(router.householdId, mac)` — not a
+lookup-and-reject. See [§3.2.2](#32-the-router-wire) for why rejection is the
+wrong mechanism (it would break new-device discovery), and sub-issues **C** + **E**.
 
 ### Gap 3 — `admin`/`adult` means "see ALL rows"
 
@@ -274,12 +276,41 @@ Two sub-mechanisms, **neither of which changes the wire shape**:
    containing only its own household's devices/profiles; for `renderBlocklist`,
    the household is checked to *authorize* access to a shared category list, but
    the list **content** stays global (§0.2).
-2. **Token binding + ingest MAC validation (write).** `routers.household_id`
-   (gap 2) lets ingest reject a payload `mac` that is not a device in the
-   router's household — closing the cross-household screen-time-poisoning hole.
-   The `router_id`-mismatch guard already exists
+2. **Token binding + constructively-scoped ingest writes.** `routers.household_id`
+   (gap 2) closes the cross-household screen-time-poisoning hole — but the
+   mechanism is **constructive scoping, not lookup-and-reject**: every MAC-keyed
+   ingest write is keyed `(router.householdId, mac)`, so a router *cannot
+   address* another household's rows by construction. The `router_id`-mismatch
+   guard already exists
    ([`RouterIngestService.scala:59`](../../api/src/routes/RouterIngestService.scala));
-   the MAC guard is the additive check.
+   the household scoping is the additive change.
+
+   **Why not reject unknown MACs?** Because a first-seen MAC is not an error —
+   it is how **new-device discovery** works. There is no device-enrollment step:
+   a device joins a household by appearing behind its gateway. Ingest
+   auto-creates the row via `deviceRepo.upsertUnknown`
+   ([`RouterIngestService.scala:459`](../../api/src/routes/RouterIngestService.scala)
+   → [`Repos.scala:1212`](../../api/src/db/Repos.scala), an
+   `INSERT … ON CONFLICT(mac) DO UPDATE` with `profile_id = NULL`), and the
+   device sits **unmanaged** — governed by the household's unmanaged-MAC policy
+   (allow, or block with the `Unmanaged` reason) — until an admin assigns it to
+   a profile. A reject-unknown-MACs guard would break that flow on every first
+   sighting.
+
+   Under multi-tenancy this flow is unchanged in shape: household membership of
+   a device is not *detected*, it is *defined* by which gateway it appeared
+   behind. `upsertUnknown` becomes
+   `INSERT … (household_id = router.householdId, mac, …) ON CONFLICT
+   (household_id, mac) DO UPDATE` — a new MAC reported by household-A's router
+   is created **in A**, unmanaged, exactly as today. If the same MAC later
+   appears behind household-B's router, that is a **different row** under
+   `UNIQUE(household_id, mac)` (§0.1) — no collision, no ambiguity, and neither
+   household can see or affect the other's row. Once the global `UNIQUE(mac)` is
+   relaxed, "does this MAC belong to another household?" is a question ingest
+   can't ask and doesn't need to: all device reads/writes inside ingest
+   (`upsertUnknown`, `touchLastSeenBatch`, `findByMac`, and the MAC-keyed
+   `time_usage`/`time_extensions` writes via the §3.4 join) carry the router's
+   household key.
 
 The router agent, UCI keys, and CLI flags are **not** part of this — they carry
 no household concept and need no change. Household scoping is entirely
@@ -300,20 +331,32 @@ across households (two tenants with a device at the same randomized MAC — not
 impossible with MAC randomization) would still let one household's usage read
 join to another's rows.
 
-**Decision:** rather than denormalize `household_id` onto every screen-time
-table, rely on the fact that **all read paths reach these tables through a
-household-scoped `devices` row** (screen-time is always queried "for device X in
-my household"). The isolation guarantee then rests on two things:
+**Decision, split by how the table is keyed:**
 
-1. **Read joins go through `devices`** — a MAC that isn't in the caller's
-   household simply has no `devices` row to join, so its usage is invisible.
-2. **The ingest MAC check (§3.2.2)** stops a router from *writing* usage for a
-   MAC outside its household in the first place.
+- **`router_id`-keyed tables** (`traffic_reports`, `connection_events`) need
+  **no new column**: `router_id` → `routers.household_id` scopes them
+  transitively, and reads already filter by router or join through a
+  household-scoped `devices` row. Writes are constructively scoped because the
+  `router_id` comes from the authed token, never the payload
+  ([`RouterIngestService.scala:59`](../../api/src/routes/RouterIngestService.scala)).
+- **Bare-MAC-keyed tables** (`time_usage` — `UNIQUE(device_mac, domain, date)`;
+  `time_extensions`; `block_events.mac`) **must gain `household_id` in the key**,
+  becoming e.g. `UNIQUE(household_id, device_mac, domain, date)`. Join-through-
+  `devices` is *not* sufficient here: under a cross-household MAC collision, two
+  households' routers would increment the **same** `time_usage` row (a *write*
+  collision, not a read bypass), and then each household's `devices` join would
+  faithfully read the other tenant's polluted minutes — corrupting daily-limit
+  enforcement in both households. The ingest write path stamps
+  `router.householdId` into these increments; reads add the household predicate.
 
-We add `household_id` to these leaf tables only if a concrete query is found
-that reads them *without* going through `devices`; the sub-issue **E** test pins
-(§7) are what surface such a query. This keeps the migration small and avoids
-denormalization drift (`docs/process/single-source-of-truth.md`).
+The isolation guarantee then rests on: (1) reads join through a
+household-scoped `devices` row (a foreign MAC has no row to join), and (2) all
+MAC-keyed writes carry the router's household key, with `upsertUnknown` creating
+the household's own device row on first sighting (§3.2.2). This is a deliberate,
+narrow denormalization: `household_id` goes only onto tables whose *unique key*
+is a bare MAC, not onto every leaf (`docs/process/single-source-of-truth.md`).
+The `time_usage` backfill must be estimated against prod row counts per
+`docs/process/migrations.md#migrations-prod-data-volume`.
 
 ---
 
@@ -411,13 +454,29 @@ CREATE INDEX idx_routers_household  ON routers(household_id);
 CREATE INDEX idx_users_household    ON users(household_id);
 ```
 
+The bare-MAC-keyed screen-time tables also need the key change from §3.4
+(shown separately because of the volume note below):
+
+```sql
+ALTER TABLE time_usage      ADD COLUMN household_id BIGINT REFERENCES households(id);
+ALTER TABLE time_extensions ADD COLUMN household_id BIGINT REFERENCES households(id);
+UPDATE time_usage      SET household_id = 1;
+UPDATE time_extensions SET household_id = 1;
+ALTER TABLE time_usage      ALTER COLUMN household_id SET NOT NULL;
+ALTER TABLE time_extensions ALTER COLUMN household_id SET NOT NULL;
+-- UNIQUE(device_mac, domain, date) → UNIQUE(household_id, device_mac, domain, date)
+-- (drop/re-add; exact constraint names verified via \d at implementation time)
+```
+
 > **Prod data-volume note** (`docs/process/migrations.md#migrations-prod-data-volume`):
 > the four root tables (`users`/`routers`/`profiles`/`devices`) are **small,
-> bounded** tables — this migration does *not* touch the unbounded-growth
-> tables (`traffic_reports`, `connection_events`, rollups), so it will not
-> approach the 15-minute Render port-scan timeout. If §3.4's decision is ever
-> revisited to add `household_id` to `time_usage`/`connection_events`, **that**
-> migration must be estimated against prod row counts, not test fixtures.
+> bounded** tables and this migration does *not* touch the unbounded-growth
+> tables (`traffic_reports`, `connection_events`, rollups). But `time_usage`
+> grows with devices × domains × days (bounded by the retention sweep, #2086/
+> #2089): its `UPDATE … SET household_id = 1` backfill and unique-index rebuild
+> **must be estimated against prod row counts, not test fixtures**, before the
+> migration PR merges — split it into its own migration if it approaches the
+> 15-minute Render port-scan window.
 
 ### 5.2 Backfill correctness
 
@@ -448,10 +507,11 @@ router-visible shapes are a public contract.
 - The snapshot an older agent receives is now *scoped* to its household, but a
   single-household install's scoped snapshot ≡ its old global snapshot, so
   rollout is a no-op for the existing fleet.
-- The ingest MAC check (§3.2.2) is **fail-safe for the existing fleet**: the one
-  household owns all devices, so every MAC the current router reports is in its
-  household and passes. The check only ever rejects a *cross-household* MAC,
-  which cannot occur until a second household exists.
+- The constructively-scoped ingest path (§3.2.2) is **behavior-preserving for
+  the existing fleet**: nothing is rejected — a first-seen MAC is still
+  auto-created via `upsertUnknown` (new-device discovery is unchanged), just
+  stamped with the router's household. With one household, the scoped writes
+  are byte-for-byte the same rows as today's.
 
 No capability negotiation (#376) is required — there is no non-additive wire
 change. (Contrast the websocket transport, which needed #376 analysis;
@@ -482,11 +542,17 @@ the point is the **absence** of leakage):
 3. **Snapshot scoping.** `GET /api/router/policy` with household-A's router
    token returns a `PolicySnapshot` whose `devices`/`profiles` maps contain
    **only** household-A MACs/profiles (guards gap 1).
-4. **Ingest MAC isolation.** Household-A's router `POST /api/router/usage` with a
-   `mac` that belongs to a household-B device → rejected (or silently dropped,
-   TBD in sub-issue E), and household-B's `time_usage` is **unchanged** (guards
-   gap 2 + §3.4). This is the pin that would surface any screen-time table read
-   that bypasses `devices`.
+4. **Ingest MAC isolation + new-device discovery.** Two halves:
+   a. Household-A's router `POST /api/router/usage` with a `mac` that already
+      exists as a household-B device → the write lands **only** under
+      household-A's own `(hhA, mac)` rows (creating A's device row via
+      `upsertUnknown` if first sighting); household-B's device row and
+      `time_usage` are **byte-identical before/after** (guards gap 2 + §3.4's
+      write-collision case).
+   b. Household-A's router reports a **never-seen** MAC → a new unmanaged
+      device row appears in household A (`profile_id = NULL`,
+      `household_id = hhA`) and in **no other** household — pinning that
+      constructive scoping did not break new-device discovery.
 5. **Blocklist authorization.** `renderBlocklist` for a category the router's
    household is entitled to succeeds; content is identical across households
    (confirms §0.2 — shared catalog, scoped *authorization*).
@@ -556,8 +622,12 @@ Filed: **A** = [#2104](https://github.com/wifihaven/wifihaven/issues/2104),
   `docs/process/migrations.md`. Creates `households`, backfills the single
   existing install as `household_id = 1`, adds the column (nullable → backfill →
   NOT NULL) to `users`/`routers`/`profiles`/`devices` + `household_settings`
-  (with a per-household unique constraint), and the partial indexes. The
-  existing feature suite is the back-compat gate.
+  (with a per-household unique constraint), and the partial indexes. Also adds
+  `household_id` to the bare-MAC-keyed screen-time tables (`time_usage`,
+  `time_extensions`) with the widened unique keys per §3.4/§5.1 — the
+  `time_usage` backfill sized against prod row counts (split into its own
+  migration if it approaches the port-scan window). The existing feature suite
+  is the back-compat gate.
 - **B — JWT household claim.** Add `hh: HouseholdId` to `JwtClaims`, mint it at
   login from `users.household_id`, read it back in `verify`. Additive claim
   alongside the #2080 `token_version` work. Thread `claims.hh` to the call sites
@@ -572,13 +642,16 @@ Filed: **A** = [#2104](https://github.com/wifihaven/wifihaven/issues/2104),
   `renderBlocklist` / the decision-lookup path to take the household from the
   router token and read only that household's rows. Wire shape unchanged
   (invariant 3). Feature test: pins 3 + 5 from §7.
-- **E — per-repo household predicates + ingest MAC check + isolation pins.** Add
-  the `household_id` predicate to every global read enumerated in §2 gap 4
+- **E — per-repo household predicates + scoped ingest writes + isolation pins.**
+  Add the `household_id` predicate to every global read enumerated in §2 gap 4
   (via `…ByHousehold(hh)` methods or a shared `SqlFragments` predicate), keep
-  the gap-3 visibility helpers narrowing *within* the household, and add the
-  ingest MAC-in-household validation (§3.2.2). Land the full
-  `MultiTenantIsolationSpec` (§7) as the merge gate. Prove each hot query's plan
-  (§5.3).
+  the gap-3 visibility helpers narrowing *within* the household, and make every
+  MAC-keyed ingest write constructively scoped to `(router.householdId, mac)` —
+  including `upsertUnknown`, which keeps auto-creating first-seen MACs as
+  unmanaged devices *in the router's household* (new-device discovery unchanged;
+  §3.2.2, never lookup-and-reject). Land the full `MultiTenantIsolationSpec`
+  (§7, including the pin-4b discovery test) as the merge gate. Prove each hot
+  query's plan (§5.3).
 - **F — edge/config custom-domain pointer.** Documentation-only for v1: record
   that CORS `allowedOrigins` / `WIFIHAVEN_UI_ALLOWED_HOSTS` / `WS_ALLOWED_ORIGINS`
   become per-household only under custom domains, and link the future
