@@ -24,9 +24,8 @@
 # fixtures, contract goldens, build files, configs. Code that adopts the
 # new schema (including new tests for it) lands in a follow-up PR.
 #
-# Escape hatch: apply the `migration-coupled-justified` label on the PR
-# and the workflow skips this job. Use it sparingly, with a written
-# justification in the PR body.
+# This gate is unconditional — there is no label opt-out (#2098). Ship the
+# migration alone, then the consuming code in a follow-up PR.
 #
 # See AGENTS.md §migrations-back-compat for the invariant this enforces.
 set -euo pipefail
@@ -95,9 +94,8 @@ Split this PR:
   2) Follow-up PR with the code that adopts the new schema. New
      tests for the new shape go here, not in the schema PR.
 
-If the change genuinely must be atomic (rare — please justify in the
-PR body), apply the `migration-coupled-justified` label on the PR to
-skip this check. See AGENTS.md §migrations-back-compat.
+This gate is unconditional — there is no label opt-out. See
+AGENTS.md §migrations-back-compat.
 MSG
   exit 1
 fi

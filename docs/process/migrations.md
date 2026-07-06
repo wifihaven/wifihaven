@@ -61,9 +61,8 @@ The workflow is two PRs:
    and deployed. This is where new repo methods, route handlers, wire
    shapes, and the tests that cover them go.
 
-**Escape hatch:** for genuinely atomic changes (rare), apply the
-`migration-coupled-justified` label on the PR and explain in the body
-why splitting isn't possible. The check skips when the label is set.
+This gate is unconditional — there is no label opt-out (#2098). The
+split above is cheap; ship the schema first, then the code.
 
 ### Migrations that are fast on dev/staging can be minutes-long on prod {#migrations-prod-data-volume}
 

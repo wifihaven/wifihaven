@@ -329,27 +329,22 @@ jobs:
   # every migration (including the new one in this PR). That only works
   # when the migration ships alone; co-shipping schema + code bypasses the
   # gate and reintroduces the #1176-class of bug. See
-  # AGENTS.md §migrations-back-compat. Skip with the
-  # `migration-coupled-justified` label on the PR.
+  # AGENTS.md §migrations-back-compat. This gate is unconditional — there is
+  # no label opt-out; the correct workflow is a schema-only PR followed by a
+  # code PR (#2098).
   migration-isolation:
     name: Migration Isolation Check
     needs: changes
     # Runs on pull_request + merge_group only (NOT push — redundant
-    # post-merge). Path-gated like the rest (#1236). The label escape hatch
-    # is handled two ways: inline `!contains(...)` for PRs (labels are in the
-    # event), and a resolve-step for the queue (merge_group has no labels —
-    # we look them up from the queued PR head SHA).
+    # post-merge). Path-gated like the rest (#1236).
     if: |
       needs.changes.outputs.migrations == 'true'
       && (github.event_name == 'pull_request' || github.event_name == 'merge_group')
-      && !contains(github.event.pull_request.labels.*.name, 'migration-coupled-justified')
     runs-on: ubuntu-latest
     # CodeQL actions/missing-workflow-permissions: contents:read to diff the
-    # branch; pull-requests:read so `gh pr list` can resolve the queued PR's
-    # labels in merge_group (no token writes).
+    # branch.
     permissions:
       contents: read
-      pull-requests: read
     steps:
       # Check out the REAL PR head, not the default synthetic merge ref.
       # The "Resolve base SHA" step below passes the CURRENT main tip
@@ -369,20 +364,6 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      # In the merge queue the migration-coupled-justified label is not on the
-      # event, so a PR justified at PR time would otherwise fail here. Resolve
-      # the originating PR from the queue head SHA and skip if it's labeled.
-      - name: Check coupled-justified label (merge_group)
-        id: label
-        if: github.event_name == 'merge_group'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          labels=$(gh pr list --search "${{ github.event.merge_group.head_sha }}" --state all --json labels -q '.[0].labels[].name' 2>/dev/null || true)
-          if echo "$labels" | grep -qx 'migration-coupled-justified'; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          fi
-
       # Diff against the per-event base (three-dot semantics): PR base.sha for
       # pull_request, merge-base for merge_group. The script already uses
       # `<base>...HEAD`, so this resolves the same merge-base intent as the old
@@ -396,7 +377,6 @@ jobs:
           esac
 
       - name: Reject migration PRs that also change production source
-        if: steps.label.outputs.skip != 'true'
         run: bash .github/scripts/check-migration-isolation.sh "${{ steps.base.outputs.sha }}"
 
   # ── Usage period: forbid hardcoding the data-derived report period ───────

@@ -232,7 +232,7 @@ Docker commands hang indefinitely if Docker Desktop is degraded; verify `docker 
 Postgres in Docker, `mill api.run`, `cd web && npm run dev`, `mill __.test`, plus OpenWRT (`busted`) and OPNsense (`pytest`) command incantations. → see [`docs/process/local-dev.md`](docs/process/local-dev.md)
 
 ### Database migrations — schema-only PR {#migrations-back-compat}
-A migration PR contains only the migration SQL and `*.md` docs — no source, tests, CI, fixtures, build files — so the existing feature-test suite can act as the back-compat gate. Escape hatch: `migration-coupled-justified` label. → see [`docs/process/migrations.md`](docs/process/migrations.md#migrations-back-compat)
+A migration PR contains only the migration SQL and `*.md` docs — no source, tests, CI, fixtures, build files — so the existing feature-test suite can act as the back-compat gate. The gate is unconditional (no label opt-out; #2098). → see [`docs/process/migrations.md`](docs/process/migrations.md#migrations-back-compat)
 
 ### Migrations that are fast on dev/staging can be minutes-long on prod {#migrations-prod-data-volume}
 Migrations that scan/rewrite the unbounded-growth tables (`traffic_reports`, `connection_events`, `block_events`, rollups) can take minutes on prod and time out the 15-minute Render port-scan; estimate against prod row counts, not test fixtures. → see [`docs/process/migrations.md`](docs/process/migrations.md#migrations-prod-data-volume)
