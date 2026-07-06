@@ -39,6 +39,19 @@ function handle_request(env)
   uhttpd.send("Status: 200 OK\r\n")
   uhttpd.send("Content-Type: text/html; charset=utf-8\r\n")
   uhttpd.send("Cache-Control: no-store\r\n")
+  -- #2082: the block page is unauthenticated by design (any LAN client can be
+  -- redirected here), so it must not be embeddable/framed by another origin
+  -- (clickjacking) and must not have its content-type sniffed. The block page's
+  -- own render_html emits an inline <script>/<style>, so CSP keeps
+  -- 'unsafe-inline' for those directives rather than breaking the redirect —
+  -- default-src 'self' + frame-ancestors 'none' are the load-bearing lines.
+  uhttpd.send("X-Content-Type-Options: nosniff\r\n")
+  uhttpd.send("X-Frame-Options: DENY\r\n")
+  uhttpd.send(
+    "Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; " ..
+    "style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'self'; " ..
+    "object-src 'none'\r\n"
+  )
   uhttpd.send("Content-Length: " .. tostring(#body) .. "\r\n")
   uhttpd.send("\r\n")
   uhttpd.send(body)

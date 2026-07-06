@@ -38,6 +38,13 @@ object AlertRoutes {
   /** Default extension duration when the admin doesn't override on approve. */
   val DefaultExtensionMinutes: Int = 30
 
+  /**
+   * #2081: `note` is attacker-controlled free text on an unauthenticated route (React escapes it on
+   * render, so no XSS, but an unbounded value is unnecessary DB bloat / content-injection surface).
+   * Truncated, not rejected — a genuine over-length note from a kid shouldn't 400.
+   */
+  val MaxNoteLength: Int = 500
+
   def routes(
       auth: AuthService,
       alertRepo: AlertRepo,
@@ -48,17 +55,26 @@ object AlertRoutes {
       hsRepo: HouseholdSettingsRepo,
       notifier: Notifier,
       clock: SharedClock,
+      rateLimiter: RateLimiter,
   ): Routes[Any, Response] =
     Routes(
       // ── Public: kid posts an access-request from the block page ─────────
       Method.POST / "api" / "access-requests" ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            body <- req.body.asString.orElseFail(ApiError.BadRequest(""))
-            cr   <- ZIO
+            // #2081: per-source-IP rate limit — the existing per-(mac,host) debounce is
+            // bypassed by varying host/note, so an unauthenticated caller could otherwise
+            // flood alerts + notifications by cycling those fields.
+            allowed <- rateLimiter.tryAcquire(s"access-requests:${clientIp(req)}")
+            _       <- ZIO
+              .fail(ApiError.RateLimited("Too many requests; try again later"))
+              .unless(allowed)
+            body    <- req.body.asString.orElseFail(ApiError.BadRequest(""))
+            cr0     <- ZIO
               .fromEither(body.fromJson[CreateAccessRequest])
               .mapError(ApiError.DecodeFailure(_))
-            now  <- clock.instant
+            cr = cr0.copy(note = cr0.note.map(_.take(MaxNoteLength)))
+            now <- clock.instant
             since = now.minusSeconds(AccessRequestDebounceSeconds)
             existing <- alertRepo
               .findRecentAccessRequest(cr.mac, cr.host, since)

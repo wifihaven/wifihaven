@@ -27,16 +27,24 @@ object AuthRoutes {
       auth: AuthService,
       userRepo: UserRepo,
       userProfileRepo: UserProfileRepo,
+      loginRateLimiter: RateLimiter,
   ): Routes[Any, Response] =
     Routes(
       Method.POST / "api" / "auth" / "login"                 ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            body <- req.body.asString.orElseFail(ApiError.BadRequest(""))
-            lr   <- ZIO
+            // #2079: per-source-IP rate limit ahead of any DB/bcrypt work — online
+            // brute-force / credential-stuffing defense on the one internet-facing,
+            // unauthenticated, single-known-account login route.
+            allowed <- loginRateLimiter.tryAcquire(s"login:${clientIp(req)}")
+            _       <- ZIO
+              .fail(ApiError.RateLimited("Too many login attempts; try again later"))
+              .unless(allowed)
+            body    <- req.body.asString.orElseFail(ApiError.BadRequest(""))
+            lr      <- ZIO
               .fromEither(body.fromJson[LoginRequest])
               .mapError(ApiError.DecodeFailure(_))
-            resp <- auth
+            resp    <- auth
               .login(lr.username, lr.password)
               .mapError {
                 case AuthError.InvalidCredentials => ApiError.Unauthorized("Invalid credentials")
@@ -59,6 +67,14 @@ object AuthRoutes {
             cpr    <- ZIO
               .fromEither(body.fromJson[ChangePasswordRequest])
               .mapError(ApiError.DecodeFailure(_))
+            // #2084: minimum password length — previously any non-empty string was accepted.
+            _      <- ZIO
+              .fail(
+                ApiError.BadRequest(
+                  s"password must be at least ${AuthService.MinPasswordLength} characters",
+                ),
+              )
+              .when(!AuthService.isPasswordStrongEnough(cpr.newPassword))
             _      <- auth
               .changePassword(claims.sub, cpr.currentPassword, cpr.newPassword)
               .mapError {
@@ -96,6 +112,14 @@ object AuthRoutes {
             cur  <- ZIO
               .fromEither(body.fromJson[CreateUserRequest])
               .mapError(ApiError.DecodeFailure(_))
+            // #2084: minimum password length — previously any non-empty string was accepted.
+            _    <- ZIO
+              .fail(
+                ApiError.BadRequest(
+                  s"password must be at least ${AuthService.MinPasswordLength} characters",
+                ),
+              )
+              .when(!AuthService.isPasswordStrongEnough(cur.password))
             hash <- auth.hashPassword(cur.password)
             id   <- userRepo
               .create(cur.username, hash, UserRole.asString(cur.role))
@@ -2140,6 +2164,34 @@ private def bearerToken(req: Request): Option[String] =
     if v.startsWith("Bearer ") then Some(v.drop(7)) else None
   }
 
+/**
+ * #2079/#2081: best-effort client IP for rate-limit keying.
+ *
+ * Deliberately does NOT trust the first (leftmost) hop of `X-Forwarded-For`: our own reverse-proxy
+ * config (docs/install-api.md §7.2) sets it via nginx's `$proxy_add_x_forwarded_for`, which
+ * *appends* the real client to whatever the caller already sent — so the leftmost entry is
+ * attacker-controlled, and reading it would let anyone bypass the rate limit by sending a fresh
+ * fake value on every request. `X-Real-IP` is the value our nginx config sets instead
+ * (`$remote_addr`), which nginx *overwrites* rather than appends — not spoofable through it. Falls
+ * back to the last (rightmost) `X-Forwarded-For` hop (the proxy-appended one, for any other proxy
+ * that only sets that header), then to the raw socket `remoteAddress` (correct when there's no
+ * reverse proxy at all), then to a constant so a fully unattributable caller still shares one
+ * (still-enforced) bucket rather than bypassing the limit entirely.
+ */
+private[routes] def clientIp(req: Request): String =
+  req.headers
+    .get("X-Real-IP")
+    .map(_.trim)
+    .filter(_.nonEmpty)
+    .orElse(
+      req.headers
+        .get("X-Forwarded-For")
+        .map(_.split(",").last.trim)
+        .filter(_.nonEmpty),
+    )
+    .orElse(req.remoteAddress.map(_.getHostAddress))
+    .getOrElse("unknown")
+
 // 403 body emitted when must_change_password is set (#586). Wire-shape:
 // JSON `{"error":"password_change_required"}`, distinct from ApiError.Forbidden's plain text — kept
 // as a Wrapped Response since the SPA sniffs this exact JSON body.
@@ -2161,6 +2213,7 @@ def requireAuthSkipPwCheck(req: Request, auth: AuthService): IO[ApiError, JwtCla
         .verify(t)
         .mapError {
           case AuthError.TokenExpired => ApiError.Unauthorized("Token expired")
+          case AuthError.TokenRevoked => ApiError.Unauthorized("Session revoked")
           case _                      => ApiError.Unauthorized("Invalid token")
         },
     )
@@ -2180,6 +2233,7 @@ def requireAuth(req: Request, auth: AuthService): IO[ApiError, JwtClaims] =
         .mapError {
           case AuthError.Forbidden    => passwordChangeRequiredError
           case AuthError.TokenExpired => ApiError.Unauthorized("Token expired")
+          case AuthError.TokenRevoked => ApiError.Unauthorized("Session revoked")
           case _                      => ApiError.Unauthorized("Invalid token")
         },
     )

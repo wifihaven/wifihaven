@@ -19,7 +19,17 @@ case class JwtClaims(
     role: String, // admin | readonly
     iat: Long,
     exp: Long,
+    // #2080: the user's token_version at issuance time. verify() rejects a token
+    // whose stamped version is behind the user's CURRENT token_version (bumped on
+    // every password change) — this is what makes password change actually
+    // invalidate previously-issued sessions. 0 for tokens minted before this field
+    // existed, which compares equal to a never-changed user's token_version.
+    tokenVersion: Int = 0,
 ) derives JsonCodec
+
+// Wire shape of the JWT `content` claim. `tv` defaults to 0 so a pre-#2080 token
+// (minted before this field existed) decodes cleanly instead of failing to parse.
+private case class JwtContent(role: String, tv: Int = 0) derives JsonCodec
 
 // ── Auth errors ────────────────────────────────────────────────────────────
 
@@ -27,6 +37,9 @@ sealed trait AuthError
 object AuthError {
   case object InvalidCredentials     extends AuthError
   case object TokenExpired           extends AuthError
+  // #2080: token is well-formed and unexpired, but was issued before the user's
+  // last password change (token_version rolled forward since issuance).
+  case object TokenRevoked           extends AuthError
   case object InvalidToken           extends AuthError
   case object Forbidden              extends AuthError
   case class Unexpected(msg: String) extends AuthError
@@ -76,7 +89,9 @@ class AuthServiceLive(
         _     <- ZIO.fail(AuthError.InvalidCredentials).when(!valid)
         now   <- clock.instant.map(_.getEpochSecond)
         claim = JwtClaim(
-          content = s"""{"role":"${UserRole.asString(user.role)}"}""",
+          // #2080: stamp the user's CURRENT token_version so a subsequent password
+          // change (which bumps it) invalidates this token on its next verify().
+          content = JwtContent(UserRole.asString(user.role), user.tokenVersion).toJson,
           subject = Some(user.username),
           issuedAt = Some(now),
           expiration = Some(now + jwtConfig.expiryHours * 3600L),
@@ -119,14 +134,15 @@ class AuthServiceLive(
       .mapError(_ => AuthError.InvalidToken)
       .flatMap { claim =>
         ZIO
-          .fromEither(claim.content.fromJson[Map[String, String]])
+          .fromEither(claim.content.fromJson[JwtContent])
           .mapError(_ => AuthError.InvalidToken)
-          .map { m =>
+          .map { c =>
             JwtClaims(
               sub = claim.subject.getOrElse(""),
-              role = m.getOrElse("role", ""),
+              role = c.role,
               iat = claim.issuedAt.getOrElse(0L),
               exp = claim.expiration.getOrElse(0L),
+              tokenVersion = c.tv,
             )
           }
       }
@@ -136,10 +152,24 @@ class AuthServiceLive(
           ZIO.fail(AuthError.TokenExpired).when(claims.exp < now).as(claims)
         }
       }
+      .flatMap { claims =>
+        // #2080: reject a token stamped with an older token_version than the
+        // user's current one — the effect of a password change (which bumps it)
+        // invalidating every session minted before the change.
+        userRepo
+          .findByUsername(claims.sub)
+          .mapError(e => AuthError.Unexpected(e.getMessage))
+          .flatMap {
+            case Some(user) if user.tokenVersion > claims.tokenVersion =>
+              ZIO.fail(AuthError.TokenRevoked)
+            case _                                                     => ZIO.succeed(claims)
+          }
+      }
       .tapError {
-        // #1204: only the expired case is a bounded, security-relevant reason. A
-        // malformed/forged token (InvalidToken) is not in the §5.2 reason enum.
+        // #1204: only these are bounded, security-relevant reasons. A malformed/forged
+        // token (InvalidToken) is not in the §5.2 reason enum.
         case AuthError.TokenExpired => AppMetrics.recordAuthFailure("expired_token")
+        case AuthError.TokenRevoked => AppMetrics.recordAuthFailure("revoked_session")
         case _                      => ZIO.unit
       }
 
@@ -193,6 +223,10 @@ class AuthServiceLive(
       _     <- userRepo
         .clearMustChangePassword(user.id)
         .mapError(e => AuthError.Unexpected(e.getMessage))
+      // #2080: invalidate every previously-issued JWT for this user.
+      _     <- userRepo
+        .bumpTokenVersion(user.id)
+        .mapError(e => AuthError.Unexpected(e.getMessage))
     } yield ()
 
   def hashPassword(password: String): UIO[String] =
@@ -202,4 +236,11 @@ class AuthServiceLive(
 object AuthService {
   val layer: ZLayer[UserRepo & JwtConfig & Clock, Nothing, AuthService] =
     ZLayer.fromFunction(AuthServiceLive(_, _, _))
+
+  // #2084: minimum password length enforced on both create-user and
+  // change-password — previously neither path validated strength at all.
+  val MinPasswordLength: Int = 12
+
+  def isPasswordStrongEnough(password: String): Boolean =
+    password.length >= MinPasswordLength
 }

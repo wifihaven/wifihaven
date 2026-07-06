@@ -44,6 +44,13 @@ object ApiError {
   final case class NotFound(message: String) extends ApiError
 
   /**
+   * 429. #2079/#2081: rate-limited by [[wifihaven.api.auth.RateLimiter]] on an unauthenticated,
+   * internet-facing route (`/api/auth/login`, `/api/access-requests`). Plain-text body,
+   * `Retry-After` header so a well-behaved caller backs off instead of retrying immediately.
+   */
+  final case class RateLimited(message: String) extends ApiError
+
+  /**
    * 503 + `{"status":"error","db":"<class>"}` + `Retry-After: 30` (via
    * [[ErrorMapper.dbErrorToResponse]]). The agent distinguishes this "retry later" 503 from a 4xx
    * "do not retry"; keeping DB failures as 503 (never a bare 500) is load-bearing.

@@ -30,6 +30,8 @@ object ErrorMapper {
     case ApiError.Unauthorized(m)  => Response.unauthorized(m)
     case ApiError.Forbidden(m)     => Response.forbidden(m)
     case ApiError.NotFound(m)      => Response.notFound(m)
+    case ApiError.RateLimited(m)   =>
+      Response.text(m).status(Status.TooManyRequests).addHeader("Retry-After", "60")
     case ApiError.Db(t)            => dbErrorToResponse(t)
     case ApiError.Internal(m)      => Response.internalServerError(m)
     case ApiError.Wrapped(r)       => r
