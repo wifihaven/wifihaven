@@ -326,7 +326,8 @@ carries `sub`, `role`, `iat`, `exp` — **no household**. We add `hh:
 HouseholdId`, minted at login from `users.household_id`
 ([`AuthService.scala:79`](../../api/src/auth/AuthService.scala) is where the
 `JwtClaim` content is built) and read back in `verify`
-([`AuthService.scala:113`](../../api/src/auth/AuthService.scala)). Every
+([`AuthService.scala:116`](../../api/src/auth/AuthService.scala), which
+reconstructs `JwtClaims` ~`:125`). Every
 authorized route then passes `claims.hh` into the (now household-scoped) repo
 read.
 
