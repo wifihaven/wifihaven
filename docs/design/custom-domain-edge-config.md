@@ -31,13 +31,16 @@ with verified citations, so nothing is missed.
 | # | Surface | Config type / value | Env var → HOCON key | Consumer (enforcement point) |
 |---|---------|---------------------|---------------------|------------------------------|
 | 1 | **CORS `allowedOrigins`** | `CorsConfig` ([`Config.scala:119`](../../api/src/Config.scala), field `allowedOrigins` [`:120`](../../api/src/Config.scala), parsed `origins` [`:122`](../../api/src/Config.scala)) | `WIFIHAVEN_ALLOWED_ORIGINS` → `wifihaven.cors.allowedOrigins` | CORS middleware, [`Cors.scala:12`](../../api/src/Cors.scala) (`wrap`) → [`:21`](../../api/src/Cors.scala) (`buildConfig`) |
-| 2 | **UI allowed hosts** | `PolicyConfig.uiAllowedHosts` ([`Config.scala:135`](../../api/src/Config.scala), parsed `uiAllowedHostsParsed` [`:149`](../../api/src/Config.scala)) | `WIFIHAVEN_UI_ALLOWED_HOSTS` → `wifihaven.policy.uiAllowedHosts` | unioned into every profile's snapshot `extraAllowed` so a paused member can still reach the admin UI ([`PolicyService.scala:892`](../../api/src/policy/PolicyService.scala); #944) |
+| 2 | **UI allowed hosts** | `PolicyConfig.uiAllowedHosts` ([`Config.scala:135`](../../api/src/Config.scala), parsed `uiAllowedHostsParsed` [`:149`](../../api/src/Config.scala)) | `WIFIHAVEN_UI_ALLOWED_HOSTS` → `wifihaven.policy.uiAllowedHosts` | unioned into every profile's snapshot `extraAllowed` so a paused member can still reach the admin UI (union at [`PolicyService.scala:201`](../../api/src/policy/PolicyService.scala) `uiGlobalAllow`, threaded from config at [`:892`](../../api/src/policy/PolicyService.scala); #944) |
 | 3 | **WS origin gate** | `WsConfig.allowedOrigins` ([`Config.scala:184`](../../api/src/Config.scala), parsed `allowedOriginHosts` [`:191`](../../api/src/Config.scala), match `originAllowed` [`:203`](../../api/src/Config.scala)) | `WIFIHAVEN_WS_ALLOWED_ORIGINS` → `wifihaven.ws.allowedOrigins` | SPA-websocket upgrade check, [`SpaWsRoutes.scala:121`](../../api/src/routes/SpaWsRoutes.scala) (`checkOrigin`); #1969 |
 
-All three parse a comma-separated string and are **empty by default**, which
-disables the check entirely — the self-hosted single-origin path stays
-header-clean (CORS middleware skipped, WS same-origin relies on the
-`SameSite=Strict` `wh_ws` cookie). Cloud/staging populate them.
+All three parse a comma-separated string, and an **empty value disables the
+check entirely** — the self-hosted single-origin path stays header-clean (CORS
+middleware skipped, WS same-origin relies on the `SameSite=Strict` `wh_ws`
+cookie). `uiAllowedHosts` and `WsConfig.allowedOrigins` default to `""`;
+`CorsConfig.allowedOrigins` is a required field (no Scala default) that the
+deploy configs supply empty (`render.yaml`, `docker-compose.prod.yml`'s
+`${WIFIHAVEN_ALLOWED_ORIGINS:-}`). Cloud/staging populate all three.
 
 Nuance on surface 2: `uiAllowedHosts` is not itself an origin/CORS check — it
 lists the deployment's own SPA + API hostnames so a paused household member can
