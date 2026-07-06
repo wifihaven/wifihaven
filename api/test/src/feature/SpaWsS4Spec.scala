@@ -52,7 +52,7 @@ object SpaWsS4Spec
   override val bootstrap =
     TestDatabase.layer ++ TestLayers.withClock(testClockAt)
 
-  private val jwtCfg  = JwtConfig(secret = "test-secret-at-least-32-chars!!", expiryHours = 1)
+  private val jwtCfg  = JwtConfig(secret = "test-secret-at-least-32-chars!!x", expiryHours = 1)
   private val openCfg = WsConfig(allowedOrigins = "", expiryCheckSeconds = 60)
   private val cleanDb = TestDatabase.cleanAndMigrate
 

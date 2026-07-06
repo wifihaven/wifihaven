@@ -1432,6 +1432,11 @@ case class Router(
     // `X-WifiHaven-Agent-Version` header. NULL until the router upgrades to
     // an agent that reports it.
     agentVersion: Option[String] = None,
+    // #2083: enrollment tokens are single-use (enrollmentTokenHash cleared on
+    // completion) but previously never expired. NULL once enrollment
+    // completes (the hash is cleared too, so it can no longer be looked up
+    // anyway) or for pre-#2083 rows that had no pending enrollment.
+    enrollmentExpiresAt: Option[String] = None,
 ) derives JsonCodec
 
 case class TrafficReport(

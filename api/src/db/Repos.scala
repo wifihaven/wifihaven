@@ -21,6 +21,9 @@ case class DbUser(
     role: UserRole,
     createdAt: Instant,
     mustChangePassword: Boolean = false,
+    // #2080: bumped on every password change; stamped into the JWT at login and
+    // checked on verify() so a leaked token stops working once the password rotates.
+    tokenVersion: Int = 0,
 )
 // #865: mac/deviceId/profileId became multi-valued so the SPA's column-header
 // popovers can filter to a subset. Empty list = no filter on that column.
@@ -84,6 +87,9 @@ trait UserRepo {
   def updateUsername(id: UserId, u: String): Task[Unit]
   def updateRole(id: UserId, r: String): Task[Unit]
   def clearMustChangePassword(id: UserId): Task[Unit]
+  // #2080: invalidates every previously-issued JWT for this user (verify()
+  // rejects any token stamped with an older tokenVersion).
+  def bumpTokenVersion(id: UserId): Task[Unit]
   def listAll: Task[List[DbUser]]
   def delete(id: UserId): Task[Unit]
 }
@@ -732,18 +738,25 @@ trait ConnectionEventRepo {
 }
 
 class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
+  private val userCols =
+    fr"id,username,password_hash,role,created_at,must_change_password,token_version"
+  private type UserRow = (UserId, String, String, UserRole, Instant, Boolean, Int)
+  private def toUser(r: UserRow) = r match {
+    case (id, un, ph, role, ca, mcp, tv) => DbUser(id, un, ph, role, ca, mcp, tv)
+  }
+
   def findByUsername(u: String)             =
     DbMetrics.timed("user.findByUsername")(
-      sql"SELECT id,username,password_hash,role,created_at,must_change_password FROM users WHERE username=$u"
-        .query[(UserId, String, String, UserRole, Instant, Boolean)]
-        .map { case (id, un, ph, role, ca, mcp) => DbUser(id, un, ph, role, ca, mcp) }
+      (fr"SELECT " ++ userCols ++ fr" FROM users WHERE username=$u")
+        .query[UserRow]
+        .map(toUser)
         .option
         .transact(xa),
     )
   def findById(id: UserId)                  =
-    sql"SELECT id,username,password_hash,role,created_at,must_change_password FROM users WHERE id=$id"
-      .query[(UserId, String, String, UserRole, Instant, Boolean)]
-      .map { case (id, un, ph, role, ca, mcp) => DbUser(id, un, ph, role, ca, mcp) }
+    (fr"SELECT " ++ userCols ++ fr" FROM users WHERE id=$id")
+      .query[UserRow]
+      .map(toUser)
       .option
       .transact(xa)
   def create(u: String, h: String, r: String) =
@@ -760,10 +773,12 @@ class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
     sql"UPDATE users SET role=$r WHERE id=$id".update.run.transact(xa).unit
   def clearMustChangePassword(id: UserId)   =
     sql"UPDATE users SET must_change_password=false WHERE id=$id".update.run.transact(xa).unit
+  def bumpTokenVersion(id: UserId)          =
+    sql"UPDATE users SET token_version=token_version+1 WHERE id=$id".update.run.transact(xa).unit
   def listAll                               =
-    sql"SELECT id,username,password_hash,role,created_at,must_change_password FROM users ORDER BY id"
-      .query[(UserId, String, String, UserRole, Instant, Boolean)]
-      .map { case (id, un, ph, role, ca, mcp) => DbUser(id, un, ph, role, ca, mcp) }
+    (fr"SELECT " ++ userCols ++ fr" FROM users ORDER BY id")
+      .query[UserRow]
+      .map(toUser)
       .to[List]
       .transact(xa)
   def delete(id: UserId) = sql"DELETE FROM users WHERE id=$id".update.run.transact(xa).unit
@@ -1702,6 +1717,7 @@ class RouterRepoLive(xa: Transactor[Task]) extends RouterRepo {
         Option[ETag],
         Instant,
         Option[String],
+        Option[Instant],
     )
   private def toR(r: R)                                                     =
     Router(
@@ -1713,9 +1729,12 @@ class RouterRepoLive(xa: Transactor[Task]) extends RouterRepo {
       r._6,
       r._7.toString,
       r._8,
+      r._9.map(_.toString),
     )
   private val cols                                                          =
-    fr"id,name,enrollment_token_hash,token_hash,last_seen_at,last_etag,created_at,agent_version"
+    fr"id,name,enrollment_token_hash,token_hash,last_seen_at,last_etag,created_at,agent_version,enrollment_expires_at"
+  // #2083: default TTL for a freshly-created enrollment token.
+  private val EnrollmentTtl                                                 = fr"INTERVAL '1 hour'"
   def listAll                                                               =
     (fr"SELECT " ++ cols ++ fr" FROM routers ORDER BY created_at")
       .query[R]
@@ -1728,8 +1747,12 @@ class RouterRepoLive(xa: Transactor[Task]) extends RouterRepo {
       .map(toR)
       .option
       .transact(xa)
+  // #2083: an enrollment token past its TTL no longer matches, even though the hash
+  // column itself isn't cleared until first use — a leaked but never-redeemed token
+  // stops being valid after 1h instead of indefinitely.
   def findByEnrollmentTokenHash(h: Sha256Hex)                               =
-    (fr"SELECT " ++ cols ++ fr" FROM routers WHERE enrollment_token_hash=$h")
+    (fr"SELECT " ++ cols ++
+      fr" FROM routers WHERE enrollment_token_hash=$h AND enrollment_expires_at > NOW()")
       .query[R]
       .map(toR)
       .option
@@ -1743,7 +1766,8 @@ class RouterRepoLive(xa: Transactor[Task]) extends RouterRepo {
         .transact(xa),
     )
   def create(name: String, enrollmentTokenHash: Sha256Hex)                  =
-    sql"INSERT INTO routers(name,enrollment_token_hash) VALUES($name,$enrollmentTokenHash) RETURNING id"
+    (fr"INSERT INTO routers(name,enrollment_token_hash,enrollment_expires_at)" ++
+      fr"VALUES($name,$enrollmentTokenHash,NOW() + " ++ EnrollmentTtl ++ fr") RETURNING id")
       .query[RouterId]
       .unique
       .transact(xa)

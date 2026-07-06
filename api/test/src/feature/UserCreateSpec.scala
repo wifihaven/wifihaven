@@ -28,7 +28,7 @@ object UserCreateSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
   override val bootstrap =
     TestDatabase.layer ++ TestLayers.withClock(TestClock.schoolDayAfternoon)
 
-  private val jwtCfg   = JwtConfig(secret = "test-secret-at-least-32-chars!!", expiryHours = 1)
+  private val jwtCfg   = JwtConfig(secret = "test-secret-at-least-32-chars!!x", expiryHours = 1)
   private def makeAuth =
     for {
       ur    <- ZIO.service[UserRepo]
@@ -55,15 +55,15 @@ object UserCreateSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         auth       <- makeAuth
         // Admin creates a new user via the route handler (exercises the full HTTP path).
         adminToken <- auth.login("admin", "changeme").map(_.token.value)
-        authRoutes = AuthRoutes.routes(auth, userRepo, upRepo)
-        createBody = CreateUserRequest("newbie", "initial123", UserRole.Adult, Nil).toJson
+        authRoutes = AuthRoutes.routes(auth, userRepo, upRepo, RateLimiter.allowAll)
+        createBody = CreateUserRequest("newbie", "initial123456", UserRole.Adult, Nil).toJson
         createReq  = Request
           .post(URL.decode("/api/users").toOption.get, Body.fromString(createBody))
           .addHeader(Header.Authorization.Bearer(adminToken))
           .addHeader(Header.ContentType(MediaType.application.json))
         createResp      <- authRoutes.runZIO(createReq)
         // Login with the newly created user.
-        newbieLoginResp <- auth.login("newbie", "initial123")
+        newbieLoginResp <- auth.login("newbie", "initial123456")
         newbieToken = newbieLoginResp.token.value
         // Any non-change-password authenticated route should return 403.
         meReq       = Request
@@ -81,16 +81,16 @@ object UserCreateSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         upRepo     <- ZIO.service[UserProfileRepo]
         auth       <- makeAuth
         adminToken <- auth.login("admin", "changeme").map(_.token.value)
-        authRoutes = AuthRoutes.routes(auth, userRepo, upRepo)
-        createBody = CreateUserRequest("charlie", "initial456", UserRole.Adult, Nil).toJson
+        authRoutes = AuthRoutes.routes(auth, userRepo, upRepo, RateLimiter.allowAll)
+        createBody = CreateUserRequest("charlie", "initial456789", UserRole.Adult, Nil).toJson
         createReq  = Request
           .post(URL.decode("/api/users").toOption.get, Body.fromString(createBody))
           .addHeader(Header.Authorization.Bearer(adminToken))
           .addHeader(Header.ContentType(MediaType.application.json))
         _            <- authRoutes.runZIO(createReq)
-        charlieToken <- auth.login("charlie", "initial456").map(_.token.value)
+        charlieToken <- auth.login("charlie", "initial456789").map(_.token.value)
         // POST /api/auth/change-password must succeed even with must_change_password=true.
-        cpBody = ChangePasswordRequest("initial456", "mynewpassword99").toJson
+        cpBody = ChangePasswordRequest("initial456789", "mynewpassword99").toJson
         cpReq  = Request
           .post(URL.decode("/api/auth/change-password").toOption.get, Body.fromString(cpBody))
           .addHeader(Header.Authorization.Bearer(charlieToken))

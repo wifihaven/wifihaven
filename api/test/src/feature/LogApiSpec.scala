@@ -25,7 +25,7 @@ object LogApiSpec
   override val bootstrap =
     TestDatabase.layer ++ TestLayers.withClock(TestClock.schoolDayAfternoon)
 
-  private val jwtCfg   = JwtConfig(secret = "test-secret-at-least-32-chars!!", expiryHours = 1)
+  private val jwtCfg   = JwtConfig(secret = "test-secret-at-least-32-chars!!x", expiryHours = 1)
   private def makeAuth =
     for {
       ur    <- ZIO.service[UserRepo]

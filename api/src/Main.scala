@@ -69,7 +69,7 @@ object Main extends ZIOAppDefault {
         bundledById   = bundled.map(b => b.id -> b).toMap
         routesAndRegistry <- allRoutes(templatesById, bundledById, readyRef.get)
         (routes, wsRegistry, spaWsRegistry, spaEventBus) = routesAndRegistry
-        withCors                                         = Cors.wrap(routes, cfg.cors)
+        withCors = SecurityHeaders.wrap(Cors.wrap(routes, cfg.cors))
         _ <- ZIO
           .logInfo(s"CORS enabled for origins: ${cfg.cors.origins.mkString(", ")}")
           .when(cfg.cors.origins.nonEmpty)
@@ -405,11 +405,17 @@ object Main extends ZIOAppDefault {
       xa             <- ZIO.service[Transactor[Task]]
       promPublisher  <- ZIO.service[PrometheusPublisher]
       routerAuth = new RouterAuthLive(routerRepo)
-      routerMetrics <- RouterMetricsService.make
+      routerMetrics        <- RouterMetricsService.make
+      // #2079: per-source-IP rate limit on the unauthenticated login route — 10
+      // attempts / 15 min. #2081: per-source-IP rate limit on the unauthenticated
+      // access-requests route (block-page kid request) — 20 / 5 min, on top of the
+      // existing per-(mac,host) debounce (which a varying host bypasses).
+      loginRateLimiter     <- RateLimiterLive.make(maxAttempts = 10, windowSeconds = 15 * 60)
+      accessReqRateLimiter <- RateLimiterLive.make(maxAttempts = 20, windowSeconds = 5 * 60)
       // #1970 (S3): the SPA-websocket change-source bus (design §5.2.2). The write sites publish
       // change events here; the SpaPush consumer (forked in the run scope) drains it and fans out
       // role-filtered, subscription-gated `now`/`connectionEvents`/`stale` frames.
-      spaEventBus   <- SpaEventBus.make
+      spaEventBus          <- SpaEventBus.make
       // #1846: the transport-agnostic ingest service shared by the REST ingest routes and the new
       // websocket transport, plus the per-router ws connection registry. #1970: it also publishes
       // SPA change events (new connection-events head + `now` trigger + `stale{alerts}`) to the bus.
@@ -455,7 +461,7 @@ object Main extends ZIOAppDefault {
 
       val systemRoutes: Routes[Any, Response] =
         VersionRoutes.routes(wifihaven.api.BuildInfo.fromEnv) ++
-          AuthRoutes.routes(auth, userRepo, upRepo) ++
+          AuthRoutes.routes(auth, userRepo, upRepo, loginRateLimiter) ++
           ProfileRoutes.routes(
             auth,
             profileRepo,
@@ -577,6 +583,7 @@ object Main extends ZIOAppDefault {
             hsRepo,
             notifier,
             clock,
+            accessReqRateLimiter,
           ) ++
           AppRoutes.routes(auth, appRepo, profileRepo, upRepo, blRepo, templates) ++
           AdminDebugRoutes.routes(auth, policy) ++

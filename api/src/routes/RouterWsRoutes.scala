@@ -252,6 +252,7 @@ object RouterWsRoutes {
       case ApiError.Unauthorized(_)  => "unauthorized"
       case ApiError.Forbidden(_)     => "forbidden"
       case ApiError.NotFound(_)      => "not_found"
+      case ApiError.RateLimited(_)   => "rate_limited"
       case ApiError.Db(_)            => "db_error"
       case ApiError.Internal(_)      => "internal"
       case ApiError.Wrapped(_)       => "rejected"

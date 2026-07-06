@@ -26,7 +26,7 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
   override val bootstrap =
     TestDatabase.layer ++ TestLayers.withClock(TestClock.schoolDayAfternoon)
 
-  private val jwtCfg   = JwtConfig(secret = "test-secret-at-least-32-chars!!", expiryHours = 1)
+  private val jwtCfg   = JwtConfig(secret = "test-secret-at-least-32-chars!!x", expiryHours = 1)
   private def makeAuth =
     for {
       ur    <- ZIO.service[UserRepo]
@@ -246,7 +246,7 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         auth     <- makeAuth
         _        <- createUser(userRepo, upRepo, auth, "mom", "adult", Nil)
         token    <- auth.login("mom", "pass").map(_.token.value)
-        routes = AuthRoutes.routes(auth, userRepo, upRepo)
+        routes = AuthRoutes.routes(auth, userRepo, upRepo, RateLimiter.allowAll)
         req    = Request
           .get(URL.decode("/api/users").toOption.get)
           .addHeader(Header.Authorization.Bearer(token))
@@ -266,7 +266,7 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         // create a child user with no links yet
         childId    <- createUser(userRepo, upRepo, auth, "alice", "child", Nil)
         adminToken <- auth.login("admin", "changeme").map(_.token.value)
-        authRoutes = AuthRoutes.routes(auth, userRepo, upRepo)
+        authRoutes = AuthRoutes.routes(auth, userRepo, upRepo, RateLimiter.allowAll)
         setBody    = SetUserProfilesRequest(List(kidsId)).toJson
         setReq     = Request
           .put(
@@ -306,7 +306,7 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         kidsId = profiles.find(_.name == "Kids").get.id
         _     <- createUser(userRepo, upRepo, auth, "alice", "child", List(kidsId))
         token <- auth.login("alice", "pass").map(_.token.value)
-        routes = AuthRoutes.routes(auth, userRepo, upRepo)
+        routes = AuthRoutes.routes(auth, userRepo, upRepo, RateLimiter.allowAll)
         req    = Request
           .get(URL.decode("/api/me").toOption.get)
           .addHeader(Header.Authorization.Bearer(token))

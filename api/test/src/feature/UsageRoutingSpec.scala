@@ -40,7 +40,7 @@ object UsageRoutingSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
 
   private val testMac = "aa:bb:cc:dd:ee:01"
 
-  private val jwtCfg    = JwtConfig(secret = "test-secret-at-least-32-chars!!", expiryHours = 1)
+  private val jwtCfg    = JwtConfig(secret = "test-secret-at-least-32-chars!!x", expiryHours = 1)
   private def buildAuth =
     for {
       ur    <- ZIO.service[UserRepo]

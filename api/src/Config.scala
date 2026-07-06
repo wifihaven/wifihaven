@@ -78,7 +78,26 @@ case class HttpConfig(
 case class JwtConfig(
     secret: String,
     expiryHours: Int,
-)
+) {
+  // #2084: fail fast on a weak or unrotated-placeholder JWT secret rather than
+  // silently starting with one. HS256's whole security rests on secret entropy;
+  // a short or well-known secret is offline-brute-forceable, letting an
+  // attacker forge arbitrary admin JWTs. Cloud config always sets a generated
+  // 32+ char value (render.yaml `generateValue: true`); this guards the
+  // self-hosted path, which has no such backstop.
+  require(
+    secret.length >= JwtConfig.MinSecretLength,
+    s"wifihaven.jwt.secret must be at least ${JwtConfig.MinSecretLength} characters (got ${secret.length})",
+  )
+  require(
+    !secret.startsWith("change-this"),
+    "wifihaven.jwt.secret is still the shipped config/application.conf.example placeholder — generate a real secret",
+  )
+}
+
+object JwtConfig {
+  val MinSecretLength: Int = 32
+}
 
 // #1242: Prometheus /metrics exposition. `enabled` mounts the GET /metrics
 // route; when off, non-/metrics behaviour is unchanged and the route 404s.
