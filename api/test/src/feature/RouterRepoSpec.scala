@@ -1,12 +1,15 @@
 package wifihaven.api.feature
 
 import wifihaven.api.db.*
+import wifihaven.api.db.TypeMeta.given
 import wifihaven.shared.*
 import wifihaven.shared.types.*
 import wifihaven.testinfra.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
-import doobie.Transactor
+import doobie.*
+import doobie.implicits.*
 import zio.*
+import zio.interop.catz.*
 import zio.test.*
 
 import java.time.{Instant, LocalDate}
@@ -31,6 +34,42 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           assertTrue(row.exists(_.tokenHash.isEmpty)) &&
           assertTrue(row.exists(_.lastSeenAt.isEmpty)) &&
           assertTrue(byEnroll.exists(_.id == id))
+      },
+      // #2083: enrollment tokens were correctly single-use but never expired. `create`
+      // stamps a TTL; `findByEnrollmentTokenHash` must refuse a token past it even
+      // though the hash itself is only cleared on first successful use.
+      test("create stamps enrollment_expires_at in the future") {
+        for {
+          _    <- cleanDb
+          repo <- ZIO.service[RouterRepo]
+          id   <- repo.create("home-router", Sha256Hex.unsafe("a" * 64))
+          row  <- repo.findById(id)
+        } yield assertTrue(row.flatMap(_.enrollmentExpiresAt).isDefined)
+      },
+      test("findByEnrollmentTokenHash refuses a token past its TTL") {
+        for {
+          _        <- cleanDb
+          repo     <- ZIO.service[RouterRepo]
+          xa       <- ZIO.service[Transactor[Task]]
+          id       <- repo.create("home-router", Sha256Hex.unsafe("b" * 64))
+          // Simulate TTL elapse: back-date the stamped expiry into the past.
+          _        <-
+            sql"UPDATE routers SET enrollment_expires_at = NOW() - INTERVAL '1 minute' WHERE id=$id".update.run
+              .transact(xa)
+          byEnroll <- repo.findByEnrollmentTokenHash(Sha256Hex.unsafe("b" * 64))
+          byId     <- repo.findById(id)
+        } yield assertTrue(byEnroll.isEmpty) &&
+          // The row (and its hash) still exists — expiry doesn't retroactively
+          // clear the hash, it just stops the lookup from matching it.
+          assertTrue(byId.exists(_.enrollmentTokenHash.isDefined))
+      },
+      test("findByEnrollmentTokenHash still matches a token within its TTL") {
+        for {
+          _        <- cleanDb
+          repo     <- ZIO.service[RouterRepo]
+          id       <- repo.create("home-router", Sha256Hex.unsafe("c" * 64))
+          byEnroll <- repo.findByEnrollmentTokenHash(Sha256Hex.unsafe("c" * 64))
+        } yield assertTrue(byEnroll.exists(_.id == id))
       },
       test(
         "completeEnrollment swaps enrollment_token_hash for token_hash and stamps last_seen_at",

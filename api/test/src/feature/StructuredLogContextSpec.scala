@@ -34,7 +34,7 @@ object StructuredLogContextSpec extends ZIOSpec[TestDatabase.AllRepos & Embedded
   override val bootstrap =
     TestDatabase.layer ++ TestLayers.withClock(TestClock.schoolDayAfternoon)
 
-  private val jwtCfg = JwtConfig(secret = "test-secret-at-least-32-chars!!", expiryHours = 1)
+  private val jwtCfg = JwtConfig(secret = "test-secret-at-least-32-chars!!x", expiryHours = 1)
 
   private def makeAuth =
     for {
@@ -50,7 +50,9 @@ object StructuredLogContextSpec extends ZIOSpec[TestDatabase.AllRepos & Embedded
       ur   <- ZIO.service[UserRepo]
       up   <- ZIO.service[UserProfileRepo]
       auth <- makeAuth
-    } yield LoggingMiddleware.annotate(ErrorBoundary.observe(AuthRoutes.routes(auth, ur, up)))
+    } yield LoggingMiddleware.annotate(
+      ErrorBoundary.observe(AuthRoutes.routes(auth, ur, up, RateLimiter.allowAll)),
+    )
 
   private def url(p: String) = URL.decode(p).toOption.get
 

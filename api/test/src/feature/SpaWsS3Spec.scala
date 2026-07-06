@@ -41,7 +41,7 @@ object SpaWsS3Spec
   override val bootstrap =
     TestDatabase.layer ++ TestLayers.withClock(testClockAt)
 
-  private val jwtCfg = JwtConfig(secret = "test-secret-at-least-32-chars!!", expiryHours = 1)
+  private val jwtCfg = JwtConfig(secret = "test-secret-at-least-32-chars!!x", expiryHours = 1)
 
   // Origin enforcement OFF (self-hosted same-origin shape) keeps the client connect to just the
   // cookie — S2 already covers the Origin allowlist; S3 is about the change-source fan-out.

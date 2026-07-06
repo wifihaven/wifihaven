@@ -20,7 +20,7 @@ object AuthApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
   override val bootstrap =
     TestDatabase.layer ++ TestLayers.withClock(TestClock.schoolDayAfternoon)
 
-  private val jwtCfg   = JwtConfig(secret = "test-secret-at-least-32-chars!!", expiryHours = 1)
+  private val jwtCfg   = JwtConfig(secret = "test-secret-at-least-32-chars!!x", expiryHours = 1)
   private def makeAuth =
     for {
       ur    <- ZIO.service[UserRepo]
@@ -106,7 +106,7 @@ object AuthApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
         userRepo        <- ZIO.service[UserRepo]
         auth            <- makeAuth
         userProfileRepo <- ZIO.service[UserProfileRepo]
-        routes = AuthRoutes.routes(auth, userRepo, userProfileRepo)
+        routes = AuthRoutes.routes(auth, userRepo, userProfileRepo, RateLimiter.allowAll)
         token <- auth.login("admin", "changeme").map(_.token.value)
         cpBody = ChangePasswordRequest("changeme", "newpassword123").toJson
         cpReq  = Request
@@ -126,7 +126,7 @@ object AuthApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
         userRepo        <- ZIO.service[UserRepo]
         auth            <- makeAuth
         userProfileRepo <- ZIO.service[UserProfileRepo]
-        routes = AuthRoutes.routes(auth, userRepo, userProfileRepo)
+        routes = AuthRoutes.routes(auth, userRepo, userProfileRepo, RateLimiter.allowAll)
         body   = LoginRequest("admin", "changeme").toJson
         req    = Request
           .post(URL.decode("/api/auth/login").toOption.get, Body.fromString(body))

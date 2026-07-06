@@ -20,7 +20,7 @@ object UserPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
   override val bootstrap =
     TestDatabase.layer ++ TestLayers.withClock(TestClock.schoolDayAfternoon)
 
-  private val jwtCfg   = JwtConfig(secret = "test-secret-at-least-32-chars!!", expiryHours = 1)
+  private val jwtCfg   = JwtConfig(secret = "test-secret-at-least-32-chars!!x", expiryHours = 1)
   private def makeAuth =
     for {
       ur    <- ZIO.service[UserRepo]
@@ -48,7 +48,7 @@ object UserPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
       userRepo <- ZIO.service[UserRepo]
       upRepo   <- ZIO.service[UserProfileRepo]
       token    <- auth.login("admin", "changeme").map(_.token.value)
-    } yield (AuthRoutes.routes(auth, userRepo, upRepo), token)
+    } yield (AuthRoutes.routes(auth, userRepo, upRepo, RateLimiter.allowAll), token)
 
   private def patch(routes: Routes[Any, Response], token: String, id: UserId, body: String) =
     routes.runZIO(
@@ -106,7 +106,7 @@ object UserPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         kidsId = profiles.find(_.name == "Kids").get.id
         _     <- upRepo.setProfilesForUser(id, List(kidsId))
         token <- auth.login("admin", "changeme").map(_.token.value)
-        routes = AuthRoutes.routes(auth, userRepo, upRepo)
+        routes = AuthRoutes.routes(auth, userRepo, upRepo, RateLimiter.allowAll)
         // Empty body — change nothing.
         resp  <- patch(routes, token, id, "{}")
         after <- userRepo.findById(id)
@@ -132,7 +132,7 @@ object UserPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         kidsId = profiles.find(_.name == "Kids").get.id
         _     <- upRepo.setProfilesForUser(id, List(kidsId))
         token <- auth.login("admin", "changeme").map(_.token.value)
-        routes = AuthRoutes.routes(auth, userRepo, upRepo)
+        routes = AuthRoutes.routes(auth, userRepo, upRepo, RateLimiter.allowAll)
         resp <- patch(routes, token, id, """{"profileIds":[]}""")
         pids <- upRepo.listProfilesForUser(id)
       } yield assertTrue(resp.status == Status.Ok) && assertTrue(pids.isEmpty)
@@ -166,7 +166,7 @@ object UserPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         auth     <- makeAuth
         // alice is the seeded adult; she shouldn't be able to PATCH herself.
         token    <- auth.login("alice", "secret").map(_.token.value)
-        routes = AuthRoutes.routes(auth, userRepo, upRepo)
+        routes = AuthRoutes.routes(auth, userRepo, upRepo, RateLimiter.allowAll)
         resp <- patch(routes, token, id, """{"username":"alice2"}""")
       } yield assertTrue(resp.status == Status.Forbidden)
     },
