@@ -824,3 +824,111 @@ describe("policy.format_poll_age", function()
   end)
 
 end)
+
+-- ── policy.apply ea_/ea6_ backfill (#2095) ────────────────────────────────
+--
+-- The #2094 residual: a host that IS in the wire extraAllowed (jsdelivr.net,
+-- carrying MathAcademy's KaTeX/MathJax on cdn.jsdelivr.net) was dropped over
+-- IPv6 under a whole-MAC TimeLimit block. Root cause is a population-timing
+-- gap: `nft -f` deletes+recreates `table inet wifihaven` on every apply, so
+-- the per-(mac,host) ea_/ea6_ carve sets are EMPTY right after apply and only
+-- refill when the device next RESOLVES the carved host over the live query
+-- log. A device holding a long-cached CDN IP can reconnect before that refill
+-- and get caught by the whole-MAC drop. policy.apply now backfills ea_/ea6_
+-- from the persisted dns-tail ip→host cache immediately after the reload, for
+-- BOTH families — so a carved host stays reachable over v4 AND v6.
+describe("policy.apply ea_/ea6_ backfill (#2095)", function()
+  local paths = require("wifihaven.paths")
+
+  -- Kid Mac ca:ef:a1:72:6a:a3 under a whole-MAC TimeLimit block, with
+  -- jsdelivr.net carved into extraAllowed (an Allowed-mode app's host-set that
+  -- survives the block per #1679 TimeLimit-not-omitted).
+  local BLOCKED_SNAP = [[{
+    "etag": "sha256:2095",
+    "generatedAt": "2026-07-05T23:30:00Z",
+    "devices": {
+      "ca:ef:a1:72:6a:a3": { "profileId": 1, "name": "kid-mac", "rules": null }
+    },
+    "profiles": {
+      "1": {
+        "name": "Kids",
+        "rules": {
+          "blocked": true,
+          "blockReason": "TimeLimit",
+          "extraBlocked": [],
+          "extraAllowed": ["jsdelivr.net"],
+          "blocklistIds": [],
+          "blockIpOnly": false
+        },
+        "failureMode": "block-all"
+      }
+    },
+    "blocklists": {}
+  }]]
+
+  local function decode(s) return require("cjson").decode(s) end
+
+  -- A persisted dns-tail cache holding a RECENT v4 AND v6 resolution of
+  -- cdn.jsdelivr.net (a subdomain of the carved jsdelivr.net). Format:
+  -- "<ip>\t<hostname>\t<ts>\n" (dns_log.load_table input).
+  local NOW = 2000000
+  local CACHE =
+    "151.101.1.229\tcdn.jsdelivr.net\t" .. NOW .. "\n" ..
+    "2606:4700::6811:d005\tcdn.jsdelivr.net\t" .. NOW .. "\n"
+
+  local function run()
+    local reloads = {}
+    policy.apply(decode(BLOCKED_SNAP),
+      function(_path, _content) return true, nil end,
+      function(cmd) reloads[#reloads + 1] = cmd; return 0 end,
+      nil,
+      { now_fn = function() return NOW end,
+        read_fn = function(path)
+          if path == paths.dns_cache then return CACHE end
+          return nil  -- dnsmasq conf absent → cold apply
+        end })
+    return reloads
+  end
+
+  local function issued(reloads, set_name, ip)
+    for _, c in ipairs(reloads) do
+      if c:find(set_name, 1, true) and c:find("{ " .. ip .. " }", 1, true) then
+        return true
+      end
+    end
+    return false
+  end
+
+  it("backfills ea_ (v4) for the carved host from the persisted cache", function()
+    local reloads = run()
+    assert.is_true(
+      issued(reloads, "ea_ca_ef_a1_72_6a_a3_jsdelivr_net", "151.101.1.229"),
+      "expected an nft add element into the v4 carve set for cdn.jsdelivr.net")
+  end)
+
+  it("backfills ea6_ (v6) for the carved host — the #2095 headline gap", function()
+    local reloads = run()
+    assert.is_true(
+      issued(reloads, "ea6_ca_ef_a1_72_6a_a3_jsdelivr_net", "2606:4700::6811:d005"),
+      "expected an nft add element into the v6 carve set for cdn.jsdelivr.net")
+  end)
+
+  it("does not backfill when no device has a non-empty extraAllowed", function()
+    -- Same block, but extraAllowed is empty: nothing to carve, no cache read.
+    local snap = decode(BLOCKED_SNAP)
+    snap.profiles["1"].rules.extraAllowed = {}
+    local reloads, read_paths = {}, {}
+    policy.apply(snap,
+      function(_p, _c) return true, nil end,
+      function(cmd) reloads[#reloads + 1] = cmd; return 0 end,
+      nil,
+      { now_fn = function() return NOW end,
+        read_fn = function(path) read_paths[path] = true; return nil end })
+    for _, c in ipairs(reloads) do
+      assert.is_nil(c:find("add element", 1, true),
+        "must not issue any ea_/ea6_ backfill when nothing is carved")
+    end
+    assert.is_nil(read_paths[paths.dns_cache],
+      "must skip the dns-cache read entirely when no MAC carves a host")
+  end)
+end)

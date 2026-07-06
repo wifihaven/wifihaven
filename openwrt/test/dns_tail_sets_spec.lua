@@ -237,3 +237,112 @@ describe("maybe_populate_ea", function()
     assert.equal(0, #cmds)
   end)
 end)
+
+-- ---------------------------------------------------------------------------
+-- #2095: apply-time ea_/ea6_ backfill from the persisted ip→host cache.
+--
+-- The `nft -f` in policy.apply deletes+recreates `table inet wifihaven`, so
+-- every per-(mac,host) ea_/ea6_ carve set is EMPTY right after a policy
+-- apply and only refills when the device next RESOLVES a carved host over
+-- the live query log (dns-tail tails with latency). A device holding a
+-- long-cached CDN IP (KaTeX/MathJax on cdn.jsdelivr.net) can reconnect
+-- before that refill and get caught by the whole-MAC drop even though the
+-- host IS in extraAllowed (#2094 residual, #1929-class v6 drop). backfill_ea
+-- closes the post-apply window by seeding the carve sets from the recent
+-- ip→host resolutions dns-tail already persisted — for BOTH families.
+-- ---------------------------------------------------------------------------
+describe("backfill_ea", function()
+  -- carve index: { [sanhost] = { [sanmac]=true, ... } } — the MACs that carve
+  -- each host, mirroring render.effective_extra_allowed_by_mac's output after
+  -- sanitization. jsdelivr.net carved for one MAC ca:ef:a1:72:6a:a3.
+  local KID = "ca_ef_a1_72_6a_a3"
+  local function carve_jsdelivr()
+    return { jsdelivr_net = { [KID] = true } }
+  end
+  local function bdeps(extra)
+    local d = { nft_table = "inet wifihaven" }
+    for k, v in pairs(extra or {}) do d[k] = v end
+    return d
+  end
+
+  it("seeds ea_ from a cached v4 resolution of a subdomain of the carved host", function()
+    local cmds, exec = recorder()
+    -- cdn.jsdelivr.net is a subdomain of the carved jsdelivr.net → suffix hit.
+    local cache = { ["151.101.1.229"] = "cdn.jsdelivr.net" }
+    local n = sets.backfill_ea(cache, carve_jsdelivr(), bdeps({ exec_fn = exec }))
+    assert.equal(1, n)
+    assert.is_true(added(cmds, "ea_" .. KID .. "_jsdelivr_net", "151.101.1.229"))
+  end)
+
+  it("seeds ea6_ from a cached v6 resolution — the #2095 headline case", function()
+    local cmds, exec = recorder()
+    local cache = { ["2606:4700::6811:d005"] = "cdn.jsdelivr.net" }
+    local n = sets.backfill_ea(cache, carve_jsdelivr(), bdeps({ exec_fn = exec }))
+    assert.equal(1, n)
+    assert.is_true(added(cmds, "ea6_" .. KID .. "_jsdelivr_net", "2606:4700::6811:d005"))
+  end)
+
+  it("seeds BOTH families so a carved host is reachable over v4 and v6", function()
+    local cmds, exec = recorder()
+    local cache = {
+      ["151.101.1.229"]          = "cdn.jsdelivr.net",
+      ["2606:4700::6811:d005"]   = "cdn.jsdelivr.net",
+    }
+    local n = sets.backfill_ea(cache, carve_jsdelivr(), bdeps({ exec_fn = exec }))
+    assert.equal(2, n)
+    assert.is_true(added(cmds, "ea_"  .. KID .. "_jsdelivr_net", "151.101.1.229"))
+    assert.is_true(added(cmds, "ea6_" .. KID .. "_jsdelivr_net", "2606:4700::6811:d005"))
+  end)
+
+  it("seeds every MAC that carves the host (per-(mac,host) fan-out)", function()
+    local cmds, exec = recorder()
+    local OTHER = "76_2d_95_47_d1_8e"
+    local carve = { jsdelivr_net = { [KID] = true, [OTHER] = true } }
+    local cache = { ["151.101.1.229"] = "cdn.jsdelivr.net" }
+    local n = sets.backfill_ea(cache, carve, bdeps({ exec_fn = exec }))
+    assert.equal(2, n)
+    assert.is_true(added(cmds, "ea_" .. KID   .. "_jsdelivr_net", "151.101.1.229"))
+    assert.is_true(added(cmds, "ea_" .. OTHER .. "_jsdelivr_net", "151.101.1.229"))
+  end)
+
+  it("recovers the branded head for a directly-queried CDN target (#1346 parity)", function()
+    -- Answered name is a bare CDN target that does NOT suffix-match the carved
+    -- brand; only the recovered alias head does. backfill must honour the same
+    -- resolve_head recovery the live populator uses.
+    local cmds, exec = recorder()
+    local cache = { ["199.232.65.42"] = "prod.khan.map.fastly.net" }
+    local carve = { kastatic_org = { [KID] = true } }
+    local resolve_head = function(name)
+      if name == "prod.khan.map.fastly.net" then return "cdn.kastatic.org" end
+      return name
+    end
+    local n = sets.backfill_ea(cache, carve, bdeps({ exec_fn = exec, resolve_head = resolve_head }))
+    assert.equal(1, n)
+    assert.is_true(added(cmds, "ea_" .. KID .. "_kastatic_org", "199.232.65.42"))
+  end)
+
+  it("adds nothing for a cached host that is not carved", function()
+    local cmds, exec = recorder()
+    local cache = { ["93.184.216.34"] = "example.com" }
+    local n = sets.backfill_ea(cache, carve_jsdelivr(), bdeps({ exec_fn = exec }))
+    assert.equal(0, n)
+    assert.equal(0, #cmds)
+  end)
+
+  it("is a no-op for an empty cache or empty carve index", function()
+    local cmds, exec = recorder()
+    assert.equal(0, sets.backfill_ea({}, carve_jsdelivr(), bdeps({ exec_fn = exec })))
+    assert.equal(0, sets.backfill_ea({ ["1.2.3.4"] = "cdn.jsdelivr.net" }, {}, bdeps({ exec_fn = exec })))
+    assert.equal(0, #cmds)
+  end)
+
+  it("rejects a cache ip carrying shell metacharacters", function()
+    local cmds, exec = recorder()
+    local cache = { ["1.2.3.4; rm -rf /"] = "cdn.jsdelivr.net" }
+    -- host suffix-matches, but safe_addr rejects the ip → no command issued.
+    sets.backfill_ea(cache, carve_jsdelivr(), bdeps({ exec_fn = exec }))
+    for _, c in ipairs(cmds) do
+      assert.is_nil(c:find("rm -rf", 1, true), "unsafe ip must never reach the shell")
+    end
+  end)
+end)
