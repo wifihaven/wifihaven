@@ -2235,24 +2235,27 @@ describe("render extraAllowed enforcement (#421)", function()
 
   -- ── nft side: set declarations ──────────────────────────────────────────
 
-  it("declares set ea_<sanmac>_<sanhost> (ipv4_addr, dynamic, 1h timeout)", function()
+  -- #2095: carve sets use a 24h timeout (longer than the 1h block-side sets) —
+  -- an expiring ea_ entry is fail-closed. See the "#2095" test in the
+  -- "#1865 block page is never dropped" describe block for the full rationale.
+  it("declares set ea_<sanmac>_<sanhost> (ipv4_addr, dynamic, 24h timeout)", function()
     local nft = render.nft(snap_ea())
     local pos = nft:find("set ea_aa_bb_cc_11_22_33_music_tiktok_com", 1, true)
     assert.truthy(pos)
     local blk = nft:sub(pos, pos + 200)
     assert.truthy(blk:find("type ipv4_addr", 1, true))
     assert.truthy(blk:find("flags dynamic,timeout", 1, true))
-    assert.truthy(blk:find("timeout 1h", 1, true))
+    assert.truthy(blk:find("timeout 24h", 1, true))
   end)
 
-  it("declares set ea6_<sanmac>_<sanhost> (ipv6_addr, dynamic, 1h timeout)", function()
+  it("declares set ea6_<sanmac>_<sanhost> (ipv6_addr, dynamic, 24h timeout)", function()
     local nft = render.nft(snap_ea())
     local pos = nft:find("set ea6_aa_bb_cc_11_22_33_music_tiktok_com", 1, true)
     assert.truthy(pos)
     local blk = nft:sub(pos, pos + 200)
     assert.truthy(blk:find("type ipv6_addr", 1, true))
     assert.truthy(blk:find("flags dynamic,timeout", 1, true))
-    assert.truthy(blk:find("timeout 1h", 1, true))
+    assert.truthy(blk:find("timeout 24h", 1, true))
   end)
 
   it("declares no ea_/ea6_ sets when no device has extraAllowed", function()

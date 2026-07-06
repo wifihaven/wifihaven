@@ -233,6 +233,17 @@ object MetricGuard {
     // fan-out) and `resolve_failed` (dig couldn't reach the local resolver, or
     // the host failed the hermetic allow-list).
     "eb_refresh_total"                          -> Set("result", "router_id", "installation_id"),
+    // #2095 — extraAllowed carve re-seed heartbeat. policy.apply's `nft -f`
+    // delete+recreates `table inet wifihaven`, emptying every per-(mac,host)
+    // ea_/ea6_ carve set; the agent immediately backfills them from the
+    // persisted dns ip->host cache so a long-cached carved host (e.g.
+    // cdn.jsdelivr.net over IPv6) stays reachable under a whole-MAC block
+    // rather than transiently dropping (#2094 residual). This counts the
+    // carve ELEMENTS re-seeded per apply (unlabeled total — no per-mac/host
+    // cardinality). A healthy fleet shows a steady rate tracking applies; a
+    // flatline while blocks-with-extraAllowed are active means the backfill
+    // isn't firing and the transient v6 drop can recur.
+    "ea_carve_backfill_total"                   -> Set("router_id", "installation_id"),
     // #1033 — usage-POST retry-queue health. Depth = buckets currently waiting for a backoff to
     // elapse; `usage_post_total{result}` tracks the immediate-post outcome (`ok` | `queued`) and
     // drain outcome (`drained` | `drain_failed`). Gives operators a first-class view of "are

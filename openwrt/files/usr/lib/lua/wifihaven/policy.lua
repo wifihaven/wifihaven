@@ -41,8 +41,16 @@
 
 local M = {}
 
-local render = require("wifihaven.render")
-local paths  = require("wifihaven.paths")
+local render   = require("wifihaven.render")
+local paths    = require("wifihaven.paths")
+local dns_log  = require("wifihaven.dns_log")       -- #2095: dns_cache parse
+local dns_sets = require("wifihaven.dns_tail_sets") -- #2095: ea_/ea6_ backfill
+
+-- #2095: horizon for the apply-time ea_/ea6_ backfill's dns_cache read.
+-- Mirrors the dns-tail sidecar's cache TTL and the agent's dns_cache_ttl
+-- (both 1h) — resolutions older than this are already dropped from the file
+-- by the sidecar's dump filter, so re-filtering here is just belt-and-braces.
+local DNS_CACHE_TTL = 3600
 
 -- log is injectable for tests; default uses the real logger wrapper.
 local function default_log()
@@ -240,9 +248,17 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
   -- a dnsmasq restart (false on the #414 nft-only short-circuit). The callback
   -- is for observability only — it never alters the boolean return.
   local on_apply = opts.on_apply
-  local function report(result, dnsmasq_restarted)
+  -- #2095: ea_backfilled carries the count of ea_/ea6_ carve elements the
+  -- apply-time backfill seeded (0 unless the final report). Lets the agent
+  -- emit ea_carve_backfill_total so we can confirm in prod that the carve is
+  -- actually being re-seeded after each apply (the #2094/#2095 fix firing).
+  local function report(result, dnsmasq_restarted, ea_backfilled)
     if on_apply then
-      pcall(on_apply, { result = result, dnsmasq_restarted = dnsmasq_restarted })
+      pcall(on_apply, {
+        result           = result,
+        dnsmasq_restarted = dnsmasq_restarted,
+        ea_backfilled    = ea_backfilled or 0,
+      })
     end
   end
   -- #1792: gate per-blocklist conf-file= emission on whether the shard file
@@ -320,6 +336,44 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
   local nft_rc = reload_fn("nft -f /tmp/nftables.d/wifihaven.nft")
   local nft_ok = exec_ok(nft_rc)
 
+  -- #2095: seed the per-(mac,host) extraAllowed carve sets (ea_/ea6_) from the
+  -- persisted dns-tail ip->host cache immediately after the reload. The
+  -- `nft -f` above delete+recreated `table inet wifihaven`, so every ea_/ea6_
+  -- set is now EMPTY and only refills when the device next RESOLVES a carved
+  -- host over the live query log (dns-tail tails with latency). A device
+  -- holding a long-cached CDN IP (KaTeX/MathJax on cdn.jsdelivr.net) can
+  -- reconnect before that refill and get caught by the whole-MAC drop even
+  -- though the host IS in extraAllowed — the #2094 residual / #1929-class
+  -- transient v6 drop. Backfilling from the recent-resolution cache closes
+  -- that window for BOTH families. This does NOT teach the router any policy:
+  -- it only makes the existing extraAllowed carve robust against a timing gap.
+  -- Runs only when the reload succeeded and some MAC has a non-empty effective
+  -- extraAllowed (skips the cache read + scan otherwise).
+  local ea_backfilled = 0
+  if nft_ok then
+    local carve = {}
+    for mac, hosts in pairs(render.effective_extra_allowed_by_mac(snapshot)) do
+      local sanmac = dns_sets.sanitize(mac)
+      for _, host in ipairs(hosts) do
+        local sanhost = dns_sets.sanitize(host)
+        carve[sanhost] = carve[sanhost] or {}
+        carve[sanhost][sanmac] = true
+      end
+    end
+    if next(carve) then
+      local now_fn     = opts.now_fn or os.time
+      local cache_text = read_fn(paths.dns_cache)
+      local cache      = dns_log.load_table(cache_text or "", DNS_CACHE_TTL, now_fn())
+      ea_backfilled = dns_sets.backfill_ea(cache, carve, {
+        nft_table = "inet wifihaven",
+        exec_fn   = reload_fn,
+      })
+      if ea_backfilled > 0 then
+        log.debug("policy.apply: ea_/ea6_ carve backfill added %d element(s)", ea_backfilled)
+      end
+    end
+  end
+
   -- #328 / #351 smoke probe. Runs only when we actually restarted dnsmasq:
   -- the probe exists to catch "we restarted but dnsmasq is still serving
   -- a stale config", so it adds nothing when no restart happened.
@@ -351,7 +405,7 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
   else
     result = "ok"
   end
-  report(result, dnsmasq_changed)
+  report(result, dnsmasq_changed, ea_backfilled)
 
   return true
 end

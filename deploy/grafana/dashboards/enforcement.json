@@ -337,6 +337,35 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "extraAllowed carve re-seed rate (#2095)",
+      "description": "sum(rate(ea_carve_backfill_total[5m])) — ea_/ea6_ carve ELEMENTS/sec the apply-time backfill re-seeds. policy.apply's `nft -f` delete+recreates `table inet wifihaven`, emptying every per-(mac,host) extraAllowed carve set; the agent immediately re-populates them from the persisted dns ip->host cache so a long-cached carved host (e.g. cdn.jsdelivr.net over IPv6) stays reachable under a whole-MAC block instead of transiently dropping (the #2094 residual / #1929-class v6 drop). A steady rate tracking policy applies is healthy; a flatline while blocks-with-extraAllowed are active means the backfill isn't firing and the transient v6 drop can recur.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 41 },
+      "id": 11,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "ops",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 15, "showPoints": "never", "lineWidth": 1 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(rate(ea_carve_backfill_total{env=\"$env\", router_id=~\"$router\"}[5m]))",
+          "legendFormat": "carve elements/sec",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",

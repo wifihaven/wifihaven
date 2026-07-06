@@ -838,7 +838,8 @@ end)
 -- from the persisted dns-tail ip→host cache immediately after the reload, for
 -- BOTH families — so a carved host stays reachable over v4 AND v6.
 describe("policy.apply ea_/ea6_ backfill (#2095)", function()
-  local paths = require("wifihaven.paths")
+  local paths     = require("wifihaven.paths")
+  local host_norm = require("wifihaven.host_norm")
 
   -- Kid Mac ca:ef:a1:72:6a:a3 under a whole-MAC TimeLimit block, with
   -- jsdelivr.net carved into extraAllowed (an Allowed-mode app's host-set that
@@ -908,8 +909,11 @@ describe("policy.apply ea_/ea6_ backfill (#2095)", function()
 
   it("backfills ea6_ (v6) for the carved host — the #2095 headline gap", function()
     local reloads = run()
+    -- dns_log.load_table canonicalizes the v6 key on load (#1793), so the agent
+    -- adds the expanded form; nft matches the compressed dest packet regardless.
+    local canon = host_norm.canon_ip("2606:4700::6811:d005")
     assert.is_true(
-      issued(reloads, "ea6_ca_ef_a1_72_6a_a3_jsdelivr_net", "2606:4700::6811:d005"),
+      issued(reloads, "ea6_ca_ef_a1_72_6a_a3_jsdelivr_net", canon),
       "expected an nft add element into the v6 carve set for cdn.jsdelivr.net")
   end)
 
