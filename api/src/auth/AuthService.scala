@@ -25,11 +25,21 @@ case class JwtClaims(
     // invalidate previously-issued sessions. 0 for tokens minted before this field
     // existed, which compares equal to a never-changed user's token_version.
     tokenVersion: Int = 0,
+    // #2105 (multi-tenant sub-issue B): the authenticated user's household
+    // (users.household_id, V65), minted at login and read back here. Additive
+    // alongside tokenVersion; both are HMAC-protected by the existing signature,
+    // so a client cannot forge hh any more than role. Consumed by household-scoped
+    // repo reads in sub-issue E (#2108). Defaults to household 1 — the default
+    // tenant — for pre-#2105 tokens (minted before the claim existed).
+    hh: HouseholdId = HouseholdId(1L),
 ) derives JsonCodec
 
 // Wire shape of the JWT `content` claim. `tv` defaults to 0 so a pre-#2080 token
 // (minted before this field existed) decodes cleanly instead of failing to parse.
-private case class JwtContent(role: String, tv: Int = 0) derives JsonCodec
+// #2105: `hh` defaults to household 1 so a pre-#2105 token (no hh field) decodes to
+// the default tenant instead of failing to parse.
+private case class JwtContent(role: String, tv: Int = 0, hh: HouseholdId = HouseholdId(1L))
+    derives JsonCodec
 
 // ── Auth errors ────────────────────────────────────────────────────────────
 
@@ -91,7 +101,8 @@ class AuthServiceLive(
         claim = JwtClaim(
           // #2080: stamp the user's CURRENT token_version so a subsequent password
           // change (which bumps it) invalidates this token on its next verify().
-          content = JwtContent(UserRole.asString(user.role), user.tokenVersion).toJson,
+          content =
+            JwtContent(UserRole.asString(user.role), user.tokenVersion, user.householdId).toJson,
           subject = Some(user.username),
           issuedAt = Some(now),
           expiration = Some(now + jwtConfig.expiryHours * 3600L),
@@ -143,6 +154,7 @@ class AuthServiceLive(
               iat = claim.issuedAt.getOrElse(0L),
               exp = claim.expiration.getOrElse(0L),
               tokenVersion = c.tv,
+              hh = c.hh,
             )
           }
       }

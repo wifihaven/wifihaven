@@ -36,6 +36,7 @@ object TypeMeta {
   given Meta[AppTimeLimitId]        = Meta[Long].imap(AppTimeLimitId(_))(_.value)
   given Meta[TimeExtensionId]       = Meta[Long].imap(TimeExtensionId(_))(_.value)
   given Meta[UserId]                = Meta[Long].imap(UserId(_))(_.value)
+  given Meta[HouseholdId]           = Meta[Long].imap(HouseholdId(_))(_.value)
   given Meta[BlockEventId]          = Meta[Long].imap(BlockEventId(_))(_.value)
   given Meta[ConnectionEventId]     = Meta[Long].imap(ConnectionEventId(_))(_.value)
   given Meta[QueryLogId]            = Meta[Long].imap(QueryLogId(_))(_.value)

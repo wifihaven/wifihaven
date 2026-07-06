@@ -24,6 +24,11 @@ case class DbUser(
     // #2080: bumped on every password change; stamped into the JWT at login and
     // checked on verify() so a leaked token stops working once the password rotates.
     tokenVersion: Int = 0,
+    // #2105 (multi-tenant sub-issue B): the user's tenancy key (users.household_id,
+    // V65). Minted into the JWT `hh` claim at login. Defaults to household 1 — the
+    // single existing install / default household backfilled by V65 — so pre-#2105
+    // callers that don't set it stay in the default tenant.
+    householdId: HouseholdId = HouseholdId(1L),
 )
 // #865: mac/deviceId/profileId became multi-valued so the SPA's column-header
 // popovers can filter to a subset. Empty list = no filter on that column.
@@ -739,10 +744,10 @@ trait ConnectionEventRepo {
 
 class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
   private val userCols =
-    fr"id,username,password_hash,role,created_at,must_change_password,token_version"
-  private type UserRow = (UserId, String, String, UserRole, Instant, Boolean, Int)
+    fr"id,username,password_hash,role,created_at,must_change_password,token_version,household_id"
+  private type UserRow = (UserId, String, String, UserRole, Instant, Boolean, Int, HouseholdId)
   private def toUser(r: UserRow) = r match {
-    case (id, un, ph, role, ca, mcp, tv) => DbUser(id, un, ph, role, ca, mcp, tv)
+    case (id, un, ph, role, ca, mcp, tv, hh) => DbUser(id, un, ph, role, ca, mcp, tv, hh)
   }
 
   def findByUsername(u: String)             =

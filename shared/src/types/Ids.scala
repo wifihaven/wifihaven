@@ -17,6 +17,7 @@ opaque type TimeLimitId           = Long
 opaque type AppTimeLimitId        = Long
 opaque type TimeExtensionId       = Long
 opaque type UserId                = Long
+opaque type HouseholdId           = Long
 opaque type BlockEventId          = Long
 opaque type ConnectionEventId     = Long
 opaque type QueryLogId            = Long
@@ -76,6 +77,15 @@ object UserId {
   extension (u: UserId) def value: Long = u
   given JsonCodec[UserId]               = JsonCodec.long
   given Ordering[UserId]                = Ordering.Long
+}
+
+object HouseholdId {
+  def apply(l: Long): HouseholdId            = l
+  extension (h: HouseholdId) def value: Long = h
+  given JsonCodec[HouseholdId]               = JsonCodec.long
+  given JsonFieldEncoder[HouseholdId]        = JsonFieldEncoder.long
+  given JsonFieldDecoder[HouseholdId]        = JsonFieldDecoder.long
+  given Ordering[HouseholdId]                = Ordering.Long
 }
 
 object BlockEventId {

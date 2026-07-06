@@ -11,6 +11,7 @@ import wifihaven.shared.types.*
 import wifihaven.testinfra.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 import zio.{Clock as _, *}
+import zio.interop.catz.*
 import zio.test.*
 
 /**
