@@ -17,6 +17,7 @@ opaque type TimeLimitId           = Long
 opaque type AppTimeLimitId        = Long
 opaque type TimeExtensionId       = Long
 opaque type UserId                = Long
+opaque type HouseholdId           = Long
 opaque type BlockEventId          = Long
 opaque type ConnectionEventId     = Long
 opaque type QueryLogId            = Long
@@ -76,6 +77,21 @@ object UserId {
   extension (u: UserId) def value: Long = u
   given JsonCodec[UserId]               = JsonCodec.long
   given Ordering[UserId]                = Ordering.Long
+}
+
+object HouseholdId {
+  def apply(l: Long): HouseholdId            = l
+  extension (h: HouseholdId) def value: Long = h
+  // The single existing install / default tenant, backfilled by V65 (#2104,
+  // `household_id … DEFAULT 1`). Used as the back-compat fallback wherever a
+  // household is unset (pre-#2105 JWTs, DbUser rows loaded before the column
+  // existed). Sub-issue E (#2108) drops the DB default once every write path
+  // sets household_id explicitly.
+  val Default: HouseholdId                   = HouseholdId(1L)
+  given JsonCodec[HouseholdId]               = JsonCodec.long
+  given JsonFieldEncoder[HouseholdId]        = JsonFieldEncoder.long
+  given JsonFieldDecoder[HouseholdId]        = JsonFieldDecoder.long
+  given Ordering[HouseholdId]                = Ordering.Long
 }
 
 object BlockEventId {
