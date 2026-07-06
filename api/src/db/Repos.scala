@@ -28,7 +28,7 @@ case class DbUser(
     // V65). Minted into the JWT `hh` claim at login. Defaults to household 1 — the
     // single existing install / default household backfilled by V65 — so pre-#2105
     // callers that don't set it stay in the default tenant.
-    householdId: HouseholdId = HouseholdId(1L),
+    householdId: HouseholdId = HouseholdId.Default,
 )
 // #865: mac/deviceId/profileId became multi-valued so the SPA's column-header
 // popovers can filter to a subset. Empty list = no filter on that column.

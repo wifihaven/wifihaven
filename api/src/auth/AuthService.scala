@@ -31,14 +31,14 @@ case class JwtClaims(
     // so a client cannot forge hh any more than role. Consumed by household-scoped
     // repo reads in sub-issue E (#2108). Defaults to household 1 — the default
     // tenant — for pre-#2105 tokens (minted before the claim existed).
-    hh: HouseholdId = HouseholdId(1L),
+    hh: HouseholdId = HouseholdId.Default,
 ) derives JsonCodec
 
 // Wire shape of the JWT `content` claim. `tv` defaults to 0 so a pre-#2080 token
 // (minted before this field existed) decodes cleanly instead of failing to parse.
 // #2105: `hh` defaults to household 1 so a pre-#2105 token (no hh field) decodes to
 // the default tenant instead of failing to parse.
-private case class JwtContent(role: String, tv: Int = 0, hh: HouseholdId = HouseholdId(1L))
+private case class JwtContent(role: String, tv: Int = 0, hh: HouseholdId = HouseholdId.Default)
     derives JsonCodec
 
 // ── Auth errors ────────────────────────────────────────────────────────────

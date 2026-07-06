@@ -57,7 +57,7 @@ object JwtHouseholdClaimSpec
         token  <- auth.login("admin", "changeme").map(_.token.value)
         claims <- auth.verify(token)
       } yield assertTrue(
-        claims.hh == HouseholdId(1L),
+        claims.hh == HouseholdId.Default,
       ) // seeded admin backfilled to household 1 (V65)
     },
     test("hh survives a mint -> verify round-trip for a non-default household") {
