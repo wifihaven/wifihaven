@@ -1,0 +1,12 @@
+# Cloudflare Pages reads this Netlify-style file from the publish dir.
+# #2082: HSTS/CSP/X-Frame-Options — previously unset (verified live via `curl -I` against
+# app.wifihaven.net, which had only x-content-type-options + referrer-policy per the #369 audit).
+# The JWT lives in localStorage (web/src/api/client.ts), so an absent CSP would let a future XSS
+# exfiltrate it to any host — default-src 'self' is the load-bearing line here. Kept in sync with
+# the API's equivalent (api/src/SecurityHeaders.scala) — same permissive style-src/img-src
+# allowance for Vite/React/Tailwind's inline styles and embedded icons.
+/*
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://api.wifihaven.net https://api-staging.wifihaven.net wss://api.wifihaven.net wss://api-staging.wifihaven.net; frame-ancestors 'none'; base-uri 'self'; object-src 'none'
