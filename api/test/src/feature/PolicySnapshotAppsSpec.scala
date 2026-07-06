@@ -801,6 +801,64 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
         assertTrue(rules.blockReason.contains(MacBlockReason.TimeLimit)) &&
         assertTrue(ea.contains("mathacademy.com"))
     },
+    test(
+      "#2094: exempt time_limited app under its cap keeps its SHARED hosts carved under a TimeLimit whole-MAC block",
+    ) {
+      // The operator's MathAcademy config on the Kids profile: an exempt, time_limited app
+      // (`mode=TimeLimited, exemptFromDaily=true, dailyMinutes=60`) whose host-set is a distinctive
+      // host (`mathacademy.com`) PLUS the shared library CDNs it renders math with (`jsdelivr.net`
+      // for KaTeX/MathJax, `d3js.org` for graphs — #1966 shared_hosts). When the PROFILE's daily
+      // limit is exhausted the whole MAC is blocked (`blockReason=TimeLimit`), but the app is still
+      // under its own 60 m cap, so `exemptUnderCapHosts` must carve its FULL host-set — distinctive
+      // AND shared — into extraAllowed so it beats the whole-MAC drop (#1899 most-permissive S4).
+      //
+      // #1627 pins the distinctive host survives this exact block; this test extends it to the
+      // SHARED hosts, the untested half of the #1966/#1940 fix. Prod evidence (2026-07-05, Kid Mac
+      // ca:ef:a1:72:6a:a3): the wire snapshot correctly carries jsdelivr.net + d3js.org in the
+      // profile's extraAllowed under the TimeLimit block — this guards that carve against silent
+      // regression on the exempt-under-cap path (the residual v6 ea6_ population race is separate,
+      // router-side, and tracked in #2095).
+      val mac = "aa:bb:cc:dd:ee:94"
+      for {
+        _     <- cleanDb
+        pr    <- ZIO.service[ProfileRepo]
+        dr    <- ZIO.service[DeviceRepo]
+        tlr   <- ZIO.service[TimeLimitRepo]
+        ar    <- ZIO.service[AppRepo]
+        kid   <- TestLayers.seedKidsProfile(pr)
+        _     <- tlr.upsert(kid, 30)
+        _     <- TestLayers.seedDevice(dr, mac, "kid-mac", kid)
+        appId <- ar.create("Math Academy", "math-academy", None, None)
+        _     <- ar.setHostEntries(
+          appId,
+          List(
+            AppHostEntry(Hostname.unsafe("mathacademy.com"), shared = false),
+            AppHostEntry(Hostname.unsafe("jsdelivr.net"), shared = true),
+            AppHostEntry(Hostname.unsafe("d3js.org"), shared = true),
+          ),
+        )
+        _     <- ar.upsertAssignment(appId, kid, AppMode.TimeLimited, Some(60), true)
+        rid   <- seedRouterRow
+        // Exhaust the profile's 30 m daily on an unrelated host → whole-MAC TimeLimit block …
+        _     <- seedTraffic(rid, mac, "cnn.com", LocalDate.of(2025, 1, 6), 35)
+        // … while MathAcademy has only 25 m of its own 60 m budget used (still under cap).
+        _     <- seedTraffic(rid, mac, "mathacademy.com", LocalDate.of(2025, 1, 6), 25)
+        svc   <- makePsAt(TestClock.schoolDayAfternoon)
+        snap  <- svc.snapshot
+        rules = snap.profiles(kid).rules
+        ea    = rules.extraAllowed.map(_.value).toSet
+        eb    = rules.extraBlocked.map(_.value).toSet
+      } yield assertTrue(rules.blocked) &&
+        assertTrue(rules.blockReason.contains(MacBlockReason.TimeLimit)) &&
+        // Distinctive host stays reachable (the #1627 invariant) …
+        assertTrue(ea.contains("mathacademy.com")) &&
+        // … and so do the SHARED library CDNs (the #1966/#1940 invariant, the operator's report).
+        assertTrue(ea.contains("jsdelivr.net")) &&
+        assertTrue(ea.contains("d3js.org")) &&
+        // A shared backend under an allowed/exempt app is never dropped.
+        assertTrue(!eb.contains("jsdelivr.net")) &&
+        assertTrue(!eb.contains("d3js.org"))
+    },
     test("#1105: same app assigned to two profiles with different exempt flags → independent") {
       // The exempt flag only differentiates behaviour under a whole-MAC block: an exempt app under
       // cap carves around it (`exemptUnderCapHosts`, unconditional), a non-exempt one does NOT (its
