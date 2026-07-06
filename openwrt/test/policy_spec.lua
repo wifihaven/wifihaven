@@ -824,3 +824,137 @@ describe("policy.format_poll_age", function()
   end)
 
 end)
+
+-- ── policy.apply ea_/ea6_ backfill (#2095) ────────────────────────────────
+--
+-- #2094 root cause (confirmed, NOT a v6-only race): `nft -f` deletes+recreates
+-- `table inet wifihaven` as the prelude of EVERY apply (render.lua:730-731),
+-- destroying the dynamic per-(mac,host) ea_/ea6_ carve sets AND their
+-- contents. They're only repopulated LAZILY at the next DNS resolution
+-- (dnsmasq nftset= callback + wifihaven-dns-tail). So for the window between a
+-- policy apply and the next re-resolution of each carved host, EVERY carved
+-- host is dropped for a blocked MAC — v4 and v6, INCLUDING THE APP'S OWN
+-- DOMAIN. Operator symptom: MathAcademy's same-origin submit POST to
+-- www.mathacademy.com hangs when the daily limit is exhausted, because the
+-- browser reuses a keep-alive connection to a still-cached IP whose ea_ set an
+-- apply just flushed. Prod smoking gun (Kid Mac ca:ef:a1:72:6a:a3, 2026-07-05)
+-- caught BOTH in one flush window: www.mathacademy.com v4 (52.40.111.135) and
+-- cdn.jsdelivr.net v6 (2606:4700:…), both timeLimit-dropped.
+--
+-- policy.apply now re-seeds ea_/ea6_ from the persisted dns-tail ip→host cache
+-- IMMEDIATELY after the reload, so a carved host with a known cached IP is
+-- reachable the instant the block applies — no wait for a fresh resolution,
+-- both families, and the app's own domain, not just shared CDNs.
+describe("policy.apply ea_/ea6_ backfill (#2095)", function()
+  local paths     = require("wifihaven.paths")
+  local host_norm = require("wifihaven.host_norm")
+
+  -- Kid Mac ca:ef:a1:72:6a:a3 under a whole-MAC TimeLimit block. extraAllowed
+  -- carries BOTH the app's own domain (mathacademy.com — the submit-POST
+  -- target) and the shared CDN apex (jsdelivr.net — KaTeX/MathJax), exactly as
+  -- the live wire snapshot did. An Allowed-mode app's host-set survives the
+  -- block per #1679 (TimeLimit not omitted).
+  local BLOCKED_SNAP = [[{
+    "etag": "sha256:2095",
+    "generatedAt": "2026-07-05T23:30:00Z",
+    "devices": {
+      "ca:ef:a1:72:6a:a3": { "profileId": 1, "name": "kid-mac", "rules": null }
+    },
+    "profiles": {
+      "1": {
+        "name": "Kids",
+        "rules": {
+          "blocked": true,
+          "blockReason": "TimeLimit",
+          "extraBlocked": [],
+          "extraAllowed": ["mathacademy.com", "jsdelivr.net"],
+          "blocklistIds": [],
+          "blockIpOnly": false
+        },
+        "failureMode": "block-all"
+      }
+    },
+    "blocklists": {}
+  }]]
+
+  local function decode(s) return require("cjson").decode(s) end
+
+  -- Persisted dns-tail cache reproducing the exact prod flush window: the app's
+  -- own domain resolved over v4 and the CDN over v6, both recently. Format:
+  -- "<ip>\t<hostname>\t<ts>\n" (dns_log.load_table input). www.mathacademy.com
+  -- is a subdomain of the carved mathacademy.com → suffix hit.
+  local NOW = 2000000
+  local CACHE =
+    "52.40.111.135\twww.mathacademy.com\t" .. NOW .. "\n" ..
+    "151.101.1.229\tcdn.jsdelivr.net\t" .. NOW .. "\n" ..
+    "2606:4700::6811:d005\tcdn.jsdelivr.net\t" .. NOW .. "\n"
+
+  local function run()
+    local reloads = {}
+    policy.apply(decode(BLOCKED_SNAP),
+      function(_path, _content) return true, nil end,
+      function(cmd) reloads[#reloads + 1] = cmd; return 0 end,
+      nil,
+      { now_fn = function() return NOW end,
+        read_fn = function(path)
+          if path == paths.dns_cache then return CACHE end
+          return nil  -- dnsmasq conf absent → cold apply
+        end })
+    return reloads
+  end
+
+  local function issued(reloads, set_name, ip)
+    for _, c in ipairs(reloads) do
+      if c:find(set_name, 1, true) and c:find("{ " .. ip .. " }", 1, true) then
+        return true
+      end
+    end
+    return false
+  end
+
+  it("carves the APP'S OWN DOMAIN over v4 immediately after apply (the submit-POST target)", function()
+    -- The #2094 operator symptom: www.mathacademy.com v4 (52.40.111.135) was
+    -- dropped in the flush window. After apply it must be carved WITHOUT a fresh
+    -- resolution, so an in-flight keep-alive submit POST survives.
+    local reloads = run()
+    assert.is_true(
+      issued(reloads, "ea_ca_ef_a1_72_6a_a3_mathacademy_com", "52.40.111.135"),
+      "expected the app's own domain immediately carved over v4 after apply")
+  end)
+
+  it("backfills ea_ (v4) for the shared CDN apex from the persisted cache", function()
+    local reloads = run()
+    assert.is_true(
+      issued(reloads, "ea_ca_ef_a1_72_6a_a3_jsdelivr_net", "151.101.1.229"),
+      "expected an nft add element into the v4 carve set for cdn.jsdelivr.net")
+  end)
+
+  it("backfills ea6_ (v6) for the carved host — the co-dropped CDN in the same window", function()
+    local reloads = run()
+    -- dns_log.load_table canonicalizes the v6 key on load (#1793), so the agent
+    -- adds the expanded form; nft matches the compressed dest packet regardless.
+    local canon = host_norm.canon_ip("2606:4700::6811:d005")
+    assert.is_true(
+      issued(reloads, "ea6_ca_ef_a1_72_6a_a3_jsdelivr_net", canon),
+      "expected an nft add element into the v6 carve set for cdn.jsdelivr.net")
+  end)
+
+  it("does not backfill when no device has a non-empty extraAllowed", function()
+    -- Same block, but extraAllowed is empty: nothing to carve, no cache read.
+    local snap = decode(BLOCKED_SNAP)
+    snap.profiles["1"].rules.extraAllowed = {}
+    local reloads, read_paths = {}, {}
+    policy.apply(snap,
+      function(_p, _c) return true, nil end,
+      function(cmd) reloads[#reloads + 1] = cmd; return 0 end,
+      nil,
+      { now_fn = function() return NOW end,
+        read_fn = function(path) read_paths[path] = true; return nil end })
+    for _, c in ipairs(reloads) do
+      assert.is_nil(c:find("add element", 1, true),
+        "must not issue any ea_/ea6_ backfill when nothing is carved")
+    end
+    assert.is_nil(read_paths[paths.dns_cache],
+      "must skip the dns-cache read entirely when no MAC carves a host")
+  end)
+end)

@@ -186,6 +186,13 @@ local function record_apply(reason)
     if info.dnsmasq_restarted then
       metrics.inc_counter(mreg, "dnsmasq_restarts_total", { reason = reason })
     end
+    -- #2095: count ea_/ea6_ carve elements re-seeded by the apply-time backfill.
+    -- Unlabeled total (no per-mac/host cardinality) — its purpose is to confirm
+    -- in prod that the extraAllowed carve is actually being re-populated after
+    -- each apply, closing the #2094/#2095 transient v6 drop window.
+    if info.ea_backfilled and info.ea_backfilled > 0 then
+      metrics.inc_counter(mreg, "ea_carve_backfill_total", {}, info.ea_backfilled)
+    end
   end
 end
 

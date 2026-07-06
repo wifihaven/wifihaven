@@ -187,4 +187,70 @@ function M.maybe_populate_ea(r, deps)
   return adds
 end
 
+-- backfill_ea(cache, carve, deps) — apply-time pre-population of the
+-- per-(mac,host) extraAllowed carve sets (#2095).
+--
+-- policy.apply reloads the ruleset with a single `nft -f` whose prelude
+-- delete+recreates `table inet wifihaven`, so EVERY ea_/ea6_ carve set is
+-- empty immediately after an apply and only refills when the device next
+-- RESOLVES a carved host over the live query log (the maybe_populate_ea path
+-- above, which tails with latency). A device holding a long-cached CDN IP
+-- (KaTeX/MathJax on cdn.jsdelivr.net) can reconnect before that refill and get
+-- caught by the whole-MAC drop even though the host IS in extraAllowed — the
+-- #2094 residual / #1929-class transient v6 drop. This closes the post-apply
+-- window by seeding the carve sets from the recent ip->host resolutions the
+-- dns-tail sidecar already persisted (paths.dns_cache), for BOTH families.
+--
+-- cache : { [ip] = hostname }  — dns_log.load_table output (the answered name
+--         attributed to each resolved ip; already TTL-bounded on load).
+-- carve : { [sanhost] = { [sanmac]=true, ... } } — the sanitized hosts in some
+--         MAC's effective extraAllowed and the MACs that carve each. Built by
+--         the caller from render.effective_extra_allowed_by_mac (the SAME SSOT
+--         that DECLARES the sets), so every add targets a set that exists.
+-- deps  : { nft_table, exec_fn?, resolve_head?, log? }
+--
+-- For each cached (ip, hostname): walk the answered name's candidate suffixes
+-- (+ the #1346 recovered branded head via resolve_head) and, on the first
+-- carved-host hit, add ip to ea_/ea6_<sanmac>_<sanhost> for every MAC that
+-- carves that host. Family is chosen from the ip literal (colon => v6). The ip
+-- passes through safe_addr (inside nft_add_element) so a malformed cache line
+-- can never reach the shell. Returns the number of `nft add element` commands
+-- issued.
+--
+-- Cost: one linear pass over the cache (× label depth) with a hash lookup per
+-- candidate suffix. Runs only at apply time (infrequent, etag-deduped) and
+-- only when some MAC has a non-empty extraAllowed, so it does not reintroduce
+-- a hot-path O(N) scan (cf. #2068).
+function M.backfill_ea(cache, carve, deps)
+  if type(cache) ~= "table" or type(carve) ~= "table" then return 0 end
+  local adds = 0
+  for ip, name in pairs(cache) do
+    if type(name) == "string" then
+      local is6    = (type(ip) == "string") and ip:find(":", 1, true) ~= nil
+      local prefix = is6 and "ea6_" or "ea_"
+      local seen   = {}
+      M.each_candidate_host(name, deps.resolve_head, function(sanhost)
+        local macs = carve[sanhost]
+        if macs then
+          if not seen[sanhost] then
+            seen[sanhost] = true
+            for sanmac in pairs(macs) do
+              if M.nft_add_element(deps.nft_table,
+                   prefix .. sanmac .. "_" .. sanhost, ip, deps.exec_fn) then
+                adds = adds + 1
+                if deps.log then
+                  deps.log(prefix .. sanmac .. "_" .. sanhost, ip, name)
+                end
+              end
+            end
+          end
+          return true  -- first carved suffix wins (mirror maybe_populate_ea)
+        end
+        return false
+      end)
+    end
+  end
+  return adds
+end
+
 return M

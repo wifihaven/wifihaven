@@ -990,6 +990,23 @@ function M.nft(snapshot, opts)
   -- populator still runs harmlessly; sets are cheap) — the drop/DNAT
   -- suffixes below are what allowall actually suppresses, by virtue of
   -- the eb_/bl_ rules themselves being suppressed for those MACs.
+  --
+  -- #2095: the carve (allow) sets use a LONGER timeout than the 1h block-side
+  -- eb_/bl_ sets. Asymmetry rationale: an ea_/ea6_ element expiring is
+  -- FAIL-CLOSED — a still-cached, still-in-use extraAllowed host silently
+  -- loses its carve and gets caught by the whole-MAC drop (the #2094 residual
+  -- / #1929-class transient v6 drop of cdn.jsdelivr.net). nft does NOT refresh
+  -- an element's timeout on a duplicate `add` (verified on nft 1.1.6), so live
+  -- re-resolution can't keep an actively-used carve alive — only a long
+  -- timeout can. Memory stays bounded: per set the element count is
+  -- (distinct resolved IPs for that host over the timeout window); the number
+  -- of sets is (carved MACs × their small extraAllowed lists); and the whole
+  -- table is delete+recreated on every policy apply (policy.apply's `nft -f`,
+  -- which also re-seeds via the #2095 apply-time backfill), so accumulation is
+  -- capped by the inter-apply interval, not device uptime. 24h (vs 1h) trades a
+  -- handful of extra CDN IPs per carved host for surviving a full day of a
+  -- stable block without a re-resolve — the exact #2094 scenario.
+  local EA_CARVE_TIMEOUT = "24h"
   local ea_by_mac = ea_by_mac_early
   do
     local ea_macs = {}
@@ -1000,13 +1017,13 @@ function M.nft(snapshot, opts)
         ind(string.format("set %s {", ea_set_name(mac, host)))
         ind2("type ipv4_addr")
         ind2("flags dynamic,timeout")
-        ind2("timeout 1h")
+        ind2("timeout " .. EA_CARVE_TIMEOUT)
         ind("}")
         emit("")
         ind(string.format("set %s {", ea6_set_name(mac, host)))
         ind2("type ipv6_addr")
         ind2("flags dynamic,timeout")
-        ind2("timeout 1h")
+        ind2("timeout " .. EA_CARVE_TIMEOUT)
         ind("}")
         emit("")
       end
