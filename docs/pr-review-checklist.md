@@ -150,8 +150,8 @@ are a public contract — API and agents deploy independently.
 
 - **Migration PRs are isolated.** A PR that adds a Flyway migration may contain
   ONLY the `*.sql` migration(s) and `*.md` docs — no source, no test, no CI, no
-  fixtures, no build files. (`check-migration-isolation.sh` enforces this; verify
-  it would pass, or that `migration-coupled-justified` is set with a reason.)
+  fixtures, no build files. (`check-migration-isolation.sh` enforces this
+  unconditionally — there is no label opt-out; verify it would pass.)
 - **Never edit an applied migration.** New schema = new `V{n}__….sql` with a
   unique sequential number.
 - **Prod-volume safety.** Does the migration scan, rewrite, copy, re-index, or
