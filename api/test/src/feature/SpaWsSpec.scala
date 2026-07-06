@@ -42,7 +42,7 @@ object SpaWsSpec
   override val bootstrap =
     TestDatabase.layer ++ TestLayers.withClock(testClockAt)
 
-  private val jwtCfg = JwtConfig(secret = "test-secret-at-least-32-chars!!", expiryHours = 1)
+  private val jwtCfg = JwtConfig(secret = "test-secret-at-least-32-chars!!x", expiryHours = 1)
 
   // Origin enforcement ON (cloud/staging shape): `localhost` is the dev allowlist entry, so a
   // ws upgrade whose Origin host is localhost passes and any other host is rejected. A short

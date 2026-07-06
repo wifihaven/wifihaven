@@ -28,7 +28,7 @@ object ConfigSpec extends ZIOSpecDefault {
        |    poolSize = $poolSize
        |  }
        |  http { host = "0.0.0.0", port = 8080, staticDir = "web/dist", serveSpa = true }
-       |  jwt  { secret = "change-this-to-a-random-32-char-secret!!", expiryHours = 24 }
+       |  jwt  { secret = "test-secret-at-least-32-chars!!x", expiryHours = 24 }
        |  cors { allowedOrigins = "" }
        |}""".stripMargin
 
@@ -64,7 +64,16 @@ object ConfigSpec extends ZIOSpecDefault {
           p.resolve("config/application.conf.example")
         else if (p.getParent != null) findExample(p.getParent)
         else throw new RuntimeException("could not find config/application.conf.example")
-      val text = new String(Files.readAllBytes(findExample(Paths.get(".").toAbsolutePath)))
+      val rawText = new String(Files.readAllBytes(findExample(Paths.get(".").toAbsolutePath)))
+      // #2084: JwtConfig now rejects the shipped placeholder secret (by design — it must
+      // never be used as-is). This test only cares about the expiryHours default, so swap
+      // in a compliant dummy secret rather than relaxing the guard the placeholder itself
+      // is there to trip.
+      val text    =
+        rawText.replaceAll(
+          """secret\s*=\s*"change-this[^"]*"""",
+          """secret = "test-secret-at-least-32-chars!!x"""",
+        )
       for cfg <-
           read(
             deriveConfig[AppConfig]
