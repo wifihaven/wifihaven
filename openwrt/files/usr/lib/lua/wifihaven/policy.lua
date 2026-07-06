@@ -354,6 +354,13 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
   -- it only makes the existing extraAllowed carve robust against a timing gap.
   -- Runs only when the reload succeeded and some MAC has a non-empty effective
   -- extraAllowed (skips the cache read + scan otherwise).
+  --
+  -- Scope: only the ALLOW carve (ea_/ea6_) is re-seeded here. The other dynamic
+  -- sets share the flush but don't need it: eb_/bl_ are BLOCK sets, so a flush
+  -- fails OPEN (host briefly not-blocked) and the #1658 eb_refresh timer already
+  -- re-resolves them on a cadence; resolved_ (blockIpOnly) is a separate, rarely
+  -- enabled path left out of #2094's scope. Only ea_/ea6_ fail CLOSED — a
+  -- carved host silently dropped — which is the confirmed #2094 symptom.
   local ea_backfilled = 0
   if nft_ok then
     local carve = {}

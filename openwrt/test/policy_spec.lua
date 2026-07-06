@@ -827,23 +827,33 @@ end)
 
 -- ── policy.apply ea_/ea6_ backfill (#2095) ────────────────────────────────
 --
--- The #2094 residual: a host that IS in the wire extraAllowed (jsdelivr.net,
--- carrying MathAcademy's KaTeX/MathJax on cdn.jsdelivr.net) was dropped over
--- IPv6 under a whole-MAC TimeLimit block. Root cause is a population-timing
--- gap: `nft -f` deletes+recreates `table inet wifihaven` on every apply, so
--- the per-(mac,host) ea_/ea6_ carve sets are EMPTY right after apply and only
--- refill when the device next RESOLVES the carved host over the live query
--- log. A device holding a long-cached CDN IP can reconnect before that refill
--- and get caught by the whole-MAC drop. policy.apply now backfills ea_/ea6_
--- from the persisted dns-tail ip→host cache immediately after the reload, for
--- BOTH families — so a carved host stays reachable over v4 AND v6.
+-- #2094 root cause (confirmed, NOT a v6-only race): `nft -f` deletes+recreates
+-- `table inet wifihaven` as the prelude of EVERY apply (render.lua:730-731),
+-- destroying the dynamic per-(mac,host) ea_/ea6_ carve sets AND their
+-- contents. They're only repopulated LAZILY at the next DNS resolution
+-- (dnsmasq nftset= callback + wifihaven-dns-tail). So for the window between a
+-- policy apply and the next re-resolution of each carved host, EVERY carved
+-- host is dropped for a blocked MAC — v4 and v6, INCLUDING THE APP'S OWN
+-- DOMAIN. Operator symptom: MathAcademy's same-origin submit POST to
+-- www.mathacademy.com hangs when the daily limit is exhausted, because the
+-- browser reuses a keep-alive connection to a still-cached IP whose ea_ set an
+-- apply just flushed. Prod smoking gun (Kid Mac ca:ef:a1:72:6a:a3, 2026-07-05)
+-- caught BOTH in one flush window: www.mathacademy.com v4 (52.40.111.135) and
+-- cdn.jsdelivr.net v6 (2606:4700:…), both timeLimit-dropped.
+--
+-- policy.apply now re-seeds ea_/ea6_ from the persisted dns-tail ip→host cache
+-- IMMEDIATELY after the reload, so a carved host with a known cached IP is
+-- reachable the instant the block applies — no wait for a fresh resolution,
+-- both families, and the app's own domain, not just shared CDNs.
 describe("policy.apply ea_/ea6_ backfill (#2095)", function()
   local paths     = require("wifihaven.paths")
   local host_norm = require("wifihaven.host_norm")
 
-  -- Kid Mac ca:ef:a1:72:6a:a3 under a whole-MAC TimeLimit block, with
-  -- jsdelivr.net carved into extraAllowed (an Allowed-mode app's host-set that
-  -- survives the block per #1679 TimeLimit-not-omitted).
+  -- Kid Mac ca:ef:a1:72:6a:a3 under a whole-MAC TimeLimit block. extraAllowed
+  -- carries BOTH the app's own domain (mathacademy.com — the submit-POST
+  -- target) and the shared CDN apex (jsdelivr.net — KaTeX/MathJax), exactly as
+  -- the live wire snapshot did. An Allowed-mode app's host-set survives the
+  -- block per #1679 (TimeLimit not omitted).
   local BLOCKED_SNAP = [[{
     "etag": "sha256:2095",
     "generatedAt": "2026-07-05T23:30:00Z",
@@ -857,7 +867,7 @@ describe("policy.apply ea_/ea6_ backfill (#2095)", function()
           "blocked": true,
           "blockReason": "TimeLimit",
           "extraBlocked": [],
-          "extraAllowed": ["jsdelivr.net"],
+          "extraAllowed": ["mathacademy.com", "jsdelivr.net"],
           "blocklistIds": [],
           "blockIpOnly": false
         },
@@ -869,11 +879,13 @@ describe("policy.apply ea_/ea6_ backfill (#2095)", function()
 
   local function decode(s) return require("cjson").decode(s) end
 
-  -- A persisted dns-tail cache holding a RECENT v4 AND v6 resolution of
-  -- cdn.jsdelivr.net (a subdomain of the carved jsdelivr.net). Format:
-  -- "<ip>\t<hostname>\t<ts>\n" (dns_log.load_table input).
+  -- Persisted dns-tail cache reproducing the exact prod flush window: the app's
+  -- own domain resolved over v4 and the CDN over v6, both recently. Format:
+  -- "<ip>\t<hostname>\t<ts>\n" (dns_log.load_table input). www.mathacademy.com
+  -- is a subdomain of the carved mathacademy.com → suffix hit.
   local NOW = 2000000
   local CACHE =
+    "52.40.111.135\twww.mathacademy.com\t" .. NOW .. "\n" ..
     "151.101.1.229\tcdn.jsdelivr.net\t" .. NOW .. "\n" ..
     "2606:4700::6811:d005\tcdn.jsdelivr.net\t" .. NOW .. "\n"
 
@@ -900,14 +912,24 @@ describe("policy.apply ea_/ea6_ backfill (#2095)", function()
     return false
   end
 
-  it("backfills ea_ (v4) for the carved host from the persisted cache", function()
+  it("carves the APP'S OWN DOMAIN over v4 immediately after apply (the submit-POST target)", function()
+    -- The #2094 operator symptom: www.mathacademy.com v4 (52.40.111.135) was
+    -- dropped in the flush window. After apply it must be carved WITHOUT a fresh
+    -- resolution, so an in-flight keep-alive submit POST survives.
+    local reloads = run()
+    assert.is_true(
+      issued(reloads, "ea_ca_ef_a1_72_6a_a3_mathacademy_com", "52.40.111.135"),
+      "expected the app's own domain immediately carved over v4 after apply")
+  end)
+
+  it("backfills ea_ (v4) for the shared CDN apex from the persisted cache", function()
     local reloads = run()
     assert.is_true(
       issued(reloads, "ea_ca_ef_a1_72_6a_a3_jsdelivr_net", "151.101.1.229"),
       "expected an nft add element into the v4 carve set for cdn.jsdelivr.net")
   end)
 
-  it("backfills ea6_ (v6) for the carved host — the #2095 headline gap", function()
+  it("backfills ea6_ (v6) for the carved host — the co-dropped CDN in the same window", function()
     local reloads = run()
     -- dns_log.load_table canonicalizes the v6 key on load (#1793), so the agent
     -- adds the expanded form; nft matches the compressed dest packet regardless.
