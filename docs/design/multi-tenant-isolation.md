@@ -109,8 +109,10 @@ The MAC-keyed screen-time tables are the one subtlety — see [§3.4](#34-the-ma
 - **App templates** (`api/resources/app_templates/`). Template-authored,
   shared, read-only from the tenant's perspective (per
   `memory/feedback_apps_template_authored_only.md`).
-- **Edge/config globals** (CORS, allowed hosts) — per-*deployment*, not
-  per-household, until custom domains land (a non-goal, [§9](#9-non-goals--phasing)).
+- **Edge/config globals** (CORS, allowed hosts, WS origin gate) —
+  per-*deployment*, not per-household, until custom domains land (a non-goal,
+  [§9](#9-non-goals--phasing)); the surfaces are enumerated in
+  [`custom-domain-edge-config.md`](custom-domain-edge-config.md).
 
 ---
 
@@ -241,15 +243,19 @@ sub-issue **E**.
 
 ### Gap 5 — public/edge globals are per-deployment
 
-CORS `allowedOrigins` ([`Config.scala:101`](../../api/src/Config.scala),[`:165`](../../api/src/Config.scala),
-consumed in [`Cors.scala`](../../api/src/Cors.scala)), `WIFIHAVEN_UI_ALLOWED_HOSTS`,
-and `WS_ALLOWED_ORIGINS` are single per-deployment config values. For the v1
+CORS `allowedOrigins` ([`CorsConfig`, Config.scala:119](../../api/src/Config.scala),
+consumed in [`Cors.scala:12`](../../api/src/Cors.scala)), `WIFIHAVEN_UI_ALLOWED_HOSTS`
+([`PolicyConfig.uiAllowedHosts`, Config.scala:135](../../api/src/Config.scala)),
+and `WIFIHAVEN_WS_ALLOWED_ORIGINS` ([`WsConfig.allowedOrigins`, Config.scala:184](../../api/src/Config.scala))
+are single per-deployment config values. For the v1
 multi-tenant model (**shared apex domain**, e.g. all tenants under
 `app.wifihaven.net`), these stay per-deployment and need **no change** — every
 tenant shares the same origin. They only become per-household when we offer
 **custom per-household domains**, which is an explicit non-goal ([§9](#9-non-goals--phasing)).
-This doc records the surface so the future custom-domain work has a pointer;
-no v1 work item.
+The concrete pointer — all three surfaces, verified citations, env vars, and
+what a custom-domain epic must change — lives in
+[`custom-domain-edge-config.md`](custom-domain-edge-config.md) (sub-issue **F**,
+[#2109](https://github.com/wifihaven/wifihaven/issues/2109)); no v1 work item.
 
 ---
 
@@ -318,7 +324,10 @@ server-side; the token *is* the household handle.
 
 ### 3.3 Edge/config
 
-Per §2 gap 5 — no v1 work; pointer only.
+Per §2 gap 5 — no v1 work; pointer only. The three per-deployment surfaces
+(CORS, UI allowed hosts, WS origin gate) and what a future custom-domain epic
+must make per-household are recorded in
+[`custom-domain-edge-config.md`](custom-domain-edge-config.md) (sub-issue **F**).
 
 ### 3.4 The MAC-keyed screen-time tables
 
@@ -595,7 +604,10 @@ Explicitly **out of scope for the isolation substrate (v1)**:
   §7 invariant holds.
 - **Custom per-household domains.** v1 is a single shared apex
   (`app.wifihaven.net`); the edge globals (§2 gap 5) stay per-deployment. Custom
-  domains reopen CORS/allowed-hosts as per-household config — a separate epic.
+  domains reopen CORS / UI-allowed-hosts / WS-origin-gate as per-household
+  config — a separate epic. The three surfaces and what that epic must change
+  are enumerated in [`custom-domain-edge-config.md`](custom-domain-edge-config.md)
+  (sub-issue **F**, [#2109](https://github.com/wifihaven/wifihaven/issues/2109)).
 - **Cross-household admin / super-admin.** No principal reads across households
   in v1. A future ops console is a separate, deliberately-privileged surface.
 - **Per-household blocklist *content* / custom category authoring.** The
@@ -653,7 +665,8 @@ Filed: **A** = [#2104](https://github.com/wifihaven/wifihaven/issues/2104),
   (§7, including the pin-4b discovery test) as the merge gate. Prove each hot
   query's plan (§5.3).
 - **F — edge/config custom-domain pointer.** Documentation-only for v1: record
-  that CORS `allowedOrigins` / `WIFIHAVEN_UI_ALLOWED_HOSTS` / `WS_ALLOWED_ORIGINS`
+  in [`custom-domain-edge-config.md`](custom-domain-edge-config.md)
+  that CORS `allowedOrigins` / `WIFIHAVEN_UI_ALLOWED_HOSTS` / `WIFIHAVEN_WS_ALLOWED_ORIGINS`
   become per-household only under custom domains, and link the future
   custom-domain epic. No code.
 
