@@ -35,6 +35,49 @@ trait PartitionRepo {
       weeksAhead: Int,
       now: Instant,
   ): Task[Option[List[PartitionRepo.TableResult]]]
+
+  /**
+   * #812 (design: docs/design/db-partitioning.md §"Retention via partition-drop"): for each
+   * partitioned table, `ALTER TABLE ... DETACH PARTITION` + `DROP TABLE` every weekly partition
+   * whose upper bound falls at or before `now - RetentionDays(table)` — no row rewrite or vacuum
+   * debt, unlike [[wifihaven.api.usage.RetentionSweepJob]]'s row-`DELETE`. Each drop is preceded by
+   * a `SELECT count(*)` scoped to that one (bounded, at-most-one-week's-worth) partition, purely
+   * for the audit log — this is a real sequential scan, just a small, bounded one, not the
+   * "metadata-only" DETACH/DROP itself.
+   *
+   * The `_pre_partition` historical omnibus partition is never a candidate — only partitions named
+   * `<table>_<IYYY_IW>` are considered, and the omnibus carries a different name entirely, so it is
+   * structurally excluded rather than filtered.
+   *
+   * Multi-instance-safe via its own session-scoped advisory lock
+   * ([[PartitionRepo.RetentionDropAdvisoryLockKey]]), independent of both the create-future job's
+   * lock and [[wifihaven.api.usage.RetentionSweepJob]]'s lock, so all three can interleave across
+   * instances without racing on the same lock. If another instance holds this lock, returns `None`
+   * without touching the catalog.
+   *
+   * All eligible tables' drops for one tick run inside a SINGLE transaction (same pattern as
+   * [[ensureFuturePartitions]]), so Postgres holds each `DETACH`'s `AccessExclusiveLock` on the
+   * parent until the whole tick commits, not just for that one statement. In steady state (daily
+   * ticks) at most one partition per table ages out per run, so this is brief — the same brief
+   * exclusivity the create-future job already takes. A job that hasn't run in a long time could
+   * have many partitions to catch up on in one tick, extending that hold; this is an accepted
+   * tradeoff for v1 (matches the create-future job's existing single-transaction shape) rather than
+   * a new risk introduced here.
+   *
+   * A table whose configured retention is `< 1` day is refused (logged, zero drops for that table)
+   * rather than executed — the guard against a misconfigured `0`-or-negative window wiping
+   * everything. This can never drop the partition containing `now` itself: a candidate partition's
+   * upper bound is always `<= now - RetentionDays(table)` by construction, which is strictly before
+   * the partition holding the current instant.
+   *
+   * `retentionDaysByTable` defaults to [[PartitionRepo.RetentionDaysByTable]] (the single-sourced
+   * production horizons) — the parameter exists so tests can pin a short window / an out-of-bounds
+   * value deterministically without touching the production constants.
+   */
+  def dropExpiredPartitions(
+      now: Instant,
+      retentionDaysByTable: Map[String, Int] = PartitionRepo.RetentionDaysByTable,
+  ): Task[Option[List[PartitionRepo.DropResult]]]
 }
 
 object PartitionRepo {
@@ -55,8 +98,37 @@ object PartitionRepo {
    */
   val AdvisoryLockKey: Long = 0x70617274_6e770001L
 
+  /**
+   * #812: reserved session advisory-lock key for the partition-drop (retention) pass. Distinct from
+   * both [[AdvisoryLockKey]] (create-future) and
+   * [[wifihaven.api.usage.RetentionSweepJob.AdvisoryLockKey]] (row-`DELETE` sweep) so all three
+   * passes hold independent locks and can interleave across instances (design §"Horizontal-scaling
+   * safety"). Do not reuse for any other advisory lock.
+   */
+  val RetentionDropAdvisoryLockKey: Long = 0x70617274_64770001L
+
+  /**
+   * Retention window (days) per partitioned table, reused from the single-sourced constants
+   * [[wifihaven.api.usage.RetentionSweepJob.RawRetentionDays]] /
+   * [[wifihaven.api.usage.RetentionSweepJob.EventsRetentionDays]] rather than a second literal —
+   * partition-drop and the row-`DELETE` sweep must agree on the same horizon per table
+   * (`AGENTS.md#single-source-of-truth`).
+   */
+  val RetentionDaysByTable: Map[String, Int] = Map(
+    "traffic_reports"   -> wifihaven.api.usage.RetentionSweepJob.RawRetentionDays,
+    "connection_events" -> wifihaven.api.usage.RetentionSweepJob.EventsRetentionDays,
+  )
+
   /** How far ahead [[consecutiveWeeksAheadCap]] probes when measuring runway. */
   private[db] val ConsecutiveWeeksAheadCap: Int = 60
+
+  /**
+   * #812: how far back the retention-drop pass probes for existing-but-expired weekly partitions,
+   * starting from the retention cutoff. 520 weeks (10 years) comfortably covers a job that hasn't
+   * run in years without an unbounded scan; each probed week is a single cheap `to_regclass`
+   * catalog lookup, not a table scan.
+   */
+  private[db] val RetentionDropProbeCapWeeks: Int = 520
 
   /**
    * Per-table outcome of one pass: which partitions were freshly created (for the INFO log) and the
@@ -66,4 +138,20 @@ object PartitionRepo {
    * alert watches.
    */
   final case class TableResult(table: String, created: List[String], weeksAhead: Int)
+
+  /**
+   * One partition DETACHed+DROPped by the retention pass, with its row count at drop time (audit).
+   */
+  final case class DroppedPartition(name: String, rows: Long)
+
+  /**
+   * Per-table outcome of one retention-drop pass. `skippedReason` is set (and `dropped` is empty)
+   * when the table's configured retention was out of bounds (`< 1` day) and the pass refused to run
+   * for that table rather than risk wiping everything.
+   */
+  final case class DropResult(
+      table: String,
+      dropped: List[DroppedPartition],
+      skippedReason: Option[String],
+  )
 }

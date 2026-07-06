@@ -8,8 +8,8 @@ with [#793](https://github.com/wifihaven/wifihaven/issues/793) (partitioning) an
 
 | Tier | Source | Grain | Retention | Mechanism |
 | ---- | ------ | ----- | --------- | --------- |
-| Raw | `traffic_reports` | 5-min × (router, mac, host) | **30 days** | router writes; sweep drops via `DROP PARTITION` if [#793](https://github.com/wifihaven/wifihaven/issues/793) lands, plain `DELETE` otherwise |
-| Events | `connection_events` | per-DNS-decision row | **30 days** | sweep `DELETE` (or `DROP PARTITION` if #793 partitions it too) |
+| Raw | `traffic_reports` | 5-min × (router, mac, host) | **30 days** | router writes; RANGE-partitioned (#793) — weekly partitions past the horizon are DETACHed + DROPped (#812), row-`DELETE` covers the still-partial boundary week |
+| Events | `connection_events` | per-DNS-decision row | **30 days** | RANGE-partitioned (#793) — same DETACH+DROP (#812) + boundary-week `DELETE` as `traffic_reports` |
 | Hourly | new `traffic_hourly` | 1 h × (router, mac, host) | **3 months** | API-side ZIO cron, every 5 min, UPSERT from raw |
 | Daily | new `traffic_daily` | 1 day × (router, mac, host) | **6 months** | API-side ZIO cron, daily at 00:15 local, UPSERT from raw |
 | Quota | existing `time_usage` | 1 day × (mac, host) bucket-deduped wall-clock | **30 days** ([#2086](https://github.com/wifihaven/wifihaven/issues/2086)) | sweep `DELETE` on `date` |
@@ -63,9 +63,8 @@ without code changes if the use case ever appears.
 makes, keyed by `(router_id, mac, dest_ip, ts)`). At household scale it grows faster
 than `traffic_reports` per active hour, but slower per device-day. **Retention: 30
 days**, same horizon as raw traffic for the same reason — anything older than that is
-served by aggregates, not the event log. The sweep deletes (or drops the partition,
-if [#793](https://github.com/wifihaven/wifihaven/issues/793) covers it) in the same
-job that handles `traffic_reports`.
+served by aggregates, not the event log. Retention drops the partition (#812) in the
+same job that handles `traffic_reports`.
 
 ## 2. Hourly rollup — 3 months
 
@@ -246,30 +245,34 @@ quota system continues to write `time_usage` exactly as it does today.
   `GET /api/admin/rollup-status` (admin-only).
 - **Retries:** idempotent UPSERT means a crash mid-job is safe; the next tick (on
   any instance) re-processes any hours whose source rows changed since `rolled_at`.
-- **Sweep job (retention):** same advisory-lock pattern — runs daily at 03:00
-  router-local. If [#793](https://github.com/wifihaven/wifihaven/issues/793) lands
-  with daily partitions, this is a `DROP TABLE …_YYYYMMDD` per expired partition.
-  Otherwise it's batched `DELETE WHERE <time-col> < $cutoff` with a 100 k row chunk
-  loop. Covers `traffic_reports`, `connection_events`, `traffic_hourly`,
-  `traffic_daily` per the table at the top of this doc.
+- **Sweep job (retention):** same advisory-lock pattern — runs daily. `RetentionSweepJob`
+  covers `time_usage`, `block_events`, `traffic_hourly`, `traffic_daily`,
+  `connection_events_hourly`, `connection_events_daily` via batched
+  `DELETE WHERE <time-col> < $cutoff`; `traffic_reports` and `connection_events` are
+  covered by the DETACH+DROP pass below (with `RetentionSweepJob`'s `DELETE` as a
+  redundant-but-harmless trim of the still-partial boundary week).
 
-## 10. Coordination with #793
+## 10. Coordination with #793 (landed 2026-07, #812)
 
-The retention story is **substantially better** if `traffic_reports` is partitioned:
+`traffic_reports` and `connection_events` are now RANGE-partitioned (#793, weekly —
+not daily; see `docs/design/db-partitioning.md`), so the retention story for them is
+DETACH+DROP rather than row-`DELETE`:
 
-- **Drop instead of delete.** `DROP TABLE` on a daily partition is instant and
-  releases space; `DELETE` is a long-running write-amplified scan that bloats
-  autovacuum and doesn't reclaim disk until VACUUM FULL.
-- **Granularity alignment.** This policy assumes daily partitions on
-  `traffic_reports` — the 35-day horizon is then "drop 35 partitions". If [#793](https://github.com/wifihaven/wifihaven/issues/793)
-  picks weekly partitions instead, we round to 5 weeks (35 days). Monthly is too
-  coarse — the data-deletion lag would be up to 30 days past intended horizon.
-- **Order of landing.** Rollup tables ship first (this design); retention sweep
-  ships after [#793](https://github.com/wifihaven/wifihaven/issues/793) picks a partition shape, so the sweep can be written
-  against whichever (partition-drop vs DELETE) the partitioning design lands on.
-
-If [#793](https://github.com/wifihaven/wifihaven/issues/793) is rejected / deferred, the sweep falls back to `DELETE` and we
-revisit if pgstat shows the autovacuum cost is real.
+- **Drop instead of delete.** `ALTER TABLE ... DETACH PARTITION` + `DROP TABLE` on a
+  weekly partition is metadata-only and instant, and releases space immediately;
+  `DELETE` is a long-running write-amplified scan that bloats autovacuum and doesn't
+  reclaim disk until VACUUM FULL.
+- **Granularity alignment.** Partitions are weekly (not daily), so the 30-day raw
+  horizon rounds down to whole weeks: a candidate partition is dropped once its
+  upper bound falls at or before `now - 30 days` — see `PartitionRepo.dropExpiredPartitions`
+  (`api/src/db/PartitionRepoLive.scala`). The still-partial current/boundary week can
+  carry a few rows past the exact day cutoff until the next run rounds that week away
+  too; `RetentionSweepJob`'s `DELETE` trims that residual in the meantime.
+- **Implementation.** `PartitionMaintenanceJob` runs both the create-future pass (#808)
+  and the retention-drop pass (#812) on the same daily fiber, each under its own
+  advisory lock (`PartitionRepo.AdvisoryLockKey` / `PartitionRepo.RetentionDropAdvisoryLockKey`)
+  so the two — and `RetentionSweepJob`'s own lock — can interleave across instances
+  without racing.
 
 ## 11. User-facing implications — date picker UX
 

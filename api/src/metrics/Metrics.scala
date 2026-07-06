@@ -351,6 +351,10 @@ object MetricGuard {
     // 2026-06-29 P0 (#2053). Without this entry the firewall would reject the name as unknown_name
     // and the series would never emit.
     "partition_weeks_ahead"                -> Set("table"),
+    // #812 — partition-drop retention. `partitions_dropped_total{table}` counts weekly
+    // partitions DETACHed+DROPped per run (metadata-only retention, replacing row-DELETE
+    // for the two RANGE-partitioned tables). `table` is the same bounded 2-value enum.
+    "partitions_dropped_total"             -> Set("table"),
     // #1243/#1221 HikariCP pool gauges — no labels.
     "wifihaven_db_pool_active_connections" -> Set.empty[String],
     "wifihaven_db_pool_idle_connections"   -> Set.empty[String],
@@ -759,6 +763,16 @@ object AppMetrics {
 
   def setPartitionWeeksAhead(table: String, weeksAhead: Int): UIO[Unit] =
     MetricGuard.gauge("partition_weeks_ahead", Map("table" -> table), weeksAhead.toDouble)
+
+  // ── Partition-drop retention (#812) ─────────────────────────────────────────
+  // Incremented by PartitionMaintenanceJob each run: per partitioned table, the count of weekly
+  // partitions DETACHed+DROPped in that pass (0 most runs — only nonzero when a partition just
+  // aged out of its retention window). `table` is the same bounded 2-value enum as above.
+  def incrementPartitionsDropped(table: String, count: Int): UIO[Unit] =
+    MetricGuard
+      .counter("partitions_dropped_total", Map("table" -> table), count.toLong)
+      .when(count > 0)
+      .unit
 
   // ── DB connection pool (#1243, #1221) ───────────────────────────────────────
   // Set from the polling fiber in DbPoolMetrics. threads_awaiting was the

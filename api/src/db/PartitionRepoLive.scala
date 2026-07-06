@@ -117,4 +117,103 @@ final case class PartitionRepoLive(xa: Transactor[Task]) extends PartitionRepo {
       ) IS NULL
     """.query[Int].unique
   }
+
+  // #812: retention via partition-drop. Own advisory lock, independent of ensureFuturePartitions'
+  // (design §"Horizontal-scaling safety") — a create pass and a drop pass on two different
+  // instances can proceed concurrently without racing on the same lock.
+  def dropExpiredPartitions(
+      now: Instant,
+      retentionDaysByTable: Map[String, Int] = RetentionDaysByTable,
+  ): Task[Option[List[DropResult]]] = {
+    val epochSeconds = now.toEpochMilli.toDouble / 1000.0
+
+    val body: ConnectionIO[List[DropResult]] =
+      retentionDaysByTable.toList.traverse { case (table, days) =>
+        dropExpiredForTable(table, days, epochSeconds)
+      }
+
+    val cio: ConnectionIO[Option[List[DropResult]]] =
+      sql"SELECT pg_try_advisory_lock($RetentionDropAdvisoryLockKey)"
+        .query[Boolean]
+        .unique
+        .flatMap {
+          case false => cpure(Option.empty[List[DropResult]])
+          case true  =>
+            body.attempt.flatMap { res =>
+              sql"SELECT pg_advisory_unlock($RetentionDropAdvisoryLockKey)"
+                .query[Boolean]
+                .unique
+                .flatMap { _ =>
+                  res match {
+                    case Right(rs) => cpure(Some(rs))
+                    case Left(e)   => craiseError[Option[List[DropResult]]](e)
+                  }
+                }
+            }
+        }
+    cio.transact(xa)
+  }
+
+  private def dropExpiredForTable(
+      table: String,
+      retentionDays: Int,
+      epochSeconds: Double,
+  ): ConnectionIO[DropResult] =
+    if (retentionDays < 1)
+      cpure(
+        DropResult(
+          table,
+          Nil,
+          Some(
+            s"retentionDays=$retentionDays is out of bounds (must be >= 1); refusing to drop " +
+              s"any $table partitions",
+          ),
+        ),
+      )
+    else
+      for {
+        candidates <- expiredWeekNames(table, retentionDays, epochSeconds)
+        dropped    <- candidates.traverse(dropPartition(table, _))
+      } yield DropResult(table, dropped, None)
+
+  // Weekly partitions of `table` whose upper bound is <= the retention cutoff (i.e. entirely
+  // historical), found by walking backward from the cutoff week. Each candidate week's upper bound
+  // is <= the cutoff BY CONSTRUCTION (gs starts at 1, never 0), so this can never select the
+  // partition containing `now` regardless of how small `retentionDays` is. `_pre_partition` is never
+  // a candidate — only the `<table>_<IYYY_IW>` naming scheme is probed here.
+  private def expiredWeekNames(
+      table: String,
+      retentionDays: Int,
+      epochSeconds: Double,
+  ): ConnectionIO[List[String]] = {
+    val prefix = s"${table}_"
+    val cap    = RetentionDropProbeCapWeeks
+    sql"""
+      SELECT to_char(d, 'IYYY_IW') AS iw
+      FROM (
+        SELECT (
+          date_trunc(
+            'week',
+            to_timestamp($epochSeconds) - make_interval(days => $retentionDays)
+          )::date - (gs * 7)
+        ) AS d
+        FROM generate_series(1, $cap) AS gs
+      ) w
+      WHERE to_regclass($prefix || to_char(d, 'IYYY_IW')) IS NOT NULL
+      ORDER BY d
+    """.query[String].to[List]
+  }
+
+  // DETACH then DROP — no row rewrite (unlike RetentionSweepJob's DELETE). The count(*) IS a real
+  // sequential scan, done purely for the audit log — but it's scoped to a single week's worth of
+  // rows (bounded, not a full-table scan of the unbounded parent), so it stays cheap even though it
+  // isn't "metadata-only" the way the DETACH/DROP itself is.
+  private def dropPartition(table: String, iw: String): ConnectionIO[DroppedPartition] = {
+    val name = s"${table}_$iw"
+    for {
+      rows <- Fragment.const(s"SELECT count(*) FROM $name").query[Long].unique
+      _    <- Fragment.const(s"ALTER TABLE $table DETACH PARTITION $name").update.run
+      _    <- Fragment.const(s"DROP TABLE $name").update.run
+    } yield DroppedPartition(name, rows)
+  }
 }
