@@ -204,8 +204,10 @@ final case class PartitionRepoLive(xa: Transactor[Task]) extends PartitionRepo {
     """.query[String].to[List]
   }
 
-  // DETACH then DROP — metadata-only, no row rewrite. Row count is captured just before detach for
-  // the audit log; a single week's worth of rows is bounded volume, not a full-table scan.
+  // DETACH then DROP — no row rewrite (unlike RetentionSweepJob's DELETE). The count(*) IS a real
+  // sequential scan, done purely for the audit log — but it's scoped to a single week's worth of
+  // rows (bounded, not a full-table scan of the unbounded parent), so it stays cheap even though it
+  // isn't "metadata-only" the way the DETACH/DROP itself is.
   private def dropPartition(table: String, iw: String): ConnectionIO[DroppedPartition] = {
     val name = s"${table}_$iw"
     for {

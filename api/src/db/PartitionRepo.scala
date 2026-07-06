@@ -39,8 +39,11 @@ trait PartitionRepo {
   /**
    * #812 (design: docs/design/db-partitioning.md §"Retention via partition-drop"): for each
    * partitioned table, `ALTER TABLE ... DETACH PARTITION` + `DROP TABLE` every weekly partition
-   * whose upper bound falls at or before `now - RetentionDays(table)` — metadata-only, no row scan
-   * or vacuum debt, unlike [[wifihaven.api.usage.RetentionSweepJob]]'s row-`DELETE`.
+   * whose upper bound falls at or before `now - RetentionDays(table)` — no row rewrite or vacuum
+   * debt, unlike [[wifihaven.api.usage.RetentionSweepJob]]'s row-`DELETE`. Each drop is preceded by
+   * a `SELECT count(*)` scoped to that one (bounded, at-most-one-week's-worth) partition, purely
+   * for the audit log — this is a real sequential scan, just a small, bounded one, not the
+   * "metadata-only" DETACH/DROP itself.
    *
    * The `_pre_partition` historical omnibus partition is never a candidate — only partitions named
    * `<table>_<IYYY_IW>` are considered, and the omnibus carries a different name entirely, so it is
@@ -51,6 +54,15 @@ trait PartitionRepo {
    * lock and [[wifihaven.api.usage.RetentionSweepJob]]'s lock, so all three can interleave across
    * instances without racing on the same lock. If another instance holds this lock, returns `None`
    * without touching the catalog.
+   *
+   * All eligible tables' drops for one tick run inside a SINGLE transaction (same pattern as
+   * [[ensureFuturePartitions]]), so Postgres holds each `DETACH`'s `AccessExclusiveLock` on the
+   * parent until the whole tick commits, not just for that one statement. In steady state (daily
+   * ticks) at most one partition per table ages out per run, so this is brief — the same brief
+   * exclusivity the create-future job already takes. A job that hasn't run in a long time could
+   * have many partitions to catch up on in one tick, extending that hold; this is an accepted
+   * tradeoff for v1 (matches the create-future job's existing single-transaction shape) rather than
+   * a new risk introduced here.
    *
    * A table whose configured retention is `< 1` day is refused (logged, zero drops for that table)
    * rather than executed — the guard against a misconfigured `0`-or-negative window wiping

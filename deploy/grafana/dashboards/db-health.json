@@ -264,6 +264,35 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Partitions DETACH+DROPped (retention, #812)",
+      "description": "increase(partitions_dropped_total{env=\"$env\"}[1d]) — weekly partitions DETACHed + DROPped per table by the retention-drop pass (PartitionMaintenanceJob, #812). 0 most days; a nonzero value means a partition just aged out of its retention window (traffic_reports/connection_events, 30 days). A large spike (many partitions at once) means the job caught up after a gap — the transaction held each parent's AccessExclusiveLock for the duration, see PartitionRepo.dropExpiredPartitions.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 30 },
+      "id": 6,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "bars", "fillOpacity": 40, "lineWidth": 1 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["sum"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "increase(partitions_dropped_total{env=\"$env\"}[1d])",
+          "legendFormat": "{{table}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",
