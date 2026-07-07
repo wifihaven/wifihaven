@@ -27,7 +27,12 @@ object SecurityHeaders {
       // upgrade (GET /api/ws, web/src/api/wsClient.ts) is same-origin in the
       // self-hosted deploy, but 'self' isn't guaranteed by all browsers to cover a
       // scheme upgrade from http(s) to ws(s) under CSP.
-      "img-src 'self' data:; connect-src 'self' ws: wss:; frame-ancestors 'none'; " +
+      // img-src allows https://icons.duckduckgo.com: every app template
+      // (api/resources/app_templates/*.yml, icon_type: url) renders its favicon from
+      // https://icons.duckduckgo.com/ip3/<domain>.ico, so the icon host must be
+      // allowlisted or the Apps page shows broken icons (#2115). Kept byte-identical
+      // with web/public/_headers.
+      "img-src 'self' data: https://icons.duckduckgo.com; connect-src 'self' ws: wss:; frame-ancestors 'none'; " +
       "base-uri 'self'; object-src 'none'"
 
   def wrap[Env, Err](routes: Routes[Env, Err]): Routes[Env, Err] =

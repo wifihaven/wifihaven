@@ -4,9 +4,11 @@
 # The JWT lives in localStorage (web/src/api/client.ts), so an absent CSP would let a future XSS
 # exfiltrate it to any host — default-src 'self' is the load-bearing line here. Kept in sync with
 # the API's equivalent (api/src/SecurityHeaders.scala) — same permissive style-src/img-src
-# allowance for Vite/React/Tailwind's inline styles and embedded icons.
+# allowance for Vite/React/Tailwind's inline styles and embedded icons. img-src also allows
+# https://icons.duckduckgo.com: app templates render their favicons from
+# https://icons.duckduckgo.com/ip3/<domain>.ico, so the icon host must be allowlisted (#2115).
 /*
   X-Content-Type-Options: nosniff
   X-Frame-Options: DENY
   Strict-Transport-Security: max-age=31536000; includeSubDomains
-  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://api.wifihaven.net https://api-staging.wifihaven.net wss://api.wifihaven.net wss://api-staging.wifihaven.net; frame-ancestors 'none'; base-uri 'self'; object-src 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://icons.duckduckgo.com; connect-src 'self' https://api.wifihaven.net https://api-staging.wifihaven.net wss://api.wifihaven.net wss://api-staging.wifihaven.net; frame-ancestors 'none'; base-uri 'self'; object-src 'none'
