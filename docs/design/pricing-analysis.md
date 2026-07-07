@@ -229,7 +229,7 @@ floor the price must clear, and $10 clears it 3–10×.
 
 At the recommended prices (Stripe fees from
 [stripe.com pricing](https://stripe.com/pricing): 2.9% + 30¢ processing +
-0.7% Billing → net ≈ $9.34 of $10; ≈ $5.58 of $6):
+0.7% Billing → net ≈ $9.34 of $10; ≈ $5.48 of $6):
 
 - **Breakeven on today's full $78/mo fixed stack:** ~10 households at $10/mo
   net; ~14 households at the $6 founding price. (Against the $53 prod-serving
