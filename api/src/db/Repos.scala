@@ -923,11 +923,15 @@ class ProfileRepoLive(xa: Transactor[Task]) extends ProfileRepo {
     )
   // #2107: same projection as listAllIncludingGlobal, AND-scoped to one household. Index-backed by
   // V65's idx_profiles_household.
-  // TEMP(red): predicate not yet applied — see follow-up commit.
-  def listAllIncludingGlobalForHousehold(household: HouseholdId) = {
-    val _ = household
-    listAllIncludingGlobal
-  }
+  def listAllIncludingGlobalForHousehold(household: HouseholdId) =
+    DbMetrics.timed("profile.listAllIncludingGlobalForHousehold")(
+      (fr"SELECT id,name,blocked_categories,paused,failure_mode,block_ip_only,cross_device_overlap_mode,pause_mode,default_deny,is_global FROM profiles WHERE" ++
+        SqlFragments.householdEq(household) ++ fr"ORDER BY id")
+        .query[R]
+        .map(toP)
+        .to[List]
+        .transact(xa),
+    )
   def getGlobal                                                  =
     DbMetrics.timed("profile.getGlobal")(
       sql"SELECT id,name,blocked_categories,paused,failure_mode,block_ip_only,cross_device_overlap_mode,pause_mode,default_deny,is_global FROM profiles WHERE is_global=TRUE"
@@ -1244,11 +1248,25 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
   // #2107: same projection as listAll, AND-scoped to one household. `devices` is aliased `d`, so the
   // predicate is qualified `d.household_id`. Index-backed by V65's idx_devices_household (and the
   // leading column of uq_devices_household_mac).
-  // TEMP(red): predicate not yet applied — see follow-up commit.
-  def listAllForHousehold(household: HouseholdId)                                      = {
-    val _ = household
-    listAll
-  }
+  def listAllForHousehold(household: HouseholdId)                                      =
+    DbMetrics.timed("device.listAllForHousehold")(
+      (fr"SELECT d.id,d.mac,d.name,d.profile_id,p.name,d.last_seen_ip,d.last_seen_at::TEXT FROM devices d LEFT JOIN profiles p ON p.id=d.profile_id WHERE" ++
+        SqlFragments.householdEq(household, "d.household_id") ++ fr"ORDER BY d.name")
+        .query[
+          (
+              DeviceId,
+              MacAddress,
+              String,
+              Option[ProfileId],
+              Option[String],
+              Option[IpAddress],
+              Option[String],
+          ),
+        ]
+        .map(r => Device(r._1, r._2, r._3, r._4, r._5, r._6, r._7))
+        .to[List]
+        .transact(xa),
+    )
   def findByMac(mac: MacAddress)                                                       =
     DbMetrics.timed("device.findByMac")(
       sql"SELECT d.id,d.mac,d.name,d.profile_id,p.name,d.last_seen_ip,d.last_seen_at::TEXT FROM devices d LEFT JOIN profiles p ON p.id=d.profile_id WHERE d.mac=$mac"
