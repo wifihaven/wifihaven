@@ -33,5 +33,9 @@ object SecurityHeadersSpec extends ZIOSpecDefault {
       assertTrue(csp.contains("default-src 'self'")) &&
       assertTrue(csp.contains("frame-ancestors 'none'"))
     },
+    test("img-src allowlists the app-icon host so app favicons render (#2115)") {
+      val csp = SecurityHeaders.ContentSecurityPolicy
+      assertTrue(csp.contains("img-src 'self' data: https://icons.duckduckgo.com"))
+    },
   )
 }
