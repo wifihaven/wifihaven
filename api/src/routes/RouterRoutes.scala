@@ -201,23 +201,35 @@ object AdminRouterRoutes {
   def routes(
       auth: AuthService,
       routerRepo: RouterRepo,
+      userRepo: UserRepo,
   ): Routes[Any, Response] =
     Routes(
       Method.POST / "api" / "admin" / "routers"                  ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _    <- requireAdmin(req, auth)
-            body <- req.body.asString.orElseFail(ApiError.BadRequest(""))
-            cr   <- ZIO
+            claims      <- requireAdmin(req, auth)
+            // #2106 (multi-tenant, epic #622): bind the new router to the
+            // creating admin's household so it inherits tenancy at enrollment.
+            // Resolve from the admin's JWT `sub` via UserRepo — NOT a JWT `hh`
+            // claim (sub-issue B, #2105, may not be merged yet); the user-id →
+            // household lookup keeps this PR standalone. A valid admin token
+            // always names an existing user, so a missing row is a 401.
+            householdId <- userRepo
+              .findByUsername(claims.sub)
+              .mapError(ApiError.Db(_))
+              .someOrFail(ApiError.Unauthorized("unknown admin user"))
+              .map(_.householdId)
+            body        <- req.body.asString.orElseFail(ApiError.BadRequest(""))
+            cr          <- ZIO
               .fromEither(body.fromJson[CreateRouterRequest])
               .mapError(ApiError.DecodeFailure(_))
-            _    <- ZIO
+            _           <- ZIO
               .fail(ApiError.BadRequest("name required"))
               .when(cr.name.trim.isEmpty)
             enrollmentToken = EnrollmentToken.unsafe(newEnrollmentToken())
             etHash          = PolicyService.hashToken(enrollmentToken.value)
             id <- routerRepo
-              .create(cr.name.trim, etHash)
+              .create(cr.name.trim, etHash, householdId)
               .mapError(ApiError.Db(_))
           } yield Response.json(CreateRouterResponse(id, cr.name.trim, enrollmentToken).toJson)
           handle.mapError(ErrorMapper.errorToResponse)

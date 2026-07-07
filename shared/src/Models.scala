@@ -1437,6 +1437,13 @@ case class Router(
     // completes (the hash is cleared too, so it can no longer be looked up
     // anyway) or for pre-#2083 rows that had no pending enrollment.
     enrollmentExpiresAt: Option[String] = None,
+    // #2106 (multi-tenant, epic #622): the household this router belongs to,
+    // stamped at enrollment from the creating admin's household (V65). This is
+    // a SERVER-SIDE data-scoping key resolved from the router token — it never
+    // appears on the router wire (design invariant 3). Defaults to the
+    // single-install backfill household so pre-multi-tenant rows and non-DB
+    // constructions stay tenant-safe.
+    householdId: HouseholdId = HouseholdId.Default,
 ) derives JsonCodec
 
 case class TrafficReport(

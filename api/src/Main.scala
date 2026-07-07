@@ -555,7 +555,7 @@ object Main extends ZIOAppDefault {
 
       val routerAndAdminRoutes: Routes[Any, Response] =
         RouterRoutes.routes(routerRepo, policy, routerAuth, blockEvRepo) ++
-          AdminRouterRoutes.routes(auth, routerRepo) ++
+          AdminRouterRoutes.routes(auth, routerRepo, userRepo) ++
           RollupAdminRoutes.routes(auth, rollupRepo2) ++
           RouterIngestRoutes.routes(routerAuth, routerIngest) ++
           // #1846: additive websocket transport. REST ingest/poll/metrics above stay fully live.
