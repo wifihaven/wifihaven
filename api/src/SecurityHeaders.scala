@@ -30,8 +30,9 @@ object SecurityHeaders {
       // img-src allows https://icons.duckduckgo.com: every app template
       // (api/resources/app_templates/*.yml, icon_type: url) renders its favicon from
       // https://icons.duckduckgo.com/ip3/<domain>.ico, so the icon host must be
-      // allowlisted or the Apps page shows broken icons (#2115). Kept byte-identical
-      // with web/public/_headers.
+      // allowlisted or the Apps page shows broken icons (#2115). The img-src
+      // directive is kept in sync with web/public/_headers (connect-src differs
+      // between the two: this file uses `ws: wss:`, _headers lists concrete hosts).
       "img-src 'self' data: https://icons.duckduckgo.com; connect-src 'self' ws: wss:; frame-ancestors 'none'; " +
       "base-uri 'self'; object-src 'none'"
 
