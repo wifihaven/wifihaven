@@ -126,6 +126,7 @@ object DbFailureSpec extends ZIOSpecDefault {
 
   private def brokenDeviceRepo: DeviceRepo = new DeviceRepo {
     def listAll                                                                          = throwing
+    def listAllForHousehold(household: HouseholdId)                                      = throwing
     def findByMac(mac: MacAddress)                                                       = throwing
     def upsert(mac: MacAddress, name: String, pid: Option[ProfileId], ip: String)        = throwing
     def updateLastSeen(mac: MacAddress, ip: String)                                      = throwing
@@ -160,9 +161,10 @@ object DbFailureSpec extends ZIOSpecDefault {
   }
 
   private def brokenHouseholdSettingsRepo: HouseholdSettingsRepo = new HouseholdSettingsRepo {
-    def get                                = throwing
-    def update(s: HouseholdSettings)       = throwing
-    def ensureDefault(z: java.time.ZoneId) = throwing
+    def get                                     = throwing
+    def getForHousehold(household: HouseholdId) = throwing
+    def update(s: HouseholdSettings)            = throwing
+    def ensureDefault(z: java.time.ZoneId)      = throwing
   }
 
   private def brokenConnectionEventRepo: ConnectionEventRepo = new ConnectionEventRepo {

@@ -84,7 +84,10 @@ object RouterWsRoutes {
             // fall back to the REST poll.
             registry.register(router.id, channel) *>
               ZIO.logInfo(s"router ws: connected router=${router.id}") *>
-              policy.snapshot
+              policy
+                // #2107: first-policy push is scoped to the router's household (same scoping as the
+                // REST /api/router/policy poll).
+                .snapshot(router.householdId)
                 .flatMap(registry.pushPolicyTo(channel, _))
                 .catchAllCause(c =>
                   ZIO.logWarningCause(

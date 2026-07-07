@@ -63,7 +63,10 @@ object RouterRoutes {
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
             router <- routerAuth.authenticate(req)
-            snap   <- policy.snapshot.mapError(ApiError.Db(_))
+            // #2107: the snapshot is scoped to the router's household (resolved from the token by
+            // #2106). WIRE UNCHANGED — household_id never appears on the payload; for a single-
+            // household install this is byte-identical to the old global snapshot.
+            snap   <- policy.snapshot(router.householdId).mapError(ApiError.Db(_))
             ifNoneMatch  = req
               .header(Header.IfNoneMatch)
               .map(_.renderedValue)
@@ -107,15 +110,18 @@ object RouterRoutes {
       Method.GET / "api" / "blocklists" / string("id") ->
         handler { (id: String, req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _    <- routerAuth.authenticate(req)
+            router <- routerAuth.authenticate(req)
             // Treat malformed slugs (e.g. legacy ".rpz" suffix) the same as
             // "no such blocklist" — 404, not 400. They were a route on a prior
             // version of the API and external callers may still probe them.
-            bid  <- ZIO
+            bid    <- ZIO
               .fromEither(BlocklistId.parse(id))
               .orElseFail(ApiError.NotFound(s"unknown blocklist: $id"))
-            out  <- policy.renderBlocklist(bid).mapError(ApiError.Db(_))
-            resp <- ZIO
+            // #2107: threaded for API symmetry; the blocklist CATALOG is a shared global resource
+            // (design §0.2), so content is identical across households — the household does not
+            // filter the bytes.
+            out    <- policy.renderBlocklist(router.householdId, bid).mapError(ApiError.Db(_))
+            resp   <- ZIO
               .fromOption(out)
               .mapBoth(
                 _ => ApiError.NotFound(s"unknown blocklist: $id"),
@@ -148,7 +154,9 @@ object RouterRoutes {
               .fromEither(body.fromJson[RouterDecisionRequest])
               .mapError(ApiError.DecodeFailure(_))
             result <- policy
-              .decide(dreq.mac.value, dreq.hostname.value)
+              // #2107: scope the per-host decision to the router's household, so a MAC that exists
+              // in another household never resolves the other tenant's device/profile row here.
+              .decide(router.householdId, dreq.mac.value, dreq.hostname.value)
               .mapError(ApiError.Db(_))
             _      <- ZIO
               .when(result.decision == ConnectionDecision.Block) {
