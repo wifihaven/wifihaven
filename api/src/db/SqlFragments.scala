@@ -16,6 +16,10 @@ object SqlFragments {
   // (`idx_{profiles,devices,routers,users}_household`, and the leading column of the composite
   // unique constraints) keep this predicate index-backed. Reused by the broader user-facing read
   // sweep in sub-issue E (#2108).
+  //
+  // `column` is spliced verbatim via `Fragment.const` (NOT a bound parameter), so it MUST be a
+  // trusted compile-time literal — never user input — or it is a SQL-injection vector. Only `hh` is
+  // parameterized. All current callers pass string constants.
   def householdEq(hh: HouseholdId, column: String = "household_id"): Fragment =
     Fragment.const(column) ++ fr"= $hh"
 

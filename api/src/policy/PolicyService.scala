@@ -311,10 +311,11 @@ class PolicyServiceLive(
       ZIO.succeed(mutationVersion.get).flatMap { gen =>
         // #2107: single-household today — `reevaluate` rebuilds the `HouseholdId.Default` snapshot
         // and pushes it to every connected router (all routers belong to household 1). Per-household
-        // push fan-out (rebuild + push each household's snapshot to only its own routers) is part of
-        // the websocket multi-tenant follow-up under epic #622; it is deliberately out of this
-        // read-scoping change. `invalidate` bumps the global `mutationVersion`, which stale-stamps
-        // EVERY household's cache entry, so a non-default household's next REST poll rebuilds fresh.
+        // push fan-out (rebuild + push each household's snapshot to only its own routers) is tracked
+        // in #2120 — deliberately out of this read-scoping change (the REST poll and the ws
+        // first-policy push are already household-scoped; only this broadcast is not). `invalidate`
+        // bumps the global `mutationVersion`, which stale-stamps EVERY household's cache entry, so a
+        // non-default household's next REST poll rebuilds fresh.
         buildSnapshot(HouseholdId.Default).foldZIO(
           err =>
             // Keep the last good cache on a transient build failure (e.g. a DB blip) so the REST poll
