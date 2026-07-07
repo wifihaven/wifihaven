@@ -211,16 +211,23 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
     // GENERIC block copy, NOT be mislabeled as "extra_blocked" ("a specific site").
     test("unknown block reason → generic reasonClass, NOT mislabeled extra_blocked") {
       val stubPolicy = new PolicyService {
-        def snapshot: Task[PolicySnapshot]                                      =
+        def snapshot(household: HouseholdId): Task[PolicySnapshot] =
           ZIO.dieMessage("snapshot unused in this test")
-        def renderBlocklist(id: BlocklistId): Task[Option[(ETag, String)]]      =
+        def renderBlocklist(
+            household: HouseholdId,
+            id: BlocklistId,
+        ): Task[Option[(ETag, String)]] =
           ZIO.dieMessage("renderBlocklist unused in this test")
-        def decide(mac: String, hostname: String): Task[RouterDecisionResponse] =
+        def decide(
+            household: HouseholdId,
+            mac: String,
+            hostname: String,
+        ): Task[RouterDecisionResponse] =
           ZIO.succeed(
             RouterDecisionResponse(ConnectionDecision.Block, "future_app:slack", None),
           )
-        def invalidate: UIO[Unit]                                               = ZIO.unit
-        def reevaluate: UIO[Unit]                                               = ZIO.unit
+        def invalidate: UIO[Unit]                                  = ZIO.unit
+        def reevaluate: UIO[Unit]                                  = ZIO.unit
         def setPublisher(publisher: wifihaven.api.policy.PolicySnapshotPublisher): UIO[Unit] =
           ZIO.unit
       }
@@ -247,14 +254,21 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
     // hand-written literals — the test holds both before and after.
     test("reasonClass strings track BlockReason.wireKind for every recognized case") {
       def stub(wire: String): PolicyService = new PolicyService {
-        def snapshot: Task[PolicySnapshot]                                      =
+        def snapshot(household: HouseholdId): Task[PolicySnapshot] =
           ZIO.dieMessage("snapshot unused in this test")
-        def renderBlocklist(id: BlocklistId): Task[Option[(ETag, String)]]      =
+        def renderBlocklist(
+            household: HouseholdId,
+            id: BlocklistId,
+        ): Task[Option[(ETag, String)]] =
           ZIO.dieMessage("renderBlocklist unused in this test")
-        def decide(mac: String, hostname: String): Task[RouterDecisionResponse] =
+        def decide(
+            household: HouseholdId,
+            mac: String,
+            hostname: String,
+        ): Task[RouterDecisionResponse] =
           ZIO.succeed(RouterDecisionResponse(ConnectionDecision.Block, wire, None))
-        def invalidate: UIO[Unit]                                               = ZIO.unit
-        def reevaluate: UIO[Unit]                                               = ZIO.unit
+        def invalidate: UIO[Unit]                                  = ZIO.unit
+        def reevaluate: UIO[Unit]                                  = ZIO.unit
         def setPublisher(publisher: wifihaven.api.policy.PolicySnapshotPublisher): UIO[Unit] =
           ZIO.unit
       }

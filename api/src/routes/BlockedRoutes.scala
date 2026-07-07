@@ -83,7 +83,11 @@ object BlockedRoutes {
       host: Hostname,
   ): Task[BlockedInfoResponse] =
     for {
-      decision    <- policy.decide(mac.value, host.value)
+      // #2107: the block page is unauthenticated (reached via HTTP DNAT with only ?mac=&host=), so
+      // it carries no router token and thus no household. Single-household today: decide against
+      // HouseholdId.Default. Resolving the household for the block page in a multi-tenant deploy is
+      // the edge / custom-domain concern (#2109), not this read-scoping change.
+      decision    <- policy.decide(HouseholdId.Default, mac.value, host.value)
       device      <- deviceRepo.findByMac(mac)
       profileOpt  <- device.flatMap(_.profileId) match {
         case Some(pid) => profileRepo.findById(pid)

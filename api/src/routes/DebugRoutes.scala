@@ -5,6 +5,7 @@ import wifihaven.api.cache.TimeStatusCache
 import wifihaven.api.db.*
 import wifihaven.api.policy.PolicyService
 import wifihaven.shared.Clock
+import wifihaven.shared.types.HouseholdId
 import zio.{Clock as _, *}
 import zio.http.*
 import zio.json.*
@@ -229,7 +230,11 @@ object AdminDebugRoutes {
           val handle: ZIO[Any, ApiError, Response] =
             for {
               _    <- requireAdmin(req, auth)
-              snap <- policy.snapshot.mapError(ApiError.Db(_))
+              // #2107: this admin debug view mirrors the router's GET /api/router/policy. It reads
+              // HouseholdId.Default today (single-household, byte-identical to the pre-multi-tenant
+              // snapshot); scoping this to the admin's own household is part of the user-facing read
+              // sweep in sub-issue E (#2108).
+              snap <- policy.snapshot(HouseholdId.Default).mapError(ApiError.Db(_))
             } yield Response
               .json(snap.toJson)
               // #1641: shared with the router's GET /api/router/policy via

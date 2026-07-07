@@ -22,9 +22,29 @@ trait PolicyService {
    * the `PolicyServiceLive.apply` test factory) it always rebuilds, so the existing snapshot specs
    * that mutate the DB directly and re-read see fresh bytes.
    */
-  def snapshot: Task[PolicySnapshot]
-  def renderBlocklist(id: BlocklistId): Task[Option[(ETag, String)]]
-  def decide(mac: String, hostname: String): Task[RouterDecisionResponse]
+  // #2107 (multi-tenant, epic #622): the three router-facing reads take the household resolved from
+  // the router token (via `RouterAuth.authenticate` → `Router.householdId`, #2106) and read ONLY that
+  // household's rows. WIRE UNCHANGED — `household_id` never appears on the returned `PolicySnapshot`
+  // / `DevicePolicy` / decision / blocklist payloads (design invariant 3). For a single-household
+  // install (every row in `HouseholdId.Default`) the scoped snapshot is byte-identical to the old
+  // global one. The blocklist CATALOG stays global (design §0.2); the household only scopes which
+  // rows drive the snapshot, not the shared category content.
+  def snapshot(household: HouseholdId): Task[PolicySnapshot]
+  def renderBlocklist(household: HouseholdId, id: BlocklistId): Task[Option[(ETag, String)]]
+  def decide(household: HouseholdId, mac: String, hostname: String): Task[RouterDecisionResponse]
+
+  // #2107: convenience overloads defaulting to `HouseholdId.Default` (the single backfill
+  // household). These are for the paths with no router token / no household context yet — the
+  // unauthenticated block page, the admin debug snapshot, and the ~150 single-household feature
+  // specs — NOT for enforcement paths. Every `/api/router/*` handler passes `router.householdId`
+  // explicitly (that is the whole point of tenant isolation); nothing on the router enforcement path
+  // should call these no-arg forms. Concrete (not abstract) so all implementations inherit them and
+  // arity resolution routes `.snapshot`/`.decide(mac,host)`/`.renderBlocklist(id)` here.
+  final def snapshot: Task[PolicySnapshot] = snapshot(HouseholdId.Default)
+  final def decide(mac: String, hostname: String): Task[RouterDecisionResponse] =
+    decide(HouseholdId.Default, mac, hostname)
+  final def renderBlocklist(id: BlocklistId): Task[Option[(ETag, String)]]      =
+    renderBlocklist(HouseholdId.Default, id)
 
   /**
    * #1849: drop the cached snapshot so the next [[snapshot]]/[[reevaluate]] rebuilds. Called by
@@ -150,10 +170,15 @@ class PolicyServiceLive(
     buildBarrier: UIO[Unit] = ZIO.unit,
 ) extends PolicyService {
 
-  // #1849: the single cached snapshot. Process-local `AtomicReference` (matching the existing
-  // `lastSnapshotEtag` style in this class) so the `apply` factory stays a pure constructor. For the
-  // single-household model there is exactly one global snapshot, so one slot suffices (design §6.2
-  // ticker note). Populated on first build, refreshed by `reevaluate`.
+  // #1849: the cached snapshot. Process-local `AtomicReference` (matching the existing
+  // `lastSnapshotEtag` style in this class) so the `apply` factory stays a pure constructor.
+  // Refreshed by `reevaluate`.
+  //
+  // #2107 (multi-tenant, epic #622): the cache is keyed BY HOUSEHOLD so one household can never
+  // serve another's cached snapshot. Each household's snapshot is scoped to that household's rows, so
+  // a shared single slot would let household A's poll read household B's bytes (or vice versa) on a
+  // cache hit. For a single-household install the map has exactly one entry (`HouseholdId.Default`),
+  // so behavior is identical to the old single-slot cache.
   //
   // #1954: each entry is STAMPED with the `mutationVersion` observed at the START of its build (the
   // leading `Long` of the tuple — the `gen` captured in `buildVersioned`/`reevaluate`). A reader
@@ -166,8 +191,8 @@ class PolicyServiceLive(
   // (Gate-1: a just-created profile missing from `/api/router/policy`). With the version stamp, that
   // late write lands tagged with the old version and every reader rejects it — the next read rebuilds
   // synchronously and serves fresh bytes. See #1954.
-  private val snapshotCache: AtomicReference[Option[(Long, ETag, PolicySnapshot)]] =
-    new AtomicReference(Option.empty[(Long, ETag, PolicySnapshot)])
+  private val snapshotCache: AtomicReference[Map[HouseholdId, (Long, ETag, PolicySnapshot)]] =
+    new AtomicReference(Map.empty[HouseholdId, (Long, ETag, PolicySnapshot)])
 
   // #1954: monotonic counter bumped once per policy mutation (every `invalidate`). A build stamps the
   // value it reads here BEFORE it touches the DB; a reader compares a cached stamp against the
@@ -232,13 +257,13 @@ class PolicyServiceLive(
   // rebuild. `buildVersioned` captures the version BEFORE reading the DB and stores the entry under
   // that stamp, so a build racing a concurrent mutation can never install bytes the next reader will
   // trust as current.
-  def snapshot: Task[PolicySnapshot] =
-    if (!cacheEnabled) buildSnapshot
+  def snapshot(household: HouseholdId): Task[PolicySnapshot] =
+    if (!cacheEnabled) buildSnapshot(household)
     else
-      ZIO.succeed(snapshotCache.get).flatMap {
+      ZIO.succeed(snapshotCache.get.get(household)).flatMap {
         case Some((builtAt, _, snap)) if builtAt == mutationVersion.get =>
           AppMetrics.recordSnapshotBuild("cache_hit").as(snap)
-        case _                                                          => buildVersioned
+        case _                                                          => buildVersioned(household)
       }
 
   def invalidate: UIO[Unit] =
@@ -259,20 +284,23 @@ class PolicyServiceLive(
   // never overwrite a fresher one (newer stamp) — last-writer-wins is replaced by newest-version-
   // wins. Returns the freshly built snapshot to the caller regardless (it reflects every mutation
   // committed before our DB read began).
-  private def buildVersioned: Task[PolicySnapshot] =
+  private def buildVersioned(household: HouseholdId): Task[PolicySnapshot] =
     ZIO.succeed(mutationVersion.get).flatMap { gen =>
-      buildSnapshot.tap(snap => ZIO.succeed(installSnapshot(gen, snap)))
+      buildSnapshot(household).tap(snap => ZIO.succeed(installSnapshot(household, gen, snap)))
     }
 
-  private def installSnapshot(gen: Long, snap: PolicySnapshot): Unit = {
+  // #2107: install under this household's slot in the per-household cache map. The CAS loop is
+  // unchanged from the single-slot version (#1954) except it swaps the household's entry only:
+  // a slower build (older stamp) can never overwrite a fresher one for the SAME household.
+  private def installSnapshot(household: HouseholdId, gen: Long, snap: PolicySnapshot): Unit = {
     var swapped = false
     while (!swapped) {
       val cur = snapshotCache.get
-      cur match {
+      cur.get(household) match {
         case Some((builtAt, _, _)) if builtAt > gen =>
           swapped = true // a newer-version entry is already present — don't clobber it
         case _                                      =>
-          swapped = snapshotCache.compareAndSet(cur, Some((gen, snap.etag, snap)))
+          swapped = snapshotCache.compareAndSet(cur, cur.updated(household, (gen, snap.etag, snap)))
       }
     }
   }
@@ -281,14 +309,20 @@ class PolicyServiceLive(
     if (!cacheEnabled) ZIO.unit
     else
       ZIO.succeed(mutationVersion.get).flatMap { gen =>
-        buildSnapshot.foldZIO(
+        // #2107: single-household today — `reevaluate` rebuilds the `HouseholdId.Default` snapshot
+        // and pushes it to every connected router (all routers belong to household 1). Per-household
+        // push fan-out (rebuild + push each household's snapshot to only its own routers) is part of
+        // the websocket multi-tenant follow-up under epic #622; it is deliberately out of this
+        // read-scoping change. `invalidate` bumps the global `mutationVersion`, which stale-stamps
+        // EVERY household's cache entry, so a non-default household's next REST poll rebuilds fresh.
+        buildSnapshot(HouseholdId.Default).foldZIO(
           err =>
             // Keep the last good cache on a transient build failure (e.g. a DB blip) so the REST poll
             // keeps serving the previous snapshot rather than a cold rebuild storm; the next tick
             // retries.
             ZIO.logWarning(s"policy reevaluate: snapshot rebuild failed, keeping cache: $err"),
           snap => {
-            installSnapshot(gen, snap)
+            installSnapshot(HouseholdId.Default, gen, snap)
             // Push only when the ETag actually moved since the last PUSH — the same "change is exactly
             // an ETag move" semantics the REST 200-vs-304 path uses (design §6.2), so we never fan out
             // a frame the routers would treat as unchanged. Keyed off `lastPublishedEtag` (not the
@@ -302,9 +336,13 @@ class PolicyServiceLive(
   def setPublisher(p: PolicySnapshotPublisher): UIO[Unit] =
     ZIO.succeed(publisher.set(p))
 
-  private def buildSnapshot: Task[PolicySnapshot] =
+  private def buildSnapshot(household: HouseholdId): Task[PolicySnapshot] =
     (for {
-      settings <- householdSettingsRepo.get
+      // #2107: read only this household's settings/profiles/devices. The blocklist CATALOG
+      // (`listCategories` / `loadCategory`) stays global — content is shared across households
+      // (design §0.2); only which category ids ship is scoped, and that follows automatically from
+      // the scoped profile set via `referencedBlocklistIds` below.
+      settings <- householdSettingsRepo.getForHousehold(household)
       now      <- clock.instant
       today = PolicyService.householdLocalDate(now, settings)
       // #1104: today's cap/block state for every profile in one batched read. Same call the
@@ -313,10 +351,10 @@ class PolicyServiceLive(
       // #1771: snapshot assembly needs the global sentinel too, so it can union the sentinel's
       // resolved extraAllowed/extraBlocked/blocklistIds into every other profile. `listAll`
       // is the user-facing listing and deliberately hides the sentinel.
-      allProfiles <- profileRepo.listAllIncludingGlobal
+      allProfiles <- profileRepo.listAllIncludingGlobalForHousehold(household)
       globalProfileOpt = allProfiles.find(_.isGlobal)
       profiles         = allProfiles.filterNot(_.isGlobal)
-      devices            <- deviceRepo.listAll
+      devices            <- deviceRepo.listAllForHousehold(household)
       cats               <- blocklistRepo.listCategories
       catDomains         <- ZIO.foreach(cats)(c => blocklistRepo.loadCategory(c).map(c -> _))
       // #1630: every profile's per-app assignments — across all modes — as (assignment × host)
@@ -548,7 +586,18 @@ class PolicyServiceLive(
     }
   }
 
-  def renderBlocklist(id: BlocklistId): Task[Option[(ETag, String)]] =
+  // #2107: the household *authorizes* access to a shared category list — the list CONTENT is a
+  // global, non-tenant resource (`blocklist_domains` has no `household_id`; the same curated ad/
+  // tracker domains are served to every household, design §0.2). So the household is threaded for
+  // API symmetry with `snapshot`/`decide` and to make the shared-catalog decision explicit and
+  // test-pinnable (pin 5: two households fetch the same category and get byte-identical content),
+  // but it deliberately does NOT filter the bytes — there is nothing household-private to scope. The
+  // WHICH-lists-ship scoping already happens on the snapshot via the household's `referencedBlocklistIds`;
+  // the router only ever fetches ids it saw there.
+  def renderBlocklist(
+      @scala.annotation.unused household: HouseholdId,
+      id: BlocklistId,
+  ): Task[Option[(ETag, String)]] =
     for {
       domains <- blocklistRepo.loadCategory(id)
     } yield
@@ -577,12 +626,23 @@ class PolicyServiceLive(
    * would be reported (and, on agents that consult this endpoint, enforced) as blocked while
    * paused.
    */
-  def decide(mac: String, hostname: String): Task[RouterDecisionResponse] =
+  def decide(
+      household: HouseholdId,
+      mac: String,
+      hostname: String,
+  ): Task[RouterDecisionResponse] =
     for {
-      settings <- householdSettingsRepo.get
+      // #2107: scope the settings + device lookup to the router's household. The device's
+      // `profileId` (resolved below) is therefore already this household's profile, so the
+      // downstream `profileRepo.findById(pid)` needs no separate predicate — a MAC that exists in
+      // another household is simply not found here (degrades to allow-all NoProfile), never
+      // resolving the other household's same-MAC row.
+      settings <- householdSettingsRepo.getForHousehold(household)
       now      <- clock.instant
       today = PolicyService.householdLocalDate(now, settings)
-      device <- deviceRepo.listAll.map(_.find(_.mac.value.equalsIgnoreCase(mac)))
+      device <- deviceRepo
+        .listAllForHousehold(household)
+        .map(_.find(_.mac.value.equalsIgnoreCase(mac)))
       result <- device.flatMap(_.profileId) match {
         case None      =>
           ZIO.succeed(

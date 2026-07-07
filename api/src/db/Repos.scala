@@ -126,6 +126,15 @@ trait ProfileRepo {
   /** All profiles, including the global sentinel. Used by `PolicyService.snapshot` only. */
   def listAllIncludingGlobal: Task[List[Profile]]
 
+  /**
+   * #2107 (multi-tenant, epic #622): household-scoped [[listAllIncludingGlobal]] — all profiles
+   * (incl. the global sentinel) belonging to `household`. Used by the household-scoped
+   * `PolicyService.snapshot(household)` so a router only ever sees its own household's profiles.
+   * For the single backfill household (`HouseholdId.Default`) this returns exactly the same rows as
+   * the global variant.
+   */
+  def listAllIncludingGlobalForHousehold(household: HouseholdId): Task[List[Profile]]
+
   /** The single `is_global=TRUE` sentinel row, or None if not yet seeded. */
   def getGlobal: Task[Option[Profile]]
   def findById(id: ProfileId): Task[Option[Profile]]
@@ -217,6 +226,15 @@ object NoopNamedScheduleRepo extends NamedScheduleRepo {
 
 trait HouseholdSettingsRepo {
   def get: Task[HouseholdSettings]
+
+  /**
+   * #2107 (multi-tenant, epic #622): household-scoped [[get]] — the settings row for `household`
+   * (`WHERE household_id = ?`). Used by `PolicyService.snapshot(household)` / `decide(household,
+   * …)` so a router reads only its own household's settings (daily-reset tz, unmanaged-MAC policy,
+   * block-encrypted-DNS). For the single backfill household (`HouseholdId.Default`) this returns
+   * the same single row `get` reads today.
+   */
+  def getForHousehold(household: HouseholdId): Task[HouseholdSettings]
   def update(s: HouseholdSettings): Task[Unit]
 
   /** Insert the default row if missing, using `defaultZone` as the install-time tz. */
@@ -251,6 +269,15 @@ trait AppTimeLimitRepo {
 
 trait DeviceRepo {
   def listAll: Task[List[Device]]
+
+  /**
+   * #2107 (multi-tenant, epic #622): household-scoped [[listAll]] — devices belonging to
+   * `household`. Used by `PolicyService.snapshot(household)` and `decide(household, …)` so a router
+   * only sees / resolves its own household's devices (a same-MAC row in another household is never
+   * returned). For the single backfill household (`HouseholdId.Default`) this returns the same rows
+   * as the global variant.
+   */
+  def listAllForHousehold(household: HouseholdId): Task[List[Device]]
   def findByMac(mac: MacAddress): Task[Option[Device]]
   def upsert(mac: MacAddress, name: String, pid: Option[ProfileId], ip: String): Task[DeviceId]
   def updateLastSeen(mac: MacAddress, ip: String): Task[Unit]
@@ -863,7 +890,7 @@ class ProfileRepoLive(xa: Transactor[Task]) extends ProfileRepo {
       Boolean,
       Boolean,
   )
-  private def toP(r: R)                             = Profile(
+  private def toP(r: R)                                          = Profile(
     r._1,
     r._2,
     r._3.map(BlocklistId.unsafe),
@@ -878,7 +905,7 @@ class ProfileRepoLive(xa: Transactor[Task]) extends ProfileRepo {
   // #1771: the global sentinel is filtered out of `listAll` so it never appears on
   // `GET /api/profiles` or any role-access enumeration. The snapshot path uses
   // [[listAllIncludingGlobal]] to fold the sentinel's rules into every other profile.
-  def listAll                                       =
+  def listAll                                                    =
     DbMetrics.timed("profile.listAll")(
       sql"SELECT id,name,blocked_categories,paused,failure_mode,block_ip_only,cross_device_overlap_mode,pause_mode,default_deny,is_global FROM profiles WHERE is_global=FALSE ORDER BY id"
         .query[R]
@@ -886,7 +913,7 @@ class ProfileRepoLive(xa: Transactor[Task]) extends ProfileRepo {
         .to[List]
         .transact(xa),
     )
-  def listAllIncludingGlobal                        =
+  def listAllIncludingGlobal                                     =
     DbMetrics.timed("profile.listAllIncludingGlobal")(
       sql"SELECT id,name,blocked_categories,paused,failure_mode,block_ip_only,cross_device_overlap_mode,pause_mode,default_deny,is_global FROM profiles ORDER BY id"
         .query[R]
@@ -894,7 +921,14 @@ class ProfileRepoLive(xa: Transactor[Task]) extends ProfileRepo {
         .to[List]
         .transact(xa),
     )
-  def getGlobal                                     =
+  // #2107: same projection as listAllIncludingGlobal, AND-scoped to one household. Index-backed by
+  // V65's idx_profiles_household.
+  // TEMP(red): predicate not yet applied — see follow-up commit.
+  def listAllIncludingGlobalForHousehold(household: HouseholdId) = {
+    val _ = household
+    listAllIncludingGlobal
+  }
+  def getGlobal                                                  =
     DbMetrics.timed("profile.getGlobal")(
       sql"SELECT id,name,blocked_categories,paused,failure_mode,block_ip_only,cross_device_overlap_mode,pause_mode,default_deny,is_global FROM profiles WHERE is_global=TRUE"
         .query[R]
@@ -902,7 +936,7 @@ class ProfileRepoLive(xa: Transactor[Task]) extends ProfileRepo {
         .option
         .transact(xa),
     )
-  def findById(id: ProfileId)                       =
+  def findById(id: ProfileId)                                    =
     DbMetrics.timed("profile.findById")(
       sql"SELECT id,name,blocked_categories,paused,failure_mode,block_ip_only,cross_device_overlap_mode,pause_mode,default_deny,is_global FROM profiles WHERE id=$id"
         .query[R]
@@ -910,12 +944,12 @@ class ProfileRepoLive(xa: Transactor[Task]) extends ProfileRepo {
         .option
         .transact(xa),
     )
-  def create(name: String, cats: List[BlocklistId]) =
+  def create(name: String, cats: List[BlocklistId])              =
     sql"INSERT INTO profiles(name,blocked_categories) VALUES($name,${cats.map(_.value).toArray}) RETURNING id"
       .query[ProfileId]
       .unique
       .transact(xa)
-  def update(p: Profile)                            =
+  def update(p: Profile)                                         =
     sql"""UPDATE profiles SET
             name=${p.name},
             blocked_categories=${p.blockedCategories.map(_.value).toArray},
@@ -963,23 +997,30 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
   import zio.json.*
   import wifihaven.shared.UnmanagedMacPolicy
 
-  def get: Task[HouseholdSettings] =
-    DbMetrics.timed("householdSettings.get")(
-      // #1525: `heartbeat_host_patterns` is no longer read — host-identity suppression lives in
-      // the canonical `shared.types.InfraHosts` code constant. The column is dropped in a
-      // follow-up migration-only PR; until then the SELECT just omits it and `HeartbeatFilter`
-      // gets `Nil` for that field.
-      sql"""SELECT daily_reset_time, daily_reset_tz,
+  // #2107: shared SELECT + decoder for both the legacy single-row `get` and the household-scoped
+  // `getForHousehold`, differing only in the WHERE clause — so the two cannot drift on which columns
+  // they read or how they map (AGENTS.md §single-source-of-truth).
+  // #2107: shared SELECT + decoder for both the legacy single-row `get` and the household-scoped
+  // `getForHousehold`, differing only in the WHERE clause — so the two cannot drift on which columns
+  // they read or how they map (AGENTS.md §single-source-of-truth). Returns Option so the scoped
+  // read can distinguish "no row for this household yet" (see `getForHousehold`).
+  private def selectSettings(where: Fragment): Task[Option[HouseholdSettings]] =
+    // #1525: `heartbeat_host_patterns` is no longer read — host-identity suppression lives in
+    // the canonical `shared.types.InfraHosts` code constant. The column is dropped in a
+    // follow-up migration-only PR; until then the SELECT just omits it and `HeartbeatFilter`
+    // gets `Nil` for that field.
+    (fr"""SELECT daily_reset_time, daily_reset_tz,
                  heartbeat_filter_enabled, heartbeat_bytes_threshold,
                  unmanaged_mac_policy::text,
                  presence_continuation_seconds,
                  block_encrypted_dns,
                  ambient_gate_enabled, ambient_isolation_max_hosts,
                  ambient_min_isolated_days, ambient_learning_window_days
-            FROM household_settings WHERE id=1"""
-        .query[(LocalTime, ZoneId, Boolean, Int, String, Int, Boolean, Boolean, Int, Int, Int)]
-        .unique
-        .map {
+            FROM household_settings WHERE""" ++ where)
+      .query[(LocalTime, ZoneId, Boolean, Int, String, Int, Boolean, Boolean, Int, Int, Int)]
+      .option
+      .map {
+        _.map {
           case (
                 t,
                 z,
@@ -1007,7 +1048,33 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
               ambWindow,
             )
         }
-        .transact(xa),
+      }
+      .transact(xa)
+
+  // The single install has one household_settings row (id=1, household_id=1). This legacy accessor
+  // keys on the PK; the row is always present (`ensureDefault` seeds it), so a missing row is a hard
+  // error rather than a silent default.
+  def get: Task[HouseholdSettings] =
+    DbMetrics.timed("householdSettings.get")(
+      selectSettings(fr"id=1").flatMap(
+        ZIO
+          .fromOption(_)
+          .orElseFail(new RuntimeException("household_settings row (id=1) missing")),
+      ),
+    )
+
+  // #2107: household-scoped settings read for the router snapshot/decide paths. household_settings is
+  // still a SINGLE-ROW table (V16 `CHECK (id = 1)`); the per-household split — dropping that CHECK and
+  // seeding a settings row per household — lands in sub-issue E (#2108). Until then a non-default
+  // household has no settings row of its own, so it inherits the canonical default row (`get`) rather
+  // than failing the snapshot build. For `HouseholdId.Default` the scoped read hits its own row
+  // directly and the fallback is never taken.
+  def getForHousehold(household: HouseholdId): Task[HouseholdSettings] =
+    DbMetrics.timed("householdSettings.getForHousehold")(
+      selectSettings(SqlFragments.householdEq(household)).flatMap {
+        case Some(s) => ZIO.succeed(s)
+        case None    => get
+      },
     )
 
   def update(s: HouseholdSettings): Task[Unit] = {
@@ -1174,6 +1241,14 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
         .to[List]
         .transact(xa),
     )
+  // #2107: same projection as listAll, AND-scoped to one household. `devices` is aliased `d`, so the
+  // predicate is qualified `d.household_id`. Index-backed by V65's idx_devices_household (and the
+  // leading column of uq_devices_household_mac).
+  // TEMP(red): predicate not yet applied — see follow-up commit.
+  def listAllForHousehold(household: HouseholdId)                                      = {
+    val _ = household
+    listAll
+  }
   def findByMac(mac: MacAddress)                                                       =
     DbMetrics.timed("device.findByMac")(
       sql"SELECT d.id,d.mac,d.name,d.profile_id,p.name,d.last_seen_ip,d.last_seen_at::TEXT FROM devices d LEFT JOIN profiles p ON p.id=d.profile_id WHERE d.mac=$mac"

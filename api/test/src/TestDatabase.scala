@@ -273,4 +273,83 @@ object TestLayers {
       }
       _        <- appRepo.upsertAssignment(appId, profileId, mode, dailyMinutes, exemptFromDaily)
     } yield ()
+
+  /**
+   * #2107 (multi-tenant, epic #622): identifiers produced by [[seedTwoHouseholds]] for a two-tenant
+   * isolation fixture. `tokenA`/`tokenB` are the RAW router bearer tokens (already enrolled) so a
+   * spec can hit the `/api/router` endpoints as either household's router. Reused by sub-issue E
+   * (#2108).
+   */
+  final case class TwoHouseholds(
+      hhA: wifihaven.shared.types.HouseholdId,
+      hhB: wifihaven.shared.types.HouseholdId,
+      profileA: ProfileId,
+      profileB: ProfileId,
+      macA: MacAddress,
+      macB: MacAddress,
+      tokenA: String,
+      tokenB: String,
+  )
+
+  /**
+   * #2107: seed two isolated households and return their identifiers + enrolled router tokens.
+   *
+   *   - Household A is the single backfill household (`HouseholdId.Default`, id=1) — its profile,
+   *     device, and router are created through the normal repos (which default to household 1).
+   *   - Household B is a freshly-inserted `households` row. Its profile + device are written with
+   *     an explicit `household_id` via raw SQL, because the per-household WRITE paths land in
+   *     sub-issue E (#2108) — this read-scoping issue only needs the rows to EXIST in household B
+   *     so the scoped reads can prove they don't leak into household A. Household B's router is
+   *     created through `RouterRepo.create(..., hhB)` (the household param already exists from
+   *     #2106).
+   *
+   * Note the two devices use DISTINCT MACs: V65 keeps the global `devices_mac_key` UNIQUE(mac)
+   * (dropped in E), so the same MAC cannot yet exist in two households.
+   */
+  def seedTwoHouseholds(
+      macA: MacAddress,
+      macB: MacAddress,
+  ): ZIO[
+    ProfileRepo & DeviceRepo & RouterRepo & doobie.Transactor[Task],
+    Throwable,
+    TwoHouseholds,
+  ] = {
+    import doobie.implicits.*
+    import wifihaven.api.db.TypeMeta.given
+    import wifihaven.api.policy.PolicyService
+    import wifihaven.shared.types.HouseholdId
+    for {
+      pr <- ZIO.service[ProfileRepo]
+      dr <- ZIO.service[DeviceRepo]
+      rr <- ZIO.service[RouterRepo]
+      xa <- ZIO.service[doobie.Transactor[Task]]
+      hhA = HouseholdId.Default
+      // Household A (id=1) through the normal repos.
+      profileA <- pr.create("A-Kids", Nil)
+      _        <- dr.upsert(macA, "devA", Some(profileA), "192.168.1.10")
+      // Household B: a new households row + its profile/device via raw SQL (E owns the write path).
+      hhB      <- sql"INSERT INTO households(name) VALUES ('B household') RETURNING id"
+        .query[HouseholdId]
+        .unique
+        .transact(xa)
+      // profileB is paused so a cross-household leak on the /decision path is observable: if
+      // household A's decide ever resolved this row it would BLOCK, but scoped correctly A never
+      // finds it and allows.
+      profileB <-
+        sql"INSERT INTO profiles(name, blocked_categories, paused, household_id) VALUES ('B-Kids', '{}', TRUE, $hhB) RETURNING id"
+          .query[ProfileId]
+          .unique
+          .transact(xa)
+      _        <-
+        sql"INSERT INTO devices(mac, name, profile_id, household_id) VALUES ($macB, 'devB', $profileB, $hhB)".update.run
+          .transact(xa)
+      // Enrolled routers for each household (known raw tokens).
+      tokenA = "rt_hhA_token_0000000000000000"
+      tokenB = "rt_hhB_token_0000000000000000"
+      ridA <- rr.create("gwA", PolicyService.hashToken("et_a"), hhA)
+      _    <- rr.completeEnrollment(ridA, PolicyService.hashToken(tokenA))
+      ridB <- rr.create("gwB", PolicyService.hashToken("et_b"), hhB)
+      _    <- rr.completeEnrollment(ridB, PolicyService.hashToken(tokenB))
+    } yield TwoHouseholds(hhA, hhB, profileA, profileB, macA, macB, tokenA, tokenB)
+  }
 }

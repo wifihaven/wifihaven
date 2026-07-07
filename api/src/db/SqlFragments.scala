@@ -2,10 +2,22 @@ package wifihaven.api.db
 
 import doobie.*
 import doobie.implicits.*
+import wifihaven.api.db.TypeMeta.given
+import wifihaven.shared.types.HouseholdId
 
 // Shared SQL fragments used across repos to keep duplicated read-side joins
 // in one place (#1532 SSOT audit, #1741).
 object SqlFragments {
+
+  // #2107 (multi-tenant, epic #622): the per-household tenancy predicate. Every household-scoped
+  // read AND-composes this so it sees only its own tenant's rows. `column` lets callers qualify the
+  // predicate when the query joins another table (e.g. `d.household_id` when `devices` is aliased
+  // `d`); it defaults to the bare `household_id`. The V65 indexes
+  // (`idx_{profiles,devices,routers,users}_household`, and the leading column of the composite
+  // unique constraints) keep this predicate index-backed. Reused by the broader user-facing read
+  // sweep in sub-issue E (#2108).
+  def householdEq(hh: HouseholdId, column: String = "household_id"): Fragment =
+    Fragment.const(column) ++ fr"= $hh"
 
   // Promotes ipv4/ipv6-typed `traffic_reports` rows to their resolved fqdn by
   // looking up the most recent `connection_events` row for the same
