@@ -289,6 +289,19 @@ object TestLayers {
       macB: MacAddress,
       tokenA: String,
       tokenB: String,
+      // #2108 (sub-issue E): the enrolled router ids, so an ingest pin can build a
+      // `UsageReport(routerId, …)` whose router_id matches the authed router (the mismatch guard,
+      // RouterIngestService.scala:59).
+      routerIdA: RouterId,
+      routerIdB: RouterId,
+      // #2108 (sub-issue E): each household's admin username + the shared password, so a spec can
+      // `auth.login(adminA, password)` / `auth.login(adminB, password)` to mint a JWT carrying that
+      // household's `hh` claim (#2105) and exercise the user-facing read/write isolation pins (§7).
+      // adminA is the single backfill install's seeded `admin` (household 1); adminB is a fresh admin
+      // user inserted into household B.
+      adminA: String,
+      adminB: String,
+      password: String,
   )
 
   /**
@@ -350,6 +363,28 @@ object TestLayers {
       _    <- rr.completeEnrollment(ridA, PolicyService.hashToken(tokenA))
       ridB <- rr.create("gwB", PolicyService.hashToken("et_b"), hhB)
       _    <- rr.completeEnrollment(ridB, PolicyService.hashToken(tokenB))
-    } yield TwoHouseholds(hhA, hhB, profileA, profileB, macA, macB, tokenA, tokenB)
+      // #2108: each household's admin user. Household A reuses the seeded `admin` (household 1,
+      // must_change_password already cleared in the template). Household B gets a fresh `adminB`
+      // whose password_hash is COPIED from `admin` (so `password` == "changeme" for both) — no
+      // AuthService dependency in the seeder. household_id is stamped so login mints hh=B (#2105).
+      _    <-
+        sql"""INSERT INTO users(username, password_hash, role, must_change_password, household_id)
+              SELECT 'adminB', password_hash, 'admin', false, $hhB FROM users WHERE username='admin'""".update.run
+          .transact(xa)
+    } yield TwoHouseholds(
+      hhA,
+      hhB,
+      profileA,
+      profileB,
+      macA,
+      macB,
+      tokenA,
+      tokenB,
+      routerIdA = ridA,
+      routerIdB = ridB,
+      adminA = "admin",
+      adminB = "adminB",
+      password = "changeme",
+    )
   }
 }

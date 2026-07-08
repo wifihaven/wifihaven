@@ -92,11 +92,13 @@ object UsageRoutes {
           val handle: ZIO[Any, ApiError, Response] = for {
             claims <- requireAuth(req, auth)
             mac = MacAddress.unsafe(normalizeMac(macRaw))
+            // #2108: household-scoped device lookup — a cross-household MAC 404s (incl. unmanaged
+            // devices, which the role guard alone would not catch).
             device <- deviceRepo
-              .findByMac(mac)
+              .findByMacInHousehold(mac, claims.hh)
               .mapError(ApiError.Db(_))
               .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Device not found")))
-            _      <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
+            _ <- requireProfileReadAccess(claims, device.profileId, userProfileRepo, profileRepo)
             windowDays = req.url
               .queryParam("windowDays")
               .flatMap(_.toIntOption)
@@ -150,7 +152,7 @@ object UsageRoutes {
           val pid                                  = ProfileId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
             claims <- requireAuth(req, auth)
-            _      <- requireProfileReadAccess(claims, pid, userProfileRepo)
+            _      <- requireProfileReadAccess(claims, pid, userProfileRepo, profileRepo)
             today  <- clock.today
             fromS = req.url.queryParam("from").getOrElse(today.toString)
             toS   = req.url.queryParam("to").getOrElse(fromS)
@@ -192,7 +194,7 @@ object UsageRoutes {
           val pid                                  = ProfileId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
             claims   <- requireAuth(req, auth)
-            _        <- requireProfileReadAccess(claims, pid, userProfileRepo)
+            _        <- requireProfileReadAccess(claims, pid, userProfileRepo, profileRepo)
             settings <- hsRepo.get.mapError(ApiError.Db(_))
             now      <- clock.instant
             todayLocal = wifihaven.api.policy.PolicyService.householdLocalDate(now, settings)
@@ -293,6 +295,7 @@ object UsageRoutes {
                   deviceRepo,
                   trafficRepo,
                   userProfileRepo,
+                  profileRepo,
                   groupByApp,
                   appLookup,
                   settings,
@@ -392,7 +395,9 @@ object UsageRoutes {
       ambientRepo: AmbientHostsRepo,
   ): IO[ApiError, UsageSeriesBatchResponse] =
     for {
-      _ <- ZIO.foreachDiscard(pids)(pid => requireProfileReadAccess(claims, pid, userProfileRepo))
+      _            <- ZIO.foreachDiscard(pids)(pid =>
+        requireProfileReadAccess(claims, pid, userProfileRepo, profileRepo),
+      )
       profiles     <- ZIO.foreach(pids) { pid =>
         profileRepo
           .findById(pid)
@@ -782,6 +787,7 @@ object UsageRoutes {
       deviceRepo: DeviceRepo,
       trafficRepo: TrafficReportRepo,
       userProfileRepo: UserProfileRepo,
+      profileRepo: ProfileRepo,
       groupByApp: Boolean,
       appLookup: UsageSeries.AppAxis,
       settings: HouseholdSettings,
@@ -789,11 +795,12 @@ object UsageRoutes {
       ambientRepo: AmbientHostsRepo,
   ): IO[ApiError, UsageSeriesResponse] =
     for {
+      // #2108: household-scoped device lookup — a cross-household MAC 404s (design §7 pin 1/2).
       device    <- deviceRepo
-        .findByMac(mac)
+        .findByMacInHousehold(mac, claims.hh)
         .mapError(ApiError.Db(_))
         .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Device not found")))
-      _         <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
+      _         <- requireProfileReadAccess(claims, device.profileId, userProfileRepo, profileRepo)
       raw       <- fetchPresenceDayWindow(trafficRepo, List(mac), date, zone)
       appLimits <- device.profileId
         .fold(ZIO.succeed(List.empty[wifihaven.shared.AppTimeLimit]))(pid =>
@@ -869,7 +876,7 @@ object UsageRoutes {
       ambientRepo: AmbientHostsRepo,
   ): IO[ApiError, UsageSeriesResponse] =
     for {
-      _         <- requireProfileReadAccess(claims, pid, userProfileRepo)
+      _         <- requireProfileReadAccess(claims, pid, userProfileRepo, profileRepo)
       profile   <- profileRepo
         .findById(pid)
         .mapError(ApiError.Db(_))
@@ -1077,12 +1084,14 @@ object UsageRoutes {
                 .orElseFail(ApiError.NotFound(s"Device not found: ${mac.value}"))
             }
             _    <- ZIO.foreach(devs.flatMap(_.profileId).distinct) { pid =>
-              requireProfileReadAccess(claims, Some(pid), userProfileRepo)
+              requireProfileReadAccess(claims, Some(pid), userProfileRepo, profileRepo)
             }
           } yield UsageTrafficQuery.resolveMacs(ms, profileIds, allDevices)
         case (_, pids) if pids.nonEmpty =>
           ZIO
-            .foreach(pids)(pid => requireProfileReadAccess(claims, Some(pid), userProfileRepo))
+            .foreach(pids)(pid =>
+              requireProfileReadAccess(claims, Some(pid), userProfileRepo, profileRepo),
+            )
             .as(UsageTrafficQuery.resolveMacs(Nil, pids, allDevices))
         case _                          =>
           // No filter: admin/adult only. Children must scope to their profile.

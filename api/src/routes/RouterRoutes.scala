@@ -245,19 +245,27 @@ object AdminRouterRoutes {
       Method.GET / "api" / "admin" / "routers"                   ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _   <- requireAdmin(req, auth)
-            all <- routerRepo.listAll.mapError(ApiError.Db(_))
+            claims <- requireAdmin(req, auth)
+            // #2108: an admin enumerates only their own household's routers (design §2 gap 4).
+            all    <- routerRepo.listAllForHousehold(claims.hh).mapError(ApiError.Db(_))
           } yield Response.json(all.map(toSummary).toJson)
           handle.mapError(ErrorMapper.errorToResponse)
         },
       Method.DELETE / "api" / "admin" / "routers" / string("id") ->
         handler { (id: String, req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _   <- requireAdmin(req, auth)
-            uid <- ZIO
+            claims <- requireAdmin(req, auth)
+            uid    <- ZIO
               .attempt(RouterId(UUID.fromString(id)))
               .orElseFail(ApiError.BadRequest("bad uuid"))
-            _   <- routerRepo.delete(uid).mapError(ApiError.Db(_))
+            // #2108: an admin can only delete a router IN THEIR HOUSEHOLD — 404 otherwise (never
+            // leak existence across the tenant boundary).
+            _      <- routerRepo
+              .findById(uid)
+              .mapError(ApiError.Db(_))
+              .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Router not found")))
+              .filterOrFail(_.householdId == claims.hh)(ApiError.NotFound("Router not found"))
+            _      <- routerRepo.delete(uid).mapError(ApiError.Db(_))
           } yield Response.ok
           handle.mapError(ErrorMapper.errorToResponse)
         },

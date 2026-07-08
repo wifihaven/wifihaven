@@ -59,6 +59,11 @@ case class LogFilter(
     // (ff00::/8) from both the raw and aggregated views. Operators can pass
     // ?includeMulticast=true to see them for diagnostics.
     includeMulticast: Boolean = false,
+    // #2108 (multi-tenant sub-issue E): when set, scope the read to this household via the
+    // connection_events.router_id → routers.household_id join (connection_events are router_id-keyed,
+    // so household is transitive — design §0.1). `None` (default) reads unscoped, preserving the
+    // single-household back-compat for every existing caller. Only `GET /api/logs` sets it.
+    household: Option[HouseholdId] = None,
 )
 
 case class TrafficRollupFilter(
@@ -98,6 +103,13 @@ trait UserRepo {
   // rejects any token stamped with an older tokenVersion).
   def bumpTokenVersion(id: UserId): Task[Unit]
   def listAll: Task[List[DbUser]]
+
+  /**
+   * #2108 (multi-tenant sub-issue E): household-scoped [[listAll]] — users belonging to
+   * `household`. Backs `GET /api/users` so an admin enumerates only their own household's users
+   * (design §2 gap 4). Index-backed by V65's idx_users_household.
+   */
+  def listAllForHousehold(household: HouseholdId): Task[List[DbUser]]
   def delete(id: UserId): Task[Unit]
 }
 
@@ -135,8 +147,34 @@ trait ProfileRepo {
    */
   def listAllIncludingGlobalForHousehold(household: HouseholdId): Task[List[Profile]]
 
+  /**
+   * #2108 (multi-tenant sub-issue E): household-scoped [[listAll]] — non-global profiles belonging
+   * to `household`. Backs the user-facing `GET /api/profiles` / `/time/status` reads so an
+   * admin/adult sees every profile IN THEIR HOUSEHOLD and never across (design §2 gap 4). The
+   * `is_global=FALSE` filter is preserved (the sentinel is a wire mechanism, never listed). For the
+   * single backfill household (`HouseholdId.Default`) this returns the same rows as `listAll`.
+   */
+  def listAllForHousehold(household: HouseholdId): Task[List[Profile]]
+
+  /**
+   * #2108: the household-scoped access probe used by the write/read guards — the household that
+   * owns `id`, or None if the profile does not exist. A guard rejects (404) any target whose
+   * household ≠ the caller's `claims.hh`, so an hh-A admin cannot address an hh-B profile even with
+   * the `admin` role (design §7 pin 2).
+   */
+  def householdOf(id: ProfileId): Task[Option[HouseholdId]]
+
   /** The single `is_global=TRUE` sentinel row, or None if not yet seeded. */
   def getGlobal: Task[Option[Profile]]
+
+  /**
+   * #2108 (multi-tenant sub-issue E): household-scoped [[getGlobal]] — the `is_global=TRUE`
+   * sentinel belonging to `household`, or None. Backs `GET /api/profiles/global` so an hh-A admin
+   * reads only their own household's sentinel (the global-policy layer is per-household, design §2
+   * gap 4). For the single backfill household this is the one existing sentinel; a household with
+   * no sentinel row yet gets None (404), never another household's.
+   */
+  def getGlobalForHousehold(household: HouseholdId): Task[Option[Profile]]
   def findById(id: ProfileId): Task[Option[Profile]]
   def create(name: String, cats: List[BlocklistId]): Task[ProfileId]
   def update(p: Profile): Task[Unit]
@@ -246,6 +284,14 @@ trait TimeLimitRepo {
   def upsert(pid: ProfileId, mins: Int): Task[Unit]
   def delete(pid: ProfileId): Task[Unit]
   def listAll: Task[List[TimeLimit]]
+
+  /**
+   * #2108 (multi-tenant sub-issue E): household-scoped [[listAll]] — time limits for profiles in
+   * `household`. `time_limits` carries `profile_id` (FK to a now-scoped `profiles`), so it inherits
+   * the household transitively via the join (design §0.1 "scoped transitively") — no denormalized
+   * column. Backs `GET /api/time/status`.
+   */
+  def listAllForHousehold(household: HouseholdId): Task[List[TimeLimit]]
 }
 
 /**
@@ -265,6 +311,13 @@ trait TimeLimitRepo {
 trait AppTimeLimitRepo {
   def listForProfile(pid: ProfileId): Task[List[AppTimeLimit]]
   def listAll: Task[List[AppTimeLimit]]
+
+  /**
+   * #2108 (multi-tenant sub-issue E): household-scoped [[listAll]] — app-limit rows for profiles in
+   * `household`. Scoped transitively via `app_policy_assignments.profile_id → profiles` (design
+   * §0.1). Backs `GET /api/time/status`.
+   */
+  def listAllForHousehold(household: HouseholdId): Task[List[AppTimeLimit]]
 }
 
 trait DeviceRepo {
@@ -279,14 +332,43 @@ trait DeviceRepo {
    */
   def listAllForHousehold(household: HouseholdId): Task[List[Device]]
   def findByMac(mac: MacAddress): Task[Option[Device]]
-  def upsert(mac: MacAddress, name: String, pid: Option[ProfileId], ip: String): Task[DeviceId]
+
+  /**
+   * #2108 (multi-tenant sub-issue E): household-scoped [[findByMac]] — the device row for
+   * `(household, mac)`, or None. The user-facing device routes (`GET`/`PATCH`/`DELETE
+   * /api/devices/:mac`) resolve through this so an hh-A admin gets a clean 404 for an hh-B MAC
+   * rather than reading/writing across the tenant boundary (design §7 pin 2). Index-backed by V65's
+   * uq_devices_household_mac leading column.
+   */
+  def findByMacInHousehold(mac: MacAddress, household: HouseholdId): Task[Option[Device]]
+
+  /**
+   * #2108: `household` keys the row constructively. The user-facing device write passes the
+   * caller's `claims.hh`; ingest passes the router's household. `ON CONFLICT (household_id, mac)`
+   * (V65's uq_devices_household_mac) so a first-seen MAC lands in the writer's household and the
+   * same MAC in another household is a DIFFERENT row — a writer cannot address another household's
+   * row by construction (design §3.2.2). Defaults to `HouseholdId.Default` for the single-household
+   * test/ seed call sites.
+   */
+  def upsert(
+      mac: MacAddress,
+      name: String,
+      pid: Option[ProfileId],
+      ip: String,
+      household: HouseholdId = HouseholdId.Default,
+  ): Task[DeviceId]
   def updateLastSeen(mac: MacAddress, ip: String): Task[Unit]
 
   /**
    * Update last_seen_ip/at only if the device row exists. Used by router ingest where we don't want
    * to create rows here (events does that).
    */
-  def touchLastSeen(mac: MacAddress, ip: Option[IpAddress], at: Instant): Task[Int]
+  def touchLastSeen(
+      mac: MacAddress,
+      ip: Option[IpAddress],
+      at: Instant,
+      household: HouseholdId = HouseholdId.Default,
+  ): Task[Int]
 
   /**
    * #1511: batched version of [[touchLastSeen]]. One UPDATE per distinct (mac, ip) pair the caller
@@ -294,7 +376,11 @@ trait DeviceRepo {
    * `/api/router/usage` hot path. Same per-row UPDATE template — does NOT create rows. Empty input
    * is a no-op. Returns total rows touched across the batch.
    */
-  def touchLastSeenBatch(items: List[(MacAddress, Option[IpAddress])], at: Instant): Task[Int]
+  def touchLastSeenBatch(
+      items: List[(MacAddress, Option[IpAddress])],
+      at: Instant,
+      household: HouseholdId = HouseholdId.Default,
+  ): Task[Int]
 
   /**
    * Insert a row for a previously unknown device with NULL profile_id, or refresh last_seen_ip/at
@@ -305,6 +391,7 @@ trait DeviceRepo {
       name: String,
       ip: Option[IpAddress],
       at: Instant,
+      household: HouseholdId = HouseholdId.Default,
   ): Task[DeviceId]
 
   /**
@@ -312,7 +399,11 @@ trait DeviceRepo {
    * "device-XXXXXX"). Used by router ingest to upgrade names once a later DHCP lease carries a real
    * hostname (#249). Returns the number of rows updated (0 if the name was admin-curated).
    */
-  def renameIfAutoGenerated(mac: MacAddress, newName: String): Task[Int]
+  def renameIfAutoGenerated(
+      mac: MacAddress,
+      newName: String,
+      household: HouseholdId = HouseholdId.Default,
+  ): Task[Int]
   def updateProfile(mac: MacAddress, pid: ProfileId): Task[Unit]
   def delete(mac: MacAddress): Task[Unit]
 }
@@ -359,6 +450,15 @@ trait AlertRepo {
 
   /** Pending-only when `includeAll=false`. Ordered newest first. */
   def list(includeAll: Boolean): Task[List[Alert]]
+
+  /**
+   * #2108 (multi-tenant sub-issue E): household-scoped [[list]] — alerts whose device belongs to
+   * `household`. `alerts` has no `household_id` column of its own (its rows are MAC-keyed with a FK
+   * to `devices`), so it inherits the household transitively via the join to the household-scoped
+   * `devices` row (design §0.1 "scoped transitively"). Backs `GET /api/alerts` so an admin sees
+   * only their own household's alerts.
+   */
+  def listForHousehold(includeAll: Boolean, household: HouseholdId): Task[List[Alert]]
 
   /**
    * Returns the number of rows that transitioned; 0 means the row was already decided.
@@ -426,6 +526,7 @@ trait TimeUsageRepo {
       bytesIn: Long,
       bytesOut: Long,
       proportionalSeconds: Long = 0L,
+      household: HouseholdId = HouseholdId.Default,
   ): Task[Unit]
 
   /**
@@ -433,8 +534,15 @@ trait TimeUsageRepo {
    * per (mac, host) in the `/api/router/usage` hot path into a single Doobie `updateMany` against
    * the same upsert template `incrementSecondsAndBytes` runs — same ON CONFLICT additive semantics.
    * Empty input is a no-op.
+   *
+   * #2108 (multi-tenant sub-issue E): `household` (the router's) is stamped into every inserted row
+   * and is part of the ON CONFLICT key, so a router's usage only ever accretes onto its own
+   * household's `time_usage` rows — the same MAC in another household is a different row (§3.4).
    */
-  def incrementSecondsAndBytesBatch(rows: List[TimeUsageIncrement]): Task[Unit]
+  def incrementSecondsAndBytesBatch(
+      rows: List[TimeUsageIncrement],
+      household: HouseholdId = HouseholdId.Default,
+  ): Task[Unit]
 
   /** Read seconds_used for a (mac, host, date) row. Returns 0 if no row. */
   def getSecondsUsed(mac: MacAddress, host: HostId, date: LocalDate): Task[Long]
@@ -465,6 +573,7 @@ trait TimeExtensionRepo {
       mins: Int,
       by: String,
       note: Option[String],
+      household: HouseholdId = HouseholdId.Default,
   ): Task[TimeExtensionId]
   def listForDevice(mac: MacAddress, date: LocalDate): Task[List[TimeExtension]]
   def snapshotAll(date: LocalDate): Task[Map[MacAddress, Int]]
@@ -545,6 +654,13 @@ case class ConnectionEventInsert(
 
 trait RouterRepo {
   def listAll: Task[List[Router]]
+
+  /**
+   * #2108 (multi-tenant sub-issue E): household-scoped [[listAll]] — routers belonging to
+   * `household`. Backs `GET /api/routers` so an admin enumerates only their own household's routers
+   * (design §2 gap 4). Index-backed by V65's idx_routers_household.
+   */
+  def listAllForHousehold(household: HouseholdId): Task[List[Router]]
   def findById(id: RouterId): Task[Option[Router]]
   def findByEnrollmentTokenHash(h: Sha256Hex): Task[Option[Router]]
   def findByTokenHash(h: Sha256Hex): Task[Option[Router]]
@@ -787,7 +903,7 @@ class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
     case (id, un, ph, role, ca, mcp, tv, hh) => DbUser(id, un, ph, role, ca, mcp, tv, hh)
   }
 
-  def findByUsername(u: String)             =
+  def findByUsername(u: String)                   =
     DbMetrics.timed("user.findByUsername")(
       (fr"SELECT " ++ userCols ++ fr" FROM users WHERE username=$u")
         .query[UserRow]
@@ -795,7 +911,7 @@ class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
         .option
         .transact(xa),
     )
-  def findById(id: UserId)                  =
+  def findById(id: UserId)                        =
     (fr"SELECT " ++ userCols ++ fr" FROM users WHERE id=$id")
       .query[UserRow]
       .map(toUser)
@@ -807,18 +923,28 @@ class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
       .query[UserId]
       .unique
       .transact(xa)
-  def updatePassword(id: UserId, h: String) =
+  def updatePassword(id: UserId, h: String)       =
     sql"UPDATE users SET password_hash=$h WHERE id=$id".update.run.transact(xa).unit
-  def updateUsername(id: UserId, u: String) =
+  def updateUsername(id: UserId, u: String)       =
     sql"UPDATE users SET username=$u WHERE id=$id".update.run.transact(xa).unit
-  def updateRole(id: UserId, r: String)     =
+  def updateRole(id: UserId, r: String)           =
     sql"UPDATE users SET role=$r WHERE id=$id".update.run.transact(xa).unit
-  def clearMustChangePassword(id: UserId)   =
+  def clearMustChangePassword(id: UserId)         =
     sql"UPDATE users SET must_change_password=false WHERE id=$id".update.run.transact(xa).unit
-  def bumpTokenVersion(id: UserId)          =
+  def bumpTokenVersion(id: UserId)                =
     sql"UPDATE users SET token_version=token_version+1 WHERE id=$id".update.run.transact(xa).unit
-  def listAll                               =
+  def listAll                                     =
     (fr"SELECT " ++ userCols ++ fr" FROM users ORDER BY id")
+      .query[UserRow]
+      .map(toUser)
+      .to[List]
+      .transact(xa)
+  // #2108: same projection as listAll, AND-scoped to one household. Index-backed by
+  // V65's idx_users_household.
+  def listAllForHousehold(household: HouseholdId) =
+    (fr"SELECT " ++ userCols ++ fr" FROM users WHERE" ++ SqlFragments.householdEq(
+      household,
+    ) ++ fr"ORDER BY id")
       .query[UserRow]
       .map(toUser)
       .to[List]
@@ -932,9 +1058,39 @@ class ProfileRepoLive(xa: Transactor[Task]) extends ProfileRepo {
         .to[List]
         .transact(xa),
     )
+  // #2108: same projection + `is_global=FALSE` filter as listAll, AND-scoped to one household.
+  // Index-backed by V65's idx_profiles_household.
+  def listAllForHousehold(household: HouseholdId)                =
+    DbMetrics.timed("profile.listAllForHousehold")(
+      (fr"SELECT id,name,blocked_categories,paused,failure_mode,block_ip_only,cross_device_overlap_mode,pause_mode,default_deny,is_global FROM profiles WHERE is_global=FALSE AND" ++
+        SqlFragments.householdEq(household) ++ fr"ORDER BY id")
+        .query[R]
+        .map(toP)
+        .to[List]
+        .transact(xa),
+    )
+  // #2108: the household that owns `id`, for the route guards. Index-backed by the primary key.
+  def householdOf(id: ProfileId)                                 =
+    DbMetrics.timed("profile.householdOf")(
+      sql"SELECT household_id FROM profiles WHERE id=$id"
+        .query[HouseholdId]
+        .option
+        .transact(xa),
+    )
   def getGlobal                                                  =
     DbMetrics.timed("profile.getGlobal")(
       sql"SELECT id,name,blocked_categories,paused,failure_mode,block_ip_only,cross_device_overlap_mode,pause_mode,default_deny,is_global FROM profiles WHERE is_global=TRUE"
+        .query[R]
+        .map(toP)
+        .option
+        .transact(xa),
+    )
+  // #2108: the sentinel scoped to one household. `is_global` is a partial-unique per household, so
+  // this returns at most one row.
+  def getGlobalForHousehold(household: HouseholdId)              =
+    DbMetrics.timed("profile.getGlobalForHousehold")(
+      (fr"SELECT id,name,blocked_categories,paused,failure_mode,block_ip_only,cross_device_overlap_mode,pause_mode,default_deny,is_global FROM profiles WHERE is_global=TRUE AND" ++
+        SqlFragments.householdEq(household))
         .query[R]
         .map(toP)
         .option
@@ -1150,6 +1306,14 @@ class TimeLimitRepoLive(xa: Transactor[Task]) extends TimeLimitRepo {
     .map(TimeLimit.apply)
     .to[List]
     .transact(xa)
+  // #2108: same projection as listAll, AND-scoped through the profile FK to one household.
+  def listAllForHousehold(household: HouseholdId) =
+    (fr"SELECT tl.id,tl.profile_id,tl.daily_minutes FROM time_limits tl JOIN profiles p ON p.id=tl.profile_id WHERE" ++
+      SqlFragments.householdEq(household, "p.household_id"))
+      .query[(TimeLimitId, ProfileId, Int)]
+      .map(TimeLimit.apply)
+      .to[List]
+      .transact(xa)
 }
 
 class AppTimeLimitRepoLive(xa: Transactor[Task]) extends AppTimeLimitRepo {
@@ -1224,10 +1388,27 @@ class AppTimeLimitRepoLive(xa: Transactor[Task]) extends AppTimeLimitRepo {
       .map(toS)
       .to[List]
       .transact(xa)
+
+  // #2108: same projection as listAll, AND-scoped through app_policy_assignments.profile_id → the
+  // household-scoped profiles row.
+  def listAllForHousehold(household: HouseholdId) =
+    (fr"""SELECT apa.profile_id, ah.host, apa.daily_minutes, a.slug,
+                 apa.exempt_from_daily, a.id, apa.id, apa.mode::text,
+                 apa.allowed_during_schedule_block, ah.shared
+            FROM app_policy_assignments apa
+            JOIN apps a       ON a.id = apa.app_id
+            JOIN app_hosts ah ON ah.app_id = apa.app_id
+            JOIN profiles p   ON p.id = apa.profile_id
+           WHERE""" ++ SqlFragments.householdEq(household, "p.household_id") ++
+      fr"ORDER BY apa.id, ah.host")
+      .query[R]
+      .map(toS)
+      .to[List]
+      .transact(xa)
 }
 
 class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
-  def listAll                                                                          =
+  def listAll                                                       =
     DbMetrics.timed("device.listAll")(
       sql"SELECT d.id,d.mac,d.name,d.profile_id,p.name,d.last_seen_ip,d.last_seen_at::TEXT FROM devices d LEFT JOIN profiles p ON p.id=d.profile_id ORDER BY d.name"
         .query[
@@ -1248,7 +1429,7 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
   // #2107: same projection as listAll, AND-scoped to one household. `devices` is aliased `d`, so the
   // predicate is qualified `d.household_id`. Index-backed by V65's idx_devices_household (and the
   // leading column of uq_devices_household_mac).
-  def listAllForHousehold(household: HouseholdId)                                      =
+  def listAllForHousehold(household: HouseholdId)                   =
     DbMetrics.timed("device.listAllForHousehold")(
       (fr"SELECT d.id,d.mac,d.name,d.profile_id,p.name,d.last_seen_ip,d.last_seen_at::TEXT FROM devices d LEFT JOIN profiles p ON p.id=d.profile_id WHERE" ++
         SqlFragments.householdEq(household, "d.household_id") ++ fr"ORDER BY d.name")
@@ -1267,7 +1448,7 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
         .to[List]
         .transact(xa),
     )
-  def findByMac(mac: MacAddress)                                                       =
+  def findByMac(mac: MacAddress)                                    =
     DbMetrics.timed("device.findByMac")(
       sql"SELECT d.id,d.mac,d.name,d.profile_id,p.name,d.last_seen_ip,d.last_seen_at::TEXT FROM devices d LEFT JOIN profiles p ON p.id=d.profile_id WHERE d.mac=$mac"
         .query[
@@ -1285,7 +1466,35 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
         .option
         .transact(xa),
     )
-  def upsert(mac: MacAddress, name: String, pid: Option[ProfileId], ip: String)        = {
+  // #2108: same projection as findByMac, AND-scoped to one household. The user-facing device routes
+  // resolve through this so an hh-A admin gets a clean 404 for an hh-B MAC. Index-backed by V65's
+  // uq_devices_household_mac leading column.
+  def findByMacInHousehold(mac: MacAddress, household: HouseholdId) =
+    DbMetrics.timed("device.findByMacInHousehold")(
+      (fr"SELECT d.id,d.mac,d.name,d.profile_id,p.name,d.last_seen_ip,d.last_seen_at::TEXT FROM devices d LEFT JOIN profiles p ON p.id=d.profile_id WHERE d.mac=$mac AND" ++
+        SqlFragments.householdEq(household, "d.household_id"))
+        .query[
+          (
+              DeviceId,
+              MacAddress,
+              String,
+              Option[ProfileId],
+              Option[String],
+              Option[IpAddress],
+              Option[String],
+          ),
+        ]
+        .map(r => Device(r._1, r._2, r._3, r._4, r._5, r._6, r._7))
+        .option
+        .transact(xa),
+    )
+  def upsert(
+      mac: MacAddress,
+      name: String,
+      pid: Option[ProfileId],
+      ip: String,
+      household: HouseholdId = HouseholdId.Default,
+  ) = {
     // #708: pid=None writes NULL (device unassigned). Devices without a profile
     // are a supported state — same shape auto-discovery produces.
     // #1771: defensive guard — devices cannot be assigned to the global sentinel
@@ -1309,34 +1518,58 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
           case _          => doobie.free.connection.unit
         }
     }
+    // #2108: constructively keyed by `household` (default household 1 for single-household call
+    // sites). `ON CONFLICT (household_id, mac)` (V65's uq_devices_household_mac) so a row is created/
+    // updated in the writer's household only — the same MAC in another household is a different row.
     (check *>
-      sql"INSERT INTO devices(mac,name,profile_id,last_seen_ip,last_seen_at) VALUES($mac,$name,$pid,NULLIF($ip,''),NOW()) ON CONFLICT(mac) DO UPDATE SET name=EXCLUDED.name,profile_id=EXCLUDED.profile_id RETURNING id"
+      sql"INSERT INTO devices(mac,name,profile_id,last_seen_ip,last_seen_at,household_id) VALUES($mac,$name,$pid,NULLIF($ip,''),NOW(),$household) ON CONFLICT(household_id,mac) DO UPDATE SET name=EXCLUDED.name,profile_id=EXCLUDED.profile_id RETURNING id"
         .query[DeviceId]
         .unique).transact(xa)
   }
-  def updateLastSeen(mac: MacAddress, ip: String)                                      =
+  def updateLastSeen(mac: MacAddress, ip: String)                   =
     sql"UPDATE devices SET last_seen_ip=$ip,last_seen_at=NOW() WHERE mac=$mac".update.run
       .transact(xa)
       .unit
-  def touchLastSeen(mac: MacAddress, ip: Option[IpAddress], at: Instant) =
+  def touchLastSeen(
+      mac: MacAddress,
+      ip: Option[IpAddress],
+      at: Instant,
+      household: HouseholdId = HouseholdId.Default,
+  ) =
     // #1511 SSOT: route through the batch primitive so the UPDATE template lives in one place.
-    touchLastSeenBatch(List((mac, ip)), at)
-  def touchLastSeenBatch(items: List[(MacAddress, Option[IpAddress])], at: Instant)    =
+    touchLastSeenBatch(List((mac, ip)), at, household)
+  def touchLastSeenBatch(
+      items: List[(MacAddress, Option[IpAddress])],
+      at: Instant,
+      household: HouseholdId = HouseholdId.Default,
+  ) =
     if items.isEmpty then ZIO.succeed(0)
     else
       DbMetrics.timed("device.touchLastSeenBatch")(
         // Same per-row UPDATE template as `touchLastSeen`; Doobie's `updateMany` runs them as one
         // JDBC batch. We don't need the per-row affected count, just the sum — that matches what
         // a future operator query would care about. (#1511)
-        Update[(Option[IpAddress], Instant, MacAddress)](
-          "UPDATE devices SET last_seen_ip=COALESCE(?,last_seen_ip),last_seen_at=? WHERE mac=?",
-        ).updateMany(items.map { case (mac, ip) => (ip, at, mac) }).transact(xa),
+        // #2108: the UPDATE is AND-scoped to `household` (constant per batch — the router's), so an
+        // ingest can only refresh its own household's device rows.
+        Update[(Option[IpAddress], Instant, HouseholdId, MacAddress)](
+          "UPDATE devices SET last_seen_ip=COALESCE(?,last_seen_ip),last_seen_at=? WHERE household_id=? AND mac=?",
+        ).updateMany(items.map { case (mac, ip) => (ip, at, household, mac) }).transact(xa),
       )
-  def upsertUnknown(mac: MacAddress, name: String, ip: Option[IpAddress], at: Instant) =
+  def upsertUnknown(
+      mac: MacAddress,
+      name: String,
+      ip: Option[IpAddress],
+      at: Instant,
+      household: HouseholdId = HouseholdId.Default,
+  ) =
     DbMetrics.timed("device.upsertUnknown")(
-      sql"""INSERT INTO devices(mac,name,profile_id,last_seen_ip,last_seen_at)
-          VALUES($mac,$name,NULL,$ip,$at)
-          ON CONFLICT(mac) DO UPDATE
+      // #2108: new-device discovery, constructively keyed by `household` (the router's). A first-seen
+      // MAC is created unmanaged (profile_id NULL) in the router's household; the same MAC behind
+      // another household's gateway is a DIFFERENT row under ON CONFLICT(household_id,mac) (V65's
+      // uq_devices_household_mac). Never lookup-and-reject (design §3.2.2).
+      sql"""INSERT INTO devices(mac,name,profile_id,last_seen_ip,last_seen_at,household_id)
+          VALUES($mac,$name,NULL,$ip,$at,$household)
+          ON CONFLICT(household_id,mac) DO UPDATE
           SET last_seen_ip=COALESCE(EXCLUDED.last_seen_ip,devices.last_seen_ip),
               last_seen_at=EXCLUDED.last_seen_at
           RETURNING id"""
@@ -1344,15 +1577,20 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
         .unique
         .transact(xa),
     )
-  def renameIfAutoGenerated(mac: MacAddress, newName: String)                          = {
+  def renameIfAutoGenerated(
+      mac: MacAddress,
+      newName: String,
+      household: HouseholdId = HouseholdId.Default,
+  ) = {
     val autoNamePattern = "^device-[0-9a-fA-F]+$"
     DbMetrics.timed("device.renameIfAutoGenerated")(
+      // #2108: AND-scoped to `household` so an ingest only renames its own household's device.
       sql"""UPDATE devices SET name=$newName
-          WHERE mac=$mac AND (name='unknown' OR name ~ $autoNamePattern)""".update.run
+          WHERE mac=$mac AND household_id=$household AND (name='unknown' OR name ~ $autoNamePattern)""".update.run
         .transact(xa),
     )
   }
-  def updateProfile(mac: MacAddress, pid: ProfileId)                                   =
+  def updateProfile(mac: MacAddress, pid: ProfileId)                =
     sql"UPDATE devices SET profile_id=$pid WHERE mac=$mac".update.run.transact(xa).unit
   def delete(mac: MacAddress) = sql"DELETE FROM devices WHERE mac=$mac".update.run.transact(xa).unit
 }
@@ -1471,6 +1709,19 @@ class AlertRepoLive(xa: Transactor[Task]) extends AlertRepo {
   def list(includeAll: Boolean): Task[List[Alert]] = {
     val filter = if includeAll then fr"" else fr"WHERE a.status = 'pending'"
     (baseSelect ++ filter ++ fr"ORDER BY a.created_at DESC")
+      .query[R]
+      .map(toAlert)
+      .to[List]
+      .transact(xa)
+  }
+
+  // #2108: `baseSelect` already LEFT JOINs `devices d ON d.mac = a.mac`; AND-scope on
+  // `d.household_id` so only this household's alerts return. `d.household_id = $hh` also drops any
+  // alert whose device row is absent (the LEFT JOIN yields NULL), which is the desired isolation.
+  def listForHousehold(includeAll: Boolean, household: HouseholdId): Task[List[Alert]] = {
+    val statusFilter = if includeAll then fr"" else fr"AND a.status = 'pending'"
+    (baseSelect ++ fr"WHERE" ++ SqlFragments.householdEq(household, "d.household_id") ++
+      statusFilter ++ fr"ORDER BY a.created_at DESC")
       .query[R]
       .map(toAlert)
       .to[List]
@@ -1596,24 +1847,32 @@ class TimeUsageRepoLive(xa: Transactor[Task]) extends TimeUsageRepo {
       bytesIn: Long,
       bytesOut: Long,
       proportionalSeconds: Long = 0L,
+      household: HouseholdId = HouseholdId.Default,
   ): Task[Unit] =
     // #1511 SSOT: both the per-row and batch paths share one upsert template, owned by
     // `incrementSecondsAndBytesBatch`. Per-row callers (test seeders, fixtures) pay one extra hop
     // through a singleton list; the production hot path always calls the batch method directly.
     incrementSecondsAndBytesBatch(
       List(TimeUsageIncrement(mac, host, d, seconds, bytesIn, bytesOut, proportionalSeconds)),
+      household,
     )
-  def incrementSecondsAndBytesBatch(rows: List[TimeUsageIncrement]): Task[Unit]                 =
+  def incrementSecondsAndBytesBatch(
+      rows: List[TimeUsageIncrement],
+      household: HouseholdId = HouseholdId.Default,
+  ): Task[Unit] =
     if rows.isEmpty then ZIO.unit
     else
       DbMetrics.timed("timeUsage.incrementSecondsAndBytesBatch")(
-        Update[(MacAddress, String, String, LocalDate, Long, Long, Long, Long)](
+        // #2108: `household_id` is stamped on every row and is the leading column of the ON CONFLICT
+        // key (V65's uq_time_usage_household_mac_host_date), so a router's usage accretes onto its
+        // own household's rows only.
+        Update[(HouseholdId, MacAddress, String, String, LocalDate, Long, Long, Long, Long)](
           // Same upsert template as the per-row method: one VALUES row per increment, additive
           // ON CONFLICT. Doobie issues a single batched statement, collapsing the per-(mac, host)
           // round trips that dominated the /api/router/usage hot path (#1511).
-          "INSERT INTO time_usage(device_mac,host_type,host_value,date,seconds_used,proportional_seconds,bytes_in,bytes_out,last_seen_at) " +
-            "VALUES(?,?,?,?,?,?,?,?,NOW()) " +
-            "ON CONFLICT(device_mac,host_type,host_value,date) DO UPDATE " +
+          "INSERT INTO time_usage(household_id,device_mac,host_type,host_value,date,seconds_used,proportional_seconds,bytes_in,bytes_out,last_seen_at) " +
+            "VALUES(?,?,?,?,?,?,?,?,?,NOW()) " +
+            "ON CONFLICT(household_id,device_mac,host_type,host_value,date) DO UPDATE " +
             "SET seconds_used=time_usage.seconds_used+EXCLUDED.seconds_used," +
             "    proportional_seconds=time_usage.proportional_seconds+EXCLUDED.proportional_seconds," +
             "    bytes_in=time_usage.bytes_in+EXCLUDED.bytes_in," +
@@ -1622,6 +1881,7 @@ class TimeUsageRepoLive(xa: Transactor[Task]) extends TimeUsageRepo {
         ).updateMany(
           rows.map(r =>
             (
+              household,
               r.mac,
               r.host.kind,
               r.host.value,
@@ -1749,8 +2009,17 @@ class TimeExtensionRepoLive(xa: Transactor[Task]) extends TimeExtensionRepo {
       .query[Int]
       .unique
       .transact(xa)
-  def grant(mac: MacAddress, d: LocalDate, mins: Int, by: String, note: Option[String])          =
-    sql"INSERT INTO time_extensions(device_mac,date,extra_minutes,granted_by,note) VALUES($mac,$d,$mins,$by,$note) RETURNING id"
+  def grant(
+      mac: MacAddress,
+      d: LocalDate,
+      mins: Int,
+      by: String,
+      note: Option[String],
+      household: HouseholdId = HouseholdId.Default,
+  ) =
+    // #2108: stamp `household_id` so a MAC-keyed extension is scoped to the caller's household
+    // (V65 added the column; time_extensions has no unique key to widen — the stamp is the scoping).
+    sql"INSERT INTO time_extensions(device_mac,date,extra_minutes,granted_by,note,household_id) VALUES($mac,$d,$mins,$by,$note,$household) RETURNING id"
       .query[TimeExtensionId]
       .unique
       .transact(xa)
@@ -1828,7 +2097,7 @@ class RouterRepoLive(xa: Transactor[Task]) extends RouterRepo {
         Option[Instant],
         HouseholdId,
     )
-  private def toR(r: R)                       =
+  private def toR(r: R)                           =
     Router(
       r._1,
       r._2,
@@ -1841,17 +2110,27 @@ class RouterRepoLive(xa: Transactor[Task]) extends RouterRepo {
       r._9.map(_.toString),
       r._10,
     )
-  private val cols                            =
+  private val cols                                =
     fr"id,name,enrollment_token_hash,token_hash,last_seen_at,last_etag,created_at,agent_version,enrollment_expires_at,household_id"
   // #2083: default TTL for a freshly-created enrollment token.
-  private val EnrollmentTtl                   = fr"INTERVAL '1 hour'"
-  def listAll                                 =
+  private val EnrollmentTtl                       = fr"INTERVAL '1 hour'"
+  def listAll                                     =
     (fr"SELECT " ++ cols ++ fr" FROM routers ORDER BY created_at")
       .query[R]
       .map(toR)
       .to[List]
       .transact(xa)
-  def findById(id: RouterId)                  =
+  // #2108: same projection as listAll, AND-scoped to one household. Index-backed by
+  // V65's idx_routers_household.
+  def listAllForHousehold(household: HouseholdId) =
+    (fr"SELECT " ++ cols ++ fr" FROM routers WHERE" ++ SqlFragments.householdEq(
+      household,
+    ) ++ fr"ORDER BY created_at")
+      .query[R]
+      .map(toR)
+      .to[List]
+      .transact(xa)
+  def findById(id: RouterId)                      =
     (fr"SELECT " ++ cols ++ fr" FROM routers WHERE id=$id")
       .query[R]
       .map(toR)
@@ -1860,14 +2139,14 @@ class RouterRepoLive(xa: Transactor[Task]) extends RouterRepo {
   // #2083: an enrollment token past its TTL no longer matches, even though the hash
   // column itself isn't cleared until first use — a leaked but never-redeemed token
   // stops being valid after 1h instead of indefinitely.
-  def findByEnrollmentTokenHash(h: Sha256Hex) =
+  def findByEnrollmentTokenHash(h: Sha256Hex)     =
     (fr"SELECT " ++ cols ++
       fr" FROM routers WHERE enrollment_token_hash=$h AND enrollment_expires_at > NOW()")
       .query[R]
       .map(toR)
       .option
       .transact(xa)
-  def findByTokenHash(h: Sha256Hex)           =
+  def findByTokenHash(h: Sha256Hex)               =
     DbMetrics.timed("router.findByTokenHash")(
       (fr"SELECT " ++ cols ++ fr" FROM routers WHERE token_hash=$h")
         .query[R]
@@ -2443,7 +2722,11 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
     )
     val byLoc  = f.location.fold(fr"")(l => fr"AND r.name = $l")
     val byMc   = if (f.includeMulticast) fr"" else multicastFilterSql
-    (base ++ window ++ byCur ++ byMac ++ byDev ++ byPid ++ byBl ++ byDom ++ byLoc ++ byMc ++
+    // #2108: scope to the caller's household via the already-joined `routers r` (connection_events
+    // are router_id-keyed → household transitive). Index-backed by idx_routers_household (V65).
+    val byHh   =
+      f.household.fold(fr"")(hh => fr"AND" ++ SqlFragments.householdEq(hh, "r.household_id"))
+    (base ++ window ++ byCur ++ byMac ++ byDev ++ byPid ++ byBl ++ byDom ++ byLoc ++ byMc ++ byHh ++
       fr"ORDER BY ce.ts DESC, ce.id DESC LIMIT ${f.limit}")
       .query[
         (

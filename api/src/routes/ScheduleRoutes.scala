@@ -66,6 +66,9 @@ object ScheduleRoutes {
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
             _    <- requireAuth(req, auth)
+            // TODO(#2126): scope to claims.hh. `named_schedules` has no household_id column yet
+            // (V65 didn't add one) and no direct profile FK, so it cannot be filtered in a
+            // source-only PR — the household scoping needs a schema-only migration first (#2126).
             list <- scheduleRepo.listAll.mapError(ApiError.Db(_))
           } yield Response.json(list.toJson)
           handle.mapError(ErrorMapper.errorToResponse)

@@ -107,13 +107,14 @@ object AlertRoutes {
       Method.GET / "api" / "alerts" ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _ <- requireAuth(req, auth)
+            claims <- requireAuth(req, auth)
             includeAll = req.url
               .queryParam("all")
               .map(_.equalsIgnoreCase("true"))
               .getOrElse(false)
+            // #2108: alerts scoped to the caller's household (transitively via the device join).
             xs <- alertRepo
-              .list(includeAll)
+              .listForHousehold(includeAll, claims.hh)
               .mapError(ApiError.Db(_))
           } yield Response.json(xs.toJson)
           handle.mapError(ErrorMapper.errorToResponse)
