@@ -144,6 +144,8 @@ object BundledBlocklistsSpec
         assertTrue(ads.contains(Hostname.unsafe("bidmachine.io"))) &&
         // traffic-driven addition pinned for presence (#2064)
         assertTrue(ads.contains(Hostname.unsafe("coldbidder.com"))) &&
+        // traffic-driven addition pinned for presence (#2122)
+        assertTrue(ads.contains(Hostname.unsafe("adkernel.com"))) &&
         assertTrue(meta.isDefined) &&
         assertTrue(meta.exists(m => m.bundled && m.name == "Ads & Trackers"))
     },

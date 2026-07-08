@@ -195,3 +195,36 @@ hosts:
   - adsappier.com
   - sharethru.com
   - tiktokpangle-b.us
+  # traffic-driven additions (#2122): observed but unblocked ad/RTB/tracker infra.
+  # Sourced from a 30-day prod recent-apexes sweep (26 devices, 2026-07-07).
+  # Cross-checked against ads.yml and the StevenBlack ads-extended feed — every
+  # apex below is a GENUINE APEX-LEVEL GAP (ads-extended lists, at most, one
+  # specific subdomain, never the apex; our apex entry suffix-matches all
+  # subdomains) and is ad-dedicated per per-apex verification. Dual-use /
+  # wrong-category SKIPPED: app-ads-services.com / app-analytics-services.com /
+  # app-analytics-services-att.com (Google GA4/ATT), smartborad.com (flagged
+  # malware), freebeacon.com (news content), myfitnesspal.com (fitness app),
+  # iclasspro.com (SaaS), horsebreedspictures.com (MFA content),
+  # bdtelemetry.amazon (Amazon first-party telemetry), imganalytics.com
+  # (ambiguous: IMG sports analytics / HUMAN anti-fraud). Held out as unverified:
+  # optimusbid.com, imbid.co, stbid.ru, growthguru.bid, gmtrack-visit.com,
+  # tmatrackapp.site, tpdads.com. See evidence/ads-classification-2122.md.
+  # Ad servers / RTB exchanges / mediation / bidders (gaps not in ads-extended)
+  - adkernel.com
+  - privateadserver.com
+  - serverbid.com
+  - mosspf.com
+  - mosspf.net
+  - gamaibids.com
+  - progrtb.live
+  - maticooads.com
+  - zmaticoo.com
+  # Attribution / impression + ad-fraud trackers (gaps not in ads-extended)
+  - yabidos.com
+  - adsninja.ca
+  # Sibling apexes of already-curated ad vendors (gaps not in ads-extended)
+  - appsflyersdk.com
+  - svr-algorix.com
+  - outbrainimg.com
+  - openxcdn.net
+  - minutemedia-prebid.com
