@@ -94,7 +94,16 @@ case class TrafficRollupRow(
 trait UserRepo {
   def findByUsername(u: String): Task[Option[DbUser]]
   def findById(id: UserId): Task[Option[DbUser]]
-  def create(u: String, h: String, r: String): Task[UserId]
+  // #2130: `householdId` stamps the new user with the creating admin's
+  // household (resolved from their JWT at the route). Defaults to the
+  // single-install backfill household so pre-multi-tenant callers stay
+  // tenant-safe (matches the #2106 RouterRepo.create precedent).
+  def create(
+      u: String,
+      h: String,
+      r: String,
+      householdId: HouseholdId = HouseholdId.Default,
+  ): Task[UserId]
   def updatePassword(id: UserId, h: String): Task[Unit]
   def updateUsername(id: UserId, u: String): Task[Unit]
   def updateRole(id: UserId, r: String): Task[Unit]
@@ -176,7 +185,14 @@ trait ProfileRepo {
    */
   def getGlobalForHousehold(household: HouseholdId): Task[Option[Profile]]
   def findById(id: ProfileId): Task[Option[Profile]]
-  def create(name: String, cats: List[BlocklistId]): Task[ProfileId]
+  // #2130: `householdId` stamps the new profile with the creating admin's
+  // household (from their JWT). Defaults to the single-install backfill
+  // household so pre-multi-tenant callers stay tenant-safe (#2106 precedent).
+  def create(
+      name: String,
+      cats: List[BlocklistId],
+      householdId: HouseholdId = HouseholdId.Default,
+  ): Task[ProfileId]
   def update(p: Profile): Task[Unit]
   def delete(id: ProfileId): Task[Unit]
 
@@ -578,12 +594,15 @@ trait TimeExtensionRepo {
   def listForDevice(mac: MacAddress, date: LocalDate): Task[List[TimeExtension]]
   def snapshotAll(date: LocalDate): Task[Map[MacAddress, Int]]
   // Profile-level extension methods (V5+)
+  // #2130: `household` scopes the profile-keyed grant like [[grant]] does for
+  // the MAC-keyed one (#2108); defaults to the backfill household.
   def grantForProfile(
       profileId: ProfileId,
       date: LocalDate,
       mins: Int,
       by: String,
       note: Option[String],
+      household: HouseholdId = HouseholdId.Default,
   ): Task[TimeExtensionId]
   def getProfileTotalExtension(profileId: ProfileId, date: LocalDate): Task[Int]
   def listForProfile(profileId: ProfileId, date: LocalDate): Task[List[TimeExtension]]
@@ -917,9 +936,10 @@ class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
       .map(toUser)
       .option
       .transact(xa)
-  def create(u: String, h: String, r: String) =
+  def create(u: String, h: String, r: String, householdId: HouseholdId) =
     // Always force a password change on first login for admin-created users (#599).
-    sql"INSERT INTO users(username,password_hash,role,must_change_password) VALUES($u,$h,$r,true) RETURNING id"
+    // #2130: household_id is stamped explicitly — never left to V65's DEFAULT 1.
+    sql"INSERT INTO users(username,password_hash,role,must_change_password,household_id) VALUES($u,$h,$r,true,$householdId) RETURNING id"
       .query[UserId]
       .unique
       .transact(xa)
@@ -1104,8 +1124,9 @@ class ProfileRepoLive(xa: Transactor[Task]) extends ProfileRepo {
         .option
         .transact(xa),
     )
-  def create(name: String, cats: List[BlocklistId])              =
-    sql"INSERT INTO profiles(name,blocked_categories) VALUES($name,${cats.map(_.value).toArray}) RETURNING id"
+  def create(name: String, cats: List[BlocklistId], householdId: HouseholdId) =
+    // #2130: household_id is stamped explicitly — never left to V65's DEFAULT 1.
+    sql"INSERT INTO profiles(name,blocked_categories,household_id) VALUES($name,${cats.map(_.value).toArray},$householdId) RETURNING id"
       .query[ProfileId]
       .unique
       .transact(xa)
@@ -1281,8 +1302,10 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
   }
 
   def ensureDefault(defaultZone: ZoneId): Task[Unit] =
-    sql"""INSERT INTO household_settings (id, daily_reset_time, daily_reset_tz)
-          VALUES (1, '00:00', ${defaultZone})
+    // #2130: household_id is stamped explicitly (this seeds the single backfill
+    // install's row, so HouseholdId.Default) — never left to V65's DEFAULT 1.
+    sql"""INSERT INTO household_settings (id, daily_reset_time, daily_reset_tz, household_id)
+          VALUES (1, '00:00', ${defaultZone}, ${HouseholdId.Default})
           ON CONFLICT (id) DO NOTHING""".update.run.transact(xa).unit
 }
 
@@ -2004,7 +2027,7 @@ class TimeUsageRepoLive(xa: Transactor[Task]) extends TimeUsageRepo {
 }
 
 class TimeExtensionRepoLive(xa: Transactor[Task]) extends TimeExtensionRepo {
-  def getTotalExtension(mac: MacAddress, d: LocalDate)                                           =
+  def getTotalExtension(mac: MacAddress, d: LocalDate)       =
     sql"SELECT COALESCE(SUM(extra_minutes),0)::INT FROM time_extensions WHERE device_mac=$mac AND date=$d"
       .query[Int]
       .unique
@@ -2023,7 +2046,7 @@ class TimeExtensionRepoLive(xa: Transactor[Task]) extends TimeExtensionRepo {
       .query[TimeExtensionId]
       .unique
       .transact(xa)
-  def listForDevice(mac: MacAddress, d: LocalDate)                                               =
+  def listForDevice(mac: MacAddress, d: LocalDate)           =
     sql"SELECT id,profile_id,device_mac,date::TEXT,extra_minutes,granted_by,note,created_at::TEXT FROM time_extensions WHERE device_mac=$mac AND date=$d ORDER BY created_at"
       .query[
         (
@@ -2040,23 +2063,31 @@ class TimeExtensionRepoLive(xa: Transactor[Task]) extends TimeExtensionRepo {
       .map(TimeExtension.apply)
       .to[List]
       .transact(xa)
-  def snapshotAll(d: LocalDate)                                                                  =
+  def snapshotAll(d: LocalDate)                              =
     sql"SELECT device_mac,SUM(extra_minutes)::INT FROM time_extensions WHERE date=$d AND device_mac IS NOT NULL GROUP BY device_mac"
       .query[(MacAddress, Int)]
       .to[List]
       .transact(xa)
       .map(_.toMap)
-  def grantForProfile(pid: ProfileId, d: LocalDate, mins: Int, by: String, note: Option[String]) =
-    sql"INSERT INTO time_extensions(profile_id,date,extra_minutes,granted_by,note) VALUES($pid,$d,$mins,$by,$note) RETURNING id"
+  def grantForProfile(
+      pid: ProfileId,
+      d: LocalDate,
+      mins: Int,
+      by: String,
+      note: Option[String],
+      household: HouseholdId,
+  ) =
+    // #2130: stamp household_id like [[grant]] does (#2108) — never V65's DEFAULT 1.
+    sql"INSERT INTO time_extensions(profile_id,date,extra_minutes,granted_by,note,household_id) VALUES($pid,$d,$mins,$by,$note,$household) RETURNING id"
       .query[TimeExtensionId]
       .unique
       .transact(xa)
-  def getProfileTotalExtension(pid: ProfileId, d: LocalDate)                                     =
+  def getProfileTotalExtension(pid: ProfileId, d: LocalDate) =
     sql"SELECT COALESCE(SUM(extra_minutes),0)::INT FROM time_extensions WHERE profile_id=$pid AND date=$d"
       .query[Int]
       .unique
       .transact(xa)
-  def listForProfile(pid: ProfileId, d: LocalDate)                                               =
+  def listForProfile(pid: ProfileId, d: LocalDate)           =
     sql"SELECT id,profile_id,device_mac,date::TEXT,extra_minutes,granted_by,note,created_at::TEXT FROM time_extensions WHERE profile_id=$pid AND date=$d ORDER BY created_at"
       .query[
         (
@@ -2073,7 +2104,7 @@ class TimeExtensionRepoLive(xa: Transactor[Task]) extends TimeExtensionRepo {
       .map(TimeExtension.apply)
       .to[List]
       .transact(xa)
-  def snapshotAllByProfile(d: LocalDate)                                                         =
+  def snapshotAllByProfile(d: LocalDate)                     =
     DbMetrics.timed("timeExtension.snapshotAllByProfile")(
       sql"SELECT profile_id,SUM(extra_minutes)::INT FROM time_extensions WHERE date=$d AND profile_id IS NOT NULL GROUP BY profile_id"
         .query[(ProfileId, Int)]

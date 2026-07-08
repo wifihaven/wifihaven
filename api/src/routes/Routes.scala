@@ -107,24 +107,26 @@ object AuthRoutes {
       Method.POST / "api" / "users"                          ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _    <- requireAdmin(req, auth)
-            body <- req.body.asString.orElseFail(ApiError.BadRequest(""))
-            cur  <- ZIO
+            claims <- requireAdmin(req, auth)
+            body   <- req.body.asString.orElseFail(ApiError.BadRequest(""))
+            cur    <- ZIO
               .fromEither(body.fromJson[CreateUserRequest])
               .mapError(ApiError.DecodeFailure(_))
             // #2084: minimum password length — previously any non-empty string was accepted.
-            _    <- ZIO
+            _      <- ZIO
               .fail(
                 ApiError.BadRequest(
                   s"password must be at least ${AuthService.MinPasswordLength} characters",
                 ),
               )
               .when(!AuthService.isPasswordStrongEnough(cur.password))
-            hash <- auth.hashPassword(cur.password)
-            id   <- userRepo
-              .create(cur.username, hash, UserRole.asString(cur.role))
+            hash   <- auth.hashPassword(cur.password)
+            // #2130: the new user lands in the CREATING admin's household, not
+            // V65's DEFAULT 1 — a hh-B admin must never plant rows in hh-A.
+            id     <- userRepo
+              .create(cur.username, hash, UserRole.asString(cur.role), claims.hh)
               .mapError(ApiError.Db(_))
-            _    <- userProfileRepo
+            _      <- userProfileRepo
               .setProfilesForUser(id, cur.profileIds)
               .mapError(ApiError.Db(_))
           } yield Response.json(s"""{"id":$id}""")
@@ -370,15 +372,17 @@ object ProfileRoutes {
       Method.POST / "api" / "profiles"                           ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _    <- requireAdmin(req, auth)
-            body <- req.body.asString.orElseFail(ApiError.BadRequest(""))
-            upr  <- ZIO
+            claims <- requireAdmin(req, auth)
+            body   <- req.body.asString.orElseFail(ApiError.BadRequest(""))
+            upr    <- ZIO
               .fromEither(body.fromJson[UpsertProfileRequest])
               .mapError(ApiError.DecodeFailure(_))
-            id   <- profileRepo
-              .create(upr.name, upr.blockedCategories)
+            // #2130: the new profile lands in the CREATING admin's household,
+            // not V65's DEFAULT 1.
+            id     <- profileRepo
+              .create(upr.name, upr.blockedCategories, claims.hh)
               .mapError(ApiError.Db(_))
-            _    <- profileRepo
+            _      <- profileRepo
               .update(
                 Profile(
                   id,
@@ -409,11 +413,11 @@ object ProfileRoutes {
             // #1494: profile upsert no longer writes the legacy `schedules`
             // table. Block schedules are attached via PUT
             // /api/profiles/{id}/schedules (named_schedules / profile_schedule_rules).
-            _    <- ZIO
+            _      <- ZIO
               .foreachDiscard(upr.timeLimit)(mins => timeLimitRepo.upsert(id, mins))
               .mapError(ApiError.Db(_))
             // #1849: a new profile changes the snapshot's profile set.
-            _    <- invalidateSnapshot
+            _      <- invalidateSnapshot
           } yield Response.json(s"""{"id":${id.value}}""")
           handle.mapError(ErrorMapper.errorToResponse)
         },
@@ -1274,8 +1278,17 @@ object TimeRoutes {
             settings <- hsRepo.getForHousehold(claims.hh).mapError(ApiError.Db(_))
             now      <- clock.instant
             today = wifihaven.api.policy.PolicyService.householdLocalDate(now, settings)
+            // #2130: stamp the grant with the caller's household (like the
+            // MAC-keyed grant, #2108) — never V65's DEFAULT 1.
             id <- extRepo
-              .grantForProfile(ger.profileId, today, ger.extraMinutes, claims.sub, ger.note)
+              .grantForProfile(
+                ger.profileId,
+                today,
+                ger.extraMinutes,
+                claims.sub,
+                ger.note,
+                claims.hh,
+              )
               .mapError(ApiError.Db(_))
             // #946: bust the cached ProfileTimeStatus for this profile so the SPA's next
             // refetch reflects the new cap immediately instead of waiting up to todayTtl.
