@@ -133,8 +133,9 @@ object AuthRoutes {
       Method.GET / "api" / "users"                           ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _        <- requireAdmin(req, auth)
-            users    <- userRepo.listAll.mapError(ApiError.Db(_))
+            claims   <- requireAdmin(req, auth)
+            // #2108: an admin enumerates only their own household's users (design §2 gap 4).
+            users    <- userRepo.listAllForHousehold(claims.hh).mapError(ApiError.Db(_))
             mappings <- userProfileRepo.listAllMappings.mapError(ApiError.Db(_))
             byUser    = mappings.groupBy(_._1).view.mapValues(_.map(_._2)).toMap
             summaries = users.map(u =>
@@ -268,7 +269,9 @@ object ProfileRoutes {
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
             claims      <- requireAuth(req, auth)
-            allProfiles <- profileRepo.listAll.mapError(ApiError.Db(_))
+            // #2108: household-scoped list — an admin/adult sees every profile IN THEIR HOUSEHOLD,
+            // never across (design §2 gaps 3+4). `visibleProfiles` then narrows by role within it.
+            allProfiles <- profileRepo.listAllForHousehold(claims.hh).mapError(ApiError.Db(_))
             visible     <- visibleProfiles(claims, allProfiles, userProfileRepo)
             details     <- ZIO
               .foreach(visible) { p =>
@@ -289,8 +292,11 @@ object ProfileRoutes {
       Method.GET / "api" / "profiles" / "global"                 ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _       <- requireAdmin(req, auth)
-            p       <- profileRepo.getGlobal
+            claims  <- requireAdmin(req, auth)
+            // #2108: the sentinel is per-household (the global-policy layer is per-household). An
+            // admin reads only their own household's sentinel.
+            p       <- profileRepo
+              .getGlobalForHousehold(claims.hh)
               .mapError(ApiError.Db(_))
               .flatMap(
                 ZIO.fromOption(_).orElseFail(ApiError.NotFound("Global profile not seeded")),
@@ -307,7 +313,7 @@ object ProfileRoutes {
           val pid                                  = ProfileId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
             claims  <- requireAuth(req, auth)
-            _       <- requireProfileReadAccess(claims, pid, userProfileRepo)
+            _       <- requireProfileReadAccess(claims, pid, userProfileRepo, profileRepo)
             p       <- profileRepo
               .findById(pid)
               .mapError(ApiError.Db(_))
@@ -327,7 +333,7 @@ object ProfileRoutes {
           val pid                                  = ProfileId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
             claims <- requireWriter(req, auth)
-            _      <- requireProfileAccess(claims, pid, userProfileRepo)
+            _      <- requireProfileAccess(claims, pid, userProfileRepo, profileRepo)
             // #1771: schedules are meaningless on the global sentinel — block here before any DB work.
             _      <- requireNotGlobalProfile(profileRepo, pid, "schedules")
             body   <- req.body.asString.orElseFail(ApiError.BadRequest(""))
@@ -416,7 +422,7 @@ object ProfileRoutes {
           val pid                                  = ProfileId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
             claims <- requireWriter(req, auth)
-            _      <- requireProfileAccess(claims, pid, userProfileRepo)
+            _      <- requireProfileAccess(claims, pid, userProfileRepo, profileRepo)
             body   <- req.body.asString.orElseFail(ApiError.BadRequest(""))
             upr    <- ZIO
               .fromEither(body.fromJson[UpsertProfileRequest])
@@ -505,7 +511,7 @@ object ProfileRoutes {
           val pid                                  = ProfileId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
             claims    <- requireWriter(req, auth)
-            _         <- requireProfileAccess(claims, pid, userProfileRepo)
+            _         <- requireProfileAccess(claims, pid, userProfileRepo, profileRepo)
             // Existence check up front so a missing row 404s instead of
             // letting per-field UPDATEs silently no-op. We deliberately do
             // NOT carry the loaded row's mutable columns into the writes below: every SET is
@@ -652,11 +658,13 @@ object ProfileRoutes {
         handler { (id: Long, req: Request) =>
           val pid                                  = ProfileId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
-            _     <- requireAdmin(req, auth)
-            uids  <- userProfileRepo
+            claims <- requireAdmin(req, auth)
+            // #2108: the profile must be in the admin's household, and users are enumerated scoped.
+            _      <- requireProfileInHousehold(claims, pid, profileRepo)
+            uids   <- userProfileRepo
               .listUsersForProfile(pid)
               .mapError(ApiError.Db(_))
-            users <- userRepo.listAll.mapError(ApiError.Db(_))
+            users  <- userRepo.listAllForHousehold(claims.hh).mapError(ApiError.Db(_))
             byId      = users.map(u => u.id -> u).toMap
             summaries = uids.flatMap(byId.get).map { u =>
               UserSummary(u.id, u.username, u.role, List(pid))
@@ -668,12 +676,14 @@ object ProfileRoutes {
         handler { (id: Long, req: Request) =>
           val pid                                  = ProfileId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
-            _    <- requireAdmin(req, auth)
-            body <- req.body.asString.orElseFail(ApiError.BadRequest(""))
-            r    <- ZIO
+            claims <- requireAdmin(req, auth)
+            // #2108: an admin can only link users to a profile IN THEIR HOUSEHOLD.
+            _      <- requireProfileInHousehold(claims, pid, profileRepo)
+            body   <- req.body.asString.orElseFail(ApiError.BadRequest(""))
+            r      <- ZIO
               .fromEither(body.fromJson[SetProfileUsersRequest])
               .mapError(ApiError.DecodeFailure(_))
-            _    <- userProfileRepo
+            _      <- userProfileRepo
               .setUsersForProfile(pid, r.userIds)
               .mapError(ApiError.Db(_))
           } yield Response.ok
@@ -709,7 +719,8 @@ object DeviceRoutes {
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
             claims  <- requireAuth(req, auth)
-            all     <- deviceRepo.listAll.mapError(ApiError.Db(_))
+            // #2108: household-scoped list — filterDevices then narrows by role within it.
+            all     <- deviceRepo.listAllForHousehold(claims.hh).mapError(ApiError.Db(_))
             visible <- filterDevices(claims, all, userProfileRepo)
           } yield Response.json(visible.toJson)
           handle.mapError(ErrorMapper.errorToResponse)
@@ -728,14 +739,17 @@ object DeviceRoutes {
             // a profile they can't write to still 403s.
             _  <- udr.profileId match {
               case Some(pid) =>
-                requireProfileAccess(claims, pid, userProfileRepo) *>
+                requireProfileAccess(claims, pid, userProfileRepo, profileRepo) *>
                   // #1771: devices cannot be assigned to the global sentinel profile. Reject with
                   // 400 before any DB write. The repo-layer guard catches direct callers too.
                   requireNotGlobalProfile(profileRepo, pid, "device.profileId")
               case None      => ZIO.unit
             }
+            // #2108: constructively keyed to the caller's household — a user device write lands
+            // under `claims.hh` only (ON CONFLICT (household_id, mac)); it cannot address another
+            // household's row.
             id <- deviceRepo
-              .upsert(mac, udr.name, udr.profileId, "")
+              .upsert(mac, udr.name, udr.profileId, "", claims.hh)
               .mapError(ApiError.Db(_))
             // #481: log device upsert so the next CI failure makes it obvious
             // whether the mutation reached the API at all.
@@ -760,17 +774,19 @@ object DeviceRoutes {
           val handle: ZIO[Any, ApiError, Response] = for {
             claims <- requireWriter(req, auth)
             normalized = MacAddress.unsafe(normalizeMac(mac))
+            // #2108: household-scoped lookup — an hh-A admin gets a clean 404 for an hh-B MAC (§7
+            // pin 2), never a cross-household delete.
             existing <- deviceRepo
-              .findByMac(normalized)
+              .findByMacInHousehold(normalized, claims.hh)
               .mapError(ApiError.Db(_))
               .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Device not found")))
-            _        <- requireProfileAccess(claims, existing.profileId, userProfileRepo)
-            _        <- deviceRepo.delete(normalized).mapError(ApiError.Db(_))
+            _ <- requireProfileAccess(claims, existing.profileId, userProfileRepo, profileRepo)
+            _ <- deviceRepo.delete(normalized).mapError(ApiError.Db(_))
             // #481: same rationale as PUT — make the next CI failure diagnostic.
-            _        <- LogContext.annotate(LogContext.Mac, normalized.value)(
+            _ <- LogContext.annotate(LogContext.Mac, normalized.value)(
               ZIO.logInfo(s"device deleted: mac=${normalized.value}"),
             )
-            _        <- invalidateSnapshot
+            _ <- invalidateSnapshot
           } yield Response.ok
           handle.mapError(ErrorMapper.errorToResponse)
         },
@@ -784,13 +800,14 @@ object DeviceRoutes {
           val handle: ZIO[Any, ApiError, Response] = for {
             claims <- requireWriter(req, auth)
             normalized = MacAddress.unsafe(normalizeMac(mac))
-            existing  <- deviceRepo
-              .findByMac(normalized)
+            // #2108: household-scoped lookup — a cross-household MAC 404s before any write (§7 pin 2).
+            existing <- deviceRepo
+              .findByMacInHousehold(normalized, claims.hh)
               .mapError(ApiError.Db(_))
               .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Device not found")))
-            _         <- requireProfileAccess(claims, existing.profileId, userProfileRepo)
-            body      <- req.body.asString.orElseFail(ApiError.BadRequest(""))
-            obj       <- ZIO.fromEither(FieldPatch.parseObj(body)).mapError(ApiError.BadRequest(_))
+            _    <- requireProfileAccess(claims, existing.profileId, userProfileRepo, profileRepo)
+            body <- req.body.asString.orElseFail(ApiError.BadRequest(""))
+            obj  <- ZIO.fromEither(FieldPatch.parseObj(body)).mapError(ApiError.BadRequest(_))
             namePatch <- ZIO
               .fromEither(FieldPatch.from[String](obj, "name"))
               .mapError(ApiError.BadRequest(_))
@@ -803,7 +820,7 @@ object DeviceRoutes {
             }
             _         <- pidPatch match {
               case FieldPatch.Set(pid) =>
-                requireProfileAccess(claims, pid, userProfileRepo) *>
+                requireProfileAccess(claims, pid, userProfileRepo, profileRepo) *>
                   // #1771: same guard as PUT — reassigning a device to the global sentinel is
                   // rejected with 400.
                   requireNotGlobalProfile(profileRepo, pid, "device.profileId")
@@ -812,7 +829,7 @@ object DeviceRoutes {
             newName = namePatch.applyTo(existing.name)
             newPid = pidPatch.applyToNullable(existing.profileId)
             _ <- deviceRepo
-              .upsert(normalized, newName, newPid, "")
+              .upsert(normalized, newName, newPid, "", claims.hh)
               .mapError(ApiError.Db(_))
             _ <- LogContext.annotate(LogContext.Mac, normalized.value) {
               LogContext.annotateOpt(
@@ -877,13 +894,13 @@ object TimeRoutes {
           val handle: ZIO[Any, ApiError, Response] =
             for {
               claims   <- requireAuth(req, auth)
-              settings <- hsRepo.get.mapError(ApiError.Db(_))
+              settings <- hsRepo.getForHousehold(claims.hh).mapError(ApiError.Db(_))
               now      <- clock.instant
               // #1104: default to household-local "today", not UTC `clock.today`.
               today   = wifihaven.api.policy.PolicyService.householdLocalDate(now, settings)
               dateStr = req.url.queryParam("date").getOrElse(today.toString)
               date    = LocalDate.parse(dateStr)
-              allProfiles <- profileRepo.listAll.mapError(ApiError.Db(_))
+              allProfiles <- profileRepo.listAllForHousehold(claims.hh).mapError(ApiError.Db(_))
               visible     <- visibleProfiles(claims, allProfiles, userProfileRepo)
               states      <- timeStatusService
                 .dayStateAll(now, date, settings)
@@ -916,19 +933,19 @@ object TimeRoutes {
           val handle: ZIO[Any, ApiError, Response] =
             for {
               claims   <- requireAuth(req, auth)
-              settings <- hsRepo.get.mapError(ApiError.Db(_))
+              settings <- hsRepo.getForHousehold(claims.hh).mapError(ApiError.Db(_))
               now      <- clock.instant
               // #1104: anchor on household-local today, not UTC today.
               today = wifihaven.api.policy.PolicyService.householdLocalDate(now, settings)
               toStr = req.url.queryParam("to").getOrElse(today.toString)
               to    = LocalDate.parse(toStr)
               from  = to.minusDays(6)
-              allProfiles <- profileRepo.listAll.mapError(ApiError.Db(_))
-              allDevices  <- deviceRepo.listAll.mapError(ApiError.Db(_))
-              allLimits   <- timeLimitRepo.listAll.mapError(ApiError.Db(_))
-              allAppLims  <- appTimeLimitRepo.listAll.mapError(ApiError.Db(_))
-              ambient     <- ambientRepo.gateFor(settings, today).mapError(ApiError.Db(_))
-              visible     <- visibleProfiles(claims, allProfiles, userProfileRepo)
+              allProfiles <- profileRepo.listAllForHousehold(claims.hh).mapError(ApiError.Db(_))
+              allDevices  <- deviceRepo.listAllForHousehold(claims.hh).mapError(ApiError.Db(_))
+              allLimits   <- timeLimitRepo.listAllForHousehold(claims.hh).mapError(ApiError.Db(_))
+              allAppLims <- appTimeLimitRepo.listAllForHousehold(claims.hh).mapError(ApiError.Db(_))
+              ambient    <- ambientRepo.gateFor(settings, today).mapError(ApiError.Db(_))
+              visible    <- visibleProfiles(claims, allProfiles, userProfileRepo)
               devicesByPid = allDevices.groupBy(_.profileId)
               appLimsByPid = allAppLims.groupBy(_.profileId)
               allMacs      = visible.iterator
@@ -991,7 +1008,7 @@ object TimeRoutes {
           val handle: ZIO[Any, ApiError, Response] =
             for {
               claims   <- requireAuth(req, auth)
-              settings <- hsRepo.get.mapError(ApiError.Db(_))
+              settings <- hsRepo.getForHousehold(claims.hh).mapError(ApiError.Db(_))
               now      <- clock.instant
               // #1104: household-local today, not UTC.
               today   = wifihaven.api.policy.PolicyService.householdLocalDate(now, settings)
@@ -1002,8 +1019,8 @@ object TimeRoutes {
               // sub-rollups. Auth scope still applies — child tokens can only
               // request profiles they're already entitled to see.
               profileIdOpt <- parseProfileIdParam(req)
-              allProfiles  <- profileRepo.listAll.mapError(ApiError.Db(_))
-              allDevices   <- deviceRepo.listAll.mapError(ApiError.Db(_))
+              allProfiles  <- profileRepo.listAllForHousehold(claims.hh).mapError(ApiError.Db(_))
+              allDevices   <- deviceRepo.listAllForHousehold(claims.hh).mapError(ApiError.Db(_))
               visible      <- visibleProfiles(claims, allProfiles, userProfileRepo)
               scoped       = profileIdOpt match {
                 case Some(pid) => visible.filter(_.id == pid)
@@ -1042,7 +1059,7 @@ object TimeRoutes {
           val handle: ZIO[Any, ApiError, Response] =
             for {
               claims   <- requireAuth(req, auth)
-              settings <- hsRepo.get.mapError(ApiError.Db(_))
+              settings <- hsRepo.getForHousehold(claims.hh).mapError(ApiError.Db(_))
               now      <- clock.instant
               // #1104: household-local today (was UTC).
               today = wifihaven.api.policy.PolicyService.householdLocalDate(now, settings)
@@ -1056,8 +1073,8 @@ object TimeRoutes {
               bucketOffsetMin <- parseBucketOffsetMin(req)
               // #795: same single-profile narrowing as the daily endpoint.
               profileIdOpt    <- parseProfileIdParam(req)
-              allProfiles     <- profileRepo.listAll.mapError(ApiError.Db(_))
-              allDevices      <- deviceRepo.listAll.mapError(ApiError.Db(_))
+              allProfiles     <- profileRepo.listAllForHousehold(claims.hh).mapError(ApiError.Db(_))
+              allDevices      <- deviceRepo.listAllForHousehold(claims.hh).mapError(ApiError.Db(_))
               visible         <- visibleProfiles(claims, allProfiles, userProfileRepo)
               scoped       = profileIdOpt match {
                 case Some(pid) => visible.filter(_.id == pid)
@@ -1099,7 +1116,7 @@ object TimeRoutes {
         handler { (mac: String, req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
             claims   <- requireAuth(req, auth)
-            settings <- hsRepo.get.mapError(ApiError.Db(_))
+            settings <- hsRepo.getForHousehold(claims.hh).mapError(ApiError.Db(_))
             now      <- clock.instant
             // #1104: household-local today.
             today = wifihaven.api.policy.PolicyService.householdLocalDate(now, settings)
@@ -1108,12 +1125,12 @@ object TimeRoutes {
             from  = to.minusDays(6)
             bucketOffsetMin <- parseBucketOffsetMin(req)
             device          <- deviceRepo
-              .findByMac(MacAddress.unsafe(normalizeMac(mac)))
+              .findByMacInHousehold(MacAddress.unsafe(normalizeMac(mac)), claims.hh)
               .mapError(ApiError.Db(_))
               .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Device not found")))
-            _               <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
-            ambient         <- ambientRepo.gateFor(settings, today).mapError(ApiError.Db(_))
-            status          <- buildDeviceTimeStatusWeek(
+            _ <- requireProfileReadAccess(claims, device.profileId, userProfileRepo, profileRepo)
+            ambient <- ambientRepo.gateFor(settings, today).mapError(ApiError.Db(_))
+            status  <- buildDeviceTimeStatusWeek(
               device,
               from,
               to,
@@ -1134,17 +1151,17 @@ object TimeRoutes {
         handler { (mac: String, req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
             claims   <- requireAuth(req, auth)
-            settings <- hsRepo.get.mapError(ApiError.Db(_))
+            settings <- hsRepo.getForHousehold(claims.hh).mapError(ApiError.Db(_))
             now      <- clock.instant
             // #1104: household-local today.
             today   = wifihaven.api.policy.PolicyService.householdLocalDate(now, settings)
             dateStr = req.url.queryParam("date").getOrElse(today.toString)
             date    = LocalDate.parse(dateStr)
             device <- deviceRepo
-              .findByMac(MacAddress.unsafe(normalizeMac(mac)))
+              .findByMacInHousehold(MacAddress.unsafe(normalizeMac(mac)), claims.hh)
               .mapError(ApiError.Db(_))
               .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Device not found")))
-            _      <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
+            _ <- requireProfileReadAccess(claims, device.profileId, userProfileRepo, profileRepo)
             status <- buildDeviceTimeStatus(
               device,
               date,
@@ -1169,8 +1186,8 @@ object TimeRoutes {
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] =
             for {
-              _        <- requireAdmin(req, auth)
-              settings <- hsRepo.get.mapError(ApiError.Db(_))
+              claims   <- requireAdmin(req, auth)
+              settings <- hsRepo.getForHousehold(claims.hh).mapError(ApiError.Db(_))
               now      <- clock.instant
               today = wifihaven.api.policy.PolicyService.householdLocalDate(now, settings)
               rows    <- ambientRepo.listWindow(settings, today).mapError(ApiError.Db(_))
@@ -1205,18 +1222,18 @@ object TimeRoutes {
           val handle: ZIO[Any, ApiError, Response] =
             for {
               claims   <- requireAuth(req, auth)
-              settings <- hsRepo.get.mapError(ApiError.Db(_))
+              settings <- hsRepo.getForHousehold(claims.hh).mapError(ApiError.Db(_))
               now      <- clock.instant
               // #1104: household-local today.
               today   = wifihaven.api.policy.PolicyService.householdLocalDate(now, settings)
               dateStr = req.url.queryParam("date").getOrElse(today.toString)
               date    = LocalDate.parse(dateStr)
               device <- deviceRepo
-                .findByMac(MacAddress.unsafe(normalizeMac(mac)))
+                .findByMacInHousehold(MacAddress.unsafe(normalizeMac(mac)), claims.hh)
                 .mapError(ApiError.Db(_))
                 .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Device not found")))
-              _      <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
-              rows   <- trafficRepo
+              _ <- requireProfileReadAccess(claims, device.profileId, userProfileRepo, profileRepo)
+              rows <- trafficRepo
                 .listPresenceRows(List(device.mac), date)
                 .mapError(ApiError.Db(_))
               classified = wifihaven.api.presence.Presence
@@ -1251,10 +1268,10 @@ object TimeRoutes {
             ger      <- ZIO
               .fromEither(body.fromJson[GrantExtensionRequest])
               .mapError(ApiError.DecodeFailure(_))
-            _        <- requireProfileAccess(claims, ger.profileId, userProfileRepo)
+            _        <- requireProfileAccess(claims, ger.profileId, userProfileRepo, profileRepo)
             // #1010: bucket the grant under the household-local "today" so the
             // policy-snapshot read path (also household-local) finds it.
-            settings <- hsRepo.get.mapError(ApiError.Db(_))
+            settings <- hsRepo.getForHousehold(claims.hh).mapError(ApiError.Db(_))
             now      <- clock.instant
             today = wifihaven.api.policy.PolicyService.householdLocalDate(now, settings)
             id <- extRepo
@@ -1277,9 +1294,9 @@ object TimeRoutes {
           val pid                                  = ProfileId(profileId)
           val handle: ZIO[Any, ApiError, Response] = for {
             claims   <- requireAuth(req, auth)
-            _        <- requireProfileAccess(claims, pid, userProfileRepo)
+            _        <- requireProfileAccess(claims, pid, userProfileRepo, profileRepo)
             // #1010: same household-local "today" as the grant path.
-            settings <- hsRepo.get.mapError(ApiError.Db(_))
+            settings <- hsRepo.getForHousehold(claims.hh).mapError(ApiError.Db(_))
             now      <- clock.instant
             date = wifihaven.api.policy.PolicyService.householdLocalDate(now, settings)
             exts <- extRepo
@@ -1752,6 +1769,10 @@ object LogRoutes {
               cursorTs = cursorOpt.map(_.ts),
               cursorId = cursorOpt.map(_.id),
               includeMulticast = req.url.queryParam("includeMulticast").contains("true"),
+              // #2108: scope the connection_events read to the caller's household via the
+              // router_id → routers.household_id join (design §7 pin 1). Wire-invisible; existing
+              // callers that omit it read unscoped (single-household back-compat).
+              household = Some(claims.hh),
             )
             logs    <- connRepo.query(filter).mapError(ApiError.Db(_))
             visible <- filterLogs(claims, logs, userProfileRepo)
@@ -2289,32 +2310,54 @@ def filterLogs(
       .mapError(ApiError.Db(_))
       .map(pids => all.filter(l => l.profileId.exists(pids.contains)))
 
+/**
+ * #2108 (multi-tenant sub-issue E): the tenancy choke point for profile-targeting routes. Rejects
+ * (404 — never leak existence across the tenant boundary) any target profile whose household ≠ the
+ * caller's `claims.hh`. Composed FIRST inside every `requireProfile*Access` guard so an admin/adult
+ * — who otherwise has full role visibility — still cannot address another household's profile
+ * (design §7 pin 2). Runs before the role/link check so an hh-A `admin` and a genuinely-absent
+ * profile are indistinguishable to an attacker.
+ */
+def requireProfileInHousehold(
+    claims: JwtClaims,
+    profileId: ProfileId,
+    profileRepo: ProfileRepo,
+): IO[ApiError, Unit] =
+  profileRepo.householdOf(profileId).mapError(ApiError.Db(_)).flatMap {
+    case Some(hh) if hh == claims.hh => ZIO.succeed(())
+    case _                           => ZIO.fail(ApiError.NotFound("Profile not found"))
+  }
+
 /** Allow read access if admin or adult (full visibility); child must be linked to the profile. */
 def requireProfileReadAccess(
     claims: JwtClaims,
     profileId: ProfileId,
     upRepo: UserProfileRepo,
+    profileRepo: ProfileRepo,
 ): IO[ApiError, Unit] =
-  if claims.role == "admin" || claims.role == "adult" then ZIO.succeed(())
-  else
-    upRepo
-      .listProfilesForUsername(claims.sub)
-      .mapError(ApiError.Db(_))
-      .flatMap { pids =>
-        if pids.contains(profileId) then ZIO.succeed(())
-        else ZIO.fail(ApiError.Forbidden("Not authorized for this profile"))
-      }
+  requireProfileInHousehold(claims, profileId, profileRepo) *> {
+    if claims.role == "admin" || claims.role == "adult" then ZIO.succeed(())
+    else
+      upRepo
+        .listProfilesForUsername(claims.sub)
+        .mapError(ApiError.Db(_))
+        .flatMap { pids =>
+          if pids.contains(profileId) then ZIO.succeed(())
+          else ZIO.fail(ApiError.Forbidden("Not authorized for this profile"))
+        }
+  }
 
 def requireProfileReadAccess(
     claims: JwtClaims,
     profileId: Option[ProfileId],
     upRepo: UserProfileRepo,
+    profileRepo: ProfileRepo,
 ): IO[ApiError, Unit] =
   profileId match {
     case None      =>
       if claims.role == "admin" || claims.role == "adult" then ZIO.succeed(())
       else ZIO.fail(ApiError.Forbidden("Device has no assigned profile"))
-    case Some(pid) => requireProfileReadAccess(claims, pid, upRepo)
+    case Some(pid) => requireProfileReadAccess(claims, pid, upRepo, profileRepo)
   }
 
 /** Allow write access if admin or adult linked to the profile. Child is always denied. */
@@ -2322,27 +2365,31 @@ def requireProfileAccess(
     claims: JwtClaims,
     profileId: ProfileId,
     upRepo: UserProfileRepo,
+    profileRepo: ProfileRepo,
 ): IO[ApiError, Unit] =
-  if claims.role == "admin" then ZIO.succeed(())
-  else
-    upRepo
-      .listProfilesForUsername(claims.sub)
-      .mapError(ApiError.Db(_))
-      .flatMap { pids =>
-        if pids.contains(profileId) then ZIO.succeed(())
-        else ZIO.fail(ApiError.Forbidden("Not authorized for this profile"))
-      }
+  requireProfileInHousehold(claims, profileId, profileRepo) *> {
+    if claims.role == "admin" then ZIO.succeed(())
+    else
+      upRepo
+        .listProfilesForUsername(claims.sub)
+        .mapError(ApiError.Db(_))
+        .flatMap { pids =>
+          if pids.contains(profileId) then ZIO.succeed(())
+          else ZIO.fail(ApiError.Forbidden("Not authorized for this profile"))
+        }
+  }
 
 def requireProfileAccess(
     claims: JwtClaims,
     profileId: Option[ProfileId],
     upRepo: UserProfileRepo,
+    profileRepo: ProfileRepo,
 ): IO[ApiError, Unit] =
   profileId match {
     case None      =>
       if claims.role == "admin" then ZIO.succeed(())
       else ZIO.fail(ApiError.Forbidden("Device has no assigned profile"))
-    case Some(pid) => requireProfileAccess(claims, pid, upRepo)
+    case Some(pid) => requireProfileAccess(claims, pid, upRepo, profileRepo)
   }
 
 /**

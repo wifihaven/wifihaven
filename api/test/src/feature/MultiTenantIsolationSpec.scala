@@ -201,7 +201,9 @@ object MultiTenantIsolationSpec
         auth   <- makeAuth
         tokenA <- login(auth, two.adminA, two.password)
         routes = LogRoutes.routes(auth, cer, up)
-        (sA, bodyA) <- getJson(routes, "/api/logs", tokenA)
+        // `hours` widens the connection_events window (anchored at SQL NOW(), real wall-clock) so it
+        // reaches back to the fixed-instant events seeded above.
+        (sA, bodyA) <- getJson(routes, "/api/logs?hours=1000000", tokenA)
       } yield assertTrue(sA == Status.Ok) &&
         assertTrue(bodyA.contains(macA.value), !bodyA.contains(macB.value))
     },
