@@ -299,27 +299,35 @@ object TimeStatusCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
       // `count == 2`.) Without single-flight at all, N would miss and run `load` (count == N).
       // `gate` is held only to keep every caller's `load` parked so the count is observed
       // mid-flight; the `arrived` barrier confirms all N entered before we release it.
-      val n      = 25
-      val today  = LocalDate.parse("2026-06-27")
-      val pid    = ProfileId(7L)
-      val sample =
+      val n       = 25
+      val rounds  = 30 // the bug is a scheduling race — repeat so a reintroduced race is caught
+      val today   = LocalDate.parse("2026-06-27")
+      val pid     = ProfileId(7L)
+      val sample  =
         ProfileTimeStatus(pid, "Kid", today.toString, Some(60), 0, 0, Some(60), Nil, Nil, Nil)
+      // One race attempt against a fresh cache: N concurrent missers for one key, held mid-load,
+      // then released. Returns (loadCount, results). Pre-#2121 this yielded count == 2 on an
+      // unlucky interleaving; post-fix count == 1 is invariant, so all `rounds` must hold.
+      val attempt =
+        for {
+          cache   <- TimeStatusCache.make()
+          loads   <- Ref.make(0)
+          arrived <- Ref.make(0)
+          gate    <- Promise.make[Nothing, Unit]
+          load = loads.update(_ + 1) *> gate.await.as(sample)
+          call = arrived.update(_ + 1) *> cache.getOrLoadDaily(pid, today, today)(load)
+          fiber   <- ZIO.foreachPar(1 to n)(_ => call).fork
+          _       <- arrived.get.repeatUntil(_ == n) // all N have entered their getOrLoad call
+          _       <- gate.succeed(())
+          results <- fiber.join
+          count   <- loads.get
+        } yield (count, results)
       for {
-        cache   <- TimeStatusCache.make()
-        loads   <- Ref.make(0)
-        arrived <- Ref.make(0)
-        gate    <- Promise.make[Nothing, Unit]
-        load = loads.update(_ + 1) *> gate.await.as(sample)
-        call = arrived.update(_ + 1) *> cache.getOrLoadDaily(pid, today, today)(load)
-        fiber   <- ZIO.foreachPar(1 to n)(_ => call).fork
-        _       <- arrived.get.repeatUntil(_ == n) // all N have entered their getOrLoad call
-        _       <- gate.succeed(())
-        results <- fiber.join
-        count   <- loads.get
+        outcomes <- ZIO.foreach(1 to rounds)(_ => attempt)
       } yield assertTrue(
-        count == 1,                 // single-flight: one build despite N concurrent missers
-        results.length == n,        // every caller still gets a result
-        results.forall(_ == sample),// …the same in-flight result
+        outcomes.forall(_._1 == 1),               // single-flight: one build despite N missers
+        outcomes.forall(_._2.length == n),        // every caller still gets a result
+        outcomes.forall(_._2.forall(_ == sample)),// …the same in-flight result
       )
     },
     test("Cache-Control: no-store for today, max-age=3600 for past") {
