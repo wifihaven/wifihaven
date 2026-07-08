@@ -289,14 +289,16 @@ object TimeStatusCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
       // `getOrLoadDaily` calls for the SAME key invoke `load` exactly once; the followers await
       // the in-flight result instead of launching their own build.
       //
-      // Fully deterministic with no wall-clock settle: registration is an atomic
+      // `count == 1` is invariant for any interleaving (#2121). Registration is an atomic
       // `ConcurrentHashMap.putIfAbsent`, and the winner does `cache.put` BEFORE freeing its
-      // in-flight slot (`onExit`). So `count == 1` is invariant for any interleaving — a late
-      // caller that reaches the cache after the winner finishes either hits the now-populated
-      // cache or finds the in-flight slot; it can never win a second `putIfAbsent`. Without
-      // single-flight all N would miss and run `load` (count == N). `gate` is held only to keep
-      // every caller's `load` parked so the count is observed mid-flight; the `arrived` barrier
-      // confirms all N entered before we release it.
+      // in-flight slot (`onExit`). A late caller that already missed the cache CAN still win a
+      // second `putIfAbsent` once the winner frees its slot — so the winner branch re-checks the
+      // cache before loading; because `put` happens-before the slot is freed, that re-check is
+      // guaranteed to hit and the follower skips its build. (Before #2121 the winner did not
+      // re-check, so this exact interleaving launched a second `load` and the test flaked with
+      // `count == 2`.) Without single-flight at all, N would miss and run `load` (count == N).
+      // `gate` is held only to keep every caller's `load` parked so the count is observed
+      // mid-flight; the `arrived` barrier confirms all N entered before we release it.
       val n      = 25
       val today  = LocalDate.parse("2026-06-27")
       val pid    = ProfileId(7L)

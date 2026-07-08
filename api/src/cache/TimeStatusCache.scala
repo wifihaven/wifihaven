@@ -196,12 +196,30 @@ object TimeStatusCache {
                 // periodic hit-rate stats representative of how much load the cache actually saved.
                 ZIO.succeed(hits.increment()) *> existing.await.map(_.asInstanceOf[V])
               case None           =>
-                ZIO.succeed(misses.increment()) *>
-                  load
-                    .tap(v => ZIO.succeed(cache.put(key, v)))
-                    // Always free the slot and publish the outcome to followers — even on failure
-                    // or interrupt — so the in-flight entry can never wedge waiters or leak.
-                    .onExit(exit => ZIO.succeed(inFlight.remove(key, mine)) *> mine.done(exit))
+                // #2012 race: we missed the cache, then won `putIfAbsent` — but a *prior* winner
+                // for this key may have completed in the window between our miss and our win. That
+                // winner does `cache.put` (in `.tap`) BEFORE it frees its slot (in `.onExit`), so
+                // if the slot was free for us to win, any value it produced is already in the
+                // cache. Re-check before loading: on a hit we skip the redundant build entirely,
+                // publish the value to any followers that grabbed `mine`, and free our slot. This
+                // closes the window where a late follower would otherwise launch a second `load`
+                // (`count == 2`). A prior winner that *failed* leaves the cache empty, so we
+                // correctly fall through and re-load.
+                ZIO.succeed(Option(cache.getIfPresent(key))).flatMap {
+                  case Some(v) =>
+                    val vv = v.asInstanceOf[V]
+                    ZIO.succeed(hits.increment()) *>
+                      ZIO.succeed(inFlight.remove(key, mine)) *>
+                      mine.succeed(vv).as(vv)
+                  case None    =>
+                    ZIO.succeed(misses.increment()) *>
+                      load
+                        .tap(v => ZIO.succeed(cache.put(key, v)))
+                        // Always free the slot and publish the outcome to followers — even on
+                        // failure or interrupt — so the in-flight entry can never wedge waiters
+                        // or leak.
+                        .onExit(exit => ZIO.succeed(inFlight.remove(key, mine)) *> mine.done(exit))
+                }
             }
           }
       }
