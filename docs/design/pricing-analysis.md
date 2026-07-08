@@ -19,7 +19,7 @@ Related: #622 (multi-tenant + Stripe billing), #2085 (isolation waves),
 |---|---|
 | Beta length | **4 months**, cohort-wide flip date announced at signup ("free through *date*") |
 | Launch price | **$10/month or $96/year** (= $8/mo effective, 20% annual discount), per household |
-| Tiers | **Single price at launch.** Unlimited profiles + devices, 1 router/location. No feature gates pre-PMF. |
+| Tiers | **Single public price at launch.** Unlimited profiles + devices, 1 router/location. No feature gates pre-PMF. **Multi-router support itself ships regardless** (our own household runs multiple routers; #2104 already models it) — it launches internal-only, and a public **multi-home tier** is the named first upsell (§6). |
 | Beta conversion | Beta households get a **founding price of $6/mo (or $57/yr) for as long as they stay subscribed** — Stripe coupon `duration=forever`, 40% off |
 | Self-hosted | **Free forever, explicitly.** The Nabu Casa / Tailscale playbook: self-hosted is the funnel and the trust signal; cloud sells convenience (no server to run, hosted upgrades, remote access, retention). |
 | Stripe build (#622) | Checkout + customer portal + one price pair (monthly/annual) + one forever-coupon promotion code. **No subscription schedules, no metered billing, no per-seat logic.** |
@@ -315,12 +315,27 @@ red flag to investigate before public launch, not a reason to discount deeper.
   enforcement covers whatever joins the network, and "unlimited devices" is
   the honest description of how it works. Gating it would manufacture a
   weakness the per-device competitors actually have.
-- The natural future tier axes, reserved (not built) now — each is additive
-  and none is needed at launch: **multi-router/multi-location** (the
-  households table already models it — #2104), **history retention length**
-  (retention windows are per-deploy constants today, `RetentionSweepJob`;
-  making them per-household is a clean paid axis), **alerting/notifications**,
-  **API access**. Revisit tiers when either (a) multi-location demand is real
+- **Multi-router is a special case — the capability ships, the tier comes
+  later.** Our own household needs multiple routers, so multi-router-per-
+  household support gets built regardless of pricing (the households model
+  #2104 already allows it; #2106 binds routers to a household, not 1:1).
+  At launch it is **internal/founding-household only**: the public plan says
+  "1 router," and the enrollment path caps public households there. That
+  keeps the launch price simple while the capability matures on our own
+  deployment. The public **multi-home tier** is then the first, already-named
+  upsell — and a high-value one: the segment that owns a vacation home or
+  runs multiple gateways/WAPs skews affluent and is exactly who pays $280–930
+  for Firewalla hardware today. One policy surface spanning every location a
+  kid's device can roam to is something no per-device suite or single-box
+  product offers. Indicative shape when it opens: ~1.5–2× base (e.g.
+  $15–20/mo for up to 3 routers), priced when real demand shows up — not
+  built into #622's launch billing surface beyond keeping the price/entitlement
+  lookup per-household rather than hardcoded.
+- The other future tier axes, reserved (not built) now — each is additive
+  and none is needed at launch: **history retention length** (retention
+  windows are per-deploy constants today, `RetentionSweepJob`; making them
+  per-household is a clean paid axis), **alerting/notifications**,
+  **API access**. Revisit tiers when either (a) multi-home demand is real
   or (b) a business/MSP segment shows up (Firewalla MSP, Control D
   per-endpoint pricing show that segment exists in adjacent products).
 
@@ -348,6 +363,13 @@ Explicitly **not** needed for launch (don't build): subscription schedules,
 metered/usage-based billing, per-seat quantities, tax-inclusive multi-currency
 pricing (launch US-only; enable Stripe Tax when non-US demand appears),
 lifetime SKUs (Plex's $249→$749 lifetime whiplash is the argument against).
+
+One forward-compatibility requirement from §6: entitlements (router cap, and
+later retention/alerting) resolve **per household from the subscription's
+Price/Product**, not from a global constant — so the later multi-home tier is
+"add a second Price + raise the cap for households on it," with the founding
+and internal households simply flagged past the cap, not a billing-model
+rework.
 
 ---
 
