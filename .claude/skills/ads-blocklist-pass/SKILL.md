@@ -125,6 +125,48 @@ that edit in the same PR.** If a step above is now wrong, fix the step too.
 
 ## Learnings log (newest first)
 
+- **2026-07-07** (#2122) — **The RTB/bidder vein is drying up — a small,
+  targeted pass is now the expected outcome, not a failure to find volume.**
+  Most classic `*rtb*` / `*bid*` / `*-ads` names surfacing in prod this week were
+  already covered by the #1923/#2064 `ads.yml` additions (`coldbidder.com`,
+  `rtblab.net`, `openrtbx.com`, `one-bid.com`, `servenobid.com`, `tmbid.com`,
+  `bid-algorix.com`, `rtbuniverse.com`, `smarterbidder.com`, `lacunads.com`,
+  `bm-ads.io`, `adnxs.net`, `adsappier.com`, …). Prior passes did their job;
+  don't pad the list to match #2064's 38 — 16 genuine gaps was the honest count.
+- **2026-07-07** (#2122) — **The StevenBlack feed usually lists ONE specific
+  subdomain of an ad apex, not the apex — so "apex absent from ads-extended"
+  UNDER-states coverage, and our apex entry is the stronger block regardless.**
+  Ten of this pass's 16 adds (`appsflyersdk.com`, `maticooads.com`, `serverbid.com`,
+  `adsninja.ca`, `yabidos.com`, `adkernel.com`, `outbrainimg.com`, `openxcdn.net`,
+  `minutemedia-prebid.com`, `zmaticoo.com`) had exactly one subdomain in the feed
+  (e.g. `s.appsflyersdk.com`) but not the apex. Check membership BOTH at the apex
+  AND for any feed host that is a subdomain of the apex — then note that the
+  curated apex entry still wins because it suffix-matches *all* subdomains while
+  the feed blocks only the one it happens to list. This is the core argument for
+  hand-curating apexes even when the feed nominally "has" the domain.
+- **2026-07-07** (#2122) — **macOS BSD `sed`/`grep` do not support `\s` — a
+  membership check written with `\s` silently returns all-negative.** My first
+  ads.yml extraction (`sed -E 's/^\s*-\s*//'`) produced a host set where even
+  `pubmatic.com` tested absent, which would have re-added dozens of
+  already-curated apexes. **Always smoke-test a membership set against a known
+  sentinel** (`grep -c '^pubmatic.com$'`) before trusting it; use POSIX classes
+  (`[[:space:]]`) not `\s` on macOS.
+- **2026-07-07** (#2122) — **Classify obscure RTB bidders by subdomain
+  structure when the apex has no public writeup; a malvertising/phishing flag
+  does NOT disqualify — it's still ad-category.** `gamaibids.com` had no vendor
+  page, but its `bid.` / `bids.` / `trk.` subdomains are textbook RTB-bidder +
+  impression-tracker infra. Scamadviser's mixed/phishing score is consistent with
+  malvertising, which belongs in the ads (or malware) drop either way.
+- **2026-07-07** (#2122) — **New dual-use / wrong-category SKIPs seen this pass:**
+  `freebeacon.com` (Washington Free Beacon — news *content*, matched the `beacon`
+  regex), `myfitnesspal.com` (fitness app), `iclasspro.com` (class-management
+  SaaS), `horsebreedspictures.com` (made-for-advertising *content* site — the
+  apex is content, the ads ride third-party infra), `bdtelemetry.amazon` (Amazon
+  first-party telemetry on the internal `.amazon` gTLD — not a public ad apex),
+  `imganalytics.com` (ambiguous: IMG sports-data analytics *or* HUMAN anti-bot
+  infra per netify — neither clearly ad-serving). A `beacon`/`track`/`analytics`
+  substring is a candidate signal, never a verdict — classify by what the apex
+  *is*.
 - **2026-06-30** (#2064) — **RTB/bidder/exchange genuine-gaps are the richest
   vein, and they're low-collateral by construction.** This pass added 38 apexes,
   almost all `*rtb*` / `*bid*` / `*-ads` / `oneadtag` / `imptracking`-class names
