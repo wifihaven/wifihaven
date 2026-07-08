@@ -147,6 +147,7 @@ object AlertRoutes {
               alert,
               apr.minutes.getOrElse(DefaultExtensionMinutes),
               claims.sub,
+              claims.hh,
               profileRepo,
               extRepo,
               appRepo,
@@ -210,6 +211,8 @@ object AlertRoutes {
       alert: Alert,
       requestedMinutes: Int,
       grantedBy: String,
+      // #2130: the approving admin's household — stamps the extension grant.
+      household: HouseholdId,
       profileRepo: ProfileRepo,
       extRepo: TimeExtensionRepo,
       appRepo: AppRepo,
@@ -235,7 +238,10 @@ object AlertRoutes {
                 )
               case Some(pid) =>
                 for {
-                  settings <- hsRepo.get.mapError(ApiError.Db(_))
+                  // #2130: household-scoped settings + grant stamp, so an
+                  // approval by a hh-B admin lands in hh-B (bucketed by hh-B's
+                  // local "today"), never V65's DEFAULT 1.
+                  settings <- hsRepo.getForHousehold(household).mapError(ApiError.Db(_))
                   now      <- clock.instant
                   today =
                     wifihaven.api.policy.PolicyService.householdLocalDate(now, settings)
@@ -246,6 +252,7 @@ object AlertRoutes {
                       requestedMinutes,
                       grantedBy,
                       alert.note.orElse(Some(s"approved alert #${alert.id.value}")),
+                      household,
                     )
                     .mapError(ApiError.Db(_))
                 } yield Some(requestedMinutes)
