@@ -294,6 +294,48 @@ object MultiTenantIsolationSpec
       } yield assertTrue(resp.status == Status.NotFound || resp.status == Status.Forbidden) &&
         assertTrue(nameB == "devB")
     },
+    test("pin 2 — hh-B admin POST /api/users creates the user in household B, invisible to A") {
+      // #2130: UserRepo.create used to omit household_id, so the INSERT fell back to V65's
+      // `DEFAULT 1` and a household-B admin's new user was planted in household A(=1) — a
+      // cross-tenant write the B admin couldn't even see back through the scoped read.
+      for {
+        _      <- cleanDb
+        two    <- TestLayers.seedTwoHouseholds(macA, macB)
+        ur     <- ZIO.service[UserRepo]
+        up     <- ZIO.service[UserProfileRepo]
+        xa     <- ZIO.service[Transactor[Task]]
+        auth   <- makeAuth
+        tokenA <- login(auth, two.adminA, two.password)
+        tokenB <- login(auth, two.adminB, two.password)
+        routes     = AuthRoutes.routes(auth, ur, up, RateLimiter.allowAll)
+        createBody = CreateUserRequest("kid-b", "kid-b-password!", UserRole.Child, Nil).toJson
+        resp        <- routes.runZIO(
+          Request
+            .post(URL.decode("/api/users").toOption.get, Body.fromString(createBody))
+            .addHeader(Header.Authorization.Bearer(tokenB))
+            .addHeader(Header.ContentType(MediaType.application.json)),
+        )
+        // The row is stamped with household B, not V65's DEFAULT 1.
+        hh          <- sql"SELECT household_id FROM users WHERE username='kid-b'"
+          .query[HouseholdId]
+          .unique
+          .transact(xa)
+        // Visible to B's admin via the scoped read, invisible to A's.
+        (sB, bodyB) <- getJson(routes, "/api/users", tokenB)
+        (sA, bodyA) <- getJson(routes, "/api/users", tokenA)
+        // The new user can log in and the minted JWT carries hh = B (#2105).
+        kidLogin    <- auth
+          .login("kid-b", "kid-b-password!")
+          .mapError(e => new RuntimeException(s"login failed: $e"))
+        kidClaims   <- auth
+          .verify(kidLogin.token.value)
+          .mapError(e => new RuntimeException(s"verify failed: $e"))
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(hh == two.hhB) &&
+        assertTrue(sB == Status.Ok, bodyB.contains(""""username":"kid-b"""")) &&
+        assertTrue(sA == Status.Ok, !bodyA.contains("kid-b")) &&
+        assertTrue(kidClaims.hh == two.hhB)
+    },
     // ── Pin 3: snapshot scoping (re-asserted from #2107) ───────────────────────
     test("pin 3 — GET /api/router/policy returns ONLY the router's household MACs/profiles") {
       for {
