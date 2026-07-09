@@ -365,7 +365,7 @@ subscription pays for.
   household's data stays put — the volume is small, because the
   unbounded-growth tables are already bounded by the retention sweeps
   (raw 30d / hourly 90d / daily 180d,
-  [`RetentionSweepJob.scala:56-58`](../../api/src/usage/RetentionSweepJob.scala)),
+  [`RetentionSweepJob.scala:56-59`](../../api/src/usage/RetentionSweepJob.scala)),
   so a lapsed account converges to a small bounded footprint on its own.
   `lapsed_at` records when the lapse happened; old/deactivated accounts *may*
   be purged "at some point" if the total starts to add up, but **no purge job
@@ -414,7 +414,7 @@ subscription's Price/Product, not from a global constant."*
   multi-home tier becomes "add a second Price + raise the cap for households
   on it" (pricing §7), and the reserved future axes — retention length (the
   per-deploy horizon constants at
-  [`RetentionSweepJob.scala:56-58`](../../api/src/usage/RetentionSweepJob.scala))
+  [`RetentionSweepJob.scala:56-59`](../../api/src/usage/RetentionSweepJob.scala))
   and alerting — plug into the same lookup **later**. Per pricing §6 they are
   reserved, **not built** now.
 - No code special-cases household 1 or founding households — their higher cap
