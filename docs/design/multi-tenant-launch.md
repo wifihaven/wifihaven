@@ -5,7 +5,8 @@ business decisions in [`pricing-analysis.md`](pricing-analysis.md) (#2117,
 merged PR [#2118](https://github.com/wifihaven/wifihaven/pull/2118)), scope
 decomposition in the Phase-5 execution-plan comment on
 [#622](https://github.com/wifihaven/wifihaven/issues/622) (2026-07-08) and its
-P5-8 addition (2026-07-09), plus the operator's beta-gating decision
+P5-8 addition (2026-07-08 UTC; the sub-issue scope-addition notes label it
+2026-07-09), plus the operator's beta-gating decision
 (2026-07-08: request-access with manual approval, no open signup). This doc
 **consolidates** those decisions into one reviewable design; it does not open
 them. Execution is already underway — live status in [§8](#8-execution-map).
@@ -96,7 +97,7 @@ constants of the design, and the marketing copy must match them verbatim (§7):
 
 Plus one operator decision made after the pricing doc merged (2026-07-08,
 recorded in the #622 plan comment): **beta access is request-based with manual
-operator approval — no open self-serve signup.** And a second (2026-07-09,
+operator approval — no open self-serve signup.** And a second (2026-07-08,
 P5-8 comment on #622): **the same username must work in different households**,
 so the login page gains a household field (§4).
 
@@ -234,7 +235,9 @@ is ambiguous. Verified call sites (2026-07-08, current `main`):
 - login — [`AuthService.scala:93`](../../api/src/auth/AuthService.scala)
 - verify / token_version — [`AuthService.scala:172`](../../api/src/auth/AuthService.scala)
 - password change — [`AuthService.scala:212`](../../api/src/auth/AuthService.scala), [`:223`](../../api/src/auth/AuthService.scala)
-- enrollment household lookup — [`RouterRoutes.scala:226`](../../api/src/routes/RouterRoutes.scala)
+- router create (enrollment-token mint) resolving the creating admin's
+  household — [`RouterRoutes.scala:226`](../../api/src/routes/RouterRoutes.scala)
+  (inside the `POST /api/admin/routers` handler, `:215`)
 
 Authenticated paths already carry the household (`claims.hh`,
 [#2105](https://github.com/wifihaven/wifihaven/issues/2105)) and simply
@@ -504,7 +507,7 @@ current waves):
 ## 11. References
 
 - Epic: [#622](https://github.com/wifihaven/wifihaven/issues/622) — Phase-5
-  execution-plan comment (2026-07-08) + P5-8 addition (2026-07-09)
+  execution-plan comment (2026-07-08) + P5-8 addition (same day, UTC)
 - Business decisions: [`pricing-analysis.md`](pricing-analysis.md)
   ([#2117](https://github.com/wifihaven/wifihaven/issues/2117))
 - Substrate: [`multi-tenant-isolation.md`](multi-tenant-isolation.md)
