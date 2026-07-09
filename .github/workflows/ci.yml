@@ -304,12 +304,22 @@ jobs:
 
       - name: Resolve base SHA
         id: base
-        # pull_request → PR base; merge_group → merge-base; push → before-SHA.
+        # pull_request → PR base; merge_group → merge-base; push → before-SHA;
+        # workflow_dispatch → HEAD's parent. The `changes` job treats
+        # push|workflow_dispatch identically (all='true'), so this job runs on
+        # a manual CD dispatch too — but `github.event.before` only exists on
+        # push, so a dispatch left BASE_SHA empty and check-migrations.sh
+        # exited on its `${1:?usage}` guard, reding Master Router CD's
+        # migrations-immutable gate on every manual dispatch (see #2143).
+        # fetch-depth: 0 above makes HEAD^ available; diffing the tip commit
+        # against its parent matches the single-merge push case and the
+        # duplicate-version scan runs regardless of base.
         run: |
           case "${{ github.event_name }}" in
-            pull_request) echo "sha=${{ github.event.pull_request.base.sha }}" >> "$GITHUB_OUTPUT" ;;
-            merge_group)  echo "sha=${{ github.event.merge_group.base_sha }}"  >> "$GITHUB_OUTPUT" ;;
-            push)         echo "sha=${{ github.event.before }}"                >> "$GITHUB_OUTPUT" ;;
+            pull_request)      echo "sha=${{ github.event.pull_request.base.sha }}" >> "$GITHUB_OUTPUT" ;;
+            merge_group)       echo "sha=${{ github.event.merge_group.base_sha }}"  >> "$GITHUB_OUTPUT" ;;
+            push)              echo "sha=${{ github.event.before }}"                >> "$GITHUB_OUTPUT" ;;
+            workflow_dispatch) echo "sha=$(git rev-parse HEAD^)"                    >> "$GITHUB_OUTPUT" ;;
           esac
 
       - name: Reject changes to existing migration files
