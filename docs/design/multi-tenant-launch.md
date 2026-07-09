@@ -91,7 +91,7 @@ constants of the design, and the marketing copy must match them verbatim (§7):
 | Founding discount | **$6/mo (or $57/yr) for as long as they stay subscribed** — Stripe coupon 40% off, `duration=forever` | pricing §1/§5.5 |
 | Self-hosted | **free forever, stated out loud** | pricing §1/§3 |
 | Stripe surface | 1 Product + 2 Prices + 1 forever-coupon + Checkout + Portal + webhook — nothing else | pricing §7 |
-| Non-conversion / dunning | read-only **grace**, never brick the network | pricing §5.4 |
+| Non-conversion / dunning | **enforcement stops** (fail-open, like a removed router); monitoring + edits continue; **6-month data grace, then deletion**. Never brick the network. **Supersedes** pricing §5.4's read-only grace | operator decision 2026-07-09, §5.3 |
 | Multi-router | capability ships (internal/founding only); public plan says 1 router; multi-home tier later at ~1.5–2× | pricing §1/§6 |
 | Entitlements | resolve **per household**, never global constants | pricing §7 |
 
@@ -276,10 +276,22 @@ boolean, `current_period_end`, and the load-bearing column:
 
 ```
 status: 'beta' → 'active'                    (checkout.session.completed)
-        'beta' → 'grace'  → 'locked'         (non-conversion at flip, #2137)
-        'active' → 'grace' → 'locked'        (dunning lapse, #2135 webhook)
-        'grace' → 'active'                   (recovery via Checkout/Portal)
+        'beta' → 'lapsed'                    (non-conversion at flip, #2137)
+        'active' → 'lapsed'                  (dunning lapse, #2135 webhook)
+        'lapsed' → 'active'                  (recovery via Checkout/Portal)
+        'lapsed' ──6 months──► data deleted  (household purge job)
 ```
+
+> **Superseding decision (operator, 2026-07-09).** This replaces the
+> `grace`/`locked` read-only model from pricing §5.4 (and the `grace`/`locked`
+> statuses in the original #2131/#2135/#2137 issue bodies). On lapse the
+> household is **not** put read-only — **enforcement stops** (§5.3): without
+> enforcement there is no value, so the lapse consequence *is* losing
+> enforcement, exactly as when a household's router is removed. Monitoring
+> (traffic ingest, dashboards) and edits keep working. A `lapsed_at`
+> timestamp starts a **6-month grace period**, after which the household's
+> data is deleted. #2131 has not shipped, so V66's `status` CHECK is cheap to
+> change now (`'beta','active','lapsed'`).
 
 **There is deliberately ONE state machine** serving both the non-conversion
 flip and the dunning lapse (pricing §7 "one state machine serves both paths";
@@ -303,7 +315,8 @@ Endpoints: authenticated `POST /api/billing/checkout`,
 [`docs/process/security.md`](../process/security.md)). Webhook transitions
 (#2135 scope item 4): `checkout.session.completed` → `active` (+ store
 subscription/price ids); terminal `invoice.payment_failed` /
-`customer.subscription.deleted` → `grace`. A minimal SPA billing page shows
+`customer.subscription.deleted` → `lapsed` (§5.1; the issue body's original
+`grace` target is superseded). A minimal SPA billing page shows
 plan/status + portal + checkout entry, founding price surfaced.
 
 **Pre-build verification required** (pricing §7 caveat, restated in #2135):
@@ -320,23 +333,36 @@ events counter (bounded event-type label) + checkout outcomes, Grafana panel
 in the same PR; #2137 adds a households-by-billing-status gauge + flip-notice
 counter.
 
-### 5.3 The never-brick-the-network rule
+### 5.3 Lapse = enforcement stops (never brick, fail-open)
 
-From pricing §5.4, the strongest constraint in this phase:
+The constraint from pricing §5.4 stands:
 
 > *Never brick the network at the flip — that's the Plex mistake with worse
 > stakes (it's the family's internet).*
 
-Concretely (#2137 scope items 4–5):
+But the lapse *consequence* changed (operator decision 2026-07-09,
+superseding pricing §5.4's read-only grace): a `lapsed` household keeps its
+network and even its dashboards — it loses **enforcement**, the thing the
+subscription pays for.
 
-- **Router-wire routes are NEVER gated on billing status.** The policy
-  snapshot always serves — to `beta`, `active`, `grace`, and `locked`
-  households alike. Enforcement on the family's network keeps working
-  regardless of payment state.
-- `grace` (30 days) and `locked` gate only the **SPA-facing mutating routes**,
-  via a single middleware/guard keyed off `household_billing.status`: cloud
-  dashboards/history/edits go read-only; in `locked`, the snapshot still
-  serves and history is retained per the retention windows only.
+- **Enforcement stops.** For a `lapsed` household, `PolicyService` builds a
+  **permissive snapshot** — no `blocked`, no `extraBlocked`, no
+  `blocklistIds`, no `blockIpOnly` — through the *existing* wire fields. The
+  router stays a dumb applier and never learns why; applying an empty rule
+  set is exactly what it already does for a household with no policy, and the
+  net effect is the operator's stated analogy: as if the router had been
+  removed. No wire change, no new field (the minimal-functional-shape rule).
+- **Router-wire routes are NEVER gated on billing status.** The (permissive)
+  snapshot always serves; ingest keeps flowing.
+- **Monitoring and edits continue.** Traffic ingest, dashboards, history, and
+  policy edits all keep working — edits simply don't enforce until the
+  household converts/recovers, at which point the next snapshot re-arms
+  enforcement immediately. There is **no read-only middleware** — #2137's
+  original grace/locked mutation gate is dropped.
+- **6-month data grace, then deletion.** `lapsed_at` starts the clock; after
+  6 months a purge job deletes the household's data (exact purge scope is an
+  open question, §10.5). Recovery any time inside the window restores full
+  service with history intact.
 
 ### 5.4 Flip lifecycle (#2137)
 
@@ -352,9 +378,11 @@ Concretely (#2137 scope items 4–5):
   in v1 (no invented transport, as §3.3).
 - **In-SPA banner from T−30** for unconverted households: dismissible per
   session, flip date + one-click Checkout with the founding promo pre-applied.
-- **Feature tests**: TestClock walks a household beta → T−30 notice → flip →
-  grace (writes 403, reads OK, **router snapshot OK**) → locked; converted
-  households untouched (#2137 scope item 6).
+- **Feature tests** (reshaped from #2137 scope item 6 for the superseded
+  lapse model): TestClock walks a household beta → T−30 notice → flip →
+  lapsed (snapshot goes permissive; ingest, reads, **and writes** all keep
+  working) → recovery re-arms enforcement; converted households untouched;
+  the 6-month purge fires only after `lapsed_at + 6 months`.
 
 ---
 
@@ -431,7 +459,7 @@ the `fix/2131-v66-phase5-schema` branch is not on the remote).
 | W3 | [#2133](https://github.com/wifihaven/wifihaven/issues/2133) | SPA: `/beta`, `/welcome`, operator queue | #2132, #2140 | OPEN |
 | W3 | [#2135](https://github.com/wifihaven/wifihaven/issues/2135) | Stripe: customer, Checkout + Portal, webhook, FOUNDING | #2131, #2132 | OPEN |
 | W3 | [#2138](https://github.com/wifihaven/wifihaven/issues/2138) | marketing: CTA + pricing section | #2132 (endpoint; copy can land dark) | OPEN |
-| W4 | [#2137](https://github.com/wifihaven/wifihaven/issues/2137) | beta-flip lifecycle: date, notices, banner, grace | #2135 | OPEN |
+| W4 | [#2137](https://github.com/wifihaven/wifihaven/issues/2137) | beta-flip lifecycle: date, notices, banner, lapse (enforcement-off) | #2135 | OPEN |
 
 The W1 serialization is load-bearing: V66's `DROP DEFAULT` on the V65
 `household_id DEFAULT 1` columns
@@ -459,7 +487,7 @@ injected):
 | provisioning (#2132) | new hh-B admin sees zero hh-A rows across every listing; hh-B admin cannot read/approve `beta_requests`; invite not replayable |
 | login (#2140) | same username in two households: each slug logs into its own household; wrong slug + right password fails like a bad password; absent slug → default household; verify/password-change resolve within `claims.hh` |
 | router cap (#2134) | hh-B's router count never affects hh-A's cap check |
-| billing lifecycle (#2137) | grace/locked gates only the household's own SPA mutations; the router snapshot serves regardless of billing status |
+| billing lifecycle (#2137) | a lapsed hh-B's permissive snapshot never affects hh-A's enforcement; the (permissive) snapshot serves regardless of billing status; the purge deletes only the lapsed household's rows |
 
 The billing/webhook and marketing surfaces add no new cross-household read
 paths (webhook resolves a household by its own `stripe_customer_id`; the
@@ -494,7 +522,21 @@ current waves):
    the founding mechanism needs a fallback (e.g. pinning an older API
    version, or a repeating-duration coupon with the longest allowed horizon —
    **a decision to bring back to the operator, not to make silently**).
-4. **Citation drift in #2138**: the issue cites the CORS surfaces at
+4. **Issue bodies predate the lapse decision.** #2131 (V66 `status` CHECK
+   with `'grace','locked'`), #2135 (webhook → `grace`), and #2137 (read-only
+   grace middleware, grace→locked walk) all describe the superseded
+   read-only model and need scope-change notes before their do-er sessions
+   start — cheap now since none has a PR. The 6-month **purge job itself has
+   no issue yet** and needs one (it is new work: a scheduled deletion of a
+   lapsed household's data, alongside but distinct from the per-table
+   retention sweeps).
+5. **Purge scope is undefined.** "Data is deleted" after 6 months lapsed —
+   but *which* data? Everything including the `households`/`users` rows and
+   Stripe customer linkage (a re-signup starts fresh), or usage/history only
+   (the account shell survives)? And does the deletion need an exported
+   copy / notice first? **Operator call needed before #2137's purge work is
+   scoped.**
+6. **Citation drift in #2138**: the issue cites the CORS surfaces at
    `Config.scala:101,:165`; on current `main` they are at
    [`Config.scala:120`](../../api/src/Config.scala) (`CorsConfig.allowedOrigins`)
    and [`:135`](../../api/src/Config.scala) (`uiAllowedHosts`) /
