@@ -172,6 +172,32 @@ above is now wrong, fix the step too — don't just log around it.
 
 ## Learnings log (newest first)
 
+- **2026-07-08 (#2129)** — A pass can be a clean no-op: not only ZERO new apps
+  but ZERO host-set gaps either (unlike #2058, which found an existing-app
+  mirror gap). Every apex with real kid traffic mapped to an existing app or
+  `games.yml`, and the coverage sweep against per-app host-sets found nothing
+  missing. When the traffic surfaces no cluster AND no gap, that IS the outcome
+  — file the pass issue, ship the evidence doc + this Step-6 entry as a tiny
+  skill-only PR, and don't force a marginal app.
+- **2026-07-08 (#2129)** — `unity3d.com` is a trap: it surfaced at 1.6 MB but
+  every observed subdomain was `*.mediation.unity3d.com` / `*-adq.` / `*.isx.` —
+  Unity **Ads** RTB/mediation, not the game engine. Reinforces the #1922
+  "classify by subdomain shape, not apex name" rule: `mediation`/`adq`/`isx`/
+  `sync`/`prebid`/`rtb`/`exchange` = ad-tech, skip.
+- **2026-07-08 (#2129)** — `media.tenor.com` (Google's embedded-GIF CDN,
+  giphy-adjacent) and `api.elevenlabs.io` are collateral, not apps: a single
+  `media.`/`api.`/CDN host with no branded web surface the kid navigates to is
+  skip-with-note even if giphy/an-app exists for the same *category*. Tenor is a
+  watch-item — template it alongside `giphy` only if real navigational traffic
+  (not just embedded media) appears. Also: music-gear retail (`sweetwater.com`,
+  `reverb.com`) is adult shopping, never a kid app.
+- **2026-07-08 (#2129)** — LEGO sub-experience scoping (#1815) held up under a
+  fresh 1 GB / 1089-hit sample: all observed building subdomains
+  (`api.prod.{cobuild,dbix}.i.lego.com`, `*.services.lego.com`,
+  `buggy.apps.lego.com`) suffix-match the 4 scoped entries; the uncovered
+  `www`/`avatar`/`identity`/`consent`/`analytics` hosts are the correctly-
+  excluded shop side. A scoped app needs no extension just because new
+  subdomains appear — check whether they fall under an existing entry first.
 - **2026-06-29 (#2058)** — A mature catalog means the typical pass yields ZERO
   new apps: every >1 MB uncovered apex was shared infra/CDN, ad-tech/RTB,
   shared corporate (Adobe/Autodesk), or analytics/support. The valuable finding
