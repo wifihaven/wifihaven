@@ -272,7 +272,9 @@ the first potentially-colliding usernames (#2140 / #2133 scope addition).
 
 One row per household (V66, #2131 scope item 2): `household_id` PK,
 `stripe_customer_id` / `stripe_subscription_id` / `price_id`, `founding`
-boolean, `current_period_end`, and the load-bearing column:
+boolean, `current_period_end`, `lapsed_at` (set on entering `lapsed`; starts
+the §5.3 6-month deletion clock — an addition to #2131's original column
+list), and the load-bearing column:
 
 ```
 status: 'beta' → 'active'                    (checkout.session.completed)
