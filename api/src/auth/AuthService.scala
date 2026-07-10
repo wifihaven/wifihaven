@@ -107,9 +107,12 @@ class AuthServiceLive(
   // wrong household — we still run a bcrypt verify against this hash so the failure's timing shape
   // matches a genuine wrong-password (which does run bcrypt). This closes the username/household
   // enumeration oracle required by #2140 scope item 3. The verify always returns false; the value
-  // is never a real credential.
+  // is never a real credential. Uses the SAME `AuthService.BcryptCost` as `hashPassword` — the
+  // equalization holds only while the two costs match, so they share one constant.
   private val timingDummyHash: String =
-    BCrypt.withDefaults().hashToString(12, "wifihaven-timing-equalizer".toCharArray)
+    BCrypt
+      .withDefaults()
+      .hashToString(AuthService.BcryptCost, "wifihaven-timing-equalizer".toCharArray)
 
   def login(
       username: String,
@@ -300,7 +303,7 @@ class AuthServiceLive(
     } yield ()
 
   def hashPassword(password: String): UIO[String] =
-    ZIO.succeed(BCrypt.withDefaults().hashToString(12, password.toCharArray))
+    ZIO.succeed(BCrypt.withDefaults().hashToString(AuthService.BcryptCost, password.toCharArray))
 }
 
 object AuthService {
@@ -311,6 +314,12 @@ object AuthService {
   // #2084: minimum password length enforced on both create-user and
   // change-password — previously neither path validated strength at all.
   val MinPasswordLength: Int = 12
+
+  // The bcrypt work factor for every password hash we mint (security.md: "bcrypt cost 12").
+  // SINGLE-SOURCED on purpose (#2140): `hashPassword` and the login timing-equalizer
+  // (`timingDummyHash`) MUST use the same cost, or the no-user login path diverges in latency from a
+  // genuine wrong-password and reopens the enumeration oracle #2140 closes.
+  val BcryptCost: Int = 12
 
   def isPasswordStrongEnough(password: String): Boolean =
     password.length >= MinPasswordLength

@@ -148,6 +148,10 @@ object HouseholdRepo {
    * tests inject the DB-backed [[HouseholdRepoLive]] instead.
    */
   val defaultOnly: HouseholdRepo = new HouseholdRepo {
+    // The default household's slug is `default` — backfilled by V66
+    // (`V66__beta_requests_billing_entitlements.sql`: `UPDATE households SET slug = 'default'
+    // WHERE id = 1`). This shim mirrors only that one row; every other slug resolves via the
+    // DB-backed HouseholdRepoLive.
     def findIdBySlug(slug: String): Task[Option[HouseholdId]] =
       ZIO.succeed(Option.when(slug == "default")(HouseholdId.Default))
   }
