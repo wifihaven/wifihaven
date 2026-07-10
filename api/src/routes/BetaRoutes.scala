@@ -46,9 +46,10 @@ object BetaRoutes {
           val handle: ZIO[Any, ApiError, Response] = for {
             allowed <- rateLimiter.tryAcquire(s"beta-request:${clientIp(req)}")
             _       <- ZIO
-              .fail(ApiError.RateLimited("Too many requests; try again later"))
-              .tap(_ => AppMetrics.recordBetaPipeline("request", "rate_limited"))
-              .unless(allowed)
+              .unless(allowed)(
+                AppMetrics.recordBetaPipeline("request", "rate_limited") *>
+                  ZIO.fail(ApiError.RateLimited("Too many requests; try again later")),
+              )
             body    <- req.body.asString.orElseFail(ApiError.BadRequest(""))
             cr0     <- ZIO
               .fromEither(body.fromJson[CreateBetaRequest])
@@ -94,7 +95,7 @@ object BetaRoutes {
               .someOrFail(ApiError.NotFound("beta request not found"))
             resp     <- beta
               .approve(request, operator)
-              .tapError(_ => AppMetrics.recordBetaPipeline("approve", approveOutcome(request)))
+              .tapError(e => AppMetrics.recordBetaPipeline("approve", approveOutcome(e)))
               .mapError(betaErrorToApi)
             _        <- AppMetrics.recordBetaPipeline("approve", "ok")
           } yield Response.json(resp.toJson)
@@ -111,10 +112,10 @@ object BetaRoutes {
             ok       <- betaRepo
               .reject(BetaRequestId(id), operator, now)
               .mapError(ApiError.Db(_))
-            _        <- ZIO
-              .fail(ApiError.NotFound("no pending beta request with that id"))
-              .tap(_ => AppMetrics.recordBetaPipeline("reject", "not_pending"))
-              .unless(ok)
+            _        <- ZIO.unless(ok)(
+              AppMetrics.recordBetaPipeline("reject", "not_pending") *>
+                ZIO.fail(ApiError.NotFound("no pending beta request with that id")),
+            )
             _        <- AppMetrics.recordBetaPipeline("reject", "ok")
           } yield Response.ok
           handle.mapError(ErrorMapper.errorToResponse)
@@ -141,6 +142,10 @@ object BetaRoutes {
   // Resolve the deciding operator's UserId from their JWT `sub` via UserRepo (the operator is a real
   // household-1 admin, like RouterRoutes #2106 resolves the enrolling admin). A valid operator token
   // always names an existing user, so a miss is a 401.
+  // TODO(#2140): `findByUsername` is un-scoped and ambiguous now that username is
+  // UNIQUE(household_id, username). Harmless here — the operator is always household 1 and no
+  // colliding usernames exist until #2133 — and it mirrors the RouterRoutes #2106 pattern; it will
+  // be resolved when #2140 scopes findByUsername to (hh, username).
   private def operatorUserId(userRepo: UserRepo, claims: JwtClaims): IO[ApiError, UserId] =
     userRepo
       .findByUsername(claims.sub)
@@ -165,8 +170,10 @@ object BetaRoutes {
       householdId = r.householdId,
     )
 
-  private def approveOutcome(request: DbBetaRequest): String =
-    if request.status != BetaRequestStatus.Pending then "not_pending" else "error"
+  private def approveOutcome(e: BetaError): String = e match {
+    case BetaError.NotPending => "not_pending"
+    case _                    => "error"
+  }
 
   private def acceptOutcome(e: BetaError): String = e match {
     case BetaError.InvalidToken => "invalid_token"

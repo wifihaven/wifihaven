@@ -93,6 +93,11 @@ object MetricGuard {
       // (traffic_reports | connection_events — PartitionRepo.PartitionedTables); bounded by
       // the schema, not by user/device/flow growth, so it satisfies the §4 cardinality firewall.
       "table",
+      // #2132 — beta-pipeline stage for `wifihaven_beta_pipeline_total`. A fixed 4-value enum
+      // (request | approve | reject | accept — the pipeline surfaces in BetaRoutes); bounded by
+      // the code, not by user/household growth, so it satisfies the §4 cardinality firewall.
+      // (`outcome` is already a known key.)
+      "stage",
     )
 
   /**
@@ -361,6 +366,11 @@ object MetricGuard {
     "wifihaven_db_pool_total_connections"  -> Set.empty[String],
     "wifihaven_db_pool_threads_awaiting_connection" -> Set.empty[String],
     "wifihaven_db_pool_max_size"                    -> Set.empty[String],
+    // #2132 — beta request → provisioning pipeline outcomes. `stage` ∈ {request, approve, reject,
+    // accept} and `outcome` a small fixed enum per stage (see AppMetrics.recordBetaPipeline);
+    // both bounded, never a per-email / per-household value. Without this entry the firewall would
+    // reject the name as unknown_name and the series would never emit (the #808 lesson).
+    "wifihaven_beta_pipeline_total"                 -> Set("stage", "outcome"),
   )
 
   private val rejected = Metric.counter("metrics_rejected_total")
