@@ -27,24 +27,31 @@ object JwtHouseholdClaimSpec
     TestDatabase.layer ++ TestLayers.withClock(TestClock.schoolDayAfternoon)
 
   private val jwtCfg   = JwtConfig(secret = "test-secret-at-least-32-chars!!x", expiryHours = 1)
+  // #2140: inject the DB-backed HouseholdRepo so login can resolve a non-default household's slug.
   private def makeAuth =
     for {
       ur    <- ZIO.service[UserRepo]
+      hr    <- ZIO.service[HouseholdRepo]
       clock <- ZIO.service[Clock]
-    } yield AuthServiceLive(ur, jwtCfg, clock)
+    } yield AuthServiceLive(ur, jwtCfg, clock, hr)
   private val cleanDb  = TestDatabase.cleanAndMigrate
 
-  /** Insert a second household and a user in it, returning that household's id. */
+  // #2140: the second household's login slug — usernames are unique per household now, so `beta`
+  // authenticates only when the request names this household.
+  private val secondSlug = "second"
+
+  /** Insert a second household (with a slug) and a user in it, returning that household's id. */
   private def seedUserInSecondHousehold(
       username: String,
       passwordHash: String,
   ): ZIO[Transactor[Task], Throwable, Long] =
     for {
       xa <- ZIO.service[Transactor[Task]]
-      hh <- sql"INSERT INTO households(name) VALUES ('Second household') RETURNING id"
-        .query[Long]
-        .unique
-        .transact(xa)
+      hh <-
+        sql"INSERT INTO households(name, slug) VALUES ('Second household', $secondSlug) RETURNING id"
+          .query[Long]
+          .unique
+          .transact(xa)
       _  <- sql"""INSERT INTO users(username,password_hash,role,household_id)
                   VALUES ($username,$passwordHash,'admin',$hh)""".update.run.transact(xa)
     } yield hh
@@ -66,7 +73,7 @@ object JwtHouseholdClaimSpec
         hash   <- makeAuth.flatMap(_.hashPassword("changeme"))
         hh     <- seedUserInSecondHousehold("beta", hash)
         auth   <- makeAuth
-        token  <- auth.login("beta", "changeme").map(_.token.value)
+        token  <- auth.login("beta", "changeme", Some(secondSlug)).map(_.token.value)
         claims <- auth.verify(token)
       } yield assertTrue(claims.hh == HouseholdId(hh))
     },

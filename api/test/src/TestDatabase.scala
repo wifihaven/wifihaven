@@ -184,10 +184,11 @@ object TestDatabase {
    * bootstrap layer always provides it.
    */
   type AllRepos =
-    TestDb & UserRepo & UserProfileRepo & ProfileRepo & NamedScheduleRepo & HouseholdSettingsRepo &
-      TimeLimitRepo & AppTimeLimitRepo & DeviceRepo & BlocklistRepo & TimeUsageRepo &
-      TimeExtensionRepo & RouterRepo & TrafficReportRepo & BlockEventRepo & ConnectionEventRepo &
-      AlertRepo & AppRepo & RollupRepo & TimeUsedRollupRepo & AppUsedRollupRepo & AmbientHostsRepo
+    TestDb & UserRepo & HouseholdRepo & UserProfileRepo & ProfileRepo & NamedScheduleRepo &
+      HouseholdSettingsRepo & TimeLimitRepo & AppTimeLimitRepo & DeviceRepo & BlocklistRepo &
+      TimeUsageRepo & TimeExtensionRepo & RouterRepo & TrafficReportRepo & BlockEventRepo &
+      ConnectionEventRepo & AlertRepo & AppRepo & RollupRepo & TimeUsedRollupRepo &
+      AppUsedRollupRepo & AmbientHostsRepo
 
   val layer: ZLayer[Any, Throwable, EmbeddedPostgres & TestDb & Transactor[Task] & AllRepos] = {
     val pg = embeddedPg
@@ -302,6 +303,12 @@ object TestLayers {
       adminA: String,
       adminB: String,
       password: String,
+      // #2140: each household's login slug (`households.slug`, V66). Household A is the default
+      // install (slug `default`, set by V66's backfill). Household B gets an explicit slug so a spec
+      // can `auth.login(adminB, password, Some(slugB))` — now that usernames are per-household,
+      // adminB no longer authenticates against the default household without its slug.
+      slugA: String,
+      slugB: String,
   )
 
   /**
@@ -341,10 +348,13 @@ object TestLayers {
       profileA <- pr.create("A-Kids", Nil)
       _        <- dr.upsert(macA, "devA", Some(profileA), "192.168.1.10")
       // Household B: a new households row + its profile/device via raw SQL (E owns the write path).
-      hhB      <- sql"INSERT INTO households(name) VALUES ('B household') RETURNING id"
-        .query[HouseholdId]
-        .unique
-        .transact(xa)
+      // #2140: stamp an explicit slug so household B is reachable at login (V66's backfill only
+      // slugs pre-existing rows; a test-inserted household would otherwise have NULL slug).
+      hhB      <-
+        sql"INSERT INTO households(name, slug) VALUES ('B household', 'household-b') RETURNING id"
+          .query[HouseholdId]
+          .unique
+          .transact(xa)
       // profileB is paused so a cross-household leak on the /decision path is observable: if
       // household A's decide ever resolved this row it would BLOCK, but scoped correctly A never
       // finds it and allows.
@@ -385,6 +395,8 @@ object TestLayers {
       adminA = "admin",
       adminB = "adminB",
       password = "changeme",
+      slugA = "default",
+      slugB = "household-b",
     )
   }
 }

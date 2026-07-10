@@ -64,11 +64,24 @@ object MultiTenantIsolationSpec
   private def makeAuth =
     for {
       ur    <- ZIO.service[UserRepo]
+      // #2140: inject the DB-backed HouseholdRepo so login can resolve household B's slug (the
+      // default-only stub the 3-arg constructor supplies knows only slug `default`).
+      hr    <- ZIO.service[HouseholdRepo]
       clock <- ZIO.service[Clock]
-    } yield AuthServiceLive(ur, jwt, clock): AuthService
+    } yield AuthServiceLive(ur, jwt, clock, hr): AuthService
 
-  private def login(auth: AuthService, user: String, pw: String): Task[String] =
-    auth.login(user, pw).mapError(e => new RuntimeException(s"login failed: $e")).map(_.token.value)
+  // #2140: usernames are unique per household, so a login must name the target household by slug
+  // (except the default household, whose slug is `default` / absent). adminB lives in household B.
+  private def login(
+      auth: AuthService,
+      user: String,
+      pw: String,
+      slug: Option[String] = None,
+  ): Task[String] =
+    auth
+      .login(user, pw, slug)
+      .mapError(e => new RuntimeException(s"login failed: $e"))
+      .map(_.token.value)
 
   private def getJson(
       routes: Routes[Any, Response],
@@ -109,7 +122,7 @@ object MultiTenantIsolationSpec
         nsr    <- ZIO.service[NamedScheduleRepo]
         auth   <- makeAuth
         tokenA <- login(auth, two.adminA, two.password)
-        tokenB <- login(auth, two.adminB, two.password)
+        tokenB <- login(auth, two.adminB, two.password, Some(two.slugB))
         routes = ProfileRoutes.routes(auth, pr, tlr, up, ur, nsr)
         (sA, bodyA) <- getJson(routes, "/api/profiles", tokenA)
         (sB, bodyB) <- getJson(routes, "/api/profiles", tokenB)
@@ -130,7 +143,7 @@ object MultiTenantIsolationSpec
         pr     <- ZIO.service[ProfileRepo]
         auth   <- makeAuth
         tokenA <- login(auth, two.adminA, two.password)
-        tokenB <- login(auth, two.adminB, two.password)
+        tokenB <- login(auth, two.adminB, two.password, Some(two.slugB))
         routes = DeviceRoutes.routes(auth, dr, up, pr)
         (sA, bodyA) <- getJson(routes, "/api/devices", tokenA)
         (sB, bodyB) <- getJson(routes, "/api/devices", tokenB)
@@ -223,7 +236,7 @@ object MultiTenantIsolationSpec
         tss = new TimeStatusServiceLive(pr, tlr, atlr, dr, tr, er)
         auth   <- makeAuth
         tokenA <- login(auth, two.adminA, two.password)
-        tokenB <- login(auth, two.adminB, two.password)
+        tokenB <- login(auth, two.adminB, two.password, Some(two.slugB))
         routes = TimeRoutes.routes(auth, dr, tlr, atlr, tr, er, pr, up, hsr, tss, clk)
         (sA, bodyA) <- getJson(routes, "/api/time/status", tokenA)
         (sB, bodyB) <- getJson(routes, "/api/time/status", tokenB)
@@ -306,7 +319,7 @@ object MultiTenantIsolationSpec
         xa     <- ZIO.service[Transactor[Task]]
         auth   <- makeAuth
         tokenA <- login(auth, two.adminA, two.password)
-        tokenB <- login(auth, two.adminB, two.password)
+        tokenB <- login(auth, two.adminB, two.password, Some(two.slugB))
         routes     = AuthRoutes.routes(auth, ur, up, RateLimiter.allowAll)
         createBody = CreateUserRequest("kid-b", "kid-b-password!", UserRole.Child, Nil).toJson
         resp        <- routes.runZIO(
@@ -323,9 +336,11 @@ object MultiTenantIsolationSpec
         // Visible to B's admin via the scoped read, invisible to A's.
         (sB, bodyB) <- getJson(routes, "/api/users", tokenB)
         (sA, bodyA) <- getJson(routes, "/api/users", tokenA)
-        // The new user can log in and the minted JWT carries hh = B (#2105).
+        // The new user can log in (via household B's slug) and the minted JWT carries hh = B
+        // (#2105). #2140: kid-b lives in household B, so login must name it — no slug would resolve
+        // to the default household, where kid-b does not exist.
         kidLogin    <- auth
-          .login("kid-b", "kid-b-password!")
+          .login("kid-b", "kid-b-password!", Some(two.slugB))
           .mapError(e => new RuntimeException(s"login failed: $e"))
         kidClaims   <- auth
           .verify(kidLogin.token.value)

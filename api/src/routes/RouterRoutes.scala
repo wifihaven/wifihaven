@@ -216,14 +216,13 @@ object AdminRouterRoutes {
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
             claims      <- requireAdmin(req, auth)
-            // #2106 (multi-tenant, epic #622): bind the new router to the
-            // creating admin's household so it inherits tenancy at enrollment.
-            // Resolve from the admin's JWT `sub` via UserRepo — NOT a JWT `hh`
-            // claim (sub-issue B, #2105, may not be merged yet); the user-id →
-            // household lookup keeps this PR standalone. A valid admin token
-            // always names an existing user, so a missing row is a 401.
+            // #2106 (multi-tenant, epic #622): bind the new router to the creating admin's
+            // household so it inherits tenancy at enrollment. The admin's household rides in the
+            // JWT `hh` claim (#2105, now merged); we still round-trip through UserRepo — scoped to
+            // that household (#2140: usernames are unique per household only) — so a stale token
+            // naming a since-deleted user is a 401 rather than silently minting into `claims.hh`.
             householdId <- userRepo
-              .findByUsername(claims.sub)
+              .findByUsername(claims.hh, claims.sub)
               .mapError(ApiError.Db(_))
               .someOrFail(ApiError.Unauthorized("unknown admin user"))
               .map(_.householdId)

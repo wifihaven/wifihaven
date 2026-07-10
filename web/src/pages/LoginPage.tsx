@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
+import { getHouseholdCookie } from '@/api/householdCookie'
 
 export function LoginPage() {
   const { login } = useAuth()
@@ -9,13 +10,20 @@ export function LoginPage() {
   const [password, setPassword] = useState('')
   const [error,    setError]    = useState('')
   const [loading,  setLoading]  = useState(false)
+  // #2140: pre-fill the household slug from the long-lived `wh_household` cookie so returning users
+  // never retype it. Absent (default/self-hosted single-household) → empty, and the field stays
+  // collapsed behind a "Different household?" affordance. The cookie is a UX hint only — the server
+  // authenticates the submitted slug + password, never the cookie.
+  const rememberedHousehold       = getHouseholdCookie() ?? ''
+  const [household, setHousehold] = useState(rememberedHousehold)
+  const [showHousehold, setShowHousehold] = useState(rememberedHousehold.length > 0)
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setError('')
     setLoading(true)
     try {
-      const { mustChangePassword } = await login(username, password)
+      const { mustChangePassword } = await login(username, password, household.trim() || undefined)
       // #586: server sets must_change_password on the seeded admin row.
       // Redirect to the account page so the operator is forced to rotate
       // before reaching any other part of the UI.
@@ -72,6 +80,37 @@ export function LoginPage() {
               required
             />
           </div>
+
+          {/* #2140: household field — pre-filled from the wh_household cookie, collapsed behind a
+              disclosure so the default single-household case stays a plain username+password form. */}
+          {showHousehold ? (
+            <div>
+              <label className="block text-xs font-semibold text-brand-text-muted uppercase tracking-wider mb-2">
+                Household
+              </label>
+              <input
+                type="text"
+                value={household}
+                onChange={e => setHousehold(e.target.value)}
+                className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-3 text-brand-ink placeholder-brand-text-muted focus:outline-none focus:border-brand-accent transition-colors"
+                placeholder="your-household"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+              />
+              <p className="text-brand-text-muted text-xs mt-1">
+                Leave blank for the default household.
+              </p>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setShowHousehold(true)}
+              className="text-brand-text-muted hover:text-brand-accent text-xs font-medium transition-colors"
+            >
+              Different household?
+            </button>
+          )}
 
           {error && (
             <div className="bg-red-500/10 border border-red-500/20 rounded-lg px-4 py-3 text-red-700 text-sm">

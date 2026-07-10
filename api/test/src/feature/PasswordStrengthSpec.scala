@@ -48,7 +48,7 @@ object PasswordStrengthSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPost
           .addHeader(Header.Authorization.Bearer(adminToken))
           .addHeader(Header.ContentType(MediaType.application.json))
         createResp <- authRoutes.runZIO(createReq)
-        found      <- userRepo.findByUsername("shortpw")
+        found      <- userRepo.findByUsername(HouseholdId.Default, "shortpw")
       } yield assertTrue(createResp.status == Status.BadRequest) &&
         assertTrue(found.isEmpty)
     },
