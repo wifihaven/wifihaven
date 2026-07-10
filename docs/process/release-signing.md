@@ -31,7 +31,7 @@ every router within the hourly auto-update cycle, with zero verification).
   [`openwrt/files/etc/wifihaven/keys/release.pub`](../../openwrt/files/etc/wifihaven/keys/release.pub),
   which every ipk/apk build copies into the package's `files/` tree (both
   `build-ipk.sh` and `build-apk.sh` stage the whole `openwrt/files/` directory
-  verbatim). Fingerprint: `31ffce31c5f1aa5d`.
+  verbatim). Fingerprint: `7882602646b7ae65`.
 
 ## Rotating the key
 
