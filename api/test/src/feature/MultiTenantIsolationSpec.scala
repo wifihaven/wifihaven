@@ -479,6 +479,7 @@ object MultiTenantIsolationSpec
         two    <- TestLayers.seedTwoHouseholds(macA, macB)
         rr     <- ZIO.service[RouterRepo]
         ur     <- ZIO.service[UserRepo]
+        en     <- ZIO.service[EntitlementsRepo]
         xa     <- ZIO.service[Transactor[Task]]
         auth   <- makeAuth
         // Confirm the fixture puts hh-B at its cap of 1 (default), while hh-A sits at 10.
@@ -488,7 +489,7 @@ object MultiTenantIsolationSpec
           .transact(xa)
         countB <- rr.listAllForHousehold(two.hhB).map(_.size)
         tokenA <- login(auth, two.adminA, two.password)
-        routes = AdminRouterRoutes.routes(auth, rr, ur)
+        routes = AdminRouterRoutes.routes(auth, rr, ur, en)
         respA       <- routes.runZIO(
           Request
             .post(

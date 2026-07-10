@@ -135,8 +135,9 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         rr         <- ZIO.service[RouterRepo]
         ber        <- ZIO.service[BlockEventRepo]
         ur         <- ZIO.service[UserRepo]
+        en         <- ZIO.service[EntitlementsRepo]
         adminLogin <- auth.login("admin", "changeme")
-        adminRoutes = AdminRouterRoutes.routes(auth, rr, ur)
+        adminRoutes = AdminRouterRoutes.routes(auth, rr, ur, en)
         agentRoutes = RouterRoutes.routes(rr, null, RouterAuthLive(rr), ber)
         createResp <- adminRoutes.runZIO(
           Request
@@ -376,9 +377,10 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         ps         <- makePolicyService
         (_, et)    <- seedRouter("gw-summary")
         ur         <- ZIO.service[UserRepo]
+        en         <- ZIO.service[EntitlementsRepo]
         adminLogin <- auth.login("admin", "changeme")
         agentRoutes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
-        adminRoutes = AdminRouterRoutes.routes(auth, rr, ur)
+        adminRoutes = AdminRouterRoutes.routes(auth, rr, ur, en)
         regResp   <- doRegister(agentRoutes, et)
         regBody   <- regResp.body.asString
         reg       <- ZIO.fromEither(regBody.fromJson[RegisterRouterResponse])
@@ -528,8 +530,9 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         adminLogin <- auth.login("admin", "changeme")
         h          <- auth.hashPassword("kp")
         _          <- ur.create("kid", h, "child")
+        en         <- ZIO.service[EntitlementsRepo]
         kidLogin   <- auth.login("kid", "kp")
-        adminRoutes = AdminRouterRoutes.routes(auth, rr, ur)
+        adminRoutes = AdminRouterRoutes.routes(auth, rr, ur, en)
         rejected <- adminRoutes.runZIO(
           Request
             .post(

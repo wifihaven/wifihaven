@@ -34,17 +34,28 @@ object RouterCapEntitlementSpec
 
   private val cleanDb = TestDatabase.cleanAndMigrate
 
+  // #2140: inject the DB-backed HouseholdRepo so login can resolve a non-default household's slug
+  // (the default-only shim the 3-arg constructor supplies knows only slug `default`).
   private def makeAuth =
     for {
       ur    <- ZIO.service[UserRepo]
+      hr    <- ZIO.service[HouseholdRepo]
       clock <- ZIO.service[Clock]
-    } yield AuthServiceLive(ur, jwtCfg, clock)
+    } yield AuthServiceLive(ur, jwtCfg, clock, hr)
 
-  /** Create a fresh household (router_cap defaults to 1 per V66), return its id. */
-  private def newHousehold(name: String): ZIO[doobie.Transactor[Task], Throwable, HouseholdId] =
+  /**
+   * Create a fresh household with a login slug (router_cap defaults to 1 per V66), return its id.
+   */
+  private def newHousehold(
+      name: String,
+      slug: String,
+  ): ZIO[doobie.Transactor[Task], Throwable, HouseholdId] =
     ZIO
       .serviceWithZIO[doobie.Transactor[Task]] { xa =>
-        sql"INSERT INTO households(name) VALUES($name) RETURNING id".query[Long].unique.transact(xa)
+        sql"INSERT INTO households(name, slug) VALUES($name, $slug) RETURNING id"
+          .query[Long]
+          .unique
+          .transact(xa)
       }
       .map(HouseholdId(_))
 
@@ -65,8 +76,10 @@ object RouterCapEntitlementSpec
   ): ZIO[doobie.Transactor[Task], Throwable, Unit] =
     for {
       h  <- auth.hashPassword("pw")
+      // ur.create defaults the new user into HouseholdId.Default; the UPDATE below moves it into
+      // `hh`, so the lookup here is still keyed on the default household.
       _  <- ur.create(username, h, "admin")
-      id <- ur.findByUsername(username).map(_.get.id)
+      id <- ur.findByUsername(HouseholdId.Default, username).map(_.get.id)
       _  <- ur.clearMustChangePassword(id)
       _  <- ZIO.serviceWithZIO[doobie.Transactor[Task]] { xa =>
         val hhVal = hh.value
@@ -96,10 +109,11 @@ object RouterCapEntitlementSpec
         auth       <- makeAuth
         rr         <- ZIO.service[RouterRepo]
         ur         <- ZIO.service[UserRepo]
-        hh         <- newHousehold("Capped household") // router_cap defaults to 1
+        en         <- ZIO.service[EntitlementsRepo]
+        hh         <- newHousehold("Capped household", "capped") // router_cap defaults to 1
         _          <- seedAdminInHousehold(auth, ur, "cappedadmin", hh)
-        adminLogin <- auth.login("cappedadmin", "pw")
-        adminRoutes = AdminRouterRoutes.routes(auth, rr, ur)
+        adminLogin <- auth.login("cappedadmin", "pw", Some("capped"))
+        adminRoutes = AdminRouterRoutes.routes(auth, rr, ur, en)
         // First router fills the cap of 1.
         first  <- postCreate(adminRoutes, adminLogin.token.value, "gw-1")
         // Second must be rejected — the plan includes 1 router.
@@ -117,11 +131,12 @@ object RouterCapEntitlementSpec
         auth       <- makeAuth
         rr         <- ZIO.service[RouterRepo]
         ur         <- ZIO.service[UserRepo]
-        hh         <- newHousehold("Roomy household")
+        en         <- ZIO.service[EntitlementsRepo]
+        hh         <- newHousehold("Roomy household", "roomy")
         _          <- setRouterCap(hh, 2)
         _          <- seedAdminInHousehold(auth, ur, "roomyadmin", hh)
-        adminLogin <- auth.login("roomyadmin", "pw")
-        adminRoutes = AdminRouterRoutes.routes(auth, rr, ur)
+        adminLogin <- auth.login("roomyadmin", "pw", Some("roomy"))
+        adminRoutes = AdminRouterRoutes.routes(auth, rr, ur, en)
         first  <- postCreate(adminRoutes, adminLogin.token.value, "gw-1")
         second <- postCreate(adminRoutes, adminLogin.token.value, "gw-2")
         count  <- rr.listAllForHousehold(hh).map(_.size)
@@ -134,10 +149,11 @@ object RouterCapEntitlementSpec
         auth       <- makeAuth
         rr         <- ZIO.service[RouterRepo]
         ur         <- ZIO.service[UserRepo]
-        hh         <- newHousehold("Upgrading household") // cap 1
+        en         <- ZIO.service[EntitlementsRepo]
+        hh         <- newHousehold("Upgrading household", "upgrading") // cap 1
         _          <- seedAdminInHousehold(auth, ur, "upgradeadmin", hh)
-        adminLogin <- auth.login("upgradeadmin", "pw")
-        adminRoutes = AdminRouterRoutes.routes(auth, rr, ur)
+        adminLogin <- auth.login("upgradeadmin", "pw", Some("upgrading"))
+        adminRoutes = AdminRouterRoutes.routes(auth, rr, ur, en)
         _       <- postCreate(adminRoutes, adminLogin.token.value, "gw-1") // fills cap 1
         blocked <- postCreate(adminRoutes, adminLogin.token.value, "gw-2") // rejected
         // Raise the cap on the DB column — no code special-cases the id.

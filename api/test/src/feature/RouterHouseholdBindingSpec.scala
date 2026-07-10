@@ -127,7 +127,8 @@ object RouterHouseholdBindingSpec
         _          <- seedAdminInHousehold(auth, ur, "betaadmin", hhB)
         // #2140: betaadmin lives in household `beta`, so login must name it via slug.
         adminLogin <- auth.login("betaadmin", "pw", Some("beta"))
-        adminRoutes = AdminRouterRoutes.routes(auth, rr, ur)
+        en         <- ZIO.service[EntitlementsRepo]
+        adminRoutes = AdminRouterRoutes.routes(auth, rr, ur, en)
         agentRoutes = RouterRoutes.routes(rr, null, RouterAuthLive(rr), ber)
         created <- createRouter(adminRoutes, adminLogin.token.value, "beta-gw")
         reg     <- register(agentRoutes, created.enrollmentToken)
