@@ -39,6 +39,11 @@ object AlertApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
 
   private val noopNotifier: Notifier = new Notifier {
     def alertCreated(a: Alert): UIO[Unit] = ZIO.unit
+    def betaHouseholdProvisioned(
+        email: String,
+        slug: String,
+        hh: wifihaven.shared.types.HouseholdId,
+    ): UIO[Unit] = ZIO.unit
   }
 
   private val mac1       = MacAddress.unsafe("aa:bb:cc:11:22:33")

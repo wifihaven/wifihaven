@@ -15,6 +15,7 @@ case class AppConfig(
     metrics: MetricsConfig = MetricsConfig(),
     ws: WsConfig = WsConfig(),
     partition: PartitionConfig = PartitionConfig(),
+    beta: BetaConfig = BetaConfig(),
 ) {
   // WIFIHAVEN_DEBUG env var: when set to a non-empty, non-"0"/"false"/"no"
   // value, mounts the read-only /api/debug/* endpoints (loopback only).
@@ -225,6 +226,25 @@ case class PartitionConfig(
     weeksAhead: Int = 6,
 ) {
   val weeksAheadClamped: Int = math.max(2, weeksAhead)
+}
+
+// #2132 (multi-tenant P5-2, epic #622) — beta request → provisioning pipeline.
+// `inviteBaseUrl` is the SPA origin the operator-issued invite link points at
+// (design §3.4: the accept page is `/welcome?token=…`); the approve response
+// returns `<inviteBaseUrl>/welcome?token=…` for the operator to send manually.
+// `inviteTtlHours` is the single-use invite token lifetime (design §3.3: ~7 days,
+// following the enrollment-token conventions in docs/process/security.md). Absent
+// HOCON block uses the defaults (the cloud app apex + 7 days).
+case class BetaConfig(
+    inviteBaseUrl: String = "https://app.wifihaven.net",
+    inviteTtlHours: Int = 168,
+) {
+  // Clamp to a 1h floor so a misconfigured 0/negative can't mint already-expired tokens.
+  val inviteTtl: zio.Duration = zio.Duration.fromSeconds(math.max(1, inviteTtlHours).toLong * 3600)
+
+  /** The full invite URL for a freshly-minted token — `<base>/welcome?token=…`. */
+  def inviteUrl(rawToken: String): String =
+    s"${inviteBaseUrl.stripSuffix("/")}/welcome?token=$rawToken"
 }
 
 object AppConfig {

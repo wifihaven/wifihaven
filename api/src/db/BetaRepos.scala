@@ -1,0 +1,310 @@
+package wifihaven.api.db
+
+import doobie.*
+import doobie.implicits.*
+import doobie.postgres.implicits.*
+import wifihaven.shared.*
+import wifihaven.shared.types.*
+import wifihaven.api.db.TypeMeta.given
+import zio.*
+import zio.interop.catz.*
+
+import java.time.Instant
+
+// ── Multi-tenant Phase-5 (P5-2, #2132, epic #622) repos ─────────────────────
+// The beta request → operator approval → provisioning → invite accept pipeline
+// (design docs/design/multi-tenant-launch.md §3). These are the FIRST repos to
+// write the `households` and `household_billing` tables from application code —
+// before this the single install / default household was V1-seed-only.
+
+/** A `households` row (name + human-facing slug + per-household router entitlement). */
+case class Household(
+    id: HouseholdId,
+    name: String,
+    // Nullable in V66 (schema-only PR couldn't SET NOT NULL — TODO(#2142)); provisioning
+    // (this issue) always sets it, so new households carry a slug.
+    slug: Option[String],
+    routerCap: Int,
+)
+
+/**
+ * A `household_billing` row (design §5.1). Minimal at provisioning time: `status='beta'`,
+ * `founding=true`, no Stripe linkage yet — the Stripe Customer/subscription columns are the seam
+ * #2135 fills (Customer at conversion, never during beta).
+ */
+case class HouseholdBilling(
+    householdId: HouseholdId,
+    stripeCustomerId: Option[String],
+    stripeSubscriptionId: Option[String],
+    priceId: Option[String],
+    status: String,
+    founding: Boolean,
+    currentPeriodEnd: Option[Instant],
+    lapsedAt: Option[Instant],
+)
+
+/** A `beta_requests` row (design §3.1). The invite token is stored ONLY as a hash. */
+case class DbBetaRequest(
+    id: BetaRequestId,
+    email: String,
+    name: Option[String],
+    note: Option[String],
+    status: BetaRequestStatus,
+    requestedAt: Instant,
+    decidedAt: Option[Instant],
+    decidedBy: Option[UserId],
+    inviteTokenHash: Option[Sha256Hex],
+    inviteExpiresAt: Option[Instant],
+    householdId: Option[HouseholdId],
+)
+
+// ── HouseholdRepo ────────────────────────────────────────────────────────────
+
+/**
+ * #2132: the minimal `HouseholdRepo` — none existed (households were V1-seed-only). `create` and
+ * the `find*` reads back the general household needs; login (#2140) will read `findBySlug`.
+ * Provisioning itself uses the atomic [[BetaRequestRepo.approveAndProvision]] transaction, not
+ * `create`, so the household + billing + beta-request stamp land together.
+ */
+trait HouseholdRepo {
+  def create(name: String, slug: String, routerCap: Int = 1): Task[HouseholdId]
+  def findById(id: HouseholdId): Task[Option[Household]]
+  def findBySlug(slug: String): Task[Option[Household]]
+}
+
+class HouseholdRepoLive(xa: Transactor[Task]) extends HouseholdRepo {
+  private val cols = fr"id, name, slug, router_cap"
+  private type Row = (HouseholdId, String, Option[String], Int)
+  private def toHousehold(r: Row): Household = Household(r._1, r._2, r._3, r._4)
+
+  def create(name: String, slug: String, routerCap: Int) =
+    sql"INSERT INTO households(name, slug, router_cap) VALUES($name, $slug, $routerCap) RETURNING id"
+      .query[HouseholdId]
+      .unique
+      .transact(xa)
+
+  def findById(id: HouseholdId) =
+    (fr"SELECT" ++ cols ++ fr"FROM households WHERE id=$id")
+      .query[Row]
+      .map(toHousehold)
+      .option
+      .transact(xa)
+
+  def findBySlug(slug: String) =
+    (fr"SELECT" ++ cols ++ fr"FROM households WHERE slug=$slug")
+      .query[Row]
+      .map(toHousehold)
+      .option
+      .transact(xa)
+}
+
+// ── HouseholdBillingRepo ─────────────────────────────────────────────────────
+
+/**
+ * #2132: the per-household billing state row. `create` writes the provisioning-time row
+ * (`status='beta'`, `founding=true`); the Stripe-linkage setters + status transitions land in #2135
+ * (Checkout/Portal/webhook) and #2137 (flip/lapse) — this issue only opens the seam.
+ */
+trait HouseholdBillingRepo {
+  def create(householdId: HouseholdId, status: String, founding: Boolean): Task[Unit]
+  def findByHousehold(householdId: HouseholdId): Task[Option[HouseholdBilling]]
+}
+
+class HouseholdBillingRepoLive(xa: Transactor[Task]) extends HouseholdBillingRepo {
+  private val cols =
+    fr"household_id, stripe_customer_id, stripe_subscription_id, price_id, status, founding, current_period_end, lapsed_at"
+  private type Row =
+    (
+        HouseholdId,
+        Option[String],
+        Option[String],
+        Option[String],
+        String,
+        Boolean,
+        Option[Instant],
+        Option[Instant],
+    )
+  private def toBilling(r: Row): HouseholdBilling =
+    HouseholdBilling(r._1, r._2, r._3, r._4, r._5, r._6, r._7, r._8)
+
+  def create(householdId: HouseholdId, status: String, founding: Boolean) =
+    sql"INSERT INTO household_billing(household_id, status, founding) VALUES($householdId, $status, $founding)".update.run
+      .transact(xa)
+      .unit
+
+  def findByHousehold(householdId: HouseholdId) =
+    (fr"SELECT" ++ cols ++ fr"FROM household_billing WHERE household_id=$householdId")
+      .query[Row]
+      .map(toBilling)
+      .option
+      .transact(xa)
+}
+
+// ── BetaRequestRepo ──────────────────────────────────────────────────────────
+
+/**
+ * #2132: the beta-request queue (design §3). NB deliberately named `beta_requests` / `BetaRequest`,
+ * NOT "access requests" — `AccessRequest` is the existing block-page concept (do not collide).
+ *
+ * [[approveAndProvision]] is the ONE atomic provisioning transaction (design §3.3): it creates the
+ * `households` row, its `household_billing` row, and stamps the request (status → approved,
+ * decided_*, invite hash + expiry, household_id) in a single DB transaction so a partial failure
+ * never leaves an orphan household. It touches three tables because that IS the provisioning unit;
+ * the non-SQL orchestration (slug derivation, token mint, TTL) lives in `BetaService`.
+ */
+trait BetaRequestRepo {
+
+  /**
+   * Public-intake insert, idempotent on the unique email (design §3.1 / #2132 scope 1). Returns
+   * `true` if a new row was inserted, `false` if the email already had a request — the route
+   * returns a generic 200 either way, so this boolean feeds only the outcome metric, never the
+   * response.
+   */
+  def create(email: String, name: Option[String], note: Option[String]): Task[Boolean]
+  def findById(id: BetaRequestId): Task[Option[DbBetaRequest]]
+  def findByEmail(email: String): Task[Option[DbBetaRequest]]
+  def findByInviteHash(hash: Sha256Hex): Task[Option[DbBetaRequest]]
+  def listByStatus(status: BetaRequestStatus): Task[List[DbBetaRequest]]
+
+  def approveAndProvision(
+      id: BetaRequestId,
+      decidedBy: UserId,
+      householdName: String,
+      slug: String,
+      routerCap: Int,
+      billingStatus: String,
+      founding: Boolean,
+      inviteTokenHash: Sha256Hex,
+      inviteExpiresAt: Instant,
+      decidedAt: Instant,
+  ): Task[HouseholdId]
+
+  /** Mark a pending request rejected. Returns `true` if it was pending (and is now rejected). */
+  def reject(id: BetaRequestId, decidedBy: UserId, decidedAt: Instant): Task[Boolean]
+
+  /**
+   * Invalidate the single-use invite token (design §3.4): null the hash so a replayed token no
+   * longer resolves. Idempotent.
+   */
+  def consumeInvite(id: BetaRequestId): Task[Unit]
+}
+
+class BetaRequestRepoLive(xa: Transactor[Task]) extends BetaRequestRepo {
+  private val cols =
+    fr"id, email, name, note, status, requested_at, decided_at, decided_by, invite_token_hash, invite_expires_at, household_id"
+
+  private type Row = (
+      BetaRequestId,
+      String,
+      Option[String],
+      Option[String],
+      String,
+      Instant,
+      Option[Instant],
+      Option[UserId],
+      Option[Sha256Hex],
+      Option[Instant],
+      Option[HouseholdId],
+  )
+
+  private def toReq(r: Row): DbBetaRequest =
+    DbBetaRequest(
+      r._1,
+      r._2,
+      r._3,
+      r._4,
+      // A DB CHECK guarantees status ∈ {pending,approved,rejected}; an unparseable value is a
+      // schema-drift bug, surfaced loudly rather than silently coerced.
+      BetaRequestStatus
+        .parse(r._5)
+        .getOrElse(throw new IllegalStateException(s"bad beta status: ${r._5}")),
+      r._6,
+      r._7,
+      r._8,
+      r._9,
+      r._10,
+      r._11,
+    )
+
+  def create(email: String, name: Option[String], note: Option[String]) =
+    sql"INSERT INTO beta_requests(email, name, note) VALUES($email, $name, $note) ON CONFLICT (email) DO NOTHING".update.run
+      .transact(xa)
+      .map(_ > 0)
+
+  def findById(id: BetaRequestId) =
+    (fr"SELECT" ++ cols ++ fr"FROM beta_requests WHERE id=$id")
+      .query[Row]
+      .map(toReq)
+      .option
+      .transact(xa)
+
+  def findByEmail(email: String) =
+    (fr"SELECT" ++ cols ++ fr"FROM beta_requests WHERE email=$email")
+      .query[Row]
+      .map(toReq)
+      .option
+      .transact(xa)
+
+  def findByInviteHash(hash: Sha256Hex) =
+    (fr"SELECT" ++ cols ++ fr"FROM beta_requests WHERE invite_token_hash=$hash")
+      .query[Row]
+      .map(toReq)
+      .option
+      .transact(xa)
+
+  def listByStatus(status: BetaRequestStatus) =
+    (fr"SELECT" ++ cols ++ fr"FROM beta_requests WHERE status=${BetaRequestStatus.asString(status)} ORDER BY requested_at DESC")
+      .query[Row]
+      .map(toReq)
+      .to[List]
+      .transact(xa)
+
+  def approveAndProvision(
+      id: BetaRequestId,
+      decidedBy: UserId,
+      householdName: String,
+      slug: String,
+      routerCap: Int,
+      billingStatus: String,
+      founding: Boolean,
+      inviteTokenHash: Sha256Hex,
+      inviteExpiresAt: Instant,
+      decidedAt: Instant,
+  ): Task[HouseholdId] = {
+    // One transaction: create household + billing, then stamp the request. The stamping UPDATE is
+    // guarded on `status='pending'` and its row count checked — a non-pending target raises, rolling
+    // back the household/billing inserts too, so a double-approve can never mint a second household.
+    val txn: ConnectionIO[HouseholdId] =
+      for {
+        hid <-
+          sql"INSERT INTO households(name, slug, router_cap) VALUES($householdName, $slug, $routerCap) RETURNING id"
+            .query[HouseholdId]
+            .unique
+        _   <-
+          sql"INSERT INTO household_billing(household_id, status, founding) VALUES($hid, $billingStatus, $founding)".update.run
+        n   <-
+          sql"""UPDATE beta_requests
+                SET status='approved', decided_at=$decidedAt, decided_by=$decidedBy,
+                    invite_token_hash=$inviteTokenHash, invite_expires_at=$inviteExpiresAt,
+                    household_id=$hid
+                WHERE id=$id AND status='pending'""".update.run
+        _   <-
+          if n == 1 then doobie.free.connection.unit
+          else
+            doobie.free.connection
+              .raiseError[Unit](new IllegalStateException(s"beta request $id is not pending"))
+      } yield hid
+    txn.transact(xa)
+  }
+
+  def reject(id: BetaRequestId, decidedBy: UserId, decidedAt: Instant) =
+    sql"""UPDATE beta_requests SET status='rejected', decided_at=$decidedAt, decided_by=$decidedBy
+          WHERE id=$id AND status='pending'""".update.run
+      .transact(xa)
+      .map(_ == 1)
+
+  def consumeInvite(id: BetaRequestId) =
+    sql"UPDATE beta_requests SET invite_token_hash=NULL WHERE id=$id".update.run
+      .transact(xa)
+      .unit
+}

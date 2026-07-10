@@ -641,6 +641,97 @@ case class QueryLog(
     ts: String,
 ) derives JsonCodec
 
+// ── Beta access requests (#2132, multi-tenant P5-2, epic #622) ──────────────
+// The request-gated beta signup queue (design docs/design/multi-tenant-launch.md
+// §3). DISTINCT from the block-page `AccessRequest`/`AccessRequestKind` concept
+// above — a `BetaRequest` is a prospective NEW HOUSEHOLD asking to join, resolved
+// by manual operator approval, not a kid asking to unblock a host.
+
+/** Lifecycle of a beta_requests row (design §3.1): pending → approved | rejected. */
+enum BetaRequestStatus derives JsonCodec {
+  case Pending, Approved, Rejected
+}
+object BetaRequestStatus                 {
+  def asString(s: BetaRequestStatus): String      = s match {
+    case Pending  => "pending"
+    case Approved => "approved"
+    case Rejected => "rejected"
+  }
+  def parse(s: String): Option[BetaRequestStatus] = s match {
+    case "pending"  => Some(Pending)
+    case "approved" => Some(Approved)
+    case "rejected" => Some(Rejected)
+    case _          => None
+  }
+}
+
+/**
+ * Public intake body for `POST /api/beta/request` — unauthenticated. `email` is the only required
+ * field; `name` (household/person) seeds the household name + slug at provisioning, `note` is free
+ * text for the operator. Idempotent on duplicate email (the route returns a generic 200 either way,
+ * so a duplicate leaks no enumeration signal).
+ */
+case class CreateBetaRequest(
+    email: String,
+    name: Option[String] = None,
+    note: Option[String] = None,
+) derives JsonCodec
+
+/**
+ * Generic acknowledgement returned to the public intake — deliberately content-free (no enumeration
+ * leak; a brand-new and a duplicate request are indistinguishable to the caller).
+ */
+case class BetaRequestAck(status: String = "received") derives JsonCodec
+
+/**
+ * Operator-facing view of a beta_requests row (`GET /api/operator/beta-requests`). Only the
+ * operator (admin of household 1) ever sees these — the invite token hash is NEVER included.
+ */
+case class BetaRequestSummary(
+    id: BetaRequestId,
+    email: String,
+    name: Option[String],
+    note: Option[String],
+    status: BetaRequestStatus,
+    requestedAt: String,
+    decidedAt: Option[String],
+    householdId: Option[HouseholdId],
+) derives JsonCodec
+
+/**
+ * Operator's response to `POST /api/operator/beta-requests/{id}/approve`. Carries the single-use
+ * invite URL (the operator sends it to the requester manually — no email transport is invented,
+ * design §3.3) and the provisioned household's slug (the SPA accept page uses it to set the
+ * long-lived `wh_household` cookie, design §3.4 / #2140).
+ */
+case class ApproveBetaResponse(
+    householdId: HouseholdId,
+    slug: String,
+    inviteUrl: String,
+    inviteExpiresAt: String,
+) derives JsonCodec
+
+/**
+ * Invite acceptance body for `POST /api/beta/accept` — unauthenticated. Validates the single-use,
+ * unexpired token, then creates the new household's FIRST admin user (design §3.4). This is the
+ * only second-household admin-bootstrap path (before it, the V1 seed was the sole admin creator).
+ */
+case class AcceptInviteRequest(
+    token: String,
+    username: String,
+    password: String,
+) derives JsonCodec
+
+/**
+ * Response to a successful invite accept — the new household's slug, so the SPA sets the
+ * `wh_household` cookie before auto-login (design §3.4 / #2140).
+ */
+case class AcceptInviteResponse(
+    householdId: HouseholdId,
+    slug: String,
+    username: String,
+) derives JsonCodec
+
 case class LoginRequest(username: String, password: String) derives JsonCodec
 // mustChangePassword: true when the server-side flag is set (e.g. freshly-seeded admin).
 // The web uses this to redirect directly to the change-password page after login

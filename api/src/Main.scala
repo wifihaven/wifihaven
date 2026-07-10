@@ -3,6 +3,7 @@ package wifihaven.api
 import doobie.*
 import doobie.implicits.*
 import wifihaven.api.auth.*
+import wifihaven.api.beta.BetaService
 import wifihaven.api.cache.TimeStatusCache
 import wifihaven.api.db.*
 import wifihaven.api.metrics.{
@@ -399,6 +400,9 @@ object Main extends ZIOAppDefault {
       alertRepo      <- ZIO.service[AlertRepo]
       appRepo        <- ZIO.service[AppRepo]
       appRollupRepo  <- ZIO.service[wifihaven.api.db.AppUsedRollupRepo]
+      // #2132 (multi-tenant P5-2): the beta request → provisioning → invite-accept pipeline repos.
+      householdRepo  <- ZIO.service[HouseholdRepo]
+      betaRepo       <- ZIO.service[BetaRequestRepo]
       ambientRepoR   <- ZIO.service[wifihaven.api.db.AmbientHostsRepo]
       notifier       <- ZIO.service[Notifier]
       policy         <- ZIO.service[PolicyService]
@@ -416,10 +420,16 @@ object Main extends ZIOAppDefault {
       // existing per-(mac,host) debounce (which a varying host bypasses).
       loginRateLimiter     <- RateLimiterLive.make(maxAttempts = 10, windowSeconds = 15 * 60)
       accessReqRateLimiter <- RateLimiterLive.make(maxAttempts = 20, windowSeconds = 5 * 60)
+      // #2132: per-source-IP rate limit on the unauthenticated beta-intake route — 5 / hour, a
+      // slow cadence (a genuine prospect requests once), on top of the idempotent-email dedup.
+      betaReqRateLimiter   <- RateLimiterLive.make(maxAttempts = 5, windowSeconds = 60 * 60)
+      // #2132: the beta pipeline service (slug derivation, invite token mint + TTL, provisioning,
+      // accept). Clock-injected so the invite TTL is TestClock-driven in specs.
+      betaService = BetaService(betaRepo, householdRepo, userRepo, auth, notifier, clock, cfg.beta)
       // #1970 (S3): the SPA-websocket change-source bus (design §5.2.2). The write sites publish
       // change events here; the SpaPush consumer (forked in the run scope) drains it and fans out
       // role-filtered, subscription-gated `now`/`connectionEvents`/`stale` frames.
-      spaEventBus          <- SpaEventBus.make
+      spaEventBus <- SpaEventBus.make
       // #1846: the transport-agnostic ingest service shared by the REST ingest routes and the new
       // websocket transport, plus the per-router ws connection registry. #1970: it also publishes
       // SPA change events (new connection-events head + `now` trigger + `stale{alerts}`) to the bus.
@@ -466,6 +476,8 @@ object Main extends ZIOAppDefault {
       val systemRoutes: Routes[Any, Response] =
         VersionRoutes.routes(wifihaven.api.BuildInfo.fromEnv) ++
           AuthRoutes.routes(auth, userRepo, upRepo, loginRateLimiter) ++
+          // #2132: beta request intake (public) + operator approval/reject + invite accept (public).
+          BetaRoutes.routes(auth, betaService, betaRepo, userRepo, betaReqRateLimiter) ++
           ProfileRoutes.routes(
             auth,
             profileRepo,

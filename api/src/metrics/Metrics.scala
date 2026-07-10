@@ -481,6 +481,21 @@ object AppMetrics {
   def scheduleMutation(op: String): UIO[Unit] =
     MetricGuard.counter("wifihaven_schedule_mutations_total", Map("op" -> op))
 
+  // ── #2132: beta request → provisioning pipeline outcomes ─────────────────────
+  // One counter for every terminal event in the beta pipeline (design §3), so the
+  // operator can watch intake volume, approval/rejection rate, and accept success.
+  // `stage` ∈ {request, approve, reject, accept}; `outcome` is a small fixed enum
+  // per stage — both bounded, never a per-email / per-household label.
+  //   request: created | duplicate | rate_limited
+  //   approve: ok | not_pending | error
+  //   reject:  ok | not_pending
+  //   accept:  ok | invalid_token | expired | error
+  def recordBetaPipeline(stage: String, outcome: String): UIO[Unit] =
+    MetricGuard.counter(
+      "wifihaven_beta_pipeline_total",
+      Map("stage" -> stage, "outcome" -> outcome),
+    )
+
   // ── #864: traffic_reports rows dropped as zero-bytes-zero-seconds ────────────
   // Replaces the per-request warn-log + TODO marker. A rising rate means the
   // #858 agent regression (emitting empty rows) has returned.
