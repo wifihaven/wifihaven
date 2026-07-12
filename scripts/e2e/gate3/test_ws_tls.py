@@ -46,25 +46,27 @@ WS_METRICS_PATH = "/tmp/wifihaven-ws-metrics.txt"
 WRONG_HOST_TARGET = "wrong.host.badssl.com"
 
 
-def _uci_ws(*settings: str) -> None:
+def _uci_ws(*settings: str, check: bool = True) -> None:
     """Apply uci settings under the `ws`/`wifihaven` sections, commit, restart.
 
     Mirrors scenarios_fake/test_ws_push_apply.py's `_enable_ws_and_freeze_poll`.
+    Pass multiple `settings` to fold them into one restart cycle instead of one
+    per setting. `check=False` for cleanup-only calls (see `_disable_ws`) so a
+    router already in a broken state can't raise here and obscure the test's
+    real assertion failure in the traceback.
     """
     cmd = "; ".join(settings) + "; uci commit wifihaven; /etc/init.d/wifihaven restart"
-    router_ssh(cmd, timeout=60)
+    router_ssh(cmd, timeout=60, check=check)
 
 
 def _enable_ws() -> None:
     _uci_ws("uci set wifihaven.ws.enabled=1")
 
 
-def _disable_ws() -> None:
-    _uci_ws("uci set wifihaven.ws.enabled=0")
-
-
-def _set_api_url(url: str) -> None:
-    _uci_ws(f"uci set wifihaven.wifihaven.api_url={url}")
+def _disable_ws(*, extra_settings: tuple[str, ...] = ()) -> None:
+    # check=False: this only ever runs from a `finally` (see both tests below),
+    # so it must never itself raise and hide the original failure.
+    _uci_ws("uci set wifihaven.ws.enabled=0", *extra_settings, check=False)
 
 
 def _ws_health_present() -> bool:
@@ -141,13 +143,25 @@ def test_ws_sidecar_rejects_wrong_hostname_cert(enrolled_router):
     Requires the router's SLIRP WAN egress to reach badssl.com — the same
     external reachability the gate3 smoke test already depends on for its
     example.com/.org probes.
+
+    NOTE — depends on `test_ws_sidecar_wss_handshake` (above, in this same
+    file) having already proven ws CAN connect successfully against a real
+    target. A clean rejection here is only meaningful evidence that hostname
+    verification specifically caused it if the sidecar is otherwise capable of
+    connecting at all — on its own this test can't distinguish "hostname
+    mismatch correctly rejected" from "nothing works right now." pytest runs
+    a module's tests in source order (no order-randomizing plugin in
+    requirements.txt) and both land in the same Gate 3a/3b job, so the pairing
+    holds today; don't split or reorder these two without preserving it.
     """
     real_api_url = os.environ.get("WH_API_URL")
     assert real_api_url, "WH_API_URL not set"
 
     baseline_fail = _ws_metric("ws_connect_total", "upgrade_fail")
-    _set_api_url(f"https://{WRONG_HOST_TARGET}")
-    _enable_ws()
+    _uci_ws(
+        f"uci set wifihaven.wifihaven.api_url=https://{WRONG_HOST_TARGET}",
+        "uci set wifihaven.ws.enabled=1",
+    )
     try:
         # The handshake must NOT complete against the mismatched-name target.
         # A clean timeout (health sentinel never appears) is the PASSING
@@ -165,9 +179,10 @@ def test_ws_sidecar_rejects_wrong_hostname_cert(enrolled_router):
             f"wrong-hostname target {WRONG_HOST_TARGET}"
         )
     finally:
-        _disable_ws()
-        # Restore the real staging URL — enrolled_router is session-scoped and
-        # its teardown (router_down / delete_router) doesn't depend on this,
-        # but leave the agent pointed at something real rather than a
-        # deliberately-broken target.
-        _set_api_url(real_api_url)
+        # Restore the real staging URL in the SAME restart cycle as disabling
+        # ws. enrolled_router is session-scoped and its teardown (router_down /
+        # delete_router) doesn't depend on this, but leave the agent pointed
+        # at something real rather than a deliberately-broken target.
+        _disable_ws(
+            extra_settings=(f"uci set wifihaven.wifihaven.api_url={real_api_url}",),
+        )
