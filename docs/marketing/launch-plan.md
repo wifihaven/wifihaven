@@ -114,3 +114,60 @@ near GA.
 - [ ] `FOUNDING` Stripe promo code (verify `duration=forever` on pinned API
   version — pricing doc §7 caveat)
 - [ ] Email templates: beta welcome, P2 GA-date announcement, T−30, T−7
+
+## 7. Launch dependencies (GA gates)
+
+Two engineering blockers gate **paid GA (P4)** — not the beta. The beta ships
+on the self-host/single-household stack that is already in production; charging
+strangers to share a hosted control plane is what raises the bar.
+
+| Dependency | Issue | State (2026-07-12) | Gates | Why it's a gate |
+|---|---|---|---|---|
+| Signed router package auto-update | [#2078](https://github.com/wifihaven/wifihaven/issues/2078) | **Closed** ✅ | P1 (beta) | Auto-update installed unsigned `.apk`/`.ipk` with `--allow-untrusted`; a launch-security-audit (#369) High. Resolved — this was a beta blocker (we ship agents to beta households), now cleared. |
+| Multi-tenant isolation | [#2085](https://github.com/wifihaven/wifihaven/issues/2085) | **Open** ⛔ | **P4 (paid GA)** | The hosted tier will hold *multiple households'* devices, policies, and browsing history in one DB/API. #369 found single-household isolation gaps. Every wave (roots users/routers/profiles/devices by household, wire-invisible) must land before we take money from a second paying household. This is the critical-path GA gate. |
+
+**Rule:** the P2→P4 clock (beta fill + 2 months) does not start counting toward
+a *billable* GA until #2085's isolation waves are merged and verified. If the
+beta fills before #2085 is done, extend the free period rather than open billing
+on an un-isolated multi-tenant store — a cross-household data leak at launch is
+existential. The multi-tenant design and decomposition live under
+[#2085](https://github.com/wifihaven/wifihaven/issues/2085) /
+[#622](https://github.com/wifihaven/wifihaven/issues/622).
+
+Secondary, non-gating: the self-host quickstart must be validated on a clean
+router before P1 (press *will* try it, §6), and the `FOUNDING` Stripe coupon's
+`duration=forever` must be verified on the pinned API version before P4
+(pricing doc §7).
+
+## 8. Risks & open questions (operator decisions)
+
+Opinionated calls above; these are the ones the operator should confirm or
+override before P1.
+
+1. **Beachhead audience is narrow by design.** Starting OpenWRT-only means the
+   beachhead is self-hosters/homelabbers, not the mass "worried parent" market.
+   That's deliberate (they'll test the tech, write the reviews, tolerate rough
+   edges) — but it caps beta volume and means mainstream parenting press is a
+   *post-GA, multi-router* story. **Confirm** we're comfortable with a small,
+   technical P1 rather than chasing scale early.
+2. **Beta size = 25.** Big enough to surface real config diversity, small enough
+   to support hands-on. **Open:** is 25 right, or do we want 15 (tighter support)
+   or 40 (more signal, more load on one founder)?
+3. **Event-based beta length** (fill + 2 months) diverges from the pricing doc's
+   fixed 4 months. Locked in per operator 2026-07-12 — flagged here so the
+   pricing doc and signup copy stay reconciled.
+4. **Open-core trust.** r/selfhosted and HN punish any hint of bait-and-switch.
+   The "self-hosted is complete, not crippleware; cloud = convenience" line must
+   be *literally true* at launch. **Confirm** no cloud-only enforcement feature
+   ships before we can honestly say the self-host tier is full-featured.
+5. **Founder-as-support.** P1–P3 assume the founder personally answers HN,
+   Reddit, issues, and one call per beta household. That's the plan at 25; it
+   does not scale past low-hundreds. Fine for now — noted so it's a conscious
+   choice, not a surprise at GA.
+6. **Un-priced items:** press-kit production (screenshots/diagram/bio), the two
+   marketing-site pages beyond copy (#1171), and any legal/ToS/privacy review
+   for taking payment and hosting minors' browsing data. **Open:** does the
+   hosted tier holding children's traffic need a privacy/legal pass before P4?
+7. **`~$30 OpenWRT router` claim** in the press release is UNVERIFIED — pick and
+   price a current example model (e.g. a GL.iNet entry unit) before send, or
+   soften to "starting well under $100."
