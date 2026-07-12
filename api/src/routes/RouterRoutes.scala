@@ -210,6 +210,7 @@ object AdminRouterRoutes {
       auth: AuthService,
       routerRepo: RouterRepo,
       userRepo: UserRepo,
+      entitlements: EntitlementsRepo,
   ): Routes[Any, Response] =
     Routes(
       Method.POST / "api" / "admin" / "routers"                  ->
@@ -233,6 +234,19 @@ object AdminRouterRoutes {
             _           <- ZIO
               .fail(ApiError.BadRequest("name required"))
               .when(cr.name.trim.isEmpty)
+            // #2134 (multi-tenant P5-4, design §6): enforce the household's
+            // router-cap entitlement. The cap resolves PER HOUSEHOLD from the
+            // `households.router_cap` column via the `Entitlements` accessor —
+            // never a global constant (pricing §7) — so household 1 and founding
+            // households keep their higher cap purely by the column value, and
+            // the count is scoped to this household alone (isolation pin: hh-B's
+            // routers never affect hh-A's check). A created-but-not-yet-enrolled
+            // router still consumes a slot: `listAllForHousehold` counts it.
+            ent         <- entitlements.forHousehold(householdId).mapError(ApiError.Db(_))
+            existing    <- routerRepo.listAllForHousehold(householdId).mapError(ApiError.Db(_))
+            _           <- ZIO
+              .fail(ApiError.Forbidden(s"your plan includes ${ent.routerCap} router(s)"))
+              .when(existing.sizeIs >= ent.routerCap)
             enrollmentToken = EnrollmentToken.unsafe(newEnrollmentToken())
             etHash          = PolicyService.hashToken(enrollmentToken.value)
             id <- routerRepo

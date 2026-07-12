@@ -3993,6 +3993,7 @@ object Repos {
   val appUsedRollupRepo     = ZLayer.fromFunction(AppUsedRollupRepoLive(_))
   val partitionRepo         = ZLayer.fromFunction(PartitionRepoLive(_))
   val ambientHostsRepo      = ZLayer.fromFunction(AmbientHostsRepoLive(_))
+  val entitlementsRepo      = ZLayer.fromFunction(EntitlementsRepoLive(_))
   val all                   =
-    userRepo ++ householdRepo ++ userProfileRepo ++ profileRepo ++ namedScheduleRepo ++ householdSettingsRepo ++ timeLimitRepo ++ appTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ rollupRepo ++ timeUsedRollupRepo ++ appUsedRollupRepo ++ partitionRepo ++ ambientHostsRepo
+    userRepo ++ householdRepo ++ userProfileRepo ++ profileRepo ++ namedScheduleRepo ++ householdSettingsRepo ++ timeLimitRepo ++ appTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ rollupRepo ++ timeUsedRollupRepo ++ appUsedRollupRepo ++ partitionRepo ++ ambientHostsRepo ++ entitlementsRepo
 }
