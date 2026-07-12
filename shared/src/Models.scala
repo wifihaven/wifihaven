@@ -641,7 +641,16 @@ case class QueryLog(
     ts: String,
 ) derives JsonCodec
 
-case class LoginRequest(username: String, password: String) derives JsonCodec
+// #2140 (multi-tenant P5-8): `household` carries the target household's slug (`households.slug`,
+// V66). Optional and defaulted to None so existing clients and self-hosted single-household deploys
+// keep working unchanged — absent/blank resolves to the default household server-side. The SPA
+// pre-fills it from a long-lived `wh_household` cookie (a UX hint only; the server authenticates the
+// submitted slug + password, never the cookie).
+case class LoginRequest(
+    username: String,
+    password: String,
+    household: Option[String] = None,
+) derives JsonCodec
 // mustChangePassword: true when the server-side flag is set (e.g. freshly-seeded admin).
 // The web uses this to redirect directly to the change-password page after login
 // before the user can reach any other route.

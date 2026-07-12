@@ -75,7 +75,8 @@ describe('useAuth — login', () => {
     await act(async () => {
       await result.current.login('alice', 'pw')
     })
-    expect(api.auth.login).toHaveBeenCalledWith('alice', 'pw')
+    // #2140: no household passed → undefined third arg (server resolves the default household).
+    expect(api.auth.login).toHaveBeenCalledWith('alice', 'pw', undefined)
     expect(localStorage.getItem('token')).toBe('tok')
     expect(localStorage.getItem('username')).toBe('alice')
     expect(localStorage.getItem('role')).toBe('admin')

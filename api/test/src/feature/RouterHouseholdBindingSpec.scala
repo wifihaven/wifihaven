@@ -35,17 +35,25 @@ object RouterHouseholdBindingSpec
 
   private val cleanDb = TestDatabase.cleanAndMigrate
 
+  // #2140: inject the DB-backed HouseholdRepo so login can resolve the non-default household's slug.
   private def makeAuth =
     for {
       ur    <- ZIO.service[UserRepo]
+      hr    <- ZIO.service[HouseholdRepo]
       clock <- ZIO.service[Clock]
-    } yield AuthServiceLive(ur, jwtCfg, clock)
+    } yield AuthServiceLive(ur, jwtCfg, clock, hr)
 
-  /** Create a second household, return its id. */
-  private def newHousehold(name: String): ZIO[doobie.Transactor[Task], Throwable, HouseholdId] =
+  /** Create a second household (with a login slug), return its id. */
+  private def newHousehold(
+      name: String,
+      slug: String,
+  ): ZIO[doobie.Transactor[Task], Throwable, HouseholdId] =
     ZIO
       .serviceWithZIO[doobie.Transactor[Task]] { xa =>
-        sql"INSERT INTO households(name) VALUES($name) RETURNING id".query[Long].unique.transact(xa)
+        sql"INSERT INTO households(name, slug) VALUES($name, $slug) RETURNING id"
+          .query[Long]
+          .unique
+          .transact(xa)
       }
       .map(HouseholdId(_))
 
@@ -59,7 +67,7 @@ object RouterHouseholdBindingSpec
     for {
       h  <- auth.hashPassword("pw")
       _  <- ur.create(username, h, "admin")
-      id <- ur.findByUsername(username).map(_.get.id)
+      id <- ur.findByUsername(HouseholdId.Default, username).map(_.get.id)
       // UserRepo.create forces must_change_password (#599); clear it so this
       // seeded admin can exercise the admin route without a 403.
       _  <- ur.clearMustChangePassword(id)
@@ -115,9 +123,10 @@ object RouterHouseholdBindingSpec
         ur         <- ZIO.service[UserRepo]
         ber        <- ZIO.service[BlockEventRepo]
         // Admin lives in a fresh, non-default household.
-        hhB        <- newHousehold("Beta household")
+        hhB        <- newHousehold("Beta household", "beta")
         _          <- seedAdminInHousehold(auth, ur, "betaadmin", hhB)
-        adminLogin <- auth.login("betaadmin", "pw")
+        // #2140: betaadmin lives in household `beta`, so login must name it via slug.
+        adminLogin <- auth.login("betaadmin", "pw", Some("beta"))
         adminRoutes = AdminRouterRoutes.routes(auth, rr, ur)
         agentRoutes = RouterRoutes.routes(rr, null, RouterAuthLive(rr), ber)
         created <- createRouter(adminRoutes, adminLogin.token.value, "beta-gw")

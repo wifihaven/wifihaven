@@ -40,8 +40,26 @@ describe('LoginPage', () => {
     await user.type(screen.getByPlaceholderText('••••••••'), 'secret123')
     await user.click(screen.getByRole('button', { name: /Sign in/ }))
 
-    await waitFor(() => expect(loginMock).toHaveBeenCalledWith('alice', 'secret123'))
+    // #2140: no household entered → undefined third arg (server resolves the default household).
+    await waitFor(() => expect(loginMock).toHaveBeenCalledWith('alice', 'secret123', undefined))
     await waitFor(() => expect(navigateMock).toHaveBeenCalledWith('/dashboard'))
+  })
+
+  it('#2140: passes the household slug when the "Different household?" field is filled', async () => {
+    loginMock.mockResolvedValue({ mustChangePassword: false })
+    const user = userEvent.setup()
+    renderLogin()
+
+    await user.type(screen.getByPlaceholderText('admin'), 'alice')
+    await user.type(screen.getByPlaceholderText('••••••••'), 'secret123')
+    // The field is collapsed by default (no cookie) — reveal it, then enter a slug.
+    await user.click(screen.getByRole('button', { name: /Different household\?/ }))
+    await user.type(screen.getByPlaceholderText('your-household'), 'smith-family')
+    await user.click(screen.getByRole('button', { name: /Sign in/ }))
+
+    await waitFor(() =>
+      expect(loginMock).toHaveBeenCalledWith('alice', 'secret123', 'smith-family'),
+    )
   })
 
   it('shows an error message when login fails', async () => {

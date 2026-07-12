@@ -92,7 +92,11 @@ case class TrafficRollupRow(
 )
 
 trait UserRepo {
-  def findByUsername(u: String): Task[Option[DbUser]]
+  // #2140 (multi-tenant P5-8): keyed on the V65 `UNIQUE(household_id, username)` — the same
+  // username can legitimately exist in two households, so a bare-username lookup is ambiguous.
+  // Callers resolve the household from `claims.hh` (authenticated paths) or the login request's
+  // slug (the one unauthenticated path).
+  def findByUsername(householdId: HouseholdId, u: String): Task[Option[DbUser]]
   def findById(id: UserId): Task[Option[DbUser]]
   // #2130: `householdId` stamps the new user with the creating admin's
   // household (resolved from their JWT at the route). Defaults to the
@@ -120,6 +124,37 @@ trait UserRepo {
    */
   def listAllForHousehold(household: HouseholdId): Task[List[DbUser]]
   def delete(id: UserId): Task[Unit]
+}
+
+/**
+ * #2140 (multi-tenant P5-8): the household directory, keyed by the human-facing `households.slug`
+ * (V66/#2131 — unique, lowercase; `name` is NOT unique). The one consumer today is household-aware
+ * login: the login request carries an optional slug, resolved here to the tenancy key so
+ * `UserRepo.findByUsername(hh, u)` disambiguates a shared username. An unknown slug returns `None`,
+ * which the auth path collapses into the same `InvalidCredentials` a bad password produces — no
+ * household enumeration.
+ */
+trait HouseholdRepo {
+  def findIdBySlug(slug: String): Task[Option[HouseholdId]]
+}
+
+object HouseholdRepo {
+
+  /**
+   * #2140: a DB-free repo that knows only the default household (slug `default`). It exists so
+   * [[wifihaven.api.auth.AuthServiceLive]] can default its `householdRepo` dependency — every
+   * pre-multi-tenant `AuthServiceLive(userRepo, jwtConfig, clock)` construction keeps compiling and
+   * resolves the single self-hosted household without a real repo. Production and multi-household
+   * tests inject the DB-backed [[HouseholdRepoLive]] instead.
+   */
+  val defaultOnly: HouseholdRepo = new HouseholdRepo {
+    // The default household's slug is `default` — backfilled by V66
+    // (`V66__beta_requests_billing_entitlements.sql`: `UPDATE households SET slug = 'default'
+    // WHERE id = 1`). This shim mirrors only that one row; every other slug resolves via the
+    // DB-backed HouseholdRepoLive.
+    def findIdBySlug(slug: String): Task[Option[HouseholdId]] =
+      ZIO.succeed(Option.when(slug == "default")(HouseholdId.Default))
+  }
 }
 
 trait UserProfileRepo {
@@ -922,15 +957,16 @@ class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
     case (id, un, ph, role, ca, mcp, tv, hh) => DbUser(id, un, ph, role, ca, mcp, tv, hh)
   }
 
-  def findByUsername(u: String)                   =
+  def findByUsername(householdId: HouseholdId, u: String) =
     DbMetrics.timed("user.findByUsername")(
-      (fr"SELECT " ++ userCols ++ fr" FROM users WHERE username=$u")
+      // #2140: keyed on the V65 UNIQUE(household_id, username) — never a bare-username lookup.
+      (fr"SELECT " ++ userCols ++ fr" FROM users WHERE household_id=$householdId AND username=$u")
         .query[UserRow]
         .map(toUser)
         .option
         .transact(xa),
     )
-  def findById(id: UserId)                        =
+  def findById(id: UserId)                                =
     (fr"SELECT " ++ userCols ++ fr" FROM users WHERE id=$id")
       .query[UserRow]
       .map(toUser)
@@ -943,17 +979,17 @@ class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
       .query[UserId]
       .unique
       .transact(xa)
-  def updatePassword(id: UserId, h: String)       =
+  def updatePassword(id: UserId, h: String)               =
     sql"UPDATE users SET password_hash=$h WHERE id=$id".update.run.transact(xa).unit
-  def updateUsername(id: UserId, u: String)       =
+  def updateUsername(id: UserId, u: String)               =
     sql"UPDATE users SET username=$u WHERE id=$id".update.run.transact(xa).unit
-  def updateRole(id: UserId, r: String)           =
+  def updateRole(id: UserId, r: String)                   =
     sql"UPDATE users SET role=$r WHERE id=$id".update.run.transact(xa).unit
-  def clearMustChangePassword(id: UserId)         =
+  def clearMustChangePassword(id: UserId)                 =
     sql"UPDATE users SET must_change_password=false WHERE id=$id".update.run.transact(xa).unit
-  def bumpTokenVersion(id: UserId)                =
+  def bumpTokenVersion(id: UserId)                        =
     sql"UPDATE users SET token_version=token_version+1 WHERE id=$id".update.run.transact(xa).unit
-  def listAll                                     =
+  def listAll                                             =
     (fr"SELECT " ++ userCols ++ fr" FROM users ORDER BY id")
       .query[UserRow]
       .map(toUser)
@@ -961,7 +997,7 @@ class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
       .transact(xa)
   // #2108: same projection as listAll, AND-scoped to one household. Index-backed by
   // V65's idx_users_household.
-  def listAllForHousehold(household: HouseholdId) =
+  def listAllForHousehold(household: HouseholdId)         =
     (fr"SELECT " ++ userCols ++ fr" FROM users WHERE" ++ SqlFragments.householdEq(
       household,
     ) ++ fr"ORDER BY id")
@@ -970,6 +1006,14 @@ class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
       .to[List]
       .transact(xa)
   def delete(id: UserId) = sql"DELETE FROM users WHERE id=$id".update.run.transact(xa).unit
+}
+
+class HouseholdRepoLive(xa: Transactor[Task]) extends HouseholdRepo {
+  // #2140: slug → household id. The unique `uq_households_slug` (V66) makes `.option` exact.
+  def findIdBySlug(slug: String) =
+    DbMetrics.timed("household.findIdBySlug")(
+      sql"SELECT id FROM households WHERE slug=$slug".query[HouseholdId].option.transact(xa),
+    )
 }
 
 class UserProfileRepoLive(xa: Transactor[Task]) extends UserProfileRepo {
@@ -3927,6 +3971,7 @@ class NamedScheduleRepoLive(xa: Transactor[Task]) extends NamedScheduleRepo {
 
 object Repos {
   val userRepo              = ZLayer.fromFunction(UserRepoLive(_))
+  val householdRepo         = ZLayer.fromFunction(HouseholdRepoLive(_))
   val userProfileRepo       = ZLayer.fromFunction(UserProfileRepoLive(_))
   val profileRepo           = ZLayer.fromFunction(ProfileRepoLive(_))
   val namedScheduleRepo     = ZLayer.fromFunction(NamedScheduleRepoLive(_))
@@ -3949,5 +3994,5 @@ object Repos {
   val partitionRepo         = ZLayer.fromFunction(PartitionRepoLive(_))
   val ambientHostsRepo      = ZLayer.fromFunction(AmbientHostsRepoLive(_))
   val all                   =
-    userRepo ++ userProfileRepo ++ profileRepo ++ namedScheduleRepo ++ householdSettingsRepo ++ timeLimitRepo ++ appTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ rollupRepo ++ timeUsedRollupRepo ++ appUsedRollupRepo ++ partitionRepo ++ ambientHostsRepo
+    userRepo ++ householdRepo ++ userProfileRepo ++ profileRepo ++ namedScheduleRepo ++ householdSettingsRepo ++ timeLimitRepo ++ appTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ rollupRepo ++ timeUsedRollupRepo ++ appUsedRollupRepo ++ partitionRepo ++ ambientHostsRepo
 }

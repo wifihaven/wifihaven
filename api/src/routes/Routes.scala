@@ -44,8 +44,11 @@ object AuthRoutes {
             lr      <- ZIO
               .fromEither(body.fromJson[LoginRequest])
               .mapError(ApiError.DecodeFailure(_))
+            // #2140: pass the optional household slug through; AuthService resolves it to the
+            // tenancy key (absent/blank → default household). An unknown slug fails identically to
+            // a bad password, so nothing distinguishes it here.
             resp    <- auth
-              .login(lr.username, lr.password)
+              .login(lr.username, lr.password, lr.household)
               .mapError {
                 case AuthError.InvalidCredentials => ApiError.Unauthorized("Invalid credentials")
                 case AuthError.Unexpected(_)      =>
@@ -75,8 +78,10 @@ object AuthRoutes {
                 ),
               )
               .when(!AuthService.isPasswordStrongEnough(cpr.newPassword))
+            // #2140: scope the password change to the caller's own household (usernames are unique
+            // per household only) — the authenticated token already carries it in `claims.hh`.
             _      <- auth
-              .changePassword(claims.sub, cpr.currentPassword, cpr.newPassword)
+              .changePassword(claims.sub, cpr.currentPassword, cpr.newPassword, claims.hh)
               .mapError {
                 case AuthError.InvalidCredentials =>
                   ApiError.Unauthorized("Current password incorrect")
