@@ -139,16 +139,13 @@ object BetaRoutes {
         },
     )
 
-  // Resolve the deciding operator's UserId from their JWT `sub` via UserRepo (the operator is a real
-  // household-1 admin, like RouterRoutes #2106 resolves the enrolling admin). A valid operator token
-  // always names an existing user, so a miss is a 401.
-  // TODO(#2140): `findByUsername` is un-scoped and ambiguous now that username is
-  // UNIQUE(household_id, username). Harmless here — the operator is always household 1 and no
-  // colliding usernames exist until #2133 — and it mirrors the RouterRoutes #2106 pattern; it will
-  // be resolved when #2140 scopes findByUsername to (hh, username).
+  // Resolve the deciding operator's UserId from their JWT via UserRepo (the operator is a real
+  // household-1 admin, like RouterRoutes #2106 resolves the enrolling admin). #2140 scoped
+  // findByUsername to (household, username); requireOperator guarantees claims.hh == the default
+  // household. A valid operator token always names an existing user, so a miss is a 401.
   private def operatorUserId(userRepo: UserRepo, claims: JwtClaims): IO[ApiError, UserId] =
     userRepo
-      .findByUsername(claims.sub)
+      .findByUsername(claims.hh, claims.sub)
       .mapError(ApiError.Db(_))
       .someOrFail(ApiError.Unauthorized("unknown operator user"))
       .map(_.id)

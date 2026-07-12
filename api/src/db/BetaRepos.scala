@@ -58,45 +58,9 @@ case class DbBetaRequest(
     householdId: Option[HouseholdId],
 )
 
-// ── HouseholdRepo ────────────────────────────────────────────────────────────
-
-/**
- * #2132: the minimal `HouseholdRepo` — none existed (households were V1-seed-only). `create` and
- * the `find*` reads back the general household needs; login (#2140) will read `findBySlug`.
- * Provisioning itself uses the atomic [[BetaRequestRepo.approveAndProvision]] transaction, not
- * `create`, so the household + billing + beta-request stamp land together.
- */
-trait HouseholdRepo {
-  def create(name: String, slug: String, routerCap: Int = 1): Task[HouseholdId]
-  def findById(id: HouseholdId): Task[Option[Household]]
-  def findBySlug(slug: String): Task[Option[Household]]
-}
-
-class HouseholdRepoLive(xa: Transactor[Task]) extends HouseholdRepo {
-  private val cols = fr"id, name, slug, router_cap"
-  private type Row = (HouseholdId, String, Option[String], Int)
-  private def toHousehold(r: Row): Household = Household(r._1, r._2, r._3, r._4)
-
-  def create(name: String, slug: String, routerCap: Int) =
-    sql"INSERT INTO households(name, slug, router_cap) VALUES($name, $slug, $routerCap) RETURNING id"
-      .query[HouseholdId]
-      .unique
-      .transact(xa)
-
-  def findById(id: HouseholdId) =
-    (fr"SELECT" ++ cols ++ fr"FROM households WHERE id=$id")
-      .query[Row]
-      .map(toHousehold)
-      .option
-      .transact(xa)
-
-  def findBySlug(slug: String) =
-    (fr"SELECT" ++ cols ++ fr"FROM households WHERE slug=$slug")
-      .query[Row]
-      .map(toHousehold)
-      .option
-      .transact(xa)
-}
+// NB: `HouseholdRepo` itself (findIdBySlug + the #2132 create/findById provisioning methods) lives
+// in Repos.scala alongside the other repo traits — it predates this file (#2140's login-slug
+// resolver) and #2132 extended it there. This file adds only the two beta-specific repos below.
 
 // ── HouseholdBillingRepo ─────────────────────────────────────────────────────
 

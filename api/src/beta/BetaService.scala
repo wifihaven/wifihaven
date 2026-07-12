@@ -126,7 +126,7 @@ final case class BetaService(
     def attempt(n: Int): IO[BetaError, String] = {
       val candidate = if n == 1 then base else s"$base-$n"
       householdRepo
-        .findBySlug(candidate)
+        .findIdBySlug(candidate)
         .mapError(BetaError.Db(_))
         .flatMap {
           case None    => ZIO.succeed(candidate)

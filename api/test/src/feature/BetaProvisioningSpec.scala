@@ -44,11 +44,22 @@ object BetaProvisioningSpec
   private def makeAuth =
     for {
       ur    <- ZIO.service[UserRepo]
+      // #2140: inject the DB-backed HouseholdRepo so login can resolve a provisioned household's
+      // slug (the default-only stub the 3-arg constructor supplies knows only slug `default`).
+      hr    <- ZIO.service[HouseholdRepo]
       clock <- ZIO.service[Clock]
-    } yield AuthServiceLive(ur, jwt, clock): AuthService
+    } yield AuthServiceLive(ur, jwt, clock, hr): AuthService
 
-  private def login(auth: AuthService, user: String, pw: String): Task[String] =
-    auth.login(user, pw).mapError(e => new RuntimeException(s"login failed: $e")).map(_.token.value)
+  private def login(
+      auth: AuthService,
+      user: String,
+      pw: String,
+      slug: Option[String] = None,
+  ): Task[String] =
+    auth
+      .login(user, pw, slug)
+      .mapError(e => new RuntimeException(s"login failed: $e"))
+      .map(_.token.value)
 
   private def getJson(
       routes: Routes[Any, Response],
@@ -137,7 +148,8 @@ object BetaProvisioningSpec
           .fromEither(acceptBody.fromJson[AcceptInviteResponse])
           .mapError(new RuntimeException(_))
         newLogin         <- b.auth
-          .login("familyadmin", "supersecret123")
+          // #2140: log into the NEW household by its slug (per-household usernames).
+          .login("familyadmin", "supersecret123", Some(approve.slug))
           .mapError(e => new RuntimeException(s"login failed: $e"))
         claims           <- b.auth
           .verify(newLogin.token.value)

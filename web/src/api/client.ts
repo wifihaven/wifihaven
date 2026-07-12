@@ -179,8 +179,15 @@ function weekQuery(to?: string, bucketOffsetMin?: number, profileId?: number): s
 
 export const api = {
   auth: {
-    login: (username: string, password: string) =>
-      req<LoginResponse>('POST', '/auth/login', { username, password }, true),
+    // #2140: `household` is the optional household slug the user is signing in to. Omitted/blank →
+    // the server resolves the default household (self-hosted single-household back-compat).
+    login: (username: string, password: string, household?: string) =>
+      req<LoginResponse>(
+        'POST',
+        '/auth/login',
+        household ? { username, password, household } : { username, password },
+        true,
+      ),
     changePassword: (currentPassword: string, newPassword: string) =>
       req<void>('POST', '/auth/change-password', { currentPassword, newPassword }),
     me: () => req<MeResponse>('GET', '/me'),

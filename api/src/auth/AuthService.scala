@@ -58,7 +58,16 @@ object AuthError {
 // ── Auth service ───────────────────────────────────────────────────────────
 
 trait AuthService {
-  def login(username: String, password: String): IO[AuthError, LoginResponse]
+  // #2140 (multi-tenant P5-8): `householdSlug` names the household to authenticate against
+  // (`households.slug`, V66). Absent/blank → the default household, so self-hosted single-household
+  // deploys and pre-existing API clients keep exactly today's behavior (back-compat). An unknown
+  // slug, or a valid username+password in the WRONG household, fails with the SAME
+  // `InvalidCredentials` a bad password produces — no household/username enumeration.
+  def login(
+      username: String,
+      password: String,
+      householdSlug: Option[String] = None,
+  ): IO[AuthError, LoginResponse]
   def verify(token: String): IO[AuthError, JwtClaims]
   def requireAdmin(token: String): IO[AuthError, JwtClaims]
   def requireWriter(token: String): IO[AuthError, JwtClaims]
@@ -69,7 +78,14 @@ trait AuthService {
    */
   def requirePasswordChanged(token: String): IO[AuthError, JwtClaims]
 
-  def changePassword(username: String, current: String, next: String): IO[AuthError, Unit]
+  // #2140: `household` scopes the user lookup (V65 UNIQUE(household_id, username)). Authenticated
+  // callers pass `claims.hh`; defaults to the default household for back-compat.
+  def changePassword(
+      username: String,
+      current: String,
+      next: String,
+      household: HouseholdId = HouseholdId.Default,
+  ): IO[AuthError, Unit]
   def hashPassword(password: String): UIO[String]
 }
 
@@ -77,27 +93,63 @@ class AuthServiceLive(
     userRepo: UserRepo,
     jwtConfig: JwtConfig,
     clock: Clock,
+    // #2140: resolves the login request's household slug → tenancy key. Defaults to a DB-free
+    // default-household-only repo so every pre-multi-tenant `AuthServiceLive(userRepo, jwtConfig,
+    // clock)` construction keeps compiling and resolves the single self-hosted household.
+    householdRepo: HouseholdRepo = HouseholdRepo.defaultOnly,
 ) extends AuthService {
 
   private val algo: JwtHmacAlgorithm = JwtAlgorithm.HS256
   private val secret                 = jwtConfig.secret
 
-  def login(username: String, password: String): IO[AuthError, LoginResponse] =
+  // #2140: a fixed valid bcrypt hash used ONLY for timing equalization. When the (household,
+  // username) lookup finds no user — unknown username, or a real username presented against the
+  // wrong household — we still run a bcrypt verify against this hash so the failure's timing shape
+  // matches a genuine wrong-password (which does run bcrypt). This closes the username/household
+  // enumeration oracle required by #2140 scope item 3. The verify always returns false; the value
+  // is never a real credential. Uses the SAME `AuthService.BcryptCost` as `hashPassword` — the
+  // equalization holds only while the two costs match, so they share one constant.
+  private val timingDummyHash: String =
+    BCrypt
+      .withDefaults()
+      .hashToString(AuthService.BcryptCost, "wifihaven-timing-equalizer".toCharArray)
+
+  def login(
+      username: String,
+      password: String,
+      householdSlug: Option[String] = None,
+  ): IO[AuthError, LoginResponse] =
     // #602: route/method (`POST /api/auth/login`) ride in via LoggingMiddleware on
     // the HTTP path. `user` is the only per-call dynamic context we add here, so
     // every log inside the for-comprehension (success info, bad-password warn)
     // inherits it via FiberRef.
     LogContext.annotate(LogContext.User, username) {
       (for {
-        user  <- userRepo
-          .findByUsername(username)
-          .mapError(e => AuthError.Unexpected(e.getMessage))
-          .flatMap(ZIO.fromOption(_).mapError(_ => AuthError.InvalidCredentials))
-        valid <- ZIO.succeed(
-          BCrypt.verifyer().verify(password.toCharArray, user.passwordHash).verified,
-        )
-        _     <- ZIO.fail(AuthError.InvalidCredentials).when(!valid)
-        now   <- clock.instant.map(_.getEpochSecond)
+        // #2140: resolve the requested household. Absent/blank → default household (back-compat).
+        // A present-but-unknown slug yields None so the user lookup finds nothing — the SAME
+        // failure path as an unknown username (no household enumeration).
+        hhOpt   <- householdSlug.map(_.trim).filter(_.nonEmpty) match {
+          case None       => ZIO.some(HouseholdId.Default)
+          case Some(slug) =>
+            householdRepo.findIdBySlug(slug).mapError(e => AuthError.Unexpected(e.getMessage))
+        }
+        userOpt <- hhOpt match {
+          case None     => ZIO.none
+          case Some(hh) =>
+            userRepo.findByUsername(hh, username).mapError(e => AuthError.Unexpected(e.getMessage))
+        }
+        // #2140: always run bcrypt — against the real hash if the user exists, against a fixed
+        // dummy hash otherwise — so an unknown username / wrong household is timing-indistinguishable
+        // from a wrong password. The dummy path always yields false.
+        valid = userOpt match {
+          case Some(u) => BCrypt.verifyer().verify(password.toCharArray, u.passwordHash).verified
+          case None    =>
+            BCrypt.verifyer().verify(password.toCharArray, timingDummyHash.toCharArray).verified
+        }
+        user    <- ZIO
+          .fromOption(userOpt.filter(_ => valid))
+          .mapError(_ => AuthError.InvalidCredentials)
+        now     <- clock.instant.map(_.getEpochSecond)
         claim = JwtClaim(
           // #2080: stamp the user's CURRENT token_version so a subsequent password
           // change (which bumps it) invalidates this token on its next verify().
@@ -168,8 +220,10 @@ class AuthServiceLive(
         // #2080: reject a token stamped with an older token_version than the
         // user's current one — the effect of a password change (which bumps it)
         // invalidating every session minted before the change.
+        // #2140: resolve within the token's own household (`claims.hh`) — usernames are only
+        // unique per household now, so a bare-username lookup could hit a different tenant's user.
         userRepo
-          .findByUsername(claims.sub)
+          .findByUsername(claims.hh, claims.sub)
           .mapError(e => AuthError.Unexpected(e.getMessage))
           .flatMap {
             case Some(user) if user.tokenVersion > claims.tokenVersion =>
@@ -209,7 +263,8 @@ class AuthServiceLive(
   def requirePasswordChanged(token: String): IO[AuthError, JwtClaims] =
     verify(token).flatMap { claims =>
       userRepo
-        .findByUsername(claims.sub)
+        // #2140: scope to the token's household — usernames are unique per household only.
+        .findByUsername(claims.hh, claims.sub)
         .mapError(e => AuthError.Unexpected(e.getMessage))
         .flatMap {
           case Some(user) if user.mustChangePassword => ZIO.fail(AuthError.Forbidden)
@@ -217,10 +272,16 @@ class AuthServiceLive(
         }
     }
 
-  def changePassword(username: String, current: String, next: String): IO[AuthError, Unit] =
+  def changePassword(
+      username: String,
+      current: String,
+      next: String,
+      household: HouseholdId = HouseholdId.Default,
+  ): IO[AuthError, Unit] =
     for {
       user  <- userRepo
-        .findByUsername(username)
+        // #2140: scope to the caller's household (route passes `claims.hh`).
+        .findByUsername(household, username)
         .mapError(e => AuthError.Unexpected(e.getMessage))
         .flatMap(ZIO.fromOption(_).mapError(_ => AuthError.InvalidCredentials))
       valid <- ZIO.succeed(
@@ -242,16 +303,23 @@ class AuthServiceLive(
     } yield ()
 
   def hashPassword(password: String): UIO[String] =
-    ZIO.succeed(BCrypt.withDefaults().hashToString(12, password.toCharArray))
+    ZIO.succeed(BCrypt.withDefaults().hashToString(AuthService.BcryptCost, password.toCharArray))
 }
 
 object AuthService {
-  val layer: ZLayer[UserRepo & JwtConfig & Clock, Nothing, AuthService] =
-    ZLayer.fromFunction(AuthServiceLive(_, _, _))
+  // #2140: HouseholdRepo added so login can resolve the request's household slug → tenancy key.
+  val layer: ZLayer[UserRepo & HouseholdRepo & JwtConfig & Clock, Nothing, AuthService] =
+    ZLayer.fromFunction(AuthServiceLive(_, _, _, _))
 
   // #2084: minimum password length enforced on both create-user and
   // change-password — previously neither path validated strength at all.
   val MinPasswordLength: Int = 12
+
+  // The bcrypt work factor for every password hash we mint (security.md: "bcrypt cost 12").
+  // SINGLE-SOURCED on purpose (#2140): `hashPassword` and the login timing-equalizer
+  // (`timingDummyHash`) MUST use the same cost, or the no-user login path diverges in latency from a
+  // genuine wrong-password and reopens the enumeration oracle #2140 closes.
+  val BcryptCost: Int = 12
 
   def isPasswordStrongEnough(password: String): Boolean =
     password.length >= MinPasswordLength

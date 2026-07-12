@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useCallback } from 'react'
 import { api } from '@/api/client'
+import { setHouseholdCookie } from '@/api/householdCookie'
 import type { UserRole } from '@/types/api'
 
 interface AuthState {
@@ -15,7 +16,12 @@ interface AuthState {
 interface AuthContextValue extends AuthState {
   // Returns { mustChangePassword } so callers can redirect before the React
   // state update is applied (#586).
-  login: (username: string, password: string) => Promise<{ mustChangePassword: boolean }>
+  // #2140: `household` is the optional household slug from the login form.
+  login: (
+    username: string,
+    password: string,
+    household?: string,
+  ) => Promise<{ mustChangePassword: boolean }>
   logout: () => void
   clearMustChangePassword: () => void
   isAdmin: boolean
@@ -43,8 +49,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     mustChangePassword:  false,
   }))
 
-  const login = useCallback(async (username: string, password: string) => {
-    const resp = await api.auth.login(username, password)
+  const login = useCallback(async (username: string, password: string, household?: string) => {
+    const resp = await api.auth.login(username, password, household)
+    // #2140: remember the household slug (a UX hint only) so it pre-fills next time. A blank slug —
+    // the default self-hosted single-household case — clears it, keeping the field hidden there.
+    setHouseholdCookie(household)
     localStorage.setItem('token', resp.token)
     localStorage.setItem('username', resp.username)
     localStorage.setItem('role', resp.role)
