@@ -300,12 +300,17 @@ export function ProfileTimelineChart({ profileId }: { profileId: number }) {
         )
       )}
 
-      {/* #715/#957 — proportional attention is the wall-clock-share number; the
-          Other long-tail drill-in surfaces host-presence for the leftover bucket. */}
+      {/* #2156 — the series is presence-based (#1465/#1492), NOT byte-share
+          proportional. Each stack is that app's/device's session-union minutes,
+          so concurrent apps (or devices) overlap and a bar can exceed the hour;
+          with "count each device" (Sum) cross-device overlap the daily total can
+          pass 24h. The old copy claimed stacks total to wall-clock per hour —
+          false since #1465 — which made this by-design behavior read as a bug. */}
       {win === 'today' && (stackBy === 'app' || stackBy === 'device') && (
         <p className="text-[10px] text-brand-text-muted">
-          Stacks total to wall-clock minutes per hour. Per-host minutes are byte-share-weighted
-          (proportional) within each 5-min window (#715).
+          Each stack is that {stackBy === 'app' ? 'app' : 'device'}’s active (session) minutes per
+          hour. Concurrent {stackBy === 'app' ? 'apps' : 'devices'} overlap, so a bar can exceed the
+          hour; with “count each device” overlap the daily total can pass 24h.
         </p>
       )}
 
