@@ -20,9 +20,16 @@
 local socket  = require("cqueues.socket")
 local errno   = require("cqueues.errno")
 local context = require("openssl.ssl.context")
+local store   = require("openssl.x509.store")
+local vparam  = require("openssl.x509.verify_param")
 
 local ws_frame = require("wifihaven.ws_frame")
 local ws_crypto = require("wifihaven.ws_crypto")
+local ws_tls   = require("wifihaven.ws_tls")
+
+-- luaossl submodules the TLS context builder needs, injected into ws_tls so its
+-- logic stays unit-testable on the macOS busted host (no cqueues/luaossl there).
+local TLS_DEPS = { context = context, store = store, verify_param = vparam }
 
 local M = {}
 
@@ -59,15 +66,19 @@ function M.connect(uri, opts)
   sock:settimeout(opts.connect_timeout or 10)
 
   if tls then
-    local ctx = context.new("TLS", false)      -- client context
-    -- Verify the server cert chain by default. opts.insecure disables it — for
-    -- self-signed loopback testing ONLY; production keeps VERIFY_PEER.
-    ctx:setVerify(opts.insecure and context.VERIFY_NONE or context.VERIFY_PEER)
+    -- Build the client context: VERIFY_PEER against the system CA store AND
+    -- hostname-bound to `host` (both were missing pre-#2153 — see ws_tls.lua).
+    -- opts.insecure keeps the self-signed-loopback escape hatch.
+    local ctx = ws_tls.build_context(TLS_DEPS, host, opts)
     -- Call starttls DIRECTLY (no pcall — it yields during the TLS handshake);
     -- returns the socket on success, nil+errno on failure (no throw, per the
     -- returning onerror above).
     local ok, terr = sock:starttls(ctx)
-    if not ok then return nil, "starttls: " .. tostring(terr) end
+    if not ok then
+      -- Map the raw numeric errno through cqueues' error-string helper so
+      -- logread is legible instead of a bare `-1935895353` (#2153).
+      return nil, "starttls: " .. ws_tls.format_starttls_error(terr, errno.strerror)
+    end
   end
 
   -- ── opening handshake (RFC 6455 §4.1) ──
