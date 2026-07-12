@@ -2,6 +2,7 @@ import {
   Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer,
   Tooltip, XAxis, YAxis,
 } from 'recharts'
+import { formatMins } from '@/lib/timeFormat'
 
 // Shared 24-hour stacked-bar chart used by:
 //   - DeviceTimelinePage (#721) — stack by host
@@ -62,12 +63,16 @@ export function UsageHourlyBarChart({ rows, series, showLegend = false, legendFo
             axisLine={{ stroke: '#374151' }}
             tickLine={false}
           />
+          {/* #2156: render ticks through formatMins (like the week chart, #791)
+              so a Sum-mode bar's 3-digit minutes (e.g. 180m across 3 devices)
+              show as "3:00" instead of clipping to "00m" in a too-narrow axis.
+              width matches the week chart's 44px so "H:MM" never truncates. */}
           <YAxis
             tick={{ fill: '#6b7280', fontSize: 11 }}
             axisLine={{ stroke: '#374151' }}
             tickLine={false}
-            width={32}
-            unit="m"
+            width={44}
+            tickFormatter={(v: number) => formatMins(v)}
           />
           <Tooltip
             cursor={{ fill: '#1f293780' }}

@@ -530,6 +530,68 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           assertTrue(out.topDevices.iterator.map(_.dayMins).sum == 15) &&
           assertTrue(out.presenceTotalMins == 15)
       },
+      // #2156 — Sum is the default cross-device overlap: a profile with several
+      // devices active in the same hour legitimately shows a per-hour bar > 60
+      // (each device counts) and a daily total that can exceed 24h. That is NOT a
+      // bug — the SPA chart merely mislabeled it as byte-share-proportional. Pin
+      // the >60 bar, and pin that all three stack-by views (Total / Device / App)
+      // reconcile to the SAME per-hour and daily totalMins so the header and chart
+      // stay single-sourced.
+      test(
+        "#2156: Sum-mode per-hour bar may exceed 60 and Total/Device/App views reconcile",
+      ) {
+        val macA = "aa:bb:cc:dd:ee:1a"
+        val macB = "aa:bb:cc:dd:ee:1b"
+        val macC = "aa:bb:cc:dd:ee:1c"
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo)
+          _           <- TestLayers.seedDevice(deviceRepo, macA, "iPad-A", kidsId)
+          _           <- TestLayers.seedDevice(deviceRepo, macB, "iPad-B", kidsId)
+          _           <- TestLayers.seedDevice(deviceRepo, macC, "iPad-C", kidsId)
+          routerId    <- seedRouter
+          today = TestClock.schoolDayAfternoon.toLocalDate
+          // Each device active 25 min (5 contiguous buckets) in hour 14, on its own
+          // host. Sum overlap → hour 14 total = 3 × 25 = 75 min (> 60).
+          _  <- ZIO.foreachDiscard(0 until 5)(i =>
+            insertRow(routerId, macA, "a.com", today, 14, i * 5),
+          )
+          _  <- ZIO.foreachDiscard(0 until 5)(i =>
+            insertRow(routerId, macB, "b.com", today, 14, i * 5),
+          )
+          _  <- ZIO.foreachDiscard(0 until 5)(i =>
+            insertRow(routerId, macC, "c.com", today, 14, i * 5),
+          )
+          rb <- buildRoutes
+          (routes, auth) = rb
+          token <- auth.login("admin", "changeme").map(_.token.value)
+          req = Request
+            .get(
+              URL
+                .decode(s"/api/usage/series?profileId=${kidsId.value}&date=$today&groupBy=app")
+                .toOption
+                .get,
+            )
+            .addHeader(Header.Authorization.Bearer(token))
+          resp <- routes.runZIO(req)
+          body <- resp.body.asString
+          out  <- ZIO.fromEither(body.fromJson[UsageSeriesResponse])
+          totalSum  = out.buckets.iterator.map(_.totalMins).sum
+          deviceSum = out.bucketsByDevice.iterator.map(_.totalMins).sum
+          entrySum  = out.bucketsByEntry.iterator.map(_.totalMins).sum
+        } yield assertTrue(resp.status == Status.Ok) &&
+          // By design: Sum overlap counts each device, so the bar exceeds 60.
+          assertTrue(out.buckets(14).totalMins == 75) &&
+          // The per-hour total is identical across all three stack-by views…
+          assertTrue(out.bucketsByDevice(14).totalMins == 75) &&
+          assertTrue(out.bucketsByEntry(14).totalMins == 75) &&
+          // …and so is the daily total — the header + chart are single-sourced.
+          assertTrue(totalSum == deviceSum && deviceSum == entrySum) &&
+          assertTrue(totalSum == out.presenceTotalMins) &&
+          assertTrue(out.presenceTotalMins == 75)
+      },
       test("profileId mode: rejects unknown profile with 404") {
         for {
           _  <- cleanDb
