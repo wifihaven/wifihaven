@@ -4,6 +4,7 @@ import wifihaven.api.{BetaConfig, JwtConfig}
 import wifihaven.api.auth.*
 import wifihaven.api.beta.*
 import wifihaven.api.db.*
+import wifihaven.api.db.TypeMeta.given
 import wifihaven.api.notify.Notifier
 import wifihaven.api.routes.*
 import wifihaven.shared.*
@@ -116,6 +117,7 @@ object BetaProvisioningSpec
         ctl <- TestClock.makeWithControl(TestClock.schoolDayAfternoon)
         (bc, _) = ctl
         b              <- build(bc)
+        xa             <- ZIO.service[Transactor[Task]]
         opToken        <- login(b.auth, "admin", "changeme")
         (s1, _)        <- postJson(
           b.routes,
@@ -138,18 +140,29 @@ object BetaProvisioningSpec
           .fromEither(approveBody.fromJson[ApproveBetaResponse])
           .mapError(new RuntimeException(_))
         token = tokenFromInviteUrl(approve.inviteUrl)
+        // Design §3.4 (2026-07-10): the accept payload is {token, password} — no username/email.
         (s4, acceptBody) <- postJson(
           b.routes,
           "/api/beta/accept",
           None,
-          AcceptInviteRequest(token, "familyadmin", "supersecret123").toJson,
+          AcceptInviteRequest(token, "supersecret123").toJson,
         )
         accept           <- ZIO
           .fromEither(acceptBody.fromJson[AcceptInviteResponse])
           .mapError(new RuntimeException(_))
+        // The admin's email is bound from beta_requests.email (globally unique, V67) and username
+        // defaults to `admin`. Verify the row directly.
+        adminHh          <- sql"SELECT household_id FROM users WHERE email='fam@example.com'"
+          .query[HouseholdId]
+          .unique
+          .transact(xa)
+        adminUsername    <- sql"SELECT username FROM users WHERE email='fam@example.com'"
+          .query[String]
+          .unique
+          .transact(xa)
         newLogin         <- b.auth
-          // #2140: log into the NEW household by its slug (per-household usernames).
-          .login("familyadmin", "supersecret123", Some(approve.slug))
+          // The first admin is `admin`; log into the NEW household by its slug (per-household usernames).
+          .login("admin", "supersecret123", Some(approve.slug))
           .mapError(e => new RuntimeException(s"login failed: $e"))
         claims           <- b.auth
           .verify(newLogin.token.value)
@@ -162,6 +175,9 @@ object BetaProvisioningSpec
         // The email was normalised (trim + lowercase) on intake.
         assertTrue(summaries.head.email == "fam@example.com") &&
         assertTrue(accept.slug == approve.slug) &&
+        // The admin is `admin`, email-bound to the approved request's address.
+        assertTrue(accept.username == "admin", adminUsername == "admin") &&
+        assertTrue(adminHh == approve.householdId) &&
         // The new admin logs into the NEW household, not the default operator household.
         assertTrue(claims.hh == approve.householdId, claims.hh != HouseholdId.Default) &&
         // The new admin is not forced through a first-login password change (they set it themselves).
@@ -201,7 +217,7 @@ object BetaProvisioningSpec
           b.routes,
           "/api/beta/accept",
           None,
-          AcceptInviteRequest(token, "lateadmin", "supersecret123").toJson,
+          AcceptInviteRequest(token, "supersecret123").toJson,
         )
       } yield assertTrue(sExpired == Status.BadRequest)
     },
@@ -237,14 +253,14 @@ object BetaProvisioningSpec
           b.routes,
           "/api/beta/accept",
           None,
-          AcceptInviteRequest(token, "onceadmin", "supersecret123").toJson,
+          AcceptInviteRequest(token, "supersecret123").toJson,
         )
-        // Same token, a different username — must be rejected; the token was burned on first use.
+        // Same token — must be rejected; the token was burned on first use.
         (sReplay, _)     <- postJson(
           b.routes,
           "/api/beta/accept",
           None,
-          AcceptInviteRequest(token, "twiceadmin", "supersecret123").toJson,
+          AcceptInviteRequest(token, "supersecret123").toJson,
         )
       } yield assertTrue(sFirst == Status.Ok, sReplay == Status.BadRequest)
     },

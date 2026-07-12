@@ -104,14 +104,23 @@ final case class BetaService(
         .someOrFail(BetaError.InvalidToken)
         .map(_.slug.getOrElse(""))
       pwHash  <- auth.hashPassword(req.password)
+      // Design §3.4 (2026-07-10): the accept payload carries no username/email. `username` defaults
+      // to `admin` (per-household unique, V65) and `email` is bound from the originating
+      // beta_requests.email — the global login identifier the admin authenticates with (§4, V67).
       uid     <- userRepo
-        .create(req.username, pwHash, UserRole.asString(UserRole.Admin), hid)
+        .create(
+          FirstAdminUsername,
+          pwHash,
+          UserRole.asString(UserRole.Admin),
+          hid,
+          Some(request.email),
+        )
         .mapError(BetaError.Db(_))
       // The admin set their own password → don't force a first-login change.
       _       <- userRepo.clearMustChangePassword(uid).mapError(BetaError.Db(_))
       // Single-use: burn the token so it can't be replayed (design §3.4 / #2132 scope 5).
       _       <- betaRepo.consumeInvite(request.id).mapError(BetaError.Db(_))
-    } yield AcceptInviteResponse(householdId = hid, slug = slug, username = req.username)
+    } yield AcceptInviteResponse(householdId = hid, slug = slug, username = FirstAdminUsername)
 
   // Base slug from the requested household name (falling back to the email local-part).
   private def baseSlug(r: DbBetaRequest): String =
@@ -139,9 +148,11 @@ final case class BetaService(
 }
 
 object BetaService {
-  val DefaultRouterCap: Int     = 1
-  val BetaBillingStatus: String = "beta"
-  private val MaxSlugAttempts   = 1000
+  val DefaultRouterCap: Int      = 1
+  val BetaBillingStatus: String  = "beta"
+  // Design §3.4 (2026-07-10): the household's first admin is always `admin` (per-household unique).
+  val FirstAdminUsername: String = "admin"
+  private val MaxSlugAttempts    = 1000
 
   /** Lowercase, ASCII-`[a-z0-9-]`-only slug; non-alnum runs collapse to single dashes. */
   def slugify(raw: String): String = {

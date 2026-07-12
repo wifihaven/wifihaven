@@ -90,14 +90,14 @@ object MultiTenantIsolationSpec
     routes.runZIO(req).flatMap(r => r.body.asString.map((r.status, _)))
   }
 
-  // Run request → approve → accept, returning the new household's (slug, invite token). #2140:
-  // usernames are per-household, so a caller logging in as the new admin must pass the returned slug.
+  // Run request → approve → accept, returning the new household's (slug, invite token). The accepted
+  // admin is always `admin` (design §3.4, 2026-07-10) with email bound from the request; a caller
+  // logging in as it passes the returned slug (per-household usernames, #2140).
   private def provisionHousehold(
       betaRoutes: Routes[Any, Response],
       opToken: String,
       email: String,
       name: String,
-      adminUser: String,
   ): Task[(String, String)] =
     for {
       _         <- postJson(
@@ -125,7 +125,7 @@ object MultiTenantIsolationSpec
         betaRoutes,
         "/api/beta/accept",
         None,
-        AcceptInviteRequest(token, adminUser, "supersecret123").toJson,
+        AcceptInviteRequest(token, "supersecret123").toJson,
       )
     } yield (approve.slug, token)
 
@@ -598,10 +598,10 @@ object MultiTenantIsolationSpec
         opTok <- login(auth, two.adminA, two.password) // adminA is the operator (household 1)
         bt    <- makeBetaRoutes
         (_, betaRoutes) = bt
-        prov <- provisionHousehold(betaRoutes, opTok, "c@example.com", "C Household", "cadmin")
+        prov <- provisionHousehold(betaRoutes, opTok, "c@example.com", "C Household")
         (cSlug, _) = prov
-        // The freshly-provisioned admin logs into household C — #2140: name the household by slug.
-        cTok <- login(auth, "cadmin", "supersecret123", Some(cSlug))
+        // The freshly-provisioned admin (`admin`) logs into household C by its slug (#2140).
+        cTok <- login(auth, "admin", "supersecret123", Some(cSlug))
         pr   <- ZIO.service[ProfileRepo]
         tlr  <- ZIO.service[TimeLimitRepo]
         up   <- ZIO.service[UserProfileRepo]
@@ -659,16 +659,42 @@ object MultiTenantIsolationSpec
         opTok <- login(auth, two.adminA, two.password)
         bt    <- makeBetaRoutes
         (_, betaRoutes) = bt
-        prov <- provisionHousehold(betaRoutes, opTok, "r@example.com", "R Household", "radmin")
+        prov <- provisionHousehold(betaRoutes, opTok, "r@example.com", "R Household")
         (_, token) = prov
-        // Replay the (now consumed) token with a different username.
+        // Replay the (now consumed) token.
         (sReplay, _) <- postJson(
           betaRoutes,
           "/api/beta/accept",
           None,
-          AcceptInviteRequest(token, "radmin2", "supersecret123").toJson,
+          AcceptInviteRequest(token, "supersecret123").toJson,
         )
       } yield assertTrue(sReplay == Status.BadRequest)
+    },
+    test("pin (#2132) — an accepted admin is bound to its email and findable GLOBALLY (V67)") {
+      // Design §3.4/§4 (2026-07-10): accept binds the admin's email from beta_requests.email; email
+      // is the GLOBAL login identifier (uq_users_email). Prove the bound email resolves to exactly
+      // one user, in the newly provisioned household — no other household, no duplicate.
+      for {
+        _     <- cleanDb
+        two   <- TestLayers.seedTwoHouseholds(macA, macB)
+        auth  <- makeAuth
+        xa    <- ZIO.service[Transactor[Task]]
+        opTok <- login(auth, two.adminA, two.password)
+        bt    <- makeBetaRoutes
+        (_, betaRoutes) = bt
+        _     <- provisionHousehold(betaRoutes, opTok, "e@example.com", "E Household")
+        // Exactly one user carries this email, globally.
+        count <- sql"SELECT COUNT(*) FROM users WHERE email='e@example.com'"
+          .query[Long]
+          .unique
+          .transact(xa)
+        // …and it belongs to the provisioned household (neither the operator's nor household B's).
+        hh    <- sql"SELECT household_id FROM users WHERE email='e@example.com'"
+          .query[HouseholdId]
+          .unique
+          .transact(xa)
+      } yield assertTrue(count == 1L) &&
+        assertTrue(hh != HouseholdId.Default, hh != two.hhB)
     },
   ) @@ TestAspect.sequential
 }

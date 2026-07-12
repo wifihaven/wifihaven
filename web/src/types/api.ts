@@ -1026,9 +1026,10 @@ export interface ApproveBetaResponse {
   inviteExpiresAt: string
 }
 
+// Revised 2026-07-10 (design §3.4): no username/email — the admin's email is bound server-side
+// from beta_requests.email and username defaults to `admin`.
 export interface AcceptInviteRequest {
   token: string
-  username: string
   password: string
 }
 

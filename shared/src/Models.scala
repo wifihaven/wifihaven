@@ -715,16 +715,21 @@ case class ApproveBetaResponse(
  * Invite acceptance body for `POST /api/beta/accept` — unauthenticated. Validates the single-use,
  * unexpired token, then creates the new household's FIRST admin user (design §3.4). This is the
  * only second-household admin-bootstrap path (before it, the V1 seed was the sole admin creator).
+ *
+ * Revised 2026-07-10 (design §3.4/§4): the payload carries **no username or email**. The admin's
+ * `email` is bound server-side from the originating `beta_requests.email` (the address the operator
+ * approved; V67 `users.email`), and `username` defaults to `admin` (per-household unique, V65). The
+ * admin logs in by email thereafter (§4).
  */
 case class AcceptInviteRequest(
     token: String,
-    username: String,
     password: String,
 ) derives JsonCodec
 
 /**
- * Response to a successful invite accept — the new household's slug, so the SPA sets the
- * `wh_household` cookie before auto-login (design §3.4 / #2140).
+ * Response to a successful invite accept — the new household's slug (so the SPA sets the
+ * `wh_household` cookie before auto-login) and the created admin's `username` (always `admin`),
+ * design §3.4 / #2140.
  */
 case class AcceptInviteResponse(
     householdId: HouseholdId,

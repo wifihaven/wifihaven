@@ -150,10 +150,13 @@ object BetaRoutes {
       .someOrFail(ApiError.Unauthorized("unknown operator user"))
       .map(_.id)
 
-  // Minimal email sanity — a full RFC 5322 validator is overkill; we only need to reject obvious
-  // junk before persisting. Real deliverability is proven by the operator sending the invite.
-  private def looksLikeEmail(s: String): Boolean =
-    s.length >= 3 && s.contains("@") && !s.startsWith("@") && !s.endsWith("@")
+  // #2132 (design §4, 2026-07-10): validate a deliverable public-FQDN shape — `local@domain` where
+  // the domain has at least one dot (a real TLD-bearing FQDN), no whitespace, single `@`. This is a
+  // deliverability gate (the email becomes the admin's global login identifier at accept), NOT a
+  // parse-disambiguation one — the V66/V67 charset CHECKs already keep the login forms disjoint. A
+  // full RFC 5322 validator is deliberately overkill; this rejects the obvious non-FQDN junk.
+  private val EmailFqdn                          = """^[^@\s]+@[^@\s.]+(?:\.[^@\s.]+)+$""".r
+  private def looksLikeEmail(s: String): Boolean = EmailFqdn.matches(s)
 
   private def toSummary(r: DbBetaRequest): BetaRequestSummary =
     BetaRequestSummary(

@@ -102,11 +102,16 @@ trait UserRepo {
   // household (resolved from their JWT at the route). Defaults to the
   // single-install backfill household so pre-multi-tenant callers stay
   // tenant-safe (matches the #2106 RouterRepo.create precedent).
+  // #2132 (design §3.4, V67): `email` is the global login identifier — set only
+  // by the invite-accept path (bound from beta_requests.email). Defaulted to
+  // None so every existing admin-create call site (which has no email) is
+  // unchanged and the user is created email-less (username login via §4).
   def create(
       u: String,
       h: String,
       r: String,
       householdId: HouseholdId = HouseholdId.Default,
+      email: Option[String] = None,
   ): Task[UserId]
   def updatePassword(id: UserId, h: String): Task[Unit]
   def updateUsername(id: UserId, u: String): Task[Unit]
@@ -991,10 +996,12 @@ class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
       .map(toUser)
       .option
       .transact(xa)
-  def create(u: String, h: String, r: String, householdId: HouseholdId) =
+  def create(u: String, h: String, r: String, householdId: HouseholdId, email: Option[String]) =
     // Always force a password change on first login for admin-created users (#599).
     // #2130: household_id is stamped explicitly — never left to V65's DEFAULT 1.
-    sql"INSERT INTO users(username,password_hash,role,must_change_password,household_id) VALUES($u,$h,$r,true,$householdId) RETURNING id"
+    // #2132 (V67): `email` is NULL for every path except invite-accept, which binds it from
+    // beta_requests.email (the global login identifier, uq_users_email).
+    sql"INSERT INTO users(username,password_hash,role,must_change_password,household_id,email) VALUES($u,$h,$r,true,$householdId,$email) RETURNING id"
       .query[UserId]
       .unique
       .transact(xa)
