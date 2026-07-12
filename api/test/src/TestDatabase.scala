@@ -188,7 +188,8 @@ object TestDatabase {
       HouseholdSettingsRepo & TimeLimitRepo & AppTimeLimitRepo & DeviceRepo & BlocklistRepo &
       TimeUsageRepo & TimeExtensionRepo & RouterRepo & TrafficReportRepo & BlockEventRepo &
       ConnectionEventRepo & AlertRepo & AppRepo & RollupRepo & TimeUsedRollupRepo &
-      AppUsedRollupRepo & AmbientHostsRepo & HouseholdBillingRepo & BetaRequestRepo
+      AppUsedRollupRepo & AmbientHostsRepo & HouseholdBillingRepo & BetaRequestRepo &
+      EntitlementsRepo
 
   val layer: ZLayer[Any, Throwable, EmbeddedPostgres & TestDb & Transactor[Task] & AllRepos] = {
     val pg = embeddedPg

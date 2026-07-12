@@ -380,6 +380,7 @@ object Main extends ZIOAppDefault {
     for {
       auth           <- ZIO.service[AuthService]
       userRepo       <- ZIO.service[UserRepo]
+      entitlements   <- ZIO.service[EntitlementsRepo]
       upRepo         <- ZIO.service[UserProfileRepo]
       profileRepo    <- ZIO.service[ProfileRepo]
       namedSchedRepo <- ZIO.service[NamedScheduleRepo]
@@ -571,7 +572,7 @@ object Main extends ZIOAppDefault {
 
       val routerAndAdminRoutes: Routes[Any, Response] =
         RouterRoutes.routes(routerRepo, policy, routerAuth, blockEvRepo) ++
-          AdminRouterRoutes.routes(auth, routerRepo, userRepo) ++
+          AdminRouterRoutes.routes(auth, routerRepo, userRepo, entitlements) ++
           RollupAdminRoutes.routes(auth, rollupRepo2) ++
           RouterIngestRoutes.routes(routerAuth, routerIngest) ++
           // #1846: additive websocket transport. REST ingest/poll/metrics above stay fully live.

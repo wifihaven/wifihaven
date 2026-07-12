@@ -4029,6 +4029,8 @@ object Repos {
   // #2132 (multi-tenant P5-2): beta-request pipeline repos (householdRepo is declared above, #2140).
   val householdBillingRepo  = ZLayer.fromFunction(HouseholdBillingRepoLive(_))
   val betaRequestRepo       = ZLayer.fromFunction(BetaRequestRepoLive(_))
+  // #2134 (multi-tenant P5-4): per-household entitlements (router_cap).
+  val entitlementsRepo      = ZLayer.fromFunction(EntitlementsRepoLive(_))
   val all                   =
-    userRepo ++ householdRepo ++ userProfileRepo ++ profileRepo ++ namedScheduleRepo ++ householdSettingsRepo ++ timeLimitRepo ++ appTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ rollupRepo ++ timeUsedRollupRepo ++ appUsedRollupRepo ++ partitionRepo ++ ambientHostsRepo ++ householdBillingRepo ++ betaRequestRepo
+    userRepo ++ householdRepo ++ userProfileRepo ++ profileRepo ++ namedScheduleRepo ++ householdSettingsRepo ++ timeLimitRepo ++ appTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ rollupRepo ++ timeUsedRollupRepo ++ appUsedRollupRepo ++ partitionRepo ++ ambientHostsRepo ++ householdBillingRepo ++ betaRequestRepo ++ entitlementsRepo
 }

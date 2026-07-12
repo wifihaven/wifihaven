@@ -537,6 +537,42 @@ object MultiTenantIsolationSpec
         assertTrue(row == List((two.hhA, true))) &&
         assertTrue(otherHh == 0L)
     },
+    // ── Pin 6: router-cap entitlement is scoped per household (#2134) ───────────
+    test("pin 6 — hh-B's router count never affects hh-A's router-cap check") {
+      // hh-A (household 1) is backfilled to router_cap 10; hh-B defaults to 1 and is seeded with one
+      // router already (gwB) — i.e. hh-B is AT its cap. hh-A's create must still succeed: each
+      // household's cap check counts ONLY its own routers, never the other tenant's.
+      for {
+        _      <- cleanDb
+        two    <- TestLayers.seedTwoHouseholds(macA, macB)
+        rr     <- ZIO.service[RouterRepo]
+        ur     <- ZIO.service[UserRepo]
+        en     <- ZIO.service[EntitlementsRepo]
+        xa     <- ZIO.service[Transactor[Task]]
+        auth   <- makeAuth
+        // Confirm the fixture puts hh-B at its cap of 1 (default), while hh-A sits at 10.
+        capB   <- sql"SELECT router_cap FROM households WHERE id=${two.hhB}"
+          .query[Int]
+          .unique
+          .transact(xa)
+        countB <- rr.listAllForHousehold(two.hhB).map(_.size)
+        tokenA <- login(auth, two.adminA, two.password)
+        routes = AdminRouterRoutes.routes(auth, rr, ur, en)
+        respA       <- routes.runZIO(
+          Request
+            .post(
+              URL.decode("/api/admin/routers").toOption.get,
+              Body.fromString(CreateRouterRequest("gwA-2").toJson),
+            )
+            .addHeader(Header.Authorization.Bearer(tokenA)),
+        )
+        // hh-A gained a router; hh-B's count is untouched by A's create.
+        countAAfter <- rr.listAllForHousehold(two.hhA).map(_.size)
+        countBAfter <- rr.listAllForHousehold(two.hhB).map(_.size)
+      } yield assertTrue(capB == 1, countB == 1) &&
+        assertTrue(respA.status == Status.Ok) &&
+        assertTrue(countAAfter == 2, countBAfter == 1)
+    },
     // ── Pin 5: blocklist authorization over a SHARED global catalog ─────────────
     test("pin 5 — GET /api/blocklists/<id> serves byte-identical content to both households") {
       for {
