@@ -58,7 +58,13 @@ define Package/wifihaven
   # was only checked on the apk target, not the ipk/23.05 one, so it's pinned
   # here as an explicit DEPENDS regardless of what any given base image ships,
   # closing that gap either way.
-  DEPENDS:=+lua +libuci-lua +luci-lib-jsonc +conntrack +curl +uhttpd-mod-lua +kmod-nf-log +kmod-nf-log6 +kmod-nf-conntrack6 +libustream-mbedtls +openssl-util +tcpdump-mini +lua-openssl +cqueues +luaossl +usign
+  # #2153: ca-bundle materializes /etc/ssl/certs/ca-certificates.crt, the system
+  # CA trust store the wifihaven-ws sidecar loads before a wss:// handshake.
+  # luaossl's context.new() ships an EMPTY store, so without this bundle
+  # VERIFY_PEER rejects every real cert (the prod-cutover blocker #1023 hit). It
+  # was present on the live router but not guaranteed by DEPENDS; pin it so
+  # enabling ws never depends on it arriving transitively.
+  DEPENDS:=+lua +libuci-lua +luci-lib-jsonc +conntrack +curl +uhttpd-mod-lua +kmod-nf-log +kmod-nf-log6 +kmod-nf-conntrack6 +libustream-mbedtls +openssl-util +tcpdump-mini +lua-openssl +cqueues +luaossl +usign +ca-bundle
   PKGARCH:=all
 endef
 
