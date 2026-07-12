@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { render } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { UsageHourlyBarChart, type ChartSeries } from './UsageHourlyBarChart'
@@ -13,7 +14,7 @@ import { UsageHourlyBarChart, type ChartSeries } from './UsageHourlyBarChart'
 const captured: { yAxisProps?: Record<string, unknown> } = {}
 
 vi.mock('recharts', () => {
-  const Passthrough = ({ children }: { children?: React.ReactNode }) => <div>{children}</div>
+  const Passthrough = ({ children }: { children?: ReactNode }) => <div>{children}</div>
   return {
     ResponsiveContainer: Passthrough,
     BarChart: Passthrough,
