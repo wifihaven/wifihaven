@@ -49,7 +49,7 @@ exactly the deferred items:
 **In scope (this phase):**
 
 - Beta gating + the request→approval→provisioning pipeline (§2–§3)
-- Household-aware login: per-household usernames + login slug (§4)
+- Household-aware login: single identifier field — email / `slug/username` / bare username (§4)
 - Billing: `household_billing` state machine + minimal Stripe surface (§5)
 - Entitlements: per-household `router_cap` (§6)
 - Marketing surface: request-access CTA + pricing section (§7)
@@ -98,8 +98,11 @@ constants of the design, and the marketing copy must match them verbatim (§7):
 Plus one operator decision made after the pricing doc merged (2026-07-08,
 recorded in the #622 plan comment): **beta access is request-based with manual
 operator approval — no open self-serve signup.** And a second (2026-07-08,
-P5-8 comment on #622): **the same username must work in different households**,
-so the login page gains a household field (§4).
+P5-8 comment on #622): **the same username must work in different households.**
+A third (2026-07-10) **revised how the household is determined at login**: no
+household field in the UI — the login identifier itself carries the household
+(email for admins, `slug/username` for members without email, bare username
+resolved via the household cookie), per §4.
 
 ---
 
@@ -200,11 +203,17 @@ Approval provisions the household atomically:
 
 ### 3.4 Invite accept → first admin user (#2132/#2133)
 
-`POST /api/beta/accept` `{token, username, password}` validates the token
+`POST /api/beta/accept` `{token, password}` validates the token
 (single-use, unexpired — Clock-injected so TestClock drives TTL tests),
-creates the household's **first admin user** (password policy per
-[#2084](https://github.com/wifihaven/wifihaven/issues/2084)), and invalidates
-the token. This is the second-household admin bootstrap that does not exist
+creates the household's **first admin user**, and invalidates the token.
+Revised 2026-07-10 (§4): the accept payload carries **no username or email** —
+the admin's `email` is bound from the originating `beta_requests.email` (the
+address the operator approved), and the `username` defaults to `admin`
+(safe: usernames are per-household unique, V65). Password policy per
+[#2084](https://github.com/wifihaven/wifihaven/issues/2084). The admin
+subsequently logs in **by email** (§4), so accept requires V67
+([#2159](https://github.com/wifihaven/wifihaven/issues/2159),
+`users.email`). This is the second-household admin bootstrap that does not exist
 today — the only admin-creation path before this is the V1 seed
 (`V1__init.sql:129-131`, per #2132 scope item 4).
 
@@ -215,7 +224,8 @@ unauthenticated routes, `/login` and `/blocked`
 gated on the §3.2 operator check; and the first-run empty-household experience
 points at router enrollment as the next step. `/welcome` sets the
 `wh_household` cookie (slug) **before** auto-login, so a new household's
-members never see the household field (§4; #2133 scope addition).
+members get bare-username login on that browser from day one (§4; #2133
+scope addition).
 
 **Isolation pins (merge-gating, #2132 scope item 5):** a newly provisioned
 household-B admin sees zero household-A rows across every listing; a hh-B
@@ -242,27 +252,61 @@ is ambiguous. Verified call sites (2026-07-08, current `main`):
 Authenticated paths already carry the household (`claims.hh`,
 [#2105](https://github.com/wifihaven/wifihaven/issues/2105)) and simply
 resolve `(claims.hh, claims.sub)`. **Login is the one path with no household
-in hand** — and the username can't supply it. Hence:
+in hand.**
 
-1. `findByUsername` becomes `findByUsername(hh, username)`, keyed on the V65
-   unique constraint; all five call sites updated (#2140 scope item 1).
-2. `POST /api/auth/login` accepts an optional `household` field carrying the
-   **slug** (`households.slug` — unique and human-facing; `name` is not
-   unique). **Absent/empty resolves to the default household** (slug
-   `default`), so self-hosted single-household deploys keep exactly today's
-   UX and existing API clients keep working — additive, back-compat (#2140
-   scope item 2).
-3. Wrong-household failure is indistinguishable from wrong-password — no
-   household/username enumeration (#2140 scope item 3).
-4. SPA (`web/src/pages/LoginPage.tsx`): household field pre-filled from a
-   long-lived `wh_household` cookie (`Max-Age` ~10 years), collapsed behind a
-   "different household?" affordance when present; (re)set on every
-   successful login and at invite-accept. **The cookie is a UX hint only —
-   never an auth input**; the server trusts the posted field + password, not
-   the cookie (#2140 scope items 4–5).
+> **Revision (operator decision 2026-07-10).** The original design surfaced a
+> visible household field on the login page (slug, cookie-prefilled). That is
+> superseded: the login UI is **one identifier field + password — no
+> household field, ever**. The identifier itself carries the household, in
+> one of three **syntactically disjoint** forms. Disjointness is guaranteed
+> at the schema level: usernames may not contain `@` or `/` (V67 CHECK,
+> [#2159](https://github.com/wifihaven/wifihaven/issues/2159)) and slugs are
+> `[a-z0-9-]` (V66 CHECK), so no parsing precedence is needed.
 
-Sequencing: #2140 merges **before** #2133, whose invite-accept flow creates
-the first potentially-colliding usernames (#2140 / #2133 scope addition).
+Identifier forms, resolved server-side from the single posted string:
+
+1. **Email** (contains `@`) — global lookup on `users.email`
+   (`TEXT`, nullable, **globally UNIQUE**; V67 / #2159); the household comes
+   from the matched user row. **Admins always have an email** — it is bound
+   from `beta_requests.email` at invite-accept (§3.4) — so the
+   primary-account flow needs no household knowledge at all. Any adult or
+   child who later adds an email gets the same. (Emails are validated at
+   write time — `beta_requests` intake and any later email-add — for a
+   deliverable public-FQDN shape; validation exists for deliverability,
+   not for parse disambiguation, which the charset rules already guarantee.)
+2. **`slug/username` composite** (contains `/`) — e.g. `smith-family/emma`:
+   split at the first `/`, resolve `(households.slug, username)` via the
+   scoped `findByUsername(hh, username)`. This is the no-email path for a
+   member on a **fresh device** — no email account required, unambiguous by
+   the charset rules above.
+3. **Bare username** (neither `@` nor `/`) — the SPA, **client-side**,
+   prepends the `wh_household` cookie's slug to form `slug/username` before
+   posting; the server never reads the cookie. A bare identifier that
+   reaches the server resolves to the **default household** (slug
+   `default`) — preserving today's UX for self-hosted single-household
+   deploys and existing API clients (additive, back-compat).
+
+Supporting mechanics (unchanged from the original #2140 scope where noted):
+
+- `findByUsername` becomes `findByUsername(hh, username)`, keyed on the V65
+  unique constraint; all five call sites updated (#2140 scope item 1).
+- **Any failure — unknown email, wrong slug, unknown username, bad
+  password — returns the same generic error** with uniform timing; no
+  household/username/email enumeration (#2140 scope item 3).
+- The `wh_household` cookie (`Max-Age` ~10 years) is (re)set on every
+  successful login and at invite-accept, and remains a **client-side UX
+  hint only — never an auth input**; the server authenticates the posted
+  identifier + password exclusively (#2140 scope items 4–5).
+- Child/no-email members therefore log in: on family devices, with just
+  their username (path 3, cookie present after any household member's
+  first login); on a fresh device, with `slug/username` (path 2). Adding
+  an email later upgrades any account to path 1.
+
+Sequencing: **V67 (#2159, `users.email` + username charset guard) precedes
+the #2140 rework**, which precedes #2133 (whose invite-accept flow creates
+the first potentially-colliding usernames; #2140 / #2133 scope addition).
+The in-flight PRs from the original design (#2149 login, #2148 accept
+payload) are reworked to this revision before merge.
 
 ---
 
@@ -461,9 +505,10 @@ the `fix/2131-v66-phase5-schema` branch is not on the remote).
 |---|---|---|---|---|
 | W1 | [#2130](https://github.com/wifihaven/wifihaven/issues/2130) | fix: `POST /api/users` wrote into household 1 regardless of caller | — | **MERGED** — PR [#2139](https://github.com/wifihaven/wifihaven/pull/2139) |
 | W1 | [#2131](https://github.com/wifihaven/wifihaven/issues/2131) | V66 schema-only: `beta_requests` + `household_billing` + `router_cap` + `slug` + V65 `DROP DEFAULT`s | #2130 | OPEN, next up |
-| W2 | [#2132](https://github.com/wifihaven/wifihaven/issues/2132) | beta intake + operator approval + provisioning + invite accept (API) | #2131 | OPEN |
+| W2 | [#2132](https://github.com/wifihaven/wifihaven/issues/2132) | beta intake + operator approval + provisioning + invite accept (API) — accept payload **revised 2026-07-10** (`{token, password}`, email bound from `beta_requests.email`, §3.4); PR #2148 reworked before merge | #2131, #2159 (accept writes `users.email`) | OPEN |
 | W2 | [#2134](https://github.com/wifihaven/wifihaven/issues/2134) | per-household `router_cap` enforcement | #2131 | OPEN |
-| W2 | [#2140](https://github.com/wifihaven/wifihaven/issues/2140) | household-aware login (slug + cookie) | #2131; before #2133 | OPEN |
+| W2 | [#2159](https://github.com/wifihaven/wifihaven/issues/2159) | V67 schema-only: `users.email` (nullable, globally unique) + username charset guard | #2131; before #2140 rework | OPEN (added 2026-07-10) |
+| W2 | [#2140](https://github.com/wifihaven/wifihaven/issues/2140) | household-aware login — **revised 2026-07-10** to single-identifier (email / `slug/username` / cookie-assisted bare username, §4); PR #2149 reworked before merge | #2131, #2159; before #2133 | OPEN |
 | W3 | [#2133](https://github.com/wifihaven/wifihaven/issues/2133) | SPA: `/beta`, `/welcome`, operator queue | #2132, #2140 | OPEN |
 | W3 | [#2135](https://github.com/wifihaven/wifihaven/issues/2135) | Stripe: customer, Checkout + Portal, webhook, FOUNDING | #2131, #2132 | OPEN |
 | W3 | [#2138](https://github.com/wifihaven/wifihaven/issues/2138) | marketing: CTA + pricing section | #2132 (endpoint; copy can land dark) | OPEN |
@@ -493,7 +538,7 @@ injected):
 |---|---|
 | user creation (#2130) | hh-B admin `POST /api/users` → row stamped hh-B, invisible to hh-A — **landed** (PR #2139, red-first) |
 | provisioning (#2132) | new hh-B admin sees zero hh-A rows across every listing; hh-B admin cannot read/approve `beta_requests`; invite not replayable |
-| login (#2140) | same username in two households: each slug logs into its own household; wrong slug + right password fails like a bad password; absent slug → default household; verify/password-change resolve within `claims.hh` |
+| login (#2140, §4 revision) | same username in two households: each `slug/username` composite logs into its own household; email login lands in exactly the email-owner's household; wrong slug/email + right password fails like a bad password; bare username → default household; verify/password-change resolve within `claims.hh` |
 | router cap (#2134) | hh-B's router count never affects hh-A's cap check |
 | billing lifecycle (#2137) | a lapsed hh-B's permissive snapshot never affects hh-A's enforcement; the (permissive) snapshot serves regardless of billing status |
 
