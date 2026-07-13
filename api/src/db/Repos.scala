@@ -816,6 +816,32 @@ trait TrafficReportRepo {
   ): Task[List[wifihaven.api.usage.TrafficUsageDbRow]]
 
   /**
+   * #2174: SQL-side pre-aggregation for the raw-tier *fixed-step* display buckets (10m / 1m). Same
+   * row universe as [[listRawInRange]] (period_start range + optional mac filter + zero-rows
+   * dropped), but rows are summed per `(mac, host, floor(period_start / step))` INSIDE Postgres, so
+   * the API ships one row per (mac, host, bucket) instead of one per raw report period — the
+   * unbounded `listRawInRange` fetch on this path returned 755k rows / 24h at prod volume and took
+   * ~24s (dominated by row shipping, a per-raw-row LATERAL host-resolve, and the in-app sort). The
+   * IP→FQDN LATERAL resolve runs once per aggregated group, after the GROUP BY.
+   *
+   * Returned rows carry `periodStart = bucket start` and `periodEnd = bucket start + step`, which
+   * is exactly the `[floorTo(..), floor + step)` window `UsageTraffic.buildAggregate` / `windowFor`
+   * compute for fixed-step buckets — sub-day buckets are UTC-aligned pure epoch math, so the SQL
+   * floor and the Scala floor cannot disagree. `buildAggregate` re-floors (idempotent) and
+   * aggregates further (groupBy fan-out, distinct counts) on the much smaller set. NOT used for
+   * `bucket=raw` (no fixed step — the row's real report period is the window, #2018).
+   *
+   * Bounded by a per-statement timeout ([[QueryTimeout]]): a pathological window fails fast with a
+   * typed 503 instead of holding a pool connection (#1099 class).
+   */
+  def listRawAggregatedInRange(
+      macs: List[MacAddress],
+      fromInstant: Instant,
+      toInstant: Instant,
+      stepSeconds: Long,
+  ): Task[List[wifihaven.api.usage.TrafficUsageDbRow]]
+
+  /**
    * #846: earliest `period_start` across all rows. Used by Traffic Usage page to reject `from`
    * instants that fall outside the retention horizon — naïve until #809/#814 land.
    */
@@ -2495,6 +2521,59 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
         .to[List]
         .transact(xa),
     )
+  }
+
+  // #2174: SQL-side pre-aggregation for the raw-tier fixed-step buckets (10m/1m) — see the trait
+  // doc. The inner GROUP BY runs BEFORE the IP→FQDN LATERAL, so the connection_events resolve
+  // executes once per (mac, host, bucket) group instead of once per raw report row (the prod 24h
+  // window had 755k raw rows; the grouped set is ~an order of magnitude smaller at step=600).
+  // `date` rides the GROUP BY solely so `SqlFragments.resolvedHostLateral` — which day-bounds its
+  // lookup on `tr.date` — applies verbatim to the aliased subquery; a bucket straddling a
+  // household-local date boundary yields two grouped rows, which `buildAggregate` re-merges.
+  // TODO(#730): remove this read-side join once usage records carry dest_ip.
+  def listRawAggregatedInRange(
+      macs: List[MacAddress],
+      fromInstant: Instant,
+      toInstant: Instant,
+      stepSeconds: Long,
+  ) = {
+    type Row = (MacAddress, HostId, Instant, Instant, Int, Long, Long)
+    val step      = math.max(1L, stepSeconds)
+    val macFilter = macs match {
+      case Nil => fr""
+      case ms  =>
+        val nel = cats.data.NonEmptyList.fromListUnsafe(ms.map(_.value))
+        fr"AND " ++ Fragments.in(fr"mac", nel)
+    }
+    val inner     =
+      fr"""SELECT mac, host_type, host_value, date,
+                  to_timestamp(floor(extract(epoch FROM period_start) / $step) * $step) AS bucket_start,
+                  SUM(active_seconds)::INT AS active_seconds,
+                  SUM(bytes_in)::BIGINT    AS bytes_in,
+                  SUM(bytes_out)::BIGINT   AS bytes_out
+           FROM traffic_reports
+           WHERE period_start >= $fromInstant AND period_start < $toInstant
+             AND (active_seconds > 0 OR bytes_in > 0 OR bytes_out > 0)
+           """ ++ macFilter ++ fr"GROUP BY mac, host_type, host_value, date, bucket_start"
+    val select    =
+      fr"""SELECT tr.mac,
+                  CASE WHEN tr.host_type IN ('ipv4','ipv6') AND ce.resolved_host_value IS NOT NULL
+                       THEN 'fqdn' ELSE tr.host_type END,
+                  COALESCE(CASE WHEN tr.host_type IN ('ipv4','ipv6') THEN ce.resolved_host_value END,
+                           tr.host_value),
+                  tr.bucket_start,
+                  tr.bucket_start + make_interval(secs => $step),
+                  tr.active_seconds, tr.bytes_in, tr.bytes_out
+           FROM (""" ++ inner ++ fr""") tr
+           ${SqlFragments.resolvedHostLateral}"""
+    val cio       = select
+      .query[Row]
+      .map { case (m, h, bs, be, secs, bi, bo) =>
+        wifihaven.api.usage.TrafficUsageDbRow(m, h, bs, be, secs, bi, bo)
+      }
+      .to[List]
+    val _         = (inner, cio) // RED-STAGE stub: real SQL lands in the green commit
+    listRawInRange(macs, fromInstant, toInstant)
   }
 
   def earliestPeriodStart =
