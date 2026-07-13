@@ -488,14 +488,41 @@ jobs:
   # legacy `hostname` rejection) plus 401 / 4xx negatives per endpoint.
   # Blocks API publish (retag-latest, deploy-prod-render) and the SPA prod
   # deploy by sitting directly on their `needs:`.
+  # ── 5a0. Prune leaked staging test routers (#2179) ────────────────────────
+  # #2146 made POST /api/admin/routers 403 once the calling admin's household
+  # reaches households.router_cap. The E2E suites (Gate 1 e2e-router.sh, Gate 3b)
+  # create a router per run and leak it on a hard-aborted teardown; once the
+  # leak crosses the cap, every subsequent create 403s and blocks prod deploys.
+  # This job scrubs test routers older than 2h BEFORE the router-creating gates
+  # run — age-based so a concurrent run's fresh routers are never deleted. It
+  # self-heals the accumulated backlog and bounds future growth. Both
+  # api-smoke-staging and gate-3b-api-staging `needs:` it so it completes first.
+  prune-staging-test-routers:
+    name: Prune leaked staging test routers
+    if: github.ref == 'refs/heads/main'
+    needs: [deploy-staging]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prune stale e2e/gate3 routers
+        env:
+          E2E_BASE_URL: ${{ env.STAGING_API_URL }}
+          WH_STAGING_ADMIN_PASS: ${{ secrets.WH_STAGING_ADMIN_PASS }}
+        run: python3 scripts/e2e/prune_stale_staging_routers.py
+
   api-smoke-staging:
     name: Gate 1 — API contract smoke (staging)
     if: github.ref == 'refs/heads/main'
-    # Runs in parallel with smoke-staging — both `needs: [deploy-staging]`,
-    # both gate the deploy-production jobs. smoke-staging covers the SPA
-    # bundle + CORS plane; this job covers the admin + router API plane.
-    # Either going red still blocks prod via the deploy jobs' `needs:`.
-    needs: [deploy-staging]
+    # Runs in parallel with smoke-staging — both gate the deploy-production
+    # jobs. smoke-staging covers the SPA bundle + CORS plane; this job covers
+    # the admin + router API plane. Either going red still blocks prod via the
+    # deploy jobs' `needs:`. Gated behind prune-staging-test-routers (#2179) so
+    # the router-cap headroom is reclaimed before this creates its own router.
+    needs: [deploy-staging, prune-staging-test-routers]
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
@@ -538,7 +565,9 @@ jobs:
   gate-3b-api-staging:
     name: Gate 3b — last-published router + staging API
     if: github.ref == 'refs/heads/main'
-    needs: [deploy-staging]
+    # prune-staging-test-routers (#2179) reclaims router-cap headroom before
+    # this boots a VM that creates its own gate3 router.
+    needs: [deploy-staging, prune-staging-test-routers]
     permissions:
       contents: read
     uses: ./.github/workflows/e2e-vm-gate3b.yml
