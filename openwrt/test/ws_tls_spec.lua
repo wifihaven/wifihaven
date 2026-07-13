@@ -89,6 +89,119 @@ describe("ws_tls.build_context", function()
   end)
 end)
 
+describe("ws_tls.host_matches (#2182 explicit RFC 6125 hostname match)", function()
+  it("matches an exact name (case-insensitively)", function()
+    assert.is_true(ws_tls.host_matches({ "api.wifihaven.net" }, "api.wifihaven.net"))
+    assert.is_true(ws_tls.host_matches({ "API.WifiHaven.NET" }, "api.wifihaven.net"))
+    assert.is_true(ws_tls.host_matches({ "api.wifihaven.net" }, "API.wifihaven.NET"))
+  end)
+
+  it("accepts a single-label wildcard match", function()
+    assert.is_true(ws_tls.host_matches({ "*.badssl.com" }, "a.badssl.com"))
+    assert.is_true(ws_tls.host_matches({ "*.wifihaven.net" }, "api-staging.wifihaven.net"))
+  end)
+
+  it("REJECTS the #2182 case: wildcard does not span two labels", function()
+    -- The exact MITM cert Gate 3a points at: *.badssl.com must NOT cover the
+    -- 3-label wrong.host.badssl.com. This is the regression this fix closes.
+    assert.is_false(ws_tls.host_matches(
+      { "*.badssl.com", "badssl.com" }, "wrong.host.badssl.com"))
+  end)
+
+  it("REJECTS a wildcard against the bare apex", function()
+    assert.is_false(ws_tls.host_matches({ "*.badssl.com" }, "badssl.com"))
+  end)
+
+  it("REJECTS a name that shares only a suffix", function()
+    assert.is_false(ws_tls.host_matches(
+      { "api.wifihaven.net" }, "evil-api.wifihaven.net"))
+    assert.is_false(ws_tls.host_matches(
+      { "wifihaven.net" }, "api.wifihaven.net"))
+  end)
+
+  it("REJECTS when there are no names, or host is empty/nil", function()
+    assert.is_false(ws_tls.host_matches({}, "api.wifihaven.net"))
+    assert.is_false(ws_tls.host_matches(nil, "api.wifihaven.net"))
+    assert.is_false(ws_tls.host_matches({ "api.wifihaven.net" }, ""))
+    assert.is_false(ws_tls.host_matches({ "api.wifihaven.net" }, nil))
+  end)
+
+  it("does not wildcard-match an IPv4 literal host", function()
+    assert.is_false(ws_tls.host_matches({ "*.168.1.1" }, "192.168.1.1"))
+    assert.is_true(ws_tls.host_matches({ "192.168.1.1" }, "192.168.1.1"))
+  end)
+end)
+
+describe("ws_tls.peer_dns_names (#2182 identity extraction)", function()
+  -- A fake luaossl x509 exposing the same surface build_context's peer check
+  -- uses on-target: getSubjectAlt() → an altname iterated via its __pairs
+  -- metamethod yielding (type, value); getSubject():each() → (nid, value).
+  local function fake_cert(sans, cn)
+    local san_obj
+    if sans and #sans > 0 then
+      san_obj = setmetatable({}, {
+        __pairs = function(_)
+          local i = 0
+          return function()
+            i = i + 1
+            local e = sans[i]
+            if e then return e[1], e[2] end
+          end
+        end,
+      })
+    end
+    local subject = {
+      each = function()
+        local yielded = false
+        return function()
+          if cn and not yielded then yielded = true; return "CN", cn end
+        end
+      end,
+    }
+    return {
+      getSubjectAlt = function() return san_obj end,
+      getSubject = function() return subject end,
+    }
+  end
+
+  it("extracts lowercased dNSName SAN entries", function()
+    local names = ws_tls.peer_dns_names(fake_cert(
+      { { "DNS", "API-Staging.WifiHaven.net" }, { "DNS", "alt.wifihaven.net" } }, nil))
+    assert.are.same({ "api-staging.wifihaven.net", "alt.wifihaven.net" }, names)
+  end)
+
+  it("ignores non-DNS SAN entries (IP/email/URI)", function()
+    local names = ws_tls.peer_dns_names(fake_cert(
+      { { "IP", "10.0.0.1" }, { "DNS", "api.wifihaven.net" }, { "email", "x@y.z" } }, nil))
+    assert.are.same({ "api.wifihaven.net" }, names)
+  end)
+
+  it("falls back to CN only when there is no dNSName SAN", function()
+    local names = ws_tls.peer_dns_names(fake_cert(nil, "api.wifihaven.net"))
+    assert.are.same({ "api.wifihaven.net" }, names)
+  end)
+
+  it("ignores the CN when a dNSName SAN is present", function()
+    local names = ws_tls.peer_dns_names(fake_cert(
+      { { "DNS", "san.wifihaven.net" } }, "cn.wifihaven.net"))
+    assert.are.same({ "san.wifihaven.net" }, names)
+  end)
+
+  it("end-to-end: badssl wrong-host cert does NOT match the connect host", function()
+    -- The real cert shape from wrong.host.badssl.com (SAN *.badssl.com,
+    -- badssl.com) verified on-target — must fail the host check.
+    local cert = fake_cert({ { "DNS", "*.badssl.com" }, { "DNS", "badssl.com" } }, "*.badssl.com")
+    assert.is_false(ws_tls.host_matches(
+      ws_tls.peer_dns_names(cert), "wrong.host.badssl.com"))
+  end)
+
+  it("end-to-end: the staging cert matches its connect host", function()
+    local cert = fake_cert({ { "DNS", "api-staging.wifihaven.net" } }, "api-staging.wifihaven.net")
+    assert.is_true(ws_tls.host_matches(
+      ws_tls.peer_dns_names(cert), "api-staging.wifihaven.net"))
+  end)
+end)
+
 describe("ws_tls.format_starttls_error", function()
   it("maps a numeric code through the cqueues error-string helper", function()
     local strerror = function(c)
