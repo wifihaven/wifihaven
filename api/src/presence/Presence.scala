@@ -79,6 +79,22 @@ object Presence {
    */
   val AppSessionAnchorBytes: Long = 256L
 
+  /**
+   * #2177: minimum total bytes a merged device span's NON-FQDN rows (IP-literal / `HostId.Label`)
+   * must carry to ANCHOR it in [[ambientGatedRowsWithDropCount]] — FQDN co-traffic is excluded from
+   * the sum so heavy class-host volume (an iCloud sync lane riding the same wakeup burst) cannot
+   * launder an anchor onto a low-byte IP peer. IP-literal peers carry no hostname identity, so
+   * neither the learned-ambient set nor the [[InfraHosts.cloudBackground]] class can vouch for them
+   * — instead the span's payload does. Prod replay (2026-07-13 kid-iPad windows,
+   * docs/design/idle-traffic-discrimination.md §2177-residual): real IP-literal sessions — the
+   * FaceTime shape — run tens of MB (≈77 MB / 21 min), while the phantom wakeup-burst spans
+   * anchored by Apple-infra IP literals (17.253.x.x time/config endpoints) carried ≤ 0.5 MB. 5 MB
+   * sits an order of magnitude clear of both sides. Per-span, not per-row, mirroring
+   * [[AppSessionAnchorBytes]]: a real session's ambient rows still count once any evidence in the
+   * span clears the floor.
+   */
+  val IpAnchorSpanBytes: Long = 5_000_000L
+
   // ── Session-stitch primitive (#1464, design §4) ──────────────────────────────
   //
   // Presence is no longer "credit a bucket": that under-counts the request-driven
@@ -1005,14 +1021,24 @@ object Presence {
    * rows inside a real session still contribute their seconds, so the gate can only ever REMOVE
    * minutes, never shave an anchored session (the #1446/#2068 undercount class stays closed).
    *
+   * #2177 extends the anchor predicate with two class-level tiers, because the isolation learner
+   * alone left a residual phantom (~45–75 min/day on prod): first-party-cloud wakeup-burst hosts
+   * (App Store / iCloud / `-pa.googleapis.com` private APIs) fire in dense co-occurring bursts and
+   * therefore never accrue isolated days, so per-host learning can never classify them.
+   * [[InfraHosts.cloudBackground]] names those FAMILIES by apex/suffix, and a host on that class
+   * cannot anchor (its rows still count inside a genuinely anchored span). Non-FQDN rows
+   * (IP-literals / labels), which no host-keyed set can vouch for, anchor only when the span's
+   * non-FQDN rows together exceed [[IpAnchorSpanBytes]] — real IP-literal sessions (FaceTime, tens
+   * of MB) pass, the sub-half-MB Apple-infra IP drip inside a wakeup burst does not.
+   *
    * Span topology is derived exactly the way the daily total derives it — non-heartbeat rows
    * ([[isHeartbeat]], so InfraHosts rows and sub-byte-floor keepalives are not evidence and can
    * neither anchor nor bridge), per-(mac, host) stitch on the [[effectiveGap]], then the per-mac
    * overlap-merge — so "the span the gate drops" is the same span the counting surfaces would have
    * credited. Ambient membership is an exact `HostId.value` match: the learned entries are the
    * concrete hosts observed in isolation, and exact matching means the gate can never absorb a
-   * sibling subdomain the way an apex pattern could (IP-literal peers — the FaceTime shape — are
-   * never learned, so they always anchor).
+   * sibling subdomain the way an apex pattern could; the #2177 cloud-background class is the one
+   * deliberate apex/suffix-level complement, scoped to anchor-eligibility only.
    *
    * Heartbeat rows pass through untouched (downstream surfaces already classify and drop them; the
    * suppressed-host debug view must keep seeing them). Exempt-from-daily filtering is NOT applied
@@ -1035,8 +1061,19 @@ object Presence {
       if (active.isEmpty) (rows, 0)
       else {
         val gap                                        = effectiveGap(active, continuationSeconds)
-        def isAnchor(r: PresenceRow): Boolean          =
-          isAppAttributed(r, appHostPatterns) || !ambient.hosts.contains(r.host.value)
+        // #2177: three anchor tiers. App attribution always anchors (#1506 — an active app's
+        // traffic is engagement by definition). A resolved FQDN anchors unless it is learned-
+        // ambient OR on the device-cloud background CLASS ([[InfraHosts.cloudBackground]] — the
+        // wakeup-burst hosts the isolation learner structurally cannot learn, because they only
+        // ever fire in dense co-occurring bursts and thus never accrue isolated days). A non-FQDN
+        // row (IP-literal / label — no hostname identity for either set to vouch against) anchors
+        // only when the span's non-FQDN rows carry real payload (> [[IpAnchorSpanBytes]]): the
+        // FaceTime shape survives, the low-byte Apple-infra IP drip inside a wakeup burst does not.
+        def isHostAnchor(r: PresenceRow): Boolean      =
+          isAppAttributed(r, appHostPatterns) ||
+            (r.host.asFqdn.isDefined &&
+              !ambient.hosts.contains(r.host.value) &&
+              !InfraHosts.isCloudBackground(r.host))
         def overlaps(s: Span, r: PresenceRow): Boolean = {
           val rs = spanOf(r)
           rs.startEpoch <= s.endEpoch && rs.endEpoch >= s.startEpoch
@@ -1047,8 +1084,17 @@ object Presence {
           .view
           .mapValues { macRows =>
             val merged             = mergeSpans(sessionSpans(macRows, gap))
-            val (anchored, unanch) =
-              merged.partition(s => macRows.exists(r => overlaps(s, r) && isAnchor(r)))
+            val (anchored, unanch) = merged.partition { s =>
+              val inSpan = macRows.filter(r => overlaps(s, r))
+              // Byte floor over the NON-FQDN rows only: co-present class-FQDN volume (a heavy
+              // iCloud sync riding the same wakeup burst) must not launder an anchor onto a
+              // low-byte IP peer — the payload has to be on the IP/label rows themselves.
+              inSpan.exists(isHostAnchor) ||
+              inSpan.iterator
+                .filter(_.host.asFqdn.isEmpty)
+                .map(_.bytes)
+                .sum > IpAnchorSpanBytes
+            }
             dropped += unanch.size
             anchored
           }

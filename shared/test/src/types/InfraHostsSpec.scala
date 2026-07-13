@@ -405,6 +405,71 @@ object InfraHostsSpec extends ZIOSpecDefault {
         !InfraHosts.isBackground("1password.com"),
       )
     },
+    test("#2177 cloud-background class: apex entries and the -pa.googleapis.com suffix family") {
+      // The anchor-eligibility tier (see cloudBackground scaladoc): first-party-cloud
+      // wakeup-burst families the isolation learner structurally cannot learn. Class-level
+      // matching — one apex/suffix covers every current and future member.
+      val cls = List(
+        "apps.apple.com",
+        "p46-buy.apps.apple.com",
+        "amp-api.media.apple.com",
+        "obv2-cdn.icloud-content.com",
+        "cvws.icloud-content.com",
+        "cstat.cdn-apple.com",
+        "swdist.apple.com",
+        "swcdn.apple.com",
+        "wps.apple.com",
+        "iadsdk.apple.com",
+        "health.apple.com",
+        "token.safebrowsing.apple",
+        "app-measurement.com",
+        "oauth2.googleapis.com",
+        "oauthaccountmanager.googleapis.com",
+        "securetoken.googleapis.com",
+        "analytics.plex.tv",
+        "excess-ga.duolingo.com",
+        // the -pa (Google private API) suffix family, matched by suffix not apex
+        "signaler-pa.googleapis.com",
+        "people-pa.googleapis.com",
+        "photosdata-pa.googleapis.com",
+        "kidsmanagement-pa.googleapis.com",
+        "ogads-pa.googleapis.com",
+      )
+      assertTrue(cls.forall(InfraHosts.isCloudBackground))
+    },
+    test("#2177 cloud-background BOUNDARY: engagement surfaces are NOT on the class") {
+      // These carry genuine engagement and must keep anchoring spans — the class
+      // deliberately excludes them (a real-use casualty is worse than residual phantom).
+      val engagement = List(
+        "ios-api-cf.duolingo.com",   // Duolingo's real iOS API (pinned kid-real-app above)
+        "www.duolingo.com",
+        "plex.tv",
+        "www.plex.tv",
+        "www.mathacademy.com",
+        "khanacademy.org",
+        "www.apple.com",             // apple.com apex is NOT swept in
+        "music.apple.com",           // user-facing Apple Music web player
+        "firestore.googleapis.com",  // per-app Google API — must attribute and count
+        "www.googleapis.com",
+        "spa.googleapis.com",        // suffix precision: matches "-pa." only, not "*pa."
+        "lh3.googleusercontent.com", // user photos
+        "accounts.google.com",
+        "is1-ssl.mzstatic.com",      // App Store artwork CDN — anchors real store browsing
+      )
+      assertTrue(engagement.forall(h => !InfraHosts.isCloudBackground(h)))
+    },
+    test("#2177 cloud-background is a distinct tier: HostId predicate and non-FQDN behavior") {
+      assertTrue(
+        InfraHosts.isCloudBackground(HostId.Fqdn(Hostname.unsafe("apps.apple.com"))),
+        // IP-literals / labels never match — the gate handles them via its span byte floor.
+        !InfraHosts.isCloudBackground(HostId.IPv4(IpAddress.unsafe("17.253.3.141"))),
+        !InfraHosts.isCloudBackground(HostId.Label("static-ip-range")),
+        // every entry is a parseable lowercased apex/exact host, same hygiene as canonical
+        InfraHosts.cloudBackground.forall(h => Hostname.parse(h).isRight),
+        InfraHosts.cloudBackground.forall(h => h == h.toLowerCase),
+        InfraHosts.cloudBackground.forall(h => !h.startsWith("*.")),
+      )
+    },
     test("#1629 additions do not shadow non-Apple app template host-sets") {
       // Defensive: none of the patterns added for #1629 should accidentally suppress
       // a real-app host on an unrelated apex (Khan, Math, etc. — their apexes don't
