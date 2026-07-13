@@ -47,6 +47,7 @@ object TypeMeta {
   given Meta[AppPolicyAssignmentId] = Meta[Long].imap(AppPolicyAssignmentId(_))(_.value)
   given Meta[NamedScheduleId]       = Meta[Long].imap(NamedScheduleId(_))(_.value)
   given Meta[AppScheduleRuleId]     = Meta[Long].imap(AppScheduleRuleId(_))(_.value)
+  given Meta[BetaRequestId]         = Meta[Long].imap(BetaRequestId(_))(_.value)
 
   // ── UUID-backed ────────────────────────────────────────────────────────
   given Meta[RouterId] = Meta[java.util.UUID].imap(RouterId(_))(_.value)

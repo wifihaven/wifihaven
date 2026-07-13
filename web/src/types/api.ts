@@ -993,3 +993,52 @@ export interface RetentionHorizons {
   hourlyDays: number
   dailyDays: number
 }
+
+// ── Beta access requests (#2132, multi-tenant P5-2, epic #622) ──────────────
+// Wire shapes for the request → operator approval → provisioning → invite
+// accept pipeline (design docs/design/multi-tenant-launch.md §3). The SPA
+// surfaces that consume these (the `/beta` form, operator queue, `/welcome`
+// accept page) land in #2133; these types ship with the API so that work can
+// build on them. DISTINCT from the block-page `AccessRequest` concept above.
+export type BetaRequestStatus = 'Pending' | 'Approved' | 'Rejected'
+
+export interface CreateBetaRequest {
+  email: string
+  name?: string | null
+  note?: string | null
+}
+
+export interface BetaRequestAck {
+  status: string
+}
+
+export interface BetaRequestSummary {
+  id: number
+  email: string
+  name: string | null
+  note: string | null
+  status: BetaRequestStatus
+  requestedAt: string
+  decidedAt: string | null
+  householdId: number | null
+}
+
+export interface ApproveBetaResponse {
+  householdId: number
+  slug: string
+  inviteUrl: string
+  inviteExpiresAt: string
+}
+
+// Revised 2026-07-10 (design §3.4): no username/email — the admin's email is bound server-side
+// from beta_requests.email and username defaults to `admin`.
+export interface AcceptInviteRequest {
+  token: string
+  password: string
+}
+
+export interface AcceptInviteResponse {
+  householdId: number
+  slug: string
+  username: string
+}

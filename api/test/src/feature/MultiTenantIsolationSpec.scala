@@ -1,7 +1,8 @@
 package wifihaven.api.feature
 
-import wifihaven.api.JwtConfig
+import wifihaven.api.{BetaConfig, JwtConfig}
 import wifihaven.api.auth.*
+import wifihaven.api.beta.*
 import wifihaven.api.db.*
 import wifihaven.api.db.TypeMeta.given
 import wifihaven.api.notify.Notifier
@@ -58,8 +59,75 @@ object MultiTenantIsolationSpec
   private val jwt = JwtConfig(secret = "test-secret-at-least-32-chars!!x", expiryHours = 1)
 
   private val noopNotifier: Notifier = new Notifier {
-    def alertCreated(a: Alert): UIO[Unit] = ZIO.unit
+    def alertCreated(a: Alert): UIO[Unit]                                                 = ZIO.unit
+    def betaHouseholdProvisioned(email: String, slug: String, hh: HouseholdId): UIO[Unit] = ZIO.unit
   }
+
+  // #2132: build the beta pipeline stack (service + routes) over the real repos.
+  private def makeBetaRoutes
+      : ZIO[TestDatabase.AllRepos & Clock, Nothing, (BetaService, Routes[Any, Response])] =
+    for {
+      br   <- ZIO.service[BetaRequestRepo]
+      hr   <- ZIO.service[HouseholdRepo]
+      ur   <- ZIO.service[UserRepo]
+      clk  <- ZIO.service[Clock]
+      auth <- makeAuth
+    } yield {
+      val svc = BetaService(br, hr, ur, auth, noopNotifier, clk, BetaConfig())
+      (svc, BetaRoutes.routes(auth, svc, br, ur, RateLimiter.allowAll))
+    }
+
+  private def postJson(
+      routes: Routes[Any, Response],
+      path: String,
+      token: Option[String],
+      body: String,
+  ): Task[(Status, String)] = {
+    val base = Request
+      .post(URL.decode(path).toOption.get, Body.fromString(body))
+      .addHeader(Header.ContentType(MediaType.application.json))
+    val req  = token.fold(base)(t => base.addHeader(Header.Authorization.Bearer(t)))
+    routes.runZIO(req).flatMap(r => r.body.asString.map((r.status, _)))
+  }
+
+  // Run request → approve → accept, returning the new household's (slug, invite token). The accepted
+  // admin is always `admin` (design §3.4, 2026-07-10) with email bound from the request; a caller
+  // logging in as it passes the returned slug (per-household usernames, #2140).
+  private def provisionHousehold(
+      betaRoutes: Routes[Any, Response],
+      opToken: String,
+      email: String,
+      name: String,
+  ): Task[(String, String)] =
+    for {
+      _         <- postJson(
+        betaRoutes,
+        "/api/beta/request",
+        None,
+        CreateBetaRequest(email, Some(name)).toJson,
+      )
+      (_, lst)  <- getJson(betaRoutes, "/api/operator/beta-requests", opToken)
+      reqId     <- ZIO
+        .fromEither(lst.fromJson[List[BetaRequestSummary]])
+        .mapError(new RuntimeException(_))
+        .map(_.filter(_.email == email.toLowerCase).head.id)
+      (_, appr) <- postJson(
+        betaRoutes,
+        s"/api/operator/beta-requests/${reqId.value}/approve",
+        Some(opToken),
+        "",
+      )
+      approve   <- ZIO
+        .fromEither(appr.fromJson[ApproveBetaResponse])
+        .mapError(new RuntimeException(_))
+      token = approve.inviteUrl.split("token=").last
+      _ <- postJson(
+        betaRoutes,
+        "/api/beta/accept",
+        None,
+        AcceptInviteRequest(token, "supersecret123").toJson,
+      )
+    } yield (approve.slug, token)
 
   private def makeAuth =
     for {
@@ -621,6 +689,113 @@ object MultiTenantIsolationSpec
         (sB, bodyB) <- getJson(routes, "/api/blocklists/kidsafe", two.tokenB)
       } yield assertTrue(sA == Status.Ok, sB == Status.Ok) &&
         assertTrue(bodyA == bodyB, bodyA.contains("doubleclick.net\n"))
+    },
+    // ── Provisioning pins (#2132): a newly-provisioned household is isolated ─────
+    test("pin (#2132) — a newly provisioned household's admin sees ZERO other-household rows") {
+      for {
+        _     <- cleanDb
+        two   <- TestLayers.seedTwoHouseholds(macA, macB)
+        auth  <- makeAuth
+        opTok <- login(auth, two.adminA, two.password) // adminA is the operator (household 1)
+        bt    <- makeBetaRoutes
+        (_, betaRoutes) = bt
+        prov <- provisionHousehold(betaRoutes, opTok, "c@example.com", "C Household")
+        (cSlug, _) = prov
+        // The freshly-provisioned admin (`admin`) logs into household C by its slug (#2140).
+        cTok <- login(auth, "admin", "supersecret123", Some(cSlug))
+        pr   <- ZIO.service[ProfileRepo]
+        tlr  <- ZIO.service[TimeLimitRepo]
+        up   <- ZIO.service[UserProfileRepo]
+        ur   <- ZIO.service[UserRepo]
+        nsr  <- ZIO.service[NamedScheduleRepo]
+        dr   <- ZIO.service[DeviceRepo]
+        profRoutes = ProfileRoutes.routes(auth, pr, tlr, up, ur, nsr)
+        devRoutes  = DeviceRoutes.routes(auth, dr, up, pr)
+        (sP, bodyP) <- getJson(profRoutes, "/api/profiles", cTok)
+        (sD, bodyD) <- getJson(devRoutes, "/api/devices", cTok)
+      } yield assertTrue(sP == Status.Ok, sD == Status.Ok) &&
+        // Sees NEITHER household A's nor household B's profiles…
+        assertTrue(!bodyP.contains(s""""id":${two.profileA.value}""")) &&
+        assertTrue(!bodyP.contains(s""""id":${two.profileB.value}""")) &&
+        // …nor their devices.
+        assertTrue(!bodyD.contains(macA.value), !bodyD.contains(macB.value))
+    },
+    test("pin (#2132) — a non-operator (household-B) admin cannot read or approve beta_requests") {
+      for {
+        _     <- cleanDb
+        two   <- TestLayers.seedTwoHouseholds(macA, macB)
+        auth  <- makeAuth
+        opTok <- login(auth, two.adminA, two.password)
+        // household B admin — NOT the operator; #2140: name household B by its slug.
+        bTok  <- login(auth, two.adminB, two.password, Some(two.slugB))
+        bt    <- makeBetaRoutes
+        (_, betaRoutes) = bt
+        // Seed a pending request so there is something an over-reaching admin could try to act on.
+        _             <- postJson(
+          betaRoutes,
+          "/api/beta/request",
+          None,
+          CreateBetaRequest("x@example.com").toJson,
+        )
+        (_, lst)      <- getJson(betaRoutes, "/api/operator/beta-requests", opTok)
+        reqId         <- ZIO
+          .fromEither(lst.fromJson[List[BetaRequestSummary]])
+          .mapError(new RuntimeException(_))
+          .map(_.head.id)
+        // Household B admin is forbidden from the operator surface (the §3.2 gate).
+        (sList, _)    <- getJson(betaRoutes, "/api/operator/beta-requests", bTok)
+        (sApprove, _) <- postJson(
+          betaRoutes,
+          s"/api/operator/beta-requests/${reqId.value}/approve",
+          Some(bTok),
+          "",
+        )
+      } yield assertTrue(sList == Status.Forbidden, sApprove == Status.Forbidden)
+    },
+    test("pin (#2132) — an accepted invite token cannot be replayed") {
+      for {
+        _     <- cleanDb
+        two   <- TestLayers.seedTwoHouseholds(macA, macB)
+        auth  <- makeAuth
+        opTok <- login(auth, two.adminA, two.password)
+        bt    <- makeBetaRoutes
+        (_, betaRoutes) = bt
+        prov <- provisionHousehold(betaRoutes, opTok, "r@example.com", "R Household")
+        (_, token) = prov
+        // Replay the (now consumed) token.
+        (sReplay, _) <- postJson(
+          betaRoutes,
+          "/api/beta/accept",
+          None,
+          AcceptInviteRequest(token, "supersecret123").toJson,
+        )
+      } yield assertTrue(sReplay == Status.BadRequest)
+    },
+    test("pin (#2132) — an accepted admin is bound to its email and findable GLOBALLY (V67)") {
+      // Design §3.4/§4 (2026-07-10): accept binds the admin's email from beta_requests.email; email
+      // is the GLOBAL login identifier (uq_users_email). Prove the bound email resolves to exactly
+      // one user, in the newly provisioned household — no other household, no duplicate.
+      for {
+        _     <- cleanDb
+        two   <- TestLayers.seedTwoHouseholds(macA, macB)
+        auth  <- makeAuth
+        xa    <- ZIO.service[Transactor[Task]]
+        opTok <- login(auth, two.adminA, two.password)
+        bt    <- makeBetaRoutes
+        (_, betaRoutes) = bt
+        _     <- provisionHousehold(betaRoutes, opTok, "e@example.com", "E Household")
+        // Exactly one user carries this email, globally.
+        count <- sql"SELECT COUNT(*) FROM users WHERE email='e@example.com'"
+          .query[Long]
+          .unique
+          .transact(xa)
+        // …and it belongs to the provisioned household (neither the operator's nor household B's).
+        hh    <- sql"SELECT household_id FROM users WHERE email='e@example.com'"
+          .query[HouseholdId]
+          .unique
+          .transact(xa)
+      } yield assertTrue(count == 1L) &&
+        assertTrue(hh != HouseholdId.Default, hh != two.hhB)
     },
   ) @@ TestAspect.sequential
 }

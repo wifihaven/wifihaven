@@ -28,6 +28,9 @@ opaque type AppId                 = Long
 opaque type AppPolicyAssignmentId = Long
 opaque type NamedScheduleId       = Long
 opaque type AppScheduleRuleId     = Long
+// #2132 (multi-tenant P5-2, epic #622): the beta-access request queue row id
+// (beta_requests, V66). Distinct from AlertId's AccessRequest concept.
+opaque type BetaRequestId         = Long
 
 object ProfileId {
   def apply(l: Long): ProfileId            = l
@@ -160,6 +163,15 @@ object AppScheduleRuleId {
   extension (a: AppScheduleRuleId) def value: Long = a
   given JsonCodec[AppScheduleRuleId]               = JsonCodec.long
   given Ordering[AppScheduleRuleId]                = Ordering.Long
+}
+
+object BetaRequestId {
+  def apply(l: Long): BetaRequestId            = l
+  extension (b: BetaRequestId) def value: Long = b
+  given JsonCodec[BetaRequestId]               = JsonCodec.long
+  given JsonFieldEncoder[BetaRequestId]        = JsonFieldEncoder.long
+  given JsonFieldDecoder[BetaRequestId]        = JsonFieldDecoder.long
+  given Ordering[BetaRequestId]                = Ordering.Long
 }
 
 /** UUID-backed router identifier. */

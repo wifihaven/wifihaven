@@ -2292,6 +2292,21 @@ def requireWriter(req: Request, auth: AuthService): IO[ApiError, JwtClaims] =
     else ZIO.fail(ApiError.Forbidden("Adult or admin required"))
   }
 
+/**
+ * #2132 (multi-tenant P5-2, epic #622): the OPERATOR gate — admin AND a member of household 1 (the
+ * deployment operator's household, `HouseholdId.Default`). This is the ONE deliberate, narrow
+ * exception to the "no cross-household admin" non-goal (docs/design/multi-tenant-isolation.md §9),
+ * scoped tightly: the only surface behind it reads/writes `beta_requests` rows — which belong to no
+ * household until approval — never another household's data. Documented as v1-pragmatic; a real ops
+ * console remains a future, deliberately-privileged surface. Any non-household-1 admin gets 403,
+ * indistinguishable from a plain forbidden-role (no cross-household enumeration signal).
+ */
+def requireOperator(req: Request, auth: AuthService): IO[ApiError, JwtClaims] =
+  requireAdmin(req, auth).flatMap { claims =>
+    if claims.hh == wifihaven.shared.types.HouseholdId.Default then ZIO.succeed(claims)
+    else ZIO.fail(ApiError.Forbidden("Operator required"))
+  }
+
 /** Admin and adult see all profiles. Child only sees profiles linked to their user. */
 def visibleProfiles(
     claims: JwtClaims,
