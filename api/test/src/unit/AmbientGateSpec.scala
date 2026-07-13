@@ -166,8 +166,10 @@ object AmbientGateSpec extends ZIOSpecDefault {
       assertTrue(gatedMinutes(rows, g) == 0)
     },
     test("fail-open: an ENABLED gate with an empty learned set drops nothing") {
-      // Fresh install / learner not yet run: every host anchors, so the gate is the identity
-      // over its input and behavior degrades to the status quo, never to over-suppression.
+      // Fresh install / learner not yet run: every non-class FQDN anchors, so for ordinary
+      // hosts the gate degrades to the status quo, never to over-suppression. (#2177: the
+      // cloud-background CLASS and the IP byte floor do apply from day one — see the
+      // wakeup-burst test — because those shapes need no learning to be safe.)
       val rows         = List(
         row(mac1, 0, "valid.apple.com"),
         row(mac1, 30, "weatherkit.apple.com"),
@@ -179,6 +181,63 @@ object AmbientGateSpec extends ZIOSpecDefault {
         120,
         Nil,
       )
+      assertTrue(out == rows, drops == 0)
+    },
+    test("#2177 a wakeup burst of cloud-background hosts credits zero with NOTHING learned") {
+      // The prod residual shape that survived the #2077 gate: a dense co-occurring morning
+      // burst — App Store poll, iCloud sync lane, Google private-API, OAuth refresh, Apple
+      // CDN — plus a low-byte Apple-infra IP literal. None of these hosts can ever be
+      // learned (they never appear isolated), so the learner-only gate credited the burst.
+      // Host-CLASS weighting drops it, with an EMPTY learned set (works from day one).
+      val rows         = List(
+        row(mac1, 0, "p46-buy.apps.apple.com", bytes = 120_000L),
+        row(mac1, 0, "obv2-cdn.icloud-content.com", bytes = 150_000L),
+        row(mac1, 1, "signaler-pa.googleapis.com", bytes = 40_000L),
+        row(mac1, 1, "oauth2.googleapis.com", bytes = 30_000L),
+        row(mac1, 2, "cstat.cdn-apple.com", bytes = 60_000L),
+        ipRow(mac1, 2, "17.253.3.141", bytes = 200_000L),
+      )
+      val g            = gate()
+      val (out, drops) = Presence.ambientGatedRowsWithDropCount(rows, g, filter, 120, Nil)
+      assertTrue(gatedMinutes(rows, g) == 0, out.isEmpty, drops == 1)
+    },
+    test("#2177 a low-byte IP-literal-only span cannot anchor (the Apple-infra IP drip)") {
+      // 17.253.x.x time/config endpoints reached by bare IP: prod phantom spans carried
+      // <= ~0.5 MB. Below IpAnchorSpanBytes the IP row is not an anchor and the span drops.
+      val rows = (0 until 3).toList.map(m => ipRow(mac1, m, "17.253.3.141", bytes = 150_000L))
+      assertTrue(gatedMinutes(rows, gate()) == 0)
+    },
+    test("#2177 a high-byte IP-literal span still anchors (FaceTime stays counted)") {
+      // Single minute-row carrying real payload: span bytes clear the floor, span survives.
+      val rows = List(ipRow(mac1, 0, "174.219.32.52", bytes = Presence.IpAnchorSpanBytes + 1))
+      assertTrue(gatedMinutes(rows, gate()) >= 1)
+    },
+    test("#2177 an engagement-anchored span keeps its cloud-background rows in full") {
+      // Real session (Math Academy) that also touches OAuth + App Store in passing: the
+      // span is anchored by the engagement host, and the class rows still count inside it —
+      // identical minutes to the ungated pipeline (#1446/#2068 undercount stays closed).
+      val rows    = (0 until 30).toList.map(m => row(mac1, m, "www.mathacademy.com")) ++
+        List(
+          row(mac1, 10, "oauth2.googleapis.com"),
+          row(mac1, 11, "p46-buy.apps.apple.com"),
+        )
+      val g       = gate()
+      val ungated = Presence.totalMinutesByMac(rows, Nil, filter, 120).getOrElse(mac1, 0)
+      val gated   = gatedMinutes(rows, g)
+      assertTrue(gated == ungated, gated >= 30)
+    },
+    test("#2177 app attribution beats the cloud-background class (#1506 seam)") {
+      // A host on the class that an ACTIVE app template claims anchors via attribution —
+      // the class only removes the FALLBACK anchor role, never the app seam.
+      val rows = (0 until 10).toList.map(m => row(mac1, m, "excess-ga.duolingo.com"))
+      assertTrue(gatedMinutes(rows, gate(), List("duolingo.com")) >= 10)
+    },
+    test("#2177 the ambient_gate_enabled kill-switch disables class weighting too") {
+      // The class tier rides the same operator switch as the learned baseline: gate off ⇒
+      // identity, even for a pure cloud-background burst.
+      val rows         = List(row(mac1, 0, "p46-buy.apps.apple.com"))
+      val (out, drops) =
+        Presence.ambientGatedRowsWithDropCount(rows, AmbientGate.Off, filter, 120, Nil)
       assertTrue(out == rows, drops == 0)
     },
     test("isolatedSpanHosts learns isolated hosts and never diverse or app-attributed ones") {

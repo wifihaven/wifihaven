@@ -308,4 +308,91 @@ object InfraHosts {
    * hosts never match (the suppression list keys on FQDN identity).
    */
   def isBackground(host: HostId): Boolean = host.asFqdn.exists(fqdn => isBackground(fqdn.value))
+
+  // ── #2177: device-cloud BACKGROUND CLASS (anchor-eligibility ONLY) ─────────────
+  //
+  // Apex/suffix families of first-party-cloud telemetry / sync / OS-API / private-API
+  // endpoints a device reaches without the user initiating anything, that the #2091
+  // isolation learner STRUCTURALLY cannot classify ambient: they fire in dense
+  // co-occurring wakeup/sync BURSTS (morning ~06:30–08:00), never in the ≤2-host
+  // "isolated" spans the learner keys on, so no isolated day ever accrues. On prod
+  // (2026-07-13 kid-iPad replay, docs/design/idle-traffic-discrimination.md §residual)
+  // these anchored the residual phantom that survived the shipped gate.
+  //
+  // DISTINCT ROLE from [[canonical]] / [[suppressOnly]]: this tier is NOT suppression
+  // and NOT allow-carve. It is consumed ONLY by the #2077 ambient anchor gate
+  // ([[wifihaven.api.presence.Presence.ambientGatedRowsWithDropCount]]) to decide
+  // ANCHOR eligibility — a host here cannot be the SOLE engagement anchor of a
+  // presence span, so a burst composed only of (cloud-background ∪ learned-ambient ∪
+  // IP-literals) drops. A row here still COUNTS when its span is anchored by a real
+  // engagement host (a co-present non-background FQDN, or an app-attributed row), so
+  // real sessions that merely touch these are never shaved (#1446/#2068 undercount
+  // stays closed), and #1506 app-attribution still wins (a template claiming one of
+  // these makes it a real anchor). Because it only ever removes an ANCHOR (never
+  // suppresses a row outright) and rides the operator-gated, inspectable
+  // `ambient_gate_enabled` switch, it may safely key on class-level apexes that
+  // [[canonical]] deliberately avoids.
+  //
+  // CLASS-LEVEL, not per-host — the structural leverage over the InfraHosts curation
+  // treadmill (design doc "fourth curation iteration"): one `apps.apple.com` or
+  // `-pa.googleapis.com` entry covers every current and future member of that family,
+  // so Apple/Google minting new background hostnames does not re-open the gap.
+  //
+  // Deliberately EXCLUDES ambiguous user-facing surfaces (`lh3.googleusercontent.com`
+  // photos, `chat.google.com`, `accounts.google.com`, `ssl.gstatic.com`, the
+  // `duolingo.com` apex) so genuine engagement on them still anchors — accepted
+  // residual over a real-use casualty (the #1629 iCloud-apex collateral precedent).
+  val cloudBackground: List[String] = List(
+    // Apple App Store / Music / Media API backends (background polls, not user browsing)
+    "apps.apple.com",
+    "amp-api.media.apple.com",
+    // iCloud photo / asset sync lanes (NOT `icloud.com` — that apex is already suppressOnly)
+    "icloud-content.com",
+    // Apple asset / config CDN background (cstat / idv / app-site-association / …)
+    "cdn-apple.com",
+    // Apple software distribution / update payload
+    "swdist.apple.com",
+    "swcdn.apple.com",
+    // Apple push-status, ads SDK, Health background, safe-browsing tokens
+    "wps.apple.com",
+    "iadsdk.apple.com",
+    "health.apple.com",
+    "safebrowsing.apple",
+    // Firebase Analytics (embedded in apps via SDK; pure telemetry)
+    "app-measurement.com",
+    // Google OAuth / token-refresh control plane (co-occurs with real login, which
+    // anchors on its own app host; standalone it is background)
+    "oauth2.googleapis.com",
+    "oauthaccountmanager.googleapis.com",
+    "securetoken.googleapis.com",
+    // Plex analytics beacon (NOT `plex.tv` apex — that stays real-attributable)
+    "analytics.plex.tv",
+    // Duolingo background telemetry beacon (design-doc named). The app's REAL API/content
+    // hosts (`ios-api-cf.duolingo.com`, `www.duolingo.com`) are deliberately NOT here —
+    // they carry genuine engagement and must keep anchoring even without an app template.
+    "excess.duolingo.com",
+    "excess-ga.duolingo.com",
+  )
+
+  // Google "private API" (protocol-agnostic) background services all share the
+  // `-pa.googleapis.com` SUFFIX (signaler-pa / people-pa / photosdata-pa /
+  // kidsmanagement-pa / ogads-pa / drivefrontend-pa / …). Matched as a suffix rather
+  // than via the apex matcher: there is no literal `pa.googleapis.com` host, and the
+  // `googleapis.com` apex would over-broadly absorb legitimate per-app API traffic
+  // (exactly the boundary [[canonical]] documents). One entry covers the whole family.
+  val cloudBackgroundSuffixes: List[String] = List("-pa.googleapis.com")
+
+  /** Whether `fqdn` is on the #2177 device-cloud background CLASS (apex or suffix family). */
+  def isCloudBackground(fqdn: String): Boolean =
+    cloudBackground.exists(p => HostMatch.matchesPattern(fqdn, p)) ||
+      cloudBackgroundSuffixes.exists(s => fqdn.endsWith(s))
+
+  /**
+   * #2177 host-keyed device-cloud-background CLASS predicate — the anchor-eligibility analogue of
+   * [[isBackground]], consumed solely by the #2077 ambient anchor gate. IP-literal / label hosts
+   * never match (the class keys on FQDN identity; IP-literals are handled by the gate's own
+   * byte-floor rule).
+   */
+  def isCloudBackground(host: HostId): Boolean =
+    host.asFqdn.exists(fqdn => isCloudBackground(fqdn.value))
 }
