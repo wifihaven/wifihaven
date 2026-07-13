@@ -102,9 +102,15 @@ trait UserRepo {
    * #2164 (single-identifier login, design §4 form 1): resolve a user by their GLOBAL email
    * (`users.email`, V67/#2159 — nullable, globally UNIQUE). Login uses this when the posted
    * identifier contains '@'; the matched row carries the household, so email login needs no
-   * household in hand. Match is exact (case-sensitive), aligned with the global unique constraint —
-   * email normalization, if ever wanted, is a write-side concern owned by the invite-accept /
-   * email-add paths (#2132), not the read path.
+   * household in hand. Match is exact, aligned with the case-sensitive `uq_users_email` constraint.
+   *
+   * CONTRACT (do NOT lowercase here — the write side owns normalization): every writer of
+   * `users.email` MUST store it lowercase-normalized, so this exact-match lookup still finds a
+   * differently-cased login attempt. The writer today is #2132's invite-accept (binds the admin's
+   * email from `beta_requests.email`); it, and any future email-add path, must `.toLowerCase` on
+   * write. A read-side `LOWER(email)=LOWER(?)` is the wrong fix: it needs a functional index and
+   * could match two rows differing only by case (the raw-column unique constraint doesn't forbid
+   * them), throwing on `.option` — canonical-lowercase storage is the safe single source.
    */
   def findByEmail(email: String): Task[Option[DbUser]]
   def findById(id: UserId): Task[Option[DbUser]]

@@ -134,7 +134,10 @@ class AuthServiceLive(
         // can't resolve yields None → the SAME bad-password failure below (no enumeration).
         userOpt <-
           if id.contains("@") then
-            // Form 1 — email: GLOBAL lookup; household comes from the matched row.
+            // Form 1 — email: GLOBAL lookup; household comes from the matched row. Exact match on
+            // the case-sensitive `uq_users_email`; the write side (#2132) must store emails
+            // lowercase-normalized so a differently-cased attempt still resolves — see
+            // `UserRepo.findByEmail`'s CONTRACT note.
             userRepo.findByEmail(id).mapError(e => AuthError.Unexpected(e.getMessage))
           else if id.contains("/") then {
             // Form 2 — slug/username composite: split at the FIRST '/'.
