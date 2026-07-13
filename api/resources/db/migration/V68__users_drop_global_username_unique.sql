@@ -1,0 +1,48 @@
+-- V68__users_drop_global_username_unique.sql
+-- Multi-tenant Phase-5 (epic #622, #2147). Drops the pre-existing GLOBAL
+-- username uniqueness (`users_username_key`, from V1's `username TEXT NOT NULL
+-- UNIQUE`), leaving V65's per-household `uq_users_household_username`
+-- (UNIQUE(household_id, username)) as the sole username-uniqueness rule.
+--
+-- ── Why now ──────────────────────────────────────────────────────────────────
+-- V65 (#2104) ADDED UNIQUE(household_id, username) but deliberately KEPT the
+-- global users_username_key under the additive-migration discipline
+-- (docs/process/migrations.md#migrations-back-compat) — its drop was deferred
+-- to this issue (#2147). That global constraint now blocks a second household
+-- from having its own `admin` (or any name a household 1 user already holds):
+-- the beta-provisioning invite-accept INSERT (#2132) fails with
+-- `duplicate key value violates unique constraint "users_username_key"`.
+-- Dropping it makes username uniqueness per-household, which is the intended
+-- multi-tenant semantics. This unblocks #2132.
+--
+-- ── SCHEMA-ONLY PR ───────────────────────────────────────────────────────────
+-- Per docs/process/migrations.md#migrations-back-compat this migration ships
+-- alone (SQL + docs). The existing feature suite is the back-compat gate: it
+-- proves nothing still relies on the global unique.
+--
+-- ── Verified live constraint name ────────────────────────────────────────────
+-- The global constraint is `users_username_key` — Postgres's auto-generated
+-- name for V1__init.sql's `username TEXT NOT NULL UNIQUE` (V1__init.sql:6), and
+-- the name V65 records as kept (V65__households.sql:52). The per-household
+-- replacement `uq_users_household_username` (V65__households.sql:82-83) is left
+-- in place and re-added by nothing here — V65 already provides it.
+--
+-- ── ON CONFLICT safety audit ─────────────────────────────────────────────────
+-- A bare DROP CONSTRAINT breaks any `INSERT ... ON CONFLICT (username)` (PG:
+-- "no unique or exclusion constraint matching the ON CONFLICT specification").
+-- Audited origin/main api/src:
+--   `on conflict[^)]*username`        → NO hits
+--   `users_username_key`              → NO hits
+--   `ON CONFLICT` on a users-ish table → only user_profiles(user_id,profile_id)
+--                                        (a bare ON CONFLICT DO NOTHING),
+--                                        unrelated to users.username
+-- The user-create path is a plain INSERT with RETURNING id (Repos.scala:978),
+-- no ON CONFLICT target. So the drop is safe as schema-only.
+--
+-- ── Prod data-volume (docs/process/migrations.md#migrations-prod-data-volume) ─
+-- Touches only the small bounded `users` table (prod: 6 rows, 2026-07-06 count
+-- from V65 header). No unbounded-growth table is scanned or rewritten. DROP
+-- CONSTRAINT drops the backing unique index over a handful of rows — sub-second,
+-- well inside the 15-minute Render port-scan window. No V-split needed.
+
+ALTER TABLE users DROP CONSTRAINT users_username_key;
