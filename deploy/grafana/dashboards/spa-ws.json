@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "WifiHaven SPA websocket transport (#1968/#1969, design docs/design/spa-websocket.md, epic #1860): server-side health for the browser-facing /api/ws endpoint. Panels target ONLY the series the API actually emits today (S1+S2) — spa_ws_connections_active{role} + spa_ws_subscriptions_active{topic} (SpaWsRegistry), spa_ws_frames_total{op,direction,result} (SpaWsRoutes demux), and spa_ws_auth_total{result} (S2 upgrade auth). #1970 (S3) + #1971 (S4) add spa_ws_push_total{op,result} (SpaWsRegistry change-source fan-out — now/connectionEvents/stale in S3, trafficUsage in S4). The SPA has no ws client yet (S5), so until then these read 0/flat; timeStatus/appUsage (S6a) join the push panel as those topics start pushing. Labels are bounded enums only per the §4 cardinality firewall (no per-mac/profile/session/param label). datasource/env are templated for per-environment view.",
+  "description": "WifiHaven SPA websocket transport (#1968/#1969, design docs/design/spa-websocket.md, epic #1860): server-side health for the browser-facing /api/ws endpoint. Panels target ONLY the series the API actually emits today (S1+S2) — spa_ws_connections_active{role} + spa_ws_subscriptions_active{topic} (SpaWsRegistry), spa_ws_frames_total{op,direction,result} (SpaWsRoutes demux), and spa_ws_auth_total{result} (S2 upgrade auth). #1970 (S3) + #1971 (S4) add spa_ws_push_total{op,result} (SpaWsRegistry change-source fan-out — now/connectionEvents/stale in S3, trafficUsage in S4). The SPA has no ws client yet (S5), so until then these read 0/flat; timeStatus/appUsage (S6a) join the push panel as those topics start pushing. Per-ws-message-process latency (spa_ws_message_duration_seconds, #2168) is the ws analog of http_request_duration_seconds — retaining endpoint-equivalent latency visibility now the SPA is ws-only. Labels are bounded enums only per the §4 cardinality firewall (no per-mac/profile/session/param label). datasource/env are templated for per-environment view.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -448,6 +448,138 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "title": "SPA ws message process latency p50/p95/p99 (#2168)",
+      "description": "histogram_quantile over spa_ws_message_duration_seconds_bucket — per-ws-message-process latency (decode → handle → ack inbound, change-source push send outbound), the browser-side twin of the router ws latency and the ws analog of http_request_duration_seconds. Same HTTP latency buckets for cross-transport comparison. A p99 climb on the push (direction=out) path is a live-UI staleness regression the per-HTTP-route histogram can no longer see once the SPA is ws-only.",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 32
+      },
+      "id": 8,
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(spa_ws_message_duration_seconds_bucket{env=\"$env\"}[5m])))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(spa_ws_message_duration_seconds_bucket{env=\"$env\"}[5m])))",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(spa_ws_message_duration_seconds_bucket{env=\"$env\"}[5m])))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "title": "SPA ws message process p95 latency by op/direction (#2168)",
+      "description": "histogram_quantile(0.95, sum by (le, op, direction) (rate(spa_ws_message_duration_seconds_bucket[5m]))) — per-op p95. Inbound op ∈ {hello,subscribe,unsubscribe,reauth,ping,pong,unknown}; outbound op ∈ the pushed topics {now,connectionEvents,stale,trafficUsage,timeStatus,appUsage}. Bounded enums, no per-session/per-profile dimension.",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 32
+      },
+      "id": 9,
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, op, direction) (rate(spa_ws_message_duration_seconds_bucket{env=\"$env\"}[5m])))",
+          "legendFormat": "{{op}} {{direction}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",
@@ -514,6 +646,6 @@
   "timezone": "",
   "title": "WifiHaven — SPA WS transport",
   "uid": "wifihaven-spa-ws-transport",
-  "version": 1,
+  "version": 2,
   "weekStart": ""
 }
