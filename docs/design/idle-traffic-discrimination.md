@@ -167,7 +167,12 @@ Results on the 14-day sample (in-sample):
    static `InfraHosts` list stays and short-circuits the common cases). Four
    consecutive curation iterations still leak 37 overnight hosts; the class
    system's marginal value over learned-ambient is negative (two lists to
-   drift instead of one list + one learner).
+   drift instead of one list + one learner). **Amended by #2177** (see
+   [§2177-residual](#2177-residual)): adopted in a deliberately narrow form —
+   an anchor-eligibility-only class (`InfraHosts.cloudBackground`) for the
+   burst families the isolation learner *structurally cannot* learn. Still
+   not primary: the learner remains the general mechanism; the class covers
+   exactly its blind spot.
 5. **Screen-on proxy signals** (DNS query rate/diversity, QUIC churn, flow
    concurrency) — *deferred*. Requires new agent-side signals on the wire;
    co-presence diversity extracted server-side from data we already collect
@@ -276,3 +281,72 @@ alone in a window is alone regardless of span width). The gate composes with
    Clock, no repo mocks.
 3. Operator inspects `GET /api/presence/ambient-hosts` on prod after ~3 days
    of learning, then flips `ambient_gate_enabled`.
+
+## #2177 — residual phantom after rollout: the co-occurring-burst gap {#2177-residual}
+
+Post-rollout observation (gate enabled on prod 2026-07-12; learner healthy —
+57 learned hosts across the household, all verified background) showed the
+gate working as designed yet still crediting a residual phantom on the kid
+iPads. Replay of prod `traffic_reports` for 2026-07-06→13 (offline mirror of
+the `Presence` pipeline, scratchpad `replay.py`/`classtest.py`):
+
+| device | raw (gate off) | #2077 gate | residual phantom shape |
+|---|---|---|---|
+| Octavius | 53 min | 46 min | morning wakeup bursts, zero interaction |
+| Prima | 80 min | 78 min | (mostly real use — Math Academy) |
+| Quintus | 261 min | 114 min | wakeup bursts + sync lanes, kid asleep/at school |
+
+**Root cause is structural, not tuning.** The isolation learner classifies a
+host ambient only when it appears in *isolated* spans (≤ 2 distinct hosts) on
+≥ 3 distinct days. The residual anchors — App Store background polls
+(`p46-buy.apps.apple.com`), iCloud sync lanes (`*.icloud-content.com`),
+Google private APIs (`signaler-pa.googleapis.com` and the rest of the
+`-pa.googleapis.com` family), OAuth token refresh, Apple CDN
+(`cstat.cdn-apple.com`), and Apple-infra IP literals (`17.253.x.x`) — fire in
+**dense co-occurring bursts** (device wakeup, ~06:30–08:00): five to fifteen
+hosts inside one merged span. No member of the burst ever appears isolated,
+so no isolated day ever accrues, and per-host learning can never catch them —
+at any threshold. Lowering `ambient_min_isolated_days` cannot close this gap;
+it only erodes the safety margin on genuinely-isolated real use.
+
+**Fix (#2177): two class-level anchor tiers, composed with the learner.**
+
+1. `InfraHosts.cloudBackground` — apex/suffix FAMILIES of first-party-cloud
+   background endpoints (App Store/media API, iCloud content lanes,
+   `-pa.googleapis.com`, OAuth/token control plane, Firebase Analytics,
+   telemetry beacons). A host on the class cannot be the *sole anchor* of a
+   span. Class-level naming is what beats the curation treadmill: one
+   `apps.apple.com` entry covers every present and future `pNN-buy` shard.
+2. IP-literal / label rows anchor only when their merged span moves
+   > `Presence.IpAnchorSpanBytes` (5 MB). Real IP-literal sessions are heavy
+   (the FaceTime span: 77 MB / 21 min); the phantom bursts' Apple-infra IP
+   rows carried ≤ 0.5 MB. 5 MB sits an order of magnitude clear of both.
+
+Both tiers are **anchor-eligibility only** — never row suppression. A class
+row inside a genuinely-anchored span still counts in full, app attribution
+(#1506) still beats the class, and everything rides the existing
+`ambient_gate_enabled` kill-switch (off ⇒ identity). The gate remains
+only-ever-removes, so the #1446/#2068 undercount class stays closed.
+
+Replay of the shipped rule set on the same window:
+
+| device | #2077 gate | + #2177 class tiers | verified survivors |
+|---|---|---|---|
+| Octavius | 46 min | **37 min** | gimkit + Duolingo sessions intact (incl. a 199 MB / 18.5 min Duolingo span) |
+| Prima | 78 min | **76 min** | all Math Academy sessions intact to the minute |
+| Quintus | 114 min | **80 min** | Sweetwater/YouTube/1Password sessions intact |
+
+Accepted residual (deliberate exclusions, real-use over aggressiveness):
+`ios-api-cf.duolingo.com` (Duolingo's real lesson API — its solo spans are
+plausibly genuine practice; an app template attributes them properly),
+`lh3.googleusercontent.com` (user photos), `accounts.google.com`,
+`www.apple.com`. These keep anchoring by design; the remaining path for them
+is app templates, not suppression.
+
+Boundary notes: the class deliberately excludes every user-facing surface,
+`InfraHostsSpec` pins both membership and the exclusions, and
+`AmbientGateSpec` pins the wakeup-burst/zero-learning, FaceTime-survives,
+attribution-beats-class, and kill-switch behaviors. No schema change: the
+class list is code-curated (same lifecycle as `InfraHosts.canonical`), and
+the existing `presence_ambient_spans_dropped_total` counter + Grafana panels
+observe the extended gate unchanged.
