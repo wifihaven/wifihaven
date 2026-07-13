@@ -247,6 +247,12 @@ object SpaWsS6aSpec
         cursor: Option[wifihaven.api.usage.RawTrafficCursorKey],
         limit: Option[Int],
     ) = underlying.listRawInRange(macs, fromInstant, toInstant, cursor, limit)
+    def listRawAggregatedInRange(
+        macs: List[MacAddress],
+        fromInstant: java.time.Instant,
+        toInstant: java.time.Instant,
+        stepSeconds: Long,
+    ) = underlying.listRawAggregatedInRange(macs, fromInstant, toInstant, stepSeconds)
     def earliestPeriodStart = underlying.earliestPeriodStart
     def listFqdnHostAggregatesForDevice(
         mac: MacAddress,
