@@ -79,6 +79,26 @@ function M.connect(uri, opts)
       -- logread is legible instead of a bare `-1935895353` (#2153).
       return nil, "starttls: " .. ws_tls.format_starttls_error(terr, errno.strerror)
     end
+    -- Explicit hostname enforcement (#2182). The context verify-param host bind
+    -- in build_context is a NO-OP on the older packaged-feed luaossl, so a valid-
+    -- chain cert for the WRONG name passed starttls there — a control-channel
+    -- MITM hole. Re-check the peer cert's DNS identities against the connect host
+    -- in pure Lua; the chain itself was already validated by VERIFY_PEER during
+    -- the handshake. None of these calls yield (no socket I/O), so no pcall-
+    -- across-yield hazard. Skipped for the insecure self-signed-loopback escape
+    -- hatch (build_context set VERIFY_NONE — there is no verified identity to bind).
+    if not opts.insecure then
+      local ssl = sock:checktls()
+      local cert = ssl and ssl:getPeerCertificate()
+      if not cert then
+        sock:close()
+        return nil, "hostname verify: no peer certificate"
+      end
+      if not ws_tls.host_matches(ws_tls.peer_dns_names(cert), host) then
+        sock:close()
+        return nil, "hostname verify: cert not valid for " .. tostring(host)
+      end
+    end
   end
 
   -- ── opening handshake (RFC 6455 §4.1) ──
