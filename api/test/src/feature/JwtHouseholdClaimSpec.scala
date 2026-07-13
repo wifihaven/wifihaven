@@ -73,7 +73,7 @@ object JwtHouseholdClaimSpec
         hash   <- makeAuth.flatMap(_.hashPassword("changeme"))
         hh     <- seedUserInSecondHousehold("beta", hash)
         auth   <- makeAuth
-        token  <- auth.login("beta", "changeme", Some(secondSlug)).map(_.token.value)
+        token  <- auth.login(s"$secondSlug/beta", "changeme").map(_.token.value)
         claims <- auth.verify(token)
       } yield assertTrue(claims.hh == HouseholdId(hh))
     },

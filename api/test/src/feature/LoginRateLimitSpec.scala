@@ -29,7 +29,7 @@ object LoginRateLimitSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
     Request
       .post(
         URL.decode("/api/auth/login").toOption.get,
-        Body.fromString(LoginRequest("admin", password).toJson),
+        Body.fromString(LoginRequest(identifier = Some("admin"), password = password).toJson),
       )
       .addHeader(Header.ContentType(MediaType.application.json))
       .addHeader("X-Forwarded-For", ip)
@@ -88,14 +88,14 @@ object LoginRateLimitSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         req1   = Request
           .post(
             URL.decode("/api/auth/login").toOption.get,
-            Body.fromString(LoginRequest("admin", "changeme").toJson),
+            Body.fromString(LoginRequest(identifier = Some("admin"), password = "changeme").toJson),
           )
           .addHeader(Header.ContentType(MediaType.application.json))
           .addHeader("X-Forwarded-For", s"198.51.100.1, $realIp")
         req2   = Request
           .post(
             URL.decode("/api/auth/login").toOption.get,
-            Body.fromString(LoginRequest("admin", "changeme").toJson),
+            Body.fromString(LoginRequest(identifier = Some("admin"), password = "changeme").toJson),
           )
           .addHeader(Header.ContentType(MediaType.application.json))
           // Different forged leftmost value, SAME real (rightmost) client IP.
@@ -117,7 +117,7 @@ object LoginRateLimitSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         req    = Request
           .post(
             URL.decode("/api/auth/login").toOption.get,
-            Body.fromString(LoginRequest("admin", "changeme").toJson),
+            Body.fromString(LoginRequest(identifier = Some("admin"), password = "changeme").toJson),
           )
           .addHeader(Header.ContentType(MediaType.application.json))
           .addHeader("X-Real-IP", "203.0.113.55")
@@ -127,7 +127,7 @@ object LoginRateLimitSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         req2 = Request
           .post(
             URL.decode("/api/auth/login").toOption.get,
-            Body.fromString(LoginRequest("admin", "changeme").toJson),
+            Body.fromString(LoginRequest(identifier = Some("admin"), password = "changeme").toJson),
           )
           .addHeader(Header.ContentType(MediaType.application.json))
           .addHeader("X-Real-IP", "203.0.113.55")

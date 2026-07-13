@@ -97,4 +97,17 @@ wifihaven {
     # exposed; set a token on internet-facing (Render) deployments.
     scrapeToken = ""
   }
+
+  # #2132 (multi-tenant P5-2): the beta request → provisioning → invite-accept
+  # pipeline. The whole block is optional — omit it to use the defaults shown.
+  # beta {
+  #   # SPA origin the operator-issued invite link points at; the approve
+  #   # response returns "<inviteBaseUrl>/welcome?token=…" for the operator to
+  #   # send manually (no email transport is invented). Cloud default is the app
+  #   # apex; self-hosted single-origin installs point it at their own SPA host.
+  #   inviteBaseUrl  = "https://app.wifihaven.net"
+  #   # Single-use invite token lifetime in hours (default 7 days), following the
+  #   # enrollment-token conventions in docs/process/security.md.
+  #   inviteTtlHours = 168
+  # }
 }

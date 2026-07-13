@@ -1,7 +1,8 @@
 package wifihaven.api.feature
 
-import wifihaven.api.JwtConfig
+import wifihaven.api.{BetaConfig, JwtConfig}
 import wifihaven.api.auth.*
+import wifihaven.api.beta.*
 import wifihaven.api.db.*
 import wifihaven.api.db.TypeMeta.given
 import wifihaven.api.notify.Notifier
@@ -58,8 +59,75 @@ object MultiTenantIsolationSpec
   private val jwt = JwtConfig(secret = "test-secret-at-least-32-chars!!x", expiryHours = 1)
 
   private val noopNotifier: Notifier = new Notifier {
-    def alertCreated(a: Alert): UIO[Unit] = ZIO.unit
+    def alertCreated(a: Alert): UIO[Unit]                                                 = ZIO.unit
+    def betaHouseholdProvisioned(email: String, slug: String, hh: HouseholdId): UIO[Unit] = ZIO.unit
   }
+
+  // #2132: build the beta pipeline stack (service + routes) over the real repos.
+  private def makeBetaRoutes
+      : ZIO[TestDatabase.AllRepos & Clock, Nothing, (BetaService, Routes[Any, Response])] =
+    for {
+      br   <- ZIO.service[BetaRequestRepo]
+      hr   <- ZIO.service[HouseholdRepo]
+      ur   <- ZIO.service[UserRepo]
+      clk  <- ZIO.service[Clock]
+      auth <- makeAuth
+    } yield {
+      val svc = BetaService(br, hr, ur, auth, noopNotifier, clk, BetaConfig())
+      (svc, BetaRoutes.routes(auth, svc, br, ur, RateLimiter.allowAll))
+    }
+
+  private def postJson(
+      routes: Routes[Any, Response],
+      path: String,
+      token: Option[String],
+      body: String,
+  ): Task[(Status, String)] = {
+    val base = Request
+      .post(URL.decode(path).toOption.get, Body.fromString(body))
+      .addHeader(Header.ContentType(MediaType.application.json))
+    val req  = token.fold(base)(t => base.addHeader(Header.Authorization.Bearer(t)))
+    routes.runZIO(req).flatMap(r => r.body.asString.map((r.status, _)))
+  }
+
+  // Run request → approve → accept, returning the new household's (slug, invite token). The accepted
+  // admin is always `admin` (design §3.4, 2026-07-10) with email bound from the request; a caller
+  // logging in as it passes the returned slug (per-household usernames, #2140).
+  private def provisionHousehold(
+      betaRoutes: Routes[Any, Response],
+      opToken: String,
+      email: String,
+      name: String,
+  ): Task[(String, String)] =
+    for {
+      _         <- postJson(
+        betaRoutes,
+        "/api/beta/request",
+        None,
+        CreateBetaRequest(email, Some(name)).toJson,
+      )
+      (_, lst)  <- getJson(betaRoutes, "/api/operator/beta-requests", opToken)
+      reqId     <- ZIO
+        .fromEither(lst.fromJson[List[BetaRequestSummary]])
+        .mapError(new RuntimeException(_))
+        .map(_.filter(_.email == email.toLowerCase).head.id)
+      (_, appr) <- postJson(
+        betaRoutes,
+        s"/api/operator/beta-requests/${reqId.value}/approve",
+        Some(opToken),
+        "",
+      )
+      approve   <- ZIO
+        .fromEither(appr.fromJson[ApproveBetaResponse])
+        .mapError(new RuntimeException(_))
+      token = approve.inviteUrl.split("token=").last
+      _ <- postJson(
+        betaRoutes,
+        "/api/beta/accept",
+        None,
+        AcceptInviteRequest(token, "supersecret123").toJson,
+      )
+    } yield (approve.slug, token)
 
   private def makeAuth =
     for {
@@ -70,8 +138,9 @@ object MultiTenantIsolationSpec
       clock <- ZIO.service[Clock]
     } yield AuthServiceLive(ur, jwt, clock, hr): AuthService
 
-  // #2140: usernames are unique per household, so a login must name the target household by slug
-  // (except the default household, whose slug is `default` / absent). adminB lives in household B.
+  // #2164: single-identifier login. Usernames are unique per household, so a non-default household's
+  // user names its household via the `slug/username` identifier form; the default household (slug
+  // `default`) is reachable by a bare username. adminB lives in household B.
   private def login(
       auth: AuthService,
       user: String,
@@ -79,7 +148,7 @@ object MultiTenantIsolationSpec
       slug: Option[String] = None,
   ): Task[String] =
     auth
-      .login(user, pw, slug)
+      .login(slug.fold(user)(s => s"$s/$user"), pw)
       .mapError(e => new RuntimeException(s"login failed: $e"))
       .map(_.token.value)
 
@@ -336,11 +405,11 @@ object MultiTenantIsolationSpec
         // Visible to B's admin via the scoped read, invisible to A's.
         (sB, bodyB) <- getJson(routes, "/api/users", tokenB)
         (sA, bodyA) <- getJson(routes, "/api/users", tokenA)
-        // The new user can log in (via household B's slug) and the minted JWT carries hh = B
-        // (#2105). #2140: kid-b lives in household B, so login must name it — no slug would resolve
-        // to the default household, where kid-b does not exist.
+        // The new user can log in (via household B's slug/username identifier) and the minted JWT
+        // carries hh = B (#2105). #2164: kid-b lives in household B, so login names it — a bare
+        // username would resolve to the default household, where kid-b does not exist.
         kidLogin    <- auth
-          .login("kid-b", "kid-b-password!", Some(two.slugB))
+          .login(s"${two.slugB}/kid-b", "kid-b-password!")
           .mapError(e => new RuntimeException(s"login failed: $e"))
         kidClaims   <- auth
           .verify(kidLogin.token.value)
@@ -350,6 +419,106 @@ object MultiTenantIsolationSpec
         assertTrue(sB == Status.Ok, bodyB.contains(""""username":"kid-b"""")) &&
         assertTrue(sA == Status.Ok, !bodyA.contains("kid-b")) &&
         assertTrue(kidClaims.hh == two.hhB)
+    },
+    // ── Pin 1b: single-identifier login resolves the household from the identifier (#2164) ──────
+    // Design §4 / §9: the login UI has no household field; the identifier itself carries the
+    // household (email '@' / slug/username '/' / bare → default). These pins prove the server-side
+    // resolution over two real households.
+    test("pin 1b — slug/username composite routes each user to its own household") {
+      for {
+        _    <- cleanDb
+        two  <- TestLayers.seedTwoHouseholds(macA, macB)
+        auth <- makeAuth
+        // adminA lives in the default household (slug `default`), adminB in `household-b`. Each is
+        // reached via its own slug/username identifier and mints its own hh claim. Usernames are
+        // distinct here only because V65's global users_username_key is still present
+        // (TODO(#2147)); the CODE path findByUsername(hh, u) already handles a shared username, and
+        // the per-slug routing below is exactly the achievable-and-equivalent property.
+        tokA <- login(auth, two.adminA, two.password, Some(two.slugA))
+        tokB <- login(auth, two.adminB, two.password, Some(two.slugB))
+        clA  <- auth.verify(tokA)
+        clB  <- auth.verify(tokB)
+      } yield assertTrue(clA.hh == two.hhA, clB.hh == two.hhB, clA.hh != clB.hh)
+    },
+    test("pin 1b — email login lands in exactly the email owner's household") {
+      for {
+        _     <- cleanDb
+        two   <- TestLayers.seedTwoHouseholds(macA, macB)
+        xa    <- ZIO.service[Transactor[Task]]
+        // Bind a globally-unique email to each household's admin (V67 users.email; in prod the
+        // invite-accept flow does this, #2132). The '@' identifier resolves the household with no
+        // slug in hand.
+        _     <-
+          sql"UPDATE users SET email='a@example.com' WHERE username='admin' AND household_id=${two.hhA}".update.run
+            .transact(xa)
+        _     <-
+          sql"UPDATE users SET email='b@example.com' WHERE username='adminB' AND household_id=${two.hhB}".update.run
+            .transact(xa)
+        auth  <- makeAuth
+        respA <- auth
+          .login("a@example.com", two.password)
+          .mapError(e => new RuntimeException(s"$e"))
+        respB <- auth
+          .login("b@example.com", two.password)
+          .mapError(e => new RuntimeException(s"$e"))
+        clA   <- auth.verify(respA.token.value)
+        clB   <- auth.verify(respB.token.value)
+      } yield assertTrue(clA.hh == two.hhA, clA.sub == "admin") &&
+        assertTrue(clB.hh == two.hhB, clB.sub == "adminB") &&
+        // The response carries the resolved slug so the SPA can (re)write its wh_household cookie.
+        assertTrue(respA.householdSlug == Some(two.slugA), respB.householdSlug == Some(two.slugB))
+    },
+    test("pin 1b — a bare username resolves to the DEFAULT household (self-hosted back-compat)") {
+      for {
+        _    <- cleanDb
+        two  <- TestLayers.seedTwoHouseholds(macA, macB)
+        auth <- makeAuth
+        resp <- auth.login(two.adminA, two.password).mapError(e => new RuntimeException(s"$e"))
+        cl   <- auth.verify(resp.token.value)
+      } yield assertTrue(cl.hh == HouseholdId.Default, cl.sub == "admin")
+    },
+    test(
+      "pin 1b — wrong slug / unknown email fail IDENTICALLY to a bad password (no enumeration)",
+    ) {
+      // The observable outcome of every failure mode is the SAME AuthError.InvalidCredentials.
+      // Timing uniformity is structural, not asserted here (that would be flaky): every path runs
+      // exactly one bcrypt verify — real hash on a hit, a fixed dummy hash on a miss (AuthService).
+      for {
+        _            <- cleanDb
+        two          <- TestLayers.seedTwoHouseholds(macA, macB)
+        xa           <- ZIO.service[Transactor[Task]]
+        _            <-
+          sql"UPDATE users SET email='b@example.com' WHERE username='adminB' AND household_id=${two.hhB}".update.run
+            .transact(xa)
+        auth         <- makeAuth
+        // Right password, but the WRONG household slug for adminB (adminB is not in the default hh).
+        wrongSlug    <- auth.login(s"${two.slugA}/adminB", two.password).either
+        // A syntactically-valid but UNKNOWN household slug.
+        unknownSlug  <- auth.login("no-such-house/adminB", two.password).either
+        // A well-formed email that maps to NO user.
+        unknownEmail <- auth.login("nobody@example.com", two.password).either
+        // The genuine wrong-password baseline (right email, wrong password).
+        badPw        <- auth.login("b@example.com", "wrongpassword").either
+      } yield assertTrue(badPw == Left(AuthError.InvalidCredentials)) &&
+        assertTrue(wrongSlug == badPw, unknownSlug == badPw, unknownEmail == badPw)
+    },
+    test("pin 1b — a cookie-assisted bare login (client-composed slug/username) reaches its hh") {
+      for {
+        _    <- cleanDb
+        two  <- TestLayers.seedTwoHouseholds(macA, macB)
+        auth <- makeAuth
+        // The SPA, holding a wh_household cookie of `household-b`, composes `household-b/adminB` from
+        // a bare `adminB` before POSTing (LoginPage.composeIdentifier). Server-side that is the
+        // slug/username form and must land in household B.
+        resp <- auth
+          .login(s"${two.slugB}/${two.adminB}", two.password)
+          .mapError(e => new RuntimeException(s"$e"))
+        cl   <- auth.verify(resp.token.value)
+      } yield assertTrue(
+        cl.hh == two.hhB,
+        cl.sub == "adminB",
+        resp.householdSlug == Some(two.slugB),
+      )
     },
     // ── Pin 3: snapshot scoping (re-asserted from #2107) ───────────────────────
     test("pin 3 — GET /api/router/policy returns ONLY the router's household MACs/profiles") {
@@ -520,6 +689,113 @@ object MultiTenantIsolationSpec
         (sB, bodyB) <- getJson(routes, "/api/blocklists/kidsafe", two.tokenB)
       } yield assertTrue(sA == Status.Ok, sB == Status.Ok) &&
         assertTrue(bodyA == bodyB, bodyA.contains("doubleclick.net\n"))
+    },
+    // ── Provisioning pins (#2132): a newly-provisioned household is isolated ─────
+    test("pin (#2132) — a newly provisioned household's admin sees ZERO other-household rows") {
+      for {
+        _     <- cleanDb
+        two   <- TestLayers.seedTwoHouseholds(macA, macB)
+        auth  <- makeAuth
+        opTok <- login(auth, two.adminA, two.password) // adminA is the operator (household 1)
+        bt    <- makeBetaRoutes
+        (_, betaRoutes) = bt
+        prov <- provisionHousehold(betaRoutes, opTok, "c@example.com", "C Household")
+        (cSlug, _) = prov
+        // The freshly-provisioned admin (`admin`) logs into household C by its slug (#2140).
+        cTok <- login(auth, "admin", "supersecret123", Some(cSlug))
+        pr   <- ZIO.service[ProfileRepo]
+        tlr  <- ZIO.service[TimeLimitRepo]
+        up   <- ZIO.service[UserProfileRepo]
+        ur   <- ZIO.service[UserRepo]
+        nsr  <- ZIO.service[NamedScheduleRepo]
+        dr   <- ZIO.service[DeviceRepo]
+        profRoutes = ProfileRoutes.routes(auth, pr, tlr, up, ur, nsr)
+        devRoutes  = DeviceRoutes.routes(auth, dr, up, pr)
+        (sP, bodyP) <- getJson(profRoutes, "/api/profiles", cTok)
+        (sD, bodyD) <- getJson(devRoutes, "/api/devices", cTok)
+      } yield assertTrue(sP == Status.Ok, sD == Status.Ok) &&
+        // Sees NEITHER household A's nor household B's profiles…
+        assertTrue(!bodyP.contains(s""""id":${two.profileA.value}""")) &&
+        assertTrue(!bodyP.contains(s""""id":${two.profileB.value}""")) &&
+        // …nor their devices.
+        assertTrue(!bodyD.contains(macA.value), !bodyD.contains(macB.value))
+    },
+    test("pin (#2132) — a non-operator (household-B) admin cannot read or approve beta_requests") {
+      for {
+        _     <- cleanDb
+        two   <- TestLayers.seedTwoHouseholds(macA, macB)
+        auth  <- makeAuth
+        opTok <- login(auth, two.adminA, two.password)
+        // household B admin — NOT the operator; #2140: name household B by its slug.
+        bTok  <- login(auth, two.adminB, two.password, Some(two.slugB))
+        bt    <- makeBetaRoutes
+        (_, betaRoutes) = bt
+        // Seed a pending request so there is something an over-reaching admin could try to act on.
+        _             <- postJson(
+          betaRoutes,
+          "/api/beta/request",
+          None,
+          CreateBetaRequest("x@example.com").toJson,
+        )
+        (_, lst)      <- getJson(betaRoutes, "/api/operator/beta-requests", opTok)
+        reqId         <- ZIO
+          .fromEither(lst.fromJson[List[BetaRequestSummary]])
+          .mapError(new RuntimeException(_))
+          .map(_.head.id)
+        // Household B admin is forbidden from the operator surface (the §3.2 gate).
+        (sList, _)    <- getJson(betaRoutes, "/api/operator/beta-requests", bTok)
+        (sApprove, _) <- postJson(
+          betaRoutes,
+          s"/api/operator/beta-requests/${reqId.value}/approve",
+          Some(bTok),
+          "",
+        )
+      } yield assertTrue(sList == Status.Forbidden, sApprove == Status.Forbidden)
+    },
+    test("pin (#2132) — an accepted invite token cannot be replayed") {
+      for {
+        _     <- cleanDb
+        two   <- TestLayers.seedTwoHouseholds(macA, macB)
+        auth  <- makeAuth
+        opTok <- login(auth, two.adminA, two.password)
+        bt    <- makeBetaRoutes
+        (_, betaRoutes) = bt
+        prov <- provisionHousehold(betaRoutes, opTok, "r@example.com", "R Household")
+        (_, token) = prov
+        // Replay the (now consumed) token.
+        (sReplay, _) <- postJson(
+          betaRoutes,
+          "/api/beta/accept",
+          None,
+          AcceptInviteRequest(token, "supersecret123").toJson,
+        )
+      } yield assertTrue(sReplay == Status.BadRequest)
+    },
+    test("pin (#2132) — an accepted admin is bound to its email and findable GLOBALLY (V67)") {
+      // Design §3.4/§4 (2026-07-10): accept binds the admin's email from beta_requests.email; email
+      // is the GLOBAL login identifier (uq_users_email). Prove the bound email resolves to exactly
+      // one user, in the newly provisioned household — no other household, no duplicate.
+      for {
+        _     <- cleanDb
+        two   <- TestLayers.seedTwoHouseholds(macA, macB)
+        auth  <- makeAuth
+        xa    <- ZIO.service[Transactor[Task]]
+        opTok <- login(auth, two.adminA, two.password)
+        bt    <- makeBetaRoutes
+        (_, betaRoutes) = bt
+        _     <- provisionHousehold(betaRoutes, opTok, "e@example.com", "E Household")
+        // Exactly one user carries this email, globally.
+        count <- sql"SELECT COUNT(*) FROM users WHERE email='e@example.com'"
+          .query[Long]
+          .unique
+          .transact(xa)
+        // …and it belongs to the provisioned household (neither the operator's nor household B's).
+        hh    <- sql"SELECT household_id FROM users WHERE email='e@example.com'"
+          .query[HouseholdId]
+          .unique
+          .transact(xa)
+      } yield assertTrue(count == 1L) &&
+        assertTrue(hh != HouseholdId.Default, hh != two.hhB)
     },
   ) @@ TestAspect.sequential
 }

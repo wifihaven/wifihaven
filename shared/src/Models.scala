@@ -641,24 +641,139 @@ case class QueryLog(
     ts: String,
 ) derives JsonCodec
 
-// #2140 (multi-tenant P5-8): `household` carries the target household's slug (`households.slug`,
-// V66). Optional and defaulted to None so existing clients and self-hosted single-household deploys
-// keep working unchanged — absent/blank resolves to the default household server-side. The SPA
-// pre-fills it from a long-lived `wh_household` cookie (a UX hint only; the server authenticates the
-// submitted slug + password, never the cookie).
-case class LoginRequest(
-    username: String,
-    password: String,
-    household: Option[String] = None,
+// ── Beta access requests (#2132, multi-tenant P5-2, epic #622) ──────────────
+// The request-gated beta signup queue (design docs/design/multi-tenant-launch.md
+// §3). DISTINCT from the block-page `AccessRequest`/`AccessRequestKind` concept
+// above — a `BetaRequest` is a prospective NEW HOUSEHOLD asking to join, resolved
+// by manual operator approval, not a kid asking to unblock a host.
+
+/** Lifecycle of a beta_requests row (design §3.1): pending → approved | rejected. */
+enum BetaRequestStatus derives JsonCodec {
+  case Pending, Approved, Rejected
+}
+object BetaRequestStatus                 {
+  def asString(s: BetaRequestStatus): String      = s match {
+    case Pending  => "pending"
+    case Approved => "approved"
+    case Rejected => "rejected"
+  }
+  def parse(s: String): Option[BetaRequestStatus] = s match {
+    case "pending"  => Some(Pending)
+    case "approved" => Some(Approved)
+    case "rejected" => Some(Rejected)
+    case _          => None
+  }
+}
+
+/**
+ * Public intake body for `POST /api/beta/request` — unauthenticated. `email` is the only required
+ * field; `name` (household/person) seeds the household name + slug at provisioning, `note` is free
+ * text for the operator. Idempotent on duplicate email (the route returns a generic 200 either way,
+ * so a duplicate leaks no enumeration signal).
+ */
+case class CreateBetaRequest(
+    email: String,
+    name: Option[String] = None,
+    note: Option[String] = None,
 ) derives JsonCodec
+
+/**
+ * Generic acknowledgement returned to the public intake — deliberately content-free (no enumeration
+ * leak; a brand-new and a duplicate request are indistinguishable to the caller).
+ */
+case class BetaRequestAck(status: String = "received") derives JsonCodec
+
+/**
+ * Operator-facing view of a beta_requests row (`GET /api/operator/beta-requests`). Only the
+ * operator (admin of household 1) ever sees these — the invite token hash is NEVER included.
+ */
+case class BetaRequestSummary(
+    id: BetaRequestId,
+    email: String,
+    name: Option[String],
+    note: Option[String],
+    status: BetaRequestStatus,
+    requestedAt: String,
+    decidedAt: Option[String],
+    householdId: Option[HouseholdId],
+) derives JsonCodec
+
+/**
+ * Operator's response to `POST /api/operator/beta-requests/{id}/approve`. Carries the single-use
+ * invite URL (the operator sends it to the requester manually — no email transport is invented,
+ * design §3.3) and the provisioned household's slug (the SPA accept page uses it to set the
+ * long-lived `wh_household` cookie, design §3.4 / #2140).
+ */
+case class ApproveBetaResponse(
+    householdId: HouseholdId,
+    slug: String,
+    inviteUrl: String,
+    inviteExpiresAt: String,
+) derives JsonCodec
+
+/**
+ * Invite acceptance body for `POST /api/beta/accept` — unauthenticated. Validates the single-use,
+ * unexpired token, then creates the new household's FIRST admin user (design §3.4). This is the
+ * only second-household admin-bootstrap path (before it, the V1 seed was the sole admin creator).
+ *
+ * Revised 2026-07-10 (design §3.4/§4): the payload carries **no username or email**. The admin's
+ * `email` is bound server-side from the originating `beta_requests.email` (the address the operator
+ * approved; V67 `users.email`), and `username` defaults to `admin` (per-household unique, V65). The
+ * admin logs in by email thereafter (§4).
+ */
+case class AcceptInviteRequest(
+    token: String,
+    password: String,
+) derives JsonCodec
+
+/**
+ * Response to a successful invite accept — the new household's slug (so the SPA sets the
+ * `wh_household` cookie before auto-login) and the created admin's `username` (always `admin`),
+ * design §3.4 / #2140.
+ */
+case class AcceptInviteResponse(
+    householdId: HouseholdId,
+    slug: String,
+    username: String,
+) derives JsonCodec
+
+// #2164 (multi-tenant P5-8, single-identifier login — supersedes #2140's visible household field):
+// login carries ONE identifier string, resolved server-side to a household by its syntax
+// (docs/design/multi-tenant-launch.md §4):
+//   - contains '@'   → `users.email` (global-unique, V67/#2159); household = matched row's
+//   - contains '/'   → `slug/username` composite (split at first '/'), resolve households.slug
+//   - neither        → bare username → DEFAULT household (self-hosted / existing API clients)
+// The three forms are syntactically disjoint (V67 forbids '@' and '/' in usernames; V66 slugs are
+// [a-z0-9-]) so there is no parsing precedence.
+//
+// `identifier` is the new field. `username` is retained as a back-compat ALIAS: pre-#2164 clients
+// (and self-hosted scripts) posted the bare login name as `username`, and must keep working
+// unchanged (bare name → default household). Both are Option so at least one must be present; when
+// both are set `identifier` wins.
+case class LoginRequest(
+    identifier: Option[String] = None,
+    password: String,
+    username: Option[String] = None,
+) derives JsonCodec {
+
+  /** The effective login identifier: prefer `identifier`, fall back to the legacy `username`. */
+  def loginIdentifier: String = identifier.orElse(username).getOrElse("")
+}
 // mustChangePassword: true when the server-side flag is set (e.g. freshly-seeded admin).
 // The web uses this to redirect directly to the change-password page after login
 // before the user can reach any other route.
+//
+// #2164: `householdSlug` is the resolved household's slug (`households.slug`, V66). The SPA writes it
+// to the long-lived `wh_household` cookie so a later BARE-username login on this browser can be
+// client-composed into `slug/username` (design §4 form 3). It is post-authentication output only —
+// returning the authenticated user's own household slug is not an enumeration signal. Defaulted to
+// None so pre-#2164 clients decode unchanged.
 case class LoginResponse(
     token: JwtToken,
     role: UserRole,
     username: String,
     mustChangePassword: Boolean = false,
+    householdSlug: Option[String] = None,
 ) derives JsonCodec
 case class ChangePasswordRequest(currentPassword: String, newPassword: String) derives JsonCodec
 // #623: change-password used to return an empty 200 body, which broke clients

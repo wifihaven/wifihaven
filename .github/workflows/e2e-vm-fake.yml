@@ -22,7 +22,11 @@ name: VM e2e (fake API — Gate 2)
 #   the host comes from WH_RUN_ID / WH_PORT_BASE (below) + the wh-lan* bridge
 #   pool pick (lib.sh::wh_pick_lan_bridge, #891).
 #
-#   The hard ceiling on concurrent VM pairs is the bridge pool, NOT this
+#   Within THIS workflow the apk/ipk arms are serialized (max-parallel: 1,
+#   #2158) — the bridge pool network-isolates them, but it does not bound the
+#   host's CPU/RAM/IO, and two concurrent boot/restore-heavy arms starved the
+#   router VMs at boot (see the strategy block below). Cross-workflow, the
+#   hard ceiling on concurrent VM pairs is still the bridge pool, NOT this
 #   group: api.lan's /etc/qemu/bridge.conf has 7 bridges (wh-lan0..wh-lan6),
 #   and each VM pair (router + client) consumes one. The pool is sized so
 #   usable bridges (6) cover the worst case across BOTH CD pipelines — Master
@@ -91,15 +95,32 @@ jobs:
     # #685: matrix over ipk-23.05 and apk-25.12 router images. fail-fast=false
     # so a regression in one flavor still reports the other arm's status
     # (needed to surface apk-only regressions like the #531 history case).
-    # max-parallel: 4 (#1163) — with #891's bridge/port/MAC parameterization
-    # the arms can share a host. The 7-bridge pool (6 usable + 1 headroom)
-    # covers the worst-case 6 concurrent arms across both pipelines; see the
-    # concurrency note at the top of this file. The 4 self-hosted kvm runner
-    # instances on api.lan are the lower global governor for cross-workflow
-    # concurrency; within a single workflow this cap is the per-matrix ceiling.
+    #
+    # max-parallel: 1 (#2158) — SERIALIZE the apk/ipk arms on the host. The
+    # bridge pool (#891/#895) proved that two arms *can* be network-isolated
+    # and share the host, but it does not bound the host's CPU/RAM/IO. This is
+    # the heaviest of the three VM workflows: the full ~52-scenario fake pack
+    # sustains a ~2m snapshot-restore + VM boot for *every* scenario across a
+    # ~40m run, so two arms booting concurrently double that boot/restore load
+    # for the whole run (not just at startup). On the single api.lan box that
+    # sustained contention starved the router VMs' dnsmasq at boot (`udhcpc: no
+    # lease` in the console logs) and blew the per-test timeouts across
+    # unrelated subsystems — block-page redirect, nft set population,
+    # connection_event/nflog surfacing, IPv6 attribution. Run 29197627643
+    # (2026-07-12) is the clean signal: apk and ipk both started at 15:25:03Z
+    # and BOTH failed with that spread-timeout signature while Gate 3a (which
+    # had already finished at 15:25:00Z) was not contending. Serializing gives
+    # each arm the full host during its boot/restore-heavy run; the arms just
+    # queue instead of overlapping. Wall-clock cost is one arm's runtime added
+    # to the pipeline (~35m healthy), which Master Router CD (infrequent router
+    # commits) absorbs; reliability > latency here. This is the family of
+    # Gate-2 VM flakes from #1929/#2033/#2034 that per-fix tuning never fully
+    # killed — the contention was the common root. Gate 3a/3b are smoke-weight
+    # (Gate 3a runs in ~3m) so they keep max-parallel: 4 for now; if they ever
+    # show the same signature the same one-line lever applies.
     strategy:
       fail-fast: false
-      max-parallel: 4
+      max-parallel: 1
       matrix:
         include:
           - pkg_format: ipk
@@ -111,17 +132,19 @@ jobs:
       PKG_FORMAT: ${{ matrix.pkg_format }}
       # Distinct host port bases per arm (#891): router-ssh, router-http,
       # client1-ssh use port_base, port_base+1, port_base+2; #907 adds
-      # WH_FAKE_API_PORT = WH_PORT_BASE + 1000. Today the single runner
-      # serializes the arms so reuse would be fine; the split is for
-      # forward-compat once a second runner is labeled `kvm`.
+      # WH_FAKE_API_PORT = WH_PORT_BASE + 1000. With max-parallel: 1 (#2158)
+      # the arms no longer overlap on the host, so distinct port bases are not
+      # strictly required today — the split is kept for forward-compat (a
+      # second `kvm` runner, or a future bump back above 1) and to keep the
+      # per-arm isolation invariants below unconditionally true.
       WH_PORT_BASE: ${{ matrix.port_base }}
       # Per-job scope for the qemu `-name wh-*-${WH_RUN_ID}` suffix and the
       # .run/<id>/ state dir (config.sh:91,145,40-44). Lets teardown's
       # pkill backstop match only this run's qemu, never a sibling's.
-      # Now that #895 lets matrix arms run in parallel (max-parallel: 4),
-      # the id MUST be unique per arm — two concurrently-booting arms sharing
-      # one .run/<id>/ would clobber each other's overlay/pid/monitor.sock —
-      # so we append the pkg_format. github.run_id already makes it unique
+      # The id MUST be unique per arm — even serialized (max-parallel: 1,
+      # #2158), a concurrent *sibling workflow* (gate3a/gate3b) or a future
+      # bump above 1 would clobber a shared .run/<id>/ overlay/pid/monitor.sock
+      # — so we append the pkg_format. github.run_id already makes it unique
       # across concurrent *workflow* runs (fake / gate3a / gate3b each get a
       # distinct run_id).
       # Path budget: .run/<id>/router/monitor.sock must fit the 108-byte

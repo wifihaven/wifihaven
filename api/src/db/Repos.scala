@@ -97,16 +97,37 @@ trait UserRepo {
   // Callers resolve the household from `claims.hh` (authenticated paths) or the login request's
   // slug (the one unauthenticated path).
   def findByUsername(householdId: HouseholdId, u: String): Task[Option[DbUser]]
+
+  /**
+   * #2164 (single-identifier login, design §4 form 1): resolve a user by their GLOBAL email
+   * (`users.email`, V67/#2159 — nullable, globally UNIQUE). Login uses this when the posted
+   * identifier contains '@'; the matched row carries the household, so email login needs no
+   * household in hand. Match is exact, aligned with the case-sensitive `uq_users_email` constraint.
+   *
+   * CONTRACT (do NOT lowercase here — the write side owns normalization): every writer of
+   * `users.email` MUST store it lowercase-normalized, so this exact-match lookup still finds a
+   * differently-cased login attempt. The writer today is #2132's invite-accept (binds the admin's
+   * email from `beta_requests.email`); it, and any future email-add path, must `.toLowerCase` on
+   * write. A read-side `LOWER(email)=LOWER(?)` is the wrong fix: it needs a functional index and
+   * could match two rows differing only by case (the raw-column unique constraint doesn't forbid
+   * them), throwing on `.option` — canonical-lowercase storage is the safe single source.
+   */
+  def findByEmail(email: String): Task[Option[DbUser]]
   def findById(id: UserId): Task[Option[DbUser]]
   // #2130: `householdId` stamps the new user with the creating admin's
   // household (resolved from their JWT at the route). Defaults to the
   // single-install backfill household so pre-multi-tenant callers stay
   // tenant-safe (matches the #2106 RouterRepo.create precedent).
+  // #2132 (design §3.4, V67): `email` is the global login identifier — set only
+  // by the invite-accept path (bound from beta_requests.email). Defaulted to
+  // None so every existing admin-create call site (which has no email) is
+  // unchanged and the user is created email-less (username login via §4).
   def create(
       u: String,
       h: String,
       r: String,
       householdId: HouseholdId = HouseholdId.Default,
+      email: Option[String] = None,
   ): Task[UserId]
   def updatePassword(id: UserId, h: String): Task[Unit]
   def updateUsername(id: UserId, u: String): Task[Unit]
@@ -136,6 +157,22 @@ trait UserRepo {
  */
 trait HouseholdRepo {
   def findIdBySlug(slug: String): Task[Option[HouseholdId]]
+
+  // #2132 (multi-tenant P5-2): provisioning reads/writes. `create` inserts a new households row
+  // (name + de-duped slug + router cap); `findById` reads it back (the invite-accept path resolves
+  // the provisioned household's slug for the SPA cookie, design §3.4). The atomic provisioning
+  // transaction itself lives in [[BetaRequestRepo.approveAndProvision]]; `create` backs any
+  // non-transactional household creation.
+  def create(name: String, slug: String, routerCap: Int = 1): Task[HouseholdId]
+  def findById(id: HouseholdId): Task[Option[Household]]
+
+  /**
+   * #2164: the inverse — a household's slug by id. Consumed by login only, to return the resolved
+   * household's slug on [[wifihaven.shared.LoginResponse]] so the SPA can (re)write the
+   * `wh_household` cookie (design §4). Returns None for an id with no row (or the default-only
+   * shim's non-default ids).
+   */
+  def findSlugById(id: HouseholdId): Task[Option[String]]
 }
 
 object HouseholdRepo {
@@ -154,6 +191,20 @@ object HouseholdRepo {
     // DB-backed HouseholdRepoLive.
     def findIdBySlug(slug: String): Task[Option[HouseholdId]] =
       ZIO.succeed(Option.when(slug == "default")(HouseholdId.Default))
+
+    // #2132: the default-only shim is the auth-path slug resolver only — it never provisions.
+    // Provisioning always uses the DB-backed HouseholdRepoLive, so these fail loudly if misused.
+    def create(name: String, slug: String, routerCap: Int): Task[HouseholdId] =
+      ZIO.fail(
+        new UnsupportedOperationException("defaultOnly HouseholdRepo cannot create households"),
+      )
+    def findById(id: HouseholdId): Task[Option[Household]]                    =
+      ZIO.fail(
+        new UnsupportedOperationException("defaultOnly HouseholdRepo cannot read households"),
+      )
+    // #2164: the default household's slug is `default`; any other id is unknown to this shim.
+    def findSlugById(id: HouseholdId): Task[Option[String]]                   =
+      ZIO.succeed(Option.when(id == HouseholdId.Default)("default"))
   }
 }
 
@@ -992,16 +1043,28 @@ class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
         .option
         .transact(xa),
     )
+  def findByEmail(email: String)                          =
+    DbMetrics.timed("user.findByEmail")(
+      // #2164: exact match on the globally-unique `users.email` (V67). `.option` is safe — the
+      // uq_users_email constraint guarantees at most one row.
+      (fr"SELECT " ++ userCols ++ fr" FROM users WHERE email=$email")
+        .query[UserRow]
+        .map(toUser)
+        .option
+        .transact(xa),
+    )
   def findById(id: UserId)                                =
     (fr"SELECT " ++ userCols ++ fr" FROM users WHERE id=$id")
       .query[UserRow]
       .map(toUser)
       .option
       .transact(xa)
-  def create(u: String, h: String, r: String, householdId: HouseholdId) =
+  def create(u: String, h: String, r: String, householdId: HouseholdId, email: Option[String]) =
     // Always force a password change on first login for admin-created users (#599).
     // #2130: household_id is stamped explicitly — never left to V65's DEFAULT 1.
-    sql"INSERT INTO users(username,password_hash,role,must_change_password,household_id) VALUES($u,$h,$r,true,$householdId) RETURNING id"
+    // #2132 (V67): `email` is NULL for every path except invite-accept, which binds it from
+    // beta_requests.email (the global login identifier, uq_users_email).
+    sql"INSERT INTO users(username,password_hash,role,must_change_password,household_id,email) VALUES($u,$h,$r,true,$householdId,$email) RETURNING id"
       .query[UserId]
       .unique
       .transact(xa)
@@ -1039,6 +1102,32 @@ class HouseholdRepoLive(xa: Transactor[Task]) extends HouseholdRepo {
   def findIdBySlug(slug: String) =
     DbMetrics.timed("household.findIdBySlug")(
       sql"SELECT id FROM households WHERE slug=$slug".query[HouseholdId].option.transact(xa),
+    )
+
+  // #2132: provisioning create + read-back. `Household` is defined in BetaRepos.scala (same package).
+  def create(name: String, slug: String, routerCap: Int) =
+    sql"INSERT INTO households(name, slug, router_cap) VALUES($name, $slug, $routerCap) RETURNING id"
+      .query[HouseholdId]
+      .unique
+      .transact(xa)
+
+  def findById(id: HouseholdId) =
+    sql"SELECT id, name, slug, router_cap FROM households WHERE id=$id"
+      .query[(HouseholdId, String, Option[String], Int)]
+      .map { case (i, n, s, rc) => Household(i, n, s, rc) }
+      .option
+      .transact(xa)
+
+  // #2164: slug by id, for the login response's cookie hint. Index-backed by the primary key.
+  // `households.slug` is nullable (V66 backfilled existing rows only), so read it as Option and
+  // flatten "row absent" and "row present but slug NULL" both to None.
+  def findSlugById(id: HouseholdId) =
+    DbMetrics.timed("household.findSlugById")(
+      sql"SELECT slug FROM households WHERE id=$id"
+        .query[Option[String]]
+        .option
+        .map(_.flatten)
+        .transact(xa),
     )
 }
 
@@ -4073,7 +4162,11 @@ object Repos {
   val appUsedRollupRepo     = ZLayer.fromFunction(AppUsedRollupRepoLive(_))
   val partitionRepo         = ZLayer.fromFunction(PartitionRepoLive(_))
   val ambientHostsRepo      = ZLayer.fromFunction(AmbientHostsRepoLive(_))
+  // #2132 (multi-tenant P5-2): beta-request pipeline repos (householdRepo is declared above, #2140).
+  val householdBillingRepo  = ZLayer.fromFunction(HouseholdBillingRepoLive(_))
+  val betaRequestRepo       = ZLayer.fromFunction(BetaRequestRepoLive(_))
+  // #2134 (multi-tenant P5-4): per-household entitlements (router_cap).
   val entitlementsRepo      = ZLayer.fromFunction(EntitlementsRepoLive(_))
   val all                   =
-    userRepo ++ householdRepo ++ userProfileRepo ++ profileRepo ++ namedScheduleRepo ++ householdSettingsRepo ++ timeLimitRepo ++ appTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ rollupRepo ++ timeUsedRollupRepo ++ appUsedRollupRepo ++ partitionRepo ++ ambientHostsRepo ++ entitlementsRepo
+    userRepo ++ householdRepo ++ userProfileRepo ++ profileRepo ++ namedScheduleRepo ++ householdSettingsRepo ++ timeLimitRepo ++ appTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ rollupRepo ++ timeUsedRollupRepo ++ appUsedRollupRepo ++ partitionRepo ++ ambientHostsRepo ++ householdBillingRepo ++ betaRequestRepo ++ entitlementsRepo
 }
