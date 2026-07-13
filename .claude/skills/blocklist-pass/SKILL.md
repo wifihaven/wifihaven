@@ -1,21 +1,31 @@
 ---
-name: ads-blocklist-pass
-description: Do a traffic-driven WifiHaven ads-blocklist pass — pull real device traffic from prod, find ad/RTB/tracker hostnames devices are hitting that the curated ads blocklists don't yet cover, and add the genuine gaps to api/resources/blocklists/ads.yml. Invoke whenever the operator says "update the ads blocklist", "do an ads-blocklist pass", "what ad traffic isn't blocked", "review traffic for unblocked ads", or wants new ad-category blocklist entries. Self-updating: records new learnings back into this file on every run.
+name: blocklist-pass
+description: Do a traffic-driven WifiHaven blocklist pass — pull real device traffic from prod, and for EVERY curated category (ads, adult, ai, gambling, games, social-media, …) find apex domains devices are hitting that the curated list for that category doesn't yet cover, then add the genuine gaps to the right api/resources/blocklists/<category>.yml. Invoke whenever the operator says "do a blocklist pass", "update the blocklists", "refresh the blocklists", "do an ads-blocklist pass", "update the ads/adult/ai/gambling/games/social blocklist", "what <category> traffic isn't blocked", "review traffic for unblocked <category>", or wants new blocklist entries in any category. Self-updating: records new learnings back into this file on every run.
 ---
 
-# WifiHaven ads-blocklist pass
+# WifiHaven blocklist pass
 
-Repeatable process for turning **observed ad/tracker traffic** into curated
-**ads blocklist** entries (`api/resources/blocklists/ads.yml`, with the bulk of
-coverage in the URL-sourced `ads-extended`). Sibling to the `app-catalog-pass`
-skill — same evidence-driven method, same validation + review gate — but the
-target is the **ad/RTB/tracker** category, not brand apps.
+Repeatable process for turning **observed device traffic** into curated
+**blocklist** entries across **all** categories in
+[`api/resources/blocklists/`](../../../api/resources/blocklists/). Sibling to the
+`app-catalog-pass` skill — same evidence-driven method, same host-set discipline,
+same validation + review gate — but the target is the **category blocklists**,
+not brand apps.
+
+Originally this skill covered only the **ads** category (`ads.yml` /
+`ads-extended`); it now sweeps **every curated category** in one pass. The
+ads-specific learnings below are retained verbatim — they are the richest, but
+the same discipline applies to `adult`, `ai`, `gambling`, `games`,
+`social-media`, and any category added later.
 
 This file is the **process**. The **data + conventions** live elsewhere and are
 read live — do not duplicate them here:
 
-- The curated ads lists + index → [`api/resources/blocklists/ads.yml`](../../../api/resources/blocklists/ads.yml),
+- The category lists + the manifest that names them → the `.yml` files in
+  [`api/resources/blocklists/`](../../../api/resources/blocklists/) and
   [`api/resources/blocklists/_index.yml`](../../../api/resources/blocklists/_index.yml).
+  The file schema (inline `hosts:` vs URL-sourced `url:`, required fields) is in
+  [`api/resources/blocklists/_README.yml`](../../../api/resources/blocklists/_README.yml).
 - Blocklist design (inline vs URL-sourced, refresh cadence) → [`docs/design/blocklists.md`](../../../docs/design/blocklists.md).
 - Enforcement model (per-(mac,host) nftset drops; DNS never enforces) →
   [`AGENTS.md`](../../../AGENTS.md) + [`docs/architecture.md`](../../../docs/architecture.md).
@@ -28,11 +38,47 @@ if the process itself changed (see Step 5).
 
 ---
 
+## Which lists you edit — curated (inline) vs URL-sourced
+
+Enumerate the categories **dynamically** from the directory / `_index.yml` at run
+time so a newly-added category is picked up automatically — never hardcode a
+stale list. Split them by content type (the `_README.yml` schema: exactly one of
+`hosts:` or `url:` per file):
+
+```bash
+cd api/resources/blocklists
+# curated inline lists — these are the ones a traffic pass HAND-EDITS
+for f in *.yml; do case "$f" in _*) continue;; esac
+  grep -qE '^hosts:' "$f" && echo "INLINE  ${f%.yml}"
+  grep -qE '^url:'   "$f" && echo "URL     ${f%.yml}"
+done | sort
+```
+
+- **INLINE (`hosts:`) lists are the pass's target.** As of this writing:
+  `ads`, `adult`, `ai`, `gambling`, `games`, `social-media`. You append genuine
+  apex gaps to these.
+- **URL-sourced (`url:`) lists are NOT hand-edited.** As of this writing:
+  `ads-extended`, `adult-extended`, `social-extended` (StevenBlack alternates),
+  and `malware` (URLhaus). Their hosts are fetched from the upstream feed at API
+  startup and the seeder **replaces** the DB rows each boot — a hand-added host
+  would be wiped. Their role in this pass is a **coverage cross-check**: an apex
+  already in a category's `-extended` feed is lower-value to hand-curate (it only
+  helps curated-only profiles). Diff candidates against the sibling feed (Step 2)
+  before adding to the curated list. If a genuine gap has no curated home but the
+  upstream feed is stale, the fix is upstream / a feed swap — say so, don't
+  hand-maintain hundreds of apexes.
+
+Category ↔ sibling-feed pairs today: `ads`↔`ads-extended`, `adult`↔`adult-extended`,
+`social-media`↔`social-extended`. `ai`, `gambling`, `games` have **no** upstream
+sibling — for those the curated list is the only coverage, so a traffic pass is
+the primary way they grow. Re-derive these pairings from `_index.yml` at run time
+rather than trusting this line.
+
 ## Step 0 — Pull active traffic (READ-ONLY prod)
 
 Same source + auth as `app-catalog-pass` Step 0. Prod `https://api.wifihaven.net`;
 admin password in local memory (`prod_api_admin_password.md`) — read, never
-echo/commit. Pull per-apex bytes/hits across **all** devices (ad traffic is
+echo/commit. Pull per-apex bytes/hits across **all** devices (category traffic is
 everywhere, not just kid devices):
 
 ```bash
@@ -52,79 +98,125 @@ rm -f /tmp/apex_*.json
 
 > IPv4-bias caveat applies (#1796) — see `app-catalog-pass`. Re-confirm at run time.
 
-## Step 1 — Identify unblocked ad/RTB/tracker traffic
+## Step 1 — Bucket unblocked traffic by category
 
-An apex is an **ads-blocklist candidate** if it is an advertising exchange,
-RTB/SSP/DSP, tracker, data broker, attribution/measurement, or tag network — and
-is NOT already covered by `ads.yml` / `ads-extended`. The signal: many distinct
-subdomains, high hit count, served to many devices, and a name that maps to no
-app or content category. Apexes seen unblocked in the #1815 traffic sample that
-look like classic ad/RTB infra (verify each before adding):
+Walk the ranked apex list once and classify each into the category it **belongs
+to**, if any. Signals per category (classify by what the apex *is*, never by a
+substring match alone — a `track`/`beacon`/`ai` substring is a candidate flag,
+never a verdict):
 
-```
-flashtalking innovid adsrvr doubleverify adsafeprotected pubmatic casalemedia
-media.net sharethrough onetag-sys 3lift seedtag richaudience adnxs rubiconproject
-smartadserver 33across rlcdn openx criteo adform teads outbrain bidswitch
-pubmatic mathtag agkn adkernel sitescout rfihub bidr 360yield smaato …
-```
+- **ads** — advertising exchange, RTB/SSP/DSP, tracker, data broker,
+  attribution/measurement, tag network. Signal: many distinct subdomains, high
+  hits, served to many devices, maps to no app or content category.
+- **adult** — pornography / NSFW content sites.
+- **ai** — consumer AI chatbots, assistants, AI search, companion/roleplay bots,
+  image/video/audio/text generators. List the **product subdomain** (e.g.
+  `gemini.google.com`), never the bare shared vendor apex — see the `ai.yml`
+  host-scoping header.
+- **gambling** — online casinos, poker, sportsbooks.
+- **games** — game titles, storefronts, gaming platforms.
+- **social-media** — consumer social networks, chat, dating.
 
-**Cross-check before adding** — web-search the apex; many are obvious, but verify
-it's ad-dedicated. Be conservative:
+An apex is a **candidate** for category `C` if it clearly belongs to `C` **and**
+is not already covered by `C`'s curated list (nor, as a lower-value signal, by
+`C`'s `-extended` feed — Step 2). Cross-check before adding — web-search / netify
+/ whois any apex whose owner or function you're inferring from the name alone
+(names lie: see the `antibanads` / `ttdns2` learnings). Be conservative.
 
-- **Skip dual-use / shared infra** that also carries legitimate product traffic.
-  Known traps to LEAVE OUT: `google-analytics.com`, `googleadservices.com`,
-  `googlesyndication.com` parents that share Google pools; `app-measurement.com`
-  (Firebase); `sentry.io` / `bugsnag.com` (error reporting); `cloudflare.com`,
-  `amazonaws.com`, `akamai*` (multi-tenant). Same collateral rule as app
-  host-sets — a shared pool drags non-ad traffic into the drop.
-- **`ads.yml` is hand-curated apex hosts** for clearly ad-dedicated domains; the
-  heavy lifting is the URL-sourced `ads-extended` feed. If the gap is really
-  "the public feed is stale / not catching this", say so rather than
-  hand-maintaining hundreds of apexes — a handful of high-traffic, clearly-ad
-  apexes per pass is the right scale.
+**Skip dual-use / shared infra** that also carries legitimate product traffic —
+same collateral rule as app host-sets: a shared pool drags non-category traffic
+into the drop. Known traps to LEAVE OUT (category-agnostic): `google-analytics.com`,
+`googleadservices.com`, `googlesyndication.com` (Google shared pools),
+`app-measurement.com` (Firebase), `sentry.io` / `bugsnag.com` (error reporting),
+and multi-tenant clouds/CDNs (`cloudflare.com`, `amazonaws.com`, `cloudfront`,
+`fastly`, `akamai*`). See the Learnings log for the running list of per-category
+dual-use skips.
 
-## Step 2 — Verify the gap is real
+Scale: a handful of high-traffic, clearly-in-category apexes per category per
+pass is the right output. The RTB/bidder vein (ads) is the historically richest
+and lowest-collateral because *the name is the function*; other categories tend
+to yield fewer but higher-confidence adds. A small, honest count beats padding.
 
-Before adding `X`, confirm it isn't already blocked: load `ads.yml` (and, if
-fetchable, the `ads-extended` source) and check membership. Only add genuine
-gaps. Record per-apex hits + a one-line "what it is" for each addition.
+## Step 2 — Verify each gap is real
+
+Before adding apex `X` to category `C`, confirm it isn't already blocked:
+
+1. Load `C`'s curated `hosts:` from `<C>.yml` and check exact + subdomain
+   membership. **Smoke-test the extraction against a known sentinel** (e.g.
+   `grep -c '^doubleclick.net$'` for ads) before trusting it — a bad regex
+   (macOS BSD `sed`/`grep` do NOT support `\s`; use `[[:space:]]`) silently
+   returns all-negative and would re-add already-curated apexes.
+2. If `C` has a sibling `-extended` / upstream feed (per the pairing derived in
+   the "Which lists you edit" section), fetch it and check membership at the
+   apex AND for any feed host that is a subdomain of the apex. The feed usually
+   lists ONE specific subdomain, not the apex — so "apex absent from the feed"
+   under-states coverage, and the curated **apex** entry is the stronger block
+   regardless (it suffix-matches all subdomains). Use the feed to *prioritize*
+   (genuine gaps first), not to *disqualify*.
+
+Only add genuine gaps. Record per-apex hits + a one-line "what it is" for each
+addition.
 
 ## Step 3 — Author
 
-- Add apexes to `api/resources/blocklists/ads.yml` under a dated comment block
-  (`# traffic-driven additions (#<issue>): observed but unblocked ad/RTB infra`).
-  Subdomains are suffix-matched at the router, so list apexes.
+- Add apexes to the matching `api/resources/blocklists/<category>.yml` under a
+  dated comment block (`# traffic-driven additions (#<issue>): observed but
+  unblocked <category> infra`). Subdomains are suffix-matched at the router, so
+  list apexes (for `ai`, list product subdomains per its header). Never wildcards.
 - No `_index.yml` change unless adding a NEW list file.
 - `BundledBlocklistsSpec` asserts *presence* of representative hosts, not an
-  exact count — additions are safe; optionally pin one representative new host
-  in the spec's presence assertions.
-- Keep an evidence doc under `evidence/ads-classification-<issue>.md` (per-apex
-  hit table + what-it-is + why-it-was-a-gap).
+  exact count — additions are safe. Optionally pin one representative new host in
+  the spec's per-category presence assertions (it already pins ads additions;
+  add the same style for whichever category you grew).
+- Keep an evidence doc under
+  `api/resources/blocklists/evidence/<category>-classification-<issue>.md`
+  (per-apex hit table + what-it-is + why-it-was-a-gap). One doc per category
+  touched, or a combined doc if the pass spanned several.
 
 ## Step 4 — Validate + ship
 
 ```bash
-mill api.test.testOnly 'wifihaven.api.feature.BundledBlocklistsSpec'
-scalafmt --check --non-interactive   # only if any .scala changed (usually none)
+mill api.test.testOnly 'wifihaven.api.feature.BundledBlocklistsSpec'   # covers ALL categories
+scalafmt --check --non-interactive   # only if any .scala changed (e.g. you pinned a host in the spec)
 ```
 
-Worktree off `origin/main`; file/identify a tracking issue; open a PR ("Relates
-to #<issue>"); run `/pr-review`, address BLOCKERs + cheap SHOULD-FIX, push,
-re-run until no BLOCKER; monitor CI through green. Do **not** `gh pr merge` /
-enable auto-merge (operator's call). Post a summary on the issue: apexes added +
-what each is + why it was a gap.
+`BundledBlocklistsSpec` loads and validates every category (`_index.yml` sync,
+hostname parse, inline non-empty, seeder), so it is the correct gate no matter
+which category files you edited.
+
+Worktree off `origin/main`; **file a FRESH tracking issue per pass** (never
+reopen a closed one); open a PR ("Relates to #<issue>"); run `/pr-review`,
+address BLOCKERs + cheap SHOULD-FIX, push, re-run until no BLOCKER; monitor CI
+through green. Do **not** `gh pr merge` / enable auto-merge (operator's call).
+Post a summary on the issue: per category, apexes added + what each is + why it
+was a gap.
 
 ## Step 5 — Self-update (MANDATORY, every run)
 
 Reflect on what THIS run taught you that the steps didn't capture — a new
-dual-use host to skip, a better ad-apex detection signal, a changed caveat, a
-stale-public-feed finding. **Append it to the Learnings log below and include
+dual-use host to skip (note its category), a better detection signal for some
+category, a changed caveat, a stale-upstream-feed finding, a new category that
+appeared in `_index.yml`. **Append it to the Learnings log below and include
 that edit in the same PR.** If a step above is now wrong, fix the step too.
 
 ---
 
 ## Learnings log (newest first)
 
+- **2026-07-13** — **Skill renamed `ads-blocklist-pass` → `blocklist-pass` and
+  generalized from ads-only to ALL curated categories.** Key structural fact for
+  future runs: only **inline (`hosts:`) lists** are hand-editable — `ads`,
+  `adult`, `ai`, `gambling`, `games`, `social-media` today. The `-extended`
+  StevenBlack alternates and `malware` (URLhaus) are **`url:`-sourced**; the
+  seeder replaces their DB rows from upstream every API boot, so a hand-added
+  host is wiped — use them only as a coverage cross-check for their curated
+  sibling (`ads`↔`ads-extended`, `adult`↔`adult-extended`,
+  `social-media`↔`social-extended`). `ai`/`gambling`/`games` have NO upstream
+  sibling, so a traffic pass is their only growth path. Enumerate categories from
+  `_index.yml` at run time so new ones are auto-included. All ads-specific
+  learnings below still apply to their category; the classification discipline
+  (classify by what the apex *is*, verify ownership, skip dual-use) is
+  category-agnostic.
 - **2026-07-07** (#2122) — **The RTB/bidder vein is drying up — a small,
   targeted pass is now the expected outcome, not a failure to find volume.**
   Most classic `*rtb*` / `*bid*` / `*-ads` names surfacing in prod this week were
@@ -204,7 +296,8 @@ that edit in the same PR.** If a step above is now wrong, fix the step too.
   misses the apex entirely → highest value to hand-curate) from apexes the
   extended feed already covers (lower value, only helps curated-only profiles).
   Prioritize the gaps; add a small set of the highest-traffic covered apexes for
-  the curated baseline.
+  the curated baseline. (Generalized: the same diff applies to `adult`↔
+  `adult-extended` and `social-media`↔`social-extended`.)
 - **2026-06-23** (#1923) — **A name that resembles a known ad co is NOT
   identity — verify ownership.** `ttdns2.com` reads like TheTradeDesk
   (`adsrvr.org`/`ttd*`) but is actually **TikTok** shared DNS infra
