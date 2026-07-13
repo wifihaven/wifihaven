@@ -108,7 +108,28 @@ object UsageTrafficQuery {
   ): Task[List[TrafficUsageAggregateRow]] = {
     val tier                                 = pickTier(bucket, Duration.between(from, to))
     val fetch: Task[List[TrafficUsageDbRow]] = tier match {
-      case SourceTier.Raw    => trafficRepo.listRawInRange(macs, from, to)
+      // #2174: a UTC-grid display bucket on the raw tier (1m / 10m / 1h) pre-aggregates in SQL —
+      // one row per (mac, host, bucket) instead of one per raw report period (755k rows / 24h at
+      // prod volume, ~24s). Restricted to exactly the buckets whose `floorTo` is pure UTC epoch
+      // math, so the SQL floor and the Scala floor cannot disagree; the downstream aggregation —
+      // groupBy fan-out, distinct counts, window assembly — is unchanged, just over far fewer
+      // rows. Excluded on purpose:
+      //   - `raw` has no fixed step — the row's real report period is the window (#2018);
+      //   - `12h` / `1d` / `1w` floor in the HOUSEHOLD zone (`floorTo`), which a UTC epoch floor
+      //     would break in non-UTC zones. They only land on the raw tier for short windows (the
+      //     picker's freshness preference; their cost cap routes wide windows to the rollups), so
+      //     the per-row fetch stays cheap there.
+      case SourceTier.Raw    =>
+        (bucket, UsageTraffic.stepOf(bucket)) match {
+          case (
+                UsageTraffic.Bucket.OneMin | UsageTraffic.Bucket.TenMin |
+                UsageTraffic.Bucket.OneHour,
+                Some(step),
+              ) =>
+            trafficRepo.listRawAggregatedInRange(macs, from, to, step.toSeconds)
+          case _ =>
+            trafficRepo.listRawInRange(macs, from, to)
+        }
       case SourceTier.Hourly => rollupRepo.listHourlyInRange(macs, from, to).map(asDbRows)
       case SourceTier.Daily  => rollupRepo.listDailyInRange(macs, from, to).map(asDbRows)
     }

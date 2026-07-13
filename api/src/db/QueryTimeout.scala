@@ -34,6 +34,15 @@ object QueryTimeout {
   val PresenceWindow: Duration = Duration.ofSeconds(8)
 
   /**
+   * #2174: bound for the raw-tier pre-aggregated Traffic Usage read
+   * ([[TrafficReportRepoLive.listRawAggregatedInRange]]). Wider than [[PresenceWindow]] because the
+   * page's window cap is 31 days (`UsageTraffic.maxOnTheFlyDuration`) and a legitimate month-wide
+   * 10m aggregation over prod volume hash-aggregates millions of rows; 30s matches #846's original
+   * "wider windows risk >30s queries → reject with 503" line rather than wedging the pool (#1099).
+   */
+  val RawAggregateWindow: Duration = Duration.ofSeconds(30)
+
+  /**
    * Run `c` inside a transaction with a `SET LOCAL statement_timeout`, so the bound auto-releases
    * when the tx commits/rolls back and never leaks onto a pooled connection. A Postgres cancel
    * (SQLSTATE 57014) is remapped to [[QueryTimeoutException]]; all other failures pass through

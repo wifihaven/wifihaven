@@ -98,6 +98,12 @@ object DbFailureSpec extends ZIOSpecDefault {
         cursor: Option[wifihaven.api.usage.RawTrafficCursorKey] = None,
         limit: Option[Int] = None,
     ) = throwing
+    def listRawAggregatedInRange(
+        macs: List[MacAddress],
+        fromInstant: java.time.Instant,
+        toInstant: java.time.Instant,
+        stepSeconds: Long,
+    ) = throwing
     def earliestPeriodStart                                              = throwing
     def listFqdnHostAggregatesForDevice(
         mac: MacAddress,
