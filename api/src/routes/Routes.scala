@@ -44,11 +44,12 @@ object AuthRoutes {
             lr      <- ZIO
               .fromEither(body.fromJson[LoginRequest])
               .mapError(ApiError.DecodeFailure(_))
-            // #2140: pass the optional household slug through; AuthService resolves it to the
-            // tenancy key (absent/blank → default household). An unknown slug fails identically to
-            // a bad password, so nothing distinguishes it here.
+            // #2164: pass the single identifier through; AuthService resolves it to a household by
+            // its syntax (email '@' / slug/username '/' / bare → default). `loginIdentifier` prefers
+            // the new `identifier` field, falling back to the legacy `username` alias. Any unresolved
+            // form fails identically to a bad password, so nothing distinguishes it here.
             resp    <- auth
-              .login(lr.username, lr.password, lr.household)
+              .login(lr.loginIdentifier, lr.password)
               .mapError {
                 case AuthError.InvalidCredentials => ApiError.Unauthorized("Invalid credentials")
                 case AuthError.Unexpected(_)      =>

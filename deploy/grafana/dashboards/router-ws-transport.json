@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "WifiHaven websocket router transport (#1846, epic #1023): server-side health for the persistent /api/router/ws endpoint. Panels target only the series the API actually emits today \u2014 router_ws_connections_active (RouterWsRegistry) and router_ws_frames_total{op,direction,result} (RouterWsRoutes demux). The REST transport stays the fallback; until the agent ws client (#1848) ships these read 0/flat. Push-on-change health (router_ws_policy_push_total) lands with #1849. Labels are bounded enums only per the \u00a74 cardinality firewall. datasource/env are templated for per-environment view.",
+  "description": "WifiHaven websocket router transport (#1846, epic #1023): server-side health for the persistent /api/router/ws endpoint. Panels target only the series the API actually emits today \u2014 router_ws_connections_active (RouterWsRegistry) and router_ws_frames_total{op,direction,result} (RouterWsRoutes demux). The REST transport stays the fallback; until the agent ws client (#1848) ships these read 0/flat. Push-on-change health (router_ws_policy_push_total) lands with #1849. Per-ws-message-process latency (router_ws_message_duration_seconds, #2168) is the ws analog of http_request_duration_seconds \u2014 it must land before the #1023 prod cutover / #1850 poll removal so slow-op regressions on the socket stay visible. Labels are bounded enums only per the \u00a74 cardinality firewall. datasource/env are templated for per-environment view.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -673,6 +673,138 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "title": "WS message process latency p50/p95/p99 (#2168)",
+      "description": "histogram_quantile over router_ws_message_duration_seconds_bucket \u2014 per-ws-message-process latency (decode \u2192 handle \u2192 ack inbound, policy-push send outbound), the ws analog of http_request_duration_seconds. Reuses the HTTP latency buckets so a ws op's latency is directly comparable to the REST endpoint it replaced across the #1023 cutover. Once the poll is removed (#1850) this is the ONLY latency signal for router operations \u2014 a p99 climb here is the ws-transport equivalent of the /api/usage/traffic regression per-endpoint metrics caught.",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 48
+      },
+      "id": 12,
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(router_ws_message_duration_seconds_bucket{env=\"$env\"}[5m])))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(router_ws_message_duration_seconds_bucket{env=\"$env\"}[5m])))",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(router_ws_message_duration_seconds_bucket{env=\"$env\"}[5m])))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "title": "WS message process p95 latency by op/direction (#2168)",
+      "description": "histogram_quantile(0.95, sum by (le, op, direction) (rate(router_ws_message_duration_seconds_bucket[5m]))) \u2014 per-op p95, so a single slow logical channel (e.g. a usage ingest that got expensive) is visible even when the aggregate looks fine. op \u2208 {usage,events,metrics,ping,pong,hello,policy,unknown}, direction \u2208 {in,out} \u2014 bounded enums, no per-mac/router dimension.",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 48
+      },
+      "id": 13,
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, op, direction) (rate(router_ws_message_duration_seconds_bucket{env=\"$env\"}[5m])))",
+          "legendFormat": "{{op}} {{direction}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",
@@ -739,6 +871,6 @@
   "timezone": "",
   "title": "WifiHaven \u2014 Router WS transport",
   "uid": "wifihaven-router-ws-transport",
-  "version": 2,
+  "version": 3,
   "weekStart": ""
 }

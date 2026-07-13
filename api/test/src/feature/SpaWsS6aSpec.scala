@@ -210,7 +210,64 @@ object SpaWsS6aSpec
   private type BootstrapEnv =
     TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task]
 
+  /**
+   * Counting decorator over the REAL repo (never a mock — testing.md): increments `dayLoads` on
+   * every full-day presence load (the `listPresenceRows(macs, date)` day variant — the expensive
+   * whole-day scan the #2167 prod starvation was made of) and delegates everything verbatim. Lets
+   * the scan-count test below pin how many full-day loads one push cycle performs.
+   */
+  private final class CountingTrafficRepo(underlying: TrafficReportRepo, dayLoads: Ref[Int])
+      extends TrafficReportRepo {
+    def insertBatch(reports: List[TrafficReportInsert])           = underlying.insertBatch(reports)
+    def listForDevice(mac: MacAddress, date: java.time.LocalDate) =
+      underlying.listForDevice(mac, date)
+    def listForRouter(routerId: RouterId, limit: Int) = underlying.listForRouter(routerId, limit)
+    def listTrafficRollupRows(f: TrafficRollupFilter) = underlying.listTrafficRollupRows(f)
+    def listPresenceRows(macs: List[MacAddress], date: java.time.LocalDate) =
+      dayLoads.update(_ + 1) *> underlying.listPresenceRows(macs, date)
+    def listPresenceRows(
+        macs: List[MacAddress],
+        from: java.time.LocalDate,
+        to: java.time.LocalDate,
+    ) = underlying.listPresenceRows(macs, from, to)
+    def listPresenceRowsSince(
+        macs: List[MacAddress],
+        date: java.time.LocalDate,
+        since: java.time.Instant,
+    ) = underlying.listPresenceRowsSince(macs, date, since)
+    def listPresenceRowsInWindow(
+        macs: List[MacAddress],
+        fromInstant: java.time.Instant,
+        toInstant: java.time.Instant,
+    ) = underlying.listPresenceRowsInWindow(macs, fromInstant, toInstant)
+    def listRawInRange(
+        macs: List[MacAddress],
+        fromInstant: java.time.Instant,
+        toInstant: java.time.Instant,
+        cursor: Option[wifihaven.api.usage.RawTrafficCursorKey],
+        limit: Option[Int],
+    ) = underlying.listRawInRange(macs, fromInstant, toInstant, cursor, limit)
+    def earliestPeriodStart = underlying.earliestPeriodStart
+    def listFqdnHostAggregatesForDevice(
+        mac: MacAddress,
+        fromInstant: java.time.Instant,
+        toInstant: java.time.Instant,
+    ) = underlying.listFqdnHostAggregatesForDevice(mac, fromInstant, toInstant)
+  }
+
   private def withHarness[A](
+      body: (
+          Int,
+          RouterIngestService,
+          Router,
+          SpaEventBus,
+      ) => ZIO[Client & BootstrapEnv, Throwable, A],
+  ): ZIO[BootstrapEnv, Throwable, A] =
+    withHarnessWrapped(identity)(body)
+
+  private def withHarnessWrapped[A](
+      wrapTraffic: TrafficReportRepo => TrafficReportRepo,
+  )(
       body: (
           Int,
           RouterIngestService,
@@ -222,7 +279,7 @@ object SpaWsS6aSpec
       _           <- cleanDb
       clock       <- ZIO.service[Clock]
       auth        <- makeAuth(clock)
-      trafficRepo <- ZIO.service[TrafficReportRepo]
+      trafficRepo <- ZIO.service[TrafficReportRepo].map(wrapTraffic)
       rollupRepo  <- ZIO.service[RollupRepo]
       connRepo    <- ZIO.service[ConnectionEventRepo]
       deviceRepo  <- ZIO.service[DeviceRepo]
@@ -434,6 +491,41 @@ object SpaWsS6aSpec
         } yield assertTrue(tFrames.nonEmpty) &&
           assertTrue(pushed.map(_.profileName) == List("Kids"))
       }
+    },
+    test("one timeStatus push cycle's full-day presence loads do not scale with profile count") {
+      // #2167: on prod (591k traffic_reports rows/day) the push cycle's presence reads are
+      // the whole cost. The pre-fix shape did 1 (dayStateAllLive) + N (one per profile in
+      // buildOneTimeStatus) full-day loads per cycle — 9 scans/minute at 8 profiles, which
+      // saturated the DB pool and starved GET /api/time/status/summary into the SPA's
+      // "can't reach the API" fallback (admin UI showed 0m while limits kept enforcing).
+      // Pin: one cycle performs at most 2 full-day loads (the rollup-miss live fold + ONE shared
+      // load sliced per profile) no matter how many profiles exist.
+      for {
+        counter <- Ref.make(0)
+        result  <- withHarnessWrapped(r => new CountingTrafficRepo(r, counter)) {
+          (port, ingest, router, bus) =>
+            for {
+              _      <- ZIO.serviceWithZIO[ProfileRepo](_.create("Teens", Nil))
+              _      <- ZIO.serviceWithZIO[ProfileRepo](_.create("Guests", Nil))
+              tok    <- ZIO.serviceWithZIO[Clock](makeAuth).flatMap(adminToken)
+              // NO usage ingest here, deliberately: an ingest publishes its own event batch with no
+              // subscriber yet, and the consumer fiber drains it asynchronously — a leftover push
+              // cycle could race its loads into the counted window (the scan COUNT is what's
+              // pinned; it doesn't depend on any rows existing). The only event the consumer ever
+              // sees is the single post-ack trigger below, so the counted window holds exactly one
+              // push cycle with no wall-clock settle needed.
+              frames <- collect(
+                port,
+                tok,
+                List(subTimeStatus),
+                trigger = counter.set(0) *> bus.publish(SpaEvent.TimeStatusChanged),
+                wait = 4.seconds,
+              )
+              n      <- counter.get
+              tFrames = framesOf(frames, "timeStatus")
+            } yield assertTrue(tFrames.nonEmpty) && assertTrue(n <= 2)
+        }
+      } yield result
     },
     test("no timeStatus/appUsage subscriber → no timeStatus/appUsage push on usage ingest") {
       withHarness { (port, ingest, router, _) =>

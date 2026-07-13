@@ -125,8 +125,8 @@ object RouterHouseholdBindingSpec
         // Admin lives in a fresh, non-default household.
         hhB        <- newHousehold("Beta household", "beta")
         _          <- seedAdminInHousehold(auth, ur, "betaadmin", hhB)
-        // #2140: betaadmin lives in household `beta`, so login must name it via slug.
-        adminLogin <- auth.login("betaadmin", "pw", Some("beta"))
+        // #2164: betaadmin lives in household `beta`, so login names it via the slug/username form.
+        adminLogin <- auth.login("beta/betaadmin", "pw")
         en         <- ZIO.service[EntitlementsRepo]
         adminRoutes = AdminRouterRoutes.routes(auth, rr, ur, en)
         agentRoutes = RouterRoutes.routes(rr, null, RouterAuthLive(rr), ber)

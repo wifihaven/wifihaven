@@ -253,6 +253,46 @@ describe('ProfilesPage — list (collapse-by-default shell, #972)', () => {
     expect(chip).toHaveTextContent(/Paused/)
   })
 
+  // #2166 — the page-level loader deliberately paints the cards before the
+  // time-status summary returns, so the used/cap number has its own
+  // loading→loaded gate. A pending summary must show a skeleton, NEVER "0m":
+  // a loading zero is indistinguishable from a genuine zero and once made a
+  // slow-query incident read as all-profiles-zero data loss (#1098). See
+  // docs/process/loading-states.md.
+  describe('usage summary loading state (#2166)', () => {
+    it('shows a skeleton, not "0m"/"45m", while the summary query is pending', async () => {
+      // Never resolve summaryAll: the query stays pending while the rest of the
+      // page (profiles / devices / aux) loads and paints the cards.
+      (api.time.summaryAll as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
+        new Promise(() => {}),
+      )
+      renderPage()
+      const kidsCard = await screen.findByTestId('profile-card-1')
+      expect(
+        within(kidsCard).getByTestId('profile-summary-time-loading-1'),
+      ).toBeInTheDocument()
+      // Crucially, no real-looking number is rendered while pending.
+      const time = within(kidsCard).getByTestId('profile-summary-time-1')
+      expect(time).not.toHaveTextContent('0m')
+      expect(time).not.toHaveTextContent('45m')
+    })
+
+    it('renders a genuine loaded zero as "0m" (loaded !== loading)', async () => {
+      // adultsProfile carries a real summary with usedMins 0 — a LOADED zero
+      // must still render "0m" and show no skeleton.
+      renderPage()
+      const adultsCard = await screen.findByTestId('profile-card-2')
+      await waitFor(() =>
+        expect(
+          within(adultsCard).getByTestId('profile-summary-time-2'),
+        ).toHaveTextContent('0m'),
+      )
+      expect(
+        within(adultsCard).queryByTestId('profile-summary-time-loading-2'),
+      ).not.toBeInTheDocument()
+    })
+  })
+
   it('summary row reflects granted +Time extension in the cap text', async () => {
     // #975 follow-up: pre-fix the row read "45m / 2:00" even after a +30m
     // grant — the bar denominator grew but the text ignored extensionMins,

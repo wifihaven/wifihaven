@@ -274,6 +274,14 @@ object MetricGuard {
     // no per-mac / per-host dimension ever rides a ws metric.
     "router_ws_connections_active"              -> Set.empty[String],
     "router_ws_frames_total"                    -> Set("op", "direction", "result"),
+    // #2168 — per-ws-message-process latency, the ws analog of http_request_duration_seconds.
+    // Over the persistent socket (#1023) every logical operation is a frame on ONE connection, so
+    // the per-HTTP-route duration histogram no longer observes it; without this we go blind to
+    // slow-op regressions (the class that caught /api/usage/traffic) after the poll is removed
+    // (#1850). Times decode → handle → ack (`direction=in`) and the outbound policy push
+    // (`direction=out`). `op` is the SAME bounded envelope enum as router_ws_frames_total, so no
+    // per-mac / per-router / per-household dimension ever rides it — the §4 cardinality firewall.
+    "router_ws_message_duration_seconds"        -> Set("op", "direction"),
     // #1849 — computed-snapshot cache + push-on-change. `policy_snapshot_build_total` splits policy
     // snapshot accesses into `result` ∈ {computed, cache_hit} (proves the cache works);
     // `router_ws_policy_push_total` is the push fan-out, `result` ∈ {ok, channel_closed}. Both are
@@ -293,6 +301,12 @@ object MetricGuard {
     // spa_ws_push_total{op,result} below for the S3 change-source fan-out.)
     "spa_ws_connections_active"                 -> Set("role"),
     "spa_ws_frames_total"                       -> Set("op", "direction", "result"),
+    // #2168 — SPA per-ws-message-process latency, the browser-side twin of
+    // router_ws_message_duration_seconds. Times decode → handle → ack for inbound frames
+    // (`direction=in`) and the change-source push send (`direction=out`), labeled by the SAME
+    // bounded op enum as spa_ws_frames_total / spa_ws_push_total. No per-mac / per-profile /
+    // per-session / param dimension — the §4 cardinality firewall.
+    "spa_ws_message_duration_seconds"           -> Set("op", "direction"),
     "spa_ws_subscriptions_active"               -> Set("topic"),
     // #1969 (S2) — upgrade-auth outcomes for `GET /api/ws` (design §4/§7). `result` ∈
     // {ok, no_cookie, invalid_jwt, expired_jwt, bad_origin, jwt_expired_midconn} — the
@@ -687,6 +701,19 @@ object AppMetrics {
       Map("op" -> op, "direction" -> direction, "result" -> result),
     )
 
+  // #2168: per-ws-message-process latency — the ws analog of http_request_duration_seconds. Emitted
+  // from RouterWsRoutes (inbound: decode → handle → ack, `direction=in`) and RouterWsRegistry
+  // (outbound policy push send, `direction=out`). `op` is the same bounded envelope enum as
+  // recordWsFrame (unknown ops collapse to `unknown` upstream). Reuses the HTTP latency buckets so a
+  // ws op's latency is directly comparable to the REST endpoint it replaces across the #1023 cutover.
+  def recordWsMessageDuration(op: String, direction: String, durationSeconds: Double): UIO[Unit] =
+    MetricGuard.histogram(
+      "router_ws_message_duration_seconds",
+      Map("op" -> op, "direction" -> direction),
+      math.max(0.0, durationSeconds),
+      HttpDurationBoundaries,
+    )
+
   // #1849: counts policy-snapshot accesses split by whether they hit the computed-snapshot cache.
   // `computed` = an actual PolicyService rebuild (the ~500ms #1512 work); `cache_hit` = served from
   // the cache without rebuilding. The ratio proves the cache is working — once the reconcile ticker
@@ -722,6 +749,22 @@ object AppMetrics {
     MetricGuard.counter(
       "spa_ws_frames_total",
       Map("op" -> op, "direction" -> direction, "result" -> result),
+    )
+
+  // #2168: SPA per-ws-message-process latency (browser-side twin of recordWsMessageDuration).
+  // Emitted from SpaWsRoutes (inbound: decode → handle → ack, `direction=in`) and SpaWsRegistry
+  // (outbound change-source push send, `direction=out`). `op` is the same bounded enum as
+  // recordSpaWsFrame / recordSpaWsPush. Same HTTP latency buckets for cross-transport comparison.
+  def recordSpaWsMessageDuration(
+      op: String,
+      direction: String,
+      durationSeconds: Double,
+  ): UIO[Unit] =
+    MetricGuard.histogram(
+      "spa_ws_message_duration_seconds",
+      Map("op" -> op, "direction" -> direction),
+      math.max(0.0, durationSeconds),
+      HttpDurationBoundaries,
     )
 
   // #1969 (S2) — emitted from SpaWsRoutes at upgrade time (cookie verify + Origin check)

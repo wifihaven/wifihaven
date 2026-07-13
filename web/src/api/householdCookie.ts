@@ -1,12 +1,13 @@
-// #2140 (multi-tenant P5-8, design docs/design/multi-tenant-launch.md §4): household-aware login.
-// Login no longer derives the household from the username, so the login form has a household field.
-// To spare returning users from retyping it, the last successfully-used household **slug** is
-// remembered in a long-lived `wh_household` cookie and pre-fills the field.
+// #2164 (multi-tenant P5-8, design docs/design/multi-tenant-launch.md §4): single-identifier login.
+// The login form has ONE identifier field (email / slug/username / bare username). For a BARE
+// username, the SPA composes `slug/username` client-side using the last successfully-used household
+// **slug**, remembered in a long-lived `wh_household` cookie. The cookie is (re)written on every
+// successful login from the slug the SERVER resolved (LoginResponse.householdSlug).
 //
-// This cookie is a UX HINT ONLY — never an authentication input. The server authenticates the slug
-// the SPA POSTs in the login body (which this cookie merely pre-fills) together with the password;
-// it does not read this cookie. Tampering with it can only change which household slug pre-fills the
-// form, which still has to pass slug + password server-side. So it is deliberately:
+// This cookie is a UX HINT ONLY — never an authentication input. The server authenticates the single
+// identifier the SPA POSTs together with the password; it does NOT read this cookie. Tampering with
+// it can only change which slug a bare username is composed against, which still has to resolve to a
+// real household and pass the password server-side. So it is deliberately:
 //   - readable by JS (not HttpOnly) — the SPA reads it to pre-fill the field.
 //   - not `Secure` — self-hosted installs may serve the SPA over plain http on the LAN, and a
 //     non-sensitive slug hint should survive there too.
@@ -41,9 +42,9 @@ export function getHouseholdCookie(jar: CookieWriter | null = defaultCookieJar()
 }
 
 /**
- * Remember `slug` (a household slug) for the next login. A blank/empty slug — the default,
- * single-household, self-hosted case — clears the cookie instead of storing an empty value, so the
- * field stays hidden for those installs. `jar` is injectable for tests.
+ * Remember `slug` (a household slug) for the next login. A blank/empty slug — a household with no
+ * slug yet — clears the cookie instead of storing an empty value, so a bare username stays bare
+ * (server resolves the default household). `jar` is injectable for tests.
  */
 export function setHouseholdCookie(
   slug: string | null | undefined,

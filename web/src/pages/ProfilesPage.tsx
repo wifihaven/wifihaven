@@ -19,6 +19,7 @@ import { AppBlocklistWarningBadge } from '@/components/AppBlocklistWarning'
 import { ProfileTimelineChart } from '@/components/usage/ProfileTimelineChart'
 import { ProfileUsageBreakdown } from '@/components/usage/ProfileUsageBreakdown'
 import { EmptyState } from '@/components/EmptyState'
+import { Skeleton } from '@/components/Skeleton'
 import { PageLoader } from './DashboardPage'
 import { formatMins } from '@/lib/timeFormat'
 
@@ -129,6 +130,13 @@ export function ProfilesPage() {
   useWsTimeStatus()
   const timeStatusLive = useWsTopicLive('timeStatus')
   const summariesQuery = useTimeStatusSummary({ wsLive: timeStatusLive })
+  // #2166 — the page-level `loading` gate below intentionally does NOT include
+  // the summary query (the profile cards paint before time-status returns), so
+  // we thread its pending state down to render a skeleton for the used/cap
+  // number instead of coercing a not-yet-loaded summary to "0m". A loading
+  // "0m" is indistinguishable from a genuine zero and once masked a slow-query
+  // incident as data loss (#1098). See docs/process/loading-states.md.
+  const summariesPending = summariesQuery.isPending
   const profiles  = useMemo(() => {
     const list = profilesQuery.data ?? []
     const g    = globalProfileQuery.data
@@ -464,6 +472,7 @@ export function ProfilesPage() {
             key={pd.profile.id}
             pd={pd}
             summary={summaryByProfile.get(pd.profile.id)}
+            summaryLoading={summariesPending}
             devices={devicesByProfile.get(pd.profile.id) ?? []}
             allDevices={devices}
             users={usersByProfile.get(pd.profile.id) ?? []}
@@ -556,13 +565,14 @@ export function ProfilesPage() {
 // Expanded body holds the inline subsections (#973-#977) that replaced the
 // old per-profile modal, plus the read-only devices listing.
 function ProfileShellRow({
-  pd, summary, devices, allDevices, users, apps, allUsers, isAdmin, expanded, highlight,
+  pd, summary, summaryLoading, devices, allDevices, users, apps, allUsers, isAdmin, expanded, highlight,
   onToggle, onDelete, onTogglePause, onGrantTime,
   onAppsChanged, onProfileChanged, updateProfile,
   onToggleUserLink, pendingUserLinks, userLinkError,
 }: {
   pd: ProfileDetail
   summary: ProfileTimeSummary | undefined
+  summaryLoading: boolean
   devices: Device[]
   allDevices: Device[]
   users: User[]
@@ -600,6 +610,10 @@ function ProfileShellRow({
     return namedSchedules.filter(s => attached.has(s.id)).flatMap(s => s.windows)
   }, [namedSchedules, pd.scheduleIds])
   const chip = computeChip(pd, summary, attachedScheduleWindows)
+  // #2166 — the summary query is still pending and this profile has no summary
+  // yet: show a skeleton for the used/cap number rather than "0m". A loaded
+  // summary with usedMins 0 is a genuine zero and DOES render "0m" (below).
+  const summaryPending = summaryLoading && !summary
   const hasLimit = summary?.dailyLimitMins != null
   const usedMins = summary?.usedMins ?? 0
   const limitBase = hasLimit ? (summary!.dailyLimitMins ?? 0) + (summary!.extensionMins ?? 0) : 0
@@ -699,25 +713,37 @@ function ProfileShellRow({
             data-testid={`profile-summary-time-${pd.profile.id}`}
             className="hidden sm:flex flex-col items-end min-w-[7rem]"
           >
-            {/* #975: surface granted +Time extensions in the cap text so a
-                fresh grant is visible in the summary row. The denominator is
-                base + extension (matches the bar denominator below); a
-                "(+Xm)" suffix calls out how much of that is a grant so the
-                operator can tell at a glance how much extra is in play. */}
-            <span className="text-xs font-mono text-brand-text">
-              {formatMins(usedMins)}
-              {hasLimit ? ` / ${formatMins(limitBase)}` : ''}
-              {hasLimit && (summary!.extensionMins ?? 0) > 0 && (
-                <span className="text-brand-accent"> (+{formatMins(summary!.extensionMins ?? 0)})</span>
-              )}
-            </span>
-            {hasLimit && (
-              <div className="w-24 h-1 bg-brand-alt rounded-full overflow-hidden mt-1">
-                <div
-                  className={`h-full rounded-full ${overLimit ? 'bg-red-500' : 'bg-brand-accent'}`}
-                  style={{ width: `${pct}%` }}
-                />
-              </div>
+            {/* #2166 — skeleton while the time-status summary is still loading,
+                so a slow query can't render "0m" as if it were real usage. */}
+            {summaryPending ? (
+              <Skeleton
+                className="h-4 w-16"
+                testId={`profile-summary-time-loading-${pd.profile.id}`}
+                label="Loading usage…"
+              />
+            ) : (
+              <>
+                {/* #975: surface granted +Time extensions in the cap text so a
+                    fresh grant is visible in the summary row. The denominator is
+                    base + extension (matches the bar denominator below); a
+                    "(+Xm)" suffix calls out how much of that is a grant so the
+                    operator can tell at a glance how much extra is in play. */}
+                <span className="text-xs font-mono text-brand-text">
+                  {formatMins(usedMins)}
+                  {hasLimit ? ` / ${formatMins(limitBase)}` : ''}
+                  {hasLimit && (summary!.extensionMins ?? 0) > 0 && (
+                    <span className="text-brand-accent"> (+{formatMins(summary!.extensionMins ?? 0)})</span>
+                  )}
+                </span>
+                {hasLimit && (
+                  <div className="w-24 h-1 bg-brand-alt rounded-full overflow-hidden mt-1">
+                    <div
+                      className={`h-full rounded-full ${overLimit ? 'bg-red-500' : 'bg-brand-accent'}`}
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                )}
+              </>
             )}
           </div>
           )}

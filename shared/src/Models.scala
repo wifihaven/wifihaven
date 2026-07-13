@@ -737,24 +737,43 @@ case class AcceptInviteResponse(
     username: String,
 ) derives JsonCodec
 
-// #2140 (multi-tenant P5-8): `household` carries the target household's slug (`households.slug`,
-// V66). Optional and defaulted to None so existing clients and self-hosted single-household deploys
-// keep working unchanged — absent/blank resolves to the default household server-side. The SPA
-// pre-fills it from a long-lived `wh_household` cookie (a UX hint only; the server authenticates the
-// submitted slug + password, never the cookie).
+// #2164 (multi-tenant P5-8, single-identifier login — supersedes #2140's visible household field):
+// login carries ONE identifier string, resolved server-side to a household by its syntax
+// (docs/design/multi-tenant-launch.md §4):
+//   - contains '@'   → `users.email` (global-unique, V67/#2159); household = matched row's
+//   - contains '/'   → `slug/username` composite (split at first '/'), resolve households.slug
+//   - neither        → bare username → DEFAULT household (self-hosted / existing API clients)
+// The three forms are syntactically disjoint (V67 forbids '@' and '/' in usernames; V66 slugs are
+// [a-z0-9-]) so there is no parsing precedence.
+//
+// `identifier` is the new field. `username` is retained as a back-compat ALIAS: pre-#2164 clients
+// (and self-hosted scripts) posted the bare login name as `username`, and must keep working
+// unchanged (bare name → default household). Both are Option so at least one must be present; when
+// both are set `identifier` wins.
 case class LoginRequest(
-    username: String,
+    identifier: Option[String] = None,
     password: String,
-    household: Option[String] = None,
-) derives JsonCodec
+    username: Option[String] = None,
+) derives JsonCodec {
+
+  /** The effective login identifier: prefer `identifier`, fall back to the legacy `username`. */
+  def loginIdentifier: String = identifier.orElse(username).getOrElse("")
+}
 // mustChangePassword: true when the server-side flag is set (e.g. freshly-seeded admin).
 // The web uses this to redirect directly to the change-password page after login
 // before the user can reach any other route.
+//
+// #2164: `householdSlug` is the resolved household's slug (`households.slug`, V66). The SPA writes it
+// to the long-lived `wh_household` cookie so a later BARE-username login on this browser can be
+// client-composed into `slug/username` (design §4 form 3). It is post-authentication output only —
+// returning the authenticated user's own household slug is not an enumeration signal. Defaulted to
+// None so pre-#2164 clients decode unchanged.
 case class LoginResponse(
     token: JwtToken,
     role: UserRole,
     username: String,
     mustChangePassword: Boolean = false,
+    householdSlug: Option[String] = None,
 ) derives JsonCodec
 case class ChangePasswordRequest(currentPassword: String, newPassword: String) derives JsonCodec
 // #623: change-password used to return an empty 200 body, which broke clients

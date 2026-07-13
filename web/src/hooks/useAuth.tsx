@@ -16,11 +16,11 @@ interface AuthState {
 interface AuthContextValue extends AuthState {
   // Returns { mustChangePassword } so callers can redirect before the React
   // state update is applied (#586).
-  // #2140: `household` is the optional household slug from the login form.
+  // #2164: `identifier` is the single login string (email / slug/username / bare). LoginPage has
+  // already composed a bare username into `slug/username` via the cookie before calling this.
   login: (
-    username: string,
+    identifier: string,
     password: string,
-    household?: string,
   ) => Promise<{ mustChangePassword: boolean }>
   logout: () => void
   clearMustChangePassword: () => void
@@ -49,11 +49,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     mustChangePassword:  false,
   }))
 
-  const login = useCallback(async (username: string, password: string, household?: string) => {
-    const resp = await api.auth.login(username, password, household)
-    // #2140: remember the household slug (a UX hint only) so it pre-fills next time. A blank slug —
-    // the default self-hosted single-household case — clears it, keeping the field hidden there.
-    setHouseholdCookie(household)
+  const login = useCallback(async (identifier: string, password: string) => {
+    const resp = await api.auth.login(identifier, password)
+    // #2164: remember the household slug the SERVER resolved (a UX hint only) so a later bare-username
+    // login on this browser can be client-composed into `slug/username` (design §4 form 3). The
+    // server never reads this cookie. `default`/self-hosted resolves to slug "default"; a household
+    // with no slug yet returns undefined, which clears the cookie.
+    setHouseholdCookie(resp.householdSlug)
     localStorage.setItem('token', resp.token)
     localStorage.setItem('username', resp.username)
     localStorage.setItem('role', resp.role)

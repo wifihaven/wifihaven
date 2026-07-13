@@ -210,7 +210,7 @@ trait SpaWsRegistry {
    * role-visible (§4.4). Each carries the `(role, username)` the per-child GET filter needs;
    * [[SpaPush]] builds the full `ProfileTimeStatus[]` once, then delivers each recipient its
    * role-visible subset (admin/adult: all; child: their linked profiles). Empty ⇒ no subscriber ⇒
-   * no `dayStateAllLive` query ("don't compute what nobody watches").
+   * no `dayStateAll` query ("don't compute what nobody watches").
    */
   def timeStatusRecipients: UIO[List[SpaRecipient]]
 
@@ -433,14 +433,24 @@ final class SpaWsRegistryLive(
       op: String,
       frame: String,
   ): UIO[Unit] =
-    channel
-      .send(ChannelEvent.read(WebSocketFrame.text(frame)))
-      .foldZIO(
-        _ => AppMetrics.recordSpaWsPush(op, "channel_closed") *> deregister(id),
-        _ =>
-          AppMetrics.recordSpaWsPush(op, "ok") *>
-            AppMetrics.recordSpaWsFrame(op, "out", "ok"),
-      )
+    // #2168: time the outbound change-source push send as spa_ws_message_duration_seconds{op,
+    // direction=out} — the outbound half of the SPA per-ws-op latency. `ensuring` fires the
+    // observation on every exit (ok or racing-disconnect), same as the inbound timing in SpaWsRoutes.
+    Clock.nanoTime.flatMap { start =>
+      channel
+        .send(ChannelEvent.read(WebSocketFrame.text(frame)))
+        .foldZIO(
+          _ => AppMetrics.recordSpaWsPush(op, "channel_closed") *> deregister(id),
+          _ =>
+            AppMetrics.recordSpaWsPush(op, "ok") *>
+              AppMetrics.recordSpaWsFrame(op, "out", "ok"),
+        )
+        .ensuring(
+          Clock.nanoTime.flatMap(end =>
+            AppMetrics.recordSpaWsMessageDuration(op, "out", (end - start) / 1e9d),
+          ),
+        )
+    }
 }
 
 /**

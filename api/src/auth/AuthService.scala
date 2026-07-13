@@ -58,15 +58,17 @@ object AuthError {
 // ── Auth service ───────────────────────────────────────────────────────────
 
 trait AuthService {
-  // #2140 (multi-tenant P5-8): `householdSlug` names the household to authenticate against
-  // (`households.slug`, V66). Absent/blank → the default household, so self-hosted single-household
-  // deploys and pre-existing API clients keep exactly today's behavior (back-compat). An unknown
-  // slug, or a valid username+password in the WRONG household, fails with the SAME
-  // `InvalidCredentials` a bad password produces — no household/username enumeration.
+  // #2164 (multi-tenant P5-8, single-identifier login — supersedes #2140's slug param): `identifier`
+  // is the single login string, resolved to a household by its syntax (design §4):
+  //   - contains '@'  → `users.email` (global-unique, V67); household = matched row's
+  //   - contains '/'  → `slug/username` (split at first '/'); resolve households.slug → findByUsername
+  //   - neither       → bare username → DEFAULT household (self-hosted / existing API clients)
+  // The forms are syntactically disjoint (V67 forbids '@'/'/' in usernames). ANY failure — unknown
+  // email, wrong/unknown slug, unknown username, bad password — collapses to the SAME
+  // `InvalidCredentials` with uniform bcrypt timing; no email/slug/username enumeration.
   def login(
-      username: String,
+      identifier: String,
       password: String,
-      householdSlug: Option[String] = None,
   ): IO[AuthError, LoginResponse]
   def verify(token: String): IO[AuthError, JwtClaims]
   def requireAdmin(token: String): IO[AuthError, JwtClaims]
@@ -115,32 +117,53 @@ class AuthServiceLive(
       .hashToString(AuthService.BcryptCost, "wifihaven-timing-equalizer".toCharArray)
 
   def login(
-      username: String,
+      identifier: String,
       password: String,
-      householdSlug: Option[String] = None,
-  ): IO[AuthError, LoginResponse] =
+  ): IO[AuthError, LoginResponse] = {
+    val id = identifier.trim
     // #602: route/method (`POST /api/auth/login`) ride in via LoggingMiddleware on
     // the HTTP path. `user` is the only per-call dynamic context we add here, so
     // every log inside the for-comprehension (success info, bad-password warn)
-    // inherits it via FiberRef.
-    LogContext.annotate(LogContext.User, username) {
+    // inherits it via FiberRef. We annotate with the raw identifier (email / slug/username /
+    // bare) — it's what the operator would search for.
+    LogContext.annotate(LogContext.User, id) {
       (for {
-        // #2140: resolve the requested household. Absent/blank → default household (back-compat).
-        // A present-but-unknown slug yields None so the user lookup finds nothing — the SAME
-        // failure path as an unknown username (no household enumeration).
-        hhOpt   <- householdSlug.map(_.trim).filter(_.nonEmpty) match {
-          case None       => ZIO.some(HouseholdId.Default)
-          case Some(slug) =>
-            householdRepo.findIdBySlug(slug).mapError(e => AuthError.Unexpected(e.getMessage))
-        }
-        userOpt <- hhOpt match {
-          case None     => ZIO.none
-          case Some(hh) =>
-            userRepo.findByUsername(hh, username).mapError(e => AuthError.Unexpected(e.getMessage))
-        }
-        // #2140: always run bcrypt — against the real hash if the user exists, against a fixed
-        // dummy hash otherwise — so an unknown username / wrong household is timing-indistinguishable
-        // from a wrong password. The dummy path always yields false.
+        // #2164: resolve the identifier to a user by its syntactic form. The three forms are
+        // disjoint (V67 CHECK forbids '@'/'/' in usernames; V66 slugs are [a-z0-9-]) so a simple
+        // if/else on the identifier's charset is unambiguous — no precedence hack. Any path that
+        // can't resolve yields None → the SAME bad-password failure below (no enumeration).
+        userOpt <-
+          if id.contains("@") then
+            // Form 1 — email: GLOBAL lookup; household comes from the matched row. Exact match on
+            // the case-sensitive `uq_users_email`; the write side (#2132) must store emails
+            // lowercase-normalized so a differently-cased attempt still resolves — see
+            // `UserRepo.findByEmail`'s CONTRACT note.
+            userRepo.findByEmail(id).mapError(e => AuthError.Unexpected(e.getMessage))
+          else if id.contains("/") then {
+            // Form 2 — slug/username composite: split at the FIRST '/'.
+            val idx   = id.indexOf('/')
+            val slug  = id.substring(0, idx)
+            val uname = id.substring(idx + 1)
+            householdRepo
+              .findIdBySlug(slug)
+              .mapError(e => AuthError.Unexpected(e.getMessage))
+              .flatMap {
+                case Some(hh) =>
+                  userRepo
+                    .findByUsername(hh, uname)
+                    .mapError(e => AuthError.Unexpected(e.getMessage))
+                case None => ZIO.none // unknown slug → no user (same failure as unknown username)
+              }
+          } else
+            // Form 3 — bare username: DEFAULT household (self-hosted / existing API clients).
+            userRepo
+              .findByUsername(HouseholdId.Default, id)
+              .mapError(e => AuthError.Unexpected(e.getMessage))
+        // #2164: always run exactly one bcrypt verify — against the real hash if the user exists,
+        // against a fixed dummy hash otherwise — so an unresolved identifier (unknown email / wrong
+        // or unknown slug / unknown username) is timing-indistinguishable from a wrong password.
+        // bcrypt (cost 12) dominates the sub-ms index lookups, so the small difference in query
+        // count across forms is not an observable oracle. The dummy path always yields false.
         valid = userOpt match {
           case Some(u) => BCrypt.verifyer().verify(password.toCharArray, u.passwordHash).verified
           case None    =>
@@ -149,6 +172,11 @@ class AuthServiceLive(
         user    <- ZIO
           .fromOption(userOpt.filter(_ => valid))
           .mapError(_ => AuthError.InvalidCredentials)
+        // #2164: the resolved household's slug, for the SPA's `wh_household` cookie hint. Looked up
+        // post-auth (rare path — logins are infrequent). None only if the row has no slug yet.
+        slug    <- householdRepo
+          .findSlugById(user.householdId)
+          .mapError(e => AuthError.Unexpected(e.getMessage))
         now     <- clock.instant.map(_.getEpochSecond)
         claim = JwtClaim(
           // #2080: stamp the user's CURRENT token_version so a subsequent password
@@ -165,28 +193,30 @@ class AuthServiceLive(
         // #602: explicit success log (the boundary only logs failures). Bounded — one line
         // per successful login, MDC-annotated with the user + role for searchability.
         _     <- LogContext.annotate(LogContext.Reason, "ok") {
-          ZIO.logInfo(s"login ok: user=$username role=${UserRole.asString(user.role)}")
+          ZIO.logInfo(s"login ok: user=${user.username} role=${UserRole.asString(user.role)}")
         }
       } yield LoginResponse(
         JwtToken.unsafe(token),
         user.role,
         user.username,
         user.mustChangePassword,
+        slug,
       ))
         .tapError {
           // #1204: a bad password or unknown user both collapse to InvalidCredentials.
-          // #602: the message text duplicates the annotation values (user=, reason=) on
+          // #602: the message text duplicates the annotation values (identifier=, reason=) on
           // purpose — same back-compat strategy as ErrorBoundary.scala. Existing log
           // readers grep substrings; the MDC keys are additive for structured consumers.
           // Don't drop the substrings until the JSON appender lands.
           case AuthError.InvalidCredentials =>
             AppMetrics.recordAuthFailure("bad_password") *>
               LogContext.annotate(LogContext.Reason, "bad_password") {
-                ZIO.logWarning(s"login failed: user=$username reason=bad_password")
+                ZIO.logWarning(s"login failed: identifier=$id reason=bad_password")
               }
           case _                            => ZIO.unit
         }
     }
+  }
 
   // We delegate expiration/not-before checks to our injected Clock (see below).
   private val jwtOpts = JwtOptions(expiration = false, notBefore = false)

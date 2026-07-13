@@ -179,15 +179,12 @@ function weekQuery(to?: string, bucketOffsetMin?: number, profileId?: number): s
 
 export const api = {
   auth: {
-    // #2140: `household` is the optional household slug the user is signing in to. Omitted/blank →
-    // the server resolves the default household (self-hosted single-household back-compat).
-    login: (username: string, password: string, household?: string) =>
-      req<LoginResponse>(
-        'POST',
-        '/auth/login',
-        household ? { username, password, household } : { username, password },
-        true,
-      ),
+    // #2164: single-identifier login. `identifier` is the one login string (email / slug/username /
+    // bare username); the server resolves the household from its syntax (design §4). The SPA composes
+    // a bare username into `slug/username` client-side (LoginPage) before calling this, so the value
+    // posted here is already the final identifier.
+    login: (identifier: string, password: string) =>
+      req<LoginResponse>('POST', '/auth/login', { identifier, password }, true),
     changePassword: (currentPassword: string, newPassword: string) =>
       req<void>('POST', '/auth/change-password', { currentPassword, newPassword }),
     me: () => req<MeResponse>('GET', '/me'),

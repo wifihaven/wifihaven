@@ -75,13 +75,26 @@ describe('useAuth — login', () => {
     await act(async () => {
       await result.current.login('alice', 'pw')
     })
-    // #2140: no household passed → undefined third arg (server resolves the default household).
-    expect(api.auth.login).toHaveBeenCalledWith('alice', 'pw', undefined)
+    // #2164: login takes a single already-composed identifier (no household arg).
+    expect(api.auth.login).toHaveBeenCalledWith('alice', 'pw')
     expect(localStorage.getItem('token')).toBe('tok')
     expect(localStorage.getItem('username')).toBe('alice')
     expect(localStorage.getItem('role')).toBe('admin')
     expect(result.current.isAuthenticated).toBe(true)
     expect(result.current.isAdmin).toBe(true)
+  })
+
+  it('#2164: writes the server-resolved household slug to the wh_household cookie', async () => {
+    (api.auth.login as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      token: 'tok', username: 'emma', role: 'child', householdSlug: 'smith-family',
+    })
+    const { result } = renderHook(() => useAuth(), { wrapper })
+    await act(async () => {
+      await result.current.login('smith-family/emma', 'pw')
+    })
+    expect(document.cookie).toContain('wh_household=smith-family')
+    // Cleanup so the cookie doesn't leak into other tests.
+    document.cookie = 'wh_household=; Path=/; Max-Age=0'
   })
 })
 

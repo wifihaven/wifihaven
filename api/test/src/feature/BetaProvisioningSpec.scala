@@ -51,6 +51,8 @@ object BetaProvisioningSpec
       clock <- ZIO.service[Clock]
     } yield AuthServiceLive(ur, jwt, clock, hr): AuthService
 
+  // #2164: single-identifier login — a non-default household names itself via the `slug/username`
+  // identifier form; the default household (slug `default`) is reachable by a bare username.
   private def login(
       auth: AuthService,
       user: String,
@@ -58,7 +60,7 @@ object BetaProvisioningSpec
       slug: Option[String] = None,
   ): Task[String] =
     auth
-      .login(user, pw, slug)
+      .login(slug.fold(user)(s => s"$s/$user"), pw)
       .mapError(e => new RuntimeException(s"login failed: $e"))
       .map(_.token.value)
 
@@ -161,8 +163,8 @@ object BetaProvisioningSpec
           .unique
           .transact(xa)
         newLogin         <- b.auth
-          // The first admin is `admin`; log into the NEW household by its slug (per-household usernames).
-          .login("admin", "supersecret123", Some(approve.slug))
+          // #2164: the admin's global identity is its bound email — log in by email (single-identifier).
+          .login("fam@example.com", "supersecret123")
           .mapError(e => new RuntimeException(s"login failed: $e"))
         claims           <- b.auth
           .verify(newLogin.token.value)
