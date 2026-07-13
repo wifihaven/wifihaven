@@ -118,17 +118,27 @@ final class RouterWsRegistryLive(
       channel: WebSocketChannel,
       frame: String,
   ): UIO[Unit] =
-    channel
-      .send(ChannelEvent.read(WebSocketFrame.text(frame)))
-      .foldZIO(
-        _ =>
-          // A racing disconnect: meter the failed push and (when we know which router it was) drop
-          // the dead channel. The receive loop's `ensuring` also deregisters, but doing it here too
-          // keeps the gauge honest if the push raced ahead of the close event.
-          AppMetrics.recordWsPolicyPush("channel_closed") *>
-            ZIO.foreachDiscard(id)(deregister(_, channel)),
-        _ =>
-          AppMetrics.recordWsFrame("policy", "out", "ok") *>
-            AppMetrics.recordWsPolicyPush("ok"),
-      )
+    // #2168: time the outbound policy-push send as router_ws_message_duration_seconds{op=policy,
+    // direction=out} — the outbound half of the per-ws-op latency. `ensuring` fires the observation
+    // on every exit (ok or racing-disconnect), same as the inbound timing in RouterWsRoutes.
+    Clock.nanoTime.flatMap { start =>
+      channel
+        .send(ChannelEvent.read(WebSocketFrame.text(frame)))
+        .foldZIO(
+          _ =>
+            // A racing disconnect: meter the failed push and (when we know which router it was) drop
+            // the dead channel. The receive loop's `ensuring` also deregisters, but doing it here too
+            // keeps the gauge honest if the push raced ahead of the close event.
+            AppMetrics.recordWsPolicyPush("channel_closed") *>
+              ZIO.foreachDiscard(id)(deregister(_, channel)),
+          _ =>
+            AppMetrics.recordWsFrame("policy", "out", "ok") *>
+              AppMetrics.recordWsPolicyPush("ok"),
+        )
+        .ensuring(
+          Clock.nanoTime.flatMap(end =>
+            AppMetrics.recordWsMessageDuration("policy", "out", (end - start) / 1e9d),
+          ),
+        )
+    }
 }

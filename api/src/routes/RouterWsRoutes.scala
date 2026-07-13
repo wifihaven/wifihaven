@@ -132,48 +132,87 @@ object RouterWsRoutes {
   ): ZIO[Any, Throwable, Unit] =
     text.fromJson[WsFrame] match {
       case Left(err)    =>
-        AppMetrics.recordWsFrame("unknown", "in", "reject") *>
-          ZIO.logWarning(s"router ws: undecodable frame from router=${router.id}: $err")
+        timedInbound("unknown")(
+          AppMetrics.recordWsFrame("unknown", "in", "reject") *>
+            ZIO.logWarning(s"router ws: undecodable frame from router=${router.id}: $err"),
+        )
       case Right(frame) =>
         LogContext.annotate(LogContext.RouterId, router.id.toString) {
-          frame.op match {
-            case "usage"   =>
-              ingestFrame("usage", frame, channel, payload => ingest.ingestUsage(router, payload))
-            case "events"  =>
-              ingestFrame("events", frame, channel, payload => ingest.ingestEvents(router, payload))
-            case "metrics" =>
-              ingestFrame(
-                "metrics",
-                frame,
-                channel,
-                payload => ingestMetrics(router, payload, metricsSvc),
-              )
-            case "ping"    =>
-              touch(routerRepo, router) *>
-                AppMetrics.recordWsFrame("ping", "in", "ok") *>
-                send(channel, WsFrame("pong", Some(Json.Obj()))) *>
-                AppMetrics.recordWsFrame("pong", "out", "ok")
-            case "pong"    =>
-              touch(routerRepo, router) *> AppMetrics.recordWsFrame("pong", "in", "ok")
-            case "hello"   =>
-              // #1847 seam: the capability handshake (hello→ready + snapshotVersion negotiation) is
-              // NOT implemented here. Acknowledge receipt in the logs/metrics so the frame is
-              // observable, but do not negotiate or reply `ready` yet.
-              touch(routerRepo, router) *>
-                AppMetrics.recordWsFrame("hello", "in", "ok") *>
-                ZIO.logInfo(
-                  s"router ws: hello from router=${router.id} (handshake deferred to #1847)",
+          timedInbound(inboundOpLabel(frame.op)) {
+            frame.op match {
+              case "usage"   =>
+                ingestFrame("usage", frame, channel, payload => ingest.ingestUsage(router, payload))
+              case "events"  =>
+                ingestFrame(
+                  "events",
+                  frame,
+                  channel,
+                  payload => ingest.ingestEvents(router, payload),
                 )
-            case other     =>
-              // Forward-compat: ignore + meter an unrecognized op (design §1.3) so a future op
-              // (e.g. policy_diff) can ship without a flag day. The arbitrary op string is collapsed
-              // to the bounded literal `unknown` for the metric label (an attacker-supplied op must
-              // never become a Prometheus label value — cardinality firewall); the real op goes to
-              // the log only.
-              AppMetrics.recordWsFrame("unknown", "in", "unknown_op") *>
-                ZIO.logDebug(s"router ws: ignoring unknown op '$other' from router=${router.id}")
+              case "metrics" =>
+                ingestFrame(
+                  "metrics",
+                  frame,
+                  channel,
+                  payload => ingestMetrics(router, payload, metricsSvc),
+                )
+              case "ping"    =>
+                touch(routerRepo, router) *>
+                  AppMetrics.recordWsFrame("ping", "in", "ok") *>
+                  send(channel, WsFrame("pong", Some(Json.Obj()))) *>
+                  AppMetrics.recordWsFrame("pong", "out", "ok")
+              case "pong"    =>
+                touch(routerRepo, router) *> AppMetrics.recordWsFrame("pong", "in", "ok")
+              case "hello"   =>
+                // #1847 seam: the capability handshake (hello→ready + snapshotVersion negotiation) is
+                // NOT implemented here. Acknowledge receipt in the logs/metrics so the frame is
+                // observable, but do not negotiate or reply `ready` yet.
+                touch(routerRepo, router) *>
+                  AppMetrics.recordWsFrame("hello", "in", "ok") *>
+                  ZIO.logInfo(
+                    s"router ws: hello from router=${router.id} (handshake deferred to #1847)",
+                  )
+              case other     =>
+                // Forward-compat: ignore + meter an unrecognized op (design §1.3) so a future op
+                // (e.g. policy_diff) can ship without a flag day. The arbitrary op string is collapsed
+                // to the bounded literal `unknown` for the metric label (an attacker-supplied op must
+                // never become a Prometheus label value — cardinality firewall); the real op goes to
+                // the log only.
+                AppMetrics.recordWsFrame("unknown", "in", "unknown_op") *>
+                  ZIO.logDebug(s"router ws: ignoring unknown op '$other' from router=${router.id}")
+            }
           }
         }
+    }
+
+  /** The bounded inbound-op vocabulary (design §1.2); anything else collapses to `unknown`. */
+  private val KnownInboundOps: Set[String] =
+    Set("usage", "events", "metrics", "ping", "pong", "hello")
+
+  /**
+   * Collapse a raw frame `op` to the bounded metric label — an unrecognized (possibly
+   * attacker-supplied) op must never become a Prometheus label value (cardinality firewall), so it
+   * maps to `unknown`, exactly as [[recordWsFrame]] labels an unknown-op frame.
+   */
+  private def inboundOpLabel(op: String): String =
+    if (KnownInboundOps.contains(op)) op else "unknown"
+
+  /**
+   * #2168: time the full processing of one inbound frame (decode → handle → ack) and record it to
+   * `router_ws_message_duration_seconds{op,direction=in}` — the ws analog of the per-endpoint
+   * `http_request_duration_seconds`. The observation fires on EVERY exit (ok, typed reject, or a
+   * transport failure that tears the frame down) via `ensuring`, mirroring [[HttpMetrics]] timing
+   * the handler's full success-and-failure exit.
+   */
+  private def timedInbound[R, E](
+      op: String,
+  )(effect: ZIO[R, E, Unit]): ZIO[R, E, Unit] =
+    Clock.nanoTime.flatMap { start =>
+      effect.ensuring(
+        Clock.nanoTime.flatMap(end =>
+          AppMetrics.recordWsMessageDuration(op, "in", (end - start) / 1e9d),
+        ),
+      )
     }
 
   /**

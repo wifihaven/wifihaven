@@ -261,43 +261,77 @@ object SpaWsRoutes {
   ): ZIO[Any, Throwable, Unit] =
     text.fromJson[SpaWsFrame] match {
       case Left(err)    =>
-        AppMetrics.recordSpaWsFrame("unknown", "in", "reject") *>
-          ZIO.logWarning(s"spa ws: undecodable frame: $err")
+        timedInbound("unknown")(
+          AppMetrics.recordSpaWsFrame("unknown", "in", "reject") *>
+            ZIO.logWarning(s"spa ws: undecodable frame: $err"),
+        )
       case Right(frame) =>
         registry.roleFor(id).flatMap { roleOpt =>
           val role = roleOpt.getOrElse(fallbackRole)
           LogContext
             .annotateAll(LogContext.Op -> frame.op, LogContext.Role -> UserRole.asString(role)) {
-              frame.op match {
-                case "hello"       => handleHello(id, channel, registry, clock)
-                case "subscribe"   => handleSubscribe(id, channel, frame, role, registry)
-                case "unsubscribe" => handleUnsubscribe(id, frame, registry)
-                case "reauth"      =>
-                  // Forward-compat seam (design §4.3): v1 has NO silent refresh, so reject. The SPA
-                  // falls back to polling + /login on `4401`; when refresh lands, the server will
-                  // advance jwtExp here instead.
-                  LogContext.annotate(LogContext.Result, "reject") {
-                    AppMetrics.recordSpaWsFrame("reauth", "in", "reject") *>
-                      sendAck(channel, "reauth", "reject", Some("reauth_unsupported"))
-                  }
-                case "ping"        =>
-                  AppMetrics.recordSpaWsFrame("ping", "in", "ok") *>
-                    send(channel, SpaWsFrame("pong", Some(Json.Obj()))) *>
-                    AppMetrics.recordSpaWsFrame("pong", "out", "ok")
-                case "pong"        =>
-                  AppMetrics.recordSpaWsFrame("pong", "in", "ok")
-                case other         =>
-                  // Forward-compat: ignore + meter an unrecognized op (design §2.2). The arbitrary op
-                  // string collapses to the bounded literal `unknown` for the metric label (cardinality
-                  // firewall — an attacker-supplied op must never become a Prometheus label value); the
-                  // real op goes to the log only.
-                  LogContext.annotate(LogContext.Result, "unknown_op") {
-                    AppMetrics.recordSpaWsFrame("unknown", "in", "unknown_op") *>
-                      ZIO.logDebug(s"spa ws: ignoring unknown op '$other'")
-                  }
+              timedInbound(inboundOpLabel(frame.op)) {
+                frame.op match {
+                  case "hello"       => handleHello(id, channel, registry, clock)
+                  case "subscribe"   => handleSubscribe(id, channel, frame, role, registry)
+                  case "unsubscribe" => handleUnsubscribe(id, frame, registry)
+                  case "reauth"      =>
+                    // Forward-compat seam (design §4.3): v1 has NO silent refresh, so reject. The SPA
+                    // falls back to polling + /login on `4401`; when refresh lands, the server will
+                    // advance jwtExp here instead.
+                    LogContext.annotate(LogContext.Result, "reject") {
+                      AppMetrics.recordSpaWsFrame("reauth", "in", "reject") *>
+                        sendAck(channel, "reauth", "reject", Some("reauth_unsupported"))
+                    }
+                  case "ping"        =>
+                    AppMetrics.recordSpaWsFrame("ping", "in", "ok") *>
+                      send(channel, SpaWsFrame("pong", Some(Json.Obj()))) *>
+                      AppMetrics.recordSpaWsFrame("pong", "out", "ok")
+                  case "pong"        =>
+                    AppMetrics.recordSpaWsFrame("pong", "in", "ok")
+                  case other         =>
+                    // Forward-compat: ignore + meter an unrecognized op (design §2.2). The arbitrary op
+                    // string collapses to the bounded literal `unknown` for the metric label (cardinality
+                    // firewall — an attacker-supplied op must never become a Prometheus label value); the
+                    // real op goes to the log only.
+                    LogContext.annotate(LogContext.Result, "unknown_op") {
+                      AppMetrics.recordSpaWsFrame("unknown", "in", "unknown_op") *>
+                        ZIO.logDebug(s"spa ws: ignoring unknown op '$other'")
+                    }
+                }
               }
             }
         }
+    }
+
+  /** The bounded inbound-op vocabulary (design §2.2); anything else collapses to `unknown`. */
+  private val KnownInboundOps: Set[String] =
+    Set("hello", "subscribe", "unsubscribe", "reauth", "ping", "pong")
+
+  /**
+   * Collapse a raw frame `op` to the bounded metric label — an unrecognized (possibly
+   * attacker-supplied) op must never become a Prometheus label value (cardinality firewall), so it
+   * maps to `unknown`, exactly as [[recordSpaWsFrame]] labels an unknown-op frame.
+   */
+  private def inboundOpLabel(op: String): String =
+    if (KnownInboundOps.contains(op)) op else "unknown"
+
+  /**
+   * #2168: time the full processing of one inbound frame (decode → handle → ack) and record it to
+   * `spa_ws_message_duration_seconds{op,direction=in}` — the browser-side twin of the router path's
+   * inbound timing. The observation fires on EVERY exit (ok, reject, or a transport failure) via
+   * `ensuring`. Uses `zio.Clock.nanoTime` explicitly because the `Clock` in scope here is
+   * [[wifihaven.shared.Clock]] (the injected wall-clock), not the monotonic runtime clock.
+   */
+  private def timedInbound[R, E](
+      op: String,
+  )(effect: ZIO[R, E, Unit]): ZIO[R, E, Unit] =
+    zio.Clock.nanoTime.flatMap { start =>
+      effect.ensuring(
+        zio.Clock.nanoTime.flatMap(end =>
+          AppMetrics.recordSpaWsMessageDuration(op, "in", (end - start) / 1e9d),
+        ),
+      )
     }
 
   /**

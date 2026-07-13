@@ -433,14 +433,24 @@ final class SpaWsRegistryLive(
       op: String,
       frame: String,
   ): UIO[Unit] =
-    channel
-      .send(ChannelEvent.read(WebSocketFrame.text(frame)))
-      .foldZIO(
-        _ => AppMetrics.recordSpaWsPush(op, "channel_closed") *> deregister(id),
-        _ =>
-          AppMetrics.recordSpaWsPush(op, "ok") *>
-            AppMetrics.recordSpaWsFrame(op, "out", "ok"),
-      )
+    // #2168: time the outbound change-source push send as spa_ws_message_duration_seconds{op,
+    // direction=out} — the outbound half of the SPA per-ws-op latency. `ensuring` fires the
+    // observation on every exit (ok or racing-disconnect), same as the inbound timing in SpaWsRoutes.
+    Clock.nanoTime.flatMap { start =>
+      channel
+        .send(ChannelEvent.read(WebSocketFrame.text(frame)))
+        .foldZIO(
+          _ => AppMetrics.recordSpaWsPush(op, "channel_closed") *> deregister(id),
+          _ =>
+            AppMetrics.recordSpaWsPush(op, "ok") *>
+              AppMetrics.recordSpaWsFrame(op, "out", "ok"),
+        )
+        .ensuring(
+          Clock.nanoTime.flatMap(end =>
+            AppMetrics.recordSpaWsMessageDuration(op, "out", (end - start) / 1e9d),
+          ),
+        )
+    }
 }
 
 /**
