@@ -45,6 +45,7 @@ jobs:
       migrations: ${{ steps.filter.outputs.migrations || steps.force.outputs.all }}
       contract: ${{ steps.filter.outputs.contract || steps.force.outputs.all }}
       fake-api: ${{ steps.filter.outputs.fake-api || steps.force.outputs.all }}
+      e2e-lib: ${{ steps.filter.outputs.e2e-lib || steps.force.outputs.all }}
       workflows: ${{ steps.filter.outputs.workflows || steps.force.outputs.all }}
       grafana-tf: ${{ steps.filter.outputs.grafana-tf || steps.force.outputs.all }}
       cloudflare-tf: ${{ steps.filter.outputs.cloudflare-tf || steps.force.outputs.all }}
@@ -145,6 +146,13 @@ jobs:
               - '.github/workflows/ci.yml'
               - 'scripts/e2e/fake-api/**'
               - 'contract/api-to-router/policy_snapshot.json'
+            # Pure-python unit cover for the e2e helper libs (scripts/e2e/lib).
+            # These had no CI runner before #2179; the e2e-lib-tests job below
+            # gives the staging-router pruner's selection logic a fast gate.
+            e2e-lib:
+              - '.github/workflows/ci.yml'
+              - 'scripts/e2e/lib/**'
+              - 'scripts/e2e/prune_stale_staging_routers.py'
             shell:
               - '.github/workflows/ci.yml'
               - 'deploy/**/*.sh'
@@ -633,6 +641,28 @@ jobs:
         working-directory: scripts/e2e/fake-api
         run: pytest -v
 
+  # ── E2E helper-lib unit tests (#2179) ───────────────────────────────────
+  # Pure-python cover for scripts/e2e/lib. Introduced to gate the staging
+  # test-router pruner's selection logic (stale_routers.select_stale_test_routers,
+  # used by prune_stale_staging_routers.py). Scoped to test_stale_routers.py so
+  # it doesn't retroactively turn on the other lib test files (which predate any
+  # CI runner and may need extra wiring) — those can be folded in separately.
+  e2e-lib-tests:
+    name: E2E lib unit tests
+    needs: changes
+    if: needs.changes.outputs.e2e-lib == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pytest
+        run: pip install pytest
+      - name: Run e2e-lib unit tests
+        run: python -m pytest scripts/e2e/lib/test_stale_routers.py -v
+
   # ── render.yaml: YAML parse check ───────────────────────────────────────
   render-blueprint:
     name: Render Blueprint Lint
@@ -799,6 +829,7 @@ jobs:
       - contract-tests
       - python-tests
       - fake-api-tests
+      - e2e-lib-tests
       - render-blueprint
       - grafana-terraform
       - cloudflare-terraform
