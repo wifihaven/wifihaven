@@ -131,7 +131,10 @@ object ErrorBoundaryRoutesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
         rs      <- authRoutes
         resp    <- rs.runZIO(
           Request
-            .post(url("/api/auth/login"), Body.fromString(LoginRequest("admin", "nope").toJson))
+            .post(
+              url("/api/auth/login"),
+              Body.fromString(LoginRequest(identifier = Some("admin"), password = "nope").toJson),
+            )
             .addHeader(Header.ContentType(MediaType.application.json)),
         )
         body    <- bodyText(resp)

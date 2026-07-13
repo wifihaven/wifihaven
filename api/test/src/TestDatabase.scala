@@ -303,10 +303,11 @@ object TestLayers {
       adminA: String,
       adminB: String,
       password: String,
-      // #2140: each household's login slug (`households.slug`, V66). Household A is the default
+      // #2164: each household's login slug (`households.slug`, V66). Household A is the default
       // install (slug `default`, set by V66's backfill). Household B gets an explicit slug so a spec
-      // can `auth.login(adminB, password, Some(slugB))` — now that usernames are per-household,
-      // adminB no longer authenticates against the default household without its slug.
+      // can `auth.login(s"$slugB/$adminB", password)` (the single-identifier slug/username form) —
+      // now that usernames are per-household, adminB no longer authenticates via a bare username
+      // (which resolves to the default household).
       slugA: String,
       slugB: String,
   )

@@ -97,6 +97,16 @@ trait UserRepo {
   // Callers resolve the household from `claims.hh` (authenticated paths) or the login request's
   // slug (the one unauthenticated path).
   def findByUsername(householdId: HouseholdId, u: String): Task[Option[DbUser]]
+
+  /**
+   * #2164 (single-identifier login, design §4 form 1): resolve a user by their GLOBAL email
+   * (`users.email`, V67/#2159 — nullable, globally UNIQUE). Login uses this when the posted
+   * identifier contains '@'; the matched row carries the household, so email login needs no
+   * household in hand. Match is exact (case-sensitive), aligned with the global unique constraint —
+   * email normalization, if ever wanted, is a write-side concern owned by the invite-accept /
+   * email-add paths (#2132), not the read path.
+   */
+  def findByEmail(email: String): Task[Option[DbUser]]
   def findById(id: UserId): Task[Option[DbUser]]
   // #2130: `householdId` stamps the new user with the creating admin's
   // household (resolved from their JWT at the route). Defaults to the
@@ -136,6 +146,14 @@ trait UserRepo {
  */
 trait HouseholdRepo {
   def findIdBySlug(slug: String): Task[Option[HouseholdId]]
+
+  /**
+   * #2164: the inverse — a household's slug by id. Consumed by login only, to return the resolved
+   * household's slug on [[wifihaven.shared.LoginResponse]] so the SPA can (re)write the
+   * `wh_household` cookie (design §4). Returns None for an id with no row (or the default-only
+   * shim's non-default ids).
+   */
+  def findSlugById(id: HouseholdId): Task[Option[String]]
 }
 
 object HouseholdRepo {
@@ -154,6 +172,9 @@ object HouseholdRepo {
     // DB-backed HouseholdRepoLive.
     def findIdBySlug(slug: String): Task[Option[HouseholdId]] =
       ZIO.succeed(Option.when(slug == "default")(HouseholdId.Default))
+    // #2164: the default household's slug is `default`; any other id is unknown to this shim.
+    def findSlugById(id: HouseholdId): Task[Option[String]]   =
+      ZIO.succeed(Option.when(id == HouseholdId.Default)("default"))
   }
 }
 
@@ -966,6 +987,16 @@ class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
         .option
         .transact(xa),
     )
+  def findByEmail(email: String)                          =
+    DbMetrics.timed("user.findByEmail")(
+      // #2164: exact match on the globally-unique `users.email` (V67). `.option` is safe — the
+      // uq_users_email constraint guarantees at most one row.
+      (fr"SELECT " ++ userCols ++ fr" FROM users WHERE email=$email")
+        .query[UserRow]
+        .map(toUser)
+        .option
+        .transact(xa),
+    )
   def findById(id: UserId)                                =
     (fr"SELECT " ++ userCols ++ fr" FROM users WHERE id=$id")
       .query[UserRow]
@@ -1010,9 +1041,20 @@ class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
 
 class HouseholdRepoLive(xa: Transactor[Task]) extends HouseholdRepo {
   // #2140: slug → household id. The unique `uq_households_slug` (V66) makes `.option` exact.
-  def findIdBySlug(slug: String) =
+  def findIdBySlug(slug: String)    =
     DbMetrics.timed("household.findIdBySlug")(
       sql"SELECT id FROM households WHERE slug=$slug".query[HouseholdId].option.transact(xa),
+    )
+  // #2164: slug by id, for the login response's cookie hint. Index-backed by the primary key.
+  // `households.slug` is nullable (V66 backfilled existing rows only), so read it as Option and
+  // flatten "row absent" and "row present but slug NULL" both to None.
+  def findSlugById(id: HouseholdId) =
+    DbMetrics.timed("household.findSlugById")(
+      sql"SELECT slug FROM households WHERE id=$id"
+        .query[Option[String]]
+        .option
+        .map(_.flatten)
+        .transact(xa),
     )
 }
 

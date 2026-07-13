@@ -303,10 +303,13 @@ Supporting mechanics (unchanged from the original #2140 scope where noted):
   an email later upgrades any account to path 1.
 
 Sequencing: **V67 (#2159, `users.email` + username charset guard) precedes
-the #2140 rework**, which precedes #2133 (whose invite-accept flow creates
-the first potentially-colliding usernames; #2140 / #2133 scope addition).
-The in-flight PRs from the original design (#2149 login, #2148 accept
-payload) are reworked to this revision before merge.
+the single-identifier login work**, which precedes #2133 (whose invite-accept
+flow creates the first potentially-colliding usernames; #2133 scope addition).
+The original #2140 login PR ([#2149](https://github.com/wifihaven/wifihaven/pull/2149))
+**merged with the interim visible-household-field / slug design**; the
+single-identifier design in this section is a **forward supersession** shipped
+by [#2164](https://github.com/wifihaven/wifihaven/issues/2164) (not a reopen of
+#2140). The invite-accept payload rework (§3.4) rides #2132.
 
 ---
 
@@ -508,7 +511,8 @@ the `fix/2131-v66-phase5-schema` branch is not on the remote).
 | W2 | [#2132](https://github.com/wifihaven/wifihaven/issues/2132) | beta intake + operator approval + provisioning + invite accept (API) — accept payload **revised 2026-07-10** (`{token, password}`, email bound from `beta_requests.email`, §3.4); PR #2148 reworked before merge | #2131, #2159 (accept writes `users.email`) | OPEN |
 | W2 | [#2134](https://github.com/wifihaven/wifihaven/issues/2134) | per-household `router_cap` enforcement | #2131 | OPEN |
 | W2 | [#2159](https://github.com/wifihaven/wifihaven/issues/2159) | V67 schema-only: `users.email` (nullable, globally unique) + username charset guard | #2131; before #2140 rework | OPEN (added 2026-07-10) |
-| W2 | [#2140](https://github.com/wifihaven/wifihaven/issues/2140) | household-aware login — **revised 2026-07-10** to single-identifier (email / `slug/username` / cookie-assisted bare username, §4); PR #2149 reworked before merge | #2131, #2159; before #2133 | OPEN |
+| W2 | [#2140](https://github.com/wifihaven/wifihaven/issues/2140) | household-aware login — PR [#2149](https://github.com/wifihaven/wifihaven/pull/2149) **MERGED with the interim visible-household-field / slug design** | #2131, #2159; before #2133 | **MERGED (interim)** |
+| W2 | [#2164](https://github.com/wifihaven/wifihaven/issues/2164) | single-identifier login (email / `slug/username` / cookie-assisted bare username, §4) — **forward supersession** of #2140's interim design (not a reopen) | #2159; after #2149 | OPEN |
 | W3 | [#2133](https://github.com/wifihaven/wifihaven/issues/2133) | SPA: `/beta`, `/welcome`, operator queue | #2132, #2140 | OPEN |
 | W3 | [#2135](https://github.com/wifihaven/wifihaven/issues/2135) | Stripe: customer, Checkout + Portal, webhook, FOUNDING | #2131, #2132 | OPEN |
 | W3 | [#2138](https://github.com/wifihaven/wifihaven/issues/2138) | marketing: CTA + pricing section | #2132 (endpoint; copy can land dark) | OPEN |

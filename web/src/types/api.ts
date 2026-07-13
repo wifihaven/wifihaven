@@ -746,6 +746,10 @@ export interface LoginResponse {
   // #586: true when the server has the must_change_password flag set.
   // The web redirects to /account immediately after login when true.
   mustChangePassword?: boolean
+  // #2164: the resolved household's slug. The SPA writes it to the long-lived `wh_household`
+  // cookie so a later BARE-username login on this browser can be client-composed into
+  // `slug/username` (design §4 form 3). Absent for a household with no slug yet.
+  householdSlug?: string
 }
 
 export interface MeResponse {
