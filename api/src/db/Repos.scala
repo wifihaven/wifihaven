@@ -2572,8 +2572,9 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
         wifihaven.api.usage.TrafficUsageDbRow(m, h, bs, be, secs, bi, bo)
       }
       .to[List]
-    val _         = (inner, cio) // RED-STAGE stub: real SQL lands in the green commit
-    listRawInRange(macs, fromInstant, toInstant)
+    DbMetrics.timed("traffic.listRawAggregatedInRange")(
+      QueryTimeout.bounded(xa, QueryTimeout.RawAggregateWindow)(cio),
+    )
   }
 
   def earliestPeriodStart =
