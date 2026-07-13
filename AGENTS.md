@@ -252,6 +252,9 @@ The same PR that emits a new metric series adds or updates a consuming Grafana p
 ### Grafana Cloud stack
 `https://wifihaven.grafana.net` hosts app metrics (Alloy), Render infra OTLP, deploy annotations. Repo secrets `GRAFANA_CLOUD_URL` + `GRAFANA_CLOUD_ANNOTATION_TOKEN`. → see [`docs/ops/grafana-cloud.md`](docs/ops/grafana-cloud.md)
 
+### Never render real-looking data before real data has loaded {#loading-states}
+A pending/loading query MUST show a loading state (spinner/skeleton), never a placeholder that looks like a real value — `0m`, `0`, empty counts, "no usage", an empty chart. A loading `0` is indistinguishable from a genuine zero and has masked real bugs (a slow per-profile query made `/profiles` show `0m` everywhere — a perf problem read as data loss). Distinguish three states in every data view: **loading** (spinner/skeleton), **error** (error affordance, not zero), **loaded** (real value, may legitimately be 0). In react-query terms: gate on `isPending`/`isError` before reading `data`; never coerce `undefined`/loading to `0`. → see [`docs/process/loading-states.md`](docs/process/loading-states.md#loading-states)
+
 ### Every router-agent write to `/tmp` must be bounded {#bounded-tmp-writes}
 On OpenWRT `/tmp` is `tmpfs` — RAM. Any agent file under `/tmp` that grows with traffic/time/event volume must ship a rotation/truncation path in the SAME change; add it to the existing `wifihaven-rotate-dnsmasq-log` cron (copytruncate, never rename). → see [`docs/process/router-agent-bounded-writes.md`](docs/process/router-agent-bounded-writes.md)
 
