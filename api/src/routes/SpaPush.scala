@@ -464,11 +464,19 @@ object SpaPush {
   /**
    * #1974 (S6a): the `timeStatus` push (design §1.2/§3.1, class-(2) thick push). For each
    * subscribed connection, push the `/api/time/status` `ProfileTimeStatus[]` body — built ONCE over
-   * all profiles via the canonical [[TimeStatusService.dayStateAllLive]] minutes + the shared
+   * all profiles via the canonical [[TimeStatusService.dayStateAll]] minutes + the shared
    * [[TimeStatusService.assembleProfileTimeStatus]] wire-shape builder (SSOT — byte-identical to
    * the GET) — then DELIVERED per recipient with the GET's per-child profile filter (design §4.4):
    * an admin/adult gets all profiles, a child only their linked ones. No subscriber → no
-   * `dayStateAllLive` query.
+   * `dayStateAll` query.
+   *
+   * #2167: this fires on EVERY `TimeStatusChanged` (each usage ingest, ~1/min while a /profiles tab
+   * is open), so its DB cost is a steady-state load, not a one-off. Two rules keep it from starving
+   * the pool at prod row volume (591k traffic_reports rows/day zeroed the admin UI):
+   *   - minutes come from `dayStateAll` (the rollup + live-tail path the GETs read — same numbers
+   *     by the #1160 source-of-truth invariant), NEVER `dayStateAllLive` (a full-day scan);
+   *   - the presence rows for the per-device / top-host views are loaded ONCE across all devices
+   *     and sliced per profile in memory — never one full-day scan per profile.
    */
   private def pushTimeStatus(
       registry: SpaWsRegistry,
@@ -486,20 +494,24 @@ object SpaPush {
             now      <- clock.instant
             settings <- deps.hsRepo.get
             date = PolicyService.householdLocalDate(now, settings)
-            states   <- deps.timeStatusService.dayStateAllLive(now, date, settings)
+            states   <- deps.timeStatusService.dayStateAll(now, date, settings)
             ambient  <- deps.ambientRepo.gateFor(settings, date)
             profiles <- profileRepo.listAll
             devices  <- deviceRepo.listAll
             devsByPid = devices.groupBy(_.profileId).collect { case (Some(pid), ds) => pid -> ds }
+            // ONE full-day presence load across every device, sliced per profile below — the
+            // per-profile re-scan was the #2167 pool-starvation amplifier.
+            allPresence   <- trafficRepo.listPresenceRows(devices.map(_.mac), date)
             // The full per-profile body, in profileRepo.listAll order (the GET's order). Built once;
             // each recipient receives its role-visible subset of it (design §4.4).
             rows          <- ZIO.foreach(profiles) { p =>
               val devs = devsByPid.getOrElse(p.id, Nil)
+              val macs = devs.map(_.mac).toSet
               buildOneTimeStatus(
                 p,
                 devs,
                 states.get(p.id),
-                trafficRepo,
+                allPresence.filter(r => macs.contains(r.mac)),
                 appTimeLimitRepo,
                 date,
                 settings,
@@ -518,19 +530,22 @@ object SpaPush {
         .unit
     }
 
-  /** Build one profile's `ProfileTimeStatus` exactly as the GET does (shared assembler — SSOT). */
+  /**
+   * Build one profile's `ProfileTimeStatus` exactly as the GET does (shared assembler — SSOT).
+   * `raw` is this profile's slice of the ONE per-cycle presence load (see [[pushTimeStatus]]) —
+   * this method must not re-scan the day itself (#2167).
+   */
   private def buildOneTimeStatus(
       profile: Profile,
       devices: List[Device],
       state: Option[wifihaven.api.policy.ProfileDayState],
-      trafficRepo: TrafficReportRepo,
+      raw: List[wifihaven.api.presence.PresenceRow],
       appTimeLimitRepo: AppTimeLimitRepo,
       date: LocalDate,
       settings: wifihaven.shared.HouseholdSettings,
       ambient: wifihaven.api.presence.AmbientGate,
   ): Task[ProfileTimeStatus] =
     for {
-      raw       <- trafficRepo.listPresenceRows(devices.map(_.mac), date)
       appLimits <- appTimeLimitRepo.listForProfile(profile.id)
       presence = TimeStatusService.gatedPresence(appLimits, raw, settings, ambient)
       st       = state.getOrElse(
