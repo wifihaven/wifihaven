@@ -54,9 +54,9 @@ object SpaPush {
   /**
    * #1974 (S6a): the extra services the `timeStatus`/`appUsage` pushes need, bundled `Option`al so
    * the S3/S4 harnesses (which never publish [[SpaEvent.TimeStatusChanged]]) construct `run`
-   * without them. `timeStatusService` provides the canonical `dayStateAllLive` minutes; `hsRepo`
-   * the household settings (today/heartbeat); `userProfileRepo` the per-child profile filter the
-   * GET uses (design §4.4). Production always passes `Some(...)`.
+   * without them. `timeStatusService` provides the canonical `dayStateAll` minutes; `hsRepo` the
+   * household settings (today/heartbeat); `userProfileRepo` the per-child profile filter the GET
+   * uses (design §4.4). Production always passes `Some(...)`.
    */
   final case class TimeUsageDeps(
       timeStatusService: TimeStatusService,

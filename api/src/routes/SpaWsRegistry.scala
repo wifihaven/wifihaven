@@ -210,7 +210,7 @@ trait SpaWsRegistry {
    * role-visible (§4.4). Each carries the `(role, username)` the per-child GET filter needs;
    * [[SpaPush]] builds the full `ProfileTimeStatus[]` once, then delivers each recipient its
    * role-visible subset (admin/adult: all; child: their linked profiles). Empty ⇒ no subscriber ⇒
-   * no `dayStateAllLive` query ("don't compute what nobody watches").
+   * no `dayStateAll` query ("don't compute what nobody watches").
    */
   def timeStatusRecipients: UIO[List[SpaRecipient]]
 

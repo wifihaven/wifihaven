@@ -508,17 +508,17 @@ object SpaWsS6aSpec
               _      <- ZIO.serviceWithZIO[ProfileRepo](_.create("Teens", Nil))
               _      <- ZIO.serviceWithZIO[ProfileRepo](_.create("Guests", Nil))
               tok    <- ZIO.serviceWithZIO[Clock](makeAuth).flatMap(adminToken)
-              _      <- ingestUsage(ingest, router, usageRecord("youtube.com", 120))
-              // The counter reset runs INSIDE the trigger — i.e. after the subscribe ack, plus a
-              // settle — so the ingest's own event batch (published above with no subscriber yet,
-              // processed asynchronously by the consumer fiber) has fully drained and a leftover
-              // push cycle can't race its loads into the counted window.
+              // NO usage ingest here, deliberately: an ingest publishes its own event batch with no
+              // subscriber yet, and the consumer fiber drains it asynchronously — a leftover push
+              // cycle could race its loads into the counted window (the scan COUNT is what's
+              // pinned; it doesn't depend on any rows existing). The only event the consumer ever
+              // sees is the single post-ack trigger below, so the counted window holds exactly one
+              // push cycle with no wall-clock settle needed.
               frames <- collect(
                 port,
                 tok,
                 List(subTimeStatus),
-                trigger = ZIO.sleep(2.seconds) *> counter.set(0) *>
-                  bus.publish(SpaEvent.TimeStatusChanged),
+                trigger = counter.set(0) *> bus.publish(SpaEvent.TimeStatusChanged),
                 wait = 4.seconds,
               )
               n      <- counter.get
