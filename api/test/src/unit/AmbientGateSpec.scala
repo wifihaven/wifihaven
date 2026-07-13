@@ -207,6 +207,15 @@ object AmbientGateSpec extends ZIOSpecDefault {
       val rows = (0 until 3).toList.map(m => ipRow(mac1, m, "17.253.3.141", bytes = 150_000L))
       assertTrue(gatedMinutes(rows, gate()) == 0)
     },
+    test("#2177 heavy class-FQDN bytes cannot launder an anchor onto a low-byte IP peer") {
+      // A >5MB iCloud sync lane riding the wakeup burst plus a 0.2MB Apple-infra IP
+      // literal: the byte floor sums NON-FQDN rows only, so the span still drops.
+      val rows = List(
+        row(mac1, 0, "obv2-cdn.icloud-content.com", bytes = 20_000_000L),
+        ipRow(mac1, 1, "17.253.3.141", bytes = 200_000L),
+      )
+      assertTrue(gatedMinutes(rows, gate()) == 0)
+    },
     test("#2177 a high-byte IP-literal span still anchors (FaceTime stays counted)") {
       // Single minute-row carrying real payload: span bytes clear the floor, span survives.
       val rows = List(ipRow(mac1, 0, "174.219.32.52", bytes = Presence.IpAnchorSpanBytes + 1))

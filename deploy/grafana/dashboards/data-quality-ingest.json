@@ -672,7 +672,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "Ambient anchor-gate spans dropped — rate (#2077)",
-      "description": "rate(presence_ambient_spans_dropped_total[5m]) — device presence spans dropped by the #2077 engagement-anchor gate because they contained no anchor row (app-attributed, or a non-ambient host that is also off the #2177 InfraHosts.cloudBackground class; IP-literals anchor only above the 5MB span byte floor). Emitted once per TimeUsedRollupJob tick (~15 min). A sustained rise with flat screen-time means the isolation learner is eating real sessions (over-suppression); a flat zero while phantom idle-time returns means the thresholds are too lax. Unlabelled; from AppMetrics.recordAmbientSpansDropped.",
+      "description": "rate(presence_ambient_spans_dropped_total[5m]) — device presence spans dropped by the #2077 engagement-anchor gate because they contained no anchor row (app-attributed, or a non-ambient host that is also off the #2177 InfraHosts.cloudBackground class; IP-literal rows anchor only when they together clear the 5MB byte floor). Emitted once per TimeUsedRollupJob tick (~15 min). A sustained rise with flat screen-time means the isolation learner is eating real sessions (over-suppression); a flat zero while phantom idle-time returns means the thresholds are too lax. Unlabelled; from AppMetrics.recordAmbientSpansDropped.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 10, "x": 0, "y": 72 },
       "id": 19,

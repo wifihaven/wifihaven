@@ -80,12 +80,14 @@ object Presence {
   val AppSessionAnchorBytes: Long = 256L
 
   /**
-   * #2177: minimum total bytes a merged device span must carry for a non-FQDN row (IP-literal /
-   * `HostId.Label`) to ANCHOR it in [[ambientGatedRowsWithDropCount]]. IP-literal peers carry no
-   * hostname identity, so neither the learned-ambient set nor the [[InfraHosts.cloudBackground]]
-   * class can vouch for them — instead the span's payload does. Prod replay (2026-07-13 kid-iPad
-   * windows, docs/design/idle-traffic-discrimination.md §2177-residual): real IP-literal sessions —
-   * the FaceTime shape — run tens of MB (≈77 MB / 21 min), while the phantom wakeup-burst spans
+   * #2177: minimum total bytes a merged device span's NON-FQDN rows (IP-literal / `HostId.Label`)
+   * must carry to ANCHOR it in [[ambientGatedRowsWithDropCount]] — FQDN co-traffic is excluded from
+   * the sum so heavy class-host volume (an iCloud sync lane riding the same wakeup burst) cannot
+   * launder an anchor onto a low-byte IP peer. IP-literal peers carry no hostname identity, so
+   * neither the learned-ambient set nor the [[InfraHosts.cloudBackground]] class can vouch for them
+   * — instead the span's payload does. Prod replay (2026-07-13 kid-iPad windows,
+   * docs/design/idle-traffic-discrimination.md §2177-residual): real IP-literal sessions — the
+   * FaceTime shape — run tens of MB (≈77 MB / 21 min), while the phantom wakeup-burst spans
    * anchored by Apple-infra IP literals (17.253.x.x time/config endpoints) carried ≤ 0.5 MB. 5 MB
    * sits an order of magnitude clear of both sides. Per-span, not per-row, mirroring
    * [[AppSessionAnchorBytes]]: a real session's ambient rows still count once any evidence in the
@@ -1025,9 +1027,9 @@ object Presence {
    * therefore never accrue isolated days, so per-host learning can never classify them.
    * [[InfraHosts.cloudBackground]] names those FAMILIES by apex/suffix, and a host on that class
    * cannot anchor (its rows still count inside a genuinely anchored span). Non-FQDN rows
-   * (IP-literals / labels), which no host-keyed set can vouch for, anchor only when their merged
-   * span's total bytes exceed [[IpAnchorSpanBytes]] — real IP-literal sessions (FaceTime, tens of
-   * MB) pass, the sub-half-MB Apple-infra IP drip inside a wakeup burst does not.
+   * (IP-literals / labels), which no host-keyed set can vouch for, anchor only when the span's
+   * non-FQDN rows together exceed [[IpAnchorSpanBytes]] — real IP-literal sessions (FaceTime, tens
+   * of MB) pass, the sub-half-MB Apple-infra IP drip inside a wakeup burst does not.
    *
    * Span topology is derived exactly the way the daily total derives it — non-heartbeat rows
    * ([[isHeartbeat]], so InfraHosts rows and sub-byte-floor keepalives are not evidence and can
@@ -1065,7 +1067,7 @@ object Presence {
         // wakeup-burst hosts the isolation learner structurally cannot learn, because they only
         // ever fire in dense co-occurring bursts and thus never accrue isolated days). A non-FQDN
         // row (IP-literal / label — no hostname identity for either set to vouch against) anchors
-        // only when its containing span carries real payload (> [[IpAnchorSpanBytes]]): the
+        // only when the span's non-FQDN rows carry real payload (> [[IpAnchorSpanBytes]]): the
         // FaceTime shape survives, the low-byte Apple-infra IP drip inside a wakeup burst does not.
         def isHostAnchor(r: PresenceRow): Boolean      =
           isAppAttributed(r, appHostPatterns) ||
@@ -1084,9 +1086,14 @@ object Presence {
             val merged             = mergeSpans(sessionSpans(macRows, gap))
             val (anchored, unanch) = merged.partition { s =>
               val inSpan = macRows.filter(r => overlaps(s, r))
+              // Byte floor over the NON-FQDN rows only: co-present class-FQDN volume (a heavy
+              // iCloud sync riding the same wakeup burst) must not launder an anchor onto a
+              // low-byte IP peer — the payload has to be on the IP/label rows themselves.
               inSpan.exists(isHostAnchor) ||
-              (inSpan.exists(_.host.asFqdn.isEmpty) &&
-                inSpan.iterator.map(_.bytes).sum > IpAnchorSpanBytes)
+              inSpan.iterator
+                .filter(_.host.asFqdn.isEmpty)
+                .map(_.bytes)
+                .sum > IpAnchorSpanBytes
             }
             dropped += unanch.size
             anchored

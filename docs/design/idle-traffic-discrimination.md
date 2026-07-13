@@ -317,8 +317,10 @@ it only erodes the safety margin on genuinely-isolated real use.
    telemetry beacons). A host on the class cannot be the *sole anchor* of a
    span. Class-level naming is what beats the curation treadmill: one
    `apps.apple.com` entry covers every present and future `pNN-buy` shard.
-2. IP-literal / label rows anchor only when their merged span moves
-   > `Presence.IpAnchorSpanBytes` (5 MB). Real IP-literal sessions are heavy
+2. IP-literal / label rows anchor only when the span's non-FQDN rows
+   together move > `Presence.IpAnchorSpanBytes` (5 MB) — FQDN co-traffic is
+   excluded from the sum, so heavy class-host volume cannot launder an
+   anchor onto a low-byte IP peer. Real IP-literal sessions are heavy
    (the FaceTime span: 77 MB / 21 min); the phantom bursts' Apple-infra IP
    rows carried ≤ 0.5 MB. 5 MB sits an order of magnitude clear of both.
 
