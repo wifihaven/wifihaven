@@ -13,9 +13,14 @@ freshly-created routers (minutes old) are never deleted out from under it.
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
-from stale_routers import select_stale_test_routers
+from stale_routers import TEST_ROUTER_PREFIXES, select_stale_test_routers
+
+# scripts/e2e/lib/ → repo root is three parents up.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def _router(name: str, created_at: str | None) -> dict:
@@ -89,6 +94,37 @@ def test_missing_or_malformed_createdAt_is_not_selected():
         _router("gate3-2-apk-apk-3b", ""),
     ]
     assert select_stale_test_routers(routers, now=NOW, max_age=MAX_AGE) == []
+
+
+def test_prefixes_track_the_suite_naming_conventions():
+    """Drift guard (#2179): the pruner's prefixes must still match how the E2E
+    suites actually NAME the routers they create. Derived from the source, not
+    hard-coded here — so renaming a router in either suite without updating
+    TEST_ROUTER_PREFIXES turns THIS test red instead of silently disarming the
+    pruner (the #1334 silent-no-op class: the leak would quietly return and prod
+    would 403 on router_cap again).
+    """
+    # Gate 1 — scripts/e2e-router.sh: ROUTER_NAME="e2e-test-router-${RUN_ID}".
+    shell = (_REPO_ROOT / "scripts" / "e2e-router.sh").read_text()
+    m = re.search(r'ROUTER_NAME="([^"$]+)\$\{', shell)
+    assert m, "could not find ROUTER_NAME=... in scripts/e2e-router.sh"
+    gate1_prefix = m.group(1)
+    assert gate1_prefix in TEST_ROUTER_PREFIXES, (
+        f"e2e-router.sh names routers {gate1_prefix!r}, not matched by the "
+        f"pruner prefixes {TEST_ROUTER_PREFIXES!r} — update stale_routers.py"
+    )
+
+    # Gate 3a/3b — scripts/e2e/gate3/conftest.py session router fixture:
+    # name = f"gate3-{_suffix()}" (the profile fixture uses {suffix}, so keying
+    # on the literal `{_suffix()}` call pins the *router* name specifically).
+    conftest = (_REPO_ROOT / "scripts" / "e2e" / "gate3" / "conftest.py").read_text()
+    m = re.search(r'f"([^"{]+)\{_suffix\(\)\}"', conftest)
+    assert m, "could not find the router-name f-string in gate3/conftest.py"
+    gate3_prefix = m.group(1)
+    assert gate3_prefix in TEST_ROUTER_PREFIXES, (
+        f"gate3 conftest names routers {gate3_prefix!r}, not matched by the "
+        f"pruner prefixes {TEST_ROUTER_PREFIXES!r} — update stale_routers.py"
+    )
 
 
 def test_mixed_payload_selects_only_stale_test_routers():

@@ -64,11 +64,12 @@ def select_stale_test_routers(
     """
     stale: list[str] = []
     for r in routers:
-        if not is_test_router(r.get("name")):
+        rid = r.get("id")
+        if not rid or not is_test_router(r.get("name")):
             continue
         created = _parse_created_at(r.get("createdAt"))
         if created is None:
             continue
         if now - created > max_age:
-            stale.append(r["id"])
+            stale.append(rid)
     return stale

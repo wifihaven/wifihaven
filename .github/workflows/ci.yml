@@ -661,7 +661,10 @@ jobs:
       - name: Install pytest
         run: pip install pytest
       - name: Run e2e-lib unit tests
-        run: python -m pytest scripts/e2e/lib/test_stale_routers.py -v
+        # CWD = the lib dir so the modules import bare (the established
+        # convention for scripts/e2e/lib/test_*.py — no package prefix).
+        working-directory: scripts/e2e/lib
+        run: python -m pytest test_stale_routers.py -v
 
   # ── render.yaml: YAML parse check ───────────────────────────────────────
   render-blueprint:

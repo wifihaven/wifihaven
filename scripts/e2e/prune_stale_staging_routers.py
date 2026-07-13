@@ -33,7 +33,11 @@ from stale_routers import select_stale_test_routers  # noqa: E402
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger("prune-staging-routers")
 
-DEFAULT_MAX_AGE_SECONDS = 2 * 60 * 60  # 2h — well above a single run's lifetime.
+# 2h — comfortably above a single CD run's lifetime so a *concurrent* run's
+# fresh routers are never pruned. The router-creating gates cap out well under
+# this: api-smoke-staging `timeout-minutes: 8`, gate-3b VM ~20min — a ~4–6x
+# margin. Overridable via PRUNE_MAX_AGE_SECONDS.
+DEFAULT_MAX_AGE_SECONDS = 2 * 60 * 60
 
 
 def main() -> int:
