@@ -816,8 +816,8 @@ trait TrafficReportRepo {
   ): Task[List[wifihaven.api.usage.TrafficUsageDbRow]]
 
   /**
-   * #2174: SQL-side pre-aggregation for the raw-tier *fixed-step* display buckets (10m / 1m). Same
-   * row universe as [[listRawInRange]] (period_start range + optional mac filter + zero-rows
+   * #2174: SQL-side pre-aggregation for the raw-tier *fixed-step* display buckets (1m / 10m / 1h).
+   * Same row universe as [[listRawInRange]] (period_start range + optional mac filter + zero-rows
    * dropped), but rows are summed per `(mac, host, floor(period_start / step))` INSIDE Postgres, so
    * the API ships one row per (mac, host, bucket) instead of one per raw report period — the
    * unbounded `listRawInRange` fetch on this path returned 755k rows / 24h at prod volume and took
@@ -2523,7 +2523,7 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
     )
   }
 
-  // #2174: SQL-side pre-aggregation for the raw-tier fixed-step buckets (10m/1m) — see the trait
+  // #2174: SQL-side pre-aggregation for the raw-tier fixed-step buckets (1m/10m/1h) — see the trait
   // doc. The inner GROUP BY runs BEFORE the IP→FQDN LATERAL, so the connection_events resolve
   // executes once per (mac, host, bucket) group instead of once per raw report row (the prod 24h
   // window had 755k raw rows; the grouped set is ~an order of magnitude smaller at step=600).

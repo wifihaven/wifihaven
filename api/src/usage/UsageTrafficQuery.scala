@@ -120,13 +120,13 @@ object UsageTrafficQuery {
       //     picker's freshness preference; their cost cap routes wide windows to the rollups), so
       //     the per-row fetch stays cheap there.
       case SourceTier.Raw    =>
-        bucket match {
-          case UsageTraffic.Bucket.OneMin | UsageTraffic.Bucket.TenMin |
-              UsageTraffic.Bucket.OneHour =>
-            // stepOf is total for fixed-step buckets; the getOrElse arm is unreachable for the
-            // three matched here.
-            val step = UsageTraffic.stepOf(bucket).map(_.toSeconds).getOrElse(60L)
-            trafficRepo.listRawAggregatedInRange(macs, from, to, step)
+        (bucket, UsageTraffic.stepOf(bucket)) match {
+          case (
+                UsageTraffic.Bucket.OneMin | UsageTraffic.Bucket.TenMin |
+                UsageTraffic.Bucket.OneHour,
+                Some(step),
+              ) =>
+            trafficRepo.listRawAggregatedInRange(macs, from, to, step.toSeconds)
           case _ =>
             trafficRepo.listRawInRange(macs, from, to)
         }
