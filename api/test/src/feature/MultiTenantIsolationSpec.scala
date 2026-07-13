@@ -70,8 +70,9 @@ object MultiTenantIsolationSpec
       clock <- ZIO.service[Clock]
     } yield AuthServiceLive(ur, jwt, clock, hr): AuthService
 
-  // #2140: usernames are unique per household, so a login must name the target household by slug
-  // (except the default household, whose slug is `default` / absent). adminB lives in household B.
+  // #2164: single-identifier login. Usernames are unique per household, so a non-default household's
+  // user names its household via the `slug/username` identifier form; the default household (slug
+  // `default`) is reachable by a bare username. adminB lives in household B.
   private def login(
       auth: AuthService,
       user: String,
@@ -79,7 +80,7 @@ object MultiTenantIsolationSpec
       slug: Option[String] = None,
   ): Task[String] =
     auth
-      .login(user, pw, slug)
+      .login(slug.fold(user)(s => s"$s/$user"), pw)
       .mapError(e => new RuntimeException(s"login failed: $e"))
       .map(_.token.value)
 
@@ -336,11 +337,11 @@ object MultiTenantIsolationSpec
         // Visible to B's admin via the scoped read, invisible to A's.
         (sB, bodyB) <- getJson(routes, "/api/users", tokenB)
         (sA, bodyA) <- getJson(routes, "/api/users", tokenA)
-        // The new user can log in (via household B's slug) and the minted JWT carries hh = B
-        // (#2105). #2140: kid-b lives in household B, so login must name it — no slug would resolve
-        // to the default household, where kid-b does not exist.
+        // The new user can log in (via household B's slug/username identifier) and the minted JWT
+        // carries hh = B (#2105). #2164: kid-b lives in household B, so login names it — a bare
+        // username would resolve to the default household, where kid-b does not exist.
         kidLogin    <- auth
-          .login("kid-b", "kid-b-password!", Some(two.slugB))
+          .login(s"${two.slugB}/kid-b", "kid-b-password!")
           .mapError(e => new RuntimeException(s"login failed: $e"))
         kidClaims   <- auth
           .verify(kidLogin.token.value)
@@ -350,6 +351,106 @@ object MultiTenantIsolationSpec
         assertTrue(sB == Status.Ok, bodyB.contains(""""username":"kid-b"""")) &&
         assertTrue(sA == Status.Ok, !bodyA.contains("kid-b")) &&
         assertTrue(kidClaims.hh == two.hhB)
+    },
+    // ── Pin 1b: single-identifier login resolves the household from the identifier (#2164) ──────
+    // Design §4 / §9: the login UI has no household field; the identifier itself carries the
+    // household (email '@' / slug/username '/' / bare → default). These pins prove the server-side
+    // resolution over two real households.
+    test("pin 1b — slug/username composite routes each user to its own household") {
+      for {
+        _    <- cleanDb
+        two  <- TestLayers.seedTwoHouseholds(macA, macB)
+        auth <- makeAuth
+        // adminA lives in the default household (slug `default`), adminB in `household-b`. Each is
+        // reached via its own slug/username identifier and mints its own hh claim. Usernames are
+        // distinct here only because V65's global users_username_key is still present
+        // (TODO(#2147)); the CODE path findByUsername(hh, u) already handles a shared username, and
+        // the per-slug routing below is exactly the achievable-and-equivalent property.
+        tokA <- login(auth, two.adminA, two.password, Some(two.slugA))
+        tokB <- login(auth, two.adminB, two.password, Some(two.slugB))
+        clA  <- auth.verify(tokA)
+        clB  <- auth.verify(tokB)
+      } yield assertTrue(clA.hh == two.hhA, clB.hh == two.hhB, clA.hh != clB.hh)
+    },
+    test("pin 1b — email login lands in exactly the email owner's household") {
+      for {
+        _     <- cleanDb
+        two   <- TestLayers.seedTwoHouseholds(macA, macB)
+        xa    <- ZIO.service[Transactor[Task]]
+        // Bind a globally-unique email to each household's admin (V67 users.email; in prod the
+        // invite-accept flow does this, #2132). The '@' identifier resolves the household with no
+        // slug in hand.
+        _     <-
+          sql"UPDATE users SET email='a@example.com' WHERE username='admin' AND household_id=${two.hhA}".update.run
+            .transact(xa)
+        _     <-
+          sql"UPDATE users SET email='b@example.com' WHERE username='adminB' AND household_id=${two.hhB}".update.run
+            .transact(xa)
+        auth  <- makeAuth
+        respA <- auth
+          .login("a@example.com", two.password)
+          .mapError(e => new RuntimeException(s"$e"))
+        respB <- auth
+          .login("b@example.com", two.password)
+          .mapError(e => new RuntimeException(s"$e"))
+        clA   <- auth.verify(respA.token.value)
+        clB   <- auth.verify(respB.token.value)
+      } yield assertTrue(clA.hh == two.hhA, clA.sub == "admin") &&
+        assertTrue(clB.hh == two.hhB, clB.sub == "adminB") &&
+        // The response carries the resolved slug so the SPA can (re)write its wh_household cookie.
+        assertTrue(respA.householdSlug == Some(two.slugA), respB.householdSlug == Some(two.slugB))
+    },
+    test("pin 1b — a bare username resolves to the DEFAULT household (self-hosted back-compat)") {
+      for {
+        _    <- cleanDb
+        two  <- TestLayers.seedTwoHouseholds(macA, macB)
+        auth <- makeAuth
+        resp <- auth.login(two.adminA, two.password).mapError(e => new RuntimeException(s"$e"))
+        cl   <- auth.verify(resp.token.value)
+      } yield assertTrue(cl.hh == HouseholdId.Default, cl.sub == "admin")
+    },
+    test(
+      "pin 1b — wrong slug / unknown email fail IDENTICALLY to a bad password (no enumeration)",
+    ) {
+      // The observable outcome of every failure mode is the SAME AuthError.InvalidCredentials.
+      // Timing uniformity is structural, not asserted here (that would be flaky): every path runs
+      // exactly one bcrypt verify — real hash on a hit, a fixed dummy hash on a miss (AuthService).
+      for {
+        _            <- cleanDb
+        two          <- TestLayers.seedTwoHouseholds(macA, macB)
+        xa           <- ZIO.service[Transactor[Task]]
+        _            <-
+          sql"UPDATE users SET email='b@example.com' WHERE username='adminB' AND household_id=${two.hhB}".update.run
+            .transact(xa)
+        auth         <- makeAuth
+        // Right password, but the WRONG household slug for adminB (adminB is not in the default hh).
+        wrongSlug    <- auth.login(s"${two.slugA}/adminB", two.password).either
+        // A syntactically-valid but UNKNOWN household slug.
+        unknownSlug  <- auth.login("no-such-house/adminB", two.password).either
+        // A well-formed email that maps to NO user.
+        unknownEmail <- auth.login("nobody@example.com", two.password).either
+        // The genuine wrong-password baseline (right email, wrong password).
+        badPw        <- auth.login("b@example.com", "wrongpassword").either
+      } yield assertTrue(badPw == Left(AuthError.InvalidCredentials)) &&
+        assertTrue(wrongSlug == badPw, unknownSlug == badPw, unknownEmail == badPw)
+    },
+    test("pin 1b — a cookie-assisted bare login (client-composed slug/username) reaches its hh") {
+      for {
+        _    <- cleanDb
+        two  <- TestLayers.seedTwoHouseholds(macA, macB)
+        auth <- makeAuth
+        // The SPA, holding a wh_household cookie of `household-b`, composes `household-b/adminB` from
+        // a bare `adminB` before POSTing (LoginPage.composeIdentifier). Server-side that is the
+        // slug/username form and must land in household B.
+        resp <- auth
+          .login(s"${two.slugB}/${two.adminB}", two.password)
+          .mapError(e => new RuntimeException(s"$e"))
+        cl   <- auth.verify(resp.token.value)
+      } yield assertTrue(
+        cl.hh == two.hhB,
+        cl.sub == "adminB",
+        resp.householdSlug == Some(two.slugB),
+      )
     },
     // ── Pin 3: snapshot scoping (re-asserted from #2107) ───────────────────────
     test("pin 3 — GET /api/router/policy returns ONLY the router's household MACs/profiles") {

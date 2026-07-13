@@ -19,15 +19,17 @@ import zio.json.*
 import zio.test.*
 
 /**
- * #2140 (multi-tenant P5-8, epic #622) — household-aware login.
+ * #2164 (multi-tenant P5-8, epic #622) — single-identifier login (supersedes #2140's visible
+ * household field).
  *
- * Login can no longer resolve the household from the username: the request carries an optional
- * household **slug** (`households.slug`, V66/#2131), and the user lookup is keyed on
- * `(household_id, username)`. This spec pins the operator's requirement (2026-07-09): the household
- * is taken from the request, NOT the username; a valid credential presented against the wrong
- * household fails identically to a bad password (no cross-household enumeration); and an absent
- * slug resolves to the default household so self-hosted single-household deploys log in exactly as
- * before (back-compat).
+ * Login carries ONE identifier string, resolved to a household by its syntax
+ * (docs/design/multi-tenant-launch.md §4): `slug/username` (contains '/') → the named household;
+ * email (contains '@') → the globally-unique `users.email` owner's household; bare (neither) → the
+ * DEFAULT household. This spec pins the operator's requirement: the household is taken from the
+ * identifier, NOT inferred from a bare username; a valid credential presented against the wrong
+ * household (wrong slug) fails identically to a bad password (no cross-household enumeration); and
+ * a bare username resolves to the default household so self-hosted single-household deploys log in
+ * exactly as before (back-compat).
  *
  * NOTE on the same-username variant. V65 kept the GLOBAL `users_username_key UNIQUE(username)`
  * alongside the per-household composite unique (`V65__households.sql:52`), so the literal "same
@@ -35,7 +37,7 @@ import zio.test.*
  * unique is dropped (TODO(#2147), a schema-only follow-up, mirroring the deferred `devices_mac_key`
  * drop that `MultiTenantIsolationSpec` pin 4a works around). The login CODE path
  * (`findByUsername(hh, u)`) already handles it; this spec proves the achievable-and-equivalent
- * property with DISTINCT-household users: the household is never derived from the username, and a
+ * property with DISTINCT-household users: the household is taken from the identifier's slug, and a
  * user in one household can never authenticate against another. Once #2147 lands, the distinct
  * usernames below collapse to a single shared username.
  *
@@ -75,9 +77,9 @@ object HouseholdAwareLoginSpec
               VALUES ($username, $pwHash, 'admin', false, $hh)""".update.run.transact(xa)
     } yield hh
 
-  def spec = suite("Household-aware login (#2140)")(
+  def spec = suite("Single-identifier login (#2164)")(
     test(
-      "each household's user authenticates via its own slug, minting that household's hh claim",
+      "each household's user authenticates via its own slug/username, minting that hh claim",
     ) {
       for {
         _       <- cleanDb
@@ -86,27 +88,29 @@ object HouseholdAwareLoginSpec
         hashY   <- auth.hashPassword("passY")
         hhX     <- seedHousehold("House X", "house-x", "alpha", hashX)
         hhY     <- seedHousehold("House Y", "house-y", "beta", hashY)
-        respX   <- auth.login("alpha", "passX", Some("house-x"))
+        respX   <- auth.login("house-x/alpha", "passX")
         claimsX <- auth.verify(respX.token.value)
-        respY   <- auth.login("beta", "passY", Some("house-y"))
+        respY   <- auth.login("house-y/beta", "passY")
         claimsY <- auth.verify(respY.token.value)
       } yield assertTrue(claimsX.hh == hhX) &&
         assertTrue(claimsY.hh == hhY) &&
-        assertTrue(claimsX.hh != claimsY.hh)
+        assertTrue(claimsX.hh != claimsY.hh) &&
+        // The response carries each user's resolved slug for the SPA cookie hint.
+        assertTrue(respX.householdSlug == Some("house-x"), respY.householdSlug == Some("house-y"))
     },
-    test("the household comes from the request, never the username (no slug → default household)") {
+    test("the household comes from the identifier, never a bare username (bare → default hh)") {
       // The operator's core requirement: a user in household X must NOT authenticate just because
-      // the username is right — with no slug, login resolves to the DEFAULT household, where this
+      // the bare username is right — a bare identifier resolves to the DEFAULT household, where this
       // user does not exist, so it fails exactly like a bad password.
       for {
-        _      <- cleanDb
-        auth   <- makeAuth
-        hashX  <- auth.hashPassword("passX")
-        _      <- seedHousehold("House X", "house-x", "alpha", hashX)
-        noSlug <- auth.login("alpha", "passX").either
-        badPw  <- auth.login("alpha", "nope", Some("house-x")).either
-      } yield assertTrue(noSlug == Left(AuthError.InvalidCredentials)) &&
-        assertTrue(noSlug == badPw)
+        _     <- cleanDb
+        auth  <- makeAuth
+        hashX <- auth.hashPassword("passX")
+        _     <- seedHousehold("House X", "house-x", "alpha", hashX)
+        bare  <- auth.login("alpha", "passX").either
+        badPw <- auth.login("house-x/alpha", "nope").either
+      } yield assertTrue(bare == Left(AuthError.InvalidCredentials)) &&
+        assertTrue(bare == badPw)
     },
     test("a valid credential presented against the WRONG household fails like a bad password") {
       for {
@@ -116,9 +120,9 @@ object HouseholdAwareLoginSpec
         hashY   <- auth.hashPassword("passY")
         _       <- seedHousehold("House X", "house-x", "alpha", hashX)
         _       <- seedHousehold("House Y", "house-y", "beta", hashY)
-        // alpha/passX is valid — but only in house-x. Presented against house-y it must fail.
-        wrongHh <- auth.login("alpha", "passX", Some("house-y")).either
-        badPw   <- auth.login("beta", "nope", Some("house-y")).either
+        // alpha/passX is valid — but only in house-x. Named against house-y it must fail.
+        wrongHh <- auth.login("house-y/alpha", "passX").either
+        badPw   <- auth.login("house-y/beta", "nope").either
       } yield assertTrue(wrongHh == Left(AuthError.InvalidCredentials)) &&
         assertTrue(badPw == Left(AuthError.InvalidCredentials)) &&
         // Indistinguishable: same error value for both failure modes.
@@ -130,12 +134,12 @@ object HouseholdAwareLoginSpec
         auth    <- makeAuth
         hashX   <- auth.hashPassword("passX")
         _       <- seedHousehold("House X", "house-x", "alpha", hashX)
-        unknown <- auth.login("alpha", "passX", Some("no-such-house")).either
-        badPw   <- auth.login("alpha", "nope", Some("house-x")).either
+        unknown <- auth.login("no-such-house/alpha", "passX").either
+        badPw   <- auth.login("house-x/alpha", "nope").either
       } yield assertTrue(unknown == Left(AuthError.InvalidCredentials)) &&
         assertTrue(unknown == badPw)
     },
-    test("absent household resolves to the default household (self-hosted back-compat)") {
+    test("a bare username resolves to the default household (self-hosted back-compat)") {
       for {
         _      <- cleanDb
         auth   <- makeAuth
@@ -143,25 +147,27 @@ object HouseholdAwareLoginSpec
         resp   <- auth.login("admin", "changeme")
         claims <- auth.verify(resp.token.value)
       } yield assertTrue(claims.sub == "admin") &&
-        assertTrue(claims.hh == HouseholdId.Default)
+        assertTrue(claims.hh == HouseholdId.Default) &&
+        // Even the bare-username default path returns the resolved slug for the cookie hint.
+        assertTrue(resp.householdSlug == Some("default"))
     },
-    test("empty/blank household string also resolves to the default household") {
+    test("the identifier is trimmed before resolution (surrounding whitespace ignored)") {
       for {
         _      <- cleanDb
         auth   <- makeAuth
-        resp   <- auth.login("admin", "changeme", Some("   "))
+        resp   <- auth.login("  admin  ", "changeme")
         claims <- auth.verify(resp.token.value)
-      } yield assertTrue(claims.hh == HouseholdId.Default)
+      } yield assertTrue(claims.sub == "admin", claims.hh == HouseholdId.Default)
     },
     test("the seeded default household is reachable by its explicit `default` slug too") {
       for {
         _      <- cleanDb
         auth   <- makeAuth
-        resp   <- auth.login("admin", "changeme", Some("default"))
+        resp   <- auth.login("default/admin", "changeme")
         claims <- auth.verify(resp.token.value)
       } yield assertTrue(claims.hh == HouseholdId.Default)
     },
-    test("POST /api/auth/login via HTTP handler resolves the slug end-to-end") {
+    test("POST /api/auth/login via HTTP handler resolves the identifier end-to-end") {
       for {
         _     <- cleanDb
         auth  <- makeAuth
@@ -171,19 +177,26 @@ object HouseholdAwareLoginSpec
         _     <- seedHousehold("House X", "house-x", "alpha", hashX)
         // `auth` already has the real HouseholdRepo injected, so the login route resolves the slug.
         routes = AuthRoutes.routes(auth, ur, up, RateLimiter.allowAll)
-        okBody = LoginRequest("alpha", "passX", Some("house-x")).toJson
+        okBody = LoginRequest(identifier = Some("house-x/alpha"), password = "passX").toJson
         okReq  = Request
           .post(URL.decode("/api/auth/login").toOption.get, Body.fromString(okBody))
           .addHeader(Header.ContentType(MediaType.application.json))
         okResp <- routes.runZIO(okReq)
-        // Wrong household through the HTTP path → 401, same as a bad password.
-        badBody = LoginRequest("alpha", "passX", Some("no-such-house")).toJson
+        // Unknown household through the HTTP path → 401, same as a bad password.
+        badBody = LoginRequest(identifier = Some("no-such-house/alpha"), password = "passX").toJson
         badReq  = Request
           .post(URL.decode("/api/auth/login").toOption.get, Body.fromString(badBody))
           .addHeader(Header.ContentType(MediaType.application.json))
         badResp <- routes.runZIO(badReq)
+        // The legacy `username` field is still accepted as an identifier alias (pre-#2164 clients).
+        legacyBody = LoginRequest(username = Some("house-x/alpha"), password = "passX").toJson
+        legacyReq  = Request
+          .post(URL.decode("/api/auth/login").toOption.get, Body.fromString(legacyBody))
+          .addHeader(Header.ContentType(MediaType.application.json))
+        legacyResp <- routes.runZIO(legacyReq)
       } yield assertTrue(okResp.status == Status.Ok) &&
-        assertTrue(badResp.status == Status.Unauthorized)
+        assertTrue(badResp.status == Status.Unauthorized) &&
+        assertTrue(legacyResp.status == Status.Ok)
     },
   ) @@ TestAspect.sequential
 }

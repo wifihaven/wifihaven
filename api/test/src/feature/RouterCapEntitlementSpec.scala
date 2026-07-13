@@ -112,7 +112,7 @@ object RouterCapEntitlementSpec
         en         <- ZIO.service[EntitlementsRepo]
         hh         <- newHousehold("Capped household", "capped") // router_cap defaults to 1
         _          <- seedAdminInHousehold(auth, ur, "cappedadmin", hh)
-        adminLogin <- auth.login("cappedadmin", "pw", Some("capped"))
+        adminLogin <- auth.login("capped/cappedadmin", "pw")
         adminRoutes = AdminRouterRoutes.routes(auth, rr, ur, en)
         // First router fills the cap of 1.
         first  <- postCreate(adminRoutes, adminLogin.token.value, "gw-1")
@@ -135,7 +135,7 @@ object RouterCapEntitlementSpec
         hh         <- newHousehold("Roomy household", "roomy")
         _          <- setRouterCap(hh, 2)
         _          <- seedAdminInHousehold(auth, ur, "roomyadmin", hh)
-        adminLogin <- auth.login("roomyadmin", "pw", Some("roomy"))
+        adminLogin <- auth.login("roomy/roomyadmin", "pw")
         adminRoutes = AdminRouterRoutes.routes(auth, rr, ur, en)
         first  <- postCreate(adminRoutes, adminLogin.token.value, "gw-1")
         second <- postCreate(adminRoutes, adminLogin.token.value, "gw-2")
@@ -152,7 +152,7 @@ object RouterCapEntitlementSpec
         en         <- ZIO.service[EntitlementsRepo]
         hh         <- newHousehold("Upgrading household", "upgrading") // cap 1
         _          <- seedAdminInHousehold(auth, ur, "upgradeadmin", hh)
-        adminLogin <- auth.login("upgradeadmin", "pw", Some("upgrading"))
+        adminLogin <- auth.login("upgrading/upgradeadmin", "pw")
         adminRoutes = AdminRouterRoutes.routes(auth, rr, ur, en)
         _       <- postCreate(adminRoutes, adminLogin.token.value, "gw-1") // fills cap 1
         blocked <- postCreate(adminRoutes, adminLogin.token.value, "gw-2") // rejected

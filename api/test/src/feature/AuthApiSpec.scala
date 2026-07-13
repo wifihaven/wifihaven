@@ -127,7 +127,7 @@ object AuthApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
         auth            <- makeAuth
         userProfileRepo <- ZIO.service[UserProfileRepo]
         routes = AuthRoutes.routes(auth, userRepo, userProfileRepo, RateLimiter.allowAll)
-        body   = LoginRequest("admin", "changeme").toJson
+        body   = LoginRequest(identifier = Some("admin"), password = "changeme").toJson
         req    = Request
           .post(URL.decode("/api/auth/login").toOption.get, Body.fromString(body))
           .addHeader(Header.ContentType(MediaType.application.json))

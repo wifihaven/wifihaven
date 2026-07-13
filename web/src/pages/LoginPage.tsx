@@ -3,27 +3,37 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { getHouseholdCookie } from '@/api/householdCookie'
 
+/**
+ * #2164 (single-identifier login, design §4): compose the string actually posted to the server from
+ * what the user typed.
+ *   - contains '@' (email) or '/' (explicit slug/username) → posted verbatim.
+ *   - bare username → prepend the `wh_household` cookie slug to form `slug/username`, so a member on
+ *     a family device logs in with just their name. With no cookie it stays bare, and the server
+ *     resolves it to the default household (self-hosted / first-ever login on this browser).
+ * The cookie is a client-side UX hint only — the server never reads it.
+ */
+export function composeIdentifier(entered: string, cookieSlug: string | null): string {
+  const value = entered.trim()
+  if (value.includes('@') || value.includes('/')) return value
+  return cookieSlug ? `${cookieSlug}/${value}` : value
+}
+
 export function LoginPage() {
   const { login } = useAuth()
   const navigate  = useNavigate()
-  const [username, setUsername] = useState('')
-  const [password, setPassword] = useState('')
-  const [error,    setError]    = useState('')
-  const [loading,  setLoading]  = useState(false)
-  // #2140: pre-fill the household slug from the long-lived `wh_household` cookie so returning users
-  // never retype it. Absent (default/self-hosted single-household) → empty, and the field stays
-  // collapsed behind a "Different household?" affordance. The cookie is a UX hint only — the server
-  // authenticates the submitted slug + password, never the cookie.
-  const rememberedHousehold       = getHouseholdCookie() ?? ''
-  const [household, setHousehold] = useState(rememberedHousehold)
-  const [showHousehold, setShowHousehold] = useState(rememberedHousehold.length > 0)
+  const [identifier, setIdentifier] = useState('')
+  const [password,   setPassword]   = useState('')
+  const [error,      setError]      = useState('')
+  const [loading,    setLoading]    = useState(false)
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setError('')
     setLoading(true)
     try {
-      const { mustChangePassword } = await login(username, password, household.trim() || undefined)
+      // #2164: read the cookie at submit time and compose a bare username into `slug/username`.
+      const posted = composeIdentifier(identifier, getHouseholdCookie())
+      const { mustChangePassword } = await login(posted, password)
       // #586: server sets must_change_password on the seeded admin row.
       // Redirect to the account page so the operator is forced to rotate
       // before reaching any other part of the UI.
@@ -33,7 +43,7 @@ export function LoginPage() {
         navigate('/dashboard')
       }
     } catch {
-      setError('Invalid username or password')
+      setError('Invalid email/username or password')
     } finally {
       setLoading(false)
     }
@@ -55,14 +65,17 @@ export function LoginPage() {
         <form onSubmit={handleSubmit} className="bg-white rounded-2xl border border-brand-border p-6 space-y-4">
           <div>
             <label className="block text-xs font-semibold text-brand-text-muted uppercase tracking-wider mb-2">
-              Username
+              Email or username
             </label>
             <input
               type="text"
-              value={username}
-              onChange={e => setUsername(e.target.value)}
+              value={identifier}
+              onChange={e => setIdentifier(e.target.value)}
               className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-3 text-brand-ink placeholder-brand-text-muted focus:outline-none focus:border-brand-accent transition-colors"
-              placeholder="admin"
+              placeholder="you@example.com or admin"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
               autoFocus
               required
             />
@@ -81,36 +94,9 @@ export function LoginPage() {
             />
           </div>
 
-          {/* #2140: household field — pre-filled from the wh_household cookie, collapsed behind a
-              disclosure so the default single-household case stays a plain username+password form. */}
-          {showHousehold ? (
-            <div>
-              <label className="block text-xs font-semibold text-brand-text-muted uppercase tracking-wider mb-2">
-                Household
-              </label>
-              <input
-                type="text"
-                value={household}
-                onChange={e => setHousehold(e.target.value)}
-                className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-3 text-brand-ink placeholder-brand-text-muted focus:outline-none focus:border-brand-accent transition-colors"
-                placeholder="your-household"
-                autoCapitalize="none"
-                autoCorrect="off"
-                spellCheck={false}
-              />
-              <p className="text-brand-text-muted text-xs mt-1">
-                Leave blank for the default household.
-              </p>
-            </div>
-          ) : (
-            <button
-              type="button"
-              onClick={() => setShowHousehold(true)}
-              className="text-brand-text-muted hover:text-brand-accent text-xs font-medium transition-colors"
-            >
-              Different household?
-            </button>
-          )}
+          {/* #2164: no household field. The identifier itself carries the household (email / an
+              explicit slug/username / the wh_household cookie for a bare username), resolved
+              server-side — design §4. */}
 
           {error && (
             <div className="bg-red-500/10 border border-red-500/20 rounded-lg px-4 py-3 text-red-700 text-sm">
