@@ -38,6 +38,7 @@ function accessReq(
     createdAt: new Date(Date.now() - 60_000).toISOString(),
     decidedAt: null,
     decidedBy: null,
+    householdId: null,
   }
 }
 
@@ -57,6 +58,7 @@ function newDevice(id: number, mac: string): Alert {
     createdAt: new Date().toISOString(),
     decidedAt: null,
     decidedBy: null,
+    householdId: null,
   }
 }
 

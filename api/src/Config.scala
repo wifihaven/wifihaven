@@ -16,6 +16,7 @@ case class AppConfig(
     ws: WsConfig = WsConfig(),
     partition: PartitionConfig = PartitionConfig(),
     beta: BetaConfig = BetaConfig(),
+    email: EmailConfig = EmailConfig(),
 ) {
   // WIFIHAVEN_DEBUG env var: when set to a non-empty, non-"0"/"false"/"no"
   // value, mounts the read-only /api/debug/* endpoints (loopback only).
@@ -245,6 +246,35 @@ case class BetaConfig(
   /** The full invite URL for a freshly-minted token — `<base>/welcome?token=…`. */
   def inviteUrl(rawToken: String): String =
     s"${inviteBaseUrl.stripSuffix("/")}/welcome?token=$rawToken"
+}
+
+// #578 — outbound email transport for admin notifications (the deferred
+// email-notification half of the block-page kid→parent request flow; epic #874).
+// The one sanctioned email transport (docs/design/alerting.md §4 previously
+// declared "no transport invented"; the operator signed off on Resend for #578).
+//
+// Sent over the JDK HttpClient to Resend's HTTPS API — NO new build dependency
+// (same `ZIO.attemptBlocking` shape as `BlocklistFetcher`), honoring the #874
+// "no SMTP libs without sign-off" constraint. Entirely config-gated: `enabled`
+// is false unless BOTH an API key and a from-address are set, in which case the
+// `Notifier` keeps its structured-log fallback and sends nothing. So the feature
+// merges dark and the operator flips it on by adding the two secrets.
+//
+//   - `resendApiKey`   Resend API key (`re_…`); sent as `Authorization: Bearer`.
+//     Cloud sets it via a Render secret; self-hosted leaves it empty (email off).
+//   - `fromAddress`    verified sender, e.g. "WifiHaven <alerts@wifihaven.net>".
+//   - `appBaseUrl`     SPA origin the "review in dashboard" link points at.
+case class EmailConfig(
+    resendApiKey: String = "",
+    fromAddress: String = "",
+    appBaseUrl: String = "https://app.wifihaven.net",
+) {
+  val apiKeyTrimmed: String = resendApiKey.trim
+  val fromTrimmed: String   = fromAddress.trim
+  // Both secrets required — a key with no verified sender (or vice-versa) can't
+  // send, so treat that as "off" rather than failing every notification at runtime.
+  val enabled: Boolean      = apiKeyTrimmed.nonEmpty && fromTrimmed.nonEmpty
+  def dashboardUrl: String  = appBaseUrl.stripSuffix("/")
 }
 
 object AppConfig {

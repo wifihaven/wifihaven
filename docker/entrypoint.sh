@@ -25,6 +25,12 @@ set -euo pipefail
 : "${WIFIHAVEN_WS_ALLOWED_ORIGINS:=}"
 : "${WIFIHAVEN_METRICS_ENABLED:=true}"
 : "${WIFIHAVEN_METRICS_SCRAPE_TOKEN:=}"
+# #578: outbound email for admin notifications (block-page kid→parent requests).
+# OFF unless BOTH the API key and from-address are set — empty defaults render an
+# `email {}` block whose EmailConfig.enabled is false, so the Notifier logs only.
+: "${WIFIHAVEN_EMAIL_RESEND_API_KEY:=}"
+: "${WIFIHAVEN_EMAIL_FROM_ADDRESS:=}"
+: "${WIFIHAVEN_EMAIL_APP_BASE_URL:=https://app.wifihaven.net}"
 
 export WIFIHAVEN_LOG_LEVEL WIFIHAVEN_DEBUG
 
@@ -65,6 +71,11 @@ wifihaven {
   metrics {
     enabled     = ${WIFIHAVEN_METRICS_ENABLED}
     scrapeToken = "${WIFIHAVEN_METRICS_SCRAPE_TOKEN}"
+  }
+  email {
+    resendApiKey = "${WIFIHAVEN_EMAIL_RESEND_API_KEY}"
+    fromAddress  = "${WIFIHAVEN_EMAIL_FROM_ADDRESS}"
+    appBaseUrl   = "${WIFIHAVEN_EMAIL_APP_BASE_URL}"
   }
 }
 EOF

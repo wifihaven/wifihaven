@@ -589,6 +589,11 @@ object AccessRequestKind {
  * Admin read shape — JOINed with device + profile so the banner / review UI doesn't have to chase
  * names per row. `host` / `requestKind` / `note` / `grantedMinutes` are populated only for
  * `kind=AccessRequest` rows (none of which exist until #960 ships).
+ *
+ * `householdId` is resolved from the alert's device via the join `AlertRepo` already does (alerts
+ * rows are MAC-keyed with no household_id column of their own). It carries the tenancy key to the
+ * out-of-band notifier (#578) so it can look up this household's `notify_email`; it is `None` when
+ * the alert's MAC has no device row (e.g. a stale/unknown MAC).
  */
 case class Alert(
     id: AlertId,
@@ -605,6 +610,7 @@ case class Alert(
     createdAt: String,
     decidedAt: Option[String],
     decidedBy: Option[String],
+    householdId: Option[HouseholdId] = None,
 ) derives JsonCodec
 
 /**
@@ -872,6 +878,12 @@ case class HouseholdSettings(
     ambientIsolationMaxHosts: Int = HouseholdSettings.DefaultAmbientIsolationMaxHosts,
     ambientMinIsolatedDays: Int = HouseholdSettings.DefaultAmbientMinIsolatedDays,
     ambientLearningWindowDays: Int = HouseholdSettings.DefaultAmbientLearningWindowDays,
+    // #578: per-household address the API notifies out-of-band (email) when an
+    // access-request alert is raised. `None` = no recipient configured, in which
+    // case the Notifier falls back to its structured-log line. A notification
+    // *preference*, deliberately not coupled to any admin's `users.email` login
+    // identity. Column V69 (household_settings.notify_email); nullable.
+    notifyEmail: Option[String] = None,
 ) derives JsonCodec
 
 object HouseholdSettings {
@@ -901,6 +913,11 @@ case class UpdateHouseholdSettingsRequest(
     ambientIsolationMaxHosts: Int = HouseholdSettings.DefaultAmbientIsolationMaxHosts,
     ambientMinIsolatedDays: Int = HouseholdSettings.DefaultAmbientMinIsolatedDays,
     ambientLearningWindowDays: Int = HouseholdSettings.DefaultAmbientLearningWindowDays,
+    // #578: additive — an older SPA build that PUTs without this field decodes to
+    // the default (None). NOTE a full-replace PUT that omits notifyEmail therefore
+    // CLEARS it; the SPA autosave path uses PATCH, which preserves absent fields
+    // (and supports explicit null to clear). Mirrors the blockEncryptedDns precedent.
+    notifyEmail: Option[String] = None,
 ) derives JsonCodec
 
 /**

@@ -676,6 +676,35 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Access-request email notifications (#578)",
+      "description": "Rate of outbound admin-notification emails from Notifier.alertCreated, by outcome — sent / failed (transport invoked) vs skipped_disabled (no Resend secrets) / skipped_no_recipient (household has no notify_email) / skipped_no_household. A climbing `failed` means the Resend transport is erroring; a flat line at `skipped_disabled` on a deployment that expects email means the secrets are unset.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 56 },
+      "id": 31,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 20, "showPoints": "never", "lineWidth": 1 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (outcome) (rate(notify_email_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{outcome}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",

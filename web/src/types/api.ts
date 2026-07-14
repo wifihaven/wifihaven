@@ -116,6 +116,12 @@ export interface HouseholdSettings {
   ambientIsolationMaxHosts: number
   ambientMinIsolatedDays: number
   ambientLearningWindowDays: number
+  // #578 — per-household address the API emails when a kid raises an access
+  // request from the block page (extension / exemption / unpause). null = no
+  // recipient configured (the API falls back to a log line, and also sends
+  // nothing when the Resend transport itself is unconfigured). A notification
+  // preference, not a login identity.
+  notifyEmail: string | null
 }
 
 export interface TimeLimit {
@@ -176,6 +182,9 @@ export interface Alert {
   createdAt: string
   decidedAt: string | null
   decidedBy: string | null
+  // #578 — the alert's household, resolved server-side from the device join.
+  // null when the MAC has no device row. Not rendered; carried for completeness.
+  householdId: number | null
 }
 
 /** Admin POST body for /approve. Empty today — new_device approval is just a

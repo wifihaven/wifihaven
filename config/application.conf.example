@@ -110,4 +110,22 @@ wifihaven {
   #   # enrollment-token conventions in docs/process/security.md.
   #   inviteTtlHours = 168
   # }
+
+  # #578: outbound email for admin notifications (a parent gets emailed when a
+  # kid raises an access request from the block page). The whole block is
+  # optional — omit it and email is OFF: the Notifier falls back to a log line
+  # and the in-app dashboard banner remains authoritative. Email turns ON only
+  # when BOTH resendApiKey and fromAddress are set. Sent via Resend's HTTPS API
+  # (no SMTP; no new build dependency). The recipient is per-household
+  # (Admin → "Request notifications"), NOT set here.
+  # email {
+  #   # Resend API key ("re_…"); sent as `Authorization: Bearer`. On Render this
+  #   # comes from a secret env override (WIFIHAVEN_EMAIL_RESEND_API_KEY, rendered
+  #   # into this block by docker/entrypoint.sh), never the committed config.
+  #   resendApiKey = ""
+  #   # Verified Resend sender, e.g. "WifiHaven <alerts@wifihaven.net>".
+  #   fromAddress  = ""
+  #   # SPA origin the "Review in dashboard" link in the email points at.
+  #   appBaseUrl   = "https://app.wifihaven.net"
+  # }
 }

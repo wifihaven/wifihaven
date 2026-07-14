@@ -39,6 +39,7 @@ beforeEach(() => {
     ambientIsolationMaxHosts: 2,
     ambientMinIsolatedDays: 3,
     ambientLearningWindowDays: 14,
+    notifyEmail: null,
   }
   ;(api.household.get as unknown as ReturnType<typeof vi.fn>).mockImplementation(
     async () => ({
