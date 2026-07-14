@@ -61,6 +61,15 @@ ETAG_ON_CHANGE = '"sha256:ws-push-onchange-v2"'
 # can't be confused with the save-only scenario above.
 ETAG_ENFORCE_BASE = '"sha256:ws-push-enforce-base-v1"'
 ETAG_ENFORCE_PAUSED = '"sha256:ws-push-enforce-paused-v2"'
+# #2207 — distinct etags for the carve-out live-apply scenario (a paused profile
+# that KEEPS extraAllowed hosts, so the whole-MAC drop renders with per-(MAC,host)
+# `!= @ea_...` carve clauses). Kept separate from the plain scenario above.
+ETAG_CARVE_BASE = '"sha256:ws-push-carve-base-v1"'
+ETAG_CARVE_PAUSED = '"sha256:ws-push-carve-paused-v2"'
+# The hosts a paused profile retains in extraAllowed (a soft pause / allowed-app
+# carve-out). The whole-MAC `:Paused` drop must render WITH these as `!= @ea_...`
+# exceptions — it must NOT be suppressed by their presence (the #2207 concern).
+CARVE_ALLOWED = ["gimkit.com", "gimkitconnect.com", "eaglercraft.dev"]
 
 
 def _snapshot(*, etag: str, extra_blocked: list[str], paused: bool = False) -> dict:
@@ -298,3 +307,83 @@ def test_ws_policy_push_applies_enforcement_live(router, fake_api):
     )
     # Sanity: the same push also advanced the on-disk snapshot etag.
     assert _router_snapshot_etag() == ETAG_ENFORCE_PAUSED
+
+
+def _carve_snapshot(*, etag: str, paused: bool) -> dict:
+    """A paused profile that KEEPS extraAllowed carve-outs, over a global allow.
+
+    A soft pause (or an allowed-app carve-out that survives the pause) leaves
+    non-empty `extraAllowed` on a `blocked=True` profile. Combined with the
+    fleet-wide `global.extraAllowed` that every real deployment ships (the infra
+    allowlist, #1307/#1308), the blocked MAC is rendered NOT via the family-
+    agnostic `@blocked_macs` set but as per-family drops carrying one
+    `ip daddr != @ea_<m>_<host>` clause per carve host plus `!= @global_allow`.
+    That whole-MAC-drop + ea_-carve combination is the exact shape #2207 flagged
+    on the failing prod device — this snapshot reproduces it on the bench.
+    """
+    return (
+        SnapshotBuilder()
+        .add_profile(
+            id=PID,
+            name="e2e-ws-push-carve",
+            blocked=paused,
+            block_reason="Paused" if paused else None,
+            extra_allowed=CARVE_ALLOWED if paused else [],
+        )
+        .add_device(mac=DEV_MAC, name="e2e-ws-push-carve-dev", profile_id=PID)
+        .set_global(
+            extra_allowed=["captive.apple.com", "connectivitycheck.gstatic.com"]
+        )
+        .build(etag=etag)
+    )
+
+
+def test_ws_policy_push_applies_paused_with_extra_allowed(router, fake_api):
+    """#2207 — a ws-pushed pause on a profile WITH extraAllowed carve-outs still
+    renders the whole-MAC `:Paused` drop over the ws apply-on-push path.
+
+    The plain live-apply test above pauses a profile with NO per-MAC
+    `extraAllowed`, so the MAC lands in the simple drop path. #2207's failing
+    prod device was a paused profile that ALSO kept `extraAllowed` carve-outs,
+    which routes the whole-MAC drop through render.lua's per-family
+    `blocked_ea_macs` branch (one `!= @ea_<m>_<host>` clause per carve host, plus
+    `!= @global_allow`). This asserts that branch renders live from a ws push
+    with the poll frozen — the previously-untested carve-out combination.
+
+    Observable: the same `wh_drop:<mac>:Paused` comment (the drop still carries
+    it even with the ea_ exceptions), so `_paused_drop_rule_present` is the
+    config-independent enforcement signal here too.
+    """
+    # ── On-connect baseline — device assigned, carve hosts allowed, NOT paused ─
+    fake_api.serve_snapshot(_carve_snapshot(etag=ETAG_CARVE_BASE, paused=False))
+    _enable_ws_and_freeze_poll()
+    fake_api.wait_for_ws_connected(timeout_s=180)
+
+    wait_until(
+        lambda: True if _router_snapshot_etag() == ETAG_CARVE_BASE else None,
+        timeout_s=90, interval_s=3,
+        description=f"carve base snapshot applied (etag {ETAG_CARVE_BASE})",
+    )
+    assert not _paused_drop_rule_present(DEV_MAC), (
+        "device should carry no paused-drop rule at the un-paused baseline"
+    )
+
+    # ── Push a PAUSED snapshot that RETAINS the extraAllowed carve-outs ───────
+    push = fake_api.serve_snapshot(_carve_snapshot(etag=ETAG_CARVE_PAUSED, paused=True))
+    assert push == ETAG_CARVE_PAUSED
+
+    # The whole-MAC drop (with its ea_ carve clauses) must render live from the
+    # push alone. Pre-fix, an `nft -f` that failed to load this ruleset would
+    # have been swallowed (policy.apply returned true regardless) and the etag
+    # advanced, so the drop would never appear and never retry — the #2207 gap.
+    def _nudged_drop_present() -> bool | None:
+        _nudge_conntrack()
+        return True if _paused_drop_rule_present(DEV_MAC) else None
+
+    wait_until(
+        _nudged_drop_present,
+        timeout_s=180, interval_s=5,
+        description="nft gains a wh_drop:<mac>:Paused drop (with ea_ carve-outs) "
+                    "via the ws push with the poll frozen — #2207",
+    )
+    assert _router_snapshot_etag() == ETAG_CARVE_PAUSED

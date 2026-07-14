@@ -341,6 +341,56 @@ describe("policy.apply", function()
     assert.is_false(ok)
   end)
 
+  -- #2207: a rejected `nft -f` (the kernel keeps the PREVIOUS ruleset
+  -- atomically, so the newly-rendered rules never take effect even though the
+  -- file on disk is correct) must be reported as a FAILED apply. Before the fix
+  -- policy.apply returned `true` unconditionally, so a ws-pushed pause
+  -- "applied" cleanly yet its whole-MAC drop never rendered — a silent
+  -- enforcement gap that was never retried (the caller advanced the applied
+  -- etag on the false "success"). os.execute returns a non-zero status (256 for
+  -- an exit-1 command on the router's Lua 5.1) which exec_ok treats as failure.
+  it("returns false when `nft -f` fails (#2207)", function()
+    local ok = policy.apply(decode_snap(),
+      function(_path, _content) return true, nil end,
+      function(cmd)
+        -- dnsmasq restart succeeds; only the nft load fails.
+        if cmd:find("nft -f", 1, true) then return 256 end
+        return 0
+      end)
+    assert.is_false(ok)
+  end)
+
+  it("logs an error carrying nft's stderr when `nft -f` fails (#2207)", function()
+    local errs = {}
+    local stub_log = {
+      info = function() end, warn = function() end, debug = function() end,
+      err  = function(fmt, ...) errs[#errs + 1] = string.format(fmt, ...) end,
+    }
+    policy.apply(decode_snap(),
+      function(_path, _content) return true, nil end,
+      function(cmd)
+        if cmd:find("nft -f", 1, true) then return 256 end
+        return 0
+      end,
+      stub_log,
+      -- Feed the captured nft stderr back so the log includes the real reason.
+      { read_fn = function(p)
+          if p == "/tmp/wifihaven-nft-err.log" then
+            return "/tmp/nftables.d/wifihaven.nft:1:1: Error: syntax error\n"
+          end
+          return nil
+        end })
+    local matched = false
+    for _, e in ipairs(errs) do
+      if e:find("nft", 1, true) and e:find("syntax error", 1, true) then
+        matched = true
+      end
+    end
+    assert.is_true(matched,
+      "expected an error log carrying nft's stderr; got: " ..
+      table.concat(errs, " | "))
+  end)
+
   -- ── #328 smoke check: confirm dnsmasq actually picked up the new policy ──
   -- A snapshot whose profile rules contain at least one extraBlocked entry,
   -- so render.dnsmasq emits address=/.../# and the smoke probe path fires.
