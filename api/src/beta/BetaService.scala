@@ -40,6 +40,79 @@ final case class BetaService(
   import BetaService.*
 
   /**
+   * Public-intake orchestration (design §3.1, #2222): idempotent AND status-aware on the
+   * requester's email. The HTTP response the route returns is deliberately uniform across every
+   * outcome, so this public, unauthenticated endpoint leaks no email-enumeration signal — the only
+   * per-status differentiation is the SERVER-SIDE side effect, which reaches the true inbox owner,
+   * never a prober. The returned [[BetaIntakeOutcome]] feeds the pipeline metric only, never the
+   * response.
+   *
+   *   - no existing request → create a new `pending` row
+   *   - existing `pending` → no-op (no duplicate row, no side effect)
+   *   - existing `approved`, invite un-accepted → re-mint the invite token + re-send the invite
+   *   - existing `approved`, invite already accepted → no-op (a real admin account already exists)
+   *   - existing `rejected` → no-op (no auto-reopen; the SPA shows a neutral "we'll follow up")
+   *
+   * `UNIQUE(email)` on `beta_requests` remains the backstop against a lost find→create race.
+   */
+  def request(
+      email: String,
+      name: Option[String],
+      note: Option[String],
+  ): IO[BetaError, BetaIntakeOutcome] =
+    betaRepo.findByEmail(email).mapError(BetaError.Db(_)).flatMap {
+      case None    =>
+        betaRepo.create(email, name, note).mapError(BetaError.Db(_)).as(BetaIntakeOutcome.Created)
+      case Some(r) =>
+        r.status match {
+          case BetaRequestStatus.Pending  => ZIO.succeed(BetaIntakeOutcome.DuplicatePending)
+          case BetaRequestStatus.Rejected => ZIO.succeed(BetaIntakeOutcome.DuplicateRejected)
+          case BetaRequestStatus.Approved =>
+            // An un-consumed invite hash means the applicant was approved but hasn't accepted yet —
+            // re-mint + re-send so a fresh, valid link reaches them. A NULL hash means the invite was
+            // already accepted (a real admin exists); re-inviting them would be wrong, so no-op.
+            r.inviteTokenHash match {
+              case None    => ZIO.succeed(BetaIntakeOutcome.AlreadyAccepted)
+              case Some(_) => resendInvite(r)
+            }
+        }
+    }
+
+  // Re-mint the single-use invite token for an approved, not-yet-accepted request and re-send the
+  // link (#2222). Re-minting is what makes a resend possible at all: only the token HASH is stored,
+  // so the prior raw link can't be recovered — a fresh token is minted, its hash + a fresh TTL
+  // persisted (invalidating the prior link), and the new `/welcome?token=…` sent via the invite
+  // seam. `remintInvite`'s UPDATE is itself guarded on (status='approved' AND invite un-consumed), so
+  // a row accepted/rejected between the find and here is left untouched and the resend is skipped
+  // (reported as AlreadyAccepted). A missing household on an approved row is a data inconsistency —
+  // skip the notify rather than fail, so the response stays uniform.
+  private def resendInvite(r: DbBetaRequest): IO[BetaError, BetaIntakeOutcome] =
+    for {
+      rawToken <- ZIO.succeed(newInviteToken())
+      hash = PolicyService.hashToken(rawToken)
+      now <- clock.instant
+      expiresAt = now.plus(cfg.inviteTtl)
+      updated <- betaRepo.remintInvite(r.id, hash, expiresAt).mapError(BetaError.Db(_))
+      _       <- ZIO.when(updated) {
+        r.householdId match {
+          case None      => ZIO.unit
+          case Some(hid) =>
+            householdRepo
+              .findById(hid)
+              .mapError(BetaError.Db(_))
+              .flatMap(h =>
+                notifier.betaInvite(
+                  r.email,
+                  h.flatMap(_.slug).getOrElse(""),
+                  hid,
+                  cfg.inviteUrl(rawToken),
+                ),
+              )
+        }
+      }
+    } yield if updated then BetaIntakeOutcome.InviteResent else BetaIntakeOutcome.AlreadyAccepted
+
+  /**
    * Provision on approve (design §3.3), returning the invite URL + slug for the operator to send.
    */
   def approve(request: DbBetaRequest, decidedBy: UserId): IO[BetaError, ApproveBetaResponse] =
@@ -72,7 +145,7 @@ final case class BetaService(
       // #2135: create the Stripe Customer for the new household (no card during beta). Best-effort —
       // never fails the approval; no-op when billing is unconfigured.
       _   <- billing.provisionCustomer(hid, request.email)
-      _   <- notifier.betaHouseholdProvisioned(request.email, slug, hid)
+      _   <- notifier.betaInvite(request.email, slug, hid, cfg.inviteUrl(rawToken))
     } yield ApproveBetaResponse(
       householdId = hid,
       slug = slug,
@@ -162,6 +235,25 @@ object BetaService {
   // Design §3.4 (2026-07-10): the household's first admin is always `admin` (per-household unique).
   val FirstAdminUsername: String = "admin"
   private val MaxSlugAttempts    = 1000
+
+  /**
+   * #2222: the status-aware outcome of a public intake, from [[BetaService.request]]. Feeds the
+   * `wifihaven_beta_pipeline_total{stage="request"}` outcome label ONLY — never the HTTP response,
+   * which stays uniform across every case (no email-enumeration leak). A small fixed enum: bounded
+   * by the code, never a per-email / per-household value.
+   */
+  enum BetaIntakeOutcome   {
+    case Created, DuplicatePending, DuplicateRejected, InviteResent, AlreadyAccepted
+  }
+  object BetaIntakeOutcome {
+    def label(o: BetaIntakeOutcome): String = o match {
+      case Created           => "created"
+      case DuplicatePending  => "duplicate_pending"
+      case DuplicateRejected => "duplicate_rejected"
+      case InviteResent      => "resend_invite"
+      case AlreadyAccepted   => "already_accepted"
+    }
+  }
 
   /** Lowercase, ASCII-`[a-z0-9-]`-only slug; non-alnum runs collapse to single dashes. */
   def slugify(raw: String): String = {

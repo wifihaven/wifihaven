@@ -59,8 +59,9 @@ object MultiTenantIsolationSpec
   private val jwt = JwtConfig(secret = "test-secret-at-least-32-chars!!x", expiryHours = 1)
 
   private val noopNotifier: Notifier = new Notifier {
-    def alertCreated(a: Alert): UIO[Unit]                                                 = ZIO.unit
-    def betaHouseholdProvisioned(email: String, slug: String, hh: HouseholdId): UIO[Unit] = ZIO.unit
+    def alertCreated(a: Alert): UIO[Unit] = ZIO.unit
+    def betaInvite(email: String, slug: String, hh: HouseholdId, inviteUrl: String): UIO[Unit] =
+      ZIO.unit
   }
 
   // #2132: build the beta pipeline stack (service + routes) over the real repos.

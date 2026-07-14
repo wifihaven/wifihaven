@@ -43,7 +43,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "Intake rate by outcome",
-      "description": "sum by (outcome) (rate(wifihaven_beta_pipeline_total{stage=\"request\"}[5m])) — created / duplicate / rate_limited per second. A rising rate_limited share means the public form is being hammered.",
+      "description": "sum by (outcome) (rate(wifihaven_beta_pipeline_total{stage=\"request\"}[5m])) — created / duplicate_pending / duplicate_rejected / resend_invite / already_accepted / rate_limited per second (#2222 status-aware intake). resend_invite counts approved applicants who re-submitted and got a fresh invite; a rising rate_limited share means the public form is being hammered.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 9, "x": 6, "y": 0 },
       "id": 2,

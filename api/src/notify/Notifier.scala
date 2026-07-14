@@ -23,12 +23,20 @@ trait Notifier {
   def alertCreated(a: Alert): UIO[Unit]
 
   /**
-   * #2132: a beta household was provisioned on operator approval (design §3.3). Still log-only —
-   * the invite email needs the invite link (only in the approve response) plumbed here and a
-   * different recipient (`beta_requests.email`); wiring it to [[EmailSender]] is a follow-up under
-   * #2132. `email` is the requester's, `slug` the new household's.
+   * #2132/#2222: send (or re-send) the single-use beta invite link to a requester. Called on
+   * operator approval (after the household is provisioned, design §3.3) AND on a duplicate intake
+   * from an already-approved applicant (#2222 — the invite token is re-minted and re-sent). `email`
+   * is the requester's, `slug` the household's, `inviteUrl` the freshly-minted `/welcome?token=…`
+   * link. Still log-only here — wiring it to [[EmailSender]] is #2190 (the invite consumer of the
+   * #578 transport); this seam is the single place that follow-up fills in, so approve and resend
+   * both start emailing at once.
    */
-  def betaHouseholdProvisioned(email: String, slug: String, householdId: HouseholdId): UIO[Unit]
+  def betaInvite(
+      email: String,
+      slug: String,
+      householdId: HouseholdId,
+      inviteUrl: String,
+  ): UIO[Unit]
 }
 
 object Notifier {
@@ -50,10 +58,15 @@ object Notifier {
         s"profile=${a.profileName.getOrElse("-")}",
     )
 
-  private def logBeta(email: String, slug: String, householdId: HouseholdId): UIO[Unit] =
+  private def logInvite(
+      email: String,
+      slug: String,
+      householdId: HouseholdId,
+      inviteUrl: String,
+  ): UIO[Unit] =
     ZIO.logInfo(
-      s"beta household provisioned: email=$email slug=$slug householdId=${householdId.value} " +
-        s"— send the invite link (from the approve response) to $email",
+      s"beta invite ready: email=$email slug=$slug householdId=${householdId.value} " +
+        s"inviteUrl=$inviteUrl — send this link to $email (email transport lands in #2190)",
     )
 
   /**
@@ -62,8 +75,8 @@ object Notifier {
    */
   val live: ULayer[Notifier] = ZLayer.succeed(new Notifier {
     def alertCreated(a: Alert): UIO[Unit] = logAlert(a)
-    def betaHouseholdProvisioned(email: String, slug: String, hh: HouseholdId): UIO[Unit] =
-      logBeta(email, slug, hh)
+    def betaInvite(email: String, slug: String, hh: HouseholdId, inviteUrl: String): UIO[Unit] =
+      logInvite(email, slug, hh, inviteUrl)
   })
 
   /**
@@ -82,8 +95,8 @@ object Notifier {
       cfg: EmailConfig,
   ) extends Notifier {
 
-    def betaHouseholdProvisioned(email: String, slug: String, hh: HouseholdId): UIO[Unit] =
-      logBeta(email, slug, hh)
+    def betaInvite(email: String, slug: String, hh: HouseholdId, inviteUrl: String): UIO[Unit] =
+      logInvite(email, slug, hh, inviteUrl)
 
     def alertCreated(a: Alert): UIO[Unit] =
       // Log first (authoritative, always), then attempt the out-of-band email.

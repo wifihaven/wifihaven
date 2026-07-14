@@ -38,8 +38,18 @@ object BetaProvisioningSpec
   private val jwt = JwtConfig(secret = "test-secret-at-least-32-chars!!x", expiryHours = 1)
 
   private val noopNotifier: Notifier = new Notifier {
-    def alertCreated(a: Alert): UIO[Unit]                                                 = ZIO.unit
-    def betaHouseholdProvisioned(email: String, slug: String, hh: HouseholdId): UIO[Unit] = ZIO.unit
+    def alertCreated(a: Alert): UIO[Unit] = ZIO.unit
+    def betaInvite(email: String, slug: String, hh: HouseholdId, inviteUrl: String): UIO[Unit] =
+      ZIO.unit
+  }
+
+  // Records every invite (re)send so a test can assert the resend fired exactly once and capture the
+  // freshly-minted link. Only the external email I/O is stubbed at the Notifier seam — repos stay
+  // real (docs/process/testing.md).
+  private final class RecordingNotifier(ref: Ref[List[(String, String)]]) extends Notifier {
+    def alertCreated(a: Alert): UIO[Unit] = ZIO.unit
+    def betaInvite(email: String, slug: String, hh: HouseholdId, inviteUrl: String): UIO[Unit] =
+      ref.update((email, inviteUrl) :: _)
   }
 
   private def makeAuth =
@@ -98,8 +108,12 @@ object BetaProvisioningSpec
       routes: Routes[Any, Response],
   )
 
-  // Build the beta stack with a caller-supplied clock so the invite TTL can be advanced.
-  private def build(betaClock: Clock): ZIO[TestDatabase.AllRepos & Clock, Nothing, Built] =
+  // Build the beta stack with a caller-supplied clock so the invite TTL can be advanced, and an
+  // optional notifier so a test can observe invite (re)sends (#2222).
+  private def build(
+      betaClock: Clock,
+      notifier: Notifier = noopNotifier,
+  ): ZIO[TestDatabase.AllRepos & Clock, Nothing, Built] =
     for {
       br   <- ZIO.service[BetaRequestRepo]
       hr   <- ZIO.service[HouseholdRepo]
@@ -117,7 +131,7 @@ object BetaProvisioningSpec
           betaClock,
           wifihaven.api.StripeConfig(),
         )
-      val svc     = BetaService(br, hr, ur, auth, noopNotifier, betaClock, BetaConfig(), billing)
+      val svc     = BetaService(br, hr, ur, auth, notifier, betaClock, BetaConfig(), billing)
       Built(svc, br, hr, ur, auth, BetaRoutes.routes(auth, svc, br, ur, RateLimiter.allowAll))
     }
 
@@ -296,6 +310,220 @@ object BetaProvisioningSpec
         // Byte-identical response body — a duplicate is indistinguishable from a first request.
         assertTrue(body1 == body2) &&
         assertTrue(count == 1L)
+    },
+    test(
+      "second request from a PENDING applicant is a no-op — no new row, no invite, generic 200",
+    ) {
+      for {
+        _   <- cleanDb
+        ctl <- TestClock.makeWithControl(TestClock.schoolDayAfternoon)
+        (bc, _) = ctl
+        sent <- Ref.make(List.empty[(String, String)])
+        b    <- build(bc, new RecordingNotifier(sent))
+        xa   <- ZIO.service[Transactor[Task]]
+        body = CreateBetaRequest("pend@example.com", Some("Pend Family")).toJson
+        (s1, _)  <- postJson(b.routes, "/api/beta/request", None, body)
+        (s2, _)  <- postJson(b.routes, "/api/beta/request", None, body)
+        recorded <- sent.get
+        count    <- sql"SELECT COUNT(*) FROM beta_requests WHERE email='pend@example.com'"
+          .query[Long]
+          .unique
+          .transact(xa)
+        status   <- sql"SELECT status FROM beta_requests WHERE email='pend@example.com'"
+          .query[String]
+          .unique
+          .transact(xa)
+      } yield assertTrue(s1 == Status.Ok, s2 == Status.Ok) &&
+        assertTrue(count == 1L, status == "pending") &&
+        // A pending duplicate sends NO invite email.
+        assertTrue(recorded.isEmpty)
+    },
+    test("second request from an APPROVED applicant re-mints + re-sends the invite (no new row)") {
+      for {
+        _   <- cleanDb
+        ctl <- TestClock.makeWithControl(TestClock.schoolDayAfternoon)
+        (bc, _) = ctl
+        sent          <- Ref.make(List.empty[(String, String)])
+        b             <- build(bc, new RecordingNotifier(sent))
+        xa            <- ZIO.service[Transactor[Task]]
+        opToken       <- login(b.auth, "admin", "changeme")
+        _             <- postJson(
+          b.routes,
+          "/api/beta/request",
+          None,
+          CreateBetaRequest("appr@example.com", Some("Appr Family")).toJson,
+        )
+        (_, listBody) <- getJson(b.routes, "/api/operator/beta-requests", opToken)
+        reqId         <- ZIO
+          .fromEither(listBody.fromJson[List[BetaRequestSummary]])
+          .mapError(new RuntimeException(_))
+          .map(_.head.id)
+        _             <- postJson(
+          b.routes,
+          s"/api/operator/beta-requests/${reqId.value}/approve",
+          Some(opToken),
+          "",
+        )
+        hash0     <- sql"SELECT invite_token_hash FROM beta_requests WHERE email='appr@example.com'"
+          .query[String]
+          .unique
+          .transact(xa)
+        // Ignore the approve-time invite — measure only the resend triggered by the duplicate intake.
+        _         <- sent.set(Nil)
+        (sDup, _) <- postJson(
+          b.routes,
+          "/api/beta/request",
+          None,
+          CreateBetaRequest("appr@example.com", Some("Appr Family")).toJson,
+        )
+        recorded  <- sent.get
+        hash1     <- sql"SELECT invite_token_hash FROM beta_requests WHERE email='appr@example.com'"
+          .query[String]
+          .unique
+          .transact(xa)
+        count     <- sql"SELECT COUNT(*) FROM beta_requests WHERE email='appr@example.com'"
+          .query[Long]
+          .unique
+          .transact(xa)
+      } yield assertTrue(sDup == Status.Ok) &&
+        // No duplicate row despite the second submit.
+        assertTrue(count == 1L) &&
+        // The invite was re-sent exactly once, to the requester's address, with a fresh /welcome link.
+        assertTrue(recorded.length == 1) &&
+        assertTrue(recorded.head._1 == "appr@example.com") &&
+        assertTrue(recorded.head._2.contains("/welcome?token=")) &&
+        // The token was re-minted (only the hash is stored — the prior link can't be reused).
+        assertTrue(hash1 != hash0)
+    },
+    test(
+      "second request from a REJECTED applicant is a silent no-op — no new row, no invite, no reopen",
+    ) {
+      for {
+        _   <- cleanDb
+        ctl <- TestClock.makeWithControl(TestClock.schoolDayAfternoon)
+        (bc, _) = ctl
+        sent          <- Ref.make(List.empty[(String, String)])
+        b             <- build(bc, new RecordingNotifier(sent))
+        xa            <- ZIO.service[Transactor[Task]]
+        opToken       <- login(b.auth, "admin", "changeme")
+        _             <- postJson(
+          b.routes,
+          "/api/beta/request",
+          None,
+          CreateBetaRequest("rej@example.com", Some("Rej Family")).toJson,
+        )
+        (_, listBody) <- getJson(b.routes, "/api/operator/beta-requests", opToken)
+        reqId         <- ZIO
+          .fromEither(listBody.fromJson[List[BetaRequestSummary]])
+          .mapError(new RuntimeException(_))
+          .map(_.head.id)
+        _             <- postJson(
+          b.routes,
+          s"/api/operator/beta-requests/${reqId.value}/reject",
+          Some(opToken),
+          "",
+        )
+        _             <- sent.set(Nil)
+        (sDup, _)     <- postJson(
+          b.routes,
+          "/api/beta/request",
+          None,
+          CreateBetaRequest("rej@example.com", Some("Rej Family")).toJson,
+        )
+        recorded      <- sent.get
+        count         <- sql"SELECT COUNT(*) FROM beta_requests WHERE email='rej@example.com'"
+          .query[Long]
+          .unique
+          .transact(xa)
+        status        <- sql"SELECT status FROM beta_requests WHERE email='rej@example.com'"
+          .query[String]
+          .unique
+          .transact(xa)
+      } yield assertTrue(sDup == Status.Ok) &&
+        // No new row, no auto-reopen (stays rejected), no email.
+        assertTrue(count == 1L, status == "rejected", recorded.isEmpty)
+    },
+    test(
+      "intake response is byte-identical across new / pending / approved / rejected (no enumeration)",
+    ) {
+      for {
+        _   <- cleanDb
+        ctl <- TestClock.makeWithControl(TestClock.schoolDayAfternoon)
+        (bc, _) = ctl
+        b        <- build(bc)
+        opToken  <- login(b.auth, "admin", "changeme")
+        // (a) brand-new email.
+        newResp  <- postJson(
+          b.routes,
+          "/api/beta/request",
+          None,
+          CreateBetaRequest("new@example.com").toJson,
+        )
+        // (b) pending duplicate.
+        _        <- postJson(
+          b.routes,
+          "/api/beta/request",
+          None,
+          CreateBetaRequest("pend@example.com").toJson,
+        )
+        pendResp <- postJson(
+          b.routes,
+          "/api/beta/request",
+          None,
+          CreateBetaRequest("pend@example.com").toJson,
+        )
+        // (c) approved duplicate.
+        _        <- postJson(
+          b.routes,
+          "/api/beta/request",
+          None,
+          CreateBetaRequest("appr2@example.com").toJson,
+        )
+        (_, lb)  <- getJson(b.routes, "/api/operator/beta-requests", opToken)
+        apprId   <- ZIO
+          .fromEither(lb.fromJson[List[BetaRequestSummary]])
+          .mapError(new RuntimeException(_))
+          .map(_.find(_.email == "appr2@example.com").get.id)
+        _        <- postJson(
+          b.routes,
+          s"/api/operator/beta-requests/${apprId.value}/approve",
+          Some(opToken),
+          "",
+        )
+        apprResp <- postJson(
+          b.routes,
+          "/api/beta/request",
+          None,
+          CreateBetaRequest("appr2@example.com").toJson,
+        )
+        // (d) rejected duplicate.
+        _        <- postJson(
+          b.routes,
+          "/api/beta/request",
+          None,
+          CreateBetaRequest("rej2@example.com").toJson,
+        )
+        (_, lb2) <- getJson(b.routes, "/api/operator/beta-requests", opToken)
+        rejId    <- ZIO
+          .fromEither(lb2.fromJson[List[BetaRequestSummary]])
+          .mapError(new RuntimeException(_))
+          .map(_.find(_.email == "rej2@example.com").get.id)
+        _        <- postJson(
+          b.routes,
+          s"/api/operator/beta-requests/${rejId.value}/reject",
+          Some(opToken),
+          "",
+        )
+        rejResp  <- postJson(
+          b.routes,
+          "/api/beta/request",
+          None,
+          CreateBetaRequest("rej2@example.com").toJson,
+        )
+      } yield
+      // Every second-submit response — regardless of the target email's state — is byte-identical in
+      // both status and body, so the endpoint reveals nothing about which emails exist or their state.
+      assertTrue(newResp == pendResp, pendResp == apprResp, apprResp == rejResp)
     },
   ) @@ TestAspect.sequential
 }
