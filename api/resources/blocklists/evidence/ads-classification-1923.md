@@ -1,6 +1,6 @@
 # ads-blocklist pass — 2026-06-23 (#1923)
 
-Traffic-driven ads-blocklist pass via the `/ads-blocklist-pass` skill.
+Traffic-driven ads-blocklist pass via the `/blocklist-pass` skill.
 
 ## Method
 
