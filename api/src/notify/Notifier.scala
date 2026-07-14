@@ -33,6 +33,13 @@ trait Notifier {
 
 object Notifier {
 
+  // The two pre-send skip outcomes for `notify_email_total`. Together with the three
+  // transport outcomes from `EmailOutcome.label` (sent / failed / skipped_disabled) these are
+  // the full label space enumerated in `MetricGuard.Allowed("notify_email_total")` — kept as
+  // named constants here so the metric-label strings live in one place per outcome, not inline.
+  private val OutcomeSkippedNoRecipient: String = "skipped_no_recipient"
+  private val OutcomeSkippedNoHousehold: String = "skipped_no_household"
+
   /** The structured line every alert logs, regardless of email outcome — the #960 behavior. */
   private def logAlert(a: Alert): UIO[Unit] =
     ZIO.logInfo(
@@ -85,10 +92,10 @@ object Notifier {
     private def notifyByEmail(a: Alert): UIO[Unit] =
       a.householdId match {
         case None     =>
-          AppMetrics.notifyEmail("skipped_no_household")
+          AppMetrics.notifyEmail(OutcomeSkippedNoHousehold)
         case Some(hh) =>
           resolveRecipient(hh).flatMap {
-            case None            => AppMetrics.notifyEmail("skipped_no_recipient")
+            case None            => AppMetrics.notifyEmail(OutcomeSkippedNoRecipient)
             case Some(recipient) =>
               sender
                 .send(recipient, subjectFor(a), bodyFor(a))

@@ -363,9 +363,9 @@ object MetricGuard {
     // #1069 named-schedule CRUD — `op` ∈ {create, update, delete}, a fixed enum. Lets an operator
     // see schedule edits land (and rate-alert on a runaway delete loop) without grepping logs.
     "wifihaven_schedule_mutations_total"   -> Set("op"),
-    // #578 — outbound admin-notification email funnel. `outcome` is a fixed 5-value enum
-    // {sent, failed, skipped_disabled, skipped_no_recipient, skipped_no_household}; never a
-    // per-recipient / per-household label.
+    // #578 — outbound admin-notification email funnel. `outcome` is a fixed 5-value enum, sourced
+    // from EmailOutcome.label (sent / failed / skipped_disabled) + Notifier.OutcomeSkipped*
+    // (skipped_no_recipient / skipped_no_household); never a per-recipient / per-household label.
     "notify_email_total"                   -> Set("outcome"),
     // #808 — partition runway gauge. `partition_weeks_ahead{table}` is the count of consecutive
     // weekly partitions present from the current ISO week for each RANGE-partitioned ingest table

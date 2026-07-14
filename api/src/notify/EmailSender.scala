@@ -45,6 +45,12 @@ object EmailSender {
 
   private val ResendEndpoint: String = "https://api.resend.com/emails"
 
+  // Send is a single tiny JSON POST (one email), so these are deliberately shorter than
+  // BlocklistFetcher's 30s/60s (which pulls multi-MB upstream lists). A notification is
+  // best-effort and fail-open, so a slow Resend shouldn't tie up the alert fiber for long.
+  private val ConnectTimeout: JDuration = JDuration.ofSeconds(10)
+  private val RequestTimeout: JDuration = JDuration.ofSeconds(20)
+
   /**
    * Config-gated layer. When [[EmailConfig.enabled]] is false (the self-hosted default and any
    * deployment missing either secret) this yields a no-op sender that returns
@@ -81,7 +87,7 @@ object EmailSender {
   final class Resend(cfg: EmailConfig) extends EmailSender {
     private val client = HttpClient
       .newBuilder()
-      .connectTimeout(JDuration.ofSeconds(10))
+      .connectTimeout(ConnectTimeout)
       .build()
 
     def send(to: String, subject: String, htmlBody: String): UIO[EmailOutcome] =
@@ -93,7 +99,7 @@ object EmailSender {
             .header("Authorization", s"Bearer ${cfg.apiKeyTrimmed}")
             .header("Content-Type", "application/json")
             .header("User-Agent", UserAgent)
-            .timeout(JDuration.ofSeconds(20))
+            .timeout(RequestTimeout)
             .POST(HttpRequest.BodyPublishers.ofString(payload))
             .build()
           client.send(req, HttpResponse.BodyHandlers.ofString())
