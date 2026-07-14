@@ -368,6 +368,12 @@ object Main extends ZIOAppDefault {
       BlocklistCache.live >+>
       BlocklistFetcher.live >+>
       Notifier.live >+>
+      // #2135 (multi-tenant P5-5): Stripe billing. The StripeConfig slice + the external StripeClient
+      // (disabled no-op when no secret key is set — self-hosted installs never bill) + the
+      // BillingService state machine (needs HouseholdBillingRepo from Repos.all + Clock).
+      ZLayer.fromZIO(ZIO.serviceWith[AppConfig](_.stripe)) >+>
+      wifihaven.api.billing.StripeClient.layer >+>
+      wifihaven.api.billing.BillingService.layer >+>
       // #1242: Prometheus publisher + snapshot listener, and JVM metrics collectors.
       MetricsRuntime.prometheus() >+>
       DefaultJvmMetrics.live
@@ -426,7 +432,18 @@ object Main extends ZIOAppDefault {
       betaReqRateLimiter   <- RateLimiterLive.make(maxAttempts = 5, windowSeconds = 60 * 60)
       // #2132: the beta pipeline service (slug derivation, invite token mint + TTL, provisioning,
       // accept). Clock-injected so the invite TTL is TestClock-driven in specs.
-      betaService = BetaService(betaRepo, householdRepo, userRepo, auth, notifier, clock, cfg.beta)
+      // #2135: the billing state machine (Checkout/Portal/webhook + the provisioning Customer seam).
+      billing              <- ZIO.service[wifihaven.api.billing.BillingService]
+      betaService = BetaService(
+        betaRepo,
+        householdRepo,
+        userRepo,
+        auth,
+        notifier,
+        clock,
+        cfg.beta,
+        billing,
+      )
       // #1970 (S3): the SPA-websocket change-source bus (design §5.2.2). The write sites publish
       // change events here; the SpaPush consumer (forked in the run scope) drains it and fans out
       // role-filtered, subscription-gated `now`/`connectionEvents`/`stale` frames.
@@ -479,6 +496,9 @@ object Main extends ZIOAppDefault {
           AuthRoutes.routes(auth, userRepo, upRepo, loginRateLimiter) ++
           // #2132: beta request intake (public) + operator approval/reject + invite accept (public).
           BetaRoutes.routes(auth, betaService, betaRepo, userRepo, betaReqRateLimiter) ++
+          // #2135: billing status (admin) + Checkout/Portal starts (admin) + signature-verified
+          // Stripe webhook (public). Disabled installs 404 the admin surfaces and no-op the webhook.
+          BillingRoutes.routes(auth, billing) ++
           ProfileRoutes.routes(
             auth,
             profileRepo,

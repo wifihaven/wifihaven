@@ -385,6 +385,15 @@ object MetricGuard {
     // both bounded, never a per-email / per-household value. Without this entry the firewall would
     // reject the name as unknown_name and the series would never emit (the #808 lesson).
     "wifihaven_beta_pipeline_total"                 -> Set("stage", "outcome"),
+    // #2135 — Stripe billing. `wifihaven_billing_webhook_total{outcome}` counts every processed
+    // webhook by the bounded outcome enum (active | lapsed | ignored | unmatched |
+    // invalid_signature | not_configured — see WebhookOutcome); never a per-customer / per-household
+    // label. `wifihaven_billing_checkout_total{kind,outcome}` counts checkout/portal starts —
+    // `kind` ∈ {checkout, portal}, `outcome` a small fixed enum (ok | not_configured |
+    // no_billing_row | no_customer | stripe_error | error). Both bounded; the #808 lesson (without
+    // these entries the firewall rejects the name as unknown_name and the series never emits).
+    "wifihaven_billing_webhook_total"               -> Set("outcome"),
+    "wifihaven_billing_checkout_total"              -> Set("kind", "outcome"),
   )
 
   private val rejected = Metric.counter("metrics_rejected_total")
@@ -518,6 +527,20 @@ object AppMetrics {
     MetricGuard.counter(
       "wifihaven_beta_pipeline_total",
       Map("stage" -> stage, "outcome" -> outcome),
+    )
+
+  // ── #2135: Stripe billing ────────────────────────────────────────────────────
+  // Emitted from BillingRoutes. `recordBillingWebhook` counts each processed webhook by its bounded
+  // WebhookOutcome; `recordBillingCheckout` counts checkout/portal starts by (kind, outcome). Both
+  // label sets are small fixed enums — never a per-customer / per-household / per-price value.
+
+  def recordBillingWebhook(outcome: String): UIO[Unit] =
+    MetricGuard.counter("wifihaven_billing_webhook_total", Map("outcome" -> outcome))
+
+  def recordBillingCheckout(kind: String, outcome: String): UIO[Unit] =
+    MetricGuard.counter(
+      "wifihaven_billing_checkout_total",
+      Map("kind" -> kind, "outcome" -> outcome),
     )
 
   // ── #864: traffic_reports rows dropped as zero-bytes-zero-seconds ────────────

@@ -737,6 +737,25 @@ case class AcceptInviteResponse(
     username: String,
 ) derives JsonCodec
 
+// ── Billing (#2135, multi-tenant P5-5) ──────────────────────────────────────
+// The SPA billing page reads current plan/status; the checkout/portal routes return a redirect URL
+// into a Stripe-hosted surface. `status` is the household_billing.status value (beta|active|lapsed).
+// `founding` surfaces the founding-price framing. No Stripe secrets ever cross this wire.
+
+/** `GET /api/billing` — current billing state for the minimal SPA billing page. */
+case class BillingStatusResponse(
+    status: String,
+    founding: Boolean,
+    priceId: Option[String],
+    currentPeriodEnd: Option[String],
+    lapsedAt: Option[String],
+) derives JsonCodec
+
+/**
+ * `POST /api/billing/checkout` / `GET /api/billing/portal` — the hosted-Stripe URL to redirect to.
+ */
+case class BillingRedirect(url: String) derives JsonCodec
+
 // #2164 (multi-tenant P5-8, single-identifier login — supersedes #2140's visible household field):
 // login carries ONE identifier string, resolved server-side to a household by its syntax
 // (docs/design/multi-tenant-launch.md §4):

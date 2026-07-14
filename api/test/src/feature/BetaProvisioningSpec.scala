@@ -104,9 +104,20 @@ object BetaProvisioningSpec
       br   <- ZIO.service[BetaRequestRepo]
       hr   <- ZIO.service[HouseholdRepo]
       ur   <- ZIO.service[UserRepo]
+      hbr  <- ZIO.service[HouseholdBillingRepo]
       auth <- makeAuth
     } yield {
-      val svc = BetaService(br, hr, ur, auth, noopNotifier, betaClock, BetaConfig())
+      // #2135: billing is disabled here (no Stripe keys) — provisionCustomer is a no-op, so the beta
+      // pipeline behaves exactly as before this seam landed. Webhook/checkout are exercised in
+      // BillingWebhookSpec with a stubbed StripeClient.
+      val billing =
+        wifihaven.api.billing.BillingService(
+          wifihaven.api.billing.StripeClient.noop,
+          hbr,
+          betaClock,
+          wifihaven.api.StripeConfig(),
+        )
+      val svc     = BetaService(br, hr, ur, auth, noopNotifier, betaClock, BetaConfig(), billing)
       Built(svc, br, hr, ur, auth, BetaRoutes.routes(auth, svc, br, ur, RateLimiter.allowAll))
     }
 

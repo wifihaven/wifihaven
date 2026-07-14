@@ -16,6 +16,7 @@ case class AppConfig(
     ws: WsConfig = WsConfig(),
     partition: PartitionConfig = PartitionConfig(),
     beta: BetaConfig = BetaConfig(),
+    stripe: StripeConfig = StripeConfig(),
 ) {
   // WIFIHAVEN_DEBUG env var: when set to a non-empty, non-"0"/"false"/"no"
   // value, mounts the read-only /api/debug/* endpoints (loopback only).
@@ -245,6 +246,38 @@ case class BetaConfig(
   /** The full invite URL for a freshly-minted token — `<base>/welcome?token=…`. */
   def inviteUrl(rawToken: String): String =
     s"${inviteBaseUrl.stripSuffix("/")}/welcome?token=$rawToken"
+}
+
+// #2135 (multi-tenant P5-5, epic #622) — Stripe billing (design docs/design/multi-tenant-launch.md
+// §5, pricing-analysis.md §7). The whole block is optional; an empty `secretKey` DISABLES billing
+// entirely (`enabled = false`) so the self-hosted single-install path — which never bills — starts
+// clean and the /api/billing/* routes return 404-shaped "not configured". Secrets (`secretKey`,
+// `webhookSecret`) come from env via the entrypoint-rendered HOCON, NEVER committed
+// (docs/process/security.md). Price ids / promo code differ between Stripe test and live modes, so
+// they are config too (not constants). `appBaseUrl` is the SPA origin the hosted Checkout / Portal
+// return to.
+case class StripeConfig(
+    secretKey: String = "",
+    webhookSecret: String = "",
+    priceMonthly: String = "",
+    priceAnnual: String = "",
+    foundingPromoCode: String = "",
+    appBaseUrl: String = "https://app.wifihaven.net",
+    apiBase: String = "https://api.stripe.com",
+) {
+  // Billing is active only when a secret key is present. Everything downstream (route mounting, the
+  // provisioning Customer seam) checks this so an unconfigured install is a no-op, not an error.
+  val enabled: Boolean = secretKey.trim.nonEmpty
+
+  private def base: String = appBaseUrl.stripSuffix("/")
+
+  /** Hosted-Checkout success/cancel + Portal-return URLs back to the SPA billing page. */
+  def checkoutSuccessUrl: String = s"$base/billing?checkout=success"
+  def checkoutCancelUrl: String  = s"$base/billing?checkout=cancel"
+  def portalReturnUrl: String    = s"$base/billing"
+
+  val foundingPromoCodeOpt: Option[String] =
+    Option(foundingPromoCode).map(_.trim).filter(_.nonEmpty)
 }
 
 object AppConfig {

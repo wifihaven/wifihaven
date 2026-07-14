@@ -30,6 +30,12 @@ final case class BetaService(
     notifier: Notifier,
     clock: Clock,
     cfg: BetaConfig,
+    // #2135 (multi-tenant P5-5): the billing seam. On approve, after the household + its
+    // `household_billing` row are provisioned, we create the Stripe Customer (email from the request)
+    // and stamp `stripe_customer_id`. Best-effort — a Stripe hiccup never fails the approval (the
+    // household already exists; checkout is the backstop). When billing is unconfigured (self-hosted),
+    // `provisionCustomer` is a no-op.
+    billing: wifihaven.api.billing.BillingService,
 ) {
   import BetaService.*
 
@@ -63,6 +69,9 @@ final case class BetaService(
           case _: IllegalStateException => BetaError.NotPending
           case e                        => BetaError.Db(e)
         }
+      // #2135: create the Stripe Customer for the new household (no card during beta). Best-effort —
+      // never fails the approval; no-op when billing is unconfigured.
+      _   <- billing.provisionCustomer(hid, request.email)
       _   <- notifier.betaHouseholdProvisioned(request.email, slug, hid)
     } yield ApproveBetaResponse(
       householdId = hid,
