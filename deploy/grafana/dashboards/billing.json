@@ -12,7 +12,7 @@
       }
     ]
   },
-  "description": "WifiHaven Stripe billing (#2135, multi-tenant P5-5): webhook processing outcomes and Checkout/Portal starts. Panels target wifihaven_billing_webhook_total{outcome} and wifihaven_billing_checkout_total{kind,outcome} emitted by AppMetrics.recordBillingWebhook / recordBillingCheckout in api/src/routes/BillingRoutes.scala — labels are bounded enums (never per-customer / per-household / per-price). Statuses are beta/active/lapsed with NO read-only gating on lapse (design docs/design/multi-tenant-launch.md §5).",
+  "description": "WifiHaven Stripe billing (#2135, multi-tenant P5-5): webhook processing outcomes and Checkout/Portal starts. Panels target wifihaven_billing_webhook_total{outcome} and wifihaven_billing_checkout_total{op,outcome} emitted by AppMetrics.recordBillingWebhook / recordBillingCheckout in api/src/routes/BillingRoutes.scala — labels are bounded enums (never per-customer / per-household / per-price). Statuses are beta/active/lapsed with NO read-only gating on lapse (design docs/design/multi-tenant-launch.md §5).",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -95,7 +95,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "Checkout / Portal starts by outcome",
-      "description": "sum by (kind,outcome) (rate(wifihaven_billing_checkout_total[5m])) — checkout vs portal session starts, split ok / no_customer / stripe_error / not_configured / no_billing_row. A rising no_customer means households reached checkout without a provisioning-time Stripe Customer; stripe_error means the Stripe API call failed.",
+      "description": "sum by (op,outcome) (rate(wifihaven_billing_checkout_total[5m])) — checkout vs portal session starts, split ok / no_customer / stripe_error / not_configured / no_billing_row. A rising no_customer means households reached checkout without a provisioning-time Stripe Customer; stripe_error means the Stripe API call failed.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
       "id": 4,
@@ -112,8 +112,8 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum by (kind, outcome) (rate(wifihaven_billing_checkout_total{env=\"$env\"}[5m]))",
-          "legendFormat": "{{kind}}/{{outcome}}",
+          "expr": "sum by (op, outcome) (rate(wifihaven_billing_checkout_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{op}}/{{outcome}}",
           "refId": "A"
         }
       ]
