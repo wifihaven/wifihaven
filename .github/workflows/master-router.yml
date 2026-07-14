@@ -57,6 +57,21 @@ on:
       - 'scripts/e2e/lib/**'
       - 'scripts/e2e/fake-api/**'
       - 'scripts/e2e/pytest.ini'
+      # DELIBERATELY EXCLUDED: scripts/e2e/gate3/** (#2191).
+      # Gate 3a here (and Gate 3b in master-api-ui.yml) run those tests, so it
+      # is tempting to add the path — but publish-openwrt ALWAYS mints a new
+      # v<X.Y.Z> once the gates pass (version = count of existing
+      # v<MAJOR>.<MINOR>.* tags, derived in build-release-artifacts.yml's
+      # `Derive version` step; there is NO artifact-hash dedup). So a
+      # gate3-test-only edit would republish a brand-new router version whose
+      # agent bytes are byte-identical to the last release — pure churn for the
+      # auto-updater and the v<X.Y.Z> tag series, with zero agent change.
+      # Trade-off (#2191 option B): we accept that a gate3-test change does NOT
+      # auto-gate itself. To validate/gate a gate3-only change after merge, run
+      # the pipeline manually: `gh workflow run master-router.yml --ref main`
+      # (this is exactly how #2189/#1023 was unblocked). Revisit if
+      # publish-openwrt ever grows hash-dedup, at which point adding the path is
+      # free (#2191 option A).
   workflow_dispatch:
 
 # Workflow-level concurrency scoped to THIS pipeline's group name — router
