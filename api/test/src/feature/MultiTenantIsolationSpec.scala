@@ -70,10 +70,18 @@ object MultiTenantIsolationSpec
       br   <- ZIO.service[BetaRequestRepo]
       hr   <- ZIO.service[HouseholdRepo]
       ur   <- ZIO.service[UserRepo]
+      hbr  <- ZIO.service[HouseholdBillingRepo]
       clk  <- ZIO.service[Clock]
       auth <- makeAuth
     } yield {
-      val svc = BetaService(br, hr, ur, auth, noopNotifier, clk, BetaConfig())
+      // #2135: billing disabled (no keys) — the provisioning Customer seam is a no-op here.
+      val billing = wifihaven.api.billing.BillingService(
+        wifihaven.api.billing.StripeClient.noop,
+        hbr,
+        clk,
+        wifihaven.api.StripeConfig(),
+      )
+      val svc     = BetaService(br, hr, ur, auth, noopNotifier, clk, BetaConfig(), billing)
       (svc, BetaRoutes.routes(auth, svc, br, ur, RateLimiter.allowAll))
     }
 

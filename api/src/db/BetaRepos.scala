@@ -72,6 +72,34 @@ case class DbBetaRequest(
 trait HouseholdBillingRepo {
   def create(householdId: HouseholdId, status: String, founding: Boolean): Task[Unit]
   def findByHousehold(householdId: HouseholdId): Task[Option[HouseholdBilling]]
+
+  // ── #2135: Stripe linkage + the ONE beta/active/lapsed status machine ─────────
+  // The state machine (design §5.1) shared by #2135 (dunning-lapse + recovery from the webhook)
+  // and #2137 (non-conversion flip). These are the transitions; the "why" (which webhook / cohort
+  // date) stays in the caller — the row records only the resulting state.
+
+  /** Store the `cus_…` id from the provisioning-time Customer create (#2135 seam). Idempotent. */
+  def setStripeCustomer(householdId: HouseholdId, stripeCustomerId: String): Task[Unit]
+
+  /** Map a Stripe customer id back to its household row (webhook events reference the customer). */
+  def findByStripeCustomerId(stripeCustomerId: String): Task[Option[HouseholdBilling]]
+
+  /**
+   * `checkout.session.completed` recovery/conversion → `status='active'`: store the subscription +
+   * price ids and current-period-end, clear `lapsed_at`, bump `updated_at`.
+   */
+  def markActive(
+      householdId: HouseholdId,
+      stripeSubscriptionId: Option[String],
+      priceId: Option[String],
+      currentPeriodEnd: Option[Instant],
+      now: Instant,
+  ): Task[Unit]
+
+  /**
+   * Dunning-terminal → `status='lapsed'`, stamp `lapsed_at` (a record, not a purge timer, §5.3).
+   */
+  def markLapsed(householdId: HouseholdId, lapsedAt: Instant): Task[Unit]
 }
 
 class HouseholdBillingRepoLive(xa: Transactor[Task]) extends HouseholdBillingRepo {
@@ -102,6 +130,47 @@ class HouseholdBillingRepoLive(xa: Transactor[Task]) extends HouseholdBillingRep
       .map(toBilling)
       .option
       .transact(xa)
+
+  def setStripeCustomer(householdId: HouseholdId, stripeCustomerId: String) =
+    sql"""UPDATE household_billing
+          SET stripe_customer_id=$stripeCustomerId, updated_at=NOW()
+          WHERE household_id=$householdId""".update.run
+      .transact(xa)
+      .unit
+
+  def findByStripeCustomerId(stripeCustomerId: String) =
+    (fr"SELECT" ++ cols ++ fr"FROM household_billing WHERE stripe_customer_id=$stripeCustomerId")
+      .query[Row]
+      .map(toBilling)
+      .option
+      .transact(xa)
+
+  def markActive(
+      householdId: HouseholdId,
+      stripeSubscriptionId: Option[String],
+      priceId: Option[String],
+      currentPeriodEnd: Option[Instant],
+      now: Instant,
+  ) =
+    // COALESCE keeps a previously-stored subscription/price id when a later event omits it, so a
+    // recovery event that carries only the customer doesn't null out the linkage.
+    sql"""UPDATE household_billing
+          SET status='active',
+              stripe_subscription_id=COALESCE($stripeSubscriptionId, stripe_subscription_id),
+              price_id=COALESCE($priceId, price_id),
+              current_period_end=COALESCE($currentPeriodEnd, current_period_end),
+              lapsed_at=NULL,
+              updated_at=$now
+          WHERE household_id=$householdId""".update.run
+      .transact(xa)
+      .unit
+
+  def markLapsed(householdId: HouseholdId, lapsedAt: Instant) =
+    sql"""UPDATE household_billing
+          SET status='lapsed', lapsed_at=$lapsedAt, updated_at=$lapsedAt
+          WHERE household_id=$householdId""".update.run
+      .transact(xa)
+      .unit
 }
 
 // ── BetaRequestRepo ──────────────────────────────────────────────────────────

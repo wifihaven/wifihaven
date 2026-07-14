@@ -41,6 +41,7 @@ const settingsNav: NavItem[] = [
   { to: '/schedules',  label: 'Schedules',  icon: '◷', adminOnly: true },
   { to: '/users',   label: 'Users',   icon: '◐', adminOnly: true },
   { to: '/routers', label: 'Routers', icon: '⬢', adminOnly: true },
+  { to: '/billing', label: 'Billing', icon: '⊞', adminOnly: true },
   { to: '/beta-requests', label: 'Beta Requests', icon: '✦', operatorOnly: true },
   { to: '/admin',   label: 'Settings', icon: '⚙', adminOnly: true },
 ]

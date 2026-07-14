@@ -12,6 +12,7 @@ import type {
   PatchDeviceRequest, PatchProfileRequest,
   UpsertAppAssignmentRequest, UpsertDeviceRequest, UpsertProfileRequest, GrantExtensionRequest,
   UsageSeriesBatchResponse, UsageSeriesResponse, User,
+  BillingStatusResponse, BillingRedirect,
 } from '@/types/api'
 
 // VITE_API_BASE_URL is empty by default (relative path — SPA served from the
@@ -535,6 +536,14 @@ export const api = {
       const qs = new URLSearchParams({ mac, host })
       return req<BlockedInfoResponse>('GET', `/blocked?${qs}`, undefined, true)
     },
+  },
+
+  // ── Billing (#2135, admin) ───────────────────────────────────────────────
+  // Hosted-Stripe surfaces: checkout/portal return a redirect URL the caller sends the browser to.
+  billing: {
+    status: () => req<BillingStatusResponse>('GET', '/billing'),
+    checkout: () => req<BillingRedirect>('POST', '/billing/checkout', {}),
+    portal: () => req<BillingRedirect>('GET', '/billing/portal'),
   },
 
   // ── Routers (admin) ────────────────────────────────────────────────────

@@ -152,6 +152,24 @@ services:
         sync: false
       - key: GRAFANA_CLOUD_LOKI_PASSWORD
         sync: false
+      # #2135: Stripe billing (test mode on staging). Secrets (key + webhook signing
+      # secret) are Render-managed sync:false — never committed. Price ids + promo
+      # code are also sync:false because they differ between Stripe test and live
+      # modes. Empty secretKey disables billing (self-hosted default); staging sets
+      # the test-mode values out of band. appBaseUrl points Checkout/Portal returns
+      # back at the staging SPA.
+      - key: WIFIHAVEN_STRIPE_SECRET_KEY
+        sync: false
+      - key: WIFIHAVEN_STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: WIFIHAVEN_STRIPE_PRICE_MONTHLY
+        sync: false
+      - key: WIFIHAVEN_STRIPE_PRICE_ANNUAL
+        sync: false
+      - key: WIFIHAVEN_STRIPE_FOUNDING_PROMO
+        sync: false
+      - key: WIFIHAVEN_STRIPE_APP_BASE_URL
+        value: "https://app-staging.wifihaven.net"
       # #578: outbound email for block-page kid→parent access-request notifications
       # on STAGING. Same sync:false pattern as prod below — OFF until BOTH secrets
       # are set in the staging Render dashboard (entrypoint.sh renders them into the
@@ -290,6 +308,22 @@ services:
         sync: false
       - key: GRAFANA_CLOUD_LOKI_PASSWORD
         sync: false
+      # #2135: Stripe billing (LIVE mode on prod). Secrets (key + webhook signing
+      # secret) are Render-managed sync:false — never committed. Price ids + promo
+      # code are also sync:false (live-mode values differ from staging's test-mode).
+      # appBaseUrl points Checkout/Portal returns back at the prod SPA apex.
+      - key: WIFIHAVEN_STRIPE_SECRET_KEY
+        sync: false
+      - key: WIFIHAVEN_STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: WIFIHAVEN_STRIPE_PRICE_MONTHLY
+        sync: false
+      - key: WIFIHAVEN_STRIPE_PRICE_ANNUAL
+        sync: false
+      - key: WIFIHAVEN_STRIPE_FOUNDING_PROMO
+        sync: false
+      - key: WIFIHAVEN_STRIPE_APP_BASE_URL
+        value: "https://app.wifihaven.net"
       # #578: outbound email for block-page kid→parent access-request notifications.
       # OFF until BOTH secrets are set in the Render dashboard (sync:false = declared
       # here, value entered out of band; entrypoint.sh renders them into the config's

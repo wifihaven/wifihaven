@@ -20,6 +20,7 @@ import { BlockedPage } from '@/pages/BlockedPage'
 import { AppsPage } from '@/pages/AppsPage'
 import { BlocklistsPage } from '@/pages/BlocklistsPage'
 import { SchedulesPage } from '@/pages/SchedulesPage'
+import { BillingPage } from '@/pages/BillingPage'
 import { BetaRequestPage } from '@/pages/BetaRequestPage'
 import { WelcomePage } from '@/pages/WelcomePage'
 import { BetaRequestsPage } from '@/pages/BetaRequestsPage'
@@ -81,6 +82,7 @@ function AppRoutes() {
         <Route path="schedules"   element={<RequirePwChanged><RequireAdmin><SchedulesPage /></RequireAdmin></RequirePwChanged>} />
         <Route path="users"     element={<RequirePwChanged><RequireAdmin><UsersPage /></RequireAdmin></RequirePwChanged>} />
         <Route path="routers"   element={<RequirePwChanged><RequireAdmin><RoutersPage /></RequireAdmin></RequirePwChanged>} />
+        <Route path="billing"   element={<RequirePwChanged><RequireAdmin><BillingPage /></RequireAdmin></RequirePwChanged>} />
         <Route path="admin"     element={<RequirePwChanged><RequireAdmin><AdminPage /></RequireAdmin></RequirePwChanged>} />
         {/* #2133: operator-only beta-request review queue (gated on the isOperator API signal). */}
         <Route path="beta-requests" element={<RequirePwChanged><RequireOperator><BetaRequestsPage /></RequireOperator></RequirePwChanged>} />

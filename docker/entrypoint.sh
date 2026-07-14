@@ -25,6 +25,16 @@ set -euo pipefail
 : "${WIFIHAVEN_WS_ALLOWED_ORIGINS:=}"
 : "${WIFIHAVEN_METRICS_ENABLED:=true}"
 : "${WIFIHAVEN_METRICS_SCRAPE_TOKEN:=}"
+# #2135: Stripe billing. Empty WIFIHAVEN_STRIPE_SECRET_KEY (the default) DISABLES billing entirely —
+# the self-hosted single-install path never bills, so the /api/billing/* admin routes 404 and the
+# webhook no-ops. Cloud/staging set the secret + webhook signing secret (Render sync:false secrets)
+# plus the test/live-mode price ids + promo code. Secrets are NEVER committed (docs/process/security.md).
+: "${WIFIHAVEN_STRIPE_SECRET_KEY:=}"
+: "${WIFIHAVEN_STRIPE_WEBHOOK_SECRET:=}"
+: "${WIFIHAVEN_STRIPE_PRICE_MONTHLY:=}"
+: "${WIFIHAVEN_STRIPE_PRICE_ANNUAL:=}"
+: "${WIFIHAVEN_STRIPE_FOUNDING_PROMO:=}"
+: "${WIFIHAVEN_STRIPE_APP_BASE_URL:=https://app.wifihaven.net}"
 # #578: outbound email for admin notifications (block-page kid→parent requests).
 # OFF unless BOTH the API key and from-address are set — empty defaults render an
 # `email {}` block whose EmailConfig.enabled is false, so the Notifier logs only.
@@ -71,6 +81,14 @@ wifihaven {
   metrics {
     enabled     = ${WIFIHAVEN_METRICS_ENABLED}
     scrapeToken = "${WIFIHAVEN_METRICS_SCRAPE_TOKEN}"
+  }
+  stripe {
+    secretKey         = "${WIFIHAVEN_STRIPE_SECRET_KEY}"
+    webhookSecret     = "${WIFIHAVEN_STRIPE_WEBHOOK_SECRET}"
+    priceMonthly      = "${WIFIHAVEN_STRIPE_PRICE_MONTHLY}"
+    priceAnnual       = "${WIFIHAVEN_STRIPE_PRICE_ANNUAL}"
+    foundingPromoCode = "${WIFIHAVEN_STRIPE_FOUNDING_PROMO}"
+    appBaseUrl        = "${WIFIHAVEN_STRIPE_APP_BASE_URL}"
   }
   email {
     resendApiKey = "${WIFIHAVEN_EMAIL_RESEND_API_KEY}"

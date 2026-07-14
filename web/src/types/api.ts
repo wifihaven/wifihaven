@@ -1061,3 +1061,19 @@ export interface AcceptInviteResponse {
   slug: string
   username: string
 }
+
+// #2135 (multi-tenant P5-5): billing status + Checkout/Portal redirect. status ∈ beta|active|lapsed
+// (design §5.1); on lapse enforcement stops but there is NO read-only gating.
+export type BillingStatus = 'beta' | 'active' | 'lapsed'
+
+export interface BillingStatusResponse {
+  status: BillingStatus
+  founding: boolean
+  priceId: string | null
+  currentPeriodEnd: string | null
+  lapsedAt: string | null
+}
+
+export interface BillingRedirect {
+  url: string
+}
