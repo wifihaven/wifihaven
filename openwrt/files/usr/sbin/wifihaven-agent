@@ -196,6 +196,17 @@ local function record_apply(reason)
   end
 end
 
+-- #2208: per-phase apply-latency observer for policy.apply's opts.phase_timer
+-- seam. Emits policy_apply_duration_seconds{phase} where `phase` is the bounded
+-- enum policy.apply produces (render_dnsmasq / render_nft / dnsmasq_restart /
+-- nft_load / ea_backfill / smoke_probe) — never per-mac/per-host. The existing
+-- unlabeled total observation at each call site is unchanged; this adds the
+-- breakdown that pinpoints where a slow apply spends its time (the ea_backfill
+-- per-element spawn regression was invisible without it).
+local function apply_phase_timer(phase, seconds)
+  metrics.observe(mreg, "policy_apply_duration_seconds", { phase = phase }, seconds)
+end
+
 -- record_poll(status) classifies a policy.fetch outcome into the bounded
 -- snapshot_poll_total{result} enum (200 / 304 / error) and increments it.
 local function record_poll(result)
@@ -748,7 +759,8 @@ local function apply_and_publish(snap, reason)
   fold_enforcement_drops()
   local at0 = clock.monotonic_seconds()
   local applied = policy.apply(snap, write_file, run_cmd, log,
-                               { on_apply = record_apply(reason) })
+                               { on_apply = record_apply(reason),
+                                 phase_timer = apply_phase_timer })
   metrics.observe(mreg, "policy_apply_duration_seconds", {},
                   clock.monotonic_seconds() - at0)
   if applied then
@@ -839,7 +851,8 @@ do
     startup_disk_etag = cached.etag
     local t0 = clock.monotonic_seconds()
     local applied = policy.apply(cached, write_file, run_cmd, log,
-                                 { on_apply = record_apply("boot") })
+                                 { on_apply = record_apply("boot"),
+                                   phase_timer = apply_phase_timer })
     metrics.observe(mreg, "policy_apply_duration_seconds", {},
                     clock.monotonic_seconds() - t0)
     if applied then
@@ -870,7 +883,8 @@ do
     refresh_blocklists(snap)
     local at0 = clock.monotonic_seconds()
     local applied = policy.apply(snap, write_file, run_cmd, log,
-                                 { on_apply = record_apply("boot") })
+                                 { on_apply = record_apply("boot"),
+                                   phase_timer = apply_phase_timer })
     metrics.observe(mreg, "policy_apply_duration_seconds", {},
                     clock.monotonic_seconds() - at0)
     if applied then
@@ -1147,6 +1161,7 @@ conntrack.watch({
           -- all (cold boot during outage): the #308 boot skeleton stays in
           -- effect and there's nothing useful we can render.
           fo_opts.on_apply = record_apply("policy_change")
+          fo_opts.phase_timer = apply_phase_timer
           -- #1325: same pre-reset capture as the main apply above.
           fold_enforcement_drops()
           local ft0 = clock.monotonic_seconds()

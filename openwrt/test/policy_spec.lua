@@ -939,21 +939,52 @@ describe("policy.apply ea_/ea6_ backfill (#2095)", function()
     "151.101.1.229\tcdn.jsdelivr.net\t" .. NOW .. "\n" ..
     "2606:4700::6811:d005\tcdn.jsdelivr.net\t" .. NOW .. "\n"
 
-  local function run()
-    local reloads = {}
+  -- #2208: the backfill is now emitted as ONE batch script written to
+  -- paths.ea_backfill_nft and loaded with a single `nft -f` (the per-element
+  -- `nft add element` spawn loop was the v0.3.19→v0.3.20 apply-latency
+  -- regression). Capture writes so assertions can inspect the batch content;
+  -- `fail_batch` simulates the batch load failing to exercise the per-element
+  -- fallback.
+  local function run(opts)
+    opts = opts or {}
+    local reloads, writes = {}, {}
     policy.apply(decode(BLOCKED_SNAP),
-      function(_path, _content) return true, nil end,
-      function(cmd) reloads[#reloads + 1] = cmd; return 0 end,
+      function(path, content) writes[path] = content; return true, nil end,
+      function(cmd)
+        reloads[#reloads + 1] = cmd
+        if opts.fail_batch and cmd:find(paths.ea_backfill_nft, 1, true) then
+          return 1
+        end
+        return 0
+      end,
       nil,
       { now_fn = function() return NOW end,
         read_fn = function(path)
           if path == paths.dns_cache then return CACHE end
           return nil  -- dnsmasq conf absent → cold apply
         end })
-    return reloads
+    return reloads, writes
   end
 
-  local function issued(reloads, set_name, ip)
+  -- Was (set, ip) seeded? Post-#2208 the normal channel is the batch script
+  -- (one `add element <table> <set> { ip, ... }` line per set, ips grouped);
+  -- the per-element `nft add element` command is the fallback channel. Accept
+  -- either so these #2095 regression tests pin the BEHAVIOUR (the carve is
+  -- seeded after apply), not the emission mechanism.
+  local function issued(reloads, writes, set_name, ip)
+    local script = writes[paths.ea_backfill_nft]
+    if script then
+      for line in script:gmatch("[^\n]+") do
+        if line:find(set_name, 1, true) and line:find(ip, 1, true) then
+          -- The batch only enforces if its `nft -f` load was actually issued.
+          for _, c in ipairs(reloads) do
+            if c:find("nft -f " .. paths.ea_backfill_nft, 1, true) then
+              return true
+            end
+          end
+        end
+      end
+    end
     for _, c in ipairs(reloads) do
       if c:find(set_name, 1, true) and c:find("{ " .. ip .. " }", 1, true) then
         return true
@@ -966,27 +997,54 @@ describe("policy.apply ea_/ea6_ backfill (#2095)", function()
     -- The #2094 operator symptom: www.mathacademy.com v4 (52.40.111.135) was
     -- dropped in the flush window. After apply it must be carved WITHOUT a fresh
     -- resolution, so an in-flight keep-alive submit POST survives.
-    local reloads = run()
+    local reloads, writes = run()
     assert.is_true(
-      issued(reloads, "ea_ca_ef_a1_72_6a_a3_mathacademy_com", "52.40.111.135"),
+      issued(reloads, writes, "ea_ca_ef_a1_72_6a_a3_mathacademy_com", "52.40.111.135"),
       "expected the app's own domain immediately carved over v4 after apply")
   end)
 
+  it("seeds the whole carve via ONE batched `nft -f`, not per-element spawns (#2208)", function()
+    local reloads, writes = run()
+    -- The batch file carries every element…
+    local script = writes[paths.ea_backfill_nft]
+    assert.is_truthy(script, "expected the ea_ backfill batch script to be written")
+    -- …and no per-element `nft add element` process is spawned on the happy path.
+    for _, c in ipairs(reloads) do
+      assert.is_nil(c:find("nft add element", 1, true),
+        "no per-element nft spawn expected when the batch load succeeds: " .. c)
+    end
+  end)
+
+  it("falls back to per-element seeding when the batch load fails (#2208)", function()
+    local reloads, writes = run({ fail_batch = true })
+    -- Batch was attempted and failed → the per-element channel must still
+    -- carve the app's own domain (fail-open on the mechanism, not the carve).
+    assert.is_truthy(writes[paths.ea_backfill_nft])
+    local found = false
+    for _, c in ipairs(reloads) do
+      if c:find("nft add element", 1, true)
+         and c:find("ea_ca_ef_a1_72_6a_a3_mathacademy_com", 1, true) then
+        found = true
+      end
+    end
+    assert.is_true(found, "expected per-element fallback adds after a failed batch load")
+  end)
+
   it("backfills ea_ (v4) for the shared CDN apex from the persisted cache", function()
-    local reloads = run()
+    local reloads, writes = run()
     assert.is_true(
-      issued(reloads, "ea_ca_ef_a1_72_6a_a3_jsdelivr_net", "151.101.1.229"),
-      "expected an nft add element into the v4 carve set for cdn.jsdelivr.net")
+      issued(reloads, writes, "ea_ca_ef_a1_72_6a_a3_jsdelivr_net", "151.101.1.229"),
+      "expected the v4 carve set for cdn.jsdelivr.net to be seeded")
   end)
 
   it("backfills ea6_ (v6) for the carved host — the co-dropped CDN in the same window", function()
-    local reloads = run()
+    local reloads, writes = run()
     -- dns_log.load_table canonicalizes the v6 key on load (#1793), so the agent
     -- adds the expanded form; nft matches the compressed dest packet regardless.
     local canon = host_norm.canon_ip("2606:4700::6811:d005")
     assert.is_true(
-      issued(reloads, "ea6_ca_ef_a1_72_6a_a3_jsdelivr_net", canon),
-      "expected an nft add element into the v6 carve set for cdn.jsdelivr.net")
+      issued(reloads, writes, "ea6_ca_ef_a1_72_6a_a3_jsdelivr_net", canon),
+      "expected the v6 carve set for cdn.jsdelivr.net to be seeded")
   end)
 
   it("does not backfill when no device has a non-empty extraAllowed", function()
