@@ -367,7 +367,13 @@ object Main extends ZIOAppDefault {
       TimeStatusCache.live() >+>
       BlocklistCache.live >+>
       BlocklistFetcher.live >+>
-      Notifier.live >+>
+      // #578: email-notification transport. The EmailConfig projection feeds the config-gated
+      // EmailSender (Resend over the JDK HttpClient; a no-op when unconfigured), and Notifier.layer
+      // resolves each alert's household → notify_email and sends via it. HouseholdSettingsRepo comes
+      // from Repos.all above; the >+> chain keeps it in scope here.
+      ZLayer.fromZIO(ZIO.serviceWith[AppConfig](_.email)) >+>
+      wifihaven.api.notify.EmailSender.layer >+>
+      Notifier.layer >+>
       // #2135 (multi-tenant P5-5): Stripe billing. The StripeConfig slice + the external StripeClient
       // (disabled no-op when no secret key is set — self-hosted installs never bill) + the
       // BillingService state machine (needs HouseholdBillingRepo from Repos.all + Clock).

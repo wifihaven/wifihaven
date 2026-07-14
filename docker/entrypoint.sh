@@ -35,6 +35,12 @@ set -euo pipefail
 : "${WIFIHAVEN_STRIPE_PRICE_ANNUAL:=}"
 : "${WIFIHAVEN_STRIPE_FOUNDING_PROMO:=}"
 : "${WIFIHAVEN_STRIPE_APP_BASE_URL:=https://app.wifihaven.net}"
+# #578: outbound email for admin notifications (block-page kid→parent requests).
+# OFF unless BOTH the API key and from-address are set — empty defaults render an
+# `email {}` block whose EmailConfig.enabled is false, so the Notifier logs only.
+: "${WIFIHAVEN_EMAIL_RESEND_API_KEY:=}"
+: "${WIFIHAVEN_EMAIL_FROM_ADDRESS:=}"
+: "${WIFIHAVEN_EMAIL_APP_BASE_URL:=https://app.wifihaven.net}"
 
 export WIFIHAVEN_LOG_LEVEL WIFIHAVEN_DEBUG
 
@@ -83,6 +89,11 @@ wifihaven {
     priceAnnual       = "${WIFIHAVEN_STRIPE_PRICE_ANNUAL}"
     foundingPromoCode = "${WIFIHAVEN_STRIPE_FOUNDING_PROMO}"
     appBaseUrl        = "${WIFIHAVEN_STRIPE_APP_BASE_URL}"
+  }
+  email {
+    resendApiKey = "${WIFIHAVEN_EMAIL_RESEND_API_KEY}"
+    fromAddress  = "${WIFIHAVEN_EMAIL_FROM_ADDRESS}"
+    appBaseUrl   = "${WIFIHAVEN_EMAIL_APP_BASE_URL}"
   }
 }
 EOF

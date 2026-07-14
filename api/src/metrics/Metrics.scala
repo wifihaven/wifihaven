@@ -363,6 +363,10 @@ object MetricGuard {
     // #1069 named-schedule CRUD — `op` ∈ {create, update, delete}, a fixed enum. Lets an operator
     // see schedule edits land (and rate-alert on a runaway delete loop) without grepping logs.
     "wifihaven_schedule_mutations_total"   -> Set("op"),
+    // #578 — outbound admin-notification email funnel. `outcome` is a fixed 5-value enum, sourced
+    // from EmailOutcome.label (sent / failed / skipped_disabled) + Notifier.OutcomeSkipped*
+    // (skipped_no_recipient / skipped_no_household); never a per-recipient / per-household label.
+    "notify_email_total"                   -> Set("outcome"),
     // #808 — partition runway gauge. `partition_weeks_ahead{table}` is the count of consecutive
     // weekly partitions present from the current ISO week for each RANGE-partitioned ingest table
     // (set each run by PartitionMaintenanceJob). `table` is the bounded 2-value enum above. The
@@ -513,6 +517,17 @@ object AppMetrics {
   // #1069 — a named-schedule create / update / delete landed. `op` is a fixed enum.
   def scheduleMutation(op: String): UIO[Unit] =
     MetricGuard.counter("wifihaven_schedule_mutations_total", Map("op" -> op))
+
+  // #578 — outbound admin-notification email attempts (the deferred email half of
+  // the block-page kid→parent request flow). Emitted once per raised access-request
+  // alert from Notifier.alertCreated. `outcome` is a small fixed enum, never a
+  // per-recipient / per-household label:
+  //   sent | failed                      — the transport was invoked (EmailOutcome)
+  //   skipped_disabled                   — email transport unconfigured (no Resend secrets)
+  //   skipped_no_recipient               — household has no notify_email set
+  //   skipped_no_household               — alert's MAC has no device/household to resolve
+  def notifyEmail(outcome: String): UIO[Unit] =
+    MetricGuard.counter("notify_email_total", Map("outcome" -> outcome))
 
   // ── #2132: beta request → provisioning pipeline outcomes ─────────────────────
   // One counter for every terminal event in the beta pipeline (design §3), so the

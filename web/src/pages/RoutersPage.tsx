@@ -4,6 +4,7 @@ import type { CreateRouterResponse, RouterSummary } from '@/types/api'
 import { PageLoader } from './DashboardPage'
 import { useEscapeClose } from '@/hooks/useEscapeClose'
 import { EmptyState } from '@/components/EmptyState'
+import { copyToClipboard } from '@/lib/clipboard'
 
 export function RoutersPage() {
   const [routers, setRouters] = useState<RouterSummary[]>([])
@@ -17,25 +18,8 @@ export function RoutersPage() {
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
 
   async function copyToken(text: string) {
-    try {
-      if (navigator.clipboard && window.isSecureContext) {
-        await navigator.clipboard.writeText(text)
-      } else {
-        const ta = document.createElement('textarea')
-        ta.value = text
-        ta.setAttribute('readonly', '')
-        ta.style.position = 'fixed'
-        ta.style.opacity = '0'
-        document.body.appendChild(ta)
-        ta.select()
-        const ok = document.execCommand('copy')
-        document.body.removeChild(ta)
-        if (!ok) throw new Error('execCommand copy failed')
-      }
-      setCopyState('copied')
-    } catch {
-      setCopyState('failed')
-    }
+    // #2133: shared helper (secure-context Clipboard API + plain-http execCommand fallback).
+    setCopyState(await copyToClipboard(text) ? 'copied' : 'failed')
     setTimeout(() => setCopyState('idle'), 2000)
   }
 

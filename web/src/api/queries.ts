@@ -8,7 +8,7 @@
 import { useQuery, useQueryClient, type UseQueryOptions } from '@tanstack/react-query'
 import { api } from '@/api/client'
 import type {
-  Alert, BlocklistSummary, DashboardNow, Device, HouseholdSettings, MeResponse, NamedSchedule, ProfileDetail,
+  Alert, BetaRequestStatus, BetaRequestSummary, BlocklistSummary, DashboardNow, Device, HouseholdSettings, MeResponse, NamedSchedule, ProfileDetail,
   ProfileTimeStatus,
   ProfileAppWeeklyUsage,
   ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek, ProfileUsageByApp,
@@ -61,6 +61,8 @@ export const LIVE_SURFACE_FALLBACK_REFETCH_MS = 10_000
 
 export const qk = {
   me: () => ['me'] as const,
+  // #2133 — operator beta-request queue, keyed on the optional status filter.
+  betaRequests: (status?: BetaRequestStatus) => ['beta-requests', status ?? 'pending'] as const,
   profiles: () => ['profiles'] as const,
   devices: () => ['devices'] as const,
   alerts: (includeAll: boolean) => ['alerts', includeAll] as const,
@@ -124,6 +126,21 @@ export function useMe(opts?: QueryOpts<MeResponse>) {
     queryKey: qk.me(),
     queryFn: () => api.auth.me(),
     staleTime: Infinity,
+    ...opts,
+  })
+}
+
+// #2133 (multi-tenant P5-3): the operator's beta-request review queue. Only a
+// household-1 admin (`isOperator`) can read it — the API 403s everyone else — so
+// the caller enables this query off `useMe().data?.isOperator`.
+export function useBetaRequests(
+  status?: BetaRequestStatus,
+  opts?: QueryOpts<BetaRequestSummary[]>,
+) {
+  return useQuery({
+    queryKey: qk.betaRequests(status),
+    queryFn: () => api.beta.operatorList(status),
+    staleTime: 30_000,
     ...opts,
   })
 }

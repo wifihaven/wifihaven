@@ -316,7 +316,28 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(me.username == "alice") &&
         assertTrue(me.role == UserRole.Child) &&
-        assertTrue(me.profileIds == List(kidsId))
+        assertTrue(me.profileIds == List(kidsId)) &&
+        // #2133: a child is never an operator (design §3.2 — admin AND household 1).
+        assertTrue(!me.isOperator)
+    },
+    test("GET /api/me reports isOperator for a household-1 admin (#2133)") {
+      for {
+        _        <- cleanDb
+        userRepo <- ZIO.service[UserRepo]
+        upRepo   <- ZIO.service[UserProfileRepo]
+        auth     <- makeAuth
+        // The V1 seed admin lives in household 1 (the default operator household).
+        token    <- auth.login("admin", "changeme").map(_.token.value)
+        routes = AuthRoutes.routes(auth, userRepo, upRepo, RateLimiter.allowAll)
+        req    = Request
+          .get(URL.decode("/api/me").toOption.get)
+          .addHeader(Header.Authorization.Bearer(token))
+        resp <- routes.runZIO(req)
+        body <- resp.body.asString
+        me   <- ZIO.fromEither(body.fromJson[MeResponse])
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(me.role == UserRole.Admin) &&
+        assertTrue(me.isOperator)
     },
     test("device list scoped to user's profiles for non-admin") {
       for {

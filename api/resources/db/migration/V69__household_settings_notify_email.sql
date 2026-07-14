@@ -1,0 +1,39 @@
+-- V69__household_settings_notify_email.sql
+-- #578 (block-page kid→parent request flow, deferred email-notification half;
+-- epic #874). The request flow itself shipped in #960/#1057: a kid's block-page
+-- CTA POSTs /api/access-requests, the server raises an `alerts` row of
+-- kind='access_request', and the admin approves/denies from the in-app banner.
+-- What was deferred is *notifying the parent out-of-band* when such a request
+-- arrives; #578 was reopened to track the email half.
+--
+-- This column is the recipient half of that: a per-household address the API
+-- emails when a new access-request (or, later, any admin-notify-worthy) alert is
+-- raised. It mirrors the #874 design ("household notification settings:
+-- notifyEmail: Option[String]"). The address is a *notification preference*, not
+-- a login identity, so it lives on household_settings — deliberately NOT coupled
+-- to users.email (V67's global login identifier): the operator may want alerts
+-- to go somewhere other than any one admin's login address.
+--
+-- SCHEMA-ONLY PR (per docs/process/migrations.md#migrations-back-compat): this
+-- migration ships alone (SQL + docs), no source/tests. The HouseholdSettings
+-- field, repo read/write, settings-route round-trip, and the EmailSender/Notifier
+-- transport that READ this column land in the follow-up code PR (#578). Until
+-- then the column is inert — nothing reads it, every existing row is NULL, and
+-- behavior is unchanged. The existing feature suite applying V69 over the seeded
+-- schema (embedded Postgres) is the clean-apply / back-compat gate.
+--
+-- Nullable, no default: NULL means "no notification recipient configured" — the
+-- Notifier falls back to its existing structured-log line (also the state when
+-- the Resend transport itself is unconfigured). image-(N-1) source — which never
+-- names notify_email in any INSERT/UPDATE — keeps working unchanged; existing
+-- rows and any new rows it writes get NULL.
+--
+-- household_settings is a small singleton-style metadata table (id=1, one row
+-- per household), NOT an unbounded-growth event table (traffic_reports,
+-- connection_events, block_events, rollups). ADD COLUMN with no default is
+-- metadata-only in PG 11+ (no table rewrite), so this is safe on the Flyway
+-- startup critical path even at prod data volume
+-- (docs/process/migrations.md#migrations-prod-data-volume).
+
+ALTER TABLE household_settings
+  ADD COLUMN notify_email TEXT;

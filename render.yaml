@@ -313,6 +313,17 @@ services:
         sync: false
       - key: WIFIHAVEN_STRIPE_APP_BASE_URL
         value: "https://app.wifihaven.net"
+      # #578: outbound email for block-page kid→parent access-request notifications.
+      # OFF until BOTH secrets are set in the Render dashboard (sync:false = declared
+      # here, value entered out of band; entrypoint.sh renders them into the config's
+      # `email {}` block). With either unset, EmailConfig.enabled is false and the
+      # Notifier falls back to a log line — the in-app dashboard banner is unaffected.
+      # RESEND_API_KEY is a Resend key ("re_…"); FROM_ADDRESS is a verified sender
+      # like "WifiHaven <alerts@wifihaven.net>". NEVER commit values.
+      - key: WIFIHAVEN_EMAIL_RESEND_API_KEY
+        sync: false
+      - key: WIFIHAVEN_EMAIL_FROM_ADDRESS
+        sync: false
 
   # ── Metrics collector: Grafana Alloy → Grafana Cloud ─────────────────────────
   # #1208: the cloud APP-metrics path. Alloy (Prometheus agent-mode) scrapes

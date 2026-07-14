@@ -67,6 +67,30 @@ def _disable_ws(*, extra_settings: tuple[str, ...] = ()) -> None:
     # check=False: this only ever runs from a `finally` (see both tests below),
     # so it must never itself raise and hide the original failure.
     _uci_ws("uci set wifihaven.ws.enabled=0", *extra_settings, check=False)
+    # Clear the ws-health sentinel on teardown so it never leaks to the next
+    # test. The sidecar removes it only on a *failed/dropped* connect; a procd
+    # stop (ws disabled here) kills the sidecar without clearing, so a sentinel
+    # from a successful connection would otherwise survive. See _reset_ws_health.
+    _reset_ws_health()
+
+
+def _reset_ws_health() -> None:
+    """Remove the ws-health sentinel on the router so a *stale* one can't be
+    read as a live connection.
+
+    The sidecar touches WS_HEALTH_PATH only after a successful connect and
+    removes it on a failed/dropped connect — but nothing clears it on a procd
+    stop (ws disabled) or at sidecar startup. So the sentinel written by the
+    positive test's successful connection survives `_disable_ws` and is still
+    on disk when the negative test re-enables ws against the wrong-host target.
+    That test polls immediately and would catch the STALE file — present for
+    ~1s until the sidecar's first failed connect clears it — a false
+    "wrongly connected". Proven on-device (openwrt.lan, identical to prod:
+    OpenWrt 25.12.3 / luaossl-20220711 / OpenSSL 3.5.6): wrong.host.badssl.com
+    is rejected at starttls and the sentinel is gone by t≈2s, but observable at
+    t≈1s. Clearing it up front makes any later appearance genuine.
+    """
+    router_ssh(f"rm -f {WS_HEALTH_PATH}", check=False, timeout=10)
 
 
 def _ws_health_present() -> bool:
@@ -109,6 +133,9 @@ def test_ws_sidecar_wss_handshake(enrolled_router):
     """
     baseline_ok = _ws_metric("ws_connect_total", "ok")
 
+    # Start from a clean sentinel so the "appeared" assertion below reflects a
+    # genuine new connection, not a leftover from a prior run/boot.
+    _reset_ws_health()
     _enable_ws()
     try:
         # The health sentinel is only touched after ws_loop.lua's connect step
@@ -158,6 +185,11 @@ def test_ws_sidecar_rejects_wrong_hostname_cert(enrolled_router):
     assert real_api_url, "WH_API_URL not set"
 
     baseline_fail = _ws_metric("ws_connect_total", "upgrade_fail")
+    # Critical: clear any sentinel the positive test left behind BEFORE enabling
+    # ws against the wrong-host target. Without this the poll below catches that
+    # stale file and reports a false "wrongly connected" even though the sidecar
+    # correctly rejects wrong.host.badssl.com at starttls (see _reset_ws_health).
+    _reset_ws_health()
     _uci_ws(
         f"uci set wifihaven.wifihaven.api_url=https://{WRONG_HOST_TARGET}",
         "uci set wifihaven.ws.enabled=1",

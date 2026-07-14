@@ -116,6 +116,12 @@ export interface HouseholdSettings {
   ambientIsolationMaxHosts: number
   ambientMinIsolatedDays: number
   ambientLearningWindowDays: number
+  // #578 — per-household address the API emails when a kid raises an access
+  // request from the block page (extension / exemption / unpause). null = no
+  // recipient configured (the API falls back to a log line, and also sends
+  // nothing when the Resend transport itself is unconfigured). A notification
+  // preference, not a login identity.
+  notifyEmail: string | null
 }
 
 export interface TimeLimit {
@@ -176,6 +182,9 @@ export interface Alert {
   createdAt: string
   decidedAt: string | null
   decidedBy: string | null
+  // #578 — the alert's household, resolved server-side from the device join.
+  // null when the MAC has no device row. Not rendered; carried for completeness.
+  householdId: number | null
 }
 
 /** Admin POST body for /approve. Empty today — new_device approval is just a
@@ -756,7 +765,17 @@ export interface MeResponse {
   username: string
   role: UserRole
   profileIds: number[]
+  // #2133 (multi-tenant P5-3): true when the caller passes the operator gate
+  // (admin AND household 1 — design §3.2). The SPA gates the beta-request queue
+  // nav/route on this instead of hardcoding the household-1-admin rule. Absent
+  // (→ false) for every non-operator and for pre-#2133 API builds.
+  isOperator?: boolean
 }
+
+// NOTE: the beta-pipeline wire types (BetaRequestStatus, CreateBetaRequest,
+// BetaRequestAck, BetaRequestSummary, ApproveBetaResponse, AcceptInviteRequest,
+// AcceptInviteResponse) already ship below with #2132 — see "Beta access
+// requests". The #2133 SPA consumes those; do NOT redeclare them here.
 
 export interface CreateUserRequest {
   username: string

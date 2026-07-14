@@ -22,12 +22,19 @@ vi.mock('@/hooks/useAuth', () => ({
   useAuth: () => mockAuth,
 }))
 
+// #2133: the operator nav item is driven by the isOperator API signal (useMe), not the JWT role.
+let mockMe: { isOperator?: boolean } | undefined = undefined
+vi.mock('@/api/queries', () => ({
+  useMe: () => ({ data: mockMe }),
+}))
+
 import { Layout } from './Layout'
 
 beforeEach(() => {
   navigateMock.mockReset()
   logoutMock.mockReset()
   mockAuth = { username: 'alice', role: 'admin', isAdmin: true, logout: logoutMock }
+  mockMe = undefined
 })
 
 function renderLayout() {
@@ -96,6 +103,25 @@ describe('Layout — Settings dropdown', () => {
     expect(within(menu).queryByRole('menuitem', { name: /Users/ })).not.toBeInTheDocument()
     expect(within(menu).queryByRole('menuitem', { name: /Routers/ })).not.toBeInTheDocument()
     expect(within(menu).queryByRole('menuitem', { name: /Settings/ })).not.toBeInTheDocument()
+  })
+
+  // #2133 — the operator beta-request queue is gated on the isOperator API signal.
+  it('hides Beta Requests for an admin who is NOT an operator', async () => {
+    mockMe = { isOperator: false }
+    const user = userEvent.setup()
+    renderLayout()
+    await user.click(screen.getByRole('button', { name: /Advanced/ }))
+    const menu = screen.getByRole('menu')
+    expect(within(menu).queryByRole('menuitem', { name: /Beta Requests/ })).not.toBeInTheDocument()
+  })
+
+  it('shows Beta Requests only when the API reports the caller is an operator', async () => {
+    mockMe = { isOperator: true }
+    const user = userEvent.setup()
+    renderLayout()
+    await user.click(screen.getByRole('button', { name: /Advanced/ }))
+    const menu = screen.getByRole('menu')
+    expect(within(menu).getByRole('menuitem', { name: /Beta Requests/ })).toBeInTheDocument()
   })
 })
 
