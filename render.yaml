@@ -170,6 +170,17 @@ services:
         sync: false
       - key: WIFIHAVEN_STRIPE_APP_BASE_URL
         value: "https://app-staging.wifihaven.net"
+      # #578: outbound email for block-page kid→parent access-request notifications
+      # on STAGING. Same sync:false pattern as prod below — OFF until BOTH secrets
+      # are set in the staging Render dashboard (entrypoint.sh renders them into the
+      # config `email {}` block; with either unset, EmailConfig.enabled is false and
+      # the Notifier just logs). Uses the same Resend domain (wifihaven.net) as prod,
+      # so it needs the domain verified (DNS) + a key set here to actually send.
+      # NEVER commit values.
+      - key: WIFIHAVEN_EMAIL_RESEND_API_KEY
+        sync: false
+      - key: WIFIHAVEN_EMAIL_FROM_ADDRESS
+        sync: false
 
   # ── Production API ─────────────────────────────────────────────────────────
   - type: web
