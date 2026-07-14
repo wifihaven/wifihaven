@@ -18,6 +18,36 @@ export function composeIdentifier(entered: string, cookieSlug: string | null): s
   return cookieSlug ? `${cookieSlug}/${value}` : value
 }
 
+/**
+ * #2220: cookie-aware guidance under the identifier field, so a member on a non-default household
+ * knows whether to prepend their household. Two cases, keyed on the `wh_household` cookie:
+ *   - cookie SET → the SPA auto-prepends the slug (composeIdentifier), so the user just types their
+ *     username. We surface which household so it's clear which slug is being composed.
+ *   - cookie NOT set (fresh device) → a member of a NAMED household should sign in as
+ *     `household-name/username`. This is a HINT, not a requirement: a bare username still resolves
+ *     server-side to the DEFAULT household (slug `default`), so the primary/self-hosted household —
+ *     admin + kids — keeps signing in with just a username. Never phrase it as "you must prepend".
+ * The cookie is a client-side UX hint only; it never authenticates.
+ */
+export type HouseholdHint =
+  | { kind: 'cookie'; slug: string; text: string }
+  | { kind: 'no-cookie'; text: string }
+
+export function householdHint(cookieSlug: string | null): HouseholdHint {
+  const slug = (cookieSlug ?? '').trim()
+  if (slug) {
+    return {
+      kind: 'cookie',
+      slug,
+      text: `Signing in to the ${slug} household — just enter your username.`,
+    }
+  }
+  return {
+    kind: 'no-cookie',
+    text: 'If you belong to a named household, sign in as household-name/username.',
+  }
+}
+
 export function LoginPage() {
   const { login } = useAuth()
   const navigate  = useNavigate()
@@ -25,6 +55,9 @@ export function LoginPage() {
   const [password,   setPassword]   = useState('')
   const [error,      setError]      = useState('')
   const [loading,    setLoading]    = useState(false)
+  // #2220: read the cookie once at mount for the guidance line (the SUBMIT path re-reads it in
+  // composeIdentifier, so a login mid-session still composes against the freshest value).
+  const [hint] = useState(() => householdHint(getHouseholdCookie()))
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -79,6 +112,15 @@ export function LoginPage() {
               autoFocus
               required
             />
+            {/* #2220: cookie-aware guidance so a non-default-household member knows whether to
+                prepend their household slug. A hint only — the default household still signs in
+                with a bare username. */}
+            <p
+              data-testid="household-hint"
+              className="mt-2 text-xs text-brand-text-muted"
+            >
+              {hint.text}
+            </p>
           </div>
           <div>
             <label className="block text-xs font-semibold text-brand-text-muted uppercase tracking-wider mb-2">
