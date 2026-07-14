@@ -144,6 +144,93 @@
         color: var(--slate);
         padding: 11px 6px;
       }
+      .hero-note {
+        margin: 16px 0 0;
+        font-size: 14px;
+        color: rgba(31, 27, 22, 0.6);
+      }
+
+      /* Pricing */
+      .prices {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 22px;
+        margin-top: 8px;
+      }
+      .price {
+        position: relative;
+        border: 1px solid rgba(58, 90, 108, 0.14);
+        border-radius: 16px;
+        padding: 28px 26px;
+        background: #fff;
+        display: flex;
+        flex-direction: column;
+      }
+      .price.feature {
+        border-color: rgba(194, 105, 58, 0.55);
+        box-shadow: 0 18px 40px -30px rgba(194, 105, 58, 0.6);
+      }
+      .price h3 {
+        margin: 0 0 4px;
+        color: var(--slate);
+        font-size: 18px;
+      }
+      .price .amt {
+        font-size: 34px;
+        font-weight: 700;
+        color: var(--ink);
+        line-height: 1.1;
+        margin: 8px 0 2px;
+      }
+      .price .amt small {
+        font-size: 15px;
+        font-weight: 500;
+        color: rgba(31, 27, 22, 0.6);
+      }
+      .price .alt {
+        font-size: 14px;
+        color: rgba(31, 27, 22, 0.6);
+        margin: 0 0 14px;
+      }
+      .price ul {
+        margin: 6px 0 0;
+        padding: 0;
+        list-style: none;
+        font-size: 15px;
+        color: rgba(31, 27, 22, 0.82);
+      }
+      .price ul li {
+        padding: 5px 0 5px 22px;
+        position: relative;
+      }
+      .price ul li::before {
+        content: '✓';
+        position: absolute;
+        left: 0;
+        color: var(--terracotta);
+        font-weight: 700;
+      }
+      .badge {
+        position: absolute;
+        top: -12px;
+        right: 20px;
+        background: var(--terracotta);
+        color: #fff;
+        font-size: 12px;
+        font-weight: 600;
+        padding: 4px 12px;
+        border-radius: 999px;
+        letter-spacing: 0.01em;
+      }
+      .price .buy {
+        margin-top: auto;
+        padding-top: 18px;
+      }
+      .closing-note {
+        margin: 16px 0 0;
+        font-size: 14px;
+        color: rgba(242, 232, 213, 0.72);
+      }
 
       /* Sections */
       section.band {
@@ -604,7 +691,8 @@
           display: none;
         }
         .steps,
-        .two {
+        .two,
+        .prices {
           grid-template-columns: 1fr;
         }
         .hero h1 {
@@ -631,7 +719,7 @@
         <a href="/" aria-label="wifihaven home">
           <img src="/brand/lockup-horizontal.svg" alt="wifihaven" />
         </a>
-        <a class="cta" href="https://app.wifihaven.net">Open the app →</a>
+        <a class="cta" href="https://app.wifihaven.net/beta">Request beta access</a>
       </nav>
     </header>
 
@@ -646,9 +734,13 @@
               No DNS sinkholes, no app to install on every device.
             </p>
             <div class="actions">
-              <a class="cta" href="https://app.wifihaven.net">Open the app →</a>
-              <a class="ghost" href="#how">See how it works</a>
+              <a class="cta" href="https://app.wifihaven.net/beta">Request beta access</a>
+              <a class="ghost" href="#pricing">See pricing</a>
             </div>
+            <p class="hero-note">
+              Free during the beta · no card required ·
+              <a href="https://app.wifihaven.net">already have access?</a>
+            </p>
           </div>
           <img src="/brand/mascot.svg" alt="" aria-hidden="true" />
         </div>
@@ -809,27 +901,65 @@
         </div>
       </section>
 
-      <section class="band" style="padding-top: 0">
+      <section class="band" style="padding-top: 0" id="pricing">
         <div class="wrap">
-          <h2>Self-host or let us host it</h2>
-          <p class="sub">Same software, your choice of who runs the cloud side.</p>
-          <div class="two">
-            <div class="card">
+          <h2>Simple pricing</h2>
+          <p class="sub">
+            One subscription per household — unlimited profiles and devices, no
+            per-device fees. Or run the whole thing yourself, free forever.
+          </p>
+
+          <div class="callout" style="margin-bottom: 28px">
+            <strong>Free during the beta.</strong> The beta is invite-based:
+            request access, and we review each request by hand and send an
+            invite link when you're approved. It's free through your cohort's
+            flip date — printed when you sign up, so there's no surprise — and
+            <strong>no card is required</strong> during the beta.
+          </div>
+
+          <div class="prices">
+            <div class="price">
               <h3>Cloud</h3>
-              <p>
-                We run the control plane; you just plug in a wifihaven router
-                and manage everything from
-                <a href="https://app.wifihaven.net">app.wifihaven.net</a>.
-                Nothing to maintain.
-              </p>
+              <p class="amt">$10<small> / month</small></p>
+              <p class="alt">or $96 / year</p>
+              <ul>
+                <li>Unlimited profiles &amp; devices</li>
+                <li>1 router</li>
+                <li>Hosted control plane — nothing to run or upgrade</li>
+                <li>History, dashboards &amp; remote access</li>
+              </ul>
+              <div class="buy">
+                <a class="cta" href="https://app.wifihaven.net/beta">Request beta access</a>
+              </div>
             </div>
-            <div class="card">
+
+            <div class="price feature">
+              <span class="badge">Founding households</span>
+              <h3>Founding price</h3>
+              <p class="amt">$6<small> / month</small></p>
+              <p class="alt">or $57 / year — 40% off</p>
+              <ul>
+                <li>Everything in Cloud</li>
+                <li>Locked in for as long as you stay subscribed</li>
+                <li>Reserved for beta households</li>
+              </ul>
+              <div class="buy">
+                <a class="cta" href="https://app.wifihaven.net/beta">Join the beta</a>
+              </div>
+            </div>
+
+            <div class="price">
               <h3>Self-hosted</h3>
-              <p>
-                Run the whole stack on your own hardware — the API server
-                bundles the web app — and keep every byte of household data
-                under your roof.
-              </p>
+              <p class="amt">Free<small> forever</small></p>
+              <p class="alt">Run it on your own hardware</p>
+              <ul>
+                <li>The whole stack — the API server bundles the web app</li>
+                <li>Every byte of household data stays under your roof</li>
+                <li>Same software, no subscription</li>
+              </ul>
+              <div class="buy">
+                <a class="cta" href="https://github.com/wifihaven/wifihaven">View on GitHub →</a>
+              </div>
             </div>
           </div>
         </div>
@@ -855,7 +985,10 @@
 
     <section class="closing">
       <h2>Ready to give your network a haven?</h2>
-      <a class="cta" href="https://app.wifihaven.net">Open the app →</a>
+      <a class="cta" href="https://app.wifihaven.net/beta">Request beta access</a>
+      <p class="closing-note">
+        Free during the beta · no card required · requests are reviewed by hand.
+      </p>
     </section>
 
     <footer>
