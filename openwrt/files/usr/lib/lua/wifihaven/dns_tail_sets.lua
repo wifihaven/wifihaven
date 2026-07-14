@@ -221,35 +221,48 @@ end
 -- candidate suffix. Runs only at apply time (infrequent, etag-deduped) and
 -- only when some MAC has a non-empty extraAllowed, so it does not reintroduce
 -- a hot-path O(N) scan (cf. #2068).
-function M.backfill_ea(cache, carve, deps)
-  if type(cache) ~= "table" or type(carve) ~= "table" then return 0 end
-  local adds = 0
+-- Shared element enumerator for the two backfill emitters below (#2095
+-- per-element, #2208 batch). Single source of the walk/dedup semantics: for
+-- each cached (ip, name) whose candidate suffix (or #1346 recovered branded
+-- head) hits a carved host — first carved suffix wins, mirroring
+-- maybe_populate_ea — invoke emit(set_name, safe_ip, name) once per MAC that
+-- carves the host. Family (ea_ vs ea6_) is chosen from the ip literal; ips
+-- failing safe_addr are skipped before the walk so a malformed cache line can
+-- never reach an emitter.
+local function each_ea_backfill_element(cache, carve, deps, emit)
+  if type(cache) ~= "table" or type(carve) ~= "table" then return end
   for ip, name in pairs(cache) do
     if type(name) == "string" then
-      local is6    = (type(ip) == "string") and ip:find(":", 1, true) ~= nil
-      local prefix = is6 and "ea6_" or "ea_"
-      local seen   = {}
-      M.each_candidate_host(name, deps.resolve_head, function(sanhost)
-        local macs = carve[sanhost]
-        if macs then
-          if not seen[sanhost] then
-            seen[sanhost] = true
-            for sanmac in pairs(macs) do
-              if M.nft_add_element(deps.nft_table,
-                   prefix .. sanmac .. "_" .. sanhost, ip, deps.exec_fn) then
-                adds = adds + 1
-                if deps.log then
-                  deps.log(prefix .. sanmac .. "_" .. sanhost, ip, name)
-                end
+      local safe = M.safe_addr(ip)
+      if safe then
+        local prefix = safe:find(":", 1, true) and "ea6_" or "ea_"
+        local seen   = {}
+        M.each_candidate_host(name, deps.resolve_head, function(sanhost)
+          local macs = carve[sanhost]
+          if macs then
+            if not seen[sanhost] then
+              seen[sanhost] = true
+              for sanmac in pairs(macs) do
+                emit(prefix .. sanmac .. "_" .. sanhost, safe, name)
               end
             end
+            return true  -- first carved suffix wins (mirror maybe_populate_ea)
           end
-          return true  -- first carved suffix wins (mirror maybe_populate_ea)
-        end
-        return false
-      end)
+          return false
+        end)
+      end
     end
   end
+end
+
+function M.backfill_ea(cache, carve, deps)
+  local adds = 0
+  each_ea_backfill_element(cache, carve, deps, function(set_name, ip, name)
+    if M.nft_add_element(deps.nft_table, set_name, ip, deps.exec_fn) then
+      adds = adds + 1
+      if deps.log then deps.log(set_name, ip, name) end
+    end
+  end)
   return adds
 end
 
@@ -266,10 +279,10 @@ end
 --            lines (one per set, ips grouped + sorted), "" when count==0.
 --   count  — number of distinct (set, ip) elements the script adds.
 --
--- Walk/dedup semantics are byte-identical to M.backfill_ea: same candidate-host
--- suffix walk (+ #1346 resolve_head head), same first-carved-suffix-wins, same
--- v4/v6 prefix split. The only difference is emission — accumulate into a
--- per-set element map and render one batch rather than exec per element.
+-- Walk/dedup semantics are M.backfill_ea's exactly — both emitters drive the
+-- SAME shared enumerator (each_ea_backfill_element), so they cannot drift. The
+-- only difference is emission — accumulate into a per-set element map and
+-- render one batch rather than exec per element.
 --
 -- Safety: every target set is DECLARED by render.nft from the SAME
 -- render.effective_extra_allowed_by_mac SSOT the caller builds `carve` from,
@@ -280,37 +293,15 @@ end
 -- fails (a set genuinely raced away), falls back to the per-element path so a
 -- single stale set can never drop the whole carve seeding.
 function M.build_ea_backfill_script(cache, carve, deps)
-  if type(cache) ~= "table" or type(carve) ~= "table" then return "", 0 end
   deps = deps or {}
   local by_set = {}   -- set_name -> { [ip]=true } (dedup within a set)
   local order  = {}   -- set-name insertion order (sorted before render)
   local count  = 0
-  for ip, name in pairs(cache) do
-    if type(name) == "string" then
-      local safe = M.safe_addr(ip)
-      if safe then
-        local is6    = ip:find(":", 1, true) ~= nil
-        local prefix = is6 and "ea6_" or "ea_"
-        local seen   = {}
-        M.each_candidate_host(name, deps.resolve_head, function(sanhost)
-          local macs = carve[sanhost]
-          if macs then
-            if not seen[sanhost] then
-              seen[sanhost] = true
-              for sanmac in pairs(macs) do
-                local set = prefix .. sanmac .. "_" .. sanhost
-                local ips = by_set[set]
-                if not ips then ips = {}; by_set[set] = ips; order[#order + 1] = set end
-                if not ips[safe] then ips[safe] = true; count = count + 1 end
-              end
-            end
-            return true  -- first carved suffix wins (mirror M.backfill_ea)
-          end
-          return false
-        end)
-      end
-    end
-  end
+  each_ea_backfill_element(cache, carve, deps, function(set, ip, _name)
+    local ips = by_set[set]
+    if not ips then ips = {}; by_set[set] = ips; order[#order + 1] = set end
+    if not ips[ip] then ips[ip] = true; count = count + 1 end
+  end)
   if count == 0 then return "", 0 end
   table.sort(order)
   local tbl   = deps.nft_table or "inet wifihaven"

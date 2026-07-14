@@ -261,7 +261,7 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
   local on_apply = opts.on_apply
   -- #2208 apply-latency instrumentation: an optional opts.phase_timer(phase,
   -- seconds) is invoked once per internal phase with a BOUNDED phase name
-  -- (render_dnsmasq / render_nft / write / dnsmasq_restart / nft_load /
+  -- (render_dnsmasq / render_nft / dnsmasq_restart / nft_load /
   -- ea_backfill / smoke_probe). nil in tests/legacy callers → zero cost. The
   -- agent wires it to observe policy_apply_duration_seconds{phase} so per-phase
   -- apply latency is visible on the fleet dashboard.
