@@ -572,6 +572,39 @@ immediately. Because the seed uses two real households in embedded PG (not
 mocks), the SQL predicate itself is what's under test — exactly the
 `docs/process/testing.md` philosophy.
 
+### 7.1 Every scoped read gets BOTH an isolation pin and a sees-own-data pin (#2176)
+
+The isolation pins above are all *negative* — they prove household-A never sees
+household-B's rows. That is necessary but **not sufficient**: a predicate that
+resolves to the WRONG or an empty household passes every negative pin while
+silently returning nothing. That is exactly the admin-0m usage regression
+([#2167](https://github.com/wifihaven/wifihaven/issues/2167)) — scoped, isolated,
+and broken (its proximate cause was read-amplification, but the *class* of bug an
+isolation-only test can't catch is real).
+
+So the standing rule for any household-scoped read: pair each negative pin with a
+**positive** one that SEEDS the caller's household with real data and asserts it
+reads back **non-empty and correct**, with the cross-household read still empty.
+`MultiTenantSeesOwnDataSpec` is the home for these positive pins (mirroring the
+`GET /api/time/status` usedMins/cap/appUsage shape the 0m bug hid in). And
+`MultiTenantScopedReadGuardSpec` fails the build if a NEW unscoped route read
+(a `…listAll` without a `…ForHousehold` sibling call) appears outside the tracked
+allowlist — encoding the lesson rather than re-fixing instances. The still-unscoped
+usage/analytics/push reads and `named_schedules` are tracked by
+[#2126](https://github.com/wifihaven/wifihaven/issues/2126) /
+[#2120](https://github.com/wifihaven/wifihaven/issues/2120).
+
+**Index/backfill audit (2026-07-14, #2176):** every E-scoped read is index-backed —
+the four root tables via V65's `idx_{profiles,devices,routers,users}_household`
+(and the leading column of the composite uniques); the transitive `→ profiles`
+joins (`time_limits`, `app_policy_assignments`) via the existing
+`time_limits.profile_id UNIQUE` / `idx_app_policy_assignments_profile`; `alerts`
+via `alerts(mac, …)`; the `connection_events → routers` logs join filters on the
+tiny already-joined `routers` row and leaves `ts`-driven partition pruning intact.
+No new index was needed. V65 added every `household_id` column `NOT NULL DEFAULT 1`
+with an FK, so a NULL or dangling tenancy key is structurally impossible — pinned
+non-vacuously by the backfill-integrity test.
+
 ---
 
 ## 8. Rollout order (foundation-first)
