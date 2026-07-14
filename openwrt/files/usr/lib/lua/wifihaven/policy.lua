@@ -57,6 +57,12 @@ local dns_sets = require("wifihaven.dns_tail_sets") -- #2095: ea_/ea6_ backfill
 -- anyway — worst case an explicitly-allowed host stays reachable a bit longer.
 local DNS_CACHE_ACCEPT_ALL = math.huge
 
+-- #2207: where `nft -f`'s stderr is captured so a rejected ruleset load is
+-- diagnosable. tmpfs; truncated (`2>`) on every apply, so it is bounded to a
+-- single apply's error output and needs no rotation (docs/process/
+-- router-agent-bounded-writes.md).
+local NFT_ERR_PATH = "/tmp/wifihaven-nft-err.log"
+
 -- log is injectable for tests; default uses the real logger wrapper.
 local function default_log()
   local ok, l = pcall(require, "wifihaven.log")
@@ -338,8 +344,29 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
   -- Single atomic `nft -f`. The rendered file's prelude removes both the
   -- boot default-deny skeleton (table inet wifihaven_boot — #308) and any
   -- prior runtime table in one transaction, then installs the new ruleset.
-  local nft_rc = reload_fn("nft -f /tmp/nftables.d/wifihaven.nft")
+  --
+  -- #2207: a failed `nft -f` is ATOMIC — the kernel keeps the PREVIOUS ruleset
+  -- and the newly-rendered rules never take effect, even though the file on
+  -- disk is correct. This function used to `return true` unconditionally, so a
+  -- rejected load was invisible: the caller recorded the snapshot as applied,
+  -- rebuilt its in-memory tables, and (over ws, poll-independent) advanced the
+  -- applied etag — so the enforcement plane silently never changed and the
+  -- apply was NEVER retried (etag dedup). That is exactly the ws-cutover
+  -- failure in #2207 (a pushed pause "applied" cleanly yet the whole-MAC drop
+  -- never rendered). We now capture nft's stderr, log the rejection loudly,
+  -- and return the load outcome so every caller retries (they gate on the
+  -- return and leave the applied etag unadvanced on false). The `2>` truncates
+  -- the capture file each apply, keeping it bounded.
+  local nft_rc = reload_fn(
+    "nft -f /tmp/nftables.d/wifihaven.nft 2>" .. NFT_ERR_PATH)
   local nft_ok = exec_ok(nft_rc)
+  if not nft_ok then
+    local nft_err = (read_fn(NFT_ERR_PATH) or ""):gsub("%s+$", "")
+    log.err("policy.apply: `nft -f` FAILED (rc=%s) — ruleset NOT loaded; the "
+            .. "previous ruleset persists and enforcement is stale. Reporting "
+            .. "the apply as failed so the caller retries. nft: %s",
+            tostring(nft_rc), nft_err)
+  end
 
   -- #2095: seed the per-(mac,host) extraAllowed carve sets (ea_/ea6_) from the
   -- persisted dns-tail ip->host cache immediately after the reload. The
@@ -406,9 +433,9 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
   end
 
   -- #1206: classify the apply outcome for policy_apply_total{result}. nft
-  -- load failure ranks above the smoke warning (it's the harder failure);
-  -- the boolean return is unchanged so failover/enforcement control flow is
-  -- untouched — this is observation only.
+  -- load failure ranks above the smoke warning (it's the harder failure). The
+  -- smoke warning does NOT fail the apply — a stale-config DNS answer is a
+  -- propagation concern, separate from whether the ruleset loaded (#351).
   local result
   if not nft_ok then
     result = "nft_failed"
@@ -419,7 +446,13 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
   end
   report(result, dnsmasq_changed, ea_backfilled)
 
-  return true
+  -- #2207: report the ACTUAL nft load outcome. A false return tells the caller
+  -- the enforcement plane did not change, so it retries and does not advance
+  -- the applied etag (the ws apply-on-push + poll paths both gate on this).
+  -- `nft_ok` is the only new failure channel — a write failure already
+  -- returned false above, and a smoke warning still returns true (it does not
+  -- mean the ruleset failed to load).
+  return nft_ok
 end
 
 -- ---------------------------------------------------------------------------
