@@ -91,6 +91,11 @@
         height: 34px;
         display: block;
       }
+      .nav-actions {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
       .cta {
         display: inline-block;
         background: var(--terracotta);
@@ -688,6 +693,9 @@
         .appbar .who {
           display: none;
         }
+        .nav-actions .ghost {
+          display: none;
+        }
       }
     </style>
   </head>
@@ -697,7 +705,10 @@
         <a href="/" aria-label="wifihaven home">
           <img src="/brand/lockup-horizontal.svg" alt="wifihaven" />
         </a>
-        <a class="cta" href="https://app.wifihaven.net/beta">Request beta access</a>
+        <div class="nav-actions">
+          <a class="ghost" href="https://app.wifihaven.net">Open the app</a>
+          <a class="cta" href="https://app.wifihaven.net/beta">Request beta access</a>
+        </div>
       </nav>
     </header>
 
@@ -717,7 +728,8 @@
             </div>
             <p class="hero-note">
               Free during the beta · no card required ·
-              <a href="https://app.wifihaven.net">already have access?</a>
+              already have access?
+              <a href="https://app.wifihaven.net">Open the app →</a>
             </p>
           </div>
           <img src="/brand/mascot.svg" alt="" aria-hidden="true" />
