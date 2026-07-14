@@ -105,6 +105,22 @@ describe('WelcomePage — /welcome invite accept', () => {
     expect(navigateMock).not.toHaveBeenCalled()
   })
 
+  it('when accept succeeds but auto-login fails, keeps the cookie and points to email sign-in', async () => {
+    acceptMock.mockResolvedValue({ householdId: 7, slug: 'smith-family', username: 'admin' })
+    loginMock.mockRejectedValue(new Error('network'))
+    const user = userEvent.setup()
+    renderWelcome()
+
+    await user.type(screen.getByLabelText(/^password/i), strongPw)
+    await user.type(screen.getByLabelText(/confirm password/i), strongPw)
+    await user.click(screen.getByRole('button', { name: /create my household/i }))
+
+    expect(await screen.findByText(/automatic sign-in failed/i)).toBeInTheDocument()
+    // The cookie was set before the failed login, so a future login lands in the right household.
+    expect(getHouseholdCookie()).toBe('smith-family')
+    expect(navigateMock).not.toHaveBeenCalled()
+  })
+
   it('prompts for a valid invite link when the token is missing', () => {
     renderWelcome('')
     expect(screen.getByText(/invite link required/i)).toBeInTheDocument()

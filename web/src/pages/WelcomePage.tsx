@@ -50,17 +50,28 @@ export function WelcomePage() {
       return
     }
     setLoading(true)
+    // Separate the accept failure (bad/expired/replayed invite) from a post-accept auto-login
+    // hiccup — after a successful accept the account already exists, so the honest recovery is
+    // "sign in with your email", not "your invite expired".
+    let accepted: Awaited<ReturnType<typeof api.beta.accept>>
     try {
-      const resp = await api.beta.accept(token, password)
-      // Set the household cookie BEFORE auto-login (design §3.4) so the browser remembers the slug
-      // for future bare-username logins even if the auto-login step hiccups.
-      setHouseholdCookie(resp.slug)
-      // Auto-login via the slug/username composite (path 2). The password we just set is the admin's.
-      await login(`${resp.slug}/${resp.username}`, password)
-      navigate('/dashboard')
+      accepted = await api.beta.accept(token, password)
     } catch {
       // The token is single-use and TTL'd: an invalid/expired/replayed invite fails here.
       setError('This invite link is invalid or has expired. Ask your operator for a new one.')
+      setLoading(false)
+      return
+    }
+    // Set the household cookie BEFORE auto-login (design §3.4) so the browser remembers the slug
+    // for future bare-username logins even if the auto-login step hiccups.
+    setHouseholdCookie(accepted.slug)
+    try {
+      // Auto-login via the slug/username composite (path 2). The password we just set is the admin's.
+      await login(`${accepted.slug}/${accepted.username}`, password)
+      navigate('/dashboard')
+    } catch {
+      // Account created, but the auto-login didn't land — send them to the normal sign-in.
+      setError('Your household is ready, but automatic sign-in failed. Please sign in with the email you were invited on.')
       setLoading(false)
     }
   }
