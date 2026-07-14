@@ -346,3 +346,98 @@ describe("backfill_ea", function()
     end
   end)
 end)
+
+-- ---------------------------------------------------------------------------
+-- #2208: batched ea_/ea6_ backfill script builder.
+--
+-- backfill_ea spawns one `nft add element` PROCESS per element — on a busy
+-- prod cache with broad carve hosts that is thousands of ~6ms fork+exec's,
+-- and it dominated policy-apply latency (the v0.3.19→v0.3.20 regression:
+-- ~24–30s for a profile pause on prod). build_ea_backfill_script folds the
+-- SAME walk/dedup semantics into a single `nft -f` ruleset string so
+-- policy.apply pays O(1) process spawns regardless of element count.
+-- ---------------------------------------------------------------------------
+describe("build_ea_backfill_script (#2208)", function()
+  local KID = "ca_ef_a1_72_6a_a3"
+  local function carve_jsdelivr()
+    return { jsdelivr_net = { [KID] = true } }
+  end
+  local function bdeps(extra)
+    local d = { nft_table = "inet wifihaven" }
+    for k, v in pairs(extra or {}) do d[k] = v end
+    return d
+  end
+
+  it("emits one `add element` line per set with all ips grouped", function()
+    local cache = {
+      ["151.101.1.229"]  = "cdn.jsdelivr.net",
+      ["151.101.65.229"] = "fastly.jsdelivr.net",
+    }
+    local script, n = sets.build_ea_backfill_script(cache, carve_jsdelivr(), bdeps())
+    assert.equal(2, n)
+    -- Both v4 ips land in ONE line for the single (mac, host) set, sorted.
+    assert.equal(
+      "add element inet wifihaven ea_" .. KID .. "_jsdelivr_net "
+        .. "{ 151.101.1.229, 151.101.65.229 }\n",
+      script)
+  end)
+
+  it("splits families into ea_ vs ea6_ target sets", function()
+    local cache = {
+      ["151.101.1.229"]        = "cdn.jsdelivr.net",
+      ["2606:4700::6811:d005"] = "cdn.jsdelivr.net",
+    }
+    local script, n = sets.build_ea_backfill_script(cache, carve_jsdelivr(), bdeps())
+    assert.equal(2, n)
+    assert.is_truthy(script:find(
+      "add element inet wifihaven ea_" .. KID .. "_jsdelivr_net { 151.101.1.229 }", 1, true))
+    assert.is_truthy(script:find(
+      "add element inet wifihaven ea6_" .. KID .. "_jsdelivr_net { 2606:4700::6811:d005 }", 1, true))
+  end)
+
+  it("fans out to every MAC that carves the host (backfill_ea parity)", function()
+    local OTHER = "76_2d_95_47_d1_8e"
+    local carve = { jsdelivr_net = { [KID] = true, [OTHER] = true } }
+    local cache = { ["151.101.1.229"] = "cdn.jsdelivr.net" }
+    local script, n = sets.build_ea_backfill_script(cache, carve, bdeps())
+    assert.equal(2, n)
+    assert.is_truthy(script:find("ea_" .. KID   .. "_jsdelivr_net { 151.101.1.229 }", 1, true))
+    assert.is_truthy(script:find("ea_" .. OTHER .. "_jsdelivr_net { 151.101.1.229 }", 1, true))
+  end)
+
+  it("recovers the branded head via resolve_head (#1346 parity)", function()
+    local cache = { ["199.232.65.42"] = "prod.khan.map.fastly.net" }
+    local carve = { kastatic_org = { [KID] = true } }
+    local resolve_head = function(name)
+      if name == "prod.khan.map.fastly.net" then return "cdn.kastatic.org" end
+      return name
+    end
+    local script, n = sets.build_ea_backfill_script(cache, carve,
+      bdeps({ resolve_head = resolve_head }))
+    assert.equal(1, n)
+    assert.is_truthy(script:find(
+      "add element inet wifihaven ea_" .. KID .. "_kastatic_org { 199.232.65.42 }", 1, true))
+  end)
+
+  it("returns empty script + 0 for no matches / empty cache / empty carve", function()
+    local s1, n1 = sets.build_ea_backfill_script(
+      { ["93.184.216.34"] = "example.com" }, carve_jsdelivr(), bdeps())
+    assert.equal(0, n1); assert.equal("", s1)
+    local s2, n2 = sets.build_ea_backfill_script({}, carve_jsdelivr(), bdeps())
+    assert.equal(0, n2); assert.equal("", s2)
+    local s3, n3 = sets.build_ea_backfill_script(
+      { ["1.2.3.4"] = "cdn.jsdelivr.net" }, {}, bdeps())
+    assert.equal(0, n3); assert.equal("", s3)
+  end)
+
+  it("never emits an ip that fails safe_addr (injection guard)", function()
+    local cache = {
+      ["1.2.3.4; rm -rf /"] = "cdn.jsdelivr.net",
+      ["151.101.1.229"]     = "cdn.jsdelivr.net",
+    }
+    local script, n = sets.build_ea_backfill_script(cache, carve_jsdelivr(), bdeps())
+    assert.equal(1, n)
+    assert.is_nil(script:find("rm -rf", 1, true), "unsafe ip must never reach the script")
+    assert.is_truthy(script:find("{ 151.101.1.229 }", 1, true))
+  end)
+end)
