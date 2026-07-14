@@ -127,8 +127,9 @@ object MultiTenantSeesOwnDataSpec
         start,
         start.plusSeconds(300),
         300,
-        // Above the household heartbeat-filter byte threshold (default 10 KiB) so it counts as real
-        // activity, not idle noise — a 0-byte bucket is dropped by the heartbeat filter.
+        // Comfortably above the household `HeartbeatFilter.bytesThreshold` so the bucket counts as
+        // real activity, not idle noise — a 0-byte bucket is dropped by the heartbeat filter and
+        // credits no presence (matches the `UsageApiSpec.insertRow` fixture's non-trivial bytes).
         25_000L,
         25_000L,
       )
