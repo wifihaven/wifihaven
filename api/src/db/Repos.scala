@@ -1355,9 +1355,27 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
                  presence_continuation_seconds,
                  block_encrypted_dns,
                  ambient_gate_enabled, ambient_isolation_max_hosts,
-                 ambient_min_isolated_days, ambient_learning_window_days
+                 ambient_min_isolated_days, ambient_learning_window_days,
+                 notify_email
             FROM household_settings WHERE""" ++ where)
-      .query[(LocalTime, ZoneId, Boolean, Int, String, Int, Boolean, Boolean, Int, Int, Int)]
+      .query[
+        (
+            LocalTime,
+            ZoneId,
+            Boolean,
+            Int,
+            String,
+            Int,
+            Boolean,
+            Boolean,
+            Int,
+            Int,
+            Int,
+            Option[
+              String,
+            ],
+        ),
+      ]
       .option
       .map {
         _.map {
@@ -1373,6 +1391,7 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
                 ambIso,
                 ambMinDays,
                 ambWindow,
+                notifyEmail,
               ) =>
             val umm = ummJson.fromJson[UnmanagedMacPolicy].getOrElse(UnmanagedMacPolicy.Default)
             HouseholdSettings(
@@ -1386,6 +1405,8 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
               ambIso,
               ambMinDays,
               ambWindow,
+              // #578: NULL notify_email → None (no recipient configured).
+              notifyEmail.map(_.trim).filter(_.nonEmpty),
             )
         }
       }
@@ -1450,6 +1471,7 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
                   ambient_isolation_max_hosts=${s.ambientIsolationMaxHosts},
                   ambient_min_isolated_days=${s.ambientMinIsolatedDays},
                   ambient_learning_window_days=${s.ambientLearningWindowDays},
+                  notify_email=${s.notifyEmail},
                   updated_at=NOW()
             WHERE id=1""".update.run
     val invalidate    = sql"DELETE FROM time_used_daily".update.run
@@ -1782,19 +1804,20 @@ class AlertRepoLive(xa: Transactor[Task]) extends AlertRepo {
   // match `baseSelect` below — the Doobie codec is positional.
   private type R = (
       AlertId,
-      String,         // kind
-      String,         // status
+      String,             // kind
+      String,             // status
       MacAddress,
-      Option[String], // device name
+      Option[String],     // device name
       Option[ProfileId],
-      Option[String], // profile name
+      Option[String],     // profile name
       Option[Hostname],
-      Option[String], // request_kind
-      Option[String], // note
-      Option[Int],    // granted_minutes
-      String,         // created_at
-      Option[String], // decided_at
-      Option[String], // decided_by
+      Option[String],     // request_kind
+      Option[String],     // note
+      Option[Int],        // granted_minutes
+      String,             // created_at
+      Option[String],     // decided_at
+      Option[String],     // decided_by
+      Option[HouseholdId],// device's household_id (NULL when the MAC has no device row)
   )
 
   // Reads parse the kind/status strings; values are presumed canonical
@@ -1823,12 +1846,13 @@ class AlertRepoLive(xa: Transactor[Task]) extends AlertRepo {
     createdAt = r._12,
     decidedAt = r._13,
     decidedBy = r._14,
+    householdId = r._15,
   )
 
   private val baseSelect = fr"""
     SELECT a.id, a.kind, a.status, a.mac, d.name, a.profile_id, p.name,
            a.host, a.request_kind, a.note, a.granted_minutes,
-           a.created_at::TEXT, a.decided_at::TEXT, a.decided_by
+           a.created_at::TEXT, a.decided_at::TEXT, a.decided_by, d.household_id
       FROM alerts a
       LEFT JOIN devices  d ON d.mac = a.mac
       LEFT JOIN profiles p ON p.id = a.profile_id

@@ -2038,6 +2038,9 @@ object HouseholdSettingsRoutes {
                   upd.ambientIsolationMaxHosts,
                   upd.ambientMinIsolatedDays,
                   upd.ambientLearningWindowDays,
+                  // #578: normalize blank → None so an empty field on a full-replace
+                  // PUT means "no recipient", not the empty string.
+                  upd.notifyEmail.map(_.trim).filter(_.nonEmpty),
                 ),
               )
               .mapError(ApiError.Db(_))
@@ -2086,6 +2089,12 @@ object HouseholdSettingsRoutes {
                 ZIO.fail(ApiError.BadRequest("ambientGateEnabled cannot be cleared"))
               case _                  => ZIO.unit
             }
+            // #578: notifyEmail is a NULLABLE field — unlike the booleans above,
+            // `null` legitimately clears the recipient. Absent preserves, a string
+            // sets, null clears (applyToNullable). Blank is normalized to a clear.
+            nePatch   <- ZIO
+              .fromEither(FieldPatch.from[String](obj, "notifyEmail"))
+              .mapError(ApiError.BadRequest(_))
             _         <- timePatch match {
               case FieldPatch.Cleared =>
                 ZIO.fail(ApiError.BadRequest("dailyResetTime cannot be cleared"))
@@ -2126,6 +2135,12 @@ object HouseholdSettingsRoutes {
               ambientIsolationMaxHosts = existing.ambientIsolationMaxHosts,
               ambientMinIsolatedDays = existing.ambientMinIsolatedDays,
               ambientLearningWindowDays = existing.ambientLearningWindowDays,
+              // #578: Set → normalized Some (blank clears), Cleared → None, Absent → preserve.
+              notifyEmail = nePatch match {
+                case FieldPatch.Set(v)  => Option(v.trim).filter(_.nonEmpty)
+                case FieldPatch.Cleared => None
+                case FieldPatch.Absent  => existing.notifyEmail
+              },
             )
             _            <- repo.update(merged).mapError(ApiError.Db(_))
             _            <- invalidateSnapshot

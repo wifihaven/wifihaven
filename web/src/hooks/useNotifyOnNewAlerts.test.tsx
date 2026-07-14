@@ -29,6 +29,7 @@ const newDevice: Alert = {
   createdAt: '2026-05-22T12:00:00Z',
   decidedAt: null,
   decidedBy: null,
+  householdId: null,
 }
 
 const accessReq: Alert = {
@@ -46,6 +47,7 @@ const accessReq: Alert = {
   createdAt: '2026-05-26T10:00:00Z',
   decidedAt: null,
   decidedBy: null,
+  householdId: null,
 }
 
 class FakeNotification {

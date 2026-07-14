@@ -367,7 +367,13 @@ object Main extends ZIOAppDefault {
       TimeStatusCache.live() >+>
       BlocklistCache.live >+>
       BlocklistFetcher.live >+>
-      Notifier.live >+>
+      // #578: email-notification transport. The EmailConfig projection feeds the config-gated
+      // EmailSender (Resend over the JDK HttpClient; a no-op when unconfigured), and Notifier.layer
+      // resolves each alert's household → notify_email and sends via it. HouseholdSettingsRepo comes
+      // from Repos.all above; the >+> chain keeps it in scope here.
+      ZLayer.fromZIO(ZIO.serviceWith[AppConfig](_.email)) >+>
+      wifihaven.api.notify.EmailSender.layer >+>
+      Notifier.layer >+>
       // #1242: Prometheus publisher + snapshot listener, and JVM metrics collectors.
       MetricsRuntime.prometheus() >+>
       DefaultJvmMetrics.live

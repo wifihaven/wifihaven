@@ -34,6 +34,7 @@ export function AdminPage() {
 
       {hs && <DailyResetCard value={hs} reload={reload} />}
       {hs && <HeartbeatFilterCard value={hs} reload={reload} />}
+      {hs && <NotifyEmailCard value={hs} reload={reload} />}
       {hs && <BlockEncryptedDnsCard value={hs} reload={reload} />}
       {hs && <AmbientGateCard value={hs} reload={reload} />}
       {hs && <UnmanagedMacPolicyCard value={hs} reload={reload} />}
@@ -185,6 +186,59 @@ function BlockEncryptedDnsCard({
         />
         Block encrypted DNS &amp; relays
       </label>
+    </div>
+  )
+}
+
+// #578 — where to email when a kid raises an access request from the block page
+// (extension / exemption / unpause). Empty clears the recipient. The API only
+// actually sends when its email transport (Resend) is configured; otherwise this
+// address is recorded but notifications fall back to a server log line.
+function NotifyEmailCard({
+  value, reload,
+}: {
+  value: HouseholdSettings
+  reload: () => Promise<void>
+}) {
+  const [email, setEmail] = useState(value.notifyEmail ?? '')
+  useEffect(() => { setEmail(value.notifyEmail ?? '') }, [value.notifyEmail])
+
+  const save = useDebouncedSave(
+    email,
+    async (next) => {
+      await api.household.patch({ notifyEmail: next.trim() })
+      await reload()
+    },
+  )
+
+  return (
+    <div
+      data-testid="notify-email-card"
+      className="bg-white rounded-2xl border border-brand-border p-5 space-y-3"
+    >
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="font-bold text-brand-ink">Request notifications</h2>
+        <SaveStatusBadge
+          testId="notify-email-save-status"
+          status={save.status}
+          error={save.error}
+          onRetry={save.retry}
+        />
+      </div>
+
+      <p className="text-xs text-brand-text">
+        When a child taps &ldquo;Ask a parent for access&rdquo; on the block page, WifiHaven emails
+        this address so you can approve or deny from the dashboard. Leave blank to turn email
+        notifications off &mdash; pending requests still appear in the dashboard either way.
+      </p>
+      <input
+        type="email"
+        value={email}
+        onChange={e => setEmail(e.target.value)}
+        placeholder="parent@example.com"
+        data-testid="notify-email-input"
+        className="w-full rounded-lg border border-brand-border px-3 py-2 text-sm text-brand-ink"
+      />
     </div>
   )
 }

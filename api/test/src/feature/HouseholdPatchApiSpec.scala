@@ -320,6 +320,72 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         after <- repo.get
       } yield assertTrue(resp.status == Status.Ok) && assertTrue(!after.blockEncryptedDns)
     },
+    test("#578 PATCH {notifyEmail:\"…\"} round-trips and preserves other fields") {
+      for {
+        _            <- setupHousehold
+        (routes, tk) <- routesAndToken
+        resp         <- patch(routes, tk, """{"notifyEmail":"parent@example.com"}""")
+        repo         <- ZIO.service[HouseholdSettingsRepo]
+        after        <- repo.get
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(after.notifyEmail.contains("parent@example.com")) &&
+        assertTrue(after.dailyResetTime == Seed.dailyResetTime)
+    },
+    test("#578 PATCH {notifyEmail:null} clears the recipient (nullable field)") {
+      for {
+        _            <- setupHousehold
+        (routes, tk) <- routesAndToken
+        _            <- patch(routes, tk, """{"notifyEmail":"parent@example.com"}""")
+        resp         <- patch(routes, tk, """{"notifyEmail":null}""")
+        repo         <- ZIO.service[HouseholdSettingsRepo]
+        after        <- repo.get
+      } yield assertTrue(resp.status == Status.Ok) && assertTrue(after.notifyEmail.isEmpty)
+    },
+    test("#578 PATCH {notifyEmail:\"\"} (blank) normalizes to cleared") {
+      for {
+        _            <- setupHousehold
+        (routes, tk) <- routesAndToken
+        _            <- patch(routes, tk, """{"notifyEmail":"parent@example.com"}""")
+        resp         <- patch(routes, tk, """{"notifyEmail":"   "}""")
+        repo         <- ZIO.service[HouseholdSettingsRepo]
+        after        <- repo.get
+      } yield assertTrue(resp.status == Status.Ok) && assertTrue(after.notifyEmail.isEmpty)
+    },
+    test("#578 PATCH that omits notifyEmail preserves the stored value") {
+      for {
+        _            <- setupHousehold
+        (routes, tk) <- routesAndToken
+        _            <- patch(routes, tk, """{"notifyEmail":"parent@example.com"}""")
+        _            <- patch(routes, tk, """{"dailyResetTime":"04:00:00"}""")
+        repo         <- ZIO.service[HouseholdSettingsRepo]
+        after        <- repo.get
+      } yield assertTrue(after.notifyEmail.contains("parent@example.com")) &&
+        assertTrue(after.dailyResetTime == LocalTime.of(4, 0))
+    },
+    test("#578 PUT carries notifyEmail through the full-replace path") {
+      for {
+        _            <- setupHousehold
+        (routes, tk) <- routesAndToken
+        body =
+          """{"dailyResetTime":"00:00:00","dailyResetTz":"America/Los_Angeles","heartbeatFilter":{"enabled":false,"bytesThreshold":1024,"heartbeatHostPatterns":[]},"unmanagedMacPolicy":{"policy":"allow","blockPage":true},"notifyEmail":"parent@example.com"}"""
+        resp  <- put(routes, tk, body)
+        repo  <- ZIO.service[HouseholdSettingsRepo]
+        after <- repo.get
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(after.notifyEmail.contains("parent@example.com"))
+    },
+    test("#578 PUT that omits notifyEmail decodes to the default (None)") {
+      for {
+        _            <- setupHousehold
+        (routes, tk) <- routesAndToken
+        _            <- patch(routes, tk, """{"notifyEmail":"parent@example.com"}""")
+        body =
+          """{"dailyResetTime":"00:00:00","dailyResetTz":"America/Los_Angeles","heartbeatFilter":{"enabled":false,"bytesThreshold":1024,"heartbeatHostPatterns":[]},"unmanagedMacPolicy":{"policy":"allow","blockPage":true}}"""
+        resp  <- put(routes, tk, body)
+        repo  <- ZIO.service[HouseholdSettingsRepo]
+        after <- repo.get
+      } yield assertTrue(resp.status == Status.Ok) && assertTrue(after.notifyEmail.isEmpty)
+    },
     test("403 when non-admin (adult) tries to PATCH") {
       for {
         _        <- setupHousehold
