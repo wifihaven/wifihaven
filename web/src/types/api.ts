@@ -756,7 +756,17 @@ export interface MeResponse {
   username: string
   role: UserRole
   profileIds: number[]
+  // #2133 (multi-tenant P5-3): true when the caller passes the operator gate
+  // (admin AND household 1 — design §3.2). The SPA gates the beta-request queue
+  // nav/route on this instead of hardcoding the household-1-admin rule. Absent
+  // (→ false) for every non-operator and for pre-#2133 API builds.
+  isOperator?: boolean
 }
+
+// NOTE: the beta-pipeline wire types (BetaRequestStatus, CreateBetaRequest,
+// BetaRequestAck, BetaRequestSummary, ApproveBetaResponse, AcceptInviteRequest,
+// AcceptInviteResponse) already ship below with #2132 — see "Beta access
+// requests". The #2133 SPA consumes those; do NOT redeclare them here.
 
 export interface CreateUserRequest {
   username: string

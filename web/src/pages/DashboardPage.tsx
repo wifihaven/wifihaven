@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '@/api/client'
-import { useDashboardNow, useRecentBlocked, LIVE_SURFACE_FALLBACK_REFETCH_MS } from '@/api/queries'
+import { useDashboardNow, useRecentBlocked, useDevices, useProfiles, LIVE_SURFACE_FALLBACK_REFETCH_MS } from '@/api/queries'
 import type {
   DashboardNow,
   DashboardNowDevice,
@@ -71,6 +71,8 @@ export function DashboardPage() {
         <DashboardWindowSelector bandwidth={bandwidth} />
       </div>
 
+      {scope.isAdmin && <FirstRunHint />}
+
       <NewDevicesHint />
 
       <AccessRequestsBanner />
@@ -102,6 +104,40 @@ function DashboardWindowSelector({ bandwidth }: { bandwidth: WsTrafficUsage }) {
         only={[...BANDWIDTH_WINDOWS]}
       />
     </div>
+  )
+}
+
+// #2133 (multi-tenant P5-3): first-run empty-household onboarding. A freshly-provisioned household
+// (invite-accept → this dashboard) has zero routers, devices and profiles; the live panels below
+// all render their own empty states, but none tells the new admin what to DO. This card names the
+// first concrete step — enroll a router — and only appears when the household is genuinely empty
+// (zero devices AND zero profiles). It is gated on `isAdmin` at the call site (only admins can
+// enroll). Loading-states rule (#1098): both queries must be LOADED before we can conclude "empty",
+// so we render nothing while either is pending — a loading `[]` must never be read as a real zero.
+export function FirstRunHint() {
+  const devices  = useDevices()
+  const profiles = useProfiles()
+  if (devices.isPending || profiles.isPending) return null
+  if (devices.isError || profiles.isError) return null
+  const empty = (devices.data?.length ?? 0) === 0 && (profiles.data?.length ?? 0) === 0
+  if (!empty) return null
+  return (
+    <section
+      data-testid="first-run-hint"
+      className="bg-brand-accent/5 border border-brand-accent/20 rounded-2xl p-5"
+    >
+      <h2 className="text-base font-semibold text-brand-ink">Welcome — let's get your household online</h2>
+      <p className="text-sm text-brand-text mt-1">
+        Your household is set up, but no router is connected yet. Enroll your router to start
+        managing devices, profiles and screen time. It takes a couple of minutes.
+      </p>
+      <Link
+        to="/routers"
+        className="inline-block mt-4 bg-brand-accent hover:bg-brand-accent-dark text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors"
+      >
+        Enroll a router →
+      </Link>
+    </section>
   )
 }
 

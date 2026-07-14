@@ -796,6 +796,12 @@ case class MeResponse(
     username: String,
     role: UserRole,
     profileIds: List[ProfileId],
+    // #2133 (multi-tenant P5-3): whether this caller passes the operator gate
+    // (admin AND a member of household 1 — `requireOperator`, design §3.2). The SPA
+    // drives beta-request queue nav/route visibility off THIS signal rather than
+    // hardcoding "household 1 admin" client-side. Defaulted to false so pre-#2133
+    // clients decode unchanged; a non-operator omits it and reads false.
+    isOperator: Boolean = false,
 ) derives JsonCodec
 case class SetUserProfilesRequest(profileIds: List[ProfileId]) derives JsonCodec
 case class SetProfileUsersRequest(userIds: List[UserId]) derives JsonCodec
