@@ -203,6 +203,54 @@ that edit in the same PR.** If a step above is now wrong, fix the step too.
 
 ## Learnings log (newest first)
 
+- **2026-07-14** (#2212) — **There is a second, large ads vein the RTB-name
+  passes structurally missed: mainstream ad-tech VENDOR apexes.** #1822/#1923/
+  #2064/#2122 all filtered on `*rtb*` / `*bid*` / `*-ads` name shapes, so they
+  never surfaced the established DSPs / SSPs / exchanges / identity-resolution /
+  data-brokers / attribution / native+video vendors whose apex is the company
+  name (dotomi=Conversant, kochava, adcolony, unrulymedia, sonobi, revcontent,
+  360yield, id5-sync, crwdcntrl=Lotame, everesttech=Adobe Ad Cloud, fwmrm=
+  FreeWheel, ml314=MediaMath, a-mo=Amobee, presage/ogury=Ogury, admaster=
+  AdMaster, eyeota, intentiq, sitescout, emxdgt, mobilefuse, start.io, …). This
+  pass added **54** such apexes — a much bigger honest count than #2122's 16,
+  not padding, because it is a different (and genuinely uncovered) vein. When the
+  RTB-name well runs dry, sweep the ranked apex list for **named ad companies**
+  next, not just name-pattern matches.
+- **2026-07-14** (#2212) — **`target-video.com` / `brid.tv` / any video
+  monetization "player + ads" platform is a dual-use SKIP — content collateral.**
+  TargetVideo (which acquired Brid.TV in 2023) serves the embedded video PLAYER
+  and its ads from the same apex; `target-video.com` was 74 MB of traffic this
+  week — almost all of it video *content* pulled through the player. Blocking the
+  apex drops the video a child is watching, not just the ad (same reason
+  `jwplayer.com` is intentionally absent). Ad-monetization companies that also
+  ship the player belong in the same skip bucket as jwplayer.
+- **2026-07-14** (#2212) — **New BitTorrent-tracker high-hit decoy:
+  `internetwarriors.net` (3,696 hits).** Add it to the running BT-tracker decoy
+  list to check before adding any high-hit apex — joins `opentrackr.org`,
+  `popcorn-tracker.org`, `demonii.com`, `coppersurfer.tk`, `openbittorrent.com`,
+  `bittor.pw`, `glotorrents.pw`, `rarbg.to`, all of which out-hit real ad apexes
+  this week but are torrent infra, not ads. A high hit-count is never an ad
+  signal.
+- **2026-07-14** (#2212) — **The non-ads categories yield a few high-confidence
+  adds per pass, and `ai`/`adult` are often already saturated.** This week:
+  gambling += americascardroom.eu / betrivers.com / polymarket.com; social-media
+  += nextdoor.com / vk.com; games += eaglercraft.com/.ru (the "unblocked games"
+  browser-Minecraft filter-bypass vein — add on the evasion-vector rationale even
+  at ~zero bytes, like duckmath/emolingo). **ai and adult had NO gaps** — the top
+  consumer AI apexes in traffic (grok/openai/elevenlabs/x.ai) and the one adult
+  apex (cam4.com) were already curated. Don't force adds where the curated list
+  already covers the observed traffic. Skip educational/classroom games
+  (prodigygame, mathplayground, arcademics) — out of scope for a games *block*.
+- **2026-07-14** (#2212) — **When websearch/verify tooling is flaky, HOLD the
+  unverified apexes and record them in the evidence doc — do not guess from the
+  name.** This run the classifier intermittently blocked WebSearch/WebFetch, so
+  ~35 promising-but-unconfirmed apexes (random-named high-hit ones +
+  moderately-known vendors like rixengine/admatic.de/globalrtb/mediago) were
+  held with a "verify next pass" note rather than added on name-inference (the
+  ttdns2/antibanads trap). The `ads-extended` feed cross-check was likewise
+  skipped — acceptable because, per the #2122 learning, the curated **apex**
+  entry is the stronger block regardless of what specific subdomain the feed
+  happens to list.
 - **2026-07-13** — **Skill renamed `ads-blocklist-pass` → `blocklist-pass` and
   generalized from ads-only to ALL curated categories.** Key structural fact for
   future runs: only **inline (`hosts:`) lists** are hand-editable — `ads`,

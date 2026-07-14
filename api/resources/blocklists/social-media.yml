@@ -33,3 +33,7 @@ hosts:
   - discord.com
   - discord.gg
   - discordapp.com
+  # traffic-driven additions (#2212): observed but unblocked consumer social
+  # networks from a 30-day prod recent-apexes sweep (26 devices, 2026-07-14).
+  - nextdoor.com # Nextdoor neighborhood social network
+  - vk.com # VKontakte (Russian consumer social network)

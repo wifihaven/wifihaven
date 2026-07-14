@@ -96,3 +96,10 @@ hosts:
   # pattern. Block target only, NOT an app template (no daily budget for a
   # filter-positioned game host). Apex covers all rainbowobbyN.* subdomains.
   - emolingo.games
+  # traffic-driven additions (#2212): Eaglercraft — a browser-based Minecraft
+  # clone that runs in-tab with no install, a staple of "unblocked games" / proxy
+  # portals used to bypass school/network filters (same class as duckmath.org and
+  # emolingo.games above). Observed on a kid iPad. Block target only, NOT an app
+  # template. Both the .com and .ru apexes are in active use.
+  - eaglercraft.com
+  - eaglercraft.ru
