@@ -35,6 +35,20 @@ product collateral). That is this week's vein.
 
 ## Added apexes (54)
 
+**Verification provenance.** Only the three apexes in the first table below were
+**web-verified this run** (the classifier intermittently blocked WebSearch/
+WebFetch). The rest were added on **established industry knowledge** of the named
+vendor — a known ad-tech company is not the `ttdns2`/`antibanads` name-inference
+trap the skill warns against, and every added apex is ad-dedicated with low
+collateral (worst case: a benign extra ad-block). The genuinely unknown /
+random-named apexes were **not** added — they are in the "Held out — UNVERIFIED"
+section and should be web-verified next pass. The moderately-known vendors added
+on knowledge alone (`e-planning.net`, `eskimi.com`, `cluep.com`, `smrtb.com`,
+`silvermob.com`, `omnitagjs.com`, `display.io`, `hadronid.net`, `aniview.com`,
+`acuityplatform.com`, `ipredictive.com`, `cafemedia.com`, `mediaplex.com`,
+`cpmstar.com`, `undertone.com`, `axonix.com`/`axonixgrid.com`) are the lowest-
+confidence of the batch — re-confirm them if any operator false-positive surfaces.
+
 ### Verified via web (ambiguous / high-traffic — ownership confirmed)
 | apex | bytes | hits | what it is |
 |------|------:|-----:|------------|
