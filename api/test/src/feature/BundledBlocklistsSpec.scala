@@ -146,6 +146,8 @@ object BundledBlocklistsSpec
         assertTrue(ads.contains(Hostname.unsafe("coldbidder.com"))) &&
         // traffic-driven addition pinned for presence (#2122)
         assertTrue(ads.contains(Hostname.unsafe("adkernel.com"))) &&
+        // traffic-driven addition pinned for presence (#2212)
+        assertTrue(ads.contains(Hostname.unsafe("dotomi.com"))) &&
         assertTrue(meta.isDefined) &&
         assertTrue(meta.exists(m => m.bundled && m.name == "Ads & Trackers"))
     },
@@ -370,7 +372,31 @@ object BundledBlocklistsSpec
         assertTrue(hosts.contains(Hostname.unsafe("steampowered.com"))) &&
         assertTrue(hosts.contains(Hostname.unsafe("minecraft.net"))) &&
         assertTrue(hosts.contains(Hostname.unsafe("riotgames.com"))) &&
-        assertTrue(hosts.contains(Hostname.unsafe("gimkitconnect.com")))
+        assertTrue(hosts.contains(Hostname.unsafe("gimkitconnect.com"))) &&
+        // traffic-driven unblocked-games addition pinned for presence (#2212)
+        assertTrue(hosts.contains(Hostname.unsafe("eaglercraft.com")))
+    },
+    test("gambling + social-media: traffic-driven additions are present (#2212)") {
+      for {
+        bundled <- BundledBlocklists.loadAll()
+        gambling = bundled
+          .find(_.id == BlocklistId.unsafe("gambling"))
+          .toList
+          .flatMap(_.content match {
+            case BundledBlocklistContent.Inline(hs) => hs
+            case _                                  => Nil
+          })
+        social   = bundled
+          .find(_.id == BlocklistId.unsafe("social-media"))
+          .toList
+          .flatMap(_.content match {
+            case BundledBlocklistContent.Inline(hs) => hs
+            case _                                  => Nil
+          })
+      } yield assertTrue(gambling.contains(Hostname.unsafe("betrivers.com"))) &&
+        assertTrue(gambling.contains(Hostname.unsafe("americascardroom.eu"))) &&
+        assertTrue(social.contains(Hostname.unsafe("nextdoor.com"))) &&
+        assertTrue(social.contains(Hostname.unsafe("vk.com")))
     },
     test("ai: bundled list is loaded and includes the major AI services (#1890)") {
       for {

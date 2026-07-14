@@ -30,3 +30,9 @@ hosts:
   - betway.com
   - ladbrokes.com
   - coral.co.uk
+  # traffic-driven additions (#2212): observed but unblocked real-money wagering
+  # apexes from a 30-day prod recent-apexes sweep (26 devices, 2026-07-14). Each
+  # is a dedicated gambling/betting platform (apex = the product), low collateral.
+  - americascardroom.eu # America's Cardroom online poker (offshore US-facing)
+  - betrivers.com # BetRivers (Rush Street Interactive) sportsbook + online casino
+  - polymarket.com # Polymarket real-money prediction / event-betting market

@@ -228,3 +228,92 @@ hosts:
   - outbrainimg.com
   - openxcdn.net
   - minutemedia-prebid.com
+  # traffic-driven additions (#2212): observed but unblocked ad infra.
+  # Sourced from a 30-day prod recent-apexes sweep (26 devices, 2026-07-14).
+  # This pass tapped a DIFFERENT vein than the RTB-name-focused #1822/#1923/
+  # #2064/#2122 passes: mainstream, established ad-tech VENDOR apexes (DSPs /
+  # SSPs / exchanges / identity-resolution / attribution / native+video ad
+  # infra) whose names are NOT *rtb*/*bid*/*-ads patterns, so the earlier passes
+  # never surfaced them even though the apex is ad-dedicated (corporate marketing
+  # site + ad backend on the same apex; blocking it drops the ad infra with
+  # negligible product collateral). Ownership verified via web for the ambiguous
+  # high-traffic ones (presage.io=Ogury, admaster.cc=AdMaster/Tencent).
+  # Dual-use / wrong-category SKIPPED: adtrafficquality.google (Google shared),
+  # target-video.com / brid.tv / jwplayer.com (video PLAYER + ads → content
+  # collateral), tagsrvcs.com (Bazaarvoice reviews widget), sharethis.com (share
+  # buttons), jpush.cn/.io + pushy.me (push SDKs), datadome.co + confiant (anti-
+  # bot / ad-fraud security), betrad.com + evidon.com (consent widgets),
+  # hubspot.com + mparticle.com + blueconic.net (CRM/CDP product), sail-horizon.com
+  # (Sailthru email), internetwarriors.net (BitTorrent tracker, not ads).
+  # HELD OUT as UNVERIFIED (websearch tooling was intermittently unavailable this
+  # run — do NOT re-classify from the name alone next pass; verify): native-cloud.com,
+  # script.ac, acobt.tech, adrta.com, mfadsrvr.com, dailyinnovation.biz,
+  # lazybumblebee.com, onegg.site, gt162037.com, ammnlth.net, 4dex.io, tk0x1.com,
+  # protechts.net, impression.link, qvdt3feo.com, str-nrg.com, tq-tungsten.com,
+  # img-static.tech, digital-services.solutions, qwadro.com, xlgmedia.com,
+  # youngle.tech, rixengine.com, admatic.de, globalrtb.com, rapidbidding.com,
+  # sparteo.com, colossusssp.com, nextmillmedia.com, mediago.io, adtarget.biz,
+  # adelement.com, ninthdecimal.com. See evidence/ads-classification-2212.md.
+  # Verified-ownership adds (ambiguous high-traffic apexes confirmed via web)
+  - presage.io
+  - ogury.co
+  - admaster.cc
+  # DSPs / demand-side + bidder platforms
+  - bidr.io
+  - ml314.com
+  - a-mo.net
+  - ipredictive.com
+  - eskimi.com
+  - acuityplatform.com
+  - sitescout.com
+  # SSPs / exchanges / sell-side
+  - sonobi.com
+  - emxdgt.com
+  - 360yield.com
+  - e-planning.net
+  - smrtb.com
+  - silvermob.com
+  - 1rx.io
+  # Native advertising
+  - revcontent.com
+  - postrelease.com
+  - dianomi.com
+  - omnitagjs.com
+  # Video ad serving / SDKs
+  - fwmrm.net
+  - unrulymedia.com
+  - aniview.com
+  - display.io
+  # Mobile ad networks / mediation SDKs
+  - adcolony.com
+  - mobilefuse.com
+  - startappservice.com
+  - adsbynimbus.com
+  - cpmstar.com
+  - cluep.com
+  # Ad serving / management / vendor apexes
+  - dotomi.com
+  - mediaplex.com
+  - undertone.com
+  - axonix.com
+  - axonixgrid.com
+  - cafemedia.com
+  - ads-twitter.com
+  # Identity resolution / data brokers / audience data
+  - id5-sync.com
+  - eu-1-id5-sync.com
+  - crwdcntrl.net
+  - eyeota.net
+  - intentiq.com
+  - pippio.com
+  - hadronid.net
+  # Attribution / measurement / ad-serving (Adobe Advertising Cloud)
+  - everesttech.net
+  - kochava.com
+  - videoamp.com
+  # Sibling apexes of already-curated ad vendors (gaps not yet listed)
+  - quantcount.com
+  - chartbeat.net
+  - rfihub.net
+  - dv.tech
+  - progrtb.com
