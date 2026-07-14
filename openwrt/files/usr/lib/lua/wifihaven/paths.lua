@@ -30,6 +30,16 @@ M.dns_aliases = "/tmp/wifihaven-dns-aliases.txt"
 -- as dns_cache).
 M.dns_metrics = "/tmp/wifihaven-dns-metrics.txt"
 
+-- ea_/ea6_ carve backfill batch (#2208): policy.apply renders the whole
+-- extraAllowed carve seeding into this single nft ruleset file and loads it with
+-- one `nft -f`, instead of spawning one `nft add element` process per element
+-- (the v0.3.19→v0.3.20 apply-latency regression). Lives under the same
+-- /tmp/nftables.d confdir the main ruleset uses (created at startup). Overwritten
+-- (truncated) on every apply, so it is naturally bounded by the carve size — no
+-- rotation belt needed (cf. docs/process/router-agent-bounded-writes.md, which
+-- governs APPEND-growth files, not truncate-rewrite ones).
+M.ea_backfill_nft = "/tmp/nftables.d/wifihaven-ea-backfill.nft"
+
 -- blocklist member → bl_ set index (#1348): policy.apply writes after each
 -- snapshot apply (in lockstep with /tmp/dnsmasq.d/wifihaven.conf), the
 -- wifihaven-dns-tail bl_ populator reads it on its set-refresh cadence.

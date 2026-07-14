@@ -80,7 +80,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "Policy apply duration (p50 / p95)",
-      "description": "histogram_quantile over policy_apply_duration_seconds_bucket (boundaries 0.01→5s, PolicyApplyDurationBoundaries). How long an agent takes to render + write + nft-load a snapshot.",
+      "description": "histogram_quantile over policy_apply_duration_seconds_bucket (boundaries 0.01→5s, PolicyApplyDurationBoundaries). How long an agent takes to render + write + nft-load a snapshot. Pinned to phase=\"\" (the whole-apply series) so the per-phase breakdown series (#2208) don't double-count.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
       "id": 3,
@@ -100,13 +100,13 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(policy_apply_duration_seconds_bucket{env=\"$env\"}[5m])))",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(policy_apply_duration_seconds_bucket{env=\"$env\", phase=\"\"}[5m])))",
           "legendFormat": "p50",
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(policy_apply_duration_seconds_bucket{env=\"$env\"}[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(policy_apply_duration_seconds_bucket{env=\"$env\", phase=\"\"}[5m])))",
           "legendFormat": "p95",
           "refId": "B"
         }
@@ -794,6 +794,35 @@
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "expr": "sum by (router_id) (rate(usage_window_stall_total{env=\"$env\"}[5m]))",
           "legendFormat": "{{router_id}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Policy apply duration p95 by phase (#2208)",
+      "description": "histogram_quantile(0.95) per internal policy.apply phase (render_dnsmasq / render_nft / dnsmasq_restart / nft_load / ea_backfill / smoke_probe — the bounded enum policy.apply's phase_timer seam emits), so a slow apply is attributable to the step that costs. ea_backfill is the phase that regressed in v0.3.20 (one nft-process spawn per carve element; fixed by batching into a single nft -f) — a p95 creep here means the carve seeding is going per-element/slow again.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 96 },
+      "id": 25,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "s",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "histogram_quantile(0.95, sum by (le, phase) (rate(policy_apply_duration_seconds_bucket{env=\"$env\", phase!=\"\"}[5m])))",
+          "legendFormat": "{{phase}} p95",
           "refId": "A"
         }
       ]

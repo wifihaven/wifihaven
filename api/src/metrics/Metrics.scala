@@ -98,6 +98,11 @@ object MetricGuard {
       // the code, not by user/household growth, so it satisfies the §4 cardinality firewall.
       // (`outcome` is already a known key.)
       "stage",
+      // #2208 — policy.apply internal step for `policy_apply_duration_seconds`. A fixed
+      // 6-value enum (render_dnsmasq | render_nft | dnsmasq_restart | nft_load |
+      // ea_backfill | smoke_probe — policy.apply's phase_timer seam); bounded by the
+      // code, not by user/device/flow growth, so it satisfies the §4 cardinality firewall.
+      "phase",
     )
 
   /**
@@ -186,7 +191,11 @@ object MetricGuard {
     // server-attached `router_id` + `installation_id` plus its own bounded enum label.
     "dnsmasq_restarts_total"                    -> Set("reason", "router_id", "installation_id"),
     "policy_apply_total"                        -> Set("result", "router_id", "installation_id"),
-    "policy_apply_duration_seconds"             -> Set("router_id", "installation_id"),
+    // #2208 — `phase` breaks the apply down into its internal steps so a slow
+    // apply is attributable (render_dnsmasq / render_nft / dnsmasq_restart /
+    // nft_load / ea_backfill / smoke_probe — the bounded enum policy.apply's
+    // phase_timer seam emits). The agent still emits the unlabeled total.
+    "policy_apply_duration_seconds"             -> Set("phase", "router_id", "installation_id"),
     "snapshot_poll_total"                       -> Set("result", "router_id", "installation_id"),
     "snapshot_poll_duration_seconds"            -> Set("router_id", "installation_id"),
     // #2037 — policy-poll dormancy. When the ws transport is enabled AND its

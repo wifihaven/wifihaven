@@ -259,6 +259,25 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
   -- a dnsmasq restart (false on the #414 nft-only short-circuit). The callback
   -- is for observability only — it never alters the boolean return.
   local on_apply = opts.on_apply
+  -- #2208 apply-latency instrumentation: an optional opts.phase_timer(phase,
+  -- seconds) is invoked once per internal phase with a BOUNDED phase name
+  -- (render_dnsmasq / render_nft / write / dnsmasq_restart / nft_load /
+  -- ea_backfill / smoke_probe). nil in tests/legacy callers → zero cost. The
+  -- agent wires it to observe policy_apply_duration_seconds{phase} so per-phase
+  -- apply latency is visible on the fleet dashboard.
+  local phase_timer = opts.phase_timer
+  local mono
+  if phase_timer then
+    local ok_clock, clk = pcall(require, "wifihaven.clock")
+    mono = (ok_clock and clk.monotonic_seconds) or os.time
+  end
+  local function timed(name, fn)
+    if not phase_timer then return fn() end
+    local t0 = mono()
+    local a, b, c = fn()
+    pcall(phase_timer, name, mono() - t0)
+    return a, b, c
+  end
   -- #2095: ea_backfilled carries the count of ea_/ea6_ carve elements the
   -- apply-time backfill seeded (0 unless the final report). Lets the agent
   -- emit ea_carve_backfill_total so we can confirm in prod that the carve is
@@ -280,16 +299,20 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
   -- after #1788). Tests inject opts.bl_shard_exists; production uses the
   -- module-level default_bl_shard_exists which stats the canonical shard path.
   local bl_shard_exists = opts.bl_shard_exists or default_bl_shard_exists
-  local dnsmasq_content = render.dnsmasq(snapshot, {
-    bl_shard_exists = function(id)
-      local ok = bl_shard_exists(id)
-      if not ok then
-        log.debug("policy.apply: omitted conf-file= for id %s (shard missing)", tostring(id))
-      end
-      return ok
-    end,
-  })
-  local nft_content     = render.nft(snapshot, opts)
+  local dnsmasq_content = timed("render_dnsmasq", function()
+    return render.dnsmasq(snapshot, {
+      bl_shard_exists = function(id)
+        local ok = bl_shard_exists(id)
+        if not ok then
+          log.debug("policy.apply: omitted conf-file= for id %s (shard missing)", tostring(id))
+        end
+        return ok
+      end,
+    })
+  end)
+  local nft_content     = timed("render_nft", function()
+    return render.nft(snapshot, opts)
+  end)
 
   -- #414: dnsmasq only needs a full restart when its config-dir file
   -- actually changes (dhcp-host= and nftset= directives are NOT picked up
@@ -336,7 +359,9 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
     -- inactive until something else restarts the service. (Post-#329/#351
     -- there are no `address=` sinkhole directives — but dhcp-host= and
     -- nftset= still need a full restart for the same reason.)
-    reload_fn("/etc/init.d/dnsmasq restart")
+    timed("dnsmasq_restart", function()
+      reload_fn("/etc/init.d/dnsmasq restart")
+    end)
   else
     log.debug("policy.apply: wrote dnsmasq=%dB (unchanged) nft=%dB; skipping dnsmasq restart",
               #dnsmasq_content, #nft_content)
@@ -357,8 +382,9 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
   -- and return the load outcome so every caller retries (they gate on the
   -- return and leave the applied etag unadvanced on false). The `2>` truncates
   -- the capture file each apply, keeping it bounded.
-  local nft_rc = reload_fn(
-    "nft -f /tmp/nftables.d/wifihaven.nft 2>" .. NFT_ERR_PATH)
+  local nft_rc = timed("nft_load", function()
+    return reload_fn("nft -f /tmp/nftables.d/wifihaven.nft 2>" .. NFT_ERR_PATH)
+  end)
   local nft_ok = exec_ok(nft_rc)
   if not nft_ok then
     local nft_err = (read_fn(NFT_ERR_PATH) or ""):gsub("%s+$", "")
@@ -390,6 +416,7 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
   -- carved host silently dropped — which is the confirmed #2094 symptom.
   local ea_backfilled = 0
   if nft_ok then
+    timed("ea_backfill", function()
     local carve = {}
     for mac, hosts in pairs(render.effective_extra_allowed_by_mac(snapshot)) do
       local sanmac = dns_sets.sanitize(mac)
@@ -403,14 +430,41 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
       local now_fn     = opts.now_fn or os.time
       local cache_text = read_fn(paths.dns_cache)
       local cache      = dns_log.load_table(cache_text or "", DNS_CACHE_ACCEPT_ALL, now_fn())
-      ea_backfilled = dns_sets.backfill_ea(cache, carve, {
+      -- #2208: seed the carve in ONE `nft -f` batch rather than one `nft add
+      -- element` process per element. The old per-element path spawned
+      -- O(matching-cache-entries) nft processes (~6ms fork+exec each) and, on a
+      -- busy prod cache with broad carve hosts, dominated apply latency (the
+      -- v0.3.19→v0.3.20 regression). All target sets were just declared by the
+      -- `nft -f` above from the same SSOT, so the single transaction is safe.
+      local script, n = dns_sets.build_ea_backfill_script(cache, carve, {
         nft_table = "inet wifihaven",
-        exec_fn   = reload_fn,
       })
+      if n > 0 then
+        local ok_batch, err_batch = write_fn(paths.ea_backfill_nft, script)
+        local batch_rc = nil
+        if ok_batch then
+          batch_rc = reload_fn("nft -f " .. paths.ea_backfill_nft)
+        end
+        if ok_batch and exec_ok(batch_rc) then
+          ea_backfilled = n
+        else
+          -- Batch load failed (a target set raced away, or the write failed).
+          -- Fall back to the per-element path so a single stale set can't drop
+          -- the whole carve seeding (each add is best-effort, ENOENT-tolerant).
+          log.warn("policy.apply: ea_ backfill batch failed (write_ok=%s rc=%s), "
+                   .. "falling back to per-element seeding",
+                   tostring(ok_batch), tostring(batch_rc or err_batch))
+          ea_backfilled = dns_sets.backfill_ea(cache, carve, {
+            nft_table = "inet wifihaven",
+            exec_fn   = reload_fn,
+          })
+        end
+      end
       if ea_backfilled > 0 then
         log.debug("policy.apply: ea_/ea6_ carve backfill added %d element(s)", ea_backfilled)
       end
     end
+    end)
   end
 
   -- #328 / #351 smoke probe. Runs only when we actually restarted dnsmasq:
@@ -421,7 +475,7 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
     local probe_domain = first_extrablocked_host(dnsmasq_content)
     if probe_domain then
       local check = opts.dns_check_fn or default_dns_check
-      local result = check(probe_domain)
+      local result = timed("smoke_probe", function() return check(probe_domain) end)
       if is_blocked_at_connection(result) then
         smoke_warn = true
         log.warn(

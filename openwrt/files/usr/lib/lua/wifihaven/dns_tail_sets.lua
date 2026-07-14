@@ -253,4 +253,76 @@ function M.backfill_ea(cache, carve, deps)
   return adds
 end
 
+-- #2208 — build a SINGLE `nft -f` batch script that seeds every carve set from
+-- the cache, instead of one `nft add element` process per element. The old
+-- per-element M.backfill_ea (above) spawns O(matching-cache-entries) nft
+-- processes; on a busy prod cache with broad carve hosts that is thousands of
+-- ~6ms fork+exec's, dominating apply latency (the v0.3.19→v0.3.20 regression
+-- #2094/#2095 introduced). Grouping all adds into one `nft -f` invocation makes
+-- the cost O(1) process spawns regardless of element count.
+--
+-- Returns (script, count):
+--   script — an nft ruleset string of `add element <table> <set> { ip, ... }`
+--            lines (one per set, ips grouped + sorted), "" when count==0.
+--   count  — number of distinct (set, ip) elements the script adds.
+--
+-- Walk/dedup semantics are byte-identical to M.backfill_ea: same candidate-host
+-- suffix walk (+ #1346 resolve_head head), same first-carved-suffix-wins, same
+-- v4/v6 prefix split. The only difference is emission — accumulate into a
+-- per-set element map and render one batch rather than exec per element.
+--
+-- Safety: every target set is DECLARED by render.nft from the SAME
+-- render.effective_extra_allowed_by_mac SSOT the caller builds `carve` from,
+-- and the `nft -f` that created them ran immediately before, so all sets exist
+-- and are empty (no missing-set or duplicate-element aborts inside the single
+-- transaction). IPs pass safe_addr; set names are sanitized — no shell/nft
+-- metacharacters reach the script. The caller runs the batch and, if the load
+-- fails (a set genuinely raced away), falls back to the per-element path so a
+-- single stale set can never drop the whole carve seeding.
+function M.build_ea_backfill_script(cache, carve, deps)
+  if type(cache) ~= "table" or type(carve) ~= "table" then return "", 0 end
+  deps = deps or {}
+  local by_set = {}   -- set_name -> { [ip]=true } (dedup within a set)
+  local order  = {}   -- set-name insertion order (sorted before render)
+  local count  = 0
+  for ip, name in pairs(cache) do
+    if type(name) == "string" then
+      local safe = M.safe_addr(ip)
+      if safe then
+        local is6    = ip:find(":", 1, true) ~= nil
+        local prefix = is6 and "ea6_" or "ea_"
+        local seen   = {}
+        M.each_candidate_host(name, deps.resolve_head, function(sanhost)
+          local macs = carve[sanhost]
+          if macs then
+            if not seen[sanhost] then
+              seen[sanhost] = true
+              for sanmac in pairs(macs) do
+                local set = prefix .. sanmac .. "_" .. sanhost
+                local ips = by_set[set]
+                if not ips then ips = {}; by_set[set] = ips; order[#order + 1] = set end
+                if not ips[safe] then ips[safe] = true; count = count + 1 end
+              end
+            end
+            return true  -- first carved suffix wins (mirror M.backfill_ea)
+          end
+          return false
+        end)
+      end
+    end
+  end
+  if count == 0 then return "", 0 end
+  table.sort(order)
+  local tbl   = deps.nft_table or "inet wifihaven"
+  local lines = {}
+  for _, set in ipairs(order) do
+    local ips = {}
+    for ip in pairs(by_set[set]) do ips[#ips + 1] = ip end
+    table.sort(ips)
+    lines[#lines + 1] = string.format("add element %s %s { %s }",
+                                      tbl, set, table.concat(ips, ", "))
+  end
+  return table.concat(lines, "\n") .. "\n", count
+end
+
 return M
