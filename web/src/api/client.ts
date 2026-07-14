@@ -1,5 +1,6 @@
 import { apiHealth } from '@/api/apiHealth'
 import type {
+  AcceptInviteRequest, AcceptInviteResponse, ApproveBetaResponse, BetaRequestAck, BetaRequestStatus, BetaRequestSummary, CreateBetaRequest,
   Alert, AppDetail, ApproveAlertRequest, BlockedInfoResponse, BlocklistHosts, BlocklistSummary, CreateRouterRequest, CreateRouterResponse, CreateUserRequest,
   DashboardNow, DashboardStats, Device,
   CreateAccessRequest, DeviceTimeStatus, DeviceTimeStatusWeek, HouseholdSettings, LoginResponse, MeResponse, ProfileAppWeeklyUsage, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek, ProfileUsageByApp,
@@ -188,6 +189,31 @@ export const api = {
     changePassword: (currentPassword: string, newPassword: string) =>
       req<void>('POST', '/auth/change-password', { currentPassword, newPassword }),
     me: () => req<MeResponse>('GET', '/me'),
+  },
+
+  // ── Beta signup pipeline (#2133 SPA over #2132 API, design §3) ──────────
+  beta: {
+    // Public, unauthenticated intake. Idempotent + rate-limited server-side; the
+    // ack is content-free so a duplicate/rate-limited response leaks nothing.
+    request: (data: CreateBetaRequest) =>
+      req<BetaRequestAck>('POST', '/beta/request', data, true),
+    // Public, unauthenticated invite acceptance → new household's first admin.
+    // Payload is {token, password} ONLY (design §3.4): email is bound server-side
+    // from beta_requests.email, username defaults to `admin`.
+    accept: (token: string, password: string) =>
+      req<AcceptInviteResponse>('POST', '/beta/accept', { token, password } as AcceptInviteRequest, true),
+    // Operator queue — household-1 admin only (requireOperator, design §3.2). The status enum
+    // serializes capitalized on the wire ('Pending'), but the `?status=` query param is parsed
+    // lowercase server-side (BetaRequestStatus.parse), so we lowercase it here.
+    operatorList: (status?: BetaRequestStatus) =>
+      req<BetaRequestSummary[]>(
+        'GET',
+        `/operator/beta-requests${status ? `?status=${status.toLowerCase()}` : ''}`,
+      ),
+    approve: (id: number) =>
+      req<ApproveBetaResponse>('POST', `/operator/beta-requests/${id}/approve`),
+    reject: (id: number) =>
+      req<void>('POST', `/operator/beta-requests/${id}/reject`),
   },
 
   // ── Users ──────────────────────────────────────────────────────────────

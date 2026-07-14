@@ -24,6 +24,13 @@ vi.mock('@/api/client', () => ({
     auth: {
       me: vi.fn(),
     },
+    // #2133: FirstRunHint reads these to decide whether the household is empty.
+    devices: {
+      list: vi.fn(),
+    },
+    profiles: {
+      list: vi.fn(),
+    },
   },
 }))
 
@@ -248,6 +255,10 @@ beforeEach(() => {
     bucket: '1m', from: '', to: '', tz: 'UTC', rawRows: [], aggregateRows: [],
   })
   mockUseWsTrafficUsage.mockReturnValue(idleBandwidth)
+  // #2133: default to a NON-empty household so FirstRunHint stays hidden in the
+  // existing dashboard tests; the first-run behaviour is covered in FirstRunHint.test.
+  ;(api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([{ id: 1 }])
+  ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([{ id: 1 }])
 })
 
 // #2056: a live per-profile bandwidth head row (groupBy:profile keys the profile name in

@@ -106,6 +106,11 @@ object AuthRoutes {
               claims.sub,
               UserRole.parse(claims.role).getOrElse(UserRole.Child),
               pids,
+              // #2133: the operator gate (design §3.2) is admin AND household 1 —
+              // the same predicate `requireOperator` enforces server-side. The SPA
+              // reads this to show/hide the beta-request queue.
+              isOperator =
+                claims.role == "admin" && claims.hh == wifihaven.shared.types.HouseholdId.Default,
             ).toJson,
           )
           handle.mapError(ErrorMapper.errorToResponse)
