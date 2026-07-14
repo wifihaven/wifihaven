@@ -36,11 +36,14 @@ export type HouseholdHint =
 export function householdHint(cookieSlug: string | null): HouseholdHint {
   const slug = (cookieSlug ?? '').trim()
   if (slug) {
-    return {
-      kind: 'cookie',
-      slug,
-      text: `Signing in to the ${slug} household — just enter your username.`,
-    }
+    // The DEFAULT household (slug `default`, V66__…sql:122) is the self-hosted / single-household
+    // case — naming "the default household" reads as noise to a self-hoster who never thinks in
+    // households, so drop the name there and just tell them to enter their username.
+    const text =
+      slug === 'default'
+        ? 'Just enter your username.'
+        : `Signing in to the ${slug} household — just enter your username.`
+    return { kind: 'cookie', slug, text }
   }
   return {
     kind: 'no-cookie',

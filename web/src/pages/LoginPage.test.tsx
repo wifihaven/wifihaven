@@ -82,6 +82,14 @@ describe('householdHint', () => {
   it('treats a blank/whitespace cookie slug as no cookie', () => {
     expect(householdHint('   ').kind).toBe('no-cookie')
   })
+  it('the default household (self-hosted) gets the just-your-username hint without naming the household', () => {
+    const hint = householdHint('default')
+    expect(hint.kind).toBe('cookie')
+    expect(hint.text.toLowerCase()).toContain('just')
+    expect(hint.text.toLowerCase()).toContain('username')
+    // No "the default household" noise for the single-household / self-hosted case.
+    expect(hint.text.toLowerCase()).not.toContain('household')
+  })
 })
 
 describe('LoginPage', () => {
