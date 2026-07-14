@@ -421,23 +421,65 @@ subscription pays for.
 
 ### 5.4 Flip lifecycle (#2137)
 
-- **Cohort flip date** is a config value (env/HOCON via zio-config) — one
-  cohort-wide date, not per-household in v1; printed at every signup surface
-  ("free through *date*").
+**Flip model — EVENT-TRIGGERED** (operator decision 2026-07-14, #2137 comment;
+supersedes the earlier fixed "cohort flip date is a config value" model). The
+flip is not a hand-set calendar date — it is triggered by beta adoption:
+
+- **Trigger + window.** The flip clock **starts** the first time the count of
+  **active beta households** reaches a configured threshold
+  (`flip.thresholdHouseholds`, default **25**). Once started it runs a
+  configured window (`flip.windowDays`, default **60** = "two months") and
+  **latches** — a later dip in the active count does **not** pause or reset it.
+  The start instant is persisted (`beta_cohort.clock_started_at`, V70) so the
+  latch survives an API restart; the window end is
+  `clock_started_at + flip.windowDays`, never recomputed from a fresh "now".
+- **"Active household"** = a household with ≥1 enrolled router that reported
+  traffic within a configured lookback (`flip.activeLookbackDays`, default
+  **7**). The count is a *live* number of active beta households and can drift
+  **down** during beta (a household that stops using its router drops out).
+  There is **no lapsing during beta** — beta has no expiry; enforcement runs
+  normally throughout.
+- **Config** (all env/HOCON via zio-config, tunable without a code change):
+  `flip.thresholdHouseholds=25`, `flip.windowDays=60`,
+  `flip.activeLookbackDays=7`.
+
+**Subscribe CTA / charging (A1).**
+
+- **No Subscribe prompt during pure beta.** Beta households see status/plan but
+  **no payment CTA** until the flip window is open. Until this ships, the
+  correct default is the CTA hidden for all `status='beta'` households (#2135
+  billing page).
+- The Subscribe CTA (FOUNDING pre-applied) shows for the **whole** window.
+- **Nobody is charged until the window ends.** Subscribing early during the
+  window locks FOUNDING but the **first charge is deferred to the window-end
+  date** via Stripe `trial_end` (`subscription_data[trial_end]` on the Checkout
+  Session). Everyone gets the full free beta regardless of when they convert.
+  ⚠️ Trade-off: this reintroduces the trial-anchor bookkeeping pricing §7
+  originally avoided — a conscious change, accepted for the "free through the
+  window for everyone" promise. Commented at the call site.
+
+**Notices + flip consequence.**
+
 - **T−30 / T−7 notices**: a scheduled in-process job (Clock-injected, modeled
   on `RetentionSweepJob`) emits per-household notices for unconverted
-  (`status='beta'`) households through the `Notifier` one-method pattern —
-  `.live` logs a line carrying everything an email needs, so a future
-  transport ([#874](https://github.com/wifihaven/wifihaven/issues/874)) drops
-  in without call-site reshaping. The operator sends actual emails manually
-  in v1 (no invented transport, as §3.3).
-- **In-SPA banner from T−30** for unconverted households: dismissible per
-  session, flip date + one-click Checkout with the founding promo pre-applied.
-- **Feature tests** (reshaped from #2137 scope item 6 for the superseded
-  lapse model): TestClock walks a household beta → T−30 notice → flip →
-  lapsed (snapshot goes permissive; ingest, reads, **and writes** all keep
-  working; `lapsed_at` stamped) → recovery re-arms enforcement; converted
-  households untouched.
+  (`status='beta'`) households through the `Notifier` one-method pattern — an
+  email transport now exists (#578/Resend), so notices route through it when
+  configured, else `.live` logs a line carrying everything an email needs.
+  Windows are measured against the persisted window end (`clock_started_at +
+  flip.windowDays`), so notices only fire once the flip clock has started.
+- **In-SPA banner from window open** for unconverted households: dismissible
+  per session, flip date + one-click Checkout with the founding promo
+  pre-applied.
+- **At window end**, unconverted (`status='beta'`) households flip to
+  **`lapsed`** via the existing `HouseholdBillingRepo.markLapsed` →
+  **enforcement stops** (permissive snapshot via existing wire fields, §5.3),
+  **NOT** read-only grace. Never brick the network. `beta_cohort.flipped_at`
+  latches the sweep so it runs exactly once.
+- **Feature tests**: TestClock walks the cohort through threshold-reach →
+  clock start → T−30 notice → window end → beta households flip to `lapsed`
+  (snapshot goes permissive; ingest, reads, **and writes** all keep working;
+  `lapsed_at` stamped) → recovery re-arms enforcement; already-converted
+  (`active`) households untouched.
 
 ---
 
