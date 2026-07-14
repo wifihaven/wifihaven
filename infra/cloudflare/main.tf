@@ -132,7 +132,52 @@ resource "cloudflare_record" "spf" {
   content = "\"v=spf1 -all\""
   proxied = false
   ttl     = 1
-  comment = "SPF: no mail from this domain (#613)"
+  # Apex sends no *direct* mail: Resend's envelope sender is send.wifihaven.net
+  # (see cloudflare_record.send_spf below), so SPF is evaluated on that
+  # subdomain, and the resend._domainkey DKIM (aligned to the apex) carries
+  # DMARC alignment for From: …@wifihaven.net. Apex stays -all (#613, #2202).
+  comment = "SPF: no direct mail from apex; Resend sends via send. (#613, #2202)"
+}
+
+# ── Resend sending DNS records (send.wifihaven.net) ─────────────────────────
+# Codify the Resend "sending" records for the #578 email transport (activation
+# #2196) so DKIM/SPF/DMARC pass. Region us-east-1; Resend domain
+# 129d9ba0-f9a2-495a-9650-47f8ff8e0c50. Plain create — the records did not
+# exist before this change; Resend verifies the domain once these apply.
+
+# DKIM: domain-unique 1024-bit public key from the Resend dashboard. Public
+# key material — safe to commit.
+resource "cloudflare_record" "resend_dkim" {
+  zone_id = var.zone_id
+  name    = "resend._domainkey"
+  type    = "TXT"
+  content = "\"p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCqrTo2ry2vqofKJLFJicNAjmpwmNJvlbDwtHZ8CGDXf1dfe3qEo0spNVSuWRyYWtWEccmEYuXHR8HVhdabPca0YXLsu4lS4tTbMx9k1Q8ArtaT8jbWI8PD7I4b3ZdHgkoULCCGbr3jw1qVz76TovFaxkIvRwQwlyVqX+DZQpuHEwIDAQAB\""
+  proxied = false
+  ttl     = 1
+  comment = "Resend DKIM for wifihaven.net (#578, #2202)"
+}
+
+# Bounce / return-path MX for the send. subdomain (Resend/us-east-1).
+resource "cloudflare_record" "send_mx" {
+  zone_id  = var.zone_id
+  name     = "send"
+  type     = "MX"
+  priority = 10
+  content  = "feedback-smtp.us-east-1.amazonses.com"
+  proxied  = false
+  ttl      = 1
+  comment  = "Resend bounce/return-path MX (#578, #2202)"
+}
+
+# SPF for the send. subdomain — the envelope sender Resend uses.
+resource "cloudflare_record" "send_spf" {
+  zone_id = var.zone_id
+  name    = "send"
+  type    = "TXT"
+  content = "\"v=spf1 include:amazonses.com ~all\""
+  proxied = false
+  ttl     = 1
+  comment = "Resend SPF for send.wifihaven.net (#578, #2202)"
 }
 
 # Apex + www CNAME to the MARKETING project's .pages.dev (#1842). Stays proxied
