@@ -63,11 +63,16 @@ final case class FlipService(
     cohort.clockStartedAt match {
       case None            => FlipWindow(open = false, flipDate = None)
       case Some(startedAt) =>
-        val end = startedAt.plus(cfg.window.toMillis, ChronoUnit.MILLIS)
         // Open = clock started AND not yet flipped. After the flip we still surface the date so the
         // SPA can explain a lapse, but the CTA/banner (keyed on `open`) turns off.
-        FlipWindow(open = cohort.flippedAt.isEmpty, flipDate = Some(end))
+        FlipWindow(open = cohort.flippedAt.isEmpty, flipDate = Some(windowEndOf(startedAt)))
     }
+
+  // The window end is the persisted clock-start plus the configured window — the ONE place this is
+  // computed, so the SPA read (`windowOf`) and the tick (`runWindow`) can never drift. Never
+  // recomputed from a fresh "now" (the latch, design §5.4).
+  private def windowEndOf(startedAt: Instant): Instant =
+    startedAt.plus(cfg.window.toMillis, ChronoUnit.MILLIS)
 
   /**
    * One lifecycle tick (the scheduled job calls this; tests call it directly with a walked
@@ -84,9 +89,7 @@ final case class FlipService(
       _      <- cohort.clockStartedAt match {
         case None            => maybeStartClock(now)
         case Some(startedAt) =>
-          ZIO.when(cohort.flippedAt.isEmpty)(
-            runWindow(now, startedAt.plus(cfg.window.toMillis, ChronoUnit.MILLIS)),
-          )
+          ZIO.when(cohort.flippedAt.isEmpty)(runWindow(now, windowEndOf(startedAt)))
       }
       _      <- publishStatusGauge
     } yield ()
@@ -157,24 +160,27 @@ final case class FlipService(
           } yield ()
       }
 
-  // Flip unconverted households to lapsed at window end. `markFlipped` (guarded on `flipped_at IS
-  // NULL`) latches the sweep so it runs exactly once even across ticks/instances; only the winner
-  // proceeds. Enforcement stops because PolicyService reads billing status and serves a permissive
-  // snapshot for a lapsed household — `invalidate` rebuilds so the change lands immediately.
+  // Flip unconverted households to lapsed at window end. The sweep runs BEFORE the `flipped_at`
+  // latch so a partial failure self-heals: if `markLapsed` fails mid-loop, `flipped_at` stays NULL,
+  // so the next tick re-enters `runWindow` and re-sweeps — idempotent, since `betaHouseholdIds`
+  // returns only still-`beta` households and `markLapsed` on an already-lapsed row is a no-op.
+  // `markFlipped` (guarded on `flipped_at IS NULL`) latches only once the sweep has succeeded, so a
+  // concurrent instance re-running the (idempotent) sweep is harmless and only the winner logs.
+  // Enforcement stops because PolicyService reads billing status and serves a permissive snapshot
+  // for a lapsed household — `invalidate` rebuilds so the change lands immediately.
   private def flip(now: Instant): Task[Unit] =
-    cohortRepo.markFlipped(now).flatMap {
-      case false => ZIO.unit // already flipped by a prior tick / another instance
-      case true  =>
-        for {
-          ids <- cohortRepo.betaHouseholdIds
-          _   <- ZIO.foreachDiscard(ids)(hid => billingRepo.markLapsed(hid, now))
-          _   <- policyService.invalidate
-          _   <- ZIO.logInfo(
-            s"beta flip executed at $now: ${ids.size} unconverted household(s) → lapsed " +
-              "(enforcement stops permissively; router wire un-gated)",
-          )
-        } yield ()
-    }
+    for {
+      ids     <- cohortRepo.betaHouseholdIds
+      _       <- ZIO.foreachDiscard(ids)(hid => billingRepo.markLapsed(hid, now))
+      _       <- ZIO.when(ids.nonEmpty)(policyService.invalidate)
+      latched <- cohortRepo.markFlipped(now)
+      _       <- ZIO.when(latched)(
+        ZIO.logInfo(
+          s"beta flip executed at $now: ${ids.size} unconverted household(s) → lapsed " +
+            "(enforcement stops permissively; router wire un-gated)",
+        ),
+      )
+    } yield ()
 
   private def publishStatusGauge: Task[Unit] =
     billingRepo.countByStatus.flatMap { counts =>

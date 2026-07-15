@@ -252,10 +252,17 @@ class BetaCohortRepoLive(xa: Transactor[Task]) extends BetaCohortRepo {
       .map(_ == 1)
 
   def countActiveBetaHouseholds(since: Instant): Task[Int] =
-    // Beta households with ≥1 router that reported traffic in the lookback window. EXISTS keeps the
-    // beta set (bounded small — threshold ~25 at launch) as the driving table and probes
-    // traffic_reports by its (router_id) / (period_start) indexes; runs on the daily-ish flip tick,
-    // never per request.
+    // Beta households with ≥1 router that reported traffic in the lookback window.
+    //
+    // Access pattern (traffic_reports is the unbounded growth table, so this matters): the driving
+    // table is `household_billing WHERE status='beta'` — bounded small (threshold ~25 at launch),
+    // and the query runs once an hour off the request path (FlipService job), not per request. For
+    // each beta household the EXISTS probes `routers` by `idx_routers_household` (V65) then
+    // `traffic_reports` by `idx_traffic_reports_router` (V2), and the `period_start >= $since`
+    // filter is partition-prunable — traffic_reports is weekly RANGE-partitioned on period_start
+    // (V41), so only the ~1-2 partitions covering the 7-day lookback are scanned, never the whole
+    // history. So the cost is ~O(beta_households × routers_per_household) index probes against a
+    // pruned recent slice, independent of total traffic_reports size. No full scan.
     sql"""SELECT COUNT(*)
           FROM household_billing hb
           WHERE hb.status = 'beta'
