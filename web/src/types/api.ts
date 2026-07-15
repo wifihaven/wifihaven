@@ -1072,6 +1072,13 @@ export interface BillingStatusResponse {
   priceId: string | null
   currentPeriodEnd: string | null
   lapsedAt: string | null
+  // #2137 (P5-6): the cohort flip-window state (design §5.4, A1). `flipWindowOpen` is true once the
+  // flip clock has started and has not yet flipped — while open, unconverted households see the
+  // Subscribe CTA + conversion banner. During pure beta (clock not started) it's false and NO
+  // payment CTA shows. `flipDate` is the window end ("free through <date>"), null until the clock
+  // starts. Optional-with-default on the wire for back-compat.
+  flipWindowOpen?: boolean
+  flipDate?: string | null
 }
 
 export interface BillingRedirect {

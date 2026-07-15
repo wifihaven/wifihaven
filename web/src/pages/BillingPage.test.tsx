@@ -54,15 +54,23 @@ describe('BillingPage', () => {
     expect(await screen.findByText(/Could not load billing status/i)).toBeInTheDocument()
   })
 
-  it('surfaces the founding plan and a Subscribe button for a beta household', async () => {
-    statusMock.mockResolvedValue(billing({ status: 'beta', founding: true }))
+  it('surfaces the founding plan and a Subscribe button for a beta household in the flip window', async () => {
+    // #2137 (A1): the Subscribe CTA shows once the flip window is open.
+    statusMock.mockResolvedValue(billing({ status: 'beta', founding: true, flipWindowOpen: true }))
     renderPage()
     expect(await screen.findByText(/Founding — 40% off, forever/i)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Subscribe/ })).toBeInTheDocument()
   })
 
+  it('a pure-beta household (flip window not open) sees NO Subscribe CTA (A1)', async () => {
+    statusMock.mockResolvedValue(billing({ status: 'beta', founding: true, flipWindowOpen: false }))
+    renderPage()
+    expect(await screen.findByText(/free beta/i)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Subscribe/ })).not.toBeInTheDocument()
+  })
+
   it('checkout redirects the browser to the returned Stripe URL', async () => {
-    statusMock.mockResolvedValue(billing({ status: 'beta' }))
+    statusMock.mockResolvedValue(billing({ status: 'beta', flipWindowOpen: true }))
     checkoutMock.mockResolvedValue({ url: 'https://checkout.stripe.test/sess_1' })
     const original = window.location
     // jsdom: make location.href assignable + observable

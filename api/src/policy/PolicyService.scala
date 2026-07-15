@@ -100,6 +100,10 @@ object PolicyServiceLive {
       // mutate repos and re-read `snapshot` expecting fresh bytes) keep building every call; the
       // production layer turns it on so the REST poll path reads the cache (#1512).
       cacheEnabled: Boolean = false,
+      // #2137: the billing-status gate. Defaulted to "always active" so the many positional test
+      // constructions build the normal enforcing snapshot; the flip lifecycle spec passes a
+      // repo-backed reader to exercise the lapsed→permissive path.
+      billingStatusOf: HouseholdId => Task[Option[String]] = _ => ZIO.succeed(Some("active")),
   ): PolicyServiceLive = {
     val tss = new TimeStatusServiceLive(
       profileRepo,
@@ -128,6 +132,7 @@ object PolicyServiceLive {
       uiAllowedHosts,
       namedScheduleRepo,
       cacheEnabled,
+      billingStatusOf = billingStatusOf,
     )
   }
 }
@@ -168,6 +173,14 @@ class PolicyServiceLive(
     // production and the ~40 existing specs; PolicySnapshotCacheSpec wires a gate here to suspend an
     // in-flight build deterministically and prove a stale build cannot clobber a fresher cache entry.
     buildBarrier: UIO[Unit] = ZIO.unit,
+    // #2137 (multi-tenant P5-6): the billing-status gate. A `lapsed` household gets a PERMISSIVE
+    // snapshot — enforcement STOPS (design §5.3, never brick the network) — built through the
+    // existing wire fields (no new field, no wire change; the router stays a dumb applier and never
+    // learns why). The router-wire routes are NEVER gated on this; the permissive snapshot always
+    // serves. Defaulted to "always active" so the ~40 direct test constructions and single-tenant
+    // installs (only household 1, seeded `active`) build the normal enforcing snapshot unchanged;
+    // the production layer wires the real `HouseholdBillingRepo` read.
+    billingStatusOf: HouseholdId => Task[Option[String]] = _ => ZIO.succeed(Some("active")),
 ) extends PolicyService {
 
   // #1849: the cached snapshot. Process-local `AtomicReference` (matching the existing
@@ -338,6 +351,26 @@ class PolicyServiceLive(
     ZIO.succeed(publisher.set(p))
 
   private def buildSnapshot(household: HouseholdId): Task[PolicySnapshot] =
+    // #2137: a lapsed household gets a permissive snapshot — enforcement stops (§5.3). This is the
+    // ONLY billing-aware branch in the enforcement path; the router wire is never gated, the
+    // permissive snapshot serves through the existing fields exactly like a household with no policy.
+    billingStatusOf(household).flatMap {
+      case Some("lapsed") =>
+        clock.instant.flatMap { now =>
+          val snap = PolicyService.permissiveSnapshot(now)
+          // Still meter the build so the computed:cache_hit ratio and the global-policy gauge stay
+          // coherent; a permissive snapshot has an empty global section (0 allow hosts, 0 default-deny).
+          AppMetrics
+            .setGlobalPolicy(snap.global.extraAllowed.size, 0)
+            .zipRight(logSnapshotChanged(snap))
+            .zipRight(AppMetrics.recordSnapshotBuild("computed"))
+            .zipLeft(buildBarrier)
+            .as(snap)
+        }
+      case _              => buildEnforcingSnapshot(household)
+    }
+
+  private def buildEnforcingSnapshot(household: HouseholdId): Task[PolicySnapshot] =
     (for {
       // #2107: read only this household's settings/profiles/devices. The blocklist CATALOG
       // (`listCategories` / `loadCategory`) stays global — content is shared across households
@@ -919,7 +952,7 @@ object PolicyService {
   val layer: ZLayer[
     AppConfig & ProfileRepo & NamedScheduleRepo & HouseholdSettingsRepo & TimeLimitRepo &
       AppTimeLimitRepo & DeviceRepo & BlocklistRepo & TrafficReportRepo & TimeExtensionRepo &
-      AppRepo & TimeStatusService & Clock,
+      AppRepo & TimeStatusService & Clock & wifihaven.api.db.HouseholdBillingRepo,
     Nothing,
     PolicyService,
   ] = ZLayer.fromFunction {
@@ -937,6 +970,7 @@ object PolicyService {
         ar: AppRepo,
         tss: TimeStatusService,
         clk: Clock,
+        hbr: wifihaven.api.db.HouseholdBillingRepo,
     ) =>
       new PolicyServiceLive(
         pr,
@@ -956,6 +990,20 @@ object PolicyService {
         // cache (#1512), and the reconcile ticker (Main) + `invalidate` (mutating routes) keep it
         // fresh and drive the push-on-change to connected ws routers.
         cacheEnabled = true,
+        // #2137: the billing-status gate reads the household's status from HouseholdBillingRepo. A
+        // read blip fails toward enforcing (None ⇒ not lapsed ⇒ normal snapshot) so a transient DB
+        // hiccup never flips the whole fleet permissive.
+        billingStatusOf = hid =>
+          hbr
+            .findByHousehold(hid)
+            .map(_.map(_.status))
+            .catchAll { e =>
+              ZIO
+                .logWarning(
+                  s"policy: billing-status read failed for household ${hid.value}: ${e.getMessage}",
+                )
+                .as(None)
+            },
       )
   }
 
@@ -994,6 +1042,32 @@ object PolicyService {
   }
 
   def hashToken(raw: String): Sha256Hex = Sha256Hex.unsafe(sha256Hex(raw))
+
+  /**
+   * #2137: the permissive (allow-all) snapshot served for a `lapsed` household — enforcement stops
+   * (design §5.3). Empty everything (global inert, no devices/profiles/blocklists, encrypted-DNS
+   * block off): functionally identical to a household with no policy, i.e. as if the router had
+   * been removed. Built through the existing wire fields — no new field, no wire change. The ETag
+   * is computed over the same [[SnapshotCore]] path so cache/publish semantics are unchanged.
+   */
+  def permissiveSnapshot(now: java.time.Instant): PolicySnapshot = {
+    val core = SnapshotCore(
+      global = BlockRules.allowAll,
+      devices = Map.empty,
+      profiles = Map.empty,
+      blocklists = Map.empty,
+      blockEncryptedDns = false,
+    )
+    PolicySnapshot(
+      etag = computeEtag(core),
+      generatedAt = now.toString,
+      global = BlockRules.allowAll,
+      devices = Map.empty,
+      profiles = Map.empty,
+      blocklists = Map.empty,
+      blockEncryptedDns = false,
+    )
+  }
 
   /** Deterministic ETag over snapshot logical content. */
   private[policy] def computeEtag(core: SnapshotCore): ETag = {

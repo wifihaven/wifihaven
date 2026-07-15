@@ -335,6 +335,12 @@ object Main extends ZIOAppDefault {
         // the tick rather than racing on the same DELETE.
         xaForJobs         <- ZIO.service[Transactor[Task]]
         _                 <- RetentionSweepJob.start(xaForJobs, clockForJobs)
+        // #2137: the beta→paid flip lifecycle. Forks an hourly daemon that starts the cohort flip
+        // clock once the active-beta threshold is reached, emits T-30/T-7 conversion notices, and
+        // flips unconverted households to `lapsed` at window end (enforcement stops permissively —
+        // never brick the network). Idempotent via DB latches + an in-memory notice dedup.
+        flipServiceForJob <- ZIO.service[wifihaven.api.billing.FlipService]
+        _                 <- wifihaven.api.billing.FlipService.start(flipServiceForJob)
         // #808: durable fix for the 2026-06-29 P0 (#2053). Auto-creates the next
         // cfg.partition.weeksAhead weekly partitions on traffic_reports + connection_events at
         // startup and every 24h, so the fixed runway V41/V42 seeded can never silently exhaust.
@@ -380,6 +386,11 @@ object Main extends ZIOAppDefault {
       ZLayer.fromZIO(ZIO.serviceWith[AppConfig](_.stripe)) >+>
       wifihaven.api.billing.StripeClient.layer >+>
       wifihaven.api.billing.BillingService.layer >+>
+      // #2137 (multi-tenant P5-6): the beta→paid flip lifecycle service — the cohort flip clock,
+      // T-30/T-7 conversion notices, and the window-end beta→lapsed sweep (reusing the ONE billing
+      // state machine + the Notifier). Reads BetaCohortRepo/HouseholdBillingRepo/HouseholdRepo (from
+      // Repos.all), the Notifier, and PolicyService (to rebuild permissive snapshots at flip).
+      wifihaven.api.billing.FlipService.layer >+>
       // #1242: Prometheus publisher + snapshot listener, and JVM metrics collectors.
       MetricsRuntime.prometheus() >+>
       DefaultJvmMetrics.live
@@ -440,6 +451,9 @@ object Main extends ZIOAppDefault {
       // accept). Clock-injected so the invite TTL is TestClock-driven in specs.
       // #2135: the billing state machine (Checkout/Portal/webhook + the provisioning Customer seam).
       billing              <- ZIO.service[wifihaven.api.billing.BillingService]
+      // #2137: the cohort flip lifecycle service (shared with the BetaFlipJob forked in the run
+      // scope). Surfaces the flip-window state to the SPA billing page.
+      flipService          <- ZIO.service[wifihaven.api.billing.FlipService]
       betaService = BetaService(
         betaRepo,
         householdRepo,
@@ -504,7 +518,14 @@ object Main extends ZIOAppDefault {
           BetaRoutes.routes(auth, betaService, betaRepo, userRepo, betaReqRateLimiter) ++
           // #2135: billing status (admin) + Checkout/Portal starts (admin) + signature-verified
           // Stripe webhook (public). Disabled installs 404 the admin surfaces and no-op the webhook.
-          BillingRoutes.routes(auth, billing) ++
+          BillingRoutes.routes(
+            auth,
+            billing,
+            // #2137: a read failure degrades to "no window" rather than failing the billing page.
+            flipService.currentWindow.orElseSucceed(
+              wifihaven.api.billing.FlipService.FlipWindow(open = false, flipDate = None),
+            ),
+          ) ++
           ProfileRoutes.routes(
             auth,
             profileRepo,

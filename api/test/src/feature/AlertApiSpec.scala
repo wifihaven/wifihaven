@@ -45,6 +45,13 @@ object AlertApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         inviteUrl: String,
         ttlHours: Int,
     ): UIO[Unit] = ZIO.unit
+    def betaFlipNotice(
+        householdId: wifihaven.shared.types.HouseholdId,
+        slug: String,
+        window: String,
+        flipDate: java.time.Instant,
+        daysUntilFlip: Int,
+    ): UIO[Unit] = ZIO.unit
   }
 
   private val mac1       = MacAddress.unsafe("aa:bb:cc:11:22:33")

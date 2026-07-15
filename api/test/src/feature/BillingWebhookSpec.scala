@@ -191,7 +191,13 @@ object BillingWebhookSpec
         hbr   <- ZIO.service[HouseholdBillingRepo]
         auth  <- makeAuth
         svc    = BillingService(stubStripe, hbr, clock, cfg)
-        routes = BillingRoutes.routes(auth, svc)
+        // #2137: this spec exercises only the webhook route; the flip-window effect (GET /api/billing
+        // only) is a fixed closed window here and is covered end-to-end in BetaFlipLifecycleSpec.
+        routes = BillingRoutes.routes(
+          auth,
+          svc,
+          ZIO.succeed(FlipService.FlipWindow(open = false, flipDate = None)),
+        )
         hid <- seedHousehold(xa, hbr)
         now <- clock.instant
         p1 = checkoutPayload(hid)

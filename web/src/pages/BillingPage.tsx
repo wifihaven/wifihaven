@@ -84,6 +84,9 @@ export function BillingPage() {
             </div>
           )}
 
+          {/* #2137 (A1): the Subscribe CTA is HIDDEN during pure beta (clock not yet started). It
+              shows only once the flip window is open, or for a lapsed household re-subscribing. An
+              active household gets the portal. */}
           {data.status === 'active' ? (
             <>
               <p className="text-sm text-brand-text-muted">
@@ -98,12 +101,14 @@ export function BillingPage() {
                 {redirecting === 'portal' ? 'Opening…' : 'Manage billing'}
               </button>
             </>
-          ) : (
+          ) : data.status === 'lapsed' || data.flipWindowOpen ? (
             <>
               <p className="text-sm text-brand-text-muted">
-                {data.founding
-                  ? 'Subscribe now to lock in the founding price — 40% off, forever.'
-                  : 'Subscribe to keep content filtering and limits enforced.'}
+                {data.flipDate && data.status === 'beta'
+                  ? `Your free beta ends ${new Date(data.flipDate).toLocaleDateString()}. Subscribe now to keep enforcement on — you won't be charged until then.`
+                  : data.founding
+                    ? 'Subscribe now to lock in the founding price — 40% off, forever.'
+                    : 'Subscribe to keep content filtering and limits enforced.'}
               </p>
               <button
                 type="button"
@@ -114,6 +119,12 @@ export function BillingPage() {
                 {redirecting === 'checkout' ? 'Opening…' : 'Subscribe'}
               </button>
             </>
+          ) : (
+            /* Pure beta — no payment CTA yet (A1). Just reassure. */
+            <p className="text-sm text-brand-text-muted">
+              You're in the free beta{data.flipDate ? ` through ${new Date(data.flipDate).toLocaleDateString()}` : ''}
+              . We'll let you know before anything changes — no payment needed yet.
+            </p>
           )}
 
           {actionError && (

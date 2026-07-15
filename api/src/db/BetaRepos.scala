@@ -100,6 +100,13 @@ trait HouseholdBillingRepo {
    * Dunning-terminal → `status='lapsed'`, stamp `lapsed_at` (a record, not a purge timer, §5.3).
    */
   def markLapsed(householdId: HouseholdId, lapsedAt: Instant): Task[Unit]
+
+  /**
+   * #2137: household counts by billing status, for the `households_by_billing_status` gauge. A
+   * single GROUP-BY read (SSOT) — the caller fills any absent status with 0 so the gauge always
+   * publishes all three states.
+   */
+  def countByStatus: Task[Map[String, Int]]
 }
 
 class HouseholdBillingRepoLive(xa: Transactor[Task]) extends HouseholdBillingRepo {
@@ -171,6 +178,100 @@ class HouseholdBillingRepoLive(xa: Transactor[Task]) extends HouseholdBillingRep
           WHERE household_id=$householdId""".update.run
       .transact(xa)
       .unit
+
+  def countByStatus: Task[Map[String, Int]] =
+    sql"SELECT status, COUNT(*)::int FROM household_billing GROUP BY status"
+      .query[(String, Int)]
+      .to[List]
+      .map(_.toMap)
+      .transact(xa)
+}
+
+// ── BetaCohortRepo ────────────────────────────────────────────────────────────
+
+/**
+ * #2137 (multi-tenant P5-6, epic #622): the cohort-wide flip clock (`beta_cohort`, V70; design
+ * §5.4, EVENT-TRIGGERED model). ONE installation-wide row. `clockStartedAt` latches when the active
+ * beta-household count first reaches the threshold; `flippedAt` latches when the window-end
+ * beta→lapsed sweep has run exactly once.
+ */
+case class BetaCohort(
+    clockStartedAt: Option[Instant],
+    flippedAt: Option[Instant],
+)
+
+trait BetaCohortRepo {
+
+  /** The singleton cohort row (always present — V70 seeds it at migration time). */
+  def get: Task[BetaCohort]
+
+  /**
+   * Start the flip clock — set `clock_started_at` to `at`, but only if it is still NULL (the
+   * latch). Returns `true` iff this call actually started it, so a concurrent/duplicate tick can't
+   * re-stamp a later start instant over the persisted one. Idempotent.
+   */
+  def startClock(at: Instant): Task[Boolean]
+
+  /**
+   * Latch the window-end flip — set `flipped_at` to `at`, but only if it is still NULL. Returns
+   * `true` iff this call ran the latch, so the beta→lapsed sweep executes exactly once even across
+   * multiple instances / repeated ticks.
+   */
+  def markFlipped(at: Instant): Task[Boolean]
+
+  /**
+   * Count "active beta households" (design §5.4): households whose
+   * `household_billing.status='beta'` that have ≥1 enrolled router which reported traffic since
+   * `since` (now − activeLookback). This is the live number the flip clock's threshold is compared
+   * against; it can drift down during beta as households go quiet.
+   */
+  def countActiveBetaHouseholds(since: Instant): Task[Int]
+
+  /** Household ids whose billing status is still `beta` — the unconverted set (notices + flip). */
+  def betaHouseholdIds: Task[List[HouseholdId]]
+}
+
+class BetaCohortRepoLive(xa: Transactor[Task]) extends BetaCohortRepo {
+  def get: Task[BetaCohort] =
+    sql"SELECT clock_started_at, flipped_at FROM beta_cohort WHERE id = TRUE"
+      .query[(Option[Instant], Option[Instant])]
+      .unique
+      .map((s, f) => BetaCohort(s, f))
+      .transact(xa)
+
+  def startClock(at: Instant): Task[Boolean] =
+    sql"""UPDATE beta_cohort SET clock_started_at = $at
+          WHERE id = TRUE AND clock_started_at IS NULL""".update.run
+      .transact(xa)
+      .map(_ == 1)
+
+  def markFlipped(at: Instant): Task[Boolean] =
+    sql"""UPDATE beta_cohort SET flipped_at = $at
+          WHERE id = TRUE AND flipped_at IS NULL""".update.run
+      .transact(xa)
+      .map(_ == 1)
+
+  def countActiveBetaHouseholds(since: Instant): Task[Int] =
+    // Beta households with ≥1 router that reported traffic in the lookback window. EXISTS keeps the
+    // beta set (bounded small — threshold ~25 at launch) as the driving table and probes
+    // traffic_reports by its (router_id) / (period_start) indexes; runs on the daily-ish flip tick,
+    // never per request.
+    sql"""SELECT COUNT(*)
+          FROM household_billing hb
+          WHERE hb.status = 'beta'
+            AND EXISTS (
+              SELECT 1
+              FROM routers r
+              JOIN traffic_reports tr ON tr.router_id = r.id
+              WHERE r.household_id = hb.household_id
+                AND tr.period_start >= $since
+            )""".query[Int].unique.transact(xa)
+
+  def betaHouseholdIds: Task[List[HouseholdId]] =
+    sql"SELECT household_id FROM household_billing WHERE status = 'beta' ORDER BY household_id"
+      .query[HouseholdId]
+      .to[List]
+      .transact(xa)
 }
 
 // ── BetaRequestRepo ──────────────────────────────────────────────────────────

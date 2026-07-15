@@ -750,13 +750,26 @@ case class AcceptInviteResponse(
 // into a Stripe-hosted surface. `status` is the household_billing.status value (beta|active|lapsed).
 // `founding` surfaces the founding-price framing. No Stripe secrets ever cross this wire.
 
-/** `GET /api/billing` — current billing state for the minimal SPA billing page. */
+/**
+ * `GET /api/billing` — current billing state for the minimal SPA billing page.
+ *
+ * #2137 (P5-6): the two `flip*` fields carry the cohort flip-window state so the SPA can gate the
+ * Subscribe CTA and the conversion banner (design §5.4, A1). Both are additive with defaults so the
+ * wire stays back-compatible.
+ *   - `flipWindowOpen` — the flip clock has started and has not yet flipped (the window is open, so
+ *     the Subscribe CTA + banner show for unconverted households). During pure beta (clock not yet
+ *     started) this is false and the SPA shows NO payment CTA (A1).
+ *   - `flipDate` — the window-end instant (ISO-8601), when unconverted households flip to `lapsed`.
+ *     Printed at signup surfaces ("free through <date>"). None until the clock starts.
+ */
 case class BillingStatusResponse(
     status: String,
     founding: Boolean,
     priceId: Option[String],
     currentPeriodEnd: Option[String],
     lapsedAt: Option[String],
+    flipWindowOpen: Boolean = false,
+    flipDate: Option[String] = None,
 ) derives JsonCodec
 
 /**

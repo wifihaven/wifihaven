@@ -34,6 +34,11 @@ object BillingRoutes {
   def routes(
       auth: AuthService,
       billing: BillingService,
+      // #2137: the cohort flip-window state (SSOT via FlipService.currentWindow), passed as an
+      // already-failure-handled effect so this route stays decoupled from FlipService's deps. Main
+      // wires `flipService.currentWindow.orElseSucceed(closed)`; the flip walk is exercised in
+      // BetaFlipLifecycleSpec, not through this route.
+      flipWindow: UIO[FlipService.FlipWindow],
   ): Routes[Any, Response] =
     Routes(
       // ── Admin: current billing status for the SPA billing page ────────────────
@@ -42,7 +47,10 @@ object BillingRoutes {
           val handle: ZIO[Any, ApiError, Response] = for {
             claims <- requireAdmin(req, auth)
             row    <- billing.status(claims.hh).mapError(billingErrorToApi)
-          } yield Response.json(toStatusResponse(row).toJson)
+            // #2137: fold in the cohort flip-window state so the SPA can gate the Subscribe CTA +
+            // conversion banner (design §5.4, A1).
+            window <- flipWindow
+          } yield Response.json(toStatusResponse(row, window).toJson)
           handle.mapError(ErrorMapper.errorToResponse)
         },
 
@@ -99,13 +107,18 @@ object BillingRoutes {
         },
     )
 
-  private def toStatusResponse(b: HouseholdBilling): BillingStatusResponse =
+  private def toStatusResponse(
+      b: HouseholdBilling,
+      window: FlipService.FlipWindow,
+  ): BillingStatusResponse =
     BillingStatusResponse(
       status = b.status,
       founding = b.founding,
       priceId = b.priceId,
       currentPeriodEnd = b.currentPeriodEnd.map(_.toString),
       lapsedAt = b.lapsedAt.map(_.toString),
+      flipWindowOpen = window.open,
+      flipDate = window.flipDate.map(_.toString),
     )
 
   // The webhook never leaks WHY to the caller; these outcomes only feed the checkout/portal metric.

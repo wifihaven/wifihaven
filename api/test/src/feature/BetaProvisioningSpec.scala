@@ -40,6 +40,13 @@ object BetaProvisioningSpec
   private val noopNotifier: Notifier = new Notifier {
     def alertCreated(a: Alert): UIO[Unit]                                               = ZIO.unit
     def betaInvite(email: String, slug: String, inviteUrl: String, ttl: Int): UIO[Unit] = ZIO.unit
+    def betaFlipNotice(
+        householdId: wifihaven.shared.types.HouseholdId,
+        slug: String,
+        window: String,
+        flipDate: java.time.Instant,
+        daysUntilFlip: Int,
+    ): UIO[Unit] = ZIO.unit
   }
 
   private def makeAuth =
