@@ -672,10 +672,12 @@ object BetaRequestStatus                 {
 }
 
 /**
- * Public intake body for `POST /api/beta/request` — unauthenticated. `email` is the only required
- * field; `name` (household/person) seeds the household name + slug at provisioning, `note` is free
- * text for the operator. Idempotent on duplicate email (the route returns a generic 200 either way,
- * so a duplicate leaks no enumeration signal).
+ * Public intake body for `POST /api/beta/request` — unauthenticated. `email` and `name` are both
+ * required (#2217): `name` is the household name that seeds `households.name` + the derived login
+ * slug at provisioning, so the route rejects a missing/blank name with a 400. `note` is optional
+ * free text for the operator. The field stays `Option` on the wire (older/nullable rows,
+ * back-compat) — presence is enforced in the route, not the codec. Idempotent on duplicate email
+ * (the route returns a generic 200 either way, so a duplicate leaks no enumeration signal).
  */
 case class CreateBetaRequest(
     email: String,

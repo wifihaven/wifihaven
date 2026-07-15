@@ -277,6 +277,110 @@ object BetaProvisioningSpec
         )
       } yield assertTrue(sFirst == Status.Ok, sReplay == Status.BadRequest)
     },
+    test("intake with a missing/blank name is rejected with a clean 400 (#2217)") {
+      for {
+        _   <- cleanDb
+        ctl <- TestClock.makeWithControl(TestClock.schoolDayAfternoon)
+        (bc, _) = ctl
+        b             <- build(bc)
+        // Absent name.
+        (sMissing, _) <- postJson(
+          b.routes,
+          "/api/beta/request",
+          None,
+          CreateBetaRequest("noname@example.com").toJson,
+        )
+        // Present but whitespace-only.
+        (sBlank, _)   <- postJson(
+          b.routes,
+          "/api/beta/request",
+          None,
+          CreateBetaRequest("blank@example.com", Some("   ")).toJson,
+        )
+        xa            <- ZIO.service[Transactor[Task]]
+        count         <- sql"SELECT COUNT(*) FROM beta_requests"
+          .query[Long]
+          .unique
+          .transact(xa)
+      } yield assertTrue(sMissing == Status.BadRequest, sBlank == Status.BadRequest) &&
+        // No row is created for a rejected intake.
+        assertTrue(count == 0L)
+    },
+    test("two households with the same name get distinct, collision-safe slugs (#2217)") {
+      for {
+        _   <- cleanDb
+        ctl <- TestClock.makeWithControl(TestClock.schoolDayAfternoon)
+        (bc, _) = ctl
+        b       <- build(bc)
+        opToken <- login(b.auth, "admin", "changeme")
+        approve = (email: String) =>
+          for {
+            _             <- postJson(
+              b.routes,
+              "/api/beta/request",
+              None,
+              CreateBetaRequest(email, Some("The Smith Family")).toJson,
+            )
+            (_, listBody) <- getJson(b.routes, "/api/operator/beta-requests", opToken)
+            reqId         <- ZIO
+              .fromEither(listBody.fromJson[List[BetaRequestSummary]])
+              .mapError(new RuntimeException(_))
+              // The queue lists pending newest-or-oldest first; pick the row for THIS email.
+              .map(_.find(_.email == email).get.id)
+            (_, apBody)   <- postJson(
+              b.routes,
+              s"/api/operator/beta-requests/${reqId.value}/approve",
+              Some(opToken),
+              "",
+            )
+            ap            <- ZIO
+              .fromEither(apBody.fromJson[ApproveBetaResponse])
+              .mapError(new RuntimeException(_))
+          } yield ap.slug
+        slug1 <- approve("smith1@example.com")
+        slug2 <- approve("smith2@example.com")
+      } yield
+      // First gets the clean derived slug; the second is de-duplicated with a numeric suffix.
+      assertTrue(slug1 == "the-smith-family", slug2 == "the-smith-family-2")
+    },
+    test("a name that slugifies to empty falls back to a valid slug satisfying the CHECK (#2217)") {
+      for {
+        _   <- cleanDb
+        ctl <- TestClock.makeWithControl(TestClock.schoolDayAfternoon)
+        (bc, _) = ctl
+        b                  <- build(bc)
+        xa                 <- ZIO.service[Transactor[Task]]
+        opToken            <- login(b.auth, "admin", "changeme")
+        // "!!!" is a non-empty name (passes the intake guard) but slugifies to nothing.
+        _                  <- postJson(
+          b.routes,
+          "/api/beta/request",
+          None,
+          CreateBetaRequest("symbols@example.com", Some("!!!")).toJson,
+        )
+        (_, listBody)      <- getJson(b.routes, "/api/operator/beta-requests", opToken)
+        reqId              <- ZIO
+          .fromEither(listBody.fromJson[List[BetaRequestSummary]])
+          .mapError(new RuntimeException(_))
+          .map(_.head.id)
+        (sApprove, apBody) <- postJson(
+          b.routes,
+          s"/api/operator/beta-requests/${reqId.value}/approve",
+          Some(opToken),
+          "",
+        )
+        ap                 <- ZIO
+          .fromEither(apBody.fromJson[ApproveBetaResponse])
+          .mapError(new RuntimeException(_))
+        // The V66 CHECK (slug ~ '^[a-z0-9-]+$') accepted the persisted slug.
+        persisted          <- sql"SELECT slug FROM households WHERE id = ${ap.householdId}"
+          .query[Option[String]]
+          .unique
+          .transact(xa)
+      } yield assertTrue(sApprove == Status.Ok) &&
+        assertTrue(ap.slug.nonEmpty, ap.slug.matches("^[a-z0-9-]+$")) &&
+        assertTrue(persisted.contains(ap.slug))
+    },
     test("duplicate intake is idempotent and leaks no enumeration signal") {
       for {
         _   <- cleanDb

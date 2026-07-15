@@ -56,7 +56,11 @@ object BetaRoutes {
               .mapError(ApiError.DecodeFailure(_))
             email = cr0.email.trim.toLowerCase.take(MaxEmailLength)
             _ <- ZIO.fail(ApiError.BadRequest("email required")).when(!looksLikeEmail(email))
+            // #2217: the household name is required — it seeds `households.name` and the derived
+            // login slug at provisioning. Reject a missing/blank name with a clean 400 (the SPA
+            // blocks empty submit client-side; this is the server-side backstop).
             name = cr0.name.map(_.trim).filter(_.nonEmpty).map(_.take(MaxNameLength))
+            _ <- ZIO.fail(ApiError.BadRequest("name required")).when(name.isEmpty)
             note = cr0.note.map(_.take(MaxNoteLength))
             // Idempotent on the unique email: a new insert vs a duplicate both return the SAME
             // content-free 200, so a caller can't probe which emails already requested (no
