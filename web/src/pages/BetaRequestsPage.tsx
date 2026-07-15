@@ -26,8 +26,12 @@ export function BetaRequestsPage() {
   const { data, isPending, isError } = useBetaRequests(status)
   const qc = useQueryClient()
 
-  // Per-request approve result (invite URL) keyed by request id, so the operator can copy it.
-  const [approved, setApproved] = useState<Record<number, ApproveBetaResponse>>({})
+  // #2190: freshly-approved invites, in approval order. Held in page-level state (NOT inside the
+  // per-row list) so the invite link stays put after `invalidateAll` moves the row out of the
+  // Pending tab — otherwise the row (and its inline invite panel) vanishes on refetch and the link
+  // "flashes" away before the operator can copy it. Email delivery is automatic now, but this is the
+  // authoritative, dismissable fallback if delivery fails.
+  const [approved, setApproved] = useState<{ id: number; email: string; resp: ApproveBetaResponse }[]>([])
   const [busyId, setBusyId] = useState<number | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [copiedId, setCopiedId] = useState<number | null>(null)
@@ -36,18 +40,23 @@ export function BetaRequestsPage() {
     for (const t of STATUS_TABS) qc.invalidateQueries({ queryKey: qk.betaRequests(t.key) })
   }
 
-  async function approve(id: number) {
+  async function approve(id: number, email: string) {
     setActionError(null)
     setBusyId(id)
     try {
       const resp = await api.beta.approve(id)
-      setApproved(prev => ({ ...prev, [id]: resp }))
+      // De-dup by id (a re-approve replaces), keep newest last.
+      setApproved(prev => [...prev.filter(a => a.id !== id), { id, email, resp }])
       invalidateAll()
     } catch {
       setActionError('Could not approve that request. Refresh and try again.')
     } finally {
       setBusyId(null)
     }
+  }
+
+  function dismissInvite(id: number) {
+    setApproved(prev => prev.filter(a => a.id !== id))
   }
 
   async function reject(id: number) {
@@ -76,10 +85,47 @@ export function BetaRequestsPage() {
       <div className="mb-6">
         <h1 className="text-xl font-bold text-brand-ink">Beta requests</h1>
         <p className="text-brand-text-muted text-sm mt-1">
-          Approve a request to provision its household and get a single-use invite link. Send the
-          link to the requester yourself — we don't email it automatically.
+          Approve a request to provision its household. We email the single-use invite link to the
+          requester automatically — the copy below is your fallback if delivery fails.
         </p>
       </div>
+
+      {/* #2190: persistent invite surface — survives the row leaving the Pending tab on refetch. */}
+      {approved.length > 0 && (
+        <div className="mb-6 space-y-3">
+          {approved.map(a => (
+            <div key={a.id} className="bg-brand-surface border border-brand-border rounded-lg p-3">
+              <div className="flex items-start justify-between gap-2 mb-1">
+                <div className="text-xs font-semibold text-brand-text-muted uppercase tracking-wider">
+                  Invite for {a.email} — emailed automatically; copy to send it yourself too
+                </div>
+                <button
+                  type="button"
+                  onClick={() => dismissInvite(a.id)}
+                  className="shrink-0 text-xs text-brand-text-muted hover:text-brand-ink"
+                >
+                  Dismiss
+                </button>
+              </div>
+              <div className="flex items-center gap-2">
+                <code className="flex-1 min-w-0 truncate text-xs text-brand-ink bg-white border border-brand-border rounded px-2 py-1.5">
+                  {a.resp.inviteUrl}
+                </code>
+                <button
+                  type="button"
+                  onClick={() => copyInvite(a.id, a.resp.inviteUrl)}
+                  className="shrink-0 text-sm font-semibold text-brand-accent hover:underline px-2 py-1"
+                >
+                  {copiedId === a.id ? 'Copied' : 'Copy'}
+                </button>
+              </div>
+              <div className="text-xs text-brand-text-muted mt-1">
+                Expires {new Date(a.resp.inviteExpiresAt).toLocaleString()}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="flex gap-1 mb-4 border-b border-brand-border">
         {STATUS_TABS.map(t => (
@@ -134,7 +180,7 @@ export function BetaRequestsPage() {
                   <div className="flex gap-2 shrink-0">
                     <button
                       type="button"
-                      onClick={() => approve(r.id)}
+                      onClick={() => approve(r.id, r.email)}
                       disabled={busyId === r.id}
                       className="bg-brand-accent hover:bg-brand-accent-dark disabled:opacity-50 text-white text-sm font-semibold px-3 py-1.5 rounded-lg transition-colors"
                     >
@@ -151,29 +197,6 @@ export function BetaRequestsPage() {
                   </div>
                 )}
               </div>
-
-              {approved[r.id] && (
-                <div className="mt-3 bg-brand-surface border border-brand-border rounded-lg p-3">
-                  <div className="text-xs font-semibold text-brand-text-muted uppercase tracking-wider mb-1">
-                    Invite link — send this to the requester
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <code className="flex-1 min-w-0 truncate text-xs text-brand-ink bg-white border border-brand-border rounded px-2 py-1.5">
-                      {approved[r.id].inviteUrl}
-                    </code>
-                    <button
-                      type="button"
-                      onClick={() => copyInvite(r.id, approved[r.id].inviteUrl)}
-                      className="shrink-0 text-sm font-semibold text-brand-accent hover:underline px-2 py-1"
-                    >
-                      {copiedId === r.id ? 'Copied' : 'Copy'}
-                    </button>
-                  </div>
-                  <div className="text-xs text-brand-text-muted mt-1">
-                    Expires {new Date(approved[r.id].inviteExpiresAt).toLocaleString()}
-                  </div>
-                </div>
-              )}
             </li>
           ))}
         </ul>

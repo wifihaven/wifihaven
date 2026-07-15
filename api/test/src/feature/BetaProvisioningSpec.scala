@@ -1,11 +1,11 @@
 package wifihaven.api.feature
 
-import wifihaven.api.{BetaConfig, JwtConfig}
+import wifihaven.api.{BetaConfig, EmailConfig, JwtConfig}
 import wifihaven.api.auth.*
 import wifihaven.api.beta.*
 import wifihaven.api.db.*
 import wifihaven.api.db.TypeMeta.given
-import wifihaven.api.notify.Notifier
+import wifihaven.api.notify.{EmailOutcome, EmailSender, Notifier}
 import wifihaven.api.routes.*
 import wifihaven.shared.*
 import wifihaven.shared.types.*
@@ -38,8 +38,8 @@ object BetaProvisioningSpec
   private val jwt = JwtConfig(secret = "test-secret-at-least-32-chars!!x", expiryHours = 1)
 
   private val noopNotifier: Notifier = new Notifier {
-    def alertCreated(a: Alert): UIO[Unit]                                                 = ZIO.unit
-    def betaHouseholdProvisioned(email: String, slug: String, hh: HouseholdId): UIO[Unit] = ZIO.unit
+    def alertCreated(a: Alert): UIO[Unit]                                               = ZIO.unit
+    def betaInvite(email: String, slug: String, inviteUrl: String, ttl: Int): UIO[Unit] = ZIO.unit
   }
 
   private def makeAuth =
@@ -98,8 +98,12 @@ object BetaProvisioningSpec
       routes: Routes[Any, Response],
   )
 
-  // Build the beta stack with a caller-supplied clock so the invite TTL can be advanced.
-  private def build(betaClock: Clock): ZIO[TestDatabase.AllRepos & Clock, Nothing, Built] =
+  // Build the beta stack with a caller-supplied clock so the invite TTL can be advanced, and an
+  // optional notifier (#2190) so a test can capture the invite email via a recording EmailSender.
+  private def build(
+      betaClock: Clock,
+      notifier: Notifier = noopNotifier,
+  ): ZIO[TestDatabase.AllRepos & Clock, Nothing, Built] =
     for {
       br   <- ZIO.service[BetaRequestRepo]
       hr   <- ZIO.service[HouseholdRepo]
@@ -117,9 +121,20 @@ object BetaProvisioningSpec
           betaClock,
           wifihaven.api.StripeConfig(),
         )
-      val svc     = BetaService(br, hr, ur, auth, noopNotifier, betaClock, BetaConfig(), billing)
+      val svc     = BetaService(br, hr, ur, auth, notifier, betaClock, BetaConfig(), billing)
       Built(svc, br, hr, ur, auth, BetaRoutes.routes(auth, svc, br, ur, RateLimiter.allowAll))
     }
+
+  // #2190: the production invite-email path is Notifier.EmailNotifier.betaInvite → EmailSender. Mock
+  // ONLY the external email I/O (the sender), everything else real. A recording sender captures each
+  // send; the failing sender models a transport error (Resend maps any error to EmailOutcome.Failed).
+  private def emailNotifier(sender: EmailSender): ZIO[HouseholdSettingsRepo, Nothing, Notifier] =
+    ZIO.serviceWith[HouseholdSettingsRepo](hs => Notifier.EmailNotifier(hs, sender, EmailConfig()))
+
+  private val failingSender: EmailSender = new EmailSender {
+    def send(to: String, subject: String, htmlBody: String): UIO[EmailOutcome] =
+      ZIO.succeed(EmailOutcome.Failed)
+  }
 
   private def tokenFromInviteUrl(url: String): String = url.split("token=").last
 
@@ -296,6 +311,85 @@ object BetaProvisioningSpec
         // Byte-identical response body — a duplicate is indistinguishable from a first request.
         assertTrue(body1 == body2) &&
         assertTrue(count == 1L)
+    },
+    test("#2190 — approve auto-sends the invite email to the requester carrying the invite URL") {
+      for {
+        _   <- cleanDb
+        ctl <- TestClock.makeWithControl(TestClock.schoolDayAfternoon)
+        (bc, _) = ctl
+        ref                     <- Ref.make(List.empty[EmailSender.Sent])
+        notifier                <- emailNotifier(EmailSender.recording(ref))
+        b                       <- build(bc, notifier)
+        opToken                 <- login(b.auth, "admin", "changeme")
+        _                       <- postJson(
+          b.routes,
+          "/api/beta/request",
+          None,
+          CreateBetaRequest("Fam@Example.com", Some("The Test Family")).toJson,
+        )
+        (_, listBody)           <- getJson(b.routes, "/api/operator/beta-requests", opToken)
+        reqId                   <- ZIO
+          .fromEither(listBody.fromJson[List[BetaRequestSummary]])
+          .mapError(new RuntimeException(_))
+          .map(_.head.id)
+        (sApprove, approveBody) <- postJson(
+          b.routes,
+          s"/api/operator/beta-requests/${reqId.value}/approve",
+          Some(opToken),
+          "",
+        )
+        approve                 <- ZIO
+          .fromEither(approveBody.fromJson[ApproveBetaResponse])
+          .mapError(new RuntimeException(_))
+        sent                    <- ref.get
+      } yield assertTrue(sApprove == Status.Ok) &&
+        // Exactly one email, to the requester's normalised address (NOT a household notify_email).
+        assertTrue(sent.size == 1, sent.head.to == "fam@example.com") &&
+        // The body carries the exact single-use accept link the operator response also returns.
+        assertTrue(sent.head.htmlBody.contains(approve.inviteUrl)) &&
+        assertTrue(sent.head.htmlBody.contains("/welcome?token="))
+    },
+    test(
+      "#2190 — an email transport failure still provisions the household and returns the invite URL",
+    ) {
+      for {
+        _   <- cleanDb
+        ctl <- TestClock.makeWithControl(TestClock.schoolDayAfternoon)
+        (bc, _) = ctl
+        notifier                <- emailNotifier(failingSender)
+        b                       <- build(bc, notifier)
+        xa                      <- ZIO.service[Transactor[Task]]
+        opToken                 <- login(b.auth, "admin", "changeme")
+        _                       <- postJson(
+          b.routes,
+          "/api/beta/request",
+          None,
+          CreateBetaRequest("fail@example.com", Some("Fail Family")).toJson,
+        )
+        (_, listBody)           <- getJson(b.routes, "/api/operator/beta-requests", opToken)
+        reqId                   <- ZIO
+          .fromEither(listBody.fromJson[List[BetaRequestSummary]])
+          .mapError(new RuntimeException(_))
+          .map(_.head.id)
+        (sApprove, approveBody) <- postJson(
+          b.routes,
+          s"/api/operator/beta-requests/${reqId.value}/approve",
+          Some(opToken),
+          "",
+        )
+        approve                 <- ZIO
+          .fromEither(approveBody.fromJson[ApproveBetaResponse])
+          .mapError(new RuntimeException(_))
+        // The provisioning transaction committed despite the send failing (fail-open).
+        hhCount                 <- sql"SELECT COUNT(*) FROM households WHERE slug = ${approve.slug}"
+          .query[Long]
+          .unique
+          .transact(xa)
+      } yield
+      // Approval succeeds and the invite URL is still returned as the operator's manual-resend path.
+      assertTrue(sApprove == Status.Ok) &&
+        assertTrue(approve.inviteUrl.contains("/welcome?token=")) &&
+        assertTrue(hhCount == 1L)
     },
   ) @@ TestAspect.sequential
 }

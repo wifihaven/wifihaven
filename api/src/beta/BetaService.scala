@@ -72,11 +72,15 @@ final case class BetaService(
       // #2135: create the Stripe Customer for the new household (no card during beta). Best-effort —
       // never fails the approval; no-op when billing is unconfigured.
       _   <- billing.provisionCustomer(hid, request.email)
-      _   <- notifier.betaHouseholdProvisioned(request.email, slug, hid)
+      // #2190: auto-send the single-use invite link to the requester. Fail-open — `betaInvite`
+      // (via EmailSender) never fails, so a send hiccup can't roll back the already-provisioned
+      // household; `inviteUrl` below is the operator's manual-resend fallback either way.
+      inviteUrl = cfg.inviteUrl(rawToken)
+      _ <- notifier.betaInvite(request.email, slug, inviteUrl, cfg.inviteTtlHours)
     } yield ApproveBetaResponse(
       householdId = hid,
       slug = slug,
-      inviteUrl = cfg.inviteUrl(rawToken),
+      inviteUrl = inviteUrl,
       inviteExpiresAt = expiresAt.toString,
     )
 

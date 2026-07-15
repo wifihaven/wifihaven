@@ -12,7 +12,7 @@
       }
     ]
   },
-  "description": "WifiHaven beta onboarding pipeline (#2132, multi-tenant P5-2): request intake, operator approve/reject, and invite accept outcomes. Every panel targets wifihaven_beta_pipeline_total{stage,outcome} emitted by AppMetrics.recordBetaPipeline in api/src/routes/BetaRoutes.scala — both labels are bounded enums (never per-email / per-household). See docs/design/multi-tenant-launch.md §3.",
+  "description": "WifiHaven beta onboarding pipeline (#2132, multi-tenant P5-2): request intake, operator approve/reject, and invite accept outcomes. Most panels target wifihaven_beta_pipeline_total{stage,outcome} emitted by AppMetrics.recordBetaPipeline in api/src/routes/BetaRoutes.scala; the invite-email panel targets beta_invite_email_total{outcome} emitted by AppMetrics.betaInviteEmail from Notifier.betaInvite (#2190). All labels are bounded enums (never per-email / per-household). See docs/design/multi-tenant-launch.md §3.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -113,6 +113,32 @@
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "expr": "sum by (outcome) (rate(wifihaven_beta_pipeline_total{env=\"$env\",stage=\"accept\"}[5m]))",
+          "legendFormat": "{{outcome}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Invite email send outcomes (#2190)",
+      "description": "sum by (outcome) (rate(beta_invite_email_total[5m])) — the auto-sent invite email on approval (Notifier.betaInvite). sent vs failed (transport error, fail-open — approval still committed) vs skipped_disabled (Resend secrets unset, e.g. self-hosted). A persistent 'failed' share means invites aren't reaching requesters — the operator falls back to the inviteUrl in the approve response.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "id": 5,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "reqps",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1, "stacking": { "mode": "normal", "group": "A" } }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (outcome) (rate(beta_invite_email_total{env=\"$env\"}[5m]))",
           "legendFormat": "{{outcome}}",
           "refId": "A"
         }

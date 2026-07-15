@@ -39,10 +39,11 @@ object AlertApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
 
   private val noopNotifier: Notifier = new Notifier {
     def alertCreated(a: Alert): UIO[Unit] = ZIO.unit
-    def betaHouseholdProvisioned(
+    def betaInvite(
         email: String,
         slug: String,
-        hh: wifihaven.shared.types.HouseholdId,
+        inviteUrl: String,
+        ttlHours: Int,
     ): UIO[Unit] = ZIO.unit
   }
 

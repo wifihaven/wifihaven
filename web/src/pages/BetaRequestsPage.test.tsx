@@ -84,6 +84,24 @@ describe('BetaRequestsPage — operator queue', () => {
     expect(await screen.findByText(/copied/i)).toBeInTheDocument()
   })
 
+  it('keeps the invite URL visible after the approved row leaves the Pending list (no flash)', async () => {
+    approveMock.mockResolvedValue(approveResp)
+    // First Pending load has the row; after approval it moves to Approved, so the Pending refetch
+    // (triggered by invalidateAll) returns []. The invite URL must survive the row leaving the list.
+    listMock.mockResolvedValueOnce([pending]).mockResolvedValue([])
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('hopeful@example.com')
+
+    await user.click(screen.getByRole('button', { name: /^approve$/i }))
+    expect(await screen.findByText(approveResp.inviteUrl)).toBeInTheDocument()
+
+    // The Pending list is now empty (the approved row moved to Approved) — yet the invite persists
+    // in its own standalone surface rather than flashing away with the row.
+    expect(await screen.findByText(/no pending requests/i)).toBeInTheDocument()
+    expect(screen.getByText(approveResp.inviteUrl)).toBeInTheDocument()
+  })
+
   it('reject calls the API', async () => {
     rejectMock.mockResolvedValue(undefined)
     const user = userEvent.setup()
