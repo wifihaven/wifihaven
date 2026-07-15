@@ -90,7 +90,7 @@ sim "$LOG" "$TWO_SECTIONS" "dhcp.wan.ignore=1" "y" "0" "/dev/null"
 grep -q '^prompt DHCP_FORCE_ANSWER$' "$LOG" \
   && check "#2231 prompts when a dhcp section lacks force=1" ok \
   || check "#2231 prompts when a dhcp section lacks force=1" \
-           "no prompt recorded (log: $(cat "$LOG" | tr '\n' ';'))"
+           "no prompt recorded (log: $(tr '\n' ';' < "$LOG"))"
 
 grep -q '^uci-set dhcp.lan.force=1$' "$LOG" \
   && check "#2231 'y' sets force=1 on the unforced section" ok \
@@ -152,7 +152,18 @@ else
   check "#2231 unusable TTY never prompts or sets" ok
 fi
 
-# Case 6: idempotent — force=1 already set on every non-ignored section
+# Case 6: two non-ignored unforced sections — 'y' sets force=1 on BOTH
+# (pins the loop, not just the single-section path).
+sim "$LOG" "$(printf 'dhcp.lan=dhcp\ndhcp.guest=dhcp')" "" "y" "0" "/dev/null"
+if grep -q '^uci-set dhcp.lan.force=1$' "$LOG" \
+   && grep -q '^uci-set dhcp.guest.force=1$' "$LOG"; then
+  check "#2231 'y' sets force=1 on every unforced section" ok
+else
+  check "#2231 'y' sets force=1 on every unforced section" \
+        "expected uci set on both lan and guest (log: $(tr '\n' ';' < "$LOG"))"
+fi
+
+# Case 7: idempotent — force=1 already set on every non-ignored section
 # skips the prompt entirely.
 sim "$LOG" "$TWO_SECTIONS" "$(printf 'dhcp.lan.force=1\ndhcp.wan.ignore=1')" "y" "0" "/dev/null"
 if grep -q '^prompt ' "$LOG"; then

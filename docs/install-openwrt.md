@@ -70,8 +70,9 @@ It then:
    dhcp sections so dnsmasq restarts skip OpenWrt's ~3.5 s-per-section
    rogue-DHCP probe (measured 3.53 s → 0.34 s). `/etc/config/dhcp` is your
    file — the script never sets this without consent, and saying yes is
-   only safe once this router is your network's sole DHCP server. Details,
-   measurements, and the revert command:
+   only safe once this router is your network's sole DHCP server. Set
+   `WIFIHAVEN_NONINTERACTIVE=1` in the environment to suppress the prompt
+   (nothing is set). Details, measurements, and the revert command:
    [`router-tuning.md`](router-tuning.md#dnsmasq-restart-latency--option-force-1-2231)
    ([#2231](https://github.com/wifihaven/wifihaven/issues/2231)).
 
