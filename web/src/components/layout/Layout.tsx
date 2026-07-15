@@ -3,6 +3,7 @@ import { Outlet, NavLink, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { useMe } from '@/api/queries'
 import { ApiUnreachableBanner } from '@/components/ApiUnreachableBanner'
+import { ConversionBanner } from '@/components/ConversionBanner'
 
 interface NavItem {
   to: string
@@ -241,6 +242,10 @@ export function Layout() {
       {/* #1191: global API-unreachable banner; sits just under the header
           so it's visible on every route without intercepting page layout. */}
       <ApiUnreachableBanner />
+
+      {/* #2137: app-wide conversion nudge for an unconverted household inside the flip window
+          (dismissible per session). Renders nothing outside that state. */}
+      <ConversionBanner />
 
       {/* Page content */}
       <main className="flex-1 max-w-7xl mx-auto w-full px-4 py-6">

@@ -59,7 +59,14 @@ final case class BillingService(
    * code is configured. Requires a Customer to exist (created at provisioning); a missing Customer
    * is a NoCustomer error the route surfaces as 409.
    */
-  def startCheckout(householdId: HouseholdId): IO[BillingError, String] =
+  def startCheckout(
+      householdId: HouseholdId,
+      // #2137 (A1): when subscribing during the open flip window, the caller (BillingRoutes) passes
+      // the window end so the first charge is deferred to it via Stripe `trial_end` — everyone gets
+      // the full free beta. None outside the window (immediate first charge). Defaulted so the
+      // #2135 billing specs that call `startCheckout(hid)` are unchanged.
+      trialEnd: Option[java.time.Instant] = None,
+  ): IO[BillingError, String] =
     for {
       _        <- ZIO.fail(BillingError.NotConfigured).when(!cfg.enabled)
       billing  <- loadBilling(householdId)
@@ -68,6 +75,13 @@ final case class BillingService(
         .fromOption(Option(cfg.priceMonthly).map(_.trim).filter(_.nonEmpty))
         .orElseFail(BillingError.NotConfigured)
       promo = if billing.founding then cfg.foundingPromoCodeOpt else None
+      // Stripe rejects a `trial_end` less than ~48h in the future, so a household subscribing in the
+      // final ~2 days of the window would otherwise get a hard checkout failure at the critical
+      // conversion moment. Drop the trial when it's within the floor — the window is essentially
+      // over, so an immediate first charge is the right (and only workable) behavior. FOUNDING is
+      // still locked either way.
+      now <- clock.instant
+      safeTrialEnd = trialEnd.filter(_.isAfter(now.plus(BillingService.TrialEndFloor)))
       url <- stripe
         .createCheckoutSession(
           CheckoutParams(
@@ -77,6 +91,7 @@ final case class BillingService(
             clientReferenceId = householdId.value.toString,
             successUrl = cfg.checkoutSuccessUrl,
             cancelUrl = cfg.checkoutCancelUrl,
+            trialEnd = safeTrialEnd,
           ),
         )
         .mapError(BillingError.Stripe(_))
@@ -165,6 +180,11 @@ final case class BillingService(
 }
 
 object BillingService {
+
+  // Minimum lead time for a deferred `trial_end` (#2137 A1). Stripe requires the trial end to be at
+  // least 48h in the future; use 49h so a few minutes of request latency / clock skew can't push a
+  // borderline value under Stripe's floor. Below this, the trial is dropped (immediate charge).
+  val TrialEndFloor: java.time.Duration = java.time.Duration.ofHours(49)
 
   /** Event types that flip a household to `active` (conversion + recovery). */
   val ActiveEvents: Set[String] = Set("checkout.session.completed")

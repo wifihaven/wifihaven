@@ -126,6 +126,18 @@ wifihaven {
   #   inviteTtlHours = 168
   # }
 
+  # #2137 (multi-tenant P5-6): the beta→paid flip lifecycle. EVENT-TRIGGERED (not
+  # a hand-set date): the cohort flip clock STARTS the first time `thresholdHouseholds`
+  # active beta households are seen, runs `windowDays`, then unconverted households
+  # flip to `lapsed` (enforcement STOPS permissively — never brick the network). The
+  # whole block is optional — omit it to use the defaults shown (the design's v1
+  # cohort values); tune without a code change.
+  # flip {
+  #   thresholdHouseholds = 25  # active beta households that start the flip clock
+  #   windowDays          = 60  # free-beta window length once the clock starts
+  #   activeLookbackDays  = 7   # a router's traffic within N days keeps its household "active"
+  # }
+
   # #578: outbound email for admin notifications (a parent gets emailed when a
   # kid raises an access request from the block page). The whole block is
   # optional — omit it and email is OFF: the Notifier falls back to a log line

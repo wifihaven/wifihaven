@@ -103,6 +103,11 @@ object MetricGuard {
       // ea_backfill | smoke_probe — policy.apply's phase_timer seam); bounded by the
       // code, not by user/device/flow growth, so it satisfies the §4 cardinality firewall.
       "phase",
+      // #2137 — beta-flip conversion-notice window for `wifihaven_beta_flip_notice_total`. A fixed
+      // 2-value enum (t30 | t7 — FlipService.FlipNoticeWindow); bounded by the code, not by
+      // household growth, so it satisfies the §4 cardinality firewall. (`status` for the
+      // households-by-billing-status gauge is already a known key.)
+      "window",
     )
 
   /**
@@ -414,6 +419,14 @@ object MetricGuard {
     // these entries the firewall rejects the name as unknown_name and the series never emits).
     "wifihaven_billing_webhook_total"               -> Set("outcome"),
     "wifihaven_billing_checkout_total"              -> Set("op", "outcome"),
+    // #2137 — the beta→paid flip lifecycle. `wifihaven_households_by_billing_status{status}` is a
+    // gauge of the household count in each billing state (`status` ∈ beta | active | lapsed — the
+    // household_billing CHECK, bounded); it lets the operator watch the cohort convert and the flip
+    // move the unconverted tail to lapsed. `wifihaven_beta_flip_notice_total{window}` counts
+    // conversion notices emitted (`window` ∈ t30 | t7 — the two fixed windows). Both bounded, never
+    // a per-household label (the #808 lesson: without these entries the firewall rejects the name).
+    "wifihaven_households_by_billing_status"        -> Set("status"),
+    "wifihaven_beta_flip_notice_total"              -> Set("window"),
   )
 
   private val rejected = Metric.counter("metrics_rejected_total")
@@ -582,6 +595,32 @@ object AppMetrics {
       "wifihaven_billing_checkout_total",
       Map("op" -> op, "outcome" -> outcome),
     )
+
+  // ── #2137: beta→paid flip lifecycle ──────────────────────────────────────────
+  // `setBillingStatusCounts` re-publishes the per-status household gauge each flip tick from a
+  // single COUNT-by-status read (SSOT); it always sets all three states (0 included) so a state
+  // emptying out doesn't leave a stale non-zero series. `recordFlipNotice` counts each conversion
+  // notice emitted, by its bounded window (t30 | t7).
+
+  def setBillingStatusCounts(beta: Int, active: Int, lapsed: Int): UIO[Unit] =
+    MetricGuard.gauge(
+      "wifihaven_households_by_billing_status",
+      Map("status" -> "beta"),
+      beta.toDouble,
+    ) *>
+      MetricGuard.gauge(
+        "wifihaven_households_by_billing_status",
+        Map("status" -> "active"),
+        active.toDouble,
+      ) *>
+      MetricGuard.gauge(
+        "wifihaven_households_by_billing_status",
+        Map("status" -> "lapsed"),
+        lapsed.toDouble,
+      )
+
+  def recordFlipNotice(window: String): UIO[Unit] =
+    MetricGuard.counter("wifihaven_beta_flip_notice_total", Map("window" -> window))
 
   // ── #864: traffic_reports rows dropped as zero-bytes-zero-seconds ────────────
   // Replaces the per-request warn-log + TODO marker. A rising rate means the

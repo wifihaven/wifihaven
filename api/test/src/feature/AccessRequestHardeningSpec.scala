@@ -38,6 +38,13 @@ object AccessRequestHardeningSpec
         inviteUrl: String,
         ttlHours: Int,
     ): UIO[Unit] = ZIO.unit
+    def betaFlipNotice(
+        householdId: wifihaven.shared.types.HouseholdId,
+        slug: String,
+        window: String,
+        flipDate: java.time.Instant,
+        daysUntilFlip: Int,
+    ): UIO[Unit] = ZIO.unit
   }
 
   private def setup(rateLimiter: RateLimiter) =

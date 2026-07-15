@@ -36,6 +36,26 @@ trait Notifier {
    * operator's manual-resend fallback (#2190).
    */
   def betaInvite(email: String, slug: String, inviteUrl: String, ttlHours: Int): UIO[Unit]
+
+  /**
+   * #2137: a T-30 / T-7 conversion notice for an unconverted (`status='beta'`) household as the
+   * flip window closes — "your free beta ends on <flipDate>; subscribe to keep enforcement". The
+   * recipient is the household's own `notify_email` (resolved like [[alertCreated]], NOT a
+   * requester address). `window` is the bounded notice window (`t30` | `t7`); `daysUntilFlip` and
+   * `flipDate` let the body state the deadline.
+   *
+   * Fail-open like the rest of this trait: [[layer]] sends via [[EmailSender]] (never fails),
+   * [[live]] only logs — and the structured log line carries everything an email needs so a future
+   * transport drops in without call-site reshaping. A send failure must NOT fail the flip job's
+   * tick.
+   */
+  def betaFlipNotice(
+      householdId: HouseholdId,
+      slug: String,
+      window: String,
+      flipDate: java.time.Instant,
+      daysUntilFlip: Int,
+  ): UIO[Unit]
 }
 
 object Notifier {
@@ -60,6 +80,21 @@ object Notifier {
   private def logBeta(email: String, slug: String): UIO[Unit] =
     ZIO.logInfo(s"beta invite: sending invite link for household slug=$slug to $email")
 
+  // #2137: the structured line every flip notice logs, regardless of email outcome — it carries
+  // everything an email needs (household, slug, window, flip date, days remaining) so the operator
+  // can send manually and a future transport drops in unchanged.
+  private def logFlipNotice(
+      householdId: HouseholdId,
+      slug: String,
+      window: String,
+      flipDate: java.time.Instant,
+      daysUntilFlip: Int,
+  ): UIO[Unit] =
+    ZIO.logInfo(
+      s"beta flip notice: household=${householdId.value} slug=$slug window=$window " +
+        s"flipDate=$flipDate daysUntilFlip=$daysUntilFlip",
+    )
+
   /**
    * #960 log-only implementation, kept for call sites that don't need (or can't wire) the email
    * transport — e.g. tests that only assert the in-app path. Prefer [[layer]] in production.
@@ -68,6 +103,14 @@ object Notifier {
     def alertCreated(a: Alert): UIO[Unit] = logAlert(a)
     def betaInvite(email: String, slug: String, inviteUrl: String, ttlHours: Int): UIO[Unit] =
       logBeta(email, slug)
+    def betaFlipNotice(
+        householdId: HouseholdId,
+        slug: String,
+        window: String,
+        flipDate: java.time.Instant,
+        daysUntilFlip: Int,
+    ): UIO[Unit] =
+      logFlipNotice(householdId, slug, window, flipDate, daysUntilFlip)
   })
 
   /**
@@ -96,6 +139,29 @@ object Notifier {
         sender
           .send(email, betaInviteSubject, betaInviteBody(slug, inviteUrl, ttlHours))
           .flatMap(o => AppMetrics.betaInviteEmail(EmailOutcome.label(o)))
+
+    // #2137: send the conversion notice to the household's own notify_email (resolved like the alert
+    // path). Log first (authoritative record), then attempt the email; every path meters
+    // notify_email_total{outcome} so the send funnel is visible, reusing the alert-path outcomes.
+    def betaFlipNotice(
+        householdId: HouseholdId,
+        slug: String,
+        window: String,
+        flipDate: java.time.Instant,
+        daysUntilFlip: Int,
+    ): UIO[Unit] =
+      logFlipNotice(householdId, slug, window, flipDate, daysUntilFlip) *>
+        resolveRecipient(householdId).flatMap {
+          case None            => AppMetrics.notifyEmail(OutcomeSkippedNoRecipient)
+          case Some(recipient) =>
+            sender
+              .send(
+                recipient,
+                flipNoticeSubject(daysUntilFlip),
+                flipNoticeBody(slug, flipDate, daysUntilFlip),
+              )
+              .flatMap(o => AppMetrics.notifyEmail(EmailOutcome.label(o)))
+        }
 
     def alertCreated(a: Alert): UIO[Unit] =
       // Log first (authoritative, always), then attempt the out-of-band email.
@@ -184,6 +250,33 @@ object Notifier {
          |  <p style="color:#71717a;font-size:13px;">This invite link is single-use and expires in $validFor. If the button doesn't work, copy this link into your browser:<br/><span style="word-break:break-all;">${esc(
           inviteUrl,
         )}</span></p>
+         |</div>""".stripMargin
+    }
+
+    // #2137 — the T-30 / T-7 conversion notice email. The CTA points at the SPA billing page
+    // (`<appBase>/billing`), where the Subscribe button starts Checkout with the founding promo
+    // pre-applied (P5-5). The deadline is stated in both days-remaining and the flip date.
+    private def flipNoticeSubject(daysUntilFlip: Int): String =
+      s"WifiHaven: your free beta ends in $daysUntilFlip day${if daysUntilFlip == 1 then "" else "s"}"
+
+    private def flipNoticeBody(
+        slug: String,
+        flipDate: java.time.Instant,
+        daysUntilFlip: Int,
+    ): String = {
+      val whenStr    = flipDate.atZone(java.time.ZoneOffset.UTC).toLocalDate.toString
+      val billingUrl = s"${cfg.dashboardUrl}/billing"
+      s"""<div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:15px;color:#18181b;line-height:1.5;">
+         |  <p>Your WifiHaven beta household <strong>${esc(
+          slug,
+        )}</strong> is free through <strong>$whenStr</strong> — that's about $daysUntilFlip more day${
+          if daysUntilFlip == 1 then "" else "s"
+        }.</p>
+         |  <p>Subscribe now to keep your family's protections on after that. Your founding discount is pre-applied at checkout, and you won't be charged until the free period ends.</p>
+         |  <p style="margin:24px 0;">
+         |    <a href="${esc(billingUrl)}" style="background:#4f46e5;color:#ffffff;text-decoration:none;padding:10px 18px;border-radius:8px;display:inline-block;">Subscribe &amp; keep enforcement</a>
+         |  </p>
+         |  <p style="color:#71717a;font-size:13px;">If you don't subscribe, WifiHaven stops enforcing your policies after the free period — your network keeps working, but blocking and limits turn off until you subscribe.</p>
          |</div>""".stripMargin
     }
 

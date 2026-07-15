@@ -35,6 +35,13 @@ set -euo pipefail
 : "${WIFIHAVEN_STRIPE_PRICE_ANNUAL:=}"
 : "${WIFIHAVEN_STRIPE_FOUNDING_PROMO:=}"
 : "${WIFIHAVEN_STRIPE_APP_BASE_URL:=https://app.wifihaven.net}"
+# #2137 (multi-tenant P5-6): the beta→paid flip lifecycle. Event-triggered — the
+# cohort flip clock starts once THRESHOLD active beta households are seen, runs
+# WINDOW_DAYS, then unconverted households lapse (enforcement stops permissively).
+# Defaults match the design's v1 cohort values; tune without a code change.
+: "${WIFIHAVEN_FLIP_THRESHOLD_HOUSEHOLDS:=25}"
+: "${WIFIHAVEN_FLIP_WINDOW_DAYS:=60}"
+: "${WIFIHAVEN_FLIP_ACTIVE_LOOKBACK_DAYS:=7}"
 # #578: outbound email for admin notifications (block-page kid→parent requests).
 # OFF unless BOTH the API key and from-address are set — empty defaults render an
 # `email {}` block whose EmailConfig.enabled is false, so the Notifier logs only.
@@ -94,6 +101,11 @@ wifihaven {
     resendApiKey = "${WIFIHAVEN_EMAIL_RESEND_API_KEY}"
     fromAddress  = "${WIFIHAVEN_EMAIL_FROM_ADDRESS}"
     appBaseUrl   = "${WIFIHAVEN_EMAIL_APP_BASE_URL}"
+  }
+  flip {
+    thresholdHouseholds = ${WIFIHAVEN_FLIP_THRESHOLD_HOUSEHOLDS}
+    windowDays          = ${WIFIHAVEN_FLIP_WINDOW_DAYS}
+    activeLookbackDays  = ${WIFIHAVEN_FLIP_ACTIVE_LOOKBACK_DAYS}
   }
 }
 EOF

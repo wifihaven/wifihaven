@@ -18,6 +18,7 @@ case class AppConfig(
     beta: BetaConfig = BetaConfig(),
     stripe: StripeConfig = StripeConfig(),
     email: EmailConfig = EmailConfig(),
+    flip: FlipConfig = FlipConfig(),
 ) {
   // WIFIHAVEN_DEBUG env var: when set to a non-empty, non-"0"/"false"/"no"
   // value, mounts the read-only /api/debug/* endpoints (loopback only).
@@ -308,6 +309,38 @@ case class EmailConfig(
   // send, so treat that as "off" rather than failing every notification at runtime.
   val enabled: Boolean      = apiKeyTrimmed.nonEmpty && fromTrimmed.nonEmpty
   def dashboardUrl: String  = appBaseUrl.stripSuffix("/")
+}
+
+// #2137 (multi-tenant P5-6, epic #622) — the beta→paid flip lifecycle
+// (design docs/design/multi-tenant-launch.md §5.4, EVENT-TRIGGERED model per the operator's
+// 2026-07-14 decision). The flip is NOT a hand-set calendar date: the cohort-wide flip clock
+// STARTS the first time the count of active beta households reaches `thresholdHouseholds`, then
+// runs `windowDays` and LATCHES (a later dip in the active count never pauses/resets it — the
+// window end is persisted-start + windowDays, `beta_cohort.clock_started_at`, V70). At window end
+// unconverted (`status='beta'`) households flip to `lapsed` — enforcement STOPS via a permissive
+// snapshot (§5.3), never bricking the network.
+//
+// All three knobs are HOCON/env-tunable without a code change (zio-config). Defaults are the
+// design's stated cohort v1 values (25 households / 60 days / 7-day active lookback).
+case class FlipConfig(
+    thresholdHouseholds: Int = 25,
+    windowDays: Int = 60,
+    activeLookbackDays: Int = 7,
+) {
+  // Clamp to sane floors so a misconfigured 0/negative can't start the clock on the first tick
+  // (threshold ≥ 1) or make the window/lookback degenerate.
+  val thresholdClamped: Int = math.max(1, thresholdHouseholds)
+  val windowClamped: Int    = math.max(1, windowDays)
+  val lookbackClamped: Int  = math.max(1, activeLookbackDays)
+
+  /**
+   * The flip window measured from the persisted clock-start instant (never recomputed from now).
+   */
+  val window: zio.Duration = zio.Duration.fromSeconds(windowClamped.toLong * 24 * 3600)
+
+  /** How far back a router's traffic still counts its household as "active". */
+  val activeLookback: zio.Duration =
+    zio.Duration.fromSeconds(lookbackClamped.toLong * 24 * 3600)
 }
 
 object AppConfig {

@@ -48,6 +48,12 @@ final case class CheckoutParams(
     clientReferenceId: String,
     successUrl: String,
     cancelUrl: String,
+    // #2137 (A1, design §5.4): when a household subscribes DURING the open flip window, defer the
+    // first charge to the window end via Stripe `subscription_data[trial_end]` — everyone gets the
+    // full free beta regardless of when they convert (FOUNDING is still locked now). None outside
+    // the window (immediate first charge). ⚠️ Reintroduces the trial-anchor bookkeeping pricing §7
+    // avoided — a conscious trade-off for the "free through the window for everyone" promise.
+    trialEnd: Option[java.time.Instant] = None,
 )
 
 /** Typed failures the billing routes map to HTTP statuses. */
@@ -155,7 +161,13 @@ object StripeClient {
         case Some(promo) => List("discounts[0][promotion_code]" -> promo)
         case None        => List("allow_promotion_codes" -> "true")
       }
-      post("/v1/checkout/sessions", base ++ discount).flatMap(field(_, "url"))
+      // #2137 (A1): defer the first charge to the flip window end when subscribing in-window. Stripe
+      // takes `subscription_data[trial_end]` as a Unix timestamp (epoch seconds).
+      val trial    = params.trialEnd match {
+        case Some(end) => List("subscription_data[trial_end]" -> end.getEpochSecond.toString)
+        case None      => Nil
+      }
+      post("/v1/checkout/sessions", base ++ discount ++ trial).flatMap(field(_, "url"))
     }
 
     def createPortalSession(customerId: String, returnUrl: String): IO[StripeError, String] =

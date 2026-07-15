@@ -117,6 +117,58 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Households by billing status",
+      "description": "wifihaven_households_by_billing_status{status} — the current household count in each billing state (beta / active / lapsed), re-published each BetaFlipJob tick from a single COUNT-by-status read (AppMetrics.setBillingStatusCounts, api/src/billing/FlipService.scala). Watch beta convert to active over the flip window, and the unconverted tail move to lapsed at flip. #2137.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "id": 5,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1 }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (status) (wifihaven_households_by_billing_status{env=\"$env\"})",
+          "legendFormat": "{{status}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Beta flip notices by window (cumulative)",
+      "description": "sum by (window) (wifihaven_beta_flip_notice_total{window}) — T-30 (t30) and T-7 (t7) conversion notices emitted to unconverted beta households as the flip window closes (AppMetrics.recordFlipNotice, api/src/billing/FlipService.scala). One step per notice sent; idempotent per (household, window). #2137.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "id": 6,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1 }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (window) (wifihaven_beta_flip_notice_total{env=\"$env\"})",
+          "legendFormat": "{{window}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",

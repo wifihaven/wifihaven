@@ -191,7 +191,13 @@ object BillingWebhookSpec
         hbr   <- ZIO.service[HouseholdBillingRepo]
         auth  <- makeAuth
         svc    = BillingService(stubStripe, hbr, clock, cfg)
-        routes = BillingRoutes.routes(auth, svc)
+        // #2137: this spec exercises only the webhook route; the flip-window effect (GET /api/billing
+        // only) is a fixed closed window here and is covered end-to-end in BetaFlipLifecycleSpec.
+        routes = BillingRoutes.routes(
+          auth,
+          svc,
+          ZIO.succeed(FlipService.FlipWindow(open = false, flipDate = None)),
+        )
         hid <- seedHousehold(xa, hbr)
         now <- clock.instant
         p1 = checkoutPayload(hid)
@@ -206,6 +212,40 @@ object BillingWebhookSpec
             .addHeader("Stripe-Signature", sign(p1, now.getEpochSecond)),
         )
       } yield assertTrue(badResp.status == Status.BadRequest, okResp.status == Status.Ok)
+    },
+    // #2137 (A1): a checkout started DURING the open flip window defers the first charge to the
+    // window end via Stripe trial_end; outside the window there is no trial (immediate charge).
+    test("A1: startCheckout threads the window-end trial_end into the Checkout Session") {
+      for {
+        _        <- cleanDb
+        xa       <- ZIO.service[Transactor[Task]]
+        clock    <- ZIO.service[Clock]
+        hbr      <- ZIO.service[HouseholdBillingRepo]
+        captured <- Ref.make(Option.empty[CheckoutParams])
+        recStripe = new StripeClient {
+          def createCustomer(email: String, householdId: Long): IO[StripeError, String]           =
+            ZIO.succeed(CustomerId)
+          def createCheckoutSession(params: CheckoutParams): IO[StripeError, String]              =
+            captured.set(Some(params)).as("https://checkout.stripe.test/x")
+          def createPortalSession(customerId: String, returnUrl: String): IO[StripeError, String] =
+            ZIO.succeed("https://portal.stripe.test/x")
+        }
+        svc       = BillingService(recStripe, hbr, clock, cfg)
+        hid <- seedHousehold(xa, hbr)
+        now <- clock.instant
+        windowEnd = java.time.Instant.parse("2026-09-01T00:00:00Z") // well beyond the 49h floor
+        _        <- svc.startCheckout(hid, Some(windowEnd))
+        inWindow <- captured.get
+        _        <- svc.startCheckout(hid, None)
+        noWindow <- captured.get
+        // Within the 49h floor Stripe would reject trial_end — the trial is dropped (immediate charge).
+        _        <- svc.startCheckout(hid, Some(now.plus(java.time.Duration.ofHours(1))))
+        nearEnd  <- captured.get
+      } yield assertTrue(
+        inWindow.exists(_.trialEnd.contains(windowEnd)),
+        noWindow.exists(_.trialEnd.isEmpty),
+        nearEnd.exists(_.trialEnd.isEmpty),
+      )
     },
   ) @@ TestAspect.sequential
 }
