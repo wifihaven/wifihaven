@@ -49,6 +49,10 @@ pytestmark = pytest.mark.ws_push
 SNAPSHOT_PATH = "/etc/wifihaven/policy.json"
 WS_METRICS_PATH = "/tmp/wifihaven-ws-metrics.txt"
 WS_HEALTH_PATH = "/tmp/wifihaven-ws-health"
+# #2229 event-driven apply trigger: the sidecar writes "<etag>\t<uptime>" here
+# the moment it persists a pushed snapshot; the agent reads it every on_tick and
+# applies immediately (instead of waiting for the poll-of-disk gate).
+WS_PENDING_PATH = "/tmp/wifihaven-ws-pending"
 
 # A phantom device MAC — no client VM is booted because these scenarios assert
 # router-side file/metric/nft observables only (snapshot saved + frame received +
@@ -61,6 +65,10 @@ ETAG_ON_CHANGE = '"sha256:ws-push-onchange-v2"'
 # can't be confused with the save-only scenario above.
 ETAG_ENFORCE_BASE = '"sha256:ws-push-enforce-base-v1"'
 ETAG_ENFORCE_PAUSED = '"sha256:ws-push-enforce-paused-v2"'
+# #2229 — distinct etags for the IDLE event-driven-apply scenario (no conntrack
+# nudge), kept separate from the nudged live-apply scenario above.
+ETAG_IDLE_BASE = '"sha256:ws-push-idle-base-v1"'
+ETAG_IDLE_PAUSED = '"sha256:ws-push-idle-paused-v2"'
 # #2207 — distinct etags for the carve-out live-apply scenario (a paused profile
 # that KEEPS extraAllowed hosts, so the whole-MAC drop renders with per-(MAC,host)
 # `!= @ea_...` carve clauses). Kept separate from the plain scenario above.
@@ -174,6 +182,18 @@ def _nudge_conntrack() -> None:
         "done",
         check=False, timeout=20,
     )
+
+
+def _ws_pending_etag() -> str | None:
+    """The etag in the #2229 event-driven apply trigger, or None if absent.
+
+    Format (ws_pending.encode): "<etag>\\t<uptime>". We only need the etag field.
+    """
+    res = router_ssh(f"cat {WS_PENDING_PATH} 2>/dev/null || true", check=False, timeout=10)
+    out = (res.stdout or "").strip()
+    if not out:
+        return None
+    return out.split("\t", 1)[0] or None
 
 
 def _paused_drop_rule_present(mac: str) -> bool:
@@ -307,6 +327,65 @@ def test_ws_policy_push_applies_enforcement_live(router, fake_api):
     )
     # Sanity: the same push also advanced the on-disk snapshot etag.
     assert _router_snapshot_etag() == ETAG_ENFORCE_PAUSED
+
+
+def test_ws_pushed_pause_applies_on_idle_client_without_nudge(router, fake_api):
+    """#2229 — a ws-pushed pause applies on an IDLE device with NO conntrack nudge.
+
+    The live-apply test above must NUDGE conntrack every wait-iteration because
+    it was written to the pre-#2229 reality: the apply-on-push tick rode the
+    conntrack-driven `on_tick`, and on a phantom-device scenario (no client VM)
+    nothing generates flows, so `on_tick` — and the apply — would starve without
+    a synthetic GET. #2229 makes the apply EVENT-DRIVEN: the sidecar drops a
+    `<etag>\\t<uptime>` trigger (WS_PENDING_PATH) the instant it persists a push,
+    and the agent reads it every heartbeat tick (#2024) and applies immediately —
+    so a pushed pause installs the drop with the device fully idle and NO nudge.
+
+    This scenario proves exactly that: it NEVER calls `_nudge_conntrack`. If the
+    apply still needed traffic to run, the drop would never appear and the wait
+    would time out. It also asserts the new trigger file itself carries the
+    pushed etag — pinning the #2229 mechanism, not just the outcome.
+    """
+    # ── On-connect baseline — device assigned, NOT paused ───────────────────
+    fake_api.serve_snapshot(
+        _snapshot(etag=ETAG_IDLE_BASE, extra_blocked=["example.com"])
+    )
+    _enable_ws_and_freeze_poll()
+    fake_api.wait_for_ws_connected(timeout_s=180)
+
+    wait_until(
+        lambda: True if _router_snapshot_etag() == ETAG_IDLE_BASE else None,
+        timeout_s=90, interval_s=3,
+        description=f"idle base snapshot applied (etag {ETAG_IDLE_BASE})",
+    )
+    assert not _paused_drop_rule_present(DEV_MAC), (
+        "device should carry no paused-drop rule at the un-paused baseline"
+    )
+
+    # ── Push a PAUSED snapshot; the client stays IDLE (no nudge anywhere) ────
+    push = fake_api.serve_snapshot(
+        _snapshot(etag=ETAG_IDLE_PAUSED, extra_blocked=["example.com"], paused=True)
+    )
+    assert push == ETAG_IDLE_PAUSED
+
+    # The sidecar's trigger reflects the pushed etag — the #2229 event-driven
+    # signal is present (not merely the snapshot file).
+    wait_until(
+        lambda: True if _ws_pending_etag() == ETAG_IDLE_PAUSED else None,
+        timeout_s=90, interval_s=3,
+        description=f"ws-pending trigger carries the pushed etag {ETAG_IDLE_PAUSED} "
+                    "(#2229 event-driven signal written on persist)",
+    )
+
+    # The drop appears with the device IDLE and NO `_nudge_conntrack` — the
+    # apply is driven by the heartbeat tick reading the trigger, not by traffic.
+    wait_until(
+        lambda: True if _paused_drop_rule_present(DEV_MAC) else None,
+        timeout_s=90, interval_s=3,
+        description="nft gains wh_drop:<mac>:Paused from the ws push on an IDLE "
+                    "client with NO conntrack nudge — event-driven apply (#2229)",
+    )
+    assert _router_snapshot_etag() == ETAG_IDLE_PAUSED
 
 
 def _carve_snapshot(*, etag: str, paused: bool) -> dict:

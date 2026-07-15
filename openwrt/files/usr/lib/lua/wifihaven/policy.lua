@@ -351,21 +351,22 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
   --
   -- (The index is written by the agent's refresh_blocklists, not here.)
 
-  if dnsmasq_changed then
-    log.debug("policy.apply: wrote dnsmasq=%dB (changed) nft=%dB; restarting dnsmasq",
-              #dnsmasq_content, #nft_content)
-    -- #328: must be `restart`, not `reload`. SIGHUP doesn't re-read conf-dir,
-    -- so `reload` leaves new dhcp-host= and nftset= directives silently
-    -- inactive until something else restarts the service. (Post-#329/#351
-    -- there are no `address=` sinkhole directives — but dhcp-host= and
-    -- nftset= still need a full restart for the same reason.)
-    timed("dnsmasq_restart", function()
-      reload_fn("/etc/init.d/dnsmasq restart")
-    end)
-  else
-    log.debug("policy.apply: wrote dnsmasq=%dB (unchanged) nft=%dB; skipping dnsmasq restart",
-              #dnsmasq_content, #nft_content)
-  end
+  -- #2229: the dnsmasq restart is deferred until AFTER `nft -f` below. The
+  -- enforcement plane (the whole-MAC drop, per-host drops, blocked_macs) lives
+  -- ENTIRELY in the nft ruleset; the dnsmasq restart only propagates changed
+  -- dhcp-host=/nftset= *directives* (which populate ipsets on the NEXT resolve).
+  -- A pause toggles the profile's extraAllowed carve → its nftset= lines appear/
+  -- disappear → dnsmasq_changed flips → a full ~3.6s (much more on prod)
+  -- `/etc/init.d/dnsmasq restart`. When that restart ran FIRST it gated the
+  -- block behind itself, so a pushed pause took seconds to actually drop traffic
+  -- even though `nft -f` is ~0.1s (the #2229 latency). Loading nft first lands
+  -- enforcement immediately and lets the (unavoidable) restart run without
+  -- gating it. Ordering is safe: `nft -f` delete+recreates `table inet
+  -- wifihaven`, so every ea_/eb_/bl_ set is empty right after it regardless of
+  -- restart order; the ea_backfill below re-seeds ea_ from cache, and dnsmasq
+  -- repopulates the rest lazily on resolve after the restart — identical end
+  -- state, just enforcement-first.
+
   -- Single atomic `nft -f`. The rendered file's prelude removes both the
   -- boot default-deny skeleton (table inet wifihaven_boot — #308) and any
   -- prior runtime table in one transaction, then installs the new ruleset.
@@ -465,6 +466,23 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
       end
     end
     end)
+  end
+
+  -- #2229: dnsmasq restart, deferred to here (was above `nft -f`). Enforcement
+  -- is already live from the load above, so this restart — needed only to make
+  -- dnsmasq re-read changed dhcp-host=/nftset= directives (#328: SIGHUP doesn't
+  -- re-read conf-dir, so it must be a full `restart`, not `reload`) — no longer
+  -- gates the block. Skipped when the rendered conf is byte-identical (#414), so
+  -- a pure schedule/pause/time-limit flip that only moves nft state pays nothing.
+  if dnsmasq_changed then
+    log.debug("policy.apply: wrote dnsmasq=%dB (changed) nft=%dB; restarting dnsmasq (post-nft, #2229)",
+              #dnsmasq_content, #nft_content)
+    timed("dnsmasq_restart", function()
+      reload_fn("/etc/init.d/dnsmasq restart")
+    end)
+  else
+    log.debug("policy.apply: wrote dnsmasq=%dB (unchanged) nft=%dB; skipping dnsmasq restart",
+              #dnsmasq_content, #nft_content)
   end
 
   -- #328 / #351 smoke probe. Runs only when we actually restarted dnsmasq:

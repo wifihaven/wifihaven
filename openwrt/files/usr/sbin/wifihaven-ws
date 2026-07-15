@@ -31,6 +31,7 @@ local ws_spool   = require("wifihaven.ws_spool")
 local ws_metrics = require("wifihaven.ws_metrics")
 local ws_split   = require("wifihaven.ws_usage_split")
 local policy     = require("wifihaven.policy")
+local ws_pending = require("wifihaven.ws_pending")
 local paths      = require("wifihaven.paths")
 local log        = require("wifihaven.log")
 local jsonc      = require("luci.jsonc")
@@ -156,9 +157,32 @@ end
 -- agent stays the single enforcement owner and there is no two-writer race on
 -- the plane. save_snapshot is tmp→rename atomic, so the agent's read sees the
 -- old or the new complete file, never a torn one.
+-- CLOCK_MONOTONIC seconds — a system-wide clock the main agent also reads
+-- (/proc/uptime field 1). Used only to stamp the persist instant into the
+-- trigger file so the agent can observe push→apply latency (#2229); never for
+-- scheduling here. Returns nil if /proc/uptime is unreadable (the agent then
+-- skips the latency observation but still applies).
+local function monotonic_seconds()
+  local f = io.open("/proc/uptime", "r")
+  if not f then return nil end
+  local v = f:read("*n")
+  f:close()
+  return v
+end
+
 local function on_policy(snapshot)
   if type(snapshot) ~= "table" then return end
+  -- Persist the pushed snapshot FIRST (the file the agent applies), THEN write
+  -- the trigger — so if the agent sees a fresh trigger the snapshot is already
+  -- the new one (no torn read of an older policy.json). #2229.
   policy.save_snapshot(snapshot, write_file, rename_file, log)
+  -- #2229 event-driven apply: drop a tiny "<etag>\t<uptime>" trigger the agent
+  -- checks every on_tick, so a pushed pause applies in ~1 tick instead of
+  -- waiting up to ws.apply_interval for the poll-of-disk gate. Overwrite (not
+  -- append) → naturally bounded to one short line. The sidecar still NEVER
+  -- touches nft/dnsmasq; it only signals the single applier (the agent).
+  write_file(paths.ws_pending,
+             ws_pending.encode(snapshot.etag, monotonic_seconds()))
   log.info("wifihaven-ws: persisted pushed policy snapshot etag=%s (agent applies on next tick)",
            tostring(snapshot.etag))
 end

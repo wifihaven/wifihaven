@@ -256,6 +256,33 @@ describe("policy.apply", function()
       "expected restart when on-disk copy is stale; got: " .. table.concat(reloads, " | "))
   end)
 
+  -- #2229: the enforcement plane (the nft ruleset) must be loaded BEFORE the
+  -- dnsmasq restart, not after. The whole-MAC drop, per-host drops and
+  -- blocked_macs all live in nft; the dnsmasq restart only propagates changed
+  -- dhcp-host=/nftset= directives (which populate ipsets on the NEXT resolve).
+  -- When the restart ran first it GATED the block behind a multi-second
+  -- `/etc/init.d/dnsmasq restart` — the #2229 push→apply latency. Loading nft
+  -- first lands enforcement immediately; the (unavoidable) restart then runs
+  -- without gating it.
+  it("loads the nft ruleset BEFORE restarting dnsmasq (#2229)", function()
+    local seq = {}
+    policy.apply(decode_snap(),
+      function(_path, _content) return true, nil end,
+      function(cmd) table.insert(seq, cmd); return 0 end,
+      nil, fresh_opts())
+    local nft_idx, restart_idx
+    for i, cmd in ipairs(seq) do
+      if not nft_idx and cmd:find("nft %-f") then nft_idx = i end
+      if not restart_idx and cmd == "/etc/init.d/dnsmasq restart" then restart_idx = i end
+    end
+    assert.is_truthy(nft_idx, "expected an `nft -f` command; got: " .. table.concat(seq, " | "))
+    assert.is_truthy(restart_idx, "expected a dnsmasq restart; got: " .. table.concat(seq, " | "))
+    assert.is_true(nft_idx < restart_idx,
+      "`nft -f` (enforcement) must precede the dnsmasq restart so the block is "
+      .. "not gated behind the multi-second restart (#2229); got order: "
+      .. table.concat(seq, " | "))
+  end)
+
   it("restarts dnsmasq on first apply when no conf exists on disk (#414)", function()
     local reloads = {}
     policy.apply(decode_snap(),

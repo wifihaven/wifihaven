@@ -805,6 +805,81 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "title": "WS push\u2192apply latency p50/p95/p99 (#2229)",
+      "description": "histogram_quantile over ws_push_apply_latency_seconds_bucket \u2014 time from the sidecar persisting a server-pushed policy snapshot to the agent applying it to the enforcement plane (nft). Event-driven since #2229 (the sidecar writes a trigger the agent reads every heartbeat tick); should sit in low single-digit seconds, dominated by nft load, no longer gated by the dnsmasq restart. Flat/0 until agents on ws receive a push.",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 56
+      },
+      "id": 14,
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(ws_push_apply_latency_seconds_bucket{env=\"$env\"}[5m])))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(ws_push_apply_latency_seconds_bucket{env=\"$env\"}[5m])))",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(ws_push_apply_latency_seconds_bucket{env=\"$env\"}[5m])))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ]
     }
   ],
   "refresh": "30s",
