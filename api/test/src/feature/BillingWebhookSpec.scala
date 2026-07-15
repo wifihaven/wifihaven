@@ -232,14 +232,19 @@ object BillingWebhookSpec
         }
         svc       = BillingService(recStripe, hbr, clock, cfg)
         hid <- seedHousehold(xa, hbr)
-        windowEnd = java.time.Instant.parse("2026-09-01T00:00:00Z")
+        now <- clock.instant
+        windowEnd = java.time.Instant.parse("2026-09-01T00:00:00Z") // well beyond the 49h floor
         _        <- svc.startCheckout(hid, Some(windowEnd))
         inWindow <- captured.get
         _        <- svc.startCheckout(hid, None)
         noWindow <- captured.get
+        // Within the 49h floor Stripe would reject trial_end — the trial is dropped (immediate charge).
+        _        <- svc.startCheckout(hid, Some(now.plus(java.time.Duration.ofHours(1))))
+        nearEnd  <- captured.get
       } yield assertTrue(
         inWindow.exists(_.trialEnd.contains(windowEnd)),
         noWindow.exists(_.trialEnd.isEmpty),
+        nearEnd.exists(_.trialEnd.isEmpty),
       )
     },
   ) @@ TestAspect.sequential
