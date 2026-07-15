@@ -311,6 +311,57 @@ info "Enabling and starting the wifihaven agent..."
 /etc/init.d/wifihaven enable
 /etc/init.d/wifihaven start
 
+# #2231: OpenWrt's dnsmasq init script probes for a rogue DHCP server on
+# every restart (/etc/init.d/dnsmasq line 563: `[ $force -gt 0 ] ||
+# dhcp_check`; dhcp_check at line 108 runs `udhcpc -n -q -s /bin/true -t 1`,
+# line 121 — OpenWrt 25.12.3). On a gateway where dnsmasq IS the DHCP server
+# nothing answers, so each non-ignored dhcp section burns udhcpc's ~3.5s
+# discover timeout per restart (measured 3.53s default vs 0.34s with
+# force=1). `option force 1` skips the probe, at the cost of the guard
+# against a second DHCP server on the LAN — worth keeping only until this
+# router is established as the network's sole DHCP server.
+#
+# /etc/config/dhcp is the operator's file: never set force silently. Offer
+# it here, after enrollment, with an explicit y/N prompt (default No). Skip
+# entirely when non-interactive or already set. Full write-up in
+# docs/router-tuning.md.
+offer_dhcp_force() {
+  [ "${WIFIHAVEN_NONINTERACTIVE:-0}" = "0" ] || return 0
+  [ -r "$TTY" ] && [ -w "$TTY" ] || return 0
+
+  unforced=""
+  for sec in $(uci show dhcp 2>/dev/null | sed -n 's/^dhcp\.\([^.=]*\)=dhcp$/\1/p'); do
+    [ "$(uci -q get "dhcp.$sec.ignore" 2>/dev/null || true)" = "1" ] && continue
+    [ "$(uci -q get "dhcp.$sec.force" 2>/dev/null || true)" = "1" ] && continue
+    unforced="$unforced $sec"
+  done
+  [ -n "$unforced" ] || return 0
+
+  cat >"$TTY" <<EOF
+
+Optional tuning (#2231): every dnsmasq restart runs OpenWrt's rogue-DHCP
+probe — ~3.5s per DHCP section when no other DHCP server answers (measured
+3.53s -> 0.34s with 'option force 1'). Setting force=1 skips the probe but
+disables the guard against a second DHCP server on your LAN — say yes only
+if this router is (or is about to be) your network's only DHCP server.
+EOF
+  prompt DHCP_FORCE_ANSWER "Set force=1 on:${unforced}? (y/N)" "N"
+  case "$DHCP_FORCE_ANSWER" in
+    y|Y|yes|YES|Yes)
+      for sec in $unforced; do
+        uci set "dhcp.$sec.force=1"
+      done
+      uci commit dhcp
+      info "Set force=1 on:${unforced}. Takes effect on the next dnsmasq restart."
+      info "To revert: uci delete dhcp.<section>.force; uci commit dhcp; /etc/init.d/dnsmasq restart"
+      ;;
+    *)
+      info "Leaving the rogue-DHCP probe enabled (dhcp force unset)."
+      ;;
+  esac
+}
+offer_dhcp_force
+
 cat <<EOF
 
 Done. Router enrolled successfully.

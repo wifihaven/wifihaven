@@ -66,6 +66,15 @@ It then:
 4. Adds a `uhttpd` listener on `127.0.0.1:8081` for the local block page
    (idempotent — skipped if already configured).
 5. Enables and starts the `wifihaven` procd service.
+6. Optionally (y/N prompt, default No) sets `option force '1'` on your
+   dhcp sections so dnsmasq restarts skip OpenWrt's ~3.5 s-per-section
+   rogue-DHCP probe (measured 3.53 s → 0.34 s). `/etc/config/dhcp` is your
+   file — the script never sets this without consent, and saying yes is
+   only safe once this router is your network's sole DHCP server. Set
+   `WIFIHAVEN_NONINTERACTIVE=1` in the environment to suppress the prompt
+   (nothing is set). Details, measurements, and the revert command:
+   [`router-tuning.md`](router-tuning.md#dnsmasq-restart-latency--option-force-1-2231)
+   ([#2231](https://github.com/wifihaven/wifihaven/issues/2231)).
 
 If anything goes wrong it aborts before starting the agent, leaving the
 router in a clean state so you can re-run after fixing the underlying issue.
