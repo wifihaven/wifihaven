@@ -196,16 +196,36 @@ change-detection key the server uses to decide *whether* to push (§6.2).
 > (the only ws process) merely **persists** a pushed `policy` frame to
 > `/etc/wifihaven/policy.json` via the atomic `policy.save_snapshot` (tmp→rename);
 > it never touches nft/dnsmasq. The **main agent** owns enforcement: an
-> apply-on-push tick in its `on_tick` loop re-reads that file on a short cadence
-> (`wifihaven.ws.apply_interval`, default 2 s) and runs it through the *same*
-> apply pipeline the HTTP poll uses (`refresh_blocklists` → `policy.apply` →
-> `render.update_shared`) **iff the on-disk `etag` differs** from the
+> apply-on-push tick in its `on_tick` loop runs the pushed snapshot through the
+> *same* apply pipeline the HTTP poll uses (`refresh_blocklists` → `policy.apply`
+> → `render.update_shared`) **iff the on-disk `etag` differs** from the
 > currently-applied one. The `etag` is the single dedup key shared by the poll
 > and the push, so even while the poll still runs (it is deprecated separately in
 > [#1850](https://github.com/wifihaven/wifihaven/issues/1850)) a snapshot is
 > applied exactly once and there is no two-writer race on the enforcement plane.
 > Before #1945 the sidecar saved the file but nothing re-applied it mid-run, so a
 > push was a no-op for live enforcement until the next poll/restart.
+>
+> **Event-driven wake (#2229).** The apply tick no longer waits up to
+> `wifihaven.ws.apply_interval` to *notice* a push. When the sidecar persists a
+> snapshot it also writes a tiny trigger — `"<etag>\t<uptime>"` at
+> `paths.ws_pending` (the `ws_pending` module; `<uptime>` is a `/proc/uptime`
+> stamp both processes read) — and the agent reads that few-byte file on **every**
+> `on_tick` (driven by the #2024 heartbeat, so ~1 s even fully idle). A pushed
+> pause therefore applies within one tick, not one `apply_interval`; the 2 s
+> poll-of-disk gate is kept only as a backstop for a missed/torn trigger. The
+> agent observes `ws_push_apply_latency_seconds` (persist→apply) from the stamp.
+>
+> **Enforcement-first apply ordering (#2229).** Inside `policy.apply` the
+> `nft -f` load (which *is* the enforcement change — the whole-MAC drop,
+> per-host drops, `blocked_macs`) now runs **before** the `/etc/init.d/dnsmasq
+> restart`, not after. The restart only propagates changed
+> `dhcp-host=`/`nftset=` directives (ipsets populate on the next resolve) and,
+> because a pause toggles the profile's `extraAllowed` carve, it fires on nearly
+> every pause/unpause and can take seconds (much longer on a prod-sized config).
+> When it ran first it *gated* the block behind itself — the dominant part of the
+> #2229 push→apply latency. Loading nft first lands the block in ~0.1 s and lets
+> the (unavoidable, #414-conditional) restart run without gating enforcement.
 
 ---
 

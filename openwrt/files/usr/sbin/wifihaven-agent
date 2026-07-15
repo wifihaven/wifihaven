@@ -14,6 +14,7 @@
 
 local uci        = require("uci")
 local policy     = require("wifihaven.policy")
+local ws_pending = require("wifihaven.ws_pending")
 local blocklists = require("wifihaven.blocklists")
 local eb_refresh = require("wifihaven.eb_refresh")
 local metrics    = require("wifihaven.metrics")
@@ -494,6 +495,33 @@ local function ws_health_read()
   local v = tonumber((f:read("*a") or ""):match("%d+"))
   f:close()
   return v
+end
+
+-- #2229 event-driven ws apply. The sidecar writes "<etag>\t<uptime>" to
+-- paths.ws_pending the moment it persists a pushed snapshot; the agent reads
+-- this tiny file EVERY on_tick (cheap — no full-snapshot parse) so a pushed
+-- pause/unpause applies within one heartbeat tick rather than waiting up to
+-- ws.apply_interval for the poll-of-disk gate. Returns (etag, persist_uptime)
+-- or nil when the file is absent (no push yet / ws disabled). Reuses the
+-- file-CONTENT IPC idiom of ws_health_read (busybox lacks `stat -c %Y`).
+local function ws_pending_read()
+  local f = io.open(paths.ws_pending, "r")
+  if not f then return nil end
+  local line = (f:read("*a") or "")
+  f:close()
+  return ws_pending.decode(line)
+end
+
+-- CLOCK_MONOTONIC-ish seconds read from /proc/uptime — the SAME source the
+-- sidecar stamps into ws_pending, so the push→apply latency delta is valid
+-- regardless of whether clock.monotonic_seconds() picked the posix backend.
+-- Used ONLY for the ws_push_apply_latency_seconds observation. nil on failure.
+local function read_uptime_seconds()
+  local f = io.open("/proc/uptime", "r")
+  if not f then return nil end
+  local up = tonumber(((f:read("*l") or ""):match("^(%S+)")))
+  f:close()
+  return up
 end
 local function ws_spool_append(line)
   return ws_spool.append_bounded(paths.ws_outbound, line, ws_spool_max, io.open)
@@ -1212,21 +1240,49 @@ conntrack.watch({
     -- tmp→rename the sidecar uses means a reader sees either the old or the new
     -- complete file, never a partial one. Skipped while in failover (the
     -- failover chain owns the plane until the poll recovers).
-    if ws_enabled == "1" and not ts.in_failover_render
-       and (mono - ts.last_ws_apply_run) >= ws_apply_int then
-      ts.last_ws_apply_run = mono
-      local pushed = policy.load_snapshot(read_file, log)
-      if pushed and pushed.etag and pushed.etag ~= ts.current_etag then
-        -- Populate category/extraBlocked shards before the apply, exactly as the
-        -- poll path does, so the rendered conf-file= directives resolve.
-        refresh_blocklists(pushed)
-        ts.last_blocklist_run = mono
-        if apply_and_publish(pushed, "policy_change") then
-          ts.current_etag  = pushed.etag
-          ts.last_snapshot = pushed
-          policy.mark_poll_success(wall)
-          log.info("ws apply: applied pushed snapshot etag=%s (poll-independent)",
-                   tostring(pushed.etag))
+    --
+    -- #2229 event-driven wake. Waiting for the ws_apply_int poll-of-disk gate
+    -- added up to that interval of latency before a pushed pause even started
+    -- applying (measured ~1-2s on the bench; worse on an idle device). The
+    -- sidecar now drops a tiny "<etag>\t<uptime>" TRIGGER (paths.ws_pending) the
+    -- moment it persists a push, and we read it EVERY tick (cheap — a few bytes,
+    -- no snapshot parse) so a push applies within one heartbeat (~1s) rather
+    -- than waiting for the gate. The gate is KEPT as a backstop so a missed/torn
+    -- trigger (write failed, tmpfs cleared) can never strand a pushed snapshot.
+    -- Both entrypoints run the SAME etag-deduped apply, so there is no
+    -- double-apply. Skipped while in failover (the failover chain owns the plane
+    -- until the poll recovers).
+    if ws_enabled == "1" and not ts.in_failover_render then
+      local trig_etag, persist_up = ws_pending_read()
+      local due_trigger = trig_etag ~= nil and trig_etag ~= ts.current_etag
+      local due_gate    = (mono - ts.last_ws_apply_run) >= ws_apply_int
+      if due_trigger or due_gate then
+        ts.last_ws_apply_run = mono
+        local pushed = policy.load_snapshot(read_file, log)
+        if pushed and pushed.etag and pushed.etag ~= ts.current_etag then
+          -- Populate category/extraBlocked shards before the apply, exactly as
+          -- the poll path does, so the rendered conf-file= directives resolve.
+          refresh_blocklists(pushed)
+          ts.last_blocklist_run = mono
+          if apply_and_publish(pushed, "policy_change") then
+            ts.current_etag  = pushed.etag
+            ts.last_snapshot = pushed
+            policy.mark_poll_success(wall)
+            -- #2229 push→apply latency: persist→apply, from the trigger's
+            -- /proc/uptime stamp (same clock source read_uptime_seconds uses).
+            -- Only when the trigger drove this apply and carried a valid stamp.
+            if due_trigger and persist_up then
+              local now_up = read_uptime_seconds()
+              if now_up then
+                local lat = now_up - persist_up
+                if lat >= 0 then
+                  metrics.observe(mreg, "ws_push_apply_latency_seconds", {}, lat)
+                end
+              end
+            end
+            log.info("ws apply: applied pushed snapshot etag=%s (poll-independent)",
+                     tostring(pushed.etag))
+          end
         end
       end
     end

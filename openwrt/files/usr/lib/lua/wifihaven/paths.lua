@@ -101,4 +101,16 @@ M.ws_health = "/tmp/wifihaven-ws-health"
 -- fold_external treats as a reset.
 M.ws_metrics = "/tmp/wifihaven-ws-metrics.txt"
 
+-- ws apply trigger (#2229): after the sidecar persists a pushed snapshot to
+-- policy.json it writes "<etag>\t<uptime>" here (etag of the pushed snapshot;
+-- CLOCK_MONOTONIC seconds from /proc/uptime at persist time — a system-wide
+-- clock both processes read, since busybox lacks `stat -c %Y`). The main agent
+-- reads this tiny file every on_tick (cheap, no full-snapshot parse) and applies
+-- the pushed snapshot IMMEDIATELY when the etag differs from the applied one —
+-- event-driven, instead of waiting up to ws.apply_interval for the poll-of-disk
+-- gate. The uptime stamp lets the agent observe ws_push_apply_latency_seconds
+-- (persist→apply) without a shared wall clock. Bounded: a single short line,
+-- overwritten (not appended) on every push. Absent unless ws is enabled.
+M.ws_pending = "/tmp/wifihaven-ws-pending"
+
 return M
