@@ -48,6 +48,15 @@ set -euo pipefail
 : "${WIFIHAVEN_EMAIL_RESEND_API_KEY:=}"
 : "${WIFIHAVEN_EMAIL_FROM_ADDRESS:=}"
 : "${WIFIHAVEN_EMAIL_APP_BASE_URL:=https://app.wifihaven.net}"
+# #2199: Plain helpdesk integration (#2197). All DARK by default — empty keys render a `support {}`
+# block whose SupportConfig gates are false, so the identified widget renders nothing and the write
+# client is a no-op. Two independent gates: the WIDGET needs BOTH APP_ID + IDENTITY_SECRET; the
+# WRITE API needs API_KEY. WEBHOOK_SECRET is declared now (config-complete) but consumed by #2200.
+# The Claude API key for the #2200 responder is NOT here. Secrets NEVER committed.
+: "${WIFIHAVEN_SUPPORT_PLAIN_API_KEY:=}"
+: "${WIFIHAVEN_SUPPORT_PLAIN_WEBHOOK_SECRET:=}"
+: "${WIFIHAVEN_SUPPORT_PLAIN_IDENTITY_SECRET:=}"
+: "${WIFIHAVEN_SUPPORT_PLAIN_APP_ID:=}"
 
 export WIFIHAVEN_LOG_LEVEL WIFIHAVEN_DEBUG
 
@@ -106,6 +115,12 @@ wifihaven {
     thresholdHouseholds = ${WIFIHAVEN_FLIP_THRESHOLD_HOUSEHOLDS}
     windowDays          = ${WIFIHAVEN_FLIP_WINDOW_DAYS}
     activeLookbackDays  = ${WIFIHAVEN_FLIP_ACTIVE_LOOKBACK_DAYS}
+  }
+  support {
+    plainApiKey         = "${WIFIHAVEN_SUPPORT_PLAIN_API_KEY}"
+    plainWebhookSecret  = "${WIFIHAVEN_SUPPORT_PLAIN_WEBHOOK_SECRET}"
+    plainIdentitySecret = "${WIFIHAVEN_SUPPORT_PLAIN_IDENTITY_SECRET}"
+    plainAppId          = "${WIFIHAVEN_SUPPORT_PLAIN_APP_ID}"
   }
 }
 EOF

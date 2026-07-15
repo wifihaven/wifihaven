@@ -181,6 +181,19 @@ services:
         sync: false
       - key: WIFIHAVEN_EMAIL_FROM_ADDRESS
         sync: false
+      # #2199: Plain helpdesk integration on STAGING (test Plain workspace). All DARK until the keys
+      # are set in the staging Render dashboard (sync:false = declared here, value entered out of
+      # band; entrypoint.sh renders them into the config `support {}` block). The WIDGET turns on only
+      # when BOTH APP_ID + IDENTITY_SECRET are set; the WRITE API when API_KEY is set. WEBHOOK_SECRET
+      # is declared now but consumed by #2200. NEVER commit values.
+      - key: WIFIHAVEN_SUPPORT_PLAIN_API_KEY
+        sync: false
+      - key: WIFIHAVEN_SUPPORT_PLAIN_WEBHOOK_SECRET
+        sync: false
+      - key: WIFIHAVEN_SUPPORT_PLAIN_IDENTITY_SECRET
+        sync: false
+      - key: WIFIHAVEN_SUPPORT_PLAIN_APP_ID
+        sync: false
 
   # ── Production API ─────────────────────────────────────────────────────────
   - type: web
@@ -334,6 +347,19 @@ services:
       - key: WIFIHAVEN_EMAIL_RESEND_API_KEY
         sync: false
       - key: WIFIHAVEN_EMAIL_FROM_ADDRESS
+        sync: false
+      # #2199: Plain helpdesk integration on PROD (live Plain workspace). Same sync:false pattern as
+      # staging — all DARK until the keys are set in the prod Render dashboard (entrypoint.sh renders
+      # them into the config `support {}` block). The WIDGET turns on only when BOTH APP_ID +
+      # IDENTITY_SECRET are set; the WRITE API when API_KEY is set. WEBHOOK_SECRET is declared now but
+      # consumed by #2200 (the Claude responder). NEVER commit values.
+      - key: WIFIHAVEN_SUPPORT_PLAIN_API_KEY
+        sync: false
+      - key: WIFIHAVEN_SUPPORT_PLAIN_WEBHOOK_SECRET
+        sync: false
+      - key: WIFIHAVEN_SUPPORT_PLAIN_IDENTITY_SECRET
+        sync: false
+      - key: WIFIHAVEN_SUPPORT_PLAIN_APP_ID
         sync: false
 
   # ── Metrics collector: Grafana Alloy → Grafana Cloud ─────────────────────────

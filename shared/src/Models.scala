@@ -832,6 +832,40 @@ case class UserSummary(
     role: UserRole,
     profileIds: List[ProfileId],
 ) derives JsonCodec
+// #2199 (support intake B, epic #2197) — the SERVER-SIGNED identity the authenticated admin SPA
+// feeds Plain's identified chat widget (design/umbrella #2206 §2). The API computes the HMAC-SHA256
+// email hash server-side (never trusting a client-supplied email/household) so household A can never
+// obtain household B's widget identity — the household-gating boundary. Everything is `Option` so
+// the DARK case (Plain widget unconfigured, OR the caller has no email to identify) returns
+// `{configured:false}` with every other field absent and the SPA renders nothing.
+case class SupportIdentityResponse(
+    // Whether the identified widget should render: the Plain widget config is present AND the caller
+    // is identifiable (has an email). When false, the SPA renders no widget (feature dark).
+    configured: Boolean,
+    // Plain chat/widget app id (public) — the SPA needs it to boot the widget SDK.
+    appId: Option[String] = None,
+    // The authenticated caller's own email (resolved server-side from their JWT, not client-supplied).
+    email: Option[String] = None,
+    // HMAC-SHA256(identitySecret, lowercased-email) hex — Plain "chat authentication". Signed
+    // server-side; this is what prevents impersonation of another user/household.
+    emailHash: Option[String] = None,
+    // Plain's native tenant field = the caller's household id (household-gating). String on the wire
+    // because Plain's tenantIdentifier is a string.
+    tenantIdentifier: Option[String] = None,
+    // Bounded account context surfaced to Plain as customer attributes for the operator / responder.
+    fullName: Option[String] = None,
+    // Subscription state (beta / active / lapsed, from #2135 household_billing) — intake context,
+    // never a gate on reading replies.
+    plan: Option[String] = None,
+    founding: Option[Boolean] = None,
+) derives JsonCodec
+
+object SupportIdentityResponse {
+  // The dark response: widget unconfigured, or the caller is not identifiable. The SPA renders
+  // nothing on `configured=false`.
+  val disabled: SupportIdentityResponse = SupportIdentityResponse(configured = false)
+}
+
 case class MeResponse(
     username: String,
     role: UserRole,

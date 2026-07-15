@@ -13,6 +13,7 @@ import type {
   ProfileAppWeeklyUsage,
   ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek, ProfileUsageByApp,
   QueryLog, TrafficUsageBucket, TrafficUsageGroupBy, UsageConfig, UsageSeriesResponse,
+  SupportIdentityResponse,
 } from '@/types/api'
 
 const MIN = 60_000
@@ -61,6 +62,8 @@ export const LIVE_SURFACE_FALLBACK_REFETCH_MS = 10_000
 
 export const qk = {
   me: () => ['me'] as const,
+  // #2199 — the server-signed Plain widget identity for the authed admin.
+  supportIdentity: () => ['support', 'identity'] as const,
   // #2133 — operator beta-request queue, keyed on the optional status filter.
   betaRequests: (status?: BetaRequestStatus) => ['beta-requests', status ?? 'pending'] as const,
   profiles: () => ['profiles'] as const,
@@ -125,6 +128,20 @@ export function useMe(opts?: QueryOpts<MeResponse>) {
   return useQuery({
     queryKey: qk.me(),
     queryFn: () => api.auth.me(),
+    staleTime: Infinity,
+    ...opts,
+  })
+}
+
+// #2199 (support intake B): the server-signed Plain widget identity for the authed
+// admin. Cached for the session (staleTime: Infinity) — the household + entitlement
+// don't change under a live session, and the widget only needs to boot once. Enabled
+// by the caller only for admins (the API 403s non-admins). When the widget is
+// unconfigured the response is `{configured:false}` and the caller renders nothing.
+export function useSupportIdentity(opts?: QueryOpts<SupportIdentityResponse>) {
+  return useQuery({
+    queryKey: qk.supportIdentity(),
+    queryFn: () => api.support.identity(),
     staleTime: Infinity,
     ...opts,
   })

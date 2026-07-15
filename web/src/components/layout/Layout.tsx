@@ -4,6 +4,7 @@ import { useAuth } from '@/hooks/useAuth'
 import { useMe } from '@/api/queries'
 import { ApiUnreachableBanner } from '@/components/ApiUnreachableBanner'
 import { ConversionBanner } from '@/components/ConversionBanner'
+import { SupportWidget } from '@/components/SupportWidget'
 
 interface NavItem {
   to: string
@@ -274,6 +275,10 @@ export function Layout() {
 
       {/* Bottom padding for mobile nav */}
       <div className="md:hidden h-16" />
+
+      {/* #2199: identified Plain support chat — admin-only, server-signed identity, renders nothing
+          until the operator provisions the Plain widget keys (dark by default). */}
+      <SupportWidget />
     </div>
   )
 }

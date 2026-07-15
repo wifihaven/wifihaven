@@ -113,6 +113,15 @@ trait UserRepo {
    * them), throwing on `.option` — canonical-lowercase storage is the safe single source.
    */
   def findByEmail(email: String): Task[Option[DbUser]]
+
+  /**
+   * #2199 (support intake B): resolve a user's `users.email` (V67) by their household + username —
+   * the inverse of [[findByEmail]]. An authenticated caller carries `(hh, username)` in their JWT
+   * (never an email), and the support-widget identity path needs that user's email to compute the
+   * server-signed Plain chat-auth hash. Returns `None` when the user has no email (username-only /
+   * self-hosted admin) or no such row — either way the widget stays dark for that caller.
+   */
+  def emailForUser(householdId: HouseholdId, username: String): Task[Option[String]]
   def findById(id: UserId): Task[Option[DbUser]]
   // #2130: `householdId` stamps the new user with the creating admin's
   // household (resolved from their JWT at the route). Defaults to the
@@ -1034,7 +1043,7 @@ class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
     case (id, un, ph, role, ca, mcp, tv, hh) => DbUser(id, un, ph, role, ca, mcp, tv, hh)
   }
 
-  def findByUsername(householdId: HouseholdId, u: String) =
+  def findByUsername(householdId: HouseholdId, u: String)      =
     DbMetrics.timed("user.findByUsername")(
       // #2140: keyed on the V65 UNIQUE(household_id, username) — never a bare-username lookup.
       (fr"SELECT " ++ userCols ++ fr" FROM users WHERE household_id=$householdId AND username=$u")
@@ -1043,7 +1052,7 @@ class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
         .option
         .transact(xa),
     )
-  def findByEmail(email: String)                          =
+  def findByEmail(email: String)                               =
     DbMetrics.timed("user.findByEmail")(
       // #2164: exact match on the globally-unique `users.email` (V67). `.option` is safe — the
       // uq_users_email constraint guarantees at most one row.
@@ -1053,7 +1062,18 @@ class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
         .option
         .transact(xa),
     )
-  def findById(id: UserId)                                =
+  def emailForUser(householdId: HouseholdId, username: String) =
+    DbMetrics.timed("user.emailForUser")(
+      // #2199: household-scoped username → email. Keyed on the V65 UNIQUE(household_id, username);
+      // the inner Option is the nullable `users.email` column (V67), so a row with a NULL email
+      // yields `Some(None)` → flattened to `None`.
+      sql"SELECT email FROM users WHERE household_id=$householdId AND username=$username"
+        .query[Option[String]]
+        .option
+        .map(_.flatten)
+        .transact(xa),
+    )
+  def findById(id: UserId)                                     =
     (fr"SELECT " ++ userCols ++ fr" FROM users WHERE id=$id")
       .query[UserRow]
       .map(toUser)
@@ -1068,17 +1088,17 @@ class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
       .query[UserId]
       .unique
       .transact(xa)
-  def updatePassword(id: UserId, h: String)               =
+  def updatePassword(id: UserId, h: String)                    =
     sql"UPDATE users SET password_hash=$h WHERE id=$id".update.run.transact(xa).unit
-  def updateUsername(id: UserId, u: String)               =
+  def updateUsername(id: UserId, u: String)                    =
     sql"UPDATE users SET username=$u WHERE id=$id".update.run.transact(xa).unit
-  def updateRole(id: UserId, r: String)                   =
+  def updateRole(id: UserId, r: String)                        =
     sql"UPDATE users SET role=$r WHERE id=$id".update.run.transact(xa).unit
-  def clearMustChangePassword(id: UserId)                 =
+  def clearMustChangePassword(id: UserId)                      =
     sql"UPDATE users SET must_change_password=false WHERE id=$id".update.run.transact(xa).unit
-  def bumpTokenVersion(id: UserId)                        =
+  def bumpTokenVersion(id: UserId)                             =
     sql"UPDATE users SET token_version=token_version+1 WHERE id=$id".update.run.transact(xa).unit
-  def listAll                                             =
+  def listAll                                                  =
     (fr"SELECT " ++ userCols ++ fr" FROM users ORDER BY id")
       .query[UserRow]
       .map(toUser)
@@ -1086,7 +1106,7 @@ class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
       .transact(xa)
   // #2108: same projection as listAll, AND-scoped to one household. Index-backed by
   // V65's idx_users_household.
-  def listAllForHousehold(household: HouseholdId)         =
+  def listAllForHousehold(household: HouseholdId)              =
     (fr"SELECT " ++ userCols ++ fr" FROM users WHERE" ++ SqlFragments.householdEq(
       household,
     ) ++ fr"ORDER BY id")

@@ -19,6 +19,7 @@ case class AppConfig(
     stripe: StripeConfig = StripeConfig(),
     email: EmailConfig = EmailConfig(),
     flip: FlipConfig = FlipConfig(),
+    support: SupportConfig = SupportConfig(),
 ) {
   // WIFIHAVEN_DEBUG env var: when set to a non-empty, non-"0"/"false"/"no"
   // value, mounts the read-only /api/debug/* endpoints (loopback only).
@@ -341,6 +342,53 @@ case class FlipConfig(
   /** How far back a router's traffic still counts its household as "active". */
   val activeLookback: zio.Duration =
     zio.Duration.fromSeconds(lookbackClamped.toLong * 24 * 3600)
+}
+
+// #2199 (support intake B, epic #2197) — the Plain helpdesk integration (design/umbrella #2206 §1).
+// Everything is config-gated + `sync:false` in render.yaml, mirroring the #578 Resend key: no keys ⇒
+// the feature ships DARK (the widget renders nothing, the write client is a no-op) so the
+// self-hosted single-install path and the existing test suite are entirely unaffected. Secrets are
+// NEVER committed — the cloud entrypoint renders them into this block from env
+// (docs/process/security.md).
+//
+// Two independent gates, because the two halves turn on with different secrets:
+//   - WIDGET (household-gated identified chat): needs BOTH the public `plainAppId` and the
+//     `plainIdentitySecret` (the HMAC-SHA256 email-hash secret for Plain "chat authentication",
+//     https://help.plain.com/article/chat-authentication). The identity endpoint signs SERVER-SIDE
+//     so household A can never obtain household B's widget identity (#2199 household-gating).
+//   - WRITE API (customer upsert + thread write): needs `plainApiKey` (Plain's GraphQL write API
+//     bearer). The customer-upsert half carries the household→Plain-customer mapping; the
+//     thread-write half is the seam #2200's Claude responder posts AI drafts into.
+//
+//   - `plainApiKey`         Plain API key (write API) — sent as `Authorization: Bearer`. SECRET.
+//   - `plainWebhookSecret`  Plain webhook signing secret — declared now so the config surface is
+//                           complete, CONSUMED by #2200 (inbound new-message webhook HMAC verify).
+//                           SECRET. Not read anywhere in this PR.
+//   - `plainIdentitySecret` chat-auth HMAC-SHA256 email-hash secret. SECRET.
+//   - `plainAppId`          Plain chat/widget app id — public (rendered into the SPA), not a secret,
+//                           but still `sync:false` since it differs per workspace.
+//   - `apiBase`             Plain GraphQL endpoint (region-specific; overridable for test).
+//   The Claude API key for the responder belongs to #2200, NOT here.
+case class SupportConfig(
+    plainApiKey: String = "",
+    plainWebhookSecret: String = "",
+    plainIdentitySecret: String = "",
+    plainAppId: String = "",
+    apiBase: String = "https://core-api.uk.plain.com/graphql/v1",
+) {
+  val apiKeyTrimmed: String         = plainApiKey.trim
+  val webhookSecretTrimmed: String  = plainWebhookSecret.trim
+  val identitySecretTrimmed: String = plainIdentitySecret.trim
+  val appIdTrimmed: String          = plainAppId.trim
+
+  // The identified widget renders only when BOTH the public app id AND the identity secret are set —
+  // an app id with no signing secret can't produce a verifiable identity (and vice-versa), so treat
+  // a half-configured widget as OFF rather than emitting an unverifiable identity.
+  val widgetEnabled: Boolean = appIdTrimmed.nonEmpty && identitySecretTrimmed.nonEmpty
+
+  // The Plain write API (customer upsert + thread write) is live only when the API key is set;
+  // otherwise PlainClient is the disabled no-op and every call is a metered skip.
+  val writeEnabled: Boolean = apiKeyTrimmed.nonEmpty
 }
 
 object AppConfig {
