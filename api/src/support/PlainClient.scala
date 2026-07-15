@@ -149,6 +149,9 @@ object PlainClient {
     // The Plain customer field block. `fullName` + `externalId` + `email` identify; `tenantIdentifier`
     // carries the household (household-gating). Sent for both onCreate and onUpdate so an upsert
     // keeps the mapping current.
+    // TODO(#2240): `req.attributes` (plan/founding/householdName) are NOT sent here — Plain custom
+    // fields need pre-registered field ids, a go-live provisioning step. Wire them into the mutation
+    // once the operator registers the fields so entitlement context reaches Plain (#2199 scope 3).
     private def customerFields(req: PlainCustomerUpsert): Json =
       Json.Obj(
         "fullName"         -> Json.Str(req.fullName),
