@@ -198,6 +198,10 @@ object MetricGuard {
     "policy_apply_duration_seconds"             -> Set("phase", "router_id", "installation_id"),
     "snapshot_poll_total"                       -> Set("result", "router_id", "installation_id"),
     "snapshot_poll_duration_seconds"            -> Set("router_id", "installation_id"),
+    // #2229 — ws push→apply latency (persist→apply) the agent observes from the
+    // sidecar's /proc/uptime trigger stamp. Emitted unlabeled; ingest injects
+    // router_id/installation_id (same shape as snapshot_poll_duration_seconds).
+    "ws_push_apply_latency_seconds"             -> Set("router_id", "installation_id"),
     // #2037 — policy-poll dormancy. When the ws transport is enabled AND its
     // health sentinel is fresh (within ws_fallback_after), the agent's 5 s HTTP
     // `GET /api/router/policy` poll goes dormant — the push channel is the live
