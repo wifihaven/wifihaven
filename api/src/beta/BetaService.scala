@@ -40,16 +40,112 @@ final case class BetaService(
   import BetaService.*
 
   /**
+   * Public-intake orchestration (design §3.1, #2222): idempotent AND status-aware on the
+   * requester's email. The HTTP response the route returns is deliberately uniform in CONTENT
+   * (identical status + body) across every outcome, so this public, unauthenticated endpoint leaks
+   * no email-enumeration signal in what a prober can read back — the only meaningful per-status
+   * differentiation is the SERVER-SIDE side effect, which reaches the true inbox owner, never a
+   * prober. (The approved-resend branch does more DB work than the no-op branches, so response
+   * TIMING is not perfectly uniform; that residual is a far weaker channel than response content
+   * and is called out in the PR for the operator to weigh.) The returned [[BetaIntakeOutcome]]
+   * feeds the pipeline metric only, never the response.
+   *
+   *   - no existing request → create a new `pending` row
+   *   - existing `pending` → no-op (no duplicate row, no side effect)
+   *   - existing `approved`, invite un-accepted → re-mint the invite token + re-send the invite
+   *   - existing `approved`, invite already accepted → no-op (a real admin account already exists)
+   *   - existing `rejected` → no-op (no auto-reopen; the SPA shows a neutral "we'll follow up")
+   *
+   * `UNIQUE(email)` on `beta_requests` remains the backstop against a lost find→create race.
+   */
+  def request(
+      email: String,
+      name: Option[String],
+      note: Option[String],
+  ): IO[BetaError, BetaIntakeOutcome] =
+    betaRepo.findByEmail(email).mapError(BetaError.Db(_)).flatMap {
+      case None    =>
+        // `create` is `ON CONFLICT (email) DO NOTHING` and returns whether it inserted: `false` means
+        // a concurrent first-time request won the find→create race, so this one is a duplicate, not a
+        // fresh create — report it as such so the `created` metric doesn't over-count under load.
+        betaRepo.create(email, name, note).mapError(BetaError.Db(_)).map {
+          case true  => BetaIntakeOutcome.Created
+          case false => BetaIntakeOutcome.DuplicatePending
+        }
+      case Some(r) =>
+        r.status match {
+          case BetaRequestStatus.Pending  => ZIO.succeed(BetaIntakeOutcome.DuplicatePending)
+          case BetaRequestStatus.Rejected => ZIO.succeed(BetaIntakeOutcome.DuplicateRejected)
+          case BetaRequestStatus.Approved =>
+            // An un-consumed invite hash means the applicant was approved but hasn't accepted yet —
+            // re-mint + re-send so a fresh, valid link reaches them. A NULL hash means the invite was
+            // already accepted (a real admin exists); re-inviting them would be wrong, so no-op.
+            r.inviteTokenHash match {
+              case None    => ZIO.succeed(BetaIntakeOutcome.AlreadyAccepted)
+              case Some(_) => resendInvite(r)
+            }
+        }
+    }
+
+  // Re-mint the single-use invite token for an approved, not-yet-accepted request and re-send the
+  // link (#2222). Re-minting is what makes a resend possible at all: only the token HASH is stored,
+  // so the prior raw link can't be recovered — a fresh token is minted, its hash + a fresh TTL
+  // persisted (invalidating the prior link), and the new `/welcome?token=…` sent via the invite
+  // seam. `remintInvite`'s UPDATE is itself guarded on (status='approved' AND invite un-consumed), so
+  // a row accepted/rejected between the find and here is left untouched and the resend is skipped
+  // (reported as AlreadyAccepted). A missing household on an approved row is a data inconsistency —
+  // log-and-skip the notify rather than fail, so the response stays content-uniform.
+  private def resendInvite(r: DbBetaRequest): IO[BetaError, BetaIntakeOutcome] =
+    for {
+      now <- clock.instant
+      (rawToken, hash, expiresAt) = mintInvite(now)
+      updated <- betaRepo.remintInvite(r.id, hash, expiresAt).mapError(BetaError.Db(_))
+      _       <- ZIO.when(updated) {
+        r.householdId match {
+          case None      =>
+            // Unreachable in practice — `approveAndProvision` always stamps `household_id` atomically
+            // with the approval — but if it ever happens we've re-minted (killing the prior link)
+            // without a recipient to send to, so surface it rather than silently stranding them.
+            ZIO.logWarning(
+              s"beta resend: approved request ${r.id.value} has no household_id; invite re-minted but not sent",
+            )
+          case Some(hid) =>
+            // #2190 seam: betaInvite(email, slug, inviteUrl, ttlHours). The household lookup is only
+            // to carry the slug into the email body; the fresh /welcome link is the re-minted token.
+            householdRepo
+              .findById(hid)
+              .mapError(BetaError.Db(_))
+              .flatMap(h =>
+                notifier.betaInvite(
+                  r.email,
+                  h.flatMap(_.slug).getOrElse(""),
+                  cfg.inviteUrl(rawToken),
+                  cfg.inviteTtlHours,
+                ),
+              )
+        }
+      }
+    } yield if updated then BetaIntakeOutcome.InviteResent else BetaIntakeOutcome.AlreadyAccepted
+
+  // The single invite-mint recipe (design §3.3): a fresh SecureRandom token, its SHA-256 hash (the
+  // only form persisted), and the TTL boundary off the injected clock. Shared by [[approve]] (first
+  // issue) and [[resendInvite]] (#2222 re-mint) so the token format + TTL derivation live in one
+  // place. Returns `(rawToken, hash, expiresAt)`; the raw token is used only to build the
+  // `/welcome?token=…` URL and is never stored.
+  private def mintInvite(now: java.time.Instant): (String, Sha256Hex, java.time.Instant) = {
+    val rawToken = newInviteToken()
+    (rawToken, PolicyService.hashToken(rawToken), now.plus(cfg.inviteTtl))
+  }
+
+  /**
    * Provision on approve (design §3.3), returning the invite URL + slug for the operator to send.
    */
   def approve(request: DbBetaRequest, decidedBy: UserId): IO[BetaError, ApproveBetaResponse] =
     for {
-      _        <- ZIO.fail(BetaError.NotPending).when(request.status != BetaRequestStatus.Pending)
-      slug     <- uniqueSlug(baseSlug(request))
-      rawToken <- ZIO.succeed(newInviteToken())
-      hash = PolicyService.hashToken(rawToken)
-      now <- clock.instant
-      expiresAt = now.plus(cfg.inviteTtl)
+      _    <- ZIO.fail(BetaError.NotPending).when(request.status != BetaRequestStatus.Pending)
+      slug <- uniqueSlug(baseSlug(request))
+      now  <- clock.instant
+      (rawToken, hash, expiresAt) = mintInvite(now)
       // The atomic transaction: households row + household_billing row (status='beta',
       // founding=true — Stripe Customer creation is #2135's seam) + the request stamp.
       hid <- betaRepo
@@ -166,6 +262,25 @@ object BetaService {
   // Design §3.4 (2026-07-10): the household's first admin is always `admin` (per-household unique).
   val FirstAdminUsername: String = "admin"
   private val MaxSlugAttempts    = 1000
+
+  /**
+   * #2222: the status-aware outcome of a public intake, from [[BetaService.request]]. Feeds the
+   * `wifihaven_beta_pipeline_total{stage="request"}` outcome label ONLY — never the HTTP response,
+   * which stays uniform across every case (no email-enumeration leak). A small fixed enum: bounded
+   * by the code, never a per-email / per-household value.
+   */
+  enum BetaIntakeOutcome   {
+    case Created, DuplicatePending, DuplicateRejected, InviteResent, AlreadyAccepted
+  }
+  object BetaIntakeOutcome {
+    def label(o: BetaIntakeOutcome): String = o match {
+      case Created           => "created"
+      case DuplicatePending  => "duplicate_pending"
+      case DuplicateRejected => "duplicate_rejected"
+      case InviteResent      => "resend_invite"
+      case AlreadyAccepted   => "already_accepted"
+    }
+  }
 
   /** Lowercase, ASCII-`[a-z0-9-]`-only slug; non-alnum runs collapse to single dashes. */
   def slugify(raw: String): String = {

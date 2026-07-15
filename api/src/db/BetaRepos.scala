@@ -216,6 +216,19 @@ trait BetaRequestRepo {
   def reject(id: BetaRequestId, decidedBy: UserId, decidedAt: Instant): Task[Boolean]
 
   /**
+   * #2222: re-mint the single-use invite token for an APPROVED, not-yet-accepted request — store a
+   * fresh hash + expiry so a new, valid invite link can be re-sent to a returning applicant (only
+   * the hash is stored, so the prior raw link can't be recovered). Guarded on `status='approved'
+   * AND invite_token_hash IS NOT NULL` so it can never touch a pending/rejected row or re-open an
+   * already-consumed invite. Returns `true` iff a row was updated.
+   */
+  def remintInvite(
+      id: BetaRequestId,
+      inviteTokenHash: Sha256Hex,
+      inviteExpiresAt: Instant,
+  ): Task[Boolean]
+
+  /**
    * Invalidate the single-use invite token (design §3.4): null the hash so a replayed token no
    * longer resolves. Idempotent.
    */
@@ -333,6 +346,13 @@ class BetaRequestRepoLive(xa: Transactor[Task]) extends BetaRequestRepo {
   def reject(id: BetaRequestId, decidedBy: UserId, decidedAt: Instant) =
     sql"""UPDATE beta_requests SET status='rejected', decided_at=$decidedAt, decided_by=$decidedBy
           WHERE id=$id AND status='pending'""".update.run
+      .transact(xa)
+      .map(_ == 1)
+
+  def remintInvite(id: BetaRequestId, inviteTokenHash: Sha256Hex, inviteExpiresAt: Instant) =
+    sql"""UPDATE beta_requests
+          SET invite_token_hash=$inviteTokenHash, invite_expires_at=$inviteExpiresAt
+          WHERE id=$id AND status='approved' AND invite_token_hash IS NOT NULL""".update.run
       .transact(xa)
       .map(_ == 1)
 

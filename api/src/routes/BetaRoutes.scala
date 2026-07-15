@@ -62,13 +62,15 @@ object BetaRoutes {
             name = cr0.name.map(_.trim).filter(_.nonEmpty).map(_.take(MaxNameLength))
             _ <- ZIO.fail(ApiError.BadRequest("name required")).when(name.isEmpty)
             note = cr0.note.map(_.take(MaxNoteLength))
-            // Idempotent on the unique email: a new insert vs a duplicate both return the SAME
-            // content-free 200, so a caller can't probe which emails already requested (no
-            // enumeration leak, #2132 scope 1).
-            inserted <- betaRepo.create(email, name, note).mapError(ApiError.Db(_))
-            _        <- AppMetrics.recordBetaPipeline(
+            // Status-aware intake (#2222): create-if-new / no-op-if-pending-or-rejected /
+            // resend-invite-if-approved, all behind the SAME content-free 200 below. A caller can't
+            // probe which emails exist or in what state — every outcome yields a byte-identical
+            // response; only the server-side side effect (a re-minted invite to an approved
+            // applicant's true inbox) differs. The outcome feeds the pipeline metric only.
+            outcome <- beta.request(email, name, note).mapError(betaErrorToApi)
+            _       <- AppMetrics.recordBetaPipeline(
               "request",
-              if inserted then "created" else "duplicate",
+              BetaService.BetaIntakeOutcome.label(outcome),
             )
           } yield Response.json(BetaRequestAck().toJson)
           handle.mapError(ErrorMapper.errorToResponse)

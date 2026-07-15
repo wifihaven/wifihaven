@@ -546,7 +546,8 @@ object AppMetrics {
   // operator can watch intake volume, approval/rejection rate, and accept success.
   // `stage` ∈ {request, approve, reject, accept}; `outcome` is a small fixed enum
   // per stage — both bounded, never a per-email / per-household label.
-  //   request: created | duplicate | rate_limited
+  //   request: created | duplicate_pending | duplicate_rejected | resend_invite |
+  //            already_accepted | rate_limited        (status-aware intake, #2222)
   //   approve: ok | not_pending | error
   //   reject:  ok | not_pending
   //   accept:  ok | invalid_token | expired | error
