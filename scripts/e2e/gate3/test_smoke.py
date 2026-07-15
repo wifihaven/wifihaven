@@ -94,15 +94,26 @@ def test_gate3_smoke(admin, enrolled_router, client_vm, scratch_profile_and_devi
     # device-summary shape (deviceMac, deviceName) breaks the SPA today;
     # a Gate 3b run against the last-published router would still expect
     # this field to be present.
-    statuses = admin.time_status()
-    summaries = [d for prof in statuses for d in prof.get("devices", [])]
-    matched = [
-        d for d in summaries
-        if (d.get("deviceMac") or "").lower() == mac.lower()
-    ]
-    assert matched, (
-        f"no /api/time/status summary for {mac} under profile {profile_id}; "
-        f"saw {len(summaries)} summaries across {len(statuses)} profile(s)"
+    #
+    # Poll rather than a single shot (#2226): /api/time/status is the heaviest
+    # public endpoint (per-profile usage computation, cached by TimeStatusCache
+    # — #2012). On a *freshly-deployed* staging the FIRST call is cold and can
+    # exceed the client's 15 s read timeout (measured 6.6–10.3 s cold vs ~0.2 s
+    # warm). That first call still warms the server-side cache, so a poll retry
+    # lands on the warm path. Mirrors the /api/logs wait above; see #877.
+    def _matched_time_status():
+        summaries = [
+            d for prof in admin.time_status() for d in prof.get("devices", [])
+        ]
+        return [
+            d for d in summaries
+            if (d.get("deviceMac") or "").lower() == mac.lower()
+        ] or None
+
+    matched = wait_until(
+        _matched_time_status,
+        timeout_s=120, interval_s=5,
+        description=f"/api/time/status summary for mac={mac}",
     )
     log.info("gate3: time_status summary present for %s: %s", mac, matched[0])
 

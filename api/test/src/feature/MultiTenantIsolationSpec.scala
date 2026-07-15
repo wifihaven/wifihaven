@@ -739,11 +739,12 @@ object MultiTenantIsolationSpec
         bt    <- makeBetaRoutes
         (_, betaRoutes) = bt
         // Seed a pending request so there is something an over-reaching admin could try to act on.
+        // #2217: the intake now requires a household name.
         _             <- postJson(
           betaRoutes,
           "/api/beta/request",
           None,
-          CreateBetaRequest("x@example.com").toJson,
+          CreateBetaRequest("x@example.com", Some("Over Reach House")).toJson,
         )
         (_, lst)      <- getJson(betaRoutes, "/api/operator/beta-requests", opTok)
         reqId         <- ZIO
