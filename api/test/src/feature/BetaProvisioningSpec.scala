@@ -647,27 +647,27 @@ object BetaProvisioningSpec
           b.routes,
           "/api/beta/request",
           None,
-          CreateBetaRequest("new@example.com").toJson,
+          CreateBetaRequest("new@example.com", Some("New Fam")).toJson,
         )
         // (b) pending duplicate.
         _        <- postJson(
           b.routes,
           "/api/beta/request",
           None,
-          CreateBetaRequest("pend@example.com").toJson,
+          CreateBetaRequest("pend@example.com", Some("Pend Fam")).toJson,
         )
         pendResp <- postJson(
           b.routes,
           "/api/beta/request",
           None,
-          CreateBetaRequest("pend@example.com").toJson,
+          CreateBetaRequest("pend@example.com", Some("Pend Fam")).toJson,
         )
         // (c) approved duplicate.
         _        <- postJson(
           b.routes,
           "/api/beta/request",
           None,
-          CreateBetaRequest("appr2@example.com").toJson,
+          CreateBetaRequest("appr2@example.com", Some("Appr2 Fam")).toJson,
         )
         (_, lb)  <- getJson(b.routes, "/api/operator/beta-requests", opToken)
         apprId   <- ZIO
@@ -684,14 +684,14 @@ object BetaProvisioningSpec
           b.routes,
           "/api/beta/request",
           None,
-          CreateBetaRequest("appr2@example.com").toJson,
+          CreateBetaRequest("appr2@example.com", Some("Appr2 Fam")).toJson,
         )
         // (d) rejected duplicate.
         _        <- postJson(
           b.routes,
           "/api/beta/request",
           None,
-          CreateBetaRequest("rej2@example.com").toJson,
+          CreateBetaRequest("rej2@example.com", Some("Rej2 Fam")).toJson,
         )
         (_, lb2) <- getJson(b.routes, "/api/operator/beta-requests", opToken)
         rejId    <- ZIO
@@ -708,7 +708,7 @@ object BetaProvisioningSpec
           b.routes,
           "/api/beta/request",
           None,
-          CreateBetaRequest("rej2@example.com").toJson,
+          CreateBetaRequest("rej2@example.com", Some("Rej2 Fam")).toJson,
         )
       } yield
       // Every second-submit response — regardless of the target email's state — is byte-identical in
