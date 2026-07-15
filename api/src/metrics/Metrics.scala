@@ -103,6 +103,11 @@ object MetricGuard {
       // ea_backfill | smoke_probe — policy.apply's phase_timer seam); bounded by the
       // code, not by user/device/flow growth, so it satisfies the §4 cardinality firewall.
       "phase",
+      // #2137 — beta-flip conversion-notice window for `wifihaven_beta_flip_notice_total`. A fixed
+      // 2-value enum (t30 | t7 — FlipService.FlipNoticeWindow); bounded by the code, not by
+      // household growth, so it satisfies the §4 cardinality firewall. (`status` for the
+      // households-by-billing-status gauge is already a known key.)
+      "window",
     )
 
   /**
