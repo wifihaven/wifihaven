@@ -16,7 +16,7 @@ vi.mock('@/hooks/useAuth', () => ({
   useAuth: () => ({ login: loginMock }),
 }))
 
-import { LoginPage, composeIdentifier } from './LoginPage'
+import { LoginPage, composeIdentifier, householdHint } from './LoginPage'
 
 function clearHouseholdCookie() {
   document.cookie = `${HOUSEHOLD_COOKIE_NAME}=; Path=/; Max-Age=0`
@@ -59,7 +59,57 @@ describe('composeIdentifier', () => {
   })
 })
 
+// #2220: the pure cookie-aware guidance helper. Copy accuracy matters — it must NOT
+// hard-require the default/primary household to prepend a slug (a bare username still
+// resolves to the default household server-side).
+describe('householdHint', () => {
+  it('with a cookie slug: tells the user to sign in with just their username, and surfaces the slug', () => {
+    const hint = householdHint('smith-family')
+    expect(hint.kind).toBe('cookie')
+    if (hint.kind === 'cookie') expect(hint.slug).toBe('smith-family')
+    expect(hint.text.toLowerCase()).toContain('just')
+    expect(hint.text.toLowerCase()).toContain('username')
+  })
+  it('with no cookie: hints (not requires) household-name/username for named households', () => {
+    const hint = householdHint(null)
+    expect(hint.kind).toBe('no-cookie')
+    expect(hint.text.toLowerCase()).toContain('household-name/username')
+    // Must be a soft hint ("if you belong to a named household"), never a hard "you must prepend":
+    // the default/primary household signs in with a bare username.
+    expect(hint.text.toLowerCase()).toContain('if you belong')
+    expect(hint.text.toLowerCase()).not.toContain('must')
+  })
+  it('treats a blank/whitespace cookie slug as no cookie', () => {
+    expect(householdHint('   ').kind).toBe('no-cookie')
+  })
+  it('the default household (self-hosted) gets the just-your-username hint without naming the household', () => {
+    const hint = householdHint('default')
+    expect(hint.kind).toBe('cookie')
+    expect(hint.text.toLowerCase()).toContain('just')
+    expect(hint.text.toLowerCase()).toContain('username')
+    // No "the default household" noise for the single-household / self-hosted case.
+    expect(hint.text.toLowerCase()).not.toContain('household')
+  })
+})
+
 describe('LoginPage', () => {
+  it('#2220: with a wh_household cookie, shows the "just your username" guidance and the slug', () => {
+    document.cookie = `${HOUSEHOLD_COOKIE_NAME}=smith-family; Path=/`
+    renderLogin()
+    const hint = screen.getByTestId('household-hint')
+    expect(hint.textContent?.toLowerCase()).toContain('just')
+    expect(hint.textContent?.toLowerCase()).toContain('username')
+    expect(hint.textContent).toContain('smith-family')
+  })
+
+  it('#2220: with NO cookie, shows the named-household hint without hard-requiring a prefix', () => {
+    renderLogin()
+    const hint = screen.getByTestId('household-hint')
+    expect(hint.textContent).toContain('household-name/username')
+    expect(hint.textContent?.toLowerCase()).toContain('if you belong')
+    expect(hint.textContent?.toLowerCase()).not.toContain('must')
+  })
+
   it('logs in and navigates to /dashboard on success', async () => {
     loginMock.mockResolvedValue({ mustChangePassword: false })
     const user = userEvent.setup()
