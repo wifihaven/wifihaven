@@ -25,13 +25,13 @@ function renderPage() {
 }
 
 describe('BetaRequestPage — /beta signup form', () => {
-  it('submits email/name/note and shows the manual-approval success state', async () => {
+  it('submits email/household-name/note and shows the manual-approval success state', async () => {
     requestMock.mockResolvedValue({ status: 'received' })
     const user = userEvent.setup()
     renderPage()
 
     await user.type(screen.getByLabelText(/email/i), 'new@example.com')
-    await user.type(screen.getByLabelText(/^name/i), 'The Smiths')
+    await user.type(screen.getByLabelText(/household name/i), 'The Smith Family')
     await user.type(screen.getByLabelText(/anything else/i), 'excited to try it')
     await user.click(screen.getByRole('button', { name: /request access/i }))
 
@@ -40,27 +40,46 @@ describe('BetaRequestPage — /beta signup form', () => {
     expect(screen.getByText(/approve beta requests manually/i)).toBeInTheDocument()
     expect(screen.getByText(/personal invite link/i)).toBeInTheDocument()
 
+    // #2217: the household name is required and sent as a plain string (not undefined).
     expect(requestMock).toHaveBeenCalledWith({
       email: 'new@example.com',
-      name: 'The Smiths',
+      name: 'The Smith Family',
       note: 'excited to try it',
     })
   })
 
-  it('omits blank optional fields (email only)', async () => {
+  it('omits only the blank optional note, keeping the required household name', async () => {
     requestMock.mockResolvedValue({ status: 'received' })
     const user = userEvent.setup()
     renderPage()
 
     await user.type(screen.getByLabelText(/email/i), 'solo@example.com')
+    await user.type(screen.getByLabelText(/household name/i), 'Solo House')
     await user.click(screen.getByRole('button', { name: /request access/i }))
 
     await screen.findByText(/request received/i)
     expect(requestMock).toHaveBeenCalledWith({
       email: 'solo@example.com',
-      name: undefined,
+      name: 'Solo House',
       note: undefined,
     })
+  })
+
+  it('#2217: blocks submit when the household name is empty (required)', async () => {
+    requestMock.mockResolvedValue({ status: 'received' })
+    const user = userEvent.setup()
+    renderPage()
+
+    // Fill email but leave the required household-name field empty.
+    await user.type(screen.getByLabelText(/email/i), 'noname@example.com')
+    await user.click(screen.getByRole('button', { name: /request access/i }))
+
+    // The required-field constraint blocks the submit — the API is never called and
+    // the success state never appears.
+    expect(requestMock).not.toHaveBeenCalled()
+    expect(screen.queryByText(/request received/i)).not.toBeInTheDocument()
+    // The household-name input carries the `required` constraint.
+    expect(screen.getByLabelText(/household name/i)).toBeRequired()
   })
 
   it('shows a generic error on failure (no enumeration signal) and does not show success', async () => {
@@ -69,6 +88,7 @@ describe('BetaRequestPage — /beta signup form', () => {
     renderPage()
 
     await user.type(screen.getByLabelText(/email/i), 'dup@example.com')
+    await user.type(screen.getByLabelText(/household name/i), 'Dup House')
     await user.click(screen.getByRole('button', { name: /request access/i }))
 
     await screen.findByText(/something went wrong/i)

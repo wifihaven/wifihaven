@@ -24,7 +24,7 @@ export function BetaRequestPage() {
     try {
       await api.beta.request({
         email: email.trim(),
-        name: name.trim() || undefined,
+        name: name.trim(),
         note: note.trim() || undefined,
       })
       // Idempotent + content-free: a fresh request and a duplicate look identical here.
@@ -94,7 +94,7 @@ export function BetaRequestPage() {
           </div>
           <div>
             <label htmlFor="beta-name" className="block text-xs font-semibold text-brand-text-muted uppercase tracking-wider mb-2">
-              Name <span className="text-brand-text-muted/70 normal-case">(optional)</span>
+              Household name
             </label>
             <input
               id="beta-name"
@@ -102,7 +102,8 @@ export function BetaRequestPage() {
               value={name}
               onChange={e => setName(e.target.value)}
               className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-3 text-brand-ink placeholder-brand-text-muted focus:outline-none focus:border-brand-accent transition-colors"
-              placeholder="Your name or household"
+              placeholder="The Smith Family"
+              required
             />
           </div>
           <div>
