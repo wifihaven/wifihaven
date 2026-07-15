@@ -59,11 +59,16 @@ object BillingRoutes {
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
             claims <- requireAdmin(req, auth)
-            url    <- billing
-              .startCheckout(claims.hh)
+            // #2137 (A1): subscribing during the open flip window defers the first charge to the
+            // window end (Stripe trial_end) — everyone gets the full free beta. Outside the window
+            // (closed / not started) there's no trial and the first charge is immediate.
+            window <- flipWindow
+            trialEnd = if window.open then window.flipDate else None
+            url <- billing
+              .startCheckout(claims.hh, trialEnd)
               .tapError(e => AppMetrics.recordBillingCheckout("checkout", checkoutOutcome(e)))
               .mapError(billingErrorToApi)
-            _      <- AppMetrics.recordBillingCheckout("checkout", "ok")
+            _   <- AppMetrics.recordBillingCheckout("checkout", "ok")
           } yield Response.json(BillingRedirect(url).toJson)
           handle.mapError(ErrorMapper.errorToResponse)
         },

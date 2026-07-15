@@ -213,5 +213,34 @@ object BillingWebhookSpec
         )
       } yield assertTrue(badResp.status == Status.BadRequest, okResp.status == Status.Ok)
     },
+    // #2137 (A1): a checkout started DURING the open flip window defers the first charge to the
+    // window end via Stripe trial_end; outside the window there is no trial (immediate charge).
+    test("A1: startCheckout threads the window-end trial_end into the Checkout Session") {
+      for {
+        _        <- cleanDb
+        xa       <- ZIO.service[Transactor[Task]]
+        clock    <- ZIO.service[Clock]
+        hbr      <- ZIO.service[HouseholdBillingRepo]
+        captured <- Ref.make(Option.empty[CheckoutParams])
+        recStripe = new StripeClient {
+          def createCustomer(email: String, householdId: Long): IO[StripeError, String]           =
+            ZIO.succeed(CustomerId)
+          def createCheckoutSession(params: CheckoutParams): IO[StripeError, String]              =
+            captured.set(Some(params)).as("https://checkout.stripe.test/x")
+          def createPortalSession(customerId: String, returnUrl: String): IO[StripeError, String] =
+            ZIO.succeed("https://portal.stripe.test/x")
+        }
+        svc       = BillingService(recStripe, hbr, clock, cfg)
+        hid <- seedHousehold(xa, hbr)
+        windowEnd = java.time.Instant.parse("2026-09-01T00:00:00Z")
+        _        <- svc.startCheckout(hid, Some(windowEnd))
+        inWindow <- captured.get
+        _        <- svc.startCheckout(hid, None)
+        noWindow <- captured.get
+      } yield assertTrue(
+        inWindow.exists(_.trialEnd.contains(windowEnd)),
+        noWindow.exists(_.trialEnd.isEmpty),
+      )
+    },
   ) @@ TestAspect.sequential
 }

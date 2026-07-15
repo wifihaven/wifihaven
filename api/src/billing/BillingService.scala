@@ -59,7 +59,14 @@ final case class BillingService(
    * code is configured. Requires a Customer to exist (created at provisioning); a missing Customer
    * is a NoCustomer error the route surfaces as 409.
    */
-  def startCheckout(householdId: HouseholdId): IO[BillingError, String] =
+  def startCheckout(
+      householdId: HouseholdId,
+      // #2137 (A1): when subscribing during the open flip window, the caller (BillingRoutes) passes
+      // the window end so the first charge is deferred to it via Stripe `trial_end` — everyone gets
+      // the full free beta. None outside the window (immediate first charge). Defaulted so the
+      // #2135 billing specs that call `startCheckout(hid)` are unchanged.
+      trialEnd: Option[java.time.Instant] = None,
+  ): IO[BillingError, String] =
     for {
       _        <- ZIO.fail(BillingError.NotConfigured).when(!cfg.enabled)
       billing  <- loadBilling(householdId)
@@ -77,6 +84,7 @@ final case class BillingService(
             clientReferenceId = householdId.value.toString,
             successUrl = cfg.checkoutSuccessUrl,
             cancelUrl = cfg.checkoutCancelUrl,
+            trialEnd = trialEnd,
           ),
         )
         .mapError(BillingError.Stripe(_))
