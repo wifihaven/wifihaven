@@ -376,6 +376,9 @@ object MetricGuard {
     // from EmailOutcome.label (sent / failed / skipped_disabled) + Notifier.OutcomeSkipped*
     // (skipped_no_recipient / skipped_no_household); never a per-recipient / per-household label.
     "notify_email_total"                   -> Set("outcome"),
+    // #2190 — beta invite-email send funnel. `outcome` is the bounded transport enum from
+    // EmailOutcome.label (sent / failed / skipped_disabled); never a per-recipient label.
+    "beta_invite_email_total"              -> Set("outcome"),
     // #808 — partition runway gauge. `partition_weeks_ahead{table}` is the count of consecutive
     // weekly partitions present from the current ISO week for each RANGE-partitioned ingest table
     // (set each run by PartitionMaintenanceJob). `table` is the bounded 2-value enum above. The
@@ -553,6 +556,14 @@ object AppMetrics {
       "wifihaven_beta_pipeline_total",
       Map("stage" -> stage, "outcome" -> outcome),
     )
+
+  // #2190 — the beta invite-email send funnel, emitted once per operator approval from
+  // Notifier.betaInvite. `outcome` is the same bounded transport enum as notify_email_total,
+  // sourced from EmailOutcome.label: sent | failed | skipped_disabled (email unconfigured). No
+  // pre-send skip outcomes here — the recipient is always the beta_requests.email, so there is no
+  // "no recipient" / "no household" branch. Never a per-email / per-household label.
+  def betaInviteEmail(outcome: String): UIO[Unit] =
+    MetricGuard.counter("beta_invite_email_total", Map("outcome" -> outcome))
 
   // ── #2135: Stripe billing ────────────────────────────────────────────────────
   // Emitted from BillingRoutes. `recordBillingWebhook` counts each processed webhook by its bounded

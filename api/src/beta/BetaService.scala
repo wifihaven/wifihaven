@@ -110,6 +110,8 @@ final case class BetaService(
               s"beta resend: approved request ${r.id.value} has no household_id; invite re-minted but not sent",
             )
           case Some(hid) =>
+            // #2190 seam: betaInvite(email, slug, inviteUrl, ttlHours). The household lookup is only
+            // to carry the slug into the email body; the fresh /welcome link is the re-minted token.
             householdRepo
               .findById(hid)
               .mapError(BetaError.Db(_))
@@ -117,8 +119,8 @@ final case class BetaService(
                 notifier.betaInvite(
                   r.email,
                   h.flatMap(_.slug).getOrElse(""),
-                  hid,
                   cfg.inviteUrl(rawToken),
+                  cfg.inviteTtlHours,
                 ),
               )
         }
@@ -166,11 +168,15 @@ final case class BetaService(
       // #2135: create the Stripe Customer for the new household (no card during beta). Best-effort —
       // never fails the approval; no-op when billing is unconfigured.
       _   <- billing.provisionCustomer(hid, request.email)
-      _   <- notifier.betaInvite(request.email, slug, hid, cfg.inviteUrl(rawToken))
+      // #2190: auto-send the single-use invite link to the requester. Fail-open — `betaInvite`
+      // (via EmailSender) never fails, so a send hiccup can't roll back the already-provisioned
+      // household; `inviteUrl` below is the operator's manual-resend fallback either way.
+      inviteUrl = cfg.inviteUrl(rawToken)
+      _ <- notifier.betaInvite(request.email, slug, inviteUrl, cfg.inviteTtlHours)
     } yield ApproveBetaResponse(
       householdId = hid,
       slug = slug,
-      inviteUrl = cfg.inviteUrl(rawToken),
+      inviteUrl = inviteUrl,
       inviteExpiresAt = expiresAt.toString,
     )
 

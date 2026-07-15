@@ -35,8 +35,8 @@ object AccessRequestHardeningSpec
     def betaInvite(
         email: String,
         slug: String,
-        hh: wifihaven.shared.types.HouseholdId,
         inviteUrl: String,
+        ttlHours: Int,
     ): UIO[Unit] = ZIO.unit
   }
 

@@ -1,11 +1,11 @@
 package wifihaven.api.feature
 
-import wifihaven.api.{BetaConfig, JwtConfig}
+import wifihaven.api.{BetaConfig, EmailConfig, JwtConfig}
 import wifihaven.api.auth.*
 import wifihaven.api.beta.*
 import wifihaven.api.db.*
 import wifihaven.api.db.TypeMeta.given
-import wifihaven.api.notify.Notifier
+import wifihaven.api.notify.{EmailOutcome, EmailSender, Notifier}
 import wifihaven.api.routes.*
 import wifihaven.shared.*
 import wifihaven.shared.types.*
@@ -38,18 +38,8 @@ object BetaProvisioningSpec
   private val jwt = JwtConfig(secret = "test-secret-at-least-32-chars!!x", expiryHours = 1)
 
   private val noopNotifier: Notifier = new Notifier {
-    def alertCreated(a: Alert): UIO[Unit] = ZIO.unit
-    def betaInvite(email: String, slug: String, hh: HouseholdId, inviteUrl: String): UIO[Unit] =
-      ZIO.unit
-  }
-
-  // Records every invite (re)send so a test can assert the resend fired exactly once and capture the
-  // freshly-minted link. Only the external email I/O is stubbed at the Notifier seam — repos stay
-  // real (docs/process/testing.md).
-  private final class RecordingNotifier(ref: Ref[List[(String, String)]]) extends Notifier {
-    def alertCreated(a: Alert): UIO[Unit] = ZIO.unit
-    def betaInvite(email: String, slug: String, hh: HouseholdId, inviteUrl: String): UIO[Unit] =
-      ref.update((email, inviteUrl) :: _)
+    def alertCreated(a: Alert): UIO[Unit]                                               = ZIO.unit
+    def betaInvite(email: String, slug: String, inviteUrl: String, ttl: Int): UIO[Unit] = ZIO.unit
   }
 
   private def makeAuth =
@@ -109,7 +99,8 @@ object BetaProvisioningSpec
   )
 
   // Build the beta stack with a caller-supplied clock so the invite TTL can be advanced, and an
-  // optional notifier so a test can observe invite (re)sends (#2222).
+  // optional notifier so a test can capture invite (re)sends — via a recording EmailSender (#2190)
+  // or the resend path (#2222).
   private def build(
       betaClock: Clock,
       notifier: Notifier = noopNotifier,
@@ -134,6 +125,17 @@ object BetaProvisioningSpec
       val svc     = BetaService(br, hr, ur, auth, notifier, betaClock, BetaConfig(), billing)
       Built(svc, br, hr, ur, auth, BetaRoutes.routes(auth, svc, br, ur, RateLimiter.allowAll))
     }
+
+  // #2190: the production invite-email path is Notifier.EmailNotifier.betaInvite → EmailSender. Mock
+  // ONLY the external email I/O (the sender), everything else real. A recording sender captures each
+  // send; the failing sender models a transport error (Resend maps any error to EmailOutcome.Failed).
+  private def emailNotifier(sender: EmailSender): ZIO[HouseholdSettingsRepo, Nothing, Notifier] =
+    ZIO.serviceWith[HouseholdSettingsRepo](hs => Notifier.EmailNotifier(hs, sender, EmailConfig()))
+
+  private val failingSender: EmailSender = new EmailSender {
+    def send(to: String, subject: String, htmlBody: String): UIO[EmailOutcome] =
+      ZIO.succeed(EmailOutcome.Failed)
+  }
 
   private def tokenFromInviteUrl(url: String): String = url.split("token=").last
 
@@ -311,40 +313,123 @@ object BetaProvisioningSpec
         assertTrue(body1 == body2) &&
         assertTrue(count == 1L)
     },
+    test("#2190 — approve auto-sends the invite email to the requester carrying the invite URL") {
+      for {
+        _   <- cleanDb
+        ctl <- TestClock.makeWithControl(TestClock.schoolDayAfternoon)
+        (bc, _) = ctl
+        ref                     <- Ref.make(List.empty[EmailSender.Sent])
+        notifier                <- emailNotifier(EmailSender.recording(ref))
+        b                       <- build(bc, notifier)
+        opToken                 <- login(b.auth, "admin", "changeme")
+        _                       <- postJson(
+          b.routes,
+          "/api/beta/request",
+          None,
+          CreateBetaRequest("Fam@Example.com", Some("The Test Family")).toJson,
+        )
+        (_, listBody)           <- getJson(b.routes, "/api/operator/beta-requests", opToken)
+        reqId                   <- ZIO
+          .fromEither(listBody.fromJson[List[BetaRequestSummary]])
+          .mapError(new RuntimeException(_))
+          .map(_.head.id)
+        (sApprove, approveBody) <- postJson(
+          b.routes,
+          s"/api/operator/beta-requests/${reqId.value}/approve",
+          Some(opToken),
+          "",
+        )
+        approve                 <- ZIO
+          .fromEither(approveBody.fromJson[ApproveBetaResponse])
+          .mapError(new RuntimeException(_))
+        sent                    <- ref.get
+      } yield assertTrue(sApprove == Status.Ok) &&
+        // Exactly one email, to the requester's normalised address (NOT a household notify_email).
+        assertTrue(sent.size == 1, sent.head.to == "fam@example.com") &&
+        // The body carries the exact single-use accept link the operator response also returns.
+        assertTrue(sent.head.htmlBody.contains(approve.inviteUrl)) &&
+        assertTrue(sent.head.htmlBody.contains("/welcome?token="))
+    },
     test(
-      "second request from a PENDING applicant is a no-op — no new row, no invite, generic 200",
+      "#2190 — an email transport failure still provisions the household and returns the invite URL",
     ) {
       for {
         _   <- cleanDb
         ctl <- TestClock.makeWithControl(TestClock.schoolDayAfternoon)
         (bc, _) = ctl
-        sent <- Ref.make(List.empty[(String, String)])
-        b    <- build(bc, new RecordingNotifier(sent))
-        xa   <- ZIO.service[Transactor[Task]]
-        body = CreateBetaRequest("pend@example.com", Some("Pend Family")).toJson
-        (s1, _)  <- postJson(b.routes, "/api/beta/request", None, body)
-        (s2, _)  <- postJson(b.routes, "/api/beta/request", None, body)
-        recorded <- sent.get
-        count    <- sql"SELECT COUNT(*) FROM beta_requests WHERE email='pend@example.com'"
+        notifier                <- emailNotifier(failingSender)
+        b                       <- build(bc, notifier)
+        xa                      <- ZIO.service[Transactor[Task]]
+        opToken                 <- login(b.auth, "admin", "changeme")
+        _                       <- postJson(
+          b.routes,
+          "/api/beta/request",
+          None,
+          CreateBetaRequest("fail@example.com", Some("Fail Family")).toJson,
+        )
+        (_, listBody)           <- getJson(b.routes, "/api/operator/beta-requests", opToken)
+        reqId                   <- ZIO
+          .fromEither(listBody.fromJson[List[BetaRequestSummary]])
+          .mapError(new RuntimeException(_))
+          .map(_.head.id)
+        (sApprove, approveBody) <- postJson(
+          b.routes,
+          s"/api/operator/beta-requests/${reqId.value}/approve",
+          Some(opToken),
+          "",
+        )
+        approve                 <- ZIO
+          .fromEither(approveBody.fromJson[ApproveBetaResponse])
+          .mapError(new RuntimeException(_))
+        // The provisioning transaction committed despite the send failing (fail-open).
+        hhCount                 <- sql"SELECT COUNT(*) FROM households WHERE slug = ${approve.slug}"
           .query[Long]
           .unique
           .transact(xa)
-        status   <- sql"SELECT status FROM beta_requests WHERE email='pend@example.com'"
+      } yield
+      // Approval succeeds and the invite URL is still returned as the operator's manual-resend path.
+      assertTrue(sApprove == Status.Ok) &&
+        assertTrue(approve.inviteUrl.contains("/welcome?token=")) &&
+        assertTrue(hhCount == 1L)
+    },
+    test(
+      "#2222 — second request from a PENDING applicant is a no-op — no new row, no invite, generic 200",
+    ) {
+      for {
+        _   <- cleanDb
+        ctl <- TestClock.makeWithControl(TestClock.schoolDayAfternoon)
+        (bc, _) = ctl
+        ref      <- Ref.make(List.empty[EmailSender.Sent])
+        notifier <- emailNotifier(EmailSender.recording(ref))
+        b        <- build(bc, notifier)
+        xa       <- ZIO.service[Transactor[Task]]
+        body = CreateBetaRequest("pend@example.com", Some("Pend Family")).toJson
+        (s1, _) <- postJson(b.routes, "/api/beta/request", None, body)
+        (s2, _) <- postJson(b.routes, "/api/beta/request", None, body)
+        sent    <- ref.get
+        count   <- sql"SELECT COUNT(*) FROM beta_requests WHERE email='pend@example.com'"
+          .query[Long]
+          .unique
+          .transact(xa)
+        status  <- sql"SELECT status FROM beta_requests WHERE email='pend@example.com'"
           .query[String]
           .unique
           .transact(xa)
       } yield assertTrue(s1 == Status.Ok, s2 == Status.Ok) &&
         assertTrue(count == 1L, status == "pending") &&
         // A pending duplicate sends NO invite email.
-        assertTrue(recorded.isEmpty)
+        assertTrue(sent.isEmpty)
     },
-    test("second request from an APPROVED applicant re-mints + re-sends the invite (no new row)") {
+    test(
+      "#2222 — second request from an APPROVED applicant re-mints + re-sends the invite (no new row)",
+    ) {
       for {
         _   <- cleanDb
         ctl <- TestClock.makeWithControl(TestClock.schoolDayAfternoon)
         (bc, _) = ctl
-        sent          <- Ref.make(List.empty[(String, String)])
-        b             <- build(bc, new RecordingNotifier(sent))
+        ref           <- Ref.make(List.empty[EmailSender.Sent])
+        notifier      <- emailNotifier(EmailSender.recording(ref))
+        b             <- build(bc, notifier)
         xa            <- ZIO.service[Transactor[Task]]
         opToken       <- login(b.auth, "admin", "changeme")
         _             <- postJson(
@@ -369,14 +454,14 @@ object BetaProvisioningSpec
           .unique
           .transact(xa)
         // Ignore the approve-time invite — measure only the resend triggered by the duplicate intake.
-        _         <- sent.set(Nil)
+        _         <- ref.set(Nil)
         (sDup, _) <- postJson(
           b.routes,
           "/api/beta/request",
           None,
           CreateBetaRequest("appr@example.com", Some("Appr Family")).toJson,
         )
-        recorded  <- sent.get
+        sent      <- ref.get
         hash1     <- sql"SELECT invite_token_hash FROM beta_requests WHERE email='appr@example.com'"
           .query[String]
           .unique
@@ -389,21 +474,22 @@ object BetaProvisioningSpec
         // No duplicate row despite the second submit.
         assertTrue(count == 1L) &&
         // The invite was re-sent exactly once, to the requester's address, with a fresh /welcome link.
-        assertTrue(recorded.length == 1) &&
-        assertTrue(recorded.head._1 == "appr@example.com") &&
-        assertTrue(recorded.head._2.contains("/welcome?token=")) &&
+        assertTrue(sent.size == 1) &&
+        assertTrue(sent.head.to == "appr@example.com") &&
+        assertTrue(sent.head.htmlBody.contains("/welcome?token=")) &&
         // The token was re-minted (only the hash is stored — the prior link can't be reused).
         assertTrue(hash1 != hash0)
     },
     test(
-      "second request from a REJECTED applicant is a silent no-op — no new row, no invite, no reopen",
+      "#2222 — second request from a REJECTED applicant is a silent no-op — no new row, no invite, no reopen",
     ) {
       for {
         _   <- cleanDb
         ctl <- TestClock.makeWithControl(TestClock.schoolDayAfternoon)
         (bc, _) = ctl
-        sent          <- Ref.make(List.empty[(String, String)])
-        b             <- build(bc, new RecordingNotifier(sent))
+        ref           <- Ref.make(List.empty[EmailSender.Sent])
+        notifier      <- emailNotifier(EmailSender.recording(ref))
+        b             <- build(bc, notifier)
         xa            <- ZIO.service[Transactor[Task]]
         opToken       <- login(b.auth, "admin", "changeme")
         _             <- postJson(
@@ -423,14 +509,14 @@ object BetaProvisioningSpec
           Some(opToken),
           "",
         )
-        _             <- sent.set(Nil)
+        _             <- ref.set(Nil)
         (sDup, _)     <- postJson(
           b.routes,
           "/api/beta/request",
           None,
           CreateBetaRequest("rej@example.com", Some("Rej Family")).toJson,
         )
-        recorded      <- sent.get
+        sent          <- ref.get
         count         <- sql"SELECT COUNT(*) FROM beta_requests WHERE email='rej@example.com'"
           .query[Long]
           .unique
@@ -441,10 +527,10 @@ object BetaProvisioningSpec
           .transact(xa)
       } yield assertTrue(sDup == Status.Ok) &&
         // No new row, no auto-reopen (stays rejected), no email.
-        assertTrue(count == 1L, status == "rejected", recorded.isEmpty)
+        assertTrue(count == 1L, status == "rejected", sent.isEmpty)
     },
     test(
-      "intake response is byte-identical across new / pending / approved / rejected (no enumeration)",
+      "#2222 — intake response is byte-identical across new / pending / approved / rejected (no enumeration)",
     ) {
       for {
         _   <- cleanDb

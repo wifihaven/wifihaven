@@ -29,16 +29,20 @@ case class JwtClaims(
     // (users.household_id, V65), minted at login and read back here. Additive
     // alongside tokenVersion; both are HMAC-protected by the existing signature,
     // so a client cannot forge hh any more than role. Consumed by household-scoped
-    // repo reads in sub-issue E (#2108). Defaults to household 1 — the default
-    // tenant — for pre-#2105 tokens (minted before the claim existed).
+    // repo reads in sub-issue E (#2108). Non-optional here — `verify` REJECTS a
+    // token whose wire payload lacks an explicit hh (#2218), so by the time a
+    // JwtClaims is built the household is always known; downstream consumers never
+    // see a defaulted/guessed tenant.
     hh: HouseholdId = HouseholdId.Default,
 ) derives JsonCodec
 
 // Wire shape of the JWT `content` claim. `tv` defaults to 0 so a pre-#2080 token
 // (minted before this field existed) decodes cleanly instead of failing to parse.
-// #2105: `hh` defaults to household 1 so a pre-#2105 token (no hh field) decodes to
-// the default tenant instead of failing to parse.
-private case class JwtContent(role: String, tv: Int = 0, hh: HouseholdId = HouseholdId.Default)
+// #2105/#2218: `hh` is `Option` so the DECODE layer can distinguish a MISSING hh
+// field (pre-#2105 token) from a present one — a missing hh decodes to `None` and
+// `verify` rejects it (→ re-login) rather than silently defaulting it to household
+// 1. Minting always sets hh, so a legitimately-issued token is always `Some`.
+private case class JwtContent(role: String, tv: Int = 0, hh: Option[HouseholdId] = None)
     derives JsonCodec
 
 // ── Auth errors ────────────────────────────────────────────────────────────
@@ -181,8 +185,11 @@ class AuthServiceLive(
         claim = JwtClaim(
           // #2080: stamp the user's CURRENT token_version so a subsequent password
           // change (which bumps it) invalidates this token on its next verify().
-          content =
-            JwtContent(UserRole.asString(user.role), user.tokenVersion, user.householdId).toJson,
+          content = JwtContent(
+            UserRole.asString(user.role),
+            user.tokenVersion,
+            Some(user.householdId),
+          ).toJson,
           subject = Some(user.username),
           issuedAt = Some(now),
           expiration = Some(now + jwtConfig.expiryHours * 3600L),
@@ -229,15 +236,27 @@ class AuthServiceLive(
         ZIO
           .fromEither(claim.content.fromJson[JwtContent])
           .mapError(_ => AuthError.InvalidToken)
-          .map { c =>
-            JwtClaims(
-              sub = claim.subject.getOrElse(""),
-              role = c.role,
-              iat = claim.issuedAt.getOrElse(0L),
-              exp = claim.expiration.getOrElse(0L),
-              tokenVersion = c.tv,
-              hh = c.hh,
-            )
+          .flatMap { c =>
+            // #2218 (multi-tenant security): a token whose wire payload carries no explicit `hh`
+            // claim is a pre-#2105 token (minted before the household claim existed). Reject it —
+            // do NOT silently assign it `HouseholdId.Default`. Guessing a household is a cross-tenant
+            // hazard the moment a second household exists: the token would be granted the default
+            // tenant's data. Mirror the #2080 token_version rejection (below): fail TokenRevoked so
+            // the client is forced to re-login (→ 401) and re-authenticate into its real household.
+            // Minting always sets `hh`, so only stale pre-#2105 tokens land in the `None` branch.
+            ZIO
+              .fromOption(c.hh)
+              .orElseFail(AuthError.TokenRevoked)
+              .map { hh =>
+                JwtClaims(
+                  sub = claim.subject.getOrElse(""),
+                  role = c.role,
+                  iat = claim.issuedAt.getOrElse(0L),
+                  exp = claim.expiration.getOrElse(0L),
+                  tokenVersion = c.tv,
+                  hh = hh,
+                )
+              }
           }
       }
       .flatMap { claims =>
