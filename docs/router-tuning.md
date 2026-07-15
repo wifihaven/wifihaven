@@ -116,6 +116,60 @@ Force-flush the event buffer after this many seconds even if
   per tick. Bump to `1` only when actively diagnosing; leave at `0` in
   steady state.
 
+## dnsmasq restart latency — `option force 1` ([#2231](https://github.com/wifihaven/wifihaven/issues/2231))
+
+This knob lives in the operator-owned `/etc/config/dhcp`, **not**
+`/etc/config/wifihaven` — the agent never sets it on its own. `install.sh`
+offers to set it (explicit y/N consent, default No) after enrollment.
+
+OpenWrt's dnsmasq init script probes for a rogue DHCP server on every
+restart: `/etc/init.d/dnsmasq` line 563 runs
+`[ $force -gt 0 ] || dhcp_check "$ifname"`, and `dhcp_check` (line 108)
+runs `udhcpc -n -q -s /bin/true -t 1 -i "$ifname"` (line 121; line numbers
+verified on OpenWrt 25.12.3). On a deployed WifiHaven gateway dnsmasq *is*
+the network's DHCP server, so nothing answers and udhcpc burns its full
+~3.5s discover timeout — per non-ignored `config dhcp` section, per
+restart. Measured on the test bench ([#2231](https://github.com/wifihaven/wifihaven/issues/2231),
+10-run averages):
+
+| `/etc/config/dhcp` | `/etc/init.d/dnsmasq restart` |
+|---|---|
+| default (`force` unset) | **3.53 s** |
+| `option force '1'` on `dhcp.lan` | **0.34 s** |
+
+dnsmasq itself cycles in ~4 ms; the probe is essentially the whole cost.
+
+Since [#2230](https://github.com/wifihaven/wifihaven/pull/2230) the restart
+is off the enforcement path (`nft -f` applies blocks first), so this is not
+pause-latency-critical. A fast restart still helps: rendered `nftset=`
+directive changes propagate sooner after policy edits, and `on_tick` —
+which blocks for the restart's duration — recovers faster, so rapid
+back-to-back policy pushes don't serialize behind a 3.5 s stall.
+
+**Trade-off:** `force=1` disables the double-DHCP guard — dnsmasq will
+serve DHCP even if another DHCP server is live on the LAN. That guard has
+real value at *first install* into a network that still has its old DHCP
+server running; once the WifiHaven gateway is the network's only DHCP
+server it is pure cost. Recommended post-deployment, per non-ignored dhcp
+section:
+
+```sh
+uci set dhcp.lan.force='1'
+uci commit dhcp
+```
+
+To revert:
+
+```sh
+uci delete dhcp.lan.force
+uci commit dhcp
+/etc/init.d/dnsmasq restart
+```
+
+Do **not** patch or fork the OpenWrt init script for this — the supported
+knob is exactly this UCI option (the init script's own log message says
+"use 'option force 1' to override").
+
 ## Safe-range / coupling summary
 
 | Knob | Default | Suggested range | Couples with |
