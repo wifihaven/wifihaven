@@ -31,6 +31,10 @@ vi.mock('@/api/client', () => ({
     profiles: {
       list: vi.fn(),
     },
+    // #2252: FirstRunHint reads the enrolled routers to pick its onboarding state.
+    routers: {
+      list: vi.fn(),
+    },
   },
 }))
 
@@ -259,6 +263,11 @@ beforeEach(() => {
   // existing dashboard tests; the first-run behaviour is covered in FirstRunHint.test.
   ;(api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([{ id: 1 }])
   ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([{ id: 1 }])
+  // #2252: default to a router that has already connected (lastSeenAt set) so the onboarding
+  // banner stays hidden here; its state machine is covered in FirstRunHint.test.
+  ;(api.routers.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+    { id: 'r1', name: 'gw', enrolled: true, lastSeenAt: '2026-05-12T00:00:00Z', lastEtag: null, createdAt: '2026-05-11T00:00:00Z', agentVersion: null },
+  ])
 })
 
 // #2056: a live per-profile bandwidth head row (groupBy:profile keys the profile name in

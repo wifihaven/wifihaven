@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '@/api/client'
-import { useDashboardNow, useRecentBlocked, useDevices, useProfiles, LIVE_SURFACE_FALLBACK_REFETCH_MS } from '@/api/queries'
+import { useDashboardNow, useRecentBlocked, useRouters, LIVE_SURFACE_FALLBACK_REFETCH_MS } from '@/api/queries'
 import type {
   DashboardNow,
   DashboardNowDevice,
@@ -107,36 +107,65 @@ function DashboardWindowSelector({ bandwidth }: { bandwidth: WsTrafficUsage }) {
   )
 }
 
-// #2133 (multi-tenant P5-3): first-run empty-household onboarding. A freshly-provisioned household
-// (invite-accept → this dashboard) has zero routers, devices and profiles; the live panels below
-// all render their own empty states, but none tells the new admin what to DO. This card names the
-// first concrete step — enroll a router — and only appears when the household is genuinely empty
-// (zero devices AND zero profiles). It is gated on `isAdmin` at the call site (only admins can
-// enroll). Loading-states rule (#1098): both queries must be LOADED before we can conclude "empty",
-// so we render nothing while either is pending — a loading `[]` must never be read as a real zero.
+// #2133 (multi-tenant P5-3) / #2252: first-run onboarding banner. A freshly-provisioned household
+// (invite-accept → this dashboard) has to enroll a router before anything else works, but the live
+// panels below only render their own empty states — none tells the new admin what to DO. This card
+// names the next concrete step, and is STATE-AWARE across the enrollment lifecycle (#2252) so it
+// stops nagging "enroll a router" once an enrollment already exists:
+//   1. no router enrolled yet          → "Enroll a router →" CTA
+//   2. enrollment created, not connected → "Waiting for your router to connect" (run the install
+//      script), NOT the enroll CTA
+//   3. a router has checked in          → no banner (onboarding is done)
+// A `routers` row is created at enrollment-token minting (POST /api/admin/routers); `lastSeenAt`
+// stays null until the agent's first policy fetch, so `lastSeenAt != null` on any router is the
+// "actually talking to us" / connected signal. It is gated on `isAdmin` at the call site (only
+// admins enroll, and GET /api/admin/routers is admin-only). Loading-states rule (#1098): the query
+// must be LOADED before we can conclude a state, so we render nothing while pending — a loading `[]`
+// must never be read as a real "no routers".
 export function FirstRunHint() {
-  const devices  = useDevices()
-  const profiles = useProfiles()
-  if (devices.isPending || profiles.isPending) return null
-  if (devices.isError || profiles.isError) return null
-  const empty = (devices.data?.length ?? 0) === 0 && (profiles.data?.length ?? 0) === 0
-  if (!empty) return null
+  const routers = useRouters()
+  if (routers.isPending || routers.isError) return null
+  const list = routers.data ?? []
+  const connected = list.some(r => r.lastSeenAt != null)
+  if (connected) return null
+
+  const pending = list.length > 0
   return (
     <section
       data-testid="first-run-hint"
+      data-state={pending ? 'pending' : 'none'}
       className="bg-brand-accent/5 border border-brand-accent/20 rounded-2xl p-5"
     >
-      <h2 className="text-base font-semibold text-brand-ink">Welcome — let's get your household online</h2>
-      <p className="text-sm text-brand-text mt-1">
-        Your household is set up, but no router is connected yet. Enroll your router to start
-        managing devices, profiles and screen time. It takes a couple of minutes.
-      </p>
-      <Link
-        to="/routers"
-        className="inline-block mt-4 bg-brand-accent hover:bg-brand-accent-dark text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors"
-      >
-        Enroll a router →
-      </Link>
+      {pending ? (
+        <>
+          <h2 className="text-base font-semibold text-brand-ink">Waiting for your router to connect</h2>
+          <p className="text-sm text-brand-text mt-1">
+            You've enrolled a router, but it hasn't checked in yet. Run the OpenWRT install script on
+            the router and paste the enrollment token when prompted. Once it connects, your devices,
+            profiles and screen time appear here automatically.
+          </p>
+          <Link
+            to="/routers"
+            className="inline-block mt-4 bg-brand-accent hover:bg-brand-accent-dark text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors"
+          >
+            View router setup →
+          </Link>
+        </>
+      ) : (
+        <>
+          <h2 className="text-base font-semibold text-brand-ink">Welcome — let's get your household online</h2>
+          <p className="text-sm text-brand-text mt-1">
+            Your household is set up, but no router is connected yet. Enroll your router to start
+            managing devices, profiles and screen time. It takes a couple of minutes.
+          </p>
+          <Link
+            to="/routers"
+            className="inline-block mt-4 bg-brand-accent hover:bg-brand-accent-dark text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors"
+          >
+            Enroll a router →
+          </Link>
+        </>
+      )}
     </section>
   )
 }
