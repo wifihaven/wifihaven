@@ -12,6 +12,13 @@ Declarative config for everything Cloudflare-side (#613):
 - SPF TXT record + the `e2e-brand` / `e2e-mid` / `e2e-edge` test-fixture
   CNAME chain (#1351).
 - Resend sending records on `send.wifihaven.net` (DKIM/MX/SPF, #578/#2196).
+- **Plain outbound sending** records (#2247/#2206): per-domain Postmark DKIM
+  (`20260716…pm._domainkey` on the apex and on `staging`) + custom Return-Path
+  CNAMEs (`plain-bounces` and `plain-bounces.staging` → `pm.mtasv.net`) for
+  `support@wifihaven.net` and `support@staging.wifihaven.net`. The per-domain
+  DKIM strict-aligns `d=` under our `adkim=s` DMARC; the custom Return-Path means
+  **no apex SPF include for Postmark is needed** (do not add `spf.mtasv.net`).
+  Apply + let DNS propagate **before** clicking Plain's "Verify DNS and continue".
 - **Email Routing** (#2198): forwards `support@wifihaven.net` **and**
   `support@staging.wifihaven.net` into WifiHaven's Plain inbox (each to its own
   Postmark inbound address — prod vs. staging channel). Terraform manages only
