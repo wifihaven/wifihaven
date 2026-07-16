@@ -121,9 +121,24 @@ identity. You don't wire any of that; you only provide the App ID + identity sec
 ## 5. API key — machine user (write API)
 
 1. Settings → create a **machine user**.
-2. **Add API Key** and grant the permissions our calls need: **`customer:read`** +
-   customer upsert (`upsertCustomer`), and — for #2200's responder — **`thread:create`**
-   / reply. Plain shows the required permission per feature; grant those.
+2. **Add API Key** and grant the scopes our two code paths need (least privilege — one
+   key is shared by both):
+
+   | Scope | Why | For |
+   |---|---|---|
+   | `customer:create` | `upsertCustomer` (household → Plain customer) | **#2199 (now)** |
+   | `customer:edit` | `upsertCustomer` updates an existing customer | **#2199 (now)** |
+   | `customer:read` | look up the household by `tenantIdentifier`/`externalId` for draft context | #2200 |
+   | `thread:create` | `createThread` — the `PlainClient.writeThread` seam | #2200 |
+   | `thread:reply` | post the AI-drafted reply into the thread | #2200 |
+   | `threadEvent:create` + `threadEvent:read` | post the draft as an AI-labeled note/event (if #2200 uses a note vs an unsent reply) | #2200 |
+
+   **Strict minimum for what's merged today (#2199):** just `customer:create` +
+   `customer:edit`. **Recommended:** grant the full set now — the key is shown once and
+   #2200 lands next, so this avoids re-issuing. The exact draft-posting scope
+   (`thread:reply` vs `threadEvent:create`) is #2200's implementation choice; granting
+   both keeps it unblocked. **Do NOT grant** `customer:delete`, `customer:impersonate`,
+   `thread:assign`, or `thread:unassign` — nothing we do needs them.
 3. **Copy the key immediately** (`plainApiKey_…`) — Plain shows it **once**. → value #3.
    Sent by the code as `Authorization: Bearer …`.
 
