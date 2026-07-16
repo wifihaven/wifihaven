@@ -186,6 +186,73 @@ resource "cloudflare_record" "send_spf" {
   comment = "Resend SPF for send.wifihaven.net (#578, #2202)"
 }
 
+# ── Plain OUTBOUND sending DNS (#2247, epic #2206) ──────────────────────────
+# Plain sends outbound support mail (replies + notifications) via Postmark. Each
+# sending domain gets its OWN per-domain DKIM selector so the DKIM `d=` strict-
+# aligns with the From domain under our `adkim=s` DMARC:
+#   support@wifihaven.net          → d=wifihaven.net          (prod selector)
+#   support@staging.wifihaven.net  → d=staging.wifihaven.net  (staging selector)
+# and a custom Postmark Return-Path (plain-bounces.* → pm.mtasv.net) so bounces
+# route to Postmark with SPF resolved on the bounce subdomain (not the apex) —
+# which is why NO apex SPF include for Postmark (spf.mtasv.net) is needed. DMARC
+# passes on DKIM strict-alignment alone; SPF need not align (under our `aspf=s`
+# the bounce subdomain plain-bounces.wifihaven.net would not strict-align with
+# the apex From domain anyway, and DMARC is an OR of DKIM/SPF alignment). Do NOT
+# add spf.mtasv.net to cloudflare_record.spf.
+#
+# Selectors (20260716…pm) are Postmark-issued and differ from the inbound
+# cf2024-1 and the Resend `resend` DKIM, so no conflict. Public key material —
+# safe to commit. Values copied verbatim from Plain's domain-setup screen; each
+# `k=rsa; p=…` is <255 chars → single quoted TXT string (no chunking), same as
+# cloudflare_record.resend_dkim.
+#
+# DNS must be applied + propagated BEFORE the operator clicks Plain's "Verify DNS
+# and continue" per domain (Plain checks the records live).
+
+# prod — DKIM for support@wifihaven.net (d=wifihaven.net).
+resource "cloudflare_record" "plain_dkim_prod" {
+  zone_id = var.zone_id
+  name    = "20260716020234pm._domainkey"
+  type    = "TXT"
+  content = "\"k=rsa; p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQC1v+5pm0FRVoJTkwRYx/RmJo0QKL0qtC3vtBjq1ryosJbwLFhhMbw1QVjX9HGD1H5QLUKK16ThSv6wDIDhtR71+0lwHLa5Hw8AkckRKwicQMBFi558//uazuXHMa+GKJfJrZNtbH4WjVdqZNOmnXf06daTFIhz4qeulphfQO/RlQIDAQAB\""
+  proxied = false
+  ttl     = 1
+  comment = "Plain outbound DKIM for wifihaven.net (Postmark, #2247, #2206)"
+}
+
+# prod — Postmark custom Return-Path (bounce domain) for wifihaven.net.
+resource "cloudflare_record" "plain_bounces_prod" {
+  zone_id = var.zone_id
+  name    = "plain-bounces"
+  type    = "CNAME"
+  content = "pm.mtasv.net"
+  proxied = false
+  ttl     = 1
+  comment = "Plain outbound Return-Path for wifihaven.net (Postmark, #2247, #2206)"
+}
+
+# staging — DKIM for support@staging.wifihaven.net (d=staging.wifihaven.net).
+resource "cloudflare_record" "plain_dkim_staging" {
+  zone_id = var.zone_id
+  name    = "20260716163303pm._domainkey.staging"
+  type    = "TXT"
+  content = "\"k=rsa; p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCFthRPOhHmWGH5JfBsifjUdlTjGMJTdcqzO9LX4Hyc2nuKs5Jb6+6b3MreCFu2iPSfpk8xwJJh5Fa377dgcYjXhMNvxHavx9GTImndT3S6KxcLqyHcaFgHdCxN+p42unJkuvIsIw8/Uo2AyuntHrdfM+Y5PvFMw80/+H8beE78pQIDAQAB\""
+  proxied = false
+  ttl     = 1
+  comment = "Plain outbound DKIM for staging.wifihaven.net (Postmark, #2247, #2206)"
+}
+
+# staging — Postmark custom Return-Path (bounce domain) for staging.wifihaven.net.
+resource "cloudflare_record" "plain_bounces_staging" {
+  zone_id = var.zone_id
+  name    = "plain-bounces.staging"
+  type    = "CNAME"
+  content = "pm.mtasv.net"
+  proxied = false
+  ttl     = 1
+  comment = "Plain outbound Return-Path for staging.wifihaven.net (Postmark, #2247, #2206)"
+}
+
 # ── Email Routing: support@wifihaven.net → Plain inbox (#2198) ──────────────
 # Inbound support mail is forwarded into WifiHaven's Plain workspace via its
 # Postmark inbound address. This is the DNS/MX half of #2198 (epic #2197 /
