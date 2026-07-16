@@ -237,6 +237,59 @@ resource "cloudflare_email_routing_rule" "support_to_plain" {
   depends_on = [cloudflare_email_routing_settings.wifihaven]
 }
 
+# ── Email Routing: support@staging.wifihaven.net → Plain inbox (#2198) ──────
+# Same forward, but for the staging subdomain address, into a SEPARATE Plain
+# inbound address (cfc4be…@inbound.postmarkapp.com — the staging channel).
+#
+# SUBDOMAIN ENABLEMENT IS AN OPERATOR STEP. Cloudflare Email Routing handles a
+# subdomain only after that subdomain is added under Email Routing → Settings →
+# Subdomains, which provisions its OWN route1/2/3.mx.cloudflare.net MX records
+# on `staging.wifihaven.net` with Cloudflare-assigned (zone-specific) priorities.
+# The v4 provider has no "email routing subdomain" resource, and the priorities
+# are not fixed, so — exactly as with the apex MX above — we do NOT author those
+# subdomain MX as cloudflare_record resources here (guessed priorities would be
+# wrong). The operator must add the `staging` subdomain in the dash BEFORE this
+# rule's apply can succeed (the API rejects a rule for a not-yet-enabled
+# subdomain), then confirm the three subdomain MX records appear.
+#
+# DNS coexistence note: `staging.wifihaven.net` already carries a PROXIED CNAME
+# (cloudflare_record.spa_staging → wifihaven-staging.pages.dev). Cloudflare
+# flattens a proxied CNAME to A/AAAA at the edge and permits MX to coexist with
+# it, so the subdomain MX and the existing Pages CNAME do not conflict — but the
+# operator should verify staging.wifihaven.net still resolves for the SPA after
+# enabling the subdomain.
+
+# Staging destination address. Distinct from the prod inbound address so staging
+# support mail lands in its own Plain channel. Not a secret. Same one-time
+# manual verification: Cloudflare emails a confirm link that lands in this Plain
+# inbox; the operator must click it. Terraform cannot complete verification.
+resource "cloudflare_email_routing_address" "plain_inbound_staging" {
+  account_id = var.account_id
+  email      = "cfc4be868a29b61b0c6605edd081c18c@inbound.postmarkapp.com"
+}
+
+# Forward support@staging.wifihaven.net → the staging Plain inbound address.
+resource "cloudflare_email_routing_rule" "support_staging_to_plain" {
+  zone_id = var.zone_id
+  name    = "support@staging.wifihaven.net -> Plain (#2198)"
+  enabled = true
+
+  matcher {
+    type  = "literal"
+    field = "to"
+    value = "support@staging.wifihaven.net"
+  }
+
+  action {
+    type  = "forward"
+    value = [cloudflare_email_routing_address.plain_inbound_staging.email]
+  }
+
+  # Routing must be enabled on the zone (and the `staging` subdomain added in the
+  # dash — see the block comment above) before this rule's apply can succeed.
+  depends_on = [cloudflare_email_routing_settings.wifihaven]
+}
+
 # Apex + www CNAME to the MARKETING project's .pages.dev (#1842). Stays proxied
 # (orange cloud) so the zone-level redirect ruleset below can fire at the edge.
 resource "cloudflare_record" "spa_apex" {
