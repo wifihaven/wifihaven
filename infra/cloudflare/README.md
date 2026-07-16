@@ -14,19 +14,23 @@ Declarative config for everything Cloudflare-side (#613):
 - Resend sending records on `send.wifihaven.net` (DKIM/MX/SPF, #578/#2196).
 - **Email Routing** (#2198): forwards `support@wifihaven.net` **and**
   `support@staging.wifihaven.net` into WifiHaven's Plain inbox (each to its own
-  Postmark inbound address — prod vs. staging channel). Resources:
-  `cloudflare_email_routing_settings` (enables routing on the zone), two
-  `cloudflare_email_routing_address` (prod + staging Plain destinations), and
-  two `cloudflare_email_routing_rule` (the `to` → forward rules). The apex
-  `route1/2/3.mx.cloudflare.net` MX records are provisioned by Cloudflare Email
-  Routing itself with zone-assigned priorities — they are **not** authored here
-  and do not appear in Terraform state. Operator steps remain after apply:
-  (1) confirm the Cloudflare token carries Email Routing edit scope (or apply
-  from the dash/CLI); (2) for the **staging** address, add the `staging`
-  subdomain under Email Routing → Settings → Subdomains **before** apply (it
-  provisions the subdomain's own MX; the rule's apply fails otherwise); and
-  (3) click the destination-verification link Cloudflare emails to each Plain
-  inbox (prod and staging).
+  Postmark inbound address — prod vs. staging channel). Terraform manages only
+  the parts a scoped CI token can create: two `cloudflare_email_routing_address`
+  (prod + staging Plain destinations) and two `cloudflare_email_routing_rule`
+  (the `to` → forward rules). **Enabling Email Routing on the zone is an
+  operator/dashboard step, not Terraform** — a scoped API token cannot perform
+  the zone "enable" onboarding action even with `Zone → Email Routing Rules →
+  Edit` (it returns `Authentication error (10000)`; verified on #2243). Enabling
+  in the dash also provisions the apex `route1/2/3.mx.cloudflare.net` MX with
+  zone-assigned priorities, which are likewise **not** authored here (same class
+  as the enable; they live outside Terraform state, so no drift). Operator steps:
+  (1) **enable Email Routing on the zone** (Email → Email Routing → Enable), and
+  for the **staging** address also add the `staging` subdomain under Settings →
+  Subdomains — do both **before** the apply, else the rule creates fail;
+  (2) ensure the CI Cloudflare token carries `Account → Email Routing Addresses →
+  Edit` and `Zone → Email Routing Rules → Edit` (needed for the addresses + rules
+  Terraform *does* manage); (3) click the destination-verification link
+  Cloudflare emails to each Plain inbox (prod and staging).
 
 **Not managed here**: the zone itself (added once via the dash; NS flip at the
 registrar is a one-shot manual step), and the GitHub repo secrets.
