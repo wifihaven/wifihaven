@@ -189,19 +189,19 @@ resource "cloudflare_record" "send_spf" {
 # second apex SPF record is a permerror, and forwarded mail is not evaluated
 # against the apex SPF anyway.
 
-# Enable Email Routing on the zone. On a Cloudflare-hosted zone this also
-# provisions the route1/2/3.mx.cloudflare.net MX records automatically, with
-# per-zone priorities that Cloudflare assigns itself. We intentionally do NOT
-# author those MX as explicit cloudflare_record resources: their priorities are
-# zone-specific (not fixed), so hardcoding guessed values would be wrong, and
-# Email Routing manages them out-of-band (they will not appear in Terraform
-# state, so they produce no plan drift). After the first apply the operator
-# should confirm in the Cloudflare dash (Email → Email Routing) that the three
-# MX records are present and routing status is "Enabled".
-resource "cloudflare_email_routing_settings" "wifihaven" {
-  zone_id = var.zone_id
-  enabled = true
-}
+# ENABLING EMAIL ROUTING ON THE ZONE IS AN OPERATOR/DASHBOARD STEP — NOT managed
+# by Terraform here. A *scoped* Cloudflare API token cannot perform the zone
+# "enable Email Routing" onboarding action even with `Zone → Email Routing Rules
+# → Edit`: the CI token creates addresses and rules fine, but the enable call
+# returns `Authentication error (10000)` (verified on PR #2243's apply). This is
+# the same class of Cloudflare-managed action as the MX records below, so we
+# treat it identically: the operator enables Email Routing once in the dash
+# (Email → Email Routing → Enable), which also provisions the apex
+# route1/2/3.mx.cloudflare.net MX with Cloudflare-assigned (zone-specific)
+# priorities. We do NOT author those MX as cloudflare_record resources (guessed
+# priorities would be wrong; they live outside Terraform state, so no drift).
+# There is deliberately no `cloudflare_email_routing_settings` resource — it only
+# ever failed to apply. The rules below just require routing to already be on.
 
 # Destination address: WifiHaven's live Plain workspace inbound address (Plain
 # is backed by Postmark). Not a secret — safe to commit.
@@ -233,8 +233,8 @@ resource "cloudflare_email_routing_rule" "support_to_plain" {
     value = [cloudflare_email_routing_address.plain_inbound.email]
   }
 
-  # Routing must be enabled on the zone before the rule can be created.
-  depends_on = [cloudflare_email_routing_settings.wifihaven]
+  # Routing must already be enabled on the zone (operator/dashboard step above)
+  # for this rule to apply.
 }
 
 # ── Email Routing: support@staging.wifihaven.net → Plain inbox (#2198) ──────
@@ -246,11 +246,12 @@ resource "cloudflare_email_routing_rule" "support_to_plain" {
 # Subdomains, which provisions its OWN route1/2/3.mx.cloudflare.net MX records
 # on `staging.wifihaven.net` with Cloudflare-assigned (zone-specific) priorities.
 # The v4 provider has no "email routing subdomain" resource, and the priorities
-# are not fixed, so — exactly as with the apex MX above — we do NOT author those
-# subdomain MX as cloudflare_record resources here (guessed priorities would be
-# wrong). The operator must add the `staging` subdomain in the dash BEFORE this
-# rule's apply can succeed (the API rejects a rule for a not-yet-enabled
-# subdomain), then confirm the three subdomain MX records appear.
+# are not fixed, so — exactly as with the apex MX and the zone enable above — we
+# do NOT author those subdomain MX as cloudflare_record resources here (guessed
+# priorities would be wrong). The operator must enable Email Routing on the zone
+# AND add the `staging` subdomain in the dash BEFORE this rule's apply can
+# succeed (the API rejects a rule for a not-yet-enabled subdomain), then confirm
+# the three subdomain MX records appear.
 #
 # DNS coexistence note: `staging.wifihaven.net` already carries a PROXIED CNAME
 # (cloudflare_record.spa_staging → wifihaven-staging.pages.dev). Cloudflare
@@ -285,9 +286,8 @@ resource "cloudflare_email_routing_rule" "support_staging_to_plain" {
     value = [cloudflare_email_routing_address.plain_inbound_staging.email]
   }
 
-  # Routing must be enabled on the zone (and the `staging` subdomain added in the
-  # dash — see the block comment above) before this rule's apply can succeed.
-  depends_on = [cloudflare_email_routing_settings.wifihaven]
+  # Routing must already be enabled on the zone and the `staging` subdomain added
+  # in the dash (see the block comment above) before this rule's apply can succeed.
 }
 
 # Apex + www CNAME to the MARKETING project's .pages.dev (#1842). Stays proxied
