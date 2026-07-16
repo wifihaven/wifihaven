@@ -25,16 +25,29 @@ set -euo pipefail
 : "${WIFIHAVEN_WS_ALLOWED_ORIGINS:=}"
 : "${WIFIHAVEN_METRICS_ENABLED:=true}"
 : "${WIFIHAVEN_METRICS_SCRAPE_TOKEN:=}"
+# #2250: single per-environment SPA origin — the one place a deployment names the app host.
+# The beta-invite link, Stripe Checkout/Portal return, and the alert/email "review in dashboard"
+# link all derive from this unless individually overridden below. Cloud sets it once per env in
+# render.yaml (prod → app.wifihaven.net, staging → app-staging.wifihaven.net); self-hosted/unset
+# keeps the prod default. Before #2250 the beta invite base had NO env binding and the email base
+# had one but no staging value, so both fell through to the prod default even on staging.
+: "${WIFIHAVEN_APP_BASE_URL:=https://app.wifihaven.net}"
 # #2135: Stripe billing. Empty WIFIHAVEN_STRIPE_SECRET_KEY (the default) DISABLES billing entirely —
 # the self-hosted single-install path never bills, so the /api/billing/* admin routes 404 and the
 # webhook no-ops. Cloud/staging set the secret + webhook signing secret (Render sync:false secrets)
 # plus the test/live-mode price ids + promo code. Secrets are NEVER committed (docs/process/security.md).
+# appBaseUrl defaults to the shared WIFIHAVEN_APP_BASE_URL (#2250) but keeps its own override.
 : "${WIFIHAVEN_STRIPE_SECRET_KEY:=}"
 : "${WIFIHAVEN_STRIPE_WEBHOOK_SECRET:=}"
 : "${WIFIHAVEN_STRIPE_PRICE_MONTHLY:=}"
 : "${WIFIHAVEN_STRIPE_PRICE_ANNUAL:=}"
 : "${WIFIHAVEN_STRIPE_FOUNDING_PROMO:=}"
-: "${WIFIHAVEN_STRIPE_APP_BASE_URL:=https://app.wifihaven.net}"
+: "${WIFIHAVEN_STRIPE_APP_BASE_URL:=${WIFIHAVEN_APP_BASE_URL}}"
+# #2132 / #2250: beta request → invite. inviteBaseUrl is the SPA origin the operator-issued
+# "/welcome?token=…" link points at; before #2250 it had NO env binding, so staging invites went
+# to the prod SPA. Now it derives from the shared WIFIHAVEN_APP_BASE_URL (own override still honored).
+: "${WIFIHAVEN_BETA_INVITE_BASE_URL:=${WIFIHAVEN_APP_BASE_URL}}"
+: "${WIFIHAVEN_BETA_INVITE_TTL_HOURS:=168}"
 # #2137 (multi-tenant P5-6): the beta→paid flip lifecycle. Event-triggered — the
 # cohort flip clock starts once THRESHOLD active beta households are seen, runs
 # WINDOW_DAYS, then unconverted households lapse (enforcement stops permissively).
@@ -47,7 +60,10 @@ set -euo pipefail
 # `email {}` block whose EmailConfig.enabled is false, so the Notifier logs only.
 : "${WIFIHAVEN_EMAIL_RESEND_API_KEY:=}"
 : "${WIFIHAVEN_EMAIL_FROM_ADDRESS:=}"
-: "${WIFIHAVEN_EMAIL_APP_BASE_URL:=https://app.wifihaven.net}"
+# #2250: derive the "review in dashboard" link host from the shared SPA origin (own override still
+# honored). Before #2250 this had an env binding but no staging value, so staging alert/email links
+# pointed at the prod SPA.
+: "${WIFIHAVEN_EMAIL_APP_BASE_URL:=${WIFIHAVEN_APP_BASE_URL}}"
 # #2199: Plain helpdesk integration (#2197). All DARK by default — empty keys render a `support {}`
 # block whose SupportConfig gates are false, so the identified widget renders nothing and the write
 # client is a no-op. Two independent gates: the WIDGET needs BOTH APP_ID + IDENTITY_SECRET; the
@@ -110,6 +126,10 @@ wifihaven {
     resendApiKey = "${WIFIHAVEN_EMAIL_RESEND_API_KEY}"
     fromAddress  = "${WIFIHAVEN_EMAIL_FROM_ADDRESS}"
     appBaseUrl   = "${WIFIHAVEN_EMAIL_APP_BASE_URL}"
+  }
+  beta {
+    inviteBaseUrl  = "${WIFIHAVEN_BETA_INVITE_BASE_URL}"
+    inviteTtlHours = ${WIFIHAVEN_BETA_INVITE_TTL_HOURS}
   }
   flip {
     thresholdHouseholds = ${WIFIHAVEN_FLIP_THRESHOLD_HOUSEHOLDS}

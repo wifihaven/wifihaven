@@ -82,5 +82,68 @@ object ConfigSpec extends ZIOSpecDefault {
           )
       yield assertTrue(cfg.jwt.expiryHours == 720)
     },
+  ) + suite("#2250 per-env SPA app-base")(
+    // The bug: on staging, an approved beta invite link pointed at the PROD SPA
+    // (app.wifihaven.net/welcome?…) because BetaConfig.inviteBaseUrl had no per-env
+    // env binding and fell through to the prod default. entrypoint.sh now renders a
+    // `beta {}` block whose inviteBaseUrl derives from the shared WIFIHAVEN_APP_BASE_URL
+    // (staging → app-staging.wifihaven.net). These pin the Scala side of that contract:
+    // whatever host the HOCON carries flows through to the derived URLs, and the
+    // in-repo code defaults stay prod so self-hosted/unset is unchanged.
+    test(
+      "staging-configured beta inviteBaseUrl → inviteUrl resolves to the staging SPA, not prod",
+    ) {
+      for cfg <- loadApp(appBase(Some("https://app-staging.wifihaven.net")))
+      yield {
+        val url = cfg.beta.inviteUrl("tok123")
+        assertTrue(
+          url == "https://app-staging.wifihaven.net/welcome?token=tok123",
+          !url.contains("app.wifihaven.net/welcome"),
+        )
+      }
+    },
+    test("staging email appBaseUrl → alert/notifier dashboardUrl resolves to staging, not prod") {
+      for cfg <- loadApp(appBase(Some("https://app-staging.wifihaven.net")))
+      yield assertTrue(cfg.email.dashboardUrl == "https://app-staging.wifihaven.net")
+    },
+    test("staging stripe appBaseUrl → Checkout return URL resolves to staging") {
+      for cfg <- loadApp(appBase(Some("https://app-staging.wifihaven.net")))
+      yield assertTrue(
+        cfg.stripe.checkoutSuccessUrl == "https://app-staging.wifihaven.net/billing?checkout=success",
+      )
+    },
+    test("code defaults (self-hosted/unset) stay on the prod apex — back-compat unchanged") {
+      for cfg <- loadApp(appBase(None))
+      yield assertTrue(
+        cfg.beta.inviteUrl("t") == "https://app.wifihaven.net/welcome?token=t",
+        cfg.email.dashboardUrl == "https://app.wifihaven.net",
+        cfg.stripe.checkoutSuccessUrl == "https://app.wifihaven.net/billing?checkout=success",
+      )
+    },
   )
+
+  // Minimal valid HOCON; when `base` is set, the beta/email/stripe blocks all carry that host
+  // (mirroring entrypoint.sh deriving each from the shared WIFIHAVEN_APP_BASE_URL). When None,
+  // the blocks are omitted so the case-class defaults (the prod apex) apply.
+  private def appBase(base: Option[String]): String = {
+    val blocks = base.fold("") { b =>
+      s"""  beta   { inviteBaseUrl = "$b" }
+         |  email  { resendApiKey = "k", fromAddress = "WifiHaven <a@wifihaven.net>", appBaseUrl = "$b" }
+         |  stripe { secretKey = "sk_test_x", appBaseUrl = "$b" }
+         |""".stripMargin
+    }
+    s"""wifihaven {
+       |  db   { host = "localhost", port = 5432, database = "wifihaven", user = "wifihaven", password = "changeme", poolSize = 5 }
+       |  http { host = "0.0.0.0", port = 8080, staticDir = "web/dist", serveSpa = true }
+       |  jwt  { secret = "test-secret-at-least-32-chars!!x", expiryHours = 24 }
+       |  cors { allowedOrigins = "" }
+       |$blocks}""".stripMargin
+  }
+
+  private def loadApp(text: String) =
+    read(
+      deriveConfig[AppConfig]
+        .nested("wifihaven")
+        .from(TypesafeConfigProvider.fromHoconString(text)),
+    )
 }
