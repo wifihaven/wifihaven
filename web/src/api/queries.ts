@@ -12,7 +12,7 @@ import type {
   ProfileTimeStatus,
   ProfileAppWeeklyUsage,
   ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek, ProfileUsageByApp,
-  QueryLog, TrafficUsageBucket, TrafficUsageGroupBy, UsageConfig, UsageSeriesResponse,
+  QueryLog, RouterSummary, TrafficUsageBucket, TrafficUsageGroupBy, UsageConfig, UsageSeriesResponse,
   SupportIdentityResponse,
 } from '@/types/api'
 
@@ -37,6 +37,9 @@ const STALE = {
   timeStatusWeek: 5 * MIN,
   profiles: 5 * MIN,
   devices: 5 * MIN,
+  // #2252 — shorter than profiles/devices so the onboarding banner flips promptly once the
+  // router registers, without polling as hot as the live NOW surfaces (5s).
+  routers: 30_000,
 } as const
 
 // #1871 / #1976 (SPA-ws S7) — the live time-used surfaces must stay fresh so the displayed
@@ -68,6 +71,9 @@ export const qk = {
   betaRequests: (status?: BetaRequestStatus) => ['beta-requests', status ?? 'pending'] as const,
   profiles: () => ['profiles'] as const,
   devices: () => ['devices'] as const,
+  // #2252 — enrolled routers, read by the dashboard first-run banner to tell
+  // "no router yet" apart from "enrollment pending, waiting to connect".
+  routers: () => ['routers'] as const,
   alerts: (includeAll: boolean) => ['alerts', includeAll] as const,
   schedules: () => ['schedules'] as const,
   dashboardNow: () => ['dashboard', 'now'] as const,
@@ -215,6 +221,21 @@ export function useDevices(opts?: QueryOpts<Device[]>) {
     queryKey: qk.devices(),
     queryFn: () => api.devices.list(),
     staleTime: STALE.devices,
+    ...opts,
+  })
+}
+
+// #2252 — enrolled routers (GET /api/admin/routers), admin-only. The dashboard
+// first-run banner reads this to distinguish three onboarding states: no router
+// enrolled yet, an enrollment created but the router hasn't connected, or a
+// router that has checked in. The route is admin-only, so only mount callers in
+// an admin context (FirstRunHint renders behind `scope.isAdmin`); a non-admin
+// caller would otherwise fire a fetch the server refuses and get stuck in error.
+export function useRouters(opts?: QueryOpts<RouterSummary[]>) {
+  return useQuery({
+    queryKey: qk.routers(),
+    queryFn: () => api.routers.list(),
+    staleTime: STALE.routers,
     ...opts,
   })
 }

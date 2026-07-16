@@ -183,31 +183,25 @@ export function RoutersPage() {
             <label className="block text-xs font-semibold text-brand-text-muted uppercase tracking-wider mb-2">
               Enrollment token for {showToken.name}
             </label>
-            <input
-              type="text"
-              readOnly
-              value={showToken.enrollmentToken}
-              onFocus={e => e.currentTarget.select()}
-              className="block w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-3 text-brand-accent font-mono text-sm break-all"
-            />
+            {/* #2252 — inline copy affordance: a small icon on the right of the token field,
+                not a full-width button below it. Right padding on the input keeps the token
+                text clear of the icon. */}
+            <div className="relative">
+              <input
+                type="text"
+                readOnly
+                value={showToken.enrollmentToken}
+                onFocus={e => e.currentTarget.select()}
+                className="block w-full bg-brand-surface border border-brand-border-strong rounded-xl pl-4 pr-11 py-3 text-brand-accent font-mono text-sm break-all"
+              />
+              <CopyTokenIcon state={copyState} onCopy={() => copyToken(showToken.enrollmentToken)} />
+            </div>
+            {copyState === 'failed' && (
+              <p role="alert" className="mt-2 text-xs text-red-700">
+                Copy failed — select the token above and copy manually.
+              </p>
+            )}
           </div>
-          <button
-            onClick={() => copyToken(showToken.enrollmentToken)}
-            aria-label="Copy enrollment token to clipboard"
-            className={`w-full py-2 rounded-xl text-sm font-medium transition-colors ${
-              copyState === 'copied'
-                ? 'bg-brand-accent/20 text-brand-accent'
-                : copyState === 'failed'
-                ? 'bg-red-500/20 text-red-700'
-                : 'bg-brand-alt text-brand-ink hover:bg-brand-alt'
-            }`}
-          >
-            {copyState === 'copied'
-              ? 'Copied!'
-              : copyState === 'failed'
-              ? 'Copy failed — select the token above and copy manually'
-              : 'Copy to clipboard'}
-          </button>
           <button
             onClick={() => setShowToken(null)}
             className="w-full py-3 rounded-xl bg-brand-accent text-white font-semibold"
@@ -217,6 +211,49 @@ export function RoutersPage() {
         </Modal>
       )}
     </div>
+  )
+}
+
+// #2252 — the inline copy icon that sits on the right edge of the token field. Keyboard-activatable
+// (it's a real <button>, so Enter/Space work) with an aria-label and a focus-visible ring; the icon
+// swaps to a check on success and a warning on failure, with the label announcing the state.
+function CopyTokenIcon({ state, onCopy }: { state: 'idle' | 'copied' | 'failed'; onCopy: () => void }) {
+  const label =
+    state === 'copied' ? 'Enrollment token copied' :
+    state === 'failed' ? 'Copy failed' :
+    'Copy enrollment token to clipboard'
+  return (
+    <button
+      type="button"
+      data-testid="copy-token"
+      onClick={onCopy}
+      aria-label={label}
+      title={label}
+      className={`absolute right-1.5 top-1/2 -translate-y-1/2 p-2 rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-accent ${
+        state === 'copied'
+          ? 'text-brand-accent'
+          : state === 'failed'
+          ? 'text-red-700'
+          : 'text-brand-text-muted hover:text-brand-ink hover:bg-brand-alt'
+      }`}
+    >
+      {state === 'copied' ? (
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+          <polyline points="20 6 9 17 4 12" />
+        </svg>
+      ) : state === 'failed' ? (
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+          <circle cx="12" cy="12" r="10" />
+          <line x1="12" y1="8" x2="12" y2="12" />
+          <line x1="12" y1="16" x2="12.01" y2="16" />
+        </svg>
+      ) : (
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+        </svg>
+      )}
+    </button>
   )
 }
 

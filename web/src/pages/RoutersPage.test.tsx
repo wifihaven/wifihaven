@@ -58,6 +58,10 @@ async function openTokenDialog() {
 }
 
 describe('RoutersPage — copy to clipboard', () => {
+  // #2252 — the copy affordance is now a small inline icon on the right of the token field
+  // (data-testid="copy-token"), not a full-width button. Its accessible name announces the
+  // copy state (idle → "Copy enrollment token to clipboard", success → "…copied", fail →
+  // "Copy failed"), so a screen reader hears the feedback the icon shows visually.
   it('copies the enrollment token via execCommand fallback on HTTP/LAN deploys', async () => {
     const execCommand = vi.fn().mockReturnValue(true)
     Object.defineProperty(document, 'execCommand', {
@@ -65,12 +69,13 @@ describe('RoutersPage — copy to clipboard', () => {
     })
 
     const user = await openTokenDialog()
-    await user.click(screen.getByRole('button', { name: /copy enrollment token/i }))
+    const copyIcon = screen.getByTestId('copy-token')
+    expect(copyIcon).toHaveAccessibleName(/copy enrollment token/i)
+    await user.click(copyIcon)
 
     expect(execCommand).toHaveBeenCalledWith('copy')
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /copy enrollment token/i }))
-        .toHaveTextContent(/copied/i)
+      expect(screen.getByTestId('copy-token')).toHaveAccessibleName(/copied/i)
     })
   })
 
@@ -81,12 +86,26 @@ describe('RoutersPage — copy to clipboard', () => {
     })
 
     const user = await openTokenDialog()
-    await user.click(screen.getByRole('button', { name: /copy enrollment token/i }))
+    await user.click(screen.getByTestId('copy-token'))
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /copy enrollment token/i }))
-        .toHaveTextContent(/copy failed/i)
+      expect(screen.getByTestId('copy-token')).toHaveAccessibleName(/copy failed/i)
     })
+    // The inline alert gives the manual-copy fallback instruction.
+    expect(screen.getByRole('alert')).toHaveTextContent(/select the token above/i)
+  })
+
+  it('is a keyboard-activatable button (accessible inline affordance)', async () => {
+    const execCommand = vi.fn().mockReturnValue(true)
+    Object.defineProperty(document, 'execCommand', {
+      value: execCommand, configurable: true, writable: true,
+    })
+
+    await openTokenDialog()
+    const copyIcon = screen.getByTestId('copy-token')
+    expect(copyIcon.tagName).toBe('BUTTON')
+    copyIcon.focus()
+    expect(copyIcon).toHaveFocus()
   })
 
   it('renders the token in a selectable readonly input as a manual-copy fallback', async () => {
