@@ -129,14 +129,20 @@ resource "cloudflare_record" "spf" {
   zone_id = var.zone_id
   name    = "wifihaven.net"
   type    = "TXT"
-  content = "\"v=spf1 -all\""
+  content = "\"v=spf1 include:_spf.mx.cloudflare.net ~all\""
   proxied = false
   ttl     = 1
-  # Apex sends no *direct* mail: Resend's envelope sender is send.wifihaven.net
-  # (see cloudflare_record.send_spf below), so SPF is evaluated on that
-  # subdomain, and the resend._domainkey DKIM (aligned to the apex) carries
-  # DMARC alignment for From: …@wifihaven.net. Apex stays -all (#613, #2202).
-  comment = "SPF: no direct mail from apex; Resend sends via send. (#613, #2202)"
+  # Apex SPF authorizes Cloudflare Email Routing to forward mail on our behalf
+  # (#2198). Email Routing's forwarding return-path is under wifihaven.net, so
+  # the destination (Postmark/Plain) evaluates THIS apex SPF; a strict `-all`
+  # would make forwarded mail fail SPF, which is why Cloudflare flags `-all` as
+  # conflicting and its docs say to MERGE existing SPF into
+  # `include:_spf.mx.cloudflare.net ~all`. Resend still sends via
+  # send.wifihaven.net (its own SPF on that subdomain, cloudflare_record.send_spf
+  # below), unaffected by this apex value. Exactly ONE apex `v=spf1` TXT — do not
+  # add a second (permerror). Superseded the earlier apex `-all` (#613/#2202),
+  # which predated inbound Email Routing.
+  comment = "SPF: authorize Cloudflare Email Routing forwarding; Resend via send. (#2198)"
 }
 
 # ── Resend sending DNS records (send.wifihaven.net) ─────────────────────────
@@ -183,11 +189,12 @@ resource "cloudflare_record" "send_spf" {
 # ── Email Routing: support@wifihaven.net → Plain inbox (#2198) ──────────────
 # Inbound support mail is forwarded into WifiHaven's Plain workspace via its
 # Postmark inbound address. This is the DNS/MX half of #2198 (epic #2197 /
-# integration umbrella #2206). Cloudflare Email Routing receives on the apex
-# and forwards with its own SRS return-path, so the apex SPF stays `-all`
-# (cloudflare_record.spf above) — do NOT add a second apex `v=spf1` TXT; a
-# second apex SPF record is a permerror, and forwarded mail is not evaluated
-# against the apex SPF anyway.
+# integration umbrella #2206). Cloudflare Email Routing receives on the apex and
+# forwards on our behalf, so the apex SPF must authorize Cloudflare — see
+# cloudflare_record.spf above, now `v=spf1 include:_spf.mx.cloudflare.net ~all`.
+# Keep exactly ONE apex `v=spf1` TXT (a second is a permerror); the earlier
+# `-all` was wrong for forwarding (the return-path is under our domain, so the
+# destination evaluates our apex SPF).
 
 # ENABLING EMAIL ROUTING ON THE ZONE IS AN OPERATOR/DASHBOARD STEP — NOT managed
 # by Terraform here. A *scoped* Cloudflare API token cannot perform the zone
