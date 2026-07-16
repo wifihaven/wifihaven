@@ -46,8 +46,9 @@ set -euo pipefail
 # #2132 / #2250: beta request → invite. inviteBaseUrl is the SPA origin the operator-issued
 # "/welcome?token=…" link points at; before #2250 it had NO env binding, so staging invites went
 # to the prod SPA. Now it derives from the shared WIFIHAVEN_APP_BASE_URL (own override still honored).
+# inviteTtlHours is left to the BetaConfig case-class default (Config.scala) — single-sourced there,
+# so it is intentionally NOT re-hardcoded here.
 : "${WIFIHAVEN_BETA_INVITE_BASE_URL:=${WIFIHAVEN_APP_BASE_URL}}"
-: "${WIFIHAVEN_BETA_INVITE_TTL_HOURS:=168}"
 # #2137 (multi-tenant P5-6): the beta→paid flip lifecycle. Event-triggered — the
 # cohort flip clock starts once THRESHOLD active beta households are seen, runs
 # WINDOW_DAYS, then unconverted households lapse (enforcement stops permissively).
@@ -128,8 +129,7 @@ wifihaven {
     appBaseUrl   = "${WIFIHAVEN_EMAIL_APP_BASE_URL}"
   }
   beta {
-    inviteBaseUrl  = "${WIFIHAVEN_BETA_INVITE_BASE_URL}"
-    inviteTtlHours = ${WIFIHAVEN_BETA_INVITE_TTL_HOURS}
+    inviteBaseUrl = "${WIFIHAVEN_BETA_INVITE_BASE_URL}"
   }
   flip {
     thresholdHouseholds = ${WIFIHAVEN_FLIP_THRESHOLD_HOUSEHOLDS}
