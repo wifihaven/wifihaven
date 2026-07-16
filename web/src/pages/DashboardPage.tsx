@@ -116,10 +116,13 @@ function DashboardWindowSelector({ bandwidth }: { bandwidth: WsTrafficUsage }) {
 //   2. enrollment created, not connected → "Waiting for your router to connect" (run the install
 //      script), NOT the enroll CTA
 //   3. a router has checked in          → no banner (onboarding is done)
-// A `routers` row is created at enrollment-token minting (POST /api/admin/routers); `lastSeenAt`
-// stays null until the agent's first policy fetch, so `lastSeenAt != null` on any router is the
-// "actually talking to us" / connected signal. It is gated on `isAdmin` at the call site (only
-// admins enroll, and GET /api/admin/routers is admin-only). Loading-states rule (#1098): the query
+// A `routers` row is created at enrollment-token minting (POST /api/admin/routers) with a null
+// `lastSeenAt`; the router's registration step (`completeEnrollment`, Repos.scala) stamps
+// `last_seen_at=NOW()` in the same statement that sets `token_hash` (which flips `enrolled`), and
+// every later policy poll re-stamps it. So `lastSeenAt != null` on any router means "the router has
+// registered / connected" — equivalently `enrolled` — and pending = token minted, install script
+// not yet run. It is gated on `isAdmin` at the call site (FirstRunHint is only mounted for admins,
+// and GET /api/admin/routers is admin-only). Loading-states rule (#1098): the query
 // must be LOADED before we can conclude a state, so we render nothing while pending — a loading `[]`
 // must never be read as a real "no routers".
 export function FirstRunHint() {

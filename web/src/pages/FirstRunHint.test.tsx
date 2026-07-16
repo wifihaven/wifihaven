@@ -47,8 +47,9 @@ describe('FirstRunHint — #2252 router-onboarding-aware welcome banner', () => 
   })
 
   it('shows "Waiting for your router to connect" when an enrollment exists but no router has connected', async () => {
-    // A `routers` row is minted at token creation; lastSeenAt stays null until the agent's
-    // first policy fetch, so a never-seen router is a pending enrollment, not "connected".
+    // A `routers` row is minted at token creation with a null lastSeenAt; registration
+    // (completeEnrollment) stamps it, so a never-seen router is a pending enrollment, not
+    // "connected".
     listRouters.mockResolvedValue([router({ lastSeenAt: null })])
     renderHint()
 
@@ -71,7 +72,8 @@ describe('FirstRunHint — #2252 router-onboarding-aware welcome banner', () => 
   it('treats a household as connected when ANY router has been seen', async () => {
     listRouters.mockResolvedValue([
       router({ id: 'r1', lastSeenAt: null }),
-      router({ id: 'r2', lastSeenAt: '2026-05-12T00:00:00Z' }),
+      // A seen router is always enrolled — both are stamped by completeEnrollment.
+      router({ id: 'r2', enrolled: true, lastSeenAt: '2026-05-12T00:00:00Z' }),
     ])
     renderHint()
 

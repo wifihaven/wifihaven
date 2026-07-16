@@ -37,6 +37,8 @@ const STALE = {
   timeStatusWeek: 5 * MIN,
   profiles: 5 * MIN,
   devices: 5 * MIN,
+  // #2252 — shorter than profiles/devices so the onboarding banner flips promptly once the
+  // router registers, without polling as hot as the live NOW surfaces (5s).
   routers: 30_000,
 } as const
 
@@ -226,9 +228,9 @@ export function useDevices(opts?: QueryOpts<Device[]>) {
 // #2252 — enrolled routers (GET /api/admin/routers), admin-only. The dashboard
 // first-run banner reads this to distinguish three onboarding states: no router
 // enrolled yet, an enrollment created but the router hasn't connected, or a
-// router that has checked in. Gate the hook with `enabled: isAdmin` at the call
-// site — the route is admin-only, so a non-admin would otherwise get a stuck
-// error state.
+// router that has checked in. The route is admin-only, so only mount callers in
+// an admin context (FirstRunHint renders behind `scope.isAdmin`); a non-admin
+// caller would otherwise fire a fetch the server refuses and get stuck in error.
 export function useRouters(opts?: QueryOpts<RouterSummary[]>) {
   return useQuery({
     queryKey: qk.routers(),
