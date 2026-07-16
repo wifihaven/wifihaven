@@ -192,10 +192,13 @@ resource "cloudflare_record" "send_spf" {
 # aligns with the From domain under our `adkim=s` DMARC:
 #   support@wifihaven.net          → d=wifihaven.net          (prod selector)
 #   support@staging.wifihaven.net  → d=staging.wifihaven.net  (staging selector)
-# and a custom Postmark Return-Path (plain-bounces.* → pm.mtasv.net) so the
-# bounce/envelope domain aligns too — which is why NO apex SPF include for
-# Postmark (spf.mtasv.net) is needed: the custom Return-Path carries SPF on the
-# bounce subdomain, not the apex. Do NOT add spf.mtasv.net to cloudflare_record.spf.
+# and a custom Postmark Return-Path (plain-bounces.* → pm.mtasv.net) so bounces
+# route to Postmark with SPF resolved on the bounce subdomain (not the apex) —
+# which is why NO apex SPF include for Postmark (spf.mtasv.net) is needed. DMARC
+# passes on DKIM strict-alignment alone; SPF need not align (under our `aspf=s`
+# the bounce subdomain plain-bounces.wifihaven.net would not strict-align with
+# the apex From domain anyway, and DMARC is an OR of DKIM/SPF alignment). Do NOT
+# add spf.mtasv.net to cloudflare_record.spf.
 #
 # Selectors (20260716…pm) are Postmark-issued and differ from the inbound
 # cf2024-1 and the Resend `resend` DKIM, so no conflict. Public key material —
