@@ -427,6 +427,13 @@ object MetricGuard {
     // a per-household label (the #808 lesson: without these entries the firewall rejects the name).
     "wifihaven_households_by_billing_status"        -> Set("status"),
     "wifihaven_beta_flip_notice_total"              -> Set("window"),
+    // #2199 — Plain support integration (dark until keys set). `support_widget_identity_total{outcome}`
+    // counts each identity-endpoint call by a bounded enum (issued | no_email | disabled);
+    // `support_customer_upsert_total{outcome}` counts each household→Plain customer upsert by the
+    // PlainOutcome enum (ok | disabled | error). Both bounded, never per-household / per-email. The
+    // #808 lesson: without these entries the firewall rejects the name and the series never emits.
+    "support_widget_identity_total"                 -> Set("outcome"),
+    "support_customer_upsert_total"                 -> Set("outcome"),
   )
 
   private val rejected = Metric.counter("metrics_rejected_total")
@@ -621,6 +628,18 @@ object AppMetrics {
 
   def recordFlipNotice(window: String): UIO[Unit] =
     MetricGuard.counter("wifihaven_beta_flip_notice_total", Map("window" -> window))
+
+  // ── #2199: Plain support integration (dark until keys set) ───────────────────
+  // Emitted from SupportService. `supportIdentity` counts each widget-identity request by a bounded
+  // enum (issued | no_email | disabled); `supportCustomerUpsert` counts each household→Plain
+  // customer upsert by the PlainOutcome enum (ok | disabled | error). Never a per-household /
+  // per-email label.
+
+  def supportIdentity(outcome: String): UIO[Unit] =
+    MetricGuard.counter("support_widget_identity_total", Map("outcome" -> outcome))
+
+  def supportCustomerUpsert(outcome: String): UIO[Unit] =
+    MetricGuard.counter("support_customer_upsert_total", Map("outcome" -> outcome))
 
   // ── #864: traffic_reports rows dropped as zero-bytes-zero-seconds ────────────
   // Replaces the per-request warn-log + TODO marker. A rising rate means the

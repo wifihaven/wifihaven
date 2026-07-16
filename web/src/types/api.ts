@@ -1084,3 +1084,18 @@ export interface BillingStatusResponse {
 export interface BillingRedirect {
   url: string
 }
+
+// #2199 (support intake B): the server-signed Plain widget identity for the
+// authenticated admin. Every field but `configured` is nullable so the DARK case
+// (Plain widget unconfigured, or the caller has no email) is `{configured:false}`
+// with nothing else and the SPA renders no widget.
+export interface SupportIdentityResponse {
+  configured: boolean
+  appId: string | null
+  email: string | null
+  emailHash: string | null
+  tenantIdentifier: string | null
+  fullName: string | null
+  plan: string | null
+  founding: boolean | null
+}

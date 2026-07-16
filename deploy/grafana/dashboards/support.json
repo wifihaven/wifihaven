@@ -1,0 +1,139 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "WifiHaven Plain support integration (#2199, epic #2197): server-signed widget-identity outcomes and household→Plain customer-upsert outcomes. Panels target support_widget_identity_total{outcome} and support_customer_upsert_total{outcome} emitted by AppMetrics.supportIdentity / AppMetrics.supportCustomerUpsert in api/src/support/SupportService.scala. All labels are bounded enums (never per-email / per-household). Ships DARK: with no Plain keys set, the identity endpoint counts outcome=disabled and no customer upsert fires. See docs/design and issue #2206.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Widget identity requests (cumulative, issued)",
+      "description": "sum(support_widget_identity_total{outcome=\"issued\"}) — total server-signed identities issued to authenticated admins. Zero while the widget is dark (no Plain app id / identity secret).",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
+      "id": 1,
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "thresholds" }, "unit": "short", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] } },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto", "colorMode": "value", "graphMode": "area", "justifyMode": "auto" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(support_widget_identity_total{env=\"$env\",outcome=\"issued\"})",
+          "legendFormat": "issued",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Widget identity rate by outcome",
+      "description": "sum by (outcome) (rate(support_widget_identity_total{env=\"$env\"}[5m])) — issued / no_email (caller has no email to identify — username-only admin) / disabled (Plain widget unconfigured, feature dark). A rising no_email share means admins without an email are opening the app; disabled dominates until the operator provisions the Plain widget keys.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 9, "x": 6, "y": 0 },
+      "id": 2,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "reqps",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1, "stacking": { "mode": "normal", "group": "A" } }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (outcome) (rate(support_widget_identity_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{outcome}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Household → Plain customer upsert outcomes",
+      "description": "sum by (outcome) (rate(support_customer_upsert_total{env=\"$env\"}[5m])) — ok (mapping written to Plain) / disabled (Plain write API unconfigured — no API key, dark) / error (Plain returned non-2xx or a GraphQL error; fail-open, the identity response is unaffected). A persistent 'error' share means the household→customer mapping isn't reaching Plain — check the API key / GraphQL endpoint.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 9, "x": 15, "y": 0 },
+      "id": 3,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "reqps",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1, "stacking": { "mode": "normal", "group": "A" } }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (outcome) (rate(support_customer_upsert_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{outcome}}",
+          "refId": "A"
+        }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["wifihaven", "support", "plain"],
+  "templating": {
+    "list": [
+      {
+        "current": { "selected": true, "text": "prod", "value": "prod" },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Environment",
+        "multi": false,
+        "name": "env",
+        "options": [
+          { "selected": true, "text": "prod", "value": "prod" },
+          { "selected": false, "text": "staging", "value": "staging" }
+        ],
+        "query": "prod,staging",
+        "skipUrlSync": false,
+        "type": "custom"
+      },
+      {
+        "current": { "selected": true, "text": "grafanacloud-wifihaven-prom", "value": "grafanacloud-prom" },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "datasource",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      }
+    ]
+  },
+  "time": { "from": "now-24h", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "WifiHaven — Support (Plain)",
+  "uid": "wifihaven-support",
+  "version": 1,
+  "weekStart": ""
+}

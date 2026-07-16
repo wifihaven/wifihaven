@@ -26,6 +26,8 @@ vi.mock('@/hooks/useAuth', () => ({
 let mockMe: { isOperator?: boolean } | undefined = undefined
 vi.mock('@/api/queries', () => ({
   useMe: () => ({ data: mockMe }),
+  // #2199: Layout mounts SupportWidget, which reads the widget identity. Dark by default in tests.
+  useSupportIdentity: () => ({ data: undefined }),
 }))
 
 import { Layout } from './Layout'

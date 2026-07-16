@@ -13,6 +13,7 @@ import type {
   UpsertAppAssignmentRequest, UpsertDeviceRequest, UpsertProfileRequest, GrantExtensionRequest,
   UsageSeriesBatchResponse, UsageSeriesResponse, User,
   BillingStatusResponse, BillingRedirect,
+  SupportIdentityResponse,
 } from '@/types/api'
 
 // VITE_API_BASE_URL is empty by default (relative path — SPA served from the
@@ -544,6 +545,11 @@ export const api = {
     status: () => req<BillingStatusResponse>('GET', '/billing'),
     checkout: () => req<BillingRedirect>('POST', '/billing/checkout', {}),
     portal: () => req<BillingRedirect>('GET', '/billing/portal'),
+  },
+
+  // ── Support (#2199): server-signed Plain widget identity (admin) ─────────
+  support: {
+    identity: () => req<SupportIdentityResponse>('GET', '/support/identity'),
   },
 
   // ── Routers (admin) ────────────────────────────────────────────────────

@@ -391,6 +391,13 @@ object Main extends ZIOAppDefault {
       // state machine + the Notifier). Reads BetaCohortRepo/HouseholdBillingRepo/HouseholdRepo (from
       // Repos.all), the Notifier, and PolicyService (to rebuild permissive snapshots at flip).
       wifihaven.api.billing.FlipService.layer >+>
+      // #2199 (support intake B): Plain helpdesk integration. The SupportConfig slice + the external
+      // PlainClient (disabled no-op when no Plain API key — self-hosted / unconfigured ships dark) +
+      // the SupportService (household→customer mapping + server-signed widget identity; reads
+      // UserRepo/HouseholdRepo/HouseholdBillingRepo from Repos.all above).
+      ZLayer.fromZIO(ZIO.serviceWith[AppConfig](_.support)) >+>
+      wifihaven.api.support.PlainClient.layer >+>
+      wifihaven.api.support.SupportService.layer >+>
       // #1242: Prometheus publisher + snapshot listener, and JVM metrics collectors.
       MetricsRuntime.prometheus() >+>
       DefaultJvmMetrics.live
@@ -454,6 +461,9 @@ object Main extends ZIOAppDefault {
       // #2137: the cohort flip lifecycle service (shared with the BetaFlipJob forked in the run
       // scope). Surfaces the flip-window state to the SPA billing page.
       flipService          <- ZIO.service[wifihaven.api.billing.FlipService]
+      // #2199: the support integration service (server-signed widget identity + household→Plain
+      // customer mapping). Dark unless the Plain keys are set.
+      support              <- ZIO.service[wifihaven.api.support.SupportService]
       betaService = BetaService(
         betaRepo,
         householdRepo,
@@ -526,6 +536,9 @@ object Main extends ZIOAppDefault {
               wifihaven.api.billing.FlipService.FlipWindow(open = false, flipDate = None),
             ),
           ) ++
+          // #2199: admin-only server-signed Plain widget identity. Dark (returns {configured:false})
+          // until the operator sets the Plain widget app id + identity secret.
+          SupportRoutes.routes(auth, support) ++
           ProfileRoutes.routes(
             auth,
             profileRepo,
