@@ -88,15 +88,35 @@ Plain receives email via a Postmark inbound address it shows you under
    confirm link from there. (You can't click it in a normal mailbox because the mailbox
    *is* Plain.)
 3. **Back in Plain** (Settings → Email → Receiving emails): tick **"Inbound email
-   forwarding is set up"** → **Save and continue**, then complete **Sending emails** and
-   **Enable email**.
+   forwarding is set up"** → **Save and continue**, then do **Sending emails** (see the
+   outbound-DMARC requirement below) and **Enable email**.
 
-> **DNS caveat — keep exactly one apex SPF record.** The apex already has
-> `v=spf1 -all` (`infra/cloudflare/main.tf` `cloudflare_record.spf`). SPF is a *sending*
-> policy; Email Routing *receives* and forwards with its own return-path, so it doesn't
-> need the apex SPF. If Cloudflare offers to add an SPF/TXT to the apex, **skip it** — a
-> second apex `v=spf1` TXT is an SPF permerror. Only take the MX records. This is handled
-> in the #2198 Terraform; don't add SPF by hand in the dashboard.
+> **DNS is Terraform-managed — don't hand-edit in the dashboard.** The #2198 Terraform
+> already sets the apex SPF (`v=spf1 include:_spf.mx.cloudflare.net ~all`), the Cloudflare
+> MX (`route1/2/3.mx.cloudflare.net`), and the `cf2024-1` inbound DKIM. Keep exactly ONE
+> apex SPF record (a second apex `v=spf1` TXT is a permerror). Any new records go through
+> `infra/cloudflare/main.tf`, not the Cloudflare dashboard.
+
+### Outbound sending — strict DMARC needs per-domain DKIM ([#2247](https://github.com/wifihaven/wifihaven/issues/2247))
+
+Plain sends agent replies **as** `support@wifihaven.net` **and**
+`support@staging.wifihaven.net`, via Postmark, **direct to the recipient** (not through
+Cloudflare). Our DMARC is enforcing and strict:
+`_dmarc.wifihaven.net = v=DMARC1; p=reject; sp=reject; adkim=s; aspf=s` (staging has no
+`_dmarc` record, so it inherits `sp=reject` + strict alignment). Postmark's Return-Path is
+a Postmark subdomain, so **SPF won't strict-align** → **DKIM carries DMARC**, and under
+`adkim=s` the DKIM `d=` must **exactly** match the From domain. So at the **Sending
+emails** step:
+
+- Verify **both** `wifihaven.net` **and** `staging.wifihaven.net` as **separate** sending
+  domains in Plain/Postmark, each with its **own** DKIM:
+  - `support@wifihaven.net` → DKIM `d=wifihaven.net`
+  - `support@staging.wifihaven.net` → DKIM `d=staging.wifihaven.net`
+  Verifying only the apex means **staging replies get `p=reject`'d**.
+- For each domain, copy the **DKIM TXT** + **custom Return-Path (CNAME)** values Plain
+  shows, and hand them to the #2198 inbound-DNS session — they go into
+  `infra/cloudflare/main.tf` (same pattern as the Resend records; selectors differ, so no
+  conflict). Track under [#2247](https://github.com/wifihaven/wifihaven/issues/2247).
 
 ---
 
