@@ -152,12 +152,20 @@ services:
         sync: false
       - key: GRAFANA_CLOUD_LOKI_PASSWORD
         sync: false
+      # #2250: single per-environment SPA origin. The beta-invite link, Stripe
+      # Checkout/Portal return, and the alert/email "review in dashboard" link all
+      # derive from this in entrypoint.sh (each keeps its own override, but staging
+      # sets only this one). Before #2250 the beta invite base had no env binding
+      # and the email base no staging value, so both sent staging users to the prod
+      # SPA. Prod sets the same key to https://app.wifihaven.net below.
+      - key: WIFIHAVEN_APP_BASE_URL
+        value: "https://app-staging.wifihaven.net"
       # #2135: Stripe billing (test mode on staging). Secrets (key + webhook signing
       # secret) are Render-managed sync:false — never committed. Price ids + promo
       # code are also sync:false because they differ between Stripe test and live
       # modes. Empty secretKey disables billing (self-hosted default); staging sets
-      # the test-mode values out of band. appBaseUrl points Checkout/Portal returns
-      # back at the staging SPA.
+      # the test-mode values out of band. Checkout/Portal returns resolve to the
+      # staging SPA via the shared WIFIHAVEN_APP_BASE_URL above (#2250).
       - key: WIFIHAVEN_STRIPE_SECRET_KEY
         sync: false
       - key: WIFIHAVEN_STRIPE_WEBHOOK_SECRET
@@ -168,8 +176,6 @@ services:
         sync: false
       - key: WIFIHAVEN_STRIPE_FOUNDING_PROMO
         sync: false
-      - key: WIFIHAVEN_STRIPE_APP_BASE_URL
-        value: "https://app-staging.wifihaven.net"
       # #578: outbound email for block-page kid→parent access-request notifications
       # on STAGING. Same sync:false pattern as prod below — OFF until BOTH secrets
       # are set in the staging Render dashboard (entrypoint.sh renders them into the
@@ -321,10 +327,17 @@ services:
         sync: false
       - key: GRAFANA_CLOUD_LOKI_PASSWORD
         sync: false
+      # #2250: single per-environment SPA origin (see staging block). Beta-invite,
+      # Stripe Checkout/Portal return, and alert/email dashboard links all derive
+      # from this in entrypoint.sh. Matches the code default, so this is also what
+      # self-hosted/unset uses.
+      - key: WIFIHAVEN_APP_BASE_URL
+        value: "https://app.wifihaven.net"
       # #2135: Stripe billing (LIVE mode on prod). Secrets (key + webhook signing
       # secret) are Render-managed sync:false — never committed. Price ids + promo
       # code are also sync:false (live-mode values differ from staging's test-mode).
-      # appBaseUrl points Checkout/Portal returns back at the prod SPA apex.
+      # Checkout/Portal returns resolve to the prod SPA apex via the shared
+      # WIFIHAVEN_APP_BASE_URL above (#2250).
       - key: WIFIHAVEN_STRIPE_SECRET_KEY
         sync: false
       - key: WIFIHAVEN_STRIPE_WEBHOOK_SECRET
@@ -335,8 +348,6 @@ services:
         sync: false
       - key: WIFIHAVEN_STRIPE_FOUNDING_PROMO
         sync: false
-      - key: WIFIHAVEN_STRIPE_APP_BASE_URL
-        value: "https://app.wifihaven.net"
       # #578: outbound email for block-page kid→parent access-request notifications.
       # OFF until BOTH secrets are set in the Render dashboard (sync:false = declared
       # here, value entered out of band; entrypoint.sh renders them into the config's
