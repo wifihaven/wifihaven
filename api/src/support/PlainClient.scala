@@ -137,29 +137,51 @@ object PlainClient {
         |  upsertCustomer(input: $input) { customer { id } error { message } }
         |}""".stripMargin
 
+    // `onCreate` and `onUpdate` are DIFFERENT Plain input types (`UpsertCustomerOnCreateInput` vs
+    // `UpsertCustomerOnUpdateInput`), so they take different field shapes — see the two builders
+    // below. Sending the create shape to onUpdate is exactly what 400'd on staging (#2253).
     private def upsertCustomerVars(req: PlainCustomerUpsert): Json =
       Json.Obj(
         "input" -> Json.Obj(
           "identifier" -> Json.Obj("externalId" -> Json.Str(req.externalId)),
-          "onCreate"   -> customerFields(req),
-          "onUpdate"   -> customerFields(req),
+          "onCreate"   -> customerCreateFields(req),
+          "onUpdate"   -> customerUpdateFields(req),
         ),
       )
 
-    // The Plain customer field block. `fullName` + `externalId` + `email` identify; `tenantIdentifier`
-    // carries the household (household-gating). Sent for both onCreate and onUpdate so an upsert
-    // keeps the mapping current.
+    // Plain's `EmailAddressInput` — `{ email, isVerified }`. Shared by onCreate and onUpdate.
+    private def emailInput(email: String): Json =
+      Json.Obj("email" -> Json.Str(email), "isVerified" -> Json.Bool(true))
+
+    // `UpsertCustomerOnCreateInput` (Plain schema, team-plain/typescript-sdk src/graphql/types.ts):
+    //   fullName: String            — plain scalar
+    //   email: EmailAddressInput     — { email, isVerified }
+    //   tenantIdentifiers: [TenantIdentifierInput]  — PLURAL, a LIST of { externalId } (household id).
+    // The tenant list is what scopes the customer to the household (household-gating); it lives ONLY
+    // on the create input — Plain's update input has no tenantIdentifiers field (membership is set at
+    // create), so re-asserting it on update is a schema error (#2253).
     // TODO(#2240): `req.attributes` (plan/founding/householdName) are NOT sent here — Plain custom
     // fields need pre-registered field ids, a go-live provisioning step. Wire them into the mutation
     // once the operator registers the fields so entitlement context reaches Plain (#2199 scope 3).
-    private def customerFields(req: PlainCustomerUpsert): Json =
+    private def customerCreateFields(req: PlainCustomerUpsert): Json =
       Json.Obj(
-        "fullName"         -> Json.Str(req.fullName),
-        "email"            -> Json.Obj(
-          "email"      -> Json.Str(req.email),
-          "isVerified" -> Json.Bool(true),
+        "fullName"          -> Json.Str(req.fullName),
+        "email"             -> emailInput(req.email),
+        "tenantIdentifiers" -> Json.Arr(
+          Json.Obj("externalId" -> Json.Str(req.tenantIdentifier)),
         ),
-        "tenantIdentifier" -> Json.Obj("externalId" -> Json.Str(req.tenantIdentifier)),
+      )
+
+    // `UpsertCustomerOnUpdateInput` (same source): every field is optional and WRAPPED —
+    //   fullName: StringInput        — { value: String }, NOT a bare scalar (this was the second
+    //                                  #2253 400, on the onUpdate path)
+    //   email: EmailAddressInput     — { email, isVerified }
+    // There is NO tenantIdentifiers on the update input, so it is deliberately omitted — the tenant
+    // mapping is carried by onCreate above and persists across upserts.
+    private def customerUpdateFields(req: PlainCustomerUpsert): Json =
+      Json.Obj(
+        "fullName" -> Json.Obj("value" -> Json.Str(req.fullName)),
+        "email"    -> emailInput(req.email),
       )
 
     def upsertCustomer(req: PlainCustomerUpsert): UIO[PlainOutcome] =
