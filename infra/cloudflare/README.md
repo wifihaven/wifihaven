@@ -11,6 +11,18 @@ Declarative config for everything Cloudflare-side (#613):
 - DNS-only CNAMEs: `api.wifihaven.net`, `api-staging.wifihaven.net` → Render.
 - SPF TXT record + the `e2e-brand` / `e2e-mid` / `e2e-edge` test-fixture
   CNAME chain (#1351).
+- Resend sending records on `send.wifihaven.net` (DKIM/MX/SPF, #578/#2196).
+- **Email Routing** (#2198): forwards `support@wifihaven.net` into WifiHaven's
+  Plain inbox (Postmark inbound address). Three resources —
+  `cloudflare_email_routing_settings` (enables routing on the zone),
+  `cloudflare_email_routing_address` (the Plain destination), and
+  `cloudflare_email_routing_rule` (the `to` → forward rule). The
+  `route1/2/3.mx.cloudflare.net` MX records are provisioned by Cloudflare Email
+  Routing itself with zone-assigned priorities — they are **not** authored here
+  and do not appear in Terraform state. Two operator steps remain after apply:
+  (1) confirm the Cloudflare token carries Email Routing edit scope (or apply
+  from the dash/CLI), and (2) click the destination-verification link
+  Cloudflare emails to the Plain inbox.
 
 **Not managed here**: the zone itself (added once via the dash; NS flip at the
 registrar is a one-shot manual step), and the GitHub repo secrets.
