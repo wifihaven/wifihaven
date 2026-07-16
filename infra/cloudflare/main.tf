@@ -219,7 +219,7 @@ resource "cloudflare_email_routing_address" "plain_inbound" {
 # Forward support@wifihaven.net → the Plain inbound address above.
 resource "cloudflare_email_routing_rule" "support_to_plain" {
   zone_id = var.zone_id
-  name    = "support@wifihaven.net → Plain (#2198)"
+  name    = "support@wifihaven.net -> Plain (#2198)"
   enabled = true
 
   matcher {
