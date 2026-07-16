@@ -131,7 +131,7 @@ identity. You don't wire any of that; you only provide the App ID + identity sec
    | `customer:read` | look up the household by `tenantIdentifier`/`externalId` for draft context | #2200 |
    | `thread:create` | `createThread` — the `PlainClient.writeThread` seam | #2200 |
    | `thread:reply` | post the AI-drafted reply into the thread | #2200 |
-   | `threadEvent:create` + `threadEvent:read` | post the draft as an AI-labeled note/event (if #2200 uses a note vs an unsent reply) | #2200 |
+   | `threadEvent:create` | post the draft as an AI-labeled note/event (if #2200 uses a note vs an unsent reply) | #2200 |
 
    **Strict minimum for what's merged today (#2199):** just `customer:create` +
    `customer:edit`. **Recommended:** grant the full set now — the key is shown once and
