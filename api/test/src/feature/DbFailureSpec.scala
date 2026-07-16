@@ -211,7 +211,7 @@ object DbFailureSpec extends ZIOSpecDefault {
       throwing
     def stats                                                                           = throwing
     def topBlocked(h: Int, l: Int)                                                      = throwing
-    def lastSeenByMacSince(since: Instant)                                              = throwing
+    def lastSeenByMacSince(since: Instant, household: Option[HouseholdId] = None)       = throwing
     def findRecentFqdnFor(r: RouterId, ip: IpAddress, since: Instant)                   = throwing
     def findRecentFqdnForBatch(r: RouterId, ips: List[IpAddress], since: Instant)       = throwing
     def backfillResolvedFor(r: RouterId, ip: IpAddress, fqdn: Hostname, since: Instant) =
