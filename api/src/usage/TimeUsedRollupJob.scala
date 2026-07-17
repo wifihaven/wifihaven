@@ -177,8 +177,8 @@ object TimeUsedRollupJob {
   ): Task[Int] = for {
     settings <- hs.get
     today = PolicyService.householdLocalDate(now, settings)
-    profiles <- profileRepo.listAll
-    devices  <- deviceRepo.listAll
+    profiles <- profileRepo.listAllAcrossHouseholds
+    devices  <- deviceRepo.listAllAcrossHouseholds
     atlsP    <- ZIO.foreach(profiles)(p => appTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
     presence <- trafficRepo.listPresenceRows(devices.map(_.mac), today)
     ambient  <- ambientRepo.gateFor(settings, today)

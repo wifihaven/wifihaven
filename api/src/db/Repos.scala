@@ -232,12 +232,20 @@ trait UserProfileRepo {
 trait ProfileRepo {
 
   /**
+   * #2257 (multi-tenant hardening, epic #2085/#622): the CROSS-TENANT profile read — non-global
+   * profiles across EVERY household. Renamed from `listAll` so the intent is unmissable in review:
+   * a request handler or SPA push builder must NEVER call this (it would leak another household's
+   * profiles, the #2251/#2120 class). Only genuinely all-tenant background jobs (rollups, ambient
+   * learn) and the internal `TimeStatusService` batch paths (which key results by `ProfileId` and
+   * let the caller filter by household) may use it. Everything user-facing reads
+   * [[listAllForHousehold]] instead.
+   *
    * Non-global profiles only. The `is_global=TRUE` sentinel (#1771) is filtered out so it never
    * appears on `GET /api/profiles`, role-access enumerations, or any user-facing listing — it is a
    * wire-shape mechanism, not an authored profile. The snapshot path consumes
    * [[listAllIncludingGlobal]].
    */
-  def listAll: Task[List[Profile]]
+  def listAllAcrossHouseholds: Task[List[Profile]]
 
   /** All profiles, including the global sentinel. Used by `PolicyService.snapshot` only. */
   def listAllIncludingGlobal: Task[List[Profile]]
@@ -432,14 +440,25 @@ trait AppTimeLimitRepo {
 }
 
 trait DeviceRepo {
-  def listAll: Task[List[Device]]
 
   /**
-   * #2107 (multi-tenant, epic #622): household-scoped [[listAll]] — devices belonging to
-   * `household`. Used by `PolicyService.snapshot(household)` and `decide(household, …)` so a router
-   * only sees / resolves its own household's devices (a same-MAC row in another household is never
-   * returned). For the single backfill household (`HouseholdId.Default`) this returns the same rows
-   * as the global variant.
+   * #2257 (multi-tenant hardening, epic #2085/#622): the CROSS-TENANT device read — EVERY
+   * household's devices in one list. Renamed from `listAll` so the intent is unmissable in review:
+   * a request handler or SPA push builder must NEVER call this (it would leak another household's
+   * devices, the #2251/#2120 class). Only genuinely all-tenant background jobs (rollups, ambient
+   * learn) and the internal `TimeStatusService` batch paths (which key results by `ProfileId` and
+   * let the caller filter by household) may use it. Everything user-facing reads
+   * [[listAllForHousehold]] instead.
+   */
+  def listAllAcrossHouseholds: Task[List[Device]]
+
+  /**
+   * #2107 (multi-tenant, epic #622): household-scoped [[listAllAcrossHouseholds]] — devices
+   * belonging to `household`. Used by `PolicyService.snapshot(household)` and `decide(household,
+   * …)` so a router only sees / resolves its own household's devices (a same-MAC row in another
+   * household is never returned), and by every user-facing route / SPA push builder so it can never
+   * read across the tenant boundary (#2257). For the single backfill household
+   * (`HouseholdId.Default`) this returns the same rows as the cross-tenant variant.
    */
   def listAllForHousehold(household: HouseholdId): Task[List[Device]]
   def findByMac(mac: MacAddress): Task[Option[Device]]
@@ -1241,7 +1260,7 @@ class ProfileRepoLive(xa: Transactor[Task]) extends ProfileRepo {
   // #1771: the global sentinel is filtered out of `listAll` so it never appears on
   // `GET /api/profiles` or any role-access enumeration. The snapshot path uses
   // [[listAllIncludingGlobal]] to fold the sentinel's rules into every other profile.
-  def listAll                                                    =
+  def listAllAcrossHouseholds                                    =
     DbMetrics.timed("profile.listAll")(
       sql"SELECT id,name,blocked_categories,paused,failure_mode,block_ip_only,cross_device_overlap_mode,pause_mode,default_deny,is_global FROM profiles WHERE is_global=FALSE ORDER BY id"
         .query[R]
@@ -1643,7 +1662,7 @@ class AppTimeLimitRepoLive(xa: Transactor[Task]) extends AppTimeLimitRepo {
 }
 
 class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
-  def listAll                                                       =
+  def listAllAcrossHouseholds                                       =
     DbMetrics.timed("device.listAll")(
       sql"SELECT d.id,d.mac,d.name,d.profile_id,p.name,d.last_seen_ip,d.last_seen_at::TEXT FROM devices d LEFT JOIN profiles p ON p.id=d.profile_id ORDER BY d.name"
         .query[

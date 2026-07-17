@@ -92,7 +92,7 @@ object MetricsSelfMetricsSpec
         routerRepo  <- ZIO.service[RouterRepo]
         auth        <- makeAuth
         token       <- auth.login("admin", "changeme").map(_.token.value)
-        profiles    <- profileRepo.listAll
+        profiles    <- profileRepo.listAllAcrossHouseholds
         kidsId = profiles.find(_.name == "Kids").get.id
         _ <- deviceRepo.upsert(MacAddress.unsafe(concreteMac), "iPad", Some(kidsId), "192.168.1.50")
 

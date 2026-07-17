@@ -146,7 +146,8 @@ class AppUsedRollupServiceLive(
         case Some(p) =>
           for {
             atls    <- appTimeLimitRepo.listForProfile(profileId)
-            devices <- deviceRepo.listAll.map(_.filter(_.profileId.contains(profileId)))
+            devices <- deviceRepo.listAllAcrossHouseholds
+              .map(_.filter(_.profileId.contains(profileId)))
             macs = devices.map(_.mac)
             raw     <- rolled.values.iterator.map(_.rolledThrough).minOption match {
               case Some(watermark) => trafficRepo.listPresenceRowsSince(macs, date, watermark)

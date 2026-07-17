@@ -41,7 +41,7 @@ object AppReconcilerSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
         _        <- cleanDb
         appRepo  <- ZIO.service[AppRepo]
         profileR <- ZIO.service[ProfileRepo]
-        profiles <- profileR.listAll
+        profiles <- profileR.listAllAcrossHouseholds
         kidsId   = profiles.find(_.name == "Kids").get.id
         adultsId = profiles.find(_.name == "Adults").get.id
         // 1. Operator-added canonical 'youtube' (no template_id). Operator added an extra host.
@@ -129,7 +129,7 @@ object AppReconcilerSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
         _        <- cleanDb
         appRepo  <- ZIO.service[AppRepo]
         profileR <- ZIO.service[ProfileRepo]
-        profiles <- profileR.listAll
+        profiles <- profileR.listAllAcrossHouseholds
         kidsId = profiles.find(_.name == "Kids").get.id
         id       <- appRepo.create(
           "YouTube",

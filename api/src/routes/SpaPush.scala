@@ -348,36 +348,44 @@ object SpaPush {
       periodStart: Instant,
       periodEnd: Instant,
   ): Task[Unit] =
-    registry.trafficUsageParamSets.flatMap { paramSets =>
+    registry.trafficUsageParamSets.flatMap { pairs =>
       ZIO
-        .when(paramSets.nonEmpty) {
-          for {
-            devices  <- deviceRepo.listAll
-            profiles <- profileRepo.listAll
-            devByMac  = devices.iterator.map(d => d.mac -> d).toMap
-            profNames = profiles.iterator.map(p => p.id -> p.name).toMap
-            // App memberships are only needed if some subscribed param-set groups by app; load once.
-            wantsApp  = paramSets.exists(p =>
-              decodeParams(p).exists(_.groupBySet.contains(UsageTraffic.GroupBy.App)),
-            )
-            appsByHost <-
-              if (wantsApp) loadAppsByHost(appRepo)
-              else ZIO.succeed(Map.empty[String, List[AppMembership]])
-            _          <- ZIO.foreachDiscard(paramSets.toList)(p =>
-              pushOneParamSet(
-                p,
-                registry,
-                trafficRepo,
-                rollupRepo,
-                devices,
-                devByMac,
-                profNames,
-                appsByHost,
-                periodStart,
-                periodEnd,
-              ),
-            )
-          } yield ()
+        .when(pairs.nonEmpty) {
+          // #2257: group the `(household, params)` subscription keys by household and build each
+          // head-bucket body from THAT household's SCOPED devices/profiles, delivered only within it
+          // — two households subscribed with identical params each see their own traffic, never one
+          // global body fanned out to both (the sibling of the #2120 `now` leak).
+          val byHousehold = pairs.groupBy(_._1).view.mapValues(_.map(_._2)).toMap
+          ZIO.foreachDiscard(byHousehold.toList) { case (household, paramSets) =>
+            for {
+              devices  <- deviceRepo.listAllForHousehold(household)
+              profiles <- profileRepo.listAllForHousehold(household)
+              devByMac  = devices.iterator.map(d => d.mac -> d).toMap
+              profNames = profiles.iterator.map(p => p.id -> p.name).toMap
+              // App memberships are only needed if some param-set groups by app; load once per hh.
+              wantsApp  = paramSets.exists(p =>
+                decodeParams(p).exists(_.groupBySet.contains(UsageTraffic.GroupBy.App)),
+              )
+              appsByHost <-
+                if (wantsApp) loadAppsByHost(appRepo)
+                else ZIO.succeed(Map.empty[String, List[AppMembership]])
+              _          <- ZIO.foreachDiscard(paramSets.toList)(p =>
+                pushOneParamSet(
+                  household,
+                  p,
+                  registry,
+                  trafficRepo,
+                  rollupRepo,
+                  devices,
+                  devByMac,
+                  profNames,
+                  appsByHost,
+                  periodStart,
+                  periodEnd,
+                ),
+              )
+            } yield ()
+          }
         }
         .unit
     }
@@ -389,6 +397,7 @@ object SpaPush {
    * empty head (never widens to the whole household — `macs = Nil` would mean "all" at the repo).
    */
   private def pushOneParamSet(
+      household: HouseholdId,
       params: Json,
       registry: SpaWsRegistry,
       trafficRepo: TrafficReportRepo,
@@ -484,7 +493,7 @@ object SpaPush {
             )
           }
         computeBody.flatMap(body =>
-          registry.fanOutTrafficUsage(params, body.toJsonAST.getOrElse(Json.Obj())),
+          registry.fanOutTrafficUsage(household, params, body.toJsonAST.getOrElse(Json.Obj())),
         )
     }
 
@@ -521,36 +530,52 @@ object SpaPush {
             now      <- clock.instant
             settings <- deps.hsRepo.get
             date = PolicyService.householdLocalDate(now, settings)
-            states   <- deps.timeStatusService.dayStateAll(now, date, settings)
-            ambient  <- deps.ambientRepo.gateFor(settings, date)
-            profiles <- profileRepo.listAll
-            devices  <- deviceRepo.listAll
-            devsByPid = devices.groupBy(_.profileId).collect { case (Some(pid), ds) => pid -> ds }
-            // ONE full-day presence load across every device, sliced per profile below — the
-            // per-profile re-scan was the #2167 pool-starvation amplifier.
-            allPresence   <- trafficRepo.listPresenceRows(devices.map(_.mac), date)
-            // The full per-profile body, in profileRepo.listAll order (the GET's order). Built once;
-            // each recipient receives its role-visible subset of it (design §4.4).
-            rows          <- ZIO.foreach(profiles) { p =>
-              val devs = devsByPid.getOrElse(p.id, Nil)
-              val macs = devs.map(_.mac).toSet
-              buildOneTimeStatus(
-                p,
-                devs,
-                states.get(p.id),
-                allPresence.filter(r => macs.contains(r.mac)),
-                appTimeLimitRepo,
-                date,
-                settings,
-                ambient,
-              )
-                .map(p.id -> _)
-            }
-            visibleByUser <- resolveVisibleSets(recipients, deps.userProfileRepo)
-            _             <- ZIO.foreachDiscard(recipients) { r =>
-              val visible = visibleByUser(visibilityKey(r))
-              val body    = rows.collect { case (pid, ts) if visible.forall(_.contains(pid)) => ts }
-              registry.deliver(r.id, "timeStatus", body.toJsonAST.getOrElse(Json.Arr()))
+            // `dayStateAll` is keyed by `ProfileId` and spans tenants (an internal batch, #2257); we
+            // only ever look up `states.get(p.id)` for the CURRENT household's profiles below, so no
+            // other household's state is ever emitted.
+            states  <- deps.timeStatusService.dayStateAll(now, date, settings)
+            ambient <- deps.ambientRepo.gateFor(settings, date)
+            // #2257: build + deliver PER HOUSEHOLD — a household-B admin subscribed to `timeStatus`
+            // must never receive household A's `ProfileTimeStatus[]` (the sibling of the #2120 `now`
+            // leak). Group recipients by household, scope the profile/device/presence reads to that
+            // household, and role-filter WITHIN it (admin/adult see all of THEIR household; a child
+            // only their linked profiles — design §4.4).
+            byHousehold = recipients.groupBy(_.household)
+            _ <- ZIO.foreachDiscard(byHousehold.toList) { case (household, hhRecipients) =>
+              for {
+                profiles <- profileRepo.listAllForHousehold(household)
+                devices  <- deviceRepo.listAllForHousehold(household)
+                devsByPid = devices.groupBy(_.profileId).collect { case (Some(pid), ds) =>
+                  pid -> ds
+                }
+                // ONE full-day presence load across this household's devices, sliced per profile
+                // below — the per-profile re-scan was the #2167 pool-starvation amplifier.
+                allPresence <- trafficRepo.listPresenceRows(devices.map(_.mac), date)
+                // This household's per-profile body, in listAllForHousehold order (the GET's order).
+                // Built once; each recipient receives its role-visible subset of it (design §4.4).
+                rows          <- ZIO.foreach(profiles) { p =>
+                  val devs = devsByPid.getOrElse(p.id, Nil)
+                  val macs = devs.map(_.mac).toSet
+                  buildOneTimeStatus(
+                    p,
+                    devs,
+                    states.get(p.id),
+                    allPresence.filter(r => macs.contains(r.mac)),
+                    appTimeLimitRepo,
+                    date,
+                    settings,
+                    ambient,
+                  )
+                    .map(p.id -> _)
+                }
+                visibleByUser <- resolveVisibleSets(hhRecipients, deps.userProfileRepo)
+                _             <- ZIO.foreachDiscard(hhRecipients) { r =>
+                  val visible = visibleByUser(visibilityKey(r))
+                  val body    =
+                    rows.collect { case (pid, ts) if visible.forall(_.contains(pid)) => ts }
+                  registry.deliver(r.id, "timeStatus", body.toJsonAST.getOrElse(Json.Arr()))
+                }
+              } yield ()
             }
           } yield ()
         }
@@ -597,6 +622,12 @@ object SpaPush {
    * renders even for non-UTC households (a UTC `clock.today` would skew a tz-crossing household by
    * a day until refetch). A child only receives a profileId it is linked to (design §4.4). No
    * subscriber → no query.
+   *
+   * #2257 (multi-tenant hardening): the subscribed `profileId` is ALSO gated to the recipient's own
+   * household — a recipient (even an admin) must never receive app usage for another household's
+   * profile (the sibling of the #2120 `now` leak). Group by household, gate each subscribed pid to
+   * that household's profile-id set, and build each body over that household's SCOPED device read
+   * (via `buildUsageByApp(household)`).
    */
   private def pushAppUsage(
       registry: SpaWsRegistry,
@@ -612,45 +643,59 @@ object SpaPush {
       ZIO
         .when(recipients.nonEmpty) {
           for {
-            visibleByUser <- resolveVisibleSets(recipients, deps.userProfileRepo)
-            // (recipient, subscribed profileId) pairs the recipient is entitled to see.
-            entitled = recipients.flatMap { r =>
-              decodeAppUsageProfileId(r.params).flatMap { pid =>
-                val visible = visibleByUser(visibilityKey(r))
-                Option.when(visible.forall(_.contains(pid)))(r -> pid)
-              }
-            }
-            now <- clock.instant
+            now      <- clock.instant
             settings <- deps.hsRepo.get
-            today        = PolicyService.householdLocalDate(now, settings)
-            distinctPids = entitled.map(_._2).distinct
-            // Build each entitled profile's body ONCE; a NotFound/etc. drops that profile's push only.
-            bodies <- ZIO.foreach(distinctPids) { pid =>
-              UsageRoutes
-                .buildUsageByApp(
-                  pid,
-                  today,
-                  today,
-                  profileRepo,
-                  deviceRepo,
-                  trafficRepo,
-                  appRepo,
-                  appTimeLimitRepo,
-                  settings,
-                  deps.ambientRepo,
-                )
-                .map(b => Some(pid -> b))
-                .catchAll(e =>
-                  ZIO.logWarning(s"spa ws push: appUsage build failed for $pid: $e").as(None),
-                )
-            }
-            byPid = bodies.flatten.toMap
-            _      <- ZIO.foreachDiscard(entitled) { case (r, pid) =>
-              byPid.get(pid) match {
-                case Some(body) =>
-                  registry.deliver(r.id, "appUsage", body.toJsonAST.getOrElse(Json.Obj()))
-                case None       => ZIO.unit
-              }
+            today       = PolicyService.householdLocalDate(now, settings)
+            byHousehold = recipients.groupBy(_.household)
+            _ <- ZIO.foreachDiscard(byHousehold.toList) { case (household, hhRecipients) =>
+              for {
+                // The profile-id set for THIS household — the gate that keeps a subscribed pid from
+                // another household from ever being served (#2257).
+                hhProfileIds  <- profileRepo.listAllForHousehold(household).map(_.map(_.id).toSet)
+                visibleByUser <- resolveVisibleSets(hhRecipients, deps.userProfileRepo)
+                // (recipient, subscribed profileId) pairs the recipient is entitled to see: the pid
+                // must be in the recipient's household AND role-visible (a child only their linked
+                // profiles).
+                entitled     = hhRecipients.flatMap { r =>
+                  decodeAppUsageProfileId(r.params).flatMap { pid =>
+                    val visible = visibleByUser(visibilityKey(r))
+                    Option.when(hhProfileIds.contains(pid) && visible.forall(_.contains(pid)))(
+                      r -> pid,
+                    )
+                  }
+                }
+                distinctPids = entitled.map(_._2).distinct
+                // Build each entitled profile's body ONCE over this household's scoped reads; a
+                // NotFound/etc. drops that profile's push only.
+                bodies <- ZIO.foreach(distinctPids) { pid =>
+                  UsageRoutes
+                    .buildUsageByApp(
+                      pid,
+                      today,
+                      today,
+                      household,
+                      profileRepo,
+                      deviceRepo,
+                      trafficRepo,
+                      appRepo,
+                      appTimeLimitRepo,
+                      settings,
+                      deps.ambientRepo,
+                    )
+                    .map(b => Some(pid -> b))
+                    .catchAll(e =>
+                      ZIO.logWarning(s"spa ws push: appUsage build failed for $pid: $e").as(None),
+                    )
+                }
+                byPid = bodies.flatten.toMap
+                _      <- ZIO.foreachDiscard(entitled) { case (r, pid) =>
+                  byPid.get(pid) match {
+                    case Some(body) =>
+                      registry.deliver(r.id, "appUsage", body.toJsonAST.getOrElse(Json.Obj()))
+                    case None       => ZIO.unit
+                  }
+                }
+              } yield ()
             }
           } yield ()
         }

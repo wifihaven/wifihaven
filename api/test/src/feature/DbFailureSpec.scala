@@ -134,7 +134,7 @@ object DbFailureSpec extends ZIOSpecDefault {
   }
 
   private def brokenDeviceRepo: DeviceRepo = new DeviceRepo {
-    def listAll                                                       = throwing
+    def listAllAcrossHouseholds                                       = throwing
     def listAllForHousehold(household: HouseholdId)                   = throwing
     def findByMac(mac: MacAddress)                                    = throwing
     def findByMacInHousehold(mac: MacAddress, household: HouseholdId) = throwing

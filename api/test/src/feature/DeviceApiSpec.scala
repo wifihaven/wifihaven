@@ -38,7 +38,7 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         deviceRepo  <- ZIO.service[DeviceRepo]
         auth        <- makeAuth
         token       <- auth.login("admin", "changeme").map(_.token)
-        profiles    <- profileRepo.listAll
+        profiles    <- profileRepo.listAllAcrossHouseholds
         kidsId = profiles.find(_.name == "Kids").get.id
         userProfileRepo <- ZIO.service[UserProfileRepo]
         routes = DeviceRoutes.routes(auth, deviceRepo, userProfileRepo, profileRepo)
@@ -75,7 +75,7 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         deviceRepo  <- ZIO.service[DeviceRepo]
         auth        <- makeAuth
         token       <- auth.login("admin", "changeme").map(_.token)
-        profiles    <- profileRepo.listAll
+        profiles    <- profileRepo.listAllAcrossHouseholds
         kidsId = profiles.find(_.name == "Kids").get.id
         userProfileRepo <- ZIO.service[UserProfileRepo]
         routes = DeviceRoutes.routes(auth, deviceRepo, userProfileRepo, profileRepo)
@@ -99,7 +99,7 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         deviceRepo  <- ZIO.service[DeviceRepo]
         auth        <- makeAuth
         token       <- auth.login("admin", "changeme").map(_.token)
-        profiles    <- profileRepo.listAll
+        profiles    <- profileRepo.listAllAcrossHouseholds
         kidsId = profiles.find(_.name == "Kids").get.id
         mac    = "11:22:33:44:55:66"
         _ <- deviceRepo.upsert(MacAddress.unsafe(mac), "OldDevice", Some(kidsId), "192.168.1.50")
@@ -127,7 +127,7 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         routerRepo  <- ZIO.service[RouterRepo]
         auth        <- makeAuth
         token       <- auth.login("admin", "changeme").map(_.token)
-        profiles    <- profileRepo.listAll
+        profiles    <- profileRepo.listAllAcrossHouseholds
         kidsId = profiles.find(_.name == "Kids").get.id
         mac    = MacAddress.unsafe("aa:bb:cc:11:22:33")
         host   = HostId.Fqdn(Hostname.unsafe("youtube.com"))
@@ -173,7 +173,7 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
         deviceRepo  <- ZIO.service[DeviceRepo]
-        profiles    <- profileRepo.listAll
+        profiles    <- profileRepo.listAllAcrossHouseholds
         kidsId = profiles.find(_.name == "Kids").get.id
         mac    = "cc:dd:ee:ff:00:11"
         _      <- deviceRepo.upsert(MacAddress.unsafe(mac), "Laptop", Some(kidsId), "192.168.1.5")
@@ -189,7 +189,7 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
         deviceRepo  <- ZIO.service[DeviceRepo]
-        profiles    <- profileRepo.listAll
+        profiles    <- profileRepo.listAllAcrossHouseholds
         kidsId   = profiles.find(_.name == "Kids").get.id
         adultsId = profiles.find(_.name == "Adults").get.id
         mac      = "aa:bb:cc:00:00:01"
@@ -234,7 +234,7 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         deviceRepo  <- ZIO.service[DeviceRepo]
         auth        <- makeAuth
         token       <- auth.login("admin", "changeme").map(_.token)
-        profiles    <- profileRepo.listAll
+        profiles    <- profileRepo.listAllAcrossHouseholds
         kidsId = profiles.find(_.name == "Kids").get.id
         mac    = "aa:bb:cc:00:00:20"
         _               <- deviceRepo.upsert(MacAddress.unsafe(mac), "OldName", Some(kidsId), "")
@@ -258,7 +258,7 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         deviceRepo  <- ZIO.service[DeviceRepo]
         auth        <- makeAuth
         token       <- auth.login("admin", "changeme").map(_.token)
-        profiles    <- profileRepo.listAll
+        profiles    <- profileRepo.listAllAcrossHouseholds
         kidsId   = profiles.find(_.name == "Kids").get.id
         adultsId = profiles.find(_.name == "Adults").get.id
         mac      = "aa:bb:cc:00:00:21"
@@ -290,7 +290,7 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         userRepo    <- ZIO.service[UserRepo]
         upRepo      <- ZIO.service[UserProfileRepo]
         auth        <- makeAuth
-        profiles    <- profileRepo.listAll
+        profiles    <- profileRepo.listAllAcrossHouseholds
         kidsId   = profiles.find(_.name == "Kids").get.id
         adultsId = profiles.find(_.name == "Adults").get.id
         mac      = "aa:bb:cc:00:00:22"

@@ -42,7 +42,7 @@ object PolicySnapshotBlockIpOnlySpec
       for {
         _        <- cleanDb
         pr       <- ZIO.service[ProfileRepo]
-        profiles <- pr.listAll
+        profiles <- pr.listAllAcrossHouseholds
       } yield assertTrue(profiles.forall(!_.blockIpOnly))
     },
     test("snapshot carries each profile's blockIpOnly value") {
@@ -59,7 +59,7 @@ object PolicySnapshotBlockIpOnlySpec
         ar     <- ZIO.service[AppRepo]
         clock  <- ZIO.service[Clock]
         svc = PolicyServiceLive(pr, hsr, tlr, atlr, dr, blr, trRepo, er, ar, clock)
-        profiles0 <- pr.listAll
+        profiles0 <- pr.listAllAcrossHouseholds
         kidsId   = profiles0.find(_.name == "Kids").get.id
         adultsId = profiles0.find(_.name == "Adults").get.id
         _    <- pr.update(profiles0.find(_.name == "Kids").get.copy(blockIpOnly = true))
@@ -82,7 +82,7 @@ object PolicySnapshotBlockIpOnlySpec
         ar     <- ZIO.service[AppRepo]
         clock  <- ZIO.service[Clock]
         svc = PolicyServiceLive(pr, hsr, tlr, atlr, dr, blr, trRepo, er, ar, clock)
-        profiles0 <- pr.listAll
+        profiles0 <- pr.listAllAcrossHouseholds
         kids = profiles0.find(_.name == "Kids").get
         _     <- pr.update(kids.copy(blockIpOnly = false))
         snap1 <- svc.snapshot
@@ -97,7 +97,7 @@ object PolicySnapshotBlockIpOnlySpec
         tlRepo      <- ZIO.service[TimeLimitRepo]
         auth        <- makeAuth
         token       <- auth.login("admin", "changeme").map(_.token.value)
-        profiles0   <- profileRepo.listAll
+        profiles0   <- profileRepo.listAllAcrossHouseholds
         kidsId = profiles0.find(_.name == "Kids").get.id
         userProfileRepo <- ZIO.service[UserProfileRepo]
         userRepoSvc     <- ZIO.service[UserRepo]
@@ -171,7 +171,7 @@ object PolicySnapshotBlockIpOnlySpec
         }
         _ <- routes.runZIO(mkReq("Defaulted", None))
         _        <- routes.runZIO(mkReq("Strict", Some(true)))
-        profiles <- profileRepo.listAll
+        profiles <- profileRepo.listAllAcrossHouseholds
         defaulted = profiles.find(_.name == "Defaulted").get
         strict    = profiles.find(_.name == "Strict").get
       } yield assertTrue(!defaulted.blockIpOnly) && assertTrue(strict.blockIpOnly)

@@ -74,7 +74,7 @@ object UserPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
       for {
         id          <- setupUser(role = "adult")
         profileRepo <- ZIO.service[ProfileRepo]
-        profiles    <- profileRepo.listAll
+        profiles    <- profileRepo.listAllAcrossHouseholds
         kidsId = profiles.find(_.name == "Kids").get.id
         (routes, tk) <- routesAndToken
         resp         <- patch(
@@ -102,7 +102,7 @@ object UserPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         hash        <- auth.hashPassword("secret")
         id          <- userRepo.create("alice", hash, "adult")
         _           <- userRepo.clearMustChangePassword(id)
-        profiles    <- profileRepo.listAll
+        profiles    <- profileRepo.listAllAcrossHouseholds
         kidsId = profiles.find(_.name == "Kids").get.id
         _     <- upRepo.setProfilesForUser(id, List(kidsId))
         token <- auth.login("admin", "changeme").map(_.token.value)
@@ -128,7 +128,7 @@ object UserPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         id           <- userRepo.create("alice", hash, "adult")
         _            <- userRepo.clearMustChangePassword(id)
         profileRepo2 <- ZIO.service[ProfileRepo]
-        profiles     <- profileRepo2.listAll
+        profiles     <- profileRepo2.listAllAcrossHouseholds
         kidsId = profiles.find(_.name == "Kids").get.id
         _     <- upRepo.setProfilesForUser(id, List(kidsId))
         token <- auth.login("admin", "changeme").map(_.token.value)

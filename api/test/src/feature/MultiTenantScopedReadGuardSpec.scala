@@ -22,6 +22,12 @@ import scala.jdk.CollectionConverters.*
  * The set is allowed to SHRINK freely (⊆, not ==): as #2126/#2120 scope these reads the scan finds
  * fewer, which stays a subset — the guard never blocks the tracked fixes from landing.
  *
+ * #2257 shrank it: every user-facing `deviceRepo.listAll` / `profileRepo.listAll` (the #2120/#2251
+ * leak class) is now household-scoped (`listAllForHousehold`) in the request handlers + SPA push
+ * builders, and the bare cross-tenant methods were renamed `listAllAcrossHouseholds` so no route
+ * can reach them by accident. Only the still-tracked non-device/profile reads remain in the
+ * allowlist.
+ *
  * Scope of the scan (deliberately narrow, to stay low-false-positive):
  *   - Only the `.scala` files in `api/src/routes` (the user-facing plane; the snapshot/policy plane
  *     already uses `listAllIncludingGlobalForHousehold`).
@@ -73,23 +79,20 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
    * tracked for scoping by #2126 (usage/analytics/push + named_schedules) or #2120 (ws push).
    */
   private val Allowlist: Map[String, Set[String]] = Map(
-    // #2126 — SPA dashboard "now" view: device/profile/app-limit reads.
-    "DashboardNowRoutes.scala" -> Set(
-      "deviceRepo.listAll",
-      "profileRepo.listAll",
-      "appTimeLimitRepo.listAll",
-    ),
-    // #2126 — admin debug surface enumerates all devices.
-    "DebugRoutes.scala"        -> Set("deviceRepo.listAll"),
+    // #2126 — SPA dashboard "now" view: app-limit read. (#2251 scoped the device/profile reads to
+    // `listAllForHousehold(claims.hh)`; #2257 renamed the cross-tenant device/profile reads to
+    // `listAllAcrossHouseholds` so they can no longer appear here.)
+    "DashboardNowRoutes.scala" -> Set("appTimeLimitRepo.listAll"),
     // #2126 — user↔profile mappings; today filtered by the scoped `users` list it is joined against,
     // so not an active leak, but the read itself is unscoped (defense-in-depth follow-up).
     "Routes.scala"             -> Set("userProfileRepo.listAllMappings"),
     // #2126 — `named_schedules` has no household_id column yet; GET /api/schedules is unscoped.
     "ScheduleRoutes.scala"     -> Set("scheduleRepo.listAll"),
-    // #2120 / #2126 — the SPA-ws push builders read the whole fleet.
-    "SpaPush.scala"            -> Set("profileRepo.listAll", "deviceRepo.listAll"),
-    // #2126 — the usage/analytics endpoints scope by mac-resolution in a later wave (see #2174).
-    "UsageRoutes.scala"        -> Set("deviceRepo.listAll", "profileRepo.listAll"),
+    // #2257 — DebugRoutes / SpaPush / UsageRoutes previously held unscoped `deviceRepo.listAll` /
+    // `profileRepo.listAll`. Those are now either household-scoped (`listAllForHousehold`) in every
+    // request handler + SPA push builder, or renamed to the honestly-named `listAllAcrossHouseholds`
+    // (DebugRoutes, a loopback-only on-host operator dump) — none match this scan any more, so no
+    // allowlist entry is needed. The device/profile `listAll` methods themselves no longer exist.
   )
 
   private def householdRelevantReads(src: String): Set[String] =
@@ -115,7 +118,11 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
     test("the scan is non-vacuous — it finds the known tracked reads") {
       val all =
         routeFiles.flatMap(p => householdRelevantReads(new String(Files.readAllBytes(p)))).toSet
-      assertTrue(all.contains("scheduleRepo.listAll"), all.contains("deviceRepo.listAll"))
+      // #2257: `deviceRepo.listAll` / `profileRepo.listAll` no longer exist (scoped or renamed to
+      // `listAllAcrossHouseholds`), so the anchor moved to the still-tracked `scheduleRepo.listAll`
+      // (named_schedules, #2126) and `appTimeLimitRepo.listAll` (DashboardNow app-limit, #2126) —
+      // both non-catalog reads the scan must still see.
+      assertTrue(all.contains("scheduleRepo.listAll"), all.contains("appTimeLimitRepo.listAll"))
     },
     // The exemption for the global app catalog must actually fire (else it is dead config).
     test("appRepo.listAll (global catalog) is exempt, never flagged") {

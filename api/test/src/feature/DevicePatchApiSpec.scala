@@ -37,7 +37,7 @@ object DevicePatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
       _           <- cleanDb
       profileRepo <- ZIO.service[ProfileRepo]
       deviceRepo  <- ZIO.service[DeviceRepo]
-      profiles    <- profileRepo.listAll
+      profiles    <- profileRepo.listAllAcrossHouseholds
       pid = profiles.find(_.name == profileName).get.id
       _ <- deviceRepo.upsert(Mac, initialName, Some(pid), "")
     } yield pid
@@ -75,7 +75,7 @@ object DevicePatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
       for {
         _           <- setupDevice()
         profileRepo <- ZIO.service[ProfileRepo]
-        profiles    <- profileRepo.listAll
+        profiles    <- profileRepo.listAllAcrossHouseholds
         adultsId = profiles.find(_.name == "Adults").get.id
         (routes, tk) <- routesAndToken
         resp         <- patch(routes, tk, s"""{"name":"Tablet","profileId":${adultsId.value}}""")
@@ -140,7 +140,7 @@ object DevicePatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         upRepo      <- ZIO.service[UserProfileRepo]
         deviceRepo  <- ZIO.service[DeviceRepo]
         auth        <- makeAuth
-        profiles    <- profileRepo.listAll
+        profiles    <- profileRepo.listAllAcrossHouseholds
         kidsId   = profiles.find(_.name == "Kids").get.id
         adultsId = profiles.find(_.name == "Adults").get.id
         hash  <- auth.hashPassword("pass")

@@ -183,29 +183,36 @@ trait SpaWsRegistry {
   def fanOutStale(topic: StaleTopic, scope: Option[String]): UIO[Unit]
 
   /**
-   * #1971 (S4): the DISTINCT `trafficUsage` subscription param-sets across every connection that
-   * BOTH subscribed to `TrafficUsage` AND whose role may see it (§4.4 — `SpaTopic.visibleTo`). The
-   * [[SpaPush]] aggregator recomputes the head bucket ONCE per distinct param-set (design §5.3); an
-   * empty result means no subscriber, so no query runs ("don't compute what nobody watches"). The
-   * params are the verbatim `GET /api/usage/traffic` query params (§1.4 / §0.3), opaque here.
+   * #1971 (S4): the DISTINCT `(household, trafficUsage-param-set)` pairs across every connection
+   * that BOTH subscribed to `TrafficUsage` AND whose role may see it (§4.4 — `SpaTopic.visibleTo`).
+   * The [[SpaPush]] aggregator recomputes the head bucket ONCE per distinct pair (design §5.3),
+   * building each body from that HOUSEHOLD's scoped device/profile reads; an empty result means no
+   * subscriber, so no query runs ("don't compute what nobody watches"). The params are the verbatim
+   * `GET /api/usage/traffic` query params (§1.4 / §0.3), opaque here.
+   *
+   * #2257 (multi-tenant hardening): the `household` is part of the key so two households subscribed
+   * with IDENTICAL params (e.g. the default household-wide `{}`) each get a body built from THEIR
+   * OWN devices/profiles — never one global body fanned out to both (the #2251/#2120 leak class).
    */
-  def trafficUsageParamSets: UIO[Set[Json]]
+  def trafficUsageParamSets: UIO[Set[(HouseholdId, Json)]]
 
   /**
-   * #1971 (S4): push the live-edge `TrafficUsageResponse` computed for `params` to every connection
-   * whose `TrafficUsage` subscription params EQUAL `params` and whose role may see it (§4.4). The
-   * body is built ONCE by the caller ([[SpaPush]], via the shared `UsageTrafficQuery.aggregate` —
-   * the same query the `GET` runs, so the stream and the page can't disagree); `TrafficUsage` is
-   * visible only to admin/adult (full-visibility roles, exactly as the GET treats them), so one
-   * body is correct for every recipient and the role gate is the per-role filter. Latest-wins per
-   * param-set (design §6.3): a re-push carries the freshest head, never a backlog. Metered per send
-   * like [[deliver]].
+   * #1971 (S4): push the live-edge `TrafficUsageResponse` computed for `(household, params)` to
+   * every connection in THAT household whose `TrafficUsage` subscription params EQUAL `params` and
+   * whose role may see it (§4.4). The body is built ONCE by the caller ([[SpaPush]], via the shared
+   * `UsageTrafficQuery.aggregate` — the same query the `GET` runs, so the stream and the page can't
+   * disagree) over the household's scoped reads; `TrafficUsage` is visible only to admin/adult
+   * (full- visibility roles, exactly as the GET treats them), so within a household one body is
+   * correct for every recipient and the role gate is the per-role filter. Latest-wins per param-set
+   * (design §6.3): a re-push carries the freshest head, never a backlog. Metered per send like
+   * [[deliver]].
    *
-   * NOTE (#2251): unlike the `now` push, this body is NOT yet household-scoped — a follow-up must
-   * group `trafficUsage`/`timeStatus`/`appUsage` recipients by household the same way
-   * `nowRecipients` does — tracked by #2257. `now` was the reported leak (#2120) and is fixed here.
+   * #2257 (multi-tenant hardening): the `household` gate means a body built from household A's
+   * devices is delivered ONLY to household-A subscribers — an hh-B admin subscribed with the same
+   * params never receives A's traffic (closes the sibling of the #2120 `now` leak for
+   * `trafficUsage`).
    */
-  def fanOutTrafficUsage(params: Json, payload: Json): UIO[Unit]
+  def fanOutTrafficUsage(household: HouseholdId, params: Json, payload: Json): UIO[Unit]
 
   /**
    * #1974 (S6a): the connections eligible for a `timeStatus` push — subscribed to `TimeStatus` AND
@@ -354,25 +361,26 @@ final class SpaWsRegistryLive(
       }
     }
 
-  def trafficUsageParamSets: UIO[Set[Json]] =
+  def trafficUsageParamSets: UIO[Set[(HouseholdId, Json)]] =
     state.get.map(
       _.values.iterator
         .collect {
           case s
               if s.subscriptions.contains(SpaTopic.TrafficUsage) &&
                 SpaTopic.visibleTo(SpaTopic.TrafficUsage, s.role) =>
-            s.subscriptions(SpaTopic.TrafficUsage)
+            (s.household, s.subscriptions(SpaTopic.TrafficUsage))
         }
         .toSet,
     )
 
-  def fanOutTrafficUsage(params: Json, payload: Json): UIO[Unit] =
+  def fanOutTrafficUsage(household: HouseholdId, params: Json, payload: Json): UIO[Unit] =
     state.get.flatMap { m =>
       val op    = SpaTopic.wire(SpaTopic.TrafficUsage)
       val frame = frameText(op, payload.toJson)
       ZIO.foreachDiscard(m.toList) { case (id, s) =>
         ZIO.when(
-          s.subscriptions.get(SpaTopic.TrafficUsage).contains(params) &&
+          s.household == household &&
+            s.subscriptions.get(SpaTopic.TrafficUsage).contains(params) &&
             SpaTopic.visibleTo(SpaTopic.TrafficUsage, s.role),
         )(sendPush(id, s.channel, op, frame))
       }

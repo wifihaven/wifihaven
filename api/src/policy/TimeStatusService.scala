@@ -206,7 +206,8 @@ class TimeStatusServiceLive(
           schedules <- schedulesFor(profileId)
           tl        <- timeLimitRepo.findForProfile(profileId)
           atls      <- appTimeLimitRepo.listForProfile(profileId)
-          devices   <- deviceRepo.listAll.map(_.filter(_.profileId.contains(profileId)))
+          devices   <- deviceRepo.listAllAcrossHouseholds
+            .map(_.filter(_.profileId.contains(profileId)))
           presence  <- trafficRepo.listPresenceRows(devices.map(_.mac), date)
           ambient   <- ambientGateFor(now, settings)
           extMins   <- extRepo.getProfileTotalExtension(profileId, date)
@@ -242,8 +243,8 @@ class TimeStatusServiceLive(
       settings: HouseholdSettings,
   ): Task[Map[ProfileId, ProfileDayState]] =
     for {
-      profiles <- profileRepo.listAll
-      devices  <- deviceRepo.listAll
+      profiles <- profileRepo.listAllAcrossHouseholds
+      devices  <- deviceRepo.listAllAcrossHouseholds
       namedP   <- namedScheduleRepo.windowsForAllProfiles
       tlsP     <- ZIO.foreach(profiles)(p => timeLimitRepo.findForProfile(p.id).map(p.id -> _))
       atlsP    <- ZIO.foreach(profiles)(p => appTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
@@ -300,7 +301,8 @@ class TimeStatusServiceLive(
           schedules <- schedulesFor(profileId)
           tl        <- timeLimitRepo.findForProfile(profileId)
           atls      <- appTimeLimitRepo.listForProfile(profileId)
-          devices   <- deviceRepo.listAll.map(_.filter(_.profileId.contains(profileId)))
+          devices   <- deviceRepo.listAllAcrossHouseholds
+            .map(_.filter(_.profileId.contains(profileId)))
           tail <- trafficRepo.listPresenceRowsSince(devices.map(_.mac), date, rolled.rolledThrough)
           ambient    <- ambientGateFor(now, settings)
           extMins    <- extRepo.getProfileTotalExtension(profileId, date)
@@ -342,7 +344,7 @@ class TimeStatusServiceLive(
       settings: HouseholdSettings,
   ): Task[Map[ProfileId, ProfileDayState]] =
     for {
-      profiles <- profileRepo.listAll
+      profiles <- profileRepo.listAllAcrossHouseholds
       rolled   <- rollupRepo.getDayMap(date)
       result   <-
         if profiles.exists(p => !rolled.contains(p.id)) then dayStateAllLive(now, date, settings)
@@ -361,7 +363,7 @@ class TimeStatusServiceLive(
     // per-profile filtering handle any per-row over-fetch.
     val watermark = rolled.values.iterator.map(_.rolledThrough).min
     for {
-      devices    <- deviceRepo.listAll
+      devices    <- deviceRepo.listAllAcrossHouseholds
       namedP     <- namedScheduleRepo.windowsForAllProfiles
       tlsP       <- ZIO.foreach(profiles)(p => timeLimitRepo.findForProfile(p.id).map(p.id -> _))
       atlsP      <- ZIO.foreach(profiles)(p => appTimeLimitRepo.listForProfile(p.id).map(p.id -> _))

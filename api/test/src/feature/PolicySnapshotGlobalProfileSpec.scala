@@ -53,10 +53,12 @@ object PolicySnapshotGlobalProfileSpec
     } yield PolicyServiceLive(pr, hsr, tlr, atlr, dr, blr, trRepo, er, ar, clock): PolicyService
 
   private def kidsId: ZIO[ProfileRepo, Throwable, ProfileId] =
-    ZIO.serviceWithZIO[ProfileRepo](_.listAll.map(_.find(_.name == "Kids").get.id))
+    ZIO.serviceWithZIO[ProfileRepo](_.listAllAcrossHouseholds.map(_.find(_.name == "Kids").get.id))
 
   private def adultsId: ZIO[ProfileRepo, Throwable, ProfileId] =
-    ZIO.serviceWithZIO[ProfileRepo](_.listAll.map(_.find(_.name == "Adults").get.id))
+    ZIO.serviceWithZIO[ProfileRepo](
+      _.listAllAcrossHouseholds.map(_.find(_.name == "Adults").get.id),
+    )
 
   private def globalId: ZIO[ProfileRepo, Throwable, ProfileId] =
     ZIO.serviceWithZIO[ProfileRepo](_.getGlobal.map(_.get.id))

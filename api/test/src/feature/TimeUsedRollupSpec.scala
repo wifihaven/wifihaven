@@ -159,7 +159,7 @@ object TimeUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
           for {
             profile <- ZIO.serviceWithZIO[ProfileRepo](_.findById(kid)).someOrFailException
             devices <- ZIO
-              .serviceWithZIO[DeviceRepo](_.listAll)
+              .serviceWithZIO[DeviceRepo](_.listAllAcrossHouseholds)
               .map(_.filter(_.profileId.contains(kid)))
             atls    <- ZIO.serviceWithZIO[AppTimeLimitRepo](_.listForProfile(kid))
             allPres <- trr.listPresenceRows(devices.map(_.mac), today)

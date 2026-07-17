@@ -170,6 +170,7 @@ object UsageRoutes {
               pid,
               from,
               to,
+              claims.hh,
               profileRepo,
               deviceRepo,
               trafficRepo,
@@ -404,7 +405,7 @@ object UsageRoutes {
           .mapError(ApiError.Db(_))
           .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Profile not found")))
       }
-      allDevices   <- deviceRepo.listAll.mapError(ApiError.Db(_))
+      allDevices   <- deviceRepo.listAllForHousehold(claims.hh).mapError(ApiError.Db(_))
       // #1492: exempt-from-daily site patterns must match the headline daily total exactly, so
       // load them per profile (same input `usedSecondsForProfile` uses) and carve them out.
       appLimsByPid <- ZIO
@@ -499,6 +500,11 @@ object UsageRoutes {
       pid: ProfileId,
       from: LocalDate,
       to: LocalDate,
+      // #2257: the caller's household — the GET passes `claims.hh`, the `appUsage` ws push passes the
+      // recipient's household. The device read is scoped to it so this never scans another household's
+      // rows (the #2251/#2120 leak class). `pid` is already entitled to the caller's household by the
+      // GET's `requireProfileReadAccess` / the push's per-household profile-id gate.
+      household: HouseholdId,
       profileRepo: ProfileRepo,
       deviceRepo: DeviceRepo,
       trafficRepo: TrafficReportRepo,
@@ -514,7 +520,7 @@ object UsageRoutes {
         .findById(pid)
         .mapError(ApiError.Db(_))
         .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Profile not found")))
-      allDevs <- deviceRepo.listAll.mapError(ApiError.Db(_))
+      allDevs <- deviceRepo.listAllForHousehold(household).mapError(ApiError.Db(_))
       macs = allDevs.collect { case d if d.profileId.contains(pid) => d.mac }
       raw       <- (if (macs.isEmpty) ZIO.succeed(Nil)
               else trafficRepo.listPresenceRows(macs, from, to))
@@ -881,7 +887,7 @@ object UsageRoutes {
         .findById(pid)
         .mapError(ApiError.Db(_))
         .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Profile not found")))
-      all       <- deviceRepo.listAll.mapError(ApiError.Db(_))
+      all       <- deviceRepo.listAllForHousehold(claims.hh).mapError(ApiError.Db(_))
       appLimits <- appTimeLimitRepo.listForProfile(pid).mapError(ApiError.Db(_))
       // #1630: read the canonical exempt-pattern primitive (`ProfileAppDispositions.exemptPatterns`)
       // instead of re-deriving the filter inline — the same §single-source-of-truth shape the
@@ -1069,7 +1075,7 @@ object UsageRoutes {
       // Resolve mac filter from macs / profileIds / "all visible to admin".
       // When both lists are non-empty, intersect: devices that match any
       // selected mac AND belong to any selected profile.
-      allDevices <- deviceRepo.listAll.mapError(ApiError.Db(_))
+      allDevices <- deviceRepo.listAllForHousehold(claims.hh).mapError(ApiError.Db(_))
       // #1971: the device-set RESULT is computed by the shared
       // `UsageTrafficQuery.resolveMacs` (one source, also used by the S4 live-edge stream so the two
       // can't drift on filter semantics). This handler keeps the HTTP-only guards around it: a
@@ -1107,7 +1113,7 @@ object UsageRoutes {
       // at ingest into traffic_reports_filtered_zero_bytes_total (see
       // RouterIngestRoutes.handleUsage), so a return of the #858 regression is
       // now a metric rather than a per-request log.
-      profiles   <- profileRepo.listAll.mapError(ApiError.Db(_))
+      profiles   <- profileRepo.listAllForHousehold(claims.hh).mapError(ApiError.Db(_))
       profNames = profiles.iterator.map(p => p.id -> p.name).toMap
       devByMac  = allDevices.iterator.map(d => d.mac -> d).toMap
       // #769: load (host → app memberships) for app grouping. Only fetched

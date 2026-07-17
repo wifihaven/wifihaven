@@ -48,7 +48,11 @@ object DebugRoutes {
       Routes(
         Method.GET / "api" / "debug" / "devices"                -> handler { (req: Request) =>
           guardLoopback(req, "/api/debug/devices") {
-            deviceRepo.listAll
+            // #2257: a deliberate ALL-TENANT dump — this surface is loopback-only AND gated behind
+            // `WIFIHAVEN_DEBUG=1` (on-host operator triage, no JWT/household context), so the
+            // cross-household read is intentional and its intent is unmissable via the method name
+            // (never `listAll`, which no longer exists). NOT reachable from a normal request path.
+            deviceRepo.listAllAcrossHouseholds
               .mapBoth(
                 ApiError.Db(_),
                 xs => Response.json(xs.toJson),

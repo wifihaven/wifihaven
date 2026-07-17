@@ -246,6 +246,60 @@ object MultiTenantIsolationSpec
       }
     } yield res
 
+  // #2257: the generalized two-household ws isolation helper — connect a household-A and a
+  // household-B subscriber over ONE live server (each with its own subscribe frames), wait for both
+  // subscribe acks, run `trigger` (publish the driving `SpaEvent`), and return each client's first
+  // `op` push frame (None if it never arrives within the timeout). Mirrors [[wsNowIsolation]] but is
+  // parametric over the subscription frames, the push `op` to capture, and the trigger — so the
+  // `timeStatus` / `appUsage` / `trafficUsage` push pins can each drive their own topic. The forked
+  // [[SpaPush]] consumer must already be running in the enclosing scope.
+  private def wsIsolation(
+      port: Int,
+      tokenA: String,
+      tokenB: String,
+      subsA: List[String],
+      subsB: List[String],
+      op: String,
+      trigger: UIO[Unit],
+  ): ZIO[Client, Throwable, (Option[String], Option[String])] =
+    for {
+      ackA   <- Promise.make[Nothing, Unit]
+      ackB   <- Promise.make[Nothing, Unit]
+      frameA <- Promise.make[Nothing, String]
+      frameB <- Promise.make[Nothing, String]
+      app = (subs: List[String], ack: Promise[Nothing, Unit], frame: Promise[Nothing, String]) =>
+        Handler.webSocket { channel =>
+          channel.receiveAll {
+            case ChannelEvent.UserEventTriggered(UserEvent.HandshakeComplete) =>
+              ZIO.foreachDiscard(subs)(f => channel.send(ChannelEvent.read(WebSocketFrame.text(f))))
+            case ChannelEvent.Read(WebSocketFrame.Text(t))                    =>
+              ZIO.when(t.contains("\"op\":\"ack\""))(ack.succeed(())) *>
+                ZIO.when(t.contains(s"""\"op\":\"$op\""""))(frame.succeed(t)).unit
+            case _                                                            =>
+              ZIO.unit
+          }
+        }
+      res <- ZIO.scoped {
+        for {
+          _ <- app(subsA, ackA, frameA)
+            .connect(s"ws://localhost:$port/api/ws", Headers("Cookie", s"wh_ws=$tokenA"))
+            .forkScoped
+          _ <- app(subsB, ackB, frameB)
+            .connect(s"ws://localhost:$port/api/ws", Headers("Cookie", s"wh_ws=$tokenB"))
+            .forkScoped
+          // The timeouts must run on the LIVE clock (`Live.live`): these specs inject a non-advancing
+          // TestClock, and a `now`-refused recipient (the `appUsage` cross-household pin) never
+          // receives a frame — a TestClock `.timeout` would then never fire and hang the suite.
+          _ <- Live.live(ackA.await.timeoutFail(new RuntimeException("no ack A"))(20.seconds))
+          _ <- Live.live(ackB.await.timeoutFail(new RuntimeException("no ack B"))(20.seconds))
+          // Both subscribed — one trigger fans a per-household body to each.
+          _ <- trigger
+          a <- Live.live(frameA.await.timeout(20.seconds))
+          b <- Live.live(frameB.await.timeout(20.seconds))
+        } yield (a, b)
+      }
+    } yield res
+
   def spec = suite("Multi-tenant isolation — THE acceptance gate (#2108)")(
     // ── Pin 1: user READ isolation ─────────────────────────────────────────────
     test("pin 1 — GET /api/profiles returns ONLY the caller's household profiles") {
@@ -886,6 +940,231 @@ object MultiTenantIsolationSpec
         (aFrame, bFrame) = out
       } yield assertTrue(aFrame.isDefined, bFrame.isDefined) &&
         // A's live NOW push has A's profile, never B's; B's has B's, never A's.
+        assertTrue(aFrame.exists(f => f.contains("A-Kids") && !f.contains("B-Kids"))) &&
+        assertTrue(bFrame.exists(f => f.contains("B-Kids") && !f.contains("A-Kids"))))
+        .provideSome[TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task]](
+          Server.defaultWithPort(0),
+          Client.default,
+        )
+    },
+    test(
+      "pin (#2257) — the ws `timeStatus` push carries ONLY the caller's household profiles",
+    ) {
+      (for {
+        _      <- cleanDb
+        two    <- TestLayers.seedTwoHouseholds(macA, macB)
+        clk    <- ZIO.service[Clock]
+        tr     <- ZIO.service[TrafficReportRepo]
+        rlr    <- ZIO.service[RollupRepo]
+        cer    <- ZIO.service[ConnectionEventRepo]
+        dr     <- ZIO.service[DeviceRepo]
+        pr     <- ZIO.service[ProfileRepo]
+        apr    <- ZIO.service[AppRepo]
+        atlr   <- ZIO.service[AppTimeLimitRepo]
+        tlr    <- ZIO.service[TimeLimitRepo]
+        extR   <- ZIO.service[TimeExtensionRepo]
+        hsR    <- ZIO.service[HouseholdSettingsRepo]
+        upR    <- ZIO.service[UserProfileRepo]
+        auth   <- makeAuth
+        tokenA <- login(auth, two.adminA, two.password)
+        tokenB <- login(auth, two.adminB, two.password, Some(two.slugB))
+        reg    <- SpaWsRegistry.make
+        bus    <- SpaEventBus.make
+        timeStatus = new TimeStatusServiceLive(pr, tlr, atlr, dr, tr, extR)
+        routes     = SpaWsRoutes.routes(
+          auth,
+          reg,
+          clk,
+          WsConfig(allowedOrigins = "", expiryCheckSeconds = 60),
+        )
+        port <- Server.install(routes)
+        subs = List(
+          """{"op":"hello"}""",
+          """{"op":"subscribe","payload":{"topic":"timeStatus"}}""",
+        )
+        out <- ZIO.scoped {
+          SpaPush.run(
+            bus,
+            reg,
+            tr,
+            rlr,
+            cer,
+            dr,
+            pr,
+            apr,
+            atlr,
+            clk,
+            Some(SpaPush.TimeUsageDeps(timeStatus, hsR, upR)),
+          ) *>
+            wsIsolation(
+              port,
+              tokenA,
+              tokenB,
+              subs,
+              subs,
+              "timeStatus",
+              bus.publish(SpaEvent.TimeStatusChanged),
+            )
+        }
+        (aFrame, bFrame) = out
+      } yield assertTrue(aFrame.isDefined, bFrame.isDefined) &&
+        assertTrue(aFrame.exists(f => f.contains("A-Kids") && !f.contains("B-Kids"))) &&
+        assertTrue(bFrame.exists(f => f.contains("B-Kids") && !f.contains("A-Kids"))))
+        .provideSome[TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task]](
+          Server.defaultWithPort(0),
+          Client.default,
+        )
+    },
+    test(
+      "pin (#2257) — the ws `appUsage` push refuses another household's profileId",
+    ) {
+      (for {
+        _      <- cleanDb
+        two    <- TestLayers.seedTwoHouseholds(macA, macB)
+        clk    <- ZIO.service[Clock]
+        tr     <- ZIO.service[TrafficReportRepo]
+        rlr    <- ZIO.service[RollupRepo]
+        cer    <- ZIO.service[ConnectionEventRepo]
+        dr     <- ZIO.service[DeviceRepo]
+        pr     <- ZIO.service[ProfileRepo]
+        apr    <- ZIO.service[AppRepo]
+        atlr   <- ZIO.service[AppTimeLimitRepo]
+        tlr    <- ZIO.service[TimeLimitRepo]
+        extR   <- ZIO.service[TimeExtensionRepo]
+        hsR    <- ZIO.service[HouseholdSettingsRepo]
+        upR    <- ZIO.service[UserProfileRepo]
+        auth   <- makeAuth
+        tokenA <- login(auth, two.adminA, two.password)
+        tokenB <- login(auth, two.adminB, two.password, Some(two.slugB))
+        reg    <- SpaWsRegistry.make
+        bus    <- SpaEventBus.make
+        timeStatus = new TimeStatusServiceLive(pr, tlr, atlr, dr, tr, extR)
+        routes     = SpaWsRoutes.routes(
+          auth,
+          reg,
+          clk,
+          WsConfig(allowedOrigins = "", expiryCheckSeconds = 60),
+        )
+        port <- Server.install(routes)
+        // BOTH clients subscribe to household-A's profile id. A is entitled (it is A's own household);
+        // B (household B) must be REFUSED — the pid is not in B's household, so B receives no frame.
+        subs = List(
+          """{"op":"hello"}""",
+          s"""{"op":"subscribe","payload":{"topic":"appUsage","params":{"profileId":${two.profileA.value}}}}""",
+        )
+        out <- ZIO.scoped {
+          SpaPush.run(
+            bus,
+            reg,
+            tr,
+            rlr,
+            cer,
+            dr,
+            pr,
+            apr,
+            atlr,
+            clk,
+            Some(SpaPush.TimeUsageDeps(timeStatus, hsR, upR)),
+          ) *>
+            wsIsolation(
+              port,
+              tokenA,
+              tokenB,
+              subs,
+              subs,
+              "appUsage",
+              bus.publish(SpaEvent.TimeStatusChanged),
+            )
+        }
+        (aFrame, bFrame) = out
+      } yield
+      // A sees its OWN profile's app usage; B never receives another household's profile's usage.
+      assertTrue(aFrame.isDefined, bFrame.isEmpty))
+        .provideSome[TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task]](
+          Server.defaultWithPort(0),
+          Client.default,
+        )
+    },
+    test(
+      "pin (#2257) — the ws `trafficUsage` push carries ONLY the caller's household traffic",
+    ) {
+      val periodStart = java.time.Instant.parse("2026-06-25T14:00:00Z")
+      val periodEnd   = periodStart.plusSeconds(60)
+      val date        = java.time.LocalDate.parse("2026-06-25")
+      (for {
+        _      <- cleanDb
+        two    <- TestLayers.seedTwoHouseholds(macA, macB)
+        clk    <- ZIO.service[Clock]
+        tr     <- ZIO.service[TrafficReportRepo]
+        rlr    <- ZIO.service[RollupRepo]
+        cer    <- ZIO.service[ConnectionEventRepo]
+        dr     <- ZIO.service[DeviceRepo]
+        pr     <- ZIO.service[ProfileRepo]
+        apr    <- ZIO.service[AppRepo]
+        atlr   <- ZIO.service[AppTimeLimitRepo]
+        // Seed one traffic row per household so each household's head bucket has data. The row is
+        // attributed to that household's device/router; the scoped device read decides which bucket
+        // each subscriber's body is built from.
+        _      <- tr.insertBatch(
+          List(
+            TrafficReportInsert(
+              two.routerIdA,
+              macA,
+              None,
+              HostId.Fqdn(Hostname.unsafe("a.example")),
+              date,
+              periodStart,
+              periodEnd,
+              60,
+              1000L,
+              2000L,
+            ),
+            TrafficReportInsert(
+              two.routerIdB,
+              macB,
+              None,
+              HostId.Fqdn(Hostname.unsafe("b.example")),
+              date,
+              periodStart,
+              periodEnd,
+              60,
+              3000L,
+              4000L,
+            ),
+          ),
+        )
+        auth   <- makeAuth
+        tokenA <- login(auth, two.adminA, two.password)
+        tokenB <- login(auth, two.adminB, two.password, Some(two.slugB))
+        reg    <- SpaWsRegistry.make
+        bus    <- SpaEventBus.make
+        routes = SpaWsRoutes.routes(
+          auth,
+          reg,
+          clk,
+          WsConfig(allowedOrigins = "", expiryCheckSeconds = 60),
+        )
+        port <- Server.install(routes)
+        // Identical params in BOTH households (household-wide, group by profile) — the leak the fix
+        // closes is exactly two households sharing a param-set and one global body reaching both.
+        subs = List(
+          """{"op":"hello"}""",
+          """{"op":"subscribe","payload":{"topic":"trafficUsage","params":{"groupBy":["profile"],"bucket":"1m"}}}""",
+        )
+        out <- ZIO.scoped {
+          SpaPush.run(bus, reg, tr, rlr, cer, dr, pr, apr, atlr, clk) *>
+            wsIsolation(
+              port,
+              tokenA,
+              tokenB,
+              subs,
+              subs,
+              "trafficUsage",
+              bus.publish(SpaEvent.UsageIngested(periodStart, periodEnd)),
+            )
+        }
+        (aFrame, bFrame) = out
+      } yield assertTrue(aFrame.isDefined, bFrame.isDefined) &&
         assertTrue(aFrame.exists(f => f.contains("A-Kids") && !f.contains("B-Kids"))) &&
         assertTrue(bFrame.exists(f => f.contains("B-Kids") && !f.contains("A-Kids"))))
         .provideSome[TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task]](

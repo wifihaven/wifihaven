@@ -39,7 +39,7 @@ object PolicySnapshotFailureModeSpec
         ar     <- ZIO.service[AppRepo]
         clock  <- ZIO.service[Clock]
         svc = PolicyServiceLive(pr, hsr, tlr, atlr, dr, blr, trRepo, er, ar, clock)
-        profiles0 <- pr.listAll
+        profiles0 <- pr.listAllAcrossHouseholds
         kidsId   = profiles0.find(_.name == "Kids").get.id
         adultsId = profiles0.find(_.name == "Adults").get.id
         // Force the two seeded profiles into known modes.
@@ -71,7 +71,7 @@ object PolicySnapshotFailureModeSpec
         ar     <- ZIO.service[AppRepo]
         clock  <- ZIO.service[Clock]
         svc = PolicyServiceLive(pr, hsr, tlr, atlr, dr, blr, trRepo, er, ar, clock)
-        profiles0 <- pr.listAll
+        profiles0 <- pr.listAllAcrossHouseholds
         _         <- pr.update(
           profiles0.find(_.name == "Kids").get.copy(failureMode = FailureMode.BlockAll),
         )
@@ -97,7 +97,7 @@ object PolicySnapshotFailureModeSpec
         ar     <- ZIO.service[AppRepo]
         clock  <- ZIO.service[Clock]
         svc = PolicyServiceLive(pr, hsr, tlr, atlr, dr, blr, trRepo, er, ar, clock)
-        profiles0 <- pr.listAll
+        profiles0 <- pr.listAllAcrossHouseholds
         _         <- pr.update(
           profiles0.find(_.name == "Kids").get.copy(failureMode = FailureMode.BlockAll),
         )
