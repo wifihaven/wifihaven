@@ -72,6 +72,69 @@ object StartupConfigSpec extends ZIOSpecDefault {
       test("boot validation SUCCEEDS on a valid required config") {
         bootValidate(hocon(goodSecret)).exit.map(ex => assertTrue(ex.isSuccess))
       },
+      test(
+        "#2265: support.responderEnabled=true with the chain missing crashes boot, naming EVERY gap",
+      ) {
+        // The load-bearing junction: an explicitly-enabled support responder makes its whole config
+        // chain required, and those gaps flow into the CANONICAL accumulator (not a bespoke one) so
+        // boot fails loudly listing them all. A regression dropping the support hook from
+        // validateRequired makes this test fail — the silent-no-op class #2265 exists to kill.
+        val cfg = loadVia(
+          hocon(
+            goodSecret,
+            """  support { responderEnabled = true }
+                                              |""".stripMargin,
+          ),
+        )
+        cfg.flatMap { c =>
+          val errs = AppConfig.validateRequired(c)
+          bootValidate(
+            hocon(
+              goodSecret,
+              """  support { responderEnabled = true }
+                                           |""".stripMargin,
+            ),
+          ).exit.map { ex =>
+            val bootMsg = ex match {
+              case Exit.Failure(cause) => cause.failureOption.map(_.getMessage).getOrElse("")
+              case Exit.Success(_)     => ""
+            }
+            assertTrue(
+              // The gaps accumulate (jwt is valid here, so ONLY the support keys appear).
+              errs.exists(_.contains("support.plainApiKey")),
+              errs.exists(_.contains("support.anthropicApiKey")),
+              errs.exists(_.contains("support.claudeAgentId")),
+              errs.exists(_.contains("support.claudeEnvironmentId")),
+              errs.exists(_.contains("support.agentTokenSecret")),
+              errs.exists(_.contains("support.deploymentEnv")),
+              // …and boot actually CRASHES with them (not just a pure-list check).
+              ex.isFailure,
+              bootMsg.contains("support.claudeAgentId"),
+            )
+          }
+        }
+      },
+      test("#2265: support.responderEnabled=false requires no support keys — boot succeeds") {
+        // Off is the default posture; a disabled responder must never make any support key required.
+        bootValidate(
+          hocon(
+            goodSecret,
+            """  support { responderEnabled = false }
+                                         |""".stripMargin,
+          ),
+        ).exit.map(ex => assertTrue(ex.isSuccess))
+      },
+      test("#2265: support.responderEnabled=true with the FULL chain set boots clean") {
+        val full =
+          """  support {
+            |    responderEnabled = true
+            |    plainApiKey = "k", plainWebhookSecret = "w", anthropicApiKey = "sk"
+            |    claudeAgentId = "agent_x", claudeEnvironmentId = "env_x"
+            |    agentTokenSecret = "secret-at-least-32-chars-long!!x", deploymentEnv = "staging"
+            |  }
+            |""".stripMargin
+        bootValidate(hocon(goodSecret, full)).exit.map(ex => assertTrue(ex.isSuccess))
+      },
     ),
     suite("optional features are observable — enabled/disabled + reason (rule 3)")(
       test("email disabled when no key: named + reason surfaces the unset keys") {
@@ -112,12 +175,27 @@ object StartupConfigSpec extends ZIOSpecDefault {
           assertTrue(!soff.enabled, soff.detail.contains("secretKey"), son.enabled)
         }
       },
-      test("support widget + write API each reported independently") {
+      test("support widget + write API + responder + issue-filing each reported independently") {
         loadVia(hocon(goodSecret)).map { c =>
           val states = StartupFeatureReport.states(c)
           assertTrue(
             states.exists(s => s.name == "support-widget" && !s.enabled),
             states.exists(s => s.name == "support-write-api" && !s.enabled),
+            // #2265: the explicit-flag features report their (default-off) state too.
+            states.exists(s => s.name == "support-responder" && !s.enabled),
+            states.exists(s => s.name == "support-issue-filing" && !s.enabled),
+          )
+        }
+      },
+      test("support responder/issue-filing report ENABLED when their #2265 flags are true") {
+        val on =
+          """  support { responderEnabled = true, issueFilingEnabled = true }
+            |""".stripMargin
+        loadVia(hocon(goodSecret, on)).map { c =>
+          val states = StartupFeatureReport.states(c)
+          assertTrue(
+            states.exists(s => s.name == "support-responder" && s.enabled),
+            states.exists(s => s.name == "support-issue-filing" && s.enabled),
           )
         }
       },
@@ -130,6 +208,8 @@ object StartupConfigSpec extends ZIOSpecDefault {
               "stripe-billing",
               "support-widget",
               "support-write-api",
+              "support-responder",
+              "support-issue-filing",
               "metrics-endpoint",
               "metrics-scrape-token",
               "cors",

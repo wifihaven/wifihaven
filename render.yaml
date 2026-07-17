@@ -206,6 +206,31 @@ services:
         sync: false
       - key: WIFIHAVEN_SUPPORT_PLAIN_APP_ID
         sync: false
+      # #2200: the Claude support responder on STAGING (test Plain + test Managed Agent). #2265: NO
+      # dark-by-default — RESPONDER_ENABLED / ISSUE_FILING_ENABLED are explicit flags (flip to true
+      # via PR at go-live, AFTER the secrets below are set — config precedes code); with a flag true
+      # and any required key missing the API refuses to boot, bulk-listing the gaps. GITHUB_BOT_TOKEN
+      # is fine-grained, Issues:write ONLY (the structural no-PR scope, #2241). NEVER commit values.
+      - key: WIFIHAVEN_SUPPORT_RESPONDER_ENABLED
+        value: "false"
+      - key: WIFIHAVEN_SUPPORT_ISSUE_FILING_ENABLED
+        value: "false"
+      - key: WIFIHAVEN_SUPPORT_ANTHROPIC_API_KEY
+        sync: false
+      - key: WIFIHAVEN_SUPPORT_CLAUDE_AGENT_ID
+        sync: false
+      - key: WIFIHAVEN_SUPPORT_CLAUDE_ENVIRONMENT_ID
+        sync: false
+      - key: WIFIHAVEN_SUPPORT_AGENT_TOKEN_SECRET
+        generateValue: true
+      - key: WIFIHAVEN_SUPPORT_AGENT_API_BASE
+        value: https://api-staging.wifihaven.net
+      # Deployment identity for the agent kickoff: staging sessions are operator tests, prod
+      # sessions are real customers. A literal, not a secret.
+      - key: WIFIHAVEN_SUPPORT_DEPLOYMENT_ENV
+        value: staging
+      - key: WIFIHAVEN_SUPPORT_GITHUB_BOT_TOKEN
+        sync: false
 
   # ── Production API ─────────────────────────────────────────────────────────
   - type: web
@@ -383,6 +408,30 @@ services:
       - key: WIFIHAVEN_SUPPORT_PLAIN_IDENTITY_SECRET
         sync: false
       - key: WIFIHAVEN_SUPPORT_PLAIN_APP_ID
+        sync: false
+      # #2200: the Claude support responder on PROD (live Plain + prod Managed Agent). #2265: NO
+      # dark-by-default — same explicit-flag pattern as staging (flip via PR at go-live, after the
+      # secrets are set; a true flag with missing keys refuses to boot, bulk-listing the gaps).
+      # GITHUB_BOT_TOKEN is the fine-grained Issues:write-only support-bot credential (structural
+      # no-PR, #2241). NEVER commit values.
+      - key: WIFIHAVEN_SUPPORT_RESPONDER_ENABLED
+        value: "false"
+      - key: WIFIHAVEN_SUPPORT_ISSUE_FILING_ENABLED
+        value: "false"
+      - key: WIFIHAVEN_SUPPORT_ANTHROPIC_API_KEY
+        sync: false
+      - key: WIFIHAVEN_SUPPORT_CLAUDE_AGENT_ID
+        sync: false
+      - key: WIFIHAVEN_SUPPORT_CLAUDE_ENVIRONMENT_ID
+        sync: false
+      - key: WIFIHAVEN_SUPPORT_AGENT_TOKEN_SECRET
+        generateValue: true
+      - key: WIFIHAVEN_SUPPORT_AGENT_API_BASE
+        value: https://api.wifihaven.net
+      # Deployment identity for the agent kickoff: prod sessions are real customers. A literal.
+      - key: WIFIHAVEN_SUPPORT_DEPLOYMENT_ENV
+        value: prod
+      - key: WIFIHAVEN_SUPPORT_GITHUB_BOT_TOKEN
         sync: false
 
   # ── Metrics collector: Grafana Alloy → Grafana Cloud ─────────────────────────

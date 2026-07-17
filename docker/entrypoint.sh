@@ -71,12 +71,34 @@ set -euo pipefail
 # #2199: Plain helpdesk integration (#2197). All DARK by default — empty keys render a `support {}`
 # block whose SupportConfig gates are false, so the identified widget renders nothing and the write
 # client is a no-op. Two independent gates: the WIDGET needs BOTH APP_ID + IDENTITY_SECRET; the
-# WRITE API needs API_KEY. WEBHOOK_SECRET is declared now (config-complete) but consumed by #2200.
-# The Claude API key for the #2200 responder is NOT here. Secrets NEVER committed.
+# WRITE API needs API_KEY. Secrets NEVER committed.
 : "${WIFIHAVEN_SUPPORT_PLAIN_API_KEY:=}"
 : "${WIFIHAVEN_SUPPORT_PLAIN_WEBHOOK_SECRET:=}"
 : "${WIFIHAVEN_SUPPORT_PLAIN_IDENTITY_SECRET:=}"
 : "${WIFIHAVEN_SUPPORT_PLAIN_APP_ID:=}"
+# #2200: the Claude support responder (cloud-agent dispatch per UI-originated Plain message, #2241
+# access model). DARK unless the WHOLE responder chain is set: WEBHOOK_SECRET (above) + the
+# Anthropic session-create triple (API key + pre-provisioned agent id + environment id, see
+# deploy/support-agent/) + the AGENT_TOKEN_SECRET (HMAC for the per-session thread-/household-bound
+# token — generate ≥32 random chars). GITHUB token is the fine-grained Issues:write-only support-bot
+# credential (issue filing dark without it). AGENT_API_BASE is the public URL the cloud agent calls
+# back to.
+# #2265: EXPLICIT enable flags — no dark-by-default. false (the default) = feature deliberately
+# off, logged at boot + visible on /api/health. true REQUIRES the full config chain: boot fails
+# loudly listing every missing key. Flip via render.yaml PR at go-live, AFTER the secrets are set
+# (config precedes code).
+: "${WIFIHAVEN_SUPPORT_RESPONDER_ENABLED:=false}"
+: "${WIFIHAVEN_SUPPORT_ISSUE_FILING_ENABLED:=false}"
+: "${WIFIHAVEN_SUPPORT_ANTHROPIC_API_KEY:=}"
+: "${WIFIHAVEN_SUPPORT_CLAUDE_AGENT_ID:=}"
+: "${WIFIHAVEN_SUPPORT_CLAUDE_ENVIRONMENT_ID:=}"
+: "${WIFIHAVEN_SUPPORT_AGENT_TOKEN_SECRET:=}"
+: "${WIFIHAVEN_SUPPORT_AGENT_API_BASE:=https://api.wifihaven.net}"
+# Which deployment this API is (staging | prod — a per-service literal in render.yaml, empty on
+# self-hosted). Rides in every agent kickoff so the session knows whether it serves a real
+# customer (prod) or an operator test (staging).
+: "${WIFIHAVEN_SUPPORT_DEPLOYMENT_ENV:=}"
+: "${WIFIHAVEN_SUPPORT_GITHUB_BOT_TOKEN:=}"
 
 export WIFIHAVEN_LOG_LEVEL WIFIHAVEN_DEBUG
 
@@ -141,10 +163,19 @@ wifihaven {
     activeLookbackDays  = ${WIFIHAVEN_FLIP_ACTIVE_LOOKBACK_DAYS}
   }
   support {
-    plainApiKey         = "${WIFIHAVEN_SUPPORT_PLAIN_API_KEY}"
-    plainWebhookSecret  = "${WIFIHAVEN_SUPPORT_PLAIN_WEBHOOK_SECRET}"
-    plainIdentitySecret = "${WIFIHAVEN_SUPPORT_PLAIN_IDENTITY_SECRET}"
-    plainAppId          = "${WIFIHAVEN_SUPPORT_PLAIN_APP_ID}"
+    plainApiKey           = "${WIFIHAVEN_SUPPORT_PLAIN_API_KEY}"
+    plainWebhookSecret    = "${WIFIHAVEN_SUPPORT_PLAIN_WEBHOOK_SECRET}"
+    plainIdentitySecret   = "${WIFIHAVEN_SUPPORT_PLAIN_IDENTITY_SECRET}"
+    plainAppId            = "${WIFIHAVEN_SUPPORT_PLAIN_APP_ID}"
+    responderEnabled      = ${WIFIHAVEN_SUPPORT_RESPONDER_ENABLED}
+    issueFilingEnabled    = ${WIFIHAVEN_SUPPORT_ISSUE_FILING_ENABLED}
+    anthropicApiKey       = "${WIFIHAVEN_SUPPORT_ANTHROPIC_API_KEY}"
+    claudeAgentId         = "${WIFIHAVEN_SUPPORT_CLAUDE_AGENT_ID}"
+    claudeEnvironmentId   = "${WIFIHAVEN_SUPPORT_CLAUDE_ENVIRONMENT_ID}"
+    agentTokenSecret      = "${WIFIHAVEN_SUPPORT_AGENT_TOKEN_SECRET}"
+    agentApiBase          = "${WIFIHAVEN_SUPPORT_AGENT_API_BASE}"
+    deploymentEnv         = "${WIFIHAVEN_SUPPORT_DEPLOYMENT_ENV}"
+    githubSupportBotToken = "${WIFIHAVEN_SUPPORT_GITHUB_BOT_TOKEN}"
   }
 }
 EOF

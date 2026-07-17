@@ -1,0 +1,77 @@
+name: Master Support Agent CD
+
+# #2200 / #2241 — reconciles the deployed Anthropic Managed Agent (the Claude support responder)
+# to the in-repo declarative definition under deploy/support-agent/ (agent.yaml + environment.yaml),
+# per docs/process/declarative-config.md: config lives in the repo, the vendor side is applied from
+# it — never hand-edited in a dashboard.
+#
+# Flow (one job): install the `ant` CLI, run deploy/support-agent/apply.sh — create-or-update by
+# NAME with the agent's version as an optimistic lock, so a re-run with no repo edits is an
+# idempotent no-op-shaped apply. Sessions pin their agent version at create time, so an update
+# never disturbs in-flight support sessions; the next dispatched session picks up the new version.
+#
+# One workspace serves both deployments: staging and prod differ only in the per-service Render env
+# (agentApiBase + deploymentEnv ride in each session's kickoff), so there is no per-environment
+# agent copy to reconcile.
+#
+# Dark-by-default, mirroring master-grafana.yml: without the SUPPORT_AGENT_ANTHROPIC_API_KEY secret
+# the job skips with a notice instead of failing — the whole support feature ships dark until the
+# operator provisions it (deploy/support-agent/README.md).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'deploy/support-agent/**'
+      - '.github/workflows/master-support-agent.yml'
+  workflow_dispatch:
+
+# Serialize applies: two overlapping runs would race the version optimistic lock. Queue, don't
+# cancel — the later run reconciles to the latest repo state anyway.
+concurrency:
+  group: master-support-agent-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  apply-support-agent:
+    name: Apply support-agent definition
+    # Path filters let feature-branch pushes create a run; skip (not fail) off-main refs
+    # (mirrors the master-grafana.yml / master-router.yml `if` guard).
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check the Anthropic secret is configured
+        id: gate
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.SUPPORT_AGENT_ANTHROPIC_API_KEY }}
+        run: |
+          if [ -n "$ANTHROPIC_API_KEY" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::SUPPORT_AGENT_ANTHROPIC_API_KEY not set — skipping support-agent apply. The responder ships dark until provisioned (deploy/support-agent/README.md)."
+          fi
+
+      - name: Set up Go (for the ant CLI)
+        if: steps.gate.outputs.configured == 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Install the ant CLI
+        if: steps.gate.outputs.configured == 'true'
+        run: go install github.com/anthropics/anthropic-cli/cmd/ant@latest
+
+      - name: Apply agent + environment (create-or-update by name)
+        if: steps.gate.outputs.configured == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.SUPPORT_AGENT_ANTHROPIC_API_KEY }}
+        run: |
+          gobin="$(go env GOPATH)/bin"
+          export PATH="$PATH:$gobin"
+          ./deploy/support-agent/apply.sh

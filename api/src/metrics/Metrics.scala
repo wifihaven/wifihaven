@@ -442,6 +442,17 @@ object MetricGuard {
     // #808 lesson: without these entries the firewall rejects the name and the series never emits.
     "support_widget_identity_total"                 -> Set("outcome"),
     "support_customer_upsert_total"                 -> Set("outcome"),
+    // #2200 — the Claude support responder (dark until keys set). `support_ai_draft_total{outcome}`
+    // (the #2200-specified series name, kept though v1 sends replies rather than drafts)
+    // counts each inbound Plain webhook by a bounded enum (dispatched | skipped_unauthenticated |
+    // rate_limited | invalid_signature | malformed | disabled | error) — `skipped_unauthenticated`
+    // is the UI-origin gate on cold email, `rate_limited` the per-thread/global dispatch cost caps,
+    // `invalid_signature` the security rejection.
+    // `support_agent_action_total{op,outcome}` counts the cloud agent's callback
+    // actions (reply | issue | household_read × ok | denied | rate_limited | disabled | error) —
+    // the `issue` action's rate feeds the #2241 volume alert. Both bounded, never per-household.
+    "support_ai_draft_total"                        -> Set("outcome"),
+    "support_agent_action_total"                    -> Set("op", "outcome"),
   )
 
   private val rejected = Metric.counter("metrics_rejected_total")
@@ -648,6 +659,18 @@ object AppMetrics {
 
   def supportCustomerUpsert(outcome: String): UIO[Unit] =
     MetricGuard.counter("support_customer_upsert_total", Map("outcome" -> outcome))
+
+  // ── #2200: Claude support responder (dark until keys set) ─────────────────────
+  // Emitted from SupportResponder. `supportAiDraft` counts each inbound Plain webhook by outcome
+  // (dispatched | skipped_unauthenticated | rate_limited | invalid_signature | malformed |
+  // disabled | error); `supportAgentAction` counts each token-authenticated agent callback by
+  // (op, outcome). Both bounded enums — never a per-household / per-thread label.
+
+  def supportAiDraft(outcome: String): UIO[Unit] =
+    MetricGuard.counter("support_ai_draft_total", Map("outcome" -> outcome))
+
+  def supportAgentAction(action: String, outcome: String): UIO[Unit] =
+    MetricGuard.counter("support_agent_action_total", Map("op" -> action, "outcome" -> outcome))
 
   // ── #864: traffic_reports rows dropped as zero-bytes-zero-seconds ────────────
   // Replaces the per-request warn-log + TODO marker. A rising rate means the
