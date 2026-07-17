@@ -300,6 +300,12 @@ object MetricGuard {
     // (`direction=out`). `op` is the SAME bounded envelope enum as router_ws_frames_total, so no
     // per-mac / per-router / per-household dimension ever rides it — the §4 cardinality firewall.
     "router_ws_message_duration_seconds"        -> Set("op", "direction"),
+    // #2268 — server-side reassembly of fragmented inbound ws messages (an intermediary — Render's
+    // edge — re-fragments large frames at ~4 KiB; mirror of the router-side reassembler #1959).
+    // `surface` ∈ {router, spa} (which ws handler), `result` ∈ {completed, overflow}. Fixed 2-value
+    // enums — bounded, no per-mac / per-router dimension. Without this entry `check()` rejects the
+    // name as unknown_name and the series never emits.
+    "ws_reassembly_total"                       -> Set("surface", "result"),
     // #1849 — computed-snapshot cache + push-on-change. `policy_snapshot_build_total` splits policy
     // snapshot accesses into `result` ∈ {computed, cache_hit} (proves the cache works);
     // `router_ws_policy_push_total` is the push fan-out, `result` ∈ {ok, channel_closed}. Both are

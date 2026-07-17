@@ -230,6 +230,7 @@ object SpaWsRoutes {
                       WsFrameReassembler.Outcome.Passthrough =>
                     ZIO.unit
                   case WsFrameReassembler.Outcome.Overflow(bytes)           =>
+                    // Close with 1009 (RFC 6455 §7.4.1 "message too big").
                     AppMetrics.recordWsReassembly("spa", "overflow") *>
                       ZIO.logWarning(
                         s"spa ws: reassembly exceeded ${WsFrameReassembler.MaxMessageBytes}B " +

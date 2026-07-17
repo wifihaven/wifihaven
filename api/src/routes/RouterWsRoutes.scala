@@ -121,7 +121,8 @@ object RouterWsRoutes {
                       WsFrameReassembler.Outcome.Passthrough =>
                     ZIO.unit
                   case WsFrameReassembler.Outcome.Overflow(bytes)           =>
-                    // A peer streaming past the cap is a memory-exhaustion hazard — meter + close.
+                    // A peer streaming past the cap is a memory-exhaustion hazard — meter + close
+                    // with 1009 (RFC 6455 §7.4.1 "message too big").
                     AppMetrics.recordWsReassembly("router", "overflow") *>
                       ZIO.logWarning(
                         s"router ws: reassembly exceeded ${WsFrameReassembler.MaxMessageBytes}B " +
