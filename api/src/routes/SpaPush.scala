@@ -5,7 +5,7 @@ import wifihaven.api.observability.LogContext
 import wifihaven.api.policy.{PolicyService, TimeStatusService}
 import wifihaven.api.usage.{AppMembership, UsageTraffic, UsageTrafficQuery}
 import wifihaven.shared.{Clock, Device, Profile, ProfileTimeStatus, TrafficUsageResponse, UserRole}
-import wifihaven.shared.types.{HouseholdId, MacAddress, ProfileId}
+import wifihaven.shared.types.{MacAddress, ProfileId}
 import zio.{Clock as _, *}
 import zio.json.*
 import zio.json.ast.Json
@@ -21,11 +21,10 @@ import java.time.{Duration, Instant, LocalDate, ZoneId}
  *
  *   - [[SpaEvent.NowChanged]] → rebuild [[wifihaven.shared.DashboardNow]] ONCE via the shared
  *     [[DashboardNowRoutes.computeNow]] builder (SSOT — the same code `GET /api/dashboard/now`
- *     runs) and push it to `now` subscribers. #2251: built ONCE PER DISTINCT HOUSEHOLD over that
- *     household's SCOPED devices/profiles and delivered only to that household's recipients — the
- *     live NOW push must never carry another household's entities (closes #2120). `now` is visible
- *     only to admin/adult (`SpaTopic.visibleTo`), so within a household one body is correct for
- *     every recipient and no further per-role filtering is needed.
+ *     runs) and push it to `now` subscribers. Built over the FULL profile/device set because `now`
+ *     is visible only to admin/adult (`SpaTopic.visibleTo`), the roles the GET shows everything to
+ *     (§4.4) — so one body is correct for every recipient and the registry's role gate is the
+ *     filter.
  *   - [[SpaEvent.ConnectionEventsIngested]] → re-read the head rows through the same
  *     `connRepo.query` the `/api/logs` GET uses (SSOT), keep the genuinely-new rows (ts at/after
  *     the event's `since`), and let the registry append them to each `connectionEvents` subscriber
@@ -249,18 +248,7 @@ object SpaPush {
         }
     }
 
-  /**
-   * #2251 (multi-tenant, epic #622): rebuild `DashboardNow` PER HOUSEHOLD and deliver each
-   * household's body only to that household's `now` recipients (closes #2120). The old
-   * implementation built ONE body over the GLOBAL profile/device set and `fanOut`'d it to every
-   * subscriber — a household-B admin received household A's entities in the live NOW push (the
-   * sibling of the GET leak fixed in `DashboardNowRoutes`). Now: group the eligible recipients by
-   * household, run the shared `computeNow` builder over each household's SCOPED reads exactly once
-   * per distinct household (SSOT — same builder the GET calls), and `deliver` that body to the
-   * recipients in that household. The recipient set is already subscription- AND role-gated
-   * (`nowRecipients` = subscribed to `Now` AND admin/adult), so no per-recipient body filtering is
-   * needed beyond the household scope. No subscriber ⇒ no query.
-   */
+  /** Rebuild `DashboardNow` over the full profile/device set and push to `now` subscribers. */
   private def pushNow(
       registry: SpaWsRegistry,
       trafficRepo: TrafficReportRepo,
@@ -270,35 +258,20 @@ object SpaPush {
       appTimeLimitRepo: AppTimeLimitRepo,
       clock: Clock,
   ): Task[Unit] =
-    registry.nowRecipients.flatMap { recipients =>
-      ZIO
-        .when(recipients.nonEmpty) {
-          for {
-            now <- clock.instant
-            byHousehold = recipients.groupBy(_.household)
-            _ <- ZIO.foreachDiscard(byHousehold.toList) { case (household, hhRecipients) =>
-              for {
-                profiles <- profileRepo.listAllForHousehold(household)
-                devices  <- deviceRepo.listAllForHousehold(household)
-                body     <- DashboardNowRoutes.computeNow(
-                  now,
-                  profiles,
-                  devices,
-                  trafficRepo,
-                  connRepo,
-                  appTimeLimitRepo,
-                  Some(household),
-                )
-                payload = body.toJsonAST.getOrElse(Json.Obj())
-                _ <- ZIO.foreachDiscard(hhRecipients)(r =>
-                  registry.deliver(r.id, SpaTopic.wire(SpaTopic.Now), payload),
-                )
-              } yield ()
-            }
-          } yield ()
-        }
-        .unit
-    }
+    for {
+      now      <- clock.instant
+      profiles <- profileRepo.listAll
+      devices  <- deviceRepo.listAll
+      body     <- DashboardNowRoutes.computeNow(
+        now,
+        profiles,
+        devices,
+        trafficRepo,
+        connRepo,
+        appTimeLimitRepo,
+      )
+      _        <- registry.fanOut(SpaTopic.Now, body.toJsonAST.getOrElse(Json.Obj()))
+    } yield ()
 
   /**
    * Re-read the connection-events head through the `/api/logs` query and append the genuinely-new
