@@ -45,6 +45,8 @@ object BillingWebhookSpec
   private val jwt = JwtConfig(secret = "test-secret-at-least-32-chars!!x", expiryHours = 1)
 
   private val cfg = StripeConfig(
+    // #2266: billing is gated by the EXPLICIT `enabled` flag now (not secretKey presence).
+    enabled = true,
     secretKey = "sk_test_dummy",
     webhookSecret = WebhookSecret,
     priceMonthly = "price_monthly",

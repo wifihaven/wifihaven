@@ -102,13 +102,16 @@ wifihaven {
     requireToken = false
   }
 
-  # #2135 (multi-tenant P5-5): Stripe billing. The whole block is optional — an
-  # empty secretKey (the default) DISABLES billing entirely: the self-hosted
-  # single-install path never bills, so the /api/billing/* admin routes 404 and
-  # the webhook no-ops. Cloud/staging set these from env (secrets NEVER committed —
-  # docs/process/security.md). Price ids / promo code differ between Stripe test
-  # and live modes, so they are config, not constants.
+  # #2135 (multi-tenant P5-5): Stripe billing. The whole block is optional — the
+  # self-hosted single-install path never bills, so the /api/billing/* admin routes
+  # 404 and the webhook no-ops. Cloud/staging set these from env (secrets NEVER
+  # committed — docs/process/security.md). Price ids / promo code differ between
+  # Stripe test and live modes, so they are config, not constants.
   # stripe {
+  #   # #2266: EXPLICIT enable flag (no dark-by-default). Billing is off unless set
+  #   # true — NOT inferred from secretKey presence. When true, secretKey is REQUIRED
+  #   # and an unset key FAILS BOOT (rather than silently no-opping).
+  #   enabled           = false
   #   secretKey         = ""   # Stripe secret API key (sk_test_… / sk_live_…) — SECRET
   #   webhookSecret     = ""   # Webhook signing secret (whsec_…) — SECRET
   #   priceMonthly      = ""   # recurring Price id, $10/mo (price_…)
@@ -145,11 +148,14 @@ wifihaven {
   # #578: outbound email for admin notifications (a parent gets emailed when a
   # kid raises an access request from the block page). The whole block is
   # optional — omit it and email is OFF: the Notifier falls back to a log line
-  # and the in-app dashboard banner remains authoritative. Email turns ON only
-  # when BOTH resendApiKey and fromAddress are set. Sent via Resend's HTTPS API
-  # (no SMTP; no new build dependency). The recipient is per-household
+  # and the in-app dashboard banner remains authoritative. Sent via Resend's HTTPS
+  # API (no SMTP; no new build dependency). The recipient is per-household
   # (Admin → "Request notifications"), NOT set here.
   # email {
+  #   # #2266: EXPLICIT enable flag (no dark-by-default). Email is off unless set true
+  #   # — NOT inferred from the secrets. When true, BOTH resendApiKey and fromAddress
+  #   # are REQUIRED and an unset one FAILS BOOT (rather than silently logging).
+  #   enabled      = false
   #   # Resend API key ("re_…"); sent as `Authorization: Bearer`. On Render this
   #   # comes from a secret env override (WIFIHAVEN_EMAIL_RESEND_API_KEY, rendered
   #   # into this block by docker/entrypoint.sh), never the committed config.

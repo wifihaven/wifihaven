@@ -51,17 +51,19 @@ object StartupFeatureReport {
       FeatureState(
         "email-notifications",
         email.enabled,
-        if email.enabled then "wifihaven.email.resendApiKey + wifihaven.email.fromAddress set"
+        if email.enabled then
+          "wifihaven.email.enabled=true — resendApiKey + fromAddress required & set (#578/#2266)"
         else
-          "wifihaven.email.resendApiKey and/or wifihaven.email.fromAddress unset — access-request " +
-            "notifications fall back to a structured log line (#578/#2195)",
+          "wifihaven.email.enabled=false — access-request notifications fall back to a structured " +
+            "log line; set enabled=true (+ both secrets) to send (#578/#2195/#2266)",
       ),
       FeatureState(
         "stripe-billing",
         stripe.enabled,
-        if stripe.enabled then "wifihaven.stripe.secretKey set — /api/billing/* live"
+        if stripe.enabled then
+          "wifihaven.stripe.enabled=true — secretKey required & set, /api/billing/* live"
         else
-          "wifihaven.stripe.secretKey unset — billing off, /api/billing/* return not-configured (#2135)",
+          "wifihaven.stripe.enabled=false — billing off, /api/billing/* return not-configured (#2135/#2266)",
       ),
       FeatureState(
         "support-widget",

@@ -40,6 +40,9 @@ set -euo pipefail
 # webhook no-ops. Cloud/staging set the secret + webhook signing secret (Render sync:false secrets)
 # plus the test/live-mode price ids + promo code. Secrets are NEVER committed (docs/process/security.md).
 # appBaseUrl defaults to the shared WIFIHAVEN_APP_BASE_URL (#2250) but keeps its own override.
+# #2266: EXPLICIT enable flag — billing is off unless set true, NOT inferred from the key. When
+# true, an unset secretKey FAILS BOOT (AppConfig.validateRequired). Default false = self-hosted off.
+: "${WIFIHAVEN_STRIPE_ENABLED:=false}"
 : "${WIFIHAVEN_STRIPE_SECRET_KEY:=}"
 : "${WIFIHAVEN_STRIPE_WEBHOOK_SECRET:=}"
 : "${WIFIHAVEN_STRIPE_PRICE_MONTHLY:=}"
@@ -60,8 +63,10 @@ set -euo pipefail
 : "${WIFIHAVEN_FLIP_WINDOW_DAYS:=60}"
 : "${WIFIHAVEN_FLIP_ACTIVE_LOOKBACK_DAYS:=7}"
 # #578: outbound email for admin notifications (block-page kid→parent requests).
-# OFF unless BOTH the API key and from-address are set — empty defaults render an
-# `email {}` block whose EmailConfig.enabled is false, so the Notifier logs only.
+# #2266: EXPLICIT enable flag — email is off unless set true, NOT inferred from the secrets. When
+# true, an unset resendApiKey/fromAddress FAILS BOOT (AppConfig.validateRequired). Default false =
+# self-hosted off (the Notifier logs only).
+: "${WIFIHAVEN_EMAIL_ENABLED:=false}"
 : "${WIFIHAVEN_EMAIL_RESEND_API_KEY:=}"
 : "${WIFIHAVEN_EMAIL_FROM_ADDRESS:=}"
 # #2250: derive the "review in dashboard" link host from the shared SPA origin (own override still
@@ -142,6 +147,7 @@ wifihaven {
     requireToken = ${WIFIHAVEN_METRICS_REQUIRE_TOKEN}
   }
   stripe {
+    enabled           = ${WIFIHAVEN_STRIPE_ENABLED}
     secretKey         = "${WIFIHAVEN_STRIPE_SECRET_KEY}"
     webhookSecret     = "${WIFIHAVEN_STRIPE_WEBHOOK_SECRET}"
     priceMonthly      = "${WIFIHAVEN_STRIPE_PRICE_MONTHLY}"
@@ -150,6 +156,7 @@ wifihaven {
     appBaseUrl        = "${WIFIHAVEN_STRIPE_APP_BASE_URL}"
   }
   email {
+    enabled      = ${WIFIHAVEN_EMAIL_ENABLED}
     resendApiKey = "${WIFIHAVEN_EMAIL_RESEND_API_KEY}"
     fromAddress  = "${WIFIHAVEN_EMAIL_FROM_ADDRESS}"
     appBaseUrl   = "${WIFIHAVEN_EMAIL_APP_BASE_URL}"

@@ -90,11 +90,12 @@ object DebugApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         body   <- resp.body.asString
       } yield assertTrue(
         resp.status == Status.Ok,
-        // testCfg sets no optional secrets → these features report DISABLED with a named reason.
+        // testCfg sets no optional flags → these features report DISABLED with a named reason.
         body.contains("email-notifications"),
         body.contains("stripe-billing"),
         body.contains("\"enabled\":false"),
-        body.contains("wifihaven.stripe.secretKey"),
+        // #2266: stripe/email are gated by the explicit flag now, so the disabled reason names it.
+        body.contains("wifihaven.stripe.enabled=false"),
       )
     },
     test("/api/debug/config is 404 when disabled, 403 when non-loopback (#2266)") {

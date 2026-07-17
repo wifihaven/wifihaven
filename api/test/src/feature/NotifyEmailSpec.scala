@@ -32,7 +32,10 @@ object NotifyEmailSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres 
   private val mac  = MacAddress.unsafe("aa:bb:cc:11:22:33")
   private val host = Hostname.unsafe("example.com")
   private val now  = Instant.parse("2026-05-07T14:00:00Z")
-  private val cfg  = EmailConfig(resendApiKey = "re_test", fromAddress = "WifiHaven <a@b.com>")
+  // #2266: email is now gated by the EXPLICIT `enabled` flag (not secret presence), so this
+  // send-path fixture sets enabled=true alongside the secrets.
+  private val cfg  =
+    EmailConfig(enabled = true, resendApiKey = "re_test", fromAddress = "WifiHaven <a@b.com>")
 
   // Seed a kid profile + device (household 1 / Default) and return the alert repo + profile id.
   private def setupKid =

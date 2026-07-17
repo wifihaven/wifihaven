@@ -169,9 +169,13 @@ services:
       # #2135: Stripe billing (test mode on staging). Secrets (key + webhook signing
       # secret) are Render-managed sync:false — never committed. Price ids + promo
       # code are also sync:false because they differ between Stripe test and live
-      # modes. Empty secretKey disables billing (self-hosted default); staging sets
-      # the test-mode values out of band. Checkout/Portal returns resolve to the
-      # staging SPA via the shared WIFIHAVEN_APP_BASE_URL above (#2250).
+      # modes. Checkout/Portal returns resolve to the staging SPA via the shared
+      # WIFIHAVEN_APP_BASE_URL above (#2250).
+      # #2266: EXPLICIT enable flag (no dark-by-default). Staging bills in test mode,
+      # and the test secretKey is already set here, so enabled=true validates cleanly;
+      # an unset key under enabled=true would fail boot.
+      - key: WIFIHAVEN_STRIPE_ENABLED
+        value: "true"
       - key: WIFIHAVEN_STRIPE_SECRET_KEY
         sync: false
       - key: WIFIHAVEN_STRIPE_WEBHOOK_SECRET
@@ -183,12 +187,14 @@ services:
       - key: WIFIHAVEN_STRIPE_FOUNDING_PROMO
         sync: false
       # #578: outbound email for block-page kid→parent access-request notifications
-      # on STAGING. Same sync:false pattern as prod below — OFF until BOTH secrets
-      # are set in the staging Render dashboard (entrypoint.sh renders them into the
-      # config `email {}` block; with either unset, EmailConfig.enabled is false and
-      # the Notifier just logs). Uses the same Resend domain (wifihaven.net) as prod,
-      # so it needs the domain verified (DNS) + a key set here to actually send.
-      # NEVER commit values.
+      # on STAGING. Secrets are sync:false (entrypoint.sh renders them into the config
+      # `email {}` block). Uses the same Resend domain (wifihaven.net) as prod, so it
+      # needs the domain verified (DNS) + a key set here to actually send. NEVER commit values.
+      # #2266: EXPLICIT enable flag (no dark-by-default). Both email secrets are already
+      # set here, so enabled=true validates cleanly; an unset secret under enabled=true
+      # would fail boot.
+      - key: WIFIHAVEN_EMAIL_ENABLED
+        value: "true"
       - key: WIFIHAVEN_EMAIL_RESEND_API_KEY
         sync: false
       - key: WIFIHAVEN_EMAIL_FROM_ADDRESS
@@ -375,6 +381,11 @@ services:
       # code are also sync:false (live-mode values differ from staging's test-mode).
       # Checkout/Portal returns resolve to the prod SPA apex via the shared
       # WIFIHAVEN_APP_BASE_URL above (#2250).
+      # #2266: EXPLICIT enable flag (no dark-by-default). Billing is DISABLED on prod —
+      # the live-mode secretKey is not populated yet, and enabled=false means the unset
+      # key can't fail boot. Flip to "true" ONLY once the live Stripe secrets are set here.
+      - key: WIFIHAVEN_STRIPE_ENABLED
+        value: "false"
       - key: WIFIHAVEN_STRIPE_SECRET_KEY
         sync: false
       - key: WIFIHAVEN_STRIPE_WEBHOOK_SECRET
@@ -386,12 +397,15 @@ services:
       - key: WIFIHAVEN_STRIPE_FOUNDING_PROMO
         sync: false
       # #578: outbound email for block-page kid→parent access-request notifications.
-      # OFF until BOTH secrets are set in the Render dashboard (sync:false = declared
-      # here, value entered out of band; entrypoint.sh renders them into the config's
-      # `email {}` block). With either unset, EmailConfig.enabled is false and the
-      # Notifier falls back to a log line — the in-app dashboard banner is unaffected.
-      # RESEND_API_KEY is a Resend key ("re_…"); FROM_ADDRESS is a verified sender
-      # like "WifiHaven <alerts@wifihaven.net>". NEVER commit values.
+      # Secrets are sync:false (declared here, value entered out of band; entrypoint.sh
+      # renders them into the config's `email {}` block). RESEND_API_KEY is a Resend key
+      # ("re_…"); FROM_ADDRESS is a verified sender like "WifiHaven <alerts@wifihaven.net>".
+      # NEVER commit values.
+      # #2266: EXPLICIT enable flag (no dark-by-default). Both email secrets are already
+      # set on prod, so enabled=true validates cleanly; an unset secret under enabled=true
+      # would fail boot.
+      - key: WIFIHAVEN_EMAIL_ENABLED
+        value: "true"
       - key: WIFIHAVEN_EMAIL_RESEND_API_KEY
         sync: false
       - key: WIFIHAVEN_EMAIL_FROM_ADDRESS

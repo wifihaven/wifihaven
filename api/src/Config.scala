@@ -286,6 +286,13 @@ case class BetaConfig(
 // they are config too (not constants). `appBaseUrl` is the SPA origin the hosted Checkout / Portal
 // return to.
 case class StripeConfig(
+    // #2266: EXPLICIT named enable flag (no dark-by-default). Billing is off by default and turns on
+    // only when the operator sets `enabled=true` — NOT inferred from `secretKey` presence. A true
+    // flag makes `secretKey` REQUIRED (StripeConfig.validate → AppConfig.validateRequired fails boot),
+    // so a cloud deploy that means to bill but dropped the key crashes loudly instead of silently
+    // no-opping. Default false = the self-hosted / never-bills posture, logged at boot + on
+    // /api/debug/config.
+    enabled: Boolean = false,
     secretKey: String = "",
     webhookSecret: String = "",
     priceMonthly: String = "",
@@ -294,10 +301,6 @@ case class StripeConfig(
     appBaseUrl: String = "https://app.wifihaven.net",
     apiBase: String = "https://api.stripe.com",
 ) {
-  // Billing is active only when a secret key is present. Everything downstream (route mounting, the
-  // provisioning Customer seam) checks this so an unconfigured install is a no-op, not an error.
-  val enabled: Boolean = secretKey.trim.nonEmpty
-
   private def base: String = appBaseUrl.stripSuffix("/")
 
   /** Hosted-Checkout success/cancel + Portal-return URLs back to the SPA billing page. */
@@ -307,6 +310,18 @@ case class StripeConfig(
 
   val foundingPromoCodeOpt: Option[String] =
     Option(foundingPromoCode).map(_.trim).filter(_.nonEmpty)
+}
+
+object StripeConfig {
+  // #2266: with billing explicitly enabled, `secretKey` is REQUIRED — an unset key then fails boot
+  // (accumulated by AppConfig.validateRequired) rather than the old silent secretKey-presence no-op.
+  private[api] def validate(cfg: StripeConfig): List[String] =
+    Option
+      .when(cfg.enabled && cfg.secretKey.trim.isEmpty)(
+        "wifihaven.stripe.secretKey must be set when wifihaven.stripe.enabled=true (billing is on) — " +
+          "set the key (or enabled=false to disable billing on this deploy)",
+      )
+      .toList
 }
 
 // #578 — outbound email transport for admin notifications (the deferred
@@ -326,16 +341,34 @@ case class StripeConfig(
 //   - `fromAddress`    verified sender, e.g. "WifiHaven <alerts@wifihaven.net>".
 //   - `appBaseUrl`     SPA origin the "review in dashboard" link points at.
 case class EmailConfig(
+    // #2266: EXPLICIT named enable flag (no dark-by-default) — email is off unless the operator sets
+    // `enabled=true`, NOT inferred from the two secrets being present. A true flag makes BOTH
+    // `resendApiKey` and `fromAddress` REQUIRED (EmailConfig.validate → boot fails loud) so a deploy
+    // that means to send but lost a secret crashes instead of silently logging. Default false = the
+    // self-hosted no-email posture, logged at boot + on /api/debug/config.
+    enabled: Boolean = false,
     resendApiKey: String = "",
     fromAddress: String = "",
     appBaseUrl: String = "https://app.wifihaven.net",
 ) {
   val apiKeyTrimmed: String = resendApiKey.trim
   val fromTrimmed: String   = fromAddress.trim
-  // Both secrets required — a key with no verified sender (or vice-versa) can't
-  // send, so treat that as "off" rather than failing every notification at runtime.
-  val enabled: Boolean      = apiKeyTrimmed.nonEmpty && fromTrimmed.nonEmpty
   def dashboardUrl: String  = appBaseUrl.stripSuffix("/")
+}
+
+object EmailConfig {
+  // #2266: with email explicitly enabled, BOTH secrets are required (a key with no verified sender —
+  // or vice-versa — can't send). Reports every gap so boot fails loud listing them all (rule 4).
+  private[api] def validate(cfg: EmailConfig): List[String] =
+    if !cfg.enabled then Nil
+    else
+      List(
+        "wifihaven.email.resendApiKey" -> cfg.apiKeyTrimmed,
+        "wifihaven.email.fromAddress"  -> cfg.fromTrimmed,
+      ).collect {
+        case (k, v) if v.isEmpty =>
+          s"$k must be set when wifihaven.email.enabled=true — set it (or enabled=false to disable email)"
+      }
 }
 
 // #2137 (multi-tenant P5-6, epic #622) — the beta→paid flip lifecycle
@@ -523,6 +556,7 @@ object AppConfig {
    */
   def validateRequired(cfg: AppConfig): List[String] =
     JwtConfig.validate(cfg.jwt) ++ MetricsConfig.validate(cfg.metrics) ++
+      EmailConfig.validate(cfg.email) ++ StripeConfig.validate(cfg.stripe) ++
       // #2265: the support responder / issue filing are EXPLICIT-flag features — off by default, but
       // when a flag is turned on its whole config chain becomes required. `missingRequiredKeys`
       // returns every gap for the enabled flag(s); mapped to a message here so they accumulate with
