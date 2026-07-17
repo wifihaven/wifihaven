@@ -213,6 +213,9 @@ Scala 3 + ZIO 2, ZIO HTTP, Doobie, Flyway, Lua on OpenWRT, jwt-scala, Mill, Reac
 ### Coding conventions
 ZIO effects (no exceptions), typed errors as sealed traits, config via `zio-config` HOCON, SQL only in `*RepoLive`, ZLayer wiring, ZIO Test, scalafmt + scalafix enforced in CI. → see [`docs/process/coding-conventions.md`](docs/process/coding-conventions.md)
 
+### No dark-by-default — required config fails loud {#no-dark-by-default}
+A feature that requires config must fail loud when it's missing/invalid — a typed `zio-config` startup error that crashes boot, or a loud alerting runtime error — never a silent no-op; absence of a secret is a bug, not a disable switch. Set the secret in every target environment before (or atomically with) the dependent code, which assumes it's present and does not defensively degrade to off. Genuinely-optional-off must be an explicit named flag (logged at startup, in a health/config endpoint), never an unlabeled silent branch. Startup validation reports ALL missing required keys at once. Grep-able anti-patterns: `sys.env.get(...).getOrElse(<disabled>)`, `Option[...]` config that gates whether a feature runs, `enabled` flags derived from secret presence, feature flags defaulting off on absence. → see [`docs/process/no-dark-by-default.md`](docs/process/no-dark-by-default.md)
+
 ### Single source of truth — never duplicate a decision or computation {#single-source-of-truth}
 The same logical quantity or decision (e.g. minutes used today, the block reason, engaged seconds for an app) must be computed in exactly ONE place; every other consumer calls it. Resolve unavoidable proximity by COLLAPSE or TYPE-ENFORCE; otherwise ACCEPT + TEST-PIN. Wire-shape duplication mandated by the architecture is a carve-out, not a violation. → see [`docs/process/single-source-of-truth.md`](docs/process/single-source-of-truth.md)
 
