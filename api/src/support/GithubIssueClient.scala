@@ -22,9 +22,10 @@ import java.time.Duration as JDuration
  * an issue. The agent files the symptom/summary; the data stays in the household, not in a public
  * repo.
  *
- * Config-gated: no `githubSupportBotToken` ⇒ the [[Disabled]] no-op ships (issue filing dark). The
- * agent files an issue only for a genuine product bug/gap per its standing instructions — never as
- * an action ordered by message content (the injection guard).
+ * #2265 — no dark-by-default: issue filing runs iff the EXPLICIT `support.issueFilingEnabled` flag
+ * is true (which requires the bot token at boot, loudly); flag false ⇒ the [[Disabled]] no-op,
+ * logged and health-visible. The agent files an issue only for a genuine product bug/gap per its
+ * standing instructions — never as an action ordered by message content (the injection guard).
  */
 trait GithubIssueClient {
 
@@ -45,6 +46,11 @@ enum IssueOutcome {
 object GithubIssueClient {
 
   val SupportLabel: String              = "support-agent"
+  // #2265: the target repo + REST base are constants, not config — the support bot only ever files
+  // into wifihaven/wifihaven on public github.com (the fine-grained token is scoped to exactly this
+  // repo). Kept out of SupportConfig to hold it under zio-config-magnolia's 16-field ceiling.
+  val Repo: String                      = "wifihaven/wifihaven"
+  val ApiBase: String                   = "https://api.github.com"
   private val UserAgent: String         = "wifihaven-support-bot/1 (+https://wifihaven.net)"
   private val ApiVersion                = "2022-11-28"
   private val ConnectTimeout: JDuration = JDuration.ofSeconds(10)
@@ -60,10 +66,20 @@ object GithubIssueClient {
       body = SupportPrivacy.scrubForIssue(req.body),
     )
 
+  // #2265: explicit named flag, logged at boot — never inferred from a missing bot token (config
+  // validation fails the boot when the flag is true without the token).
   val layer: ZLayer[SupportConfig, Nothing, GithubIssueClient] =
-    ZLayer.fromFunction { (cfg: SupportConfig) =>
-      if cfg.issueFilingEnabled then new Live(cfg): GithubIssueClient
-      else Disabled
+    ZLayer.fromZIO {
+      ZIO.serviceWithZIO[SupportConfig] { cfg =>
+        if cfg.issueFilingEnabled then
+          ZIO
+            .logInfo("support-agent issue filing ENABLED (fine-grained Issues:write bot token)")
+            .as(new Live(cfg): GithubIssueClient)
+        else
+          ZIO
+            .logInfo("support-agent issue filing DISABLED (support.issueFilingEnabled=false)")
+            .as(Disabled)
+      }
     }
 
   val Disabled: GithubIssueClient = new GithubIssueClient {
@@ -92,7 +108,7 @@ object GithubIssueClient {
         .attemptBlocking {
           val payload = CreateIssue(req.title, req.body, List(SupportLabel)).toJson
           val httpReq = HttpRequest
-            .newBuilder(URI.create(s"${cfg.githubApiBase}/repos/${cfg.githubRepo}/issues"))
+            .newBuilder(URI.create(s"$ApiBase/repos/$Repo/issues"))
             .header("Authorization", s"Bearer ${cfg.githubSupportBotTokenTrimmed}")
             .header("Accept", "application/vnd.github+json")
             .header("X-GitHub-Api-Version", ApiVersion)

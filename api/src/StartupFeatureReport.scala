@@ -78,6 +78,27 @@ object StartupFeatureReport {
         if support.writeEnabled then "wifihaven.support.plainApiKey set — Plain write client live"
         else "wifihaven.support.plainApiKey unset — Plain write client is a metered no-op (#2199)",
       ),
+      // #2200/#2265: the responder and issue filing are EXPLICIT-flag features (rule 3's first leg —
+      // a named `enabled` flag, not inferred from secrets). When a flag is ON, its whole config
+      // chain is REQUIRED and validated at boot (AppConfig.validateRequired); this report makes the
+      // deliberate OFF state observable so it isn't mistaken for a silent no-op.
+      FeatureState(
+        "support-responder",
+        support.responderEnabled,
+        if support.responderEnabled then
+          "wifihaven.support.responderEnabled=true — signed webhook drafts a cloud-agent reply"
+        else
+          "wifihaven.support.responderEnabled=false — inbound support webhook no-ops, agent " +
+            "endpoints 404 (#2200/#2265)",
+      ),
+      FeatureState(
+        "support-issue-filing",
+        support.issueFilingEnabled,
+        if support.issueFilingEnabled then
+          "wifihaven.support.issueFilingEnabled=true — support-agent files GitHub issues (bot token)"
+        else
+          "wifihaven.support.issueFilingEnabled=false — the agent cannot file issues (#2241/#2265)",
+      ),
       FeatureState(
         "metrics-endpoint",
         metrics.enabled,

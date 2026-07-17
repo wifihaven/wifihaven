@@ -414,17 +414,28 @@ case class FlipConfig(
 //                             literal in render.yaml; empty on self-hosted). Rides in the kickoff
 //                             so the agent knows whether it is serving a real customer (prod) or
 //                             an operator test (staging).
+//   - `responderEnabled` / `issueFilingEnabled`  EXPLICIT #2265 enable flags (no dark-by-default);
+//                             a true flag makes its config chain required at boot.
 //   - `githubSupportBotToken` fine-grained GitHub token for the support bot — Issues:write ONLY on
-//                             `githubRepo` (no contents / no pull_requests ⇒ no-PR is structural,
-//                             #2241). SECRET. Empty ⇒ issue filing dark.
-//   - `githubRepo`            the repo agent-filed issues land in.
-//   - `githubApiBase`         GitHub REST base (overridable for test).
+//                             wifihaven/wifihaven (no contents / no pull_requests ⇒ no-PR is
+//                             structural, #2241). SECRET. Required when issueFilingEnabled=true.
+//                             (repo + REST base are constants in GithubIssueClient, not config.)
 case class SupportConfig(
     plainApiKey: String = "",
     plainWebhookSecret: String = "",
     plainIdentitySecret: String = "",
     plainAppId: String = "",
     apiBase: String = "https://core-api.uk.plain.com/graphql/v1",
+    // #2265: NO dark-by-default. These are EXPLICIT named enable flags — the responder / issue
+    // filing are off only when the operator says so (default false = the self-hosted no-cloud-
+    // support posture, logged at boot + visible on /api/health; never inferred from missing
+    // secrets). A TRUE flag makes its whole config chain REQUIRED: boot fails loudly, bulk-listing
+    // every gap (into AppConfig.validateRequired), instead of silently no-opping (the #1334/#1972
+    // failure class). Flat Booleans (not a nested block) — SupportConfig is at zio-config-magnolia's
+    // 16-field nested-derivation ceiling, so the rarely-overridden github repo/base moved to
+    // constants (GithubIssueClient) to make room rather than adding a 17th field.
+    responderEnabled: Boolean = false,
+    issueFilingEnabled: Boolean = false,
     anthropicApiKey: String = "",
     claudeAgentId: String = "",
     claudeEnvironmentId: String = "",
@@ -434,8 +445,6 @@ case class SupportConfig(
     agentApiBase: String = "https://api.wifihaven.net",
     deploymentEnv: String = "",
     githubSupportBotToken: String = "",
-    githubRepo: String = "wifihaven/wifihaven",
-    githubApiBase: String = "https://api.github.com",
 ) {
   val apiKeyTrimmed: String         = plainApiKey.trim
   val webhookSecretTrimmed: String  = plainWebhookSecret.trim
@@ -459,25 +468,35 @@ case class SupportConfig(
   // otherwise PlainClient is the disabled no-op and every call is a metered skip.
   val writeEnabled: Boolean = apiKeyTrimmed.nonEmpty
 
-  // #2200: the responder dispatches cloud-agent sessions only when the WHOLE chain is configured —
-  // webhook verification (signing secret), the Anthropic session-create credentials (key + agent +
-  // environment), and the agent-token secret (without which the dispatched agent could take no
-  // action anyway). Any missing piece ⇒ the webhook route no-ops dark and no tokens burn.
-  val responderEnabled: Boolean =
-    webhookSecretTrimmed.nonEmpty &&
-      anthropicApiKeyTrimmed.nonEmpty &&
-      claudeAgentIdTrimmed.nonEmpty &&
-      claudeEnvironmentIdTrimmed.nonEmpty &&
-      agentTokenSecretTrimmed.nonEmpty
+  // #2265: fail LOUD, in bulk. With the responder explicitly enabled, EVERY config the chain needs
+  // is required — webhook verification, the Plain write key (the reply path), the Anthropic
+  // session-create triple, the agent-token secret, and the deployment identity. Returns ALL missing
+  // keys at once (bulk validation, #2265/#2266 rule 4); AppConfig.validateRequired folds these into
+  // the canonical accumulator that fails boot listing every violation. A method (not a body
+  // `require`) keeps zio-config's derivation clean.
+  def missingRequiredKeys: List[String] = {
+    val responderKeys =
+      if !responderEnabled then Nil
+      else
+        List(
+          "support.plainApiKey"         -> apiKeyTrimmed,
+          "support.plainWebhookSecret"  -> webhookSecretTrimmed,
+          "support.anthropicApiKey"     -> anthropicApiKeyTrimmed,
+          "support.claudeAgentId"       -> claudeAgentIdTrimmed,
+          "support.claudeEnvironmentId" -> claudeEnvironmentIdTrimmed,
+          "support.agentTokenSecret"    -> agentTokenSecretTrimmed,
+          "support.deploymentEnv"       -> deploymentEnvTrimmed,
+        ).collect { case (k, v) if v.isEmpty => k }
+    val issueKeys     =
+      if issueFilingEnabled && githubSupportBotTokenTrimmed.isEmpty then
+        List("support.githubSupportBotToken")
+      else Nil
+    responderKeys ++ issueKeys
+  }
 
-  // #2200: the agent-facing endpoints authenticate solely with the HMAC agent token; no secret ⇒
-  // nothing could ever verify, so the endpoints are dark (404-shaped denial) rather than accepting
-  // unverifiable tokens.
-  val agentEndpointsEnabled: Boolean = agentTokenSecretTrimmed.nonEmpty
-
-  // #2241: agent issue filing is live only when the fine-grained bot token is set. The token's
-  // Issues:write-only scope is what makes "cannot create/merge PRs" structural.
-  val issueFilingEnabled: Boolean = githubSupportBotTokenTrimmed.nonEmpty
+  // #2200: the agent-facing endpoints authenticate solely with the HMAC agent token, whose secret
+  // the responder validation guarantees when enabled; disabled ⇒ 404-shaped denial.
+  val agentEndpointsEnabled: Boolean = responderEnabled && agentTokenSecretTrimmed.nonEmpty
 
   // Clamp to a 1-minute floor so a misconfigured 0/negative can't mint already-expired tokens.
   val agentTokenTtl: java.time.Duration =
@@ -503,7 +522,14 @@ object AppConfig {
    * reported (not failed) via [[StartupFeatureReport]].
    */
   def validateRequired(cfg: AppConfig): List[String] =
-    JwtConfig.validate(cfg.jwt) ++ MetricsConfig.validate(cfg.metrics)
+    JwtConfig.validate(cfg.jwt) ++ MetricsConfig.validate(cfg.metrics) ++
+      // #2265: the support responder / issue filing are EXPLICIT-flag features — off by default, but
+      // when a flag is turned on its whole config chain becomes required. `missingRequiredKeys`
+      // returns every gap for the enabled flag(s); mapped to a message here so they accumulate with
+      // the rest (rule 1 + 4). Flag=false ⇒ no keys required ⇒ nothing added.
+      cfg.support.missingRequiredKeys.map(k =>
+        s"$k must be set when the support responder / issue filing is enabled (#2265)",
+      )
 
   /**
    * Boot-boundary form of [[validateRequired]]: succeed with `cfg` when valid, else FAIL LOUDLY

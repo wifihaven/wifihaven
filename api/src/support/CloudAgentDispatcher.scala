@@ -19,8 +19,10 @@ import java.time.Duration as JDuration
  *
  * A tiny swappable trait (mirroring the #578 EmailSender / #2199 PlainClient pattern) so the
  * responder depends on "dispatch an agent run", not on Managed Agents REST specifics, and
- * feature-tests inject a recorder instead of hitting the network. Config-gated: missing any of the
- * Anthropic key / agent id / environment id ⇒ the [[Disabled]] no-op ships (responder dark).
+ * feature-tests inject a recorder instead of hitting the network. #2265 — no dark-by-default: the
+ * responder runs iff the EXPLICIT `support.responderEnabled` flag is true (in which case its whole
+ * config chain is validated loudly at boot); flag false ⇒ the [[Disabled]] no-op, logged and
+ * health-visible.
  *
  * SECURITY MODEL (#2200 / #2241):
  *   - The agent receives **zero vendor secrets**. Its only credential is the short-TTL, thread- and
@@ -76,13 +78,25 @@ object CloudAgentDispatcher {
   private val ConnectTimeout: JDuration = JDuration.ofSeconds(10)
   private val RequestTimeout: JDuration = JDuration.ofSeconds(30)
 
+  // #2265: the off state is an explicit named flag, logged at boot (and shown on /api/health) —
+  // never inferred from missing secrets (config validation fails the boot for that case).
   val layer: ZLayer[SupportConfig, Nothing, CloudAgentDispatcher] =
-    ZLayer.fromFunction { (cfg: SupportConfig) =>
-      if cfg.responderEnabled then new Live(cfg): CloudAgentDispatcher
-      else Disabled
+    ZLayer.fromZIO {
+      ZIO.serviceWithZIO[SupportConfig] { cfg =>
+        if cfg.responderEnabled then
+          ZIO
+            .logInfo(
+              "support responder ENABLED — dispatching cloud-agent sessions per inbound message",
+            )
+            .as(new Live(cfg): CloudAgentDispatcher)
+        else
+          ZIO
+            .logInfo("support responder DISABLED (support.responderEnabled=false) — webhook no-ops")
+            .as(Disabled)
+      }
     }
 
-  /** No-op dispatcher used when the responder is unconfigured — the dark default. */
+  /** No-op dispatcher used when the responder is explicitly disabled (#2265 named flag). */
   val Disabled: CloudAgentDispatcher = new CloudAgentDispatcher {
     def dispatch(req: AgentDispatch): UIO[DispatchOutcome] = ZIO.succeed(DispatchOutcome.Disabled)
   }

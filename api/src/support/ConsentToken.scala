@@ -64,8 +64,8 @@ object ConsentToken {
 
   /**
    * Mint a token for `household` + `thread`, expiring at `now + ttl`. Server-side only; `secret` is
-   * the dedicated agent-token secret (config-gated — no secret ⇒ the responder is dark and this is
-   * never called).
+   * the dedicated agent-token secret (required at boot whenever the responder is enabled, #2265 —
+   * with the responder disabled this is never called).
    */
   def mint(
       household: HouseholdId,

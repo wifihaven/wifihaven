@@ -12,8 +12,12 @@ the operator — who sees every thread in the Plain inbox — follows up. The ag
 secrets** (no Plain key, no GitHub token, no Anthropic key). Each kickoff also names the
 **deployment** it serves (`staging` = operator test, `prod` = real customer).
 
-Everything ships **dark**: with the env vars below unset, the webhook no-ops and the agent
-endpoints 404.
+**No dark-by-default (#2265):** the responder and issue filing run only when their EXPLICIT flags —
+`WIFIHAVEN_SUPPORT_RESPONDER_ENABLED` / `WIFIHAVEN_SUPPORT_ISSUE_FILING_ENABLED` — are `true`
+(flipped via render.yaml PR at go-live, **after** the secrets below are set: config precedes code).
+With a flag `true` and any required key missing, the API **refuses to boot**, listing every gap.
+With the flags `false` (the default), the off state is logged at boot and visible on
+`/api/health` (`features.supportResponder`); the webhook no-ops and the agent endpoints 404.
 
 ## Provisioning
 
@@ -35,6 +39,8 @@ at create time, so an update never disturbs in-flight support sessions.
 
 | Env var | Value |
 |---|---|
+| `WIFIHAVEN_SUPPORT_RESPONDER_ENABLED` | `false` in render.yaml — flip to `true` via PR at go-live, after everything below is set (#2265) |
+| `WIFIHAVEN_SUPPORT_ISSUE_FILING_ENABLED` | `false` in render.yaml — flip with (or after) the responder once the bot token is set |
 | `WIFIHAVEN_SUPPORT_PLAIN_WEBHOOK_SECRET` | Plain workspace webhook signing secret (Plain → Settings → Webhooks; point the webhook at `POST https://<api-host>/api/support/webhook`, thread/message-created events) |
 | `WIFIHAVEN_SUPPORT_ANTHROPIC_API_KEY` | Anthropic API key (session creation only) |
 | `WIFIHAVEN_SUPPORT_CLAUDE_AGENT_ID` | agent id printed by `apply.sh` |

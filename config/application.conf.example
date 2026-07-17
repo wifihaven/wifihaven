@@ -182,9 +182,14 @@ wifihaven {
   #   # apiBase           = "https://core-api.uk.plain.com/graphql/v1"
   #
   #   # #2200: the Claude support responder — a CLOUD Claude agent (Anthropic Managed Agents
-  #   # session) dispatched per UI-originated inbound Plain message. DARK unless ALL of
-  #   # plainWebhookSecret (above) + the three Anthropic fields + agentTokenSecret are set.
-  #   # Self-hosted installs normally leave this whole half empty (support is a cloud feature).
+  #   # session) dispatched per UI-originated inbound Plain message. #2265: NO dark-by-default —
+  #   # the responder runs only when responderEnabled = true is set EXPLICITLY, and then every
+  #   # field it needs (plainApiKey, plainWebhookSecret, the three Anthropic fields,
+  #   # agentTokenSecret, deploymentEnv) is REQUIRED: a missing one fails startup loudly, listing
+  #   # every gap. false (the default, the self-hosted posture) is logged at boot and visible on
+  #   # /api/health. issueFilingEnabled gates the GitHub bot the same way.
+  #   # responderEnabled    = false
+  #   # issueFilingEnabled  = false
   #   # Anthropic API key — used ONLY to create agent sessions. SECRET.
   #   anthropicApiKey       = ""
   #   # The pre-provisioned Managed Agent + environment ids (deploy/support-agent/, applied once
@@ -201,10 +206,9 @@ wifihaven {
   #   # Which deployment this API is ("staging" | "prod"; rides in the agent kickoff so a session
   #   # knows whether it serves a real customer or an operator test). Empty on self-hosted.
   #   # deploymentEnv       = ""
-  #   # Fine-grained GitHub token for the support bot — Issues:write ONLY on githubRepo (no
-  #   # contents / no pull_requests ⇒ no-PR is structural, #2241). Empty ⇒ issue filing dark. SECRET.
+  #   # Fine-grained GitHub token for the support bot — Issues:write ONLY on wifihaven/wifihaven
+  #   # (no contents / no pull_requests ⇒ no-PR is structural, #2241). Required when
+  #   # issueFilingEnabled = true. SECRET. (The target repo + REST base are constants, not config.)
   #   githubSupportBotToken = ""
-  #   # githubRepo          = "wifihaven/wifihaven"
-  #   # githubApiBase       = "https://api.github.com"
   # }
 }

@@ -404,9 +404,9 @@ object Main extends ZIOAppDefault {
       wifihaven.api.support.PlainClient.layer >+>
       wifihaven.api.support.SupportService.layer >+>
       // #2200 (support intake C): the Claude responder's external transports — the cloud-agent
-      // dispatcher (Managed Agents session per UI-originated inbound message; disabled no-op when
-      // the Anthropic key / agent id / environment id are unset) and the GitHub issue-filing client
-      // (fine-grained Issues:write-only bot token; disabled no-op when unset). Both ship dark.
+      // dispatcher (Managed Agents session per UI-originated inbound message) and the GitHub
+      // issue-filing client (fine-grained Issues:write-only bot token). #2265: each runs iff its
+      // EXPLICIT enable flag is true (validated loudly at boot); off is logged + health-visible.
       wifihaven.api.support.CloudAgentDispatcher.layer >+>
       wifihaven.api.support.GithubIssueClient.layer >+>
       // #1242: Prometheus publisher + snapshot listener, and JVM metrics collectors.
@@ -476,9 +476,9 @@ object Main extends ZIOAppDefault {
       // customer mapping). Dark unless the Plain keys are set.
       support               <- ZIO.service[wifihaven.api.support.SupportService]
       // #2200: the Claude responder — the webhook→gate→dispatch pipeline plus the cloud agent's
-      // token-authenticated callback endpoints. Dark unless the responder secrets are set. Issue
+      // token-authenticated callback endpoints. Runs iff support.responderEnabled (#2265). Issue
       // filing is rate-limited per-thread (3/h) and globally (10/h) — the #2241 volume control the
-      // support_agent_action_total{action="issue"} alert watches.
+      // support_agent_action_total{op="issue"} alert watches.
       billingRepo           <- ZIO.service[wifihaven.api.db.HouseholdBillingRepo]
       plainClient           <- ZIO.service[wifihaven.api.support.PlainClient]
       agentDispatcher       <- ZIO.service[wifihaven.api.support.CloudAgentDispatcher]
@@ -581,8 +581,8 @@ object Main extends ZIOAppDefault {
           // until the operator sets the Plain widget app id + identity secret.
           SupportRoutes.routes(auth, support) ++
           // #2200: the Plain new-message webhook (signature-verified, UI-origin-gated cloud-agent
-          // dispatch) + the agent's token-authenticated callback endpoints. Dark until the
-          // responder secrets are set (webhook no-ops, agent endpoints 404).
+          // dispatch) + the agent's token-authenticated callback endpoints. Off unless
+          // support.responderEnabled is set explicitly (#2265): webhook no-ops, agent endpoints 404.
           SupportAgentRoutes.routes(supportResponder) ++
           ProfileRoutes.routes(
             auth,

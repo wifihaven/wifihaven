@@ -7,7 +7,8 @@ import zio.http.*
 import zio.json.*
 
 /**
- * #2200 (support intake C, epic #2197) — the responder's HTTP surface, all config-gated dark:
+ * #2200 (support intake C, epic #2197) — the responder's HTTP surface, live iff the explicit
+ * `support.responderEnabled` flag is set (#2265):
  *
  *   - PUBLIC `POST /api/support/webhook` — Plain's signed new-message webhook. Unauthenticated by
  *     design (Plain has no bearer token); the `Plain-Request-Signature` HMAC verified inside

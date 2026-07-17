@@ -12,7 +12,7 @@
       }
     ]
   },
-  "description": "WifiHaven Plain support integration (#2199 + #2200, epic #2197): server-signed widget-identity outcomes, household→Plain customer-upsert outcomes, the #2200 Claude responder's webhook outcomes (support_ai_draft_total{outcome} from SupportResponder — dispatched / skipped_unauthenticated / rate_limited / invalid_signature / malformed / disabled / error), and the cloud agent's callback actions (support_agent_action_total{op,outcome} — reply / issue / household_read). All labels are bounded enums (never per-email / per-household / per-thread). Ships DARK: with no keys set, outcomes count as disabled and nothing dispatches. See issues #2206, #2200, #2241.",
+  "description": "WifiHaven Plain support integration (#2199 + #2200, epic #2197): server-signed widget-identity outcomes, household→Plain customer-upsert outcomes, the #2200 Claude responder's webhook outcomes (support_ai_draft_total{outcome} from SupportResponder — dispatched / skipped_unauthenticated / rate_limited / invalid_signature / malformed / disabled / error), and the cloud agent's callback actions (support_agent_action_total{op,outcome} — reply / issue / household_read). All labels are bounded enums (never per-email / per-household / per-thread). The responder runs iff the explicit support.responderEnabled flag is set (#2265 — no dark-by-default; a true flag with missing config refuses to boot); disabled installs count outcomes as disabled and dispatch nothing. See issues #2206, #2200, #2241, #2265.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,

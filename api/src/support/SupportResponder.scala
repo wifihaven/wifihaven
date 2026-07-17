@@ -11,7 +11,9 @@ import zio.json.*
 
 /**
  * #2200 (support intake C, epic #2197) — the Claude support responder, wired to Plain per the #2241
- * access model. Two halves, both config-gated (dark by default):
+ * access model. Two halves, both behind the EXPLICIT `support.responderEnabled` flag (#2265 — no
+ * dark-by-default: enabling without the full config chain refuses to boot; disabling is a named,
+ * logged, health-visible state):
  *
  * **Inbound ([[handleWebhook]])**: Plain's signed new-message webhook → HMAC verify → the
  * UI-ORIGINATED gate (operator constraint 2026-07-14: the responder acts ONLY on threads that

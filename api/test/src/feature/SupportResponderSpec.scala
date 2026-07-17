@@ -31,7 +31,8 @@ import zio.test.*
  *   - a COLD thread (no tenant, or a tenant that resolves to nothing) NEVER triggers the agent —
  *     the `skipped_unauthenticated` cost/abuse gate (operator constraint 2026-07-14);
  *   - dispatch is rate-capped (the cost guardrail — a widget-spamming household hits a ceiling);
- *   - with NO keys set everything is DARK and back-compat holds;
+ *   - flags false ⇒ the feature is EXPLICITLY off and back-compat holds; flags true with missing
+ *     config ⇒ construction fails loudly, bulk-listing every gap (#2265 — no dark-by-default);
  *   - the agent token is single-household by construction (a household-A token reads A, tampered /
  *     expired / consent-less tokens are refused);
  *   - a reply posts ONLY into the token-bound thread, AI-attributed (autonomous send, 2026-07-17);
@@ -50,18 +51,24 @@ object SupportResponderSpec
   private val WebhookSecret = "plain-webhook-signing-secret-xyz"
   private val TokenSecret   = "agent-token-secret-0123456789abcdef"
 
-  // Responder ON: webhook secret + the Anthropic session-create triple + the token secret. The
-  // recorders stand in for every network transport, so no live key shape matters.
+  // Responder ON — the EXPLICIT flags (#2265) plus the full required chain (a true flag with any
+  // key missing is caught by AppConfig.validateRequired at boot). The recorders stand in for every
+  // network transport, so no live key shape matters.
   private val liveCfg = SupportConfig(
+    responderEnabled = true,
+    issueFilingEnabled = true,
+    plainApiKey = "plain-api-key-test",
     plainWebhookSecret = WebhookSecret,
     anthropicApiKey = "sk-ant-test",
     claudeAgentId = "agent_test",
     claudeEnvironmentId = "env_test",
     agentTokenSecret = TokenSecret,
+    deploymentEnv = "staging",
     githubSupportBotToken = "github_pat_test",
   )
 
-  // Everything empty ⇒ DARK (responder, agent endpoints, issue filing all off).
+  // Flags false (the default) ⇒ the feature is EXPLICITLY off (#2265) — logged + reported on
+  // /api/debug/config via StartupFeatureReport, and inert: webhook no-ops, agent endpoints 404.
   private val darkCfg = SupportConfig()
 
   private final case class Stubs(
@@ -239,7 +246,38 @@ object SupportResponderSpec
       // The third delivery still 200s (Plain must not retry-storm) but NO agent burns tokens.
       assertTrue(s3 == Status.Ok, dispatches.size == 2)
     },
-    test("with no keys set everything is DARK — webhook no-ops, agent endpoints 404") {
+    test("responderEnabled=true with missing config reports EVERY gap in bulk (#2265)") {
+      // No dark-by-default: enabling the responder without its chain reports ALL missing keys in
+      // one shot (bulk validation, #2265 rule 4) so the operator fixes them together; the startup
+      // layer turns any non-empty list into a loud boot failure, and liveCfg (fully set) is clean.
+      val missing =
+        SupportConfig(responderEnabled = true).missingRequiredKeys
+      assertTrue(
+        missing.contains("support.plainApiKey"),
+        missing.contains("support.plainWebhookSecret"),
+        missing.contains("support.anthropicApiKey"),
+        missing.contains("support.claudeAgentId"),
+        missing.contains("support.claudeEnvironmentId"),
+        missing.contains("support.agentTokenSecret"),
+        missing.contains("support.deploymentEnv"),
+        liveCfg.missingRequiredKeys.isEmpty,
+      )
+      // These gaps flow into the canonical AppConfig.validateRequired (#2266 framework), which fails
+      // boot listing them all — the accumulation/boot-failure wording is pinned by StartupConfigSpec.
+    },
+    test("issueFilingEnabled=true without the bot token is a missing-key (#2265)") {
+      assertTrue(
+        SupportConfig(issueFilingEnabled = true).missingRequiredKeys
+          .contains("support.githubSupportBotToken"),
+        SupportConfig(
+          issueFilingEnabled = true,
+          githubSupportBotToken = "pat",
+        ).missingRequiredKeys.isEmpty,
+      )
+    },
+    test(
+      "with the flags explicitly false the feature is OFF — webhook no-ops, agent endpoints 404",
+    ) {
       for {
         _               <- cleanDb
         (routes, stubs) <- makeRoutes(darkCfg)
