@@ -57,6 +57,15 @@ staging API; the "router" side is the fake driver in those scripts.
   modes; the goal here is contract surface, not depth.
 - **Template tests:** `scripts/e2e-tests.sh` covers the admin path;
   `scripts/e2e-router.sh` covers the router-API path.
+- **Multi-tenant isolation (#2151):** `scripts/e2e-isolation.py` provisions
+  **two real households** (A = default; B via the beta pipeline) and asserts
+  the absence of cross-tenant leakage across the user API, the router
+  snapshot, ingest, beta provisioning, and the router cap (design
+  `docs/design/multi-tenant-isolation.md` §7). It runs in the compose `e2e`
+  job **only**, not `api-smoke-staging`: it creates a persistent second
+  household + routers the staging backend can't clean between runs, and the
+  disposable compose DB (`down -v` each run) is what two-household seeding
+  needs. Add tenant-scoping assertions here.
 
 ### Gate 2 — router enforcement against fake API
 
