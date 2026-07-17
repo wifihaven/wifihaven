@@ -7,7 +7,8 @@ import { copyToClipboard } from '@/lib/clipboard'
 //   - openwrt/install.sh header (the documented invocation), and
 //   - docs/install-openwrt.md §2 "Install with the one-shot script".
 // It uses `uclient-fetch` (present on stock OpenWRT) — NOT curl, which the router may
-// not have installed yet (install.sh itself installs curl on demand). Keep this string
+// not have installed yet (install.sh itself installs curl on demand). KEEP IN SYNC with
+// the openwrt/install.sh header comment and docs/install-openwrt.md §2 — this must stay
 // byte-identical to those two sources; a drift here would hand new users a broken command.
 export const ROUTER_INSTALL_COMMAND =
   'sh -c "$(uclient-fetch -qO - https://raw.githubusercontent.com/wifihaven/wifihaven/main/openwrt/install.sh)"'
@@ -33,7 +34,7 @@ const SUGGESTED_ROUTERS: SuggestedRouter[] = [
   {
     name: 'GL.iNet Flint (GL-AX1800)',
     detail:
-      'The smaller sibling — Wi-Fi 6, four gigabit LAN ports. A solid, cheaper option for lighter households.',
+      'The smaller sibling — Wi-Fi 6, gigabit Ethernet. A solid, cheaper option for lighter households.',
     note: 'Also ships an OpenWRT-based firmware.',
   },
   {
