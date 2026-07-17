@@ -72,5 +72,6 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.SUPPORT_AGENT_ANTHROPIC_API_KEY }}
         run: |
-          export PATH="$PATH:$(go env GOPATH)/bin"
+          gobin="$(go env GOPATH)/bin"
+          export PATH="$PATH:$gobin"
           ./deploy/support-agent/apply.sh
