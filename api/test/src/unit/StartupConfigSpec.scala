@@ -293,5 +293,87 @@ object StartupConfigSpec extends ZIOSpecDefault {
         assertTrue(on.enabled, on.detail.contains("requireToken"))
       },
     ),
+    suite("#2266 email + stripe — explicit `enabled` flag replaces secret-presence derivation")(
+      test("email: enabled=true + a missing secret fails boot, naming the gap(s)") {
+        val errs = EmailConfig.validate(EmailConfig(enabled = true, resendApiKey = "re_x"))
+        assertTrue(errs.length == 1, errs.head.contains("wifihaven.email.fromAddress"))
+      },
+      test("email: enabled=true + both secrets present → no error") {
+        assertTrue(
+          EmailConfig
+            .validate(EmailConfig(enabled = true, resendApiKey = "re_x", fromAddress = "a@b.co"))
+            .isEmpty,
+        )
+      },
+      test("email: enabled=false → no secret required even if unset (deliberate off)") {
+        assertTrue(EmailConfig.validate(EmailConfig(enabled = false)).isEmpty)
+      },
+      test("email: enabled is the explicit flag, NOT derived from secret presence") {
+        // secrets present but flag false → OFF; this is the whole point of the conversion.
+        assertTrue(
+          !EmailConfig(enabled = false, resendApiKey = "re_x", fromAddress = "a@b.co").enabled,
+          EmailConfig(enabled = true, resendApiKey = "re_x", fromAddress = "a@b.co").enabled,
+        )
+      },
+      test("stripe: enabled=true + empty secretKey fails boot; enabled=false never does") {
+        assertTrue(
+          StripeConfig
+            .validate(StripeConfig(enabled = true, secretKey = ""))
+            .exists(
+              _.contains("wifihaven.stripe.secretKey"),
+            ),
+          StripeConfig.validate(StripeConfig(enabled = true, secretKey = "sk_x")).isEmpty,
+          StripeConfig.validate(StripeConfig(enabled = false, secretKey = "")).isEmpty,
+        )
+      },
+      test("stripe: enabled is the explicit flag, NOT derived from secretKey") {
+        assertTrue(
+          !StripeConfig(enabled = false, secretKey = "sk_x").enabled,
+          StripeConfig(enabled = true, secretKey = "sk_x").enabled,
+        )
+      },
+      test("validateRequired accumulates email + stripe gaps alongside a bad jwt (rule 4)") {
+        val cfg  = AppConfig(
+          db = DbConfig("localhost", 5432, "wifihaven", "wifihaven", "changeme", 5),
+          http = HttpConfig("0.0.0.0", 8080, "web/dist", serveSpa = true),
+          jwt = JwtConfig("short", 24),
+          cors = CorsConfig(""),
+          email = EmailConfig(enabled = true),  // both secrets missing
+          stripe = StripeConfig(enabled = true),// secretKey missing
+        )
+        val errs = AppConfig.validateRequired(cfg)
+        assertTrue(
+          errs.exists(_.contains("wifihaven.jwt.secret")),
+          errs.exists(_.contains("wifihaven.email.")),
+          errs.exists(_.contains("wifihaven.stripe.secretKey")),
+          errs.length >= 3,
+        )
+      },
+      test("feature report reflects the explicit email/stripe flags") {
+        def rep(email: EmailConfig, stripe: StripeConfig) =
+          StartupFeatureReport.states(
+            AppConfig(
+              db = DbConfig("localhost", 5432, "wifihaven", "wifihaven", "changeme", 5),
+              http = HttpConfig("0.0.0.0", 8080, "web/dist", serveSpa = true),
+              jwt = JwtConfig(goodSecret, 24),
+              cors = CorsConfig(""),
+              email = email,
+              stripe = stripe,
+            ),
+          )
+        val on                                            = rep(
+          EmailConfig(enabled = true, resendApiKey = "re_x", fromAddress = "a@b.co"),
+          StripeConfig(enabled = true, secretKey = "sk_x"),
+        )
+        val off = rep(EmailConfig(enabled = false), StripeConfig(enabled = false))
+        assertTrue(
+          on.find(_.name == "email-notifications").get.enabled,
+          on.find(_.name == "stripe-billing").get.enabled,
+          !off.find(_.name == "email-notifications").get.enabled,
+          !off.find(_.name == "stripe-billing").get.enabled,
+          off.find(_.name == "stripe-billing").get.detail.contains("enabled=false"),
+        )
+      },
+    ),
   )
 }
