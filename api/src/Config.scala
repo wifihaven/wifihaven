@@ -112,12 +112,35 @@ object JwtConfig {
 // `scrapeToken`, when non-empty, is required as `Authorization: Bearer <token>`
 // — the API is internet-facing on Render, so prod/staging set it. Empty (the
 // self-hosted default) leaves /metrics open on the loopback-bound deployment.
+//
+// #2266 (no-dark-by-default): `requireToken` is the explicit, cloud-only "the
+// scrape token is MANDATORY here" flag. Default `false` = the loopback-open
+// self-hosted behaviour is unchanged. Set `true` (render.yaml, cloud) and an
+// unset `scrapeToken` FAILS BOOT (AppConfig.validateRequired) instead of
+// silently serving /metrics unauthenticated — closing the "token lost ⇒
+// internet-facing /metrics falls open with no signal" gap. It is a named flag,
+// not a secret-presence derivation, so "disabled" is a deliberate decision.
 case class MetricsConfig(
     enabled: Boolean = true,
     scrapeToken: String = "",
+    requireToken: Boolean = false,
 ) {
   val scrapeTokenOpt: Option[String] =
     Option(scrapeToken).map(_.trim).filter(_.nonEmpty)
+}
+
+object MetricsConfig {
+  // #2266: fail loud when /metrics is mounted AND the token is declared mandatory
+  // (requireToken=true) yet unset. Only meaningful while `enabled` — a 404'd
+  // /metrics can't leak. Accumulated by [[AppConfig.validateRequired]].
+  private[api] def validate(cfg: MetricsConfig): List[String] =
+    Option
+      .when(cfg.enabled && cfg.requireToken && cfg.scrapeTokenOpt.isEmpty)(
+        "wifihaven.metrics.requireToken=true but wifihaven.metrics.scrapeToken is unset — " +
+          "GET /metrics would be internet-facing and UNAUTHENTICATED; set the scrape token " +
+          "(or set requireToken=false for a loopback-only self-hosted install)",
+      )
+      .toList
 }
 
 // #612: cross-origin browser access for the split SPA.
@@ -413,7 +436,7 @@ object AppConfig {
    * reported (not failed) via [[StartupFeatureReport]].
    */
   def validateRequired(cfg: AppConfig): List[String] =
-    JwtConfig.validate(cfg.jwt)
+    JwtConfig.validate(cfg.jwt) ++ MetricsConfig.validate(cfg.metrics)
 
   /**
    * Boot-boundary form of [[validateRequired]]: succeed with `cfg` when valid, else FAIL LOUDLY

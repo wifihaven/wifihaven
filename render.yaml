@@ -136,6 +136,12 @@ services:
       # bearer token. Generated ONCE on first apply; share with the scraper.
       - key: WIFIHAVEN_METRICS_SCRAPE_TOKEN
         generateValue: true
+      # #2266: the token is MANDATORY on this internet-facing deploy — an unset
+      # token FAILS BOOT (AppConfig.validateRequired) rather than silently serving
+      # /metrics unauthenticated. Safe because the token above is generateValue
+      # (always present). Self-hosted leaves this false (loopback-open default).
+      - key: WIFIHAVEN_METRICS_REQUIRE_TOKEN
+        value: "true"
       # #1873: env label for the Loki appender (logback.xml reads ${WIFIHAVEN_ENV}).
       - key: WIFIHAVEN_ENV
         value: staging
@@ -311,6 +317,12 @@ services:
       # bearer token. Generated ONCE on first apply; share with the scraper.
       - key: WIFIHAVEN_METRICS_SCRAPE_TOKEN
         generateValue: true
+      # #2266: the token is MANDATORY on this internet-facing deploy — an unset
+      # token FAILS BOOT (AppConfig.validateRequired) rather than silently serving
+      # /metrics unauthenticated. Safe because the token above is generateValue
+      # (always present). Self-hosted leaves this false (loopback-open default).
+      - key: WIFIHAVEN_METRICS_REQUIRE_TOKEN
+        value: "true"
       # #1873: env label for the Loki appender (logback.xml reads ${WIFIHAVEN_ENV}).
       - key: WIFIHAVEN_ENV
         value: production

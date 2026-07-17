@@ -13,6 +13,11 @@ import zio.metrics.connectors.prometheus.PrometheusPublisher
  * Bearer <token>` (the API is internet-facing on Render). When unset, the endpoint is open — the
  * self-hosted default, where the API isn't publicly exposed. When `cfg.enabled` is false the route
  * isn't mounted at all.
+ *
+ * #2266: when `cfg.requireToken` is true (the cloud-only mandatory-token flag) an unset token is
+ * fail-CLOSED — every request is 401 rather than the loopback-open default.
+ * `AppConfig.validateRequired` already crashes boot on `requireToken=true` + empty token, so this
+ * is defense in depth: the route must never fall open just because that guard was bypassed.
  */
 object MetricsRoutes {
 
@@ -39,7 +44,9 @@ object MetricsRoutes {
 
   private def authorized(req: Request, cfg: MetricsConfig): Boolean =
     cfg.scrapeTokenOpt match {
-      case None           => true
+      // #2266: no token + requireToken → fail closed (deny all); no token + !requireToken → the
+      // loopback-open self-hosted default (allow). A configured token is always enforced.
+      case None           => !cfg.requireToken
       case Some(expected) => bearer(req).contains(expected)
     }
 
