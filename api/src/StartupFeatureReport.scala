@@ -88,10 +88,13 @@ object StartupFeatureReport {
         "metrics-scrape-token",
         metrics.scrapeTokenOpt.isDefined,
         if metrics.scrapeTokenOpt.isDefined then
-          "wifihaven.metrics.scrapeToken set — /metrics requires Bearer auth"
+          s"wifihaven.metrics.scrapeToken set — /metrics requires Bearer auth (requireToken=${metrics.requireToken})"
+        else if metrics.requireToken then
+          // Unreachable at runtime: validateRequired fails boot on requireToken=true + empty token.
+          "wifihaven.metrics.requireToken=true but scrapeToken unset — /metrics is fail-CLOSED (401) (#2266)"
         else
-          "wifihaven.metrics.scrapeToken unset — /metrics is UNAUTHENTICATED (loopback-only " +
-            "self-hosted default; cloud/staging MUST set it) (#1242)",
+          "wifihaven.metrics.scrapeToken unset, requireToken=false — /metrics is UNAUTHENTICATED " +
+            "(loopback-only self-hosted default; cloud sets requireToken=true) (#1242/#2266)",
       ),
       FeatureState(
         "cors",

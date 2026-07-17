@@ -96,6 +96,10 @@ wifihaven {
     # Leave empty for self-hosted installs where the API isn't publicly
     # exposed; set a token on internet-facing (Render) deployments.
     scrapeToken = ""
+    # #2266: set true on an internet-facing deploy to make the token MANDATORY —
+    # an unset scrapeToken then FAILS BOOT instead of serving /metrics
+    # unauthenticated. Leave false for a loopback-only self-hosted install.
+    requireToken = false
   }
 
   # #2135 (multi-tenant P5-5): Stripe billing. The whole block is optional — an

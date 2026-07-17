@@ -25,6 +25,9 @@ set -euo pipefail
 : "${WIFIHAVEN_WS_ALLOWED_ORIGINS:=}"
 : "${WIFIHAVEN_METRICS_ENABLED:=true}"
 : "${WIFIHAVEN_METRICS_SCRAPE_TOKEN:=}"
+# #2266: cloud sets this true so a missing scrape token FAILS BOOT rather than serving
+# /metrics unauthenticated. Default false keeps the loopback-open self-hosted behaviour.
+: "${WIFIHAVEN_METRICS_REQUIRE_TOKEN:=false}"
 # #2250: single per-environment SPA origin — the one place a deployment names the app host.
 # The beta-invite link, Stripe Checkout/Portal return, and the alert/email "review in dashboard"
 # link all derive from this unless individually overridden below. Cloud sets it once per env in
@@ -112,8 +115,9 @@ wifihaven {
     allowedOrigins = "${WIFIHAVEN_WS_ALLOWED_ORIGINS}"
   }
   metrics {
-    enabled     = ${WIFIHAVEN_METRICS_ENABLED}
-    scrapeToken = "${WIFIHAVEN_METRICS_SCRAPE_TOKEN}"
+    enabled      = ${WIFIHAVEN_METRICS_ENABLED}
+    scrapeToken  = "${WIFIHAVEN_METRICS_SCRAPE_TOKEN}"
+    requireToken = ${WIFIHAVEN_METRICS_REQUIRE_TOKEN}
   }
   stripe {
     secretKey         = "${WIFIHAVEN_STRIPE_SECRET_KEY}"
