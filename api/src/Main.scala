@@ -403,6 +403,12 @@ object Main extends ZIOAppDefault {
       ZLayer.fromZIO(ZIO.serviceWith[AppConfig](_.support)) >+>
       wifihaven.api.support.PlainClient.layer >+>
       wifihaven.api.support.SupportService.layer >+>
+      // #2200 (support intake C): the Claude responder's external transports — the cloud-agent
+      // dispatcher (Managed Agents session per UI-originated inbound message; disabled no-op when
+      // the Anthropic key / agent id / environment id are unset) and the GitHub issue-filing client
+      // (fine-grained Issues:write-only bot token; disabled no-op when unset). Both ship dark.
+      wifihaven.api.support.CloudAgentDispatcher.layer >+>
+      wifihaven.api.support.GithubIssueClient.layer >+>
       // #1242: Prometheus publisher + snapshot listener, and JVM metrics collectors.
       MetricsRuntime.prometheus() >+>
       DefaultJvmMetrics.live
@@ -449,27 +455,57 @@ object Main extends ZIOAppDefault {
       xa             <- ZIO.service[Transactor[Task]]
       promPublisher  <- ZIO.service[PrometheusPublisher]
       routerAuth = new RouterAuthLive(routerRepo)
-      routerMetrics        <- RouterMetricsService.make
+      routerMetrics         <- RouterMetricsService.make
       // #2079: per-source-IP rate limit on the unauthenticated login route — 10
       // attempts / 15 min. #2081: per-source-IP rate limit on the unauthenticated
       // access-requests route (block-page kid request) — 20 / 5 min, on top of the
       // existing per-(mac,host) debounce (which a varying host bypasses).
-      loginRateLimiter     <- RateLimiterLive.make(maxAttempts = 10, windowSeconds = 15 * 60)
-      accessReqRateLimiter <- RateLimiterLive.make(maxAttempts = 20, windowSeconds = 5 * 60)
+      loginRateLimiter      <- RateLimiterLive.make(maxAttempts = 10, windowSeconds = 15 * 60)
+      accessReqRateLimiter  <- RateLimiterLive.make(maxAttempts = 20, windowSeconds = 5 * 60)
       // #2132: per-source-IP rate limit on the unauthenticated beta-intake route — 5 / hour, a
       // slow cadence (a genuine prospect requests once), on top of the idempotent-email dedup.
-      betaReqRateLimiter   <- RateLimiterLive.make(maxAttempts = 5, windowSeconds = 60 * 60)
+      betaReqRateLimiter    <- RateLimiterLive.make(maxAttempts = 5, windowSeconds = 60 * 60)
       // #2132: the beta pipeline service (slug derivation, invite token mint + TTL, provisioning,
       // accept). Clock-injected so the invite TTL is TestClock-driven in specs.
       // #2135: the billing state machine (Checkout/Portal/webhook + the provisioning Customer seam).
-      billing              <- ZIO.service[wifihaven.api.billing.BillingService]
+      billing               <- ZIO.service[wifihaven.api.billing.BillingService]
       // #2137: the cohort flip lifecycle service (shared with the BetaFlipJob forked in the run
       // scope). Surfaces the flip-window state to the SPA billing page.
-      flipService          <- ZIO.service[wifihaven.api.billing.FlipService]
+      flipService           <- ZIO.service[wifihaven.api.billing.FlipService]
       // #2199: the support integration service (server-signed widget identity + household→Plain
       // customer mapping). Dark unless the Plain keys are set.
-      support              <- ZIO.service[wifihaven.api.support.SupportService]
-      betaService = BetaService(
+      support               <- ZIO.service[wifihaven.api.support.SupportService]
+      // #2200: the Claude responder — the webhook→gate→dispatch pipeline plus the cloud agent's
+      // token-authenticated callback endpoints. Dark unless the responder secrets are set. Issue
+      // filing is rate-limited per-thread (3/h) and globally (10/h) — the #2241 volume control the
+      // support_agent_action_total{action="issue"} alert watches.
+      billingRepo           <- ZIO.service[wifihaven.api.db.HouseholdBillingRepo]
+      plainClient           <- ZIO.service[wifihaven.api.support.PlainClient]
+      agentDispatcher       <- ZIO.service[wifihaven.api.support.CloudAgentDispatcher]
+      githubIssues          <- ZIO.service[wifihaven.api.support.GithubIssueClient]
+      issueThreadLimiter    <- RateLimiterLive.make(maxAttempts = 3, windowSeconds = 60 * 60)
+      issueGlobalLimiter    <- RateLimiterLive.make(maxAttempts = 10, windowSeconds = 60 * 60)
+      // Cost guardrails (2026-07-16): each dispatched agent session bills real tokens, so dispatch
+      // is hard-capped — 4/hour per thread and 50/day globally. With a worst-case ~$0.50/draft the
+      // global cap bounds even sustained abuse at pocket change; normal beta volume never hits it.
+      dispatchThreadLimiter <- RateLimiterLive.make(maxAttempts = 4, windowSeconds = 60 * 60)
+      dispatchGlobalLimiter <- RateLimiterLive.make(maxAttempts = 50, windowSeconds = 24 * 60 * 60)
+      supportResponder = wifihaven.api.support.SupportResponder(
+        cfg.support,
+        householdRepo,
+        billingRepo,
+        deviceRepo,
+        profileRepo,
+        plainClient,
+        githubIssues,
+        agentDispatcher,
+        clock,
+        issueThreadLimiter,
+        issueGlobalLimiter,
+        dispatchThreadLimiter,
+        dispatchGlobalLimiter,
+      )
+      betaService      = BetaService(
         betaRepo,
         householdRepo,
         userRepo,
@@ -544,6 +580,10 @@ object Main extends ZIOAppDefault {
           // #2199: admin-only server-signed Plain widget identity. Dark (returns {configured:false})
           // until the operator sets the Plain widget app id + identity secret.
           SupportRoutes.routes(auth, support) ++
+          // #2200: the Plain new-message webhook (signature-verified, UI-origin-gated cloud-agent
+          // dispatch) + the agent's token-authenticated callback endpoints. Dark until the
+          // responder secrets are set (webhook no-ops, agent endpoints 404).
+          SupportAgentRoutes.routes(supportResponder) ++
           ProfileRoutes.routes(
             auth,
             profileRepo,
