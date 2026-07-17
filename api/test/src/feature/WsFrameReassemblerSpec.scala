@@ -28,13 +28,13 @@ object WsFrameReassemblerSpec extends ZIOSpecDefault {
     }
 
   private def messages(frames: List[WebSocketFrame]): List[String] =
-    run(frames)._2.collect { case Outcome.Message(t) => t }
+    run(frames)._2.collect { case Outcome.Message(t, _) => t }
 
   def spec = suite("WsFrameReassembler (#2268)")(
     test("an unfragmented final Text is the whole message (fast path, no buffering)") {
       val (state, outs) = run(List(WebSocketFrame.Text("""{"op":"ping"}""")))
       assertTrue(
-        outs == List(Outcome.Message("""{"op":"ping"}""")),
+        outs == List(Outcome.Message("""{"op":"ping"}""", fragmented = false)),
         state == WsFrameReassembler.empty,
       )
     },
@@ -47,8 +47,12 @@ object WsFrameReassemblerSpec extends ZIOSpecDefault {
       )
       val (state, outs) = run(frames)
       assertTrue(
-        // The lead fragment buffers (Incomplete), the final continuation emits the whole message.
-        outs == List(Outcome.Incomplete, Outcome.Message("""{"op":"usage","payload":{}}""")),
+        // The lead fragment buffers (Incomplete), the final continuation emits the whole message
+        // flagged fragmented=true (so the caller meters the reassembly).
+        outs == List(
+          Outcome.Incomplete,
+          Outcome.Message("""{"op":"usage","payload":{}}""", fragmented = true),
+        ),
         state == WsFrameReassembler.empty,
       )
     },
@@ -81,7 +85,11 @@ object WsFrameReassemblerSpec extends ZIOSpecDefault {
       )
       val (_, outs) = run(frames)
       assertTrue(
-        outs == List(Outcome.Incomplete, Outcome.Passthrough, Outcome.Message("hello")),
+        outs == List(
+          Outcome.Incomplete,
+          Outcome.Passthrough,
+          Outcome.Message("hello", fragmented = true),
+        ),
       )
     },
     test("a new Text while a partial is buffered starts fresh (a data frame can't interleave)") {

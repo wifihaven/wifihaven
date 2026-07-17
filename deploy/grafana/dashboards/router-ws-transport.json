@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "WifiHaven websocket router transport (#1846, epic #1023): server-side health for the persistent /api/router/ws endpoint. Panels target only the series the API actually emits today \u2014 router_ws_connections_active (RouterWsRegistry) and router_ws_frames_total{op,direction,result} (RouterWsRoutes demux). The REST transport stays the fallback; until the agent ws client (#1848) ships these read 0/flat. Push-on-change health (router_ws_policy_push_total) lands with #1849. Per-ws-message-process latency (router_ws_message_duration_seconds, #2168) is the ws analog of http_request_duration_seconds \u2014 it must land before the #1023 prod cutover / #1850 poll removal so slow-op regressions on the socket stay visible. Labels are bounded enums only per the \u00a74 cardinality firewall. datasource/env are templated for per-environment view.",
+  "description": "WifiHaven websocket router transport (#1846, epic #1023): server-side health for the persistent /api/router/ws endpoint. Panels target only the series the API actually emits today — router_ws_connections_active (RouterWsRegistry) and router_ws_frames_total{op,direction,result} (RouterWsRoutes demux). The REST transport stays the fallback; until the agent ws client (#1848) ships these read 0/flat. Push-on-change health (router_ws_policy_push_total) lands with #1849. Per-ws-message-process latency (router_ws_message_duration_seconds, #2168) is the ws analog of http_request_duration_seconds — it must land before the #1023 prod cutover / #1850 poll removal so slow-op regressions on the socket stay visible. Labels are bounded enums only per the §4 cardinality firewall. datasource/env are templated for per-environment view.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -28,7 +28,7 @@
         "uid": "${datasource}"
       },
       "title": "Websocket connections active (#1846)",
-      "description": "router_ws_connections_active \u2014 live count of open /api/router/ws channels, refreshed on every register/deregister so it ages out cleanly on disconnect. The single \"how many routers are on the ws transport right now?\" signal; 0 while REST ingest flows means no agent has migrated yet (the Lua ws client is #1848).",
+      "description": "router_ws_connections_active — live count of open /api/router/ws channels, refreshed on every register/deregister so it ages out cleanly on disconnect. The single \"how many routers are on the ws transport right now?\" signal; 0 while REST ingest flows means no agent has migrated yet (the Lua ws client is #1848).",
       "type": "timeseries",
       "gridPos": {
         "h": 8,
@@ -85,7 +85,7 @@
         "uid": "${datasource}"
       },
       "title": "Websocket frame rate by op/direction/result (#1846)",
-      "description": "sum by (op, direction, result) (rate(router_ws_frames_total[5m])) \u2014 frame throughput across the {op,payload} demux. dir \u2208 {in,out}; result \u2208 {ok,reject,unknown_op}. A rising result=reject share means agents are sending frames the server rejects (the ws analog of a REST 4xx); result=unknown_op is the forward-compat counter for frames whose op the server does not recognize (design \u00a71.3).",
+      "description": "sum by (op, direction, result) (rate(router_ws_frames_total[5m])) — frame throughput across the {op,payload} demux. dir ∈ {in,out}; result ∈ {ok,reject,unknown_op}. A rising result=reject share means agents are sending frames the server rejects (the ws analog of a REST 4xx); result=unknown_op is the forward-compat counter for frames whose op the server does not recognize (design §1.3).",
       "type": "timeseries",
       "gridPos": {
         "h": 8,
@@ -146,7 +146,7 @@
         "uid": "${datasource}"
       },
       "title": "Websocket frames by op (rate)",
-      "description": "sum by (op) (rate(router_ws_frames_total[5m])) \u2014 total frame rate per logical channel (hello/usage/events/metrics/ping/pong/ack). Lets an operator see which flows dominate the socket and confirm heartbeats (ping/pong) are ticking.",
+      "description": "sum by (op) (rate(router_ws_frames_total[5m])) — total frame rate per logical channel (hello/usage/events/metrics/ping/pong/ack). Lets an operator see which flows dominate the socket and confirm heartbeats (ping/pong) are ticking.",
       "type": "timeseries",
       "gridPos": {
         "h": 8,
@@ -203,7 +203,7 @@
         "uid": "${datasource}"
       },
       "title": "Websocket reject + unknown_op rate",
-      "description": "sum by (op) (rate(router_ws_frames_total{result=~\"reject|unknown_op\"}[5m])) \u2014 the error surface of the transport isolated. Steady non-zero here is the first sign agents and server disagree on the wire (a bad payload, or an op one side hasn't shipped yet).",
+      "description": "sum by (op) (rate(router_ws_frames_total{result=~\"reject|unknown_op\"}[5m])) — the error surface of the transport isolated. Steady non-zero here is the first sign agents and server disagree on the wire (a bad payload, or an op one side hasn't shipped yet).",
       "type": "timeseries",
       "gridPos": {
         "h": 8,
@@ -260,7 +260,7 @@
         "uid": "${datasource}"
       },
       "title": "Agent ws link state by router (ws_state) (#1848)",
-      "description": "max by (router_id) (ws_state) \u2014 the wifihaven-ws sidecar's link gauge folded into the agent /metrics push: 1 = a live websocket to the API, 0 = disconnected (running on the HTTP fallback path). One series per router_id (bounded fleet dimension). Complements the server-side router_ws_connections_active gauge.",
+      "description": "max by (router_id) (ws_state) — the wifihaven-ws sidecar's link gauge folded into the agent /metrics push: 1 = a live websocket to the API, 0 = disconnected (running on the HTTP fallback path). One series per router_id (bounded fleet dimension). Complements the server-side router_ws_connections_active gauge.",
       "type": "timeseries",
       "gridPos": {
         "h": 8,
@@ -317,7 +317,7 @@
         "uid": "${datasource}"
       },
       "title": "Agent ws connect outcomes by result (#1848)",
-      "description": "sum by (result) (rate(ws_connect_total[5m])) \u2014 reconnect health from the agent side. result \u2208 {ok, upgrade_fail, auth_fail, timeout}. Rising auth_fail = the bearer token is rejected at upgrade; upgrade_fail/timeout = a proxy mangling Upgrade or an unreachable endpoint (the agent falls back to HTTP, \u00a73.1).",
+      "description": "sum by (result) (rate(ws_connect_total[5m])) — reconnect health from the agent side. result ∈ {ok, upgrade_fail, auth_fail, timeout}. Rising auth_fail = the bearer token is rejected at upgrade; upgrade_fail/timeout = a proxy mangling Upgrade or an unreachable endpoint (the agent falls back to HTTP, §3.1).",
       "type": "timeseries",
       "gridPos": {
         "h": 8,
@@ -378,7 +378,7 @@
         "uid": "${datasource}"
       },
       "title": "Agent ws HTTP-fallback events by result (#1848)",
-      "description": "sum by (result) (rate(ws_fallback_total[5m])) \u2014 how often the agent crossed the transport boundary. to_http: the socket was down past ws_fallback_after and the agent resumed HTTP polling; back_to_ws: the socket re-established. A high to_http without matching back_to_ws means the fleet is stuck on HTTP \u2014 do NOT arm any poll-deprecation (\u00a73.1/\u00a73.2).",
+      "description": "sum by (result) (rate(ws_fallback_total[5m])) — how often the agent crossed the transport boundary. to_http: the socket was down past ws_fallback_after and the agent resumed HTTP polling; back_to_ws: the socket re-established. A high to_http without matching back_to_ws means the fleet is stuck on HTTP — do NOT arm any poll-deprecation (§3.1/§3.2).",
       "type": "timeseries",
       "gridPos": {
         "h": 8,
@@ -439,7 +439,7 @@
         "uid": "${datasource}"
       },
       "title": "Agent ws frame throughput sent/recv by op (#1848)",
-      "description": "sum by (op) (rate(ws_frames_sent_total[5m])) and ws_frames_recv_total \u2014 agent-side frame throughput. sent op \u2208 {usage, events, ping}; recv op \u2208 {policy, ack, pong, unknown}. A pushed policy shows as recv op=policy (server push is #1849); usage/events sent are the outbound spool drain.",
+      "description": "sum by (op) (rate(ws_frames_sent_total[5m])) and ws_frames_recv_total — agent-side frame throughput. sent op ∈ {usage, events, ping}; recv op ∈ {policy, ack, pong, unknown}. A pushed policy shows as recv op=policy (server push is #1849); usage/events sent are the outbound spool drain.",
       "type": "timeseries",
       "gridPos": {
         "h": 8,
@@ -509,7 +509,7 @@
         "uid": "${datasource}"
       },
       "title": "Policy snapshot builds: computed vs cache_hit (#1849 / #1512)",
-      "description": "sum by (result) (rate(policy_snapshot_build_total[5m])) \u2014 proves the computed-snapshot cache is working. result=computed is an actual ~500ms PolicyService rebuild (the #1512 cost); result=cache_hit is a poll/ws-fanout served from the cache without rebuilding. Once the reconcile ticker keeps the cache warm, cache_hit should dominate and computed should track the policy-change/tick rate (\u22481 per snapshotCacheRefreshSeconds), NOT the per-poll-per-router rate. A computed rate that scales with router count means the cache is not being read.",
+      "description": "sum by (result) (rate(policy_snapshot_build_total[5m])) — proves the computed-snapshot cache is working. result=computed is an actual ~500ms PolicyService rebuild (the #1512 cost); result=cache_hit is a poll/ws-fanout served from the cache without rebuilding. Once the reconcile ticker keeps the cache warm, cache_hit should dominate and computed should track the policy-change/tick rate (≈1 per snapshotCacheRefreshSeconds), NOT the per-poll-per-router rate. A computed rate that scales with router count means the cache is not being read.",
       "type": "timeseries",
       "gridPos": {
         "h": 8,
@@ -566,7 +566,7 @@
         "uid": "${datasource}"
       },
       "title": "WS policy push fan-out by result (#1849)",
-      "description": "sum by (result) (rate(router_ws_policy_push_total[5m])) \u2014 health of the push-on-change fan-out. result=ok is a policy frame handed to a connected channel; result=channel_closed is a send that failed against a racing disconnect (the channel is dropped). A sustained channel_closed share suggests routers are churning their sockets.",
+      "description": "sum by (result) (rate(router_ws_policy_push_total[5m])) — health of the push-on-change fan-out. result=ok is a policy frame handed to a connected channel; result=channel_closed is a send that failed against a racing disconnect (the channel is dropped). A sustained channel_closed share suggests routers are churning their sockets.",
       "type": "timeseries",
       "gridPos": {
         "h": 8,
@@ -680,7 +680,7 @@
         "uid": "${datasource}"
       },
       "title": "WS message process latency p50/p95/p99 (#2168)",
-      "description": "histogram_quantile over router_ws_message_duration_seconds_bucket \u2014 per-ws-message-process latency (decode \u2192 handle \u2192 ack inbound, policy-push send outbound), the ws analog of http_request_duration_seconds. Reuses the HTTP latency buckets so a ws op's latency is directly comparable to the REST endpoint it replaced across the #1023 cutover. Once the poll is removed (#1850) this is the ONLY latency signal for router operations \u2014 a p99 climb here is the ws-transport equivalent of the /api/usage/traffic regression per-endpoint metrics caught.",
+      "description": "histogram_quantile over router_ws_message_duration_seconds_bucket — per-ws-message-process latency (decode → handle → ack inbound, policy-push send outbound), the ws analog of http_request_duration_seconds. Reuses the HTTP latency buckets so a ws op's latency is directly comparable to the REST endpoint it replaced across the #1023 cutover. Once the poll is removed (#1850) this is the ONLY latency signal for router operations — a p99 climb here is the ws-transport equivalent of the /api/usage/traffic regression per-endpoint metrics caught.",
       "type": "timeseries",
       "gridPos": {
         "h": 8,
@@ -755,7 +755,7 @@
         "uid": "${datasource}"
       },
       "title": "WS message process p95 latency by op/direction (#2168)",
-      "description": "histogram_quantile(0.95, sum by (le, op, direction) (rate(router_ws_message_duration_seconds_bucket[5m]))) \u2014 per-op p95, so a single slow logical channel (e.g. a usage ingest that got expensive) is visible even when the aggregate looks fine. op \u2208 {usage,events,metrics,ping,pong,hello,policy,unknown}, direction \u2208 {in,out} \u2014 bounded enums, no per-mac/router dimension.",
+      "description": "histogram_quantile(0.95, sum by (le, op, direction) (rate(router_ws_message_duration_seconds_bucket[5m]))) — per-op p95, so a single slow logical channel (e.g. a usage ingest that got expensive) is visible even when the aggregate looks fine. op ∈ {usage,events,metrics,ping,pong,hello,policy,unknown}, direction ∈ {in,out} — bounded enums, no per-mac/router dimension.",
       "type": "timeseries",
       "gridPos": {
         "h": 8,
@@ -811,8 +811,8 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "title": "WS push\u2192apply latency p50/p95/p99 (#2229)",
-      "description": "histogram_quantile over ws_push_apply_latency_seconds_bucket \u2014 time from the sidecar persisting a server-pushed policy snapshot to the agent applying it to the enforcement plane (nft). Event-driven since #2229 (the sidecar writes a trigger the agent reads every heartbeat tick); should sit in low single-digit seconds, dominated by nft load, no longer gated by the dnsmasq restart. Flat/0 until agents on ws receive a push.",
+      "title": "WS push→apply latency p50/p95/p99 (#2229)",
+      "description": "histogram_quantile over ws_push_apply_latency_seconds_bucket — time from the sidecar persisting a server-pushed policy snapshot to the agent applying it to the enforcement plane (nft). Event-driven since #2229 (the sidecar writes a trigger the agent reads every heartbeat tick); should sit in low single-digit seconds, dominated by nft load, no longer gated by the dnsmasq restart. Flat/0 until agents on ws receive a push.",
       "type": "timeseries",
       "gridPos": {
         "h": 8,
@@ -880,6 +880,63 @@
           "refId": "C"
         }
       ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "title": "WS frame reassembly + overflow (#2268)",
+      "description": "sum by (surface, result) (rate(ws_reassembly_total{env=\"$env\"}[5m])). completed = a multi-frame message the server rejoined (an intermediary — Render's edge — fragmented it at ~4 KiB; the router→server transport relies on this reassembly, mirror of #1959). overflow = a peer streamed past the 1 MiB cap and the connection was closed — should be flat zero; any sustained non-zero is an oversized/misbehaving sender.",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 64
+      },
+      "id": 15,
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "cps",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (surface, result) (rate(ws_reassembly_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{surface}} {{result}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",
@@ -944,7 +1001,7 @@
   },
   "timepicker": {},
   "timezone": "",
-  "title": "WifiHaven \u2014 Router WS transport",
+  "title": "WifiHaven — Router WS transport",
   "uid": "wifihaven-router-ws-transport",
   "version": 3,
   "weekStart": ""

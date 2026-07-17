@@ -835,6 +835,19 @@ object AppMetrics {
       HttpDurationBoundaries,
     )
 
+  // #2268: server-side reassembly of fragmented inbound WS messages. An intermediary (Render's edge)
+  // re-fragments large frames at ~4 KiB, so the server must rejoin `Text(isFinal=false)` +
+  // `Continuation…` before decoding (mirror of the router-side reassembler, #1959). `surface` ∈
+  // {router, spa} (which ws handler), `result` ∈ {completed, overflow}. `completed` fires ONLY for a
+  // genuinely multi-frame message (the single-frame fast path is not counted), so the series
+  // measures how often the transport actually fragments; `overflow` fires when a peer exceeds the
+  // 1 MiB reassembly cap and we close the connection. Both labels are fixed 2-value enums (bounded).
+  def recordWsReassembly(surface: String, result: String): UIO[Unit] =
+    MetricGuard.counter(
+      "ws_reassembly_total",
+      Map("surface" -> surface, "result" -> result),
+    )
+
   // #1849: counts policy-snapshot accesses split by whether they hit the computed-snapshot cache.
   // `computed` = an actual PolicyService rebuild (the ~500ms #1512 work); `cache_hit` = served from
   // the cache without rebuilding. The ratio proves the cache is working — once the reconcile ticker

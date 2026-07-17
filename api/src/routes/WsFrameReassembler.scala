@@ -44,8 +44,12 @@ object WsFrameReassembler {
   sealed trait Outcome
   object Outcome {
 
-    /** A complete text message is ready to dispatch. */
-    final case class Message(text: String) extends Outcome
+    /**
+     * A complete text message is ready to dispatch. `fragmented` is true when it was reassembled
+     * from multiple frames (a `Continuation` completed it) — the caller meters those so we can see
+     * how often the transport actually fragments — and false for the single-frame fast path.
+     */
+    final case class Message(text: String, fragmented: Boolean) extends Outcome
 
     /** A non-final fragment was buffered; wait for more frames. */
     case object Incomplete extends Outcome
@@ -77,11 +81,15 @@ object WsFrameReassembler {
   def step(state: Chunk[Byte], frame: WebSocketFrame): (Chunk[Byte], Outcome) =
     frame match {
       case t: WebSocketFrame.Text         =>
-        if (t.isFinal) (empty, Outcome.Message(t.text))
+        if (t.isFinal) (empty, Outcome.Message(t.text, fragmented = false))
         else capped(Chunk.fromArray(t.text.getBytes(StandardCharsets.UTF_8)))
       case c: WebSocketFrame.Continuation =>
         val buf = state ++ c.buffer
-        if (c.isFinal) (empty, Outcome.Message(new String(buf.toArray, StandardCharsets.UTF_8)))
+        if (c.isFinal)
+          (
+            empty,
+            Outcome.Message(new String(buf.toArray, StandardCharsets.UTF_8), fragmented = true),
+          )
         else capped(buf)
       case _                              =>
         (state, Outcome.Passthrough)
