@@ -1260,7 +1260,9 @@ class ProfileRepoLive(xa: Transactor[Task]) extends ProfileRepo {
   // #1771: the global sentinel is filtered out of `listAll` so it never appears on
   // `GET /api/profiles` or any role-access enumeration. The snapshot path uses
   // [[listAllIncludingGlobal]] to fold the sentinel's rules into every other profile.
-  def listAllAcrossHouseholds                                    =
+  def listAllAcrossHouseholds =
+    // #2257: the DbMetrics label stays `profile.listAll` (not the renamed method) on purpose — the
+    // series predates the rename, so keeping the label preserves its Grafana history continuity.
     DbMetrics.timed("profile.listAll")(
       sql"SELECT id,name,blocked_categories,paused,failure_mode,block_ip_only,cross_device_overlap_mode,pause_mode,default_deny,is_global FROM profiles WHERE is_global=FALSE ORDER BY id"
         .query[R]
@@ -1662,7 +1664,9 @@ class AppTimeLimitRepoLive(xa: Transactor[Task]) extends AppTimeLimitRepo {
 }
 
 class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
-  def listAllAcrossHouseholds                                       =
+  def listAllAcrossHouseholds =
+    // #2257: the DbMetrics label stays `device.listAll` (not the renamed method) on purpose — the
+    // series predates the rename, so keeping the label preserves its Grafana history continuity.
     DbMetrics.timed("device.listAll")(
       sql"SELECT d.id,d.mac,d.name,d.profile_id,p.name,d.last_seen_ip,d.last_seen_at::TEXT FROM devices d LEFT JOIN profiles p ON p.id=d.profile_id ORDER BY d.name"
         .query[
