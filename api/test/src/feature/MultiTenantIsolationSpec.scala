@@ -1,6 +1,6 @@
 package wifihaven.api.feature
 
-import wifihaven.api.{BetaConfig, JwtConfig}
+import wifihaven.api.{BetaConfig, JwtConfig, WsConfig}
 import wifihaven.api.auth.*
 import wifihaven.api.beta.*
 import wifihaven.api.db.*
@@ -18,6 +18,7 @@ import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 import zio.interop.catz.*
 import zio.{Clock as _, *}
 import zio.http.*
+import zio.http.ChannelEvent.UserEvent
 import zio.json.*
 import zio.test.*
 
@@ -192,6 +193,58 @@ object MultiTenantIsolationSpec
       ar     <- ZIO.service[AppRepo]
       clock  <- ZIO.service[Clock]
     } yield PolicyServiceLive(pr, hsr, tlr, atlr, dr, blr, trRepo, er, ar, clock): PolicyService
+
+  // #2251: connect TWO real `now` ws subscribers (household A + household B) over a live server,
+  // wait for BOTH subscribe acks, publish ONE `SpaEvent.NowChanged`, and return each client's first
+  // `now` push frame. The forked [[SpaPush]] consumer must already be running in the enclosing
+  // scope. This exercises the FULL push path (registry household grouping → per-household
+  // `computeNow` → per-recipient `deliver`) end to end, so the assertion is on the real wire frame
+  // each household receives — not a stubbed body.
+  private val nowSubscribe =
+    List("""{"op":"hello"}""", """{"op":"subscribe","payload":{"topic":"now"}}""")
+
+  private def wsNowIsolation(
+      port: Int,
+      tokenA: String,
+      tokenB: String,
+      bus: SpaEventBus,
+  ): ZIO[Client, Throwable, (Option[String], Option[String])] =
+    for {
+      ackA   <- Promise.make[Nothing, Unit]
+      ackB   <- Promise.make[Nothing, Unit]
+      frameA <- Promise.make[Nothing, String]
+      frameB <- Promise.make[Nothing, String]
+      app = (ack: Promise[Nothing, Unit], frame: Promise[Nothing, String]) =>
+        Handler.webSocket { channel =>
+          channel.receiveAll {
+            case ChannelEvent.UserEventTriggered(UserEvent.HandshakeComplete) =>
+              ZIO.foreachDiscard(nowSubscribe)(f =>
+                channel.send(ChannelEvent.read(WebSocketFrame.text(f))),
+              )
+            case ChannelEvent.Read(WebSocketFrame.Text(t))                    =>
+              ZIO.when(t.contains("\"op\":\"ack\""))(ack.succeed(())) *>
+                ZIO.when(t.contains("\"op\":\"now\""))(frame.succeed(t)).unit
+            case _                                                            =>
+              ZIO.unit
+          }
+        }
+      res <- ZIO.scoped {
+        for {
+          _ <- app(ackA, frameA)
+            .connect(s"ws://localhost:$port/api/ws", Headers("Cookie", s"wh_ws=$tokenA"))
+            .forkScoped
+          _ <- app(ackB, frameB)
+            .connect(s"ws://localhost:$port/api/ws", Headers("Cookie", s"wh_ws=$tokenB"))
+            .forkScoped
+          _ <- ackA.await.timeoutFail(new RuntimeException("no ack A"))(20.seconds)
+          _ <- ackB.await.timeoutFail(new RuntimeException("no ack B"))(20.seconds)
+          // Both subscribed — one trigger fans a per-household body to each.
+          _ <- bus.publish(SpaEvent.NowChanged)
+          a <- frameA.await.timeout(20.seconds)
+          b <- frameB.await.timeout(20.seconds)
+        } yield (a, b)
+      }
+    } yield res
 
   def spec = suite("Multi-tenant isolation — THE acceptance gate (#2108)")(
     // ── Pin 1: user READ isolation ─────────────────────────────────────────────
@@ -704,6 +757,141 @@ object MultiTenantIsolationSpec
         (sB, bodyB) <- getJson(routes, "/api/blocklists/kidsafe", two.tokenB)
       } yield assertTrue(sA == Status.Ok, sB == Status.Ok) &&
         assertTrue(bodyA == bodyB, bodyA.contains("doubleclick.net\n"))
+    },
+    // ── Pin (#2251 / #2120): dashboard NOW (GET + ws push) is household-scoped ───
+    // DashboardNowRoutes read `deviceRepo.listAll` / `profileRepo.listAll` (GLOBAL) then only
+    // ROLE-narrowed, so a household-B admin saw household A's devices/profiles in the NOW section
+    // (design §2 gaps 3+4). The fix scopes the reads (GET + ws push + online-now) to `claims.hh`.
+    test("pin (#2251) — GET /api/dashboard/now returns ONLY the caller's household entities") {
+      for {
+        _    <- cleanDb
+        two  <- TestLayers.seedTwoHouseholds(macA, macB)
+        tr   <- ZIO.service[TrafficReportRepo]
+        cer  <- ZIO.service[ConnectionEventRepo]
+        dr   <- ZIO.service[DeviceRepo]
+        pr   <- ZIO.service[ProfileRepo]
+        up   <- ZIO.service[UserProfileRepo]
+        atlr <- ZIO.service[AppTimeLimitRepo]
+        clk  <- ZIO.service[Clock]
+        // Make each household's device "online now" — a connection_event within the 5m recent
+        // window of the test clock (Mon 2025-01-06 14:00Z), under its OWN router. This exercises the
+        // online-now (`lastSeenByMacSince`) scope too: B must not see A's online MAC.
+        ts = Instant.parse("2025-01-06T13:59:30Z")
+        _      <- cer.insertBatch(
+          List(
+            ConnectionEventInsert(
+              two.routerIdA,
+              Some(macA),
+              HostId.Fqdn(Hostname.unsafe("a.example.com")),
+              None,
+              true,
+              BlockReason.fromWire("allow"),
+              ts,
+            ),
+            ConnectionEventInsert(
+              two.routerIdB,
+              Some(macB),
+              HostId.Fqdn(Hostname.unsafe("b.example.com")),
+              None,
+              true,
+              BlockReason.fromWire("allow"),
+              ts,
+            ),
+          ),
+        )
+        auth   <- makeAuth
+        tokenA <- login(auth, two.adminA, two.password)
+        tokenB <- login(auth, two.adminB, two.password, Some(two.slugB))
+        routes = DashboardNowRoutes.routes(auth, tr, cer, dr, pr, up, atlr, clk)
+        (sA, bodyA) <- getJson(routes, "/api/dashboard/now", tokenA)
+        (sB, bodyB) <- getJson(routes, "/api/dashboard/now", tokenB)
+      } yield assertTrue(sA == Status.Ok, sB == Status.Ok) &&
+        // Positive (sees-own-data): A's admin sees A's profile + A's online device.
+        assertTrue(bodyA.contains("A-Kids"), bodyA.contains(macA.value)) &&
+        // Negative: A never sees B's profile name or online MAC (even as admin).
+        assertTrue(!bodyA.contains("B-Kids"), !bodyA.contains(macB.value)) &&
+        // Positive: B's admin sees B's own profile.
+        assertTrue(bodyB.contains("B-Kids")) &&
+        // Negative: B never sees A's profile name or A's online MAC (online-now scope).
+        assertTrue(!bodyB.contains("A-Kids"), !bodyB.contains(macA.value))
+    },
+    test("pin (#2251) — a newly provisioned empty household's NOW carries no other household") {
+      for {
+        _     <- cleanDb
+        two   <- TestLayers.seedTwoHouseholds(macA, macB)
+        tr    <- ZIO.service[TrafficReportRepo]
+        cer   <- ZIO.service[ConnectionEventRepo]
+        dr    <- ZIO.service[DeviceRepo]
+        pr    <- ZIO.service[ProfileRepo]
+        up    <- ZIO.service[UserProfileRepo]
+        atlr  <- ZIO.service[AppTimeLimitRepo]
+        clk   <- ZIO.service[Clock]
+        // Household A has an online device — noise the empty tenant must not see.
+        _     <- cer.insertBatch(
+          List(
+            ConnectionEventInsert(
+              two.routerIdA,
+              Some(macA),
+              HostId.Fqdn(Hostname.unsafe("a.example.com")),
+              None,
+              true,
+              BlockReason.fromWire("allow"),
+              Instant.parse("2025-01-06T13:59:30Z"),
+            ),
+          ),
+        )
+        auth  <- makeAuth
+        opTok <- login(auth, two.adminA, two.password)
+        bt    <- makeBetaRoutes
+        (_, betaRoutes) = bt
+        prov <- provisionHousehold(betaRoutes, opTok, "now-c@example.com", "NOW C Household")
+        (cSlug, _) = prov
+        cTok <- login(auth, "admin", "supersecret123", Some(cSlug))
+        routes = DashboardNowRoutes.routes(auth, tr, cer, dr, pr, up, atlr, clk)
+        (sC, bodyC) <- getJson(routes, "/api/dashboard/now", cTok)
+      } yield assertTrue(sC == Status.Ok) &&
+        // Empty NOW: zero profiles, and NONE of household A/B's names or MACs.
+        assertTrue(bodyC.contains(""""profiles":[]""")) &&
+        assertTrue(!bodyC.contains("A-Kids"), !bodyC.contains("B-Kids")) &&
+        assertTrue(!bodyC.contains(macA.value), !bodyC.contains(macB.value))
+    },
+    test("pin (#2251 / #2120) — the ws `now` push carries ONLY the caller's household entities") {
+      (for {
+        _      <- cleanDb
+        two    <- TestLayers.seedTwoHouseholds(macA, macB)
+        clk    <- ZIO.service[Clock]
+        tr     <- ZIO.service[TrafficReportRepo]
+        rlr    <- ZIO.service[RollupRepo]
+        cer    <- ZIO.service[ConnectionEventRepo]
+        dr     <- ZIO.service[DeviceRepo]
+        pr     <- ZIO.service[ProfileRepo]
+        apr    <- ZIO.service[AppRepo]
+        atlr   <- ZIO.service[AppTimeLimitRepo]
+        auth   <- makeAuth
+        tokenA <- login(auth, two.adminA, two.password)
+        tokenB <- login(auth, two.adminB, two.password, Some(two.slugB))
+        reg    <- SpaWsRegistry.make
+        bus    <- SpaEventBus.make
+        routes = SpaWsRoutes.routes(
+          auth,
+          reg,
+          clk,
+          WsConfig(allowedOrigins = "", expiryCheckSeconds = 60),
+        )
+        port <- Server.install(routes)
+        out  <- ZIO.scoped {
+          SpaPush.run(bus, reg, tr, rlr, cer, dr, pr, apr, atlr, clk) *>
+            wsNowIsolation(port, tokenA, tokenB, bus)
+        }
+        (aFrame, bFrame) = out
+      } yield assertTrue(aFrame.isDefined, bFrame.isDefined) &&
+        // A's live NOW push has A's profile, never B's; B's has B's, never A's.
+        assertTrue(aFrame.exists(f => f.contains("A-Kids") && !f.contains("B-Kids"))) &&
+        assertTrue(bFrame.exists(f => f.contains("B-Kids") && !f.contains("A-Kids"))))
+        .provideSome[TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task]](
+          Server.defaultWithPort(0),
+          Client.default,
+        )
     },
     // ── Provisioning pins (#2132): a newly-provisioned household is isolated ─────
     test("pin (#2132) — a newly provisioned household's admin sees ZERO other-household rows") {
