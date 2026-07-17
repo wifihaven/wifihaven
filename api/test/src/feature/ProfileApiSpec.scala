@@ -87,7 +87,7 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
-          profiles    <- profileRepo.listAllAcrossHouseholds
+          profiles    <- profileRepo.listAllForHousehold(HouseholdId.Default)
           kids = profiles.find(_.name == "Kids").get
           (auth, routes) <- mkRoutes
           token          <- auth.login("admin", "changeme").map(_.token.value)
@@ -130,7 +130,7 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
             .addHeader(Header.Authorization.Bearer(token))
             .addHeader(Header.ContentType(MediaType.application.json))
           resp     <- routes.runZIO(req)
-          profiles <- profileRepo.listAllAcrossHouseholds
+          profiles <- profileRepo.listAllForHousehold(HouseholdId.Default)
           teen     <- ZIO
             .fromOption(profiles.find(_.name == "Teenager"))
             .orElseFail(new Exception("Profile not found"))
@@ -177,7 +177,7 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
             .addHeader(Header.Authorization.Bearer(token))
             .addHeader(Header.ContentType(MediaType.application.json))
           _        <- routes.runZIO(req)
-          profiles <- profileRepo.listAllAcrossHouseholds
+          profiles <- profileRepo.listAllForHousehold(HouseholdId.Default)
           found = profiles.find(_.name == "Defaulted").get
         } yield assertTrue(found.failureMode == FailureMode.LastKnownGood)
       },
@@ -199,7 +199,7 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
             .addHeader(Header.Authorization.Bearer(token))
             .addHeader(Header.ContentType(MediaType.application.json))
           _        <- routes.runZIO(req)
-          profiles <- profileRepo.listAllAcrossHouseholds
+          profiles <- profileRepo.listAllForHousehold(HouseholdId.Default)
           found = profiles.find(_.name == "AdultsAllowAll").get
         } yield assertTrue(found.failureMode == FailureMode.AllowAll)
       },
@@ -209,7 +209,7 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           profileRepo    <- ZIO.service[ProfileRepo]
           (auth, routes) <- mkRoutes
           token          <- auth.login("admin", "changeme").map(_.token.value)
-          profiles0      <- profileRepo.listAllAcrossHouseholds
+          profiles0      <- profileRepo.listAllForHousehold(HouseholdId.Default)
           kidsId = profiles0.find(_.name == "Kids").get.id
           body   = UpsertProfileRequest(
             name = "Kids",
@@ -251,7 +251,7 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           tlRepo         <- ZIO.service[TimeLimitRepo]
           (auth, routes) <- mkRoutes
           token          <- auth.login("admin", "changeme").map(_.token.value)
-          profiles       <- profileRepo.listAllAcrossHouseholds
+          profiles       <- profileRepo.listAllForHousehold(HouseholdId.Default)
           kidsId = profiles.find(_.name == "Kids").get.id
           body   = UpsertProfileRequest(
             name = "Kids Updated",
@@ -285,7 +285,7 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           profileRepo    <- ZIO.service[ProfileRepo]
           (auth, routes) <- mkRoutes
           token          <- auth.login("admin", "changeme").map(_.token.value)
-          profiles       <- profileRepo.listAllAcrossHouseholds
+          profiles       <- profileRepo.listAllForHousehold(HouseholdId.Default)
           kidsId = profiles.find(_.name == "Kids").get.id
           mkReq  = (paused: Boolean) => {
             val body = UpsertProfileRequest(
@@ -318,7 +318,7 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           profileRepo    <- ZIO.service[ProfileRepo]
           (auth, routes) <- mkRoutes
           token          <- auth.login("admin", "changeme").map(_.token.value)
-          profiles       <- profileRepo.listAllAcrossHouseholds
+          profiles       <- profileRepo.listAllForHousehold(HouseholdId.Default)
           kidsId = profiles.find(_.name == "Kids").get.id
           req    = Request
             .post(URL.decode(s"/api/profiles/$kidsId/pause").toOption.get, Body.empty)
@@ -338,7 +338,7 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           hash           <- auth.hashPassword("pw")
           aliceId        <- userRepo.create("alice", hash, "child")
           bobId          <- userRepo.create("bob", hash, "adult")
-          profiles       <- profileRepo.listAllAcrossHouseholds
+          profiles       <- profileRepo.listAllForHousehold(HouseholdId.Default)
           kidsId  = profiles.find(_.name == "Kids").get.id
           putBody = SetProfileUsersRequest(List(aliceId, bobId)).toJson
           putReq  = Request
@@ -366,7 +366,7 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           token           <- auth.login("admin", "changeme").map(_.token.value)
           hash            <- auth.hashPassword("pw")
           aliceId         <- userRepo.create("alice", hash, "child")
-          profiles        <- profileRepo.listAllAcrossHouseholds
+          profiles        <- profileRepo.listAllForHousehold(HouseholdId.Default)
           kidsId   = profiles.find(_.name == "Kids").get.id
           adultsId = profiles.find(_.name == "Adults").get.id
           _ <- userProfileRepo.setProfilesForUser(aliceId, List(kidsId, adultsId))
@@ -388,7 +388,7 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           hash           <- auth.hashPassword("pw")
           _              <- userRepo.create("adult1", hash, "adult")
           token          <- auth.login("adult1", "pw").map(_.token.value)
-          profiles       <- profileRepo.listAllAcrossHouseholds
+          profiles       <- profileRepo.listAllForHousehold(HouseholdId.Default)
           kidsId = profiles.find(_.name == "Kids").get.id
           body   = SetProfileUsersRequest(Nil).toJson
           req    = Request

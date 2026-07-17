@@ -64,7 +64,7 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         userRepo    <- ZIO.service[UserRepo]
         upRepo      <- ZIO.service[UserProfileRepo]
         auth        <- makeAuth
-        profiles    <- profileRepo.listAllAcrossHouseholds
+        profiles    <- profileRepo.listAllForHousehold(HouseholdId.Default)
         kidsId = profiles.find(_.name == "Kids").get.id
         _     <- createUser(userRepo, upRepo, auth, "alice", "child", List(kidsId))
         token <- auth.login("alice", "pass").map(_.token.value)
@@ -93,7 +93,7 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         userRepo    <- ZIO.service[UserRepo]
         upRepo      <- ZIO.service[UserProfileRepo]
         auth        <- makeAuth
-        profiles    <- profileRepo.listAllAcrossHouseholds
+        profiles    <- profileRepo.listAllForHousehold(HouseholdId.Default)
         kidsId   = profiles.find(_.name == "Kids").get.id
         adultsId = profiles.find(_.name == "Adults").get.id
         _     <- createUser(userRepo, upRepo, auth, "alice", "child", List(kidsId))
@@ -119,7 +119,7 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         userRepo    <- ZIO.service[UserRepo]
         upRepo      <- ZIO.service[UserProfileRepo]
         auth        <- makeAuth
-        profiles    <- profileRepo.listAllAcrossHouseholds
+        profiles    <- profileRepo.listAllForHousehold(HouseholdId.Default)
         kidsId = profiles.find(_.name == "Kids").get.id
         _     <- createUser(userRepo, upRepo, auth, "alice", "child", List(kidsId))
         token <- auth.login("alice", "pass").map(_.token.value)
@@ -146,7 +146,7 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         userRepo    <- ZIO.service[UserRepo]
         upRepo      <- ZIO.service[UserProfileRepo]
         auth        <- makeAuth
-        profiles    <- profileRepo.listAllAcrossHouseholds
+        profiles    <- profileRepo.listAllForHousehold(HouseholdId.Default)
         kidsId   = profiles.find(_.name == "Kids").get.id
         adultsId = profiles.find(_.name == "Adults").get.id
         _     <- createUser(
@@ -189,7 +189,7 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         upRepo      <- ZIO.service[UserProfileRepo]
         auth        <- makeAuth
         otherId     <- profileRepo.create("Strangers", List(BlocklistId.unsafe("gambling")))
-        profiles    <- profileRepo.listAllAcrossHouseholds
+        profiles    <- profileRepo.listAllForHousehold(HouseholdId.Default)
         kidsId = profiles.find(_.name == "Kids").get.id
         _     <- createUser(userRepo, upRepo, auth, "mom", "adult", List(kidsId))
         token <- auth.login("mom", "pass").map(_.token.value)
@@ -261,7 +261,7 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         userRepo    <- ZIO.service[UserRepo]
         upRepo      <- ZIO.service[UserProfileRepo]
         auth        <- makeAuth
-        profiles    <- profileRepo.listAllAcrossHouseholds
+        profiles    <- profileRepo.listAllForHousehold(HouseholdId.Default)
         kidsId = profiles.find(_.name == "Kids").get.id
         // create a child user with no links yet
         childId    <- createUser(userRepo, upRepo, auth, "alice", "child", Nil)
@@ -302,7 +302,7 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         userRepo    <- ZIO.service[UserRepo]
         upRepo      <- ZIO.service[UserProfileRepo]
         auth        <- makeAuth
-        profiles    <- profileRepo.listAllAcrossHouseholds
+        profiles    <- profileRepo.listAllForHousehold(HouseholdId.Default)
         kidsId = profiles.find(_.name == "Kids").get.id
         _     <- createUser(userRepo, upRepo, auth, "alice", "child", List(kidsId))
         token <- auth.login("alice", "pass").map(_.token.value)
@@ -347,7 +347,7 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         userRepo    <- ZIO.service[UserRepo]
         upRepo      <- ZIO.service[UserProfileRepo]
         auth        <- makeAuth
-        profiles    <- profileRepo.listAllAcrossHouseholds
+        profiles    <- profileRepo.listAllForHousehold(HouseholdId.Default)
         kidsId   = profiles.find(_.name == "Kids").get.id
         adultsId = profiles.find(_.name == "Adults").get.id
         _     <- deviceRepo.upsert(
@@ -383,7 +383,7 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         userRepo    <- ZIO.service[UserRepo]
         upRepo      <- ZIO.service[UserProfileRepo]
         auth        <- makeAuth
-        profiles    <- profileRepo.listAllAcrossHouseholds
+        profiles    <- profileRepo.listAllForHousehold(HouseholdId.Default)
         kidsId = profiles.find(_.name == "Kids").get.id
         _     <- createUser(userRepo, upRepo, auth, "mom", "adult", List(kidsId))
         token <- auth.login("mom", "pass").map(_.token.value)
@@ -411,7 +411,7 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         userRepo    <- ZIO.service[UserRepo]
         upRepo      <- ZIO.service[UserProfileRepo]
         auth        <- makeAuth
-        profiles    <- profileRepo.listAllAcrossHouseholds
+        profiles    <- profileRepo.listAllForHousehold(HouseholdId.Default)
         kidsId   = profiles.find(_.name == "Kids").get.id
         adultsId = profiles.find(_.name == "Adults").get.id
         _     <- createUser(userRepo, upRepo, auth, "mom", "adult", List(kidsId))
@@ -437,7 +437,7 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         userRepo    <- ZIO.service[UserRepo]
         upRepo      <- ZIO.service[UserProfileRepo]
         auth        <- makeAuth
-        profiles    <- profileRepo.listAllAcrossHouseholds
+        profiles    <- profileRepo.listAllForHousehold(HouseholdId.Default)
         kidsId   = profiles.find(_.name == "Kids").get.id
         adultsId = profiles.find(_.name == "Adults").get.id
         _     <- deviceRepo.upsert(
@@ -473,7 +473,7 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         userRepo    <- ZIO.service[UserRepo]
         upRepo      <- ZIO.service[UserProfileRepo]
         auth        <- makeAuth
-        profiles    <- profileRepo.listAllAcrossHouseholds
+        profiles    <- profileRepo.listAllForHousehold(HouseholdId.Default)
         kidsId = profiles.find(_.name == "Kids").get.id
         routerId <- routerRepo.create("home", Sha256Hex.unsafe("p" * 64))
         _        <- routerRepo.completeEnrollment(routerId, Sha256Hex.unsafe("q" * 64))

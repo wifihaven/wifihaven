@@ -177,11 +177,14 @@ object TimeUsedRollupJob {
   ): Task[Int] = for {
     settings <- hs.get
     today = PolicyService.householdLocalDate(now, settings)
-    profiles <- profileRepo.listAllAcrossHouseholds
-    devices  <- deviceRepo.listAllAcrossHouseholds
-    atlsP    <- ZIO.foreach(profiles)(p => appTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
-    presence <- trafficRepo.listPresenceRows(devices.map(_.mac), today)
-    ambient  <- ambientRepo.gateFor(settings, today)
+    // #2257: all-tenant rollup batch — enumerate households explicitly and union each one's scoped
+    // read (no cross-tenant `listAll` a request path could also reach).
+    households <- profileRepo.distinctHouseholds
+    profiles   <- ZIO.foreach(households)(profileRepo.listAllForHousehold).map(_.flatten)
+    devices    <- ZIO.foreach(households)(deviceRepo.listAllForHousehold).map(_.flatten)
+    atlsP      <- ZIO.foreach(profiles)(p => appTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
+    presence   <- trafficRepo.listPresenceRows(devices.map(_.mac), today)
+    ambient    <- ambientRepo.gateFor(settings, today)
     rolls = computeRolls(profiles, devices, atlsP.toMap, presence, settings, now, ambient)
     // #1676: each tick emits the count of per-(mac, app) sessions silently
     // dropped by the #1666 anchor-row guard so an operator can rate-alert on

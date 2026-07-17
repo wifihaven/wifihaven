@@ -24,9 +24,12 @@ import scala.jdk.CollectionConverters.*
  *
  * #2257 shrank it: every user-facing `deviceRepo.listAll` / `profileRepo.listAll` (the #2120/#2251
  * leak class) is now household-scoped (`listAllForHousehold`) in the request handlers + SPA push
- * builders, and the bare cross-tenant methods were renamed `listAllAcrossHouseholds` so no route
- * can reach them by accident. Only the still-tracked non-device/profile reads remain in the
- * allowlist.
+ * builders, and the bare cross-tenant `listAll` on devices/profiles was REMOVED entirely (no
+ * replacement method) — the handful of genuinely all-tenant reads (background rollup/learn fibers,
+ * the loopback debug dump, `TimeStatusService`'s per-profile paths) are now explicit
+ * `foreach(profileRepo.distinctHouseholds)(listAllForHousehold)` loops / `listForProfile` reads, so
+ * a cross-tenant read simply cannot be spelled in a route. Only the still-tracked
+ * non-device/profile reads remain in the allowlist.
  *
  * Scope of the scan (deliberately narrow, to stay low-false-positive):
  *   - Only the `.scala` files in `api/src/routes` (the user-facing plane; the snapshot/policy plane
@@ -89,9 +92,9 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
     // #2126 — `named_schedules` has no household_id column yet; GET /api/schedules is unscoped.
     "ScheduleRoutes.scala"     -> Set("scheduleRepo.listAll"),
     // #2257 — DebugRoutes / SpaPush / UsageRoutes previously held unscoped `deviceRepo.listAll` /
-    // `profileRepo.listAll`. Those are now either household-scoped (`listAllForHousehold`) in every
-    // request handler + SPA push builder, or renamed to the honestly-named `listAllAcrossHouseholds`
-    // (DebugRoutes, a loopback-only on-host operator dump) — none match this scan any more, so no
+    // `profileRepo.listAll`. Those are now household-scoped (`listAllForHousehold`) in every request
+    // handler + SPA push builder; DebugRoutes' loopback-only dump is an explicit
+    // `foreach(distinctHouseholds)(listAllForHousehold)` loop — none match this scan any more, so no
     // allowlist entry is needed. The device/profile `listAll` methods themselves no longer exist.
   )
 

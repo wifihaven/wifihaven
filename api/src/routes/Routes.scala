@@ -918,7 +918,7 @@ object TimeRoutes {
               allProfiles <- profileRepo.listAllForHousehold(claims.hh).mapError(ApiError.Db(_))
               visible     <- visibleProfiles(claims, allProfiles, userProfileRepo)
               states      <- timeStatusService
-                .dayStateAll(now, date, settings)
+                .dayStateAll(claims.hh, now, date, settings)
                 .mapError(ApiError.Db(_))
               summaries = visible.map { p =>
                 val st = states.getOrElse(

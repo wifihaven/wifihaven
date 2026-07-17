@@ -111,7 +111,8 @@ object DashboardNowApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
    */
   private def clearSeededProfiles: ZIO[ProfileRepo, Throwable, Unit] =
     ZIO.serviceWithZIO[ProfileRepo](pr =>
-      pr.listAllAcrossHouseholds.flatMap(ps => ZIO.foreachDiscard(ps)(p => pr.delete(p.id))),
+      pr.listAllForHousehold(HouseholdId.Default)
+        .flatMap(ps => ZIO.foreachDiscard(ps)(p => pr.delete(p.id))),
     )
 
   private val mac1  = "aa:bb:cc:dd:ee:01"

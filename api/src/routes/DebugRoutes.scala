@@ -37,6 +37,7 @@ object DebugRoutes {
   def routes(
       enabled: Boolean,
       deviceRepo: DeviceRepo,
+      profileRepo: ProfileRepo,
       connEventRepo: ConnectionEventRepo,
       timeUsageRepo: TimeUsageRepo,
       trafficRepo: TrafficReportRepo,
@@ -49,10 +50,11 @@ object DebugRoutes {
         Method.GET / "api" / "debug" / "devices"                -> handler { (req: Request) =>
           guardLoopback(req, "/api/debug/devices") {
             // #2257: a deliberate ALL-TENANT dump — this surface is loopback-only AND gated behind
-            // `WIFIHAVEN_DEBUG=1` (on-host operator triage, no JWT/household context), so the
-            // cross-household read is intentional and its intent is unmissable via the method name
-            // (never `listAll`, which no longer exists). NOT reachable from a normal request path.
-            deviceRepo.listAllAcrossHouseholds
+            // `WIFIHAVEN_DEBUG=1` (on-host operator triage, no JWT/household context). There is no
+            // cross-household `listAll`; the all-tenant read is spelled out as an EXPLICIT
+            // enumerate-households-then-union loop so it can never be reached from a request path.
+            profileRepo.distinctHouseholds
+              .flatMap(hhs => ZIO.foreach(hhs)(deviceRepo.listAllForHousehold).map(_.flatten))
               .mapBoth(
                 ApiError.Db(_),
                 xs => Response.json(xs.toJson),

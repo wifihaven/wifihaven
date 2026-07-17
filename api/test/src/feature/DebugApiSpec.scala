@@ -25,11 +25,12 @@ object DebugApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
   private def buildRoutes(enabled: Boolean) =
     for {
       dRepo  <- ZIO.service[DeviceRepo]
+      pRepo  <- ZIO.service[ProfileRepo]
       cRepo  <- ZIO.service[ConnectionEventRepo]
       tuRepo <- ZIO.service[TimeUsageRepo]
       trRepo <- ZIO.service[TrafficReportRepo]
       clock  <- ZIO.service[Clock]
-    } yield DebugRoutes.routes(enabled, dRepo, cRepo, tuRepo, trRepo, clock)
+    } yield DebugRoutes.routes(enabled, dRepo, pRepo, cRepo, tuRepo, trRepo, clock)
 
   /**
    * Build a request whose Host header is loopback-y by default. zio-http's Request.remoteAddress is

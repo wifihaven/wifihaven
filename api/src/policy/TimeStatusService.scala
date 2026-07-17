@@ -97,10 +97,16 @@ trait TimeStatusService {
 
   /**
    * Batched form for [[PolicyService.snapshot]] and the `/api/time/status/summary` route. Emits one
-   * `ProfileDayState` per profile for `date`. For today this is served from the rollup + a live
-   * tail; for past dates it's all-live.
+   * `ProfileDayState` per profile IN `household` for `date`. For today this is served from the
+   * rollup + a live tail; for past dates it's all-live.
+   *
+   * #2257: scoped to `household` — every caller already has one
+   * (`PolicyService.snapshot(household)`, the timeStatus GET's `claims.hh`, the push's
+   * per-recipient household), so this reads only that household's profiles/devices instead of every
+   * tenant's. There is no all-tenant batch variant.
    */
   def dayStateAll(
+      household: HouseholdId,
       now: Instant,
       date: LocalDate,
       settings: HouseholdSettings,
@@ -120,6 +126,7 @@ trait TimeStatusService {
 
   /** Always-live batched variant of [[dayStateAll]] — see [[dayStateLive]]. */
   def dayStateAllLive(
+      household: HouseholdId,
       now: Instant,
       date: LocalDate,
       settings: HouseholdSettings,
@@ -206,8 +213,7 @@ class TimeStatusServiceLive(
           schedules <- schedulesFor(profileId)
           tl        <- timeLimitRepo.findForProfile(profileId)
           atls      <- appTimeLimitRepo.listForProfile(profileId)
-          devices   <- deviceRepo.listAllAcrossHouseholds
-            .map(_.filter(_.profileId.contains(profileId)))
+          devices   <- deviceRepo.listForProfile(profileId)
           presence  <- trafficRepo.listPresenceRows(devices.map(_.mac), date)
           ambient   <- ambientGateFor(now, settings)
           extMins   <- extRepo.getProfileTotalExtension(profileId, date)
@@ -228,23 +234,25 @@ class TimeStatusServiceLive(
     }
 
   def dayStateAll(
+      household: HouseholdId,
       now: Instant,
       date: LocalDate,
       settings: HouseholdSettings,
   ): Task[Map[ProfileId, ProfileDayState]] = {
     val today = PolicyService.householdLocalDate(now, settings)
-    if (date == today) dayStateAllFromRollup(now, date, settings)
-    else dayStateAllLive(now, date, settings)
+    if (date == today) dayStateAllFromRollup(household, now, date, settings)
+    else dayStateAllLive(household, now, date, settings)
   }
 
   def dayStateAllLive(
+      household: HouseholdId,
       now: Instant,
       date: LocalDate,
       settings: HouseholdSettings,
   ): Task[Map[ProfileId, ProfileDayState]] =
     for {
-      profiles <- profileRepo.listAllAcrossHouseholds
-      devices  <- deviceRepo.listAllAcrossHouseholds
+      profiles <- profileRepo.listAllForHousehold(household)
+      devices  <- deviceRepo.listAllForHousehold(household)
       namedP   <- namedScheduleRepo.windowsForAllProfiles
       tlsP     <- ZIO.foreach(profiles)(p => timeLimitRepo.findForProfile(p.id).map(p.id -> _))
       atlsP    <- ZIO.foreach(profiles)(p => appTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
@@ -301,8 +309,7 @@ class TimeStatusServiceLive(
           schedules <- schedulesFor(profileId)
           tl        <- timeLimitRepo.findForProfile(profileId)
           atls      <- appTimeLimitRepo.listForProfile(profileId)
-          devices   <- deviceRepo.listAllAcrossHouseholds
-            .map(_.filter(_.profileId.contains(profileId)))
+          devices   <- deviceRepo.listForProfile(profileId)
           tail <- trafficRepo.listPresenceRowsSince(devices.map(_.mac), date, rolled.rolledThrough)
           ambient    <- ambientGateFor(now, settings)
           extMins    <- extRepo.getProfileTotalExtension(profileId, date)
@@ -339,19 +346,26 @@ class TimeStatusServiceLive(
   // all-live path for the entire batch — cheaper than mixing two code paths and the next fiber tick
   // refills the missing rows. After the fiber settles, every batch is rollup+tail.
   private def dayStateAllFromRollup(
+      household: HouseholdId,
       now: Instant,
       date: LocalDate,
       settings: HouseholdSettings,
   ): Task[Map[ProfileId, ProfileDayState]] =
     for {
-      profiles <- profileRepo.listAllAcrossHouseholds
+      profiles <- profileRepo.listAllForHousehold(household)
       rolled   <- rollupRepo.getDayMap(date)
       result   <-
-        if profiles.exists(p => !rolled.contains(p.id)) then dayStateAllLive(now, date, settings)
-        else dayStateAllFromRollupHits(now, date, settings, profiles, rolled)
+        // #2257: a household with no profiles has no day-states — short-circuit. This also guards
+        // `dayStateAllFromRollupHits`' `rolled.values.min` from an empty-map throw now that the
+        // profile set is household-scoped (a freshly-provisioned household legitimately has none).
+        if profiles.isEmpty then ZIO.succeed(Map.empty[ProfileId, ProfileDayState])
+        else if profiles.exists(p => !rolled.contains(p.id)) then
+          dayStateAllLive(household, now, date, settings)
+        else dayStateAllFromRollupHits(household, now, date, settings, profiles, rolled)
     } yield result
 
   private def dayStateAllFromRollupHits(
+      household: HouseholdId,
       now: Instant,
       date: LocalDate,
       settings: HouseholdSettings,
@@ -363,7 +377,7 @@ class TimeStatusServiceLive(
     // per-profile filtering handle any per-row over-fetch.
     val watermark = rolled.values.iterator.map(_.rolledThrough).min
     for {
-      devices    <- deviceRepo.listAllAcrossHouseholds
+      devices    <- deviceRepo.listAllForHousehold(household)
       namedP     <- namedScheduleRepo.windowsForAllProfiles
       tlsP       <- ZIO.foreach(profiles)(p => timeLimitRepo.findForProfile(p.id).map(p.id -> _))
       atlsP      <- ZIO.foreach(profiles)(p => appTimeLimitRepo.listForProfile(p.id).map(p.id -> _))

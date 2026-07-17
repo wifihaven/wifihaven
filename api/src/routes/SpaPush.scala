@@ -530,19 +530,16 @@ object SpaPush {
             now      <- clock.instant
             settings <- deps.hsRepo.get
             date = PolicyService.householdLocalDate(now, settings)
-            // `dayStateAll` is keyed by `ProfileId` and spans tenants (an internal batch, #2257); we
-            // only ever look up `states.get(p.id)` for the CURRENT household's profiles below, so no
-            // other household's state is ever emitted.
-            states  <- deps.timeStatusService.dayStateAll(now, date, settings)
             ambient <- deps.ambientRepo.gateFor(settings, date)
             // #2257: build + deliver PER HOUSEHOLD — a household-B admin subscribed to `timeStatus`
             // must never receive household A's `ProfileTimeStatus[]` (the sibling of the #2120 `now`
-            // leak). Group recipients by household, scope the profile/device/presence reads to that
-            // household, and role-filter WITHIN it (admin/adult see all of THEIR household; a child
-            // only their linked profiles — design §4.4).
+            // leak). Group recipients by household, scope EVERY read (profiles/devices/presence AND
+            // the `dayStateAll` day-state batch) to that household, and role-filter WITHIN it
+            // (admin/adult see all of THEIR household; a child only their linked profiles — §4.4).
             byHousehold = recipients.groupBy(_.household)
             _ <- ZIO.foreachDiscard(byHousehold.toList) { case (household, hhRecipients) =>
               for {
+                states   <- deps.timeStatusService.dayStateAll(household, now, date, settings)
                 profiles <- profileRepo.listAllForHousehold(household)
                 devices  <- deviceRepo.listAllForHousehold(household)
                 devsByPid = devices.groupBy(_.profileId).collect { case (Some(pid), ds) =>

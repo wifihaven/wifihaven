@@ -427,7 +427,9 @@ object SpaWsS6aSpec
       withHarness { (port, ingest, router, _) =>
         for {
           tok <- ZIO.serviceWithZIO[Clock](makeAuth).flatMap(adminToken)
-          pid <- ZIO.serviceWithZIO[ProfileRepo](_.listAllAcrossHouseholds).map(_.head.id)
+          pid <- ZIO
+            .serviceWithZIO[ProfileRepo](_.listAllForHousehold(HouseholdId.Default))
+            .map(_.head.id)
           grant = ZIO.serviceWithZIO[Client] { client =>
             ZIO
               .scoped(
@@ -455,7 +457,9 @@ object SpaWsS6aSpec
       withHarness { (port, ingest, router, _) =>
         for {
           tok    <- ZIO.serviceWithZIO[Clock](makeAuth).flatMap(adminToken)
-          pid    <- ZIO.serviceWithZIO[ProfileRepo](_.listAllAcrossHouseholds).map(_.head.id)
+          pid    <- ZIO
+            .serviceWithZIO[ProfileRepo](_.listAllForHousehold(HouseholdId.Default))
+            .map(_.head.id)
           before <- pushCount("appUsage", "ok")
           frames <- collect(
             port,
@@ -480,7 +484,9 @@ object SpaWsS6aSpec
       withHarness { (port, ingest, router, _) =>
         for {
           // A second profile the child must NOT see, plus the child linked to Kids only.
-          kidsPid <- ZIO.serviceWithZIO[ProfileRepo](_.listAllAcrossHouseholds).map(_.head.id)
+          kidsPid <- ZIO
+            .serviceWithZIO[ProfileRepo](_.listAllForHousehold(HouseholdId.Default))
+            .map(_.head.id)
           _       <- ZIO.serviceWithZIO[ProfileRepo](_.create("Teens", Nil))
           childTk <- ZIO.serviceWithZIO[Clock](makeAuth).flatMap(a => tokenFor(a, "child", "kid"))
           (childTok, childUid) = childTk

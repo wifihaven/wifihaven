@@ -240,7 +240,10 @@ object BundledBlocklistsSpec
       for {
         _    <- cleanDb
         pr   <- ZIO.service[ProfileRepo]
-        kids <- pr.listAllAcrossHouseholds.map(_.find(_.name == "Kids")).someOrFailException
+        kids <- pr
+          .listAllForHousehold(HouseholdId.Default)
+          .map(_.find(_.name == "Kids"))
+          .someOrFailException
       } yield assertTrue(kids.blockedCategories.contains(BlocklistId.unsafe("social-media"))) &&
         assertTrue(!kids.blockedCategories.contains(BlocklistId.unsafe("social_media"))) &&
         assertTrue(!kids.blockedCategories.contains(BlocklistId.unsafe("proxy"))) &&

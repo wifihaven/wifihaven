@@ -110,10 +110,13 @@ object AmbientLearnJob {
     settings <- hs.get
     today     = PolicyService.householdLocalDate(now, settings)
     yesterday = today.minusDays(1L)
-    profiles <- profileRepo.listAllAcrossHouseholds
-    devices  <- deviceRepo.listAllAcrossHouseholds
-    atlsP    <- ZIO.foreach(profiles)(p => appTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
-    presence <- trafficRepo.listPresenceRows(devices.map(_.mac), yesterday)
+    // #2257: this is a genuinely all-tenant batch — enumerate households explicitly and union each
+    // one's scoped read, rather than a cross-tenant `listAll` that a request path could also grab.
+    households <- profileRepo.distinctHouseholds
+    profiles   <- ZIO.foreach(households)(profileRepo.listAllForHousehold).map(_.flatten)
+    devices    <- ZIO.foreach(households)(deviceRepo.listAllForHousehold).map(_.flatten)
+    atlsP      <- ZIO.foreach(profiles)(p => appTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
+    presence   <- trafficRepo.listPresenceRows(devices.map(_.mac), yesterday)
     counts = {
       val atlMap  = atlsP.toMap
       val devsByP = devices.groupBy(_.profileId)
