@@ -179,6 +179,8 @@ object SpaWsRoutes {
       for {
         idRef    <- Ref.make(Option.empty[SpaConnId])
         fiberRef <- Ref.make(Option.empty[Fiber.Runtime[Nothing, Unit]])
+        // #2268: per-connection reassembly buffer for fragmented inbound frames (shared reassembler).
+        reasm    <- Ref.make(WsFrameReassembler.empty)
         _        <- channel
           .receiveAll {
             case ChannelEvent.UserEventTriggered(UserEvent.HandshakeComplete) =>
@@ -202,16 +204,42 @@ object SpaWsRoutes {
                     ).forkDaemon
                       .flatMap(f => fiberRef.set(Some(f)))
                 } *> ZIO.logInfo("spa ws: connected")
-            case ChannelEvent.Read(WebSocketFrame.Text(text))                 =>
-              idRef.get.flatMap {
-                case Some(id) =>
-                  dispatch(id, channel, text, registry, clock)
-                    .tapErrorCause(c => ZIO.logErrorCause("spa ws: dispatch failed", c))
-                case None     =>
-                  // A frame before the handshake completed — should not happen, but ignore rather
-                  // than crash the receive loop.
-                  ZIO.unit
-              }
+            case ChannelEvent.Read(frame)                                     =>
+              // #2268: reassemble fragmented frames before dispatch (mirror of the router-side
+              // reassembler #1959). Latent for the SPA today — browsers reassemble the server→browser
+              // thick pushes natively and client→server frames are tiny — but the identical
+              // drop-`Continuation` bug lives here, so it rides the shared reassembler.
+              reasm
+                .modify { s =>
+                  val (next, outcome) = WsFrameReassembler.step(s, frame)
+                  (outcome, next)
+                }
+                .flatMap {
+                  case WsFrameReassembler.Outcome.Message(text, fragmented) =>
+                    ZIO.when(fragmented)(AppMetrics.recordWsReassembly("spa", "completed")) *>
+                      idRef.get.flatMap {
+                        case Some(id) =>
+                          dispatch(id, channel, text, registry, clock)
+                            .tapErrorCause(c => ZIO.logErrorCause("spa ws: dispatch failed", c))
+                        case None     =>
+                          // A frame before the handshake completed — should not happen, but ignore
+                          // rather than crash the receive loop.
+                          ZIO.unit
+                      }
+                  case WsFrameReassembler.Outcome.Incomplete |
+                      WsFrameReassembler.Outcome.Passthrough =>
+                    ZIO.unit
+                  case WsFrameReassembler.Outcome.Overflow(bytes)           =>
+                    // Close with 1009 (RFC 6455 §7.4.1 "message too big").
+                    AppMetrics.recordWsReassembly("spa", "overflow") *>
+                      ZIO.logWarning(
+                        s"spa ws: reassembly exceeded ${WsFrameReassembler.MaxMessageBytes}B " +
+                          s"($bytes); closing",
+                      ) *>
+                      channel.send(
+                        ChannelEvent.read(WebSocketFrame.close(1009, Some("message too big"))),
+                      )
+                }
             case ChannelEvent.Unregistered                                    =>
               idRef.get.flatMap(ZIO.foreachDiscard(_)(registry.deregister))
             case _                                                            =>

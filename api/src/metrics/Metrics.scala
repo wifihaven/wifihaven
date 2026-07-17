@@ -300,6 +300,14 @@ object MetricGuard {
     // (`direction=out`). `op` is the SAME bounded envelope enum as router_ws_frames_total, so no
     // per-mac / per-router / per-household dimension ever rides it — the §4 cardinality firewall.
     "router_ws_message_duration_seconds"        -> Set("op", "direction"),
+    // #2268 — server-side reassembly of fragmented inbound ws messages (an intermediary — Render's
+    // edge — re-fragments large frames at ~4 KiB; mirror of the router-side reassembler #1959). Split
+    // per surface into SEPARATE names (like router_ws_frames_total / spa_ws_frames_total) so no new
+    // `surface` label key is needed. `result` ∈ {completed, overflow} — a fixed 2-value enum,
+    // bounded, no per-mac / per-router dimension. Without these entries `check()` rejects the name as
+    // unknown_name and the series never emits.
+    "router_ws_reassembly_total"                -> Set("result"),
+    "spa_ws_reassembly_total"                   -> Set("result"),
     // #1849 — computed-snapshot cache + push-on-change. `policy_snapshot_build_total` splits policy
     // snapshot accesses into `result` ∈ {computed, cache_hit} (proves the cache works);
     // `router_ws_policy_push_total` is the push fan-out, `result` ∈ {ok, channel_closed}. Both are
@@ -833,6 +841,22 @@ object AppMetrics {
       Map("op" -> op, "direction" -> direction),
       math.max(0.0, durationSeconds),
       HttpDurationBoundaries,
+    )
+
+  // #2268: server-side reassembly of fragmented inbound WS messages. An intermediary (Render's edge)
+  // re-fragments large frames at ~4 KiB, so the server must rejoin `Text(isFinal=false)` +
+  // `Continuation…` before decoding (mirror of the router-side reassembler, #1959). Split per
+  // surface into SEPARATE metric names — `router_ws_reassembly_total` / `spa_ws_reassembly_total` —
+  // exactly like `router_ws_frames_total` / `spa_ws_frames_total`, rather than adding a `surface`
+  // label key (which would enlarge the #1210 KnownLabelKeys vocabulary). `surface` is a caller
+  // literal ∈ {router, spa}. `result` ∈ {completed, overflow}: `completed` fires ONLY for a
+  // genuinely multi-frame message (the single-frame fast path is not counted), so the series
+  // measures how often the transport actually fragments; `overflow` fires when a peer exceeds the
+  // 1 MiB reassembly cap and we close the connection. `result` is a fixed 2-value enum (bounded).
+  def recordWsReassembly(surface: String, result: String): UIO[Unit] =
+    MetricGuard.counter(
+      s"${surface}_ws_reassembly_total",
+      Map("result" -> result),
     )
 
   // #1849: counts policy-snapshot accesses split by whether they hit the computed-snapshot cache.

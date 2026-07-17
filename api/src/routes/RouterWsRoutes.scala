@@ -75,43 +75,73 @@ object RouterWsRoutes {
       // close, error, or interruption) so the registry + active-connections gauge never leak a dead
       // channel. deregister is idempotent, so the explicit Unregistered handler below is harmless
       // belt-and-suspenders.
-      channel
-        .receiveAll {
-          case ChannelEvent.UserEventTriggered(UserEvent.HandshakeComplete) =>
-            // #1849: register, then push the current snapshot once so a freshly-connected router
-            // has policy immediately (design §6.1). A snapshot-build failure must not tear the
-            // socket down — log and carry on; the router still gets the next push-on-change and can
-            // fall back to the REST poll.
-            registry.register(router.id, channel) *>
-              ZIO.logInfo(s"router ws: connected router=${router.id}") *>
-              policy
-                // #2107: first-policy push is scoped to the router's household (same scoping as the
-                // REST /api/router/policy poll).
-                .snapshot(router.householdId)
-                .flatMap(registry.pushPolicyTo(channel, _))
-                .catchAllCause(c =>
-                  ZIO.logWarningCause(
-                    s"router ws: first-policy push failed router=${router.id}",
-                    c,
-                  ),
-                )
-          case ChannelEvent.Read(WebSocketFrame.Text(text))                 =>
-            // A dispatch failure (e.g. a send error) tears this frame's handling down; log the cause
-            // so a transport-level fault is debuggable, then let it surface (the socket closes and
-            // the agent reconnects per the design's reconnect-is-the-throttle rule).
-            dispatch(router, channel, text, ingest, metricsSvc, routerRepo)
-              .tapErrorCause(c =>
-                ZIO.logErrorCause(s"router ws: dispatch failed router=${router.id}", c),
-              )
-          case ChannelEvent.Unregistered                                    =>
-            registry.deregister(router.id, channel)
-          case _                                                            =>
-            ZIO.unit
-        }
-        .ensuring(
-          registry.deregister(router.id, channel) *>
-            ZIO.logInfo(s"router ws: disconnected router=${router.id}"),
-        )
+      // #2268: one reassembly buffer per connection. An intermediary (Render's edge) re-fragments
+      // large frames at ~4 KiB, so a single logical message can arrive as `Text(isFinal=false)` +
+      // `Continuation…`; every inbound frame goes through the shared [[WsFrameReassembler]] before
+      // dispatch (the mirror of the router-side reassembler #1959). Starts empty per channel.
+      Ref.make(WsFrameReassembler.empty).flatMap { reasm =>
+        channel
+          .receiveAll {
+            case ChannelEvent.UserEventTriggered(UserEvent.HandshakeComplete) =>
+              // #1849: register, then push the current snapshot once so a freshly-connected router
+              // has policy immediately (design §6.1). A snapshot-build failure must not tear the
+              // socket down — log and carry on; the router still gets the next push-on-change and can
+              // fall back to the REST poll.
+              registry.register(router.id, channel) *>
+                ZIO.logInfo(s"router ws: connected router=${router.id}") *>
+                policy
+                  // #2107: first-policy push is scoped to the router's household (same scoping as the
+                  // REST /api/router/policy poll).
+                  .snapshot(router.householdId)
+                  .flatMap(registry.pushPolicyTo(channel, _))
+                  .catchAllCause(c =>
+                    ZIO.logWarningCause(
+                      s"router ws: first-policy push failed router=${router.id}",
+                      c,
+                    ),
+                  )
+            case ChannelEvent.Read(frame)                                     =>
+              // `modify` wants `state => (result, newState)`; `step` returns `(newState, outcome)`.
+              reasm
+                .modify { s =>
+                  val (next, outcome) = WsFrameReassembler.step(s, frame)
+                  (outcome, next)
+                }
+                .flatMap {
+                  case WsFrameReassembler.Outcome.Message(text, fragmented) =>
+                    // A dispatch failure (e.g. a send error) tears this frame's handling down; log the
+                    // cause so a transport-level fault is debuggable, then let it surface (the socket
+                    // closes and the agent reconnects per the design's reconnect-is-the-throttle rule).
+                    ZIO.when(fragmented)(AppMetrics.recordWsReassembly("router", "completed")) *>
+                      dispatch(router, channel, text, ingest, metricsSvc, routerRepo)
+                        .tapErrorCause(c =>
+                          ZIO.logErrorCause(s"router ws: dispatch failed router=${router.id}", c),
+                        )
+                  case WsFrameReassembler.Outcome.Incomplete |
+                      WsFrameReassembler.Outcome.Passthrough =>
+                    ZIO.unit
+                  case WsFrameReassembler.Outcome.Overflow(bytes)           =>
+                    // A peer streaming past the cap is a memory-exhaustion hazard — meter + close
+                    // with 1009 (RFC 6455 §7.4.1 "message too big").
+                    AppMetrics.recordWsReassembly("router", "overflow") *>
+                      ZIO.logWarning(
+                        s"router ws: reassembly exceeded ${WsFrameReassembler.MaxMessageBytes}B " +
+                          s"($bytes) from router=${router.id}; closing",
+                      ) *>
+                      channel.send(
+                        ChannelEvent.read(WebSocketFrame.close(1009, Some("message too big"))),
+                      )
+                }
+            case ChannelEvent.Unregistered                                    =>
+              registry.deregister(router.id, channel)
+            case _                                                            =>
+              ZIO.unit
+          }
+          .ensuring(
+            registry.deregister(router.id, channel) *>
+              ZIO.logInfo(s"router ws: disconnected router=${router.id}"),
+          )
+      }
     }
 
   /**

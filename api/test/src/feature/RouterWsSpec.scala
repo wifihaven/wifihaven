@@ -190,6 +190,63 @@ object RouterWsSpec
         TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task],
       ](Server.defaultWithPort(0), Client.default)
     },
+    test("#2268: a usage frame SPLIT across Text(non-final)+Continuation frames is reassembled") {
+      // The mirror of #1959: an intermediary (Render's edge) fragments a large frame at ~4 KiB, so a
+      // single logical `usage` message arrives as `Text(isFinal=false)` + `Continuation…`. Before the
+      // reassembler, the server decoded only the truncated first fragment ("Unexpected end of input")
+      // and ingested nothing. Here we send the identical usage message as THREE ws frames and assert
+      // it still acks ok and lands exactly one traffic_report row.
+      (for {
+        _             <- cleanDb
+        rRepo         <- ZIO.service[RouterRepo]
+        pRepo         <- ZIO.service[ProfileRepo]
+        dRepo         <- ZIO.service[DeviceRepo]
+        tRepo         <- ZIO.service[TrafficReportRepo]
+        _             <- seedKnownDevice(dRepo, pRepo)
+        (id, tk)      <- seedRouter(rRepo)
+        (routes, reg) <- buildWsRoutes
+        port          <- Server.install(routes)
+        rec       = UsageRecord(
+          MacAddress.unsafe(knownMac),
+          Some(IpAddress.unsafe("192.168.1.10")),
+          HostId.Fqdn(Hostname.unsafe("youtube.com")),
+          240L,
+          1000L,
+          500L,
+        )
+        usageBody = UsageReport(id, periodStart.toString, periodEnd.toString, List(rec)).toJson
+        frame     = s"""{"op":"usage","seq":9,"payload":$usageBody}"""
+        // Fragment the message into a lead Text(fin=false) + two Continuation frames (the last
+        // fin=true), the RFC 6455 §5.4 shape an intermediary produces. Bytes are UTF-8 (ASCII here).
+        thirds    = frame.grouped(math.max(1, frame.length / 3)).toList
+        bytesOf   = (s: String) =>
+          Chunk.fromArray(s.getBytes(java.nio.charset.StandardCharsets.UTF_8))
+        result <- connectAndCapture(
+          port,
+          Some(tk),
+          ch =>
+            ch.send(ChannelEvent.read(WebSocketFrame.Text(thirds.head, isFinal = false))) *>
+              ZIO.foreachDiscard(thirds.tail.init)(part =>
+                ch.send(
+                  ChannelEvent.read(WebSocketFrame.Continuation(bytesOf(part), isFinal = false)),
+                ),
+              ) *>
+              ch.send(
+                ChannelEvent.read(WebSocketFrame.Continuation(bytesOf(thirds.last), isFinal = true)),
+              ),
+          reg.isConnected(id),
+          until = _.contains("\"op\":\"ack\""),
+        )
+        (ack, _, _) = result
+        rows <- tRepo.listForRouter(id, 100)
+      } yield assertTrue(ack.contains("\"op\":\"ack\"")) &&
+        assertTrue(ack.contains("\"status\":\"ok\"")) &&
+        assertTrue(ack.contains("\"seq\":9")) &&
+        // The reassembled body ingested exactly one row — proof the continuation frames were rejoined.
+        assertTrue(rows.size == 1)).provideSome[
+        TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task],
+      ](Server.defaultWithPort(0), Client.default)
+    },
     test("a ping frame is answered with a pong") {
       (for {
         _           <- cleanDb
