@@ -149,5 +149,69 @@ object StartupConfigSpec extends ZIOSpecDefault {
         } yield assertTrue(true)
       },
     ),
+    suite("#2266 metrics.requireToken — cloud-only fail-loud when the scrape token is missing")(
+      test("requireToken=true + enabled + empty scrapeToken → one boot error naming the key") {
+        val errs = MetricsConfig.validate(
+          MetricsConfig(enabled = true, scrapeToken = "", requireToken = true),
+        )
+        assertTrue(
+          errs.length == 1,
+          errs.head.contains("wifihaven.metrics.scrapeToken"),
+          errs.head.contains("requireToken"),
+        )
+      },
+      test("requireToken=true + scrapeToken present → no error") {
+        assertTrue(
+          MetricsConfig
+            .validate(MetricsConfig(enabled = true, scrapeToken = "tok", requireToken = true))
+            .isEmpty,
+        )
+      },
+      test("requireToken=false + empty scrapeToken → no error (self-hosted loopback default)") {
+        assertTrue(
+          MetricsConfig
+            .validate(MetricsConfig(enabled = true, scrapeToken = "", requireToken = false))
+            .isEmpty,
+        )
+      },
+      test("metrics disabled → requireToken is moot even with an empty token") {
+        assertTrue(
+          MetricsConfig
+            .validate(MetricsConfig(enabled = false, scrapeToken = "", requireToken = true))
+            .isEmpty,
+        )
+      },
+      test("validateRequired ACCUMULATES the metrics error alongside a bad jwt secret") {
+        // Bad JWT (short) + metrics requireToken-with-no-token → both surface in one pass (rule 4).
+        val cfg  = AppConfig(
+          db = DbConfig("localhost", 5432, "wifihaven", "wifihaven", "changeme", 5),
+          http = HttpConfig("0.0.0.0", 8080, "web/dist", serveSpa = true),
+          jwt = JwtConfig("short", 24),
+          cors = CorsConfig(""),
+          metrics = MetricsConfig(enabled = true, scrapeToken = "", requireToken = true),
+        )
+        val errs = AppConfig.validateRequired(cfg)
+        assertTrue(
+          errs.exists(_.contains("wifihaven.jwt.secret")),
+          errs.exists(_.contains("wifihaven.metrics.scrapeToken")),
+          errs.length == 2,
+        )
+      },
+      test("feature report's metrics-scrape-token detail names requireToken") {
+        val on = StartupFeatureReport
+          .states(
+            AppConfig(
+              db = DbConfig("localhost", 5432, "wifihaven", "wifihaven", "changeme", 5),
+              http = HttpConfig("0.0.0.0", 8080, "web/dist", serveSpa = true),
+              jwt = JwtConfig(goodSecret, 24),
+              cors = CorsConfig(""),
+              metrics = MetricsConfig(enabled = true, scrapeToken = "tok", requireToken = true),
+            ),
+          )
+          .find(_.name == "metrics-scrape-token")
+          .get
+        assertTrue(on.enabled, on.detail.contains("requireToken"))
+      },
+    ),
   )
 }

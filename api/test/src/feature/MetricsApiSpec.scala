@@ -81,6 +81,29 @@ object MetricsApiSpec extends ZIOSpecDefault {
         assertTrue(okAuth.status == Status.Ok))
         .provide(MetricsRuntime.prometheus(pollInterval))
     },
+    test(
+      "#2266 requireToken=true with a token behaves like scrapeToken auth (401 without, 200 with)",
+    ) {
+      val cfg = MetricsConfig(enabled = true, scrapeToken = "s3cret", requireToken = true)
+      (for {
+        noAuth <- scrape(cfg, None).merge
+        okAuth <- scrape(cfg, Some("s3cret")).merge
+      } yield assertTrue(noAuth.status == Status.Unauthorized, okAuth.status == Status.Ok))
+        .provide(MetricsRuntime.prometheus(pollInterval))
+    },
+    test("#2266 requireToken=true with an EMPTY token denies every request (defense in depth)") {
+      // Boot validation makes this state unreachable in prod, but the route must not fall open:
+      // an empty token under requireToken=true is fail-closed, not the loopback-open default.
+      val cfg = MetricsConfig(enabled = true, scrapeToken = "", requireToken = true)
+      (for {
+        noAuth  <- scrape(cfg, None).merge
+        anyAuth <- scrape(cfg, Some("anything")).merge
+      } yield assertTrue(
+        noAuth.status == Status.Unauthorized,
+        anyAuth.status == Status.Unauthorized,
+      ))
+        .provide(MetricsRuntime.prometheus(pollInterval))
+    },
     test("metrics.enabled = false serves no /metrics route") {
       val cfg = MetricsConfig(enabled = false)
       (for {
