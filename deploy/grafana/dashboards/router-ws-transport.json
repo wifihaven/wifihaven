@@ -887,7 +887,7 @@
         "uid": "${datasource}"
       },
       "title": "WS frame reassembly + overflow (#2268)",
-      "description": "sum by (surface, result) (rate(ws_reassembly_total{env=\"$env\"}[5m])). completed = a multi-frame message the server rejoined (an intermediary — Render's edge — fragmented it at ~4 KiB; the router→server transport relies on this reassembly, mirror of #1959). overflow = a peer streamed past the 1 MiB cap and the connection was closed — should be flat zero; any sustained non-zero is an oversized/misbehaving sender.",
+      "description": "rate of router_ws_reassembly_total / spa_ws_reassembly_total by result. completed = a multi-frame message the server rejoined (an intermediary — Render's edge — fragmented it at ~4 KiB; the router→server transport relies on this reassembly, mirror of #1959). overflow = a peer streamed past the 1 MiB cap and the connection was closed — should be flat zero; any sustained non-zero is an oversized/misbehaving sender. spa_* is latent today (browsers reassemble server→browser natively) but shares the reassembler.",
       "type": "timeseries",
       "gridPos": {
         "h": 8,
@@ -932,9 +932,18 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (surface, result) (rate(ws_reassembly_total{env=\"$env\"}[5m]))",
-          "legendFormat": "{{surface}} {{result}}",
+          "expr": "sum by (result) (rate(router_ws_reassembly_total{env=\"$env\"}[5m]))",
+          "legendFormat": "router {{result}}",
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (result) (rate(spa_ws_reassembly_total{env=\"$env\"}[5m]))",
+          "legendFormat": "spa {{result}}",
+          "refId": "B"
         }
       ]
     }
