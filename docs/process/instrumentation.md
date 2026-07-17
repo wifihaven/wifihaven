@@ -36,6 +36,13 @@ Rules of thumb:
   covered by the HTTP/DB middleware doesn't need its own series. One good
   counter or histogram beats five redundant ones, and every series costs
   cardinality.
+- **A feature gated on config must not go dark when that config is absent.** The
+  whole point of instrumenting a new path is that it's *visible*; a path that
+  silently no-ops when its secret is unset is invisible in exactly the way this
+  rule fights. If the path depends on a secret, that config **fails loud** when
+  it's missing (or is an explicit, logged, health-surfaced optional-off state)
+  — not a no-op that emits nothing. See
+  [`no-dark-by-default.md`](no-dark-by-default.md).
 - A new metric then **ships with its dashboard panel** — see the next rule.
 
 ## A new metric ships with its dashboard {#metrics-need-a-dashboard}
