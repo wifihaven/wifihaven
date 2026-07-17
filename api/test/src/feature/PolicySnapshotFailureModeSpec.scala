@@ -3,6 +3,7 @@ package wifihaven.api.feature
 import wifihaven.api.db.*
 import wifihaven.api.policy.*
 import wifihaven.shared.*
+import wifihaven.shared.types.HouseholdId
 import wifihaven.shared.Clock.TestClock
 import wifihaven.testinfra.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
@@ -39,7 +40,7 @@ object PolicySnapshotFailureModeSpec
         ar     <- ZIO.service[AppRepo]
         clock  <- ZIO.service[Clock]
         svc = PolicyServiceLive(pr, hsr, tlr, atlr, dr, blr, trRepo, er, ar, clock)
-        profiles0 <- pr.listAll
+        profiles0 <- pr.listAllForHousehold(HouseholdId.Default)
         kidsId   = profiles0.find(_.name == "Kids").get.id
         adultsId = profiles0.find(_.name == "Adults").get.id
         // Force the two seeded profiles into known modes.
@@ -71,7 +72,7 @@ object PolicySnapshotFailureModeSpec
         ar     <- ZIO.service[AppRepo]
         clock  <- ZIO.service[Clock]
         svc = PolicyServiceLive(pr, hsr, tlr, atlr, dr, blr, trRepo, er, ar, clock)
-        profiles0 <- pr.listAll
+        profiles0 <- pr.listAllForHousehold(HouseholdId.Default)
         _         <- pr.update(
           profiles0.find(_.name == "Kids").get.copy(failureMode = FailureMode.BlockAll),
         )
@@ -97,7 +98,7 @@ object PolicySnapshotFailureModeSpec
         ar     <- ZIO.service[AppRepo]
         clock  <- ZIO.service[Clock]
         svc = PolicyServiceLive(pr, hsr, tlr, atlr, dr, blr, trRepo, er, ar, clock)
-        profiles0 <- pr.listAll
+        profiles0 <- pr.listAllForHousehold(HouseholdId.Default)
         _         <- pr.update(
           profiles0.find(_.name == "Kids").get.copy(failureMode = FailureMode.BlockAll),
         )

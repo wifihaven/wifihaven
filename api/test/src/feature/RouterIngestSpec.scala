@@ -967,7 +967,7 @@ object RouterIngestSpec
         body = RouterEventsRequest(id, List(ev)).toJson
         _   <- post(routes, "/api/router/events", body, Some(tk))
         _   <- post(routes, "/api/router/events", body, Some(tk))
-        all <- dRepo.listAll
+        all <- dRepo.listAllForHousehold(HouseholdId.Default)
       } yield assertTrue(all.count(_.mac == MacAddress.unsafe(unknownMac)) == 1)
     },
     // ── ingest → policy round-trip (pins #135 fix) ───────────────────────────

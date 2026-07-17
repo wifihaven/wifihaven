@@ -145,7 +145,9 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
     }
 
   private def kidsId: ZIO[ProfileRepo, Throwable, ProfileId] =
-    ZIO.serviceWithZIO[ProfileRepo](_.listAll.map(_.find(_.name == "Kids").get.id))
+    ZIO.serviceWithZIO[ProfileRepo](
+      _.listAllForHousehold(HouseholdId.Default).map(_.find(_.name == "Kids").get.id),
+    )
 
   def spec = suite("PolicySnapshot — app expansion (#763)")(
     test("allowed-mode app: hosts unioned into extraAllowed") {

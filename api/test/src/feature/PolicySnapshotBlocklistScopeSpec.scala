@@ -60,10 +60,14 @@ object PolicySnapshotBlocklistScopeSpec
       .unit
 
   private def kidsId: ZIO[ProfileRepo, Throwable, ProfileId] =
-    ZIO.serviceWithZIO[ProfileRepo](_.listAll.map(_.find(_.name == "Kids").get.id))
+    ZIO.serviceWithZIO[ProfileRepo](
+      _.listAllForHousehold(HouseholdId.Default).map(_.find(_.name == "Kids").get.id),
+    )
 
   private def adultsId: ZIO[ProfileRepo, Throwable, ProfileId] =
-    ZIO.serviceWithZIO[ProfileRepo](_.listAll.map(_.find(_.name == "Adults").get.id))
+    ZIO.serviceWithZIO[ProfileRepo](
+      _.listAllForHousehold(HouseholdId.Default).map(_.find(_.name == "Adults").get.id),
+    )
 
   def spec = suite("PolicySnapshot — blocklists scoped to referenced lists (#1784)")(
     test("only the blocklists referenced by some profile ship in snap.blocklists") {

@@ -667,6 +667,7 @@ object Main extends ZIOAppDefault {
           DebugRoutes.routes(
             cfg.debugEnabled,
             deviceRepo,
+            profileRepo,
             connRepo,
             usageRepo,
             trafficRepo,

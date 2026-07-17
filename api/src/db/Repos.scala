@@ -232,12 +232,17 @@ trait UserProfileRepo {
 trait ProfileRepo {
 
   /**
-   * Non-global profiles only. The `is_global=TRUE` sentinel (#1771) is filtered out so it never
-   * appears on `GET /api/profiles`, role-access enumerations, or any user-facing listing — it is a
-   * wire-shape mechanism, not an authored profile. The snapshot path consumes
-   * [[listAllIncludingGlobal]].
+   * #2257 (multi-tenant hardening, epic #2085/#622): the DISTINCT household ids that own at least
+   * one profile — the tenant enumeration a genuinely all-tenant batch (rollup / ambient-learn jobs,
+   * `TimeStatusService.dayStateAll`) uses to iterate households and union
+   * `listAllForHousehold(hh)`. There is deliberately NO cross-tenant `listAll` on devices/profiles:
+   * an all-tenant read must be an EXPLICIT `foreach(distinctHouseholds)(listAllForHousehold)` loop,
+   * so it can never be written accidentally in a request or push path (the #2251/#2120 leak class).
+   * Households with no profile have nothing for a per-profile batch to process, so enumerating from
+   * `profiles` is exactly the right set. For the single backfill install this is
+   * `List(HouseholdId.Default)`.
    */
-  def listAll: Task[List[Profile]]
+  def distinctHouseholds: Task[List[HouseholdId]]
 
   /** All profiles, including the global sentinel. Used by `PolicyService.snapshot` only. */
   def listAllIncludingGlobal: Task[List[Profile]]
@@ -432,16 +437,29 @@ trait AppTimeLimitRepo {
 }
 
 trait DeviceRepo {
-  def listAll: Task[List[Device]]
 
   /**
-   * #2107 (multi-tenant, epic #622): household-scoped [[listAll]] — devices belonging to
+   * #2107 (multi-tenant, epic #622): household-scoped device read — devices belonging to
    * `household`. Used by `PolicyService.snapshot(household)` and `decide(household, …)` so a router
    * only sees / resolves its own household's devices (a same-MAC row in another household is never
-   * returned). For the single backfill household (`HouseholdId.Default`) this returns the same rows
-   * as the global variant.
+   * returned), and by every user-facing route / SPA push builder so it can never read across the
+   * tenant boundary (#2257). There is deliberately NO cross-tenant `listAll` on devices: an
+   * all-tenant read must be an EXPLICIT
+   * `foreach(profileRepo.distinctHouseholds)(listAllForHousehold)` loop (rollup / ambient-learn
+   * jobs, `TimeStatusService.dayStateAll`), so it can never be written accidentally in a request or
+   * push path. For the single backfill household (`HouseholdId.Default`) this returns every device.
    */
   def listAllForHousehold(household: HouseholdId): Task[List[Device]]
+
+  /**
+   * #2257: the devices assigned to one profile. A profile belongs to exactly one household, so this
+   * is inherently household-scoped — it replaces the old `listAll.filter(_.profileId == pid)` in
+   * the per-profile `TimeStatusService` / `AppUsedRollupService` paths, which scanned every
+   * household's rows only to keep the ones for a single profile. `devices` is a small fleet-bounded
+   * table (one row per device, not a traffic-growth table), so the `WHERE profile_id=` filter
+   * strictly beats the prior whole-table scan even without a dedicated index.
+   */
+  def listForProfile(profileId: ProfileId): Task[List[Device]]
   def findByMac(mac: MacAddress): Task[Option[Device]]
 
   /**
@@ -1238,14 +1256,14 @@ class ProfileRepoLive(xa: Transactor[Task]) extends ProfileRepo {
     r._9,
     r._10,
   )
-  // #1771: the global sentinel is filtered out of `listAll` so it never appears on
-  // `GET /api/profiles` or any role-access enumeration. The snapshot path uses
-  // [[listAllIncludingGlobal]] to fold the sentinel's rules into every other profile.
-  def listAll                                                    =
-    DbMetrics.timed("profile.listAll")(
-      sql"SELECT id,name,blocked_categories,paused,failure_mode,block_ip_only,cross_device_overlap_mode,pause_mode,default_deny,is_global FROM profiles WHERE is_global=FALSE ORDER BY id"
-        .query[R]
-        .map(toP)
+  // #2257: the tenant enumeration for the genuinely all-tenant batch paths — DISTINCT household_id
+  // over `profiles`. Include the global sentinel's household too (harmless: `listAllForHousehold`
+  // excludes global rows), so a household that has only its sentinel still enumerates. Index-backed
+  // by V65's idx_profiles_household.
+  def distinctHouseholds                                         =
+    DbMetrics.timed("profile.distinctHouseholds")(
+      sql"SELECT DISTINCT household_id FROM profiles ORDER BY household_id"
+        .query[HouseholdId]
         .to[List]
         .transact(xa),
     )
@@ -1643,9 +1661,13 @@ class AppTimeLimitRepoLive(xa: Transactor[Task]) extends AppTimeLimitRepo {
 }
 
 class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
-  def listAll                                                       =
-    DbMetrics.timed("device.listAll")(
-      sql"SELECT d.id,d.mac,d.name,d.profile_id,p.name,d.last_seen_ip,d.last_seen_at::TEXT FROM devices d LEFT JOIN profiles p ON p.id=d.profile_id ORDER BY d.name"
+  // #2107: same projection as listAll, AND-scoped to one household. `devices` is aliased `d`, so the
+  // predicate is qualified `d.household_id`. Index-backed by V65's idx_devices_household (and the
+  // leading column of uq_devices_household_mac).
+  def listAllForHousehold(household: HouseholdId)                   =
+    DbMetrics.timed("device.listAllForHousehold")(
+      (fr"SELECT d.id,d.mac,d.name,d.profile_id,p.name,d.last_seen_ip,d.last_seen_at::TEXT FROM devices d LEFT JOIN profiles p ON p.id=d.profile_id WHERE" ++
+        SqlFragments.householdEq(household, "d.household_id") ++ fr"ORDER BY d.name")
         .query[
           (
               DeviceId,
@@ -1661,13 +1683,9 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
         .to[List]
         .transact(xa),
     )
-  // #2107: same projection as listAll, AND-scoped to one household. `devices` is aliased `d`, so the
-  // predicate is qualified `d.household_id`. Index-backed by V65's idx_devices_household (and the
-  // leading column of uq_devices_household_mac).
-  def listAllForHousehold(household: HouseholdId)                   =
-    DbMetrics.timed("device.listAllForHousehold")(
-      (fr"SELECT d.id,d.mac,d.name,d.profile_id,p.name,d.last_seen_ip,d.last_seen_at::TEXT FROM devices d LEFT JOIN profiles p ON p.id=d.profile_id WHERE" ++
-        SqlFragments.householdEq(household, "d.household_id") ++ fr"ORDER BY d.name")
+  def listForProfile(profileId: ProfileId)                          =
+    DbMetrics.timed("device.listForProfile")(
+      sql"SELECT d.id,d.mac,d.name,d.profile_id,p.name,d.last_seen_ip,d.last_seen_at::TEXT FROM devices d LEFT JOIN profiles p ON p.id=d.profile_id WHERE d.profile_id=$profileId ORDER BY d.name"
         .query[
           (
               DeviceId,

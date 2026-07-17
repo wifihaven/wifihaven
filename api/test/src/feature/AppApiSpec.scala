@@ -245,7 +245,7 @@ object AppApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         rs       <- makeRoutes
         appRepo  <- ZIO.service[AppRepo]
         profileR <- ZIO.service[ProfileRepo]
-        profiles <- profileR.listAll
+        profiles <- profileR.listAllForHousehold(HouseholdId.Default)
         pid = profiles.head.id
         id    <- appRepo.create("X", "x", None, None)
         _     <- appRepo.setHosts(id, List(Hostname.unsafe("a.com")))
@@ -268,7 +268,7 @@ object AppApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         rs       <- makeRoutes
         appRepo  <- ZIO.service[AppRepo]
         profileR <- ZIO.service[ProfileRepo]
-        profiles <- profileR.listAll
+        profiles <- profileR.listAllForHousehold(HouseholdId.Default)
         pid = profiles.head.id
         id <- appRepo.create("X", "x", None, None)
         body = UpsertAppAssignmentRequest(
@@ -296,7 +296,7 @@ object AppApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         rs       <- makeRoutes
         appRepo  <- ZIO.service[AppRepo]
         profileR <- ZIO.service[ProfileRepo]
-        profiles <- profileR.listAll
+        profiles <- profileR.listAllForHousehold(HouseholdId.Default)
         pid = profiles.head.id
         id <- appRepo.create("X", "x", None, None)
         body = """{"mode":"time_limited"}"""
@@ -315,7 +315,7 @@ object AppApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         rs       <- makeRoutes
         appRepo  <- ZIO.service[AppRepo]
         profileR <- ZIO.service[ProfileRepo]
-        profiles <- profileR.listAll
+        profiles <- profileR.listAllForHousehold(HouseholdId.Default)
         pid = profiles.head.id
         id <- appRepo.create("X", "x", None, None)
         body = """{"mode":"bogus"}"""
@@ -334,7 +334,7 @@ object AppApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         rs       <- makeRoutes
         appRepo  <- ZIO.service[AppRepo]
         profileR <- ZIO.service[ProfileRepo]
-        profiles <- profileR.listAll
+        profiles <- profileR.listAllForHousehold(HouseholdId.Default)
         pid = profiles.head.id
         id   <- appRepo.create("X", "x", None, None)
         _    <- appRepo.upsertAssignment(id, pid, AppMode.Blocked, None, true)
@@ -373,7 +373,7 @@ object AppApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         profileR <- ZIO.service[ProfileRepo]
         appRepo  <- ZIO.service[AppRepo]
         auth     <- makeAuth
-        profiles <- profileR.listAll
+        profiles <- profileR.listAllForHousehold(HouseholdId.Default)
         kidsId   = profiles.find(_.name == "Kids").get.id
         adultsId = profiles.find(_.name == "Adults").get.id
         _     <- createUser(userRepo, upRepo, auth, "mom", "adult", List(kidsId))
@@ -404,7 +404,7 @@ object AppApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         profileR <- ZIO.service[ProfileRepo]
         appRepo  <- ZIO.service[AppRepo]
         auth     <- makeAuth
-        profiles <- profileR.listAll
+        profiles <- profileR.listAllForHousehold(HouseholdId.Default)
         kidsId = profiles.find(_.name == "Kids").get.id
         _     <- createUser(userRepo, upRepo, auth, "alice", "child", List(kidsId))
         token <- auth.login("alice", "pass").map(_.token.value)

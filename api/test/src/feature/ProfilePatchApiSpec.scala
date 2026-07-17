@@ -41,7 +41,7 @@ object ProfilePatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
       _           <- cleanDb
       profileRepo <- ZIO.service[ProfileRepo]
       tlRepo      <- ZIO.service[TimeLimitRepo]
-      profiles    <- profileRepo.listAll
+      profiles    <- profileRepo.listAllForHousehold(HouseholdId.Default)
       kids = profiles.find(_.name == "Kids").get
       _ <- timeLimit match {
         case Some(m) => tlRepo.upsert(kids.id, m)

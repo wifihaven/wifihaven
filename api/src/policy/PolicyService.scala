@@ -381,7 +381,7 @@ class PolicyServiceLive(
       today = PolicyService.householdLocalDate(now, settings)
       // #1104: today's cap/block state for every profile in one batched read. Same call the
       // /api/time/status/... endpoints use — keeps the snapshot and the UI in lockstep.
-      dayStates   <- timeStatusService.dayStateAll(now, today, settings)
+      dayStates   <- timeStatusService.dayStateAll(household, now, today, settings)
       // #1771: snapshot assembly needs the global sentinel too, so it can union the sentinel's
       // resolved extraAllowed/extraBlocked/blocklistIds into every other profile. `listAll`
       // is the user-facing listing and deliberately hides the sentinel.

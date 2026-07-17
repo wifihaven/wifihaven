@@ -149,7 +149,7 @@ object TimeUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         watermark = LocalDateTime.of(2025, 1, 6, 9, 0).toInstant(ZoneOffset.UTC)
         // Compute live value first (rollup is empty so this goes through dayStateAllLive).
         svc      <- makeService
-        live     <- svc.dayStateAllLive(now, today, s)
+        live     <- svc.dayStateAllLive(HouseholdId.Default, now, today, s)
         // Manually plant a rolled row at the chosen watermark; the read path should compose it
         // with the live tail and recover the live total exactly.
         rolledA  <- {
@@ -159,7 +159,7 @@ object TimeUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
           for {
             profile <- ZIO.serviceWithZIO[ProfileRepo](_.findById(kid)).someOrFailException
             devices <- ZIO
-              .serviceWithZIO[DeviceRepo](_.listAll)
+              .serviceWithZIO[DeviceRepo](_.listAllForHousehold(HouseholdId.Default))
               .map(_.filter(_.profileId.contains(kid)))
             atls    <- ZIO.serviceWithZIO[AppTimeLimitRepo](_.listForProfile(kid))
             allPres <- trr.listPresenceRows(devices.map(_.mac), today)
@@ -169,7 +169,7 @@ object TimeUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         }
         _        <- ru.upsertDay(kid, today, RolledDay(rolledA, watermark))
         // Now read via the rollup+tail path.
-        composed <- svc.dayStateAll(now, today, s)
+        composed <- svc.dayStateAll(HouseholdId.Default, now, today, s)
       } yield assertTrue(composed(kid).usedMinutes == live(kid).usedMinutes) &&
         assertTrue(live(kid).usedMinutes > 0)
     },
@@ -192,9 +192,9 @@ object TimeUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         _ <- seedTraffic(rid, "aa:bb:cc:dd:ee:20", "youtube.com", today, 40, 9 * 60)
         now = LocalDateTime.of(2025, 1, 6, 12, 0).toInstant(ZoneOffset.UTC)
         svc    <- makeService
-        live   <- svc.dayStateAllLive(now, today, s)
+        live   <- svc.dayStateAllLive(HouseholdId.Default, now, today, s)
         _      <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, stl, trr, hsr, now)
-        cached <- svc.dayStateAll(now, today, s)
+        cached <- svc.dayStateAll(HouseholdId.Default, now, today, s)
       } yield assertTrue(cached(kid).usedMinutes == live(kid).usedMinutes) &&
         assertTrue(live(kid).usedMinutes == 40)
     },
@@ -333,9 +333,9 @@ object TimeUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         _ <- seedStallTraffic(rid, "aa:bb:cc:dd:ee:60", "gimkit.com", today, 5, 500, 20)
         now = LocalDateTime.of(2025, 1, 6, 12, 0).toInstant(ZoneOffset.UTC)
         svc    <- makeService
-        live   <- svc.dayStateAllLive(now, today, s)
+        live   <- svc.dayStateAllLive(HouseholdId.Default, now, today, s)
         _      <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, stl, trr, hsr, now)
-        cached <- svc.dayStateAll(now, today, s)
+        cached <- svc.dayStateAll(HouseholdId.Default, now, today, s)
       } yield assertTrue(
         cached(kid).usedMinutes == live(kid).usedMinutes, // rollup ⇄ live equivalence
         live(kid).usedMinutes <= 2,                       // bounded by the activity envelope
