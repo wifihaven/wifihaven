@@ -92,11 +92,16 @@ final case class SupportResponder(
         householdRepo.findById(hh).catchAll(_ => ZIO.none).flatMap {
           case None            => ZIO.succeed(WebhookOutcome.SkippedUnauthenticated)
           case Some(household) =>
+            // Short-circuit (review finding on #2261): the global bucket is drawn only when the
+            // per-thread cap allowed — otherwise one capped thread would keep draining the shared
+            // daily budget and lock every other household out of the AI-draft path.
             dispatchThreadLimiter.tryAcquire(s"thread:${event.threadId}").flatMap { threadOk =>
-              dispatchGlobalLimiter.tryAcquire("global").flatMap { globalOk =>
-                if !threadOk || !globalOk then ZIO.succeed(WebhookOutcome.RateLimited)
-                else dispatchFor(event, hh, household)
-              }
+              if !threadOk then ZIO.succeed(WebhookOutcome.RateLimited)
+              else
+                dispatchGlobalLimiter.tryAcquire("global").flatMap { globalOk =>
+                  if !globalOk then ZIO.succeed(WebhookOutcome.RateLimited)
+                  else dispatchFor(event, hh, household)
+                }
             }
         }
     }
@@ -175,16 +180,19 @@ final case class SupportResponder(
    */
   def agentFileIssue(bearer: Option[String], title: String, body: String): UIO[AgentActionResult] =
     withClaims("issue", bearer) { claims =>
+      // Same short-circuit as dispatch: a thread-capped caller must not drain the global budget.
       issueThreadLimiter.tryAcquire(s"thread:${claims.threadId}").flatMap { threadOk =>
-        issueGlobalLimiter.tryAcquire("global").flatMap { globalOk =>
-          if !threadOk || !globalOk then done("issue", AgentActionResult.RateLimited)
-          else
-            github.fileIssue(IssueFileRequest(title, body, claims.threadId)).flatMap {
-              case IssueOutcome.Filed    => done("issue", AgentActionResult.Ok)
-              case IssueOutcome.Disabled => done("issue", AgentActionResult.Disabled)
-              case IssueOutcome.Error    => done("issue", AgentActionResult.Error)
-            }
-        }
+        if !threadOk then done("issue", AgentActionResult.RateLimited)
+        else
+          issueGlobalLimiter.tryAcquire("global").flatMap { globalOk =>
+            if !globalOk then done("issue", AgentActionResult.RateLimited)
+            else
+              github.fileIssue(IssueFileRequest(title, body, claims.threadId)).flatMap {
+                case IssueOutcome.Filed    => done("issue", AgentActionResult.Ok)
+                case IssueOutcome.Disabled => done("issue", AgentActionResult.Disabled)
+                case IssueOutcome.Error    => done("issue", AgentActionResult.Error)
+              }
+          }
       }
     }
 

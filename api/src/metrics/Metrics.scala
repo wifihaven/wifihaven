@@ -661,9 +661,9 @@ object AppMetrics {
 
   // ── #2200: Claude support responder (dark until keys set) ─────────────────────
   // Emitted from SupportResponder. `supportAiDraft` counts each inbound Plain webhook by outcome
-  // (dispatched | skipped_unauthenticated | invalid_signature | malformed | disabled | error);
-  // `supportAgentAction` counts each token-authenticated agent callback by (action, outcome). Both
-  // bounded enums — never a per-household / per-thread label.
+  // (dispatched | skipped_unauthenticated | rate_limited | invalid_signature | malformed |
+  // disabled | error); `supportAgentAction` counts each token-authenticated agent callback by
+  // (op, outcome). Both bounded enums — never a per-household / per-thread label.
 
   def supportAiDraft(outcome: String): UIO[Unit] =
     MetricGuard.counter("support_ai_draft_total", Map("outcome" -> outcome))
