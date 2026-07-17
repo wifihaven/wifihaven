@@ -11,21 +11,27 @@
 #   scripts/check-render-env.sh staging.env staging
 #   scripts/check-render-env.sh prod.env    prod
 #
-# What it checks, in three tiers:
-#   1. REQUIRED-NOW      keys the API already needs to boot. A verifiable failure
-#                        here exits non-zero.
+# What it checks, in four tiers:
+#   1. BOOT-CRITICAL     the ONLY hard-fail: a JWT secret that is PRESENT but invalid
+#                        (<32 chars, or the shipped placeholder) — that crashes boot
+#                        (AppConfig.validateRequired). An ABSENT JWT secret is not a
+#                        failure here (generateValue — see tier 2).
 #   2. RENDER-MANAGED    keys sourced via `generateValue`/`fromDatabase` in
 #                        render.yaml. These are injected at runtime and usually do
 #                        NOT appear in a plain .env export, so absence here is
 #                        reported as MANAGED (verify in the dashboard), never a hard
 #                        failure.
-#   3. FOLLOW-UP GATES   the sync:false secrets each deferred #2266 conversion needs
+#   3. CLOUD-RECOMMENDED keys a correct CLOUD deploy sets (HTTP_PORT, CORS + ws Origin
+#                        allowlists). Advisory only: `docker/entrypoint.sh` DEFAULTS
+#                        each of these, and an empty value is the valid self-hosted
+#                        single-origin config, so absence WARNs but never fails.
+#   4. FOLLOW-UP GATES   the sync:false secrets each deferred #2266 conversion needs
 #                        set BEFORE its PR merges. Reported READY / BLOCKED per
 #                        conversion; informational (does not change the exit code).
 #
-# The exit code is non-zero ONLY if a REQUIRED-NOW key is verifiably missing/invalid
-# in the file — so you can wire it into CI or a pre-deploy check. Follow-up gates are
-# advisory: they tell you which conversions are safe to merge next.
+# The exit code is non-zero ONLY when tier 1 finds a present-but-invalid JWT secret —
+# the one value in a downloaded .env whose badness definitely crashes boot — so you can
+# wire it into CI or a pre-deploy check. Tiers 3 + 4 are advisory (WARN / READY-BLOCKED).
 #
 # NOTE: this reads a *file*; it cannot see the live Render environment. A key shown
 # MANAGED/ABSENT here may still be set in Render (generateValue/fromDatabase, or a
@@ -83,34 +89,27 @@ echo
 printf '%sWifiHaven Render env check%s  file=%s  env=%s%s\n' "$B" "$N" "$ENV_FILE" "$ENV_LABEL" ""
 line
 
-# ── 1. REQUIRED-NOW ──────────────────────────────────────────────────────────
-printf '%s1) REQUIRED NOW (boot-critical)%s\n' "$B" "$N"
+# ── 1. BOOT-CRITICAL (the only hard-fail) ────────────────────────────────────
+printf '%s1) BOOT-CRITICAL (present-but-invalid crashes boot -> hard fail)%s\n' "$B" "$N"
 
-check_required_nonempty() {
-  local key="$1" desc="$2"
-  if present "$key"; then
-    printf '   %s[OK]%s      %-38s %s\n' "$G" "$N" "$key" "$desc"
-  else
-    printf '   %s[MISSING]%s %-38s %s\n' "$R" "$N" "$key" "$desc"
-    fail_count=$((fail_count + 1))
-  fi
-}
-
-# JWT secret has value constraints (>=32 chars, not the shipped placeholder).
+# JWT secret value constraints. These literals MIRROR the Scala guard in
+# JwtConfig (api/src/Config.scala): `MinSecretLength = 32` and the `change-this`
+# placeholder reject in JwtConfig.validate — update BOTH together if that changes.
+# An ABSENT secret is NOT failed here: it is generateValue in render.yaml and
+# usually not in a .env export (reported MANAGED in tier 2 instead).
 check_jwt_secret() {
   local key="WIFIHAVEN_JWT_SECRET" v
   v="$(getval "$key")"
   if [ -z "$v" ]; then
-    # generateValue in render.yaml → injected at runtime, often absent from export.
     printf '   %s[MANAGED]%s  %-38s %s\n' "$Y" "$N" "$key" \
       "generateValue in render.yaml — verify present in dashboard"
     return
   fi
   local len=${#v}
-  if [ "$len" -lt 32 ]; then
+  if [ "$len" -lt 32 ]; then  # JwtConfig.MinSecretLength
     printf '   %s[BAD]%s     %-38s %s\n' "$R" "$N" "$key" "set but only ${len} chars (needs >= 32) — boot WILL crash"
     fail_count=$((fail_count + 1))
-  elif case "$v" in change-this*) true ;; *) false ;; esac; then
+  elif case "$v" in change-this*) true ;; *) false ;; esac; then  # JwtConfig placeholder reject
     printf '   %s[BAD]%s     %-38s %s\n' "$R" "$N" "$key" "still the shipped placeholder — boot WILL crash"
     fail_count=$((fail_count + 1))
   else
@@ -119,9 +118,6 @@ check_jwt_secret() {
 }
 
 check_jwt_secret
-check_required_nonempty WIFIHAVEN_HTTP_PORT      "API listen port"
-check_required_nonempty WIFIHAVEN_ALLOWED_ORIGINS "CORS origins (cloud is cross-origin SPA)"
-check_required_nonempty WIFIHAVEN_WS_ALLOWED_ORIGINS "SPA websocket Origin allowlist (#1969)"
 
 echo
 
@@ -146,8 +142,29 @@ check_managed WIFIHAVEN_METRICS_SCRAPE_TOKEN "generateValue — also the metrics
 
 echo
 
-# ── 3. FOLLOW-UP GATES (#2266 deferred conversions) ──────────────────────────
-printf '%s3) FOLLOW-UP CONVERSION GATES (set these BEFORE the matching PR merges)%s\n' "$B" "$N"
+# ── 3. CLOUD-RECOMMENDED (advisory — never fails) ────────────────────────────
+# entrypoint.sh DEFAULTS each of these (HTTP_PORT :=8080; the two origin lists :="")
+# and an empty origin list is the valid self-hosted single-origin config, so absence
+# is a WARN for a cloud deploy, NOT a boot failure — it does not touch the exit code.
+printf '%s3) CLOUD-RECOMMENDED (warn only — entrypoint defaults these; empty is a valid self-hosted config)%s\n' "$B" "$N"
+
+warn_if_empty() {
+  local key="$1" desc="$2"
+  if present "$key"; then
+    printf '   %s[OK]%s      %-38s %s\n' "$G" "$N" "$key" "$desc"
+  else
+    printf '   %s[WARN]%s    %-38s %s\n' "$Y" "$N" "$key" "$desc — unset; set it on a cloud deploy"
+  fi
+}
+
+warn_if_empty WIFIHAVEN_HTTP_PORT           "API listen port (defaults 8080)"
+warn_if_empty WIFIHAVEN_ALLOWED_ORIGINS     "CORS origins (cloud SPA is cross-origin) (#612)"
+warn_if_empty WIFIHAVEN_WS_ALLOWED_ORIGINS  "SPA websocket Origin allowlist (#1969)"
+
+echo
+
+# ── 4. FOLLOW-UP GATES (#2266 deferred conversions) ──────────────────────────
+printf '%s4) FOLLOW-UP CONVERSION GATES (set these BEFORE the matching PR merges)%s\n' "$B" "$N"
 
 # report_group "<title>" "<mode: all|any>" KEY1 KEY2 ...
 #   all → every key must be set for READY.  any → at least one set (unused here but handy).
@@ -197,11 +214,11 @@ line
 
 # ── summary ──────────────────────────────────────────────────────────────────
 if [ "$fail_count" -eq 0 ]; then
-  printf '%sPASS%s  no REQUIRED-NOW key is verifiably missing in %s (%s)\n' "$G" "$N" "$ENV_FILE" "$ENV_LABEL"
-  printf '%sFollow-up gates above are advisory — a BLOCKED group just means that\n' "$DIM"
-  printf 'conversion is not ready to merge for this environment yet.%s\n' "$N"
+  printf '%sPASS%s  no boot-critical problem in %s (%s)\n' "$G" "$N" "$ENV_FILE" "$ENV_LABEL"
+  printf '%sTiers 3 (cloud-recommended) + 4 (follow-up gates) are advisory — a WARN/BLOCKED\n' "$DIM"
+  printf 'there does not fail the check; it just flags cloud-hygiene / not-yet-ready items.%s\n' "$N"
   exit 0
 else
-  printf '%sFAIL%s  %d REQUIRED-NOW problem(s) in %s (%s) — fix before deploy\n' "$R" "$N" "$fail_count" "$ENV_FILE" "$ENV_LABEL"
+  printf '%sFAIL%s  %d boot-critical problem(s) in %s (%s) — fix before deploy\n' "$R" "$N" "$fail_count" "$ENV_FILE" "$ENV_LABEL"
   exit 1
 fi

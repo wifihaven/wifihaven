@@ -62,13 +62,20 @@ WIFIHAVEN_STRIPE_WEBHOOK_SECRET=wh
 WIFIHAVEN_STRIPE_PRICE_MONTHLY=pm
 " 0
 
-# 5. an empty value counts as unset (not just an absent line).
-check "empty value treated as unset" "[MISSING]" \
+# 5. cloud-recommended keys are advisory: an empty ALLOWED_ORIGINS WARNs but does
+#    NOT fail (entrypoint defaults it; empty is the valid self-hosted config).
+check "empty cloud-recommended warns, does not fail" "[WARN]" \
   'WIFIHAVEN_JWT_SECRET=a-perfectly-fine-generated-secret-of-48-characters
-WIFIHAVEN_HTTP_PORT=8080
 WIFIHAVEN_ALLOWED_ORIGINS=
-WIFIHAVEN_WS_ALLOWED_ORIGINS=y
-' 1
+WIFIHAVEN_WS_ALLOWED_ORIGINS=
+' 0
+
+# 6. an empty value counts as unset for a follow-up gate (present() treats ""=unset).
+check "empty value treated as unset in a gate" "WIFIHAVEN_EMAIL_FROM_ADDRESS" \
+  'WIFIHAVEN_JWT_SECRET=a-perfectly-fine-generated-secret-of-48-characters
+WIFIHAVEN_EMAIL_RESEND_API_KEY=re_x
+WIFIHAVEN_EMAIL_FROM_ADDRESS=
+' 0
 
 if [ "$fail" -ne 0 ]; then echo "FAILED"; exit 1; fi
 echo "all check-render-env.test.sh assertions passed"
