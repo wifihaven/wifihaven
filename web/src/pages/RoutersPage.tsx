@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { api } from '@/api/client'
 import type { CreateRouterResponse, RouterSummary } from '@/types/api'
 import { PageLoader } from './DashboardPage'
@@ -72,7 +73,17 @@ export function RoutersPage() {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold text-brand-ink">Routers</h1>
+        <div>
+          <h1 className="text-xl font-bold text-brand-ink">Routers</h1>
+          {/* #2234: entry point to the install guide (hardware + install command) for
+              admins who land here directly rather than via the first-run banner. */}
+          <p className="text-sm text-brand-text-muted mt-1">
+            New here?{' '}
+            <Link to="/router-setup" className="text-brand-accent hover:underline">
+              Hardware &amp; install guide →
+            </Link>
+          </p>
+        </div>
         <button
           onClick={() => { setCreating(true); setError(null); setName('') }}
           className="bg-brand-accent hover:bg-brand-accent-dark text-white text-sm font-semibold px-4 py-2 rounded-xl transition-colors"

@@ -20,8 +20,11 @@ DNS normally — it is not the enforcement plane (see
 - Root SSH access to the router.
 - A WifiHaven API server already deployed and reachable from the router. See
   [`install-api.md`](install-api.md) if you need to set one up first.
-- A one-time enrollment token generated in the admin UI under
-  **Routers → Add router** (looks like `et_5f3c9b…`).
+- A one-time enrollment token generated in the admin UI: open the **Routers**
+  tab (`<your dashboard>/routers` — cloud: `https://app.wifihaven.net/routers`;
+  self-hosted: the Routers tab on your own host), click **+ Enroll Router**,
+  enter a name, then **Generate Token** and copy the token (shown only once).
+  The install script prints this same guidance at the token prompt (#2235).
 The agent depends on `dnsmasq-full`, `nftables`, and `uhttpd`. The latter
 two ship with stock OpenWRT on both 23.05.x and 24.10+. `dnsmasq-full` is
 the stock build on a generic OpenWRT image but vendor images (notably

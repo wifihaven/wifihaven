@@ -112,7 +112,7 @@ function DashboardWindowSelector({ bandwidth }: { bandwidth: WsTrafficUsage }) {
 // panels below only render their own empty states — none tells the new admin what to DO. This card
 // names the next concrete step, and is STATE-AWARE across the enrollment lifecycle (#2252) so it
 // stops nagging "enroll a router" once an enrollment already exists:
-//   1. no router enrolled yet          → "Enroll a router →" CTA
+//   1. no router enrolled yet          → "Set up your router →" CTA (to the /router-setup guide, #2234)
 //   2. enrollment created, not connected → "Waiting for your router to connect" (run the install
 //      script), NOT the enroll CTA
 //   3. a router has checked in          → no banner (onboarding is done)
@@ -148,10 +148,10 @@ export function FirstRunHint() {
             profiles and screen time appear here automatically.
           </p>
           <Link
-            to="/routers"
+            to="/router-setup"
             className="inline-block mt-4 bg-brand-accent hover:bg-brand-accent-dark text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors"
           >
-            View router setup →
+            View install instructions →
           </Link>
         </>
       ) : (
@@ -162,10 +162,10 @@ export function FirstRunHint() {
             managing devices, profiles and screen time. It takes a couple of minutes.
           </p>
           <Link
-            to="/routers"
+            to="/router-setup"
             className="inline-block mt-4 bg-brand-accent hover:bg-brand-accent-dark text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors"
           >
-            Enroll a router →
+            Set up your router →
           </Link>
         </>
       )}

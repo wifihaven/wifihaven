@@ -89,6 +89,37 @@ grep -qE "Router name|router_name|routerName" "$SCRIPT" \
            "install.sh still references router-name input" \
   || check "install.sh does not prompt for router name" ok
 
+# #2235: the token prompt must tell the operator where to mint the enrollment
+# token — link to the SPA Routers tab, derived from the already-prompted SPA
+# host ($BLOCK_PAGE_URL) rather than a hardcoded cloud host, so self-hosted
+# installs point at their own dashboard.
+grep -q 'BLOCK_PAGE_URL}/routers' "$SCRIPT" \
+  && check "#2235 token guidance links to \${BLOCK_PAGE_URL}/routers (base-derived, not hardcoded)" ok \
+  || check "#2235 token guidance links to \${BLOCK_PAGE_URL}/routers (base-derived, not hardcoded)" \
+           "install.sh token prompt doesn't derive the Routers URL from BLOCK_PAGE_URL"
+
+# #2235: the guidance must still name the cloud host as the concrete example
+# and note the self-hosted case, so cloud users have a copy-pasteable URL.
+grep -q 'https://app.wifihaven.net/routers' "$SCRIPT" \
+  && check "#2235 token guidance names the cloud Routers URL as the example" ok \
+  || check "#2235 token guidance names the cloud Routers URL as the example" \
+           "install.sh token guidance missing the cloud app.wifihaven.net/routers example"
+
+# #2235: the add-router copy must match the real SPA button labels
+# (web/src/pages/RoutersPage.tsx: "+ Enroll Router" -> "Generate Token") so
+# the script's steps line up with what the operator actually sees.
+grep -q 'Generate Token' "$SCRIPT" \
+  && check "#2235 token guidance matches the real 'Generate Token' UI copy" ok \
+  || check "#2235 token guidance matches the real 'Generate Token' UI copy" \
+           "install.sh token guidance doesn't match RoutersPage 'Generate Token' copy"
+
+# #2235: the non-interactive (no-tty) error must also point at where to get the
+# token, since that's the prompt most likely to strand an unattended run.
+awk '/no \/dev\/tty available/' "$SCRIPT" | grep -q '/routers' \
+  && check "#2235 no-tty error points at the Routers add-router flow" ok \
+  || check "#2235 no-tty error points at the Routers add-router flow" \
+           "install.sh no-tty error doesn't mention the Routers/add-router token source"
+
 # #303 + #437 + #542: block-page uhttpd UCI lives in the shared helper.
 # install.sh must invoke it (not inline the UCI calls — that was #542's
 # drift bug between install.sh and the package postinst).
