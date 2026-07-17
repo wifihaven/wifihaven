@@ -180,5 +180,28 @@ wifihaven {
   #   plainAppId          = ""
   #   # Plain GraphQL endpoint (region-specific). Default is the UK core-api region.
   #   # apiBase           = "https://core-api.uk.plain.com/graphql/v1"
+  #
+  #   # #2200: the Claude support responder — a CLOUD Claude agent (Anthropic Managed Agents
+  #   # session) dispatched per UI-originated inbound Plain message. DARK unless ALL of
+  #   # plainWebhookSecret (above) + the three Anthropic fields + agentTokenSecret are set.
+  #   # Self-hosted installs normally leave this whole half empty (support is a cloud feature).
+  #   # Anthropic API key — used ONLY to create agent sessions. SECRET.
+  #   anthropicApiKey       = ""
+  #   # The pre-provisioned Managed Agent + environment ids (deploy/support-agent/, applied once
+  #   # with `ant beta:agents create` / `ant beta:environments create`).
+  #   claudeAgentId         = ""
+  #   claudeEnvironmentId   = ""
+  #   # anthropicApiBase    = "https://api.anthropic.com"
+  #   # HMAC secret for the per-session agent token (thread- + household-bound, short-TTL,
+  #   # consent-scoped — the dispatched agent's ONLY credential). Generate ≥32 random chars. SECRET.
+  #   agentTokenSecret      = ""
+  #   # agentTokenTtlMinutes = 30
+  #   # The public base URL of THIS API — what the cloud agent calls back to (/api/support/agent/...).
+  #   # agentApiBase        = "https://api.wifihaven.net"
+  #   # Fine-grained GitHub token for the support bot — Issues:write ONLY on githubRepo (no
+  #   # contents / no pull_requests ⇒ no-PR is structural, #2241). Empty ⇒ issue filing dark. SECRET.
+  #   githubSupportBotToken = ""
+  #   # githubRepo          = "wifihaven/wifihaven"
+  #   # githubApiBase       = "https://api.github.com"
   # }
 }

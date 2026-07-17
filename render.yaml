@@ -206,6 +206,22 @@ services:
         sync: false
       - key: WIFIHAVEN_SUPPORT_PLAIN_APP_ID
         sync: false
+      # #2200: the Claude support responder on STAGING (test Plain + test Managed Agent). DARK until
+      # ALL of WEBHOOK_SECRET (above) + ANTHROPIC_API_KEY + CLAUDE_AGENT_ID + CLAUDE_ENVIRONMENT_ID +
+      # AGENT_TOKEN_SECRET are set. GITHUB_BOT_TOKEN (fine-grained, Issues:write ONLY — the
+      # structural no-PR scope, #2241) gates issue filing separately. NEVER commit values.
+      - key: WIFIHAVEN_SUPPORT_ANTHROPIC_API_KEY
+        sync: false
+      - key: WIFIHAVEN_SUPPORT_CLAUDE_AGENT_ID
+        sync: false
+      - key: WIFIHAVEN_SUPPORT_CLAUDE_ENVIRONMENT_ID
+        sync: false
+      - key: WIFIHAVEN_SUPPORT_AGENT_TOKEN_SECRET
+        generateValue: true
+      - key: WIFIHAVEN_SUPPORT_AGENT_API_BASE
+        value: https://api-staging.wifihaven.net
+      - key: WIFIHAVEN_SUPPORT_GITHUB_BOT_TOKEN
+        sync: false
 
   # ── Production API ─────────────────────────────────────────────────────────
   - type: web
@@ -383,6 +399,22 @@ services:
       - key: WIFIHAVEN_SUPPORT_PLAIN_IDENTITY_SECRET
         sync: false
       - key: WIFIHAVEN_SUPPORT_PLAIN_APP_ID
+        sync: false
+      # #2200: the Claude support responder on PROD (live Plain + prod Managed Agent). Same
+      # dark-until-set pattern as staging; the responder dispatches a cloud-agent session per
+      # UI-originated inbound message. GITHUB_BOT_TOKEN is the fine-grained Issues:write-only
+      # support-bot credential (structural no-PR, #2241). NEVER commit values.
+      - key: WIFIHAVEN_SUPPORT_ANTHROPIC_API_KEY
+        sync: false
+      - key: WIFIHAVEN_SUPPORT_CLAUDE_AGENT_ID
+        sync: false
+      - key: WIFIHAVEN_SUPPORT_CLAUDE_ENVIRONMENT_ID
+        sync: false
+      - key: WIFIHAVEN_SUPPORT_AGENT_TOKEN_SECRET
+        generateValue: true
+      - key: WIFIHAVEN_SUPPORT_AGENT_API_BASE
+        value: https://api.wifihaven.net
+      - key: WIFIHAVEN_SUPPORT_GITHUB_BOT_TOKEN
         sync: false
 
   # ── Metrics collector: Grafana Alloy → Grafana Cloud ─────────────────────────
