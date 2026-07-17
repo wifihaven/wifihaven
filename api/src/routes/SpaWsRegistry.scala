@@ -2,7 +2,7 @@ package wifihaven.api.routes
 
 import wifihaven.api.metrics.AppMetrics
 import wifihaven.shared.{QueryLog, UserRole}
-import wifihaven.shared.types.{HouseholdId, ProfileId}
+import wifihaven.shared.types.ProfileId
 import zio.*
 import zio.http.{ChannelEvent, WebSocketChannel, WebSocketFrame}
 import zio.json.*
@@ -81,12 +81,6 @@ final case class SpaConnState(
     // admin/adult sees all profiles, a child only the profiles they're linked to
     // (`UserProfileRepo.listProfilesForUsername`). `None` only for pre-auth/test registrations.
     username: Option[String] = None,
-    // #2251 (multi-tenant, epic #622): the connection's household (JWT `hh` claim), captured at
-    // upgrade so the class-(2) `now` push can be built + delivered PER HOUSEHOLD — an admin in
-    // household B must never receive household A's devices/profiles in the live NOW push (the sibling
-    // of the GET leak, closes #2120). Defaults to the single backfill household so pre-multi-tenant /
-    // test registrations stay tenant-safe.
-    household: HouseholdId = HouseholdId.Default,
 )
 
 /**
@@ -101,9 +95,6 @@ final case class SpaRecipient(
     role: UserRole,
     username: Option[String],
     params: Json,
-    // #2251: the recipient's household, so the `now` push can group recipients by household and
-    // build one household-scoped body per household (never the global set).
-    household: HouseholdId = HouseholdId.Default,
 )
 
 /**
@@ -137,7 +128,6 @@ trait SpaWsRegistry {
       role: UserRole,
       jwtExp: Option[Instant],
       username: Option[String] = None,
-      household: HouseholdId = HouseholdId.Default,
   ): UIO[SpaConnId]
 
   /** Drop a closed/closing connection. Idempotent. Refreshes the gauges. */
@@ -167,11 +157,23 @@ trait SpaWsRegistry {
   def activeCount: UIO[Int]
 
   /**
+   * #1970 (S3): fan a class-(2) thick push (`now`) out to every connection that BOTH subscribed to
+   * `topic` (§1.4) AND whose role may see it (§4.4 — `SpaTopic.visibleTo`). The body is built ONCE
+   * by the caller ([[SpaPush]], via the shared `DashboardNowRoutes.computeNow` builder) and sent
+   * verbatim; the role gate is the per-role filter (the topics pushed this way — `now` — are
+   * visible only to roles the matching GET shows everything to, so one body is correct for all
+   * recipients). A send failure (racing disconnect) is metered
+   * `spa_ws_push_total{result="channel_closed"}` and deregisters the dead channel; a success is
+   * metered `result="ok"`.
+   */
+  def fanOut(topic: SpaTopic, payload: Json): UIO[Unit]
+
+  /**
    * #1970 (S3): append new `connectionEvents` head rows (class-(1) live edge). For each connection
    * subscribed to `ConnectionEvents` and authorized, the rows are filtered by THAT connection's
    * subscription params (the verbatim `/api/logs` filter — `blocked`/`macs`/`profileIds`/`domain`,
    * §1.4); a frame is sent only if ≥1 row matches, so an ingest that doesn't match a subscriber's
-   * filter pushes nothing to it. Metered per send like [[deliver]].
+   * filter pushes nothing to it. Metered per send like [[fanOut]].
    */
   def fanOutConnectionEvents(rows: List[QueryLog]): UIO[Unit]
 
@@ -197,13 +199,9 @@ trait SpaWsRegistry {
    * body is built ONCE by the caller ([[SpaPush]], via the shared `UsageTrafficQuery.aggregate` —
    * the same query the `GET` runs, so the stream and the page can't disagree); `TrafficUsage` is
    * visible only to admin/adult (full-visibility roles, exactly as the GET treats them), so one
-   * body is correct for every recipient and the role gate is the per-role filter. Latest-wins per
-   * param-set (design §6.3): a re-push carries the freshest head, never a backlog. Metered per send
-   * like [[deliver]].
-   *
-   * NOTE (#2251): unlike the `now` push, this body is NOT yet household-scoped — a follow-up must
-   * group `trafficUsage`/`timeStatus`/`appUsage` recipients by household the same way
-   * `nowRecipients` does — tracked by #2257. `now` was the reported leak (#2120) and is fixed here.
+   * body is correct for every recipient and the role gate is the per-role filter — mirroring
+   * [[fanOut]] for `now`. Latest-wins per param-set (design §6.3): a re-push carries the freshest
+   * head, never a backlog. Metered per send like [[fanOut]].
    */
   def fanOutTrafficUsage(params: Json, payload: Json): UIO[Unit]
 
@@ -215,16 +213,6 @@ trait SpaWsRegistry {
    * no `dayStateAll` query ("don't compute what nobody watches").
    */
   def timeStatusRecipients: UIO[List[SpaRecipient]]
-
-  /**
-   * #2251 (multi-tenant, epic #622): the connections eligible for a `now` push — subscribed to
-   * `Now` AND role-visible (§4.4; `now` is admin/adult-only). Each carries its `household` so
-   * [[SpaPush]] can build ONE household-scoped `DashboardNow` per DISTINCT household and deliver it
-   * only to that household's recipients — the live NOW push must never carry another household's
-   * entities (closes #2120). Replaces the old global `fanOut(Now, …)` broadcast, which built one
-   * body over EVERY household's devices/profiles and sent it to all subscribers.
-   */
-  def nowRecipients: UIO[List[SpaRecipient]]
 
   /**
    * #1974 (S6a): the connections eligible for an `appUsage` push — subscribed to `AppUsage` AND
@@ -281,13 +269,12 @@ final class SpaWsRegistryLive(
       role: UserRole,
       jwtExp: Option[Instant],
       username: Option[String] = None,
-      household: HouseholdId = HouseholdId.Default,
   ): UIO[SpaConnId] =
     for {
       n <- seq.updateAndGet(_ + 1)
       id = SpaConnId(n)
       m <- state.updateAndGet(
-        _.updated(id, SpaConnState(channel, role, Map.empty, jwtExp, username, household)),
+        _.updated(id, SpaConnState(channel, role, Map.empty, jwtExp, username)),
       )
       _ <- publishGauges(m)
     } yield id
@@ -333,6 +320,17 @@ final class SpaWsRegistryLive(
   // its role is AUTHORIZED for it (§4.4 — `SpaTopic.visibleTo`). A send failure means the channel
   // raced a disconnect: meter `channel_closed` and drop it (the receive loop's `ensuring` also
   // deregisters; doing it here keeps the gauges honest if the push won the race).
+
+  def fanOut(topic: SpaTopic, payload: Json): UIO[Unit] =
+    state.get.flatMap { m =>
+      val op    = SpaTopic.wire(topic)
+      val frame = frameText(op, payload.toJson)
+      ZIO.foreachDiscard(m.toList) { case (id, s) =>
+        ZIO.when(s.subscriptions.contains(topic) && SpaTopic.visibleTo(topic, s.role))(
+          sendPush(id, s.channel, op, frame),
+        )
+      }
+    }
 
   def fanOutConnectionEvents(rows: List[QueryLog]): UIO[Unit] =
     state.get.flatMap { m =>
@@ -404,9 +402,6 @@ final class SpaWsRegistryLive(
   def timeStatusRecipients: UIO[List[SpaRecipient]] =
     recipientsFor(SpaTopic.TimeStatus)
 
-  def nowRecipients: UIO[List[SpaRecipient]] =
-    recipientsFor(SpaTopic.Now)
-
   def appUsageRecipients: UIO[List[SpaRecipient]] =
     recipientsFor(SpaTopic.AppUsage)
 
@@ -415,7 +410,7 @@ final class SpaWsRegistryLive(
       _.iterator
         .collect {
           case (id, s) if s.subscriptions.contains(topic) && SpaTopic.visibleTo(topic, s.role) =>
-            SpaRecipient(id, s.role, s.username, s.subscriptions(topic), s.household)
+            SpaRecipient(id, s.role, s.username, s.subscriptions(topic))
         }
         .toList,
     )

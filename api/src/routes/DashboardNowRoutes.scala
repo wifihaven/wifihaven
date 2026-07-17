@@ -50,20 +50,13 @@ object DashboardNowRoutes {
           val handle: ZIO[Any, ApiError, Response] = for {
             claims      <- requireAuth(req, auth)
             now         <- clock.instant
-            // #2251 (multi-tenant, epic #622): scope the device + profile reads to the caller's
-            // household FIRST (design §2 gaps 3+4) — the role narrowing below cannot substitute for
-            // it. `filterDevices`/`visibleProfiles` narrow by ROLE only (admin/adult ⇒ "see all"),
-            // so handing them the GLOBAL `listAll` let a household-B admin read household A's
-            // devices/profiles in the NOW section. Read the household-scoped list, THEN role-narrow
-            // WITHIN it.
-            allDevices  <- deviceRepo.listAllForHousehold(claims.hh).mapError(ApiError.Db(_))
+            allDevices  <- deviceRepo.listAll.mapError(ApiError.Db(_))
             visibleDevs <- filterDevices(claims, allDevices, userProfileRepo)
-            allProfiles <- profileRepo.listAllForHousehold(claims.hh).mapError(ApiError.Db(_))
+            allProfiles <- profileRepo.listAll.mapError(ApiError.Db(_))
             visibleProf <- visibleProfiles(claims, allProfiles, userProfileRepo)
             // #1970: the gather-and-assemble is shared with the SPA-websocket `now` push (S3) so the
             // streamed body and this GET body are produced by ONE builder (SSOT) — recomputed on
-            // change for the push, per-request here. #2251: pass `claims.hh` so the online-now
-            // (`lastSeenByMacSince`) and app-limit reads inside are household-scoped too.
+            // change for the push, per-request here.
             response    <- computeNow(
               now,
               visibleProf,
@@ -71,7 +64,6 @@ object DashboardNowRoutes {
               trafficRepo,
               connRepo,
               appTimeLimitRepo,
-              Some(claims.hh),
             )
               .mapError(ApiError.Db(_))
           } yield Response.json(response.toJson)
@@ -84,11 +76,10 @@ object DashboardNowRoutes {
    * of the NOW snapshot (design `docs/design/spa-websocket.md` §5.2 / `AGENTS.md`
    * single-source-of-truth) — the `GET /api/dashboard/now` handler calls it per-request, and the
    * SPA websocket `now` push ([[SpaPush]]) calls it on change. `profiles`/`devices` are the
-   * caller's already-scoped lists — BOTH paths pass a single household's devices/profiles: the GET
-   * reads `listAllForHousehold(claims.hh)` then role-narrows; the push builds one body per
-   * household from `listAllForHousehold(household)` (#2251). This method is agnostic to the authz
-   * model — it only assembles the body and scopes its own online-now / app-limit reads by the
-   * passed `household`. Reads run in parallel; a repo failure surfaces as the [[Throwable]].
+   * caller's already-visibility-filtered lists (the GET filters by claims; the push passes the full
+   * set since `now` is visible only to roles the GET shows everything to, §4.4), so this method is
+   * agnostic to the authz model. Reads run in parallel; a repo failure surfaces as the
+   * [[Throwable]].
    *
    * #1559: per-profile active-app host-set is read through the canonical [[ProfileAppDispositions]]
    * fold so the dashboard cannot disagree with the counting paths on what "active app host" means
@@ -101,18 +92,12 @@ object DashboardNowRoutes {
       trafficRepo: TrafficReportRepo,
       connRepo: ConnectionEventRepo,
       appTimeLimitRepo: AppTimeLimitRepo,
-      // #2251 (multi-tenant, epic #622): the caller's household, threaded so the online-now read
-      // (`lastSeenByMacSince`) and the app-limit read are household-scoped. `None` (default) keeps
-      // the pre-multi-tenant unscoped behaviour for the single-household call sites / tests; for the
-      // single backfill household the scoped reads return the same rows. The device/profile lists
-      // passed in are ALREADY household-scoped by the caller — this only scopes the reads done here.
-      household: Option[HouseholdId] = None,
   ): Task[DashboardNow] = {
     val visibleMacs = devices.map(_.mac)
     val since       = now.minus(TopHostsWindow)
     val connSince   = now.minus(RecentActivityWindow)
     for {
-      lastSeenF  <- connRepo.lastSeenByMacSince(connSince, household).fork
+      lastSeenF  <- connRepo.lastSeenByMacSince(connSince).fork
       rowsF      <- trafficRepo
         .listTrafficRollupRows(
           TrafficRollupFilter(
@@ -123,9 +108,7 @@ object DashboardNowRoutes {
           ),
         )
         .fork
-      appLimitsF <- household
-        .fold(appTimeLimitRepo.listAll)(appTimeLimitRepo.listAllForHousehold)
-        .fork
+      appLimitsF <- appTimeLimitRepo.listAll.fork
       lastSeen   <- lastSeenF.join
       rows       <- rowsF.join
       appLimits  <- appLimitsF.join

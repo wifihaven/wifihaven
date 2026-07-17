@@ -5,7 +5,6 @@ import wifihaven.api.auth.{AuthError, AuthService}
 import wifihaven.api.metrics.AppMetrics
 import wifihaven.api.observability.LogContext
 import wifihaven.shared.{Clock, UserRole}
-import wifihaven.shared.types.HouseholdId
 import zio.*
 import zio.http.*
 import zio.http.ChannelEvent.UserEvent
@@ -85,14 +84,7 @@ object SpaWsRoutes {
    */
   // #1974 (S6a): `username` (JWT `sub`) is captured alongside the role so the class-(2)
   // `timeStatus`/`appUsage` pushes can reuse the GET's per-child profile filter (design §4.4).
-  // #2251: `household` (JWT `hh`) is captured so the class-(2) `now` push is built + delivered
-  // per-household (no cross-household leak in the live NOW push, closes #2120).
-  private final case class Authorized(
-      role: UserRole,
-      jwtExp: Instant,
-      username: String,
-      household: HouseholdId,
-  )
+  private final case class Authorized(role: UserRole, jwtExp: Instant, username: String)
 
   /**
    * Why an upgrade was refused. Each case carries its `spa_ws_auth_total{result}` label and the
@@ -160,7 +152,6 @@ object SpaWsRoutes {
               role = UserRole.parse(claims.role).getOrElse(fallbackRole),
               jwtExp = Instant.ofEpochSecond(claims.exp),
               username = claims.sub,
-              household = claims.hh,
             )
           }
     }
@@ -183,13 +174,7 @@ object SpaWsRoutes {
           .receiveAll {
             case ChannelEvent.UserEventTriggered(UserEvent.HandshakeComplete) =>
               registry
-                .register(
-                  channel,
-                  authd.role,
-                  Some(authd.jwtExp),
-                  Some(authd.username),
-                  authd.household,
-                )
+                .register(channel, authd.role, Some(authd.jwtExp), Some(authd.username))
                 .flatMap { id =>
                   idRef.set(Some(id)) *>
                     watchExpiry(

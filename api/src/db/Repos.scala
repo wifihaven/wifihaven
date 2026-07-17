@@ -994,19 +994,8 @@ trait ConnectionEventRepo {
   /**
    * Latest `ts` per mac for events strictly newer than `since`. Used by the "now" dashboard to
    * detect devices that produced at least one connection attempt in the recent window.
-   *
-   * #2251 (multi-tenant, epic #622): when `household` is set, scope to that household via the
-   * `connection_events.router_id → routers.household_id` join (connection_events are
-   * router_id-keyed → household transitive, design §0.1 — same mechanism as
-   * [[LogFilter.household]]). `None` (default) reads unscoped, preserving the single-household
-   * back-compat for the existing callers. The dashboard NOW path passes `claims.hh` so the
-   * online-now set can never include another household's MAC (e.g. the same MAC enrolled in two
-   * households).
    */
-  def lastSeenByMacSince(
-      since: Instant,
-      household: Option[HouseholdId] = None,
-  ): Task[Map[MacAddress, Instant]]
+  def lastSeenByMacSince(since: Instant): Task[Map[MacAddress, Instant]]
 
   /**
    * #720 backfill: look up the most recent fqdn-typed connection_event with the given (router_id,
@@ -3661,24 +3650,15 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
       .to[List]
       .transact(xa)
 
-  def lastSeenByMacSince(
-      since: Instant,
-      household: Option[HouseholdId] = None,
-  ): Task[Map[MacAddress, Instant]] = {
-    // #2251: household scoping is transitive via `routers` (connection_events are router_id-keyed).
-    // The join is added ONLY when a household is requested so the unscoped path keeps its original
-    // single-table plan. Index-backed by idx_routers_household (V65).
-    val base  = fr"SELECT ce.mac, MAX(ce.ts) FROM connection_events ce"
-    val join  = household.fold(fr"")(_ => fr"JOIN routers r ON r.id = ce.router_id")
-    val where = fr"WHERE ce.mac IS NOT NULL AND ce.ts > $since"
-    val byHh  =
-      household.fold(fr"")(hh => fr"AND" ++ SqlFragments.householdEq(hh, "r.household_id"))
-    (base ++ join ++ where ++ byHh ++ fr"GROUP BY ce.mac")
+  def lastSeenByMacSince(since: Instant): Task[Map[MacAddress, Instant]] =
+    sql"""SELECT mac, MAX(ts)
+          FROM connection_events
+          WHERE mac IS NOT NULL AND ts > $since
+          GROUP BY mac"""
       .query[(MacAddress, Instant)]
       .to[List]
       .transact(xa)
       .map(_.toMap)
-  }
 }
 
 // ── #761: apps ────────────────────────────────────────────────────────────
