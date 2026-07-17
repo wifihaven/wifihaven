@@ -50,6 +50,11 @@ object Main extends ZIOAppDefault {
       .scoped(for {
         cfg       <- ZIO.service[AppConfig]
         _         <- ZIO.logInfo(s"WifiHaven API starting on ${cfg.http.host}:${cfg.http.port}")
+        // #2266 (no-dark-by-default rule 3): log the resolved enabled/disabled state of every
+        // config-gated optional feature so a silently-off feature (unset/lost secret, config drift)
+        // is visible in boot logs — "disabled because nobody set the key" vs "disabled by choice"
+        // is diagnosable from a single boot. Also inspectable live at loopback GET /api/debug/config.
+        _         <- StartupFeatureReport.log(cfg)
         _         <- ZIO
           .logWarning(
             "WIFIHAVEN_DEBUG=1 set — /api/debug/* endpoints are MOUNTED (loopback only). " +
@@ -666,6 +671,7 @@ object Main extends ZIOAppDefault {
           AdminDebugRoutes.routes(auth, policy) ++
           DebugRoutes.routes(
             cfg.debugEnabled,
+            cfg,
             deviceRepo,
             profileRepo,
             connRepo,

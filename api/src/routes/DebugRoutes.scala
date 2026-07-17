@@ -1,5 +1,6 @@
 package wifihaven.api.routes
 
+import wifihaven.api.{AppConfig, StartupFeatureReport}
 import wifihaven.api.auth.*
 import wifihaven.api.cache.TimeStatusCache
 import wifihaven.api.db.*
@@ -36,6 +37,7 @@ object DebugRoutes {
 
   def routes(
       enabled: Boolean,
+      cfg: AppConfig,
       deviceRepo: DeviceRepo,
       profileRepo: ProfileRepo,
       connEventRepo: ConnectionEventRepo,
@@ -47,6 +49,21 @@ object DebugRoutes {
     if !enabled then Routes.empty
     else
       Routes(
+        // #2266: inspectable feature-state surface (no-dark-by-default rule 3's "config endpoint"
+        // leg). Loopback-only, WIFIHAVEN_DEBUG-gated — same guard as the rest of this family — so it
+        // never leaks. Mirrors the startup log emitted by StartupFeatureReport.log.
+        Method.GET / "api" / "debug" / "config"                 -> handler { (req: Request) =>
+          guardLoopback(req, "/api/debug/config") {
+            ZIO.succeed(
+              Response.json(
+                StartupFeatureReport
+                  .states(cfg)
+                  .map(s => FeatureStateRow(s.name, s.enabled, s.detail))
+                  .toJson,
+              ),
+            )
+          }.mapError(ErrorMapper.errorToResponse)
+        },
         Method.GET / "api" / "debug" / "devices"                -> handler { (req: Request) =>
           guardLoopback(req, "/api/debug/devices") {
             // #2257: a deliberate ALL-TENANT dump — this surface is loopback-only AND gated behind
@@ -140,6 +157,13 @@ object DebugRoutes {
           }.mapError(ErrorMapper.errorToResponse)
         },
       )
+
+  // #2266: one config-gated feature's resolved state for GET /api/debug/config.
+  private case class FeatureStateRow(
+      name: String,
+      enabled: Boolean,
+      detail: String,
+  ) derives JsonCodec
 
   private case class CacheStatsResponse(
       hits: Long,

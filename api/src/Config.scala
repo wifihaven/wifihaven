@@ -80,28 +80,31 @@ case class HttpConfig(
     serveSpa: Boolean,
 )
 
+// #2084/#2266: the weak/placeholder-secret boot guard used to be throwing `require`s in this case
+// class body. They moved to [[AppConfig.validateRequired]] (run at the boot boundary in
+// `AppConfig.layer`) so ALL required-config violations are reported in one pass rather than aborting
+// on the first (no-dark-by-default doc rule 4). HS256's whole security rests on secret entropy; a
+// short or well-known secret is offline-brute-forceable, letting an attacker forge arbitrary admin
+// JWTs. Cloud config always sets a generated 32+ char value (render.yaml `generateValue: true`);
+// this guards the self-hosted path, which has no such backstop.
 case class JwtConfig(
     secret: String,
     expiryHours: Int,
-) {
-  // #2084: fail fast on a weak or unrotated-placeholder JWT secret rather than
-  // silently starting with one. HS256's whole security rests on secret entropy;
-  // a short or well-known secret is offline-brute-forceable, letting an
-  // attacker forge arbitrary admin JWTs. Cloud config always sets a generated
-  // 32+ char value (render.yaml `generateValue: true`); this guards the
-  // self-hosted path, which has no such backstop.
-  require(
-    secret.length >= JwtConfig.MinSecretLength,
-    s"wifihaven.jwt.secret must be at least ${JwtConfig.MinSecretLength} characters (got ${secret.length})",
-  )
-  require(
-    !secret.startsWith("change-this"),
-    "wifihaven.jwt.secret is still the shipped config/application.conf.example placeholder — generate a real secret",
-  )
-}
+)
 
 object JwtConfig {
   val MinSecretLength: Int = 32
+
+  /** #2266: accumulate (not throw) every required-JWT-config violation. */
+  private[api] def validate(cfg: JwtConfig): List[String] =
+    List(
+      Option.when(cfg.secret.length < MinSecretLength)(
+        s"wifihaven.jwt.secret must be at least $MinSecretLength characters (got ${cfg.secret.length})",
+      ),
+      Option.when(cfg.secret.startsWith("change-this"))(
+        "wifihaven.jwt.secret is still the shipped config/application.conf.example placeholder — generate a real secret",
+      ),
+    ).flatten
 }
 
 // #1242: Prometheus /metrics exposition. `enabled` mounts the GET /metrics
@@ -398,6 +401,37 @@ object AppConfig {
       case _                                 => true
     }
 
+  /**
+   * #2266 (no-dark-by-default, doc rule 1 + rule 4): validate every REQUIRED config invariant,
+   * accumulating ALL violations so a misconfigured deploy is diagnosable from a single boot attempt
+   * — an operator shouldn't fix one key, redeploy, discover the next, and repeat. Pure and total
+   * (returns the full list of human-readable errors; empty ⇒ valid) so it is unit-testable.
+   *
+   * This is where NEW required-config guards go: add the check here rather than as a throwing
+   * `require` in a case-class body, so it accumulates with the others instead of aborting boot on
+   * the first failure. GENUINELY-OPTIONAL, config-gated features are NOT validated here — they are
+   * reported (not failed) via [[StartupFeatureReport]].
+   */
+  def validateRequired(cfg: AppConfig): List[String] =
+    JwtConfig.validate(cfg.jwt)
+
+  /**
+   * Boot-boundary form of [[validateRequired]]: succeed with `cfg` when valid, else FAIL LOUDLY
+   * with a `Config.Error` listing every violation at once, crashing boot. Wired into [[layer]].
+   */
+  def validateRequiredZIO(cfg: AppConfig): IO[Config.Error, AppConfig] =
+    validateRequired(cfg) match {
+      case Nil  => ZIO.succeed(cfg)
+      case errs =>
+        ZIO.fail(
+          Config.Error.InvalidData(
+            message =
+              "Invalid WifiHaven configuration — fix ALL of the following required keys and restart:\n" +
+                errs.map("  - " + _).mkString("\n"),
+          ),
+        )
+    }
+
   val layer: ZLayer[Any, Config.Error, AppConfig] =
     ZLayer.fromZIO {
       val path = sys.props.getOrElse("config.file", "config/application.conf")
@@ -407,6 +441,6 @@ object AppConfig {
           .from(
             TypesafeConfigProvider.fromHoconFile(new java.io.File(path)),
           ),
-      )
+      ).flatMap(validateRequiredZIO)
     }
 }
