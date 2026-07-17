@@ -220,6 +220,10 @@ services:
         generateValue: true
       - key: WIFIHAVEN_SUPPORT_AGENT_API_BASE
         value: https://api-staging.wifihaven.net
+      # Deployment identity for the agent kickoff: staging sessions are operator tests, prod
+      # sessions are real customers. A literal, not a secret.
+      - key: WIFIHAVEN_SUPPORT_DEPLOYMENT_ENV
+        value: staging
       - key: WIFIHAVEN_SUPPORT_GITHUB_BOT_TOKEN
         sync: false
 
@@ -414,6 +418,9 @@ services:
         generateValue: true
       - key: WIFIHAVEN_SUPPORT_AGENT_API_BASE
         value: https://api.wifihaven.net
+      # Deployment identity for the agent kickoff: prod sessions are real customers. A literal.
+      - key: WIFIHAVEN_SUPPORT_DEPLOYMENT_ENV
+        value: prod
       - key: WIFIHAVEN_SUPPORT_GITHUB_BOT_TOKEN
         sync: false
 

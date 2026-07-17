@@ -34,7 +34,7 @@ import zio.test.*
  *   - with NO keys set everything is DARK and back-compat holds;
  *   - the agent token is single-household by construction (a household-A token reads A, tampered /
  *     expired / consent-less tokens are refused);
- *   - a draft posts ONLY into the token-bound thread, labeled as an AI draft (draft→approve→send);
+ *   - a reply posts ONLY into the token-bound thread, AI-attributed (autonomous send, 2026-07-17);
  *   - an issue body is PII-scrubbed and rate-limited (#2241 compensating control);
  *   - injection pin: message text ordering an exfiltration changes NOTHING structurally — it rides
  *     inside the data delimiter and no other side effect occurs.
@@ -199,10 +199,15 @@ object SupportResponderSpec
           kickoff.contains(s"<customer_message>\n$msg\n</customer_message>"),
           kickoff.indexOf(msg) > kickoff.indexOf("<customer_message>"),
         ) &&
-        // The kickoff token verifies and is bound to THIS household + thread, with data consent.
+        // The kickoff token verifies and is bound to THIS household + thread, with data consent;
+        // the kickoff also names the deployment the session serves (staging/prod awareness) and
+        // the autonomous-send + escalation contract.
         assertTrue(
           claims.exists(c => c.householdId == hh && c.threadId == "th_ui_1" && c.dataAccess),
           kickoff.contains(req.agentToken),
+          kickoff.contains("Deployment: staging."),
+          kickoff.contains("/api/support/agent/reply"),
+          kickoff.contains("asks for a human"),
         )
       }
     },
@@ -241,14 +246,14 @@ object SupportResponderSpec
         body = payload(Some(1L), "th_1", "hi")
         sHook       <- postWebhook(routes, body, Some(sign(body)))
         token       <- mintToken(HouseholdId.Default, "th_1", dataAccess = true)
-        (sDraft, _) <-
-          agentPost(routes, "/api/support/agent/draft", """{"markdown":"x"}""", Some(token))
+        (sReply, _) <-
+          agentPost(routes, "/api/support/agent/reply", """{"markdown":"x"}""", Some(token))
         (sHh, _)    <- agentGetHousehold(routes, Some(token))
         dispatches  <- stubs.dispatch.dispatches.get
         threads     <- stubs.plain.threads.get
       } yield assertTrue(
         sHook == Status.Ok, // dark short-circuit: Plain is never told anything is wrong
-        sDraft == Status.NotFound,
+        sReply == Status.NotFound,
         sHh == Status.NotFound,
         dispatches.isEmpty,
         threads.isEmpty,
@@ -306,17 +311,17 @@ object SupportResponderSpec
           sNoConsent == Status.Forbidden,
         )
     },
-    test("a draft posts ONLY into the token-bound thread, labeled as an AI draft") {
+    test("a reply posts ONLY into the token-bound thread, attributed as the AI assistant") {
       for {
         _               <- cleanDb
         hhRepo          <- ZIO.service[HouseholdRepo]
         hh              <- hhRepo.create("Family D", "fam-d")
         (routes, stubs) <- makeRoutes(liveCfg)
         token           <- mintToken(hh, "th_bound", dataAccess = false)
-        // The body carries ONLY the draft text — there is no thread/household field to abuse.
+        // The body carries ONLY the reply text — there is no thread/household field to abuse.
         (status, _)     <- agentPost(
           routes,
-          "/api/support/agent/draft",
+          "/api/support/agent/reply",
           """{"markdown":"Here is how to allow the school site..."}""",
           Some(token),
         )
@@ -325,8 +330,11 @@ object SupportResponderSpec
         assertTrue(
           threads.head.title.contains("th_bound"),
           threads.head.tenantIdentifier == hh.value.toString,
-          threads.head.markdown.startsWith(SupportResponder.AiDraftLabel),
+          // Autonomous send (2026-07-17): the customer-facing reply is AI-attributed and names the
+          // human-escalation path — no approval-step label exists anywhere.
+          threads.head.markdown.startsWith(SupportResponder.AiReplyAttribution),
           threads.head.markdown.contains("allow the school site"),
+          SupportResponder.AiReplyAttribution.toLowerCase.contains("human"),
         )
     },
     test("issue filing scrubs PII from the body (compensating control) and is rate-limited") {

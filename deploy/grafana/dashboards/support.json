@@ -12,7 +12,7 @@
       }
     ]
   },
-  "description": "WifiHaven Plain support integration (#2199 + #2200, epic #2197): server-signed widget-identity outcomes, household→Plain customer-upsert outcomes, the #2200 Claude responder's webhook outcomes (support_ai_draft_total{outcome} from SupportResponder — dispatched / skipped_unauthenticated / rate_limited / invalid_signature / malformed / disabled / error), and the cloud agent's callback actions (support_agent_action_total{op,outcome} — draft / issue / household_read). All labels are bounded enums (never per-email / per-household / per-thread). Ships DARK: with no keys set, outcomes count as disabled and nothing dispatches. See issues #2206, #2200, #2241.",
+  "description": "WifiHaven Plain support integration (#2199 + #2200, epic #2197): server-signed widget-identity outcomes, household→Plain customer-upsert outcomes, the #2200 Claude responder's webhook outcomes (support_ai_draft_total{outcome} from SupportResponder — dispatched / skipped_unauthenticated / rate_limited / invalid_signature / malformed / disabled / error), and the cloud agent's callback actions (support_agent_action_total{op,outcome} — reply / issue / household_read). All labels are bounded enums (never per-email / per-household / per-thread). Ships DARK: with no keys set, outcomes count as disabled and nothing dispatches. See issues #2206, #2200, #2241.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -121,7 +121,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "Agent callback actions (#2200/#2241)",
-      "description": "sum by (op, outcome) (rate(support_agent_action_total{env=\"$env\"}[5m])) — the dispatched cloud agent's token-authenticated callbacks: draft (post the AI-labeled draft note into the token-bound Plain thread), issue (file a PII-scrubbed, support-agent-labeled GitHub issue), household_read (the consented single-household summary). outcome=denied covers bad/expired tokens AND consent-less household reads; rate_limited is the per-thread/global issue caps. Emitted by SupportResponder.",
+      "description": "sum by (op, outcome) (rate(support_agent_action_total{env=\"$env\"}[5m])) — the dispatched cloud agent's token-authenticated callbacks: reply (post the AI-attributed reply into the token-bound Plain thread — sent to the customer, autonomous send), issue (file a PII-scrubbed, support-agent-labeled GitHub issue), household_read (the consented single-household summary). outcome=denied covers bad/expired tokens AND consent-less household reads; rate_limited is the per-thread/global issue caps. Emitted by SupportResponder.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
       "id": 5,

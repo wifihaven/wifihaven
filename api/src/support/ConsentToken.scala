@@ -15,14 +15,14 @@ import java.util.Base64
  * agent holds no Plain key, no GitHub token, no Anthropic key — every side effect goes back through
  * our `/api/support/agent/...` endpoints authenticated by this token. It is:
  *
- *   - **read-only + narrowly actioned** — it authorises exactly the agent endpoints (post a draft
- *     note into ONE thread, file a scrubbed issue, read ONE household's summary); nothing else in
- *     the API accepts it, and there is no mutation path behind it;
+ *   - **read-only + narrowly actioned** — it authorises exactly the agent endpoints (post a reply
+ *     into ONE thread, file a scrubbed issue, read ONE household's summary); nothing else in the
+ *     API accepts it, and there is no mutation path behind it;
  *   - **bound to exactly one `household_id`** — the token CARRIES the household, and the household
  *     read derives its scope FROM the verified token (never from the request), so a household-A
  *     token can never read household-B's data — cross-tenant reads are impossible by construction
  *     (#2107/#2108 isolation substrate);
- *   - **thread-bound** — it carries the originating Plain thread id; the draft endpoint posts into
+ *   - **thread-bound** — it carries the originating Plain thread id; the reply endpoint posts into
  *     THAT thread only, regardless of what the request body says;
  *   - **consent-scoped** — `dataAccess` is true only when the customer opted in ("give agent access
  *     to my data", #2241); without it the household-read endpoint returns 403 and the agent answers

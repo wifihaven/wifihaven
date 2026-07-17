@@ -22,11 +22,12 @@ import zio.json.*
  * (thread- + household-bound, consent-scoped, short-TTL) → dispatch a cloud-agent session
  * ([[CloudAgentDispatcher]]). The inbound message text is UNTRUSTED DATA end to end.
  *
- * **Agent-facing ([[agentDraft]] / [[agentFileIssue]] / [[agentHousehold]])**: the dispatched
+ * **Agent-facing ([[agentReply]] / [[agentFileIssue]] / [[agentHousehold]])**: the dispatched
  * agent's ONLY credential is the token; every side effect comes back through these endpoints where
  * the guarantees are enforced structurally, not by prompt:
- *   - drafts post into the token-bound thread ONLY (v1 draft→approve→send: the note is labeled as
- *     an AI draft; a human sends in Plain — no autonomous send path exists);
+ *   - replies post into the token-bound thread ONLY, attributed as the AI assistant, and go to the
+ *     customer WITHOUT a human approval step (autonomous send — operator decision 2026-07-17; the
+ *     customer can always escalate to a human, and the operator monitors every thread in Plain);
  *   - issues are PII-scrubbed at the [[GithubIssueClient]] boundary, `support-agent`-labeled, and
  *     rate-limited per-thread + globally (#2241 compensating control + volume alert feed);
  *   - household reads require the token's consent scope and derive the household FROM the verified
@@ -94,7 +95,7 @@ final case class SupportResponder(
           case Some(household) =>
             // Short-circuit (review finding on #2261): the global bucket is drawn only when the
             // per-thread cap allowed — otherwise one capped thread would keep draining the shared
-            // daily budget and lock every other household out of the AI-draft path.
+            // daily budget and lock every other household out of the AI-reply path.
             dispatchThreadLimiter.tryAcquire(s"thread:${event.threadId}").flatMap { threadOk =>
               if !threadOk then ZIO.succeed(WebhookOutcome.RateLimited)
               else
@@ -148,27 +149,29 @@ final case class SupportResponder(
   // ── Agent-facing: the token-authenticated callback endpoints ────────────────
 
   /**
-   * Post the agent's draft into the token-bound Plain thread as an AI-labeled note. The thread and
-   * household come FROM the verified token — the request body carries only the draft text, so a
-   * hijacked agent cannot aim a draft at another thread or household. v1 is draft→approve→send:
-   * this writes a labeled draft the operator reviews in the Plain inbox; nothing here sends to the
-   * customer.
+   * Post the agent's reply into the token-bound Plain thread — SENT to the customer, attributed as
+   * the AI assistant (autonomous send, operator decision 2026-07-17: no human approval step; the
+   * customer can escalate to a human at any time per the agent's standing instructions, and the
+   * operator monitors every thread in the Plain inbox). The thread and household come FROM the
+   * verified token — the request body carries only the reply text, so a hijacked agent cannot aim a
+   * reply at another thread or household.
    */
-  def agentDraft(bearer: Option[String], markdown: String): UIO[AgentActionResult] =
-    withClaims("draft", bearer) { claims =>
+  def agentReply(bearer: Option[String], markdown: String): UIO[AgentActionResult] =
+    withClaims("reply", bearer) { claims =>
       val write = PlainThreadWrite(
         customerExternalId = claims.householdId.value.toString,
         tenantIdentifier = claims.householdId.value.toString,
         // TODO(#2240): PlainClient.writeThread's live impl uses createThread; switching to the
-        // reply-to-thread mutation against `claims.threadId` is a go-live Plain-provisioning item.
-        // The trait seam is deliberate — the thread binding is enforced HERE either way.
-        title = s"[AI draft] support thread ${claims.threadId}",
-        markdown = s"$AiDraftLabel\n\n$markdown",
+        // reply-to-thread mutation against `claims.threadId` (the customer-visible send) is a
+        // go-live Plain-provisioning item. The trait seam is deliberate — the thread binding is
+        // enforced HERE either way.
+        title = s"[AI reply] support thread ${claims.threadId}",
+        markdown = s"$AiReplyAttribution\n\n$markdown",
       )
       plain.writeThread(write).flatMap {
-        case PlainOutcome.Ok       => done("draft", AgentActionResult.Ok)
-        case PlainOutcome.Disabled => done("draft", AgentActionResult.Disabled)
-        case PlainOutcome.Error    => done("draft", AgentActionResult.Error)
+        case PlainOutcome.Ok       => done("reply", AgentActionResult.Ok)
+        case PlainOutcome.Disabled => done("reply", AgentActionResult.Disabled)
+        case PlainOutcome.Error    => done("reply", AgentActionResult.Error)
       }
     }
 
@@ -267,8 +270,12 @@ final case class SupportResponder(
 
 object SupportResponder {
 
-  /** The visible marker on every agent-authored Plain note — the operator's cue to review. */
-  val AiDraftLabel: String = "🤖 **AI draft — review before sending.**"
+  /**
+   * The attribution on every agent-authored reply — the customer sees the answer came from the AI
+   * assistant and knows a human is one ask away (autonomous send, 2026-07-17).
+   */
+  val AiReplyAttribution: String =
+    "🤖 *WifiHaven support assistant — reply \"talk to a human\" any time and a teammate will follow up.*"
 
   /**
    * Bounded outcome enum for the webhook path — the `support_ai_draft_total{outcome}` label set.

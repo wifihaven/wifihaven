@@ -88,6 +88,10 @@ set -euo pipefail
 : "${WIFIHAVEN_SUPPORT_CLAUDE_ENVIRONMENT_ID:=}"
 : "${WIFIHAVEN_SUPPORT_AGENT_TOKEN_SECRET:=}"
 : "${WIFIHAVEN_SUPPORT_AGENT_API_BASE:=https://api.wifihaven.net}"
+# Which deployment this API is (staging | prod — a per-service literal in render.yaml, empty on
+# self-hosted). Rides in every agent kickoff so the session knows whether it serves a real
+# customer (prod) or an operator test (staging).
+: "${WIFIHAVEN_SUPPORT_DEPLOYMENT_ENV:=}"
 : "${WIFIHAVEN_SUPPORT_GITHUB_BOT_TOKEN:=}"
 
 export WIFIHAVEN_LOG_LEVEL WIFIHAVEN_DEBUG
@@ -162,6 +166,7 @@ wifihaven {
     claudeEnvironmentId   = "${WIFIHAVEN_SUPPORT_CLAUDE_ENVIRONMENT_ID}"
     agentTokenSecret      = "${WIFIHAVEN_SUPPORT_AGENT_TOKEN_SECRET}"
     agentApiBase          = "${WIFIHAVEN_SUPPORT_AGENT_API_BASE}"
+    deploymentEnv         = "${WIFIHAVEN_SUPPORT_DEPLOYMENT_ENV}"
     githubSupportBotToken = "${WIFIHAVEN_SUPPORT_GITHUB_BOT_TOKEN}"
   }
 }

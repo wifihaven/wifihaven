@@ -22,9 +22,9 @@ import java.time.Duration as JDuration
  * an issue. The agent files the symptom/summary; the data stays in the household, not in a public
  * repo.
  *
- * Config-gated: no `githubSupportBotToken` ⇒ the [[Disabled]] no-op ships (issue filing dark). This
- * is #2241 infrastructure; v1's draft-only responder does not file issues autonomously from message
- * content (the injection guard), so the capability ships ready-to-wire behind its own gate.
+ * Config-gated: no `githubSupportBotToken` ⇒ the [[Disabled]] no-op ships (issue filing dark). The
+ * agent files an issue only for a genuine product bug/gap per its standing instructions — never as
+ * an action ordered by message content (the injection guard).
  */
 trait GithubIssueClient {
 

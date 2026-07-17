@@ -4,7 +4,7 @@
 # reach the WifiHaven API (the token-gated callback endpoints) and public GitHub (source/docs
 # grounding). There is no route to an attacker-chosen host, so "exfiltrate to evil.example" fails
 # at the network layer regardless of what the model was talked into. Package managers stay off —
-# the agent reads and drafts; it does not install software.
+# the agent reads and replies; it does not install software.
 #
 # Apply once per workspace (see README.md): staging sessions use the same definition — the agent
 # calls whichever agentApiBase its kickoff names, so api-staging is allowlisted alongside prod.

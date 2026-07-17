@@ -410,6 +410,10 @@ case class FlipConfig(
 //   - `agentTokenTtlMinutes`  agent-token lifetime; short by design (#2241). Clamped to ≥1.
 //   - `agentApiBase`          the public base URL of THIS API (what the cloud agent calls back to
 //                             for /api/support/agent/*), e.g. https://api.wifihaven.net.
+//   - `deploymentEnv`         which deployment this API is — "staging" | "prod" (a per-service
+//                             literal in render.yaml; empty on self-hosted). Rides in the kickoff
+//                             so the agent knows whether it is serving a real customer (prod) or
+//                             an operator test (staging).
 //   - `githubSupportBotToken` fine-grained GitHub token for the support bot — Issues:write ONLY on
 //                             `githubRepo` (no contents / no pull_requests ⇒ no-PR is structural,
 //                             #2241). SECRET. Empty ⇒ issue filing dark.
@@ -428,6 +432,7 @@ case class SupportConfig(
     agentTokenSecret: String = "",
     agentTokenTtlMinutes: Int = 30,
     agentApiBase: String = "https://api.wifihaven.net",
+    deploymentEnv: String = "",
     githubSupportBotToken: String = "",
     githubRepo: String = "wifihaven/wifihaven",
     githubApiBase: String = "https://api.github.com",
@@ -442,6 +447,7 @@ case class SupportConfig(
   val claudeEnvironmentIdTrimmed: String   = claudeEnvironmentId.trim
   val agentTokenSecretTrimmed: String      = agentTokenSecret.trim
   val agentApiBaseTrimmed: String          = agentApiBase.trim.stripSuffix("/")
+  val deploymentEnvTrimmed: String         = deploymentEnv.trim
   val githubSupportBotTokenTrimmed: String = githubSupportBotToken.trim
 
   // The identified widget renders only when BOTH the public app id AND the identity secret are set —

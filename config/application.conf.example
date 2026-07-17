@@ -198,6 +198,9 @@ wifihaven {
   #   # agentTokenTtlMinutes = 30
   #   # The public base URL of THIS API — what the cloud agent calls back to (/api/support/agent/...).
   #   # agentApiBase        = "https://api.wifihaven.net"
+  #   # Which deployment this API is ("staging" | "prod"; rides in the agent kickoff so a session
+  #   # knows whether it serves a real customer or an operator test). Empty on self-hosted.
+  #   # deploymentEnv       = ""
   #   # Fine-grained GitHub token for the support bot — Issues:write ONLY on githubRepo (no
   #   # contents / no pull_requests ⇒ no-PR is structural, #2241). Empty ⇒ issue filing dark. SECRET.
   #   githubSupportBotToken = ""

@@ -447,8 +447,8 @@ object MetricGuard {
     // rate_limited | invalid_signature | malformed | disabled | error) — `skipped_unauthenticated`
     // is the UI-origin gate on cold email, `rate_limited` the per-thread/global dispatch cost caps,
     // `invalid_signature` the security rejection.
-    // `support_agent_action_total{action,outcome}` counts the cloud agent's callback
-    // actions (draft | issue | household_read × ok | denied | rate_limited | disabled | error) —
+    // `support_agent_action_total{op,outcome}` counts the cloud agent's callback
+    // actions (reply | issue | household_read × ok | denied | rate_limited | disabled | error) —
     // the `issue` action's rate feeds the #2241 volume alert. Both bounded, never per-household.
     "support_ai_draft_total"                        -> Set("outcome"),
     "support_agent_action_total"                    -> Set("op", "outcome"),

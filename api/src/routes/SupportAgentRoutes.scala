@@ -17,7 +17,7 @@ import zio.json.*
  *     UI-origin gate), disabled, malformed, downstream error — returns 200 so Plain does not
  *     retry-storm and the response never leaks WHY (the metric carries the outcome).
  *
- *   - AGENT `POST /api/support/agent/draft`, `POST /api/support/agent/issues`, `GET
+ *   - AGENT `POST /api/support/agent/reply`, `POST /api/support/agent/issues`, `GET
  *     /api/support/agent/household` — the cloud agent's ONLY side-effect channels, authenticated
  *     solely by the per-session [[wifihaven.api.support.ConsentToken]] (thread- + household-bound,
  *     consent-scoped, short-TTL) as `Authorization: Bearer`. No JWT, no admin session — and
@@ -32,8 +32,8 @@ object SupportAgentRoutes {
   /** Cap agent-endpoint bodies — a draft or issue never legitimately approaches this. */
   val MaxAgentBodyBytes: Long = 64 * 1024
 
-  private final case class DraftPost(markdown: String)
-  private object DraftPost { given JsonCodec[DraftPost] = DeriveJsonCodec.gen[DraftPost] }
+  private final case class ReplyPost(markdown: String)
+  private object ReplyPost { given JsonCodec[ReplyPost] = DeriveJsonCodec.gen[ReplyPost] }
 
   private final case class IssuePost(title: String, body: String)
   private object IssuePost { given JsonCodec[IssuePost] = DeriveJsonCodec.gen[IssuePost] }
@@ -63,18 +63,18 @@ object SupportAgentRoutes {
           handle.mapError(ErrorMapper.errorToResponse)
         },
 
-      // ── Agent: post the AI-labeled draft into the token-bound thread ────────────
-      Method.POST / "api" / "support" / "agent" / "draft" ->
+      // ── Agent: post the AI-attributed reply into the token-bound thread (sent) ──
+      Method.POST / "api" / "support" / "agent" / "reply" ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
             body   <- capped(req)
             post   <- ZIO
-              .fromEither(body.fromJson[DraftPost])
+              .fromEither(body.fromJson[ReplyPost])
               .mapError(ApiError.DecodeFailure.apply)
             _      <- ZIO
-              .fail(ApiError.BadRequest("empty draft"))
+              .fail(ApiError.BadRequest("empty reply"))
               .when(post.markdown.trim.isEmpty)
-            result <- responder.agentDraft(bearerToken(req), post.markdown)
+            result <- responder.agentReply(bearerToken(req), post.markdown)
             resp   <- toResponse(result)
           } yield resp
           handle.mapError(ErrorMapper.errorToResponse)
