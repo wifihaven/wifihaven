@@ -101,23 +101,28 @@ object CloudAgentDispatcher {
       agentApiBase: String,
       deploymentEnv: String = "",
   ): String = {
-    val plan    = req.plan.map(p => s" (plan: $p)").getOrElse("")
+    val plan     = req.plan.map(p => s" (plan: $p)").getOrElse("")
     // Which deployment this session serves — prod (real customer) vs staging (operator test). The
     // agent's grounding and tone rules key off this line (deploy/support-agent/agent.yaml).
-    val envLine =
+    val envLine  =
       if deploymentEnv.nonEmpty then s"Deployment: $deploymentEnv." else "Deployment: unspecified."
     // Neutralize delimiter breakout (review finding on #2261): a message containing the literal
     // closing tag would otherwise escape the data frame. Square-bracket both tag forms so the
     // customer text can never open or close a <customer_message> frame itself.
-    val safeMsg = req.customerMessage
-      .replace("</customer_message>", "[/customer_message]")
-      .replace("<customer_message>", "[customer_message]")
-    val consent =
+    val safeMsg  = neutralizeTags(req.customerMessage)
+    // The household name is ALSO customer-controlled (typed on the public beta-request form) and is
+    // interpolated into the kickoff's instruction zone — flatten newlines and neutralize tags so a
+    // hostile name can't fake an instruction line or open/close the data frame (#2261 review,
+    // run 3). Length-capped as defense-in-depth; a real household name is never this long.
+    val safeName = neutralizeTags(
+      req.householdName.replace('\n', ' ').replace('\r', ' '),
+    ).take(120)
+    val consent  =
       if req.dataConsent then
         s"The customer consented to household data access: GET $agentApiBase/api/support/agent/household with the token."
       else
         "The customer did NOT consent to household data access — answer without it (the household endpoint will refuse the token)."
-    s"""New support message on Plain thread ${req.threadId} from household "${req.householdName}"$plan.
+    s"""New support message on Plain thread ${req.threadId} from household "$safeName"$plan.
        |$envLine
        |
        |Your session token (Authorization: Bearer, for the /api/support/agent/* endpoints at $agentApiBase):
@@ -138,6 +143,11 @@ object CloudAgentDispatcher {
        |$safeMsg
        |</customer_message>""".stripMargin
   }
+
+  /** Square-bracket both `<customer_message>` tag forms so untrusted text can't frame-escape. */
+  private def neutralizeTags(s: String): String =
+    s.replace("</customer_message>", "[/customer_message]")
+      .replace("<customer_message>", "[customer_message]")
 
   // ── Managed Agents REST shapes (create session + kickoff event) ─────────────
   private final case class AgentRef(`type`: String, id: String)

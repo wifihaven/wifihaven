@@ -443,6 +443,7 @@ object MetricGuard {
     "support_widget_identity_total"                 -> Set("outcome"),
     "support_customer_upsert_total"                 -> Set("outcome"),
     // #2200 — the Claude support responder (dark until keys set). `support_ai_draft_total{outcome}`
+    // (the #2200-specified series name, kept though v1 sends replies rather than drafts)
     // counts each inbound Plain webhook by a bounded enum (dispatched | skipped_unauthenticated |
     // rate_limited | invalid_signature | malformed | disabled | error) — `skipped_unauthenticated`
     // is the UI-origin gate on cold email, `rate_limited` the per-thread/global dispatch cost caps,

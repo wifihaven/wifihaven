@@ -29,7 +29,7 @@ object SupportAgentRoutes {
   /** Cap the webhook body so a hostile unauthenticated caller can't stream us out of memory. */
   val MaxWebhookBytes: Long = 256 * 1024
 
-  /** Cap agent-endpoint bodies — a draft or issue never legitimately approaches this. */
+  /** Cap agent-endpoint bodies — a reply or issue never legitimately approaches this. */
   val MaxAgentBodyBytes: Long = 64 * 1024
 
   private final case class ReplyPost(markdown: String)
