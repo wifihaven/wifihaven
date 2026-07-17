@@ -65,10 +65,12 @@ object ConfigSpec extends ZIOSpecDefault {
         else if (p.getParent != null) findExample(p.getParent)
         else throw new RuntimeException("could not find config/application.conf.example")
       val rawText = new String(Files.readAllBytes(findExample(Paths.get(".").toAbsolutePath)))
-      // #2084: JwtConfig now rejects the shipped placeholder secret (by design — it must
-      // never be used as-is). This test only cares about the expiryHours default, so swap
-      // in a compliant dummy secret rather than relaxing the guard the placeholder itself
-      // is there to trip.
+      // #2084/#2266: the shipped placeholder secret is rejected at the BOOT boundary
+      // (AppConfig.validateRequired, run in AppConfig.layer) — #2266 moved the guard out of
+      // JwtConfig's constructor so all required-config violations accumulate in one pass. This
+      // test decodes directly (not via the layer) and only cares about the expiryHours default,
+      // so swap in a compliant dummy secret to keep the fixture representative of a real,
+      // validation-passing config rather than the placeholder.
       val text    =
         rawText.replaceAll(
           """secret\s*=\s*"change-this[^"]*"""",
