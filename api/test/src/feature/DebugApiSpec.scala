@@ -1,5 +1,6 @@
 package wifihaven.api.feature
 
+import wifihaven.api.{AppConfig, CorsConfig, DbConfig, HttpConfig, JwtConfig}
 import wifihaven.api.db.*
 import wifihaven.api.routes.*
 import wifihaven.shared.*
@@ -22,6 +23,14 @@ object DebugApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
 
   private val cleanDb = TestDatabase.cleanAndMigrate
 
+  // Minimal valid AppConfig for the /api/debug/config feature-state surface (#2266).
+  private val testCfg = AppConfig(
+    db = DbConfig("localhost", 5432, "wifihaven", "wifihaven", "changeme", 5),
+    http = HttpConfig("0.0.0.0", 8080, "web/dist", serveSpa = true),
+    jwt = JwtConfig("test-secret-at-least-32-chars!!x", 24),
+    cors = CorsConfig(""),
+  )
+
   private def buildRoutes(enabled: Boolean) =
     for {
       dRepo  <- ZIO.service[DeviceRepo]
@@ -30,7 +39,7 @@ object DebugApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
       tuRepo <- ZIO.service[TimeUsageRepo]
       trRepo <- ZIO.service[TrafficReportRepo]
       clock  <- ZIO.service[Clock]
-    } yield DebugRoutes.routes(enabled, dRepo, pRepo, cRepo, tuRepo, trRepo, clock)
+    } yield DebugRoutes.routes(enabled, testCfg, dRepo, pRepo, cRepo, tuRepo, trRepo, clock)
 
   /**
    * Build a request whose Host header is loopback-y by default. zio-http's Request.remoteAddress is
@@ -72,6 +81,30 @@ object DebugApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
       } yield assertTrue(r1.status == Status.Ok) &&
         assertTrue(r2.status == Status.Ok) &&
         assertTrue(r3.status == Status.Ok)
+    },
+    test("/api/debug/config from loopback returns 200 with feature states (#2266)") {
+      for {
+        _      <- cleanDb
+        routes <- buildRoutes(enabled = true)
+        resp   <- routes.runZIO(get("/api/debug/config"))
+        body   <- resp.body.asString
+      } yield assertTrue(
+        resp.status == Status.Ok,
+        // testCfg sets no optional secrets → these features report DISABLED with a named reason.
+        body.contains("email-notifications"),
+        body.contains("stripe-billing"),
+        body.contains("\"enabled\":false"),
+        body.contains("wifihaven.stripe.secretKey"),
+      )
+    },
+    test("/api/debug/config is 404 when disabled, 403 when non-loopback (#2266)") {
+      for {
+        _         <- cleanDb
+        offRoutes <- buildRoutes(enabled = false)
+        off       <- offRoutes.runZIO(get("/api/debug/config"))
+        onRoutes  <- buildRoutes(enabled = true)
+        evil      <- onRoutes.runZIO(get("/api/debug/config", host = "evil.example.com"))
+      } yield assertTrue(off.status == Status.NotFound, evil.status == Status.Forbidden)
     },
     test("/api/debug/devices from loopback returns 200 with seeded rows") {
       for {

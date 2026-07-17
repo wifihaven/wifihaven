@@ -61,17 +61,12 @@ object StartupConfigSpec extends ZIOSpecDefault {
         loadVia(hocon(goodSecret)).map(c => assertTrue(AppConfig.validateRequired(c).isEmpty))
       },
       test("boot validation FAILS (crashes) on an invalid required config, naming the key") {
-        bootValidate(hocon("short")).exit.map { ex =>
-          assertTrue(ex.isFailure) &&
-          assert(ex)(
-            Assertion.isFailure(
-              Assertion.hasField[Config.Error, String](
-                "msg",
-                _.getMessage,
-                Assertion.containsString("wifihaven.jwt.secret"),
-              ),
-            ),
-          )
+        bootValidate(hocon("short")).exit.map {
+          case Exit.Failure(cause) =>
+            val msg = cause.failureOption.map(_.getMessage).getOrElse("")
+            assertTrue(msg.contains("wifihaven.jwt.secret"), msg.contains("at least 32 characters"))
+          case Exit.Success(_)     =>
+            assertTrue(false) // boot must NOT succeed with an invalid required config
         }
       },
       test("boot validation SUCCEEDS on a valid required config") {
