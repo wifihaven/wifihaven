@@ -1,0 +1,193 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "WifiHaven PRESS/PR responder (#2203, epic #2197): the public press@wifihaven.net inbox handled by a Cloudflare Email Worker → /api/press/inbound → an Anthropic Managed Agents press session → the reply emailed straight back to the sender. Series: press_ai_draft_total{outcome} (inbound-webhook outcomes — dispatched / rate_limited / invalid_signature / malformed / disabled / error) and press_agent_action_total{op,outcome} (the press agent's reply callback — reply × ok / denied / rate_limited / disabled / error). All labels are bounded enums (never per-sender / per-thread). NO household data path (press is public). The responder runs iff the explicit press.responderEnabled flag is set (#2265 — no dark-by-default; a true flag with missing config, or with outbound email off, refuses to boot). See issues #2203, #2197, #2265.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Inbound webhook outcomes",
+      "description": "sum by (outcome) (rate(press_ai_draft_total{env=\"$env\"}[5m])) — dispatched (a press cloud-agent session was created) / rate_limited (the per-sender + global dispatch cost caps fired) / invalid_signature (unsigned or forged POST — security-relevant, investigate a sustained rate; the Worker↔API HMAC is the only auth) / malformed (missing from/text) / disabled (responder dark) / error (Managed Agents dispatch failed). Emitted by PressResponder.handleInbound.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "id": 1,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "reqps",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1, "stacking": { "mode": "normal", "group": "A" } }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (outcome) (rate(press_ai_draft_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{outcome}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Agent reply callbacks",
+      "description": "sum by (op, outcome) (rate(press_agent_action_total{env=\"$env\"}[5m])) — the dispatched press agent's token-authenticated reply callback: op=reply × ok (the reply was emailed to the sender — destination locked into the token) / denied (bad/expired/missing token — uniform 401) / disabled (responder dark) / error (Resend send failed). There is deliberately no issue-filing or household-read op (press is public — no data path). Emitted by PressResponder.agentReply.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "id": 2,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "reqps",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1, "stacking": { "mode": "normal", "group": "A" } }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (op, outcome) (rate(press_agent_action_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{op}} / {{outcome}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Press sessions dispatched (24h) — cost watch",
+      "description": "sum(increase(press_ai_draft_total{env=\"$env\",outcome=\"dispatched\"}[24h])) — press cloud-agent sessions started in the last 24h. Each session bills API tokens (rough order: a few cents/reply on Sonnet 5); the global dispatch cap (50/day) bounds the ceiling. Red at the cap = sustained press-inbox spam or a Worker retry loop — check the rate_limited / invalid_signature outcomes on the webhook panel.",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 8 },
+      "id": 3,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "unit": "short",
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 25 }, { "color": "red", "value": 50 }] }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto", "colorMode": "value", "graphMode": "area", "justifyMode": "auto" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(increase(press_ai_draft_total{env=\"$env\",outcome=\"dispatched\"}[24h]))",
+          "legendFormat": "dispatched (24h)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Press replies emailed (24h)",
+      "description": "sum(increase(press_agent_action_total{env=\"$env\",op=\"reply\",outcome=\"ok\"}[24h])) — replies the press agent emailed to journalists in the last 24h. Because replies send WITHOUT human review, spot-check early ones — the recipient is server-locked (the original sender) and the agent has no data access, so a prompt injection is bounded to a courteous-but-unhelpful public reply.",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 8 },
+      "id": 4,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "unit": "short",
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto", "colorMode": "value", "graphMode": "area", "justifyMode": "auto" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(increase(press_agent_action_total{env=\"$env\",op=\"reply\",outcome=\"ok\"}[24h]))",
+          "legendFormat": "replies (24h)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Forged/unsigned inbound (24h) — security watch",
+      "description": "sum(increase(press_ai_draft_total{env=\"$env\",outcome=\"invalid_signature\"}[24h])) — inbound POSTs to /api/press/inbound that failed HMAC verification in the last 24h. The Worker↔API signature is the only authentication on this public endpoint; a sustained non-zero rate means someone is probing it (harmless — rejected 400 before any dispatch), but a spike is worth a look.",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 8 },
+      "id": 5,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "unit": "short",
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 100 }] }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto", "colorMode": "value", "graphMode": "area", "justifyMode": "auto" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(increase(press_ai_draft_total{env=\"$env\",outcome=\"invalid_signature\"}[24h]))",
+          "legendFormat": "invalid_signature (24h)",
+          "refId": "A"
+        }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["wifihaven", "press", "pr"],
+  "templating": {
+    "list": [
+      {
+        "current": { "selected": true, "text": "prod", "value": "prod" },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Environment",
+        "multi": false,
+        "name": "env",
+        "options": [
+          { "selected": true, "text": "prod", "value": "prod" },
+          { "selected": false, "text": "staging", "value": "staging" }
+        ],
+        "query": "prod,staging",
+        "skipUrlSync": false,
+        "type": "custom"
+      },
+      {
+        "current": { "selected": true, "text": "grafanacloud-wifihaven-prom", "value": "grafanacloud-prom" },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "datasource",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      }
+    ]
+  },
+  "time": { "from": "now-24h", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "WifiHaven — Press (PR)",
+  "uid": "wifihaven-press",
+  "version": 1,
+  "weekStart": ""
+}

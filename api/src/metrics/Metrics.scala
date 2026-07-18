@@ -453,6 +453,14 @@ object MetricGuard {
     // the `issue` action's rate feeds the #2241 volume alert. Both bounded, never per-household.
     "support_ai_draft_total"                        -> Set("outcome"),
     "support_agent_action_total"                    -> Set("op", "outcome"),
+    // #2203 — the Claude PRESS/PR responder (dark until keys set). `press_ai_draft_total{outcome}`
+    // counts each inbound PRESS Plain webhook by a bounded enum (dispatched | skipped | rate_limited
+    // | invalid_signature | malformed | disabled | error); `press_agent_action_total{op,outcome}`
+    // counts the press agent's draft callback (reply × ok | denied | rate_limited | disabled |
+    // error). Separate series from support so the public-press audience is graphed independently.
+    // The #808 lesson: without these entries the firewall rejects the name and the series never emits.
+    "press_ai_draft_total"                          -> Set("outcome"),
+    "press_agent_action_total"                      -> Set("op", "outcome"),
   )
 
   private val rejected = Metric.counter("metrics_rejected_total")
@@ -671,6 +679,19 @@ object AppMetrics {
 
   def supportAgentAction(action: String, outcome: String): UIO[Unit] =
     MetricGuard.counter("support_agent_action_total", Map("op" -> action, "outcome" -> outcome))
+
+  // ── #2203: Claude press/PR responder (dark until keys set) ───────────────────
+  // Emitted from PressResponder. `pressAiDraft` counts each inbound PRESS Plain webhook by outcome
+  // (dispatched | skipped | rate_limited | invalid_signature | malformed | disabled | error);
+  // `pressAgentAction` counts each token-authenticated press agent callback by (op, outcome). Both
+  // bounded enums — never a per-sender / per-thread label. Separate series from support so the two
+  // audiences are graphed and alerted independently.
+
+  def pressAiDraft(outcome: String): UIO[Unit] =
+    MetricGuard.counter("press_ai_draft_total", Map("outcome" -> outcome))
+
+  def pressAgentAction(action: String, outcome: String): UIO[Unit] =
+    MetricGuard.counter("press_agent_action_total", Map("op" -> action, "outcome" -> outcome))
 
   // ── #864: traffic_reports rows dropped as zero-bytes-zero-seconds ────────────
   // Replaces the per-request warn-log + TODO marker. A rising rate means the

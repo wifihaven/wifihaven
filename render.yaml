@@ -231,6 +231,29 @@ services:
         value: staging
       - key: WIFIHAVEN_SUPPORT_GITHUB_BOT_TOKEN
         sync: false
+      # #2203: the Claude PRESS/PR responder on STAGING. Press email arrives via Cloudflare Email
+      # Routing → an Email Worker (deploy/press-worker/) that HMAC-signs + POSTs to /api/press/inbound;
+      # the reply is EMAILED back to the sender via Resend (the WIFIHAVEN_EMAIL_* config above must be
+      # set too). A SEPARATE Managed Agent persona from support; press being public, NO household data
+      # path. WEBHOOK_SECRET is shared with the Worker. #2265: NO dark-by-default — RESPONDER_ENABLED
+      # is an explicit flag (flip to true via PR at go-live, AFTER the secrets below AND email are set);
+      # with it true and any required key missing the API refuses to boot. NEVER commit values.
+      - key: WIFIHAVEN_PRESS_RESPONDER_ENABLED
+        value: "false"
+      - key: WIFIHAVEN_PRESS_WEBHOOK_SECRET
+        sync: false
+      - key: WIFIHAVEN_PRESS_ANTHROPIC_API_KEY
+        sync: false
+      - key: WIFIHAVEN_PRESS_CLAUDE_AGENT_ID
+        sync: false
+      - key: WIFIHAVEN_PRESS_CLAUDE_ENVIRONMENT_ID
+        sync: false
+      - key: WIFIHAVEN_PRESS_AGENT_TOKEN_SECRET
+        generateValue: true
+      - key: WIFIHAVEN_PRESS_AGENT_API_BASE
+        value: https://api-staging.wifihaven.net
+      - key: WIFIHAVEN_PRESS_DEPLOYMENT_ENV
+        value: staging
 
   # ── Production API ─────────────────────────────────────────────────────────
   - type: web
@@ -433,6 +456,28 @@ services:
         value: prod
       - key: WIFIHAVEN_SUPPORT_GITHUB_BOT_TOKEN
         sync: false
+      # #2203: the Claude PRESS/PR responder on PROD (live press@ Email Worker + prod Managed Agent).
+      # Press email arrives via Cloudflare Email Routing → an Email Worker → /api/press/inbound; the
+      # reply is EMAILED back to the sender via Resend (WIFIHAVEN_EMAIL_* must be set). A SEPARATE
+      # Managed Agent persona from support; press is public so NO household data path. WEBHOOK_SECRET
+      # is shared with the Worker. #2265: NO dark-by-default — flip RESPONDER_ENABLED to true via PR at
+      # go-live, AFTER the secrets AND email are set. NEVER commit values.
+      - key: WIFIHAVEN_PRESS_RESPONDER_ENABLED
+        value: "false"
+      - key: WIFIHAVEN_PRESS_WEBHOOK_SECRET
+        sync: false
+      - key: WIFIHAVEN_PRESS_ANTHROPIC_API_KEY
+        sync: false
+      - key: WIFIHAVEN_PRESS_CLAUDE_AGENT_ID
+        sync: false
+      - key: WIFIHAVEN_PRESS_CLAUDE_ENVIRONMENT_ID
+        sync: false
+      - key: WIFIHAVEN_PRESS_AGENT_TOKEN_SECRET
+        generateValue: true
+      - key: WIFIHAVEN_PRESS_AGENT_API_BASE
+        value: https://api.wifihaven.net
+      - key: WIFIHAVEN_PRESS_DEPLOYMENT_ENV
+        value: prod
 
   # ── Metrics collector: Grafana Alloy → Grafana Cloud ─────────────────────────
   # #1208: the cloud APP-metrics path. Alloy (Prometheus agent-mode) scrapes

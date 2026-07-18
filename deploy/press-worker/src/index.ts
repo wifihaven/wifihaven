@@ -1,0 +1,88 @@
+// #2203 — the WifiHaven PRESS/PR Cloudflare Email Worker.
+//
+// Cloudflare Email Routing catches press@wifihaven.net and runs this Worker on each inbound message
+// (docs/process/declarative-config.md — the routing rule + this Worker are the in-repo config; the
+// API server holds all the AI/secrets). The Worker is deliberately THIN: it parses the email, builds
+// a small JSON envelope, HMAC-SHA256-signs the raw body under the secret it SHARES with the API
+// (`press.webhookSecret`), and POSTs it to `${PRESS_API_URL}/api/press/inbound`. It holds no
+// Anthropic key and makes no AI call itself — the API dispatches the Managed Agents press session and
+// emails the reply back (destination locked into the session token).
+//
+// SECURITY: the signature is the authentication (the endpoint is otherwise public). The Worker signs
+// the EXACT bytes it POSTs; the API recomputes the HMAC over the raw body it receives. Any mismatch
+// (forged/replayed/unsigned) is rejected 400 server-side. The message body is untrusted downstream —
+// this Worker never interprets it, only forwards it.
+
+import PostalMime from 'postal-mime';
+
+export interface Env {
+  // The shared HMAC secret (== the API's `press.webhookSecret` / WIFIHAVEN_PRESS_WEBHOOK_SECRET).
+  // Set with: wrangler secret put PRESS_WEBHOOK_SECRET
+  PRESS_WEBHOOK_SECRET: string;
+  // The public base URL of the WifiHaven API (no trailing slash), e.g. https://api.wifihaven.net.
+  // A plain var in wrangler.toml (per environment).
+  PRESS_API_URL: string;
+}
+
+// Cap what we forward so a huge inbound email can't be relayed unbounded to the API (which also
+// caps at 256 KiB). Press inquiries are short; 128 KiB of text is generous.
+const MAX_TEXT_BYTES = 128 * 1024;
+
+function hex(buf: ArrayBuffer): string {
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function hmacSha256Hex(secret: string, body: string): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  return hex(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(body)));
+}
+
+export default {
+  // Cloudflare Email Routing entrypoint. `message` is the inbound email; `message.from` is the parsed
+  // sender address (the reply target), `message.raw` the full MIME stream.
+  async email(message: ForwardableEmailMessage, env: Env): Promise<void> {
+    if (!env.PRESS_WEBHOOK_SECRET || !env.PRESS_API_URL) {
+      // Ships dark: with no secret/URL configured the Worker does nothing (and does NOT bounce, so
+      // mail is not lost — the operator can still read press@ if routing also forwards a copy).
+      console.warn('press-worker: PRESS_WEBHOOK_SECRET / PRESS_API_URL unset — skipping');
+      return;
+    }
+
+    const parsed = await PostalMime.parse(message.raw);
+    const text = (parsed.text || parsed.html?.replace(/<[^>]+>/g, ' ') || '').slice(0, MAX_TEXT_BYTES);
+    const subject = parsed.subject || message.headers.get('subject') || '';
+    const messageId = parsed.messageId || message.headers.get('message-id') || '';
+
+    // The envelope the API's PressInbound expects. `from` is message.from (the routed sender), the
+    // reply target the API locks into the session token.
+    const body = JSON.stringify({
+      from: message.from,
+      subject,
+      text,
+      messageId,
+    });
+
+    const signature = await hmacSha256Hex(env.PRESS_WEBHOOK_SECRET, body);
+
+    const resp = await fetch(`${env.PRESS_API_URL}/api/press/inbound`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-WifiHaven-Signature': signature,
+      },
+      body,
+    });
+
+    // The API returns 200 for every non-signature outcome (dispatched / dark / rate-limited) so we do
+    // not retry-storm; a 4xx/5xx is logged for the CF dashboard. We do NOT bounce the sender.
+    if (!resp.ok) {
+      console.error(`press-worker: API POST failed HTTP ${resp.status}`);
+    }
+  },
+};

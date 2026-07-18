@@ -2,11 +2,6 @@ package wifihaven.api.support
 
 import wifihaven.api.SupportConfig
 import zio.*
-import zio.json.*
-
-import java.net.URI
-import java.net.http.{HttpClient, HttpRequest, HttpResponse}
-import java.time.Duration as JDuration
 
 /**
  * #2200 (support intake C, epic #2197) — the cloud-agent dispatch transport. The operator decision
@@ -71,12 +66,6 @@ enum DispatchOutcome {
 }
 
 object CloudAgentDispatcher {
-
-  private val UserAgent: String         = "wifihaven-api/1 (+https://wifihaven.net)"
-  private val AnthropicVersion: String  = "2023-06-01"
-  private val ManagedAgentsBeta: String = "managed-agents-2026-04-01"
-  private val ConnectTimeout: JDuration = JDuration.ofSeconds(10)
-  private val RequestTimeout: JDuration = JDuration.ofSeconds(30)
 
   // #2265: the off state is an explicit named flag, logged at boot (and shown on /api/health) —
   // never inferred from missing secrets (config validation fails the boot for that case).
@@ -159,102 +148,32 @@ object CloudAgentDispatcher {
   }
 
   /** Square-bracket both `<customer_message>` tag forms so untrusted text can't frame-escape. */
-  private def neutralizeTags(s: String): String =
-    s.replace("</customer_message>", "[/customer_message]")
-      .replace("<customer_message>", "[customer_message]")
-
-  // ── Managed Agents REST shapes (create session + kickoff event) ─────────────
-  private final case class AgentRef(`type`: String, id: String)
-  private final case class CreateSession(agent: AgentRef, environment_id: String, title: String)
-  private final case class TextBlock(`type`: String, text: String)
-  private final case class UserMessage(`type`: String, content: List[TextBlock])
-  private final case class SendEvents(events: List[UserMessage])
-  private object Codecs {
-    given JsonEncoder[AgentRef]      = DeriveJsonEncoder.gen[AgentRef]
-    given JsonEncoder[CreateSession] = DeriveJsonEncoder.gen[CreateSession]
-    given JsonEncoder[TextBlock]     = DeriveJsonEncoder.gen[TextBlock]
-    given JsonEncoder[UserMessage]   = DeriveJsonEncoder.gen[UserMessage]
-    given JsonEncoder[SendEvents]    = DeriveJsonEncoder.gen[SendEvents]
-  }
-  import Codecs.given
+  private def neutralizeTags(s: String): String = ManagedAgents.neutralizeTags(s)
 
   /**
-   * Live Managed Agents transport: two blocking HTTPS POSTs (create session, send kickoff) — the
-   * same JDK-HttpClient / `attemptBlocking` shape as StripeClient / PlainClient, no new build
-   * dependency. Fire-and-forget: the agent runs autonomously in the cloud and reports back through
-   * the agent endpoints; we do not hold an event stream open. The agent object itself is a
-   * pre-provisioned, versioned resource (deploy/support-agent/agent.yaml, applied once with `ant
-   * beta:agents create`) — this code only ever creates sessions, never agents.
+   * Live Managed Agents transport: delegates the create-session + kickoff plumbing to the shared
+   * [[ManagedAgents]] transport (one REST implementation for both audiences), rendering the
+   * support-specific kickoff. Fire-and-forget; the agent reports back through our agent endpoints.
+   * The agent object itself is a pre-provisioned, versioned resource
+   * (deploy/support-agent/agent.yaml) — this code only ever creates sessions, never agents.
    */
   final class Live(cfg: SupportConfig) extends CloudAgentDispatcher {
-    private val client = HttpClient.newBuilder().connectTimeout(ConnectTimeout).build()
-
-    def dispatch(req: AgentDispatch): UIO[DispatchOutcome] = {
-      val effect = for {
-        sessionId <- createSession(req.threadId)
-        _         <- sendKickoff(
-          sessionId,
-          kickoffPrompt(req, cfg.agentApiBaseTrimmed, cfg.deploymentEnvTrimmed),
+    def dispatch(req: AgentDispatch): UIO[DispatchOutcome] =
+      ManagedAgents
+        .dispatchSession(
+          anthropicApiBase = cfg.anthropicApiBase,
+          anthropicApiKey = cfg.anthropicApiKeyTrimmed,
+          agentId = cfg.claudeAgentIdTrimmed,
+          environmentId = cfg.claudeEnvironmentIdTrimmed,
+          title = s"Support thread ${req.threadId}",
+          kickoff = kickoffPrompt(req, cfg.agentApiBaseTrimmed, cfg.deploymentEnvTrimmed),
         )
-      } yield DispatchOutcome.Dispatched
-      effect.catchAll(e =>
-        ZIO
-          .logWarning(s"support agent dispatch errored: ${e.getMessage}")
-          .as(DispatchOutcome.Error),
-      )
-    }
-
-    private def createSession(threadId: String): Task[String] =
-      post(
-        "/v1/sessions",
-        CreateSession(
-          agent = AgentRef("agent", cfg.claudeAgentIdTrimmed),
-          environment_id = cfg.claudeEnvironmentIdTrimmed,
-          title = s"Support thread $threadId",
-        ).toJson,
-      ).flatMap { body =>
-        ZIO
-          .fromOption(sessionIdOf(body))
-          .orElseFail(new RuntimeException(s"no session id in response: ${body.take(200)}"))
-      }
-
-    private def sendKickoff(sessionId: String, prompt: String): Task[Unit] =
-      post(
-        s"/v1/sessions/$sessionId/events",
-        SendEvents(List(UserMessage("user.message", List(TextBlock("text", prompt))))).toJson,
-      ).unit
-
-    private def post(path: String, payload: String): Task[String] =
-      ZIO
-        .attemptBlocking {
-          val httpReq = HttpRequest
-            .newBuilder(URI.create(s"${cfg.anthropicApiBase}$path"))
-            .header("x-api-key", cfg.anthropicApiKeyTrimmed)
-            .header("anthropic-version", AnthropicVersion)
-            .header("anthropic-beta", ManagedAgentsBeta)
-            .header("content-type", "application/json")
-            .header("User-Agent", UserAgent)
-            .timeout(RequestTimeout)
-            .POST(HttpRequest.BodyPublishers.ofString(payload))
-            .build()
-          client.send(httpReq, HttpResponse.BodyHandlers.ofString())
-        }
-        .flatMap { resp =>
-          if resp.statusCode() / 100 == 2 then ZIO.succeed(resp.body())
-          else
-            ZIO.fail(
-              new RuntimeException(s"HTTP ${resp.statusCode()} on $path: ${resp.body().take(300)}"),
-            )
-        }
-
-    private def sessionIdOf(body: String): Option[String] =
-      zio.json.ast.Json.decoder
-        .decodeJson(body)
-        .toOption
-        .collect { case o: zio.json.ast.Json.Obj =>
-          o.fields.collectFirst { case ("id", zio.json.ast.Json.Str(id)) => id }
-        }
-        .flatten
+        .as(DispatchOutcome.Dispatched)
+        .catchAll(e =>
+          ZIO
+            .logWarning(s"support agent dispatch errored: ${e.getMessage}")
+            .as(DispatchOutcome.Error),
+        )
   }
 
   /** Test dispatcher: records every dispatch (and its rendered kickoff) and reports Dispatched. */

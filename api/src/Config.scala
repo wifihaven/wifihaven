@@ -20,6 +20,7 @@ case class AppConfig(
     email: EmailConfig = EmailConfig(),
     flip: FlipConfig = FlipConfig(),
     support: SupportConfig = SupportConfig(),
+    press: PressConfig = PressConfig(),
 ) {
   // WIFIHAVEN_DEBUG env var: when set to a non-empty, non-"0"/"false"/"no"
   // value, mounts the read-only /api/debug/* endpoints (loopback only).
@@ -503,6 +504,87 @@ case class SupportConfig(
     java.time.Duration.ofMinutes(math.max(1, agentTokenTtlMinutes).toLong)
 }
 
+// #2203 (press intake, epic #2197) — the PUBLIC press/PR inbox Claude responder. Same reuse of
+// #2200's cloud-agent dispatch + token-callback shape, but a DIFFERENT audience, trust model, AND
+// ingest/egress, so it is a SEPARATE config block, never a widening of SupportConfig:
+//
+//   - PUBLIC + UNAUTHENTICATED. Press arrives at `press@wifihaven.net` via **Cloudflare Email
+//     Routing → an Email Worker** (deploy/press-worker/), NOT Plain and NOT the #2199 household
+//     widget. The Worker HMAC-signs a tiny JSON envelope and POSTs it to THIS API's
+//     `/api/press/inbound`. There is therefore NO tenant/household gate and, critically, NO
+//     household data-read path: the press agent holds no #2241 data token and no data endpoint
+//     exists for it. It answers from PUBLIC info only (marketing docs + the public repo).
+//   - The reply is EMAILED straight back to the journalist (operator decision 2026-07-17 — reply
+//     directly, no human-approval step) via the #578 Resend [[wifihaven.api.notify.EmailSender]].
+//     The destination is LOCKED into the per-session token (the original sender's address), so a
+//     prompt-hijacked agent cannot redirect the reply — the strongest injection posture, since the
+//     send is autonomous and the sender is untrusted.
+//
+// Same dark-by-default discipline as #2200 (#2265): `responderEnabled` is an EXPLICIT flag (default
+// false, logged + health-visible); a true flag makes its whole config chain REQUIRED at boot
+// (missingRequiredKeys → AppConfig.validateRequired, bulk-listed — plus a cross-check that outbound
+// email is configured, since the reply cannot send without it). The agent holds ZERO vendor secrets
+// — its only credential is the reply-target-bound [[wifihaven.api.press.PressToken]] (no household,
+// no data scope — the no-data guarantee is structural, not prompt-level).
+//
+//   - `webhookSecret`       the shared HMAC secret between the Cloudflare Email Worker and this API
+//                           (`X-WifiHaven-Signature` over the raw body). SEPARATE from support's, so
+//                           a forged support-signed payload can't drive the press pipeline. SECRET.
+//   - `anthropicApiKey`     Anthropic API key used ONLY to create press-agent sessions. SECRET.
+//   - `claudeAgentId`       the pre-provisioned press Managed Agent id (deploy/press-agent/). Config.
+//   - `claudeEnvironmentId` the Managed Agents environment id. Config.
+//   - `anthropicApiBase`    Anthropic API base (overridable for test).
+//   - `agentTokenSecret`    HMAC secret for the per-session press token (reply-target-bound,
+//                           short-TTL). SECRET.
+//   - `agentTokenTtlMinutes` press-token lifetime; clamped to ≥1.
+//   - `agentApiBase`        the public base URL of THIS API (press-agent callback base).
+//   - `deploymentEnv`       which deployment ("staging" | "prod"); rides in the kickoff.
+case class PressConfig(
+    responderEnabled: Boolean = false,
+    webhookSecret: String = "",
+    anthropicApiKey: String = "",
+    claudeAgentId: String = "",
+    claudeEnvironmentId: String = "",
+    anthropicApiBase: String = "https://api.anthropic.com",
+    agentTokenSecret: String = "",
+    agentTokenTtlMinutes: Int = 30,
+    agentApiBase: String = "https://api.wifihaven.net",
+    deploymentEnv: String = "",
+) {
+  val webhookSecretTrimmed: String       = webhookSecret.trim
+  val anthropicApiKeyTrimmed: String     = anthropicApiKey.trim
+  val claudeAgentIdTrimmed: String       = claudeAgentId.trim
+  val claudeEnvironmentIdTrimmed: String = claudeEnvironmentId.trim
+  val agentTokenSecretTrimmed: String    = agentTokenSecret.trim
+  val agentApiBaseTrimmed: String        = agentApiBase.trim.stripSuffix("/")
+  val deploymentEnvTrimmed: String       = deploymentEnv.trim
+
+  // The press agent callback (`/api/press/agent/reply`) authenticates solely with the HMAC press
+  // token; disabled ⇒ 404-shaped denial (mirrors support's agentEndpointsEnabled).
+  val agentEndpointsEnabled: Boolean = responderEnabled && agentTokenSecretTrimmed.nonEmpty
+
+  // #2265: fail LOUD, in bulk. With the press responder explicitly enabled EVERY config the chain
+  // needs is required — the Worker↔API webhook secret, the Anthropic session-create triple, the
+  // agent-token secret, and the deployment identity. Returns ALL missing keys at once;
+  // AppConfig.validateRequired folds these into the boot accumulator (and adds the email cross-check
+  // there, since it needs the whole AppConfig).
+  def missingRequiredKeys: List[String] =
+    if !responderEnabled then Nil
+    else
+      List(
+        "press.webhookSecret"       -> webhookSecretTrimmed,
+        "press.anthropicApiKey"     -> anthropicApiKeyTrimmed,
+        "press.claudeAgentId"       -> claudeAgentIdTrimmed,
+        "press.claudeEnvironmentId" -> claudeEnvironmentIdTrimmed,
+        "press.agentTokenSecret"    -> agentTokenSecretTrimmed,
+        "press.deploymentEnv"       -> deploymentEnvTrimmed,
+      ).collect { case (k, v) if v.isEmpty => k }
+
+  // Clamp to a 1-minute floor so a misconfigured 0/negative can't mint already-expired tokens.
+  val agentTokenTtl: java.time.Duration =
+    java.time.Duration.ofMinutes(math.max(1, agentTokenTtlMinutes).toLong)
+}
+
 object AppConfig {
   private[api] def envTruthy(v: Option[String]): Boolean =
     v.map(_.trim.toLowerCase).exists {
@@ -529,7 +611,21 @@ object AppConfig {
       // the rest (rule 1 + 4). Flag=false ⇒ no keys required ⇒ nothing added.
       cfg.support.missingRequiredKeys.map(k =>
         s"$k must be set when the support responder / issue filing is enabled (#2265)",
-      )
+      ) ++
+      // #2203: the press responder is the same EXPLICIT-flag shape — a true `press.responderEnabled`
+      // makes its whole config chain required, bulk-listed here so it accumulates with the rest.
+      cfg.press.missingRequiredKeys.map(k =>
+        s"$k must be set when the press responder is enabled (#2203/#2265)",
+      ) ++
+      // #2203 cross-check: the press reply is EMAILED to the journalist, so an enabled press
+      // responder with outbound email unconfigured would silently fail to send (a dark no-op) —
+      // fail boot loudly instead (#2265 no-dark-by-default). Email being off is fine when press is.
+      (if cfg.press.responderEnabled && !cfg.email.enabled then
+         List(
+           "wifihaven.email.resendApiKey + wifihaven.email.fromAddress must be set when the press " +
+             "responder is enabled — the press reply is emailed to the sender (#2203/#2265)",
+         )
+       else Nil)
 
   /**
    * Boot-boundary form of [[validateRequired]]: succeed with `cfg` when valid, else FAIL LOUDLY
