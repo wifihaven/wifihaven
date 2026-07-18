@@ -394,23 +394,30 @@ else
         "function returned early without installing dnsmasq-full (sim log: $(cat "$_sim_log"))"
 fi
 
-# #869: both the IPK postinst (openwrt/Makefile Package/wifihaven/postinst)
-# and the APK postinst (openwrt/build-apk.sh post-install heredoc) must
-# register the wifihaven-update cron entry. The APK builder originally
-# dropped this block, so APK-installed routers never got /etc/crontabs/root
-# wired up and auto-update never ran. Guard both producers so they can't
-# drift again.
-for f in "$ROOT/Makefile" "$ROOT/build-apk.sh"; do
+# #869/#1532: the cron-installation block is hand-duplicated across four
+# producers — the IPK postinst (openwrt/Makefile Package/wifihaven/postinst),
+# the plain-ipk builder (openwrt/build-ipk.sh), and BOTH heredocs in
+# openwrt/build-apk.sh (the post-install script and the apk-v3 reinstall
+# trigger). The APK builder originally dropped this block, so APK-installed
+# routers never got /etc/crontabs/root wired up and auto-update never ran.
+# This is the SSOT test-pin for that duplication (per docs/process/single-
+# source-of-truth.md — ACCEPT + TEST-PIN): the canonical crontab lines are
+# declared ONCE here and every copy must contain them byte-for-byte, so any
+# drift (a changed cadence, a dropped line, a new producer that forgets one)
+# fails this test instead of riding on a "keep all copies in sync" comment.
+CRON_UPDATE_LINE='0 * * * * /usr/sbin/wifihaven-update --jitter'
+CRON_ROTATE_LINE='*/10 * * * * /usr/sbin/wifihaven-rotate-dnsmasq-log'
+for f in "$ROOT/Makefile" "$ROOT/build-apk.sh" "$ROOT/build-ipk.sh"; do
   label=$(basename "$f")
-  grep -q "wifihaven-update" "$f" \
-    && check "#869 $label postinst references wifihaven-update cron" ok \
-    || check "#869 $label postinst references wifihaven-update cron" \
-             "missing cron registration for /usr/sbin/wifihaven-update"
+  grep -qF "$CRON_UPDATE_LINE" "$f" \
+    && check "#869/#1532 $label writes the canonical wifihaven-update crontab line" ok \
+    || check "#869/#1532 $label writes the canonical wifihaven-update crontab line" \
+             "missing/altered '$CRON_UPDATE_LINE' — drifted from the canonical cron block"
 
-  grep -q "/usr/sbin/wifihaven-update" "$f" \
-    && check "#869 $label postinst writes /usr/sbin/wifihaven-update to crontab" ok \
-    || check "#869 $label postinst writes /usr/sbin/wifihaven-update to crontab" \
-             "missing crontab line for /usr/sbin/wifihaven-update"
+  grep -qF "$CRON_ROTATE_LINE" "$f" \
+    && check "#869/#1532 $label writes the canonical wifihaven-rotate-dnsmasq-log crontab line" ok \
+    || check "#869/#1532 $label writes the canonical wifihaven-rotate-dnsmasq-log crontab line" \
+             "missing/altered '$CRON_ROTATE_LINE' — drifted from the canonical cron block"
 
   grep -q "/etc/init.d/cron restart" "$f" \
     && check "#869 $label postinst restarts cron" ok \
@@ -440,10 +447,16 @@ grep -q '\-\-trigger "/etc/crontabs"' "$APK" \
 # crontab line + cron restart) so reinstall ends in the same state as a
 # fresh install.
 awk '/cat > "\$WORK\/trigger"/,/^TRIGGER$/' "$APK" \
-  | grep -q "0 \* \* \* \* /usr/sbin/wifihaven-update --jitter" \
+  | grep -qF "$CRON_UPDATE_LINE" \
   && check "#898/#1414 trigger script writes canonical hourly wifihaven-update crontab line" ok \
   || check "#898/#1414 trigger script writes canonical hourly wifihaven-update crontab line" \
-           "trigger heredoc missing the canonical '0 * * * * /usr/sbin/wifihaven-update --jitter' line"
+           "trigger heredoc missing the canonical '$CRON_UPDATE_LINE' line"
+
+awk '/cat > "\$WORK\/trigger"/,/^TRIGGER$/' "$APK" \
+  | grep -qF "$CRON_ROTATE_LINE" \
+  && check "#898/#1532 trigger script writes canonical wifihaven-rotate-dnsmasq-log crontab line" ok \
+  || check "#898/#1532 trigger script writes canonical wifihaven-rotate-dnsmasq-log crontab line" \
+           "trigger heredoc missing the canonical '$CRON_ROTATE_LINE' line"
 
 awk '/cat > "\$WORK\/trigger"/,/^TRIGGER$/' "$APK" \
   | grep -q "/etc/init.d/cron restart" \
