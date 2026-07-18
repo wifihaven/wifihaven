@@ -189,6 +189,21 @@ object CloudAgentDispatcher {
   private def neutralizeTags(s: String): String = ManagedAgents.neutralizeTags(s)
 
   /**
+   * Fail-open envelope shared by every live transport: a completed fire-and-forget `run` is
+   * [[DispatchOutcome.Dispatched]]; any transport error is logged and collapsed to
+   * [[DispatchOutcome.Error]] so a cloud hiccup never fails the webhook response (Plain would
+   * retry-storm a 5xx). ONE definition so the two transports can't drift on the fail-open contract.
+   */
+  private def dispatched(run: Task[Unit]): UIO[DispatchOutcome] =
+    run
+      .as(DispatchOutcome.Dispatched)
+      .catchAll(e =>
+        ZIO
+          .logWarning(s"support agent dispatch errored: ${e.getMessage}")
+          .as(DispatchOutcome.Error),
+      )
+
+  /**
    * Live Managed Agents transport: delegates the create-session + kickoff plumbing to the shared
    * [[ManagedAgents]] transport (one REST implementation for both audiences), rendering the
    * support-specific kickoff. Fire-and-forget; the agent reports back through our agent endpoints.
@@ -197,21 +212,16 @@ object CloudAgentDispatcher {
    */
   final class Live(cfg: SupportConfig) extends CloudAgentDispatcher {
     def dispatch(req: AgentDispatch): UIO[DispatchOutcome] =
-      ManagedAgents
-        .dispatchSession(
+      dispatched(
+        ManagedAgents.dispatchSession(
           anthropicApiBase = cfg.anthropicApiBase,
           anthropicApiKey = cfg.anthropicApiKeyTrimmed,
           agentId = cfg.claudeAgentIdTrimmed,
           environmentId = cfg.claudeEnvironmentIdTrimmed,
           title = s"Support thread ${req.threadId}",
           kickoff = kickoffPrompt(req, cfg.agentApiBaseTrimmed, cfg.deploymentEnvTrimmed),
-        )
-        .as(DispatchOutcome.Dispatched)
-        .catchAll(e =>
-          ZIO
-            .logWarning(s"support agent dispatch errored: ${e.getMessage}")
-            .as(DispatchOutcome.Error),
-        )
+        ),
+      )
   }
 
   /**
@@ -224,19 +234,14 @@ object CloudAgentDispatcher {
    */
   final class ClaudeCodeCloudLive(cfg: SupportConfig) extends CloudAgentDispatcher {
     def dispatch(req: AgentDispatch): UIO[DispatchOutcome] =
-      ClaudeCodeRoutines
-        .fireRoutine(
+      dispatched(
+        ClaudeCodeRoutines.fireRoutine(
           apiBase = cfg.anthropicApiBase,
           routineId = cfg.claudeCodeRoutineIdTrimmed,
           routineToken = cfg.claudeCodeRoutineTokenTrimmed,
           text = kickoffPrompt(req, cfg.agentApiBaseTrimmed, cfg.deploymentEnvTrimmed),
-        )
-        .as(DispatchOutcome.Dispatched)
-        .catchAll(e =>
-          ZIO
-            .logWarning(s"support agent dispatch errored: ${e.getMessage}")
-            .as(DispatchOutcome.Error),
-        )
+        ),
+      )
   }
 
   /** Test dispatcher: records every dispatch (and its rendered kickoff) and reports Dispatched. */

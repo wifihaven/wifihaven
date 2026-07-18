@@ -47,7 +47,10 @@ object ClaudeCodeRoutines {
 
   // The fire endpoint caps `text` at 65,536 chars (routines-fire spec). Our kickoff is tiny; guard
   // defensively so a pathological input can't 400 the whole dispatch — truncation degrades one
-  // reply, a 400 loses it.
+  // reply, a 400 loses it. Last-resort only: truncation drops the TAIL of the kickoff (the untrusted
+  // customer text, and at worst its closing </customer_message> delimiter), never the head — the
+  // SECURITY preamble + opening delimiter that establish injection containment are front-loaded by
+  // CloudAgentDispatcher.kickoffPrompt, so a cut tail loses content, not containment.
   private val MaxTextChars: Int = 65536
 
   private val sharedClient = HttpClient.newBuilder().connectTimeout(ConnectTimeout).build()
