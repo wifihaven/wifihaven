@@ -411,6 +411,72 @@ object MultiTenantIsolationSpec
       } yield assertTrue(sA == Status.Ok) &&
         assertTrue(bodyA.contains(macA.value), !bodyA.contains(macB.value))
     },
+    test("pin 1 — GET /api/stats counts ONLY the caller's household (leak pin #2282)") {
+      for {
+        _   <- cleanDb
+        two <- TestLayers.seedTwoHouseholds(macA, macB)
+        cer <- ZIO.service[ConnectionEventRepo]
+        // Real wall-clock now: the stat-card windows are anchored on SQL NOW() — the 1h tiles on raw
+        // `connection_events`, the 24h totals/top on the `connection_events_hourly` rollup — not on
+        // the injected TestClock, so the seeded events must be near real now to land in-window.
+        now = Instant.now()
+        // Household A's router produces 3 events (2 allowed + 1 blocked); household B produces NONE.
+        _      <- cer.insertBatch(
+          List(
+            ConnectionEventInsert(
+              two.routerIdA,
+              Some(macA),
+              HostId.Fqdn(Hostname.unsafe("a1.example.com")),
+              None,
+              true,
+              BlockReason.fromWire("allowed"),
+              now.minusSeconds(30),
+            ),
+            ConnectionEventInsert(
+              two.routerIdA,
+              Some(macA),
+              HostId.Fqdn(Hostname.unsafe("a2.example.com")),
+              None,
+              true,
+              BlockReason.fromWire("allowed"),
+              now.minusSeconds(20),
+            ),
+            ConnectionEventInsert(
+              two.routerIdA,
+              Some(macA),
+              HostId.Fqdn(Hostname.unsafe("ads.example.com")),
+              None,
+              false,
+              BlockReason.fromWire("category:adult"),
+              now.minusSeconds(10),
+            ),
+          ),
+        )
+        // Populate the hourly rollup so the 24h totals/top tiles have data to scope.
+        _      <- cer.rerollConnEventsHourly(now.minus(java.time.Duration.ofHours(2)))
+        statsA <- cer.stats(two.hhA)
+        statsB <- cer.stats(two.hhB)
+      } yield
+      // Positive (sees-own-data). hh-A is `HouseholdId.Default`, so this ALSO proves the null-safe
+      // scope is a NO-OP for the single backfill household — it drops none of A's legitimately-owned
+      // rows (the #2258 regression lesson).
+      assertTrue(
+        statsA.totalHour == 3,
+        statsA.blockedHour == 1,
+        statsA.totalToday == 3,
+        statsA.blockedToday == 1,
+        statsA.topBlocked.map(_.host).contains(HostId.Fqdn(Hostname.unsafe("ads.example.com"))),
+      ) &&
+        // Negative (leak pin, #2282). hh-B has NO routers/events, so every count is ZERO even while
+        // hh-A has activity — the brand-new-household cross-tenant leak this fixes.
+        assertTrue(
+          statsB.totalHour == 0,
+          statsB.blockedHour == 0,
+          statsB.totalToday == 0,
+          statsB.blockedToday == 0,
+          statsB.topBlocked.isEmpty,
+        )
+    },
     test("pin 1 — GET /api/time/status returns ONLY the caller's household profiles") {
       for {
         _    <- cleanDb

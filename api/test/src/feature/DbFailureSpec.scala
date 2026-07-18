@@ -209,7 +209,7 @@ object DbFailureSpec extends ZIOSpecDefault {
         grain: BucketGrain,
     ) =
       throwing
-    def stats                                                                           = throwing
+    def stats(household: HouseholdId)                                                   = throwing
     def topBlocked(h: Int, l: Int)                                                      = throwing
     def lastSeenByMacSince(since: Instant, household: Option[HouseholdId] = None)       = throwing
     def findRecentFqdnFor(r: RouterId, ip: IpAddress, since: Instant)                   = throwing
