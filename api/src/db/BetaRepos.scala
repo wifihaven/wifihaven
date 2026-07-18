@@ -436,6 +436,10 @@ class BetaRequestRepoLive(xa: Transactor[Task]) extends BetaRequestRepo {
             .unique
         _   <-
           sql"INSERT INTO household_billing(household_id, status, founding) VALUES($hid, $billingStatus, $founding)".update.run
+        // #2286: seed the new household's global-sentinel profile in the SAME transaction, so a
+        // provisioned household always has its `Global` policy row (else GET /api/profiles/global
+        // 404s and the household can't author global policy). SSOT insert; idempotent per household.
+        _   <- ProfileSeed.insertGlobalSentinel(hid)
         n   <-
           sql"""UPDATE beta_requests
                 SET status='approved', decided_at=$decidedAt, decided_by=$decidedBy,

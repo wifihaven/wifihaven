@@ -170,9 +170,11 @@ case class Profile(
     // flag, only the collapsed `blocked = true`. Default false. Additive field
     // with a default, so an older client that omits it decodes unchanged.
     defaultDeny: Boolean = false,
-    // #1771: marks the single household-wide "Global" sentinel profile. Exactly
-    // one row in `profiles` may have `is_global = TRUE` (V59 partial unique
-    // index). The sentinel replaces the deleted `global_*` tables (#1769): its
+    // #1771: marks a household's "Global" sentinel profile. Exactly one row per
+    // household may have `is_global = TRUE` (V73 `(household_id, is_global)`
+    // partial unique index; V59 originally made it installation-wide, #2286
+    // widened it per-household). The sentinel replaces the deleted `global_*`
+    // tables (#1769): its
     // resolved `extraAllowed` / `extraBlocked` / `blocklistIds` are unioned into
     // every other profile's `BlockRules` by `PolicyService.snapshot`, while its
     // `paused` / schedules / time limits / pauseMode are meaningless household-
