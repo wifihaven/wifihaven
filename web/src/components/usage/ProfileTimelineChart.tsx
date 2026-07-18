@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react'
 import {
-  Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis,
+  Bar, BarChart, CartesianGrid, Tooltip, XAxis, YAxis,
 } from 'recharts'
+import { ChartFrame, CHART_HEIGHT_SHORT_PX } from './ChartFrame'
 import { api } from '@/api/client'
 import {
   useTimeStatusProfileWeek, useUsageSeriesProfileToday,
@@ -265,8 +266,7 @@ export function ProfileTimelineChart({ profileId }: { profileId: number }) {
           </div>
         ) : (
           <>
-            <div className="h-48 -ml-2" data-testid={`profile-timeline-${profileId}-week-chart`}>
-              <ResponsiveContainer width="100%" height="100%">
+            <ChartFrame className="-ml-2" heightPx={CHART_HEIGHT_SHORT_PX} testId={`profile-timeline-${profileId}-week-chart`}>
                 <BarChart data={weekChart} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
                   <CartesianGrid stroke="#1f2937" strokeDasharray="3 3" vertical={false} />
                   <XAxis dataKey="label"
@@ -291,8 +291,7 @@ export function ProfileTimelineChart({ profileId }: { profileId: number }) {
                     formatter={(v) => [formatMins(Number(v)), 'Used']} />
                   <Bar dataKey="usedMins" fill={HOST_COLORS[0]} />
                 </BarChart>
-              </ResponsiveContainer>
-            </div>
+            </ChartFrame>
             <p className="text-[11px] text-brand-text-muted font-mono">
               {formatMins(weekTotal)} total · {weekData?.from} → {weekData?.to}
             </p>

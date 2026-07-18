@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import {
-  Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis,
+  Bar, BarChart, CartesianGrid, Tooltip, XAxis, YAxis,
 } from 'recharts'
+import { ChartFrame, CHART_HEIGHT_TALL_PX } from '@/components/usage/ChartFrame'
 import { api } from '@/api/client'
 import type {
   DeviceTimeStatusWeek, SuppressedHostUsage, UsageEntityBucket, UsageSeriesResponse,
@@ -261,8 +262,7 @@ export function DeviceTimelinePage() {
               No usage recorded in this 7-day window.
             </div>
           ) : (
-            <div className="h-72 -ml-2" data-testid="device-timeline-week-chart">
-              <ResponsiveContainer width="100%" height="100%">
+            <ChartFrame className="-ml-2" heightPx={CHART_HEIGHT_TALL_PX} testId="device-timeline-week-chart">
                 <BarChart data={weekChart} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
                   <CartesianGrid stroke="#1f2937" strokeDasharray="3 3" vertical={false} />
                   <XAxis
@@ -291,8 +291,7 @@ export function DeviceTimelinePage() {
                   />
                   <Bar dataKey="usedMins" fill={HOST_COLORS[0]} />
                 </BarChart>
-              </ResponsiveContainer>
-            </div>
+            </ChartFrame>
           )
         )}
       </div>
