@@ -321,10 +321,27 @@ trait ProfileRepo {
  * shape as [[AppRepo.setHosts]]).
  */
 trait NamedScheduleRepo {
-  def listAll: Task[List[NamedSchedule]]
+  // #2126 (multi-tenant, epic #2085/#622): the household-scoped list read backing
+  // `GET /api/schedules`. V71 added `named_schedules.household_id`, so the read filters on the
+  // caller's `claims.hh` — an unattached, freshly-created schedule stays visible to ITS OWN
+  // household (the authoring-UI requirement) but never leaks across the tenant boundary. There is
+  // deliberately NO cross-tenant `listAll`: the bare all-tenant read was the leak (design §2 gap 4).
+  def listAllForHousehold(household: HouseholdId): Task[List[NamedSchedule]]
   def findById(id: NamedScheduleId): Task[Option[NamedSchedule]]
   def findByName(name: String): Task[Option[NamedSchedule]]
-  def create(name: String, description: Option[String], windows: List[ScheduleWindow]): Task[
+  // #2126: the household-scoped access probe used by the per-id route guards — the household that
+  // owns `id`, or None if the schedule does not exist. A guard rejects (404) any target whose
+  // household ≠ the caller's `claims.hh`, mirroring `ProfileRepo.householdOf`.
+  def householdOf(id: NamedScheduleId): Task[Option[HouseholdId]]
+  // #2126: `household` stamps the new schedule with the creating admin's household (from their JWT),
+  // never left to V71's DEFAULT 1. Defaults to the single-install backfill household so
+  // pre-multi-tenant callers stay tenant-safe (#2130 precedent).
+  def create(
+      name: String,
+      description: Option[String],
+      windows: List[ScheduleWindow],
+      household: HouseholdId = HouseholdId.Default,
+  ): Task[
     NamedScheduleId,
   ]
   def update(
@@ -360,10 +377,16 @@ trait NamedScheduleRepo {
  * downtime, leaving the legacy `schedules` behaviour exactly as before.
  */
 object NoopNamedScheduleRepo extends NamedScheduleRepo {
-  def listAll                       = ZIO.succeed(Nil)
-  def findById(id: NamedScheduleId) = ZIO.succeed(None)
-  def findByName(name: String)      = ZIO.succeed(None)
-  def create(name: String, description: Option[String], windows: List[ScheduleWindow]) =
+  def listAllForHousehold(household: HouseholdId)                          = ZIO.succeed(Nil)
+  def findById(id: NamedScheduleId)                                        = ZIO.succeed(None)
+  def findByName(name: String)                                             = ZIO.succeed(None)
+  def householdOf(id: NamedScheduleId)                                     = ZIO.succeed(None)
+  def create(
+      name: String,
+      description: Option[String],
+      windows: List[ScheduleWindow],
+      household: HouseholdId = HouseholdId.Default,
+  ) =
     ZIO.succeed(NamedScheduleId(0L))
   def update(
       id: NamedScheduleId,
@@ -371,7 +394,7 @@ object NoopNamedScheduleRepo extends NamedScheduleRepo {
       description: Option[String],
       windows: List[ScheduleWindow],
   ) = ZIO.unit
-  def delete(id: NamedScheduleId)                                                      = ZIO.unit
+  def delete(id: NamedScheduleId)                                          = ZIO.unit
   def blockScheduleIdsForProfile(pid: ProfileId)                           = ZIO.succeed(Nil)
   def setProfileBlockSchedules(pid: ProfileId, ids: List[NamedScheduleId]) = ZIO.unit
   def windowsForProfile(pid: ProfileId)                                    = ZIO.succeed(Nil)
@@ -4140,11 +4163,14 @@ class NamedScheduleRepoLive(xa: Transactor[Task]) extends NamedScheduleRepo {
                    VALUES($id,${w.days.toArray},${w.startLocal},${w.endLocal},${w.tz})""".update.run.void
     }
 
-  def listAll =
-    DbMetrics.timed("namedSchedule.listAll")(
+  // #2126: AND-scoped to one household via the V71 `household_id` column (index-backed by
+  // idx_named_schedules_household). Backs `GET /api/schedules` with the caller's `claims.hh`.
+  def listAllForHousehold(household: HouseholdId) =
+    DbMetrics.timed("namedSchedule.listAllForHousehold")(
       (for {
         rows <-
-          sql"SELECT id,name,description FROM named_schedules ORDER BY name"
+          (fr"SELECT id,name,description FROM named_schedules WHERE" ++
+            SqlFragments.householdEq(household) ++ fr"ORDER BY name")
             .query[(NamedScheduleId, String, Option[String])]
             .to[List]
         out  <- rows.traverse { case (id, name, desc) =>
@@ -4152,6 +4178,13 @@ class NamedScheduleRepoLive(xa: Transactor[Task]) extends NamedScheduleRepo {
         }
       } yield out).transact(xa),
     )
+
+  // #2126: the household that owns `id`, for the per-id route guards. Index-backed by the primary key.
+  def householdOf(id: NamedScheduleId) =
+    sql"SELECT household_id FROM named_schedules WHERE id=$id"
+      .query[HouseholdId]
+      .option
+      .transact(xa)
 
   def findById(id: NamedScheduleId) =
     (for {
@@ -4175,10 +4208,16 @@ class NamedScheduleRepoLive(xa: Transactor[Task]) extends NamedScheduleRepo {
       }
     } yield out).transact(xa)
 
-  def create(name: String, description: Option[String], windows: List[ScheduleWindow]) =
+  def create(
+      name: String,
+      description: Option[String],
+      windows: List[ScheduleWindow],
+      household: HouseholdId = HouseholdId.Default,
+  ) =
+    // #2126: household_id is stamped explicitly — never left to V71's DEFAULT 1 (#2130 precedent).
     (for {
       id <-
-        sql"INSERT INTO named_schedules(name,description) VALUES($name,$description) RETURNING id"
+        sql"INSERT INTO named_schedules(name,description,household_id) VALUES($name,$description,$household) RETURNING id"
           .query[NamedScheduleId]
           .unique
       _  <- insertWindows(id, windows)

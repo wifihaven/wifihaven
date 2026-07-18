@@ -89,8 +89,10 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
     // #2126 — user↔profile mappings; today filtered by the scoped `users` list it is joined against,
     // so not an active leak, but the read itself is unscoped (defense-in-depth follow-up).
     "Routes.scala"             -> Set("userProfileRepo.listAllMappings"),
-    // #2126 — `named_schedules` has no household_id column yet; GET /api/schedules is unscoped.
-    "ScheduleRoutes.scala"     -> Set("scheduleRepo.listAll"),
+    // #2126 — `named_schedules` GET /api/schedules is now household-scoped: V71 added
+    // `named_schedules.household_id` and `ScheduleRoutes` reads `listAllForHousehold(claims.hh)`
+    // (the per-id routes are guarded by `requireScheduleInHousehold`). The bare `scheduleRepo.listAll`
+    // no longer exists, so no allowlist entry is needed.
     // #2257 — DebugRoutes / SpaPush / UsageRoutes previously held unscoped `deviceRepo.listAll` /
     // `profileRepo.listAll`. Those are now household-scoped (`listAllForHousehold`) in every request
     // handler + SPA push builder; DebugRoutes' loopback-only dump is an explicit
@@ -122,10 +124,10 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
       val all =
         routeFiles.flatMap(p => householdRelevantReads(new String(Files.readAllBytes(p)))).toSet
       // #2257: `deviceRepo.listAll` / `profileRepo.listAll` no longer exist (scoped or renamed to
-      // `listAllAcrossHouseholds`), so the anchor moved to the still-tracked `scheduleRepo.listAll`
-      // (named_schedules, #2126) and `appTimeLimitRepo.listAll` (DashboardNow app-limit, #2126) —
-      // both non-catalog reads the scan must still see.
-      assertTrue(all.contains("scheduleRepo.listAll"), all.contains("appTimeLimitRepo.listAll"))
+      // `listAllAcrossHouseholds`). #2126 then scoped `scheduleRepo.listAll` (named_schedules) to
+      // `listAllForHousehold`, so the remaining still-tracked non-catalog anchor is
+      // `appTimeLimitRepo.listAll` (DashboardNow app-limit, #2126) — the read the scan must still see.
+      assertTrue(all.contains("appTimeLimitRepo.listAll"))
     },
     // The exemption for the global app catalog must actually fire (else it is dead config).
     test("appRepo.listAll (global catalog) is exempt, never flagged") {

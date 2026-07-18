@@ -234,7 +234,7 @@ object SchedulesApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
             .addHeader(Header.Authorization.Bearer(token)),
         )
         after  <- nsr.blockScheduleIdsForProfile(pid)
-        remain <- nsr.listAll
+        remain <- nsr.listAllForHousehold(HouseholdId.Default)
       } yield assertTrue(link.status == Status.Ok) &&
         assertTrue(linked == List(sched.id)) &&
         assertTrue(del.status == Status.Ok) &&
