@@ -35,14 +35,16 @@ function renderHint() {
 }
 
 describe('FirstRunHint — #2252 router-onboarding-aware welcome banner', () => {
-  it('shows the "Enroll a router" CTA when no router is enrolled yet', async () => {
+  it('shows the "Set up your router" CTA (to /router-setup) when no router is enrolled yet', async () => {
     listRouters.mockResolvedValue([])
     renderHint()
 
     const hint = await screen.findByTestId('first-run-hint')
     expect(hint).toHaveAttribute('data-state', 'none')
-    const cta = screen.getByRole('link', { name: /enroll a router/i })
-    expect(cta).toHaveAttribute('href', '/routers')
+    // #2234: the none-state CTA now points at the /router-setup guide (hardware + install
+    // command), which in turn links to /routers to mint the token.
+    const cta = screen.getByRole('link', { name: /set up your router/i })
+    expect(cta).toHaveAttribute('href', '/router-setup')
     expect(screen.queryByText(/waiting for your router/i)).not.toBeInTheDocument()
   })
 
@@ -57,8 +59,8 @@ describe('FirstRunHint — #2252 router-onboarding-aware welcome banner', () => 
     expect(hint).toHaveAttribute('data-state', 'pending')
     expect(screen.getByText(/waiting for your router to connect/i)).toBeInTheDocument()
     // NOT the enroll CTA — the admin already enrolled.
-    expect(screen.queryByRole('link', { name: /enroll a router/i })).not.toBeInTheDocument()
-    expect(screen.getByRole('link', { name: /view router setup/i })).toHaveAttribute('href', '/routers')
+    expect(screen.queryByRole('link', { name: /set up your router/i })).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /view install instructions/i })).toHaveAttribute('href', '/router-setup')
   })
 
   it('renders nothing once a router has checked in (lastSeenAt set)', async () => {

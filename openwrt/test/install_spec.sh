@@ -89,6 +89,70 @@ grep -qE "Router name|router_name|routerName" "$SCRIPT" \
            "install.sh still references router-name input" \
   || check "install.sh does not prompt for router name" ok
 
+# SSOT TEST-PIN (docs/process/single-source-of-truth.md): the install one-liner is shown in
+# THREE places — this script's header (its own documented invocation), docs/install-openwrt.md
+# §2, and the SPA RouterInstallPage (ROUTER_INSTALL_COMMAND). If they drift a user copies a
+# broken command. The SSOT rule forbids resolving this with a "keep in sync" comment; instead we
+# pin the equality here so drift fails CI. Canonical source = the install.sh header line; assert
+# the docs and the SPA const contain it verbatim.
+WEB_INSTALL_PAGE="$ROOT/../web/src/pages/RouterInstallPage.tsx"
+DOCS_OPENWRT="$ROOT/../docs/install-openwrt.md"
+ONELINER=$(grep -oE 'sh -c "\$\(uclient-fetch -qO - https://[^"]*install\.sh\)"' "$SCRIPT" | head -n1)
+[ -n "$ONELINER" ] \
+  && check "SSOT: install.sh header carries the canonical install one-liner" ok \
+  || check "SSOT: install.sh header carries the canonical install one-liner" \
+           "could not extract the sh -c \"\$(uclient-fetch …)\" one-liner from install.sh header"
+
+if [ -f "$WEB_INSTALL_PAGE" ]; then
+  grep -qF "$ONELINER" "$WEB_INSTALL_PAGE" \
+    && check "SSOT: RouterInstallPage ROUTER_INSTALL_COMMAND matches the install.sh one-liner" ok \
+    || check "SSOT: RouterInstallPage ROUTER_INSTALL_COMMAND matches the install.sh one-liner" \
+             "web install page one-liner drifted from install.sh — update one to match the other"
+else
+  check "SSOT: RouterInstallPage present for one-liner pin" "missing $WEB_INSTALL_PAGE"
+fi
+
+if [ -f "$DOCS_OPENWRT" ]; then
+  grep -qF "$ONELINER" "$DOCS_OPENWRT" \
+    && check "SSOT: docs/install-openwrt.md one-liner matches install.sh" ok \
+    || check "SSOT: docs/install-openwrt.md one-liner matches install.sh" \
+             "docs one-liner drifted from install.sh — update one to match the other"
+else
+  check "SSOT: docs/install-openwrt.md present for one-liner pin" "missing $DOCS_OPENWRT"
+fi
+
+# #2235: the token prompt must give a DIRECT deep link to the add-router dialog
+# — ${BLOCK_PAGE_URL}/routers?add=1, derived from the already-prompted SPA host
+# rather than a hardcoded cloud host (so self-hosted points at its own
+# dashboard) AND carrying ?add=1 so the operator lands on the open "Generate
+# Token" dialog with no extra clicks (RoutersPage.tsx consumes the param).
+grep -q 'BLOCK_PAGE_URL}/routers?add=1' "$SCRIPT" \
+  && check "#2235 token guidance deep-links to \${BLOCK_PAGE_URL}/routers?add=1 (base-derived, direct)" ok \
+  || check "#2235 token guidance deep-links to \${BLOCK_PAGE_URL}/routers?add=1 (base-derived, direct)" \
+           "install.sh token prompt doesn't deep-link to \${BLOCK_PAGE_URL}/routers?add=1"
+
+# #2235: the guidance must still name the cloud host as the concrete example
+# (with the ?add=1 deep link) and note the self-hosted case.
+grep -q 'https://app.wifihaven.net/routers?add=1' "$SCRIPT" \
+  && check "#2235 token guidance names the cloud add-router deep link as the example" ok \
+  || check "#2235 token guidance names the cloud add-router deep link as the example" \
+           "install.sh token guidance missing the cloud app.wifihaven.net/routers?add=1 example"
+
+# #2235: the add-router copy must match the real SPA button label
+# (web/src/pages/RoutersPage.tsx: "Generate Token") so the script's steps line
+# up with what the operator actually sees.
+grep -q 'Generate Token' "$SCRIPT" \
+  && check "#2235 token guidance matches the real 'Generate Token' UI copy" ok \
+  || check "#2235 token guidance matches the real 'Generate Token' UI copy" \
+           "install.sh token guidance doesn't match RoutersPage 'Generate Token' copy"
+
+# #2235: the non-interactive (no-tty) error must also point at where to get the
+# token, since that's the prompt most likely to strand an unattended run.
+awk '/no \/dev\/tty available/' "$SCRIPT" | grep -q '/routers' \
+  && check "#2235 no-tty error points at the Routers add-router flow" ok \
+  || check "#2235 no-tty error points at the Routers add-router flow" \
+           "install.sh no-tty error doesn't mention the Routers/add-router token source"
+
 # #303 + #437 + #542: block-page uhttpd UCI lives in the shared helper.
 # install.sh must invoke it (not inline the UCI calls — that was #542's
 # drift bug between install.sh and the package postinst).

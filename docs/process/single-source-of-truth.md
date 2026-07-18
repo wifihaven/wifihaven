@@ -32,6 +32,22 @@ both display-vs-enforcement drift.
 - **If two paths genuinely must stay separate, ACCEPT + TEST-PIN.** Add a
   test that fails the moment they diverge, so the coupling is enforced by CI
   rather than by a comment.
+- **A "keep in sync" comment is never a valid resolution — least of all as a
+  way to "address" a review finding.** Writing `// KEEP IN SYNC with …` or
+  `// must stay byte-identical to …` does not fix duplication; it *is* the
+  anti-pattern, and it silently re-fails the moment someone edits one copy.
+  When a duplication finding is raised, the only acceptable responses are
+  COLLAPSE, TYPE-ENFORCE, or ACCEPT + TEST-PIN — the review is not addressed
+  until one of those lands. This applies to **cross-language / cross-file**
+  string duplication (a shell comment, a Markdown doc, and a UI constant all
+  holding the same literal), not only to Scala logic: those can't `import` each
+  other, so the resolution is a TEST-PIN that reads the files and asserts they
+  match. **Worked example:** the OpenWRT install one-liner appears in the
+  `openwrt/install.sh` header, `docs/install-openwrt.md` §2, and the SPA
+  `ROUTER_INSTALL_COMMAND`; their equality is pinned in
+  `openwrt/test/install_spec.sh` (it extracts the canonical line from
+  `install.sh` and asserts the other two contain it verbatim), so drift fails
+  CI — no "keep in sync" comment anywhere.
 - **Carve-out — intentional wire-shape redundancy is NOT a violation.** Where
   the architecture *mandates* duplication on the wire — the infra allowlist
   copied into every profile's `extraAllowed`

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import userEvent from '@testing-library/user-event'
 import type { CreateRouterResponse, RouterSummary } from '@/types/api'
 
@@ -48,7 +49,7 @@ beforeEach(() => {
 
 async function openTokenDialog() {
   const user = userEvent.setup()
-  render(<RoutersPage />)
+  render(<MemoryRouter><RoutersPage /></MemoryRouter>)
   await screen.findByText('home-gw')
   await user.click(screen.getByRole('button', { name: /enroll router/i }))
   await user.type(screen.getByPlaceholderText('home-gw'), 'new-gw')
@@ -122,22 +123,39 @@ describe('RoutersPage — #771 agent version', () => {
       ...existing, id: 'r3', name: 'gw-with-ver', agentVersion: '0.2.1',
     }
     ;(api.routers.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([withVersion])
-    render(<RoutersPage />)
+    render(<MemoryRouter><RoutersPage /></MemoryRouter>)
     const chip = await screen.findByTestId('router-agent-version')
     expect(chip).toHaveTextContent('v0.2.1')
   })
 
   it('omits the version chip when agentVersion is null (legacy router)', async () => {
-    render(<RoutersPage />)
+    render(<MemoryRouter><RoutersPage /></MemoryRouter>)
     await screen.findByText('home-gw')
     expect(screen.queryByTestId('router-agent-version')).toBeNull()
+  })
+})
+
+describe('RoutersPage — #2235 deep link to the enroll dialog', () => {
+  // The install script (openwrt/install.sh) links straight to ${BLOCK_PAGE_URL}/routers?add=1
+  // so the operator lands on the open "Enroll a Router" dialog with no extra clicks.
+  it('auto-opens the enroll dialog when ?add=1 is in the URL', async () => {
+    render(<MemoryRouter initialEntries={['/routers?add=1']}><RoutersPage /></MemoryRouter>)
+    // The modal title appears without any click.
+    expect(await screen.findByText(/Enroll a Router/i)).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('home-gw')).toBeInTheDocument()
+  })
+
+  it('does not open the dialog on a plain /routers visit', async () => {
+    render(<MemoryRouter initialEntries={['/routers']}><RoutersPage /></MemoryRouter>)
+    await screen.findByText('home-gw')
+    expect(screen.queryByText(/Enroll a Router/i)).not.toBeInTheDocument()
   })
 })
 
 describe('RoutersPage — enroll form', () => {
   it('(#568) submits the form when Enter is pressed in the name field', async () => {
     const user = userEvent.setup()
-    render(<RoutersPage />)
+    render(<MemoryRouter><RoutersPage /></MemoryRouter>)
     await screen.findByText('home-gw')
     await user.click(screen.getByRole('button', { name: /enroll router/i }))
 

@@ -15,6 +15,7 @@ import { TrafficUsagePage } from '@/pages/TrafficUsagePage'
 import { AccountPage } from '@/pages/AccountPage'
 import { UsersPage } from '@/pages/UsersPage'
 import { RoutersPage } from '@/pages/RoutersPage'
+import { RouterInstallPage } from '@/pages/RouterInstallPage'
 import { AdminPage } from '@/pages/AdminPage'
 import { BlockedPage } from '@/pages/BlockedPage'
 import { AppsPage } from '@/pages/AppsPage'
@@ -82,6 +83,9 @@ function AppRoutes() {
         <Route path="schedules"   element={<RequirePwChanged><RequireAdmin><SchedulesPage /></RequireAdmin></RequirePwChanged>} />
         <Route path="users"     element={<RequirePwChanged><RequireAdmin><UsersPage /></RequireAdmin></RequirePwChanged>} />
         <Route path="routers"   element={<RequirePwChanged><RequireAdmin><RoutersPage /></RequireAdmin></RequirePwChanged>} />
+        {/* #2234: post-registration router-install guide (hardware + install command),
+            the natural next step from the first-run onboarding banner; links to /routers. */}
+        <Route path="router-setup" element={<RequirePwChanged><RequireAdmin><RouterInstallPage /></RequireAdmin></RequirePwChanged>} />
         <Route path="billing"   element={<RequirePwChanged><RequireAdmin><BillingPage /></RequireAdmin></RequirePwChanged>} />
         <Route path="admin"     element={<RequirePwChanged><RequireAdmin><AdminPage /></RequireAdmin></RequirePwChanged>} />
         {/* #2133: operator-only beta-request review queue (gated on the isOperator API signal). */}
