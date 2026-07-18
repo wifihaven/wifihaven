@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
 import type { CreateRouterResponse, RouterSummary } from '@/types/api'
 import { PageLoader } from './DashboardPage'
@@ -17,6 +17,19 @@ export function RoutersPage() {
   const [error, setError] = useState<string | null>(null)
   const [showToken, setShowToken] = useState<CreateRouterResponse | null>(null)
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
+  const [searchParams, setSearchParams] = useSearchParams()
+
+  // #2235: deep link straight to the enroll dialog. The install script points the operator at
+  // `${BLOCK_PAGE_URL}/routers?add=1`, so landing here opens "Enroll a Router" with no extra
+  // clicks. Consume the param once (replace: strip it) so a refresh / back doesn't re-open it.
+  useEffect(() => {
+    if (searchParams.get('add') != null) {
+      setCreating(true); setError(null); setName('')
+      const next = new URLSearchParams(searchParams)
+      next.delete('add')
+      setSearchParams(next, { replace: true })
+    }
+  }, [searchParams, setSearchParams])
 
   async function copyToken(text: string) {
     // #2133: shared helper (secure-context Clipboard API + plain-http execCommand fallback).

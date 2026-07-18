@@ -89,25 +89,26 @@ grep -qE "Router name|router_name|routerName" "$SCRIPT" \
            "install.sh still references router-name input" \
   || check "install.sh does not prompt for router name" ok
 
-# #2235: the token prompt must tell the operator where to mint the enrollment
-# token — link to the SPA Routers tab, derived from the already-prompted SPA
-# host ($BLOCK_PAGE_URL) rather than a hardcoded cloud host, so self-hosted
-# installs point at their own dashboard.
-grep -q 'BLOCK_PAGE_URL}/routers' "$SCRIPT" \
-  && check "#2235 token guidance links to \${BLOCK_PAGE_URL}/routers (base-derived, not hardcoded)" ok \
-  || check "#2235 token guidance links to \${BLOCK_PAGE_URL}/routers (base-derived, not hardcoded)" \
-           "install.sh token prompt doesn't derive the Routers URL from BLOCK_PAGE_URL"
+# #2235: the token prompt must give a DIRECT deep link to the add-router dialog
+# — ${BLOCK_PAGE_URL}/routers?add=1, derived from the already-prompted SPA host
+# rather than a hardcoded cloud host (so self-hosted points at its own
+# dashboard) AND carrying ?add=1 so the operator lands on the open "Generate
+# Token" dialog with no extra clicks (RoutersPage.tsx consumes the param).
+grep -q 'BLOCK_PAGE_URL}/routers?add=1' "$SCRIPT" \
+  && check "#2235 token guidance deep-links to \${BLOCK_PAGE_URL}/routers?add=1 (base-derived, direct)" ok \
+  || check "#2235 token guidance deep-links to \${BLOCK_PAGE_URL}/routers?add=1 (base-derived, direct)" \
+           "install.sh token prompt doesn't deep-link to \${BLOCK_PAGE_URL}/routers?add=1"
 
 # #2235: the guidance must still name the cloud host as the concrete example
-# and note the self-hosted case, so cloud users have a copy-pasteable URL.
-grep -q 'https://app.wifihaven.net/routers' "$SCRIPT" \
-  && check "#2235 token guidance names the cloud Routers URL as the example" ok \
-  || check "#2235 token guidance names the cloud Routers URL as the example" \
-           "install.sh token guidance missing the cloud app.wifihaven.net/routers example"
+# (with the ?add=1 deep link) and note the self-hosted case.
+grep -q 'https://app.wifihaven.net/routers?add=1' "$SCRIPT" \
+  && check "#2235 token guidance names the cloud add-router deep link as the example" ok \
+  || check "#2235 token guidance names the cloud add-router deep link as the example" \
+           "install.sh token guidance missing the cloud app.wifihaven.net/routers?add=1 example"
 
-# #2235: the add-router copy must match the real SPA button labels
-# (web/src/pages/RoutersPage.tsx: "+ Enroll Router" -> "Generate Token") so
-# the script's steps line up with what the operator actually sees.
+# #2235: the add-router copy must match the real SPA button label
+# (web/src/pages/RoutersPage.tsx: "Generate Token") so the script's steps line
+# up with what the operator actually sees.
 grep -q 'Generate Token' "$SCRIPT" \
   && check "#2235 token guidance matches the real 'Generate Token' UI copy" ok \
   || check "#2235 token guidance matches the real 'Generate Token' UI copy" \

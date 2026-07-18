@@ -51,9 +51,10 @@ describe('RouterInstallPage — #2234 post-registration router-install page', ()
     expect(screen.getAllByText(/OpenWRT/i).length).toBeGreaterThan(0)
   })
 
-  it('links to the routers tab to mint the enrollment token', () => {
+  it('deep-links to the routers add-router dialog to mint the enrollment token', () => {
     renderPage()
     const link = screen.getByRole('link', { name: /enrollment token|routers|enroll/i })
-    expect(link).toHaveAttribute('href', '/routers')
+    // #2235: ?add=1 auto-opens the enroll dialog so there are no extra clicks.
+    expect(link).toHaveAttribute('href', '/routers?add=1')
   })
 })

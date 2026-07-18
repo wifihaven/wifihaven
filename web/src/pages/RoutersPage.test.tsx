@@ -135,6 +135,23 @@ describe('RoutersPage — #771 agent version', () => {
   })
 })
 
+describe('RoutersPage — #2235 deep link to the enroll dialog', () => {
+  // The install script (openwrt/install.sh) links straight to ${BLOCK_PAGE_URL}/routers?add=1
+  // so the operator lands on the open "Enroll a Router" dialog with no extra clicks.
+  it('auto-opens the enroll dialog when ?add=1 is in the URL', async () => {
+    render(<MemoryRouter initialEntries={['/routers?add=1']}><RoutersPage /></MemoryRouter>)
+    // The modal title appears without any click.
+    expect(await screen.findByText(/Enroll a Router/i)).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('home-gw')).toBeInTheDocument()
+  })
+
+  it('does not open the dialog on a plain /routers visit', async () => {
+    render(<MemoryRouter initialEntries={['/routers']}><RoutersPage /></MemoryRouter>)
+    await screen.findByText('home-gw')
+    expect(screen.queryByText(/Enroll a Router/i)).not.toBeInTheDocument()
+  })
+})
+
 describe('RoutersPage — enroll form', () => {
   it('(#568) submits the form when Enter is pressed in the name field', async () => {
     const user = userEvent.setup()

@@ -20,9 +20,10 @@
 # is generated — the agent does not collect it.
 #
 # Before running this, mint a one-time enrollment token in the WifiHaven
-# dashboard: Routers -> "+ Enroll Router" -> name -> "Generate Token".
-#   Cloud installs:  https://app.wifihaven.net/routers
-#   Self-hosted:     the Routers tab on your own dashboard host
+# dashboard. The /routers?add=1 deep link opens the add-router dialog directly
+# (name -> "Generate Token"):
+#   Cloud installs:  https://app.wifihaven.net/routers?add=1
+#   Self-hosted:     /routers?add=1 on your own dashboard host
 
 set -eu
 
@@ -42,7 +43,7 @@ TTY=/dev/tty
 # operator at where the enrollment token comes from, since that's the prompt
 # most likely to strand them. Mint it first in the dashboard: Routers ->
 # "+ Enroll Router" -> name -> "Generate Token".
-[ -r "$TTY" ] && [ -w "$TTY" ] || err "no /dev/tty available — run this from an interactive root shell (or download the script first, then run it). This installer prompts for the one-time enrollment token: mint it in the WifiHaven dashboard under Routers -> Add router (cloud: https://app.wifihaven.net/routers; self-hosted: the Routers tab on your own dashboard host)."
+[ -r "$TTY" ] && [ -w "$TTY" ] || err "no /dev/tty available — run this from an interactive root shell (or download the script first, then run it). This installer prompts for the one-time enrollment token: mint it in the WifiHaven dashboard via the add-router deep link (cloud: https://app.wifihaven.net/routers?add=1; self-hosted: /routers?add=1 on your own dashboard host)."
 
 prompt() {
   # prompt VAR "Question" [default]
@@ -167,19 +168,21 @@ BLOCK_PAGE_URL=${BLOCK_PAGE_URL%/}
 # Derive the URL from the SPA host we already prompted for ($BLOCK_PAGE_URL)
 # rather than hardcoding app.wifihaven.net — self-hosted installs serve the SPA
 # from their own host, so their Routers tab is on that host, not the cloud one.
-# Wording matches the real add-router UI (web/src/pages/RoutersPage.tsx):
-# "+ Enroll Router" -> enter a name -> "Generate Token".
+# The `?add=1` deep link opens the add-router dialog on arrival (RoutersPage.tsx
+# consumes the param), so the operator lands directly on "Generate Token" with
+# no extra clicks — just enter a name and copy the token.
 cat >"$TTY" <<EOF
 
 The enrollment token is a one-time secret you generate in the WifiHaven
-dashboard. To get it:
+dashboard. To get it, open this link (it opens the add-router dialog directly):
 
-  1. Log in to  ${BLOCK_PAGE_URL}/routers   (Routers tab; admin only)
-  2. Click "+ Enroll Router", enter a name, then "Generate Token"
-  3. Copy the token it shows and paste it below (it is shown only once)
+  ${BLOCK_PAGE_URL}/routers?add=1     (Routers tab; admin login required)
 
-  Cloud installs:  https://app.wifihaven.net/routers
-  Self-hosted:     the Routers tab on your own dashboard host (shown above)
+Then enter a name, click "Generate Token", copy the token it shows, and
+paste it below (it is shown only once).
+
+  Cloud installs:  https://app.wifihaven.net/routers?add=1
+  Self-hosted:     /routers?add=1 on your own dashboard host (shown above)
 
 EOF
 prompt ENROLLMENT_TOKEN "One-time enrollment token"

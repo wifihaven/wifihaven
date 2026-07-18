@@ -124,11 +124,13 @@ export function RouterInstallPage() {
           The install script asks for a one-time enrollment token. Create a router on the
           Routers tab to mint one, then paste it into the script when prompted.
         </p>
+        {/* #2235: deep link to the open enroll dialog (?add=1) — no extra clicks to reach
+            "Generate Token". */}
         <Link
-          to="/routers"
+          to="/routers?add=1"
           className="inline-block bg-brand-accent hover:bg-brand-accent-dark text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors"
         >
-          Go to Routers → get an enrollment token
+          Get an enrollment token →
         </Link>
       </section>
     </div>
