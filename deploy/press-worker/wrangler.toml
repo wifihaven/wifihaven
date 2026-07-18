@@ -1,0 +1,26 @@
+# #2203 — the WifiHaven PRESS/PR Cloudflare Email Worker (deploy/press-worker/).
+#
+# Cloudflare Email Routing catches press@wifihaven.net and runs this Worker per message; it signs and
+# POSTs a small envelope to the API's /api/press/inbound (see src/index.ts + README.md). This Worker
+# holds only the shared HMAC secret — no Anthropic key, no data access.
+#
+# Deploy:  npm install && npx wrangler deploy            (prod, the top-level env)
+#          npx wrangler deploy --env staging             (staging)
+# Secret:  npx wrangler secret put PRESS_WEBHOOK_SECRET   (== the API's press.webhookSecret)
+# Routing: bind press@wifihaven.net → this Worker in Cloudflare → Email Routing (see README.md).
+
+name = "wifihaven-press-worker"
+main = "src/index.ts"
+compatibility_date = "2026-05-17"
+compatibility_flags = ["nodejs_compat"]
+
+# Prod: the API the signed envelope is POSTed to. PRESS_WEBHOOK_SECRET is a secret (wrangler secret
+# put), NEVER a plaintext var here.
+[vars]
+PRESS_API_URL = "https://api.wifihaven.net"
+
+[env.staging]
+name = "wifihaven-press-worker-staging"
+
+[env.staging.vars]
+PRESS_API_URL = "https://api-staging.wifihaven.net"

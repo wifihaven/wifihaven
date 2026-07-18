@@ -45,6 +45,7 @@ object StartupFeatureReport {
     val email   = cfg.email
     val stripe  = cfg.stripe
     val support = cfg.support
+    val press   = cfg.press
     val metrics = cfg.metrics
 
     List(
@@ -103,6 +104,19 @@ object StartupFeatureReport {
           "wifihaven.support.issueFilingEnabled=true — support-agent files GitHub issues (bot token)"
         else
           "wifihaven.support.issueFilingEnabled=false — the agent cannot file issues (#2241/#2265)",
+      ),
+      // #2203/#2265: the press/PR responder is the same EXPLICIT-flag shape as the support responder
+      // — a named `enabled` flag, not inferred from secrets. When ON, its whole config chain is
+      // required and validated at boot (AppConfig.validateRequired); this makes the deliberate OFF
+      // state observable so it isn't mistaken for a silent no-op.
+      FeatureState(
+        "press-responder",
+        press.responderEnabled,
+        if press.responderEnabled then
+          "wifihaven.press.responderEnabled=true — signed press webhook drafts a cloud-agent reply"
+        else
+          "wifihaven.press.responderEnabled=false — inbound press webhook no-ops, agent endpoint " +
+            "404 (#2203/#2265)",
       ),
       FeatureState(
         "metrics-endpoint",

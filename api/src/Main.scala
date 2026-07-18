@@ -409,6 +409,12 @@ object Main extends ZIOAppDefault {
       // EXPLICIT enable flag is true (validated loudly at boot); off is logged + health-visible.
       wifihaven.api.support.CloudAgentDispatcher.layer >+>
       wifihaven.api.support.GithubIssueClient.layer >+>
+      // #2203 (press intake C): the public press/PR responder's cloud-agent dispatcher (a SEPARATE
+      // Managed Agent persona per inbound press message). Reuses the shared ManagedAgents transport;
+      // runs iff press.responderEnabled (#2265), else the logged no-op. The press reply is emailed
+      // via the already-wired #578 EmailSender (retrieved below); no press-specific transport.
+      ZLayer.fromZIO(ZIO.serviceWith[AppConfig](_.press)) >+>
+      wifihaven.api.press.PressAgentDispatcher.layer >+>
       // #1242: Prometheus publisher + snapshot listener, and JVM metrics collectors.
       MetricsRuntime.prometheus() >+>
       DefaultJvmMetrics.live
@@ -505,7 +511,28 @@ object Main extends ZIOAppDefault {
         dispatchThreadLimiter,
         dispatchGlobalLimiter,
       )
-      betaService      = BetaService(
+      // #2203: the PRESS responder — the public inbound webhook (from the Cloudflare Email Worker)
+      // → rate-cap → dispatch pipeline, plus the press agent's reply-target-bound EMAIL callback.
+      // Runs iff press.responderEnabled (#2265). NO household gate and NO data token (public
+      // audience); the reply is emailed to the sender via the shared #578 EmailSender (destination
+      // locked into the session token, so a hijacked agent cannot redirect it).
+      pressDispatcher            <- ZIO.service[wifihaven.api.press.PressAgentDispatcher]
+      pressEmailSender           <- ZIO.service[wifihaven.api.notify.EmailSender]
+      // Same dispatch cost caps as the #2200 support responder (4/sender/hour, 50/day global) — each
+      // dispatched session bills tokens, and the global cap is the true ceiling for this public
+      // endpoint (the per-sender key is best-effort — an anonymous From is trivially rotated).
+      pressDispatchSenderLimiter <- RateLimiterLive.make(maxAttempts = 4, windowSeconds = 60 * 60)
+      pressDispatchGlobalLimiter <-
+        RateLimiterLive.make(maxAttempts = 50, windowSeconds = 24 * 60 * 60)
+      pressResponder = wifihaven.api.press.PressResponder(
+        cfg.press,
+        pressEmailSender,
+        pressDispatcher,
+        clock,
+        pressDispatchSenderLimiter,
+        pressDispatchGlobalLimiter,
+      )
+      betaService    = BetaService(
         betaRepo,
         householdRepo,
         userRepo,
@@ -584,6 +611,12 @@ object Main extends ZIOAppDefault {
           // dispatch) + the agent's token-authenticated callback endpoints. Off unless
           // support.responderEnabled is set explicitly (#2265): webhook no-ops, agent endpoints 404.
           SupportAgentRoutes.routes(supportResponder) ++
+          // #2203: the PRESS/PR inbox — a public, unauthenticated inbound webhook from the Cloudflare
+          // Email Worker (signature-verified, NO household gate) + the press agent's
+          // token-authenticated EMAIL-reply callback (destination locked into the token). Off unless
+          // press.responderEnabled is set explicitly (#2265): webhook no-ops, agent endpoint 404.
+          // The press agent holds no household data token (public audience).
+          PressAgentRoutes.routes(pressResponder) ++
           ProfileRoutes.routes(
             auth,
             profileRepo,
