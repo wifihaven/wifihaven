@@ -364,6 +364,58 @@ resource "cloudflare_email_routing_rule" "support_staging_to_plain" {
   # in the dash (see the block comment above) before this rule's apply can succeed.
 }
 
+# ── Email Routing: press@wifihaven.net → the press Email Worker (#2203) ─────────
+# Unlike support (which FORWARDS to Plain), press is handled IN Cloudflare by an
+# Email Worker (deploy/press-worker/) that signs + POSTs the message to the API's
+# /api/press/inbound; the API dispatches a Claude press session and emails the
+# reply back. So the routing action is `worker`, not `forward`.
+#
+# The Worker script itself is deployed declaratively by
+# .github/workflows/master-press-worker.yml (cloudflare/wrangler-action, mirroring
+# the SPA Pages deploy) — Terraform only BINDS the address to it here. Ordering:
+# the Worker must exist before this rule applies; the worker workflow (on
+# deploy/press-worker/** change) and this apply (on infra/cloudflare/** change)
+# are independent, so a first apply before the worker's first deploy will fail and
+# succeed on the next run once the worker exists. Both are automated on merge — no
+# dashboard step. Routing must already be enabled on the zone (as for support).
+resource "cloudflare_email_routing_rule" "press_to_worker" {
+  zone_id = var.zone_id
+  name    = "press@wifihaven.net -> press Email Worker (#2203)"
+  enabled = true
+
+  matcher {
+    type  = "literal"
+    field = "to"
+    value = "press@wifihaven.net"
+  }
+
+  action {
+    type  = "worker"
+    value = ["wifihaven-press-worker"]
+  }
+}
+
+# Staging: press@staging.wifihaven.net → the staging press Worker. Requires the
+# `staging` subdomain to be enabled under Email Routing (the same operator step
+# support's staging rule documents above); the staging worker is deployed by the
+# same workflow (`--env staging`, name `wifihaven-press-worker-staging`).
+resource "cloudflare_email_routing_rule" "press_staging_to_worker" {
+  zone_id = var.zone_id
+  name    = "press@staging.wifihaven.net -> press Email Worker (#2203)"
+  enabled = true
+
+  matcher {
+    type  = "literal"
+    field = "to"
+    value = "press@staging.wifihaven.net"
+  }
+
+  action {
+    type  = "worker"
+    value = ["wifihaven-press-worker-staging"]
+  }
+}
+
 # Apex + www CNAME to the MARKETING project's .pages.dev (#1842). Stays proxied
 # (orange cloud) so the zone-level redirect ruleset below can fire at the edge.
 resource "cloudflare_record" "spa_apex" {

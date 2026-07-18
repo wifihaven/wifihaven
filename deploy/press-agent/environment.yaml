@@ -1,0 +1,26 @@
+# #2203 — the press responder agent's execution environment (Anthropic Managed Agents).
+#
+# LIMITED networking is load-bearing defense-in-depth: even a fully prompt-hijacked press agent can
+# only reach the WifiHaven API (the token-gated reply endpoint) and public GitHub (source/docs
+# grounding). There is no route to an attacker-chosen host, so "exfiltrate to evil.example" fails at
+# the network layer regardless of what the model was talked into — and the reply recipient is
+# server-locked besides. Package managers stay off — the agent reads and replies.
+#
+# Apply once per workspace (see README.md): staging sessions use the same definition — the agent
+# calls whichever agentApiBase its kickoff names, so api-staging is allowlisted alongside prod.
+name: wifihaven-press-env
+config:
+  type: cloud
+  networking:
+    type: limited
+    allow_package_managers: false
+    allow_mcp_servers: false
+    allowed_hosts:
+      - api.wifihaven.net
+      - api-staging.wifihaven.net
+      - github.com
+      - raw.githubusercontent.com
+      - api.github.com
+      - objects.githubusercontent.com
+      - wifihaven.net
+      - www.wifihaven.net
