@@ -138,6 +138,15 @@ jobs:
       - name: Run router e2e tests
         run: scripts/e2e-router.sh
 
+      # Gate 1, multi-tenant half (#2151): two real households through the
+      # deployed HTTP stack, asserting the absence of cross-tenant leakage
+      # (design docs/design/multi-tenant-isolation.md §7). Compose-only — it
+      # provisions a second household + routers via the beta pipeline, which a
+      # persistent staging backend can't clean between runs, so it is NOT wired
+      # into api-smoke-staging.
+      - name: Run multi-tenant isolation e2e
+        run: python3 scripts/e2e-isolation.py
+
       - name: Dump logs on failure
         if: failure()
         run: |
