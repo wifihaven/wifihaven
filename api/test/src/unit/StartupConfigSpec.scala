@@ -376,5 +376,89 @@ object StartupConfigSpec extends ZIOSpecDefault {
         )
       },
     ),
+    suite("#2266 support.plain widget/write — explicit flags (nested PlainConfig)")(
+      test("widgetEnabled=true requires appId + identitySecret; names each gap") {
+        val errs = PlainConfig.validate(PlainConfig(widgetEnabled = true))
+        assertTrue(
+          errs.exists(_.contains("wifihaven.support.plain.appId")),
+          errs.exists(_.contains("wifihaven.support.plain.identitySecret")),
+          errs.length == 2,
+        )
+      },
+      test("widgetEnabled=true with both set → no error") {
+        assertTrue(
+          PlainConfig
+            .validate(PlainConfig(widgetEnabled = true, appId = "app", identitySecret = "sec"))
+            .isEmpty,
+        )
+      },
+      test("writeEnabled=true requires apiKey; enabled=false never does") {
+        assertTrue(
+          PlainConfig
+            .validate(PlainConfig(writeEnabled = true))
+            .exists(
+              _.contains("wifihaven.support.plain.apiKey"),
+            ),
+          PlainConfig.validate(PlainConfig(writeEnabled = true, apiKey = "k")).isEmpty,
+          PlainConfig.validate(PlainConfig(writeEnabled = false)).isEmpty,
+        )
+      },
+      test("widgetEnabled/writeEnabled are EXPLICIT flags, not derived from secret presence") {
+        // secrets present but flags false → OFF (the point of the conversion).
+        val off = PlainConfig(
+          widgetEnabled = false,
+          writeEnabled = false,
+          apiKey = "k",
+          appId = "app",
+          identitySecret = "sec",
+        )
+        assertTrue(!off.widgetEnabled, !off.writeEnabled)
+      },
+      test("validateRequired accumulates support.plain gaps alongside a bad jwt (rule 4)") {
+        val cfg  = AppConfig(
+          db = DbConfig("localhost", 5432, "wifihaven", "wifihaven", "changeme", 5),
+          http = HttpConfig("0.0.0.0", 8080, "web/dist", serveSpa = true),
+          jwt = JwtConfig("short", 24),
+          cors = CorsConfig(""),
+          support = SupportConfig(plain = PlainConfig(widgetEnabled = true, writeEnabled = true)),
+        )
+        val errs = AppConfig.validateRequired(cfg)
+        assertTrue(
+          errs.exists(_.contains("wifihaven.jwt.secret")),
+          errs.exists(_.contains("wifihaven.support.plain.appId")),
+          errs.exists(_.contains("wifihaven.support.plain.apiKey")),
+        )
+      },
+      test("feature report reflects the explicit plain flags") {
+        def rep(plain: PlainConfig) =
+          StartupFeatureReport
+            .states(
+              AppConfig(
+                db = DbConfig("localhost", 5432, "wifihaven", "wifihaven", "changeme", 5),
+                http = HttpConfig("0.0.0.0", 8080, "web/dist", serveSpa = true),
+                jwt = JwtConfig(goodSecret, 24),
+                cors = CorsConfig(""),
+                support = SupportConfig(plain = plain),
+              ),
+            )
+        val on                      = rep(
+          PlainConfig(
+            widgetEnabled = true,
+            writeEnabled = true,
+            apiKey = "k",
+            appId = "app",
+            identitySecret = "sec",
+          ),
+        )
+        val off                     = rep(PlainConfig())
+        assertTrue(
+          on.find(_.name == "support-widget").get.enabled,
+          on.find(_.name == "support-write-api").get.enabled,
+          !off.find(_.name == "support-widget").get.enabled,
+          !off.find(_.name == "support-write-api").get.enabled,
+          off.find(_.name == "support-widget").get.detail.contains("widgetEnabled=false"),
+        )
+      },
+    ),
   )
 }
