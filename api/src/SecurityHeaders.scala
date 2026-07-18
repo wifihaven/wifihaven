@@ -21,8 +21,25 @@ import zio.http.*
  * script/style further is a defense-in-depth follow-up, not required to close the audit finding.
  */
 object SecurityHeaders {
+  // #2240: Plain support chat-widget hosts. The widget (web/src/components/SupportWidget.tsx)
+  // injects https://chat.cdn-plain.com/index.js; the SDK then loads Google-Fonts CSS, workspace
+  // logo / attachment images from Plain-owned S3 buckets + Gravatar avatars, and connects to
+  // Plain's UK region + the attachment-upload S3 bucket. These are exactly Plain's documented
+  // chat-widget CSP (https://help.plain.com/article/chat); the UK hosts match the API's
+  // core-api.uk.plain.com default (SupportConfig.apiBase). Plain documents NO iframe, so no
+  // frame-src host is added. Kept in sync with the Cloudflare Pages copy in web/public/_headers.
+  private val PlainScriptSrc  = "https://chat.cdn-plain.com"
+  private val PlainConnectSrc =
+    "https://chat.uk.plain.com " +
+      "https://prod-uk-services-attachm-attachmentsuploadbucket2-1l2e4906o2asm.s3.eu-west-2.amazonaws.com"
+  private val PlainStyleSrc   = "https://fonts.googleapis.com"
+  private val PlainImgSrc     =
+    "https://prod-uk-services-workspac-workspacefilespublicbuck-vs4gjqpqjkh6.s3.amazonaws.com " +
+      "https://prod-uk-services-attachm-attachmentsbucket28b3ccf-uwfssb4vt2us.s3.eu-west-2.amazonaws.com " +
+      "https://i0.wp.com"
+
   val ContentSecurityPolicy: String =
-    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+    s"default-src 'self'; script-src 'self' $PlainScriptSrc; style-src 'self' 'unsafe-inline' $PlainStyleSrc; " +
       // connect-src explicitly lists ws:/wss: alongside 'self': the SPA-websocket
       // upgrade (GET /api/ws, web/src/api/wsClient.ts) is same-origin in the
       // self-hosted deploy, but 'self' isn't guaranteed by all browsers to cover a
@@ -34,11 +51,11 @@ object SecurityHeaders {
       // duplicated for the Cloudflare Pages deploy in web/public/_headers
       // (connect-src legitimately differs: this file uses `ws: wss:`, _headers
       // lists concrete hosts). The shared directives that must agree — default-src
-      // 'self', img-src icon host, frame-ancestors 'none' — are pinned on this
-      // side by SecurityHeadersSpec and on the _headers side by
+      // 'self', img-src icon host, frame-ancestors 'none', and the Plain hosts —
+      // are pinned on this side by SecurityHeadersSpec and on the _headers side by
       // web/src/security-headers.test.ts, so neither can silently drop them.
-      "img-src 'self' data: https://icons.duckduckgo.com; connect-src 'self' ws: wss:; frame-ancestors 'none'; " +
-      "base-uri 'self'; object-src 'none'"
+      s"img-src 'self' data: https://icons.duckduckgo.com $PlainImgSrc; connect-src 'self' ws: wss: $PlainConnectSrc; " +
+      "frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
 
   def wrap[Env, Err](routes: Routes[Env, Err]): Routes[Env, Err] =
     routes

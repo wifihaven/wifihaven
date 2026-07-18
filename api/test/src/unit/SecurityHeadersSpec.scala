@@ -37,5 +37,28 @@ object SecurityHeadersSpec extends ZIOSpecDefault {
       val csp = SecurityHeaders.ContentSecurityPolicy
       assertTrue(csp.contains("img-src 'self' data: https://icons.duckduckgo.com"))
     },
+    // #2240: the Plain chat-widget hosts (https://help.plain.com/article/chat) must be present so the
+    // widget script loads and the SDK can connect/load fonts+images. Pinned here (and on the
+    // web/public/_headers side by web/src/security-headers.test.ts) so the two copies stay in sync.
+    test("allowlists Plain chat-widget hosts across script/connect/style/img (#2240)") {
+      val csp = SecurityHeaders.ContentSecurityPolicy
+      assertTrue(csp.contains("https://chat.cdn-plain.com")) &&   // script-src
+      assertTrue(csp.contains("https://chat.uk.plain.com")) &&    // connect-src (UK region)
+      assertTrue(csp.contains("https://fonts.googleapis.com")) && // style-src
+      assertTrue(csp.contains("https://i0.wp.com")) &&            // img-src (Gravatar avatars)
+      assertTrue(
+        csp.contains(
+          "https://prod-uk-services-attachm-attachmentsuploadbucket2-1l2e4906o2asm.s3.eu-west-2.amazonaws.com",
+        ),
+      ) // connect-src attachment-upload bucket
+    },
+    // Over-broadening guard: Plain documents no iframe, so we must NOT loosen frame-ancestors or add
+    // a wildcard for Plain — the additions are exact hosts only.
+    test("Plain additions do not introduce wildcards or loosen frame-ancestors (#2240)") {
+      val csp = SecurityHeaders.ContentSecurityPolicy
+      assertTrue(csp.contains("frame-ancestors 'none'")) &&
+      assertTrue(!csp.contains("*.plain.com")) &&
+      assertTrue(!csp.contains("https://*"))
+    },
   )
 }
