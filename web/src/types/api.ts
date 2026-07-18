@@ -772,6 +772,22 @@ export interface MeResponse {
   isOperator?: boolean
 }
 
+// #2296 (press correspondence log, epic #2197/#2203): one recorded message in the company-global
+// press channel, in either direction. Read-only, operator-household-only (GET /api/press/messages).
+// `inReplyTo` pairs an outbound reply to the inbound inquiry it answers; `outcome` is the send
+// result ('sent' | 'failed') for outbound rows and null for inbound.
+export interface PressMessage {
+  id: number
+  direction: 'inbound' | 'outbound'
+  peerEmail: string
+  subject: string
+  body: string
+  messageId: string
+  inReplyTo: number | null
+  outcome: string | null
+  createdAt: string
+}
+
 // NOTE: the beta-pipeline wire types (BetaRequestStatus, CreateBetaRequest,
 // BetaRequestAck, BetaRequestSummary, ApproveBetaResponse, AcceptInviteRequest,
 // AcceptInviteResponse) already ship below with #2132 — see "Beta access

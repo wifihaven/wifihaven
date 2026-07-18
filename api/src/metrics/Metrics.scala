@@ -461,6 +461,12 @@ object MetricGuard {
     // The #808 lesson: without these entries the firewall rejects the name and the series never emits.
     "press_ai_draft_total"                          -> Set("outcome"),
     "press_agent_action_total"                      -> Set("op", "outcome"),
+    // #2296 — the press correspondence log (V71). `press_message_recorded_total{direction,outcome}`
+    // counts each best-effort AUDIT write by direction (inbound | outbound) × outcome (ok | error).
+    // `error` is a fail-open recording miss — the webhook/reply path still succeeded, but the audit
+    // row was lost, so a rising error rate means the log is silently drifting from reality. Bounded
+    // enums only, never a per-sender / per-email label.
+    "press_message_recorded_total"                  -> Set("direction", "outcome"),
   )
 
   private val rejected = Metric.counter("metrics_rejected_total")
@@ -692,6 +698,17 @@ object AppMetrics {
 
   def pressAgentAction(action: String, outcome: String): UIO[Unit] =
     MetricGuard.counter("press_agent_action_total", Map("op" -> action, "outcome" -> outcome))
+
+  // ── #2296: press correspondence log (V71) ────────────────────────────────────
+  // Emitted from PressResponder's fail-open audit writes. `direction` ∈ {inbound, outbound},
+  // `outcome` ∈ {ok, error} (error = the recording DB write failed but the webhook/reply path still
+  // succeeded — a silent log/reality drift to watch). Bounded enums — never a per-sender label.
+
+  def pressMessageRecorded(direction: String, outcome: String): UIO[Unit] =
+    MetricGuard.counter(
+      "press_message_recorded_total",
+      Map("direction" -> direction, "outcome" -> outcome),
+    )
 
   // ── #864: traffic_reports rows dropped as zero-bytes-zero-seconds ────────────
   // Replaces the per-request warn-log + TODO marker. A rising rate means the

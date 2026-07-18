@@ -518,6 +518,9 @@ object Main extends ZIOAppDefault {
       // locked into the session token, so a hijacked agent cannot redirect it).
       pressDispatcher            <- ZIO.service[wifihaven.api.press.PressAgentDispatcher]
       pressEmailSender           <- ZIO.service[wifihaven.api.notify.EmailSender]
+      // #2296: the press correspondence log (V71). Recording is fail-open inside the responder; the
+      // household-1-only read route (PressRoutes) reads it back.
+      pressLog                   <- ZIO.service[wifihaven.api.db.PressMessageRepo]
       // Same dispatch cost caps as the #2200 support responder (4/sender/hour, 50/day global) — each
       // dispatched session bills tokens, and the global cap is the true ceiling for this public
       // endpoint (the per-sender key is best-effort — an anonymous From is trivially rotated).
@@ -528,6 +531,7 @@ object Main extends ZIOAppDefault {
         cfg.press,
         pressEmailSender,
         pressDispatcher,
+        pressLog,
         clock,
         pressDispatchSenderLimiter,
         pressDispatchGlobalLimiter,
@@ -617,6 +621,10 @@ object Main extends ZIOAppDefault {
           // press.responderEnabled is set explicitly (#2265): webhook no-ops, agent endpoint 404.
           // The press agent holds no household data token (public audience).
           PressAgentRoutes.routes(pressResponder) ++
+          // #2296: the household-1-only admin read of the recorded press correspondence log. Press is
+          // a company-global channel (no household_id); a non-default household gets 404 (not 403),
+          // so the log's existence is not disclosed across the tenant boundary.
+          PressRoutes.routes(auth, pressLog) ++
           ProfileRoutes.routes(
             auth,
             profileRepo,

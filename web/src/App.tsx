@@ -25,6 +25,7 @@ import { BillingPage } from '@/pages/BillingPage'
 import { BetaRequestPage } from '@/pages/BetaRequestPage'
 import { WelcomePage } from '@/pages/WelcomePage'
 import { BetaRequestsPage } from '@/pages/BetaRequestsPage'
+import { PressPage } from '@/pages/PressPage'
 import { useMe } from '@/api/queries'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
@@ -90,6 +91,8 @@ function AppRoutes() {
         <Route path="admin"     element={<RequirePwChanged><RequireAdmin><AdminPage /></RequireAdmin></RequirePwChanged>} />
         {/* #2133: operator-only beta-request review queue (gated on the isOperator API signal). */}
         <Route path="beta-requests" element={<RequirePwChanged><RequireOperator><BetaRequestsPage /></RequireOperator></RequirePwChanged>} />
+        {/* #2296: operator-only press correspondence log (same isOperator gate; API 404s others). */}
+        <Route path="press" element={<RequirePwChanged><RequireOperator><PressPage /></RequireOperator></RequirePwChanged>} />
       </Route>
     </Routes>
   )

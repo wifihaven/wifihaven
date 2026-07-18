@@ -4276,6 +4276,8 @@ object Repos {
   val betaCohortRepo        = ZLayer.fromFunction(BetaCohortRepoLive(_))
   // #2134 (multi-tenant P5-4): per-household entitlements (router_cap).
   val entitlementsRepo      = ZLayer.fromFunction(EntitlementsRepoLive(_))
+  // #2296 (press correspondence log, epic #2197/#2203): the company-global press message log (V71).
+  val pressMessageRepo      = ZLayer.fromFunction(PressMessageRepoLive(_))
   val all                   =
-    userRepo ++ householdRepo ++ userProfileRepo ++ profileRepo ++ namedScheduleRepo ++ householdSettingsRepo ++ timeLimitRepo ++ appTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ rollupRepo ++ timeUsedRollupRepo ++ appUsedRollupRepo ++ partitionRepo ++ ambientHostsRepo ++ householdBillingRepo ++ betaRequestRepo ++ betaCohortRepo ++ entitlementsRepo
+    userRepo ++ householdRepo ++ userProfileRepo ++ profileRepo ++ namedScheduleRepo ++ householdSettingsRepo ++ timeLimitRepo ++ appTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ rollupRepo ++ timeUsedRollupRepo ++ appUsedRollupRepo ++ partitionRepo ++ ambientHostsRepo ++ householdBillingRepo ++ betaRequestRepo ++ betaCohortRepo ++ entitlementsRepo ++ pressMessageRepo
 }
