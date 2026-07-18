@@ -12,7 +12,7 @@
       }
     ]
   },
-  "description": "WifiHaven PRESS/PR responder (#2203, epic #2197): the public press@wifihaven.net inbox handled by a Cloudflare Email Worker → /api/press/inbound → an Anthropic Managed Agents press session → the reply emailed straight back to the sender. Series: press_ai_draft_total{outcome} (inbound-webhook outcomes — dispatched / rate_limited / invalid_signature / malformed / disabled / error) and press_agent_action_total{op,outcome} (the press agent's reply callback — reply × ok / denied / rate_limited / disabled / error). All labels are bounded enums (never per-sender / per-thread). NO household data path (press is public). The responder runs iff the explicit press.responderEnabled flag is set (#2265 — no dark-by-default; a true flag with missing config, or with outbound email off, refuses to boot). See issues #2203, #2197, #2265.",
+  "description": "WifiHaven PRESS/PR responder (#2203, epic #2197): the public press@wifihaven.net inbox handled by a Cloudflare Email Worker → /api/press/inbound → an Anthropic Managed Agents press session → the reply emailed straight back to the sender. Series: press_ai_draft_total{outcome} (inbound-webhook outcomes — dispatched / rate_limited / invalid_signature / malformed / disabled / error), press_agent_action_total{op,outcome} (the press agent's reply callback — reply × ok / denied / rate_limited / disabled / error), and press_message_recorded_total{direction,outcome} (#2296 the correspondence-log audit writes — inbound|outbound × ok|error; fail-open, so error = a lost audit row while the webhook/reply still succeeded). All labels are bounded enums (never per-sender / per-thread). NO household data path (press is public); the recorded log is surfaced only to the household-1 admin. The responder runs iff the explicit press.responderEnabled flag is set (#2265 — no dark-by-default; a true flag with missing config, or with outbound email off, refuses to boot). See issues #2203, #2197, #2265, #2296.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -145,6 +145,37 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Correspondence recorded",
+      "description": "sum by (direction, outcome) (rate(press_message_recorded_total{env=\"$env\"}[5m])) — #2296 the press correspondence log's best-effort AUDIT writes: direction=inbound|outbound × outcome=ok|error. Recording is FAIL-OPEN (a DB error never breaks the webhook or the reply), so an `error` series means the audit row was lost while the webhook/reply still succeeded — a rising error rate means the household-1 press log is silently drifting from reality. Emitted by PressResponder.recordInbound / recordOutbound.",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 8 },
+      "id": 6,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "reqps",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1, "stacking": { "mode": "normal", "group": "A" } }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byRegexp", "options": ".*error.*" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }]
+          }
+        ]
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (direction, outcome) (rate(press_message_recorded_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{direction}} / {{outcome}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",
@@ -188,6 +219,6 @@
   "timezone": "",
   "title": "WifiHaven — Press (PR)",
   "uid": "wifihaven-press",
-  "version": 1,
+  "version": 2,
   "weekStart": ""
 }

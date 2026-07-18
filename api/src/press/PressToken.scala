@@ -31,8 +31,12 @@ import java.util.Base64
  *     reading the session transcript) cannot forge, widen, redirect, or extend a token.
  *
  * Wire shape: `v1.<b64url(payload)>.<hmacHex>` where `payload` is
- * `b64(replyTo)|b64(subject)|expEpochSeconds` (each field base64url'd so neither an email nor a
- * subject can smuggle the `|` delimiter).
+ * `b64(replyTo)|b64(subject)|pressMessageId|expEpochSeconds` (`replyTo`/`subject` base64url'd so
+ * neither an email nor a subject can smuggle the `|` delimiter; `pressMessageId` and `exp` are bare
+ * decimal). `pressMessageId` (#2296) is the id of the recorded inbound `press_messages` row this
+ * session answers, so the reply callback can pair the outbound row to its inquiry — it rides the
+ * SIGNED payload (like every other field), so a hijacked agent can neither forge nor repoint it,
+ * and `0` means "no inbound row was recorded" (fail-open: the inbound insert failed).
  */
 object PressToken {
 
@@ -49,18 +53,27 @@ object PressToken {
    * The claims a verified press token resolves to: the single email address the reply is emailed to
    * and the subject to reply under. NO household, NO data scope — the type cannot express them.
    */
-  final case class Claims(replyTo: String, subject: String, expiresAt: Instant)
+  final case class Claims(
+      replyTo: String,
+      subject: String,
+      pressMessageId: Long,
+      expiresAt: Instant,
+  )
 
-  /** Mint a token binding `replyTo` + `subject`, expiring at `now + ttl`. Server-side only. */
+  /**
+   * Mint a token binding `replyTo` + `subject` + the recorded inbound `pressMessageId`, expiring at
+   * `now + ttl`. Server-side only. Pass `pressMessageId = 0` when no inbound row was recorded.
+   */
   def mint(
       replyTo: String,
       subject: String,
+      pressMessageId: Long,
       now: Instant,
       ttl: java.time.Duration,
       secret: String,
   ): String = {
     val exp     = now.plus(ttl).getEpochSecond
-    val payload = s"${b64(replyTo)}|${b64(subject)}|$exp"
+    val payload = s"${b64(replyTo)}|${b64(subject)}|$pressMessageId|$exp"
     val body    =
       Base64.getUrlEncoder.withoutPadding.encodeToString(payload.getBytes(StandardCharsets.UTF_8))
     s"$Version.$body.${hmacHex(secret, body)}"
@@ -75,20 +88,20 @@ object PressToken {
       case Array(Version, body, sig) =>
         if !constantTimeEquals(sig, hmacHex(secret, body)) then Left(Err.BadSignature)
         else
-          decode(body).flatMap { case (replyTo, subject, exp) =>
+          decode(body).flatMap { case (replyTo, subject, pressMessageId, exp) =>
             if now.getEpochSecond > exp then Left(Err.Expired)
-            else Right(Claims(replyTo, subject, Instant.ofEpochSecond(exp)))
+            else Right(Claims(replyTo, subject, pressMessageId, Instant.ofEpochSecond(exp)))
           }
       case _                         => Left(Err.Malformed)
     }
 
-  private def decode(body: String): Either[Err, (String, String, Long)] =
+  private def decode(body: String): Either[Err, (String, String, Long, Long)] =
     scala.util
       .Try {
         val raw = new String(Base64.getUrlDecoder.decode(body), StandardCharsets.UTF_8)
-        raw.split("\\|", 3) match {
-          case Array(r, s, e) => (unb64(r), unb64(s), e.toLong)
-          case _              => throw new IllegalArgumentException("bad payload")
+        raw.split("\\|", 4) match {
+          case Array(r, s, m, e) => (unb64(r), unb64(s), m.toLong, e.toLong)
+          case _                 => throw new IllegalArgumentException("bad payload")
         }
       }
       .toEither

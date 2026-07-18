@@ -2,6 +2,7 @@ package wifihaven.api.press
 
 import wifihaven.api.PressConfig
 import wifihaven.api.auth.RateLimiter
+import wifihaven.api.db.PressMessageRepo
 import wifihaven.api.metrics.AppMetrics
 import wifihaven.api.notify.{EmailOutcome, EmailSender}
 import wifihaven.shared.Clock
@@ -34,6 +35,10 @@ final case class PressResponder(
     cfg: PressConfig,
     email: EmailSender,
     dispatcher: PressAgentDispatcher,
+    // #2296: the press correspondence log. Recording is best-effort AUDIT — every write is fail-open
+    // (a DB error is logged + metered and swallowed) so it can never break the inbound webhook or the
+    // autonomous reply send; the reply path is authoritative, the log is a side record.
+    pressLog: PressMessageRepo,
     clock: Clock,
     // Cost guardrails: press is public + unauthenticated, so there is no auth gate ahead of the
     // token-billing dispatch — the per-thread (per-sender) + global rate caps ARE the abuse control.
@@ -85,12 +90,18 @@ final case class PressResponder(
 
   private def dispatch(event: PressInboundEvent): UIO[WebhookOutcome] =
     for {
-      now <- clock.instant
+      now            <- clock.instant
+      // #2296: record the inbound press email BEFORE dispatch so the reply can pair to it. Fail-open
+      // — a recording error yields id 0 ("no inbound row") and never blocks the dispatch.
+      pressMessageId <- recordInbound(event)
       // The reply DESTINATION + subject are baked into the token here — the agent never chooses
-      // them. `from` is the sender's address the Worker extracted from the inbound email.
+      // them. `from` is the sender's address the Worker extracted from the inbound email. The
+      // recorded inbound row id (#2296) rides the SIGNED token so the reply callback can pair the
+      // outbound row to this inquiry without trusting anything the agent sends.
       token = PressToken.mint(
         replyTo = event.from,
         subject = event.subject,
+        pressMessageId = pressMessageId,
         now = now,
         ttl = cfg.agentTokenTtl,
         secret = cfg.agentTokenSecretTrimmed,
@@ -135,17 +146,73 @@ final case class PressResponder(
                 AppMetrics.pressAgentAction("reply", "denied").as(AgentActionResult.Denied)
               case Right(claims) =>
                 val subject = replySubject(claims.subject)
-                email.send(claims.replyTo, subject, htmlBody(markdown)).flatMap {
-                  case EmailOutcome.Sent     =>
-                    AppMetrics.pressAgentAction("reply", "ok").as(AgentActionResult.Ok)
-                  case EmailOutcome.Disabled =>
-                    AppMetrics.pressAgentAction("reply", "disabled").as(AgentActionResult.Disabled)
-                  case EmailOutcome.Failed   =>
-                    AppMetrics.pressAgentAction("reply", "error").as(AgentActionResult.Error)
+                email.send(claims.replyTo, subject, htmlBody(markdown)).flatMap { sendResult =>
+                  // #2296: record the outbound reply as AUDIT (fail-open) AFTER the send, pairing it
+                  // to the inbound row via the token's pressMessageId. Only Sent/Failed are real
+                  // send attempts worth logging; a Disabled send (dark install) emitted no email.
+                  val record = sendResult match {
+                    case EmailOutcome.Sent     => recordOutbound(claims, subject, markdown, "sent")
+                    case EmailOutcome.Failed   =>
+                      recordOutbound(claims, subject, markdown, "failed")
+                    case EmailOutcome.Disabled => ZIO.unit
+                  }
+                  record *> (sendResult match {
+                    case EmailOutcome.Sent     =>
+                      AppMetrics.pressAgentAction("reply", "ok").as(AgentActionResult.Ok)
+                    case EmailOutcome.Disabled =>
+                      AppMetrics
+                        .pressAgentAction("reply", "disabled")
+                        .as(AgentActionResult.Disabled)
+                    case EmailOutcome.Failed   =>
+                      AppMetrics.pressAgentAction("reply", "error").as(AgentActionResult.Error)
+                  })
                 }
             }
         }
       }
+
+  // ── #2296: fail-open correspondence-log recording ────────────────────────────
+
+  /**
+   * Record the inbound press email; returns its new row id, or 0 on any DB error. Fail-open: a
+   * recording miss is logged + metered (`press_message_recorded_total{direction=inbound}`) and
+   * swallowed so the dispatch always proceeds (the token then carries id 0 = "no inbound row").
+   */
+  private def recordInbound(event: PressInboundEvent): UIO[Long] =
+    pressLog
+      .recordInbound(event.from, event.subject, event.messageText, event.messageId)
+      .flatMap(id => AppMetrics.pressMessageRecorded("inbound", "ok").as(id))
+      .catchAll(e =>
+        ZIO.logWarning(s"press: inbound recording failed (fail-open): ${e.getMessage}") *>
+          AppMetrics.pressMessageRecorded("inbound", "error").as(0L),
+      )
+
+  /**
+   * Record the outbound AI reply as audit, paired to its inbound row. `subject` is the SAME
+   * `Re:`-subject that was emailed (threaded in, not re-derived). Fail-open: a recording error is
+   * logged + metered and swallowed — the reply has already been emailed and that is authoritative.
+   * `inReplyTo` is omitted when the token carries id 0 (the inbound insert had failed), so the
+   * outbound row never dangles against a non-existent FK.
+   */
+  private def recordOutbound(
+      claims: PressToken.Claims,
+      subject: String,
+      markdown: String,
+      outcome: String,
+  ): UIO[Unit] =
+    pressLog
+      .recordOutbound(
+        peerEmail = claims.replyTo,
+        subject = subject,
+        body = markdown,
+        inReplyTo = Option.when(claims.pressMessageId > 0)(claims.pressMessageId),
+        outcome = outcome,
+      )
+      .flatMap(_ => AppMetrics.pressMessageRecorded("outbound", "ok"))
+      .catchAll(e =>
+        ZIO.logWarning(s"press: outbound recording failed (fail-open): ${e.getMessage}") *>
+          AppMetrics.pressMessageRecorded("outbound", "error"),
+      )
 }
 
 object PressResponder {

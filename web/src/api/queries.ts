@@ -14,6 +14,7 @@ import type {
   ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek, ProfileUsageByApp,
   QueryLog, RouterSummary, TrafficUsageBucket, TrafficUsageGroupBy, UsageConfig, UsageSeriesResponse,
   SupportIdentityResponse,
+  PressMessage,
 } from '@/types/api'
 
 const MIN = 60_000
@@ -69,6 +70,8 @@ export const qk = {
   supportIdentity: () => ['support', 'identity'] as const,
   // #2133 — operator beta-request queue, keyed on the optional status filter.
   betaRequests: (status?: BetaRequestStatus) => ['beta-requests', status ?? 'pending'] as const,
+  // #2296 — operator press correspondence log.
+  pressMessages: () => ['press', 'messages'] as const,
   profiles: () => ['profiles'] as const,
   devices: () => ['devices'] as const,
   // #2252 — enrolled routers, read by the dashboard first-run banner to tell
@@ -163,6 +166,18 @@ export function useBetaRequests(
   return useQuery({
     queryKey: qk.betaRequests(status),
     queryFn: () => api.beta.operatorList(status),
+    staleTime: 30_000,
+    ...opts,
+  })
+}
+
+// #2296 (press correspondence log): the operator's read of the recorded press channel. Only a
+// household-1 admin can read it — the API 404s any other household and 403s a non-admin — so the
+// caller (route/nav) is gated on `useMe().data?.isOperator`, mirroring the beta-request queue.
+export function usePressMessages(opts?: QueryOpts<PressMessage[]>) {
+  return useQuery({
+    queryKey: qk.pressMessages(),
+    queryFn: () => api.press.messages(),
     staleTime: 30_000,
     ...opts,
   })
