@@ -2,14 +2,15 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { copyToClipboard } from '@/lib/clipboard'
 
-// #2234 — the real OpenWRT agent install one-liner. VERIFIED against the canonical
-// sources rather than invented:
-//   - openwrt/install.sh header (the documented invocation), and
-//   - docs/install-openwrt.md §2 "Install with the one-shot script".
-// It uses `uclient-fetch` (present on stock OpenWRT) — NOT curl, which the router may
-// not have installed yet (install.sh itself installs curl on demand). KEEP IN SYNC with
-// the openwrt/install.sh header comment and docs/install-openwrt.md §2 — this must stay
-// byte-identical to those two sources; a drift here would hand new users a broken command.
+// #2234 — the real OpenWRT agent install one-liner shown for the operator to run on the
+// router. It uses `uclient-fetch` (present on stock OpenWRT) — NOT curl, which the router
+// may not have installed yet (install.sh installs curl on demand).
+//
+// This exact string also appears in the openwrt/install.sh header and docs/install-openwrt.md
+// §2; a drift would hand users a broken command. Their equality is enforced MECHANICALLY, not
+// by a "keep in sync" comment (an SSOT anti-pattern — docs/process/single-source-of-truth.md):
+// openwrt/test/install_spec.sh extracts the canonical line from install.sh and asserts this
+// file and the docs contain it verbatim, so any drift fails CI.
 export const ROUTER_INSTALL_COMMAND =
   'sh -c "$(uclient-fetch -qO - https://raw.githubusercontent.com/wifihaven/wifihaven/main/openwrt/install.sh)"'
 

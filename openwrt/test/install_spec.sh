@@ -89,6 +89,38 @@ grep -qE "Router name|router_name|routerName" "$SCRIPT" \
            "install.sh still references router-name input" \
   || check "install.sh does not prompt for router name" ok
 
+# SSOT TEST-PIN (docs/process/single-source-of-truth.md): the install one-liner is shown in
+# THREE places — this script's header (its own documented invocation), docs/install-openwrt.md
+# §2, and the SPA RouterInstallPage (ROUTER_INSTALL_COMMAND). If they drift a user copies a
+# broken command. The SSOT rule forbids resolving this with a "keep in sync" comment; instead we
+# pin the equality here so drift fails CI. Canonical source = the install.sh header line; assert
+# the docs and the SPA const contain it verbatim.
+WEB_INSTALL_PAGE="$ROOT/../web/src/pages/RouterInstallPage.tsx"
+DOCS_OPENWRT="$ROOT/../docs/install-openwrt.md"
+ONELINER=$(grep -oE 'sh -c "\$\(uclient-fetch -qO - https://[^"]*install\.sh\)"' "$SCRIPT" | head -n1)
+[ -n "$ONELINER" ] \
+  && check "SSOT: install.sh header carries the canonical install one-liner" ok \
+  || check "SSOT: install.sh header carries the canonical install one-liner" \
+           "could not extract the sh -c \"\$(uclient-fetch …)\" one-liner from install.sh header"
+
+if [ -f "$WEB_INSTALL_PAGE" ]; then
+  grep -qF "$ONELINER" "$WEB_INSTALL_PAGE" \
+    && check "SSOT: RouterInstallPage ROUTER_INSTALL_COMMAND matches the install.sh one-liner" ok \
+    || check "SSOT: RouterInstallPage ROUTER_INSTALL_COMMAND matches the install.sh one-liner" \
+             "web install page one-liner drifted from install.sh — update one to match the other"
+else
+  check "SSOT: RouterInstallPage present for one-liner pin" "missing $WEB_INSTALL_PAGE"
+fi
+
+if [ -f "$DOCS_OPENWRT" ]; then
+  grep -qF "$ONELINER" "$DOCS_OPENWRT" \
+    && check "SSOT: docs/install-openwrt.md one-liner matches install.sh" ok \
+    || check "SSOT: docs/install-openwrt.md one-liner matches install.sh" \
+             "docs one-liner drifted from install.sh — update one to match the other"
+else
+  check "SSOT: docs/install-openwrt.md present for one-liner pin" "missing $DOCS_OPENWRT"
+fi
+
 # #2235: the token prompt must give a DIRECT deep link to the add-router dialog
 # — ${BLOCK_PAGE_URL}/routers?add=1, derived from the already-prompted SPA host
 # rather than a hardcoded cloud host (so self-hosted points at its own
