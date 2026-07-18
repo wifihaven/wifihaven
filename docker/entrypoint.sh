@@ -97,9 +97,19 @@ set -euo pipefail
 # (config precedes code).
 : "${WIFIHAVEN_SUPPORT_RESPONDER_ENABLED:=false}"
 : "${WIFIHAVEN_SUPPORT_ISSUE_FILING_ENABLED:=false}"
+# #2300: which cloud-agent transport the responder dispatches through — EXPLICIT named value
+# (managed-agents = Anthropic Managed Agents session, API-credit billed; claude-code-cloud = a
+# Claude Code Cloud routine fired per message, Claude-subscription billed). Only the SELECTED
+# transport's config chain is required at boot; an unknown value fails boot loudly.
+: "${WIFIHAVEN_SUPPORT_DISPATCHER:=managed-agents}"
 : "${WIFIHAVEN_SUPPORT_ANTHROPIC_API_KEY:=}"
 : "${WIFIHAVEN_SUPPORT_CLAUDE_AGENT_ID:=}"
 : "${WIFIHAVEN_SUPPORT_CLAUDE_ENVIRONMENT_ID:=}"
+# #2300: claude-code-cloud transport — the pre-provisioned routine id + its per-routine bearer token
+# (from the routine's "API trigger" in the Claude Code web UI). Required only when dispatcher =
+# claude-code-cloud.
+: "${WIFIHAVEN_SUPPORT_CLAUDE_CODE_ROUTINE_ID:=}"
+: "${WIFIHAVEN_SUPPORT_CLAUDE_CODE_ROUTINE_TOKEN:=}"
 : "${WIFIHAVEN_SUPPORT_AGENT_TOKEN_SECRET:=}"
 : "${WIFIHAVEN_SUPPORT_AGENT_API_BASE:=https://api.wifihaven.net}"
 # Which deployment this API is (staging | prod — a per-service literal in render.yaml, empty on
@@ -200,12 +210,15 @@ wifihaven {
       identitySecret = "${WIFIHAVEN_SUPPORT_PLAIN_IDENTITY_SECRET}"
       appId          = "${WIFIHAVEN_SUPPORT_PLAIN_APP_ID}"
     }
-    responderEnabled      = ${WIFIHAVEN_SUPPORT_RESPONDER_ENABLED}
-    issueFilingEnabled    = ${WIFIHAVEN_SUPPORT_ISSUE_FILING_ENABLED}
-    anthropicApiKey       = "${WIFIHAVEN_SUPPORT_ANTHROPIC_API_KEY}"
-    claudeAgentId         = "${WIFIHAVEN_SUPPORT_CLAUDE_AGENT_ID}"
-    claudeEnvironmentId   = "${WIFIHAVEN_SUPPORT_CLAUDE_ENVIRONMENT_ID}"
-    agentTokenSecret      = "${WIFIHAVEN_SUPPORT_AGENT_TOKEN_SECRET}"
+    responderEnabled       = ${WIFIHAVEN_SUPPORT_RESPONDER_ENABLED}
+    issueFilingEnabled     = ${WIFIHAVEN_SUPPORT_ISSUE_FILING_ENABLED}
+    dispatcher             = "${WIFIHAVEN_SUPPORT_DISPATCHER}"
+    anthropicApiKey        = "${WIFIHAVEN_SUPPORT_ANTHROPIC_API_KEY}"
+    claudeAgentId          = "${WIFIHAVEN_SUPPORT_CLAUDE_AGENT_ID}"
+    claudeEnvironmentId    = "${WIFIHAVEN_SUPPORT_CLAUDE_ENVIRONMENT_ID}"
+    claudeCodeRoutineId    = "${WIFIHAVEN_SUPPORT_CLAUDE_CODE_ROUTINE_ID}"
+    claudeCodeRoutineToken = "${WIFIHAVEN_SUPPORT_CLAUDE_CODE_ROUTINE_TOKEN}"
+    agentTokenSecret       = "${WIFIHAVEN_SUPPORT_AGENT_TOKEN_SECRET}"
     agentApiBase          = "${WIFIHAVEN_SUPPORT_AGENT_API_BASE}"
     deploymentEnv         = "${WIFIHAVEN_SUPPORT_DEPLOYMENT_ENV}"
     githubSupportBotToken = "${WIFIHAVEN_SUPPORT_GITHUB_BOT_TOKEN}"

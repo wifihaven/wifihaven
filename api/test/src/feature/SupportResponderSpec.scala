@@ -66,6 +66,22 @@ object SupportResponderSpec
     githubSupportBotToken = "github_pat_test",
   )
 
+  // #2300: the SAME responder, configured for the Claude Code Cloud transport (subscription-billed)
+  // instead of Managed Agents (API-credit-billed). The responder + callback contract are
+  // transport-agnostic, so the recorder stands in identically — this pins that the webhook gating,
+  // token minting, and kickoff are UNCHANGED under the alternative dispatcher.
+  private val liveCccCfg = SupportConfig(
+    responderEnabled = true,
+    issueFilingEnabled = true,
+    dispatcher = "claude-code-cloud",
+    plain = PlainConfig(apiKey = "plain-api-key-test", webhookSecret = WebhookSecret),
+    claudeCodeRoutineId = "routine_test",
+    claudeCodeRoutineToken = "sk-ant-oat01-test",
+    agentTokenSecret = TokenSecret,
+    deploymentEnv = "staging",
+    githubSupportBotToken = "github_pat_test",
+  )
+
   // Flags false (the default) ⇒ the feature is EXPLICITLY off (#2265) — logged + reported on
   // /api/debug/config via StartupFeatureReport, and inert: webhook no-ops, agent endpoints 404.
   private val darkCfg = SupportConfig()
@@ -214,6 +230,40 @@ object SupportResponderSpec
           kickoff.contains("Deployment: staging."),
           kickoff.contains("/api/support/agent/reply"),
           kickoff.contains("asks for a human"),
+        )
+      }
+    },
+    test(
+      "dispatcher=claude-code-cloud: same gate, token, and kickoff (callback contract unchanged)",
+    ) {
+      // #2300: swapping the transport (API-credit → Claude-subscription billing) must NOT change the
+      // responder's behavior — the UI-origin gate still fires, the #2241 token is still minted + bound,
+      // and the kickoff is byte-for-byte the Managed Agents kickoff (it just rides the routine's
+      // `text` field instead of a session event). The recorder proves the responder path is identical.
+      for {
+        _               <- cleanDb
+        hhRepo          <- ZIO.service[HouseholdRepo]
+        billRepo        <- ZIO.service[HouseholdBillingRepo]
+        hh              <- hhRepo.create("Family C", "family-c")
+        _               <- billRepo.create(hh, "beta", founding = true)
+        (routes, stubs) <- makeRoutes(liveCccCfg)
+        msg  = "Why is my phone blocked at dinner?"
+        body = payload(Some(hh.value), "th_ccc_1", msg, consent = true)
+        status     <- postWebhook(routes, body, Some(sign(body)))
+        dispatches <- stubs.dispatch.dispatches.get
+        clock      <- ZIO.service[Clock]
+        now        <- clock.instant
+      } yield {
+        val (req, kickoff) = dispatches.head
+        val claims         = ConsentToken.verify(req.agentToken, now, TokenSecret)
+        assertTrue(
+          status == Status.Ok,
+          dispatches.size == 1,
+          req.threadId == "th_ccc_1",
+          req.householdName == "Family C",
+          kickoff.contains(s"<customer_message>\n$msg\n</customer_message>"),
+          claims.exists(c => c.householdId == hh && c.threadId == "th_ccc_1" && c.dataAccess),
+          kickoff.contains(req.agentToken),
         )
       }
     },

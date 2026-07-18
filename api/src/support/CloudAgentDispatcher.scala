@@ -13,11 +13,15 @@ import zio.*
  * any time, and the operator sees every thread in the Plain inbox).
  *
  * A tiny swappable trait (mirroring the #578 EmailSender / #2199 PlainClient pattern) so the
- * responder depends on "dispatch an agent run", not on Managed Agents REST specifics, and
- * feature-tests inject a recorder instead of hitting the network. #2265 — no dark-by-default: the
- * responder runs iff the EXPLICIT `support.responderEnabled` flag is true (in which case its whole
- * config chain is validated loudly at boot); flag false ⇒ the [[Disabled]] no-op, logged and
- * health-visible.
+ * responder depends on "dispatch an agent run", not on any one transport's REST specifics, and
+ * feature-tests inject a recorder instead of hitting the network. #2300 — the transport is
+ * config-selectable behind this ONE trait: `support.dispatcher = "managed-agents"` ([[Live]], the
+ * Anthropic Managed Agents session, API-credit billed) or `"claude-code-cloud"`
+ * ([[ClaudeCodeCloudLive]], a Claude Code Cloud routine fired per message, Claude-subscription
+ * billed). Both render the SAME kickoff and use the SAME #2241 token + `/api/support/agent/`
+ * callback contract; only the wire endpoint differs. #2265 — no dark-by-default: the responder runs
+ * iff the EXPLICIT `support.responderEnabled` flag is true (in which case its whole config chain is
+ * validated loudly at boot); flag false ⇒ the [[Disabled]] no-op, logged and health-visible.
  *
  * SECURITY MODEL (#2200 / #2241):
  *   - The agent receives **zero vendor secrets**. Its only credential is the short-TTL, thread- and
@@ -67,21 +71,55 @@ enum DispatchOutcome {
 
 object CloudAgentDispatcher {
 
+  /**
+   * #2300: which cloud-agent transport the responder dispatches through. A pure function of config
+   * so the selection is unit-pinnable (both "the new path is selected when configured" and "the
+   * existing path is unchanged by default"), and the [[layer]] builds the matching impl. Boot
+   * validation (`SupportConfig.missingRequiredKeys`) has already rejected an unknown `dispatcher`
+   * value when the responder is enabled, so [[ManagedAgents]] is the safe fallback here.
+   */
+  enum Transport {
+    case Disabled
+    case ManagedAgents
+    case ClaudeCodeCloud
+  }
+
+  def transportFor(cfg: SupportConfig): Transport =
+    if !cfg.responderEnabled then Transport.Disabled
+    else
+      cfg.dispatcherTrimmed match {
+        case "claude-code-cloud" => Transport.ClaudeCodeCloud
+        case _                   => Transport.ManagedAgents
+      }
+
   // #2265: the off state is an explicit named flag, logged at boot (and shown on /api/health) —
-  // never inferred from missing secrets (config validation fails the boot for that case).
+  // never inferred from missing secrets (config validation fails the boot for that case). #2300: the
+  // ENABLED state additionally selects the transport by the explicit `dispatcher` value.
   val layer: ZLayer[SupportConfig, Nothing, CloudAgentDispatcher] =
     ZLayer.fromZIO {
       ZIO.serviceWithZIO[SupportConfig] { cfg =>
-        if cfg.responderEnabled then
-          ZIO
-            .logInfo(
-              "support responder ENABLED — dispatching cloud-agent sessions per inbound message",
-            )
-            .as(new Live(cfg): CloudAgentDispatcher)
-        else
-          ZIO
-            .logInfo("support responder DISABLED (support.responderEnabled=false) — webhook no-ops")
-            .as(Disabled)
+        transportFor(cfg) match {
+          case Transport.Disabled        =>
+            ZIO
+              .logInfo(
+                "support responder DISABLED (support.responderEnabled=false) — webhook no-ops",
+              )
+              .as(Disabled)
+          case Transport.ManagedAgents   =>
+            ZIO
+              .logInfo(
+                "support responder ENABLED (dispatcher=managed-agents) — Anthropic Managed Agents " +
+                  "session per inbound message",
+              )
+              .as(new Live(cfg): CloudAgentDispatcher)
+          case Transport.ClaudeCodeCloud =>
+            ZIO
+              .logInfo(
+                "support responder ENABLED (dispatcher=claude-code-cloud) — Claude Code Cloud " +
+                  "routine fired per inbound message",
+              )
+              .as(new ClaudeCodeCloudLive(cfg): CloudAgentDispatcher)
+        }
       }
     }
 
@@ -167,6 +205,31 @@ object CloudAgentDispatcher {
           environmentId = cfg.claudeEnvironmentIdTrimmed,
           title = s"Support thread ${req.threadId}",
           kickoff = kickoffPrompt(req, cfg.agentApiBaseTrimmed, cfg.deploymentEnvTrimmed),
+        )
+        .as(DispatchOutcome.Dispatched)
+        .catchAll(e =>
+          ZIO
+            .logWarning(s"support agent dispatch errored: ${e.getMessage}")
+            .as(DispatchOutcome.Error),
+        )
+  }
+
+  /**
+   * #2300: Live Claude Code Cloud transport — fires a pre-provisioned routine
+   * ([[ClaudeCodeRoutines]]) per inbound message, billed against the Claude subscription. The
+   * rendered kickoff is IDENTICAL to the Managed Agents path (same [[kickoffPrompt]]) — it rides in
+   * the routine's `text` context field — so the #2241 token, the injection framing, and the
+   * callback contract are all unchanged. Only the transport differs. Fire-and-forget; the run
+   * reports back through our agent endpoints.
+   */
+  final class ClaudeCodeCloudLive(cfg: SupportConfig) extends CloudAgentDispatcher {
+    def dispatch(req: AgentDispatch): UIO[DispatchOutcome] =
+      ClaudeCodeRoutines
+        .fireRoutine(
+          apiBase = cfg.anthropicApiBase,
+          routineId = cfg.claudeCodeRoutineIdTrimmed,
+          routineToken = cfg.claudeCodeRoutineTokenTrimmed,
+          text = kickoffPrompt(req, cfg.agentApiBaseTrimmed, cfg.deploymentEnvTrimmed),
         )
         .as(DispatchOutcome.Dispatched)
         .catchAll(e =>

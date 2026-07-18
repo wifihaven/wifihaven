@@ -226,11 +226,24 @@ services:
         value: "false"
       - key: WIFIHAVEN_SUPPORT_ISSUE_FILING_ENABLED
         value: "false"
+      # #2300: cloud-agent transport — "managed-agents" (Anthropic Managed Agents, API-credit billed)
+      # or "claude-code-cloud" (a Claude Code Cloud routine fired per message, Claude-subscription
+      # billed — the credit-free path). Only the selected transport's config chain is required at
+      # boot; an unknown value fails boot. Flip via PR alongside the routine secrets below.
+      - key: WIFIHAVEN_SUPPORT_DISPATCHER
+        value: managed-agents
       - key: WIFIHAVEN_SUPPORT_ANTHROPIC_API_KEY
         sync: false
       - key: WIFIHAVEN_SUPPORT_CLAUDE_AGENT_ID
         sync: false
       - key: WIFIHAVEN_SUPPORT_CLAUDE_ENVIRONMENT_ID
+        sync: false
+      # #2300: claude-code-cloud transport — the pre-provisioned routine id + its per-routine bearer
+      # token (from the routine's "API trigger" in https://claude.ai/code/routines). Required only
+      # when DISPATCHER=claude-code-cloud. NEVER commit values.
+      - key: WIFIHAVEN_SUPPORT_CLAUDE_CODE_ROUTINE_ID
+        sync: false
+      - key: WIFIHAVEN_SUPPORT_CLAUDE_CODE_ROUTINE_TOKEN
         sync: false
       - key: WIFIHAVEN_SUPPORT_AGENT_TOKEN_SECRET
         generateValue: true
@@ -465,11 +478,24 @@ services:
         value: "false"
       - key: WIFIHAVEN_SUPPORT_ISSUE_FILING_ENABLED
         value: "false"
+      # #2300: cloud-agent transport — "managed-agents" (Anthropic Managed Agents, API-credit billed)
+      # or "claude-code-cloud" (a Claude Code Cloud routine fired per message, Claude-subscription
+      # billed — the credit-free path). Only the selected transport's config chain is required at
+      # boot; an unknown value fails boot. Flip via PR alongside the routine secrets below.
+      - key: WIFIHAVEN_SUPPORT_DISPATCHER
+        value: managed-agents
       - key: WIFIHAVEN_SUPPORT_ANTHROPIC_API_KEY
         sync: false
       - key: WIFIHAVEN_SUPPORT_CLAUDE_AGENT_ID
         sync: false
       - key: WIFIHAVEN_SUPPORT_CLAUDE_ENVIRONMENT_ID
+        sync: false
+      # #2300: claude-code-cloud transport — the pre-provisioned routine id + its per-routine bearer
+      # token (from the routine's "API trigger" in https://claude.ai/code/routines). Required only
+      # when DISPATCHER=claude-code-cloud. NEVER commit values.
+      - key: WIFIHAVEN_SUPPORT_CLAUDE_CODE_ROUTINE_ID
+        sync: false
+      - key: WIFIHAVEN_SUPPORT_CLAUDE_CODE_ROUTINE_TOKEN
         sync: false
       - key: WIFIHAVEN_SUPPORT_AGENT_TOKEN_SECRET
         generateValue: true
