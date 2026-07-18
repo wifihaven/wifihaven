@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import {
   Bar, BarChart, CartesianGrid, Tooltip, XAxis, YAxis,
 } from 'recharts'
-import { ChartFrame } from './ChartFrame'
+import { ChartFrame, CHART_HEIGHT_SHORT_PX } from './ChartFrame'
 import { api } from '@/api/client'
 import {
   useTimeStatusProfileWeek, useUsageSeriesProfileToday,
@@ -266,7 +266,7 @@ export function ProfileTimelineChart({ profileId }: { profileId: number }) {
           </div>
         ) : (
           <>
-            <ChartFrame className="-ml-2" heightPx={192} testId={`profile-timeline-${profileId}-week-chart`}>
+            <ChartFrame className="-ml-2" heightPx={CHART_HEIGHT_SHORT_PX} testId={`profile-timeline-${profileId}-week-chart`}>
                 <BarChart data={weekChart} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
                   <CartesianGrid stroke="#1f2937" strokeDasharray="3 3" vertical={false} />
                   <XAxis dataKey="label"

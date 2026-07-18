@@ -3,7 +3,7 @@ import { Link, useParams, useSearchParams } from 'react-router-dom'
 import {
   Bar, BarChart, CartesianGrid, Tooltip, XAxis, YAxis,
 } from 'recharts'
-import { ChartFrame } from '@/components/usage/ChartFrame'
+import { ChartFrame, CHART_HEIGHT_TALL_PX } from '@/components/usage/ChartFrame'
 import { api } from '@/api/client'
 import type {
   DeviceTimeStatusWeek, SuppressedHostUsage, UsageEntityBucket, UsageSeriesResponse,
@@ -262,7 +262,7 @@ export function DeviceTimelinePage() {
               No usage recorded in this 7-day window.
             </div>
           ) : (
-            <ChartFrame className="-ml-2" heightPx={288} testId="device-timeline-week-chart">
+            <ChartFrame className="-ml-2" heightPx={CHART_HEIGHT_TALL_PX} testId="device-timeline-week-chart">
                 <BarChart data={weekChart} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
                   <CartesianGrid stroke="#1f2937" strokeDasharray="3 3" vertical={false} />
                   <XAxis

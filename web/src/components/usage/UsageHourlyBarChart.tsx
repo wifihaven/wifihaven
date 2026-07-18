@@ -3,7 +3,7 @@ import {
   Tooltip, XAxis, YAxis,
 } from 'recharts'
 import { formatMins } from '@/lib/timeFormat'
-import { ChartFrame } from './ChartFrame'
+import { ChartFrame, CHART_HEIGHT_TALL_PX } from './ChartFrame'
 
 // Shared 24-hour stacked-bar chart used by:
 //   - DeviceTimelinePage (#721) — stack by host
@@ -54,7 +54,7 @@ export function UsageHourlyBarChart({ rows, series, showLegend = false, legendFo
   const hasOther = rows.some(r => Number(r[OTHER_KEY] ?? 0) > 0)
   const otherClickable = !!onOtherClick && hasOther
   return (
-    <ChartFrame testId={testId} className="-ml-2" heightPx={288}>
+    <ChartFrame testId={testId} className="-ml-2" heightPx={CHART_HEIGHT_TALL_PX}>
         <BarChart data={rows} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
           <CartesianGrid stroke="#1f2937" strokeDasharray="3 3" vertical={false} />
           <XAxis

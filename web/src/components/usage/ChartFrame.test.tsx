@@ -1,7 +1,7 @@
 import { render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Bar, BarChart, ResponsiveContainer } from 'recharts'
-import { ChartFrame } from './ChartFrame'
+import { ChartFrame, CHART_HEIGHT_TALL_PX } from './ChartFrame'
 
 // #2297 — regression guard for the ResponsiveContainer "-1/-1" console warning.
 //
@@ -40,7 +40,7 @@ describe('ResponsiveContainer -1/-1 warning', () => {
 
   it('the percentage-height pattern reproduces the warning (root cause)', () => {
     render(
-      <div style={{ height: 288 }}>
+      <div style={{ height: CHART_HEIGHT_TALL_PX }}>
         <ResponsiveContainer width="100%" height="100%">
           {chart()}
         </ResponsiveContainer>
@@ -50,7 +50,7 @@ describe('ResponsiveContainer -1/-1 warning', () => {
   })
 
   it('ChartFrame does not warn — it gives the container a definite height', () => {
-    render(<ChartFrame heightPx={288}>{chart()}</ChartFrame>)
+    render(<ChartFrame heightPx={CHART_HEIGHT_TALL_PX}>{chart()}</ChartFrame>)
     expect(warnedAboutSize()).toBe(false)
   })
 })

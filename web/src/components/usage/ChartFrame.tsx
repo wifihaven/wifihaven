@@ -26,6 +26,14 @@ interface Props {
   children: ReactElement
 }
 
+// The two chart-height tiers used across the usage/timeline views. Named here
+// so every ChartFrame call site shares one definition per tier rather than
+// repeating a bare literal. Values mirror the Tailwind heights the sibling
+// loading/empty placeholders use (h-72 = 18rem = 288px, h-48 = 12rem = 192px)
+// at the default 16px root, so the three states occupy identical space.
+export const CHART_HEIGHT_TALL_PX = 288
+export const CHART_HEIGHT_SHORT_PX = 192
+
 export function ChartFrame({ heightPx, testId, className, children }: Props) {
   return (
     <div data-testid={testId} className={className} style={{ height: heightPx }}>
