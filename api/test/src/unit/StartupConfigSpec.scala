@@ -137,32 +137,33 @@ object StartupConfigSpec extends ZIOSpecDefault {
       },
     ),
     suite("optional features are observable — enabled/disabled + reason (rule 3)")(
-      test("email disabled when no key: named + reason surfaces the unset keys") {
+      test("email disabled by default: reason names the explicit flag (#2266)") {
+        // #2266: the disabled reason is now the EXPLICIT flag (enabled=false), not "keys unset" —
+        // the flag, not secret-absence, is what turns email off.
         loadVia(hocon(goodSecret)).map { c =>
           val states = StartupFeatureReport.states(c)
           val email  = states.find(_.name == "email-notifications").get
           assertTrue(
             !email.enabled,
-            email.detail.contains("resendApiKey"),
-            email.detail.contains("fromAddress"),
+            email.detail.contains("wifihaven.email.enabled=false"),
           )
         }
       },
-      test("email enabled when both secrets present") {
+      test("email enabled when the explicit flag is set (#2266 — not derived from secrets)") {
         val blocks =
-          """  email { resendApiKey = "re_x", fromAddress = "WifiHaven <a@wifihaven.net>" }
+          """  email { enabled = true, resendApiKey = "re_x", fromAddress = "WifiHaven <a@wifihaven.net>" }
             |""".stripMargin
         loadVia(hocon(goodSecret, blocks)).map { c =>
           val email = StartupFeatureReport.states(c).find(_.name == "email-notifications").get
           assertTrue(email.enabled)
         }
       },
-      test("stripe billing disabled when secretKey unset, enabled when set") {
+      test("stripe billing off by default, on when the explicit flag is set (#2266)") {
         val off = loadVia(hocon(goodSecret))
         val on  = loadVia(
           hocon(
             goodSecret,
-            """  stripe { secretKey = "sk_test_x" }
+            """  stripe { enabled = true, secretKey = "sk_test_x" }
                                               |""".stripMargin,
           ),
         )
@@ -172,7 +173,7 @@ object StartupConfigSpec extends ZIOSpecDefault {
         } yield {
           val soff = StartupFeatureReport.states(coff).find(_.name == "stripe-billing").get
           val son  = StartupFeatureReport.states(con).find(_.name == "stripe-billing").get
-          assertTrue(!soff.enabled, soff.detail.contains("secretKey"), son.enabled)
+          assertTrue(!soff.enabled, soff.detail.contains("enabled=false"), son.enabled)
         }
       },
       test("support widget + write API + responder + issue-filing each reported independently") {
@@ -291,6 +292,88 @@ object StartupConfigSpec extends ZIOSpecDefault {
           .find(_.name == "metrics-scrape-token")
           .get
         assertTrue(on.enabled, on.detail.contains("requireToken"))
+      },
+    ),
+    suite("#2266 email + stripe — explicit `enabled` flag replaces secret-presence derivation")(
+      test("email: enabled=true + a missing secret fails boot, naming the gap(s)") {
+        val errs = EmailConfig.validate(EmailConfig(enabled = true, resendApiKey = "re_x"))
+        assertTrue(errs.length == 1, errs.head.contains("wifihaven.email.fromAddress"))
+      },
+      test("email: enabled=true + both secrets present → no error") {
+        assertTrue(
+          EmailConfig
+            .validate(EmailConfig(enabled = true, resendApiKey = "re_x", fromAddress = "a@b.co"))
+            .isEmpty,
+        )
+      },
+      test("email: enabled=false → no secret required even if unset (deliberate off)") {
+        assertTrue(EmailConfig.validate(EmailConfig(enabled = false)).isEmpty)
+      },
+      test("email: enabled is the explicit flag, NOT derived from secret presence") {
+        // secrets present but flag false → OFF; this is the whole point of the conversion.
+        assertTrue(
+          !EmailConfig(enabled = false, resendApiKey = "re_x", fromAddress = "a@b.co").enabled,
+          EmailConfig(enabled = true, resendApiKey = "re_x", fromAddress = "a@b.co").enabled,
+        )
+      },
+      test("stripe: enabled=true + empty secretKey fails boot; enabled=false never does") {
+        assertTrue(
+          StripeConfig
+            .validate(StripeConfig(enabled = true, secretKey = ""))
+            .exists(
+              _.contains("wifihaven.stripe.secretKey"),
+            ),
+          StripeConfig.validate(StripeConfig(enabled = true, secretKey = "sk_x")).isEmpty,
+          StripeConfig.validate(StripeConfig(enabled = false, secretKey = "")).isEmpty,
+        )
+      },
+      test("stripe: enabled is the explicit flag, NOT derived from secretKey") {
+        assertTrue(
+          !StripeConfig(enabled = false, secretKey = "sk_x").enabled,
+          StripeConfig(enabled = true, secretKey = "sk_x").enabled,
+        )
+      },
+      test("validateRequired accumulates email + stripe gaps alongside a bad jwt (rule 4)") {
+        val cfg  = AppConfig(
+          db = DbConfig("localhost", 5432, "wifihaven", "wifihaven", "changeme", 5),
+          http = HttpConfig("0.0.0.0", 8080, "web/dist", serveSpa = true),
+          jwt = JwtConfig("short", 24),
+          cors = CorsConfig(""),
+          email = EmailConfig(enabled = true),  // both secrets missing
+          stripe = StripeConfig(enabled = true),// secretKey missing
+        )
+        val errs = AppConfig.validateRequired(cfg)
+        assertTrue(
+          errs.exists(_.contains("wifihaven.jwt.secret")),
+          errs.exists(_.contains("wifihaven.email.")),
+          errs.exists(_.contains("wifihaven.stripe.secretKey")),
+          errs.length >= 3,
+        )
+      },
+      test("feature report reflects the explicit email/stripe flags") {
+        def rep(email: EmailConfig, stripe: StripeConfig) =
+          StartupFeatureReport.states(
+            AppConfig(
+              db = DbConfig("localhost", 5432, "wifihaven", "wifihaven", "changeme", 5),
+              http = HttpConfig("0.0.0.0", 8080, "web/dist", serveSpa = true),
+              jwt = JwtConfig(goodSecret, 24),
+              cors = CorsConfig(""),
+              email = email,
+              stripe = stripe,
+            ),
+          )
+        val on                                            = rep(
+          EmailConfig(enabled = true, resendApiKey = "re_x", fromAddress = "a@b.co"),
+          StripeConfig(enabled = true, secretKey = "sk_x"),
+        )
+        val off = rep(EmailConfig(enabled = false), StripeConfig(enabled = false))
+        assertTrue(
+          on.find(_.name == "email-notifications").get.enabled,
+          on.find(_.name == "stripe-billing").get.enabled,
+          !off.find(_.name == "email-notifications").get.enabled,
+          !off.find(_.name == "stripe-billing").get.enabled,
+          off.find(_.name == "stripe-billing").get.detail.contains("enabled=false"),
+        )
       },
     ),
   )
