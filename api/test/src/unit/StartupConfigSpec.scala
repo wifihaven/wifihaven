@@ -101,7 +101,7 @@ object StartupConfigSpec extends ZIOSpecDefault {
             }
             assertTrue(
               // The gaps accumulate (jwt is valid here, so ONLY the support keys appear).
-              errs.exists(_.contains("support.plainApiKey")),
+              errs.exists(_.contains("support.plain.apiKey")),
               errs.exists(_.contains("support.anthropicApiKey")),
               errs.exists(_.contains("support.claudeAgentId")),
               errs.exists(_.contains("support.claudeEnvironmentId")),
@@ -128,7 +128,8 @@ object StartupConfigSpec extends ZIOSpecDefault {
         val full =
           """  support {
             |    responderEnabled = true
-            |    plainApiKey = "k", plainWebhookSecret = "w", anthropicApiKey = "sk"
+            |    plain { apiKey = "k", webhookSecret = "w" }
+            |    anthropicApiKey = "sk"
             |    claudeAgentId = "agent_x", claudeEnvironmentId = "env_x"
             |    agentTokenSecret = "secret-at-least-32-chars-long!!x", deploymentEnv = "staging"
             |  }

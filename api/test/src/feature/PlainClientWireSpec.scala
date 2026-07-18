@@ -1,6 +1,6 @@
 package wifihaven.api.feature
 
-import wifihaven.api.SupportConfig
+import wifihaven.api.{PlainConfig, SupportConfig}
 import wifihaven.api.support.*
 import com.sun.net.httpserver.{HttpExchange, HttpServer}
 import zio.*
@@ -85,7 +85,10 @@ object PlainClientWireSpec extends ZIOSpecDefault {
         for {
           cap <- captureServer
           base   = s"http://127.0.0.1:${cap.server.getAddress.getPort}/"
-          cfg    = SupportConfig(plainApiKey = "test-key", apiBase = base)
+          // #2266: write API is now an EXPLICIT flag; the wire test drives the Live client.
+          cfg    = SupportConfig(plain =
+            PlainConfig(writeEnabled = true, apiKey = "test-key", apiBase = base),
+          )
           client = PlainClient.layer
           outcome <- ZIO
             .serviceWithZIO[PlainClient](
@@ -151,13 +154,13 @@ object PlainClientWireSpec extends ZIOSpecDefault {
         }
       }
     },
-    test("no Plain key ⇒ Disabled no-op, no network call (ships dark)") {
+    test("writeEnabled=false ⇒ Disabled no-op, no network call (ships dark, #2266)") {
       ZIO.scoped {
         for {
           cap <- captureServer
           base = s"http://127.0.0.1:${cap.server.getAddress.getPort}/"
-          // Empty key ⇒ writeEnabled=false ⇒ Disabled client.
-          cfg  = SupportConfig(apiBase = base)
+          // #2266: writeEnabled defaults false ⇒ Disabled client (explicit flag, not key presence).
+          cfg  = SupportConfig(plain = PlainConfig(apiBase = base))
           outcome <- ZIO
             .serviceWithZIO[PlainClient](
               _.upsertCustomer(
