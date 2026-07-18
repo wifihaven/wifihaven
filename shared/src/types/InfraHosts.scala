@@ -372,6 +372,42 @@ object InfraHosts {
     // they carry genuine engagement and must keep anchoring even without an app template.
     "excess.duolingo.com",
     "excess-ga.duolingo.com",
+    // ── #2274 idle-Mac background-sync tail. Captured 2026-07-17 on the Kids profile's
+    //    MacBook (`ca:ef:a1:72:6a:a3`) sitting lid-closed in a cabinet all day: macOS
+    //    Power-Nap wakes every ~15 min emitted single-sample bursts to these app-updater /
+    //    telemetry / OS-config endpoints, each anchoring a phantom presence span (~16 min of
+    //    the 31-min phantom over-count; offline replay in
+    //    docs/design/idle-traffic-discrimination.md §2274). Like the rest of this class they
+    //    fire only in dense co-occurring wakeup bursts, so the #2091 isolation learner
+    //    structurally cannot learn them. Scoped to unambiguous background — the dual-use
+    //    Google asset/auth tail (docs/drive/gstatic/photos) is deliberately left to the
+    //    learner + the #2287 isolated-span follow-up, NOT blanket-classed.
+    //
+    // Serato DJ telemetry / update (apex covers insights. / id. / static. subdomains)
+    "serato.com",
+    // Brave browser component / update / usage-telemetry. Sibling telemetry (collector.bsg /
+    // star-randsrv) lives on suppressOnly (never counts); these land here on the class
+    // (anchor-ineligible, but still count inside a genuinely-anchored span) deliberately —
+    // #2274 is an ANCHOR problem (they anchored phantom spans), and the class tier keeps the
+    // #1446/#2068 no-undercount guarantee that outright suppression would forgo. Specific
+    // hosts — the brave.com apex is NOT swept in, so real Brave search/product keeps anchoring.
+    "go-updater.brave.com",
+    "brave-core-ext.s3.brave.com",
+    "usage-ping.brave.com",
+    // Adobe Creative Cloud OOBE (onboarding / feature-flag) background feed. Apex covers the
+    // `ffc-static-cdn.` / `prod-rel-ffc-ccm.` shards; distinct from the `adobe.io` telemetry
+    // API already on canonical.
+    "oobesaas.adobe.com",
+    // Apple OS background: A/B experiment config, background analytics, tethering captive
+    // edge check, device-configuration feed — siblings of the #1629/#1694 apple.com
+    // OS-services tail, listed explicitly so the apple.com apex is never swept in.
+    "experiments.apple.com",
+    "sylvan.apple.com",
+    "tether.edge.apple",
+    "device-config.pcms.apple.com",
+    // Google software-update service. Explicitly NOT a `-pa` private API and NOT the
+    // googleapis apex — background update control plane only.
+    "update.googleapis.com",
   )
 
   // Google "private API" (protocol-agnostic) background services all share the

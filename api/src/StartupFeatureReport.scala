@@ -67,18 +67,21 @@ object StartupFeatureReport {
       ),
       FeatureState(
         "support-widget",
-        support.widgetEnabled,
-        if support.widgetEnabled then
-          "wifihaven.support.plainAppId + wifihaven.support.plainIdentitySecret set"
+        support.plain.widgetEnabled,
+        if support.plain.widgetEnabled then
+          "wifihaven.support.plain.widgetEnabled=true — appId + identitySecret required & set"
         else
-          "wifihaven.support.plainAppId and/or wifihaven.support.plainIdentitySecret unset — " +
-            "identified chat widget renders nothing (#2199)",
+          "wifihaven.support.plain.widgetEnabled=false — identified chat widget renders nothing " +
+            "(#2199/#2266)",
       ),
       FeatureState(
         "support-write-api",
-        support.writeEnabled,
-        if support.writeEnabled then "wifihaven.support.plainApiKey set — Plain write client live"
-        else "wifihaven.support.plainApiKey unset — Plain write client is a metered no-op (#2199)",
+        support.plain.writeEnabled,
+        if support.plain.writeEnabled then
+          "wifihaven.support.plain.writeEnabled=true — apiKey required & set, Plain write client live"
+        else
+          "wifihaven.support.plain.writeEnabled=false — Plain write client is a metered no-op " +
+            "(#2199/#2266)",
       ),
       // #2200/#2265: the responder and issue filing are EXPLICIT-flag features (rule 3's first leg —
       // a named `enabled` flag, not inferred from secrets). When a flag is ON, its whole config

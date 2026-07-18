@@ -69,7 +69,7 @@ final case class SupportResponder(
   def handleWebhook(rawBody: String, sigHeader: Option[String]): UIO[WebhookOutcome] =
     if !cfg.responderEnabled then meter(WebhookOutcome.Disabled)
     else
-      PlainWebhook.verifyAndParse(rawBody, sigHeader, cfg.webhookSecretTrimmed) match {
+      PlainWebhook.verifyAndParse(rawBody, sigHeader, cfg.plain.webhookSecretTrimmed) match {
         case Left(PlainWebhook.VerifyError.MissingSignature) | Left(
               PlainWebhook.VerifyError.BadSignature,
             ) =>

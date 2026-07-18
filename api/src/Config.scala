@@ -453,12 +453,63 @@ case class FlipConfig(
 //                             wifihaven/wifihaven (no contents / no pull_requests ⇒ no-PR is
 //                             structural, #2241). SECRET. Required when issueFilingEnabled=true.
 //                             (repo + REST base are constants in GithubIssueClient, not config.)
-case class SupportConfig(
-    plainApiKey: String = "",
-    plainWebhookSecret: String = "",
-    plainIdentitySecret: String = "",
-    plainAppId: String = "",
+//
+// #2266: the Plain-widget + write-API config lives in this nested [[PlainConfig]] sub-block (HOCON
+// `support.plain { … }`). Two reasons: (1) it frees SupportConfig from zio-config-magnolia's 16-field
+// ceiling (#2265) so the enable flags fit; (2) `widgetEnabled` / `writeEnabled` are EXPLICIT named
+// flags (no dark-by-default) — the widget/write halves are off unless the operator sets the flag,
+// NOT inferred from secret presence. A true flag makes its secret(s) REQUIRED at boot
+// (PlainConfig.validate → AppConfig.validateRequired). The env var names (WIFIHAVEN_SUPPORT_PLAIN_*)
+// are unchanged; only the internal HOCON path moved (support.plainApiKey → support.plain.apiKey).
+case class PlainConfig(
+    // widgetEnabled needs appId + identitySecret (a verifiable identity needs both); writeEnabled
+    // needs apiKey. Default false = the self-hosted no-Plain posture, observable at boot + on
+    // /api/debug/config.
+    widgetEnabled: Boolean = false,
+    writeEnabled: Boolean = false,
+    apiKey: String = "",
+    webhookSecret: String = "",
+    identitySecret: String = "",
+    appId: String = "",
     apiBase: String = "https://core-api.uk.plain.com/graphql/v1",
+) {
+  val apiKeyTrimmed: String         = apiKey.trim
+  val webhookSecretTrimmed: String  = webhookSecret.trim
+  val identitySecretTrimmed: String = identitySecret.trim
+  val appIdTrimmed: String          = appId.trim
+}
+
+object PlainConfig {
+  // #2266: with a flag explicitly on, its secret(s) are REQUIRED — an unset one fails boot
+  // (accumulated by AppConfig.validateRequired) rather than the old widget-renders-nothing /
+  // write-no-ops silent secret-presence derivation. Reports every gap (rule 4).
+  private[api] def validate(cfg: PlainConfig): List[String] = {
+    val widget =
+      if !cfg.widgetEnabled then Nil
+      else
+        List(
+          "wifihaven.support.plain.appId"          -> cfg.appIdTrimmed,
+          "wifihaven.support.plain.identitySecret" -> cfg.identitySecretTrimmed,
+        ).collect {
+          case (k, v) if v.isEmpty =>
+            s"$k must be set when wifihaven.support.plain.widgetEnabled=true (or widgetEnabled=false)"
+        }
+    val write  =
+      if cfg.writeEnabled && cfg.apiKeyTrimmed.isEmpty then
+        List(
+          "wifihaven.support.plain.apiKey must be set when wifihaven.support.plain.writeEnabled=true (or writeEnabled=false)",
+        )
+      else Nil
+    widget ++ write
+  }
+}
+
+case class SupportConfig(
+    // #2266: the Plain-helpdesk config nests in a sub-block so SupportConfig stays under
+    // zio-config-magnolia's 16-field derivation ceiling AND the widget / write-API gates are
+    // EXPLICIT named flags (`plain.widgetEnabled` / `plain.writeEnabled`), not secret-presence
+    // derivations. See [[PlainConfig]].
+    plain: PlainConfig = PlainConfig(),
     // #2265: NO dark-by-default. These are EXPLICIT named enable flags — the responder / issue
     // filing are off only when the operator says so (default false = the self-hosted no-cloud-
     // support posture, logged at boot + visible on /api/health; never inferred from missing
@@ -479,11 +530,6 @@ case class SupportConfig(
     deploymentEnv: String = "",
     githubSupportBotToken: String = "",
 ) {
-  val apiKeyTrimmed: String         = plainApiKey.trim
-  val webhookSecretTrimmed: String  = plainWebhookSecret.trim
-  val identitySecretTrimmed: String = plainIdentitySecret.trim
-  val appIdTrimmed: String          = plainAppId.trim
-
   val anthropicApiKeyTrimmed: String       = anthropicApiKey.trim
   val claudeAgentIdTrimmed: String         = claudeAgentId.trim
   val claudeEnvironmentIdTrimmed: String   = claudeEnvironmentId.trim
@@ -491,15 +537,6 @@ case class SupportConfig(
   val agentApiBaseTrimmed: String          = agentApiBase.trim.stripSuffix("/")
   val deploymentEnvTrimmed: String         = deploymentEnv.trim
   val githubSupportBotTokenTrimmed: String = githubSupportBotToken.trim
-
-  // The identified widget renders only when BOTH the public app id AND the identity secret are set —
-  // an app id with no signing secret can't produce a verifiable identity (and vice-versa), so treat
-  // a half-configured widget as OFF rather than emitting an unverifiable identity.
-  val widgetEnabled: Boolean = appIdTrimmed.nonEmpty && identitySecretTrimmed.nonEmpty
-
-  // The Plain write API (customer upsert + thread write) is live only when the API key is set;
-  // otherwise PlainClient is the disabled no-op and every call is a metered skip.
-  val writeEnabled: Boolean = apiKeyTrimmed.nonEmpty
 
   // #2265: fail LOUD, in bulk. With the responder explicitly enabled, EVERY config the chain needs
   // is required — webhook verification, the Plain write key (the reply path), the Anthropic
@@ -512,8 +549,8 @@ case class SupportConfig(
       if !responderEnabled then Nil
       else
         List(
-          "support.plainApiKey"         -> apiKeyTrimmed,
-          "support.plainWebhookSecret"  -> webhookSecretTrimmed,
+          "support.plain.apiKey"        -> plain.apiKeyTrimmed,
+          "support.plain.webhookSecret" -> plain.webhookSecretTrimmed,
           "support.anthropicApiKey"     -> anthropicApiKeyTrimmed,
           "support.claudeAgentId"       -> claudeAgentIdTrimmed,
           "support.claudeEnvironmentId" -> claudeEnvironmentIdTrimmed,
@@ -557,6 +594,7 @@ object AppConfig {
   def validateRequired(cfg: AppConfig): List[String] =
     JwtConfig.validate(cfg.jwt) ++ MetricsConfig.validate(cfg.metrics) ++
       EmailConfig.validate(cfg.email) ++ StripeConfig.validate(cfg.stripe) ++
+      PlainConfig.validate(cfg.support.plain) ++
       // #2265: the support responder / issue filing are EXPLICIT-flag features — off by default, but
       // when a flag is turned on its whole config chain becomes required. `missingRequiredKeys`
       // returns every gap for the enabled flag(s); mapped to a message here so they accumulate with

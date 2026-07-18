@@ -169,23 +169,30 @@ wifihaven {
   # #2199 (support intake B, epic #2197): the Plain helpdesk integration. The whole
   # block is optional — omit it and support is OFF (DARK): the identified chat
   # widget renders nothing and the Plain write client is a no-op, so the
-  # self-hosted single install is unaffected. Two independent gates:
-  #   - the WIDGET turns on only when BOTH plainAppId AND plainIdentitySecret are set;
-  #   - the WRITE API (customer upsert + thread write) turns on when plainApiKey is set.
+  # self-hosted single install is unaffected. Two independent gates, now EXPLICIT
+  # flags (#2266, no dark-by-default) in the nested `plain {}` sub-block:
+  #   - the WIDGET turns on only when plain.widgetEnabled = true (then plainAppId +
+  #     plainIdentitySecret are REQUIRED — a missing one fails boot);
+  #   - the WRITE API turns on when plain.writeEnabled = true (then plainApiKey is REQUIRED).
   # Secrets come from env on Render (WIFIHAVEN_SUPPORT_PLAIN_*, rendered into this
   # block by docker/entrypoint.sh), NEVER the committed config (docs/process/security.md).
   # support {
-  #   # Plain API key (write API — customer upsert + thread write); Authorization: Bearer. SECRET.
-  #   plainApiKey         = ""
-  #   # Plain webhook signing secret (inbound new-message HMAC verify). Declared for a complete
-  #   # config surface; CONSUMED by #2200 (the Claude responder), not read in this build. SECRET.
-  #   plainWebhookSecret  = ""
-  #   # Plain "chat authentication" HMAC-SHA256 email-hash secret (server-signed widget identity). SECRET.
-  #   plainIdentitySecret = ""
-  #   # Plain chat/widget app id — public (rendered into the SPA), still per-workspace config.
-  #   plainAppId          = ""
-  #   # Plain GraphQL endpoint (region-specific). Default is the UK core-api region.
-  #   # apiBase           = "https://core-api.uk.plain.com/graphql/v1"
+  #   plain {
+  #     # #2266: EXPLICIT enable flags — the widget / write halves are off unless set true, NOT
+  #     # inferred from secret presence. A true flag makes its secret(s) REQUIRED (fail loud on boot).
+  #     widgetEnabled  = false
+  #     writeEnabled   = false
+  #     # Plain API key (write API — customer upsert + thread write); Authorization: Bearer. SECRET.
+  #     apiKey         = ""
+  #     # Plain webhook signing secret (inbound new-message HMAC verify). SECRET.
+  #     webhookSecret  = ""
+  #     # Plain "chat authentication" HMAC-SHA256 email-hash secret (server-signed widget identity). SECRET.
+  #     identitySecret = ""
+  #     # Plain chat/widget app id — public (rendered into the SPA), still per-workspace config.
+  #     appId          = ""
+  #     # Plain GraphQL endpoint (region-specific). Default is the UK core-api region.
+  #     # apiBase      = "https://core-api.uk.plain.com/graphql/v1"
+  #   }
   #
   #   # #2200: the Claude support responder — a CLOUD Claude agent (Anthropic Managed Agents
   #   # session) dispatched per UI-originated inbound Plain message. #2265: NO dark-by-default —

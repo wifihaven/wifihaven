@@ -1006,7 +1006,18 @@ trait ConnectionEventRepo {
    */
   def rerollConnEventsDaily(sinceDate: LocalDate): Task[Option[Int]]
 
-  def stats: Task[DashboardStats]
+  /**
+   * #2282 (multi-tenant, epic #622): the dashboard stat-card counts (total-today, blocked-today,
+   * events-hour, blocked-hour, top-blocked) scoped to `household`. Both the raw `connection_events`
+   * (1h tiles) and the `connection_events_hourly` rollup (24h totals + top) are router_id-keyed, so
+   * the household predicate is transitive via `routers.household_id` — same mechanism as
+   * [[lastSeenByMacSince]] / [[LogFilter.household]]. The scope is null-safe (`router_id IN (SELECT
+   * id FROM routers WHERE household_id=$household)`), never an INNER JOIN that could drop a
+   * legitimately-owned row, so for the single backfill household (`HouseholdId.Default`) it returns
+   * exactly the pre-scoping global counts. Fixes a cross-tenant leak: a brand-new household with no
+   * routers previously saw the whole install's EVENTS(1H)/BLOCKED(1H).
+   */
+  def stats(household: HouseholdId): Task[DashboardStats]
   def topBlocked(hours: Int, limit: Int): Task[List[DomainCount]]
 
   /**
@@ -3614,45 +3625,59 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
   // feed legitimately need the live raw tail and stay on `connection_events`.
   // perDevice was dropped from the dashboard in #1836 (per-device volume belongs on
   // /devices + /profiles), so its raw 24h scan is removed entirely, not re-pointed.
-  def stats =
+  // #2282: household scoping is transitive via `routers` — both `connection_events` (raw 1h tiles)
+  // and `connection_events_hourly` (24h totals + top) are router_id-keyed. A null-safe `router_id IN
+  // (SELECT id FROM routers WHERE household_id=$hh)` subquery (NOT an INNER JOIN) carves the
+  // household's rows out; a router with no events contributes nothing, and for the single backfill
+  // household this returns exactly the pre-scoping global counts. Index-backed by V65's
+  // idx_routers_household.
+  private def hhRouterScope(household: HouseholdId): Fragment =
+    fr"AND router_id IN (SELECT id FROM routers WHERE" ++ SqlFragments.householdEq(
+      household,
+    ) ++ fr")"
+
+  def stats(household: HouseholdId) = {
+    val hh = hhRouterScope(household)
     for {
       tt  <- DbMetrics.timed("stats.total24h")(
-        sql"""SELECT COALESCE(SUM(count_succeeded + count_blocked), 0)::INT
+        (fr"""SELECT COALESCE(SUM(count_succeeded + count_blocked), 0)::INT
               FROM connection_events_hourly
-              WHERE bucket_start > NOW() - INTERVAL '24 hours'"""
+              WHERE bucket_start > NOW() - INTERVAL '24 hours'""" ++ hh)
           .query[Int]
           .unique
           .transact(xa),
       )
       bt  <- DbMetrics.timed("stats.blocked24h")(
-        sql"""SELECT COALESCE(SUM(count_blocked), 0)::INT
+        (fr"""SELECT COALESCE(SUM(count_blocked), 0)::INT
               FROM connection_events_hourly
-              WHERE bucket_start > NOW() - INTERVAL '24 hours'"""
+              WHERE bucket_start > NOW() - INTERVAL '24 hours'""" ++ hh)
           .query[Int]
           .unique
           .transact(xa),
       )
-      th  <- sql"SELECT COUNT(*)::INT FROM connection_events WHERE ts > NOW()-INTERVAL '1 hour'"
-        .query[Int]
-        .unique
-        .transact(xa)
+      th  <-
+        (fr"SELECT COUNT(*)::INT FROM connection_events WHERE ts > NOW()-INTERVAL '1 hour'" ++ hh)
+          .query[Int]
+          .unique
+          .transact(xa)
       bh  <-
-        sql"SELECT COUNT(*)::INT FROM connection_events WHERE ts > NOW()-INTERVAL '1 hour' AND NOT allowed"
+        (fr"SELECT COUNT(*)::INT FROM connection_events WHERE ts > NOW()-INTERVAL '1 hour' AND NOT allowed" ++ hh)
           .query[Int]
           .unique
           .transact(xa)
       top <- DbMetrics.timed("stats.topBlocked24h")(
-        sql"""SELECT hostname, SUM(count_blocked)::INT AS c
+        (fr"""SELECT hostname, SUM(count_blocked)::INT AS c
               FROM connection_events_hourly
-              WHERE bucket_start > NOW() - INTERVAL '24 hours'
-              GROUP BY hostname HAVING SUM(count_blocked) > 0
-              ORDER BY c DESC LIMIT 10"""
+              WHERE bucket_start > NOW() - INTERVAL '24 hours'""" ++ hh ++
+          fr"""GROUP BY hostname HAVING SUM(count_blocked) > 0
+              ORDER BY c DESC LIMIT 10""")
           .query[(String, Int)]
           .map { case (h, c) => DomainCount(hostIdFromRollup(h), c) }
           .to[List]
           .transact(xa),
       )
     } yield DashboardStats(tt, bt, th, bh, top)
+  }
 
   // #1837: reconstruct a HostId from the rollup's bare `hostname` string. The
   // hourly/daily rollups drop host_type, so re-infer it: an IP literal → IPv4/IPv6,

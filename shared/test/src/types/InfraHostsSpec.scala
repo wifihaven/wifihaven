@@ -487,5 +487,58 @@ object InfraHostsSpec extends ZIOSpecDefault {
       )
       assertTrue(unrelatedAppHosts.forall(h => !InfraHosts.isBackground(h)))
     },
+    test("#2274 cloud-background extension: idle-Mac background sync/updater/OS hosts") {
+      // Captured 2026-07-17 on the Kids profile's MacBook (ca:ef:a1:72:6a:a3) while it sat
+      // lid-closed in a cabinet all day: macOS Power-Nap wakes every ~15 min emitted single-
+      // sample background bursts to app-updater / telemetry / OS-config endpoints that the
+      // #2091 isolation learner structurally cannot learn (they only ever fire in dense co-
+      // occurring bursts, never in the ≤2-host isolated spans the learner keys on) and that
+      // the prior #2177 class did not cover. Each anchored a phantom presence span → ~16 min
+      // of the 31-min phantom over-count (offline replay, docs/design/idle-traffic-
+      // discrimination.md §2274). Class membership removes only ANCHOR eligibility: a row
+      // here still counts inside a genuinely engagement-anchored span (#1446/#2068 undercount
+      // stays closed), and #1506 app-attribution still wins.
+      val cls = List(
+        // Serato DJ telemetry / update (insights. / id. / static. subdomains) — apex
+        "serato.com",
+        "insights.serato.com",
+        // Brave browser component / update / usage-telemetry background hosts
+        "go-updater.brave.com",
+        "brave-core-ext.s3.brave.com",
+        "usage-ping.brave.com",
+        // Adobe Creative Cloud OOBE (onboarding / update) background feed — apex
+        "oobesaas.adobe.com",
+        "ffc-static-cdn.oobesaas.adobe.com",
+        "prod-rel-ffc-ccm.oobesaas.adobe.com",
+        // Apple OS background: A/B experiment config, analytics, tethering edge check,
+        // device-configuration feed (siblings of the OS-services tail already suppress-only)
+        "experiments.apple.com",
+        "sylvan.apple.com",
+        "tether.edge.apple",
+        "device-config.pcms.apple.com",
+        // Google software-update service (NOT a -pa private API; background update control)
+        "update.googleapis.com",
+      )
+      assertTrue(cls.forall(InfraHosts.isCloudBackground))
+    },
+    test("#2274 additions keep the #2177 engagement boundary — no real-use casualty") {
+      // The extension is deliberately scoped to unambiguous background telemetry/updater/OS
+      // hosts. It must NOT shadow any engagement surface, and in particular must leave the
+      // delicate mzstatic store-artwork boundary and the dual-use Google asset/auth tail
+      // (handled by the learner + the follow-up isolated-span work) untouched.
+      val stillEngagement = List(
+        "is1-ssl.mzstatic.com", // App Store artwork CDN — still anchors real store browsing
+        "apps.mzstatic.com",    // deliberately NOT added (mzstatic boundary is delicate)
+        "play.googleapis.com",  // deliberately NOT added (per-app googleapis must attribute)
+        "www.googleapis.com",
+        "search.brave.com",     // real Brave search — the brave.com apex is NOT swept in
+        "www.adobe.com",        // real Adobe surfaces — only the oobesaas feed is class
+        "www.apple.com",        // apple.com apex is NOT swept in
+        "docs.google.com",      // dual-use homework — handled by the learner, never blanket-classed
+        "drive.google.com",
+        "ssl.gstatic.com",
+      )
+      assertTrue(stillEngagement.forall(h => !InfraHosts.isCloudBackground(h)))
+    },
   )
 }

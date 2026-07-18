@@ -199,11 +199,16 @@ services:
         sync: false
       - key: WIFIHAVEN_EMAIL_FROM_ADDRESS
         sync: false
-      # #2199: Plain helpdesk integration on STAGING (test Plain workspace). All DARK until the keys
-      # are set in the staging Render dashboard (sync:false = declared here, value entered out of
-      # band; entrypoint.sh renders them into the config `support {}` block). The WIDGET turns on only
-      # when BOTH APP_ID + IDENTITY_SECRET are set; the WRITE API when API_KEY is set. WEBHOOK_SECRET
-      # is declared now but consumed by #2200. NEVER commit values.
+      # #2199: Plain helpdesk integration on STAGING (test Plain workspace). Secrets are sync:false
+      # (entrypoint.sh renders them into the config `support.plain {}` block). WEBHOOK_SECRET is
+      # consumed by #2200. NEVER commit values.
+      # #2266: EXPLICIT enable flags (no dark-by-default). The Plain secrets are already set on
+      # staging, so widget + write enabled=true validate cleanly; an unset secret under an enabled
+      # flag would fail boot.
+      - key: WIFIHAVEN_SUPPORT_WIDGET_ENABLED
+        value: "true"
+      - key: WIFIHAVEN_SUPPORT_WRITE_ENABLED
+        value: "true"
       - key: WIFIHAVEN_SUPPORT_PLAIN_API_KEY
         sync: false
       - key: WIFIHAVEN_SUPPORT_PLAIN_WEBHOOK_SECRET
@@ -410,11 +415,16 @@ services:
         sync: false
       - key: WIFIHAVEN_EMAIL_FROM_ADDRESS
         sync: false
-      # #2199: Plain helpdesk integration on PROD (live Plain workspace). Same sync:false pattern as
-      # staging — all DARK until the keys are set in the prod Render dashboard (entrypoint.sh renders
-      # them into the config `support {}` block). The WIDGET turns on only when BOTH APP_ID +
-      # IDENTITY_SECRET are set; the WRITE API when API_KEY is set. WEBHOOK_SECRET is declared now but
+      # #2199: Plain helpdesk integration on PROD (live Plain workspace). Secrets are sync:false
+      # (entrypoint.sh renders them into the config `support.plain {}` block). WEBHOOK_SECRET is
       # consumed by #2200 (the Claude responder). NEVER commit values.
+      # #2266: EXPLICIT enable flags (no dark-by-default). The Plain secrets are already set on prod,
+      # so widget + write enabled=true validate cleanly; an unset secret under an enabled flag would
+      # fail boot.
+      - key: WIFIHAVEN_SUPPORT_WIDGET_ENABLED
+        value: "true"
+      - key: WIFIHAVEN_SUPPORT_WRITE_ENABLED
+        value: "true"
       - key: WIFIHAVEN_SUPPORT_PLAIN_API_KEY
         sync: false
       - key: WIFIHAVEN_SUPPORT_PLAIN_WEBHOOK_SECRET

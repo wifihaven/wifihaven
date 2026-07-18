@@ -1896,10 +1896,14 @@ object LogRoutes {
       Method.GET / "api" / "stats"                        ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] =
-            requireAdmin(req, auth) *>
-              connRepo.stats
+            // #2282: scope the stat-card counts to the caller's household — the counts leaked across
+            // tenants when read globally (a brand-new household saw the whole install's EVENTS/BLOCKED).
+            requireAdmin(req, auth).flatMap { claims =>
+              connRepo
+                .stats(claims.hh)
                 .map(s => Response.json(s.toJson))
                 .mapError(ApiError.Db(_))
+            }
           handle.mapError(ErrorMapper.errorToResponse)
         },
     )
