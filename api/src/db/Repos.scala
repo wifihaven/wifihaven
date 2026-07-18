@@ -14,6 +14,23 @@ import java.time.{Instant, LocalDate, LocalTime, ZoneId}
 
 given Meta[List[String]] = Meta[Array[String]].imap(_.toList)(_.toArray)
 
+/**
+ * #2286: the ONE definition of the per-household global-sentinel profile insert. Each household
+ * owns exactly one `is_global = TRUE` "Global" profile (the household's global-policy layer,
+ * #2108); every other column takes its table default. Returned as a `ConnectionIO` so the caller
+ * can run it inside whatever transaction owns the surrounding household-create (the beta
+ * [[BetaRequestRepo.approveAndProvision]] txn, [[HouseholdRepoLive.create]], or the boot-time seed
+ * in `Main`). Idempotent via V73's `(household_id, is_global) WHERE is_global` partial-unique
+ * index: `ON CONFLICT DO NOTHING` guarantees at most one sentinel per household even under a
+ * re-run.
+ */
+object ProfileSeed {
+  def insertGlobalSentinel(householdId: HouseholdId): ConnectionIO[Int] =
+    sql"""INSERT INTO profiles (name, is_global, household_id)
+          VALUES ('Global', TRUE, $householdId)
+          ON CONFLICT DO NOTHING""".update.run
+}
+
 case class DbUser(
     id: UserId,
     username: String,
@@ -1188,11 +1205,17 @@ class HouseholdRepoLive(xa: Transactor[Task]) extends HouseholdRepo {
     )
 
   // #2132: provisioning create + read-back. `Household` is defined in BetaRepos.scala (same package).
+  // #2286: seed the household's global-sentinel profile in the SAME transaction as the household row,
+  // so any household-create path (not just the beta approveAndProvision txn) yields a household that
+  // can author global policy and whose GET /api/profiles/global resolves. SSOT insert; idempotent.
   def create(name: String, slug: String, routerCap: Int) =
-    sql"INSERT INTO households(name, slug, router_cap) VALUES($name, $slug, $routerCap) RETURNING id"
-      .query[HouseholdId]
-      .unique
-      .transact(xa)
+    (for {
+      hid <-
+        sql"INSERT INTO households(name, slug, router_cap) VALUES($name, $slug, $routerCap) RETURNING id"
+          .query[HouseholdId]
+          .unique
+      _   <- ProfileSeed.insertGlobalSentinel(hid)
+    } yield hid).transact(xa)
 
   def findById(id: HouseholdId) =
     sql"SELECT id, name, slug, router_cap FROM households WHERE id=$id"

@@ -135,11 +135,14 @@ object Main extends ZIOAppDefault {
             // that hides/uses the sentinel — see #1769 step 2.
             // #2130: household_id is stamped explicitly (this seeds the single
             // backfill install's sentinel) — never left to V65's DEFAULT 1.
-            // Per-household sentinels for later households are a provisioning
-            // concern (#622 Phase 5), not this seed's.
-            _ <- sql"""INSERT INTO profiles (name, is_global, household_id)
-                       VALUES ('Global', TRUE, ${wifihaven.shared.types.HouseholdId.Default.value})
-                       ON CONFLICT DO NOTHING""".update.run.transact(xaForSeed)
+            // #2286: per-household sentinels for provisioned households are seeded
+            // at household-create time (approveAndProvision / HouseholdRepo.create);
+            // this boot seed covers only the default install (household 1). Shares
+            // the ONE ProfileSeed.insertGlobalSentinel definition (SSOT) so the seed
+            // shape can't drift from the provisioning path.
+            _ <- ProfileSeed
+              .insertGlobalSentinel(wifihaven.shared.types.HouseholdId.Default)
+              .transact(xaForSeed)
             _ <- ZIO.logInfo("global profile sentinel ensured (is_global=TRUE)")
             // #768: seed the starter library of app templates. Idempotent —
             // operator host edits on previously-seeded apps are preserved.
