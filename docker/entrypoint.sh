@@ -73,10 +73,13 @@ set -euo pipefail
 # honored). Before #2250 this had an env binding but no staging value, so staging alert/email links
 # pointed at the prod SPA.
 : "${WIFIHAVEN_EMAIL_APP_BASE_URL:=${WIFIHAVEN_APP_BASE_URL}}"
-# #2199: Plain helpdesk integration (#2197). All DARK by default — empty keys render a `support {}`
-# block whose SupportConfig gates are false, so the identified widget renders nothing and the write
-# client is a no-op. Two independent gates: the WIDGET needs BOTH APP_ID + IDENTITY_SECRET; the
-# WRITE API needs API_KEY. Secrets NEVER committed.
+# #2199: Plain helpdesk integration (#2197). Two independent gates, now EXPLICIT flags (#2266, no
+# dark-by-default): the WIDGET (WIDGET_ENABLED) needs BOTH APP_ID + IDENTITY_SECRET; the WRITE API
+# (WRITE_ENABLED) needs API_KEY. A true flag with a missing secret FAILS BOOT
+# (AppConfig.validateRequired). Default false = off (widget renders nothing / write is a no-op),
+# observable at boot + on /api/debug/config. Secrets NEVER committed.
+: "${WIFIHAVEN_SUPPORT_WIDGET_ENABLED:=false}"
+: "${WIFIHAVEN_SUPPORT_WRITE_ENABLED:=false}"
 : "${WIFIHAVEN_SUPPORT_PLAIN_API_KEY:=}"
 : "${WIFIHAVEN_SUPPORT_PLAIN_WEBHOOK_SECRET:=}"
 : "${WIFIHAVEN_SUPPORT_PLAIN_IDENTITY_SECRET:=}"
@@ -170,10 +173,14 @@ wifihaven {
     activeLookbackDays  = ${WIFIHAVEN_FLIP_ACTIVE_LOOKBACK_DAYS}
   }
   support {
-    plainApiKey           = "${WIFIHAVEN_SUPPORT_PLAIN_API_KEY}"
-    plainWebhookSecret    = "${WIFIHAVEN_SUPPORT_PLAIN_WEBHOOK_SECRET}"
-    plainIdentitySecret   = "${WIFIHAVEN_SUPPORT_PLAIN_IDENTITY_SECRET}"
-    plainAppId            = "${WIFIHAVEN_SUPPORT_PLAIN_APP_ID}"
+    plain {
+      widgetEnabled  = ${WIFIHAVEN_SUPPORT_WIDGET_ENABLED}
+      writeEnabled   = ${WIFIHAVEN_SUPPORT_WRITE_ENABLED}
+      apiKey         = "${WIFIHAVEN_SUPPORT_PLAIN_API_KEY}"
+      webhookSecret  = "${WIFIHAVEN_SUPPORT_PLAIN_WEBHOOK_SECRET}"
+      identitySecret = "${WIFIHAVEN_SUPPORT_PLAIN_IDENTITY_SECRET}"
+      appId          = "${WIFIHAVEN_SUPPORT_PLAIN_APP_ID}"
+    }
     responderEnabled      = ${WIFIHAVEN_SUPPORT_RESPONDER_ENABLED}
     issueFilingEnabled    = ${WIFIHAVEN_SUPPORT_ISSUE_FILING_ENABLED}
     anthropicApiKey       = "${WIFIHAVEN_SUPPORT_ANTHROPIC_API_KEY}"

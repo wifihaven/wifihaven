@@ -95,7 +95,7 @@ object PlainClient {
    */
   val layer: ZLayer[SupportConfig, Nothing, PlainClient] =
     ZLayer.fromFunction { (cfg: SupportConfig) =>
-      if cfg.writeEnabled then new Live(cfg): PlainClient
+      if cfg.plain.writeEnabled then new Live(cfg): PlainClient
       else Disabled
     }
 
@@ -211,8 +211,8 @@ object PlainClient {
         .attemptBlocking {
           val payload = GqlRequest(query, variables).toJson
           val httpReq = HttpRequest
-            .newBuilder(URI.create(cfg.apiBase))
-            .header("Authorization", s"Bearer ${cfg.apiKeyTrimmed}")
+            .newBuilder(URI.create(cfg.plain.apiBase))
+            .header("Authorization", s"Bearer ${cfg.plain.apiKeyTrimmed}")
             .header("Content-Type", "application/json")
             .header("User-Agent", UserAgent)
             .timeout(RequestTimeout)

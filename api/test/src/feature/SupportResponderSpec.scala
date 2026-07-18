@@ -1,6 +1,6 @@
 package wifihaven.api.feature
 
-import wifihaven.api.SupportConfig
+import wifihaven.api.{PlainConfig, SupportConfig}
 import wifihaven.api.auth.{RateLimiter, RateLimiterLive}
 import wifihaven.api.db.*
 import wifihaven.api.routes.SupportAgentRoutes
@@ -57,8 +57,7 @@ object SupportResponderSpec
   private val liveCfg = SupportConfig(
     responderEnabled = true,
     issueFilingEnabled = true,
-    plainApiKey = "plain-api-key-test",
-    plainWebhookSecret = WebhookSecret,
+    plain = PlainConfig(apiKey = "plain-api-key-test", webhookSecret = WebhookSecret),
     anthropicApiKey = "sk-ant-test",
     claudeAgentId = "agent_test",
     claudeEnvironmentId = "env_test",
@@ -253,8 +252,8 @@ object SupportResponderSpec
       val missing =
         SupportConfig(responderEnabled = true).missingRequiredKeys
       assertTrue(
-        missing.contains("support.plainApiKey"),
-        missing.contains("support.plainWebhookSecret"),
+        missing.contains("support.plain.apiKey"),
+        missing.contains("support.plain.webhookSecret"),
         missing.contains("support.anthropicApiKey"),
         missing.contains("support.claudeAgentId"),
         missing.contains("support.claudeEnvironmentId"),

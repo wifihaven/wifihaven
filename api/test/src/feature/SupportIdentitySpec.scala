@@ -1,6 +1,6 @@
 package wifihaven.api.feature
 
-import wifihaven.api.{JwtConfig, SupportConfig}
+import wifihaven.api.{JwtConfig, PlainConfig, SupportConfig}
 import wifihaven.api.auth.*
 import wifihaven.api.db.*
 import wifihaven.api.routes.SupportRoutes
@@ -44,12 +44,15 @@ object SupportIdentitySpec
   private val IdentitySecret = "plain-chat-identity-secret-xyz"
   private val AppId          = "plainApp_123"
 
-  // Widget ON: both the public app id and the identity secret are set. Write API OFF here — the
-  // recorder stub stands in for the Plain write client, so we assert the mapping without a network.
+  // Widget ON: #2266 explicit flag + both the public app id and the identity secret set. Write API
+  // OFF here — the recorder stub stands in for the Plain write client, so we assert the mapping
+  // without a network.
   private val widgetCfg =
-    SupportConfig(plainIdentitySecret = IdentitySecret, plainAppId = AppId)
+    SupportConfig(plain =
+      PlainConfig(widgetEnabled = true, identitySecret = IdentitySecret, appId = AppId),
+    )
 
-  // Everything empty ⇒ DARK (widgetEnabled=false, writeEnabled=false).
+  // Everything default ⇒ DARK (widgetEnabled=false, writeEnabled=false).
   private val darkCfg = SupportConfig()
 
   private def makeAuth =

@@ -46,7 +46,7 @@ final case class SupportService(
    */
   def identity(claims: JwtClaims): UIO[SupportIdentityResponse] =
     // Gate 1: widget unconfigured (no app id / no identity secret) ⇒ dark, no work, no Plain call.
-    if !cfg.widgetEnabled then
+    if !cfg.plain.widgetEnabled then
       AppMetrics.supportIdentity("disabled").as(SupportIdentityResponse.disabled)
     else
       resolveEmail(claims.hh, claims.sub).flatMap {
@@ -58,7 +58,7 @@ final case class SupportService(
             household <- householdRepo.findById(claims.hh).catchAll(_ => ZIO.none)
             billing   <- billingRepo.findByHousehold(claims.hh).catchAll(_ => ZIO.none)
             // The chat-auth hash is over the caller's OWN lowercased email — the impersonation guard.
-            hash     = SupportService.hmacSha256Hex(cfg.identitySecretTrimmed, email.toLowerCase)
+            hash = SupportService.hmacSha256Hex(cfg.plain.identitySecretTrimmed, email.toLowerCase)
             fullName = household.map(_.name).getOrElse("")
             tenant   = claims.hh.value.toString
             // Lazy household→customer upsert (best-effort). Awaited but fail-open: PlainClient never
@@ -74,7 +74,7 @@ final case class SupportService(
             _ <- AppMetrics.supportIdentity("issued")
           } yield SupportIdentityResponse(
             configured = true,
-            appId = Some(cfg.appIdTrimmed),
+            appId = Some(cfg.plain.appIdTrimmed),
             email = Some(email),
             emailHash = Some(hash),
             tenantIdentifier = Some(tenant),
