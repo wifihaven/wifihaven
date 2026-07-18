@@ -31,32 +31,44 @@ wifihaven-press-worker  ──HMAC-signed POST──▶  POST /api/press/inbound
                                             API emails the reply → the original sender (Resend)
 ```
 
-## Provisioning (operator, once)
+## Provisioning — declarative (no manual `wrangler deploy`, no dashboard clicks)
 
-Everything below is dark until done; the API's `press.responderEnabled` flag must ALSO be flipped
-(render.yaml PR) after the secrets are set — see [`../press-agent/README.md`](../press-agent/README.md).
+Both halves are configured in-repo and applied by CI on merge (`docs/process/declarative-config.md`).
+Everything is dark until the repo secrets exist; the API's `press.responderEnabled` flag is the final
+switch (render.yaml PR) — see [`../press-agent/README.md`](../press-agent/README.md).
 
-1. **Deploy the Worker** (from this directory):
-   ```sh
-   npm install
-   npx wrangler deploy                # prod  → wifihaven-press-worker
-   npx wrangler deploy --env staging  # staging → wifihaven-press-worker-staging
-   ```
-2. **Set the shared secret** — the SAME value as the API's `WIFIHAVEN_PRESS_WEBHOOK_SECRET`
-   (generate ≥32 random chars; set it in Render for the API and here):
-   ```sh
-   npx wrangler secret put PRESS_WEBHOOK_SECRET
-   npx wrangler secret put PRESS_WEBHOOK_SECRET --env staging
-   ```
-3. **Bind the address to the Worker** — Cloudflare dashboard → the `wifihaven.net` zone → Email →
-   Email Routing → Routing rules → add `press@wifihaven.net` → action **Send to a Worker** →
-   `wifihaven-press-worker`. (Email Routing must be enabled on the zone, which sets the MX records.)
-   Equivalent API call: `POST /zones/{zone}/email/routing/rules` with a `worker` action — or add a
-   `cloudflare_email_routing_rule` to `infra/cloudflare` once the CF token carries the Email scope.
-4. **Flip the API on** — set the press secrets in Render (`WIFIHAVEN_PRESS_*`) and, in a render.yaml
-   PR, set `WIFIHAVEN_PRESS_RESPONDER_ENABLED=true` (staging first). Outbound email
-   (`WIFIHAVEN_EMAIL_*`) must be configured too — the API refuses to boot with the press responder on
-   and email off (#2265).
+1. **Worker deploy + secret sync — CI.** [`.github/workflows/master-press-worker.yml`](../../.github/workflows/master-press-worker.yml)
+   runs `wrangler deploy` (prod → `wifihaven-press-worker`, staging → `wifihaven-press-worker-staging`)
+   and pushes `PRESS_WEBHOOK_SECRET` on every merge touching `deploy/press-worker/**` — the same
+   `cloudflare/wrangler-action` mechanism the SPA Pages deploy uses. It's dark until the CF token
+   secret exists (skips with a notice, mirroring `master-support-agent.yml`).
+
+2. **Address → Worker binding — Terraform.** `infra/cloudflare/main.tf` declares
+   `cloudflare_email_routing_rule.press_to_worker` (+ `…_staging_to_worker`) with a `worker` action,
+   applied by `master-cloudflare.yml`. No dashboard rule. (Ordering: the Worker must exist before the
+   rule applies; the first TF apply before the worker's first deploy fails and succeeds on the next
+   run — both are automated on merge.)
+
+**Repo secrets to set (once, in GitHub → Settings → Secrets):**
+
+| Secret | Value |
+|---|---|
+| `CLOUDFLARE_API_TOKEN` | Cloudflare token with **Workers Scripts: Edit** (+ the Email Routing / Pages scopes the other pipelines need). Gates both the worker deploy and the TF apply. |
+| `CLOUDFLARE_ACCOUNT_ID` | the Cloudflare account id (already set for the SPA deploy). |
+| `PRESS_WEBHOOK_SECRET` | **prod** shared HMAC secret — MUST equal the prod API's `WIFIHAVEN_PRESS_WEBHOOK_SECRET`. |
+| `PRESS_WEBHOOK_SECRET_STAGING` | **staging** shared HMAC secret — MUST equal the staging API's `WIFIHAVEN_PRESS_WEBHOOK_SECRET`. |
+
+**Operator prerequisites TF/CI can't do:** Email Routing must be enabled on the `wifihaven.net` zone
+(and the `staging` subdomain added — the same one-time steps `support`'s rules document in
+`infra/cloudflare/main.tf`), and the CF token must carry the Workers scope.
+
+3. **Flip the API on** — set the press secrets in Render (`WIFIHAVEN_PRESS_*`, matching the repo
+   secrets above) and, in a render.yaml PR, set `WIFIHAVEN_PRESS_RESPONDER_ENABLED=true` (staging
+   first). Outbound email (`WIFIHAVEN_EMAIL_*`) must be configured too — the API refuses to boot with
+   the press responder on and email off (#2265).
+
+> First-time bootstrap: a local `npm install && npx wrangler deploy` from this directory works too
+> (identical result), but is not required — CI is the source of truth.
 
 ## Notes
 

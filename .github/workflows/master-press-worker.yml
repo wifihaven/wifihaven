@@ -1,0 +1,96 @@
+name: Master Press Worker CD
+
+# #2203 — deploys the press Cloudflare Email Worker (deploy/press-worker/) declaratively on merge,
+# and syncs its shared HMAC secret. The Worker catches press@wifihaven.net (bound by the
+# cloudflare_email_routing_rule in infra/cloudflare/, applied by master-cloudflare.yml), signs the
+# inbound email, and POSTs it to the API's /api/press/inbound.
+#
+# Mirrors the SPA Pages deploy (master-api-ui.yml) — cloudflare/wrangler-action bundles the worker
+# (esbuild) and pushes it, so there is NO manual `wrangler deploy` and NO dashboard step
+# (docs/process/declarative-config.md). Deploys prod + staging; the per-env PRESS_WEBHOOK_SECRET is
+# set from a repo secret in the same run (it must equal the API's WIFIHAVEN_PRESS_WEBHOOK_SECRET for
+# that environment).
+#
+# Dark-by-default, mirroring master-support-agent.yml: without CLOUDFLARE_API_TOKEN the job skips
+# with a notice — the whole press feature ships dark until the operator provisions it
+# (deploy/press-worker/README.md).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'deploy/press-worker/**'
+      - '.github/workflows/master-press-worker.yml'
+  workflow_dispatch:
+
+# Serialize deploys of the same worker; queue rather than cancel so the latest repo state always wins.
+concurrency:
+  group: master-press-worker-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-press-worker:
+    name: Deploy press Email Worker (prod + staging)
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check the Cloudflare token is configured
+        id: gate
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [ -n "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::CLOUDFLARE_API_TOKEN not set — skipping press-worker deploy. The press feature ships dark until provisioned (deploy/press-worker/README.md)."
+          fi
+
+      - uses: actions/setup-node@v6
+        if: steps.gate.outputs.configured == 'true'
+        with:
+          node-version: '22'
+
+      - name: Install worker deps
+        if: steps.gate.outputs.configured == 'true'
+        working-directory: deploy/press-worker
+        run: npm install --no-audit --no-fund
+
+      # Explicit `npx wrangler` (rather than wrangler-action's `secrets:` input) so the secret is set
+      # against the correct environment with `--env` — the action's bulk secret upload does not target
+      # a named env. `npm install` above put wrangler on the path. The secret is only pushed when the
+      # repo secret is present, so a token-only (no-secret-yet) run still deploys the code.
+      - name: Deploy press Worker (prod) + sync secret
+        if: steps.gate.outputs.configured == 'true'
+        working-directory: deploy/press-worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PRESS_WEBHOOK_SECRET: ${{ secrets.PRESS_WEBHOOK_SECRET }}
+        run: |
+          npx wrangler deploy
+          if [ -n "$PRESS_WEBHOOK_SECRET" ]; then
+            printf '%s' "$PRESS_WEBHOOK_SECRET" | npx wrangler secret put PRESS_WEBHOOK_SECRET
+          else
+            echo "::warning::PRESS_WEBHOOK_SECRET repo secret unset — worker deployed but the signing secret is NOT synced; the API will reject its POSTs until set."
+          fi
+
+      - name: Deploy press Worker (staging) + sync secret
+        if: steps.gate.outputs.configured == 'true'
+        working-directory: deploy/press-worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PRESS_WEBHOOK_SECRET: ${{ secrets.PRESS_WEBHOOK_SECRET_STAGING }}
+        run: |
+          npx wrangler deploy --env staging
+          if [ -n "$PRESS_WEBHOOK_SECRET" ]; then
+            printf '%s' "$PRESS_WEBHOOK_SECRET" | npx wrangler secret put PRESS_WEBHOOK_SECRET --env staging
+          else
+            echo "::warning::PRESS_WEBHOOK_SECRET_STAGING repo secret unset — staging worker deployed but the signing secret is NOT synced."
+          fi
