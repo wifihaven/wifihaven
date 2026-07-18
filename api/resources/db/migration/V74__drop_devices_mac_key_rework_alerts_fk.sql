@@ -1,0 +1,115 @@
+-- V74__drop_devices_mac_key_rework_alerts_fk.sql
+-- Multi-tenant EPIC (#622) — the deferred devices/alerts half of V65's
+-- expand/contract, filed as #2277 and surfaced by the #2151 Gate-1
+-- two-household isolation e2e (scenario 4: cross-household same-MAC discovery).
+--
+-- ── What this unblocks ────────────────────────────────────────────────────────
+-- When household A's router reports (via dhcp_lease / first_seen_mac) a MAC that
+-- ALREADY exists as a device in household B, new-device discovery
+-- (deviceRepo.upsertUnknown → RouterIngestService.applyDhcpOrFirstSeen) 503s:
+--     ERROR: duplicate key value violates unique constraint "devices_mac_key"
+-- because the pre-multi-tenant GLOBAL UNIQUE(mac) (`devices_mac_key`, from V1's
+-- `mac TEXT NOT NULL UNIQUE`) is still enforced. The design
+-- (docs/design/multi-tenant-isolation.md §0.1 / §3.2.2 / §5.1) requires that
+-- global unique be RELAXED to the per-household `UNIQUE(household_id, mac)`
+-- (`uq_devices_household_mac`, already ADDED additively by V65 #2104) so two
+-- households can each own a device row for the same randomized MAC, isolated
+-- under the tenancy key. Once the global unique is gone, a MAC reported behind
+-- A's gateway is A's OWN (hhA, mac) row and B's (hhB, mac) row is a DIFFERENT
+-- row — no collision, no 503, no cross-tenant coupling. #2108 already switched
+-- every device upsert to `ON CONFLICT(household_id, mac)` (Repos.scala:1778,
+-- 1825), so the source side of discovery is already household-keyed; only this
+-- schema relaxation was missing.
+--
+-- ── Why V65 could NOT drop it (the alerts.mac FK blocker) ─────────────────────
+-- V65 (#2104) ADDED `uq_devices_household_mac` but KEPT `devices_mac_key` under
+-- the additive-migration discipline. Its header explicitly defers this drop
+-- (V65__households.sql:30-34): dropping `devices_mac_key` is impossible while
+-- `alerts.mac` carries a FK REFERENCES devices(mac) ON DELETE CASCADE
+-- (`alerts_mac_fkey`, from V37__alerts.sql:30) — that FK depends on the
+-- devices(mac) unique index, so Postgres refuses to drop the constraint the FK
+-- relies on. This migration removes that FK dependency FIRST, then drops the
+-- global unique. (The parallel users.username half already shipped as V68 #2147
+-- — this is the same expand/contract pattern for devices/alerts.)
+--
+-- ── Why the alerts.mac FK is DROPPED here, not repointed to the composite key ─
+-- The design's preferred end-state re-keys `alerts` to carry its own
+-- `household_id` and repoints the FK to the composite
+-- `(household_id, mac) → devices(household_id, mac)` (V65's
+-- uq_devices_household_mac). That composite FK CANNOT ship in a schema-only PR,
+-- because it is COUPLED to a source change: image-(N-1) alert-insert paths
+-- (`raiseNewDevice` Repos.scala:1917, `createAccessRequest` Repos.scala:1933)
+-- do NOT set household_id, so any composite FK would reject an alert raised for
+-- a non-household-1 device (the value would default and mismatch the device's
+-- household). This is proven by the existing two-household back-compat gate:
+-- adding the composite FK turns `MultiTenantIsolationSpec` "pin 1 — GET
+-- /api/alerts returns ONLY the caller's household alerts" RED, because that test
+-- (MultiTenantIsolationSpec.scala:357) raises a new-device alert for household
+-- B's MAC via image-(N-1) source. So this migration takes the issue's OTHER
+-- sanctioned option (#2277 fix-sketch 1: "or drop the FK and scope alert reads
+-- by household"): it DROPS `alerts_mac_fkey`. Alert reads are already scoped
+-- per-household by #2108's transitive join (`AlertRepoLive.baseSelect` LEFT JOIN
+-- devices d ON d.mac = a.mac, filtered on d.household_id — Repos.scala:1905,
+-- 1976), which isolates correctly for distinct MACs.
+--
+-- The composite FK (+ an `alerts.household_id` column populated on insert, +
+-- tightening that read join to `d.mac = a.mac AND d.household_id = a.household_id`
+-- so it stays unambiguous once the SAME MAC can exist in two households, + making
+-- new-device dedup per-household) is the SOURCE follow-up #2283, sequenced AFTER
+-- this schema PR. It re-adds ON DELETE CASCADE at that point.
+--
+-- ── Interim behavior between this PR and #2283 ───────────────────────────────
+-- Dropping `alerts_mac_fkey` removes the ON DELETE CASCADE that auto-purged an
+-- alert when its device row was deleted. Interim effect: a deleted device leaves
+-- its alert rows orphaned. They are HARMLESS to reads — the LEFT JOIN yields a
+-- NULL household_id, which the `d.household_id = $hh` predicate filters out — and
+-- `alerts` is a tiny bounded table (admin-resolved new_device/access_request
+-- rows). #2283 restores per-household cascade. The device-delete path itself
+-- still succeeds (no FK to block it): verified against DeviceApiSpec "#1154
+-- delete device with dependent alert / usage / connection-event rows", which
+-- asserts the delete returns 200 and the device is gone (it does not assert the
+-- alert vanished), so it stays green.
+--
+-- ── SCHEMA-ONLY PR ───────────────────────────────────────────────────────────
+-- Per docs/process/migrations.md#migrations-back-compat this migration ships
+-- alone (SQL + docs only — no source/tests/CI/fixtures). The existing feature
+-- suite run against this schema is the unconditional (#2098) back-compat gate:
+-- it proves nothing image-(N-1) still relies on `devices_mac_key` or the
+-- single-column `alerts_mac_fkey`. Validated locally: the alert/device/ingest
+-- feature specs AND MultiTenantIsolationSpec are green against this schema.
+--
+-- ── ON CONFLICT / dependency audit (origin/main api/src + all migrations) ─────
+-- Dropping `devices_mac_key` breaks any `INSERT ... ON CONFLICT (mac)` on
+-- devices ("no unique or exclusion constraint matching the ON CONFLICT
+-- specification"). Audited: #2108 already switched every device upsert to
+-- `ON CONFLICT(household_id, mac)` (Repos.scala:1778, 1825) — grep
+-- `ON CONFLICT(mac)` / `ON CONFLICT (mac)` on devices → NO hits. The only object
+-- depending on `devices(mac)`'s unique index is `alerts_mac_fkey`, dropped here;
+-- grep `REFERENCES devices` across all migrations → only alerts (V37) and the
+-- already-dropped device_alerts (V29). No other FK, no ON CONFLICT breakage.
+--
+-- ── Verified live constraint / FK names ──────────────────────────────────────
+-- From the #2277 reporter's `\d devices` on a live head schema (and the
+-- deterministic PG auto-naming that V68 relied on for `users_username_key`):
+--   devices global unique  = devices_mac_key          (V1 `mac … UNIQUE`; DROP)
+--   devices per-hh unique  = uq_devices_household_mac  (V65; KEPT, sole MAC uniq)
+--   alerts→devices FK      = alerts_mac_fkey           (V37 `mac … REFERENCES`;
+--                                                       DROP — see rationale above)
+--
+-- ── Prod data-volume (docs/process/migrations.md#migrations-prod-data-volume) ─
+-- Touches only the small bounded `devices` (V65 header: 26 rows on 2026-07-06)
+-- and `alerts` (admin-resolved rows — tiny, bounded) tables. No unbounded-growth
+-- table (traffic_reports/connection_events/rollups) is scanned or rewritten.
+-- Both are metadata-only DROP CONSTRAINTs over a handful of rows — sub-second,
+-- far inside the 15-minute Render port-scan window. No V-split needed.
+
+-- 1. Remove the alerts→devices FK so it no longer depends on devices(mac)'s
+--    unique index. Alert reads stay per-household-scoped via #2108's transitive
+--    devices join; the composite FK + household_id column are the #2283 source
+--    follow-up.
+ALTER TABLE alerts DROP CONSTRAINT alerts_mac_fkey;
+
+-- 2. Drop the global UNIQUE(mac); uq_devices_household_mac (V65) is now the sole
+--    MAC-uniqueness rule, so two households can each own the same MAC and
+--    cross-household new-device discovery no longer 503s (#2151 scenario 4).
+ALTER TABLE devices DROP CONSTRAINT devices_mac_key;
