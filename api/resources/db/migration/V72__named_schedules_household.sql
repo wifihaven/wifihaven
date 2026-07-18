@@ -1,4 +1,5 @@
--- V71__named_schedules_household.sql
+-- V72__named_schedules_household.sql
+-- (renumbered from V71 after #2279's V71__press_messages.sql landed on main first)
 -- Multi-tenant isolation follow-up to sub-issue E (#2108, epic #2085/#622,
 -- design docs/design/multi-tenant-isolation.md §2 gap 4). Refs #2126, #622.
 --
