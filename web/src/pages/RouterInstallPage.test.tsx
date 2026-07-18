@@ -51,6 +51,38 @@ describe('RouterInstallPage — #2234 post-registration router-install page', ()
     expect(screen.getAllByText(/OpenWRT/i).length).toBeGreaterThan(0)
   })
 
+  it('links each suggested router to Amazon with the wifihaven-20 affiliate tag', () => {
+    // #2301 — every router card carries a "View on Amazon" link. Amazon Associates requires
+    // the tag on every link; rel="sponsored" flags the paid relationship.
+    renderPage()
+    const links = screen.getAllByRole('link', { name: /View on Amazon/i })
+    expect(links.length).toBeGreaterThan(0)
+    for (const link of links) {
+      const href = link.getAttribute('href') ?? ''
+      expect(href).toContain('tag=wifihaven-20')
+      expect(href).toMatch(/^https:\/\/www\.amazon\.com\//)
+      expect(link).toHaveAttribute('target', '_blank')
+      expect(link.getAttribute('rel')).toContain('sponsored')
+      expect(link.getAttribute('rel')).toContain('noopener')
+    }
+  })
+
+  it('shows the Amazon Associates affiliate disclosure', () => {
+    // #2301 — a visible disclosure near the links is an Associates requirement.
+    renderPage()
+    expect(
+      screen.getByText(/We may earn a small commission from these links, at no cost to you/i),
+    ).toBeInTheDocument()
+  })
+
+  it('no longer lists the discontinued Belkin RT3200 / Linksys E8450', () => {
+    // #2301 — dropped as no longer reliably available on Amazon; replaced by the Netgear
+    // WAX206 (same MediaTek MT7622 mainline-OpenWRT platform).
+    renderPage()
+    expect(screen.queryByText(/RT3200|E8450/i)).not.toBeInTheDocument()
+    expect(screen.getByText(/WAX206/i)).toBeInTheDocument()
+  })
+
   it('deep-links to the routers add-router dialog to mint the enrollment token', () => {
     renderPage()
     const link = screen.getByRole('link', { name: /enrollment token|routers|enroll/i })

@@ -19,10 +19,21 @@ export const ROUTER_INSTALL_COMMAND =
 // Deliberately NOT an exhaustive compatibility matrix. Every entry runs OpenWRT; the GL.iNet
 // boxes ship an OpenWRT-based firmware out of the box (lighter flashing), while mainline
 // targets need an OpenWRT flash first (see the prerequisite note below).
+//
+// #2301 — each entry links to Amazon with our Associates tag (wifihaven-20). Every `amazon`
+// URL below is a VERIFIED current product listing (dp/<ASIN>) confirmed available on
+// amazon.com as of 2026-07-18 — no fabricated ASINs. If a listing later rots, swap it for the
+// rot-proof search fallback `https://www.amazon.com/s?k=<model>&tag=wifihaven-20`, which always
+// resolves and still carries the tag. The Belkin RT3200 / Linksys E8450 was dropped here: it is
+// no longer reliably available on Amazon (discontinued). Its replacement, the Netgear WAX206,
+// is the same MediaTek MT7622 mainline-OpenWRT platform as the RT3200 — the same "cheap target
+// you flash yourself" role — and is a currently-stocked amazon.com listing.
 interface SuggestedRouter {
   name: string
   detail: string
   note?: string
+  // Verified amazon.com product URL carrying tag=wifihaven-20 (Amazon Associates).
+  amazon: string
 }
 
 const SUGGESTED_ROUTERS: SuggestedRouter[] = [
@@ -31,18 +42,21 @@ const SUGGESTED_ROUTERS: SuggestedRouter[] = [
     detail:
       'Our reference hardware. Quad-core aarch64, dual-band Wi-Fi 6, 2.5G WAN — plenty of headroom for line-rate filtering and accounting at gigabit.',
     note: 'Ships GL.iNet’s OpenWRT-based firmware; well supported in mainline OpenWRT.',
+    amazon: 'https://www.amazon.com/dp/B0CP7S3117?tag=wifihaven-20',
   },
   {
     name: 'GL.iNet Flint (GL-AX1800)',
     detail:
       'The smaller sibling — Wi-Fi 6, gigabit Ethernet. A solid, cheaper option for lighter households.',
     note: 'Also ships an OpenWRT-based firmware.',
+    amazon: 'https://www.amazon.com/dp/B09HBW45ZJ?tag=wifihaven-20',
   },
   {
-    name: 'Belkin RT3200 / Linksys E8450',
+    name: 'Netgear WAX206 (AX3200)',
     detail:
-      'A popular, inexpensive mainline-OpenWRT target with strong community support. Great value if you’re comfortable flashing.',
+      'An inexpensive mainline-OpenWRT target with strong community support (MediaTek MT7622, Wi-Fi 6, 2.5G WAN). Great value if you’re comfortable flashing.',
     note: 'Requires flashing OpenWRT yourself before installing the agent.',
+    amazon: 'https://www.amazon.com/dp/B098BRF91P?tag=wifihaven-20',
   },
 ]
 
@@ -88,9 +102,28 @@ export function RouterInstallPage() {
               {r.note && (
                 <p className="text-xs text-brand-text-muted mt-1.5">{r.note}</p>
               )}
+              {/* #2301 — affiliate link. rel="sponsored" flags the paid relationship (Amazon
+                  Associates / SEO), noopener hardens the new tab. */}
+              <a
+                href={r.amazon}
+                target="_blank"
+                rel="sponsored noopener"
+                className="inline-flex items-center gap-1 text-xs font-semibold text-brand-accent hover:text-brand-accent-dark mt-2.5"
+              >
+                View on Amazon
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                  <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                  <polyline points="15 3 21 3 21 9" />
+                  <line x1="10" y1="14" x2="21" y2="3" />
+                </svg>
+              </a>
             </li>
           ))}
         </ul>
+        {/* #2301 — Amazon Associates requires a visible affiliate disclosure near the links. */}
+        <p className="text-xs text-brand-text-muted">
+          We may earn a small commission from these links, at no cost to you.
+        </p>
       </section>
 
       {/* Step 2 — install command */}
