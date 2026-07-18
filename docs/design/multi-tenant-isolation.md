@@ -232,8 +232,14 @@ inventory (trait declarations in [`Repos.scala`](../../api/src/db/Repos.scala)):
 
 Plus the global-sentinel profile (`isGlobal`,
 [`V59__profiles_is_global_drop_globals.sql`](../../api/resources/db/migration/V59__profiles_is_global_drop_globals.sql)):
-today there is exactly one sentinel row; multi-tenant needs **one sentinel per
-household** (the global-policy layer is per-household policy, not fleet-wide).
+multi-tenant needs **one sentinel per household** (the global-policy layer is
+per-household policy, not fleet-wide). Delivered by #2286:
+[`V73__profiles_is_global_per_household.sql`](../../api/resources/db/migration/V73__profiles_is_global_per_household.sql)
+widens the `is_global` partial-unique index from installation-wide to
+`(household_id, is_global)`, and provisioning seeds each new household's `Global`
+sentinel at household-create time (see the #2286 code follow-up) — so
+`getGlobalForHousehold` / `GET /api/profiles/global` resolve for every household,
+not just the default install.
 
 **Fix:** each read above becomes household-scoped — either a new
 `…ByHousehold(hh)` method or a `household_id` predicate added to the existing
