@@ -2,7 +2,7 @@ package wifihaven.api.feature
 
 import wifihaven.api.PressConfig
 import wifihaven.api.auth.{RateLimiter, RateLimiterLive}
-import wifihaven.api.notify.EmailSender
+import wifihaven.api.notify.{EmailOutcome, EmailSender}
 import wifihaven.api.press.*
 import wifihaven.api.routes.PressAgentRoutes
 import wifihaven.api.support.SupportService
@@ -256,6 +256,40 @@ object PressResponderSpec extends ZIOSpecDefault {
           sExpired == Status.Unauthorized,
           sNoToken == Status.Unauthorized,
         )
+    },
+    test("a signature-valid but malformed envelope (no from/text) is skipped, not dispatched") {
+      for {
+        (routes, stubs, _) <- makeRoutes(liveCfg)
+        // Valid signature, but the envelope has no `from` (and thus no reply target) — PressInbound
+        // rejects it as malformed; the webhook still 200s (the Worker must not retry) and nothing is
+        // dispatched.
+        noFrom = """{"subject":"hi","text":"who do I reply to?"}"""
+        status     <- postInbound(routes, noFrom, Some(sign(noFrom)))
+        dispatches <- stubs.dispatch.dispatches.get
+      } yield assertTrue(status == Status.Ok, dispatches.isEmpty)
+    },
+    test("a failed outbound email surfaces as 500, not a false 200") {
+      for {
+        clock <- Ref.make(TestClock.schoolDayAfternoon).map(new TestClock(_): Clock)
+        // An EmailSender whose send always fails (Resend down / rejected) — the reply endpoint must
+        // report the error, not pretend success.
+        failing   = new EmailSender {
+          def send(to: String, subject: String, htmlBody: String): UIO[EmailOutcome] =
+            ZIO.succeed(EmailOutcome.Failed)
+        }
+        dispRec <- PressAgentDispatcher.recorder
+        responder = PressResponder(
+          liveCfg,
+          failing,
+          PressAgentDispatcher.recording(dispRec),
+          clock,
+          RateLimiter.allowAll,
+          RateLimiter.allowAll,
+        )
+        routes    = PressAgentRoutes.routes(responder)
+        token       <- mintToken(clock, "reporter@example.com")
+        (status, _) <- agentReply(routes, """{"markdown":"hello"}""", Some(token))
+      } yield assertTrue(status == Status.InternalServerError)
     },
     test("injection pin: an exfiltration/redirect order in the message changes nothing") {
       for {

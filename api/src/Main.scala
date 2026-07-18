@@ -518,6 +518,9 @@ object Main extends ZIOAppDefault {
       // locked into the session token, so a hijacked agent cannot redirect it).
       pressDispatcher            <- ZIO.service[wifihaven.api.press.PressAgentDispatcher]
       pressEmailSender           <- ZIO.service[wifihaven.api.notify.EmailSender]
+      // Same dispatch cost caps as the #2200 support responder (4/sender/hour, 50/day global) — each
+      // dispatched session bills tokens, and the global cap is the true ceiling for this public
+      // endpoint (the per-sender key is best-effort — an anonymous From is trivially rotated).
       pressDispatchSenderLimiter <- RateLimiterLive.make(maxAttempts = 4, windowSeconds = 60 * 60)
       pressDispatchGlobalLimiter <-
         RateLimiterLive.make(maxAttempts = 50, windowSeconds = 24 * 60 * 60)

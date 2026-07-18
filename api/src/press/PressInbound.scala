@@ -61,16 +61,20 @@ object PressInbound {
         // `from` is used verbatim as the outbound reply recipient, so strip CR/LF/control chars —
         // the reply is emailed autonomously, and a control char in the recipient has no legitimate
         // place. (The Cloudflare Worker sends a parsed address; this is defense-in-depth.)
-        val from = str(root, "from").map(sanitizeAddr).filter(_.nonEmpty)
+        val from = str(root, "from").map(stripControl).map(_.trim).filter(_.nonEmpty)
         val text = str(root, "text").filter(_.trim.nonEmpty)
         (from, text) match {
           case (Some(f), Some(t)) =>
             Some(
               PressInboundEvent(
                 from = f,
-                subject = str(root, "subject").getOrElse(""),
+                // The subject is attacker-controlled and lands in the outbound reply's Subject
+                // header (via the session token); strip control chars for the same defense-in-depth
+                // reason as `from` — an autonomous email header must not carry CR/LF material. (Resend
+                // JSON-encodes the subject so raw injection is already prevented; this is belt+braces.)
+                subject = str(root, "subject").map(stripControl).getOrElse(""),
                 messageText = t,
-                messageId = str(root, "messageId").getOrElse(""),
+                messageId = str(root, "messageId").map(stripControl).getOrElse(""),
               ),
             )
           case _                  => None
@@ -81,10 +85,11 @@ object PressInbound {
   private def str(o: Json.Obj, key: String): Option[String] =
     o.fields.collectFirst { case (k, Json.Str(v)) if k == key => v }
 
-  // Strip control characters (incl. CR/LF) and trim — the recipient of an autonomous email must not
-  // carry header-injection material or whitespace.
-  private def sanitizeAddr(s: String): String =
-    s.filter(c => !c.isControl).trim
+  // Strip control characters (incl. CR/LF) — attacker-controlled fields that flow into an autonomous
+  // email (the recipient, and the subject/message-id that ride the reply headers) must not carry
+  // header-injection material. The recipient is additionally trimmed by the caller.
+  private def stripControl(s: String): String =
+    s.filter(c => !c.isControl)
 }
 
 /**

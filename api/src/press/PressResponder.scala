@@ -71,7 +71,9 @@ final case class PressResponder(
    */
   private def dispatchFor(event: PressInboundEvent): UIO[WebhookOutcome] =
     // Short-circuit (mirrors #2261): draw the global bucket only when the per-sender cap allowed, so
-    // one spamming sender can't drain the shared budget and lock everyone else out.
+    // one spamming sender can't drain the shared budget and lock everyone else out. The per-sender
+    // key is best-effort (the From is attacker-controlled and trivially rotated); the GLOBAL cap is
+    // the real ceiling on token spend for this public endpoint.
     dispatchSenderLimiter.tryAcquire(s"from:${event.from}").flatMap { senderOk =>
       if !senderOk then ZIO.succeed(WebhookOutcome.RateLimited)
       else
