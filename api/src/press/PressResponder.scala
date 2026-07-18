@@ -151,8 +151,9 @@ final case class PressResponder(
                   // to the inbound row via the token's pressMessageId. Only Sent/Failed are real
                   // send attempts worth logging; a Disabled send (dark install) emitted no email.
                   val record = sendResult match {
-                    case EmailOutcome.Sent     => recordOutbound(claims, markdown, "sent")
-                    case EmailOutcome.Failed   => recordOutbound(claims, markdown, "failed")
+                    case EmailOutcome.Sent     => recordOutbound(claims, subject, markdown, "sent")
+                    case EmailOutcome.Failed   =>
+                      recordOutbound(claims, subject, markdown, "failed")
                     case EmailOutcome.Disabled => ZIO.unit
                   }
                   record *> (sendResult match {
@@ -187,20 +188,22 @@ final case class PressResponder(
       )
 
   /**
-   * Record the outbound AI reply as audit, paired to its inbound row. Fail-open: a recording error
-   * is logged + metered and swallowed — the reply has already been emailed and that is
-   * authoritative. `inReplyTo` is omitted when the token carries id 0 (the inbound insert had
-   * failed), so the outbound row never dangles against a non-existent FK.
+   * Record the outbound AI reply as audit, paired to its inbound row. `subject` is the SAME
+   * `Re:`-subject that was emailed (threaded in, not re-derived). Fail-open: a recording error is
+   * logged + metered and swallowed — the reply has already been emailed and that is authoritative.
+   * `inReplyTo` is omitted when the token carries id 0 (the inbound insert had failed), so the
+   * outbound row never dangles against a non-existent FK.
    */
   private def recordOutbound(
       claims: PressToken.Claims,
+      subject: String,
       markdown: String,
       outcome: String,
   ): UIO[Unit] =
     pressLog
       .recordOutbound(
         peerEmail = claims.replyTo,
-        subject = replySubject(claims.subject),
+        subject = subject,
         body = markdown,
         inReplyTo = Option.when(claims.pressMessageId > 0)(claims.pressMessageId),
         outcome = outcome,
