@@ -385,9 +385,12 @@ object InfraHosts {
     //
     // Serato DJ telemetry / update (apex covers insights. / id. / static. subdomains)
     "serato.com",
-    // Brave browser component / update / usage-telemetry (siblings of the collector.bsg /
-    // star-randsrv hosts already on suppressOnly). Specific hosts — the brave.com apex is
-    // NOT swept in, so real Brave search/product surfaces keep anchoring.
+    // Brave browser component / update / usage-telemetry. Sibling telemetry (collector.bsg /
+    // star-randsrv) lives on suppressOnly (never counts); these land here on the class
+    // (anchor-ineligible, but still count inside a genuinely-anchored span) deliberately —
+    // #2274 is an ANCHOR problem (they anchored phantom spans), and the class tier keeps the
+    // #1446/#2068 no-undercount guarantee that outright suppression would forgo. Specific
+    // hosts — the brave.com apex is NOT swept in, so real Brave search/product keeps anchoring.
     "go-updater.brave.com",
     "brave-core-ext.s3.brave.com",
     "usage-ping.brave.com",
