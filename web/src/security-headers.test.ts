@@ -28,4 +28,31 @@ describe('web/public/_headers CSP (Cloudflare Pages copy)', () => {
     expect(headers).toContain('img-src')
     expect(headers).toContain('https://icons.duckduckgo.com')
   })
+
+  // #2240: the Plain support chat widget is blocked until these hosts are allowlisted. Exact hosts
+  // from Plain's documented chat-widget CSP (https://help.plain.com/article/chat), UK region — kept
+  // in sync with the API copy (api/src/SecurityHeaders.scala, pinned by api SecurityHeadersSpec).
+  it('allowlists Plain chat-widget hosts across script/connect/style/img (#2240)', () => {
+    expect(headers).toContain('https://chat.cdn-plain.com') // script-src
+    expect(headers).toContain('https://chat.uk.plain.com') // connect-src (UK region)
+    expect(headers).toContain('https://fonts.googleapis.com') // style-src
+    expect(headers).toContain('https://i0.wp.com') // img-src (Gravatar agent avatars)
+    expect(headers).toContain(
+      'https://prod-uk-services-attachm-attachmentsuploadbucket2-1l2e4906o2asm.s3.eu-west-2.amazonaws.com',
+    ) // connect-src attachment-upload bucket
+    expect(headers).toContain(
+      'https://prod-uk-services-workspac-workspacefilespublicbuck-vs4gjqpqjkh6.s3.amazonaws.com',
+    ) // img-src workspace-logo bucket
+    expect(headers).toContain(
+      'https://prod-uk-services-attachm-attachmentsbucket28b3ccf-uwfssb4vt2us.s3.eu-west-2.amazonaws.com',
+    ) // img-src attachment bucket
+  })
+
+  // Over-broadening guard: Plain documents no iframe, so the additions must stay exact hosts — no
+  // wildcard, and frame-ancestors 'none' unchanged.
+  it('does not introduce wildcards or loosen frame-ancestors for Plain (#2240)', () => {
+    expect(headers).toContain("frame-ancestors 'none'")
+    expect(headers).not.toContain('*.plain.com')
+    expect(headers).not.toContain('https://*')
+  })
 })

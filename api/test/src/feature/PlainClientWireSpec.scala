@@ -16,8 +16,13 @@ import java.net.InetSocketAddress
  * bare-scalar `fullName` on onUpdate — every field wrong for the update path — so every household
  * upsert 400'd on staging and `GET /api/support/identity` failed.
  *
+ * #2240 — entitlement (plan / founding / household name) rides on the Plain *tenant*, not the
+ * customer (Plain's customer input has no attributes/customFields channel). So a single
+ * `upsertCustomer` DTO drives THREE Plain writes: the customer upsert, `upsertTenant` (household
+ * name), and one `upsertTenantField` per entitlement field. This spec asserts all of them.
+ *
  * This stubs the Plain HTTP transport (a JDK [[HttpServer]] pointed at by `cfg.apiBase`, no repo
- * mocks, no network) and asserts the exact wire body the LIVE client emits — the one thing the
+ * mocks, no network) and asserts the exact wire bodies the LIVE client emits — the one thing the
  * recorder-based [[SupportIdentitySpec]] can't see, because the recorder captures the DTO, not the
  * serialized GraphQL variables.
  *
@@ -28,20 +33,24 @@ import java.net.InetSocketAddress
  *   - `UpsertCustomerOnCreateInput.fullName: String` — a bare scalar;
  *   - `UpsertCustomerOnUpdateInput.fullName: StringInput` — a WRAPPED `{ value }`;
  *   - `UpsertCustomerOnUpdateInput` has NO `tenantIdentifiers` field — so it must be absent on
- *     update.
+ *     update;
+ *   - `UpsertTenantInput` — `{ identifier: { externalId }, externalId, name }`;
+ *   - `UpsertTenantFieldInput` — `{ tenantFieldIdentifier: { tenantId, externalFieldId }, type,
+ *     <typed>Value }`.
  */
 object PlainClientWireSpec extends ZIOSpecDefault {
 
-  // A one-request capture server: serves a Plain-style 200 `{data:{upsertCustomer:{customer:{id}}}}`
-  // and stashes the last request body for assertion. Started/stopped inside a scoped resource so the
-  // port is released even on failure.
-  private final class CaptureServer(val server: HttpServer, val lastBody: Ref[Option[String]])
+  // A capture server: serves a Plain-style 200 that carries BOTH `upsertCustomer.customer.id` and
+  // `upsertTenant.tenant.id` (so the client can chain tenant-field writes), and stashes EVERY
+  // request body in order for assertion. Started/stopped inside a scoped resource so the port is
+  // released even on failure.
+  private final class CaptureServer(val server: HttpServer, val bodies: Ref[List[String]])
 
   private def captureServer: ZIO[Scope, Throwable, CaptureServer] =
     for {
-      bodyRef <- Ref.make(Option.empty[String])
-      runtime <- ZIO.runtime[Any]
-      server  <- ZIO.acquireRelease(
+      bodiesRef <- Ref.make(List.empty[String])
+      runtime   <- ZIO.runtime[Any]
+      server    <- ZIO.acquireRelease(
         ZIO.attempt {
           val s = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0)
           s.createContext(
@@ -49,9 +58,10 @@ object PlainClientWireSpec extends ZIOSpecDefault {
             (exchange: HttpExchange) => {
               val body             = new String(exchange.getRequestBody.readAllBytes(), "UTF-8")
               Unsafe.unsafe { implicit u =>
-                runtime.unsafe.run(bodyRef.set(Some(body))).getOrThrowFiberFailure()
+                runtime.unsafe.run(bodiesRef.update(_ :+ body)).getOrThrowFiberFailure()
               }
-              val resp             = """{"data":{"upsertCustomer":{"customer":{"id":"c_1"}}}}"""
+              val resp             =
+                """{"data":{"upsertCustomer":{"customer":{"id":"c_1"}},"upsertTenant":{"tenant":{"id":"t_1"}},"upsertTenantField":{"tenantField":{"id":"tf_1"}}}}"""
               val out: Array[Byte] = resp.getBytes("UTF-8")
               exchange.sendResponseHeaders(200, out.length.toLong)
               val os: OutputStream = exchange.getResponseBody
@@ -63,7 +73,7 @@ object PlainClientWireSpec extends ZIOSpecDefault {
           s
         },
       )(s => ZIO.attempt(s.stop(0)).ignore)
-    } yield new CaptureServer(server, bodyRef)
+    } yield new CaptureServer(server, bodiesRef)
 
   private def parse(body: String): Json =
     Json.decoder.decodeJson(body).toOption.get
@@ -77,7 +87,16 @@ object PlainClientWireSpec extends ZIOSpecDefault {
       }
     }
 
-  def spec = suite("PlainClient.Live wire shape (#2253)")(
+  // Pick the recorded request body whose GraphQL `query` names `op`, and return its `variables`.
+  private def varsForOp(bodies: List[String], op: String): Option[Json] =
+    bodies
+      .map(parse)
+      .find(b =>
+        field(b, "query").exists { case Json.Str(q) => q.contains(s"$op(input:"); case _ => false },
+      )
+      .map(b => field(b, "variables").getOrElse(b))
+
+  def spec = suite("PlainClient.Live wire shape (#2253, #2240)")(
     test(
       "upsertCustomer serializes Plain's UpsertCustomerInput — plural tenantIdentifiers + correct onCreate/onUpdate",
     ) {
@@ -103,10 +122,9 @@ object PlainClientWireSpec extends ZIOSpecDefault {
               ),
             )
             .provide(client, ZLayer.succeed(cfg))
-          raw     <- cap.lastBody.get
-          vars      = parse(raw.get)
-          // The `variables` object we assert against.
-          variables = field(vars, "variables").getOrElse(vars)
+          bodies  <- cap.bodies.get
+          // The customer-upsert request's `variables` object we assert against.
+          variables = varsForOp(bodies, "upsertCustomer").get
         } yield {
           // Live client, not the Disabled no-op (key is set).
           val liveOk = assertTrue(outcome == PlainOutcome.Ok)
@@ -154,6 +172,89 @@ object PlainClientWireSpec extends ZIOSpecDefault {
         }
       }
     },
+    // #2240: entitlement rides on the Plain TENANT. One upsertCustomer DTO with plan+founding drives
+    // upsertTenant (household name) + one upsertTenantField per entitlement field, keyed on the
+    // internal tenant id returned by upsertTenant.
+    test(
+      "upsertCustomer also upserts the tenant (name) + tenant fields (plan string, founding bool)",
+    ) {
+      ZIO.scoped {
+        for {
+          cap <- captureServer
+          base   = s"http://127.0.0.1:${cap.server.getAddress.getPort}/"
+          cfg    = SupportConfig(plain =
+            PlainConfig(writeEnabled = true, apiKey = "test-key", apiBase = base),
+          )
+          client = PlainClient.layer
+          outcome <- ZIO
+            .serviceWithZIO[PlainClient](
+              _.upsertCustomer(
+                PlainCustomerUpsert(
+                  externalId = "hh-7",
+                  tenantIdentifier = "7",
+                  email = "a@example.com",
+                  fullName = "Family Seven",
+                  attributes =
+                    Map("plan" -> "beta", "founding" -> "true", "householdName" -> "Family Seven"),
+                ),
+              ),
+            )
+            .provide(client, ZLayer.succeed(cfg))
+          bodies  <- cap.bodies.get
+          tenantVars = varsForOp(bodies, "upsertTenant")
+          // Both field writes serialize with the SAME mutation name; collect all their variables.
+          fieldVars  = bodies
+            .map(parse)
+            .filter(b =>
+              field(b, "query").exists {
+                case Json.Str(q) => q.contains("upsertTenantField(input:"); case _ => false
+              },
+            )
+            .map(b => field(b, "variables").getOrElse(b))
+        } yield {
+          val ok = assertTrue(outcome == PlainOutcome.Ok)
+
+          // upsertTenant carries the household id (identifier + top-level externalId) and the name.
+          val tenantShape = assertTrue(
+            field(tenantVars.get, "input", "identifier", "externalId").contains(Json.Str("7")),
+            field(tenantVars.get, "input", "externalId").contains(Json.Str("7")),
+            field(tenantVars.get, "input", "name").contains(Json.Str("Family Seven")),
+          )
+
+          // Exactly two field writes: plan (STRING_TYPE/stringValue) + founding (BOOLEAN_TYPE/booleanValue),
+          // both keyed on the INTERNAL tenant id t_1 from upsertTenant's response.
+          val twoFields     = assertTrue(fieldVars.size == 2)
+          val planField     = assertTrue(
+            fieldVars.exists { v =>
+              field(v, "input", "tenantFieldIdentifier", "tenantId").contains(Json.Str("t_1")) &&
+              field(v, "input", "tenantFieldIdentifier", "externalFieldId").contains(
+                Json.Str("plan"),
+              ) &&
+              field(v, "input", "type").contains(Json.Str("STRING_TYPE")) &&
+              field(v, "input", "stringValue").contains(Json.Str("beta"))
+            },
+          )
+          val foundingField = assertTrue(
+            fieldVars.exists { v =>
+              field(v, "input", "tenantFieldIdentifier", "externalFieldId").contains(
+                Json.Str("founding"),
+              ) &&
+              field(v, "input", "type").contains(Json.Str("BOOLEAN_TYPE")) &&
+              field(v, "input", "booleanValue").contains(Json.Bool(true))
+            },
+          )
+          // householdName is the tenant NAME, never a field.
+          val noNameField   = assertTrue(
+            !fieldVars.exists(v =>
+              field(v, "input", "tenantFieldIdentifier", "externalFieldId")
+                .contains(Json.Str("householdName")),
+            ),
+          )
+
+          ok && tenantShape && twoFields && planField && foundingField && noNameField
+        }
+      }
+    },
     test("writeEnabled=false ⇒ Disabled no-op, no network call (ships dark, #2266)") {
       ZIO.scoped {
         for {
@@ -168,8 +269,8 @@ object PlainClientWireSpec extends ZIOSpecDefault {
               ),
             )
             .provide(PlainClient.layer, ZLayer.succeed(cfg))
-          raw     <- cap.lastBody.get
-        } yield assertTrue(outcome == PlainOutcome.Disabled, raw.isEmpty)
+          bodies  <- cap.bodies.get
+        } yield assertTrue(outcome == PlainOutcome.Disabled, bodies.isEmpty)
       }
     },
   ) @@ TestAspect.sequential

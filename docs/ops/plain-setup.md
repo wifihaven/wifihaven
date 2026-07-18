@@ -128,13 +128,16 @@ identity. You don't wire any of that; you only provide the App ID + identity sec
    |---|---|---|
    | `customer:create` | `upsertCustomer` (household → Plain customer) | **#2199 (now)** |
    | `customer:edit` | `upsertCustomer` updates an existing customer | **#2199 (now)** |
+   | `tenant:create` / `tenant:edit` | `upsertTenant` — sets the household name on the Plain tenant *(verify exact scope strings)* | **#2240 (now)** |
+   | `tenantField:create` / `tenantField:edit` | `upsertTenantField` — writes the `plan` / `founding` entitlement fields *(verify exact scope strings)* | **#2240 (now)** |
    | `customer:read` | look up the household by `tenantIdentifier`/`externalId` for draft context | #2200 |
    | `thread:create` | `createThread` — the `PlainClient.writeThread` seam | #2200 |
    | `thread:reply` | post the AI-drafted reply into the thread | #2200 |
    | `threadEvent:create` | post the draft as an AI-labeled note/event (if #2200 uses a note vs an unsent reply) | #2200 |
 
-   **Strict minimum for what's merged today (#2199):** just `customer:create` +
-   `customer:edit`. **Recommended:** grant the full set now — the key is shown once and
+   **Strict minimum for what's merged today (#2199 + #2240):** `customer:create` +
+   `customer:edit` + the `tenant:*` / `tenantField:*` scopes (the household→tenant name +
+   plan/founding entitlement writes). **Recommended:** grant the full set now — the key is shown once and
    #2200 lands next, so this avoids re-issuing. The exact draft-posting scope
    (`thread:reply` vs `threadEvent:create`) is #2200's implementation choice; granting
    both keeps it unblocked. **Do NOT grant** `customer:delete`, `customer:impersonate`,
@@ -178,9 +181,25 @@ these:
    lowercased-email)`. Plain's chat-auth doc is the authority on the exact field name (it
    may be `customerHash`) and hashed value — we reconcile `SupportWidget.tsx` +
    `SupportService` to match.
-3. **Entitlement custom fields.** To actually send `plan`/`founding` to Plain, register
-   those custom fields in the workspace, then we wire their field ids into the
-   `upsertCustomer` mutation (`PlainClient.customerFields`, marked `TODO(#2240)`).
+3. **Entitlement fields (on the TENANT, not the customer).** Plain's customer input has **no**
+   custom-field/attributes channel — `UpsertCustomerOnCreateInput`/`OnUpdateInput`
+   (team-plain/typescript-sdk `src/graphql/types.ts`) expose only `fullName` / `email` /
+   `externalId` / `shortName` / `tenantIdentifiers`. Entitlement is **household-level**, and each
+   household maps to a Plain **tenant** (`tenantIdentifier = household_id`), so plan/founding/name
+   ride on the tenant:
+   - **Household name** → the tenant's first-class `name` (set by `upsertTenant`). No registration
+     needed.
+   - **`plan`** (billing status: beta / active / lapsed) → a Plain **tenant field**, `externalFieldId`
+     = `plan`, type **String**.
+   - **`founding`** (boolean) → a tenant field, `externalFieldId` = `founding`, type **Boolean**.
+
+   **Register these two tenant-field schemas in the workspace before go-live** (Settings → Tenants →
+   Fields *(verify label)*), using **exactly** those external field ids and types — the code keys
+   `upsertTenantField` on `externalFieldId: "plan"` / `"founding"`, so a mismatched id/type fails
+   the field write (logged, fail-open — the widget + customer/tenant mapping still work). Until the
+   schemas exist, plan/founding simply don't appear on the tenant; nothing else breaks.
+   (`PlainClient.upsertTenantEntitlement` — the `upsertCustomer` DTO drives the tenant + field writes
+   automatically once the write key is set.)
 
 ---
 

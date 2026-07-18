@@ -442,6 +442,11 @@ object MetricGuard {
     // #808 lesson: without these entries the firewall rejects the name and the series never emits.
     "support_widget_identity_total"                 -> Set("outcome"),
     "support_customer_upsert_total"                 -> Set("outcome"),
+    // #2240 — the household→Plain TENANT entitlement write (household name + plan/founding tenant
+    // fields). Separate from the customer upsert so a silently-failing entitlement path (e.g. the
+    // plan/founding field schemas not yet registered at go-live) is visible in metrics, not only
+    // logs. Bounded PlainOutcome enum (ok | error); Disabled never reaches the Live client.
+    "support_tenant_upsert_total"                   -> Set("outcome"),
     // #2200 — the Claude support responder (dark until keys set). `support_ai_draft_total{outcome}`
     // (the #2200-specified series name, kept though v1 sends replies rather than drafts)
     // counts each inbound Plain webhook by a bounded enum (dispatched | skipped_unauthenticated |
@@ -667,6 +672,11 @@ object AppMetrics {
 
   def supportCustomerUpsert(outcome: String): UIO[Unit] =
     MetricGuard.counter("support_customer_upsert_total", Map("outcome" -> outcome))
+
+  // #2240 — the household→Plain TENANT entitlement write (name + plan/founding fields). Metered
+  // separately from the customer upsert so a failing entitlement path is observable, not log-only.
+  def supportTenantUpsert(outcome: String): UIO[Unit] =
+    MetricGuard.counter("support_tenant_upsert_total", Map("outcome" -> outcome))
 
   // ── #2200: Claude support responder (dark until keys set) ─────────────────────
   // Emitted from SupportResponder. `supportAiDraft` counts each inbound Plain webhook by outcome

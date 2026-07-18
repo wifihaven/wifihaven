@@ -1,6 +1,7 @@
 package wifihaven.api.support
 
 import wifihaven.api.SupportConfig
+import wifihaven.api.metrics.AppMetrics
 import zio.*
 import zio.json.*
 import zio.json.ast.Json
@@ -160,9 +161,10 @@ object PlainClient {
     // The tenant list is what scopes the customer to the household (household-gating); it lives ONLY
     // on the create input — Plain's update input has no tenantIdentifiers field (membership is set at
     // create), so re-asserting it on update is a schema error (#2253).
-    // TODO(#2240): `req.attributes` (plan/founding/householdName) are NOT sent here — Plain custom
-    // fields need pre-registered field ids, a go-live provisioning step. Wire them into the mutation
-    // once the operator registers the fields so entitlement context reaches Plain (#2199 scope 3).
+    // #2240: `req.attributes` (plan / founding / householdName) are NOT customer fields. Plain's
+    // customer input has NO attributes/customFields channel (only the fields above), so entitlement
+    // cannot ride on the customer. It is HOUSEHOLD-level context and rides on the Plain *tenant*
+    // instead (upsertTenant name + upsertTenantField) — see `upsertTenantEntitlement` below.
     private def customerCreateFields(req: PlainCustomerUpsert): Json =
       Json.Obj(
         "fullName"          -> Json.Str(req.fullName),
@@ -185,7 +187,131 @@ object PlainClient {
       )
 
     def upsertCustomer(req: PlainCustomerUpsert): UIO[PlainOutcome] =
+      // The customer upsert is the primary write and its outcome is what we return/meter. The
+      // tenant entitlement (household name + plan/founding fields) is a best-effort follow-on that
+      // must never flip the customer outcome — a missing tenant-field schema (not yet registered at
+      // go-live) or a tenant hiccup is logged and ignored.
       post(UpsertCustomerMutation, upsertCustomerVars(req), "upsertCustomer")
+        .zipLeft(upsertTenantEntitlement(req))
+
+    // ── Tenant entitlement (#2240) ─────────────────────────────────────────────
+    // Plain custom entitlement is HOUSEHOLD-level, and the household maps to a Plain *tenant*
+    // (`tenantIdentifier = household id`). The household NAME is the tenant's first-class `name`
+    // (upsertTenant); `plan` (billing status) and `founding` ride as Plain *tenant fields*
+    // (upsertTenantField), each keyed on an operator-registered `externalFieldId` — the "pre-
+    // registered field" go-live step (#2240). A tenant field needs the tenant's INTERNAL id, which
+    // upsertTenant returns, so this is: upsertTenant → read tenant.id → upsertTenantField per field.
+    // Field external ids the operator registers in the workspace (docs/ops/plain-setup.md §7.3):
+    private val PlanFieldId     = "plan"     // TenantFieldType.STRING_TYPE
+    private val FoundingFieldId = "founding" // TenantFieldType.BOOLEAN_TYPE
+
+    private val UpsertTenantMutation: String =
+      """mutation upsertTenant($input: UpsertTenantInput!) {
+        |  upsertTenant(input: $input) { tenant { id } error { message } }
+        |}""".stripMargin
+
+    private val UpsertTenantFieldMutation: String =
+      """mutation upsertTenantField($input: UpsertTenantFieldInput!) {
+        |  upsertTenantField(input: $input) { tenantField { id } error { message } }
+        |}""".stripMargin
+
+    // `UpsertTenantInput` (Plain schema): { identifier: TenantIdentifierInput, externalId: String,
+    // name: String, url? }. Both `identifier.externalId` and the top-level `externalId` are the
+    // household id; `name` is the household name.
+    private def upsertTenantVars(externalId: String, name: String): Json =
+      Json.Obj(
+        "input" -> Json.Obj(
+          "identifier" -> Json.Obj("externalId" -> Json.Str(externalId)),
+          "externalId" -> Json.Str(externalId),
+          "name"       -> Json.Str(name),
+        ),
+      )
+
+    // `UpsertTenantFieldInput`: { tenantFieldIdentifier: { tenantId, externalFieldId }, type,
+    // <typed>Value }. `tenantId` is Plain's INTERNAL id (from upsertTenant), not our externalId.
+    private def upsertTenantFieldVars(
+        tenantId: String,
+        externalFieldId: String,
+        fieldType: String,
+        valueKey: String,
+        value: Json,
+    ): Json =
+      Json.Obj(
+        "input" -> Json.Obj(
+          "tenantFieldIdentifier" -> Json.Obj(
+            "tenantId"        -> Json.Str(tenantId),
+            "externalFieldId" -> Json.Str(externalFieldId),
+          ),
+          "type"                  -> Json.Str(fieldType),
+          valueKey                -> value,
+        ),
+      )
+
+    // Build the (mutation-vars, op-label) list for the entitlement fields present on this upsert.
+    // `householdName` in `attributes` is NOT a field — it is the tenant `name` (set by upsertTenant).
+    private def tenantFieldWrites(
+        req: PlainCustomerUpsert,
+        tenantId: String,
+    ): List[(Json, String)] = {
+      val plan     = req.attributes.get("plan").map { p =>
+        upsertTenantFieldVars(tenantId, PlanFieldId, "STRING_TYPE", "stringValue", Json.Str(p)) ->
+          "upsertTenantField(plan)"
+      }
+      val founding = req.attributes.get("founding").map { f =>
+        upsertTenantFieldVars(
+          tenantId,
+          FoundingFieldId,
+          "BOOLEAN_TYPE",
+          "booleanValue",
+          Json.Bool(f == "true"),
+        ) -> "upsertTenantField(founding)"
+      }
+      List(plan, founding).flatten
+    }
+
+    private def upsertTenantEntitlement(req: PlainCustomerUpsert): UIO[Unit] =
+      // Nothing household-level to carry ⇒ no tenant write at all (and nothing to meter).
+      if req.fullName.isEmpty && req.attributes.isEmpty then ZIO.unit
+      else
+        // Aggregate outcome: `ok` only when the tenant upsert AND every field write succeed;
+        // `error` if any step fails (a missing field schema at go-live, a tenant hiccup, …). Metered
+        // so a silently-failing entitlement path is visible beyond the per-step log warnings.
+        sendForBody(
+          UpsertTenantMutation,
+          upsertTenantVars(req.tenantIdentifier, req.fullName),
+          "upsertTenant",
+        ).flatMap {
+          case None       => ZIO.succeed(PlainOutcome.Error) // already logged
+          case Some(body) =>
+            tenantIdFrom(body) match {
+              case None           =>
+                ZIO
+                  .logWarning("plain upsertTenant: no tenant id in response; skipping fields")
+                  .as(PlainOutcome.Error)
+              case Some(tenantId) =>
+                ZIO
+                  .foreach(tenantFieldWrites(req, tenantId)) { case (vars, op) =>
+                    post(UpsertTenantFieldMutation, vars, op)
+                  }
+                  .map(os =>
+                    if os.forall(_ == PlainOutcome.Ok) then PlainOutcome.Ok else PlainOutcome.Error,
+                  )
+            }
+        }.flatMap(o => AppMetrics.supportTenantUpsert(PlainOutcome.label(o)))
+
+    // Navigate `data.upsertTenant.tenant.id` out of the response body. Best-effort: any parse miss
+    // yields None (logged by the caller), never throws.
+    private def tenantIdFrom(body: String): Option[String] =
+      Json.decoder.decodeJson(body).toOption.flatMap { j =>
+        List("data", "upsertTenant", "tenant", "id")
+          .foldLeft(Option(j)) { (acc, key) =>
+            acc.flatMap {
+              case o: Json.Obj => o.fields.collectFirst { case (k, v) if k == key => v }
+              case _           => None
+            }
+          }
+          .collect { case Json.Str(s) => s }
+      }
 
     private val CreateThreadMutation: String =
       """mutation createThread($input: CreateThreadInput!) {
@@ -207,6 +333,15 @@ object PlainClient {
       post(CreateThreadMutation, writeThreadVars(req), "createThread")
 
     private def post(query: String, variables: Json, op: String): UIO[PlainOutcome] =
+      sendForBody(query, variables, op).map {
+        case Some(_) => PlainOutcome.Ok
+        case None    => PlainOutcome.Error
+      }
+
+    // One blocking HTTPS POST. Returns `Some(body)` on a 2xx with no top-level GraphQL `errors`
+    // array (the shared success check), else `None` (logged). Callers that need the response body
+    // (tenant-id extraction) read it; `post` just maps presence to Ok/Error.
+    private def sendForBody(query: String, variables: Json, op: String): UIO[Option[String]] =
       ZIO
         .attemptBlocking {
           val payload = GqlRequest(query, variables).toJson
@@ -226,15 +361,15 @@ object PlainClient {
           // coupling): if the body advertises an error we log + meter Error, else Ok.
           val body = resp.body()
           if resp.statusCode() / 100 == 2 && !body.contains("\"errors\"") then
-            ZIO.succeed(PlainOutcome.Ok)
+            ZIO.succeed(Some(body))
           else
             ZIO
               .logWarning(
                 s"plain $op failed: HTTP ${resp.statusCode()} (body: ${body.take(500)})",
               )
-              .as(PlainOutcome.Error)
+              .as(None)
         }
-        .catchAll(e => ZIO.logWarning(s"plain $op errored: ${e.getMessage}").as(PlainOutcome.Error))
+        .catchAll(e => ZIO.logWarning(s"plain $op errored: ${e.getMessage}").as(None))
   }
 
   /**

@@ -193,6 +193,32 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Household → Plain tenant entitlement upsert outcomes (#2240)",
+      "description": "sum by (outcome) (rate(support_tenant_upsert_total{env=\"$env\"}[5m])) — the household→Plain TENANT write (household name + plan/founding tenant fields), separate from the customer upsert. ok (name + all fields written) / error (tenant upsert failed, or a field write failed — most commonly the plan/founding tenant-field schemas not yet registered in the Plain workspace at go-live; fail-open, the identity response is unaffected). A persistent 'error' share means entitlement context isn't reaching Plain — register the field schemas (docs/ops/plain-setup.md §7.3) or check the API key / GraphQL endpoint.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "id": 8,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "reqps",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1, "stacking": { "mode": "normal", "group": "A" } }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (outcome) (rate(support_tenant_upsert_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{outcome}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",
