@@ -2386,6 +2386,22 @@ def requireProfileInHousehold(
     case _                           => ZIO.fail(ApiError.NotFound("Profile not found"))
   }
 
+/**
+ * #2126 (multi-tenant, epic #2085/#622): the tenancy choke point for the per-id named-schedule
+ * routes (`GET`/`PATCH`/`DELETE /api/schedules/{id}`). Rejects (404 — never leak existence across
+ * the tenant boundary) any target schedule whose household ≠ the caller's `claims.hh`. Mirrors
+ * [[requireProfileInHousehold]]; the list read is scoped at the repo (`listAllForHousehold`).
+ */
+def requireScheduleInHousehold(
+    claims: JwtClaims,
+    scheduleId: NamedScheduleId,
+    scheduleRepo: NamedScheduleRepo,
+): IO[ApiError, Unit] =
+  scheduleRepo.householdOf(scheduleId).mapError(ApiError.Db(_)).flatMap {
+    case Some(hh) if hh == claims.hh => ZIO.succeed(())
+    case _                           => ZIO.fail(ApiError.NotFound("Schedule not found"))
+  }
+
 /** Allow read access if admin or adult (full visibility); child must be linked to the profile. */
 def requireProfileReadAccess(
     claims: JwtClaims,

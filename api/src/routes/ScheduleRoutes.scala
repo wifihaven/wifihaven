@@ -65,20 +65,24 @@ object ScheduleRoutes {
       Method.GET / "api" / "schedules"                 ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _    <- requireAuth(req, auth)
-            // TODO(#2126): scope to claims.hh. `named_schedules` has no household_id column yet
-            // (V65 didn't add one) and no direct profile FK, so it cannot be filtered in a
-            // source-only PR — the household scoping needs a schema-only migration first (#2126).
-            list <- scheduleRepo.listAll.mapError(ApiError.Db(_))
+            // #2126: scope to the caller's household — V71 added `named_schedules.household_id`, so
+            // the list returns only this tenant's schedules (an unattached one stays visible to its
+            // own household; another household's never leaks). Design §2 gap 4.
+            claims <- requireAuth(req, auth)
+            list   <- scheduleRepo.listAllForHousehold(claims.hh).mapError(ApiError.Db(_))
           } yield Response.json(list.toJson)
           handle.mapError(ErrorMapper.errorToResponse)
         },
       Method.GET / "api" / "schedules" / long("id")    ->
         handler { (id: Long, req: Request) =>
+          val sid                                  = NamedScheduleId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
-            _ <- requireAuth(req, auth)
-            s <- scheduleRepo
-              .findById(NamedScheduleId(id))
+            claims <- requireAuth(req, auth)
+            // #2126: reject a cross-household id with 404 before reading the row (existence never
+            // leaks across the tenant boundary).
+            _      <- requireScheduleInHousehold(claims, sid, scheduleRepo)
+            s      <- scheduleRepo
+              .findById(sid)
               .mapError(ApiError.Db(_))
               .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Schedule not found")))
           } yield Response.json(s.toJson)
@@ -87,9 +91,9 @@ object ScheduleRoutes {
       Method.POST / "api" / "schedules"                ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _    <- requireAdmin(req, auth)
-            body <- req.body.asString.orElseFail(ApiError.BadRequest(""))
-            cr   <- ZIO
+            claims <- requireAdmin(req, auth)
+            body   <- req.body.asString.orElseFail(ApiError.BadRequest(""))
+            cr     <- ZIO
               .fromEither(body.fromJson[CreateNamedScheduleRequest])
               .mapError(ApiError.DecodeFailure(_))
             name = cr.name.trim
@@ -97,8 +101,11 @@ object ScheduleRoutes {
             windows <- ZIO.fromEither(validateWindows(cr.windows)).mapError(ApiError.BadRequest(_))
             taken   <- scheduleRepo.findByName(name).mapError(ApiError.Db(_))
             _       <- ZIO.fail(nameTaken(name)).when(taken.isDefined)
+            // #2126: stamp the creating admin's household (from their JWT) so a freshly-created,
+            // still-unattached schedule is scoped to its author's tenant — and thus visible only to
+            // them via `listAllForHousehold` (#2130 stamp-on-create precedent).
             id      <- scheduleRepo
-              .create(name, cr.description.map(_.trim).filter(_.nonEmpty), windows)
+              .create(name, cr.description.map(_.trim).filter(_.nonEmpty), windows, claims.hh)
               .mapError(ApiError.Db(_))
             s       <- scheduleRepo
               .findById(id)
@@ -116,9 +123,11 @@ object ScheduleRoutes {
         handler { (id: Long, req: Request) =>
           val sid                                  = NamedScheduleId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
-            _    <- requireAdmin(req, auth)
-            body <- req.body.asString.orElseFail(ApiError.BadRequest(""))
-            ur   <- ZIO
+            claims <- requireAdmin(req, auth)
+            // #2126: reject a cross-household target with 404 before any read/write.
+            _      <- requireScheduleInHousehold(claims, sid, scheduleRepo)
+            body   <- req.body.asString.orElseFail(ApiError.BadRequest(""))
+            ur     <- ZIO
               .fromEither(body.fromJson[UpdateNamedScheduleRequest])
               .mapError(ApiError.DecodeFailure(_))
             name = ur.name.trim
@@ -146,13 +155,15 @@ object ScheduleRoutes {
         },
       Method.DELETE / "api" / "schedules" / long("id") ->
         handler { (id: Long, req: Request) =>
-          val handle: ZIO[Any, ApiError, Response] =
-            requireAdmin(req, auth) *>
-              scheduleRepo
-                .delete(NamedScheduleId(id))
-                .mapError(ApiError.Db(_)) *>
-              invalidateSnapshot *>
-              AppMetrics.scheduleMutation("delete").as(Response.ok)
+          val sid                                  = NamedScheduleId(id)
+          val handle: ZIO[Any, ApiError, Response] = for {
+            claims <- requireAdmin(req, auth)
+            // #2126: reject a cross-household delete with 404 (never mutate another tenant's row).
+            _      <- requireScheduleInHousehold(claims, sid, scheduleRepo)
+            _      <- scheduleRepo.delete(sid).mapError(ApiError.Db(_))
+            _      <- invalidateSnapshot
+            _      <- AppMetrics.scheduleMutation("delete")
+          } yield Response.ok
           handle.mapError(ErrorMapper.errorToResponse)
         },
     )
