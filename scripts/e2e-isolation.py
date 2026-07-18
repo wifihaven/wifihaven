@@ -394,7 +394,7 @@ def main() -> None:
 
     # ── Scenario 5 (part 1): beta provisioning → fresh, empty, isolated B ──────
     section("Scenario 5 — beta provisioning end-to-end + fresh B is empty/isolated")
-    b_email, b_password, b_token, b_slug = provision_household_b(a_token)
+    b_email, _b_password, b_token, b_slug = provision_household_b(a_token)
     ok(f"household B provisioned via beta pipeline (slug={b_slug}, email={b_email})")
 
     # A fresh B admin, before seeding anything, must see an EMPTY dashboard —
@@ -572,9 +572,11 @@ def main() -> None:
     b_devices_pre = GET("/api/devices", token=b_token).body
     b_status_pre = GET("/api/time/status", token=b_token).body
     never_seen_mac = _mac()
-    now = time.gmtime()
-    period_end = time.strftime("%Y-%m-%dT%H:%M:%SZ", now)
-    period_start = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 300))
+    # Synthetic usage-report window. Cosmetic — no assertion reads the period;
+    # mirrors docker/fake-router.py's 5-min (timedelta(minutes=5)) window.
+    usage_period_secs = 300
+    period_end = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    period_start = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - usage_period_secs))
 
     # (4a) Cross-tenant screen-time-poisoning attempt: A's router POSTs usage for
     # B's device MAC. The MAC-keyed writes (time_usage, touchLastSeenBatch) are
