@@ -722,5 +722,138 @@ object BetaProvisioningSpec
       // both status and body, so the endpoint reveals nothing about which emails exist or their state.
       assertTrue(newResp == pendResp, pendResp == apprResp, apprResp == rejResp)
     },
+    test(
+      "#2286 — provisioning a household creates exactly one household-scoped global sentinel; GET /api/profiles/global returns it (no 404)",
+    ) {
+      for {
+        _   <- cleanDb
+        ctl <- TestClock.makeWithControl(TestClock.schoolDayAfternoon)
+        (bc, _) = ctl
+        b               <- build(bc)
+        xa              <- ZIO.service[Transactor[Task]]
+        profileRepo     <- ZIO.service[ProfileRepo]
+        tlRepo          <- ZIO.service[TimeLimitRepo]
+        userProfileRepo <- ZIO.service[UserProfileRepo]
+        userRepo        <- ZIO.service[UserRepo]
+        opToken         <- login(b.auth, "admin", "changeme")
+        // Full approve → accept flow so we hold a logged-in admin whose claims.hh is the new household.
+        _               <- postJson(
+          b.routes,
+          "/api/beta/request",
+          None,
+          CreateBetaRequest("g1@example.com", Some("Global One")).toJson,
+        )
+        (_, listBody)   <- getJson(b.routes, "/api/operator/beta-requests", opToken)
+        reqId           <- ZIO
+          .fromEither(listBody.fromJson[List[BetaRequestSummary]])
+          .mapError(new RuntimeException(_))
+          .map(_.head.id)
+        (_, apBody)     <- postJson(
+          b.routes,
+          s"/api/operator/beta-requests/${reqId.value}/approve",
+          Some(opToken),
+          "",
+        )
+        approve         <- ZIO
+          .fromEither(apBody.fromJson[ApproveBetaResponse])
+          .mapError(new RuntimeException(_))
+        _               <- postJson(
+          b.routes,
+          "/api/beta/accept",
+          None,
+          AcceptInviteRequest(tokenFromInviteUrl(approve.inviteUrl), "supersecret123").toJson,
+        )
+        newLogin        <- b.auth
+          .login("g1@example.com", "supersecret123")
+          .mapError(e => new RuntimeException(s"login failed: $e"))
+        // Exactly one is_global profile, scoped to the NEW household, named 'Global' (household 1's
+        // sentinel is untouched — the count is per-household).
+        globalCount     <-
+          sql"SELECT COUNT(*) FROM profiles WHERE household_id = ${approve.householdId} AND is_global = TRUE"
+            .query[Long]
+            .unique
+            .transact(xa)
+        globalName      <-
+          sql"SELECT name FROM profiles WHERE household_id = ${approve.householdId} AND is_global = TRUE"
+            .query[String]
+            .unique
+            .transact(xa)
+        // The regression: this route 404'd for a freshly-provisioned household. It must now resolve
+        // the household's OWN sentinel for its admin.
+        profileRoutes = ProfileRoutes.routes(b.auth, profileRepo, tlRepo, userProfileRepo, userRepo)
+        (sGlobal, gBody) <- getJson(profileRoutes, "/api/profiles/global", newLogin.token.value)
+        detail           <- ZIO
+          .fromEither(gBody.fromJson[ProfileDetail])
+          .mapError(new RuntimeException(_))
+      } yield assertTrue(globalCount == 1L, globalName == "Global") &&
+        assertTrue(sGlobal == Status.Ok, detail.profile.isGlobal)
+    },
+    test(
+      "#2286 — each provisioned household gets its OWN single global sentinel; provisioning never duplicates and reads never cross households",
+    ) {
+      for {
+        _   <- cleanDb
+        ctl <- TestClock.makeWithControl(TestClock.schoolDayAfternoon)
+        (bc, _) = ctl
+        b           <- build(bc)
+        xa          <- ZIO.service[Transactor[Task]]
+        profileRepo <- ZIO.service[ProfileRepo]
+        opToken     <- login(b.auth, "admin", "changeme")
+        provision = (email: String, name: String) =>
+          for {
+            _             <- postJson(
+              b.routes,
+              "/api/beta/request",
+              None,
+              CreateBetaRequest(email, Some(name)).toJson,
+            )
+            (_, listBody) <- getJson(b.routes, "/api/operator/beta-requests", opToken)
+            reqId         <- ZIO
+              .fromEither(listBody.fromJson[List[BetaRequestSummary]])
+              .mapError(new RuntimeException(_))
+              .map(_.find(_.email == email).get.id)
+            (_, apBody)   <- postJson(
+              b.routes,
+              s"/api/operator/beta-requests/${reqId.value}/approve",
+              Some(opToken),
+              "",
+            )
+            ap            <- ZIO
+              .fromEither(apBody.fromJson[ApproveBetaResponse])
+              .mapError(new RuntimeException(_))
+          } yield ap.householdId
+        hidA <- provision("a@example.com", "House A")
+        hidB        <- provision("b@example.com", "House B")
+        // Each new household has exactly one global sentinel — a second provisioning never duplicates.
+        countA      <-
+          sql"SELECT COUNT(*) FROM profiles WHERE household_id = $hidA AND is_global = TRUE"
+            .query[Long]
+            .unique
+            .transact(xa)
+        countB      <-
+          sql"SELECT COUNT(*) FROM profiles WHERE household_id = $hidB AND is_global = TRUE"
+            .query[Long]
+            .unique
+            .transact(xa)
+        // Three sentinels total: default install (household 1) + A + B — no extras leaked in.
+        totalGlobal <- sql"SELECT COUNT(*) FROM profiles WHERE is_global = TRUE"
+          .query[Long]
+          .unique
+          .transact(xa)
+        // Household-scoped reads resolve each household's OWN sentinel — never the other's.
+        gA          <- profileRepo.getGlobalForHousehold(hidA)
+        gB          <- profileRepo.getGlobalForHousehold(hidB)
+        rowHhA      <- sql"SELECT household_id FROM profiles WHERE id = ${gA.get.id}"
+          .query[HouseholdId]
+          .unique
+          .transact(xa)
+        rowHhB      <- sql"SELECT household_id FROM profiles WHERE id = ${gB.get.id}"
+          .query[HouseholdId]
+          .unique
+          .transact(xa)
+      } yield assertTrue(countA == 1L, countB == 1L, totalGlobal == 3L) &&
+        assertTrue(gA.isDefined, gB.isDefined, gA.get.id != gB.get.id) &&
+        assertTrue(rowHhA == hidA, rowHhB == hidB)
+    },
   ) @@ TestAspect.sequential
 }
