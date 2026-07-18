@@ -106,8 +106,10 @@ cat > "$WORK/post-install" <<'POSTINSTALL'
 # /etc/uci-defaults/95-wifihaven-uhttpd (shipped in data/).
 
 # #869: Install cron entries. Replace any existing wifihaven entries so
-# upgrades migrate the cadence. Kept in sync with trigger below and
-# openwrt/Makefile postinst, build-ipk.sh.
+# upgrades migrate the cadence. This block is hand-duplicated across four
+# producers (the trigger heredoc below, openwrt/Makefile postinst,
+# build-ipk.sh); the canonical crontab lines are pinned byte-for-byte across
+# all copies by openwrt/test/install_spec.sh (#1532), which fails on drift.
 mkdir -p /etc/crontabs
 [ -f /etc/crontabs/root ] && sed -i '/wifihaven-update/d' /etc/crontabs/root
 [ -f /etc/crontabs/root ] && sed -i '/wifihaven-rotate-dnsmasq-log/d' /etc/crontabs/root
@@ -126,8 +128,9 @@ chmod 0755 "$WORK/post-install"
 # that directory — and database.c sets ipkg->run_all_triggers=1 on every
 # install of our own package, so reinstalling ourselves is enough to fire
 # this even if /etc/crontabs was untouched on disk.
-# Mirrors the cron-installation block in post-install above and in
-# openwrt/Makefile (.ipk postinst); keep all three in sync.
+# Same canonical cron-installation block as post-install above and in
+# openwrt/Makefile / build-ipk.sh; the canonical crontab lines are pinned
+# byte-for-byte across all copies by openwrt/test/install_spec.sh (#1532).
 cat > "$WORK/trigger" <<'TRIGGER'
 #!/bin/sh
 mkdir -p /etc/crontabs

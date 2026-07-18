@@ -153,7 +153,9 @@ define Package/wifihaven/postinst
 # are up, so a uci-defaults stub is the right idiom here. Nothing for
 # postinst to do for the block-page handler.
 # Install cron entries. Replace any existing wifihaven entries so upgrades
-# migrate the cadence. Kept in sync with build-ipk.sh, build-apk.sh.
+# migrate the cadence. Same canonical block as build-ipk.sh and build-apk.sh;
+# the crontab lines are pinned byte-for-byte across all copies by
+# openwrt/test/install_spec.sh (#1532).
 mkdir -p /etc/crontabs
 [ -f /etc/crontabs/root ] && sed -i '/wifihaven-update/d' /etc/crontabs/root
 [ -f /etc/crontabs/root ] && sed -i '/wifihaven-rotate-dnsmasq-log/d' /etc/crontabs/root

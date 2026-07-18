@@ -52,7 +52,9 @@ cat > "$WORK/ctrl/postinst" <<'POSTINST'
 # #542: uhttpd block-page wire-up runs at first boot from
 # /etc/uci-defaults/95-wifihaven-uhttpd (shipped in data/).
 # Install cron entries. Replace any existing wifihaven entries so upgrades
-# migrate the cadence. Kept in sync with Makefile postinst, build-apk.sh.
+# migrate the cadence. Same canonical block as Makefile postinst and
+# build-apk.sh; the crontab lines are pinned byte-for-byte across all copies
+# by openwrt/test/install_spec.sh (#1532).
 mkdir -p /etc/crontabs
 [ -f /etc/crontabs/root ] && sed -i '/wifihaven-update/d' /etc/crontabs/root
 [ -f /etc/crontabs/root ] && sed -i '/wifihaven-rotate-dnsmasq-log/d' /etc/crontabs/root

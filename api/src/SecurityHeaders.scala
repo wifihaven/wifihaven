@@ -30,9 +30,13 @@ object SecurityHeaders {
       // img-src allows https://icons.duckduckgo.com: every app template
       // (api/resources/app_templates/*.yml, icon_type: url) renders its favicon from
       // https://icons.duckduckgo.com/ip3/<domain>.ico, so the icon host must be
-      // allowlisted or the Apps page shows broken icons (#2115). The img-src
-      // directive is kept in sync with web/public/_headers (connect-src differs
-      // between the two: this file uses `ws: wss:`, _headers lists concrete hosts).
+      // allowlisted or the Apps page shows broken icons (#2115). This CSP is
+      // duplicated for the Cloudflare Pages deploy in web/public/_headers
+      // (connect-src legitimately differs: this file uses `ws: wss:`, _headers
+      // lists concrete hosts). The shared directives that must agree — default-src
+      // 'self', img-src icon host, frame-ancestors 'none' — are pinned on this
+      // side by SecurityHeadersSpec and on the _headers side by
+      // web/src/security-headers.test.ts, so neither can silently drop them.
       "img-src 'self' data: https://icons.duckduckgo.com; connect-src 'self' ws: wss:; frame-ancestors 'none'; " +
       "base-uri 'self'; object-src 'none'"
 
