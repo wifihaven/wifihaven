@@ -352,3 +352,50 @@ attribution-beats-class, and kill-switch behaviors. No schema change: the
 class list is code-curated (same lifecycle as `InfraHosts.canonical`), and
 the existing `presence_ambient_spans_dropped_total` counter + Grafana panels
 observe the extended gate unchanged.
+
+## #2274 — idle MacBook: background-sync tail + the single-sample inflation {#2274}
+
+Operator report 2026-07-17: the Kids profile showed 31 min "usage today"
+while its only device (a MacBook Pro, `ca:ef:a1:72:6a:a3`) sat lid-closed in a
+cabinet all day. Read-only prod investigation (router DHCP lease renewed but L2
+`STALE`, 0 live conntrack; `time/heartbeat-explain`): 46 macOS **Power-Nap**
+wakes at a near-perfect ~15-min cadence, 06:06 → 00:23 next-day (incl.
+overnight), all real bytes but zero interaction — background sync/telemetry
+(Google Drive Desktop, iCloud, Serato/Brave/Adobe updaters). An **ACCRUAL**
+over-count (correct MAC, real bytes, no engagement), NOT attribution. The
+offline replay (`scratchpad/replay*.py`) reproduces prod exactly: current model
+= 29–30 / 66 / 24 min for 07-17 idle / 07-11 real / 07-14 mixed (prod 31 / 66 /
+27).
+
+Two contributing mechanisms, established by replay:
+
+1. **The dual-use core is already handled.** `docs.google.com`,
+   `drive.google.com`, `ssl.gstatic.com`, `lh3.googleusercontent.com` are all
+   learned-ambient — the #2091 learner works; they do not anchor. The earlier
+   worry that host-class couldn't touch a dual-use core was an analysis error
+   (the learned-ambient set had not been applied).
+
+2. **A background-sync tail the class missed** — Serato/Brave/Adobe telemetry
+   & updaters, Apple OS-config (`experiments.`/`sylvan.`/`tether.edge`/
+   `device-config.pcms.`), Google `update.googleapis.com`. Like the #2177
+   families these fire only in dense co-occurring wakeup bursts, so the learner
+   structurally cannot learn them. **This PR extends `cloudBackground` with
+   them** (idle 30 → 16 min; real-use day 66 → 66, untouched — zero real-use
+   casualty). Same anchor-eligibility-only semantics and boundary discipline as
+   #2177; `InfraHostsSpec` pins membership and the preserved boundary.
+
+**The single-sample inflation (the deeper lever, deferred to #2287).** The
+deployed agent is current (v0.3.23; #2024 + #2025 both live). But 91% of the
+idle day's counted rows are **single-sample** (`activeSeconds = 10`) → a
+degenerate `activeStart == activeEnd` envelope → `Presence.spanOf` #2068 falls
+back to the full flush window (~90–148 s vs ~10 s of real activity), an 8.6×
+per-row inflation. On the real day only 47% are single-sample, so
+single-sample cleanly marks background wakes. But the obvious fix — shrinking
+degenerate rows in `spanOf` — is **replay-proven unsafe**: it crushes the real
+day 66 → 16 min, because real multi-host sessions rely on the wide flush windows
+*overlapping* to bridge into one continuous session; shrinking rows shatters
+that bridge and re-opens the #2016/#2068 undercount. The structurally-correct
+fix is an **isolated-span** rule in the ambient gate (drop a single-report-
+period, sub-wedge-width, non-app-attributed, non-IP-heavy merged span), which
+needs a design doc + replay harness + broad real-use validation + operator
+sign-off on the residual undercount — tracked as **#2287**.
