@@ -40,6 +40,12 @@ describe('web/public/_headers CSP (Cloudflare Pages copy)', () => {
     expect(headers).toContain(
       'https://prod-uk-services-attachm-attachmentsuploadbucket2-1l2e4906o2asm.s3.eu-west-2.amazonaws.com',
     ) // connect-src attachment-upload bucket
+    expect(headers).toContain(
+      'https://prod-uk-services-workspac-workspacefilespublicbuck-vs4gjqpqjkh6.s3.amazonaws.com',
+    ) // img-src workspace-logo bucket
+    expect(headers).toContain(
+      'https://prod-uk-services-attachm-attachmentsbucket28b3ccf-uwfssb4vt2us.s3.eu-west-2.amazonaws.com',
+    ) // img-src attachment bucket
   })
 
   // Over-broadening guard: Plain documents no iframe, so the additions must stay exact hosts — no

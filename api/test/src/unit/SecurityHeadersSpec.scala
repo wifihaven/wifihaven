@@ -50,7 +50,17 @@ object SecurityHeadersSpec extends ZIOSpecDefault {
         csp.contains(
           "https://prod-uk-services-attachm-attachmentsuploadbucket2-1l2e4906o2asm.s3.eu-west-2.amazonaws.com",
         ),
-      ) // connect-src attachment-upload bucket
+      ) && // connect-src attachment-upload bucket
+      assertTrue(
+        csp.contains(
+          "https://prod-uk-services-workspac-workspacefilespublicbuck-vs4gjqpqjkh6.s3.amazonaws.com",
+        ),
+      ) && // img-src workspace-logo bucket
+      assertTrue(
+        csp.contains(
+          "https://prod-uk-services-attachm-attachmentsbucket28b3ccf-uwfssb4vt2us.s3.eu-west-2.amazonaws.com",
+        ),
+      )    // img-src attachment bucket
     },
     // Over-broadening guard: Plain documents no iframe, so we must NOT loosen frame-ancestors or add
     // a wildcard for Plain — the additions are exact hosts only.

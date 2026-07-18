@@ -1,6 +1,7 @@
 package wifihaven.api.support
 
 import wifihaven.api.SupportConfig
+import wifihaven.api.metrics.AppMetrics
 import zio.*
 import zio.json.*
 import zio.json.ast.Json
@@ -269,25 +270,34 @@ object PlainClient {
     }
 
     private def upsertTenantEntitlement(req: PlainCustomerUpsert): UIO[Unit] =
-      // Nothing household-level to carry ⇒ no tenant write at all.
+      // Nothing household-level to carry ⇒ no tenant write at all (and nothing to meter).
       if req.fullName.isEmpty && req.attributes.isEmpty then ZIO.unit
       else
+        // Aggregate outcome: `ok` only when the tenant upsert AND every field write succeed;
+        // `error` if any step fails (a missing field schema at go-live, a tenant hiccup, …). Metered
+        // so a silently-failing entitlement path is visible beyond the per-step log warnings.
         sendForBody(
           UpsertTenantMutation,
           upsertTenantVars(req.tenantIdentifier, req.fullName),
           "upsertTenant",
         ).flatMap {
-          case None       => ZIO.unit // already logged
+          case None       => ZIO.succeed(PlainOutcome.Error) // already logged
           case Some(body) =>
             tenantIdFrom(body) match {
               case None           =>
-                ZIO.logWarning("plain upsertTenant: no tenant id in response; skipping fields").unit
+                ZIO
+                  .logWarning("plain upsertTenant: no tenant id in response; skipping fields")
+                  .as(PlainOutcome.Error)
               case Some(tenantId) =>
-                ZIO.foreachDiscard(tenantFieldWrites(req, tenantId)) { case (vars, op) =>
-                  post(UpsertTenantFieldMutation, vars, op)
-                }
+                ZIO
+                  .foreach(tenantFieldWrites(req, tenantId)) { case (vars, op) =>
+                    post(UpsertTenantFieldMutation, vars, op)
+                  }
+                  .map(os =>
+                    if os.forall(_ == PlainOutcome.Ok) then PlainOutcome.Ok else PlainOutcome.Error,
+                  )
             }
-        }
+        }.flatMap(o => AppMetrics.supportTenantUpsert(PlainOutcome.label(o)))
 
     // Navigate `data.upsertTenant.tenant.id` out of the response body. Best-effort: any parse miss
     // yields None (logged by the caller), never throws.
