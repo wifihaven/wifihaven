@@ -689,6 +689,75 @@ def main() -> None:
         "B's device list byte-identical after A's same-MAC discovery (#2277)",
     )
 
+    # ── Scenario 4c (#2125): same MAC → each household's OWN policy; delete scope ─
+    # The contract half of #2125. A owns (hhA, b_mac) as an unmanaged device
+    # (from 4b); B owns (hhB, b_mac) → b_pid. Assign A's copy to a DISTINCT,
+    # paused A-profile and prove each household's router snapshot resolves the
+    # SAME MAC to its OWN policy — then prove a household-scoped delete removes
+    # only A's copy, leaving B's intact.
+    section("Scenario 4c — same MAC resolves per-household; delete is household-scoped (#2125)")
+
+    def _dev_in(snap_body, mac):
+        devs = (snap_body or {}).get("devices", {})
+        return next((v for k, v in devs.items() if k.lower() == mac.lower()), None)
+
+    def _rules_for(snap_body, mac):
+        dev = _dev_in(snap_body, mac)
+        if dev is None:
+            return None
+        if dev.get("rules") is not None:
+            return dev["rules"]  # per-device override (unmanaged path) wins
+        pid = dev.get("profileId")
+        prof = (snap_body or {}).get("profiles", {}).get(str(pid)) if pid is not None else None
+        return prof.get("rules") if prof else None
+
+    # A-profile 2, paused → blocked=true, distinct from B's default-allow b_pid.
+    a_pid2 = create_profile(a_token, f"iso-A-profile2-{RUN_ID}")
+    pause2 = PATCH(f"/api/profiles/{a_pid2}", {"paused": True}, token=a_token)
+    check(pause2.status in (200, 204), "A pauses a_pid2 (distinct rules from B's b_pid)", ctx=(pause2.status, pause2.body))
+    # Assign A's (hhA, b_mac) copy to a_pid2 (household-scoped write, #2108).
+    upsert_device(a_token, b_mac, f"iso-A-shared-{RUN_ID}", profile_id=a_pid2)
+
+    snap_a2 = GET("/api/router/policy", token=a_router_token)
+    snap_b2 = GET("/api/router/policy", token=b_router_token)
+    a_dev_shared = _dev_in(snap_a2.body, b_mac)
+    b_dev_shared = _dev_in(snap_b2.body, b_mac)
+    check(
+        a_dev_shared is not None and a_dev_shared.get("profileId") == a_pid2,
+        "A's router snapshot binds the shared MAC to a_pid2 (A's OWN profile)",
+        ctx=a_dev_shared,
+    )
+    check(
+        b_dev_shared is not None and b_dev_shared.get("profileId") == b_pid,
+        "B's router snapshot binds the shared MAC to b_pid (B's OWN profile)",
+        ctx=b_dev_shared,
+    )
+    a_rules_shared = _rules_for(snap_a2.body, b_mac)
+    b_rules_shared = _rules_for(snap_b2.body, b_mac)
+    check(
+        a_rules_shared is not None and b_rules_shared is not None
+        and canonical(a_rules_shared) != canonical(b_rules_shared),
+        "the shared MAC's resolved rules DIFFER per household (#2125 core requirement)",
+        ctx=(a_rules_shared, b_rules_shared),
+    )
+    check(
+        bool((a_rules_shared or {}).get("blocked")) and not bool((b_rules_shared or {}).get("blocked")),
+        "shared MAC blocked in A (paused a_pid2), allowed in B (default b_pid)",
+        ctx=(a_rules_shared, b_rules_shared),
+    )
+
+    # Delete isolation: A deletes its (hhA, b_mac); B's (hhB, b_mac) MUST survive.
+    del_shared = DELETE(f"/api/devices/{b_mac}", token=a_token)
+    check(del_shared.status in (200, 204), "A deletes its own (hhA, b_mac) device", ctx=(del_shared.status, del_shared.body))
+    a_devs_after_del = GET("/api/devices", token=a_token).body
+    check(b_mac.lower() not in macs_of(a_devs_after_del), "A no longer sees (hhA, b_mac) after its delete", ctx=macs_of(a_devs_after_del))
+    b_devs_after_del = GET("/api/devices", token=b_token).body
+    check(
+        b_mac.lower() in macs_of(b_devs_after_del),
+        "B STILL owns (hhB, b_mac) after A's delete — delete is household-scoped (#2125)",
+        ctx=macs_of(b_devs_after_del),
+    )
+
     # ── Scenario 6: router cap ─────────────────────────────────────────────────
     section("Scenario 6 — router cap enforced through the live endpoint")
 
