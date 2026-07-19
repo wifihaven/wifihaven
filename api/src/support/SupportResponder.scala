@@ -2,9 +2,16 @@ package wifihaven.api.support
 
 import wifihaven.api.SupportConfig
 import wifihaven.api.auth.RateLimiter
-import wifihaven.api.db.{DeviceRepo, HouseholdBillingRepo, HouseholdRepo, ProfileRepo}
+import wifihaven.api.db.{
+  DeviceRepo,
+  Household,
+  HouseholdBillingRepo,
+  HouseholdRepo,
+  ProfileRepo,
+  UserRepo,
+}
 import wifihaven.api.metrics.AppMetrics
-import wifihaven.shared.Clock
+import wifihaven.shared.{Clock, UserRole}
 import wifihaven.shared.types.HouseholdId
 import zio.*
 import zio.json.*
@@ -16,13 +23,24 @@ import zio.json.*
  * logged, health-visible state):
  *
  * **Inbound ([[handleWebhook]])**: Plain's signed new-message webhook → HMAC verify → the
- * UI-ORIGINATED gate (operator constraint 2026-07-14: the responder acts ONLY on threads that
- * originated from an authenticated UI submission — the #2199 identified widget stamps
- * `tenantIdentifier = household_id` on the Plain customer, so a thread whose tenant does not
- * resolve to a real household is cold inbound email and MUST NOT trigger the agent; this is the
- * cost/abuse control preventing unauthenticated token burn) → mint the per-session [[ConsentToken]]
- * (thread- + household-bound, consent-scoped, short-TTL) → dispatch a cloud-agent session
- * ([[CloudAgentDispatcher]]). The inbound message text is UNTRUSTED DATA end to end.
+ * AUTHENTICATED-ORIGIN gate → mint the per-session [[ConsentToken]] (thread- + household-bound,
+ * consent-scoped, short-TTL) → dispatch a cloud-agent session ([[CloudAgentDispatcher]]). The
+ * inbound message text is UNTRUSTED DATA end to end.
+ *
+ * The gate admits a thread to the AI responder on EITHER of two authenticated origins; everything
+ * else burns no tokens (#2307, refining the 2026-07-14 UI-only constraint):
+ *   - **UI-originated**: the #2199 identified widget stamps `tenantIdentifier = household_id` on
+ *     the Plain customer, so a `tenantIdentifier` that resolves to a real household is a proven
+ *     authenticated submission.
+ *   - **Registered-admin email**: a NEW inbound email (no resolvable tenant) whose From address
+ *     matches a registered household ADMIN (`users.email`, globally unique, V67). We resolve THAT
+ *     admin's household and dispatch bound to it, exactly as if UI-originated (the #2241 token
+ *     binds to the sender's household).
+ *
+ * A new email from an UNREGISTERED address gets a FIXED static reject via the outbound Plain reply
+ * — no Claude call, no dispatch, no token, no persisted support thread — so a flood of cold email
+ * cannot burn tokens (the token-burn guard the UI-only rule used to provide, preserved). A
+ * CONTINUATION message with no resolvable tenant stays `skipped_unauthenticated` (unchanged).
  *
  * **Agent-facing ([[agentReply]] / [[agentFileIssue]] / [[agentHousehold]])**: the dispatched
  * agent's ONLY credential is the token; every side effect comes back through these endpoints where
@@ -41,6 +59,9 @@ import zio.json.*
 final case class SupportResponder(
     cfg: SupportConfig,
     householdRepo: HouseholdRepo,
+    // #2307: the email-intake gate resolves an inbound From address to a registered household admin
+    // (findByEmail, globally unique V67) and dispatches bound to THAT admin's household.
+    userRepo: UserRepo,
     billingRepo: HouseholdBillingRepo,
     deviceRepo: DeviceRepo,
     profileRepo: ProfileRepo,
@@ -52,10 +73,14 @@ final case class SupportResponder(
     issueGlobalLimiter: RateLimiter,
     // Cost guardrails (operator concern 2026-07-16): agent sessions bill real tokens, so dispatch
     // itself is rate-capped per-thread and globally — a household spamming the widget (or a retry
-    // storm) hits a hard ceiling instead of an open-ended bill. Cold email never reaches this point
-    // (the UI-origin gate is the first cost control).
+    // storm) hits a hard ceiling instead of an open-ended bill. Unregistered cold email never
+    // reaches this point (the origin gate is the first cost control).
     dispatchThreadLimiter: RateLimiter,
     dispatchGlobalLimiter: RateLimiter,
+    // #2307: bounds the cheap static-reject outbound path so a spammer forging many cold-email
+    // threads cannot turn us into a reply-amplification (backscatter) source. Global bucket — the
+    // reject is a fixed string, not a per-thread cost.
+    rejectLimiter: RateLimiter,
 ) {
   import SupportResponder.*
 
@@ -77,42 +102,126 @@ final case class SupportResponder(
         case Left(PlainWebhook.VerifyError.MalformedPayload) =>
           meter(WebhookOutcome.Malformed)
         case Right(event)                                    =>
-          dispatchIfUiOriginated(event).flatMap(meter)
+          dispatchIfAuthorized(event).flatMap(meter)
       }
 
   /**
-   * The UI-ORIGINATED gate + dispatch. The tenant identifier must parse AND resolve to an existing
-   * household row — presence of the attribute alone is not enough (anyone can email support; only
-   * the #2199 identified-widget path stamps a resolvable household). Threads without a provable
-   * authenticated origin are skipped WITHOUT any Claude/agent call (`skipped_unauthenticated`).
+   * The AUTHENTICATED-ORIGIN gate + dispatch (#2307). A thread reaches the AI responder on EITHER
+   * origin, else it burns no tokens: (1) a `tenantIdentifier` that resolves to a real household
+   * (the #2199 UI-origin path); (2) failing that, a NEW inbound email whose From matches a
+   * registered household admin. A new email from an unregistered address gets a static reject (no
+   * dispatch); a continuation with no resolvable tenant is `skipped_unauthenticated` (unchanged).
    */
-  private def dispatchIfUiOriginated(event: PlainNewMessageEvent): UIO[WebhookOutcome] =
+  private def dispatchIfAuthorized(event: PlainNewMessageEvent): UIO[WebhookOutcome] =
+    resolveTenantHousehold(event).flatMap {
+      case Some((hh, household)) =>
+        rateLimitedDispatch(event, hh, household, WebhookOutcome.Dispatched)
+      case None                  =>
+        // No provable UI origin. A NEW email is gated on the sender being a registered admin; a
+        // continuation stays skipped (its origin was already decided when the thread opened).
+        if event.isNewThread then emailIntakeGate(event)
+        else ZIO.succeed(WebhookOutcome.SkippedUnauthenticated)
+    }
+
+  /**
+   * Resolve the UI-origin tenant to a household. The tenant must parse AND resolve to an existing
+   * row (presence of the attribute alone is not enough) and there must be a thread to bind to.
+   */
+  private def resolveTenantHousehold(
+      event: PlainNewMessageEvent,
+  ): UIO[Option[(HouseholdId, Household)]] =
     event.tenantIdentifier.flatMap(_.toLongOption) match {
-      case None                              => ZIO.succeed(WebhookOutcome.SkippedUnauthenticated)
-      case Some(_) if event.threadId.isEmpty => ZIO.succeed(WebhookOutcome.SkippedUnauthenticated)
-      case Some(raw)                         =>
+      case Some(raw) if event.threadId.nonEmpty =>
         val hh = HouseholdId(raw)
-        householdRepo.findById(hh).catchAll(_ => ZIO.none).flatMap {
-          case None            => ZIO.succeed(WebhookOutcome.SkippedUnauthenticated)
-          case Some(household) =>
-            // Short-circuit (review finding on #2261): the global bucket is drawn only when the
-            // per-thread cap allowed — otherwise one capped thread would keep draining the shared
-            // daily budget and lock every other household out of the AI-reply path.
-            dispatchThreadLimiter.tryAcquire(s"thread:${event.threadId}").flatMap { threadOk =>
-              if !threadOk then ZIO.succeed(WebhookOutcome.RateLimited)
-              else
-                dispatchGlobalLimiter.tryAcquire("global").flatMap { globalOk =>
-                  if !globalOk then ZIO.succeed(WebhookOutcome.RateLimited)
-                  else dispatchFor(event, hh, household)
-                }
-            }
+        householdRepo.findById(hh).catchAll(_ => ZIO.none).map(_.map(hh -> _))
+      case _                                    => ZIO.none
+    }
+
+  /**
+   * #2307 email-intake gate: a NEW inbound email with no resolvable tenant. Resolve the From
+   * address to a registered household ADMIN and dispatch bound to THAT admin's household
+   * (authenticated, as if UI-originated); otherwise emit the fixed static reject. No AI call ever
+   * runs on the reject path (the token-burn guard the UI-only rule used to provide).
+   */
+  private def emailIntakeGate(event: PlainNewMessageEvent): UIO[WebhookOutcome] =
+    event.customerEmail match {
+      case None        => ZIO.succeed(WebhookOutcome.SkippedUnauthenticated) // no From to gate on
+      case Some(email) =>
+        resolveAdminHousehold(email).flatMap {
+          case Some((hh, household)) if event.threadId.nonEmpty =>
+            rateLimitedDispatch(event, hh, household, WebhookOutcome.EmailRegisteredDispatched)
+          case Some(_)                                          =>
+            ZIO.succeed(WebhookOutcome.SkippedUnauthenticated) // registered but no thread to bind
+          case None                                             =>
+            staticReject(event)
         }
+    }
+
+  /**
+   * Resolve a sender From address to the household of the ADMIN who owns it. Match is exact
+   * (aligned with the case-sensitive `uq_users_email` constraint used by email login). A non-admin
+   * registered email is NOT admitted (the gate is admins only, #2307).
+   */
+  private def resolveAdminHousehold(email: String): UIO[Option[(HouseholdId, Household)]] =
+    userRepo.findByEmail(email).catchAll(_ => ZIO.none).flatMap {
+      case Some(user) if user.role == UserRole.Admin =>
+        householdRepo
+          .findById(user.householdId)
+          .catchAll(_ => ZIO.none)
+          .map(_.map(user.householdId -> _))
+      case _                                         => ZIO.none
+    }
+
+  /**
+   * The dispatch cost caps (#2261 short-circuit: the global bucket is drawn only when the
+   * per-thread cap allowed, else one capped thread would drain the shared daily budget and lock
+   * every other household out of the AI-reply path). `success` is the metered outcome (UI vs email
+   * origin).
+   */
+  private def rateLimitedDispatch(
+      event: PlainNewMessageEvent,
+      hh: HouseholdId,
+      household: Household,
+      success: WebhookOutcome,
+  ): UIO[WebhookOutcome] =
+    dispatchThreadLimiter.tryAcquire(s"thread:${event.threadId}").flatMap { threadOk =>
+      if !threadOk then ZIO.succeed(WebhookOutcome.RateLimited)
+      else
+        dispatchGlobalLimiter.tryAcquire("global").flatMap { globalOk =>
+          if !globalOk then ZIO.succeed(WebhookOutcome.RateLimited)
+          else dispatchFor(event, hh, household, success)
+        }
+    }
+
+  /**
+   * The fixed, NON-AI reject for a new email from an unregistered sender (#2307). A static string,
+   * never a Claude call, so cold-email volume cannot burn tokens; rate-capped globally so we cannot
+   * be turned into a reply-amplification source. No token minted, no dispatch, no persisted support
+   * thread. The wording is deliberately generic (names no accounts) — it reveals only whether the
+   * sender's OWN address is registered, their own info.
+   */
+  private def staticReject(event: PlainNewMessageEvent): UIO[WebhookOutcome] =
+    rejectLimiter.tryAcquire("global").flatMap { ok =>
+      if !ok then ZIO.succeed(WebhookOutcome.RateLimited)
+      else {
+        val write = PlainThreadWrite(
+          // No household — this sender maps to no tenant. #2240 switches writeThread to a
+          // reply-INTO-thread mutation against event.threadId (the customer-visible email reply);
+          // the trait seam keeps that a go-live provisioning change, not a code change here.
+          customerExternalId = event.customerExternalId,
+          tenantIdentifier = "",
+          title = UnregisteredRejectTitle,
+          markdown = UnregisteredRejectTemplate,
+        )
+        plain.writeThread(write).as(WebhookOutcome.EmailUnregisteredRejected)
+      }
     }
 
   private def dispatchFor(
       event: PlainNewMessageEvent,
       hh: HouseholdId,
-      household: wifihaven.api.db.Household,
+      household: Household,
+      success: WebhookOutcome,
   ): UIO[WebhookOutcome] =
     for {
       billing <- billingRepo.findByHousehold(hh).catchAll(_ => ZIO.none)
@@ -140,7 +249,7 @@ final case class SupportResponder(
         ),
       )
     } yield outcome match {
-      case DispatchOutcome.Dispatched => WebhookOutcome.Dispatched
+      case DispatchOutcome.Dispatched => success
       case DispatchOutcome.Disabled   => WebhookOutcome.Disabled
       case DispatchOutcome.Error      => WebhookOutcome.Error
     }
@@ -280,10 +389,27 @@ object SupportResponder {
     "🤖 *WifiHaven support assistant — reply \"talk to a human\" any time and a teammate will follow up.*"
 
   /**
+   * The FIXED reject a new email from an unregistered sender receives (#2307). Static — NEVER
+   * AI-generated (no token burn) — and generic: it names no accounts and reveals only whether the
+   * sender's own address is registered (their own info). Points the sender at the two authenticated
+   * intake paths (in-app chat / beta access).
+   */
+  val UnregisteredRejectTitle: String    = "Re: your message to WifiHaven support"
+  val UnregisteredRejectTemplate: String =
+    "Thanks for reaching out. WifiHaven support is available to registered customers — please " +
+      "sign in at https://app.wifihaven.net and use the in-app support chat. If you don't have an " +
+      "account yet, you can request beta access at https://app.wifihaven.net/beta."
+
+  /**
    * Bounded outcome enum for the webhook path — the `support_ai_draft_total{outcome}` label set.
    */
   enum WebhookOutcome   {
     case Dispatched
+    // #2307: a NEW inbound email whose From matched a registered household admin → dispatched
+    // (authenticated), kept distinct from the UI-origin `Dispatched` for cost/attribution.
+    case EmailRegisteredDispatched
+    // #2307: a NEW inbound email from an UNREGISTERED address → the fixed static reject (no AI).
+    case EmailUnregisteredRejected
     case SkippedUnauthenticated
     case RateLimited
     case InvalidSignature
@@ -293,13 +419,15 @@ object SupportResponder {
   }
   object WebhookOutcome {
     def label(o: WebhookOutcome): String = o match {
-      case Dispatched             => "dispatched"
-      case SkippedUnauthenticated => "skipped_unauthenticated"
-      case RateLimited            => "rate_limited"
-      case InvalidSignature       => "invalid_signature"
-      case Malformed              => "malformed"
-      case Disabled               => "disabled"
-      case Error                  => "error"
+      case Dispatched                => "dispatched"
+      case EmailRegisteredDispatched => "email_registered_dispatched"
+      case EmailUnregisteredRejected => "email_unregistered_rejected"
+      case SkippedUnauthenticated    => "skipped_unauthenticated"
+      case RateLimited               => "rate_limited"
+      case InvalidSignature          => "invalid_signature"
+      case Malformed                 => "malformed"
+      case Disabled                  => "disabled"
+      case Error                     => "error"
     }
   }
 

@@ -449,10 +449,13 @@ object MetricGuard {
     "support_tenant_upsert_total"                   -> Set("outcome"),
     // #2200 — the Claude support responder (dark until keys set). `support_ai_draft_total{outcome}`
     // (the #2200-specified series name, kept though v1 sends replies rather than drafts)
-    // counts each inbound Plain webhook by a bounded enum (dispatched | skipped_unauthenticated |
-    // rate_limited | invalid_signature | malformed | disabled | error) — `skipped_unauthenticated`
-    // is the UI-origin gate on cold email, `rate_limited` the per-thread/global dispatch cost caps,
-    // `invalid_signature` the security rejection.
+    // counts each inbound Plain webhook by a bounded enum (dispatched | email_registered_dispatched
+    // | email_unregistered_rejected | skipped_unauthenticated | rate_limited | invalid_signature |
+    // malformed | disabled | error) — `dispatched` is a UI-origin thread, `email_registered_dispatched`
+    // a #2307 registered-admin-email new thread admitted to the AI, `email_unregistered_rejected` a
+    // #2307 unregistered new email that got the fixed static reject (NO AI/token burn),
+    // `skipped_unauthenticated` a continuation with no resolvable tenant, `rate_limited` the
+    // per-thread/global dispatch (or reject) cost caps, `invalid_signature` the security rejection.
     // `support_agent_action_total{op,outcome}` counts the cloud agent's callback
     // actions (reply | issue | household_read × ok | denied | rate_limited | disabled | error) —
     // the `issue` action's rate feeds the #2241 volume alert. Both bounded, never per-household.

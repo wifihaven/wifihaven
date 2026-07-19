@@ -14,9 +14,11 @@ import zio.json.*
  *     design (Plain has no bearer token); the `Plain-Request-Signature` HMAC verified inside
  *     [[SupportResponder.handleWebhook]] IS the authentication, exactly like the Stripe webhook
  *     (#2135). Size-capped before anything is read. A bad signature is the one security-relevant
- *     rejection (400); every other outcome — dispatched, skipped-unauthenticated (cold email, the
- *     UI-origin gate), disabled, malformed, downstream error — returns 200 so Plain does not
- *     retry-storm and the response never leaks WHY (the metric carries the outcome).
+ *     rejection (400); every other outcome — dispatched, email_registered_dispatched /
+ *     email_unregistered_rejected (the #2307 email-intake gate), skipped_unauthenticated (a
+ *     continuation with no resolvable tenant), disabled, malformed, downstream error — returns 200
+ *     so Plain does not retry-storm and the response never leaks WHY (the metric carries the
+ *     outcome).
  *
  *   - AGENT `POST /api/support/agent/reply`, `POST /api/support/agent/issues`, `GET
  *     /api/support/agent/household` — the cloud agent's ONLY side-effect channels, authenticated
@@ -56,8 +58,8 @@ object SupportAgentRoutes {
             resp    <- outcome match {
               case WebhookOutcome.InvalidSignature =>
                 ZIO.fail(ApiError.BadRequest("invalid signature"))
-              // Everything else is a 200 so Plain stops retrying — a cold thread (the UI-origin
-              // gate), a dark install, or a downstream hiccup is not the webhook's error.
+              // Everything else is a 200 so Plain stops retrying — a skipped continuation, a #2307
+              // static reject, a dark install, or a downstream hiccup is not the webhook's error.
               case _                               => ZIO.succeed(Response.ok)
             }
           } yield resp

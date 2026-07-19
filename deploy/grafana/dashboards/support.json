@@ -95,7 +95,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "Responder webhook outcomes (#2200)",
-      "description": "sum by (outcome) (rate(support_ai_draft_total{env=\"$env\"}[5m])) — dispatched (a cloud-agent session was created for a UI-originated thread) / skipped_unauthenticated (the UI-origin gate: cold inbound email, NO tokens burned) / rate_limited (the per-thread + global dispatch cost caps fired) / invalid_signature (unsigned or forged webhook — security-relevant, investigate a sustained rate) / malformed / disabled (responder dark) / error (Managed Agents dispatch failed). Emitted by SupportResponder.handleWebhook.",
+      "description": "sum by (outcome) (rate(support_ai_draft_total{env=\"$env\"}[5m])) — dispatched (a cloud-agent session was created for a UI-originated thread) / email_registered_dispatched (#2307: a NEW inbound email whose From matched a registered household admin, admitted to the AI bound to that household) / email_unregistered_rejected (#2307: a NEW inbound email from an unregistered address got the FIXED static reject — NO Claude call, NO tokens burned) / skipped_unauthenticated (a continuation with no resolvable tenant) / rate_limited (the per-thread + global dispatch, or the global reject, cost caps fired) / invalid_signature (unsigned or forged webhook — security-relevant, investigate a sustained rate) / malformed / disabled (responder dark) / error (Managed Agents dispatch failed). Emitted by SupportResponder.handleWebhook.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
       "id": 4,
