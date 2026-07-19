@@ -103,10 +103,13 @@ object PlainWebhook {
       case _              => None
     }
 
-  // The sender's From address — the #2307 email-intake gate key. On Plain the customer's email is
-  // either a nested `EmailAddress` object (`customer.email.email`) or a bare `customer.email`
-  // string; also accept a top-level `customer` email carrier. Absent ⇒ None (no address to gate on,
-  // so a new email with no From simply falls through to skipped_unauthenticated).
+  // The sender's From address — the #2307 email-intake gate key. Plain's webhook payloads model a
+  // customer email as an `EmailAddress` (`customer.email.email`, per team-plain/typescript-sdk
+  // graphql types — the same `{email,isVerified}` shape PlainClient writes on upsert); we also
+  // accept a bare `customer.email` string and a top-level `customer` carrier defensively, since the
+  // exact envelope varies by event type. The nested `thread.customer.email.email` shape is pinned
+  // end-to-end by SupportResponderSpec's `emailPayload`. Absent ⇒ None (no address to gate on, so a
+  // new email with no From simply falls through to skipped_unauthenticated).
   private def customerEmail(customerObj: Option[Json.Obj], inner: Json.Obj): Option[String] =
     customerObj
       .flatMap(c => objField(c, "email"))
@@ -116,9 +119,14 @@ object PlainWebhook {
       .map(_.trim)
       .filter(_.nonEmpty)
 
-  // Whether this delivery opens a NEW thread (Plain fires `thread.thread_created` for the first
-  // inbound message on a thread — the one #2307 gate-vs-continuation signal). Every other event
-  // type (chat/email replies into an existing thread) is a continuation.
+  // Whether this delivery opens a NEW thread — the one #2307 gate-vs-continuation signal. Plain's
+  // webhook event catalog (https://www.plain.com/docs/api-reference/webhooks/event-types) fires
+  // `thread.thread_created` once, when a thread is first opened (a first inbound email creates the
+  // thread); subsequent messages arrive as distinct reply/timeline event types. Only a genuinely new
+  // thread runs the email-intake gate — so a mislabel is fail-safe: a NEW admin email misclassified
+  // as a continuation is silently skipped (not mis-dispatched), never the reverse. The gate on the
+  // `thread.thread_created` type is pinned by SupportResponderSpec (`emailPayload` uses it; the
+  // continuation test uses `thread.chat_sent`).
   private def isNewThread(eventType: String): Boolean =
     eventType == "thread.thread_created"
 

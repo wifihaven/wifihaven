@@ -142,6 +142,18 @@ final case class SupportResponder(
    * address to a registered household ADMIN and dispatch bound to THAT admin's household
    * (authenticated, as if UI-originated); otherwise emit the fixed static reject. No AI call ever
    * runs on the reject path (the token-burn guard the UI-only rule used to provide).
+   *
+   * TRUST BOUNDARY: SMTP `From` is spoofable, so this gate trusts Plain's upstream MX (#2198) to
+   * have accepted the message under its own SPF/DKIM/spam handling before signing + firing the
+   * webhook — we treat `customerEmail` as authenticated by Plain, not by us. The blast radius of a
+   * forged-From admin email is deliberately bounded and does NOT include data exfiltration:
+   *   - consent (`event.consent` → the token's `dataAccess`) is never set from a cold email — only
+   *     the #2199 identified widget stamps `dataConsent`, so a forged-From dispatch mints a
+   *     data-scope-LESS token: the agent can reply but the household-read endpoint refuses it;
+   *   - the reply is delivered by Plain to the spoofed address (the REAL admin), not the forger;
+   *   - dispatch is rate-capped (per-thread + global), so the worst case is bounded dispatch-budget
+   *     burn, not an open-ended bill or a leak.
+   * Do NOT "fix" the consent default to true here, and do NOT assume the From is verified locally.
    */
   private def emailIntakeGate(event: PlainNewMessageEvent): UIO[WebhookOutcome] =
     event.customerEmail match {
