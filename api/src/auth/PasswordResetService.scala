@@ -143,12 +143,10 @@ class PasswordResetServiceLive(
         .fail(PasswordResetError.InvalidToken)
         .when(!consumed)
         .tapError(_ => AppMetrics.passwordReset("reset_invalid_token"))
-      newHash  <- auth.hashPassword(newPassword)
-      _        <- userRepo.updatePassword(row.userId, newHash).mapError(PasswordResetError.Db(_))
-      // The user just chose a password → clear any must_change_password flag.
-      _        <- userRepo.clearMustChangePassword(row.userId).mapError(PasswordResetError.Db(_))
-      // #2080: invalidate every previously-issued JWT for this user (mirrors changePassword).
-      _        <- userRepo.bumpTokenVersion(row.userId).mapError(PasswordResetError.Db(_))
+      // Apply the new password via the shared rotation primitive: hash + store + clear
+      // must_change_password + bump token_version (#2080, revoking prior JWTs). Single source of
+      // truth with AuthService.changePassword — the invariant can't drift between the two paths.
+      _        <- auth.setPassword(row.userId, newPassword).mapError(PasswordResetError.Db(_))
       _        <- AppMetrics.passwordReset("reset_ok")
     } yield ()
 }

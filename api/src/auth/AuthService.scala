@@ -92,6 +92,16 @@ trait AuthService {
       next: String,
       household: HouseholdId = HouseholdId.Default,
   ): IO[AuthError, Unit]
+
+  /**
+   * Apply a new password to an existing user (by id): hash it, store it, clear
+   * must_change_password, and bump token_version (#2080, revoking every previously-issued JWT). The
+   * SINGLE SOURCE OF TRUTH for the password-rotation side effects — [[changePassword]] (after
+   * verifying the current password) and the #2308 reset-password path (after validating the reset
+   * token) both call this, so the rotation invariant (in particular the token_version bump) can't
+   * drift between the two. Fails only on a DB error; the caller maps it to its own error channel.
+   */
+  def setPassword(userId: UserId, newPlaintext: String): Task[Unit]
   def hashPassword(password: String): UIO[String]
 }
 
@@ -337,18 +347,19 @@ class AuthServiceLive(
         BCrypt.verifyer().verify(current.toCharArray, user.passwordHash).verified,
       )
       _     <- ZIO.fail(AuthError.InvalidCredentials).when(!valid)
-      hash  <- hashPassword(next)
-      _     <- userRepo
-        .updatePassword(user.id, hash)
-        .mapError(e => AuthError.Unexpected(e.getMessage))
-      // Clear must_change_password flag on successful rotation (#586).
-      _     <- userRepo
-        .clearMustChangePassword(user.id)
-        .mapError(e => AuthError.Unexpected(e.getMessage))
+      // The rotation side effects (hash + store + clear must_change (#586) + bump token_version
+      // (#2080)) are shared with the #2308 reset path via `setPassword` — one source of truth.
+      _     <- setPassword(user.id, next).mapError(e => AuthError.Unexpected(e.getMessage))
+    } yield ()
+
+  def setPassword(userId: UserId, newPlaintext: String): Task[Unit] =
+    for {
+      hash <- hashPassword(newPlaintext)
+      _    <- userRepo.updatePassword(userId, hash)
+      // Clear must_change_password flag on rotation (#586).
+      _    <- userRepo.clearMustChangePassword(userId)
       // #2080: invalidate every previously-issued JWT for this user.
-      _     <- userRepo
-        .bumpTokenVersion(user.id)
-        .mapError(e => AuthError.Unexpected(e.getMessage))
+      _    <- userRepo.bumpTokenVersion(userId)
     } yield ()
 
   def hashPassword(password: String): UIO[String] =
