@@ -10,6 +10,16 @@ If you're installing WifiHaven on different OpenWRT hardware, skip directly to
 [`install-openwrt.md`](install-openwrt.md) — only the sections marked
 "Hardware-specific" below apply to the Flint 2.
 
+> **Flashing vanilla OpenWRT is the supported path — do not skip §1.** GL.iNet
+> ships the Flint 2 with GL.iNet's own *forked* OpenWRT firmware, and the agent
+> has **not been validated against that stock firmware**
+> ([#2304](https://github.com/wifihaven/wifihaven/issues/2304)): GL.iNet's
+> firewall/UI layer and dnsmasq management are untested against the agent's
+> nftables and nftset config. This doc's §1 flashes the box to **vanilla
+> OpenWRT** before installing WifiHaven — that is the validated configuration.
+> Do not run the agent installer on the GL.iNet stock firmware until #2304
+> closes.
+
 ## Why this hardware
 
 - **Mediatek MT7986A (filogic)**, aarch64 cortex-a53 — plenty of CPU for line-rate

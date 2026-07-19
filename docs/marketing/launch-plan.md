@@ -170,4 +170,9 @@ override before P1.
    hosted tier holding children's traffic need a privacy/legal pass before P4?
 7. **`~$30 OpenWRT router` claim** in the press release is UNVERIFIED — pick and
    price a current example model (e.g. a GL.iNet entry unit) before send, or
-   soften to "starting well under $100."
+   soften to "starting well under $100." If the copy names GL.iNet: the agent is
+   validated on **flashed vanilla OpenWRT** only; GL.iNet **stock** forked
+   firmware is not yet verified
+   ([#2304](https://github.com/wifihaven/wifihaven/issues/2304)). Don't imply
+   the out-of-the-box firmware is a supported path — either point at the
+   flash-to-vanilla step or mark stock support "in validation."

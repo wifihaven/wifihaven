@@ -13,6 +13,19 @@ DNS normally — it is not the enforcement plane (see
 
 ## 1. Prerequisites
 
+> **Supported firmware baseline.** The agent is currently validated only on
+> **flashed vanilla OpenWRT** (the images from
+> [firmware-selector.openwrt.org](https://firmware-selector.openwrt.org/)).
+> Vendor-forked firmware — notably the **GL.iNet stock firmware** those routers
+> ship with out of the box — is **not yet a verified target**
+> ([#2304](https://github.com/wifihaven/wifihaven/issues/2304)). The install
+> script only checks for `apk`-or-`opkg` + `uci` + `jsonfilter`, so it may
+> *start* on stock GL.iNet firmware, but that path is unverified: GL.iNet's own
+> firewall/UI layer and dnsmasq management have not been tested against the
+> agent's nftables and nftset config. On GL.iNet hardware, flash vanilla
+> OpenWRT first ([`install-flint2.md`](install-flint2.md)) — that is the
+> supported path.
+
 - A router running **OpenWRT 23.05.x** (opkg / `.ipk`) **or OpenWRT 24.10+ /
   SNAPSHOT** (apk / `.apk`). CI builds and attaches both artifacts to every
   release.

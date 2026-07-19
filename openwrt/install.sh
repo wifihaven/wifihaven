@@ -1,6 +1,16 @@
 #!/bin/sh
 # WifiHaven OpenWRT agent — interactive first-install script.
 #
+# Supported firmware baseline: the agent is currently validated only on
+# FLASHED VANILLA OpenWRT (23.05.x / 24.10+ / SNAPSHOT). GL.iNet routers ship
+# GL.iNet's own *forked* OpenWRT firmware out of the box; that stock firmware
+# is NOT YET a verified target — see
+# https://github.com/wifihaven/wifihaven/issues/2304. This script will run
+# wherever it finds apk-or-opkg + uci + jsonfilter (so it may start on stock
+# GL.iNet firmware), but running it there is unverified. On GL.iNet hardware,
+# flash vanilla OpenWRT first (docs/install-flint2.md) — that is the supported
+# path.
+#
 # Usage (on an OpenWRT 23.05.x router, as root):
 #
 #   sh -c "$(uclient-fetch -qO - https://raw.githubusercontent.com/wifihaven/wifihaven/main/openwrt/install.sh)"
