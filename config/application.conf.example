@@ -203,6 +203,14 @@ wifihaven {
   #   # /api/health. issueFilingEnabled gates the GitHub bot the same way.
   #   # responderEnabled    = false
   #   # issueFilingEnabled  = false
+  #   # #2300: which cloud-agent transport to dispatch through — an EXPLICIT named value (no
+  #   # dark-by-default). "managed-agents" (default; Anthropic Managed Agents session, API-credit
+  #   # billed) or "claude-code-cloud" (a Claude Code Cloud routine fired per message, billed
+  #   # against the Claude subscription). When responderEnabled, only the SELECTED transport's
+  #   # config chain below is required; an unknown value fails boot.
+  #   # dispatcher          = "managed-agents"
+  #   #
+  #   # ── Transport: managed-agents (required when dispatcher = "managed-agents") ──
   #   # Anthropic API key — used ONLY to create agent sessions. SECRET.
   #   anthropicApiKey       = ""
   #   # The pre-provisioned Managed Agent + environment ids (deploy/support-agent/, applied once
@@ -210,6 +218,16 @@ wifihaven {
   #   claudeAgentId         = ""
   #   claudeEnvironmentId   = ""
   #   # anthropicApiBase    = "https://api.anthropic.com"
+  #   #
+  #   # ── Transport: claude-code-cloud (required when dispatcher = "claude-code-cloud") ──
+  #   # The pre-provisioned Claude Code Cloud routine fired per message. Create the routine ONCE in
+  #   # the Claude Code web UI (https://claude.ai/code/routines): give it the support-agent system
+  #   # prompt (same instructions as deploy/support-agent/), add an "API trigger" (which mints the
+  #   # per-routine bearer token), and set its environment's network access to allow this API's
+  #   # agentApiBase so the run can reach the /api/support/agent/* callbacks. Shares anthropicApiBase.
+  #   claudeCodeRoutineId    = ""
+  #   # The per-routine bearer token from the routine's API trigger (Authorization: Bearer). SECRET.
+  #   claudeCodeRoutineToken = ""
   #   # HMAC secret for the per-session agent token (thread- + household-bound, short-TTL,
   #   # consent-scoped — the dispatched agent's ONLY credential). Generate ≥32 random chars. SECRET.
   #   agentTokenSecret      = ""

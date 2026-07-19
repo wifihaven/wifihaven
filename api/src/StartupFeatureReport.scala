@@ -92,7 +92,10 @@ object StartupFeatureReport {
         "support-responder",
         support.responderEnabled,
         if support.responderEnabled then
-          "wifihaven.support.responderEnabled=true — signed webhook drafts a cloud-agent reply"
+          // #2300: name the active transport so the credit-billed vs subscription-billed path is
+          // observable, not just "enabled".
+          s"wifihaven.support.responderEnabled=true — signed webhook drafts a cloud-agent reply " +
+            s"(dispatcher=${support.dispatcherTrimmed})"
         else
           "wifihaven.support.responderEnabled=false — inbound support webhook no-ops, agent " +
             "endpoints 404 (#2200/#2265)",

@@ -521,23 +521,43 @@ case class SupportConfig(
     // constants (GithubIssueClient) to make room rather than adding a 17th field.
     responderEnabled: Boolean = false,
     issueFilingEnabled: Boolean = false,
+    // #2300: which cloud-agent transport the responder dispatches through — an EXPLICIT named value
+    // (#2265 no-dark: never inferred). Two supported transports, both behind the ONE
+    // [[wifihaven.api.support.CloudAgentDispatcher]] trait + #2241 callback contract:
+    //   - "managed-agents"    → the Anthropic Managed Agents session (default; API-credit billed).
+    //   - "claude-code-cloud" → a Claude Code Cloud routine fired per message (subscription billed).
+    // Default keeps the pre-#2300 behavior. When responderEnabled, an unknown value FAILS BOOT
+    // (missingRequiredKeys), and the SELECTED transport's config chain becomes required (below).
+    dispatcher: String = "managed-agents",
     anthropicApiKey: String = "",
     claudeAgentId: String = "",
     claudeEnvironmentId: String = "",
     anthropicApiBase: String = "https://api.anthropic.com",
+    // #2300: the Claude Code Cloud routine to fire (dispatcher = "claude-code-cloud"). The routine is
+    // pre-provisioned once in the Claude Code web UI (its system prompt carries the same support-agent
+    // instructions as deploy/support-agent/), with an "API trigger" that mints the per-routine bearer
+    // token. The dispatcher only ever FIRES the routine, never creates it.
+    //   - claudeCodeRoutineId    the routine id fired at POST /v1/claude_code/routines/{id}/fire.
+    //   - claudeCodeRoutineToken the per-routine bearer token (Authorization: Bearer). SECRET.
+    // The fire endpoint shares `anthropicApiBase` (both live on api.anthropic.com).
+    claudeCodeRoutineId: String = "",
+    claudeCodeRoutineToken: String = "",
     agentTokenSecret: String = "",
     agentTokenTtlMinutes: Int = 30,
     agentApiBase: String = "https://api.wifihaven.net",
     deploymentEnv: String = "",
     githubSupportBotToken: String = "",
 ) {
-  val anthropicApiKeyTrimmed: String       = anthropicApiKey.trim
-  val claudeAgentIdTrimmed: String         = claudeAgentId.trim
-  val claudeEnvironmentIdTrimmed: String   = claudeEnvironmentId.trim
-  val agentTokenSecretTrimmed: String      = agentTokenSecret.trim
-  val agentApiBaseTrimmed: String          = agentApiBase.trim.stripSuffix("/")
-  val deploymentEnvTrimmed: String         = deploymentEnv.trim
-  val githubSupportBotTokenTrimmed: String = githubSupportBotToken.trim
+  val dispatcherTrimmed: String             = dispatcher.trim
+  val anthropicApiKeyTrimmed: String        = anthropicApiKey.trim
+  val claudeAgentIdTrimmed: String          = claudeAgentId.trim
+  val claudeEnvironmentIdTrimmed: String    = claudeEnvironmentId.trim
+  val claudeCodeRoutineIdTrimmed: String    = claudeCodeRoutineId.trim
+  val claudeCodeRoutineTokenTrimmed: String = claudeCodeRoutineToken.trim
+  val agentTokenSecretTrimmed: String       = agentTokenSecret.trim
+  val agentApiBaseTrimmed: String           = agentApiBase.trim.stripSuffix("/")
+  val deploymentEnvTrimmed: String          = deploymentEnv.trim
+  val githubSupportBotTokenTrimmed: String  = githubSupportBotToken.trim
 
   // #2265: fail LOUD, in bulk. With the responder explicitly enabled, EVERY config the chain needs
   // is required — webhook verification, the Plain write key (the reply path), the Anthropic
@@ -548,16 +568,38 @@ case class SupportConfig(
   def missingRequiredKeys: List[String] = {
     val responderKeys =
       if !responderEnabled then Nil
-      else
-        List(
-          "support.plain.apiKey"        -> plain.apiKeyTrimmed,
-          "support.plain.webhookSecret" -> plain.webhookSecretTrimmed,
-          "support.anthropicApiKey"     -> anthropicApiKeyTrimmed,
-          "support.claudeAgentId"       -> claudeAgentIdTrimmed,
-          "support.claudeEnvironmentId" -> claudeEnvironmentIdTrimmed,
-          "support.agentTokenSecret"    -> agentTokenSecretTrimmed,
-          "support.deploymentEnv"       -> deploymentEnvTrimmed,
-        ).collect { case (k, v) if v.isEmpty => k }
+      else {
+        // Common to BOTH dispatchers: the Plain webhook-verify + write halves, the #2241 token
+        // secret, and the deployment identity that rides in every kickoff.
+        val common    =
+          List(
+            "support.plain.apiKey"        -> plain.apiKeyTrimmed,
+            "support.plain.webhookSecret" -> plain.webhookSecretTrimmed,
+            "support.agentTokenSecret"    -> agentTokenSecretTrimmed,
+            "support.deploymentEnv"       -> deploymentEnvTrimmed,
+          ).collect { case (k, v) if v.isEmpty => k }
+        // #2300: only the SELECTED transport's config chain is required. An unknown dispatcher value
+        // is itself a boot failure (explicit named value, #2265) — the operator sees the valid set.
+        val transport = dispatcherTrimmed match {
+          case "managed-agents"    =>
+            List(
+              "support.anthropicApiKey"     -> anthropicApiKeyTrimmed,
+              "support.claudeAgentId"       -> claudeAgentIdTrimmed,
+              "support.claudeEnvironmentId" -> claudeEnvironmentIdTrimmed,
+            ).collect { case (k, v) if v.isEmpty => k }
+          case "claude-code-cloud" =>
+            List(
+              "support.claudeCodeRoutineId"    -> claudeCodeRoutineIdTrimmed,
+              "support.claudeCodeRoutineToken" -> claudeCodeRoutineTokenTrimmed,
+            ).collect { case (k, v) if v.isEmpty => k }
+          case other               =>
+            List(
+              s"support.dispatcher must be 'managed-agents' or 'claude-code-cloud' " +
+                s"(got '$other')",
+            )
+        }
+        common ++ transport
+      }
     val issueKeys     =
       if issueFilingEnabled && githubSupportBotTokenTrimmed.isEmpty then
         List("support.githubSupportBotToken")
