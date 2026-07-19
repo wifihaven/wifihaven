@@ -1998,7 +1998,7 @@ class AlertRepoLive(xa: Transactor[Task]) extends AlertRepo {
     householdId = r._15,
   )
 
-  // #2283: read the alert's OWN `a.household_id` (its tenancy key, V76) — NOT the joined device's.
+  // #2283: read the alert's OWN `a.household_id` (its tenancy key, V78) — NOT the joined device's.
   // The devices join is now qualified `d.mac = a.mac AND d.household_id = a.household_id` so a MAC
   // shared across households (V74) resolves `d.name` to the alert's OWN household's device instead of
   // matching both rows. Reading `a.household_id` also keeps attribution correct for an orphaned alert
@@ -2042,7 +2042,7 @@ class AlertRepoLive(xa: Transactor[Task]) extends AlertRepo {
       createdAt: Instant,
   ): Task[AlertId] = {
     val rkStr = AccessRequestKind.asString(requestKind)
-    // #2283: stamp the alert's tenancy key (V76) from its OWN device row so the household-scoped
+    // #2283: stamp the alert's tenancy key (V78) from its OWN device row so the household-scoped
     // read (`listForHousehold` on `a.household_id`) attributes it to the same household the pre-#2283
     // transitive device join did — no read regression. This is the public, unauthenticated block-page
     // path (no JWT/router household in scope), so the household is derived from the device rather than
@@ -2097,7 +2097,7 @@ class AlertRepoLive(xa: Transactor[Task]) extends AlertRepo {
       .transact(xa)
   }
 
-  // #2283: scope on the alert's OWN `a.household_id` (V76), NOT the joined `d.household_id`. Once a
+  // #2283: scope on the alert's OWN `a.household_id` (V78), NOT the joined `d.household_id`. Once a
   // MAC can exist in two households (V74) the device join is ambiguous, so #2108's transitive scope
   // no longer isolates. `a.household_id = $hh` is the alert's authoritative tenancy key: it isolates
   // correctly even for a shared MAC AND still returns an orphaned alert (device deleted) to its own
