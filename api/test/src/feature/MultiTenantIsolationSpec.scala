@@ -1346,5 +1346,77 @@ object MultiTenantIsolationSpec
       } yield assertTrue(count == 1L) &&
         assertTrue(hh != HouseholdId.Default, hh != two.hhB)
     },
+    // ── Pin (#2313): screen-time / daily-cap used-minutes are household-scoped for a SHARED MAC ──
+    // Enforcement-critical. After V74 the SAME MAC can be a device in two households. The
+    // `traffic_reports` presence reads that feed `TimeStatusService` (the daily-limit / screen-time
+    // read path the policy snapshot consumes) filtered by bare MAC with NO household/router
+    // predicate, so a profile's used-minutes was inflated by ANOTHER household's traffic on the same
+    // MAC → wrongful cap block/allow. This pin seeds ONE MAC behind BOTH households' routers, posts
+    // DISTINCT traffic under each router on a past date (routes `dayStateAll` to the all-live
+    // presence read), and asserts each profile's used-minutes reflects ONLY its own household's
+    // traffic. RED pre-fix: household A's minutes = 10 + 20 = 30 (leaked B's usage of the shared MAC).
+    test("pin (#2313) — used-minutes for a shared MAC count ONLY the caller's household traffic") {
+      val date = java.time.LocalDate.parse("2025-01-05") // a PAST date → dayStateAll goes all-live
+      val macM = MacAddress.unsafe("aa:bb:cc:00:00:99")  // the SAME MAC in BOTH households
+      val tA = java.time.Instant.parse("2025-01-05T10:00:00Z") // hh-A's window (10 min)
+      val tB = java.time.Instant.parse("2025-01-05T18:00:00Z") // hh-B's window (20 min), far apart
+      for {
+        _    <- cleanDb
+        two  <- TestLayers.seedTwoHouseholds(macA, macB)
+        dr   <- ZIO.service[DeviceRepo]
+        tlr  <- ZIO.service[TimeLimitRepo]
+        atlr <- ZIO.service[AppTimeLimitRepo]
+        tr   <- ZIO.service[TrafficReportRepo]
+        er   <- ZIO.service[TimeExtensionRepo]
+        pr   <- ZIO.service[ProfileRepo]
+        hsr  <- ZIO.service[HouseholdSettingsRepo]
+        clk  <- ZIO.service[Clock]
+        now  <- clk.instant
+        // The SAME MAC is a device in BOTH households (representable post-V74), each under that
+        // household's own profile. uq_devices_household_mac keeps (hhA, M) and (hhB, M) distinct rows.
+        _    <- dr.upsert(macM, "sharedA", Some(two.profileA), "192.168.1.20", two.hhA)
+        _    <- dr.upsert(macM, "sharedB", Some(two.profileB), "192.168.1.21", two.hhB)
+        // Distinct traffic for the shared MAC under each household's router — 10 min for A, 20 for B.
+        // Bytes are well above the default heartbeat threshold (V23: 10240) so the rows count.
+        _    <- tr.insertBatch(
+          List(
+            TrafficReportInsert(
+              two.routerIdA,
+              macM,
+              None,
+              HostId.Fqdn(Hostname.unsafe("a.example")),
+              date,
+              tA,
+              tA.plusSeconds(600),
+              600,
+              40000L,
+              50000L,
+            ),
+            TrafficReportInsert(
+              two.routerIdB,
+              macM,
+              None,
+              HostId.Fqdn(Hostname.unsafe("b.example")),
+              date,
+              tB,
+              tB.plusSeconds(1200),
+              1200,
+              60000L,
+              70000L,
+            ),
+          ),
+        )
+        tss = new TimeStatusServiceLive(pr, tlr, atlr, dr, tr, er)
+        setA <- hsr.getForHousehold(two.hhA)
+        setB <- hsr.getForHousehold(two.hhB)
+        dayA <- tss.dayStateAll(two.hhA, now, date, setA)
+        dayB <- tss.dayStateAll(two.hhB, now, date, setB)
+        usedA = dayA.get(two.profileA).map(_.usedMinutes)
+        usedB = dayB.get(two.profileB).map(_.usedMinutes)
+      } yield
+      // Each household's profile counts ONLY its own router's traffic on the shared MAC — never the
+      // other tenant's. Pre-fix `usedA` was 30 (10 + the leaked 20).
+      assertTrue(usedA == Some(10), usedB == Some(20))
+    },
   ) @@ TestAspect.sequential
 }
