@@ -3215,7 +3215,11 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
     )
     val byLoc     = f.location.fold(fr"")(l => fr"AND r.name = $l")
     val byMc      = if (f.includeMulticast) fr"" else multicastFilterSql
-    val filters   = window ++ byMac ++ byDev ++ byPid ++ byBl ++ byDom ++ byLoc ++ byMc
+    // #2314: scope to the caller's household via the already-joined `routers r` (connection_events
+    // are router_id-keyed → household transitive), mirroring `query(LogFilter)`. Without this a
+    // shared MAC aggregates + mislabels across households. Index-backed by idx_routers_household (V65).
+    val byHh      = SqlFragments.householdFilter(f.household, "r.household_id")
+    val filters   = window ++ byMac ++ byDev ++ byPid ++ byBl ++ byDom ++ byLoc ++ byMc ++ byHh
 
     val succProj     = fr"COUNT(*) FILTER (WHERE ce.allowed)::INT"
     val blkProj      = fr"COUNT(*) FILTER (WHERE NOT ce.allowed)::INT"
@@ -3290,8 +3294,11 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
     )
     val byDom     = f.domain.fold(fr"")(d => fr"AND cer.hostname ILIKE ${s"%$d%"}")
     val byLoc     = f.location.fold(fr"")(l => fr"AND r.name = $l")
+    // #2314: same household scope as the raw path — the rollup carries `cer.router_id`, joined to
+    // `routers r`, so tenancy is transitive. Shared predicate lives in SqlFragments.householdFilter.
+    val byHh      = SqlFragments.householdFilter(f.household, "r.household_id")
     // No multicast filter: excluded at reroll write time.
-    val filters   = window ++ byMac ++ byDev ++ byPid ++ byBl ++ byDom ++ byLoc
+    val filters   = window ++ byMac ++ byDev ++ byPid ++ byBl ++ byDom ++ byLoc ++ byHh
 
     // Sum the stored split counts. When the caller narrows to blocked/allowed,
     // zero the opposite projection so a row mixing both contributes only the

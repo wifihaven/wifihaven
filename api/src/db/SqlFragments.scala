@@ -41,6 +41,16 @@ object SqlFragments {
     fr"AND" ++ Fragment.const(column) ++ fr"IN (SELECT id FROM routers WHERE" ++
       householdEq(hh) ++ fr")"
 
+  // #2314 (same-MAC-across-households, epic #622): the optional, AND-composed household predicate
+  // for connection_events reads. connection_events are `router_id`-keyed, so household scope is
+  // transitive through the already-joined `routers` table — callers pass `column = "r.household_id"`.
+  // Returns an empty fragment when the caller omits `household` (single-household back-compat: an
+  // unscoped read still sees its own rows). Both `querySeries` and `querySeriesRollup` compose this
+  // so the tenancy predicate lives in exactly one place (SSOT) rather than being hand-copied. Same
+  // `column`-is-trusted-literal / `hh`-is-parameterized contract as `householdEq`.
+  def householdFilter(household: Option[HouseholdId], column: String): Fragment =
+    household.fold(Fragment.empty)(hh => fr"AND" ++ householdEq(hh, column))
+
   // Promotes ipv4/ipv6-typed `traffic_reports` rows to their resolved fqdn by
   // looking up the most recent `connection_events` row for the same
   // (mac, dest_ip) that has a resolved_host_value, within the row's own day.
