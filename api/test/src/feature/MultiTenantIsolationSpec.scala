@@ -360,8 +360,8 @@ object MultiTenantIsolationSpec
         apr    <- ZIO.service[AppRepo]
         hsr    <- ZIO.service[HouseholdSettingsRepo]
         clk    <- ZIO.service[Clock]
-        _      <- ar.raiseNewDevice(macA, Instant.parse("2026-05-07T14:00:00Z"))
-        _      <- ar.raiseNewDevice(macB, Instant.parse("2026-05-07T14:00:00Z"))
+        _      <- ar.raiseNewDevice(macA, Instant.parse("2026-05-07T14:00:00Z"), two.hhA)
+        _      <- ar.raiseNewDevice(macB, Instant.parse("2026-05-07T14:00:00Z"), two.hhB)
         auth   <- makeAuth
         tokenA <- login(auth, two.adminA, two.password)
         routes = AlertRoutes.routes(
