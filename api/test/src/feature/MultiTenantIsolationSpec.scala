@@ -39,11 +39,15 @@ import java.time.Instant
  * never-seen MAC → unmanaged device in hhA, in NO other household 5 blocklist auth — shared global
  * catalog, byte-identical across households
  *
- * NOTE on pin 4a's mechanism: V65 (#2104) kept the GLOBAL `devices_mac_key`/`time_usage` uniques
- * (dropped in a follow-up schema-only PR), so the SAME MAC cannot yet exist in two households — the
- * literal same-MAC write-collision is unrepresentable until that drop. Pin 4a therefore proves the
+ * NOTE on pin 4a's mechanism: V65 (#2104) kept the GLOBAL `devices_mac_key`/`time_usage` uniques,
+ * so the SAME MAC could not exist in two households — pin 4a therefore proved the
  * achievable-and-equivalent property: hh-A's router write is CONSTRUCTIVELY keyed to (hhA, mac) and
- * does not touch hh-B's distinct-MAC rows. The same-MAC collision variant lands with the drop PR.
+ * does not touch hh-B's distinct-MAC rows. The global uniques are now DROPPED (`devices_mac_key`
+ * V74 #2277, `time_usage_device_mac_host_date_key` V75 #2125), so the literal SAME-MAC variants are
+ * now representable and pinned directly: 4c (same MAC → each household's own profile/rules per
+ * router), 4d (deleting the shared MAC in hh-A leaves hh-B's device + usage intact — the contract
+ * half of #2125 that household-scopes `DeviceRepo.delete`), and 4e (the same (MAC,host,date) usage
+ * from two routers persists per household — proving the V75 `time_usage` unique-drop).
  */
 object MultiTenantIsolationSpec
     extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task]] {
@@ -56,6 +60,8 @@ object MultiTenantIsolationSpec
   private val macA = MacAddress.unsafe("aa:bb:cc:00:00:0a")
   private val macB = MacAddress.unsafe("aa:bb:cc:00:00:0b")
   private val macC = MacAddress.unsafe("aa:bb:cc:00:00:0c") // never-seen (pin 4b)
+  private val macM =
+    MacAddress.unsafe("aa:bb:cc:00:00:00") // the SAME MAC in BOTH households (pins 4c/4d/4e, #2125)
 
   private val jwt = JwtConfig(secret = "test-secret-at-least-32-chars!!x", expiryHours = 1)
 
@@ -825,6 +831,190 @@ object MultiTenantIsolationSpec
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(row == List((two.hhA, true))) &&
         assertTrue(otherHh == 0L)
+    },
+    // ── Pin 4c: the SAME MAC resolves to each household's OWN profile/rules ─────
+    // The operator's core requirement (#2125): one randomized MAC exists in two
+    // households, and each household's router snapshot must resolve it to THAT
+    // household's profile/policy — never the other's. Representable now that the
+    // global devices_mac_key is dropped (V74 #2277).
+    test(
+      "pin 4c — the SAME MAC resolves to each household's OWN profile/rules per router (#2125)",
+    ) {
+      for {
+        _   <- cleanDb
+        two <- TestLayers.seedTwoHouseholds(macA, macB)
+        dr  <- ZIO.service[DeviceRepo]
+        ber <- ZIO.service[BlockEventRepo]
+        rr  <- ZIO.service[RouterRepo]
+        xa  <- ZIO.service[Transactor[Task]]
+        ps  <- makePolicyService
+        // The SAME MAC in BOTH households, each bound to that household's own profile with DISTINCT
+        // rules: profileA (A-Kids) is not paused → blocked=false; profileB (B-Kids) is paused →
+        // blocked=true (seedTwoHouseholds seeds B-Kids paused).
+        _   <- dr.upsert(macM, "sharedA", Some(two.profileA), "192.168.1.20", two.hhA)
+        _   <-
+          sql"INSERT INTO devices(mac,name,profile_id,household_id) VALUES ($macM,'sharedB',${two.profileB},${two.hhB})".update.run
+            .transact(xa)
+        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
+        (_, bodyA) <- getJson(routes, "/api/router/policy", two.tokenA)
+        (_, bodyB) <- getJson(routes, "/api/router/policy", two.tokenB)
+        snapA <- ZIO.fromEither(bodyA.fromJson[PolicySnapshot]).mapError(new RuntimeException(_))
+        snapB <- ZIO.fromEither(bodyB.fromJson[PolicySnapshot]).mapError(new RuntimeException(_))
+        // A managed device carries rules=None and inherits its profile's resolved BlockRules; fall
+        // back to the profile map to get the effective rules for the shared MAC.
+        rulesA = snapA.devices
+          .get(macM)
+          .flatMap(d => d.rules.orElse(d.profileId.flatMap(snapA.profiles.get).map(_.rules)))
+        rulesB = snapB.devices
+          .get(macM)
+          .flatMap(d => d.rules.orElse(d.profileId.flatMap(snapB.profiles.get).map(_.rules)))
+      } yield
+      // Each router sees the shared MAC bound to its OWN household's profile, never the other's.
+      assertTrue(snapA.devices.get(macM).flatMap(_.profileId).contains(two.profileA)) &&
+        assertTrue(snapB.devices.get(macM).flatMap(_.profileId).contains(two.profileB)) &&
+        assertTrue(!snapA.devices.get(macM).flatMap(_.profileId).contains(two.profileB)) &&
+        assertTrue(!snapB.devices.get(macM).flatMap(_.profileId).contains(two.profileA)) &&
+        // The resolved BlockRules differ: A allows (not paused), B blocks (paused).
+        assertTrue(rulesA.exists(!_.blocked), rulesB.exists(_.blocked)) &&
+        assertTrue(rulesA.isDefined, rulesB.isDefined, rulesA != rulesB)
+    },
+    // ── Pin 4d: deleting the shared MAC in hh-A leaves hh-B untouched ───────────
+    // The contract half of #2125: DeviceRepo.delete was a global `WHERE mac=$mac`,
+    // so deleting (hhA, M) ALSO deleted (hhB, M) — a real cross-tenant delete leak,
+    // reachable now that the same MAC can exist in two households. This pin FAILS
+    // against the global delete (hh-B's device row vanishes) and passes once delete
+    // is household-scoped.
+    test("pin 4d — deleting the shared MAC in hh-A leaves hh-B's device + usage intact (#2125)") {
+      for {
+        _      <- cleanDb
+        two    <- TestLayers.seedTwoHouseholds(macA, macB)
+        dr     <- ZIO.service[DeviceRepo]
+        up     <- ZIO.service[UserProfileRepo]
+        pr     <- ZIO.service[ProfileRepo]
+        xa     <- ZIO.service[Transactor[Task]]
+        auth   <- makeAuth
+        // The SAME MAC in both households, plus a hh-B time_usage row for it.
+        _      <- dr.upsert(macM, "sharedA", Some(two.profileA), "192.168.1.20", two.hhA)
+        _      <-
+          sql"INSERT INTO devices(mac,name,profile_id,household_id) VALUES ($macM,'sharedB',${two.profileB},${two.hhB})".update.run
+            .transact(xa)
+        _      <-
+          sql"""INSERT INTO time_usage(household_id,device_mac,host_type,host_value,date,seconds_used,proportional_seconds,bytes_in,bytes_out,last_seen_at)
+                VALUES (${two.hhB},$macM,'fqdn','youtube.com','2026-05-07',60,60,100,50,NOW())""".update.run
+            .transact(xa)
+        tokenA <- login(auth, two.adminA, two.password)
+        routes = DeviceRoutes.routes(auth, dr, up, pr)
+        resp  <- routes.runZIO(
+          Request
+            .delete(URL.decode(s"/api/devices/${macM.value}").toOption.get)
+            .addHeader(Header.Authorization.Bearer(tokenA)),
+        )
+        // hh-A's row is gone…
+        aGone <-
+          sql"SELECT COUNT(*) FROM devices WHERE household_id=${two.hhA} AND mac=$macM"
+            .query[Long]
+            .unique
+            .transact(xa)
+        // …but hh-B's device row AND its usage survive untouched.
+        bDev  <-
+          sql"SELECT COUNT(*) FROM devices WHERE household_id=${two.hhB} AND mac=$macM"
+            .query[Long]
+            .unique
+            .transact(xa)
+        bUse  <-
+          sql"SELECT COUNT(*) FROM time_usage WHERE household_id=${two.hhB} AND device_mac=$macM"
+            .query[Long]
+            .unique
+            .transact(xa)
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(aGone == 0L) &&
+        assertTrue(bDev == 1L) &&
+        assertTrue(bUse == 1L)
+    },
+    // ── Pin 4e: same (MAC,host,date) usage from two routers persists per hh ─────
+    // Proves the V75 time_usage unique-drop: pre-V75 the global
+    // time_usage_device_mac_host_date_key = UNIQUE(device_mac, host_type, host_value,
+    // date) rejects hh-B's write for a (mac,host,date) hh-A already recorded (the
+    // source ON CONFLICT is on the COMPOSITE (household_id,…) key, so PG raises a
+    // plain unique violation → 5xx). After V75 both rows persist independently.
+    test("pin 4e — same (MAC,host,date) usage from two routers persists per household (#2125)") {
+      for {
+        _   <- cleanDb
+        two <- TestLayers.seedTwoHouseholds(macA, macB)
+        rr  <- ZIO.service[RouterRepo]
+        tr  <- ZIO.service[TrafficReportRepo]
+        tu  <- ZIO.service[TimeUsageRepo]
+        dr  <- ZIO.service[DeviceRepo]
+        cer <- ZIO.service[ConnectionEventRepo]
+        ar  <- ZIO.service[AlertRepo]
+        hsr <- ZIO.service[HouseholdSettingsRepo]
+        xa  <- ZIO.service[Transactor[Task]]
+        // The SAME MAC in both households.
+        _   <- dr.upsert(macM, "sharedA", Some(two.profileA), "192.168.1.20", two.hhA)
+        _   <-
+          sql"INSERT INTO devices(mac,name,profile_id,household_id) VALUES ($macM,'sharedB',${two.profileB},${two.hhB})".update.run
+            .transact(xa)
+        auth   = RouterAuthLive(rr)
+        routes = RouterIngestRoutes.routes(auth, rr, tr, tu, dr, cer, ar, hsr)
+        rec    = UsageRecord(
+          macM,
+          Some(IpAddress.unsafe("192.168.1.20")),
+          HostId.Fqdn(Hostname.unsafe("youtube.com")),
+          240L,
+          1000L,
+          500L,
+        )
+        // Identical (mac, host, date) posted by each household's OWN router.
+        mkReq  = (rid: RouterId, token: String) =>
+          Request
+            .post(
+              URL.decode("/api/router/usage").toOption.get,
+              Body.fromString(
+                UsageReport(rid, "2026-05-07T14:00:00Z", "2026-05-07T14:05:00Z", List(rec)).toJson,
+              ),
+            )
+            .addHeader(Header.ContentType(MediaType.application.json))
+            .addHeader(Header.Authorization.Bearer(token))
+        respA <- routes.runZIO(mkReq(two.routerIdA, two.tokenA))
+        respB <- routes.runZIO(mkReq(two.routerIdB, two.tokenB))
+        aUse  <-
+          sql"SELECT COUNT(*) FROM time_usage WHERE household_id=${two.hhA} AND device_mac=$macM"
+            .query[Long]
+            .unique
+            .transact(xa)
+        bUse  <-
+          sql"SELECT COUNT(*) FROM time_usage WHERE household_id=${two.hhB} AND device_mac=$macM"
+            .query[Long]
+            .unique
+            .transact(xa)
+      } yield assertTrue(respA.status == Status.Ok, respB.status == Status.Ok) &&
+        assertTrue(aUse == 1L, bUse == 1L)
+    },
+    // ── Pin 4f: findByMac must not throw for a MAC shared across households ─────
+    // #2312: the global `DeviceRepo.findByMac(mac)` (WHERE d.mac=$mac) terminates in
+    // Doobie `.option`, which THROWS ("more than one row") once the same MAC exists in
+    // two households — crashing the block page (BlockedRoutes.buildBlockedInfo) and the
+    // public access-request intake (AlertRoutes), both of which call it. This pin drives
+    // the 1-arg call that both prod paths use: RED against the global lookup (throws on
+    // the 2-row match), green once it is household-scoped and returns the caller's-
+    // default-household row.
+    test("pin 4f — findByMac does not throw for a MAC shared across households (#2312)") {
+      for {
+        _     <- cleanDb
+        two   <- TestLayers.seedTwoHouseholds(macA, macB)
+        dr    <- ZIO.service[DeviceRepo]
+        xa    <- ZIO.service[Transactor[Task]]
+        // The SAME MAC in both households.
+        _     <- dr.upsert(macM, "sharedA", Some(two.profileA), "192.168.1.20", two.hhA)
+        _     <-
+          sql"INSERT INTO devices(mac,name,profile_id,household_id) VALUES ($macM,'sharedB',${two.profileB},${two.hhB})".update.run
+            .transact(xa)
+        // The block-page / access-request call shape: no household argument → default
+        // household (hhA is HouseholdId.Default in the fixture). Must return exactly the
+        // hhA row and NOT throw on the 2-row match.
+        found <- dr.findByMac(macM)
+      } yield assertTrue(found.exists(_.mac == macM)) &&
+        assertTrue(found.exists(_.name == "sharedA"))
     },
     // ── Pin 6: router-cap entitlement is scoped per household (#2134) ───────────
     test("pin 6 — hh-B's router count never affects hh-A's router-cap check") {

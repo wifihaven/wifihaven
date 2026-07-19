@@ -796,7 +796,9 @@ object DeviceRoutes {
               .mapError(ApiError.Db(_))
               .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Device not found")))
             _ <- requireProfileAccess(claims, existing.profileId, userProfileRepo, profileRepo)
-            _ <- deviceRepo.delete(normalized).mapError(ApiError.Db(_))
+            // #2125: household-scoped delete — the same MAC can exist in another household (V74),
+            // so pass `claims.hh` to remove ONLY this household's row, never the other's.
+            _ <- deviceRepo.delete(normalized, claims.hh).mapError(ApiError.Db(_))
             // #481: same rationale as PUT — make the next CI failure diagnostic.
             _ <- LogContext.annotate(LogContext.Mac, normalized.value)(
               ZIO.logInfo(s"device deleted: mac=${normalized.value}"),

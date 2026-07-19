@@ -500,7 +500,17 @@ trait DeviceRepo {
    * strictly beats the prior whole-table scan even without a dedicated index.
    */
   def listForProfile(profileId: ProfileId): Task[List[Device]]
-  def findByMac(mac: MacAddress): Task[Option[Device]]
+
+  /**
+   * #2312: household-scoped. The old global `findByMac` (WHERE d.mac=$mac + `.option`) THREW ("more
+   * than one row") once the same MAC existed in two households (V74/V75), crashing the block page
+   * ([[BlockedRoutes]]) and the public access-request intake ([[AlertRoutes]]). It now delegates to
+   * [[findByMacInHousehold]] — one query, one source of truth; V65's uq_devices_household_mac
+   * guarantees ≤1 row per household so `.option` is safe. Defaults to `HouseholdId.Default` for the
+   * single-household test call sites; the unauthenticated block-page callers pass
+   * `HouseholdId.Default` until per-request household derivation lands (#2109).
+   */
+  def findByMac(mac: MacAddress, household: HouseholdId = HouseholdId.Default): Task[Option[Device]]
 
   /**
    * #2108 (multi-tenant sub-issue E): household-scoped [[findByMac]] — the device row for
@@ -526,7 +536,19 @@ trait DeviceRepo {
       ip: String,
       household: HouseholdId = HouseholdId.Default,
   ): Task[DeviceId]
-  def updateLastSeen(mac: MacAddress, ip: String): Task[Unit]
+
+  /**
+   * #2125: household-scoped. Now that the same MAC can exist in two households (V74 dropped the
+   * global `devices_mac_key`), the UPDATE is AND-scoped to `household` so it can only touch its own
+   * household's row. Defaults to `HouseholdId.Default` for the single-household test call sites.
+   * (Production ingest uses `touchLastSeen`/`touchLastSeenBatch`, which are already
+   * household-scoped.)
+   */
+  def updateLastSeen(
+      mac: MacAddress,
+      ip: String,
+      household: HouseholdId = HouseholdId.Default,
+  ): Task[Unit]
 
   /**
    * Update last_seen_ip/at only if the device row exists. Used by router ingest where we don't want
@@ -573,8 +595,16 @@ trait DeviceRepo {
       newName: String,
       household: HouseholdId = HouseholdId.Default,
   ): Task[Int]
-  def updateProfile(mac: MacAddress, pid: ProfileId): Task[Unit]
-  def delete(mac: MacAddress): Task[Unit]
+
+  /**
+   * #2125 (multi-tenant contract half of #2108): household-scoped delete. Now that the same MAC can
+   * exist in two households (V74 dropped the global `devices_mac_key`), a global `WHERE mac=$mac`
+   * delete would remove BOTH households' rows — a cross-tenant leak. The user-facing DELETE route
+   * passes the caller's `claims.hh` (it already resolves the row via `findByMacInHousehold` first),
+   * so a writer can only delete its own household's device. Index-backed by V65's
+   * uq_devices_household_mac.
+   */
+  def delete(mac: MacAddress, household: HouseholdId = HouseholdId.Default): Task[Unit]
 }
 
 /**
@@ -1758,24 +1788,11 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
         .to[List]
         .transact(xa),
     )
-  def findByMac(mac: MacAddress)                                    =
-    DbMetrics.timed("device.findByMac")(
-      sql"SELECT d.id,d.mac,d.name,d.profile_id,p.name,d.last_seen_ip,d.last_seen_at::TEXT FROM devices d LEFT JOIN profiles p ON p.id=d.profile_id WHERE d.mac=$mac"
-        .query[
-          (
-              DeviceId,
-              MacAddress,
-              String,
-              Option[ProfileId],
-              Option[String],
-              Option[IpAddress],
-              Option[String],
-          ),
-        ]
-        .map(r => Device(r._1, r._2, r._3, r._4, r._5, r._6, r._7))
-        .option
-        .transact(xa),
-    )
+  def findByMac(mac: MacAddress, household: HouseholdId = HouseholdId.Default) =
+    // #2312: delegate to the household-scoped primitive. The old global `WHERE d.mac=$mac` + `.option`
+    // threw on the 2-row match once the same MAC lived in two households; scoping guarantees ≤1 row
+    // (uq_devices_household_mac). One query, one source of truth — no duplicated projection.
+    findByMacInHousehold(mac, household)
   // #2108: same projection as findByMac, AND-scoped to one household. The user-facing device routes
   // resolve through this so an hh-A admin gets a clean 404 for an hh-B MAC. Index-backed by V65's
   // uq_devices_household_mac leading column.
@@ -1836,8 +1853,9 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
         .query[DeviceId]
         .unique).transact(xa)
   }
-  def updateLastSeen(mac: MacAddress, ip: String)                   =
-    sql"UPDATE devices SET last_seen_ip=$ip,last_seen_at=NOW() WHERE mac=$mac".update.run
+  def updateLastSeen(mac: MacAddress, ip: String, household: HouseholdId = HouseholdId.Default) =
+    // #2125: AND-scoped to `household` so it can only touch its own household's row.
+    sql"UPDATE devices SET last_seen_ip=$ip,last_seen_at=NOW() WHERE household_id=$household AND mac=$mac".update.run
       .transact(xa)
       .unit
   def touchLastSeen(
@@ -1900,9 +1918,10 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
         .transact(xa),
     )
   }
-  def updateProfile(mac: MacAddress, pid: ProfileId)                =
-    sql"UPDATE devices SET profile_id=$pid WHERE mac=$mac".update.run.transact(xa).unit
-  def delete(mac: MacAddress) = sql"DELETE FROM devices WHERE mac=$mac".update.run.transact(xa).unit
+  def delete(mac: MacAddress, household: HouseholdId = HouseholdId.Default) =
+    // #2125: household-scoped so deleting (hhA, mac) never removes another household's (hhB, mac)
+    // row. The user-facing DELETE route passes `claims.hh` after a household-scoped lookup.
+    sql"DELETE FROM devices WHERE household_id=$household AND mac=$mac".update.run.transact(xa).unit
 }
 
 class AlertRepoLive(xa: Transactor[Task]) extends AlertRepo {
