@@ -17,7 +17,8 @@ secrets** (no Plain key, no GitHub token, no Anthropic key). Each kickoff also n
 (flipped via render.yaml PR at go-live, **after** the secrets below are set: config precedes code).
 With a flag `true` and any required key missing, the API **refuses to boot**, listing every gap.
 With the flags `false` (the default), the off state is logged at boot and visible on
-`/api/health` (`features.supportResponder`); the webhook no-ops and the agent endpoints 404.
+`/api/debug/config` (the `supportResponder` feature state; loopback-only, `WIFIHAVEN_DEBUG`-gated);
+the webhook no-ops and the agent endpoints 404.
 
 ## Provisioning
 
@@ -100,9 +101,10 @@ token and a `{"text": "<kickoff>"}` body — so this stays a per-message PUSH (n
    `claude-code-cloud`, the routine id + token become REQUIRED and the API refuses to boot if either
    is unset (#2265/#2266); the Managed-Agents keys are NOT required on this path.
 
-`GET /api/health` (`features.supportResponder`) and `/api/debug/config` name the active dispatcher
-so the billed path is observable. Routine CRUD is web-UI-only today; only `/fire` is API-driven, so
-step 1's prompt and step 3's network policy are manual per environment.
+`GET /api/debug/config` (`supportResponder` feature state — loopback-only, `WIFIHAVEN_DEBUG`-gated)
+names the active dispatcher in its `detail`, so the billed path is observable; the same line is
+emitted to the startup log. Routine CRUD is web-UI-only today; only `/fire` is API-driven, so step
+1's prompt and step 3's network policy are manual per environment.
 
 ## Cost guardrails
 
