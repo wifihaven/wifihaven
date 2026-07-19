@@ -1,0 +1,62 @@
+-- V75__drop_redundant_global_uniques.sql
+-- Multi-tenant EPIC (#622) / design docs/design/multi-tenant-isolation.md —
+-- the CONTRACT half of #2125 (follow-up to sub-issue E #2108, epic #2085).
+--
+-- V65 (#2104) was purely ADDITIVE: it kept the pre-multi-tenant GLOBAL uniques
+-- alongside the new per-household composite constraints. #2108 then switched
+-- every source `ON CONFLICT` to the composite `(household_id, …)` keys (the
+-- migrate-source step of expand/contract), so the old global uniques below are
+-- now redundant — AND one of them is a LIVE cross-household BUG. The parallel
+-- drops already shipped: `devices_mac_key` in V74 (#2277), `users_username_key`
+-- in V68 (#2147). This migration finishes the set.
+--
+-- ── 1. time_usage_device_mac_host_date_key — redundant AND a live bug ─────────
+-- Was `UNIQUE(device_mac, host_type, host_value, date)` (V13__hostid_tagged_union
+-- .sql:31-33), with NO household_id. It is now subsumed by
+-- `uq_time_usage_household_mac_host_date = UNIQUE(household_id, device_mac,
+-- host_type, host_value, date)` (V65__households.sql:84-85).
+--
+-- Its continued presence is a LIVE multi-tenant BUG, not just dead weight:
+-- household B posting screen-time usage for a `(mac, host_type, host_value,
+-- date)` tuple that household A already recorded VIOLATES this global unique.
+-- The source upsert uses `ON CONFLICT(household_id, device_mac, host_type,
+-- host_value, date)` (Repos.scala:2187) — the COMPOSITE key — so PG does NOT
+-- treat B's write as a conflict-update and instead raises a plain unique
+-- violation on `time_usage_device_mac_host_date_key`. With the same randomized
+-- MAC legitimately existing in two households (post-V74), this is reachable in
+-- normal operation. Dropping the global unique lets the composite ON CONFLICT do
+-- its job and makes same-MAC cross-household usage independent per household.
+--
+-- ── 2. household_settings_id_check — redundant single-row guard ───────────────
+-- Was `CHECK (id = 1)` on `household_settings.id` (V16__time_handling.sql:22),
+-- pinning the table to a single row back when settings were install-global. V65
+-- added `household_id` + `uq_household_settings_household = UNIQUE(household_id)`
+-- (V65__households.sql:88-89), which is now the per-household uniqueness rule.
+-- The `id = 1` CHECK blocks any household but #1 from ever owning a settings
+-- row, so it must go for genuine multi-tenancy; per-household uniqueness is
+-- already enforced by the composite unique above.
+--
+-- ── SCHEMA-ONLY PR (docs/process/migrations.md#migrations-back-compat) ────────
+-- Ships alone (SQL + docs only — no source/tests/CI/fixtures). #2108's source is
+-- already deployed and uses the composite ON CONFLICT keys, so image-(N-1) no
+-- longer relies on either global constraint; the unconditional (#2098) feature
+-- suite run against this schema is the back-compat gate. The source scoping +
+-- affirmative same-MAC coverage follow in a stacked PR (source half of #2125).
+--
+-- ── Prod data-volume (docs/process/migrations.md#migrations-prod-data-volume) ─
+-- Dropping a UNIQUE constraint drops its backing unique index (catalog-metadata
+-- update + index unlink) — there is NO table rewrite and NO table scan, so this
+-- is fast even on the unbounded-growth `time_usage` table (~243K rows on
+-- 2026-07-06, growing). It takes a brief ACCESS EXCLUSIVE lock on the table, not
+-- a scan, so it stays far inside the 15-minute Render port-scan window. Dropping
+-- a CHECK constraint is likewise a metadata-only operation. No V-split needed.
+--
+-- Refs #2125, #2108, #2085, #622.
+
+-- 1. Drop the global time_usage unique; uq_time_usage_household_mac_host_date
+--    (V65) is now the sole key and matches the source ON CONFLICT.
+ALTER TABLE time_usage DROP CONSTRAINT time_usage_device_mac_host_date_key;
+
+-- 2. Drop the single-row CHECK; uq_household_settings_household (V65) already
+--    enforces one settings row per household.
+ALTER TABLE household_settings DROP CONSTRAINT household_settings_id_check;
