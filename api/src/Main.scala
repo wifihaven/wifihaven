@@ -455,6 +455,8 @@ object Main extends ZIOAppDefault {
       // #2132 (multi-tenant P5-2): the beta request → provisioning → invite-accept pipeline repos.
       householdRepo  <- ZIO.service[HouseholdRepo]
       betaRepo       <- ZIO.service[BetaRequestRepo]
+      // #2308: single-use, short-TTL password-reset tokens (V77) for the forgot-password flow.
+      resetTokenRepo <- ZIO.service[PasswordResetTokenRepo]
       ambientRepoR   <- ZIO.service[wifihaven.api.db.AmbientHostsRepo]
       notifier       <- ZIO.service[Notifier]
       policy         <- ZIO.service[PolicyService]
@@ -475,6 +477,12 @@ object Main extends ZIOAppDefault {
       // #2132: per-source-IP rate limit on the unauthenticated beta-intake route — 5 / hour, a
       // slow cadence (a genuine prospect requests once), on top of the idempotent-email dedup.
       betaReqRateLimiter    <- RateLimiterLive.make(maxAttempts = 5, windowSeconds = 60 * 60)
+      // #2308: per-source-IP rate limits on the two unauthenticated password-reset routes. Requests
+      // are tight (5 / hour) to blunt email-bombing a known address; the reset consume is a touch
+      // looser (10 / 15 min) so a legitimate user can retry a weak password without lockout, while
+      // still bounding token brute-force.
+      forgotPwRateLimiter   <- RateLimiterLive.make(maxAttempts = 5, windowSeconds = 60 * 60)
+      resetPwRateLimiter    <- RateLimiterLive.make(maxAttempts = 10, windowSeconds = 15 * 60)
       // #2132: the beta pipeline service (slug derivation, invite token mint + TTL, provisioning,
       // accept). Clock-injected so the invite TTL is TestClock-driven in specs.
       // #2135: the billing state machine (Checkout/Portal/webhook + the provisioning Customer seam).
@@ -556,6 +564,17 @@ object Main extends ZIOAppDefault {
         cfg.beta,
         billing,
       )
+      // #2308: the forgot/reset-password service — mints single-use short-TTL tokens, emails the
+      // reset link via the #578 Notifier, and on reset bumps token_version to invalidate prior JWTs.
+      // Clock-injected so the token TTL is TestClock-driven in specs.
+      passwordReset  = PasswordResetServiceLive(
+        userRepo,
+        resetTokenRepo,
+        auth,
+        notifier,
+        cfg.email,
+        clock,
+      )
       // #1970 (S3): the SPA-websocket change-source bus (design §5.2.2). The write sites publish
       // change events here; the SpaPush consumer (forked in the run scope) drains it and fans out
       // role-filtered, subscription-gated `now`/`connectionEvents`/`stale` frames.
@@ -606,6 +625,9 @@ object Main extends ZIOAppDefault {
       val systemRoutes: Routes[Any, Response] =
         VersionRoutes.routes(wifihaven.api.BuildInfo.fromEnv) ++
           AuthRoutes.routes(auth, userRepo, upRepo, loginRateLimiter) ++
+          // #2308: forgot-password request (public) + token consume / reset (public). Both rate-
+          // limited + enumeration-safe.
+          PasswordResetRoutes.routes(passwordReset, forgotPwRateLimiter, resetPwRateLimiter) ++
           // #2132: beta request intake (public) + operator approval/reject + invite accept (public).
           BetaRoutes.routes(auth, betaService, betaRepo, userRepo, betaReqRateLimiter) ++
           // #2135: billing status (admin) + Checkout/Portal starts (admin) + signature-verified

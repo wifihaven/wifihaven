@@ -75,6 +75,7 @@ object MultiTenantIsolationSpec
         flipDate: java.time.Instant,
         daysUntilFlip: Int,
     ): UIO[Unit] = ZIO.unit
+    def passwordReset(email: String, resetUrl: String, ttlMinutes: Int): UIO[Unit]      = ZIO.unit
   }
 
   // #2132: build the beta pipeline stack (service + routes) over the real repos.

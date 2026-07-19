@@ -60,6 +60,7 @@ object BetaFlipLifecycleSpec
         flipDate: java.time.Instant,
         daysUntilFlip: Int,
     ): UIO[Unit] = ref.update(_ :+ (householdId, window))
+    def passwordReset(email: String, resetUrl: String, ttlMinutes: Int): UIO[Unit]      = ZIO.unit
   }
 
   private def mkPolicy(clock: Clock, billing: HouseholdBillingRepo) =

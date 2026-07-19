@@ -56,6 +56,20 @@ trait Notifier {
       flipDate: java.time.Instant,
       daysUntilFlip: Int,
   ): UIO[Unit]
+
+  /**
+   * #2308: a household admin requested a password reset — email them the single-use, short-TTL
+   * reset link. `email` is the requester's own `users.email` (the global login identifier, resolved
+   * by the forgot-password service, NOT a per-household notify_email); `resetUrl` is the
+   * `<appBaseUrl>/reset-password?token=…` link (only known at mint time — only the token's hash is
+   * stored); `ttlMinutes` is its lifetime so the body can say how long the link is good for.
+   *
+   * Fail-open like the rest of this trait: [[layer]] sends via [[EmailSender]] (itself
+   * never-fails), [[live]] only logs. A send failure must NOT fail the request — the
+   * forgot-password endpoint always returns the same generic 200 regardless (no enumeration). Every
+   * path meters `password_reset_email_total{outcome}`.
+   */
+  def passwordReset(email: String, resetUrl: String, ttlMinutes: Int): UIO[Unit]
 }
 
 object Notifier {
@@ -79,6 +93,12 @@ object Notifier {
 
   private def logBeta(email: String, slug: String): UIO[Unit] =
     ZIO.logInfo(s"beta invite: sending invite link for household slug=$slug to $email")
+
+  // #2308: the structured line every reset-request logs, regardless of email outcome. Deliberately
+  // records ONLY that a reset link was requested for this address — never the token or the URL (both
+  // carry the single-use secret). The authoritative record that we attempted a send.
+  private def logPasswordReset(email: String): UIO[Unit] =
+    ZIO.logInfo(s"password reset: sending reset link to $email")
 
   // #2137: the structured line every flip notice logs, regardless of email outcome — it carries
   // everything an email needs (household, slug, window, flip date, days remaining) so the operator
@@ -111,6 +131,8 @@ object Notifier {
         daysUntilFlip: Int,
     ): UIO[Unit] =
       logFlipNotice(householdId, slug, window, flipDate, daysUntilFlip)
+    def passwordReset(email: String, resetUrl: String, ttlMinutes: Int): UIO[Unit]           =
+      logPasswordReset(email)
   })
 
   /**
@@ -139,6 +161,18 @@ object Notifier {
         sender
           .send(email, betaInviteSubject, betaInviteBody(slug, inviteUrl, ttlHours))
           .flatMap(o => AppMetrics.betaInviteEmail(EmailOutcome.label(o)))
+
+    // #2308: email the single-use reset link to the requester's own address. Log first (the
+    // authoritative record that we attempted a send — but never the token/URL), then send. Fail-open
+    // by construction: `send` never fails, and every outcome is metered via
+    // `password_reset_email_total{outcome}`. When email is unconfigured the sender yields `Disabled`
+    // → this degrades to exactly the log line and sends nothing (self-hosted email-off posture; the
+    // email-only recovery caveat is documented on the forgot-password service).
+    def passwordReset(email: String, resetUrl: String, ttlMinutes: Int): UIO[Unit] =
+      logPasswordReset(email) *>
+        sender
+          .send(email, passwordResetSubject, passwordResetBody(resetUrl, ttlMinutes))
+          .flatMap(o => AppMetrics.passwordResetEmail(EmailOutcome.label(o)))
 
     // #2137: send the conversion notice to the household's own notify_email (resolved like the alert
     // path). Log first (authoritative record), then attempt the email; every path meters
@@ -249,6 +283,30 @@ object Notifier {
          |  </p>
          |  <p style="color:#71717a;font-size:13px;">This invite link is single-use and expires in $validFor. If the button doesn't work, copy this link into your browser:<br/><span style="word-break:break-all;">${esc(
           inviteUrl,
+        )}</span></p>
+         |</div>""".stripMargin
+    }
+
+    // #2308 — the password-reset email. Subject is fixed; the body carries the single-use reset link
+    // and how long it's valid so the requester knows to act. Mirrors betaInviteBody.
+    private val passwordResetSubject: String = "Reset your WifiHaven password"
+
+    private def passwordResetBody(resetUrl: String, ttlMinutes: Int): String = {
+      // "expires in N minutes" for the sub-hour TTL; "N hours" if ever configured longer.
+      val validFor =
+        if ttlMinutes >= 60 && ttlMinutes % 60 == 0 then {
+          val h = ttlMinutes / 60; s"$h hour${if h == 1 then "" else "s"}"
+        } else s"$ttlMinutes minute${if ttlMinutes == 1 then "" else "s"}"
+      s"""<div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:15px;color:#18181b;line-height:1.5;">
+         |  <p>We received a request to reset your WifiHaven password.</p>
+         |  <p>Click below to choose a new password:</p>
+         |  <p style="margin:24px 0;">
+         |    <a href="${esc(
+          resetUrl,
+        )}" style="background:#4f46e5;color:#ffffff;text-decoration:none;padding:10px 18px;border-radius:8px;display:inline-block;">Reset your password</a>
+         |  </p>
+         |  <p style="color:#71717a;font-size:13px;">This link is single-use and expires in $validFor. If you didn't request a password reset, you can safely ignore this email — your password won't change. If the button doesn't work, copy this link into your browser:<br/><span style="word-break:break-all;">${esc(
+          resetUrl,
         )}</span></p>
          |</div>""".stripMargin
     }

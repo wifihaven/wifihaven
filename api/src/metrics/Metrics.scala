@@ -396,6 +396,15 @@ object MetricGuard {
     // #2190 — beta invite-email send funnel. `outcome` is the bounded transport enum from
     // EmailOutcome.label (sent / failed / skipped_disabled); never a per-recipient label.
     "beta_invite_email_total"              -> Set("outcome"),
+    // #2308 — forgot/reset-password pipeline outcomes. `outcome` is a small fixed enum (see
+    // AppMetrics.passwordReset): request_sent / request_no_account (the enumeration-safe request
+    // path — internal only, never surfaced to the caller) and reset_ok / reset_invalid_token /
+    // reset_expired / reset_weak_password (the consume path). Bounded, never a per-email label.
+    "password_reset_total"                 -> Set("outcome"),
+    // #2308 — the reset-link email send funnel, emitted from Notifier.passwordReset. `outcome` is the
+    // same bounded transport enum as beta_invite_email_total (EmailOutcome.label): sent / failed /
+    // skipped_disabled (email unconfigured). Never a per-recipient label.
+    "password_reset_email_total"           -> Set("outcome"),
     // #808 — partition runway gauge. `partition_weeks_ahead{table}` is the count of consecutive
     // weekly partitions present from the current ISO week for each RANGE-partitioned ingest table
     // (set each run by PartitionMaintenanceJob). `table` is the bounded 2-value enum above. The
@@ -629,6 +638,25 @@ object AppMetrics {
   // "no recipient" / "no household" branch. Never a per-email / per-household label.
   def betaInviteEmail(outcome: String): UIO[Unit] =
     MetricGuard.counter("beta_invite_email_total", Map("outcome" -> outcome))
+
+  // ── #2308: forgot / reset password ───────────────────────────────────────────
+  // `passwordReset` counts every terminal outcome of the two-endpoint flow so the operator can watch
+  // request volume and reset success. `outcome` is a small fixed enum — never a per-email label:
+  //   request_sent        — a registered email; a reset link was minted + emailed (request path)
+  //   request_no_account  — an unregistered email; nothing sent (request path; INTERNAL only — the
+  //                         caller sees the SAME generic 200 either way, no enumeration)
+  //   reset_ok            — a valid token consumed; password set + token_version bumped
+  //   reset_invalid_token — unknown / already-used token (consume path)
+  //   reset_expired       — token past its TTL (consume path)
+  //   reset_weak_password — new password below the #2084 minimum (consume path; token NOT consumed)
+  def passwordReset(outcome: String): UIO[Unit] =
+    MetricGuard.counter("password_reset_total", Map("outcome" -> outcome))
+
+  // #2308 — the reset-link email send funnel, emitted once per registered-email request from
+  // Notifier.passwordReset. `outcome` is the bounded transport enum from EmailOutcome.label:
+  // sent | failed | skipped_disabled (email unconfigured). Never a per-recipient label.
+  def passwordResetEmail(outcome: String): UIO[Unit] =
+    MetricGuard.counter("password_reset_email_total", Map("outcome" -> outcome))
 
   // ── #2135: Stripe billing ────────────────────────────────────────────────────
   // Emitted from BillingRoutes. `recordBillingWebhook` counts each processed webhook by its bounded
