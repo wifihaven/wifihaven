@@ -126,6 +126,22 @@ object SpaWsS3Spec
       .map(_.count)
 
   /**
+   * Drain the `spa_ws_push_total{op,result=ok}` counter until it reaches `target`, then return it.
+   * The increment runs on the server fan-out fiber AFTER `channel.send` resolves, so it can lag the
+   * client's frame receipt; polling until it lands (rather than reading once) removes that race
+   * (#2324). Gently spaced (10ms) so the poll never starves the fan-out fiber on a constrained
+   * runner, and caller-wrapped in `Live.live` so the delay/timeout run on the live clock. Fails
+   * loudly if the counter never advances within the window rather than asserting on a stale read.
+   */
+  private def awaitPushCount(op: String, target: Double): Task[Double] = {
+    def poll: UIO[Double] =
+      pushCount(op, "ok").flatMap(v => if (v >= target) ZIO.succeed(v) else poll.delay(10.millis))
+    poll.timeoutFail(
+      new RuntimeException(s"spa_ws_push_total{op=$op,result=ok} never reached $target"),
+    )(20.seconds)
+  }
+
+  /**
    * Connect a ws client, send `hello` + the given subscribe frames, wait for the subscribe `ack`
    * (so the subscription is registered server-side before the trigger fires), run `trigger` (a real
    * write site), then resolve to the first frame matching `until` within `wait` (None on timeout).
@@ -164,12 +180,23 @@ object SpaWsS3Spec
           _   <- app
             .connect(s"ws://localhost:$port/api/ws", Headers("Cookie", s"wh_ws=$token"))
             .forkScoped
+          // Await the subscribe `ack` BEFORE the trigger: the server registers the subscription
+          // (`registry.subscribe`) strictly before it sends the `ack` (SpaWsRoutes.handleSubscribe),
+          // so an acked subscription is guaranteed visible to the SpaPush fan-out by the time we
+          // trigger — no reliance on a wall-clock catch-up. The timeout runs on the LIVE clock
+          // (`Live.live`, mirroring `MultiTenantIsolationSpec.wsIsolation`) so the wait can never
+          // hang on a non-advancing injected `TestClock`.
           _   <- ZIO
             .when(awaitAck)(
-              ackP.await.timeoutFail(new RuntimeException("no subscribe ack"))(20.seconds),
+              Live.live(
+                ackP.await.timeoutFail(new RuntimeException("no subscribe ack"))(20.seconds),
+              ),
             )
           _   <- trigger
-          m   <- matched.await.timeout(wait)
+          // Frame receipt is Promise-gated (drain until the expected push arrives), never a sleep;
+          // the timeout is on the LIVE clock so a topic that legitimately never pushes (the negative
+          // pins) bounds out instead of hanging.
+          m   <- Live.live(matched.await.timeout(wait))
           all <- frames.get
         } yield (m, all)
       }
@@ -254,7 +281,14 @@ object SpaWsS3Spec
             until = _.contains("\"op\":\"connectionEvents\""),
             wait = 20.seconds,
           )
-          after        <- pushCount("connectionEvents", "ok")
+          // `spa_ws_push_total{op=connectionEvents,result=ok}` is incremented on the SERVER fan-out
+          // fiber STRICTLY AFTER `channel.send` resolves (SpaWsRegistry.sendPush), whereas `matched`
+          // above resolves the instant the CLIENT receives that same frame — so a single read of the
+          // counter here races the server-side increment (the intermittent merge-queue failure,
+          // #2324). Drain until the counter reflects the push (bounded on the LIVE clock, gently
+          // spaced so the poll never starves the fan-out fiber), rather than reading once. The
+          // assertion is unchanged — we still prove the counter advanced by ≥1.
+          after        <- Live.live(awaitPushCount("connectionEvents", before + 1.0))
         } yield assertTrue(matched.exists(_.contains("youtube.com"))) &&
           assertTrue(matched.exists(_.contains("\"blocked\":true"))) &&
           assertTrue(after - before >= 1.0)
