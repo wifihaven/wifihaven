@@ -19,10 +19,12 @@ import javax.crypto.spec.SecretKeySpec
  * bytes and break the MAC.
  *
  * The parsed [[PlainNewMessageEvent]] carries only the functional fields the responder needs: the
- * thread id (to reply into), the customer external id, the `tenantIdentifier` (the household id
- * stamped on the customer by the #2199 identified-widget upsert — the UI-origin key the responder
- * gates on), the inbound message text (UNTRUSTED DATA), and a consent flag. Inbound text is quoted
- * to Claude as content, never as instructions (#2200 injection model).
+ * thread id (to reply into), the customer external id, the sender email (the inbound From — the
+ * #2307 email-intake gate key), whether this is a NEW thread vs a continuation, the
+ * `tenantIdentifier` (the household id stamped on the customer by the #2199 identified-widget
+ * upsert — the UI-origin key the responder gates on), the inbound message text (UNTRUSTED DATA),
+ * and a consent flag. Inbound text is quoted to Claude as content, never as instructions (#2200
+ * injection model).
  */
 object PlainWebhook {
 
@@ -71,18 +73,18 @@ object PlainWebhook {
   private def parseEvent(payload: String): Option[PlainNewMessageEvent] =
     Json.decoder.decodeJson(payload).toOption.flatMap {
       case root: Json.Obj =>
-        val eventType = str(root, "type").getOrElse("")
-        val inner     = objField(root, "payload").getOrElse(root)
-        val thread    = objField(inner, "thread")
+        val eventType   = str(root, "type").getOrElse("")
+        val inner       = objField(root, "payload").getOrElse(root)
+        val thread      = objField(inner, "thread")
+        val customerObj = thread.flatMap(t => objField(t, "customer"))
         // tenantIdentifier is `{externalId: "..."}` on Plain; accept a bare string too.
-        val tenant    = thread
+        val tenant      = thread
           .flatMap(t => objField(t, "tenantIdentifier"))
           .flatMap(o => str(o, "externalId"))
           .orElse(thread.flatMap(t => str(t, "tenantIdentifier")))
-        val threadId  =
+        val threadId    =
           thread.flatMap(t => str(t, "id")).orElse(str(inner, "threadId")).getOrElse("")
-        val customer  = thread
-          .flatMap(t => objField(t, "customer"))
+        val customer    = customerObj
           .flatMap(c => str(c, "externalId"))
           .orElse(thread.flatMap(t => str(t, "customerId")))
           .getOrElse("")
@@ -91,6 +93,8 @@ object PlainWebhook {
             eventType = eventType,
             threadId = threadId,
             customerExternalId = customer,
+            customerEmail = customerEmail(customerObj, inner),
+            isNewThread = isNewThread(eventType),
             tenantIdentifier = tenant,
             messageText = messageText(inner),
             consent = consentFlag(thread, inner),
@@ -98,6 +102,33 @@ object PlainWebhook {
         )
       case _              => None
     }
+
+  // The sender's From address — the #2307 email-intake gate key. Plain's webhook payloads model a
+  // customer email as an `EmailAddress` (`customer.email.email`, per team-plain/typescript-sdk
+  // graphql types — the same `{email,isVerified}` shape PlainClient writes on upsert); we also
+  // accept a bare `customer.email` string and a top-level `customer` carrier defensively, since the
+  // exact envelope varies by event type. The nested `thread.customer.email.email` shape is pinned
+  // end-to-end by SupportResponderSpec's `emailPayload`. Absent ⇒ None (no address to gate on, so a
+  // new email with no From simply falls through to skipped_unauthenticated).
+  private def customerEmail(customerObj: Option[Json.Obj], inner: Json.Obj): Option[String] =
+    customerObj
+      .flatMap(c => objField(c, "email"))
+      .flatMap(e => str(e, "email"))
+      .orElse(customerObj.flatMap(c => str(c, "email")))
+      .orElse(objField(inner, "customer").flatMap(c => str(c, "email")))
+      .map(_.trim)
+      .filter(_.nonEmpty)
+
+  // Whether this delivery opens a NEW thread — the one #2307 gate-vs-continuation signal. Plain's
+  // webhook event catalog (https://www.plain.com/docs/api-reference/webhooks/event-types) fires
+  // `thread.thread_created` once, when a thread is first opened (a first inbound email creates the
+  // thread); subsequent messages arrive as distinct reply/timeline event types. Only a genuinely new
+  // thread runs the email-intake gate — so a mislabel is fail-safe: a NEW admin email misclassified
+  // as a continuation is silently skipped (not mis-dispatched), never the reverse. The gate on the
+  // `thread.thread_created` type is pinned by SupportResponderSpec (`emailPayload` uses it; the
+  // continuation test uses `thread.chat_sent`).
+  private def isNewThread(eventType: String): Boolean =
+    eventType == "thread.thread_created"
 
   // The inbound message text — the UNTRUSTED customer content. Try the common carriers in order:
   // a `chat` component, a `timelineEntry` component list, or a bare `text`/`message` field.
@@ -140,13 +171,18 @@ object PlainWebhook {
 /**
  * The functional slice of a Plain new-message webhook the responder acts on. `tenantIdentifier` is
  * the household id stamped on the Plain customer by the #2199 identified widget — its presence (and
- * resolution to a real household) is the UI-origin gate. `messageText` is UNTRUSTED customer
- * content (#2200 injection model): quoted to Claude as data, never as instructions.
+ * resolution to a real household) is the UI-origin gate. `customerEmail` is the inbound From — the
+ * #2307 fallback gate: a NEW thread (`isNewThread`) with no resolvable tenant is admitted to the
+ * responder iff this address matches a registered household admin, else it gets a static reject.
+ * `messageText` is UNTRUSTED customer content (#2200 injection model): quoted to Claude as data,
+ * never as instructions.
  */
 final case class PlainNewMessageEvent(
     eventType: String,
     threadId: String,
     customerExternalId: String,
+    customerEmail: Option[String],
+    isNewThread: Boolean,
     tenantIdentifier: Option[String],
     messageText: String,
     consent: Boolean,

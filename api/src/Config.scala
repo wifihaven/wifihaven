@@ -429,9 +429,11 @@ case class FlipConfig(
 //   - `apiBase`             Plain GraphQL endpoint (region-specific; overridable for test).
 //
 // #2200 (support intake C) adds the cloud-agent responder surface (operator decision 2026-07-16:
-// the responder is a CLOUD Claude agent — an Anthropic Managed Agents session dispatched per
-// UI-originated inbound message — not an in-process Claude call). Same dark-by-default rule: any
-// missing secret leaves that half off and existing behavior unchanged.
+// the responder is a CLOUD Claude agent — an Anthropic Managed Agents session — not an in-process
+// Claude call). It is dispatched per AUTHENTICATED-ORIGIN inbound message: a UI-originated thread
+// (#2199 tenant resolves to a household) OR, since #2307, a NEW inbound email whose From matches a
+// registered household admin (an unregistered new email gets a fixed static reject, no AI). Same
+// dark-by-default rule: any missing secret leaves that half off and existing behavior unchanged.
 //   - `anthropicApiKey`       Anthropic API key used ONLY to create agent sessions. SECRET.
 //   - `claudeAgentId`         the pre-provisioned Managed Agent id (`agent_…`) — created once from
 //                             deploy/support-agent/agent.yaml via `ant beta:agents create`, never

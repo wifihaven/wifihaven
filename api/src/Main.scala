@@ -407,8 +407,9 @@ object Main extends ZIOAppDefault {
       wifihaven.api.support.PlainClient.layer >+>
       wifihaven.api.support.SupportService.layer >+>
       // #2200 (support intake C): the Claude responder's external transports — the cloud-agent
-      // dispatcher (Managed Agents session per UI-originated inbound message) and the GitHub
-      // issue-filing client (fine-grained Issues:write-only bot token). #2265: each runs iff its
+      // dispatcher (Managed Agents session per authenticated-origin inbound message — UI-originated
+      // or a #2307 registered-admin email) and the GitHub issue-filing client (fine-grained
+      // Issues:write-only bot token). #2265: each runs iff its
       // EXPLICIT enable flag is true (validated loudly at boot); off is logged + health-visible.
       wifihaven.api.support.CloudAgentDispatcher.layer >+>
       wifihaven.api.support.GithubIssueClient.layer >+>
@@ -499,9 +500,14 @@ object Main extends ZIOAppDefault {
       // global cap bounds even sustained abuse at pocket change; normal beta volume never hits it.
       dispatchThreadLimiter <- RateLimiterLive.make(maxAttempts = 4, windowSeconds = 60 * 60)
       dispatchGlobalLimiter <- RateLimiterLive.make(maxAttempts = 50, windowSeconds = 24 * 60 * 60)
+      // #2307: the static-reject cap for unregistered cold email. Cheap (a fixed string, no AI), so
+      // the ceiling is generous, but bounded globally so a spammer forging many cold-email threads
+      // can't turn us into a reply-amplification (backscatter) source.
+      rejectLimiter         <- RateLimiterLive.make(maxAttempts = 100, windowSeconds = 60 * 60)
       supportResponder = wifihaven.api.support.SupportResponder(
         cfg.support,
         householdRepo,
+        userRepo,
         billingRepo,
         deviceRepo,
         profileRepo,
@@ -513,6 +519,7 @@ object Main extends ZIOAppDefault {
         issueGlobalLimiter,
         dispatchThreadLimiter,
         dispatchGlobalLimiter,
+        rejectLimiter,
       )
       // #2203: the PRESS responder — the public inbound webhook (from the Cloudflare Email Worker)
       // → rate-cap → dispatch pipeline, plus the press agent's reply-target-bound EMAIL callback.
@@ -614,8 +621,9 @@ object Main extends ZIOAppDefault {
           // #2199: admin-only server-signed Plain widget identity. Dark (returns {configured:false})
           // until the operator sets the Plain widget app id + identity secret.
           SupportRoutes.routes(auth, support) ++
-          // #2200: the Plain new-message webhook (signature-verified, UI-origin-gated cloud-agent
-          // dispatch) + the agent's token-authenticated callback endpoints. Off unless
+          // #2200: the Plain new-message webhook (signature-verified, authenticated-origin-gated
+          // cloud-agent dispatch — UI-originated or a #2307 registered-admin email) + the agent's
+          // token-authenticated callback endpoints. Off unless
           // support.responderEnabled is set explicitly (#2265): webhook no-ops, agent endpoints 404.
           SupportAgentRoutes.routes(supportResponder) ++
           // #2203: the PRESS/PR inbox — a public, unauthenticated inbound webhook from the Cloudflare
