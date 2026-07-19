@@ -649,14 +649,15 @@ def main() -> None:
         check(ns_row[0].get("profileId") is None, "A's discovered device is unmanaged (profileId null)", ctx=ns_row[0])
     check(never_seen_mac.lower() not in macs_of(b_devices_post), "never-seen MAC did NOT appear in B", ctx=never_seen_mac)
 
-    # KNOWN GAP (#2277): A discovering a MAC that ALSO exists in household B
-    # currently 503s — V65 kept the global `devices_mac_key` UNIQUE(mac) (the
-    # `alerts.mac` FK depends on it), so A cannot create its own (hhA, B-MAC)
-    # row yet. This is a FUNCTIONAL gap, not a leak: the poison-isolation pins
-    # above prove B stays byte-identical (the failure mode is a loud 503, never a
-    # silent cross-tenant write). We assert the loud-refusal shape so a future
-    # silent-success regression is caught, and flip this to a hard "A owns its
-    # own (hhA, mac) row" positive pin when #2277 relaxes the constraint.
+    # RESOLVED (#2277): A discovering a MAC that ALSO exists in household B now
+    # creates A's OWN (hhA, mac) unmanaged device row. V74
+    # (`V74__drop_devices_mac_key_rework_alerts_fk.sql`) dropped the global
+    # `devices_mac_key` UNIQUE(mac) and the `alerts.mac` FK that pinned it, so the
+    # per-household `uq_devices_household_mac` UNIQUE(household_id, mac) (from V65)
+    # is the tenancy key — each household owns an INDEPENDENT row for the same MAC.
+    # This is the positive-pin flip promised in the old known-gap comment: same-MAC
+    # discovery must SUCCEED for A, create A's own unmanaged row, and STILL leave B
+    # byte-identical (A owning its own same-MAC row is not a cross-write into B).
     same_mac_disc = POST(
         "/api/router/events",
         {"routerId": a_router_id, "events": [
@@ -666,16 +667,26 @@ def main() -> None:
         token=a_router_token,
     )
     check(
-        same_mac_disc.status in (500, 503),
-        "same-MAC discovery is loudly refused today, not a silent cross-write (#2277)",
+        same_mac_disc.status in (200, 204),
+        "same-MAC discovery succeeds — A owns its own (hhA, mac) row post-#2277",
         ctx=(same_mac_disc.status, same_mac_disc.body),
     )
-    # Whatever the outcome, B must STILL be byte-identical (no poison on the
-    # collision path either).
+    # A now owns b_mac as its OWN unmanaged device (discovery), independent of B.
+    a_devices_after_collision = GET("/api/devices", token=a_token).body
+    check(
+        b_mac.lower() in macs_of(a_devices_after_collision),
+        "A owns its own (hhA, b_mac) unmanaged device row after same-MAC discovery (#2277)",
+        ctx=macs_of(a_devices_after_collision),
+    )
+    a_bmac_row = [d for d in a_devices_after_collision if d.get("mac", "").lower() == b_mac.lower()]
+    if a_bmac_row:
+        check(a_bmac_row[0].get("profileId") is None, "A's same-MAC discovered device is unmanaged (profileId null)", ctx=a_bmac_row[0])
+    # B must STILL be byte-identical — A owning its own same-MAC row is not a
+    # cross-write into B's rows.
     b_devices_after_collision = GET("/api/devices", token=b_token).body
     check(
         canonical(b_devices_after_collision) == canonical(b_devices_pre),
-        "B's device list byte-identical after A's same-MAC collision attempt (#2277)",
+        "B's device list byte-identical after A's same-MAC discovery (#2277)",
     )
 
     # ── Scenario 6: router cap ─────────────────────────────────────────────────
