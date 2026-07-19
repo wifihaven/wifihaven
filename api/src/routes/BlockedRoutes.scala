@@ -88,7 +88,10 @@ object BlockedRoutes {
       // HouseholdId.Default. Resolving the household for the block page in a multi-tenant deploy is
       // the edge / custom-domain concern (#2109), not this read-scoping change.
       decision    <- policy.decide(HouseholdId.Default, mac.value, host.value)
-      device      <- deviceRepo.findByMac(mac)
+      // #2312: household-scoped lookup — the same MAC can exist in two households (V74/V75), and the
+      // old global findByMac threw on the 2-row match. Same HouseholdId.Default as `decide` above
+      // until per-request block-page household derivation lands (#2109).
+      device      <- deviceRepo.findByMac(mac, HouseholdId.Default)
       profileOpt  <- device.flatMap(_.profileId) match {
         case Some(pid) => profileRepo.findById(pid)
         case None      => ZIO.succeed(None)

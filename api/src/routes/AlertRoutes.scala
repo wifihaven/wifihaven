@@ -83,8 +83,13 @@ object AlertRoutes {
               case Some(a) => ZIO.succeed(Response.json(a.toJson))
               case None    =>
                 for {
+                  // #2312: household-scoped lookup — the same MAC can exist in two households
+                  // (V74/V75), and the old global findByMac threw on the 2-row match. This is the
+                  // unauthenticated block-page access-request path (no household in scope), so it
+                  // resolves against HouseholdId.Default until block-page household derivation lands
+                  // (#2109).
                   device <- deviceRepo
-                    .findByMac(cr.mac)
+                    .findByMac(cr.mac, HouseholdId.Default)
                     .mapError(ApiError.Db(_))
                   pid = device.flatMap(_.profileId)
                   id    <- alertRepo
