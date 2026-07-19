@@ -23,6 +23,24 @@ object SqlFragments {
   def householdEq(hh: HouseholdId, column: String = "household_id"): Fragment =
     Fragment.const(column) ++ fr"= $hh"
 
+  // #2313 (multi-tenant, epic #622): the per-household tenancy predicate for `router_id`-keyed
+  // growth tables (`traffic_reports`). Those tables carry no `household_id` of their own, so the
+  // scope is TRANSITIVE via `routers.household_id` — mirroring the `connection_events` scope
+  // (`ConnectionEventRepoLive.hhRouterScope`, #2282). The `traffic_reports` presence/usage reads
+  // that feed `TimeStatusService` (the daily-limit / screen-time enforcement read path) AND-compose
+  // this so a profile's used-minutes can never be inflated by ANOTHER household's traffic on the
+  // SAME MAC (representable once V74 dropped the global `devices_mac_key`). Emits the leading `AND`.
+  //
+  // `column` qualifies `router_id` when the query aliases `traffic_reports` (e.g. `tr.router_id`);
+  // it is spliced verbatim via `Fragment.const` — a trusted compile-time literal, NEVER user input
+  // — exactly like [[householdEq]]'s `column`. Only `hh` is parameterized. Index-backed by
+  // idx_routers_household (V65) on the subquery and idx_traffic_reports_router (V41) on the outer
+  // filter; for a single-household install the subquery returns that install's routers and the
+  // predicate is a no-op that drops none of its own rows.
+  def householdRouterScope(hh: HouseholdId, column: String = "router_id"): Fragment =
+    fr"AND" ++ Fragment.const(column) ++ fr"IN (SELECT id FROM routers WHERE" ++
+      householdEq(hh) ++ fr")"
+
   // Promotes ipv4/ipv6-typed `traffic_reports` rows to their resolved fqdn by
   // looking up the most recent `connection_events` row for the same
   // (mac, dest_ip) that has a resolved_host_value, within the row's own day.

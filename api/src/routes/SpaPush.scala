@@ -445,7 +445,7 @@ object SpaPush {
             // the GET; the push only delivers the fresh head). Built via the shared `buildRaw` (SSOT).
             val rawZ =
               if (filterEmpty) ZIO.succeed(List.empty[wifihaven.api.usage.TrafficUsageDbRow])
-              else trafficRepo.listRawInRange(resolvedMacs, headStart, headEnd)
+              else trafficRepo.listRawInRange(household, resolvedMacs, headStart, headEnd)
             rawZ.map(rows =>
               TrafficUsageResponse(
                 bucket = parsed.bucket.code,
@@ -463,6 +463,7 @@ object SpaPush {
               if (filterEmpty) ZIO.succeed(List.empty[wifihaven.shared.TrafficUsageAggregateRow])
               else
                 UsageTrafficQuery.aggregate(
+                  household,
                   trafficRepo,
                   rollupRepo,
                   resolvedMacs,
@@ -547,7 +548,7 @@ object SpaPush {
                 }
                 // ONE full-day presence load across this household's devices, sliced per profile
                 // below — the per-profile re-scan was the #2167 pool-starvation amplifier.
-                allPresence <- trafficRepo.listPresenceRows(devices.map(_.mac), date)
+                allPresence <- trafficRepo.listPresenceRows(household, devices.map(_.mac), date)
                 // This household's per-profile body, in listAllForHousehold order (the GET's order).
                 // Built once; each recipient receives its role-visible subset of it (design §4.4).
                 rows          <- ZIO.foreach(profiles) { p =>

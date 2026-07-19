@@ -175,8 +175,8 @@ object UsageTrafficSqlPreAggSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
     for {
       tRepo <- ZIO.service[TrafficReportRepo]
       step = UsageTraffic.stepOf(bucket).map(_.toSeconds).getOrElse(60L)
-      oldRows <- tRepo.listRawInRange(macs, dayStart, dayEnd)
-      newRows <- tRepo.listRawAggregatedInRange(macs, dayStart, dayEnd, step)
+      oldRows <- tRepo.listRawInRange(HouseholdId.Default, macs, dayStart, dayEnd)
+      newRows <- tRepo.listRawAggregatedInRange(HouseholdId.Default, macs, dayStart, dayEnd, step)
       build = (rows: List[wifihaven.api.usage.TrafficUsageDbRow]) =>
         UsageTraffic
           .buildAggregate(rows, bucket, ZoneOffset.UTC, groupBy, deviceByMac, profileNames)
@@ -224,7 +224,13 @@ object UsageTrafficSqlPreAggSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
         _     <- cleanDb
         _     <- seedAll
         tRepo <- ZIO.service[TrafficReportRepo]
-        rows  <- tRepo.listRawAggregatedInRange(List(mac1), dayStart, dayEnd, 600L)
+        rows  <- tRepo.listRawAggregatedInRange(
+          HouseholdId.Default,
+          List(mac1),
+          dayStart,
+          dayEnd,
+          600L,
+        )
         exampleAt10 = rows.filter(r => r.host.value == "example.com" && r.periodStart == at(10, 0))
       } yield assertTrue(
         // 10:00 + 10:05 periods collapsed into ONE pre-aggregated row…
@@ -242,7 +248,8 @@ object UsageTrafficSqlPreAggSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
         _     <- cleanDb
         _     <- seedAll
         tRepo <- ZIO.service[TrafficReportRepo]
-        rows  <- tRepo.listRawAggregatedInRange(List(mac1), dayStart, dayEnd, 600L)
+        rows  <- tRepo
+          .listRawAggregatedInRange(HouseholdId.Default, List(mac1), dayStart, dayEnd, 600L)
       } yield assertTrue(
         rows.exists(r => r.host.value == resolved.value),
         !rows.exists(r => r.host.value == destIp.value),
@@ -258,6 +265,7 @@ object UsageTrafficSqlPreAggSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
         tRepo   <- ZIO.service[TrafficReportRepo]
         rRepo   <- ZIO.service[RollupRepo]
         core    <- UsageTrafficQuery.aggregate(
+          HouseholdId.Default,
           tRepo,
           rRepo,
           Nil,
@@ -270,7 +278,7 @@ object UsageTrafficSqlPreAggSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
           profileNames,
           Map.empty,
         )
-        oldRows <- tRepo.listRawInRange(Nil, dayStart, dayEnd)
+        oldRows <- tRepo.listRawInRange(HouseholdId.Default, Nil, dayStart, dayEnd)
         expected = UsageTraffic.buildAggregate(
           oldRows,
           UsageTraffic.Bucket.TenMin,

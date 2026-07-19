@@ -70,42 +70,49 @@ object DbFailureSpec extends ZIOSpecDefault {
   }
 
   private def brokenTrafficRepo: TrafficReportRepo = new TrafficReportRepo {
-    def insertBatch(rs: List[TrafficReportInsert])                       = throwing
-    def listForDevice(mac: MacAddress, d: java.time.LocalDate)           = throwing
-    def listForRouter(r: RouterId, l: Int)                               = throwing
-    def listTrafficRollupRows(f: TrafficRollupFilter)                    = throwing
-    def listPresenceRows(macs: List[MacAddress], d: java.time.LocalDate) = throwing
+    def insertBatch(rs: List[TrafficReportInsert])                                     = throwing
+    def listForDevice(household: HouseholdId, mac: MacAddress, d: java.time.LocalDate) = throwing
+    def listForRouter(r: RouterId, l: Int)                                             = throwing
+    def listTrafficRollupRows(f: TrafficRollupFilter)                                  = throwing
+    def listPresenceRows(household: HouseholdId, macs: List[MacAddress], d: java.time.LocalDate) =
+      throwing
     def listPresenceRows(
+        household: HouseholdId,
         macs: List[MacAddress],
         from: java.time.LocalDate,
         to: java.time.LocalDate,
     ) = throwing
     def listPresenceRowsSince(
+        household: HouseholdId,
         macs: List[MacAddress],
         d: java.time.LocalDate,
         s: java.time.Instant,
     ) =
       throwing
     def listPresenceRowsInWindow(
+        household: HouseholdId,
         macs: List[MacAddress],
         fromInstant: java.time.Instant,
         toInstant: java.time.Instant,
     ) = throwing
     def listRawInRange(
+        household: HouseholdId,
         macs: List[MacAddress],
         fromInstant: java.time.Instant,
         toInstant: java.time.Instant,
-        cursor: Option[wifihaven.api.usage.RawTrafficCursorKey] = None,
-        limit: Option[Int] = None,
+        cursor: Option[wifihaven.api.usage.RawTrafficCursorKey],
+        limit: Option[Int],
     ) = throwing
     def listRawAggregatedInRange(
+        household: HouseholdId,
         macs: List[MacAddress],
         fromInstant: java.time.Instant,
         toInstant: java.time.Instant,
         stepSeconds: Long,
     ) = throwing
-    def earliestPeriodStart                                              = throwing
+    def earliestPeriodStart = throwing
     def listFqdnHostAggregatesForDevice(
+        household: HouseholdId,
         mac: MacAddress,
         fromInstant: java.time.Instant,
         toInstant: java.time.Instant,

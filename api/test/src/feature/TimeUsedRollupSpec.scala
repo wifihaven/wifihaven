@@ -162,7 +162,7 @@ object TimeUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
               .serviceWithZIO[DeviceRepo](_.listAllForHousehold(HouseholdId.Default))
               .map(_.filter(_.profileId.contains(kid)))
             atls    <- ZIO.serviceWithZIO[AppTimeLimitRepo](_.listForProfile(kid))
-            allPres <- trr.listPresenceRows(devices.map(_.mac), today)
+            allPres <- trr.listPresenceRows(HouseholdId.Default, devices.map(_.mac), today)
             prefixP = allPres.filter(_.periodStart.isBefore(prefix))
             secs    = TimeStatusService.usedSecondsForProfile(profile, devices, atls, prefixP, s)
           } yield secs
@@ -212,7 +212,7 @@ object TimeUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         _   <- seedTraffic(rid, "aa:bb:cc:dd:ee:25", "youtube.com", today, 15, 9 * 60)
         svc <- makeService
         now = LocalDateTime.of(2025, 1, 6, 12, 0).toInstant(ZoneOffset.UTC)
-        st <- svc.dayState(now, today, s, kid)
+        st <- svc.dayState(HouseholdId.Default, now, today, s, kid)
       } yield assertTrue(st.exists(_.usedMinutes == 15))
     },
     test("past dates ignore the rollup entirely") {
@@ -232,7 +232,7 @@ object TimeUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         _   <- ru.upsertDay(kid, pastDate, RolledDay(usedSeconds = 9_999L, rolledThrough = bogus))
         svc <- makeService
         now = LocalDateTime.of(2025, 1, 6, 12, 0).toInstant(ZoneOffset.UTC) // tomorrow
-        st <- svc.dayState(now, pastDate, s, kid)
+        st <- svc.dayState(HouseholdId.Default, now, pastDate, s, kid)
       } yield assertTrue(st.exists(_.usedMinutes == 0))
     },
     test("heartbeat-filter change deletes the rollup so the next refill reflects the new filter") {

@@ -889,7 +889,13 @@ trait RouterRepo {
 
 trait TrafficReportRepo {
   def insertBatch(reports: List[TrafficReportInsert]): Task[Int]
-  def listForDevice(mac: MacAddress, date: LocalDate): Task[List[TrafficReport]]
+  // #2313: `household`-scoped — `traffic_reports` is `router_id`-keyed and a MAC can exist in more
+  // than one household (post-V74), so a bare-MAC read would surface another tenant's rows.
+  def listForDevice(
+      household: HouseholdId,
+      mac: MacAddress,
+      date: LocalDate,
+  ): Task[List[TrafficReport]]
   def listForRouter(routerId: RouterId, limit: Int): Task[List[TrafficReport]]
 
   /**
@@ -907,6 +913,7 @@ trait TrafficReportRepo {
    * bucket don't inflate total screen time.
    */
   def listPresenceRows(
+      household: HouseholdId,
       macs: List[MacAddress],
       date: LocalDate,
   ): Task[List[wifihaven.api.presence.PresenceRow]]
@@ -918,6 +925,7 @@ trait TrafficReportRepo {
    * re-bucketing for the chart happens in the SPA against the UTC `periodStart` instants (#794).
    */
   def listPresenceRows(
+      household: HouseholdId,
       macs: List[MacAddress],
       from: LocalDate,
       to: LocalDate,
@@ -929,6 +937,7 @@ trait TrafficReportRepo {
    * rollup hasn't yet absorbed.
    */
   def listPresenceRowsSince(
+      household: HouseholdId,
       macs: List[MacAddress],
       date: LocalDate,
       since: Instant,
@@ -945,17 +954,20 @@ trait TrafficReportRepo {
    * [[listPresenceRows]]; callers compute the window from the requested local day + zone.
    */
   def listPresenceRowsInWindow(
+      household: HouseholdId,
       macs: List[MacAddress],
       fromInstant: Instant,
       toInstant: Instant,
   ): Task[List[wifihaven.api.presence.PresenceRow]]
 
   /**
-   * #846: raw rows in `[fromInstant, toInstant)` for the given macs. `macs = Nil` means "all macs"
-   * (used by the Traffic Usage page in unfiltered mode). Returns Instants (not String date columns)
-   * so callers can bucket without re-parsing.
+   * #846: raw rows in `[fromInstant, toInstant)` for the given macs. `macs = Nil` means "all macs
+   * in `household`" (used by the Traffic Usage page in unfiltered mode) — the `household` scope
+   * bounds that "all" to the caller's tenant. Returns Instants (not String date columns) so callers
+   * can bucket without re-parsing.
    */
   def listRawInRange(
+      household: HouseholdId,
       macs: List[MacAddress],
       fromInstant: Instant,
       toInstant: Instant,
@@ -983,6 +995,7 @@ trait TrafficReportRepo {
    * typed 503 instead of holding a pool connection (#1099 class).
    */
   def listRawAggregatedInRange(
+      household: HouseholdId,
       macs: List[MacAddress],
       fromInstant: Instant,
       toInstant: Instant,
@@ -1002,6 +1015,7 @@ trait TrafficReportRepo {
    * the apps create/edit recently-visited-hosts picker; PSL apex collapse happens in Scala.
    */
   def listFqdnHostAggregatesForDevice(
+      household: HouseholdId,
       mac: MacAddress,
       fromInstant: Instant,
       toInstant: Instant,
@@ -2539,9 +2553,9 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
         Long,
         Long,
     )
-  private def toT(r: R)                               =
+  private def toT(r: R)                                                       =
     TrafficReport(r._1, r._2, r._3, r._4, r._5, r._6, r._7, r._8, r._9, r._10, r._11)
-  def insertBatch(reports: List[TrafficReportInsert]) =
+  def insertBatch(reports: List[TrafficReportInsert])                         =
     DbMetrics.timed("traffic.insertBatch")(
       Update[TrafficReportInsert](
         "INSERT INTO traffic_reports(router_id,mac,ip,host_type,host_value,date,period_start,period_end,active_seconds,bytes_in,bytes_out,dest_ip,active_start,active_end) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(router_id,period_start,mac,host_type,host_value) DO NOTHING",
@@ -2550,8 +2564,8 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
   // TODO(#730): remove this read-side join once usage records carry dest_ip.
   // Promotes ipv4/ipv6-typed traffic_reports rows to their resolved fqdn at
   // SELECT time via the same LATERAL join used in TimeUsageRepoLive.
-  def listForDevice(mac: MacAddress, date: LocalDate) =
-    sql"""SELECT tr.id, tr.router_id, tr.mac, tr.ip,
+  def listForDevice(household: HouseholdId, mac: MacAddress, date: LocalDate) =
+    (fr"""SELECT tr.id, tr.router_id, tr.mac, tr.ip,
                  CASE WHEN tr.host_type IN ('ipv4','ipv6') AND ce.resolved_host_value IS NOT NULL
                       THEN 'fqdn' ELSE tr.host_type END,
                  COALESCE(CASE WHEN tr.host_type IN ('ipv4','ipv6') THEN ce.resolved_host_value END,
@@ -2569,14 +2583,15 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
               AND ts <  ($date::DATE + INTERVAL '1 day')::TIMESTAMPTZ
             ORDER BY ts DESC LIMIT 1
           ) ce ON tr.host_type IN ('ipv4','ipv6')
-          WHERE tr.mac = $mac AND tr.date = $date
-          ORDER BY tr.period_start"""
+          WHERE tr.mac = $mac AND tr.date = $date """
+      ++ SqlFragments.householdRouterScope(household, "tr.router_id") ++
+      fr"ORDER BY tr.period_start")
       .query[R]
       .map(toT)
       .to[List]
       .transact(xa)
   // TODO(#730): remove this read-side join once usage records carry dest_ip.
-  def listForRouter(routerId: RouterId, limit: Int)   =
+  def listForRouter(routerId: RouterId, limit: Int)                           =
     sql"""SELECT tr.id, tr.router_id, tr.mac, tr.ip,
                  CASE WHEN tr.host_type IN ('ipv4','ipv6') AND ce.resolved_host_value IS NOT NULL
                       THEN 'fqdn' ELSE tr.host_type END,
@@ -2593,16 +2608,27 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
       .to[List]
       .transact(xa)
 
-  def listPresenceRows(macs: List[MacAddress], date: LocalDate) =
-    listPresenceRowsBetween(macs, date, date, None)
+  def listPresenceRows(household: HouseholdId, macs: List[MacAddress], date: LocalDate) =
+    listPresenceRowsBetween(household, macs, date, date, None)
 
-  def listPresenceRows(macs: List[MacAddress], from: LocalDate, to: LocalDate) =
-    listPresenceRowsBetween(macs, from, to, None)
+  def listPresenceRows(
+      household: HouseholdId,
+      macs: List[MacAddress],
+      from: LocalDate,
+      to: LocalDate,
+  ) =
+    listPresenceRowsBetween(household, macs, from, to, None)
 
-  def listPresenceRowsSince(macs: List[MacAddress], date: LocalDate, since: Instant) =
-    listPresenceRowsBetween(macs, date, date, Some(since))
+  def listPresenceRowsSince(
+      household: HouseholdId,
+      macs: List[MacAddress],
+      date: LocalDate,
+      since: Instant,
+  ) =
+    listPresenceRowsBetween(household, macs, date, date, Some(since))
 
   def listPresenceRowsInWindow(
+      household: HouseholdId,
       macs: List[MacAddress],
       fromInstant: Instant,
       toInstant: Instant,
@@ -2641,6 +2667,7 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
                ${SqlFragments.resolvedHostLateral}
                WHERE tr.period_start >= $fromInstant AND tr.period_start < $toInstant
                  AND (tr.active_seconds > 0 OR tr.bytes_in > 0 OR tr.bytes_out > 0)
+                 ${SqlFragments.householdRouterScope(household, "tr.router_id")}
                  AND """ ++ Fragments.in(fr"tr.mac", nel)
         val cio =
           q.query[Row]
@@ -2659,6 +2686,7 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
 
   // TODO(#730): remove this read-side join once usage records carry dest_ip.
   private def listPresenceRowsBetween(
+      household: HouseholdId,
       macs: List[MacAddress],
       from: LocalDate,
       to: LocalDate,
@@ -2693,6 +2721,7 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
                ${SqlFragments.resolvedHostLateral}
                WHERE tr.date BETWEEN $from AND $to
                  AND (tr.active_seconds > 0 OR tr.bytes_in > 0 OR tr.bytes_out > 0)
+                 ${SqlFragments.householdRouterScope(household, "tr.router_id")}
                  AND """ ++ Fragments.in(fr"tr.mac", nel) ++
             since.fold(fr"")(s => fr"AND tr.period_start >= $s")
         DbMetrics.timed("traffic.listPresenceRows")(
@@ -2712,6 +2741,7 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
   // (UsageTrafficService) enforces a window cap that keeps this from melting prod.
   // TODO(#730): remove this read-side join once usage records carry dest_ip.
   def listRawInRange(
+      household: HouseholdId,
       macs: List[MacAddress],
       fromInstant: Instant,
       toInstant: Instant,
@@ -2732,6 +2762,7 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
            ${SqlFragments.resolvedHostLateral}
            WHERE tr.period_start >= $fromInstant AND tr.period_start < $toInstant
              AND (tr.active_seconds > 0 OR tr.bytes_in > 0 OR tr.bytes_out > 0) """
+        ++ SqlFragments.householdRouterScope(household, "tr.router_id") ++ fr" "
     val macFilter  = macs match {
       case Nil => fr""
       case ms  =>
@@ -2770,6 +2801,7 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
   // household-local date boundary yields two grouped rows, which `buildAggregate` re-merges.
   // TODO(#730): remove this read-side join once usage records carry dest_ip.
   def listRawAggregatedInRange(
+      household: HouseholdId,
       macs: List[MacAddress],
       fromInstant: Instant,
       toInstant: Instant,
@@ -2792,7 +2824,8 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
            FROM traffic_reports
            WHERE period_start >= $fromInstant AND period_start < $toInstant
              AND (active_seconds > 0 OR bytes_in > 0 OR bytes_out > 0)
-           """ ++ macFilter ++ fr"GROUP BY mac, host_type, host_value, date, bucket_start"
+           """ ++ SqlFragments.householdRouterScope(household, "router_id") ++ fr" " ++
+        macFilter ++ fr"GROUP BY mac, host_type, host_value, date, bucket_start"
     val select    =
       fr"""SELECT tr.mac,
                   CASE WHEN tr.host_type IN ('ipv4','ipv6') AND ce.resolved_host_value IS NOT NULL
@@ -2825,12 +2858,13 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
   // LATERAL FQDN resolve are filtered (host IS NULL). Indexed by
   // (mac, period_start) — see V25.
   def listFqdnHostAggregatesForDevice(
+      household: HouseholdId,
       mac: MacAddress,
       fromInstant: Instant,
       toInstant: Instant,
   ) = {
     type Row = (String, Long, Long)
-    sql"""SELECT host, SUM(bytes)::BIGINT AS bytes, COUNT(*)::BIGINT AS hits
+    (fr"""SELECT host, SUM(bytes)::BIGINT AS bytes, COUNT(*)::BIGINT AS hits
           FROM (
             SELECT COALESCE(
                      CASE WHEN tr.host_type IN ('ipv4','ipv6') THEN ce.resolved_host_value END,
@@ -2842,11 +2876,13 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
             WHERE tr.mac = $mac
               AND tr.period_start >= $fromInstant
               AND tr.period_start <  $toInstant
-              AND (tr.bytes_in + tr.bytes_out) > 0
+              AND (tr.bytes_in + tr.bytes_out) > 0 """
+      ++ SqlFragments.householdRouterScope(household, "tr.router_id") ++
+      fr"""
           ) sub
           WHERE host IS NOT NULL
           GROUP BY host
-          ORDER BY bytes DESC"""
+          ORDER BY bytes DESC""")
       .query[Row]
       .to[List]
       .transact(xa)

@@ -172,7 +172,7 @@ object TimeStatusServiceSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:dd:ee:01", "kid-ipad", kid)
         svc <- makeService
         now = LocalDateTime.of(2026, 5, 26, 22, 46, 0).toInstant(ZoneOffset.UTC)
-        stOpt <- svc.todaysState(now, s, kid)
+        stOpt <- svc.todaysState(HouseholdId.Default, now, s, kid)
       } yield assertTrue(
         stOpt.exists(_.date == LocalDate.of(2026, 5, 26)),
       )
@@ -187,7 +187,7 @@ object TimeStatusServiceSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         kid <- TestLayers.seedKidsProfile(pr)
         svc <- makeService
         now = LocalDateTime.of(2026, 5, 26, 13, 0, 0).toInstant(ZoneOffset.UTC)
-        stOpt <- svc.todaysState(now, s, kid)
+        stOpt <- svc.todaysState(HouseholdId.Default, now, s, kid)
       } yield assertTrue(stOpt.exists(_.date == LocalDate.of(2026, 5, 26)))
     },
     test("after UTC midnight but before MDT midnight, today is still the prior MDT day") {
@@ -200,7 +200,7 @@ object TimeStatusServiceSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         kid <- TestLayers.seedKidsProfile(pr)
         svc <- makeService
         now = LocalDateTime.of(2026, 5, 27, 0, 30, 0).toInstant(ZoneOffset.UTC)
-        stOpt <- svc.todaysState(now, s, kid)
+        stOpt <- svc.todaysState(HouseholdId.Default, now, s, kid)
       } yield assertTrue(stOpt.exists(_.date == LocalDate.of(2026, 5, 26)))
     },
     test(
@@ -214,7 +214,7 @@ object TimeStatusServiceSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         kid <- TestLayers.seedKidsProfile(pr)
         svc <- makeService
         now = LocalDateTime.of(2025, 3, 9, 8, 0, 0).toInstant(ZoneOffset.UTC)
-        stOpt <- svc.todaysState(now, s, kid)
+        stOpt <- svc.todaysState(HouseholdId.Default, now, s, kid)
       } yield assertTrue(stOpt.exists(_.date == LocalDate.of(2025, 3, 9)))
     },
     test("cap exhausted exactly at minute N → blocked=true with reason=TimeLimit") {
@@ -233,7 +233,7 @@ object TimeStatusServiceSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         svc <- makeService
         // 14:00 Monday — well after exhausting; no schedule conflict at this hour either
         now = Clock.TestClock.schoolDayAfternoon.toInstant(ZoneOffset.UTC)
-        stOpt <- svc.todaysState(now, s, kid)
+        stOpt <- svc.todaysState(HouseholdId.Default, now, s, kid)
       } yield assertTrue(
         stOpt.exists(st => st.blocked && st.blockReason.contains(MacBlockReason.TimeLimit)),
       ) && assertTrue(stOpt.exists(_.usedMinutes >= 30))
@@ -255,7 +255,7 @@ object TimeStatusServiceSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         _   <- er.grantForProfile(kid, LocalDate.of(2025, 1, 6), 15, "admin", None)
         svc <- makeService
         now = Clock.TestClock.schoolDayAfternoon.toInstant(ZoneOffset.UTC)
-        stOpt <- svc.todaysState(now, s, kid)
+        stOpt <- svc.todaysState(HouseholdId.Default, now, s, kid)
       } yield assertTrue(stOpt.exists(st => !st.blocked)) &&
         assertTrue(stOpt.exists(_.extensionMinutes == 15)) &&
         assertTrue(stOpt.exists(_.remainingMinutes.contains(15)))
@@ -277,10 +277,10 @@ object TimeStatusServiceSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         svc <- makeService
         now = Clock.TestClock.schoolDayAfternoon.toInstant(ZoneOffset.UTC)
         // Default seedKidsProfile creates profile with overlap=Sum (verify shape)
-        sumState   <- svc.todaysState(now, s, kid)
+        sumState   <- svc.todaysState(HouseholdId.Default, now, s, kid)
         profile    <- pr.findById(kid).map(_.get)
         _          <- pr.update(profile.copy(crossDeviceOverlapMode = CrossDeviceOverlapMode.Dedup))
-        dedupState <- svc.todaysState(now, s, kid)
+        dedupState <- svc.todaysState(HouseholdId.Default, now, s, kid)
       } yield assertTrue(sumState.exists(_.usedMinutes == 60)) &&
         assertTrue(dedupState.exists(_.usedMinutes == 30))
     },
@@ -310,7 +310,7 @@ object TimeStatusServiceSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         _   <- seedTraffic(rid, "aa:bb:cc:dd:ee:06", "cnn.com", LocalDate.of(2025, 1, 6), 10)
         svc <- makeService
         now = Clock.TestClock.schoolDayAfternoon.toInstant(ZoneOffset.UTC)
-        stOpt <- svc.todaysState(now, s, kid)
+        stOpt <- svc.todaysState(HouseholdId.Default, now, s, kid)
       } yield assertTrue(stOpt.exists(_.usedMinutes == 10)) &&
         assertTrue(
           stOpt.exists(_.perApp.exists(p => p.domainPattern == "khan.org" && p.exemptFromDaily)),
@@ -348,7 +348,7 @@ object TimeStatusServiceSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         )
         svc <- makeService
         now = Clock.TestClock.schoolDayAfternoon.toInstant(ZoneOffset.UTC)
-        stOpt <- svc.todaysState(now, s, kid)
+        stOpt <- svc.todaysState(HouseholdId.Default, now, s, kid)
       } yield assertTrue(
         stOpt.exists(
           _.perApp.exists(p => p.domainPattern == "mathacademy.com" && p.usedMinutes == 30),
@@ -383,7 +383,7 @@ object TimeStatusServiceSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         _   <- seedStallTraffic(rid, "aa:bb:cc:dd:ee:30", "gimkit.com", today, 5, 500, 20)
         svc <- makeService
         now = LocalDateTime.of(2025, 1, 6, 12, 0).toInstant(ZoneOffset.UTC)
-        bounded <- svc.dayStateLive(now, today, s, kid)
+        bounded <- svc.dayStateLive(HouseholdId.Default, now, today, s, kid)
         // Re-seed the SAME shape without the envelope (an old agent) to show the over-count it
         // structurally prevents.
         _       <- cleanDb
@@ -402,7 +402,7 @@ object TimeStatusServiceSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
           withEnvelope = false,
         )
         svc2    <- makeService
-        balloon <- svc2.dayStateLive(now, today, s2, kid2)
+        balloon <- svc2.dayStateLive(HouseholdId.Default, now, today, s2, kid2)
       } yield assertTrue(
         bounded.exists(_.usedMinutes <= 2),
         balloon.exists(_.usedMinutes >= 30),
@@ -437,7 +437,7 @@ object TimeStatusServiceSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         _   <- seedStallTraffic(rid, "aa:bb:cc:dd:ee:32", "www.gimkit.com", today, 5, 500, 20)
         svc <- makeService
         now = LocalDateTime.of(2025, 1, 6, 12, 0).toInstant(ZoneOffset.UTC)
-        stOpt <- svc.dayStateLive(now, today, s, kid)
+        stOpt <- svc.dayStateLive(HouseholdId.Default, now, today, s, kid)
       } yield assertTrue(
         stOpt.exists { st =>
           val appMins = st.perApp.find(_.domainPattern == "gimkit.com").map(_.usedMinutes)
@@ -468,7 +468,7 @@ object TimeStatusServiceSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         svc <- makeService
         // now = 00:45 — elapsed wall-clock since midnight is 45 min.
         now = LocalDateTime.of(2025, 1, 6, 0, 45).toInstant(ZoneOffset.UTC)
-        stOpt <- svc.dayStateLive(now, today, s, kid)
+        stOpt <- svc.dayStateLive(HouseholdId.Default, now, today, s, kid)
       } yield assertTrue(
         stOpt.exists(st => st.usedMinutes <= 45 && st.usedMinutes <= 1440),
       )

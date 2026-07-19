@@ -112,42 +112,55 @@ object AmbientLearnJob {
     yesterday = today.minusDays(1L)
     // #2257: this is a genuinely all-tenant batch — enumerate households explicitly and union each
     // one's scoped read, rather than a cross-tenant `listAll` that a request path could also grab.
-    households <- profileRepo.distinctHouseholds
-    profiles   <- ZIO.foreach(households)(profileRepo.listAllForHousehold).map(_.flatten)
-    devices    <- ZIO.foreach(households)(deviceRepo.listAllForHousehold).map(_.flatten)
-    atlsP      <- ZIO.foreach(profiles)(p => appTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
-    presence   <- trafficRepo.listPresenceRows(devices.map(_.mac), yesterday)
-    counts = {
-      val atlMap  = atlsP.toMap
-      val devsByP = devices.groupBy(_.profileId)
-      // Learn per profile-group so each device's spans see its own profile's app-attribution
-      // context; devices with no profile learn with none. Counts merge across groups (the
-      // baseline is household-wide).
-      val acc     = scala.collection.mutable.Map.empty[String, Int]
-      devsByP.foreach { case (pidOpt, devs) =>
-        val macSet  = devs.map(_.mac).toSet
-        val appPats = pidOpt.map(pid => atlMap.getOrElse(pid, Nil)).getOrElse(Nil)
-        val learned = Presence.isolatedSpanHosts(
-          presence.filter(r => macSet.contains(r.mac)),
-          settings.ambientIsolationMaxHosts,
-          settings.heartbeatFilter,
-          settings.presenceContinuationSeconds,
-          TimeStatusService.appHostPatterns(appPats),
-        )
-        learned.foreach { case (h, c) =>
-          acc.updateWith(h.value)(prev => Some(prev.getOrElse(0) + c))
+    // #2313: the presence read AND the profile-group learning run PER HOUSEHOLD — `traffic_reports`
+    // is router_id-keyed and the same MAC can exist in >1 household (post-V74), so a global read +
+    // global grouping would let one household's traffic on a shared MAC seed the ambient baseline
+    // from another household's device. Each household learns over only its own scoped presence; the
+    // per-host counts merge afterward (the baseline is a single global host set). Identical for
+    // distinct MACs.
+    households  <- profileRepo.distinctHouseholds
+    perHhCounts <- ZIO.foreach(households) { hh =>
+      for {
+        profiles <- profileRepo.listAllForHousehold(hh)
+        devices  <- deviceRepo.listAllForHousehold(hh)
+        atlsP    <- ZIO.foreach(profiles)(p => appTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
+        presence <- trafficRepo.listPresenceRows(hh, devices.map(_.mac), yesterday)
+      } yield {
+        val atlMap  = atlsP.toMap
+        val devsByP = devices.groupBy(_.profileId)
+        // Learn per profile-group so each device's spans see its own profile's app-attribution
+        // context; devices with no profile learn with none. Counts merge across groups (the
+        // baseline is household-wide).
+        val acc     = scala.collection.mutable.Map.empty[String, Int]
+        devsByP.foreach { case (pidOpt, devs) =>
+          val macSet  = devs.map(_.mac).toSet
+          val appPats = pidOpt.map(pid => atlMap.getOrElse(pid, Nil)).getOrElse(Nil)
+          val learned = Presence.isolatedSpanHosts(
+            presence.filter(r => macSet.contains(r.mac)),
+            settings.ambientIsolationMaxHosts,
+            settings.heartbeatFilter,
+            settings.presenceContinuationSeconds,
+            TimeStatusService.appHostPatterns(appPats),
+          )
+          learned.foreach { case (h, c) =>
+            acc.updateWith(h.value)(prev => Some(prev.getOrElse(0) + c))
+          }
         }
+        acc.toMap
       }
-      acc.toMap
     }
-    _ <- ambientRepo.upsertDay(yesterday, counts)
+    // Merge each household's per-host isolated-span counts into the single global baseline.
+    counts = perHhCounts.foldLeft(Map.empty[String, Int]) { (acc, hhCounts) =>
+      hhCounts.foldLeft(acc) { case (a, (h, c)) => a.updated(h, a.getOrElse(h, 0) + c) }
+    }
+    _           <- ambientRepo.upsertDay(yesterday, counts)
     // Prune exactly the days the window reads exclude: the reads keep
     // `day > today - windowDays` (strict), so everything at or before that
     // boundary is dead weight — delete `day < boundary + 1`.
-    _       <- ambientRepo.pruneBefore(
+    _           <- ambientRepo.pruneBefore(
       today.minusDays(settings.ambientLearningWindowDays.max(1).toLong).plusDays(1L),
     )
-    ambient <- ambientRepo.ambientHosts(settings, today)
-    _       <- AppMetrics.setAmbientHosts(ambient.size)
+    ambient     <- ambientRepo.ambientHosts(settings, today)
+    _           <- AppMetrics.setAmbientHosts(ambient.size)
   } yield counts.size
 }

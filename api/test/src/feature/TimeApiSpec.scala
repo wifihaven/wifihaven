@@ -2379,7 +2379,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           list <- ZIO.fromEither(body.fromJson[List[ProfileTimeSummary]])
           kids = list.find(_.profileId == kidsId).get
           // Single source of truth: the same day-state that drives the snapshot's `blocked`.
-          state <- tss.dayState(now, today, settings, kidsId).map(_.get)
+          state <- tss.dayState(HouseholdId.Default, now, today, settings, kidsId).map(_.get)
         } yield assertTrue(resp.status == Status.Ok) &&
           // Only `c.unexempt.example` (15 m) counts — both `a.example` AND `b.example` excluded.
           assertTrue(kids.usedMins == 15) &&
@@ -2448,7 +2448,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           body <- resp.body.asString
           list <- ZIO.fromEither(body.fromJson[List[ProfileTimeSummary]])
           kids = list.find(_.profileId == kidsId).get
-          state <- tss.dayState(now, today, settings, kidsId).map(_.get)
+          state <- tss.dayState(HouseholdId.Default, now, today, settings, kidsId).map(_.get)
         } yield assertTrue(resp.status == Status.Ok) &&
           // Only the 35 m of non-exempt presence counts — exempt hosts still excluded.
           assertTrue(kids.usedMins == 35) &&

@@ -218,47 +218,57 @@ object SpaWsS6aSpec
    */
   private final class CountingTrafficRepo(underlying: TrafficReportRepo, dayLoads: Ref[Int])
       extends TrafficReportRepo {
-    def insertBatch(reports: List[TrafficReportInsert])           = underlying.insertBatch(reports)
-    def listForDevice(mac: MacAddress, date: java.time.LocalDate) =
-      underlying.listForDevice(mac, date)
+    def insertBatch(reports: List[TrafficReportInsert]) = underlying.insertBatch(reports)
+    def listForDevice(household: HouseholdId, mac: MacAddress, date: java.time.LocalDate) =
+      underlying.listForDevice(household, mac, date)
     def listForRouter(routerId: RouterId, limit: Int) = underlying.listForRouter(routerId, limit)
     def listTrafficRollupRows(f: TrafficRollupFilter) = underlying.listTrafficRollupRows(f)
-    def listPresenceRows(macs: List[MacAddress], date: java.time.LocalDate) =
-      dayLoads.update(_ + 1) *> underlying.listPresenceRows(macs, date)
     def listPresenceRows(
+        household: HouseholdId,
+        macs: List[MacAddress],
+        date: java.time.LocalDate,
+    ) =
+      dayLoads.update(_ + 1) *> underlying.listPresenceRows(household, macs, date)
+    def listPresenceRows(
+        household: HouseholdId,
         macs: List[MacAddress],
         from: java.time.LocalDate,
         to: java.time.LocalDate,
-    ) = underlying.listPresenceRows(macs, from, to)
+    ) = underlying.listPresenceRows(household, macs, from, to)
     def listPresenceRowsSince(
+        household: HouseholdId,
         macs: List[MacAddress],
         date: java.time.LocalDate,
         since: java.time.Instant,
-    ) = underlying.listPresenceRowsSince(macs, date, since)
+    ) = underlying.listPresenceRowsSince(household, macs, date, since)
     def listPresenceRowsInWindow(
+        household: HouseholdId,
         macs: List[MacAddress],
         fromInstant: java.time.Instant,
         toInstant: java.time.Instant,
-    ) = underlying.listPresenceRowsInWindow(macs, fromInstant, toInstant)
+    ) = underlying.listPresenceRowsInWindow(household, macs, fromInstant, toInstant)
     def listRawInRange(
+        household: HouseholdId,
         macs: List[MacAddress],
         fromInstant: java.time.Instant,
         toInstant: java.time.Instant,
         cursor: Option[wifihaven.api.usage.RawTrafficCursorKey],
         limit: Option[Int],
-    ) = underlying.listRawInRange(macs, fromInstant, toInstant, cursor, limit)
+    ) = underlying.listRawInRange(household, macs, fromInstant, toInstant, cursor, limit)
     def listRawAggregatedInRange(
+        household: HouseholdId,
         macs: List[MacAddress],
         fromInstant: java.time.Instant,
         toInstant: java.time.Instant,
         stepSeconds: Long,
-    ) = underlying.listRawAggregatedInRange(macs, fromInstant, toInstant, stepSeconds)
-    def earliestPeriodStart = underlying.earliestPeriodStart
+    ) = underlying.listRawAggregatedInRange(household, macs, fromInstant, toInstant, stepSeconds)
+    def earliestPeriodStart                           = underlying.earliestPeriodStart
     def listFqdnHostAggregatesForDevice(
+        household: HouseholdId,
         mac: MacAddress,
         fromInstant: java.time.Instant,
         toInstant: java.time.Instant,
-    ) = underlying.listFqdnHostAggregatesForDevice(mac, fromInstant, toInstant)
+    ) = underlying.listFqdnHostAggregatesForDevice(household, mac, fromInstant, toInstant)
   }
 
   private def withHarness[A](

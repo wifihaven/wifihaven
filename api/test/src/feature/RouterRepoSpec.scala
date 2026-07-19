@@ -203,7 +203,7 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
             ),
           )
           n    <- tRepo.insertBatch(batch)
-          rows <- tRepo.listForDevice(mac, LocalDate.of(2026, 5, 2))
+          rows <- tRepo.listForDevice(HouseholdId.Default, mac, LocalDate.of(2026, 5, 2))
         } yield assertTrue(n == 2) && assertTrue(rows.size == 2) &&
           assertTrue(
             rows.map(_.host).toSet == Set(
@@ -242,7 +242,7 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
               mk(mac2, d1, "c.com"),
             ),
           )
-          rows <- tRepo.listForDevice(mac1, d1)
+          rows <- tRepo.listForDevice(HouseholdId.Default, mac1, d1)
         } yield assertTrue(rows.size == 1) && assertTrue(
           rows.head.host == HostId.Fqdn(Hostname.unsafe("a.com")),
         )

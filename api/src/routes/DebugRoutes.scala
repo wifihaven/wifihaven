@@ -128,8 +128,11 @@ object DebugRoutes {
               // measuring device-online time can read a single value instead of summing.
               // (#474)
               macs = snap.keys.map(_._1).toList.distinct
+              // #2313: loopback-only diagnostic — reads the default household's presence (matching the
+              // single-household reality this debug endpoint targets); the `snapshotAll` above is a
+              // global cross-tenant diagnostic that this endpoint's guard already restricts to admins.
               presence <- trafficRepo
-                .listPresenceRows(macs, today)
+                .listPresenceRows(HouseholdId.Default, macs, today)
                 .mapError(ApiError.Db(_))
               // Surface raw active-seconds (sum of max-per-bucket activeSeconds) as well as
               // the floor-divided minute count. The e2e D2 minute-granularity test (#516)
