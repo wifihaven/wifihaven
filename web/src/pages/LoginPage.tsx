@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { getHouseholdCookie } from '@/api/householdCookie'
 
@@ -137,6 +137,12 @@ export function LoginPage() {
               placeholder="••••••••"
               required
             />
+            {/* #2308: self-service password recovery via emailed reset link. */}
+            <p className="mt-2 text-right text-xs">
+              <Link to="/forgot-password" className="text-brand-accent hover:underline">
+                Forgot password?
+              </Link>
+            </p>
           </div>
 
           {/* #2164: no household field. The identifier itself carries the household (email / an

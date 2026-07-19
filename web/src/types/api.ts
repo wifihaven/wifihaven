@@ -1078,6 +1078,27 @@ export interface AcceptInviteResponse {
   username: string
 }
 
+// #2308: forgot-password / reset-via-email-link flow. Both endpoints are public, unauthenticated,
+// and rate-limited. forgot-password always returns the same content-free ack (no account
+// enumeration); reset-password consumes a single-use, short-TTL token and, on success, bumps
+// token_version so existing JWTs are invalidated.
+export interface ForgotPasswordRequest {
+  email: string
+}
+
+export interface ForgotPasswordAck {
+  status: string
+}
+
+export interface ResetPasswordRequest {
+  token: string
+  newPassword: string
+}
+
+export interface ResetPasswordResponse {
+  ok: boolean
+}
+
 // #2135 (multi-tenant P5-5): billing status + Checkout/Portal redirect. status ∈ beta|active|lapsed
 // (design §5.1); on lapse enforcement stops but there is NO read-only gating.
 export type BillingStatus = 'beta' | 'active' | 'lapsed'

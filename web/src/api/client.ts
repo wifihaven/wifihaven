@@ -1,6 +1,7 @@
 import { apiHealth } from '@/api/apiHealth'
 import type {
   AcceptInviteRequest, AcceptInviteResponse, ApproveBetaResponse, BetaRequestAck, BetaRequestStatus, BetaRequestSummary, CreateBetaRequest,
+  ForgotPasswordAck, ForgotPasswordRequest, ResetPasswordRequest, ResetPasswordResponse,
   Alert, AppDetail, ApproveAlertRequest, BlockedInfoResponse, BlocklistHosts, BlocklistSummary, CreateRouterRequest, CreateRouterResponse, CreateUserRequest,
   DashboardNow, DashboardStats, Device,
   CreateAccessRequest, DeviceTimeStatus, DeviceTimeStatusWeek, HouseholdSettings, LoginResponse, MeResponse, ProfileAppWeeklyUsage, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek, ProfileUsageByApp,
@@ -191,6 +192,14 @@ export const api = {
       req<LoginResponse>('POST', '/auth/login', { identifier, password }, true),
     changePassword: (currentPassword: string, newPassword: string) =>
       req<void>('POST', '/auth/change-password', { currentPassword, newPassword }),
+    // #2308: public, unauthenticated + rate-limited. Always returns the same content-free ack
+    // whether or not the email is registered (no enumeration) — the UI shows one success state.
+    forgotPassword: (email: string) =>
+      req<ForgotPasswordAck>('POST', '/auth/forgot-password', { email } as ForgotPasswordRequest, true),
+    // #2308: consume the single-use, short-TTL reset token + set a new password. A bad/expired token
+    // or a too-weak password fails with a 400 the caller surfaces.
+    resetPassword: (token: string, newPassword: string) =>
+      req<ResetPasswordResponse>('POST', '/auth/reset-password', { token, newPassword } as ResetPasswordRequest, true),
     me: () => req<MeResponse>('GET', '/me'),
   },
 

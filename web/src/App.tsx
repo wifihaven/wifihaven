@@ -24,6 +24,8 @@ import { SchedulesPage } from '@/pages/SchedulesPage'
 import { BillingPage } from '@/pages/BillingPage'
 import { BetaRequestPage } from '@/pages/BetaRequestPage'
 import { WelcomePage } from '@/pages/WelcomePage'
+import { ForgotPasswordPage } from '@/pages/ForgotPasswordPage'
+import { ResetPasswordPage } from '@/pages/ResetPasswordPage'
 import { BetaRequestsPage } from '@/pages/BetaRequestsPage'
 import { PressPage } from '@/pages/PressPage'
 import { useMe } from '@/api/queries'
@@ -60,6 +62,9 @@ function AppRoutes() {
     <Routes>
       <Route path="/login"   element={<LoginPage />} />
       <Route path="/blocked" element={<BlockedPage />} />
+      {/* #2308: unauthenticated password recovery — request a reset link, then set a new password. */}
+      <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+      <Route path="/reset-password"  element={<ResetPasswordPage />} />
       {/* #2133: unauthenticated beta signup + invite acceptance (design §3). */}
       <Route path="/beta"    element={<BetaRequestPage />} />
       <Route path="/welcome" element={<WelcomePage />} />
