@@ -240,7 +240,13 @@ services:
         sync: false
       # #2300: claude-code-cloud transport — the pre-provisioned routine id + its per-routine bearer
       # token (from the routine's "API trigger" in https://claude.ai/code/routines). Required only
-      # when DISPATCHER=claude-code-cloud. NEVER commit values.
+      # when DISPATCHER=claude-code-cloud. NEVER commit values. ROUTINE_ID is the `trig_…` segment of
+      # the fire URL. Two provisioning steps are NOT config and easy to miss (see
+      # deploy/support-agent/README.md "Claude Code Cloud routine transport"): (1) the routine prompt
+      # must be the transport-agnostic deploy/support-agent/agent.yaml `system:` block — a prompt
+      # that never names <routine-fire-payload> makes the routine post NOTHING while still reporting a
+      # green run; (2) the routine's cloud environment must allow-list the AGENT_API_BASE host
+      # (Network access → Custom/Full), else the callback fails 403 host_not_allowed.
       - key: WIFIHAVEN_SUPPORT_CLAUDE_CODE_ROUTINE_ID
         sync: false
       - key: WIFIHAVEN_SUPPORT_CLAUDE_CODE_ROUTINE_TOKEN
@@ -492,7 +498,13 @@ services:
         sync: false
       # #2300: claude-code-cloud transport — the pre-provisioned routine id + its per-routine bearer
       # token (from the routine's "API trigger" in https://claude.ai/code/routines). Required only
-      # when DISPATCHER=claude-code-cloud. NEVER commit values.
+      # when DISPATCHER=claude-code-cloud. NEVER commit values. ROUTINE_ID is the `trig_…` segment of
+      # the fire URL. Two provisioning steps are NOT config and easy to miss (see
+      # deploy/support-agent/README.md "Claude Code Cloud routine transport"): (1) the routine prompt
+      # must be the transport-agnostic deploy/support-agent/agent.yaml `system:` block — a prompt
+      # that never names <routine-fire-payload> makes the routine post NOTHING while still reporting a
+      # green run; (2) the routine's cloud environment must allow-list the AGENT_API_BASE host
+      # (Network access → Custom/Full), else the callback fails 403 host_not_allowed.
       - key: WIFIHAVEN_SUPPORT_CLAUDE_CODE_ROUTINE_ID
         sync: false
       - key: WIFIHAVEN_SUPPORT_CLAUDE_CODE_ROUTINE_TOKEN
