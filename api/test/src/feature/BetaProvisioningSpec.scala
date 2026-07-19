@@ -47,6 +47,7 @@ object BetaProvisioningSpec
         flipDate: java.time.Instant,
         daysUntilFlip: Int,
     ): UIO[Unit] = ZIO.unit
+    def passwordReset(email: String, resetUrl: String, ttlMinutes: Int): UIO[Unit]      = ZIO.unit
   }
 
   private def makeAuth =

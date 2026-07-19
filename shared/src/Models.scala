@@ -818,6 +818,38 @@ case class LoginResponse(
     householdSlug: Option[String] = None,
 ) derives JsonCodec
 case class ChangePasswordRequest(currentPassword: String, newPassword: String) derives JsonCodec
+
+// ── Forgot / reset password (#2308, epic #622) ──────────────────────────────
+// The self-service recovery path for a household admin who forgot their password (beta admins log in
+// by email; a lockout otherwise has no recovery). Two unauthenticated, rate-limited endpoints:
+//   - POST /api/auth/forgot-password — request a reset link by email.
+//   - POST /api/auth/reset-password  — consume the single-use token + set a new password.
+
+/**
+ * `POST /api/auth/forgot-password` body. `email` is the global login identifier (`users.email`,
+ * V67); the server resolves it to a user (and thus household) with no household in hand. A user is
+ * only emailed if the address is registered — but the response is ALWAYS the same generic
+ * [[ForgotPasswordAck]] (no account enumeration).
+ */
+case class ForgotPasswordRequest(email: String) derives JsonCodec
+
+/**
+ * Deliberately content-free acknowledgement for `POST /api/auth/forgot-password` — a registered and
+ * an unregistered email are byte-identical to the caller (no enumeration leak; mirrors
+ * [[BetaRequestAck]]).
+ */
+case class ForgotPasswordAck(status: String = "sent") derives JsonCodec
+
+/**
+ * `POST /api/auth/reset-password` body. `token` is the single-use, short-TTL raw token from the
+ * emailed `/reset-password?token=…` link (only its hash is stored server-side); `newPassword` is
+ * subject to the #2084 password policy. A successful reset bumps the user's `token_version`
+ * (#2080), invalidating every previously-issued JWT.
+ */
+case class ResetPasswordRequest(token: String, newPassword: String) derives JsonCodec
+
+/** Response to a successful `POST /api/auth/reset-password`. */
+case class ResetPasswordResponse(ok: Boolean = true) derives JsonCodec
 // #623: change-password used to return an empty 200 body, which broke clients
 // that assume "200 ⇒ parseable JSON" (every other route returns JSON). Echo
 // back mustChangePassword=false so callers can refresh session state inline.

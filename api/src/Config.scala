@@ -355,6 +355,12 @@ case class EmailConfig(
   val apiKeyTrimmed: String = resendApiKey.trim
   val fromTrimmed: String   = fromAddress.trim
   def dashboardUrl: String  = appBaseUrl.stripSuffix("/")
+
+  // #2308: the emailed password-reset link, `<appBaseUrl>/reset-password?token=…`. Reuses the same
+  // per-env `appBaseUrl` (#2250) as the dashboard link so a reset points at the right host
+  // (staging vs prod vs self-hosted). The raw token is single-use + short-TTL; only its hash is
+  // stored (see PasswordResetTokenRepo). Mirrors BetaConfig.inviteUrl.
+  def passwordResetUrl(rawToken: String): String = s"$dashboardUrl/reset-password?token=$rawToken"
 }
 
 object EmailConfig {

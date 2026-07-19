@@ -38,7 +38,7 @@ object AlertApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
   private val cleanDb = TestDatabase.cleanAndMigrate
 
   private val noopNotifier: Notifier = new Notifier {
-    def alertCreated(a: Alert): UIO[Unit] = ZIO.unit
+    def alertCreated(a: Alert): UIO[Unit]                                          = ZIO.unit
     def betaInvite(
         email: String,
         slug: String,
@@ -52,6 +52,7 @@ object AlertApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         flipDate: java.time.Instant,
         daysUntilFlip: Int,
     ): UIO[Unit] = ZIO.unit
+    def passwordReset(email: String, resetUrl: String, ttlMinutes: Int): UIO[Unit] = ZIO.unit
   }
 
   private val mac1       = MacAddress.unsafe("aa:bb:cc:11:22:33")
