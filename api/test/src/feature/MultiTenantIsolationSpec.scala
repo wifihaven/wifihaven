@@ -990,6 +990,32 @@ object MultiTenantIsolationSpec
       } yield assertTrue(respA.status == Status.Ok, respB.status == Status.Ok) &&
         assertTrue(aUse == 1L, bUse == 1L)
     },
+    // ── Pin 4f: findByMac must not throw for a MAC shared across households ─────
+    // #2312: the global `DeviceRepo.findByMac(mac)` (WHERE d.mac=$mac) terminates in
+    // Doobie `.option`, which THROWS ("more than one row") once the same MAC exists in
+    // two households — crashing the block page (BlockedRoutes.buildBlockedInfo) and the
+    // public access-request intake (AlertRoutes), both of which call it. This pin drives
+    // the 1-arg call that both prod paths use: RED against the global lookup (throws on
+    // the 2-row match), green once it is household-scoped and returns the caller's-
+    // default-household row.
+    test("pin 4f — findByMac does not throw for a MAC shared across households (#2312)") {
+      for {
+        _     <- cleanDb
+        two   <- TestLayers.seedTwoHouseholds(macA, macB)
+        dr    <- ZIO.service[DeviceRepo]
+        xa    <- ZIO.service[Transactor[Task]]
+        // The SAME MAC in both households.
+        _     <- dr.upsert(macM, "sharedA", Some(two.profileA), "192.168.1.20", two.hhA)
+        _     <-
+          sql"INSERT INTO devices(mac,name,profile_id,household_id) VALUES ($macM,'sharedB',${two.profileB},${two.hhB})".update.run
+            .transact(xa)
+        // The block-page / access-request call shape: no household argument → default
+        // household (hhA is HouseholdId.Default in the fixture). Must return exactly the
+        // hhA row and NOT throw on the 2-row match.
+        found <- dr.findByMac(macM)
+      } yield assertTrue(found.exists(_.mac == macM)) &&
+        assertTrue(found.exists(_.name == "sharedA"))
+    },
     // ── Pin 6: router-cap entitlement is scoped per household (#2134) ───────────
     test("pin 6 — hh-B's router count never affects hh-A's router-cap check") {
       // hh-A (household 1) is backfilled to router_cap 10; hh-B defaults to 1 and is seeded with one
