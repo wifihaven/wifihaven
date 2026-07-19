@@ -87,5 +87,5 @@ self-hosted option and a hosted cloud tier. Learn more at wifihaven.net.
 | No card during beta | pricing doc §5.2 |
 | Beta = 25 households; GA = fill + 2 months | operator instruction 2026-07-12 (supersedes pricing doc's 4-month term) |
 | Self-hosted free forever, stated explicitly | pricing doc §1, §3 |
-| OpenWRT routers from ~$30 | verify a current example model/price before send (e.g. GL.iNet entry models) — UNVERIFIED |
+| OpenWRT routers from ~$30 | verify a current example model/price before send (e.g. GL.iNet entry models) — UNVERIFIED. If naming GL.iNet: the agent is validated on **flashed vanilla OpenWRT** only; GL.iNet **stock** firmware is not yet verified ([#2304](https://github.com/wifihaven/wifihaven/issues/2304)) — don't imply it works out of the box. |
 | Per-device apps defeated by deletion/reset; DNS filters bypassed by DoH | pricing doc §3.1; general claim, safe |

@@ -70,6 +70,13 @@ Prompts for the API URL, an enrollment token (admin UI → **Routers → Add
 router**), and the LAN prefix. Detects 23.05.x (opkg) vs 24.10+ (apk) and
 installs the matching artifact. Full walkthrough: [`docs/install-openwrt.md`](docs/install-openwrt.md).
 
+> **Supported firmware:** the agent is currently validated only on **flashed
+> vanilla OpenWRT**. Many recommended routers (e.g. GL.iNet models) ship
+> GL.iNet's own *forked* OpenWRT firmware, which is **not yet a verified
+> target** ([#2304](https://github.com/wifihaven/wifihaven/issues/2304)). On
+> GL.iNet hardware, flash vanilla OpenWRT first — see
+> [`docs/install-flint2.md`](docs/install-flint2.md).
+
 **3. OPNsense router agent** — installer not yet published. See the
 [`opnsense/`](opnsense/) directory for the in-progress plugin.
 
