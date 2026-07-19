@@ -526,7 +526,19 @@ trait DeviceRepo {
       ip: String,
       household: HouseholdId = HouseholdId.Default,
   ): Task[DeviceId]
-  def updateLastSeen(mac: MacAddress, ip: String): Task[Unit]
+
+  /**
+   * #2125: household-scoped. Now that the same MAC can exist in two households (V74 dropped the
+   * global `devices_mac_key`), the UPDATE is AND-scoped to `household` so it can only touch its own
+   * household's row. Defaults to `HouseholdId.Default` for the single-household test call sites.
+   * (Production ingest uses `touchLastSeen`/`touchLastSeenBatch`, which are already
+   * household-scoped.)
+   */
+  def updateLastSeen(
+      mac: MacAddress,
+      ip: String,
+      household: HouseholdId = HouseholdId.Default,
+  ): Task[Unit]
 
   /**
    * Update last_seen_ip/at only if the device row exists. Used by router ingest where we don't want
@@ -573,8 +585,16 @@ trait DeviceRepo {
       newName: String,
       household: HouseholdId = HouseholdId.Default,
   ): Task[Int]
-  def updateProfile(mac: MacAddress, pid: ProfileId): Task[Unit]
-  def delete(mac: MacAddress): Task[Unit]
+
+  /**
+   * #2125 (multi-tenant contract half of #2108): household-scoped delete. Now that the same MAC can
+   * exist in two households (V74 dropped the global `devices_mac_key`), a global `WHERE mac=$mac`
+   * delete would remove BOTH households' rows — a cross-tenant leak. The user-facing DELETE route
+   * passes the caller's `claims.hh` (it already resolves the row via `findByMacInHousehold` first),
+   * so a writer can only delete its own household's device. Index-backed by V65's
+   * uq_devices_household_mac.
+   */
+  def delete(mac: MacAddress, household: HouseholdId = HouseholdId.Default): Task[Unit]
 }
 
 /**
@@ -1836,8 +1856,9 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
         .query[DeviceId]
         .unique).transact(xa)
   }
-  def updateLastSeen(mac: MacAddress, ip: String)                   =
-    sql"UPDATE devices SET last_seen_ip=$ip,last_seen_at=NOW() WHERE mac=$mac".update.run
+  def updateLastSeen(mac: MacAddress, ip: String, household: HouseholdId = HouseholdId.Default) =
+    // #2125: AND-scoped to `household` so it can only touch its own household's row.
+    sql"UPDATE devices SET last_seen_ip=$ip,last_seen_at=NOW() WHERE household_id=$household AND mac=$mac".update.run
       .transact(xa)
       .unit
   def touchLastSeen(
@@ -1900,9 +1921,10 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
         .transact(xa),
     )
   }
-  def updateProfile(mac: MacAddress, pid: ProfileId)                =
-    sql"UPDATE devices SET profile_id=$pid WHERE mac=$mac".update.run.transact(xa).unit
-  def delete(mac: MacAddress) = sql"DELETE FROM devices WHERE mac=$mac".update.run.transact(xa).unit
+  def delete(mac: MacAddress, household: HouseholdId = HouseholdId.Default) =
+    // #2125: household-scoped so deleting (hhA, mac) never removes another household's (hhB, mac)
+    // row. The user-facing DELETE route passes `claims.hh` after a household-scoped lookup.
+    sql"DELETE FROM devices WHERE household_id=$household AND mac=$mac".update.run.transact(xa).unit
 }
 
 class AlertRepoLive(xa: Transactor[Task]) extends AlertRepo {
