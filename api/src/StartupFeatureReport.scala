@@ -116,7 +116,10 @@ object StartupFeatureReport {
         "press-responder",
         press.responderEnabled,
         if press.responderEnabled then
-          "wifihaven.press.responderEnabled=true — signed press webhook drafts a cloud-agent reply"
+          // #2327: name the active transport so the credit-billed vs subscription-billed path is
+          // observable, not just "enabled".
+          s"wifihaven.press.responderEnabled=true — signed press webhook drafts a cloud-agent reply " +
+            s"(dispatcher=${press.dispatcherTrimmed})"
         else
           "wifihaven.press.responderEnabled=false — inbound press webhook no-ops, agent endpoint " +
             "404 (#2203/#2265)",

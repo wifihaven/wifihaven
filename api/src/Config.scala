@@ -655,44 +655,87 @@ case class SupportConfig(
 //   - `deploymentEnv`       which deployment ("staging" | "prod"); rides in the kickoff.
 case class PressConfig(
     responderEnabled: Boolean = false,
+    // #2327: which cloud-agent transport the press responder dispatches through — an EXPLICIT named
+    // value (#2265 no-dark: never inferred), mirroring `support.dispatcher` (#2300) exactly. Both
+    // supported transports sit behind the ONE [[wifihaven.api.press.PressAgentDispatcher]] trait +
+    // the reply-target-bound [[wifihaven.api.press.PressToken]] callback contract:
+    //   - "managed-agents"    → the Anthropic Managed Agents session (default; API-credit billed).
+    //   - "claude-code-cloud" → a Claude Code Cloud routine fired per message (subscription billed —
+    //                            the reason for #2327: we can't provision the API credits).
+    // Default keeps the pre-#2327 behavior. When responderEnabled, an unknown value FAILS BOOT
+    // (missingRequiredKeys), and the SELECTED transport's config chain becomes required (below).
+    dispatcher: String = "managed-agents",
     webhookSecret: String = "",
     anthropicApiKey: String = "",
     claudeAgentId: String = "",
     claudeEnvironmentId: String = "",
     anthropicApiBase: String = "https://api.anthropic.com",
+    // #2327: the Claude Code Cloud routine to fire (dispatcher = "claude-code-cloud"). A SEPARATE
+    // press routine (its system prompt carries the press-agent persona — public info only, no
+    // household data — from deploy/press-agent/), pre-provisioned once in the Claude Code web UI with
+    // an "API trigger" that mints the per-routine bearer token. The dispatcher only ever FIRES it.
+    //   - claudeCodeRoutineId    the routine id fired at POST /v1/claude_code/routines/{id}/fire.
+    //   - claudeCodeRoutineToken the per-routine bearer token (Authorization: Bearer). SECRET.
+    // The fire endpoint shares `anthropicApiBase` (both live on api.anthropic.com).
+    claudeCodeRoutineId: String = "",
+    claudeCodeRoutineToken: String = "",
     agentTokenSecret: String = "",
     agentTokenTtlMinutes: Int = 30,
     agentApiBase: String = "https://api.wifihaven.net",
     deploymentEnv: String = "",
 ) {
-  val webhookSecretTrimmed: String       = webhookSecret.trim
-  val anthropicApiKeyTrimmed: String     = anthropicApiKey.trim
-  val claudeAgentIdTrimmed: String       = claudeAgentId.trim
-  val claudeEnvironmentIdTrimmed: String = claudeEnvironmentId.trim
-  val agentTokenSecretTrimmed: String    = agentTokenSecret.trim
-  val agentApiBaseTrimmed: String        = agentApiBase.trim.stripSuffix("/")
-  val deploymentEnvTrimmed: String       = deploymentEnv.trim
+  val dispatcherTrimmed: String             = dispatcher.trim
+  val webhookSecretTrimmed: String          = webhookSecret.trim
+  val anthropicApiKeyTrimmed: String        = anthropicApiKey.trim
+  val claudeAgentIdTrimmed: String          = claudeAgentId.trim
+  val claudeEnvironmentIdTrimmed: String    = claudeEnvironmentId.trim
+  val claudeCodeRoutineIdTrimmed: String    = claudeCodeRoutineId.trim
+  val claudeCodeRoutineTokenTrimmed: String = claudeCodeRoutineToken.trim
+  val agentTokenSecretTrimmed: String       = agentTokenSecret.trim
+  val agentApiBaseTrimmed: String           = agentApiBase.trim.stripSuffix("/")
+  val deploymentEnvTrimmed: String          = deploymentEnv.trim
 
   // The press agent callback (`/api/press/agent/reply`) authenticates solely with the HMAC press
   // token; disabled ⇒ 404-shaped denial (mirrors support's agentEndpointsEnabled).
   val agentEndpointsEnabled: Boolean = responderEnabled && agentTokenSecretTrimmed.nonEmpty
 
   // #2265: fail LOUD, in bulk. With the press responder explicitly enabled EVERY config the chain
-  // needs is required — the Worker↔API webhook secret, the Anthropic session-create triple, the
+  // needs is required — the Worker↔API webhook secret, the SELECTED transport's chain (#2327), the
   // agent-token secret, and the deployment identity. Returns ALL missing keys at once;
   // AppConfig.validateRequired folds these into the boot accumulator (and adds the email cross-check
   // there, since it needs the whole AppConfig).
   def missingRequiredKeys: List[String] =
     if !responderEnabled then Nil
-    else
-      List(
-        "press.webhookSecret"       -> webhookSecretTrimmed,
-        "press.anthropicApiKey"     -> anthropicApiKeyTrimmed,
-        "press.claudeAgentId"       -> claudeAgentIdTrimmed,
-        "press.claudeEnvironmentId" -> claudeEnvironmentIdTrimmed,
-        "press.agentTokenSecret"    -> agentTokenSecretTrimmed,
-        "press.deploymentEnv"       -> deploymentEnvTrimmed,
-      ).collect { case (k, v) if v.isEmpty => k }
+    else {
+      // Common to BOTH dispatchers: the Worker↔API webhook secret, the #2241-shape press-token
+      // secret, and the deployment identity that rides in every kickoff.
+      val common    =
+        List(
+          "press.webhookSecret"    -> webhookSecretTrimmed,
+          "press.agentTokenSecret" -> agentTokenSecretTrimmed,
+          "press.deploymentEnv"    -> deploymentEnvTrimmed,
+        ).collect { case (k, v) if v.isEmpty => k }
+      // #2327: only the SELECTED transport's config chain is required. An unknown dispatcher value is
+      // itself a boot failure (explicit named value, #2265) — the operator sees the valid set.
+      val transport = dispatcherTrimmed match {
+        case "managed-agents"    =>
+          List(
+            "press.anthropicApiKey"     -> anthropicApiKeyTrimmed,
+            "press.claudeAgentId"       -> claudeAgentIdTrimmed,
+            "press.claudeEnvironmentId" -> claudeEnvironmentIdTrimmed,
+          ).collect { case (k, v) if v.isEmpty => k }
+        case "claude-code-cloud" =>
+          List(
+            "press.claudeCodeRoutineId"    -> claudeCodeRoutineIdTrimmed,
+            "press.claudeCodeRoutineToken" -> claudeCodeRoutineTokenTrimmed,
+          ).collect { case (k, v) if v.isEmpty => k }
+        case other               =>
+          List(
+            s"press.dispatcher must be 'managed-agents' or 'claude-code-cloud' (got '$other')",
+          )
+      }
+      common ++ transport
+    }
 
   // Clamp to a 1-minute floor so a misconfigured 0/negative can't mint already-expired tokens.
   val agentTokenTtl: java.time.Duration =
