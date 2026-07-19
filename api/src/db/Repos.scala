@@ -2046,9 +2046,11 @@ class AlertRepoLive(xa: Transactor[Task]) extends AlertRepo {
     // read (`listForHousehold` on `a.household_id`) attributes it to the same household the pre-#2283
     // transitive device join did — no read regression. This is the public, unauthenticated block-page
     // path (no JWT/router household in scope), so the household is derived from the device rather than
-    // passed by the caller; block-page household derivation proper is deferred to #2109. A MAC with no
-    // device row (or, defensively, one shared across households under V74) falls back to the LOWEST
-    // matching household, else `HouseholdId.Default` — matching today's global `findByMac`.
+    // passed by the caller. A MAC with no device row (or, defensively, one shared across households
+    // under V74) falls back to the LOWEST matching household, else `HouseholdId.Default` — matching
+    // today's global `findByMac`. Deriving the household authoritatively for the block-page path
+    // (so a shared MAC attributes to the requesting router's household, not the lowest id) is the
+    // follow-up TODO(#2322).
     sql"""INSERT INTO alerts (kind, status, mac, household_id, profile_id, host, request_kind, note, created_at)
           SELECT 'access_request', 'pending', $mac,
                  COALESCE(
