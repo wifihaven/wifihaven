@@ -969,7 +969,7 @@ object TimeRoutes {
                 .toList
                 .distinct
               presence <- (if allMacs.isEmpty then ZIO.succeed(Nil)
-                           else trafficRepo.listPresenceRows(allMacs, from, to))
+                           else trafficRepo.listPresenceRows(claims.hh, allMacs, from, to))
                 .mapError(ApiError.Db(_))
               limitByPid = allLimits.iterator.map(l => l.profileId -> l.dailyMinutes).toMap
               summaries  = visible
@@ -1050,6 +1050,7 @@ object TimeRoutes {
                   cache
                     .getOrLoadDaily(p.id, date, today) {
                       buildProfileTimeStatus(
+                        claims.hh,
                         p,
                         devicesByPid.getOrElse(Some(p.id), Nil),
                         date,
@@ -1106,6 +1107,7 @@ object TimeRoutes {
                   cache
                     .getOrLoadWeekly(p.id, from, to, bucketOffsetMin, today) {
                       buildProfileTimeStatusWeek(
+                        claims.hh,
                         p,
                         devicesByPid.getOrElse(Some(p.id), Nil),
                         from,
@@ -1146,6 +1148,7 @@ object TimeRoutes {
             _ <- requireProfileReadAccess(claims, device.profileId, userProfileRepo, profileRepo)
             ambient <- ambientRepo.gateFor(settings, today).mapError(ApiError.Db(_))
             status  <- buildDeviceTimeStatusWeek(
+              claims.hh,
               device,
               from,
               to,
@@ -1178,6 +1181,7 @@ object TimeRoutes {
               .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Device not found")))
             _ <- requireProfileReadAccess(claims, device.profileId, userProfileRepo, profileRepo)
             status <- buildDeviceTimeStatus(
+              claims.hh,
               device,
               date,
               now,
@@ -1249,7 +1253,7 @@ object TimeRoutes {
                 .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Device not found")))
               _ <- requireProfileReadAccess(claims, device.profileId, userProfileRepo, profileRepo)
               rows <- trafficRepo
-                .listPresenceRows(List(device.mac), date)
+                .listPresenceRows(claims.hh, List(device.mac), date)
                 .mapError(ApiError.Db(_))
               classified = wifihaven.api.presence.Presence
                 .classifyRows(rows, settings.heartbeatFilter)
@@ -1360,6 +1364,7 @@ object TimeRoutes {
    * computed from the day's presence rows here (snapshot doesn't need them).
    */
   private def buildProfileTimeStatus(
+      household: HouseholdId,
       profile: Profile,
       devices: List[Device],
       date: LocalDate,
@@ -1372,11 +1377,11 @@ object TimeRoutes {
   ): Task[ProfileTimeStatus] = {
     val macs = devices.map(_.mac)
     for {
-      stateOpt <- timeStatusService.dayState(now, date, settings, profile.id)
+      stateOpt <- timeStatusService.dayState(household, now, date, settings, profile.id)
       state = stateOpt.getOrElse(
         wifihaven.api.policy.ProfileDayState(profile.id, date, None, 0, 0, None, false, None, Nil),
       )
-      raw       <- trafficRepo.listPresenceRows(macs, date)
+      raw       <- trafficRepo.listPresenceRows(household, macs, date)
       appLimits <- appTimeLimitRepo.listForProfile(profile.id)
       ambient   <- ambientRepo.gateFor(
         settings,
@@ -1401,6 +1406,7 @@ object TimeRoutes {
    * `date` so each bar in the UI matches what a `Today`-view for that date would report.
    */
   private def buildProfileTimeStatusWeek(
+      household: HouseholdId,
       profile: Profile,
       devices: List[Device],
       from: LocalDate,
@@ -1416,7 +1422,7 @@ object TimeRoutes {
     val macs = devices.map(_.mac)
     for {
       tl        <- tlRepo.findForProfile(profile.id)
-      raw       <- trafficRepo.listPresenceRows(macs, from, to)
+      raw       <- trafficRepo.listPresenceRows(household, macs, from, to)
       appLimits <- appTimeLimitRepo.listForProfile(profile.id)
       // #2077: gate with the same profile app-attribution context as the daily view so the
       // weekly bars reconcile with the daily headline.
@@ -1473,6 +1479,7 @@ object TimeRoutes {
 
   /** Per-device weekly variant of [[buildProfileTimeStatusWeek]]. */
   private def buildDeviceTimeStatusWeek(
+      household: HouseholdId,
       device: Device,
       from: LocalDate,
       to: LocalDate,
@@ -1492,7 +1499,7 @@ object TimeRoutes {
       profile   <- pid.fold(ZIO.succeed("No profile"))(p =>
         profileRepo.findById(p).map(_.map(_.name).getOrElse("Unknown")),
       )
-      raw       <- trafficRepo.listPresenceRows(macs, from, to)
+      raw       <- trafficRepo.listPresenceRows(household, macs, from, to)
       appLimits <- pid.fold(ZIO.succeed(List.empty[AppTimeLimit]))(
         appTimeLimitRepo.listForProfile,
       )
@@ -1601,6 +1608,7 @@ object TimeRoutes {
    * presence rows, but the daily cap fields read from `state`.
    */
   private def buildDeviceTimeStatus(
+      household: HouseholdId,
       device: Device,
       date: LocalDate,
       now: java.time.Instant,
@@ -1614,9 +1622,9 @@ object TimeRoutes {
     val pid = device.profileId
     for {
       stateOpt   <- pid.fold(ZIO.succeed(Option.empty[wifihaven.api.policy.ProfileDayState]))(p =>
-        timeStatusService.dayState(now, date, settings, p),
+        timeStatusService.dayState(household, now, date, settings, p),
       )
-      raw        <- trafficRepo.listPresenceRows(List(device.mac), date)
+      raw        <- trafficRepo.listPresenceRows(household, List(device.mac), date)
       profileOpt <- pid.fold(ZIO.succeed(Option.empty[Profile]))(profileRepo.findById)
       appLimits  <- pid.fold(ZIO.succeed(List.empty[AppTimeLimit]))(
         appTimeLimitRepo.listForProfile,

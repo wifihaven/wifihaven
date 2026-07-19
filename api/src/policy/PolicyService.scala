@@ -697,7 +697,7 @@ class PolicyServiceLive(
             // policy code (the old `siteGroups`/`byApp`/`exemptPats`/`perMacTot`/`totalMins`/
             // `capExhausted` re-derivation) so the block-page reason and the snapshot's nftables
             // enforcement cannot drift. Only the genuinely per-HOST matching stays below.
-            state           <- timeStatusService.todaysState(now, settings, pid)
+            state           <- timeStatusService.todaysState(household, now, settings, pid)
             // #1630: read the unified `appTimeLimitRepo` rows (all modes) so the per-host
             // /decision fallback shares the same fold as the snapshot via
             // `ProfileAppDispositions.from`. Before #1630 this path fetched `appAssigns` +

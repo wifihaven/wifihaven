@@ -71,7 +71,10 @@ trait TimeStatusService {
    * `None` if no such profile exists. Use this on the snapshot/grant/ingestion side and for
    * `/api/time/status/...` reads against today.
    */
+  // #2313: `household` scopes the `traffic_reports` presence reads — a MAC can exist in >1 household
+  // post-V74, so a bare-MAC read would inflate used-minutes with another tenant's traffic.
   def todaysState(
+      household: HouseholdId,
       now: Instant,
       settings: HouseholdSettings,
       profileId: ProfileId,
@@ -89,6 +92,7 @@ trait TimeStatusService {
    * what `dayStateLive` would have returned.
    */
   def dayState(
+      household: HouseholdId,
       now: Instant,
       date: LocalDate,
       settings: HouseholdSettings,
@@ -118,6 +122,7 @@ trait TimeStatusService {
    * (#1160's source-of-truth invariant).
    */
   def dayStateLive(
+      household: HouseholdId,
       now: Instant,
       date: LocalDate,
       settings: HouseholdSettings,
@@ -178,14 +183,20 @@ class TimeStatusServiceLive(
   private def schedulesFor(pid: ProfileId): Task[List[DbSchedule]] =
     namedScheduleRepo.windowsForProfile(pid).map(syntheticWindows(pid, _))
 
+  // #2313: `household` scopes the `traffic_reports` presence reads to the caller's tenant — a MAC can
+  // exist in more than one household (post-V74), so without it a profile's used-minutes would be
+  // inflated by another household's traffic on the same MAC. Every caller already has the household:
+  // `PolicyService.decide`/snapshot pass the router/claims household, the block page passes Default.
   def todaysState(
+      household: HouseholdId,
       now: Instant,
       settings: HouseholdSettings,
       profileId: ProfileId,
   ): Task[Option[ProfileDayState]] =
-    dayState(now, PolicyService.householdLocalDate(now, settings), settings, profileId)
+    dayState(household, now, PolicyService.householdLocalDate(now, settings), settings, profileId)
 
   def dayState(
+      household: HouseholdId,
       now: Instant,
       date: LocalDate,
       settings: HouseholdSettings,
@@ -194,13 +205,15 @@ class TimeStatusServiceLive(
     val today = PolicyService.householdLocalDate(now, settings)
     if (date == today)
       rollupRepo.getDayForProfile(profileId, date).flatMap {
-        case Some(rolled) => dayStateFromRollupAndTail(now, date, settings, profileId, rolled)
-        case None         => dayStateLive(now, date, settings, profileId)
+        case Some(rolled) =>
+          dayStateFromRollupAndTail(household, now, date, settings, profileId, rolled)
+        case None         => dayStateLive(household, now, date, settings, profileId)
       }
-    else dayStateLive(now, date, settings, profileId)
+    else dayStateLive(household, now, date, settings, profileId)
   }
 
   def dayStateLive(
+      household: HouseholdId,
       now: Instant,
       date: LocalDate,
       settings: HouseholdSettings,
@@ -214,7 +227,7 @@ class TimeStatusServiceLive(
           tl        <- timeLimitRepo.findForProfile(profileId)
           atls      <- appTimeLimitRepo.listForProfile(profileId)
           devices   <- deviceRepo.listForProfile(profileId)
-          presence  <- trafficRepo.listPresenceRows(devices.map(_.mac), date)
+          presence  <- trafficRepo.listPresenceRows(household, devices.map(_.mac), date)
           ambient   <- ambientGateFor(now, settings)
           extMins   <- extRepo.getProfileTotalExtension(profileId, date)
         } yield Some(
@@ -256,7 +269,7 @@ class TimeStatusServiceLive(
       namedP   <- namedScheduleRepo.windowsForAllProfiles
       tlsP     <- ZIO.foreach(profiles)(p => timeLimitRepo.findForProfile(p.id).map(p.id -> _))
       atlsP    <- ZIO.foreach(profiles)(p => appTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
-      presence <- trafficRepo.listPresenceRows(devices.map(_.mac), date)
+      presence <- trafficRepo.listPresenceRows(household, devices.map(_.mac), date)
       ambient  <- ambientGateFor(now, settings)
       exts     <- extRepo.snapshotAllByProfile(date)
     } yield {
@@ -296,6 +309,7 @@ class TimeStatusServiceLive(
   // absorbed yet (period_start >= rolledThrough). Truncation to minutes happens once at the end so
   // the result is byte-identical to a full live aggregation over the whole day.
   private def dayStateFromRollupAndTail(
+      household: HouseholdId,
       now: Instant,
       date: LocalDate,
       settings: HouseholdSettings,
@@ -306,16 +320,18 @@ class TimeStatusServiceLive(
       case None    => ZIO.succeed(None)
       case Some(p) =>
         for {
-          schedules <- schedulesFor(profileId)
-          tl        <- timeLimitRepo.findForProfile(profileId)
-          atls      <- appTimeLimitRepo.listForProfile(profileId)
-          devices   <- deviceRepo.listForProfile(profileId)
-          tail <- trafficRepo.listPresenceRowsSince(devices.map(_.mac), date, rolled.rolledThrough)
+          schedules  <- schedulesFor(profileId)
+          tl         <- timeLimitRepo.findForProfile(profileId)
+          atls       <- appTimeLimitRepo.listForProfile(profileId)
+          devices    <- deviceRepo.listForProfile(profileId)
+          tail       <- trafficRepo
+            .listPresenceRowsSince(household, devices.map(_.mac), date, rolled.rolledThrough)
           ambient    <- ambientGateFor(now, settings)
           extMins    <- extRepo.getProfileTotalExtension(profileId, date)
           // #1515: per-app cap usage from the #1510 per-app rollup + live tail, so the per-app cap
           // enforces on the rollup path identically to the all-live path.
-          perAppMins <- appUsedRollupService.appCapMinutesByAppId(now, date, settings, profileId)
+          perAppMins <- appUsedRollupService
+            .appCapMinutesByAppId(household, now, date, settings, profileId)
         } yield {
           // #2077: the rolled part was gated at rollup-write time; gate the live tail the same
           // way. Gating only the tail slice can transiently drop an ambient-only tail of a real
@@ -377,18 +393,20 @@ class TimeStatusServiceLive(
     // per-profile filtering handle any per-row over-fetch.
     val watermark = rolled.values.iterator.map(_.rolledThrough).min
     for {
-      devices    <- deviceRepo.listAllForHousehold(household)
-      namedP     <- namedScheduleRepo.windowsForAllProfiles
-      tlsP       <- ZIO.foreach(profiles)(p => timeLimitRepo.findForProfile(p.id).map(p.id -> _))
-      atlsP      <- ZIO.foreach(profiles)(p => appTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
-      tail       <- trafficRepo.listPresenceRowsSince(devices.map(_.mac), date, watermark)
-      ambient    <- ambientGateFor(now, settings)
-      exts       <- extRepo.snapshotAllByProfile(date)
+      devices <- deviceRepo.listAllForHousehold(household)
+      namedP  <- namedScheduleRepo.windowsForAllProfiles
+      tlsP    <- ZIO.foreach(profiles)(p => timeLimitRepo.findForProfile(p.id).map(p.id -> _))
+      atlsP   <- ZIO.foreach(profiles)(p => appTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
+      tail    <- trafficRepo.listPresenceRowsSince(household, devices.map(_.mac), date, watermark)
+      ambient <- ambientGateFor(now, settings)
+      exts    <- extRepo.snapshotAllByProfile(date)
       // #1515: per-app cap usage per profile from the #1510 per-app rollup + live tail. Keyed by the
       // `app:<slug>` cap-group label so it joins to each profile's per-app cap groups below.
       perAppMins <- ZIO
         .foreach(profiles)(p =>
-          appUsedRollupService.appCapMinutesByAppId(now, date, settings, p.id).map(p.id -> _),
+          appUsedRollupService
+            .appCapMinutesByAppId(household, now, date, settings, p.id)
+            .map(p.id -> _),
         )
         .map(_.toMap)
     } yield {

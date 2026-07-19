@@ -3,7 +3,7 @@ package wifihaven.api.usage
 import wifihaven.api.db.*
 import wifihaven.api.policy.{PolicyService, TimeStatusService}
 import wifihaven.shared.HouseholdSettings
-import wifihaven.shared.types.{AppId, ProfileId}
+import wifihaven.shared.types.{AppId, HouseholdId, ProfileId}
 import zio.*
 
 import java.time.{Instant, LocalDate}
@@ -51,6 +51,7 @@ trait AppUsedRollupService {
    * `app_used_daily` rollup the per-app series reads.
    */
   def appEngagedMinutes(
+      household: HouseholdId,
       now: Instant,
       date: LocalDate,
       settings: HouseholdSettings,
@@ -68,6 +69,7 @@ trait AppUsedRollupService {
    * (#1532).
    */
   def appCapMinutesByAppId(
+      household: HouseholdId,
       now: Instant,
       date: LocalDate,
       settings: HouseholdSettings,
@@ -83,12 +85,14 @@ trait AppUsedRollupService {
  */
 object NoopAppUsedRollupService extends AppUsedRollupService {
   def appEngagedMinutes(
+      household: HouseholdId,
       now: Instant,
       date: LocalDate,
       settings: HouseholdSettings,
       profileId: ProfileId,
   ): Task[Map[AppId, Int]] = ZIO.succeed(Map.empty)
   def appCapMinutesByAppId(
+      household: HouseholdId,
       now: Instant,
       date: LocalDate,
       settings: HouseholdSettings,
@@ -107,20 +111,22 @@ class AppUsedRollupServiceLive(
 ) extends AppUsedRollupService {
 
   def appEngagedMinutes(
+      household: HouseholdId,
       now: Instant,
       date: LocalDate,
       settings: HouseholdSettings,
       profileId: ProfileId,
   ): Task[Map[AppId, Int]] =
-    aggregate(now, date, settings, profileId)
+    aggregate(household, now, date, settings, profileId)
 
   def appCapMinutesByAppId(
+      household: HouseholdId,
       now: Instant,
       date: LocalDate,
       settings: HouseholdSettings,
       profileId: ProfileId,
   ): Task[Map[AppId, Int]] =
-    aggregate(now, date, settings, profileId)
+    aggregate(household, now, date, settings, profileId)
 
   // Single read path keyed on apps.id end-to-end (#1564). When the per-app rollup is non-empty,
   // add its engaged seconds to a live aggregation of the TAIL past the shared watermark
@@ -131,6 +137,7 @@ class AppUsedRollupServiceLive(
   // span straddles it — same exactness argument as `time_used_daily`). The cap and series consumers
   // both read this AppId-keyed map directly; no slug round-trip.
   private def aggregate(
+      household: HouseholdId,
       now: Instant,
       date: LocalDate,
       settings: HouseholdSettings,
@@ -149,8 +156,9 @@ class AppUsedRollupServiceLive(
             devices <- deviceRepo.listForProfile(profileId)
             macs = devices.map(_.mac)
             raw     <- rolled.values.iterator.map(_.rolledThrough).minOption match {
-              case Some(watermark) => trafficRepo.listPresenceRowsSince(macs, date, watermark)
-              case None            => trafficRepo.listPresenceRows(macs, date)
+              case Some(watermark) =>
+                trafficRepo.listPresenceRowsSince(household, macs, date, watermark)
+              case None            => trafficRepo.listPresenceRows(household, macs, date)
             }
             // #2077: gate the live slice the same way the rollup write path gates its input, so
             // rolled + tail compose over one active-minute definition. Gating only the slice can

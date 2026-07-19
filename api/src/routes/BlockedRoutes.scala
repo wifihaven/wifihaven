@@ -102,7 +102,11 @@ object BlockedRoutes {
           for {
             now      <- clock.instant
             settings <- householdSettingsRepo.get
-            ds       <- timeStatusService.todaysState(now, settings, p.id)
+            // #2313: the block page has no household context on the wire (the router redirect carries
+            // only ?mac=&host=), so it reads the default household — the same household this handler's
+            // `policy.decide(HouseholdId.Default, …)` above already uses. Household-aware block-page
+            // resolution is a separate concern (see AGENTS.md §1615/§1617).
+            ds       <- timeStatusService.todaysState(HouseholdId.Default, now, settings, p.id)
           } yield ds
       }
       reasonPair  <-

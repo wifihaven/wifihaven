@@ -114,7 +114,7 @@ object UsageRoutes {
             now <- clock.instant
             from = now.minus(Duration.ofDays(windowDays.toLong))
             rows <- trafficRepo
-              .listFqdnHostAggregatesForDevice(mac, from, now)
+              .listFqdnHostAggregatesForDevice(claims.hh, mac, from, now)
               .mapError(ApiError.Db(_))
             grouped = rows
               .groupBy { case (h, _, _) => Apex.orSelf(h) }
@@ -420,7 +420,7 @@ object UsageRoutes {
         .map(pid => pid -> allDevices.filter(_.profileId.contains(pid)))
         .toMap
       allMacs      = devicesByPid.valuesIterator.flatten.map(_.mac).toList.distinct
-      rows <- fetchPresenceDayWindow(trafficRepo, allMacs, date, zone)
+      rows <- fetchPresenceDayWindow(claims.hh, trafficRepo, allMacs, date, zone)
     } yield {
       val series = profiles.map { profile =>
         val devices   = devicesByPid.getOrElse(profile.id, Nil)
@@ -523,7 +523,7 @@ object UsageRoutes {
       allDevs <- deviceRepo.listAllForHousehold(household).mapError(ApiError.Db(_))
       macs = allDevs.collect { case d if d.profileId.contains(pid) => d.mac }
       raw       <- (if (macs.isEmpty) ZIO.succeed(Nil)
-              else trafficRepo.listPresenceRows(macs, from, to))
+              else trafficRepo.listPresenceRows(household, macs, from, to))
         .mapError(ApiError.Db(_))
       appList   <- appRepo.listAll.mapError(ApiError.Db(_))
       mappings  <- appRepo.listAllHostMappings.mapError(ApiError.Db(_))
@@ -807,7 +807,7 @@ object UsageRoutes {
         .mapError(ApiError.Db(_))
         .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Device not found")))
       _         <- requireProfileReadAccess(claims, device.profileId, userProfileRepo, profileRepo)
-      raw       <- fetchPresenceDayWindow(trafficRepo, List(mac), date, zone)
+      raw       <- fetchPresenceDayWindow(claims.hh, trafficRepo, List(mac), date, zone)
       appLimits <- device.profileId
         .fold(ZIO.succeed(List.empty[wifihaven.shared.AppTimeLimit]))(pid =>
           appTimeLimitRepo.listForProfile(pid),
@@ -897,7 +897,7 @@ object UsageRoutes {
       devices   = all.filter(_.profileId.contains(pid))
       macs      = devices.map(_.mac)
       nameByMac = devices.iterator.map(d => d.mac -> d.name).toMap
-      raw     <- fetchPresenceDayWindow(trafficRepo, macs, date, zone)
+      raw     <- fetchPresenceDayWindow(claims.hh, trafficRepo, macs, date, zone)
       // #2077: gate the presence-derived series with the same definition as the daily headline.
       ambient <- ambientRepo.gateFor(settings, date).mapError(ApiError.Db(_))
       rows = wifihaven.api.policy.TimeStatusService
@@ -951,6 +951,7 @@ object UsageRoutes {
   // whole table for 90s. The row set is identical: both select exactly the
   // rows whose period_start falls in the local day.
   private def fetchPresenceDayWindow(
+      household: HouseholdId,
       trafficRepo: TrafficReportRepo,
       macs: List[MacAddress],
       date: LocalDate,
@@ -961,7 +962,7 @@ object UsageRoutes {
       val from = date.atStartOfDay(zone).toInstant
       val to   = date.plusDays(1).atStartOfDay(zone).toInstant
       trafficRepo
-        .listPresenceRowsInWindow(macs, from, to)
+        .listPresenceRowsInWindow(household, macs, from, to)
         .mapError(ApiError.Db(_))
     }
 
@@ -1173,7 +1174,7 @@ object UsageRoutes {
                 ZIO.succeed(List.empty[wifihaven.api.usage.TrafficUsageDbRow])
               else
                 trafficRepo
-                  .listRawInRange(macs, fromI, toI, rawCursor, Some(rawLimit))
+                  .listRawInRange(claims.hh, macs, fromI, toI, rawCursor, Some(rawLimit))
                   .mapError(ApiError.Db(_))
             built   = UsageTraffic.buildRaw(pagedRows, devByMac, profNames)
             nextCur =
@@ -1215,6 +1216,7 @@ object UsageRoutes {
               else
                 UsageTrafficQuery
                   .aggregate(
+                    claims.hh,
                     trafficRepo,
                     rollupRepo,
                     macs,

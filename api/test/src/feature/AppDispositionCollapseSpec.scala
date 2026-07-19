@@ -153,7 +153,7 @@ object AppDispositionCollapseSpec extends ZIOSpec[TestDatabase.AllRepos & Embedd
         _        <- seedTraffic(rid, kidMac, "khanacademy.org", 20)
         settings <- hsr.get
         tss      <- buildTss
-        stOpt    <- tss.todaysState(nowInstant, settings, pid)
+        stOpt    <- tss.todaysState(HouseholdId.Default, nowInstant, settings, pid)
         state = stOpt.get
       } yield assertTrue(state.usedMinutes == 0)
     },
@@ -178,7 +178,7 @@ object AppDispositionCollapseSpec extends ZIOSpec[TestDatabase.AllRepos & Embedd
         _        <- seedTraffic(rid, kidMac, "khanacademy.org", 20)
         settings <- hsr.get
         tss      <- buildTss
-        stOpt    <- tss.todaysState(nowInstant, settings, pid)
+        stOpt    <- tss.todaysState(HouseholdId.Default, nowInstant, settings, pid)
         state = stOpt.get
       } yield assertTrue(state.usedMinutes >= 15)
     },
@@ -228,7 +228,7 @@ object AppDispositionCollapseSpec extends ZIOSpec[TestDatabase.AllRepos & Embedd
         _        <- seedTraffic(rid, kidMac, "khanacademy.org", 120)
         settings <- hsr.get
         tss      <- buildTss
-        stOpt    <- tss.todaysState(nowInstant, settings, pid)
+        stOpt    <- tss.todaysState(HouseholdId.Default, nowInstant, settings, pid)
         state = stOpt.get
       } yield assertTrue(
         !state.blocked || state.blockReason != Some(MacBlockReason.TimeLimit),
@@ -259,7 +259,7 @@ object AppDispositionCollapseSpec extends ZIOSpec[TestDatabase.AllRepos & Embedd
         _        <- seedTraffic(rid, kidMac, "youtube.com", 65)
         settings <- hsr.get
         tss      <- buildTss
-        stOpt    <- tss.todaysState(nowInstant, settings, pid)
+        stOpt    <- tss.todaysState(HouseholdId.Default, nowInstant, settings, pid)
         state = stOpt.get
       } yield assertTrue(
         state.blocked,

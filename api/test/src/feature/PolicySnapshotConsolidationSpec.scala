@@ -220,7 +220,7 @@ object PolicySnapshotConsolidationSpec extends ZIOSpec[TestDatabase.AllRepos & E
         tss  <- buildTss
         snap <- ps.snapshot
         now = f.now.toInstant(ZoneOffset.UTC)
-        stOpt <- tss.todaysState(now, s, kid)
+        stOpt <- tss.todaysState(HouseholdId.Default, now, s, kid)
         state = stOpt.get
         rules = snap.profiles(kid).rules
       } yield assertTrue(

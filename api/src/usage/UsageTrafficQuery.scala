@@ -94,6 +94,10 @@ object UsageTrafficQuery {
    * result; the S4 aggregator passes a head-bucket window and takes the rows as-is.
    */
   def aggregate(
+      // #2313: scope the raw `traffic_reports` reads to the caller's household — `macs = Nil` means
+      // "all macs in `household`" (not all tenants), and a shared MAC never pulls another household's
+      // rows into this aggregation.
+      household: HouseholdId,
       trafficRepo: TrafficReportRepo,
       rollupRepo: RollupRepo,
       macs: List[MacAddress],
@@ -126,9 +130,9 @@ object UsageTrafficQuery {
                 UsageTraffic.Bucket.OneHour,
                 Some(step),
               ) =>
-            trafficRepo.listRawAggregatedInRange(macs, from, to, step.toSeconds)
+            trafficRepo.listRawAggregatedInRange(household, macs, from, to, step.toSeconds)
           case _ =>
-            trafficRepo.listRawInRange(macs, from, to)
+            trafficRepo.listRawInRange(household, macs, from, to)
         }
       case SourceTier.Hourly => rollupRepo.listHourlyInRange(macs, from, to).map(asDbRows)
       case SourceTier.Daily  => rollupRepo.listDailyInRange(macs, from, to).map(asDbRows)

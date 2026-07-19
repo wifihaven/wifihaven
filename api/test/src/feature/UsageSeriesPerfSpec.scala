@@ -137,11 +137,20 @@ object UsageSeriesPerfSpec
         _    <- insertAt(routerId, mac, "before.com", localMid.minusSeconds(600))
         _    <- insertAt(routerId, mac, "after.com", nextMid.plusSeconds(60))
         // Legacy three-call + zone filter (what fetchPresenceDayWindow used to do).
-        prev <- trafficRepo.listPresenceRows(List(MacAddress.unsafe(mac)), date.minusDays(1))
-        cur  <- trafficRepo.listPresenceRows(List(MacAddress.unsafe(mac)), date)
-        nxt  <- trafficRepo.listPresenceRows(List(MacAddress.unsafe(mac)), date.plusDays(1))
+        prev <- trafficRepo.listPresenceRows(
+          HouseholdId.Default,
+          List(MacAddress.unsafe(mac)),
+          date.minusDays(1),
+        )
+        cur <- trafficRepo.listPresenceRows(HouseholdId.Default, List(MacAddress.unsafe(mac)), date)
+        nxt <- trafficRepo.listPresenceRows(
+          HouseholdId.Default,
+          List(MacAddress.unsafe(mac)),
+          date.plusDays(1),
+        )
         legacy = (prev ++ cur ++ nxt).filter(_.periodStart.atZone(zone).toLocalDate == date)
         windowed <- trafficRepo.listPresenceRowsInWindow(
+          HouseholdId.Default,
           List(MacAddress.unsafe(mac)),
           localMid,
           nextMid,

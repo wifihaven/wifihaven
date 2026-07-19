@@ -152,10 +152,10 @@ object AppUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
         now = LocalDateTime.of(2025, 1, 6, 12, 0).toInstant(ZoneOffset.UTC)
         _      <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, stl, trr, hsr, now)
         reader <- makeReader
-        perApp <- reader.appEngagedMinutes(now, today, s, kid)
+        perApp <- reader.appEngagedMinutes(HouseholdId.Default, now, today, s, kid)
         // The per-app cap aggregate (AppDayState.usedMinutes) for the same app.
         tsvc   <- makeTimeService
-        state  <- tsvc.dayStateLive(now, today, s, kid)
+        state  <- tsvc.dayStateLive(HouseholdId.Default, now, today, s, kid)
         capMin = state.flatMap(_.perApp.find(_.label == "app:social").map(_.usedMinutes))
       } yield assertTrue(perApp.get(app).contains(15)) &&
         assertTrue(capMin.contains(15))
@@ -183,10 +183,10 @@ object AppUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
         watermark = LocalDateTime.of(2025, 1, 6, 9, 0).toInstant(ZoneOffset.UTC)
         reader   <- makeReader
         // Rollup empty → all-live path.
-        live     <- reader.appEngagedMinutes(now, today, s, kid)
+        live     <- reader.appEngagedMinutes(HouseholdId.Default, now, today, s, kid)
         // Plant the rolled prefix (the 25-min first window) and read via rolled+tail.
         _        <- aru.upsertDay(kid, app, today, RolledAppDay(25L * 60L, watermark))
-        composed <- reader.appEngagedMinutes(now, today, s, kid)
+        composed <- reader.appEngagedMinutes(HouseholdId.Default, now, today, s, kid)
       } yield assertTrue(live.get(app).contains(55)) &&
         assertTrue(composed.get(app).contains(55))
     },
@@ -249,7 +249,7 @@ object AppUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
         _   = atls
         now = LocalDateTime.of(2025, 1, 6, 12, 0).toInstant(ZoneOffset.UTC)
         tsvc  <- makeTimeService
-        state <- tsvc.dayStateLive(now, today, s, kid)
+        state <- tsvc.dayStateLive(HouseholdId.Default, now, today, s, kid)
         perApp = state.map(_.perApp).getOrElse(Nil)
       } yield assertTrue(atls.nonEmpty) &&
         assertTrue(atls.forall(_.appId == app)) &&

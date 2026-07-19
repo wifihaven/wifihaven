@@ -177,25 +177,44 @@ object TimeUsedRollupJob {
   ): Task[Int] = for {
     settings <- hs.get
     today = PolicyService.householdLocalDate(now, settings)
+    ambient    <- ambientRepo.gateFor(settings, today)
     // #2257: all-tenant rollup batch — enumerate households explicitly and union each one's scoped
     // read (no cross-tenant `listAll` a request path could also reach).
+    // #2313: the presence read is now PER-HOUSEHOLD (`traffic_reports` is router_id-keyed, and the
+    // same MAC can exist in >1 household post-V74), and `computeRolls` runs per household over only
+    // that household's profiles/devices/scoped presence. The per-household roll maps are then unioned
+    // — profile ids and (profile, app) keys are unique per household — so a shared MAC's minutes can
+    // never leak across tenants into the rollup the enforcement read consumes. Behaviour is identical
+    // for distinct MACs (each profile's macSet was already disjoint under the old global read).
     households <- profileRepo.distinctHouseholds
-    profiles   <- ZIO.foreach(households)(profileRepo.listAllForHousehold).map(_.flatten)
-    devices    <- ZIO.foreach(households)(deviceRepo.listAllForHousehold).map(_.flatten)
-    atlsP      <- ZIO.foreach(profiles)(p => appTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
-    presence   <- trafficRepo.listPresenceRows(devices.map(_.mac), today)
-    ambient    <- ambientRepo.gateFor(settings, today)
-    rolls = computeRolls(profiles, devices, atlsP.toMap, presence, settings, now, ambient)
+    perHh      <- ZIO.foreach(households) { hh =>
+      for {
+        profiles <- profileRepo.listAllForHousehold(hh)
+        devices  <- deviceRepo.listAllForHousehold(hh)
+        atlsP    <- ZIO.foreach(profiles)(p => appTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
+        presence <- trafficRepo.listPresenceRows(hh, devices.map(_.mac), today)
+      } yield computeRolls(profiles, devices, atlsP.toMap, presence, settings, now, ambient)
+    }
+    rolls = perHh.foldLeft(
+      (
+        Map.empty[ProfileId, RolledDay],
+        Map.empty[(ProfileId, AppId), RolledAppDay],
+        0,
+        0,
+      ),
+    ) { case ((accP, accA, accDropped, accAmb), (p, a, dropped, amb)) =>
+      (accP ++ p, accA ++ a, accDropped + dropped, accAmb + amb)
+    }
     // #1676: each tick emits the count of per-(mac, app) sessions silently
     // dropped by the #1666 anchor-row guard so an operator can rate-alert on
     // threshold drift. Summed across profiles since the metric is unlabelled.
-    _ <- AppMetrics.recordAppSessionsDropped(rolls._3)
+    _          <- AppMetrics.recordAppSessionsDropped(rolls._3)
     // #2077: same cadence for the ambient anchor gate's dropped-span watchdog —
     // a sustained rise with flat screen-time means the learner is eating real
     // sessions; a flat zero with returning phantom means it is too lax.
-    _ <- AppMetrics.recordAmbientSpansDropped(rolls._4)
-    n <- rollup.upsertBatch(today, rolls._1)
-    _ <- appRollup.upsertBatch(today, rolls._2)
+    _          <- AppMetrics.recordAmbientSpansDropped(rolls._4)
+    n          <- rollup.upsertBatch(today, rolls._1)
+    _          <- appRollup.upsertBatch(today, rolls._2)
   } yield n
 
   // Pure: collapse one presence batch into both the per-profile total roll (`time_used_daily`) and
