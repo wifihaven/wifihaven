@@ -21,6 +21,12 @@ case class AppConfig(
     flip: FlipConfig = FlipConfig(),
     support: SupportConfig = SupportConfig(),
     press: PressConfig = PressConfig(),
+    // #2233: operator-run press-OUTREACH send capability. A TOP-LEVEL block (HOCON
+    // `wifihaven.pressOutreach { … }`), NOT nested under `press`, because adding a field to the
+    // already-large PressConfig pushes its zio-config-magnolia derivation past the arity limit.
+    // SEPARATE from `press.responderEnabled` (the reply path) — its own explicit enable flag
+    // (#2265 no-dark, default off) and its own From/Reply-To (press@, not the alerts@ sender).
+    pressOutreach: PressOutreachConfig = PressOutreachConfig(),
 ) {
   // WIFIHAVEN_DEBUG env var: when set to a non-empty, non-"0"/"false"/"no"
   // value, mounts the read-only /api/debug/* endpoints (loopback only).
@@ -748,6 +754,43 @@ case class PressConfig(
     java.time.Duration.ofMinutes(math.max(1, agentTokenTtlMinutes).toLong)
 }
 
+// #2233 — the press-OUTREACH send capability's config (HOCON `wifihaven.pressOutreach { … }`). This
+// is operator-run tooling, guarded three ways: (1) `enabled` is an EXPLICIT named flag (default
+// false, no dark-by-default #2265 — the send endpoints 404 until the operator flips it); (2) every
+// send request must carry `confirm=true`; (3) the send REFUSES while the release still has
+// unresolved fill tokens. The transport is the same #578 Resend [[EmailSender]], but the envelope
+// FROM is the press address (NOT the alerts@ notification sender) and REPLY-TO points at the press
+// inbox so a journalist's reply routes to the #2203 press responder.
+//   - `enabled`      turns the /api/press/outreach/{preview,send} admin surface on. Default false.
+//   - `fromAddress`  the verified wifihaven.net sender the outreach is FROM (e.g.
+//                    "WifiHaven Press <press@wifihaven.net>").
+//   - `replyTo`      where replies go — the press inbox the Cloudflare Email Worker feeds into the
+//                    #2203 responder. Defaults to the same press@ address.
+//   - `perSendDelayMillis` rate-limit spacing between individual sends in a batch (clamped ≥ 0).
+case class PressOutreachConfig(
+    enabled: Boolean = false,
+    fromAddress: String = "WifiHaven Press <press@wifihaven.net>",
+    replyTo: String = "press@wifihaven.net",
+    perSendDelayMillis: Int = 2000,
+) {
+  val fromTrimmed: String    = fromAddress.trim
+  val replyToTrimmed: String = replyTo.trim
+
+  /** Clamp to a 0 floor so a negative can't be handed to `ZIO.sleep`. */
+  val perSendDelay: zio.Duration =
+    zio.Duration.fromMillis(math.max(0, perSendDelayMillis).toLong)
+
+  // #2265: with outreach explicitly enabled, its From + Reply-To are required (an empty sender/
+  // reply-to would emit malformed press email). Returns every gap so boot fails loud listing them.
+  def missingRequiredKeys: List[String] =
+    if !enabled then Nil
+    else
+      List(
+        "wifihaven.pressOutreach.fromAddress" -> fromTrimmed,
+        "wifihaven.pressOutreach.replyTo"     -> replyToTrimmed,
+      ).collect { case (k, v) if v.isEmpty => k }
+}
+
 object AppConfig {
   private[api] def envTruthy(v: Option[String]): Boolean =
     v.map(_.trim.toLowerCase).exists {
@@ -789,6 +832,20 @@ object AppConfig {
          List(
            "wifihaven.email.resendApiKey + wifihaven.email.fromAddress must be set when the press " +
              "responder is enabled — the press reply is emailed to the sender (#2203/#2265)",
+         )
+       else Nil) ++
+      // #2233: the press-outreach send capability is the same EXPLICIT-flag shape — a true
+      // `pressOutreach.enabled` makes its From + Reply-To required, bulk-listed here.
+      cfg.pressOutreach.missingRequiredKeys.map(k =>
+        s"$k must be set when press outreach is enabled (#2233/#2265)",
+      ) ++
+      // #2233 cross-check: outreach EMAILS the release via the #578 Resend transport, so an enabled
+      // outreach with outbound email unconfigured would silently send nothing — fail boot loudly
+      // instead (#2265 no-dark-by-default).
+      (if cfg.pressOutreach.enabled && !cfg.email.enabled then
+         List(
+           "wifihaven.email.enabled (+ resendApiKey + fromAddress) must be set when press outreach " +
+             "is enabled — the release is emailed via the Resend transport (#2233/#2265)",
          )
        else Nil)
 

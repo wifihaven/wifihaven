@@ -484,6 +484,13 @@ object MetricGuard {
     // row was lost, so a rising error rate means the log is silently drifting from reality. Bounded
     // enums only, never a per-sender / per-email label.
     "press_message_recorded_total"                  -> Set("direction", "outcome"),
+    // #2233 — the operator-run press-OUTREACH send. `press_outreach_total{outcome}` counts every
+    // per-contact result of a preview/send run by a bounded enum: sent | failed (Resend transport
+    // outcomes) | skipped_already_sent (idempotency: a peer we already have outbound correspondence
+    // with) | skipped_no_email (form-only contact, no verified address) | skipped_disabled (email
+    // transport off) | dry_run (preview / unconfirmed — rendered, never transmitted). Never a
+    // per-contact / per-email label — `outcome` is the whole 6-value space.
+    "press_outreach_total"                          -> Set("outcome"),
   )
 
   private val rejected = Metric.counter("metrics_rejected_total")
@@ -750,6 +757,13 @@ object AppMetrics {
       "press_message_recorded_total",
       Map("direction" -> direction, "outcome" -> outcome),
     )
+
+  // ── #2233: operator-run press-outreach send ──────────────────────────────────
+  // Emitted from PressOutreachRoutes, once per per-contact result of a preview/send run. `outcome`
+  // is the bounded 6-value PressOutreach.Outcome enum (sent | failed | skipped_already_sent |
+  // skipped_no_email | skipped_disabled | dry_run). Never a per-contact / per-email label.
+  def pressOutreach(outcome: String): UIO[Unit] =
+    MetricGuard.counter("press_outreach_total", Map("outcome" -> outcome))
 
   // ── #864: traffic_reports rows dropped as zero-bytes-zero-seconds ────────────
   // Replaces the per-request warn-log + TODO marker. A rising rate means the

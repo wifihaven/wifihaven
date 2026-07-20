@@ -68,6 +68,17 @@ trait PressMessageRepo {
    * The most-recent `limit` messages, newest-first (index-backed by press_messages_created_at_idx).
    */
   def listRecent(limit: Int): Task[List[PressMessage]]
+
+  /**
+   * #2233 — the set of distinct `peer_email`s we have any SUCCESSFUL outbound correspondence with
+   * (`direction='outbound'` and `outcome <> 'failed'` — a failed send is NOT "already reached", so
+   * a re-run retries it). The press-outreach send path reads this as its cross-invocation
+   * idempotency ledger: a peer already here is skipped, so re-running a partially-completed batch
+   * never double-blasts a journalist. Reuses the #2296 `press_messages` log (no new table), which
+   * is correct semantically — a peer we've already emailed the release to (or already replied to)
+   * is a peer we don't re-outreach.
+   */
+  def outboundPeers(): Task[Set[String]]
 }
 
 class PressMessageRepoLive(xa: Transactor[Task]) extends PressMessageRepo {
@@ -100,5 +111,13 @@ class PressMessageRepoLive(xa: Transactor[Task]) extends PressMessageRepo {
       fr"FROM press_messages ORDER BY created_at DESC, id DESC LIMIT ${limit.toLong}")
       .query[PressMessage]
       .to[List]
+      .transact(xa)
+
+  def outboundPeers(): Task[Set[String]] =
+    sql"""SELECT DISTINCT peer_email FROM press_messages
+          WHERE direction = 'outbound' AND (outcome IS NULL OR outcome <> 'failed')"""
+      .query[String]
+      .to[List]
+      .map(_.toSet)
       .transact(xa)
 }

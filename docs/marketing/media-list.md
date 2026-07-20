@@ -5,6 +5,15 @@ Status: researched 2026-07-12. Companion to
 Emails appear ONLY where actually published; nothing fabricated. Items marked
 UNVERIFIED need a check before sending.
 
+> **Machine-readable send manifest (#2233):** the operator-run press-outreach tool iterates
+> [`api/resources/press/media-contacts.yml`](../../api/resources/press/media-contacts.yml) — a
+> transcription of THIS table (id, outlet, person, priority, angle, contactUrl). Keep the two in
+> sync. Per the fabrication rule below, NO target has a verified direct email as of the 2026-07-12
+> pass — every outlet is form/tip-line only, so the tool's dry-run reports them all as "manual
+> submission" and a real email send reaches nobody until the operator supplies a verified address at
+> send time (the send request's `emailOverrides` map — no fabricated address ever lives in-repo).
+> See the [send runbook](press-outreach-runbook.md).
+
 **Send order:** Priority 1 first (they set community tone and their coverage
 gives P2 outlets a reason to care), Show HN same day, Priority 2 with a
 1-week exclusive offer to one outlet if desired, Priority 3 as a follow-up

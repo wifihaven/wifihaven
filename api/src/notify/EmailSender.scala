@@ -21,6 +21,25 @@ trait EmailSender {
 
   /** Send one email. `htmlBody` is the pre-rendered HTML. Never fails. */
   def send(to: String, subject: String, htmlBody: String): UIO[EmailOutcome]
+
+  /**
+   * #2233 — send one email with an explicit envelope FROM override and an optional Reply-To. Used
+   * by the press-OUTREACH path, where the release must be FROM the press address (not the alerts@
+   * notification sender [[EmailConfig.fromAddress]] this trait's other callers use) and REPLY-TO
+   * must point at the press inbox so a journalist's reply routes to the #2203 responder.
+   *
+   * Default implementation ignores the envelope override and delegates to [[send]] — so the
+   * [[EmailSender.Disabled]] no-op and any transport that doesn't support a per-send From are
+   * correct without change. [[EmailSender.Resend]] overrides it to set `from` + `reply_to`.
+   */
+  def sendAs(
+      from: String,
+      replyTo: Option[String],
+      to: String,
+      subject: String,
+      htmlBody: String,
+  ): UIO[EmailOutcome] =
+    send(to, subject, htmlBody)
 }
 
 /** Result of an attempted send — also the bounded label space for the notify metric. */
@@ -74,6 +93,9 @@ object EmailSender {
       to: List[String],
       subject: String,
       html: String,
+      // #2233 — Resend's `reply_to` field (snake_case on the wire). Only set for the outreach path
+      // via `sendAs`; `None` for the notification path so the JSON is byte-identical to before.
+      reply_to: Option[List[String]] = None,
   )
   private object ResendRequest {
     given JsonEncoder[ResendRequest] = DeriveJsonEncoder.gen[ResendRequest]
@@ -91,9 +113,28 @@ object EmailSender {
       .build()
 
     def send(to: String, subject: String, htmlBody: String): UIO[EmailOutcome] =
+      post(ResendRequest(cfg.fromTrimmed, List(to), subject, htmlBody))
+
+    // #2233 — the outreach envelope: FROM the press address, REPLY-TO the press inbox. A blank
+    // `from` falls back to the configured notification sender so a misconfig can't send with an
+    // empty From header. `replyTo` is set only when non-blank.
+    override def sendAs(
+        from: String,
+        replyTo: Option[String],
+        to: String,
+        subject: String,
+        htmlBody: String,
+    ): UIO[EmailOutcome] = {
+      val fromHeader  = Option(from).map(_.trim).filter(_.nonEmpty).getOrElse(cfg.fromTrimmed)
+      val replyHeader =
+        replyTo.map(_.trim).filter(_.nonEmpty).map(List(_))
+      post(ResendRequest(fromHeader, List(to), subject, htmlBody, replyHeader))
+    }
+
+    private def post(request: ResendRequest): UIO[EmailOutcome] =
       ZIO
         .attemptBlocking {
-          val payload = ResendRequest(cfg.fromTrimmed, List(to), subject, htmlBody).toJson
+          val payload = request.toJson
           val req     = HttpRequest
             .newBuilder(URI.create(ResendEndpoint))
             .header("Authorization", s"Bearer ${cfg.apiKeyTrimmed}")
@@ -123,10 +164,50 @@ object EmailSender {
    * [[EmailOutcome.Sent]]. Used by the feature suite to assert the notifier addressed the right
    * recipient without a network.
    */
-  final case class Sent(to: String, subject: String, htmlBody: String)
+  final case class Sent(
+      to: String,
+      subject: String,
+      htmlBody: String,
+      // #2233 — the envelope override captured on the `sendAs` path (press outreach). `None` on the
+      // plain `send` path, so existing recorders/assertions are unaffected.
+      from: Option[String] = None,
+      replyTo: Option[String] = None,
+  )
 
   def recording(ref: Ref[List[Sent]]): EmailSender = new EmailSender {
     def send(to: String, subject: String, htmlBody: String): UIO[EmailOutcome] =
       ref.update(_ :+ Sent(to, subject, htmlBody)).as(EmailOutcome.Sent)
+
+    // #2233 — record the FROM + Reply-To so the outreach specs can assert the release goes out FROM
+    // the press address and REPLIES route to the press inbox.
+    override def sendAs(
+        from: String,
+        replyTo: Option[String],
+        to: String,
+        subject: String,
+        htmlBody: String,
+    ): UIO[EmailOutcome] =
+      ref.update(_ :+ Sent(to, subject, htmlBody, Some(from), replyTo)).as(EmailOutcome.Sent)
   }
+
+  /**
+   * #2233 — a recording sender that reports [[EmailOutcome.Failed]] for a chosen set of recipients
+   * (and [[EmailOutcome.Sent]] otherwise), so send specs can exercise the failed-send branch
+   * (metric label, ledger `outcome=failed`, not marking the contact done) without a live transport.
+   */
+  def recordingWithFailures(ref: Ref[List[Sent]], failFor: Set[String]): EmailSender =
+    new EmailSender {
+      private def outcome(to: String): EmailOutcome                              =
+        if failFor.contains(to) then EmailOutcome.Failed else EmailOutcome.Sent
+      def send(to: String, subject: String, htmlBody: String): UIO[EmailOutcome] =
+        ref.update(_ :+ Sent(to, subject, htmlBody)).as(outcome(to))
+      override def sendAs(
+          from: String,
+          replyTo: Option[String],
+          to: String,
+          subject: String,
+          htmlBody: String,
+      ): UIO[EmailOutcome] =
+        ref.update(_ :+ Sent(to, subject, htmlBody, Some(from), replyTo)).as(outcome(to))
+    }
 }
