@@ -1,7 +1,7 @@
 package wifihaven.api.press
 
 import wifihaven.api.PressConfig
-import wifihaven.api.support.ManagedAgents
+import wifihaven.api.support.{ClaudeCodeRoutines, ManagedAgents}
 import zio.*
 
 /**
@@ -13,8 +13,17 @@ import zio.*
  * `/api/press/agent/reply` endpoint, where the API EMAILS it straight to the sender (autonomous
  * send — operator decision 2026-07-17; reply directly to the journalist, no human-approval step).
  *
- * The REST plumbing is the shared [[ManagedAgents]] transport (one implementation for both
- * audiences); only the agent id / environment / kickoff differ.
+ * #2327 — the transport is config-selectable behind this ONE trait, mirroring the support responder
+ * (#2300): `press.dispatcher = "managed-agents"` ([[Live]], the Anthropic Managed Agents session,
+ * API-credit billed) or `"claude-code-cloud"` ([[ClaudeCodeCloudLive]], a Claude Code Cloud routine
+ * fired per message via the shared [[ClaudeCodeRoutines]] trigger, Claude-subscription billed — the
+ * credits we can't provision). Both render the SAME [[kickoffPrompt]] and use the SAME
+ * [[PressToken]] + `/api/press/agent/` callback contract; only the wire endpoint differs. The press
+ * agent still holds ZERO vendor secrets and NO household data token under either transport — the
+ * routine token (like the Managed Agents API key) stays server-side. The REST plumbing for each is
+ * the shared [[ManagedAgents]] / [[ClaudeCodeRoutines]] transport (one implementation per wire,
+ * both reused from the support side — no forked Claude-Code integration); only the agent id /
+ * routine id / kickoff differ from support.
  *
  * SECURITY MODEL (#2203, the strongest injection posture — autonomous send to an untrusted party):
  *   - The press agent receives **zero vendor secrets**. Its only credential is the short-TTL
@@ -58,21 +67,54 @@ object PressAgentDispatcher {
 
   import wifihaven.api.support.DispatchOutcome
 
+  /**
+   * #2327: which cloud-agent transport the press responder dispatches through. A pure function of
+   * config so the selection is unit-pinnable (both "the new path is selected when configured" and
+   * "the existing path is unchanged by default"), and the [[layer]] builds the matching impl. Boot
+   * validation (`PressConfig.missingRequiredKeys`) has already rejected an unknown `dispatcher`
+   * value when the responder is enabled, so [[ManagedAgents]] is the safe fallback here. Mirrors
+   * [[wifihaven.api.support.CloudAgentDispatcher.Transport]].
+   */
+  enum Transport {
+    case Disabled
+    case ManagedAgents
+    case ClaudeCodeCloud
+  }
+
+  def transportFor(cfg: PressConfig): Transport =
+    if !cfg.responderEnabled then Transport.Disabled
+    else
+      cfg.dispatcherTrimmed match {
+        case "claude-code-cloud" => Transport.ClaudeCodeCloud
+        case _                   => Transport.ManagedAgents
+      }
+
   // #2265: the off state is an explicit named flag, logged at boot — never inferred from missing
-  // secrets (config validation fails the boot for that case).
+  // secrets (config validation fails the boot for that case). #2327: the ENABLED state additionally
+  // selects the transport by the explicit `dispatcher` value.
   val layer: ZLayer[PressConfig, Nothing, PressAgentDispatcher] =
     ZLayer.fromZIO {
       ZIO.serviceWithZIO[PressConfig] { cfg =>
-        if cfg.responderEnabled then
-          ZIO
-            .logInfo(
-              "press responder ENABLED — dispatching press cloud-agent sessions per inbound message",
-            )
-            .as(new Live(cfg): PressAgentDispatcher)
-        else
-          ZIO
-            .logInfo("press responder DISABLED (press.responderEnabled=false) — webhook no-ops")
-            .as(Disabled)
+        transportFor(cfg) match {
+          case Transport.Disabled        =>
+            ZIO
+              .logInfo("press responder DISABLED (press.responderEnabled=false) — webhook no-ops")
+              .as(Disabled)
+          case Transport.ManagedAgents   =>
+            ZIO
+              .logInfo(
+                "press responder ENABLED (dispatcher=managed-agents) — Anthropic Managed Agents " +
+                  "session per inbound message",
+              )
+              .as(new Live(cfg): PressAgentDispatcher)
+          case Transport.ClaudeCodeCloud =>
+            ZIO
+              .logInfo(
+                "press responder ENABLED (dispatcher=claude-code-cloud) — Claude Code Cloud " +
+                  "routine fired per inbound message",
+              )
+              .as(new ClaudeCodeCloudLive(cfg): PressAgentDispatcher)
+        }
       }
     }
 
@@ -138,26 +180,56 @@ object PressAgentDispatcher {
   }
 
   /**
+   * Fail-open envelope shared by every live transport: a completed fire-and-forget `run` is
+   * [[DispatchOutcome.Dispatched]]; any transport error is logged and collapsed to
+   * [[DispatchOutcome.Error]] so a cloud hiccup never fails the webhook response (the Worker would
+   * retry a 5xx). ONE definition so the two transports can't drift on the fail-open contract.
+   */
+  private def dispatched(run: Task[Unit]): UIO[DispatchOutcome] =
+    run
+      .as(DispatchOutcome.Dispatched)
+      .catchAll(e =>
+        ZIO
+          .logWarning(s"press agent dispatch errored: ${e.getMessage}")
+          .as(DispatchOutcome.Error),
+      )
+
+  /**
    * Live press Managed Agents transport: delegates the create-session + kickoff plumbing to the
    * shared [[ManagedAgents]] transport, rendering the press-specific kickoff.
    */
   final class Live(cfg: PressConfig) extends PressAgentDispatcher {
     def dispatch(req: PressDispatch): UIO[DispatchOutcome] =
-      ManagedAgents
-        .dispatchSession(
+      dispatched(
+        ManagedAgents.dispatchSession(
           anthropicApiBase = cfg.anthropicApiBase,
           anthropicApiKey = cfg.anthropicApiKeyTrimmed,
           agentId = cfg.claudeAgentIdTrimmed,
           environmentId = cfg.claudeEnvironmentIdTrimmed,
           title = s"Press reply to ${req.from.take(120)}",
           kickoff = kickoffPrompt(req, cfg.agentApiBaseTrimmed, cfg.deploymentEnvTrimmed),
-        )
-        .as(DispatchOutcome.Dispatched)
-        .catchAll(e =>
-          ZIO
-            .logWarning(s"press agent dispatch errored: ${e.getMessage}")
-            .as(DispatchOutcome.Error),
-        )
+        ),
+      )
+  }
+
+  /**
+   * #2327: Live Claude Code Cloud transport — fires a pre-provisioned PRESS routine
+   * ([[ClaudeCodeRoutines]]) per inbound message, billed against the Claude subscription. The
+   * rendered kickoff is IDENTICAL to the Managed Agents path (same [[kickoffPrompt]]) — it rides in
+   * the routine's `text` context field — so the [[PressToken]], the injection framing, the
+   * no-household-data posture, and the `/api/press/agent/` callback contract are all unchanged.
+   * Only the transport differs. Fire-and-forget; the run reports back through our agent endpoints.
+   */
+  final class ClaudeCodeCloudLive(cfg: PressConfig) extends PressAgentDispatcher {
+    def dispatch(req: PressDispatch): UIO[DispatchOutcome] =
+      dispatched(
+        ClaudeCodeRoutines.fireRoutine(
+          apiBase = cfg.anthropicApiBase,
+          routineId = cfg.claudeCodeRoutineIdTrimmed,
+          routineToken = cfg.claudeCodeRoutineTokenTrimmed,
+          text = kickoffPrompt(req, cfg.agentApiBaseTrimmed, cfg.deploymentEnvTrimmed),
+        ),
+      )
   }
 
   /** Test dispatcher: records every dispatch (and its rendered kickoff) and reports Dispatched. */
