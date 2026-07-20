@@ -617,11 +617,20 @@ trait DeviceRepo {
 trait AlertRepo {
 
   /**
-   * #711: raise a new-device alert. Idempotent on `mac` — if a row already exists for this MAC and
-   * kind, the existing one wins regardless of its status, so re-ingesting the same first-seen event
-   * doesn't resurrect a decided alert or duplicate a pending one.
+   * #711: raise a new-device alert. Idempotent per `(household, mac)` — if a row already exists for
+   * this household's MAC and kind, the existing one wins regardless of its status, so re-ingesting
+   * the same first-seen event doesn't resurrect a decided alert or duplicate a pending one.
+   *
+   * #2283: `household` is the discovering router's household. Dedup is scoped to it (NOT global) so
+   * that once V74 lets the SAME MAC be discovered in two households, EACH household raises its own
+   * new_device alert instead of one shared row. Production always passes the router's household;
+   * the default keeps single-household test call sites terse.
    */
-  def raiseNewDevice(mac: MacAddress, firstSeenAt: Instant): Task[Unit]
+  def raiseNewDevice(
+      mac: MacAddress,
+      firstSeenAt: Instant,
+      household: HouseholdId = HouseholdId.Default,
+  ): Task[Unit]
 
   /**
    * #960: create an access-request alert. `profileId` is denormalised at insert time so the row
@@ -1957,7 +1966,8 @@ class AlertRepoLive(xa: Transactor[Task]) extends AlertRepo {
       String,             // created_at
       Option[String],     // decided_at
       Option[String],     // decided_by
-      Option[HouseholdId],// device's household_id (NULL when the MAC has no device row)
+      Option[HouseholdId],// #2283: the alert's OWN household_id (a.household_id, NOT NULL); Option
+      // only because the positional codec keeps the column nullable-tolerant.
   )
 
   // Reads parse the kind/status strings; values are presumed canonical
@@ -1989,26 +1999,38 @@ class AlertRepoLive(xa: Transactor[Task]) extends AlertRepo {
     householdId = r._15,
   )
 
+  // #2283: read the alert's OWN `a.household_id` (its tenancy key, V78) — NOT the joined device's.
+  // The devices join is now qualified `d.mac = a.mac AND d.household_id = a.household_id` so a MAC
+  // shared across households (V74) resolves `d.name` to the alert's OWN household's device instead of
+  // matching both rows. Reading `a.household_id` also keeps attribution correct for an orphaned alert
+  // (device deleted, interim V74→#2283 loss of ON DELETE CASCADE) where the LEFT JOIN yields no `d`.
   private val baseSelect = fr"""
     SELECT a.id, a.kind, a.status, a.mac, d.name, a.profile_id, p.name,
            a.host, a.request_kind, a.note, a.granted_minutes,
-           a.created_at::TEXT, a.decided_at::TEXT, a.decided_by, d.household_id
+           a.created_at::TEXT, a.decided_at::TEXT, a.decided_by, a.household_id
       FROM alerts a
-      LEFT JOIN devices  d ON d.mac = a.mac
+      LEFT JOIN devices  d ON d.mac = a.mac AND d.household_id = a.household_id
       LEFT JOIN profiles p ON p.id = a.profile_id
   """
 
-  def raiseNewDevice(mac: MacAddress, firstSeenAt: Instant): Task[Unit] =
-    // ON CONFLICT-style idempotency: insert only if no row with this mac
-    // already exists for kind='new_device'. We can't use a UNIQUE index
-    // because the same mac may legitimately have multiple access_request
-    // rows over time. WHERE NOT EXISTS keeps this race-free under the
-    // SERIALIZABLE-equivalent semantics of a single statement insert.
+  def raiseNewDevice(
+      mac: MacAddress,
+      firstSeenAt: Instant,
+      household: HouseholdId,
+  ): Task[Unit] =
+    // ON CONFLICT-style idempotency: insert only if no row with this
+    // (household, mac) already exists for kind='new_device'. We can't use a
+    // UNIQUE index because the same mac may legitimately have multiple
+    // access_request rows over time. WHERE NOT EXISTS keeps this race-free
+    // under the SERIALIZABLE-equivalent semantics of a single-statement insert.
+    // #2283: the dedup is scoped to `household_id` (not global), so a MAC
+    // discovered in two households (post-V74) raises one alert PER household.
     DbMetrics.timed("alert.raiseNewDevice")(
-      sql"""INSERT INTO alerts (kind, status, mac, created_at)
-          SELECT 'new_device', 'pending', $mac, $firstSeenAt
+      sql"""INSERT INTO alerts (kind, status, mac, household_id, created_at)
+          SELECT 'new_device', 'pending', $mac, $household, $firstSeenAt
           WHERE NOT EXISTS (
-            SELECT 1 FROM alerts WHERE mac = $mac AND kind = 'new_device'
+            SELECT 1 FROM alerts
+             WHERE mac = $mac AND kind = 'new_device' AND household_id = $household
           )""".update.run.transact(xa).unit,
     )
 
@@ -2021,8 +2043,23 @@ class AlertRepoLive(xa: Transactor[Task]) extends AlertRepo {
       createdAt: Instant,
   ): Task[AlertId] = {
     val rkStr = AccessRequestKind.asString(requestKind)
-    sql"""INSERT INTO alerts (kind, status, mac, profile_id, host, request_kind, note, created_at)
-          VALUES ('access_request', 'pending', $mac, $profileId, $host, $rkStr, $note, $createdAt)
+    // #2283: stamp the alert's tenancy key (V78) from its OWN device row so the household-scoped
+    // read (`listForHousehold` on `a.household_id`) attributes it to the same household the pre-#2283
+    // transitive device join did — no read regression. This is the public, unauthenticated block-page
+    // path (no JWT/router household in scope), so the household is derived from the device rather than
+    // passed by the caller. A MAC with no device row (or, defensively, one shared across households
+    // under V74) falls back to the LOWEST matching household, else `HouseholdId.Default` — matching
+    // today's global `findByMac`. Deriving the household authoritatively for the block-page path
+    // (so a shared MAC attributes to the requesting router's household, not the lowest id) is the
+    // follow-up TODO(#2322).
+    sql"""INSERT INTO alerts (kind, status, mac, household_id, profile_id, host, request_kind, note, created_at)
+          SELECT 'access_request', 'pending', $mac,
+                 COALESCE(
+                   (SELECT d.household_id FROM devices d WHERE d.mac = $mac
+                     ORDER BY d.household_id LIMIT 1),
+                   ${HouseholdId.Default}
+                 ),
+                 $profileId, $host, $rkStr, $note, $createdAt
           RETURNING id"""
       .query[AlertId]
       .unique
@@ -2061,12 +2098,14 @@ class AlertRepoLive(xa: Transactor[Task]) extends AlertRepo {
       .transact(xa)
   }
 
-  // #2108: `baseSelect` already LEFT JOINs `devices d ON d.mac = a.mac`; AND-scope on
-  // `d.household_id` so only this household's alerts return. `d.household_id = $hh` also drops any
-  // alert whose device row is absent (the LEFT JOIN yields NULL), which is the desired isolation.
+  // #2283: scope on the alert's OWN `a.household_id` (V78), NOT the joined `d.household_id`. Once a
+  // MAC can exist in two households (V74) the device join is ambiguous, so #2108's transitive scope
+  // no longer isolates. `a.household_id = $hh` is the alert's authoritative tenancy key: it isolates
+  // correctly even for a shared MAC AND still returns an orphaned alert (device deleted) to its own
+  // household — the old `d.household_id` predicate silently dropped those.
   def listForHousehold(includeAll: Boolean, household: HouseholdId): Task[List[Alert]] = {
     val statusFilter = if includeAll then fr"" else fr"AND a.status = 'pending'"
-    (baseSelect ++ fr"WHERE" ++ SqlFragments.householdEq(household, "d.household_id") ++
+    (baseSelect ++ fr"WHERE" ++ SqlFragments.householdEq(household, "a.household_id") ++
       statusFilter ++ fr"ORDER BY a.created_at DESC")
       .query[R]
       .map(toAlert)

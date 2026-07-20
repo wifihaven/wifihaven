@@ -360,8 +360,8 @@ object MultiTenantIsolationSpec
         apr    <- ZIO.service[AppRepo]
         hsr    <- ZIO.service[HouseholdSettingsRepo]
         clk    <- ZIO.service[Clock]
-        _      <- ar.raiseNewDevice(macA, Instant.parse("2026-05-07T14:00:00Z"))
-        _      <- ar.raiseNewDevice(macB, Instant.parse("2026-05-07T14:00:00Z"))
+        _      <- ar.raiseNewDevice(macA, Instant.parse("2026-05-07T14:00:00Z"), two.hhA)
+        _      <- ar.raiseNewDevice(macB, Instant.parse("2026-05-07T14:00:00Z"), two.hhB)
         auth   <- makeAuth
         tokenA <- login(auth, two.adminA, two.password)
         routes = AlertRoutes.routes(
@@ -379,6 +379,92 @@ object MultiTenantIsolationSpec
         (sA, bodyA) <- getJson(routes, "/api/alerts?all=true", tokenA)
       } yield assertTrue(sA == Status.Ok) &&
         assertTrue(bodyA.contains(macA.value), !bodyA.contains(macB.value))
+    },
+    // ── Pin 1 (#2283): shared-MAC alert isolation ──────────────────────────────
+    // The pin above uses DISTINCT MACs, so #2108's transitive `d.mac = a.mac`
+    // join isolates by accident. V74 dropped `devices_mac_key`, so the SAME MAC
+    // can now be DISCOVERED in two households. This pin drives real first-seen
+    // discovery of ONE shared MAC through BOTH households' router ingest and
+    // asserts each household gets its OWN new_device alert (not one globally
+    // deduped row that leaks across the tenant boundary). RED pre-#2283-source:
+    // `raiseNewDevice`'s GLOBAL dedup raises a single alert, and the ambiguous
+    // read join surfaces that one row to both households (equal ids, one DB row).
+    test("pin 1 (#2283) — a shared MAC raises a SEPARATE new_device alert per household") {
+      val sharedMac = MacAddress.unsafe("aa:bb:cc:00:00:0d") // never pre-seeded; discovered per-hh
+      def firstSeen(routerId: RouterId, token: String, routes: Routes[Any, Response]) = {
+        val body = RouterEventsRequest(
+          routerId,
+          List(
+            RouterEvent(
+              "first_seen_mac",
+              mac = Some(sharedMac),
+              ip = Some(IpAddress.unsafe("192.168.1.77")),
+              ts = "2026-05-07T14:00:00Z",
+            ),
+          ),
+        ).toJson
+        routes.runZIO(
+          Request
+            .post(URL.decode("/api/router/events").toOption.get, Body.fromString(body))
+            .addHeader(Header.ContentType(MediaType.application.json))
+            .addHeader(Header.Authorization.Bearer(token)),
+        )
+      }
+      for {
+        _   <- cleanDb
+        two <- TestLayers.seedTwoHouseholds(macA, macB)
+        ar  <- ZIO.service[AlertRepo]
+        dr  <- ZIO.service[DeviceRepo]
+        rr  <- ZIO.service[RouterRepo]
+        tr  <- ZIO.service[TrafficReportRepo]
+        tu  <- ZIO.service[TimeUsageRepo]
+        cer <- ZIO.service[ConnectionEventRepo]
+        pr  <- ZIO.service[ProfileRepo]
+        er  <- ZIO.service[TimeExtensionRepo]
+        apr <- ZIO.service[AppRepo]
+        hsr <- ZIO.service[HouseholdSettingsRepo]
+        clk <- ZIO.service[Clock]
+        xa  <- ZIO.service[Transactor[Task]]
+        ingest = RouterIngestRoutes.routes(RouterAuthLive(rr), rr, tr, tu, dr, cer, ar, hsr)
+        // Household A's router, then household B's router, each DISCOVER the same MAC first-seen.
+        _        <- firstSeen(two.routerIdA, two.tokenA, ingest)
+        _        <- firstSeen(two.routerIdB, two.tokenB, ingest)
+        // Two distinct alert rows must exist — one per household — not one globally-deduped row.
+        rowCount <- sql"SELECT COUNT(*) FROM alerts WHERE mac = $sharedMac AND kind = 'new_device'"
+          .query[Long]
+          .unique
+          .transact(xa)
+        auth     <- makeAuth
+        tokenA   <- login(auth, two.adminA, two.password)
+        tokenB   <- login(auth, two.adminB, two.password, slug = Some(two.slugB))
+        alertRoutes = AlertRoutes.routes(
+          auth,
+          ar,
+          dr,
+          pr,
+          er,
+          apr,
+          hsr,
+          noopNotifier,
+          clk,
+          RateLimiter.allowAll,
+        )
+        (sA, bodyA) <- getJson(alertRoutes, "/api/alerts?all=true", tokenA)
+        (sB, bodyB) <- getJson(alertRoutes, "/api/alerts?all=true", tokenB)
+        alertsA     <- ZIO.fromEither(bodyA.fromJson[List[Alert]]).mapError(new RuntimeException(_))
+        alertsB     <- ZIO.fromEither(bodyB.fromJson[List[Alert]]).mapError(new RuntimeException(_))
+      } yield assertTrue(sA == Status.Ok, sB == Status.Ok) &&
+        // Discovery raised its OWN alert in EACH household — dedup is per-household, not global.
+        assertTrue(rowCount == 2L) &&
+        // Each admin sees exactly ONE alert for the shared MAC — its own, isolated to its household.
+        assertTrue(alertsA.size == 1, alertsB.size == 1) &&
+        assertTrue(alertsA.head.mac == sharedMac, alertsB.head.mac == sharedMac) &&
+        assertTrue(
+          alertsA.head.householdId == Some(two.hhA),
+          alertsB.head.householdId == Some(two.hhB),
+        ) &&
+        // The two households' alerts are DISTINCT rows — B's alert never leaks into A's list.
+        assertTrue(alertsA.head.id != alertsB.head.id)
     },
     test("pin 1 — GET /api/logs returns ONLY the caller's household connection logs") {
       for {

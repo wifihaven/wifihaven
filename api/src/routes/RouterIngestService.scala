@@ -479,7 +479,10 @@ final class RouterIngestService(
                   .mapError(ApiError.Db(_))
                   .unit *>
                   alertRepo
-                    .raiseNewDevice(mac, ts)
+                    // #2283: stamp the discovering router's household so the alert isolates to it and
+                    // dedup is per-household — a MAC discovered in two households (V74) raises one
+                    // new_device alert EACH, not one shared row.
+                    .raiseNewDevice(mac, ts, household)
                     .mapError(ApiError.Db(_)) *>
                   // #1970 (S3): a raised alert is a class-(3) write site → nudge `stale{alerts}`
                   // so an open dashboard re-fetches the alerts list. Idempotent on `mac`, so a

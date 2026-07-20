@@ -172,7 +172,7 @@ object DbFailureSpec extends ZIOSpecDefault {
   }
 
   private def brokenAlertRepo: AlertRepo = new AlertRepo {
-    def raiseNewDevice(mac: MacAddress, firstSeenAt: Instant)                    = throwing
+    def raiseNewDevice(mac: MacAddress, firstSeenAt: Instant, household: HouseholdId) = throwing
     def createAccessRequest(
         mac: MacAddress,
         profileId: Option[ProfileId],
@@ -181,10 +181,10 @@ object DbFailureSpec extends ZIOSpecDefault {
         note: Option[String],
         createdAt: Instant,
     ) = throwing
-    def findRecentAccessRequest(mac: MacAddress, host: Hostname, since: Instant) = throwing
-    def findById(id: AlertId)                                                    = throwing
-    def list(includeAll: Boolean)                                                = throwing
-    def listForHousehold(includeAll: Boolean, household: HouseholdId)            = throwing
+    def findRecentAccessRequest(mac: MacAddress, host: Hostname, since: Instant)      = throwing
+    def findById(id: AlertId)                                                         = throwing
+    def list(includeAll: Boolean)                                                     = throwing
+    def listForHousehold(includeAll: Boolean, household: HouseholdId)                 = throwing
     def decide(
         id: AlertId,
         newStatus: AlertStatus,
