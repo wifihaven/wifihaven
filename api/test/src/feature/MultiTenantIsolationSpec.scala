@@ -418,6 +418,133 @@ object MultiTenantIsolationSpec
       } yield assertTrue(sA == Status.Ok) &&
         assertTrue(bodyA.contains(macA.value), !bodyA.contains(macB.value))
     },
+    // #2314 (same-MAC-across-households, epic #622/#2085): GET /api/connection-events/series must
+    // scope to the caller's household. Before the fix `querySeries`/`querySeriesRollup` had no `byHh`
+    // predicate, so the aggregation summed events across ALL households and (once a MAC is shared)
+    // mislabeled device/profile by bare MAC. Here the SAME MAC `macA` is present behind BOTH
+    // households' routers (posted under `routerIdA` and `routerIdB`); a household-A admin must see
+    // ONLY A's host counts, never B's. NOTE: `macA` is a device only in household A (distinct from
+    // B's `macB` device), so the `LEFT JOIN devices d ON d.mac = ce.mac` matches exactly one row and
+    // the counts stay clean — the residual same-MAC device-join fan-out is #2312's scope, not this
+    // aggregation-leak pin.
+    test("pin 1 — GET /api/connection-events/series (raw) counts ONLY the caller's household") {
+      for {
+        _   <- cleanDb
+        two <- TestLayers.seedTwoHouseholds(macA, macB)
+        cer <- ZIO.service[ConnectionEventRepo]
+        up  <- ZIO.service[UserProfileRepo]
+        // Real wall-clock now: the series window is anchored on SQL NOW() (real time), not the
+        // injected TestClock, so the seeded events must be near real now to land in a raw-path window.
+        now = Instant.now()
+        _      <- cer.insertBatch(
+          List(
+            // Household A: 2 succeeded to `a-series.example.com` behind A's router, MAC macA.
+            ConnectionEventInsert(
+              two.routerIdA,
+              Some(macA),
+              HostId.Fqdn(Hostname.unsafe("a-series.example.com")),
+              None,
+              true,
+              BlockReason.fromWire("allowed"),
+              now.minusSeconds(60),
+            ),
+            ConnectionEventInsert(
+              two.routerIdA,
+              Some(macA),
+              HostId.Fqdn(Hostname.unsafe("a-series.example.com")),
+              None,
+              true,
+              BlockReason.fromWire("allowed"),
+              now.minusSeconds(50),
+            ),
+            // Household B: the SAME MAC macA behind B's router, hitting a distinct host. Pre-fix these
+            // leak into A's series (aggregated across households); post-fix they must be excluded.
+            ConnectionEventInsert(
+              two.routerIdB,
+              Some(macA),
+              HostId.Fqdn(Hostname.unsafe("b-series.example.com")),
+              None,
+              true,
+              BlockReason.fromWire("allowed"),
+              now.minusSeconds(40),
+            ),
+          ),
+        )
+        auth   <- makeAuth
+        tokenA <- login(auth, two.adminA, two.password)
+        routes = LogRoutes.routes(auth, cer, up)
+        // bucket=1h + default hours=24 stays on the raw `querySeries` path (BucketPolicy: Raw grain).
+        (sA, bodyA) <- getJson(
+          routes,
+          "/api/connection-events/series?bucket=1h&groupBy=domain",
+          tokenA,
+        )
+        pageA       <- ZIO.fromEither(bodyA.fromJson[ConnectionEventSeriesPage])
+        aRow = pageA.rows.find(_.groups.getOrElse("domain", "") == "a-series.example.com")
+        bRow = pageA.rows.find(_.groups.getOrElse("domain", "") == "b-series.example.com")
+      } yield assertTrue(sA == Status.Ok) &&
+        // A's own host present with A's own count only …
+        assertTrue(aRow.exists(_.countSucceeded == 2)) &&
+        // … and household B's host never leaks into A's series.
+        assertTrue(bRow.isEmpty)
+    },
+    test("pin 1 — GET /api/connection-events/series (rollup) counts ONLY the caller's household") {
+      for {
+        _   <- cleanDb
+        two <- TestLayers.seedTwoHouseholds(macA, macB)
+        cer <- ZIO.service[ConnectionEventRepo]
+        up  <- ZIO.service[UserProfileRepo]
+        now = Instant.now()
+        _      <- cer.insertBatch(
+          List(
+            ConnectionEventInsert(
+              two.routerIdA,
+              Some(macA),
+              HostId.Fqdn(Hostname.unsafe("a-series.example.com")),
+              None,
+              true,
+              BlockReason.fromWire("allowed"),
+              now.minusSeconds(90),
+            ),
+            ConnectionEventInsert(
+              two.routerIdA,
+              Some(macA),
+              HostId.Fqdn(Hostname.unsafe("a-series.example.com")),
+              None,
+              true,
+              BlockReason.fromWire("allowed"),
+              now.minusSeconds(80),
+            ),
+            // Same MAC macA behind B's router → B's household's events; must be scoped out post-fix.
+            ConnectionEventInsert(
+              two.routerIdB,
+              Some(macA),
+              HostId.Fqdn(Hostname.unsafe("b-series.example.com")),
+              None,
+              true,
+              BlockReason.fromWire("allowed"),
+              now.minusSeconds(70),
+            ),
+          ),
+        )
+        // Populate the hourly rollup so the rollup-backed path (querySeriesRollup) has data.
+        _      <- cer.rerollConnEventsHourly(now.minus(java.time.Duration.ofHours(2)))
+        auth   <- makeAuth
+        tokenA <- login(auth, two.adminA, two.password)
+        routes = LogRoutes.routes(auth, cer, up)
+        // bucket=1h + hours=48 routes to the hourly rollup (querySeriesRollup) per BucketPolicy.
+        (sA, bodyA) <- getJson(
+          routes,
+          "/api/connection-events/series?bucket=1h&hours=48&groupBy=domain",
+          tokenA,
+        )
+        pageA       <- ZIO.fromEither(bodyA.fromJson[ConnectionEventSeriesPage])
+        aRow = pageA.rows.find(_.groups.getOrElse("domain", "") == "a-series.example.com")
+        bRow = pageA.rows.find(_.groups.getOrElse("domain", "") == "b-series.example.com")
+      } yield assertTrue(sA == Status.Ok) &&
+        assertTrue(aRow.exists(_.countSucceeded == 2)) &&
+        assertTrue(bRow.isEmpty)
+    },
     test("pin 1 — GET /api/stats counts ONLY the caller's household (leak pin #2282)") {
       for {
         _   <- cleanDb

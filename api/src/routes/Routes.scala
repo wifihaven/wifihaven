@@ -1887,6 +1887,10 @@ object LogRoutes {
               cursorWs = cursorOpt.map(_.ws),
               cursorKey = cursorOpt.map(_.key),
               includeMulticast = req.url.queryParam("includeMulticast").contains("true"),
+              // #2314: scope the aggregation to the caller's household via the router_id →
+              // routers.household_id join, mirroring /api/logs. Without it a MAC shared across
+              // households aggregates + mislabels device/profile by bare MAC. Wire-invisible.
+              household = Some(claims.hh),
             )
             // #1265: route coarse + wide reads to the rollup tables; fine,
             // short, or multicast-inclusive reads stay on raw connection_events.
