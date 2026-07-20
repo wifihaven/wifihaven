@@ -72,6 +72,13 @@ object PressOutreachSpec extends ZIOSpecDefault {
         // deliberate, reviewed change to THIS assertion.
         cs.forall(_.email.isEmpty),
         body.contains("FOR IMMEDIATE RELEASE"),
+        // Pin the load-bearing pricing/positioning claims IN THE SENDABLE RESOURCE so a bad edit to
+        // the copy (or drift from the authored docs/marketing/press-release.md) is caught in CI —
+        // these are the facts a journalist quotes (SHOULD-FIX from the #2233 review).
+        body.contains("$6/month (or $57/year)"),
+        body.contains("$10/month or $96/year"),
+        body.contains("self-host"),
+        body.contains("connection layer"),
         // The release still carries exactly the fill tokens the runbook documents.
         unresolved.toSet == Set(
           "city",

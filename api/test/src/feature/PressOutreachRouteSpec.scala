@@ -12,7 +12,9 @@ import wifihaven.shared.Clock.TestClock
 import wifihaven.shared.types.*
 import wifihaven.testinfra.*
 import doobie.*
+import doobie.implicits.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
+import zio.interop.catz.*
 import zio.{Clock as _, *}
 import zio.http.*
 import zio.json.*
@@ -119,6 +121,23 @@ object PressOutreachRouteSpec
         tokB        <- login(auth, two.adminB, two.password, Some(two.slugB))
         (hhB, _)    <- post(routes, preview, Some(tokB), "{}")
       } yield assertTrue(unauth == Status.Unauthorized, hhB == Status.NotFound)
+    },
+    test("preview: a non-admin (adult) in the operator household gets 403 (role gate)") {
+      for {
+        _    <- cleanDb
+        _    <- TestLayers.seedTwoHouseholds(macA, macB)
+        xa   <- ZIO.service[Transactor[Task]]
+        pl   <- ZIO.service[PressMessageRepo]
+        ref  <- Ref.make(List.empty[EmailSender.Sent])
+        auth <- makeAuth
+        _    <-
+          sql"""INSERT INTO users(username, password_hash, role, must_change_password, household_id)
+                SELECT 'viewer', password_hash, 'adult', false, 1 FROM users WHERE username='admin'""".update.run
+            .transact(xa)
+        tok  <- login(auth, "viewer", "changeme")
+        routes = routesWith(auth, cfgOn, EmailSender.recording(ref), pl)
+        (st, _) <- post(routes, preview, Some(tok), "{}")
+      } yield assertTrue(st == Status.Forbidden)
     },
     test("preview: an operator admin gets a dry-run — nothing is transmitted") {
       for {
