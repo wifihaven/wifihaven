@@ -39,14 +39,14 @@ Declarative config for everything Cloudflare-side (#613):
   Terraform *does* manage); (3) click the destination-verification link
   Cloudflare emails to each Plain inbox (prod and staging).
 - **Personal forwarding alias** (#2204): forwards `sameer@wifihaven.net` straight
-  to the operator's real external inbox `sameer@creativedestruction.com` — a plain
+  to the operator's real external inbox `sameerbrenn@gmail.com` — a plain
   Cloudflare Email Routing forward (no Plain, no Email Worker, no app/AI). Managed
   as one `cloudflare_email_routing_address` (the external destination) + one
   `cloudflare_email_routing_rule` (`to` → forward). Uses the same already-enabled
   zone Email Routing and the same apex SPF as support@ — **no SPF change**, and it
   coexists with support@/press@ (distinct local-part). Operator step: click the
   one-time Cloudflare destination-verification link emailed to
-  `sameer@creativedestruction.com` (Terraform cannot complete it).
+  `sameerbrenn@gmail.com` (Terraform cannot complete it).
 
 **Not managed here**: the zone itself (added once via the dash; NS flip at the
 registrar is a one-shot manual step), and the GitHub repo secrets.

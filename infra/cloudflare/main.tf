@@ -416,7 +416,7 @@ resource "cloudflare_email_routing_rule" "press_staging_to_worker" {
   }
 }
 
-# ── Email Routing: sameer@wifihaven.net → sameer@creativedestruction.com (#2204) ──
+# ── Email Routing: sameer@wifihaven.net → sameerbrenn@gmail.com (#2204) ──
 # A personal alias the operator can hand out selectively (partners, escalations,
 # "email me directly"). Unlike support (forwards to Plain) and press (Email
 # Worker), this is a plain forward straight to a real, monitored external inbox —
@@ -431,19 +431,19 @@ resource "cloudflare_email_routing_rule" "press_staging_to_worker" {
 # Destination address: the operator's real external inbox. Not a secret.
 #
 # One-time MANUAL verification required: Cloudflare emails a confirmation link to
-# sameer@creativedestruction.com before it will forward to it. The operator must
+# sameerbrenn@gmail.com before it will forward to it. The operator must
 # click that link from that inbox. Terraform CANNOT complete this step — the
 # `verified` attribute stays null until confirmed, and forwarding does not work
 # until then.
 resource "cloudflare_email_routing_address" "operator_personal" {
   account_id = var.account_id
-  email      = "sameer@creativedestruction.com"
+  email      = "sameerbrenn@gmail.com"
 }
 
 # Forward sameer@wifihaven.net → the operator's personal inbox above.
 resource "cloudflare_email_routing_rule" "operator_personal_forward" {
   zone_id = var.zone_id
-  name    = "sameer@wifihaven.net -> sameer@creativedestruction.com (#2204)"
+  name    = "sameer@wifihaven.net -> sameerbrenn@gmail.com (#2204)"
   enabled = true
 
   matcher {
