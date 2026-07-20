@@ -554,7 +554,12 @@ object Main extends ZIOAppDefault {
         pressDispatchSenderLimiter,
         pressDispatchGlobalLimiter,
       )
-      betaService    = BetaService(
+      // #2233: the operator-run press-OUTREACH send capability. The media-contacts manifest + the
+      // sendable release template load from bundled resources at boot (fail-fast if malformed), like
+      // AppTemplates / BundledBlocklists. The send endpoints stay dark until press.outreach.enabled.
+      pressContacts <- wifihaven.api.press.PressOutreach.loadContacts()
+      pressRelease  <- wifihaven.api.press.PressOutreach.loadReleaseTemplate()
+      betaService   = BetaService(
         betaRepo,
         householdRepo,
         userRepo,
@@ -567,7 +572,7 @@ object Main extends ZIOAppDefault {
       // #2308: the forgot/reset-password service — mints single-use short-TTL tokens, emails the
       // reset link via the #578 Notifier, and on reset bumps token_version to invalidate prior JWTs.
       // Clock-injected so the token TTL is TestClock-driven in specs.
-      passwordReset  = PasswordResetServiceLive(
+      passwordReset = PasswordResetServiceLive(
         userRepo,
         resetTokenRepo,
         auth,
@@ -658,6 +663,18 @@ object Main extends ZIOAppDefault {
           // a company-global channel (no household_id); a non-default household gets 404 (not 403),
           // so the log's existence is not disclosed across the tenant boundary.
           PressRoutes.routes(auth, pressLog) ++
+          // #2233: the operator-only press-OUTREACH send surface (preview = dry-run default; send
+          // requires confirm:true + resolved fill tokens + configured email). Both endpoints 404
+          // unless press.outreach.enabled (dark-by-default #2265) and for any non-operator household.
+          PressOutreachRoutes.routes(
+            auth,
+            cfg.pressOutreach,
+            cfg.email.enabled,
+            pressEmailSender,
+            pressLog,
+            pressContacts,
+            pressRelease,
+          ) ++
           ProfileRoutes.routes(
             auth,
             profileRepo,

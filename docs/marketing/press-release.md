@@ -2,6 +2,14 @@
 
 > Draft for review. Bracketed items need operator input before send:
 > [CITY], [FOUNDER NAME], [QUOTE APPROVAL], [BETA SIGNUP URL], [PRESS KIT URL].
+>
+> **This is the authored source of truth (human-readable, with the fact-check ledger
+> below).** The MACHINE-SENDABLE copy the #2233 press-outreach tool actually emails lives at
+> [`api/resources/press/release.md`](../../api/resources/press/release.md) — same prose, stripped of
+> this note + the ledger, with `{{city}}` / `{{date}}` / `{{founderName}}` / `{{founderQuote}}` /
+> `{{betaSignupUrl}}` / `{{pressKitUrl}}` fill tokens the operator supplies at send time. Keep the
+> two in sync when the copy changes. The send path is operator-gated and dry-run-by-default; see the
+> [send runbook](press-outreach-runbook.md).
 
 ---
 
@@ -46,7 +54,7 @@ founding cohort of 25 households. The beta is free, with no credit card
 required. General availability begins two months after the beta cohort fills,
 at $10/month or $96/year per household — covering unlimited profiles and
 devices on one router. Founding beta households keep a lifetime price of
-$6/month for as long as they stay subscribed.
+$6/month (or $57/year) for as long as they stay subscribed.
 
 "[Placeholder quote — suggested draft:] We built WifiHaven because every
 parental control we tried was either an app our kids could delete or a DNS
@@ -57,7 +65,7 @@ their home network, the whole thing is open source and free to run yourself,"
 said [FOUNDER NAME], creator of WifiHaven. [QUOTE APPROVAL]
 
 WifiHaven requires a router running OpenWRT, the open-source router firmware
-that runs on hundreds of consumer models starting around $30. The company is
+that runs on hundreds of consumer models starting well under $100. The company is
 deliberately starting with the technical-family audience — the same households
 that run Pi-hole or Home Assistant today — before expanding router support.
 
@@ -83,9 +91,9 @@ self-hosted option and a hosted cloud tier. Learn more at wifihaven.net.
 | Connection-layer nftables enforcement, DNS always resolves | AGENTS.md architectural model §1 |
 | blockIpOnly closes DoH / hard-coded-IP bypass | AGENTS.md `blockIpOnly` field; pricing doc §3.1 |
 | $10/mo, $96/yr, unlimited profiles/devices, 1 router | pricing doc §1 |
-| $6/mo founding price, forever | pricing doc §1 (Stripe coupon duration=forever — verify basil caveat §7 before GA) |
+| $6/mo (or $57/yr) founding price, forever | pricing doc §1 (Stripe coupon duration=forever — verify basil caveat §7 before GA) |
 | No card during beta | pricing doc §5.2 |
 | Beta = 25 households; GA = fill + 2 months | operator instruction 2026-07-12 (supersedes pricing doc's 4-month term) |
 | Self-hosted free forever, stated explicitly | pricing doc §1, §3 |
-| OpenWRT routers from ~$30 | verify a current example model/price before send (e.g. GL.iNet entry models) — UNVERIFIED. If naming GL.iNet: the agent is validated on **flashed vanilla OpenWRT** only; GL.iNet **stock** firmware is not yet verified ([#2304](https://github.com/wifihaven/wifihaven/issues/2304)) — don't imply it works out of the box. |
+| OpenWRT routers "starting well under $100" | softened from the earlier "~$30" claim (UNVERIFIED at that price). If naming a specific model (e.g. a GL.iNet entry unit), price it at send AND note: the agent is validated on **flashed vanilla OpenWRT** only; GL.iNet **stock** firmware is not yet verified ([#2304](https://github.com/wifihaven/wifihaven/issues/2304)) — don't imply it works out of the box. |
 | Per-device apps defeated by deletion/reset; DNS filters bypassed by DoH | pricing doc §3.1; general claim, safe |
