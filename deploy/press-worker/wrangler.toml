@@ -14,6 +14,16 @@ main = "src/index.ts"
 compatibility_date = "2026-05-17"
 compatibility_flags = ["nodejs_compat"]
 
+# This is an Email Worker — it is invoked by the Cloudflare Email Routing rule
+# (cloudflare_email_routing_rule.press_to_worker), NOT over HTTP. It has no route
+# and must not be published to a workers.dev subdomain, so `wrangler deploy` must
+# not try to register one (the account has none, and the default publish-to-
+# workers.dev path errors "register a workers.dev subdomain"). workers_dev = false
+# uploads the script (which the email-routing rule binds to) without a subdomain.
+# workers_dev is an inheritable field, so [env.staging] inherits this false; the
+# explicit line below just restates it so staging can't drift on a future edit.
+workers_dev = false
+
 # Prod: the API the signed envelope is POSTed to. PRESS_WEBHOOK_SECRET is a secret (wrangler secret
 # put), NEVER a plaintext var here.
 [vars]
@@ -21,6 +31,7 @@ PRESS_API_URL = "https://api.wifihaven.net"
 
 [env.staging]
 name = "wifihaven-press-worker-staging"
+workers_dev = false
 
 [env.staging.vars]
 PRESS_API_URL = "https://api-staging.wifihaven.net"
