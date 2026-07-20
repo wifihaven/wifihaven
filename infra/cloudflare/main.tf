@@ -416,6 +416,51 @@ resource "cloudflare_email_routing_rule" "press_staging_to_worker" {
   }
 }
 
+# ── Email Routing: sameer@wifihaven.net → sameer@creativedestruction.com (#2204) ──
+# A personal alias the operator can hand out selectively (partners, escalations,
+# "email me directly"). Unlike support (forwards to Plain) and press (Email
+# Worker), this is a plain forward straight to a real, monitored external inbox —
+# no app, no AI. Same Cloudflare Email Routing mechanism as support@ above; the
+# apex SPF (cloudflare_record.spf, `include:_spf.mx.cloudflare.net ~all`) already
+# authorizes Cloudflare to forward on our behalf, so this alias is covered without
+# any SPF change. Local-part `sameer` is distinct from support@/press@ — no clash.
+#
+# Requires Email Routing to already be enabled on the zone (the operator/dashboard
+# step documented in the support@ block above) for this rule to apply.
+
+# Destination address: the operator's real external inbox. Not a secret.
+#
+# One-time MANUAL verification required: Cloudflare emails a confirmation link to
+# sameer@creativedestruction.com before it will forward to it. The operator must
+# click that link from that inbox. Terraform CANNOT complete this step — the
+# `verified` attribute stays null until confirmed, and forwarding does not work
+# until then.
+resource "cloudflare_email_routing_address" "operator_personal" {
+  account_id = var.account_id
+  email      = "sameer@creativedestruction.com"
+}
+
+# Forward sameer@wifihaven.net → the operator's personal inbox above.
+resource "cloudflare_email_routing_rule" "operator_personal_forward" {
+  zone_id = var.zone_id
+  name    = "sameer@wifihaven.net -> sameer@creativedestruction.com (#2204)"
+  enabled = true
+
+  matcher {
+    type  = "literal"
+    field = "to"
+    value = "sameer@wifihaven.net"
+  }
+
+  action {
+    type  = "forward"
+    value = [cloudflare_email_routing_address.operator_personal.email]
+  }
+
+  # Routing must already be enabled on the zone (operator/dashboard step in the
+  # support@ block above) for this rule to apply.
+}
+
 # Apex + www CNAME to the MARKETING project's .pages.dev (#1842). Stays proxied
 # (orange cloud) so the zone-level redirect ruleset below can fire at the edge.
 resource "cloudflare_record" "spa_apex" {
