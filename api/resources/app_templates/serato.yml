@@ -1,0 +1,16 @@
+slug: serato
+name: Serato
+icon: "https://icons.duckduckgo.com/ip3/serato.com.ico"
+icon_type: url
+# Added from prod evidence (#2331: 2026-07-20 app-catalog pass): 30d traffic on
+# Kid Mac showed 8.9 MB / 106 hits across serato.com (DJ/music-production
+# software) — api./ecom./id./insights./license./my./myserato./notifications./
+# profile./rewards./static./whatsnew.serato.com — all first-party account,
+# licensing, and rewards-program subdomains. Consistent multi-week hit pattern
+# (license checks, rewards, notifications) indicates genuine software use, not
+# a one-off page load. sera.to (Serato's own CDN/short-link domain — confirmed
+# via web search serving DJ software downloads at a.cdn.sera.to) is Serato's
+# dedicated infra, not a shared shortener, so it's included alongside the apex.
+hosts:
+  - serato.com
+  - sera.to
