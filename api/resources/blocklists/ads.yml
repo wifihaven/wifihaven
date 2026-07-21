@@ -317,3 +317,64 @@ hosts:
   - rfihub.net
   - dv.tech
   - progrtb.com
+  # traffic-driven additions (#2348): observed but unblocked ad infra.
+  # Sourced from a 30-day prod recent-apexes sweep (26 devices, 2026-07-21).
+  # Two sources this pass: (1) the RTB/bidder name-pattern vein (still
+  # productive — 15 more *rtb*/*bid*/*ssp* apexes not in ads-extended), and
+  # (2) re-verifying apexes the #2212 pass held out as unverified (its
+  # websearch tooling was flaky that run) — ownership confirmed via web this
+  # time for adrta.com (Pixalate), geoedge.be (GeoEdge), globalrtb.com,
+  # rapidbidding.com, colossusssp.com, admatic.de (AdMatic GmbH), mediago.io
+  # (MediaGo/Baidu Global), ninthdecimal.com (ex-JiWire, now InMarket),
+  # sparteo.com, rixengine.com (RixEngine/Baidu Global), adtarget.biz,
+  # acobt.tech + mfadsrvr.com (Bigo Ads-style obfuscated tracking / Media
+  # Force via BidSwitch). Dual-use / wrong-category SKIPPED: script.ac +
+  # protechts.net + tagsrvcs.com (all HUMAN Security anti-bot/fraud
+  # infrastructure — same collateral class as datadome.co/confiant, protects
+  # legitimate login/checkout flows broadly, not ad-exclusive), betrad.com
+  # (ambiguous gambling-adjacent tracking, unclear if ad-serving or
+  # analytics-only), xlgmedia.com (XLMedia's business is substantially
+  # gambling-affiliate content publishing across 2,000+ owned/managed
+  # properties — the observed `s.xlgmedia.com` script host is closer to the
+  # target-video.com/horsebreedspictures.com content-collateral pattern than
+  # a dedicated ad-serving apex; independent review caught this after the
+  # initial add). HELD OUT as UNVERIFIED (still no clear identity after a
+  # web search — do NOT re-classify from the name alone, verify next pass):
+  # native-cloud.com, dailyinnovation.biz, lazybumblebee.com, onegg.site,
+  # gt162037.com, ammnlth.net, 4dex.io, tk0x1.com, impression.link,
+  # qvdt3feo.com, str-nrg.com, tq-tungsten.com, img-static.tech,
+  # digital-services.solutions, qwadro.com, youngle.tech (contradictory
+  # low-confidence search results), nextmillmedia.com, adelement.com,
+  # pod-ad.com, growthguru.bid, inhousedsp.com. See
+  # evidence/ads-classification-2348.md.
+  # RTB/bidder/SSP name-pattern gaps (name is the function — low collateral)
+  - optimusbid.com
+  - globalrtb.com
+  - adspsp.com
+  - htlbid.com
+  - rapidbidding.com
+  - tubrtb.com
+  - bidsystem.ai
+  - imbid.co
+  - colossusssp.com
+  - rtb.mx
+  - anyrtb.com
+  - bidmatic.io
+  - rtb-oveeo.com
+  - prebid.cloud
+  - betweendigital.com
+  # Verified-ownership vendor apexes (ambiguous names confirmed via web)
+  - adrta.com
+  - geoedge.be
+  - adtonos.com
+  - permutive.app
+  - permutive.com
+  - 4dsply.com
+  - acobt.tech
+  - mfadsrvr.com
+  - admatic.de
+  - mediago.io
+  - ninthdecimal.com
+  - sparteo.com
+  - rixengine.com
+  - adtarget.biz

@@ -148,6 +148,8 @@ object BundledBlocklistsSpec
         assertTrue(ads.contains(Hostname.unsafe("adkernel.com"))) &&
         // traffic-driven addition pinned for presence (#2212)
         assertTrue(ads.contains(Hostname.unsafe("dotomi.com"))) &&
+        // traffic-driven addition pinned for presence (#2348)
+        assertTrue(ads.contains(Hostname.unsafe("geoedge.be"))) &&
         assertTrue(meta.isDefined) &&
         assertTrue(meta.exists(m => m.bundled && m.name == "Ads & Trackers"))
     },
@@ -377,7 +379,9 @@ object BundledBlocklistsSpec
         assertTrue(hosts.contains(Hostname.unsafe("riotgames.com"))) &&
         assertTrue(hosts.contains(Hostname.unsafe("gimkitconnect.com"))) &&
         // traffic-driven unblocked-games addition pinned for presence (#2212)
-        assertTrue(hosts.contains(Hostname.unsafe("eaglercraft.com")))
+        assertTrue(hosts.contains(Hostname.unsafe("eaglercraft.com"))) &&
+        // traffic-driven addition pinned for presence (#2348)
+        assertTrue(hosts.contains(Hostname.unsafe("saygames.io")))
     },
     test("gambling + social-media: traffic-driven additions are present (#2212)") {
       for {
@@ -399,7 +403,9 @@ object BundledBlocklistsSpec
       } yield assertTrue(gambling.contains(Hostname.unsafe("betrivers.com"))) &&
         assertTrue(gambling.contains(Hostname.unsafe("americascardroom.eu"))) &&
         assertTrue(social.contains(Hostname.unsafe("nextdoor.com"))) &&
-        assertTrue(social.contains(Hostname.unsafe("vk.com")))
+        assertTrue(social.contains(Hostname.unsafe("vk.com"))) &&
+        // traffic-driven addition pinned for presence (#2348)
+        assertTrue(gambling.contains(Hostname.unsafe("acebet.cc")))
     },
     test("ai: bundled list is loaded and includes the major AI services (#1890)") {
       for {
@@ -419,6 +425,8 @@ object BundledBlocklistsSpec
         assertTrue(hosts.contains(Hostname.unsafe("perplexity.ai"))) &&
         assertTrue(hosts.contains(Hostname.unsafe("character.ai"))) &&
         assertTrue(hosts.contains(Hostname.unsafe("midjourney.com"))) &&
+        // traffic-driven addition pinned for presence (#2348)
+        assertTrue(hosts.contains(Hostname.unsafe("gemini.google"))) &&
         // Never list the bare shared vendor apex (#1890 host-scoping note).
         assertTrue(!hosts.contains(Hostname.unsafe("google.com"))) &&
         assertTrue(!hosts.contains(Hostname.unsafe("microsoft.com")))

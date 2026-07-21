@@ -203,6 +203,56 @@ that edit in the same PR.** If a step above is now wrong, fix the step too.
 
 ## Learnings log (newest first)
 
+- **2026-07-21** (#2348) — **When websearch tooling is available (unlike a
+  prior flaky run), re-verify the PREVIOUS pass's "held out — unverified"
+  list before scanning for new candidates — it's free signal the last run
+  already surfaced.** #2212 held out 27 apexes because its websearch was
+  intermittently down. This run re-searched all 27: 9 confirmed genuine ad-tech
+  gaps (adrta.com=Pixalate, geoedge.be=GeoEdge, admatic.de=AdMatic GmbH,
+  mediago.io=MediaGo/Baidu, ninthdecimal.com=ex-JiWire/InMarket, sparteo.com,
+  rixengine.com=Baidu Global, adtarget.biz, globalrtb.com/rapidbidding.com/
+  colossusssp.com — all still genuine gaps), 3 resolved as the SAME dual-use
+  vendor (see next entry), 15 remain genuinely unidentifiable and are carried
+  forward again (do not keep re-guessing from the name — a domain staying
+  unverified for 2+ passes just means it's obscure, not that it's ad-tech).
+- **2026-07-21** (#2348) — **HUMAN Security (bot-mitigation/anti-fraud,
+  formerly White Ops) runs the SAME product under at least three unrelated-
+  looking domain names: `tagsrvcs.com`, `script.ac`, `protechts.net`.** All
+  three are dual-use SKIPS (same class as `datadome.co`/`confiant-integrations.net`)
+  — HUMAN protects login/checkout/general traffic broadly on legitimate sites,
+  not ad-serving exclusively. Correcting a prior mistake: the #2212 evidence
+  doc attributed `tagsrvcs.com` to "Bazaarvoice reviews widget" — this run's
+  websearch instead confirms HUMAN Security ownership via Netify. If a new
+  obfuscated-looking domain resolves to HUMAN, treat it as the same skip
+  bucket rather than re-litigating.
+- **2026-07-21** (#2348) — **A domain owned by a vendor already known for
+  rotating obfuscated tracking domains (Bigo Ads) is a genuine ads add, not a
+  hold-out, once ownership is confirmed — obfuscation is evidence FOR ad
+  infra, not against it.** `acobt.tech` and (already curated) `antibanads.com`
+  are both Bigo Ads domains deliberately named to not look ad-related, per
+  security research. Contrast with the HUMAN Security case above: obfuscated
+  naming + confirmed ad-serving ownership → add; obfuscated naming + confirmed
+  bot-mitigation/security ownership → skip. The naming pattern alone doesn't
+  decide it — the confirmed *function* does.
+- **2026-07-21** (#2348) — **A bare-TLD variant of an already-curated product
+  subdomain is a genuine, if low-traffic, coverage gap — check apex vs
+  bare-gTLD siblings, not just apex vs subdomain.** `gemini.google` (Google's
+  `.google` gTLD, no `.com`) carries `share.gemini.google` — Gemini's
+  share-link feature — and is a completely different apex from the curated
+  `gemini.google.com`; the existing entry doesn't suffix-match it. Low volume
+  (139K bytes, 8 hits) but real: a household relying on the `.com` entry alone
+  would leak this one feature. Applies to any vendor using both `<product>.com`
+  and a special gTLD (`.google`, `.goog`) for the same product.
+- **2026-07-21** (#2348) — **A search result that reads as an implausible
+  "harmless" explanation for a domain surfacing in ad/tracking-shaped traffic
+  is a reason to hold out, not a reason to add.** `youngle.tech` returned one
+  search result describing it as a "tech careers blog" — but the traffic shape
+  (25MB bytes, only 7 hits — an extreme bytes/hit ratio typical of ad-creative
+  payloads) and other results flagging a subdomain on scam-adviser tools
+  contradict that. When a low-confidence identity claim conflicts with the
+  observed traffic shape, don't resolve the conflict in the direction of "skip
+  it" (nothing to skip — it's already unblocked); hold it out as unverified
+  instead of trusting the shakiest positive-sounding explanation.
 - **2026-07-14** (#2212) — **There is a second, large ads vein the RTB-name
   passes structurally missed: mainstream ad-tech VENDOR apexes.** #1822/#1923/
   #2064/#2122 all filtered on `*rtb*` / `*bid*` / `*-ads` name shapes, so they

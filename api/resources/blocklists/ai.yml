@@ -37,6 +37,11 @@ hosts:
   - claudeusercontent.com
   # Google Gemini (product subdomains only — never bare google.com)
   - gemini.google.com
+  # traffic-driven addition (#2348): `share.gemini.google` (Gemini share-link
+  # feature) rides the bare `.google` gTLD, not `.com` — a distinct apex from
+  # gemini.google.com that the existing entry doesn't suffix-match. 30-day
+  # prod recent-apexes sweep (26 devices, 2026-07-21).
+  - gemini.google
   - bard.google.com
   - aistudio.google.com
   - ai.google.dev

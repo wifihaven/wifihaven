@@ -103,3 +103,9 @@ hosts:
   # template. Both the .com and .ru apexes are in active use.
   - eaglercraft.com
   - eaglercraft.ru
+  # traffic-driven additions (#2348): 30-day prod recent-apexes sweep (26
+  # devices, 2026-07-21). Dual-use / wrong-category SKIPPED: unity3d.com /
+  # unity3dusercontent.com (Unity is a game ENGINE/SDK used by thousands of
+  # unrelated legitimate games — blocking it is infra-level collateral, not a
+  # specific game), viddea.com (unclear identity, held out unverified).
+  - saygames.io # SayGames — hyper-casual mobile game publisher (200+ titles, 8B+ downloads)
