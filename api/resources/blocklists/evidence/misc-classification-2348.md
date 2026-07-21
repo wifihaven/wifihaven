@@ -25,7 +25,7 @@ tracking infra, held out — see ads evidence doc).
 
 | apex | bytes | hits | what it is | why a gap |
 |------|------:|-----:|------------|-----------|
-| saygames.io | 59K | 3 | SayGames — Cyprus-based hyper-casual mobile game publisher, 200+ titles, 8B+ downloads | dedicated game-publisher apex; not in `games.yml` |
+| saygames.io | 59K | 3 | SayGames — hyper-casual mobile game publisher, 200+ titles, 8B+ downloads (sources disagree on HQ: Cyprus per Crunchbase vs. Minsk per Tracxn/office-tour coverage — immaterial to the classification) | dedicated game-publisher apex; not in `games.yml` |
 
 **Skipped (dual-use SDK/engine infra):** `unity3d.com` / `unity3dusercontent.com`
 — Unity is a game ENGINE/SDK used by thousands of unrelated legitimate games;

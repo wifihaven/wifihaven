@@ -34,7 +34,7 @@ IPv4-bias caveat (#1796) applies — byte totals under-count IPv6-heavy flows.
    three differently-named domains), and 15 remain genuinely unidentifiable —
    carried forward again.
 
-## Added apexes (30)
+## Added apexes (29)
 
 ### RTB/bidder/SSP name-pattern gaps (name is the function — low collateral)
 | apex | bytes | hits | what it is |
@@ -59,7 +59,6 @@ IPv4-bias caveat (#1796) applies — byte totals under-count IPv6-heavy flows.
 | apex | bytes | hits | what it is |
 |------|------:|-----:|------------|
 | geoedge.be | 33.5M | 611 | GeoEdge — ad quality/security (malvertising protection), founded 2010 |
-| xlgmedia.com | 4.7M | 208 | XLMedia — ad network/performance publisher (observed subdomain `s.xlgmedia.com`, the serving/script host, not the main content site) |
 | adtonos.com | 4.1M | 140 | AdTonos — programmatic audio advertising platform |
 | adrta.com | 4.0M | 432 | Pixalate ad-fraud/analytics platform; #2212 held out unverified, now confirmed |
 | permutive.app | 3.1M | 47 | Permutive — contextual/first-party-data ad targeting for publishers |
@@ -94,6 +93,17 @@ IPv4-bias caveat (#1796) applies — byte totals under-count IPv6-heavy flows.
 - **hs-analytics.net** (477K bytes, 40 hits) — HubSpot Analytics. Same
   collateral class as `google-analytics.com`: first-party website analytics
   widely embedded by legitimate small/medium business sites, not ad-serving.
+- **xlgmedia.com** (4.7M bytes, 208 hits) — initially added as "XLMedia ad
+  network/performance publisher," but the independent review pass flagged
+  that XLMedia's actual business is substantially **gambling-affiliate
+  content publishing** across 2,000+ owned/managed properties (sports
+  betting, personal finance verticals), not a dedicated ad-serving vendor.
+  The observed subdomain (`s.xlgmedia.com`) is a shared script host across
+  that publisher network — closer to the `target-video.com`/
+  `horsebreedspictures.com` content-collateral pattern than a clean ad
+  apex. Removed from `ads.yml` after the initial add; held out rather than
+  reassigned to `gambling.yml` since it's infrastructure shared across many
+  properties, not a dedicated gambling destination itself.
 
 ## Held out — UNVERIFIED this run (do NOT re-add from the name alone)
 

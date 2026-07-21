@@ -333,7 +333,12 @@ hosts:
   # infrastructure — same collateral class as datadome.co/confiant, protects
   # legitimate login/checkout flows broadly, not ad-exclusive), betrad.com
   # (ambiguous gambling-adjacent tracking, unclear if ad-serving or
-  # analytics-only). HELD OUT as UNVERIFIED (still no clear identity after a
+  # analytics-only), xlgmedia.com (XLMedia's business is substantially
+  # gambling-affiliate content publishing across 2,000+ owned/managed
+  # properties — the observed `s.xlgmedia.com` script host is closer to the
+  # target-video.com/horsebreedspictures.com content-collateral pattern than
+  # a dedicated ad-serving apex; independent review caught this after the
+  # initial add). HELD OUT as UNVERIFIED (still no clear identity after a
   # web search — do NOT re-classify from the name alone, verify next pass):
   # native-cloud.com, dailyinnovation.biz, lazybumblebee.com, onegg.site,
   # gt162037.com, ammnlth.net, 4dex.io, tk0x1.com, impression.link,
@@ -364,7 +369,6 @@ hosts:
   - adtonos.com
   - permutive.app
   - permutive.com
-  - xlgmedia.com
   - 4dsply.com
   - acobt.tech
   - mfadsrvr.com
