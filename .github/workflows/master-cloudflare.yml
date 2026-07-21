@@ -40,6 +40,23 @@ on:
       - 'infra/cloudflare/**'
       - '.github/workflows/master-cloudflare.yml'
   workflow_dispatch:
+    inputs:
+      # BREAK-GLASS, manual-run-only. Normally empty. The Cloudflare Terraform
+      # provider (4.x, we're pinned `~> 4.40`) cannot perform an *in-place
+      # update* of `cloudflare_email_routing_rule` — it omits the rule id on the
+      # update API call and aborts with `required rule id missing`, wedging every
+      # plain `apply`. Create/delete work, so a one-time targeted `-replace`
+      # (destroy+recreate) sidesteps it. Pass the resource address(es) here for a
+      # single manual run to force-recreate them; the operator supplies the
+      # address (e.g. cloudflare_email_routing_rule.operator_personal_forward) at
+      # dispatch time. Leave empty for normal CD — `push` never sets this, so the
+      # automatic apply is unchanged. This is a manual workaround, not part of
+      # normal CD; the real fix is the provider v5 migration (tracked separately).
+      # Refs #2350, terraform-provider-cloudflare#3397.
+      replace_targets:
+        description: 'BREAK-GLASS: space-separated Terraform resource addresses to force-recreate (-replace) for this one run. Normally empty. See #2350.'
+        required: false
+        default: ''
 
 # Scoped to this pipeline's own group. Unlike master-grafana.yml we do NOT
 # cancel in-progress runs: killing `terraform apply` mid-run could orphan the
@@ -95,6 +112,19 @@ jobs:
           # wifihaven.net. Prefer a dedicated DNS-scoped token; fall back to the
           # Pages deploy token only if it has been widened to cover DNS.
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_DNS_API_TOKEN || secrets.CLOUDFLARE_API_TOKEN }}
+          # Break-glass -replace targets (workflow_dispatch only; empty on push).
+          # See the workflow_dispatch input comment above and #2350.
+          REPLACE_TARGETS: ${{ github.event.inputs.replace_targets }}
         run: |
           terraform init -input=false
-          terraform apply -auto-approve -input=false
+          # Build any operator-supplied -replace flags. Empty (the default, and
+          # always on push) => command byte-identical to the normal apply.
+          # `set -f` disables globbing so a resource address is never pathname-
+          # expanded during the intentional word-split of $REPLACE_TARGETS.
+          replace_args=()
+          set -f
+          for target in $REPLACE_TARGETS; do
+            replace_args+=("-replace=$target")
+          done
+          set +f
+          terraform apply -auto-approve -input=false "${replace_args[@]}"
