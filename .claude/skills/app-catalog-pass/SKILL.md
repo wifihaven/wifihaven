@@ -172,6 +172,28 @@ above is now wrong, fix the step too — don't just log around it.
 
 ## Learnings log (newest first)
 
+- **2026-07-20 (#2331)** — A mature catalog can still find a genuine new app in
+  a low-byte, high-consistency cluster: `serato.com` (DJ software) was only
+  8.9 MB / 106 hits, far below the multi-hundred-MB clusters that usually
+  trigger a new template, but the hit *pattern* (spread across license checks,
+  rewards, notifications over the full 30d window — not a single burst) is what
+  made it a real app rather than a one-off page load. Byte volume alone isn't
+  the bar; recurring engagement shape matters as much for small clusters.
+- **2026-07-20 (#2331)** — A brand's own short-link/CDN domain (`sera.to` for
+  Serato) belongs in the app's host-set alongside the main apex when it's
+  confirmed first-party (web search showed `a.cdn.sera.to` serving the vendor's
+  own downloads directly) — same reasoning as `plex.direct` and the
+  account-scoped `eaglercraft-99f.workers.dev` entry: a brand-dedicated
+  subdomain of a shared platform is fine to include; the shared platform's
+  bare/generic apex is not.
+- **2026-07-20 (#2331)** — Existing-app host-set gaps keep recurring even on
+  mature apps: `1password.yml` was missing `agilebits.com` (1Password's legacy
+  company-name domain, serves the extension's favicon/icon cache) and
+  `1passwordusercontent.com` (encrypted vault attachments) despite being
+  present on every kid device. When gap-checking a top-byte apex that maps to
+  an existing app, also check whether *sibling* apexes tied to the same vendor
+  (old company names, `usercontent`/`cache`/`cdn` variants) are traffic-visible
+  but unlisted — don't stop at confirming the primary apex is covered.
 - **2026-07-08 (#2129)** — A pass can be a clean no-op: not only ZERO new apps
   but ZERO host-set gaps either (unlike #2058, which found an existing-app
   mirror gap). Every apex with real kid traffic mapped to an existing app or

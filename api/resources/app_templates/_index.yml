@@ -47,3 +47,5 @@ slugs:
   - a-z-animals
   # operator request: Prodigy kids' educational math game
   - prodigy
+  # #2331: traffic-driven catalog pass (see evidence/classification-2331.md)
+  - serato
