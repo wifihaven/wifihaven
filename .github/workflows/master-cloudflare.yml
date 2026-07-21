@@ -119,8 +119,12 @@ jobs:
           terraform init -input=false
           # Build any operator-supplied -replace flags. Empty (the default, and
           # always on push) => command byte-identical to the normal apply.
+          # `set -f` disables globbing so a resource address is never pathname-
+          # expanded during the intentional word-split of $REPLACE_TARGETS.
           replace_args=()
+          set -f
           for target in $REPLACE_TARGETS; do
             replace_args+=("-replace=$target")
           done
+          set +f
           terraform apply -auto-approve -input=false "${replace_args[@]}"
