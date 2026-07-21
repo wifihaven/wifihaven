@@ -1,13 +1,13 @@
 ---
 name: cd-watchdog
-description: Daily health check of WifiHaven Master Router CD + Master API/UI CD. Detects a RED deploy pipeline on main, triages infra flakes (re-run, don't patch), and ONLY for a genuine unaddressed code failure opens a fix PR. Invoke as the daily CD watchdog, or whenever asked "is CD green", "check the deploy pipelines", "why is Master Router CD / Master API-UI CD red", or "watchdog the CD".
+description: Daily health check of every WifiHaven `Master … CD` deploy pipeline (Router, API/UI, Cloudflare, Grafana, Marketing, Press Agent/Worker, Support Agent, and any future ones). Detects a RED deploy pipeline on main, triages infra flakes (re-run, don't patch), and ONLY for a genuine unaddressed code failure opens a fix PR. Invoke as the daily CD watchdog, or whenever asked "is CD green", "check the deploy pipelines", "why is Master … CD red", or "watchdog the CD".
 ---
 
 # CD health watchdog
 
-This skill is the WifiHaven **CD health watchdog** — an autonomous check of the
-two deploy pipelines. It runs with a **fresh context and no memory of prior
-runs**, so everything it needs is here.
+This skill is the WifiHaven **CD health watchdog** — an autonomous check of
+**every** deploy pipeline (all workflows named `Master … CD`). It runs with a
+**fresh context and no memory of prior runs**, so everything it needs is here.
 
 The governing instinct is **conservatism**: detect a RED deploy pipeline and,
 ONLY if it is a genuine code failure that nobody is already fixing, open a fix
@@ -32,26 +32,37 @@ any disagreement — update this skill if the process itself changed:
 
 ---
 
-## Step 1 — Detect red
+## Step 1 — Detect red across ALL CD pipelines
 
 ```bash
 cd /Users/sameer/workspace/wifihaven && git fetch origin
 ```
 
-For EACH workflow, get the most recent **COMPLETED** run on `main`:
+**The set of pipelines to check is discovered dynamically, never hardcoded.**
+Every deploy pipeline is a workflow whose GitHub name is `Master … CD` — today
+that is Router, API/UI, Cloudflare, Grafana, Marketing, Press Agent, Press
+Worker, and Support Agent, but new ones get added, so enumerate by name so this
+skill stays current automatically:
 
 ```bash
-# Master Router CD
-gh run list --workflow=master-router.yml --branch main --limit 5 \
-  --json conclusion,status,displayTitle,headSha,url,createdAt,databaseId
-# Master API/UI CD
-gh run list --workflow=master-api-ui.yml --branch main --limit 5 \
+# All CD deploy pipelines = workflows named "Master … CD"
+gh workflow list --all --json name,path \
+  --jq '.[] | select(.name | test("^Master .* CD$")) | .path | sub(".*/"; "")'
+```
+
+For EACH workflow file that returns, get the most recent **COMPLETED** run on
+`main`:
+
+```bash
+gh run list --workflow=<file>.yml --branch main --limit 5 \
   --json conclusion,status,displayTitle,headSha,url,createdAt,databaseId
 ```
 
 A workflow is **RED** if its most recent *completed* run on main has
-`conclusion == "failure"` — ignore in-progress runs; look at the latest
-completed one. If **NEITHER** workflow is red, print **"both green"** and STOP.
+`conclusion == "failure"` — ignore in-progress and `cancelled` runs (a
+`cancelled` run is a superseded push, not a failure); look at the latest
+*completed with conclusion `success`/`failure`* one. If **NONE** of the CD
+workflows is red, print **"all green"** (listing the count checked) and STOP.
 
 ---
 
@@ -64,9 +75,22 @@ gh run view <runId> --json jobs       # which job/step failed
 gh run view <runId> --log-failed      # grep this for the real error
 ```
 
-Master Router CD's **first gate is a shared CI job** (frontend Vitest + Scala
-tests). A router-CD failure is frequently **not** Gate 3a (the KVM/router e2e)
-but a test in that shared gate — identify which it actually is.
+Each pipeline has a different shape — don't assume the failing step:
+
+- **Master Router CD** / **Master API/UI CD**: first gate is a shared CI job
+  (frontend Vitest + Scala tests), then image build/publish, then the VM e2e
+  Gates (3a router-side, 3b API/UI-side). A router-CD failure is frequently
+  **not** Gate 3a (the KVM/router e2e) but a test in that shared gate.
+- **Master Cloudflare CD** / **Master Grafana CD**: Terraform apply — failures
+  are usually a provider/auth error, a plan drift, or a missing secret/token
+  scope, not a test.
+- **Master Marketing CD** / **Master Press Worker CD**: static-site / Cloudflare
+  Worker build + deploy (wrangler) — failures are usually a build or a
+  wrangler/secret error.
+- **Master Press Agent CD** / **Master Support Agent CD**: agent build/deploy —
+  failures are usually a build, a container push, or a deploy-target error.
+
+Identify which job/step actually failed before classifying.
 
 ---
 
