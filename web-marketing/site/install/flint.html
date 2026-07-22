@@ -142,29 +142,11 @@ openwrt-&lt;version&gt;-qualcommax-ipq60xx-glinet_gl-ax1800-squashfs-factory.ubi
         <h2>4. Turn on Wi-Fi (it’s off by default)</h2>
         <p>
           Vanilla OpenWrt ships with <strong>both radios disabled and no wireless network</strong>,
-          so right after flashing you’ll only have wired connectivity. That’s expected — not a bad
-          flash — you turn Wi-Fi on yourself. Do it before you unplug the laptop.
+          so right after flashing you’ll only have wired connectivity — that’s expected. Turning it
+          on is the same on every OpenWrt router, so we keep it on one page:
+          <strong><a href="/install/enable-wifi">Turn on Wi-Fi →</a></strong> (LuCI or SSH). Do it
+          before you unplug the laptop.
         </p>
-        <p>
-          <strong>In LuCI (browser):</strong> go to <strong>Network → Wireless</strong>. For each
-          radio (2.4 GHz and 5 GHz) click <strong>Enable</strong>, then <strong>Edit</strong> — set
-          the <strong>ESSID</strong> (network name), pick <strong>WPA2-PSK</strong> (or WPA2/WPA3
-          mixed) with a password, set your country, and <strong>Save &amp; Apply</strong>.
-        </p>
-        <p><strong>Or over SSH:</strong></p>
-        <pre><code>uci set wireless.radio0.country='US'   # your country code
-uci set wireless.radio1.country='US'
-uci set wireless.radio0.disabled='0'   # radios are disabled by default
-uci set wireless.radio1.disabled='0'
-uci set wireless.default_radio0.ssid='YourNetwork'
-uci set wireless.default_radio1.ssid='YourNetwork'
-uci set wireless.default_radio0.encryption='sae-mixed'   # WPA2/WPA3; use 'psk2' for WPA2 only
-uci set wireless.default_radio1.encryption='sae-mixed'
-uci set wireless.default_radio0.key='your-wifi-password'
-uci set wireless.default_radio1.key='your-wifi-password'
-uci commit wireless
-wifi reload</code></pre>
-        <p>Confirm your SSID is now visible from a phone — <code>wifi status</code> shows each radio up.</p>
 
         <h2>5. Install the wifihaven agent</h2>
         <p>

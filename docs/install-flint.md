@@ -178,29 +178,11 @@ for the full detail. In brief:
 
 ### 2.1 Turn on Wi-Fi and set the country code
 
-**Wi-Fi is OFF after flashing — vanilla OpenWRT ships with the radios disabled
+**Wi-Fi is OFF after flashing** — vanilla OpenWRT ships with the radios disabled
 and no wireless network, so you'll only have wired connectivity until you bring
-it up.** Set the country, enable both radios, and create a network:
-
-```sh
-uci set wireless.radio0.country='US'   # your country code
-uci set wireless.radio1.country='US'
-uci set wireless.radio0.disabled='0'
-uci set wireless.radio1.disabled='0'
-uci set wireless.default_radio0.ssid='YourNetwork'
-uci set wireless.default_radio1.ssid='YourNetwork'
-uci set wireless.default_radio0.encryption='sae-mixed'  # WPA2/WPA3; 'psk2' for WPA2-only
-uci set wireless.default_radio1.encryption='sae-mixed'
-uci set wireless.default_radio0.key='your-wifi-password'
-uci set wireless.default_radio1.key='your-wifi-password'
-uci commit wireless
-wifi reload
-```
-
-Or do it in LuCI under **Network → Wireless** (Enable → Edit → set ESSID +
-WPA2/WPA3 password → Save & Apply). Full detail, including the LuCI walk-through,
-is in [`install-flint2.md` §2.1](install-flint2.md#21-turn-on-wi-fi-and-set-the-country-code).
-Verify with `iw reg get` and confirm the SSID is visible from a phone.
+it up. This step is identical on every OpenWRT router; do it (LuCI or `uci` —
+enable `radio0`/`radio1`, set an SSID + WPA2/WPA3 password, set the country) per
+[`install-flint2.md` §2.1](install-flint2.md#21-turn-on-wi-fi-and-set-the-country-code).
 
 ### 2.2 Remove unused IPsec WAN-side rules
 
