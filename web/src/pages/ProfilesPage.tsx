@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
+import { newProfileDefaults } from '@/api/profileDefaults'
 import { useBlocklists, useGlobalProfile, useProfiles, useDevices, useInvalidators, useNamedSchedules, useProfileUsageByApp, useTimeStatusSummary } from '@/api/queries'
 import { useAuth } from '@/hooks/useAuth'
 import { useWsTimeStatus, useWsTopicLive } from '@/hooks/useWs'
@@ -304,15 +305,10 @@ export function ProfilesPage() {
     try {
       // #978 — defaults mirror the old modal's emptyForm() so the new profile
       // boots in the same safe-by-default state (LastKnownGood failover, Sum
-      // overlap, no blocked categories, no schedules, no daily cap).
-      await createMutation.mutateAsync({
-        name: trimmed,
-        blockedCategories: [],
-        paused: false,
-        timeLimit: null,
-        failureMode: 'last-known-good',
-        crossDeviceOverlapMode: 'sum',
-      })
+      // overlap, no blocked categories, no schedules, no daily cap). Shared
+      // with the Add-Device inline creator (#2367) via newProfileDefaults so
+      // the two creation paths can't drift.
+      await createMutation.mutateAsync(newProfileDefaults(trimmed))
       setCreatingName(null)
     } catch (e) {
       setCreatingError(e instanceof Error ? e.message : 'Failed to create')

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
+import { newProfileDefaults } from '@/api/profileDefaults'
 import { useAlerts, useDevices, useHouseholdSettings, useProfiles, useInvalidators } from '@/api/queries'
 import { useAuth } from '@/hooks/useAuth'
 import { useEscapeClose } from '@/hooks/useEscapeClose'
@@ -50,7 +51,7 @@ export function DevicesPage() {
   useEscapeClose(() => setEditing(null), editing !== null)
   const [form,     setForm]     = useState({ mac: '', name: '', profileId: 0 })
   const [editingMac, setEditingMac] = useState<string | null>(null)
-  // #2367 — inline "＋ New profile…" creation from within the Add-Device modal,
+  // #2367 — inline "+ New profile…" creation from within the Add-Device modal,
   // so a brand-new (zero-profile) household can onboard its first device without
   // bouncing to Profiles. When the household has no profiles, the creator is
   // shown in place of the (otherwise empty/invalid) select.
@@ -69,17 +70,10 @@ export function DevicesPage() {
   })
 
   // Reuse the same create endpoint + safe-by-default shape ProfilesPage uses
-  // (#978), so an inline-created profile is identical to one made on /profiles.
+  // (#978 via newProfileDefaults), so an inline-created profile is identical to
+  // one made on /profiles.
   const createProfileMutation = useMutation({
-    mutationFn: (name: string) =>
-      api.profiles.create({
-        name,
-        blockedCategories: [],
-        paused: false,
-        timeLimit: null,
-        failureMode: 'last-known-good',
-        crossDeviceOverlapMode: 'sum',
-      }),
+    mutationFn: (name: string) => api.profiles.create(newProfileDefaults(name)),
     onSuccess: async (created) => {
       setForm(f => ({ ...f, profileId: created.id }))
       setCreatingProfile(false)
@@ -254,7 +248,7 @@ export function DevicesPage() {
                   }}
                   className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-3 text-brand-ink">
                   {profiles.map(p => <option key={p.profile.id} value={p.profile.id}>{p.profile.name}</option>)}
-                  <option value="__new__">＋ New profile…</option>
+                  <option value="__new__">+ New profile…</option>
                 </select>
               )}
               {creatingProfile && (
