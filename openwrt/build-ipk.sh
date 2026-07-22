@@ -93,34 +93,18 @@ fi
 (cd "$WORK/data" && tar czf "$WORK/data.tar.gz" .)
 
 # ── assemble .ipk (portable ar; plain member names, no GNU trailing slash) ────
-# opkg on OpenWrt 21.02-era (GL.iNet stock 4.8.x — the first hop of the stock
-# GL.iNet install path) requires the ar members to be named EXACTLY
-# debian-binary / control.tar.gz / data.tar.gz. GNU binutils `ar` (the Linux
-# CI host's `ar`) writes SysV-style names WITH a trailing slash as its name
-# terminator ("control.tar.gz/"), which that opkg's pkg_init_from_file rejects
-# as "Malformed package file"; modern opkg (23.05+) and macOS BSD `ar` tolerate
-# or avoid it, which is why it went unnoticed (#2363). Hand-assemble the ar
-# container so the member names are byte-for-byte correct regardless of which
-# `ar` variant the build host ships. ipk_ar_format_spec.test.sh pins the names.
-#
-# ar layout: 8-byte global header "!<arch>\n", then per member a 60-byte header
-# (name[16] mtime[12] uid[6] gid[6] mode[8] size[10] magic[2]) followed by the
-# data, padded to an even byte boundary with a newline.
-ar_append() {  # $1 = member name (as opkg must see it), $2 = source file
-    _name="$1"; _file="$2"
-    _size=$(wc -c < "$_file")
-    # Deterministic mtime/uid/gid (0), mode 100644, magic = 0x60 0x0a (`\n).
-    printf '%-16s%-12d%-6d%-6d%-8s%-10d\140\n' \
-        "$_name" 0 0 0 100644 "$_size" >> "$OUT_IPK"
-    cat "$_file" >> "$OUT_IPK"
-    [ $((_size % 2)) -ne 0 ] && printf '\n' >> "$OUT_IPK"
-    return 0
-}
+# GNU `ar` writes SysV-style member names with a trailing slash, which OpenWrt
+# 21.02-era opkg rejects as "Malformed package file" (#2363). Hand-assemble the
+# ar container via the shared helper so member names are byte-for-byte correct
+# regardless of the build host's `ar`. See ar-append.sh for the full rationale;
+# ipk_ar_format_spec.test.sh pins the resulting member names.
+# shellcheck source=openwrt/ar-append.sh
+. "$SCRIPT_DIR/ar-append.sh"
 
 rm -f "$OUT_IPK"
-printf '!<arch>\n' > "$OUT_IPK"
-ar_append debian-binary  "$WORK/debian-binary"
-ar_append control.tar.gz "$WORK/control.tar.gz"
-ar_append data.tar.gz    "$WORK/data.tar.gz"
+wh_ar_init "$OUT_IPK"
+wh_ar_append "$OUT_IPK" debian-binary  "$WORK/debian-binary"
+wh_ar_append "$OUT_IPK" control.tar.gz "$WORK/control.tar.gz"
+wh_ar_append "$OUT_IPK" data.tar.gz    "$WORK/data.tar.gz"
 
 echo "Built: $OUT_IPK"
