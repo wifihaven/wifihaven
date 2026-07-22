@@ -5,25 +5,40 @@ import zio.test.*
 object InfraHostsSpec extends ZIOSpecDefault {
 
   def spec = suite("InfraHosts")(
-    test("apex entries match every subdomain (gvt2 download shards, ls.apple services)") {
+    test(
+      "apex entries match every subdomain (ls.apple services; #2369-demoted gvt2 via background)",
+    ) {
       assertTrue(
-        InfraHosts.isInfra("gvt2.com"),
-        InfraHosts.isInfra("r3---sn-abc.gvt2.com"),
-        InfraHosts.isInfra("beacons3.gvt2.com"),
-        InfraHosts.isInfra("gvt3.com"),
+        // canonical apex still matches every subdomain on the allow side
         InfraHosts.isInfra("gsp-ssl.ls.apple.com"),
-        InfraHosts.isInfra("b1.nel.goog"),
+        // #2369: gvt2/gvt3/nel.goog were demoted to suppressOnly — apex matching still works,
+        // now on the background (suppression) side, not the allow (isInfra) side.
+        InfraHosts.isBackground("gvt2.com"),
+        InfraHosts.isBackground("r3---sn-abc.gvt2.com"),
+        InfraHosts.isBackground("beacons3.gvt2.com"),
+        InfraHosts.isBackground("gvt3.com"),
+        InfraHosts.isBackground("b1.nel.goog"),
+        !InfraHosts.isInfra("gvt2.com"),
+        !InfraHosts.isInfra("gvt3.com"),
+        !InfraHosts.isInfra("b1.nel.goog"),
       )
     },
     test("exact-host entries match the host and its subdomains") {
       assertTrue(
         InfraHosts.isInfra("connectivitycheck.gstatic.com"),
-        InfraHosts.isInfra("safebrowsingohttpgateway.googleapis.com"),
+        InfraHosts.isInfra("ocsp.pki.goog"),
         InfraHosts.isInfra("events.launchdarkly.com"),
         InfraHosts.isInfra("ocsp.digicert.com"),
+        // #2369: safebrowsingohttpgateway was demoted — still background, no longer allow-carved.
+        InfraHosts.isBackground("safebrowsingohttpgateway.googleapis.com"),
+        !InfraHosts.isInfra("safebrowsingohttpgateway.googleapis.com"),
       )
     },
-    test("#1503 expansion covers the observed #1499 leaking infra classes") {
+    test("#1503 expansion covers the observed #1499 leaking infra classes (suppression)") {
+      // #1499 was an over-COUNT leak — the concern is presence SUPPRESSION (`isBackground`), which
+      // #2369 preserves for every host below. The Google-fronted subset (gvt2/gvt3/nel.goog/
+      // app-analytics/safebrowsing*) is now suppress-only rather than allow+suppress (see the
+      // #2369 tests), but it is still fully suppressed — the #1499 fix is intact.
       val expanded = List(
         "x.gvt2.com",
         "x.gvt3.com",
@@ -35,7 +50,7 @@ object InfraHostsSpec extends ZIOSpecDefault {
         "safebrowsing.google.com",
         "safebrowsingohttpgateway.googleapis.com",
       )
-      assertTrue(expanded.forall(InfraHosts.isInfra))
+      assertTrue(expanded.forall(InfraHosts.isBackground))
     },
     test("BOUNDARY: per-app CDN / asset hosts are NOT infra (they must attribute and count)") {
       // The seam that keeps suppression from re-opening the #1446 undercount: rotating per-app
@@ -73,8 +88,10 @@ object InfraHostsSpec extends ZIOSpecDefault {
     },
     test("matchedPattern returns the canonical pattern that matched") {
       assertTrue(
-        InfraHosts.matchedPattern("r3---sn-abc.gvt2.com").contains("gvt2.com"),
+        InfraHosts.matchedPattern("gsp-ssl.ls.apple.com").contains("ls.apple.com"),
         InfraHosts.matchedPattern("www.tinkercad.com").isEmpty,
+        // #2369: gvt2 is no longer canonical, so the allow-side matcher returns None for it.
+        InfraHosts.matchedPattern("r3---sn-abc.gvt2.com").isEmpty,
       )
     },
     test("every canonical entry is a parseable lowercased hostname (valid for extraAllowed)") {
@@ -112,7 +129,10 @@ object InfraHostsSpec extends ZIOSpecDefault {
     },
     test("#1525 canonical hosts are both allowed and background; the boundary holds for both") {
       assertTrue(
-        InfraHosts.isInfra("gvt2.com") && InfraHosts.isBackground("gvt2.com"),
+        // #2369: gvt2 moved to suppressOnly; `ls.apple.com` is a still-canonical apex example.
+        InfraHosts.isInfra("gsp-ssl.ls.apple.com") && InfraHosts.isBackground(
+          "gsp-ssl.ls.apple.com",
+        ),
         // app/CDN hosts are neither allowed nor suppressed.
         !InfraHosts.isBackground("www.tinkercad.com"),
         !InfraHosts.isBackground("firestore.googleapis.com"),

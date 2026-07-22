@@ -23,10 +23,12 @@ package wifihaven.shared.types
  * `*.fastly.net`, or an app's branded asset domains). Those rotate and, more importantly, must
  * ATTRIBUTE to the app and COUNT (the app host-set work), not be suppressed. That seam is what
  * keeps this list from re-opening the #1446 undercount: suppression keys on host *identity*, never
- * on low bytes / short activity. For the same reason this list enumerates *specific* background
+ * on low bytes / short activity. For the same reason the background set enumerates *specific*
  * `googleapis.com` subdomains (client-services bootstrap, the safe-browsing gateway) rather than
  * the `googleapis.com` apex — the apex would absorb legitimate per-app API traffic that must
- * attribute and count.
+ * attribute and count. (#2369 demoted those two Google-fronted subdomains, plus the gvt2/gvt3/
+ * nel.goog/app-analytics/safebrowsing beacons, from [[canonical]] to [[suppressOnly]] — see the TWO
+ * TIERS note — but they remain enumerated as specific subdomains on the background set.)
  *
  * #1506 enforces this boundary at runtime: even if an entry here also appears in an ACTIVE app's
  * host-set, [[wifihaven.api.presence.Presence.isHeartbeat]] treats app attribution as winning over
@@ -49,6 +51,10 @@ package wifihaven.shared.types
  *     iCloud Private Relay (`mask*.icloud.com`): allow-carving it would punch an anti-filtering
  *     tunnel through every block. These were already suppress-only before #1525 (they lived in the
  *     heartbeat list, never in `infraAllowHosts`), so this split preserves both behaviors exactly.
+ *     #2369 later demoted seven Google-fronted telemetry / analytics / safe-browsing / download
+ *     hosts here for the SAME reason: they share YouTube's GFE anycast IP pool, so allow-carving
+ *     them leaked every Google host-block at the IP layer (the connection-critical OCSP responder
+ *     `ocsp.pki.goog` deliberately stays on [[canonical]]).
  *
  * Presence/dashboard suppression uses [[isBackground]] (= `canonical ++ suppressOnly`); the policy
  * allow carve-out uses [[canonical]] only.
@@ -59,30 +65,29 @@ object InfraHosts {
     // ── Connectivity / captive-portal probes ──────────────────────────────
     "connectivitycheck.gstatic.com", // Android / Chrome connectivity probe
     "captive.apple.com",             // iOS / macOS captive-portal probe
-    "msftconnecttest.com",  // #1540 Windows NCSI connectivity probe (www / ipv6 subdomains)
-    "msftncsi.com",         // #1540 Windows NCSI legacy/secondary probe (www / dns subdomains)
+    "msftconnecttest.com",     // #1540 Windows NCSI connectivity probe (www / ipv6 subdomains)
+    "msftncsi.com",            // #1540 Windows NCSI legacy/secondary probe (www / dns subdomains)
     // ── CA OCSP / CRL responders ──────────────────────────────────────────
-    "ocsp.apple.com",       // Apple OCSP responder
-    "ocsp2.apple.com",      // Apple OCSP responder (secondary)
-    "crl.apple.com",        // Apple CRL distribution
-    "ocsp.pki.goog",        // Google Trust Services OCSP
-    "ocsp.digicert.com",    // DigiCert OCSP (common CA for app backends)
+    "ocsp.apple.com",          // Apple OCSP responder
+    "ocsp2.apple.com",         // Apple OCSP responder (secondary)
+    "crl.apple.com",           // Apple CRL distribution
+    "ocsp.pki.goog",           // Google Trust Services OCSP
+    "ocsp.digicert.com",       // DigiCert OCSP (common CA for app backends)
     // ── Apple edge / OS infra ─────────────────────────────────────────────
-    "g.aaplimg.com",        // Apple geo-edge CDN: OCSP + asset shards
-    "netcts.cdn-apple.com", // #1337 Apple network-connectivity-test CDN
-    "ls.apple.com",         // #1503 Apple location services (*.ls.apple.com)
-    // ── Google infra ──────────────────────────────────────────────────────
-    "clientservices.googleapis.com", // Google client-services bootstrap
-    "gvt2.com",                // #1411 Google connectivity / Play / download infra (all subdomains)
-    "gvt3.com",                // #1503 Google update beacons (sibling of gvt2)
-    "nel.goog",                // #1503 Network Error Logging beacons (*.nel.goog)
+    "g.aaplimg.com",           // Apple geo-edge CDN: OCSP + asset shards
+    "netcts.cdn-apple.com",    // #1337 Apple network-connectivity-test CDN
+    "ls.apple.com",            // #1503 Apple location services (*.ls.apple.com)
     // ── Analytics / telemetry SaaS ────────────────────────────────────────
+    // NOTE (#2369): the Google-fronted telemetry / analytics / safe-browsing / download-beacon
+    // hosts that used to live in this section — `clientservices.googleapis.com`, `gvt2.com`,
+    // `gvt3.com`, `nel.goog`, `app-analytics-services.com`, `safebrowsing.google.com`,
+    // `safebrowsingohttpgateway.googleapis.com` — have been DEMOTED to [[suppressOnly]]. They
+    // front on Google's SHARED GFE anycast pool (the same IPs `youtube.com` / `googlevideo.com`
+    // resolve to), so allow-carving them punched YouTube's IPs into `@global_allow` and leaked
+    // every Google host-block at the IP layer. `events.launchdarkly.com` / `adobe.io` stay here:
+    // they don't front on a blockable property's pool, so they carry no shared-IP leak.
     "events.launchdarkly.com", // #1503 LaunchDarkly analytics events
     "adobe.io",                // #1503 Adobe telemetry API (cc-api-data.adobe.io, …)
-    "app-analytics-services.com",             // #1503 app analytics beacons
-    // ── Safe-browsing / security ──────────────────────────────────────────
-    "safebrowsing.google.com",                // #1503 Google Safe Browsing
-    "safebrowsingohttpgateway.googleapis.com",// #1503 Safe Browsing OHTTP gateway
   )
 
   /**
@@ -129,8 +134,8 @@ object InfraHosts {
     "smoot.apple.com",
     // Push channels / system management
     "xp.apple.com",        // Apple Experience Push
-    "smp-device-content.apple.com", // System Management Push content
-    "humb.apple.com",               // background metrics
+    "smp-device-content.apple.com",  // System Management Push content
+    "humb.apple.com",                // background metrics
     // Apple analytics (not user-initiated)
     "swallow.apple.com",
     "odin-signals.apple.com",
@@ -277,6 +282,40 @@ object InfraHosts {
     "use.fontawesome.com",
     "encrypted-tbn0.gstatic.com",
     "ci3.googleusercontent.com",
+    // ── #2369 Google shared-GFE frontend hosts — DEMOTED from [[canonical]] to suppress-only.
+    //    These device-level Google telemetry / analytics / safe-browsing / download-beacon hosts
+    //    front on Google's SHARED Global Front End anycast pool, which also serves `youtube.com`,
+    //    `googlevideo.com`, `ytimg.com` and the rest of Google's blockable properties. While they
+    //    were on `canonical` they were allow-carved into every profile's `global.extraAllowed`
+    //    (`PolicyService.infraAllowHosts`); the router flattens that into `@global_allow` and the
+    //    per-host drop rule reads `... ip daddr @eb_<host> ip daddr != @global_allow drop`. Because
+    //    a shared GFE IP resolved for one of these allow-carved hosts also lands in `@global_allow`,
+    //    the `!= @global_allow` guard went false for exactly that IP and the drop was SKIPPED — so a
+    //    host-block on YouTube (or any Google property) leaked whenever the browser's connection
+    //    landed on a shared IP. Live #2369 evidence: `142.251.46.142` was in BOTH `eb_youtube_com`
+    //    and `global_allow` (added by `app-analytics-services.com`), and `clientservices.googleapis.com`
+    //    was observed resolving to YouTube's exact frontend IP.
+    //
+    //    Moving them here PRESERVES their #1503/#1499 presence-suppression exactly (they stay on
+    //    `background = canonical ++ suppressOnly`, so e.g. `gvt2.com` — ~36% of the #1499 background
+    //    over-count — keeps being suppressed from engagement) while removing them from the allow
+    //    carve-out. This is the same suppress-but-never-allow-carve reasoning `suppressOnly` was
+    //    created for (`mask*.icloud.com` Private Relay): allow-carving a host that shares a blocked
+    //    property's reachability defeats the block.
+    //
+    //    BOUNDARY: only the NON-connectivity-critical Google hosts are demoted. The Google Trust
+    //    Services OCSP responder `ocsp.pki.goog` STAYS on `canonical` — OCSP validates TLS certs for
+    //    the hosts a device legitimately reaches under a block (including allowed apps), so cutting it
+    //    is a broader, user-visible failure than the narrow residual leak it leaves (a blocked Google
+    //    host happening to share an OCSP-resolved IP). That residual is closed fully only by SNI-level
+    //    disambiguation (the SNI sidecar already sees the ClientHello host) — tracked as follow-up.
+    "clientservices.googleapis.com", // Chrome variations / client-services bootstrap
+    "gvt2.com",                      // Google download / Play / Widevine infra (all subdomains)
+    "gvt3.com",                      // Google update beacons (sibling of gvt2)
+    "nel.goog",                      // Network Error Logging beacons (*.nel.goog)
+    "app-analytics-services.com",    // app analytics beacons (#2369 confirmed leak vector)
+    "safebrowsing.google.com",       // Google Safe Browsing
+    "safebrowsingohttpgateway.googleapis.com", // Safe Browsing OHTTP gateway
   )
 
   /** All hosts suppressed from presence counting: allow+suppress plus suppress-only (#1525). */
