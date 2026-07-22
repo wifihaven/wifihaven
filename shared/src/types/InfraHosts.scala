@@ -308,7 +308,7 @@ object InfraHosts {
     //    the hosts a device legitimately reaches under a block (including allowed apps), so cutting it
     //    is a broader, user-visible failure than the narrow residual leak it leaves (a blocked Google
     //    host happening to share an OCSP-resolved IP). That residual is closed fully only by SNI-level
-    //    disambiguation (the SNI sidecar already sees the ClientHello host) — tracked as follow-up.
+    //    disambiguation (the SNI sidecar already sees the ClientHello host) — tracked in #2377.
     "clientservices.googleapis.com", // Chrome variations / client-services bootstrap
     "gvt2.com",                      // Google download / Play / Widevine infra (all subdomains)
     "gvt3.com",                      // Google update beacons (sibling of gvt2)
