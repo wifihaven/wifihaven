@@ -15,6 +15,11 @@ Status: **implemented for OpenWRT; OPNsense partial.** (Refreshed 2026-07 — #2
 
 Two truths govern everything that follows.
 
+> For the user-facing consequences of this model — why a freshly-enabled block
+> warms up rather than dropping instantly, what HTTPS blocks look like, and
+> which device settings bypass filtering — see
+> [`docs/enforcement-expectations.md`](enforcement-expectations.md).
+
 ### 0.1 DNS is never the enforcement plane
 
 DNS always resolves. Blocking happens at the **connection layer** via

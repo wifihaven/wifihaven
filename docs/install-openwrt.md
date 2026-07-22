@@ -148,6 +148,24 @@ allowed browsing, blocking, pause, schedule, time limits, usage reporting,
 unknown-device autocreation — follow [docs/manual-qa.md](manual-qa.md)
 with one connected device.
 
+### Blocking isn't instant — set expectations first
+
+The first time you enable a block, expect a short **warm-up** rather than an
+instant cutoff. Blocking is a connection-layer drop keyed to the IPs a device
+resolves *through the router's DNS*, so a new block takes effect only after the
+policy reaches the router (seconds) **and** the device does a fresh DNS lookup
+for the host — until then, cached DNS answers and open connections keep working.
+To test a block immediately, flush the device's DNS cache and reload the site.
+
+Several device-side settings (a VPN / Cloudflare WARP full tunnel, or "Secure
+DNS" / DoH / DoT / iCloud Private Relay) route around the router entirely and
+defeat host-based filtering by design. If a block "doesn't work," check for
+these before assuming a bug.
+
+Full details, verified against the agent code, are in
+[docs/enforcement-expectations.md](enforcement-expectations.md) — read it before
+debugging a block that seems ineffective.
+
 ## 4. Enrolling against the cloud API
 
 This section is for the **new main-house router** being brought up against the
@@ -379,8 +397,18 @@ uci commit uhttpd
 /etc/init.d/uhttpd reload
 ```
 
-HTTPS to blocked hosts intentionally times out — TLS interception would
-require installing a custom CA on every client, which is not practical.
+We do **not** intercept TLS (that would need a custom CA on every client), so
+there is no clean block *page* for HTTPS. The standard one-shot install also
+adds a sibling `uhttpd` TLS listener on `127.0.0.1:8443` and DNATs blocked
+port 443 to it with a self-signed cert
+([#383](https://github.com/wifihaven/wifihaven/issues/383)): browsers then show
+a certificate warning and, after clicking through, the block page, while apps
+that pin certs simply see the TLS handshake fail. The manual steps above set up
+only the HTTP listener; for the full block-page behavior use the one-shot
+installer or run
+[`setup-uhttpd-block-page.sh`](../openwrt/files/usr/lib/wifihaven/setup-uhttpd-block-page.sh).
+See [docs/enforcement-expectations.md](enforcement-expectations.md) for what
+HTTPS blocks look like in practice.
 
 Then jump to §3 to verify.
 
@@ -392,5 +420,7 @@ Then jump to §3 to verify.
   developer-facing details.
 - [`docs/architecture.md`](architecture.md) §7 — full design of the OpenWRT
   agent.
+- [`docs/enforcement-expectations.md`](enforcement-expectations.md) — how a
+  block warms up, what HTTPS blocks look like, and what can bypass filtering.
 - [`docs/deploy.md`](deploy.md) — overall CD pipeline for both deployment
   targets.
