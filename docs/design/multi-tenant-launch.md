@@ -328,7 +328,23 @@ status: 'beta' → 'active'                    (checkout.session.completed)
         'beta' → 'lapsed'                    (non-conversion at flip, #2137)
         'active' → 'lapsed'                  (dunning lapse, #2135 webhook)
         'lapsed' → 'active'                  (recovery via Checkout/Portal)
+        <any> → 'free_forever'               (operator grant, #2356)
+        'free_forever' → 'beta'              (operator revoke, #2356)
 ```
+
+> **`free_forever` — a persisted, operator-grantable "never billed" status
+> (#2356, V80 widens the CHECK).** For households that must never be charged and
+> never enter the beta→paid flip funnel (partners, friends-and-family, internal;
+> household 1 is seeded as the first one). It is a first-class value on THIS one
+> status machine, not a parallel flag. Properties: never charged; excluded from
+> the flip cohort automatically (the cohort/flip queries filter `status='beta'`,
+> so any other status drops out by construction — no INNER JOIN that could lose
+> single-household rows); Checkout/Portal hidden client-side and rejected server-
+> side as a defensive backstop. It is NOT a lapse — PolicyService serves the
+> permissive snapshot only for `'lapsed'`, so a `free_forever` household keeps
+> FULL enforcement (it uses the product). The grant is OPERATOR-only
+> (`requireOperator`, mirroring beta approval); revoke returns the household to
+> `'beta'` (re-enters the funnel).
 
 > **Superseding decision (operator, 2026-07-09).** This replaces the
 > `grace`/`locked` read-only model from pricing §5.4 (and the `grace`/`locked`
