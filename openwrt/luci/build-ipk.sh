@@ -48,10 +48,25 @@ chmod 0755 "$WORK/data/usr/libexec/rpcd/wifihaven"
 
 (cd "$WORK/data" && tar czf "$WORK/data.tar.gz" .)
 
+# Hand-assemble the ar container with plain member names (no GNU-ar trailing
+# slash) so the .ipk installs on OpenWrt 21.02-era opkg — same fix and layout
+# as openwrt/build-ipk.sh; see that file and #2363 for the full rationale.
+# ar layout: 8-byte "!<arch>\n" header, then per member a 60-byte header
+# (name[16] mtime[12] uid[6] gid[6] mode[8] size[10] magic[2]) + even-padded data.
+ar_append() {  # $1 = member name, $2 = source file
+    _name="$1"; _file="$2"
+    _size=$(wc -c < "$_file")
+    printf '%-16s%-12d%-6d%-6d%-8s%-10d\140\n' \
+        "$_name" 0 0 0 100644 "$_size" >> "$OUT_IPK"
+    cat "$_file" >> "$OUT_IPK"
+    [ $((_size % 2)) -ne 0 ] && printf '\n' >> "$OUT_IPK"
+    return 0
+}
+
 rm -f "$OUT_IPK"
-ar r "$OUT_IPK" \
-    "$WORK/debian-binary" \
-    "$WORK/control.tar.gz" \
-    "$WORK/data.tar.gz"
+printf '!<arch>\n' > "$OUT_IPK"
+ar_append debian-binary  "$WORK/debian-binary"
+ar_append control.tar.gz "$WORK/control.tar.gz"
+ar_append data.tar.gz    "$WORK/data.tar.gz"
 
 echo "Built: $OUT_IPK"
