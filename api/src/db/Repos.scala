@@ -31,6 +31,58 @@ object ProfileSeed {
           ON CONFLICT DO NOTHING""".update.run
 }
 
+/**
+ * #2355: the ONE household-creation primitive. A household is, by invariant, three rows written as
+ * a unit: the `households` row, its `household_billing` row (so `GET /api/billing` never 404s
+ * `NoBillingRow` — the bug this fixes), and its global-sentinel profile (#2286). Exposed as a
+ * composable `ConnectionIO` so every caller runs it inside whatever transaction owns the
+ * surrounding work — the beta [[BetaRequestRepo.approveAndProvision]] txn (which also stamps
+ * `beta_requests` in the same txn for its double-approve rollback guard) and
+ * [[HouseholdRepoLive.create]]. There is no household-create path that skips any of the three (the
+ * drift that let path (2) omit billing is exactly the SSOT failure this collapses; same lesson as
+ * #2286's global-sentinel mirror).
+ *
+ * `insertGlobalSentinel` is idempotent (ON CONFLICT), but the households/billing inserts are not —
+ * they always mint fresh rows, so this is a CREATE primitive, not an upsert. The rowless-household
+ * *backfill* is the separate idempotent [[backfillMissingBilling]].
+ */
+object HouseholdSeed {
+  // Provisioning-time billing defaults (design §5.1: "minimal at provisioning time: status=beta").
+  // `founding=false` is the create()/backfill default; the beta approveAndProvision path passes
+  // `founding=true` explicitly for founding members.
+  val DefaultBillingStatus: String = "beta"
+  val DefaultFounding: Boolean     = false
+
+  def insertHousehold(
+      name: String,
+      slug: String,
+      routerCap: Int,
+      billingStatus: String = DefaultBillingStatus,
+      founding: Boolean = DefaultFounding,
+  ): ConnectionIO[HouseholdId] =
+    for {
+      hid <-
+        sql"INSERT INTO households(name, slug, router_cap) VALUES($name, $slug, $routerCap) RETURNING id"
+          .query[HouseholdId]
+          .unique
+      _   <-
+        sql"INSERT INTO household_billing(household_id, status, founding) VALUES($hid, $billingStatus, $founding)".update.run
+      _   <- ProfileSeed.insertGlobalSentinel(hid)
+    } yield hid
+
+  /**
+   * #2355: idempotent boot-time backfill for pre-existing households minted before billing was
+   * seeded on every create path. Gives every rowless household a default beta row; the NOT EXISTS
+   * guard makes a re-run a no-op and never touches an existing billing row. One-shot cleanup after
+   * it deploys is tracked by #2359 (under #1608; see [[wifihaven.api.Main]] boot seed).
+   */
+  val backfillMissingBilling: ConnectionIO[Int] =
+    sql"""INSERT INTO household_billing(household_id, status, founding)
+          SELECT h.id, $DefaultBillingStatus, $DefaultFounding
+          FROM households h
+          WHERE NOT EXISTS (SELECT 1 FROM household_billing hb WHERE hb.household_id = h.id)""".update.run
+}
+
 case class DbUser(
     id: UserId,
     username: String,
@@ -1259,17 +1311,12 @@ class HouseholdRepoLive(xa: Transactor[Task]) extends HouseholdRepo {
     )
 
   // #2132: provisioning create + read-back. `Household` is defined in BetaRepos.scala (same package).
-  // #2286: seed the household's global-sentinel profile in the SAME transaction as the household row,
-  // so any household-create path (not just the beta approveAndProvision txn) yields a household that
-  // can author global policy and whose GET /api/profiles/global resolves. SSOT insert; idempotent.
+  // #2286: the household's global-sentinel profile is seeded in the SAME transaction as the household
+  // row. #2355: so is its household_billing row — via the ONE [[HouseholdSeed.insertHousehold]]
+  // primitive (households + billing + global-sentinel as a unit), the same fragment
+  // approveAndProvision composes, so no create path can drift into skipping billing.
   def create(name: String, slug: String, routerCap: Int) =
-    (for {
-      hid <-
-        sql"INSERT INTO households(name, slug, router_cap) VALUES($name, $slug, $routerCap) RETURNING id"
-          .query[HouseholdId]
-          .unique
-      _   <- ProfileSeed.insertGlobalSentinel(hid)
-    } yield hid).transact(xa)
+    HouseholdSeed.insertHousehold(name, slug, routerCap).transact(xa)
 
   def findById(id: HouseholdId) =
     sql"SELECT id, name, slug, router_cap FROM households WHERE id=$id"

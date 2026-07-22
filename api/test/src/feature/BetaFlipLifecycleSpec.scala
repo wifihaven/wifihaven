@@ -97,6 +97,9 @@ object BetaFlipLifecycleSpec
       pr      <- ZIO.service[ProfileRepo]
       dr      <- ZIO.service[DeviceRepo]
       hid     <- hr.create(slug, slug, 1)
+      // #2355: HouseholdRepo.create now seeds a billing row (status='beta', founding=false) as part
+      // of the ONE creation primitive; billing.create is idempotent (ON CONFLICT DO UPDATE), so this
+      // steers the pre-seeded row to this fixture's status + founding member.
       _       <- billing.create(hid, status, founding = true)
       pid     <- pr.create(s"$slug-profile", Nil, hid)
       mac = MacAddress.unsafe(f"aa:bb:cc:00:00:${hid.value}%02x")
