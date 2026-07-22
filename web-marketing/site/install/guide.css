@@ -81,6 +81,14 @@ header {
   background: var(--terracotta-dark);
   text-decoration: none;
 }
+.ghost {
+  font-weight: 600;
+  color: var(--slate);
+  padding: 10px 6px;
+}
+.ghost:hover {
+  color: var(--terracotta);
+}
 
 /* Article */
 main {
