@@ -540,5 +540,67 @@ object InfraHostsSpec extends ZIOSpecDefault {
       )
       assertTrue(stillEngagement.forall(h => !InfraHosts.isCloudBackground(h)))
     },
+    test("#2369 Google shared-GFE infra hosts are suppressed but NOT allow-carved") {
+      // These Google telemetry / analytics / safe-browsing / download-beacon hosts front on
+      // Google's SHARED GFE anycast pool — the same IPs `youtube.com` / `googlevideo.com`
+      // resolve to. Allow-carving them (canonical → `PolicyService.infraAllowHosts` →
+      // `global.extraAllowed`) put those shared IPs into `@global_allow`, and `extraAllowed`
+      // beats `extraBlocked` at the IP layer (feedback_extraallowed_beats_blocked / #421), so a
+      // host-block on a Google property leaked whenever it landed on a shared IP. #2369 live
+      // evidence: `142.251.46.142` was in BOTH `eb_youtube_com` and `global_allow` (added by
+      // `app-analytics-services.com`) → the `ip daddr != @global_allow` guard was false → drop
+      // skipped → YouTube reachable via that IP. `clientservices.googleapis.com` was observed
+      // resolving to YouTube's exact frontend IP.
+      //
+      // Fix: demote them from [[InfraHosts.canonical]] (allow + suppress) to
+      // [[InfraHosts.suppressOnly]] (suppress ONLY). They stay dropped from presence counting
+      // (#1503/#1499 background-suppression PRESERVED — `isBackground` still true, so gvt2's
+      // ~36% background share keeps being suppressed), but are no longer reachable through a
+      // block — exactly the anti-tunnel reasoning `suppressOnly` was created for
+      // (`mask*.icloud.com` Private Relay).
+      val googleSharedFrontend = List(
+        "app-analytics-services.com",    // #2369 confirmed in youtube.com's pool
+        "v1.app-analytics-services.com",
+        "clientservices.googleapis.com", // #2369 resolved to youtube.com's exact IP
+        "gvt2.com",
+        "r3---sn-abc.gvt2.com",
+        "beacons3.gvt2.com",
+        "gvt3.com",
+        "beacons.gvt3.com",
+        "nel.goog",
+        "b1.nel.goog",
+        "safebrowsing.google.com",
+        "safebrowsingohttpgateway.googleapis.com",
+      )
+      assertTrue(
+        // #1503/#1499 presence-suppression PRESERVED — they remain on the background set.
+        googleSharedFrontend.forall(InfraHosts.isBackground),
+        // …but they are NO LONGER allow-carved through the block (the #2369 leak fix).
+        googleSharedFrontend.forall(h => !InfraHosts.isInfra(h)),
+        // matchedPattern (canonical-only) no longer resolves them either.
+        InfraHosts.matchedPattern("r3---sn-abc.gvt2.com").isEmpty,
+      )
+    },
+    test("#2369 connectivity-critical infra stays allow-carved (the design boundary)") {
+      // The design line the #2369 fix draws: allow-carve survives ONLY for connectivity-critical
+      // infra. OCSP responders validate TLS certs for the hosts a device legitimately reaches
+      // under a block (including allowed apps), so they stay carved even though `ocsp.pki.goog`
+      // also fronts on a Google pool — breaking TLS validation is a broader, user-visible failure
+      // than the narrow residual leak, which the SNI sidecar (follow-up) closes fully.
+      // Connectivity / captive-portal probes likewise stay carved. This test guards against
+      // over-removing the connectivity tier while closing the telemetry leak.
+      val stillCarved = List(
+        "ocsp.pki.goog",                 // Google Trust Services OCSP — TLS validation
+        "ocsp.digicert.com",
+        "ocsp.apple.com",
+        "connectivitycheck.gstatic.com", // connectivity probe
+        "captive.apple.com",
+        "www.msftconnecttest.com",
+      )
+      assertTrue(
+        stillCarved.forall(InfraHosts.isInfra),
+        stillCarved.forall(InfraHosts.isBackground),
+      )
+    },
   )
 }
