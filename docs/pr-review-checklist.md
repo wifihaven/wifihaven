@@ -68,6 +68,24 @@ in [#1561](https://github.com/wifihaven/wifihaven/issues/1561).
   [#1539](https://github.com/wifihaven/wifihaven/issues/1539) trap): does a
   display / UI path read a DIFFERENT source than the enforcement path for the
   same fact? They will drift. Flag it.
+- **Sibling-path drift-by-omission = BLOCKER.** This is the other face of SSOT:
+  not a value computed twice, but a value *written* by several parallel paths
+  where the touched one silently skips a step its siblings perform. When the PR
+  adds or edits ONE of several code paths that construct, provision, or mutate
+  the same entity — a creation path, an enforcement path, a teardown path — diff
+  it against the canonical / sibling path(s): does it perform the SAME set of
+  required seeds / invariant writes / cleanups? A path that omits a step a
+  sibling performs is a drift-by-omission BLOCKER. The resolution is the SSOT
+  resolution — prefer **COLLAPSE** (one shared primitive both paths call) or
+  **TYPE-ENFORCE** over hand-maintained parallel paths; a review is not
+  addressed by adding the missing step to the fork and leaving the fork. Worked
+  invariant for this repo: **every household-creation path must seed
+  `households` + `household_billing` + the global-sentinel profile together**
+  ([#2355](https://github.com/wifihaven/wifihaven/issues/2355): a second
+  creation path seeded the household + sentinel profile but not the billing row,
+  and shipped through review as a prod/staging "no billing record" error) —
+  there should be exactly one creation primitive. See
+  [single-source-of-truth](process/single-source-of-truth.md#single-source-of-truth).
 - **OK — not a finding:** the intentional wire-shape redundancy the architecture
   mandates. Copying the infra allowlist into every profile's `extraAllowed`
   ([#1311](https://github.com/wifihaven/wifihaven/issues/1311)) and the

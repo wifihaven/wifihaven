@@ -17,6 +17,26 @@ cap-evaluation path did) and
 chip read a dead legacy table while enforcement read named schedules) were
 both display-vs-enforcement drift.
 
+This rule has **two** failure modes, not one:
+
+1. **Re-derivation** — the same quantity or decision *computed* a second time
+   (the #1531 / #1539 shape above).
+2. **Drift-by-omission** — the same entity *written* by several parallel paths,
+   one of which silently skips a required step (a seed, an invariant row, a
+   cleanup) that its siblings perform. There is no duplicated *computation* to
+   spot here — just a fork whose two arms have quietly diverged in what they
+   write. [#2355](https://github.com/wifihaven/wifihaven/issues/2355) is the
+   worked example: a second household-creation path
+   (`HouseholdRepoLive.create`) seeded `households` + the global-sentinel
+   profile but NOT the `household_billing` row that the canonical
+   `approveAndProvision` path seeds, and shipped as a prod/staging "no billing
+   record for this household" error. **Every household-creation path must seed
+   `households` + `household_billing` + the global-sentinel profile together;
+   there should be exactly one creation primitive.** The resolution is the same
+   as for re-derivation — COLLAPSE the forks to one shared primitive both
+   callers invoke (or TYPE-ENFORCE), never patch the missing step into the fork
+   and leave two hand-maintained arms.
+
 - **Reuse the existing primitive — don't re-derive.** Before adding a new
   path that computes such a value, search for the one that already does it
   and call it. The canonical ones present today include
