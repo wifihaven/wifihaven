@@ -15,6 +15,7 @@ vi.mock('@/api/client', () => ({
     },
     profiles: {
       list: vi.fn(),
+      create: vi.fn(),
     },
     alerts: {
       list: vi.fn(),
@@ -70,6 +71,7 @@ beforeEach(() => {
   mockAuth = { isAdmin: true }
   ;(api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([ipad, laptop])
   ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([kidsProfile, adultsProfile])
+  ;(api.profiles.create as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 7 })
   ;(api.devices.upsert as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 99 })
   ;(api.devices.delete as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.devices.patch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
@@ -116,6 +118,104 @@ describe('DevicesPage — add', () => {
       })
     )
     await waitFor(() => expect(api.devices.list).toHaveBeenCalledTimes(2))
+  })
+})
+
+describe('DevicesPage — add device with inline profile creation (#2367)', () => {
+  const firstProfile: ProfileDetail = {
+    profile: { id: 7, name: 'First Kid', blockedCategories: [], paused: false, failureMode: 'last-known-good', crossDeviceOverlapMode: 'sum', pauseMode: 'soft', defaultDeny: false },
+    timeLimit: null,
+  }
+
+  it('zero-profile household: Add Device prompts to create the first profile inline, then saves the device with it', async () => {
+    (api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([firstProfile])
+    ;(api.profiles.create as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 7 })
+
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('No devices yet.')
+    await user.click(screen.getByRole('button', { name: /\+ Add Device/ }))
+
+    // Empty household: no profile <select> to pick from — the inline creator
+    // is shown instead so the first device can still be onboarded.
+    expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
+    const nameInput = await screen.findByTestId('add-device-new-profile-name')
+    await user.type(nameInput, 'First Kid')
+    await user.click(screen.getByTestId('add-device-create-profile'))
+
+    await waitFor(() =>
+      expect(api.profiles.create).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'First Kid' }),
+      )
+    )
+
+    await user.type(screen.getByPlaceholderText('aa:bb:cc:dd:ee:ff'), 'aa:bb:cc:dd:ee:77')
+    await user.type(screen.getByPlaceholderText("Kid's iPad"), 'First iPad')
+    await user.click(screen.getByRole('button', { name: /^Save$/ }))
+
+    await waitFor(() =>
+      expect(api.devices.upsert).toHaveBeenCalledWith({
+        mac: 'aa:bb:cc:dd:ee:77',
+        name: 'First iPad',
+        profileId: 7,
+      })
+    )
+  })
+
+  it('with existing profiles: "+ New profile…" option opens the inline creator and selects the created profile', async () => {
+    (api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce([kidsProfile, adultsProfile])
+      .mockResolvedValue([kidsProfile, adultsProfile, firstProfile])
+    ;(api.profiles.create as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 7 })
+
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('No devices yet.')
+    await user.click(screen.getByRole('button', { name: /\+ Add Device/ }))
+
+    // Choosing the sentinel reveals the creator without leaving the flow.
+    await user.selectOptions(screen.getByRole('combobox'), '__new__')
+    const nameInput = await screen.findByTestId('add-device-new-profile-name')
+    await user.type(nameInput, 'First Kid')
+    await user.click(screen.getByTestId('add-device-create-profile'))
+
+    await waitFor(() =>
+      expect(api.profiles.create).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'First Kid' }),
+      )
+    )
+
+    await user.type(screen.getByPlaceholderText('aa:bb:cc:dd:ee:ff'), 'aa:bb:cc:dd:ee:77')
+    await user.type(screen.getByPlaceholderText("Kid's iPad"), 'First iPad')
+    await user.click(screen.getByRole('button', { name: /^Save$/ }))
+
+    await waitFor(() =>
+      expect(api.devices.upsert).toHaveBeenCalledWith({
+        mac: 'aa:bb:cc:dd:ee:77',
+        name: 'First iPad',
+        profileId: 7,
+      })
+    )
+  })
+
+  it('blank profile name is rejected with an inline error', async () => {
+    (api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('No devices yet.')
+    await user.click(screen.getByRole('button', { name: /\+ Add Device/ }))
+
+    await screen.findByTestId('add-device-new-profile-name')
+    await user.click(screen.getByTestId('add-device-create-profile'))
+
+    expect(await screen.findByTestId('add-device-new-profile-error')).toBeInTheDocument()
+    expect(api.profiles.create).not.toHaveBeenCalled()
   })
 })
 
