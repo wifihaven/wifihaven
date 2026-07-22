@@ -391,8 +391,13 @@ function M.parse_arp_table(lan_dev)
   -- The `lladdr <mac>` token is the load-bearing piece; entries in FAILED
   -- state have no lladdr and we skip them naturally. `show dev <lan_dev>`
   -- (#2368) drops the `dev …` token from each line, but the ip/lladdr parse
-  -- is position-independent and unaffected.
-  local neigh_cmd = (lan_dev and lan_dev ~= "")
+  -- is position-independent and unaffected. `lan_dev` is interpolated into a
+  -- shell command, so require it to look like a real interface name
+  -- (alphanumerics plus `.`/`_`/`-`, e.g. br-lan, eth0.2) before trusting it —
+  -- defense-in-depth against a malformed UCI value; anything else falls back to
+  -- the unfiltered dump.
+  local dev_ok = lan_dev and lan_dev ~= "" and lan_dev:match("^[%w._-]+$")
+  local neigh_cmd = dev_ok
     and ("ip -6 neigh show dev " .. lan_dev .. " 2>/dev/null")
     or  "ip -6 neigh show 2>/dev/null"
   local pf = io.popen(neigh_cmd)

@@ -266,6 +266,22 @@ describe("parse_arp_table LAN-dev scoping (#2368)", function()
       assert.equal("94:83:c4:d4:9d:d9", set["fdcd:f224:23d6::1"])  -- WAN present pre-scope
     end)
   end)
+
+  it("rejects a lan_dev with shell metacharacters (no injection)", function()
+    with_neigh_stub(function()
+      conntrack.parse_arp_table("br-lan; rm -rf /")
+      -- unsafe value is not interpolated; falls back to the unfiltered dump
+      assert.is_nil(last_neigh_cmd:match("rm"))
+      assert.is_nil(last_neigh_cmd:match("dev%s"))
+    end)
+  end)
+
+  it("accepts a VLAN-style dev name (eth0.2)", function()
+    with_neigh_stub(function()
+      conntrack.parse_arp_table("eth0.2")
+      assert.is_truthy(last_neigh_cmd:match("dev%s+eth0%.2"))
+    end)
+  end)
 end)
 
 -- ---------------------------------------------------------------------------
