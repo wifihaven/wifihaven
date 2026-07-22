@@ -90,6 +90,18 @@ describe('BillingPage', () => {
     expect(screen.queryByRole('button', { name: /^Subscribe$/ })).not.toBeInTheDocument()
   })
 
+  it('a free_forever household renders "Free — not billed" and NO billing CTA', async () => {
+    // #2356: never billed — no Subscribe, no Manage-billing (the portal would 409). Just a clean
+    // "not billed" panel.
+    statusMock.mockResolvedValue(billing({ status: 'free_forever', founding: true }))
+    renderPage()
+    // The panel's distinctive copy (the plan value ALSO reads "Free — not billed", so match the
+    // full sentence to stay unambiguous).
+    expect(await screen.findByText(/nothing to pay and no subscription to manage/i)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Manage billing/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Subscribe$/ })).not.toBeInTheDocument()
+  })
+
   it('a lapsed household sees the lapse notice and a Subscribe button (no gating language)', async () => {
     statusMock.mockResolvedValue(billing({ status: 'lapsed', founding: true, lapsedAt: '2026-07-01T00:00:00Z' }))
     renderPage()

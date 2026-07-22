@@ -1101,7 +1101,10 @@ export interface ResetPasswordResponse {
 
 // #2135 (multi-tenant P5-5): billing status + Checkout/Portal redirect. status ∈ beta|active|lapsed
 // (design §5.1); on lapse enforcement stops but there is NO read-only gating.
-export type BillingStatus = 'beta' | 'active' | 'lapsed'
+// #2356: `free_forever` is the operator-grantable "never billed" status (partners / friends-and-
+// family / internal households; household 1 seeded as the first). Renders as "Free — not billed"
+// with the Manage-billing / Subscribe CTAs hidden.
+export type BillingStatus = 'beta' | 'active' | 'lapsed' | 'free_forever'
 
 export interface BillingStatusResponse {
   status: BillingStatus

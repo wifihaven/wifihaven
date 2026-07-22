@@ -121,7 +121,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "Households by billing status",
-      "description": "wifihaven_households_by_billing_status{status} — the current household count in each billing state (beta / active / lapsed), re-published each BetaFlipJob tick from a single COUNT-by-status read (AppMetrics.setBillingStatusCounts, api/src/billing/FlipService.scala). Watch beta convert to active over the flip window, and the unconverted tail move to lapsed at flip. #2137.",
+      "description": "wifihaven_households_by_billing_status{status} — the current household count in each billing state (beta / active / lapsed / free_forever), re-published each BetaFlipJob tick from a single COUNT-by-status read (AppMetrics.setBillingStatusCounts, api/src/billing/FlipService.scala). Watch beta convert to active over the flip window, and the unconverted tail move to lapsed at flip. free_forever (#2356) is the operator-granted never-billed status. #2137/#2356.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
       "id": 5,
@@ -166,6 +166,32 @@
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "expr": "sum by (window) (wifihaven_beta_flip_notice_total{env=\"$env\"})",
           "legendFormat": "{{window}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Free-forever grants / revokes",
+      "description": "sum by (op) (rate(wifihaven_billing_free_forever_total{op}[5m])) — operator-only free_forever grant / revoke toggles (op ∈ grant | revoke). One step per successful operator action (AppMetrics.recordFreeForever, api/src/routes/BillingRoutes.scala). The resulting household count shows in \"Households by billing status\" (free_forever series). #2356.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "id": 7,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1 }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (op) (rate(wifihaven_billing_free_forever_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{op}}",
           "refId": "A"
         }
       ]

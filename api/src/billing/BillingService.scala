@@ -70,6 +70,10 @@ final case class BillingService(
     for {
       _        <- ZIO.fail(BillingError.NotConfigured).when(!cfg.enabled)
       billing  <- loadBilling(householdId)
+      // #2356: a free_forever household is never billed. The SPA hides the CTA; this is the
+      // server-side backstop — refuse before touching Stripe. Checked ahead of the customer guard so
+      // a free_forever household without a Stripe Customer still reads as FreeForever, not NoCustomer.
+      _        <- ZIO.fail(BillingError.FreeForever).when(isFreeForever(billing))
       customer <- ZIO.fromOption(billing.stripeCustomerId).orElseFail(BillingError.NoCustomer)
       priceId  <- ZIO
         .fromOption(Option(cfg.priceMonthly).map(_.trim).filter(_.nonEmpty))
@@ -104,6 +108,8 @@ final case class BillingService(
     for {
       _        <- ZIO.fail(BillingError.NotConfigured).when(!cfg.enabled)
       billing  <- loadBilling(householdId)
+      // #2356: a free_forever household is never billed — no portal offered (backstop; CTA hidden).
+      _        <- ZIO.fail(BillingError.FreeForever).when(isFreeForever(billing))
       customer <- ZIO.fromOption(billing.stripeCustomerId).orElseFail(BillingError.NoCustomer)
       url      <- stripe
         .createPortalSession(customer, cfg.portalReturnUrl)
@@ -113,6 +119,34 @@ final case class BillingService(
   /** Current billing state for the SPA billing page (plan/status + founding flag). */
   def status(householdId: HouseholdId): IO[BillingError, HouseholdBilling] =
     loadBilling(householdId)
+
+  /**
+   * #2356 operator grant: mark a household `free_forever` (never billed, never flip-targeted). Not
+   * gated on `cfg.enabled` — it is household status management, meaningful even where Stripe is
+   * off. A missing billing row surfaces as [[BillingError.NoBillingRow]] (route → 404); every
+   * household has a row post-#2355, so this is a defensive guard.
+   */
+  def grantFreeForever(householdId: HouseholdId): IO[BillingError, Unit] =
+    for {
+      now <- clock.instant
+      ok  <- repo.grantFreeForever(householdId, now).mapError(BillingError.Db(_))
+      _   <- ZIO.fail(BillingError.NoBillingRow).when(!ok)
+    } yield ()
+
+  /**
+   * #2356 operator revoke: return a `free_forever` household to `beta` (re-enters the funnel).
+   * [[BillingError.NotFreeForever]] (route → 409) if the household wasn't free_forever — nothing
+   * changed.
+   */
+  def revokeFreeForever(householdId: HouseholdId): IO[BillingError, Unit] =
+    for {
+      now <- clock.instant
+      ok  <- repo.revokeFreeForever(householdId, now).mapError(BillingError.Db(_))
+      _   <- ZIO.fail(BillingError.NotFreeForever).when(!ok)
+    } yield ()
+
+  private def isFreeForever(b: HouseholdBilling): Boolean =
+    b.status == HouseholdBilling.FreeForever
 
   private def loadBilling(householdId: HouseholdId): IO[BillingError, HouseholdBilling] =
     repo
@@ -219,9 +253,11 @@ object WebhookOutcome {
 /** Typed failures the billing routes map to HTTP statuses. */
 sealed trait BillingError
 object BillingError {
-  case object NotConfigured extends BillingError // billing disabled (no keys) → 404-shaped
-  case object NoBillingRow  extends BillingError // household has no household_billing row
-  case object NoCustomer    extends BillingError // no Stripe Customer yet (provisioning gap)
+  case object NotConfigured  extends BillingError // billing disabled (no keys) → 404-shaped
+  case object NoBillingRow   extends BillingError // household has no household_billing row
+  case object NoCustomer     extends BillingError // no Stripe Customer yet (provisioning gap)
+  case object FreeForever    extends BillingError // #2356: household is free_forever → never billed
+  case object NotFreeForever extends BillingError // #2356: revoke target wasn't free_forever → 409
   case class Stripe(e: StripeError) extends BillingError
   case class Db(cause: Throwable)   extends BillingError
 }

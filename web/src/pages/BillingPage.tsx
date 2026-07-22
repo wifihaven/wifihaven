@@ -62,7 +62,11 @@ export function BillingPage() {
             <div className="flex justify-between">
               <dt className="text-brand-text-muted">Plan</dt>
               <dd className="text-brand-ink">
-                {data.founding ? 'Founding — 40% off, forever' : 'Standard — $10/mo or $96/yr'}
+                {data.status === 'free_forever'
+                  ? 'Free — not billed'
+                  : data.founding
+                    ? 'Founding — 40% off, forever'
+                    : 'Standard — $10/mo or $96/yr'}
               </dd>
             </div>
             {data.currentPeriodEnd && (
@@ -75,7 +79,21 @@ export function BillingPage() {
         )}
       </section>
 
-      {!isPending && !isError && (
+      {/* #2356: a free_forever household is never billed — no Subscribe / Manage-billing CTA (they
+          have no Stripe customer, so the portal would 409). Render a clean "not billed" panel
+          instead. This also fixes the old "billing not configured" error on hh1's Manage-billing
+          click, since that button no longer renders. */}
+      {!isPending && !isError && data.status === 'free_forever' && (
+        <section className="bg-white rounded-2xl border border-brand-border p-5">
+          <p className="text-sm text-brand-text-muted">
+            This household is on a <span className="font-semibold text-brand-ink">Free — not billed</span>{' '}
+            plan. There's nothing to pay and no subscription to manage — content filtering and limits
+            stay fully enforced.
+          </p>
+        </section>
+      )}
+
+      {!isPending && !isError && data.status !== 'free_forever' && (
         <section className="bg-white rounded-2xl border border-brand-border p-5 space-y-4">
           {data.status === 'lapsed' && (
             <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl px-4 py-3 text-amber-700 text-sm">
@@ -143,10 +161,14 @@ function StatusBadge({ status }: { status: BillingStatus }) {
     beta: 'bg-blue-500/10 text-blue-700 border-blue-500/20',
     active: 'bg-brand-accent/10 text-brand-accent border-brand-accent/20',
     lapsed: 'bg-amber-500/10 text-amber-700 border-amber-500/30',
+    // #2356: free_forever — a calm "not billed" badge, styled like the emerald "all good" tone.
+    free_forever: 'bg-emerald-500/10 text-emerald-700 border-emerald-500/20',
   }
+  // #2356: render the underscore status as friendly text.
+  const label = status === 'free_forever' ? 'free' : status
   return (
     <span className={`inline-block px-2 py-0.5 rounded border text-xs font-semibold ${styles[status]}`}>
-      {status}
+      {label}
     </span>
   )
 }

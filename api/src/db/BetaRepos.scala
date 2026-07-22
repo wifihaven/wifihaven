@@ -43,6 +43,22 @@ case class HouseholdBilling(
     lapsedAt: Option[Instant],
 )
 
+object HouseholdBilling {
+
+  /**
+   * #2356: the persisted, operator-grantable "never billed / never flip-targeted" status. The one
+   * literal for this value (SSOT), referenced by the repo,
+   * [[wifihaven.api.billing.BillingService]], and the households-by-billing-status gauge. Its
+   * domain is enforced by V80's widened `household_billing_status_check`.
+   */
+  val FreeForever = "free_forever"
+
+  /**
+   * The default status a household re-enters when free_forever is revoked (back into the funnel).
+   */
+  val Beta = "beta"
+}
+
 /** A `beta_requests` row (design §3.1). The invite token is stored ONLY as a hash. */
 case class DbBetaRequest(
     id: BetaRequestId,
@@ -106,9 +122,38 @@ trait HouseholdBillingRepo {
   /**
    * #2137: household counts by billing status, for the `households_by_billing_status` gauge. A
    * single GROUP-BY read (SSOT) — the caller fills any absent status with 0 so the gauge always
-   * publishes all three states.
+   * publishes every state.
    */
   def countByStatus: Task[Map[String, Int]]
+
+  // ── #2356: the operator-grantable free_forever status ─────────────────────────
+  // A new value on the SAME status machine (never a parallel flag). Grant/revoke are the operator's
+  // only writes here; `ensureFreeForever` is the boot-time seed for the operator household.
+
+  /**
+   * Operator grant: force a household to `free_forever` (never charged, never flip-targeted).
+   * Clears `lapsed_at` (free_forever is not a lapse) and bumps `updated_at`. Returns `true` iff a
+   * billing row existed and was updated — a missing row (no household_billing) yields `false`,
+   * which the route surfaces as 404 (every household has a row post-#2355, so this is a defensive
+   * guard).
+   */
+  def grantFreeForever(householdId: HouseholdId, now: Instant): Task[Boolean]
+
+  /**
+   * Operator revoke: return a `free_forever` household to `beta` (re-enters the funnel). Guarded on
+   * `status='free_forever'` so it can only ever un-set the grant — never re-open the funnel on an
+   * active/lapsed household. Returns `true` iff the row was free_forever (and is now beta); `false`
+   * (→ 409) if it wasn't free_forever, changing nothing.
+   */
+  def revokeFreeForever(householdId: HouseholdId, now: Instant): Task[Boolean]
+
+  /**
+   * #2356 boot-seed: ensure the (operator) household's billing row exists and is `free_forever`.
+   * Idempotent upsert — the operator household is internal and never billing-gated, so re-asserting
+   * it on every boot is correct (unlike an ordinary household, which the operator grant/revoke
+   * toggles). Used only for [[wifihaven.shared.types.HouseholdId.Default]] at startup.
+   */
+  def ensureFreeForever(householdId: HouseholdId, now: Instant): Task[Unit]
 }
 
 class HouseholdBillingRepoLive(xa: Transactor[Task]) extends HouseholdBillingRepo {
@@ -197,6 +242,28 @@ class HouseholdBillingRepoLive(xa: Transactor[Task]) extends HouseholdBillingRep
       .to[List]
       .map(_.toMap)
       .transact(xa)
+
+  def grantFreeForever(householdId: HouseholdId, now: Instant) =
+    sql"""UPDATE household_billing
+          SET status=${HouseholdBilling.FreeForever}, lapsed_at=NULL, updated_at=$now
+          WHERE household_id=$householdId""".update.run
+      .transact(xa)
+      .map(_ == 1)
+
+  def revokeFreeForever(householdId: HouseholdId, now: Instant) =
+    sql"""UPDATE household_billing
+          SET status=${HouseholdBilling.Beta}, updated_at=$now
+          WHERE household_id=$householdId AND status=${HouseholdBilling.FreeForever}""".update.run
+      .transact(xa)
+      .map(_ == 1)
+
+  def ensureFreeForever(householdId: HouseholdId, now: Instant) =
+    sql"""INSERT INTO household_billing(household_id, status, founding)
+          VALUES($householdId, ${HouseholdBilling.FreeForever}, TRUE)
+          ON CONFLICT (household_id)
+          DO UPDATE SET status=${HouseholdBilling.FreeForever}, lapsed_at=NULL, updated_at=$now""".update.run
+      .transact(xa)
+      .unit
 }
 
 // ── BetaCohortRepo ────────────────────────────────────────────────────────────

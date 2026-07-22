@@ -104,10 +104,13 @@ object Main extends ZIOAppDefault {
         // #1771: handle for the startup-time global sentinel seed; the seed itself runs inside
         // the retried DB-init block below alongside ensureDefault.
         xaForSeed <- ZIO.service[Transactor[Task]]
-        appRepoForSeed <- ZIO.service[AppRepo]
-        blRepoForSeed  <- ZIO.service[BlocklistRepo]
-        blCacheForSeed <- ZIO.service[BlocklistCache]
-        blFetcher      <- ZIO.service[BlocklistFetcher]
+        appRepoForSeed     <- ZIO.service[AppRepo]
+        blRepoForSeed      <- ZIO.service[BlocklistRepo]
+        blCacheForSeed     <- ZIO.service[BlocklistCache]
+        blFetcher          <- ZIO.service[BlocklistFetcher]
+        // #2356: handles for the operator-household free_forever boot-seed (below).
+        billingRepoForSeed <- ZIO.service[wifihaven.api.db.HouseholdBillingRepo]
+        clockForSeed       <- ZIO.service[Clock]
         tz = java.time.ZoneId.systemDefault()
         // #1255: a transient DB outage (a few seconds during a resize/failover/
         // restart) used to throw a Hikari/PSQL connection error straight to
@@ -151,6 +154,17 @@ object Main extends ZIOAppDefault {
             // (under #1608).
             bf <- HouseholdSeed.backfillMissingBilling.transact(xaForSeed)
             _  <- ZIO.logInfo(s"household_billing backfilled for rowless households (inserted=$bf)")
+            // #2356: seed the operator household (id 1) as free_forever — it is internal and never
+            // billing-gated, so it must never enter the beta→paid funnel or be charged. Idempotent
+            // upsert (re-asserted every boot, unlike an ordinary household whose free_forever is an
+            // operator-toggled grant). Runs AFTER the #2355 backfill: that backfill only fills
+            // ROWLESS households as `beta` (hh1 already has a row from V66, so it is untouched), and
+            // this call then forces hh1 specifically to free_forever — superseding V66's
+            // `status='active'` seed for household 1.
+            now         <- clockForSeed.instant
+            _           <- billingRepoForSeed
+              .ensureFreeForever(wifihaven.shared.types.HouseholdId.Default, now)
+            _           <- ZIO.logInfo("operator household billing ensured (status=free_forever)")
             // #768: seed the starter library of app templates. Idempotent —
             // operator host edits on previously-seeded apps are preserved.
             seedSummary <- AppTemplates.seed(appRepoForSeed, templates)

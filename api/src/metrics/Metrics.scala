@@ -437,13 +437,18 @@ object MetricGuard {
     "wifihaven_billing_webhook_total"               -> Set("outcome"),
     "wifihaven_billing_checkout_total"              -> Set("op", "outcome"),
     // #2137 — the beta→paid flip lifecycle. `wifihaven_households_by_billing_status{status}` is a
-    // gauge of the household count in each billing state (`status` ∈ beta | active | lapsed — the
-    // household_billing CHECK, bounded); it lets the operator watch the cohort convert and the flip
-    // move the unconverted tail to lapsed. `wifihaven_beta_flip_notice_total{window}` counts
-    // conversion notices emitted (`window` ∈ t30 | t7 — the two fixed windows). Both bounded, never
-    // a per-household label (the #808 lesson: without these entries the firewall rejects the name).
+    // gauge of the household count in each billing state (`status` ∈ beta | active | lapsed |
+    // free_forever — the household_billing CHECK, bounded; #2356 added free_forever); it lets the
+    // operator watch the cohort convert and the flip move the unconverted tail to lapsed.
+    // `wifihaven_beta_flip_notice_total{window}` counts conversion notices emitted (`window` ∈ t30 |
+    // t7 — the two fixed windows). Both bounded, never a per-household label (the #808 lesson:
+    // without these entries the firewall rejects the name).
     "wifihaven_households_by_billing_status"        -> Set("status"),
     "wifihaven_beta_flip_notice_total"              -> Set("window"),
+    // #2356 — the operator-only free_forever grant/revoke. `wifihaven_billing_free_forever_total{op}`
+    // counts each successful operator toggle (`op` ∈ grant | revoke — bounded); never a per-household
+    // label. Lets the operator see when a household was moved to/from the never-billed status.
+    "wifihaven_billing_free_forever_total"          -> Set("op"),
     // #2199 — Plain support integration (dark until keys set). `support_widget_identity_total{outcome}`
     // counts each identity-endpoint call by a bounded enum (issued | no_email | disabled);
     // `support_customer_upsert_total{outcome}` counts each household→Plain customer upsert by the
@@ -685,7 +690,7 @@ object AppMetrics {
   // emptying out doesn't leave a stale non-zero series. `recordFlipNotice` counts each conversion
   // notice emitted, by its bounded window (t30 | t7).
 
-  def setBillingStatusCounts(beta: Int, active: Int, lapsed: Int): UIO[Unit] =
+  def setBillingStatusCounts(beta: Int, active: Int, lapsed: Int, freeForever: Int): UIO[Unit] =
     MetricGuard.gauge(
       "wifihaven_households_by_billing_status",
       Map("status" -> "beta"),
@@ -700,10 +705,21 @@ object AppMetrics {
         "wifihaven_households_by_billing_status",
         Map("status" -> "lapsed"),
         lapsed.toDouble,
+      ) *>
+      // #2356: free_forever households — otherwise they vanish from the gauge (the flip cohort
+      // excludes them, so nothing else would publish their count).
+      MetricGuard.gauge(
+        "wifihaven_households_by_billing_status",
+        Map("status" -> "free_forever"),
+        freeForever.toDouble,
       )
 
   def recordFlipNotice(window: String): UIO[Unit] =
     MetricGuard.counter("wifihaven_beta_flip_notice_total", Map("window" -> window))
+
+  /** #2356: count a successful operator free_forever toggle (`op` ∈ grant | revoke). */
+  def recordFreeForever(op: String): UIO[Unit] =
+    MetricGuard.counter("wifihaven_billing_free_forever_total", Map("op" -> op))
 
   // ── #2199: Plain support integration (dark until keys set) ───────────────────
   // Emitted from SupportService. `supportIdentity` counts each widget-identity request by a bounded
