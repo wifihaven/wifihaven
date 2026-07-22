@@ -29,7 +29,8 @@ time**, so there is a built-in warm-up.
 1. **Policy propagation (seconds).** A newly-authored block reaches the router
    on its next policy poll. The default poll cadence is **5 s**
    (`policy_poll_interval`, [`openwrt/files/etc/config/wifihaven`](../openwrt/files/etc/config/wifihaven));
-   on installs using the live WebSocket push path the snapshot arrives sooner.
+   on installs using the live WebSocket push path the snapshot arrives sooner
+   (`ws.apply_interval`, default **2 s**).
    Either way the router now *knows* about the block, but the block set is still
    empty.
 

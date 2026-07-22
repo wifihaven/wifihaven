@@ -140,8 +140,8 @@ On a healthy start you should see lines like:
 ```
 
 Then check the admin UI: **Routers → `<your router name>`** should show a
-fresh `last_seen_at`, updating roughly every 60 seconds (the policy poll
-interval).
+fresh `last_seen_at`, updating roughly every 60 seconds (the usage-report
+cadence; the policy poll itself is faster, ~5 s).
 
 For a deeper end-to-end check that mirrors the VM e2e suite — enrollment,
 allowed browsing, blocking, pause, schedule, time limits, usage reporting,
