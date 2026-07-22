@@ -32,6 +32,7 @@ local lan_warn   = require("wifihaven.lan_warn")
 local selfheal   = require("wifihaven.selfheal")
 local version      = require("wifihaven.version")
 local host_metrics = require("wifihaven.host_metrics")
+local sni          = require("wifihaven.sni")
 -- #1848: ws transport sidecar bridge. Default-off; these only do work when
 -- wifihaven.ws.enabled=1. ws_outbound tees outbound usage/events to the spool
 -- the wifihaven-ws sidecar drains; ws_metrics folds the sidecar's tally into the
@@ -74,6 +75,11 @@ local lan_prefix    = uci_get("lan_prefix",           "192.168.1.")
 -- routers that have not authored a v6 LAN). The qemu e2e harness seeds this
 -- to the test ULA prefix via scripts/vm/uci-defaults/99-wifihaven (#1680).
 local lan_prefix_v6 = uci_get("lan_prefix_v6",        "")
+-- #2368: LAN bridge dev (network.lan.device, falling back to br-lan) — scopes
+-- the conntrack watcher's v6 NDP neighbor set to LAN neighbors so the upstream
+-- WAN/default router isn't misattributed and autocreated as a household device.
+-- Reuses sni.lan_device so "what is the LAN bridge" has one source of truth.
+local lan_dev       = sni.lan_device(cursor)
 local max_batch     = tonumber(uci_get("event_batch_size",        "50"))
 local flush_int     = tonumber(uci_get("event_flush_interval",    "10"))
 local policy_int    = tonumber(uci_get("policy_poll_interval",    "5"))
@@ -1002,7 +1008,9 @@ end
 -- design) any static-IP v4 LAN device with no DHCP lease, which previously had
 -- its rx download bytes dropped (#879). The rx set's lan_ip is always a real
 -- LAN device address (`oifname br-lan` ⇒ ip[6] daddr), so WAN-side entries in
--- the ARP/NDP dump can't mis-resolve a flow.
+-- the ARP/NDP dump can't mis-resolve a flow. We still scope the v6 neigh dump
+-- to the LAN dev (#2368) so WAN-side neighbors never enter the map — harmless
+-- given the rx-key invariant above, but keeps a single scoping rule.
 -- Cheap (a handful of lines on tmpfs / one netlink dump) so it runs every scrape.
 local function load_ip_to_mac()
   local leases = conntrack.parse_dhcp_leases()
@@ -1010,7 +1018,7 @@ local function load_ip_to_mac()
   for mac, lease in pairs(leases) do
     if lease.ip then m[lease.ip] = mac end
   end
-  for ip, mac in pairs(conntrack.parse_arp_table()) do
+  for ip, mac in pairs(conntrack.parse_arp_table(lan_dev)) do
     if m[ip] == nil then m[ip] = mac end
   end
   return m
@@ -1091,6 +1099,7 @@ conntrack.watch({
   bl_hosts_by_mac   = bl_hosts_by_mac,
   lan_prefix      = lan_prefix,
   lan_prefix_v6   = lan_prefix_v6,
+  lan_dev         = lan_dev,
   max_batch       = max_batch,
   flush_interval  = flush_int,
   -- #2024: idle-heartbeat cadence — drives on_tick on a wall-clock tick even
