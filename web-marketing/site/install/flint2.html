@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#3A5A6C" />
+    <title>Flash the GL.iNet Flint 2 (GL-MT6000) — wifihaven</title>
+    <meta
+      name="description"
+      content="Flash vanilla OpenWrt onto the GL.iNet Flint 2 (GL-MT6000) for wifihaven: sysupgrade image, checksum verification, GL admin-UI flash, and U-Boot recovery."
+    />
+    <link rel="icon" type="image/svg+xml" href="/brand/favicon.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/brand/favicon-32.png" />
+    <link rel="shortcut icon" href="/brand/favicon.ico" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/install/guide.css" />
+  </head>
+  <body>
+    <header>
+      <nav class="nav">
+        <a href="/" aria-label="wifihaven home">
+          <img src="/brand/lockup-horizontal.svg" alt="wifihaven" />
+        </a>
+        <div class="nav-actions">
+          <a class="ghost" href="https://app.wifihaven.net">Open the app</a>
+          <a class="cta" href="https://app.wifihaven.net/beta">Request beta access</a>
+        </div>
+      </nav>
+    </header>
+
+    <main>
+      <div class="wrap">
+        <p class="crumbs">
+          <a href="/">wifihaven</a> → <a href="/install/">Set up your router</a> → Flint 2
+        </p>
+        <h1>Flash the GL.iNet Flint 2 (GL-MT6000)</h1>
+        <p class="lede">
+          The Flint 2 is our reference router. It ships GL.iNet’s own firmware — this guide flashes
+          it to <strong>vanilla OpenWrt</strong>, the only configuration wifihaven supports, then
+          hands off to the agent install.
+        </p>
+
+        <div class="warn">
+          <strong>Why flash?</strong> GL.iNet ships the Flint 2 with GL.iNet’s <em>forked</em>
+          OpenWrt firmware. The wifihaven agent is <strong>not supported on that stock firmware</strong>
+          — its firewall/UI layer and dnsmasq fork are untested against the agent’s enforcement, and
+          on the GL stock build the agent can’t install and can’t block. Flash vanilla OpenWrt first;
+          don’t run the installer on GL stock.
+        </div>
+
+        <table class="spec">
+          <tr><th>SoC</th><td>MediaTek MT7986A (Filogic), quad-core ARM Cortex-A53, aarch64</td></tr>
+          <tr><th>OpenWrt target</th><td><code>mediatek/filogic</code> · profile <code>glinet_gl-mt6000</code></td></tr>
+          <tr><th>Wireless</th><td>Dual-band Wi-Fi 6 (802.11ax)</td></tr>
+          <tr><th>Ports</th><td>1× 2.5G WAN, 4× gigabit LAN, USB-A</td></tr>
+          <tr><th>Stock GL IP</th><td><code>192.168.8.1</code></td></tr>
+          <tr><th>OpenWrt IP (after flash)</th><td><code>192.168.1.1</code></td></tr>
+        </table>
+
+        <h2>1. Download the OpenWrt image</h2>
+        <p>
+          Use the <strong>sysupgrade</strong> image (not initramfs). Get it from the
+          <a
+            href="https://firmware-selector.openwrt.org/?target=mediatek%2Ffilogic&id=glinet_gl-mt6000"
+            target="_blank"
+            rel="noopener"
+            >OpenWrt Firmware Selector</a
+          >
+          (search “GL.iNet GL-MT6000”):
+        </p>
+        <pre><code class="filename">openwrt-&lt;version&gt;-mediatek-filogic-glinet_gl-mt6000-squashfs-sysupgrade.bin</code></pre>
+        <div class="warn">
+          <strong>Verify the checksum before you flash — a wrong image can brick the router.</strong>
+          Check the SHA-256 of your download against the value the Firmware Selector shows (and the
+          <code>sha256sums</code> file under
+          <a
+            href="https://downloads.openwrt.org/releases/"
+            target="_blank"
+            rel="noopener"
+            >downloads.openwrt.org/releases/&lt;version&gt;/targets/mediatek/filogic/</a
+          >). The exact reference build we validate against, with its pinned checksum, is in the
+          <a
+            href="https://github.com/wifihaven/wifihaven/blob/main/docs/install-flint2.md"
+            target="_blank"
+            rel="noopener"
+            >full Flint 2 install doc</a
+          >.
+        </div>
+        <pre><code>sha256sum openwrt-*-glinet_gl-mt6000-squashfs-sysupgrade.bin
+# Must match the checksum shown on the official download page.</code></pre>
+
+        <h2>2. Flash from GL stock firmware</h2>
+        <ol>
+          <li>Power on the Flint 2 with WAN unplugged; plug your laptop into a LAN port.</li>
+          <li>
+            Browse to <code>http://192.168.8.1</code> and set the GL admin password (you’ll only
+            need it for the next few minutes).
+          </li>
+          <li>Go to the firmware/upgrade page and upload the sysupgrade image from step 1.</li>
+          <li>
+            <strong>Uncheck “keep settings” / “preserve config.”</strong> You want clean vanilla
+            OpenWrt, not a GL-flavored install with leftover vendor config.
+          </li>
+          <li>Confirm and flash — ~5–10 min including reboot. Don’t power-cycle while it’s flashing.</li>
+        </ol>
+
+        <h2>3. First boot on OpenWrt</h2>
+        <p>After the reboot the router is at <code>192.168.1.1</code> on clean OpenWrt defaults.</p>
+        <ol>
+          <li>Renew your laptop’s DHCP lease (or replug) to get a <code>192.168.1.x</code> address.</li>
+          <li>Browse to <code>http://192.168.1.1</code> (LuCI) and set a root password.</li>
+          <li>
+            SSH in (<code>ssh root@192.168.1.1</code>) and confirm the firmware:
+            <pre><code>cat /etc/openwrt_release
+# Expect DISTRIB_TARGET='mediatek/filogic'</code></pre>
+          </li>
+        </ol>
+
+        <h2>4. Turn on Wi-Fi (it’s off by default)</h2>
+        <p>
+          Vanilla OpenWrt ships with <strong>both radios disabled and no wireless network</strong>,
+          so right after flashing you’ll only have wired connectivity — that’s expected. Turning it
+          on is the same on every OpenWrt router, so we keep it on one page:
+          <strong><a href="/install/enable-wifi">Turn on Wi-Fi →</a></strong> (LuCI or SSH). Do it
+          before you unplug the laptop.
+        </p>
+
+        <h2>5. Install the wifihaven agent</h2>
+        <p>
+          The box is now on vanilla OpenWrt. Follow
+          <a href="/install/#2-install-the-wifihaven-agent">step 2 of the setup page</a> to run the
+          one-line installer, or the
+          <a
+            href="https://github.com/wifihaven/wifihaven/blob/main/docs/install-openwrt.md"
+            target="_blank"
+            rel="noopener"
+            >full OpenWrt install doc</a
+          >
+          for the complete walkthrough. The
+          <a
+            href="https://github.com/wifihaven/wifihaven/blob/main/docs/install-flint2.md"
+            target="_blank"
+            rel="noopener"
+            >Flint 2 doc</a
+          >
+          also covers baseline config (country code, SQM/bufferbloat) and known apk-release quirks.
+        </p>
+
+        <h2>Recovery if a flash goes wrong</h2>
+        <p>GL.iNet’s U-Boot has a built-in web recovery. Walk it once before you need it:</p>
+        <ol>
+          <li>Power the router off.</li>
+          <li>
+            Hold the reset button, plug power in while still holding, and keep holding ~10s until the
+            power LED flashes rapidly (U-Boot recovery).
+          </li>
+          <li>Plug your laptop into a LAN port and give it a static <code>192.168.1.2/24</code>.</li>
+          <li>Browse to <code>http://192.168.1.1</code> — the GL.iNet recovery UI loads.</li>
+          <li>
+            Upload stock GL firmware from
+            <a href="https://dl.gl-inet.com/router/mt6000/" target="_blank" rel="noopener"
+              >dl.gl-inet.com/router/mt6000/</a
+            >
+            (or re-upload the OpenWrt sysupgrade), then reboot.
+          </li>
+        </ol>
+        <p>
+          Full recovery detail, including the TFTP fallback, is in the
+          <a
+            href="https://github.com/wifihaven/wifihaven/blob/main/docs/install-flint2.md#recovery-if-the-flash-bricks"
+            target="_blank"
+            rel="noopener"
+            >Flint 2 install doc</a
+          >.
+        </p>
+
+        <div class="next">
+          <a class="cta" href="https://app.wifihaven.net/routers?add=1">Get an enrollment token →</a>
+          <a class="ghost" href="/install/">← All router guides</a>
+        </div>
+      </div>
+    </main>
+
+    <footer>
+      <p>
+        wifihaven — a haven for the household network. ·
+        <a href="https://github.com/wifihaven/wifihaven">Source on GitHub</a>
+      </p>
+    </footer>
+  </body>
+</html>

@@ -51,6 +51,42 @@ describe('RouterInstallPage — #2234 post-registration router-install page', ()
     expect(screen.getAllByText(/OpenWRT/i).length).toBeGreaterThan(0)
   })
 
+  it('makes clear EVERY router (incl. GL.iNet) needs a vanilla-OpenWRT flash — not just mainline', () => {
+    // #2364 — the old copy said GL.iNet "ships an OpenWRT-based firmware out of the box", which
+    // wrongly implied those boxes were ready to go. Stock GL firmware is NOT supported (#2304/
+    // #2363); it still needs a vanilla-OpenWRT flash. The prerequisite must say so.
+    renderPage()
+    // Appears in the prerequisite banner and reinforced on each router card.
+    expect(screen.getAllByText(/flash vanilla OpenWRT first/i).length).toBeGreaterThan(0)
+    // Must not resurrect the misleading "ships an OpenWRT-based firmware out of the box; other
+    // hardware needs a flash" framing that implied GL.iNet boxes were ready as-is.
+    expect(
+      screen.queryByText(/ships an OpenWRT-based firmware\s+out of the box; other hardware/i),
+    ).not.toBeInTheDocument()
+  })
+
+  it('links each router to its per-router flash guide on the marketing site', () => {
+    // #2364 — the guides live on wifihaven.net/install/* (mirroring docs/install-*.md) and are
+    // linked from every card so the operator can actually flash the box.
+    renderPage()
+    const links = screen.getAllByRole('link', { name: /Flash .* install guide/i })
+    expect(links.length).toBe(3)
+    for (const link of links) {
+      expect(link.getAttribute('href')).toMatch(/^https:\/\/wifihaven\.net\/install\//)
+      expect(link).toHaveAttribute('target', '_blank')
+      expect(link.getAttribute('rel')).toContain('noopener')
+    }
+    // The three specific per-router guide slugs.
+    const hrefs = links.map(l => l.getAttribute('href'))
+    expect(hrefs).toEqual(
+      expect.arrayContaining([
+        'https://wifihaven.net/install/flint2',
+        'https://wifihaven.net/install/flint',
+        'https://wifihaven.net/install/wax206',
+      ]),
+    )
+  })
+
   it('links each suggested router to Amazon with the wifihaven-20 affiliate tag', () => {
     // #2301 — every router card carries a "View on Amazon" link. Amazon Associates requires
     // the tag on every link; rel="sponsored" flags the paid relationship.

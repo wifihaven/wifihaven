@@ -22,8 +22,10 @@ DNS normally — it is not the enforcement plane (see
 > script only checks for `apk`-or-`opkg` + `uci` + `jsonfilter`, so it may
 > *start* on stock GL.iNet firmware, but that path is unverified: GL.iNet's own
 > firewall/UI layer and dnsmasq management have not been tested against the
-> agent's nftables and nftset config. On GL.iNet hardware, flash vanilla
-> OpenWRT first ([`install-flint2.md`](install-flint2.md)) — that is the
+> agent's nftables and nftset config. Flash vanilla OpenWRT first — per-router
+> flash guides: [`install-flint2.md`](install-flint2.md) (Flint 2 / GL-MT6000),
+> [`install-flint.md`](install-flint.md) (Flint / GL-AX1800), and
+> [`install-wax206.md`](install-wax206.md) (Netgear WAX206) — that is the
 > supported path.
 
 - A router running **OpenWRT 23.05.x** (opkg / `.ipk`) **or OpenWRT 24.10+ /

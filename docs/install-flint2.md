@@ -125,20 +125,44 @@ These are not strictly required for WifiHaven to start, but they're things
 you want on a long-running household router and are easiest to set now while
 the box is fresh.
 
-### 2.1 Wireless country code
+### 2.1 Turn on Wi-Fi and set the country code
 
-OpenWRT defaults the wifi regulatory domain to `00` (world), which clamps TX
-power and blocks some channels. Set to your country before bringing up the
-radios:
+> **Wi-Fi is OFF after flashing — this is expected, not a broken flash.** Vanilla
+> OpenWRT ships with **both radios disabled and no wireless network** on any
+> device that has Ethernet ports (which is every router here), so immediately
+> after flashing you only have wired connectivity. You bring Wi-Fi up yourself —
+> that is not a defect, it's the OpenWRT default.
+
+First set the regulatory country. OpenWRT defaults the wifi regulatory domain to
+`00` (world), which clamps TX power and blocks some channels; set your country
+before bringing up the radios.
+
+**Via SSH / `uci`** — sets the country, enables both radios, and creates a WPA2/WPA3
+network on each. The wifi-device sections are `radio0` / `radio1`; the per-radio
+network sections are `default_radio0` / `default_radio1`:
 
 ```sh
-uci set wireless.radio0.country='US'   # or your country code
+uci set wireless.radio0.country='US'   # your country code
 uci set wireless.radio1.country='US'
+uci set wireless.radio0.disabled='0'   # radios are disabled by default
+uci set wireless.radio1.disabled='0'
+uci set wireless.default_radio0.ssid='YourNetwork'
+uci set wireless.default_radio1.ssid='YourNetwork'
+uci set wireless.default_radio0.encryption='sae-mixed'  # WPA2/WPA3; use 'psk2' for WPA2-only
+uci set wireless.default_radio1.encryption='sae-mixed'
+uci set wireless.default_radio0.key='your-wifi-password'
+uci set wireless.default_radio1.key='your-wifi-password'
 uci commit wireless
 wifi reload
 ```
 
-Verify with `iw reg get` — it should show your country, not `00`.
+**Via LuCI** — **Network → Wireless**: for each radio click **Enable**, then
+**Edit** to set the **ESSID**, pick **WPA2-PSK** (or WPA2/WPA3 mixed) under
+**Wireless Security** with a password, set the country under the radio's device
+config, then **Save & Apply**.
+
+Verify with `iw reg get` (should show your country, not `00`) and confirm the SSID
+is now visible from a phone. `wifi status` shows each radio as `up`.
 
 ### 2.2 Remove unused IPsec WAN-side rules
 

@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#3A5A6C" />
+    <title>Flash the Netgear WAX206 — wifihaven</title>
+    <meta
+      name="description"
+      content="Flash vanilla OpenWrt onto the Netgear WAX206 (AX3200) for wifihaven: factory image via the Netgear web UI, checksum verification, and nmrpflash recovery."
+    />
+    <link rel="icon" type="image/svg+xml" href="/brand/favicon.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/brand/favicon-32.png" />
+    <link rel="shortcut icon" href="/brand/favicon.ico" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/install/guide.css" />
+  </head>
+  <body>
+    <header>
+      <nav class="nav">
+        <a href="/" aria-label="wifihaven home">
+          <img src="/brand/lockup-horizontal.svg" alt="wifihaven" />
+        </a>
+        <div class="nav-actions">
+          <a class="ghost" href="https://app.wifihaven.net">Open the app</a>
+          <a class="cta" href="https://app.wifihaven.net/beta">Request beta access</a>
+        </div>
+      </nav>
+    </header>
+
+    <main>
+      <div class="wrap">
+        <p class="crumbs">
+          <a href="/">wifihaven</a> → <a href="/install/">Set up your router</a> → WAX206
+        </p>
+        <h1>Flash the Netgear WAX206 (AX3200)</h1>
+        <p class="lede">
+          The WAX206 is an inexpensive mainline-OpenWrt target on the same MediaTek MT7622 platform
+          as the well-known Linksys E8450 / Belkin RT3200. This guide flashes it to
+          <strong>vanilla OpenWrt</strong>, then hands off to the agent install.
+        </p>
+
+        <div class="warn">
+          <strong>Why flash?</strong> The WAX206 ships Netgear’s stock firmware, not OpenWrt. The
+          wifihaven agent runs only on <strong>vanilla OpenWrt</strong> — Netgear stock is not a
+          supported target. Flash OpenWrt first; don’t run the installer on Netgear stock.
+        </div>
+
+        <table class="spec">
+          <tr><th>SoC</th><td>MediaTek MT7622BV, dual-core ARM Cortex-A53, aarch64</td></tr>
+          <tr><th>OpenWrt target</th><td><code>mediatek/mt7622</code> · profile <code>netgear_wax206</code></td></tr>
+          <tr><th>Wireless</th><td>Dual-band Wi-Fi 6 (802.11ax, AX3200)</td></tr>
+          <tr><th>Ports</th><td>1× 2.5G WAN, 4× gigabit LAN, USB 3.0</td></tr>
+          <tr><th>OpenWrt IP (after flash)</th><td><code>192.168.1.1</code></td></tr>
+        </table>
+
+        <h2>1. Download the OpenWrt image</h2>
+        <p>
+          For the first flash off Netgear stock you need a <strong>factory</strong> image. Get it
+          from the
+          <a
+            href="https://firmware-selector.openwrt.org/?target=mediatek%2Fmt7622&id=netgear_wax206"
+            target="_blank"
+            rel="noopener"
+            >OpenWrt Firmware Selector</a
+          >
+          (search “Netgear WAX206”):
+        </p>
+        <pre><code class="filename">openwrt-&lt;version&gt;-mediatek-mt7622-netgear_wax206-squashfs-factory.img</code></pre>
+        <p>
+          The <code>squashfs-sysupgrade.bin</code> image is for <em>later</em> upgrades only; the
+          <code>initramfs-recovery.itb</code> is only for the recovery path below.
+        </p>
+        <div class="warn">
+          <strong>Verify the checksum before you flash — a wrong image can brick the router.</strong>
+          Check the SHA-256 of your download against the value the Firmware Selector shows (and the
+          <code>sha256sums</code> file under
+          <a
+            href="https://downloads.openwrt.org/releases/"
+            target="_blank"
+            rel="noopener"
+            >downloads.openwrt.org/releases/&lt;version&gt;/targets/mediatek/mt7622/</a
+          >). The exact reference build we validate against, with its pinned checksum, is in the
+          <a
+            href="https://github.com/wifihaven/wifihaven/blob/main/docs/install-wax206.md"
+            target="_blank"
+            rel="noopener"
+            >full WAX206 install doc</a
+          >.
+        </div>
+
+        <h2>2. Flash from Netgear stock firmware</h2>
+        <ol>
+          <li>Power on with WAN unplugged; plug your laptop into a LAN port.</li>
+          <li>
+            Browse to <code>http://192.168.1.1</code> (or <code>routerlogin.net</code>) and log in to
+            the Netgear admin UI.
+          </li>
+          <li>
+            Go to <strong>Advanced → Administration → Firmware Update</strong> and select the
+            <strong><code>…-squashfs-factory.img</code></strong> image.
+          </li>
+          <li>
+            Netgear warns the firmware is older / not a Netgear image — that’s expected; confirm past
+            it. The device reboots into OpenWrt.
+          </li>
+        </ol>
+        <p>
+          If the OEM UI refuses the image, use the <code>nmrpflash</code> path below to push the same
+          factory image.
+        </p>
+
+        <h2>3. First boot on OpenWrt</h2>
+        <p>After the reboot the router is at <code>192.168.1.1</code> on clean OpenWrt defaults.</p>
+        <ol>
+          <li>Keep your laptop in a LAN port on DHCP and renew the lease.</li>
+          <li>Browse to <code>http://192.168.1.1</code> (LuCI) and set a root password.</li>
+          <li>
+            SSH in (<code>ssh root@192.168.1.1</code>) and confirm the firmware:
+            <pre><code>cat /etc/openwrt_release
+# Expect DISTRIB_TARGET='mediatek/mt7622'</code></pre>
+          </li>
+        </ol>
+
+        <h2>4. Turn on Wi-Fi (it’s off by default)</h2>
+        <p>
+          Vanilla OpenWrt ships with <strong>both radios disabled and no wireless network</strong>,
+          so right after flashing you’ll only have wired connectivity — that’s expected. Turning it
+          on is the same on every OpenWrt router, so we keep it on one page:
+          <strong><a href="/install/enable-wifi">Turn on Wi-Fi →</a></strong> (LuCI or SSH). Do it
+          before you unplug the laptop.
+        </p>
+
+        <h2>5. Install the wifihaven agent</h2>
+        <p>
+          The box is now on vanilla OpenWrt. Follow
+          <a href="/install/#2-install-the-wifihaven-agent">step 2 of the setup page</a> to run the
+          one-line installer, or the
+          <a
+            href="https://github.com/wifihaven/wifihaven/blob/main/docs/install-openwrt.md"
+            target="_blank"
+            rel="noopener"
+            >full OpenWrt install doc</a
+          >. Baseline config and apk-release quirks are covered in the
+          <a
+            href="https://github.com/wifihaven/wifihaven/blob/main/docs/install-wax206.md"
+            target="_blank"
+            rel="noopener"
+            >WAX206 install doc</a
+          >.
+        </p>
+
+        <h2>Recovery if a flash goes wrong</h2>
+        <p>
+          Netgear routers recover over the <strong>NMRP</strong> protocol, which
+          <a href="https://github.com/jclehner/nmrpflash" target="_blank" rel="noopener"
+            ><code>nmrpflash</code></a
+          >
+          speaks — no case-opening required.
+        </p>
+        <ol>
+          <li>Install <code>nmrpflash</code> on your laptop and connect it to a LAN port of the (off) router.</li>
+          <li>Give the laptop’s wired interface a static address on <code>192.168.1.0/24</code>.</li>
+          <li>
+            Run <code>nmrpflash</code> pointed at your interface and the factory image, then power the
+            router on so it catches the NMRP advertisement during boot:
+            <pre><code>nmrpflash -i &lt;your-wired-interface&gt; \
+  -f openwrt-&lt;version&gt;-mediatek-mt7622-netgear_wax206-squashfs-factory.img</code></pre>
+          </li>
+        </ol>
+        <p>
+          Use the OpenWrt <code>…-factory.img</code> to reinstall OpenWrt, or a Netgear stock
+          <code>.img</code> to return to vendor firmware. The serial/TFTP U-Boot fallback is
+          documented on the
+          <a href="https://openwrt.org/toh/netgear/wax206" target="_blank" rel="noopener"
+            >OpenWrt WAX206 device page</a
+          >.
+        </p>
+
+        <div class="next">
+          <a class="cta" href="https://app.wifihaven.net/routers?add=1">Get an enrollment token →</a>
+          <a class="ghost" href="/install/">← All router guides</a>
+        </div>
+      </div>
+    </main>
+
+    <footer>
+      <p>
+        wifihaven — a haven for the household network. ·
+        <a href="https://github.com/wifihaven/wifihaven">Source on GitHub</a>
+      </p>
+    </footer>
+  </body>
+</html>

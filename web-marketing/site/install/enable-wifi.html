@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#3A5A6C" />
+    <title>Turn on Wi-Fi (OpenWrt) — wifihaven</title>
+    <meta
+      name="description"
+      content="Vanilla OpenWrt ships with Wi-Fi off. Turn it on and set an SSID + password via LuCI or SSH — the same on every OpenWrt router."
+    />
+    <link rel="icon" type="image/svg+xml" href="/brand/favicon.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/brand/favicon-32.png" />
+    <link rel="shortcut icon" href="/brand/favicon.ico" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/install/guide.css" />
+  </head>
+  <body>
+    <header>
+      <nav class="nav">
+        <a href="/" aria-label="wifihaven home">
+          <img src="/brand/lockup-horizontal.svg" alt="wifihaven" />
+        </a>
+        <div class="nav-actions">
+          <a class="ghost" href="https://app.wifihaven.net">Open the app</a>
+          <a class="cta" href="https://app.wifihaven.net/beta">Request beta access</a>
+        </div>
+      </nav>
+    </header>
+
+    <main>
+      <div class="wrap">
+        <p class="crumbs">
+          <a href="/">wifihaven</a> → <a href="/install/">Set up your router</a> → Turn on Wi-Fi
+        </p>
+        <h1>Turn on Wi-Fi</h1>
+        <p class="lede">
+          This step is the same on <strong>every</strong> OpenWrt router — whichever model you
+          flashed, do this once after the first boot, before you unplug the laptop.
+        </p>
+
+        <div class="warn">
+          <strong>Wi-Fi is off after flashing — that’s expected, not a bad flash.</strong> Vanilla
+          OpenWrt ships with <strong>both radios disabled and no wireless network</strong> on any
+          router that has Ethernet ports, so right after flashing you’ll only have wired
+          connectivity. You turn Wi-Fi on yourself — here’s how.
+        </div>
+
+        <h2>Via LuCI (browser)</h2>
+        <ol>
+          <li>Browse to <code>http://192.168.1.1</code> and open <strong>Network → Wireless</strong>.</li>
+          <li>For each radio (2.4 GHz and 5 GHz), click <strong>Enable</strong>, then <strong>Edit</strong>.</li>
+          <li>
+            Set the <strong>ESSID</strong> (your network name), and under <strong>Wireless
+            Security</strong> choose <strong>WPA2-PSK</strong> (or WPA2/WPA3 mixed) and set a
+            password.
+          </li>
+          <li>Set the country under the radio’s device configuration, then <strong>Save &amp; Apply</strong>.</li>
+        </ol>
+
+        <h2>Or over SSH</h2>
+        <p>
+          SSH in (<code>ssh root@192.168.1.1</code>) and run — this sets the country, enables both
+          radios, and creates a WPA2/WPA3 network on each:
+        </p>
+        <pre><code>uci set wireless.radio0.country='US'   # your country code
+uci set wireless.radio1.country='US'
+uci set wireless.radio0.disabled='0'   # radios are disabled by default
+uci set wireless.radio1.disabled='0'
+uci set wireless.default_radio0.ssid='YourNetwork'
+uci set wireless.default_radio1.ssid='YourNetwork'
+uci set wireless.default_radio0.encryption='sae-mixed'   # WPA2/WPA3; use 'psk2' for WPA2 only
+uci set wireless.default_radio1.encryption='sae-mixed'
+uci set wireless.default_radio0.key='your-wifi-password'
+uci set wireless.default_radio1.key='your-wifi-password'
+uci commit wireless
+wifi reload</code></pre>
+        <p>
+          The wifi-device sections are <code>radio0</code> / <code>radio1</code>; the per-radio
+          network sections are <code>default_radio0</code> / <code>default_radio1</code>. Confirm
+          your SSID is now visible from a phone — <code>wifi status</code> shows each radio up.
+        </p>
+
+        <div class="next">
+          <a class="cta" href="https://app.wifihaven.net/routers?add=1">Get an enrollment token →</a>
+          <a class="ghost" href="/install/">← All router guides</a>
+        </div>
+      </div>
+    </main>
+
+    <footer>
+      <p>
+        wifihaven — a haven for the household network. ·
+        <a href="https://github.com/wifihaven/wifihaven">Source on GitHub</a>
+      </p>
+    </footer>
+  </body>
+</html>

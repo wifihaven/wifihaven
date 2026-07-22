@@ -16,9 +16,16 @@ export const ROUTER_INSTALL_COMMAND =
 
 // #2234 — a short, opinionated list of known-good OpenWRT hardware, coordinated with the
 // in-repo hardware docs (docs/install-flint2.md names the Flint 2 as the reference router).
-// Deliberately NOT an exhaustive compatibility matrix. Every entry runs OpenWRT; the GL.iNet
-// boxes ship an OpenWRT-based firmware out of the box (lighter flashing), while mainline
-// targets need an OpenWRT flash first (see the prerequisite note below).
+// Deliberately NOT an exhaustive compatibility matrix.
+//
+// #2364 — EVERY router in this list must be flashed to *vanilla* OpenWRT before the agent will
+// work. The GL.iNet boxes ship GL.iNet's own *forked* OpenWRT-based firmware out of the box, but
+// that stock firmware is NOT a supported target: on it the agent can't install (#2363 — GL's
+// 2021 opkg rejects the released package) and has no enforcement substrate (#2304 — no nft, and
+// GL's dnsmasq fork lacks nftset). So "ships OpenWRT-based firmware" does NOT mean "ready to go"
+// — it still needs a vanilla-OpenWRT flash, same as any mainline target. Each entry links to its
+// per-router flash guide on the marketing site (web-marketing/site/install/*, which mirror
+// docs/install-flint2.md et al.).
 //
 // #2301 — each entry links to Amazon with our Associates tag (wifihaven-20). Every `amazon`
 // URL below is a VERIFIED current product listing (dp/<ASIN>) confirmed available on
@@ -34,6 +41,8 @@ interface SuggestedRouter {
   note?: string
   // Verified amazon.com product URL carrying tag=wifihaven-20 (Amazon Associates).
   amazon: string
+  // #2364 — per-router "flash vanilla OpenWRT" guide on the marketing site.
+  guide: string
 }
 
 const SUGGESTED_ROUTERS: SuggestedRouter[] = [
@@ -41,22 +50,25 @@ const SUGGESTED_ROUTERS: SuggestedRouter[] = [
     name: 'GL.iNet Flint 2 (GL-MT6000)',
     detail:
       'Our reference hardware. Quad-core aarch64, dual-band Wi-Fi 6, 2.5G WAN — plenty of headroom for line-rate filtering and accounting at gigabit.',
-    note: 'Ships GL.iNet’s OpenWRT-based firmware; well supported in mainline OpenWRT.',
+    note: 'Ships GL.iNet’s forked firmware — flash vanilla OpenWRT first (guide below).',
     amazon: 'https://www.amazon.com/dp/B0CP7S3117?tag=wifihaven-20',
+    guide: 'https://wifihaven.net/install/flint2',
   },
   {
     name: 'GL.iNet Flint (GL-AX1800)',
     detail:
       'The smaller sibling — Wi-Fi 6, gigabit Ethernet. A solid, cheaper option for lighter households.',
-    note: 'Also ships an OpenWRT-based firmware.',
+    note: 'Ships GL.iNet’s forked firmware — flash vanilla OpenWRT first (guide below).',
     amazon: 'https://www.amazon.com/dp/B09HBW45ZJ?tag=wifihaven-20',
+    guide: 'https://wifihaven.net/install/flint',
   },
   {
     name: 'Netgear WAX206 (AX3200)',
     detail:
       'An inexpensive mainline-OpenWRT target with strong community support (MediaTek MT7622, Wi-Fi 6, 2.5G WAN). Great value if you’re comfortable flashing.',
-    note: 'Requires flashing OpenWRT yourself before installing the agent.',
+    note: 'Ships Netgear stock firmware — flash vanilla OpenWRT first (guide below).',
     amazon: 'https://www.amazon.com/dp/B098BRF91P?tag=wifihaven-20',
+    guide: 'https://wifihaven.net/install/wax206',
   },
 ]
 
@@ -86,10 +98,13 @@ export function RouterInstallPage() {
       <section className="space-y-4">
         <h2 className="text-base font-semibold text-brand-ink">1. Suggested hardware</h2>
         <div className="bg-amber-500/10 border border-amber-500/30 text-amber-700 text-sm rounded-xl px-4 py-3">
-          <strong>Prerequisite:</strong> the router must run <strong>OpenWRT</strong> (23.05.x
-          with <code className="font-mono">opkg</code>, or 24.10+/25.12.x with{' '}
-          <code className="font-mono">apk</code>). GL.iNet devices ship an OpenWRT-based firmware
-          out of the box; other hardware needs an OpenWRT flash first.
+          <strong>Prerequisite — flash vanilla OpenWRT first.</strong> Every router below must run{' '}
+          <strong>vanilla OpenWRT</strong> (23.05.x with <code className="font-mono">opkg</code>, or
+          24.10+/25.12.x with <code className="font-mono">apk</code>) before the agent will work.
+          The GL.iNet boxes ship GL.iNet’s <em>own forked</em> firmware out of the box — that stock
+          firmware is <strong>not supported</strong> (the agent can’t install on it and can’t
+          enforce), so it still needs a vanilla-OpenWRT flash, just like the mainline Netgear. Use
+          the per-router flash guide on each card — it walks the flash, checksum, and recovery.
         </div>
         <ul className="space-y-3">
           {SUGGESTED_ROUTERS.map(r => (
@@ -102,21 +117,39 @@ export function RouterInstallPage() {
               {r.note && (
                 <p className="text-xs text-brand-text-muted mt-1.5">{r.note}</p>
               )}
-              {/* #2301 — affiliate link. rel="sponsored" flags the paid relationship (Amazon
-                  Associates / SEO), noopener hardens the new tab. */}
-              <a
-                href={r.amazon}
-                target="_blank"
-                rel="sponsored noopener"
-                className="inline-flex items-center gap-1 text-xs font-semibold text-brand-accent hover:text-brand-accent-dark mt-2.5"
-              >
-                View on Amazon
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                  <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-                  <polyline points="15 3 21 3 21 9" />
-                  <line x1="10" y1="14" x2="21" y2="3" />
-                </svg>
-              </a>
+              <div className="flex items-center gap-4 mt-2.5">
+                {/* #2364 — per-router "flash vanilla OpenWRT" guide on the marketing site. The
+                    primary action: it's what makes the box usable. External (wifihaven.net vs the
+                    app's own host), so it opens in a new tab. */}
+                <a
+                  href={r.guide}
+                  target="_blank"
+                  rel="noopener"
+                  className="inline-flex items-center gap-1 text-xs font-semibold text-brand-accent hover:text-brand-accent-dark"
+                >
+                  Flash &amp; install guide
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                    <polyline points="15 3 21 3 21 9" />
+                    <line x1="10" y1="14" x2="21" y2="3" />
+                  </svg>
+                </a>
+                {/* #2301 — affiliate link. rel="sponsored" flags the paid relationship (Amazon
+                    Associates / SEO), noopener hardens the new tab. */}
+                <a
+                  href={r.amazon}
+                  target="_blank"
+                  rel="sponsored noopener"
+                  className="inline-flex items-center gap-1 text-xs font-semibold text-brand-text-muted hover:text-brand-ink"
+                >
+                  View on Amazon
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                    <polyline points="15 3 21 3 21 9" />
+                    <line x1="10" y1="14" x2="21" y2="3" />
+                  </svg>
+                </a>
+              </div>
             </li>
           ))}
         </ul>
