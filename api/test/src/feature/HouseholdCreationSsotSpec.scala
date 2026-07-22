@@ -187,5 +187,33 @@ object HouseholdCreationSsotSpec
         billingCount <- billingRowCount(xa, hid)
       } yield assertTrue(secondResult.isLeft, hhCount == 1, billingCount == 1)
     },
+    test("backfill seed is idempotent and gives a rowless household a beta row") {
+      for {
+        _      <- cleanDb
+        xa     <- ZIO.service[Transactor[Task]]
+        // A household with NO billing row — models a pre-#2355 household minted via the old
+        // billing-less create path (raw insert, bypassing the HouseholdSeed primitive).
+        hid    <-
+          sql"INSERT INTO households(name, slug, router_cap) VALUES('Legacy Fam','legacy-fam',1) RETURNING id"
+            .query[HouseholdId]
+            .unique
+            .transact(xa)
+        before <- billingRowCount(xa, hid)
+        _      <- HouseholdSeed.backfillMissingBilling.transact(xa)
+        after1 <- billingRowCount(xa, hid)
+        row    <- sql"SELECT status, founding FROM household_billing WHERE household_id=$hid"
+          .query[(String, Boolean)]
+          .unique
+          .transact(xa)
+        // Second run is a no-op (idempotent) — no duplicate row, existing row untouched.
+        _      <- HouseholdSeed.backfillMissingBilling.transact(xa)
+        after2 <- billingRowCount(xa, hid)
+      } yield assertTrue(
+        before == 0,
+        after1 == 1,
+        row == ("beta", false),
+        after2 == 1,
+      )
+    },
   ) @@ TestAspect.sequential
 }

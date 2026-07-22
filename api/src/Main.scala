@@ -121,12 +121,12 @@ object Main extends ZIOAppDefault {
         // safely re-runs it from the start.
         _             <- Database.withStartupRetry(cfg.db.resilience, "startup DB init") {
           for {
-            _ <- Database.runMigrations(cfg.db)
-            _ <- ZIO.logInfo("Database migrations complete")
+            _  <- Database.runMigrations(cfg.db)
+            _  <- ZIO.logInfo("Database migrations complete")
             // #334: ensure household_settings has its single row, defaulting the
             // daily-reset tz to the API server's local zone on first install.
-            _ <- hsRepo.ensureDefault(tz)
-            _ <- ZIO.logInfo(s"household_settings ensured (install-default tz=${tz.getId})")
+            _  <- hsRepo.ensureDefault(tz)
+            _  <- ZIO.logInfo(s"household_settings ensured (install-default tz=${tz.getId})")
             // #1771: seed the single global sentinel profile that PolicyService unions into
             // every other profile's BlockRules. Idempotent — V59's partial unique index
             // (`is_global = TRUE`) ensures at most one row ever exists, and ON CONFLICT
@@ -140,10 +140,17 @@ object Main extends ZIOAppDefault {
             // this boot seed covers only the default install (household 1). Shares
             // the ONE ProfileSeed.insertGlobalSentinel definition (SSOT) so the seed
             // shape can't drift from the provisioning path.
-            _ <- ProfileSeed
+            _  <- ProfileSeed
               .insertGlobalSentinel(wifihaven.shared.types.HouseholdId.Default)
               .transact(xaForSeed)
-            _ <- ZIO.logInfo("global profile sentinel ensured (is_global=TRUE)")
+            _  <- ZIO.logInfo("global profile sentinel ensured (is_global=TRUE)")
+            // #2355: backfill a household_billing row for any pre-existing household minted before
+            // billing was seeded on every create path (else GET /api/billing 404s NoBillingRow for
+            // it). Idempotent (NOT EXISTS guard) — a no-op once every household has a row. Mirrors
+            // the global-sentinel boot seed above; one-shot cleanup after deploy tracked by #2359
+            // (under #1608).
+            bf <- HouseholdSeed.backfillMissingBilling.transact(xaForSeed)
+            _  <- ZIO.logInfo(s"household_billing backfilled for rowless households (inserted=$bf)")
             // #768: seed the starter library of app templates. Idempotent —
             // operator host edits on previously-seeded apps are preserved.
             seedSummary <- AppTemplates.seed(appRepoForSeed, templates)

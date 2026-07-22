@@ -65,9 +65,11 @@ case class DbBetaRequest(
 // ── HouseholdBillingRepo ─────────────────────────────────────────────────────
 
 /**
- * #2132: the per-household billing state row. `create` writes the provisioning-time row
- * (`status='beta'`, `founding=true`); the Stripe-linkage setters + status transitions land in #2135
- * (Checkout/Portal/webhook) and #2137 (flip/lapse) — this issue only opens the seam.
+ * #2132: the per-household billing state row. The provisioning-time row is now written by the ONE
+ * household-creation primitive ([[wifihaven.api.db.HouseholdSeed.insertHousehold]], #2355), so
+ * every household is pre-seeded (`status='beta'`). `create` here is the idempotent "set the billing
+ * row" seam (ON CONFLICT DO UPDATE) with no production caller today; the Stripe-linkage setters +
+ * status transitions land in #2135 (Checkout/Portal/webhook) and #2137 (flip/lapse).
  */
 trait HouseholdBillingRepo {
   def create(householdId: HouseholdId, status: String, founding: Boolean): Task[Unit]
@@ -126,8 +128,18 @@ class HouseholdBillingRepoLive(xa: Transactor[Task]) extends HouseholdBillingRep
   private def toBilling(r: Row): HouseholdBilling =
     HouseholdBilling(r._1, r._2, r._3, r._4, r._5, r._6, r._7, r._8)
 
+  // #2355: idempotent — set the household's billing row to (status, founding), inserting it if
+  // absent. Post-#2355 the row is created as part of the ONE household-creation primitive
+  // ([[HouseholdSeed.insertHousehold]]), so a household is always pre-seeded (status='beta') by the
+  // time anyone calls this; a plain INSERT would collide on the household_id PK. ON CONFLICT DO
+  // UPDATE makes this the safe "override the provisioning billing state" seam. No production caller
+  // today (provisioning + status transitions go through HouseholdSeed / markActive / markLapsed);
+  // used by tests to steer a household to a specific billing status.
   def create(householdId: HouseholdId, status: String, founding: Boolean) =
-    sql"INSERT INTO household_billing(household_id, status, founding) VALUES($householdId, $status, $founding)".update.run
+    sql"""INSERT INTO household_billing(household_id, status, founding)
+          VALUES($householdId, $status, $founding)
+          ON CONFLICT (household_id)
+          DO UPDATE SET status = EXCLUDED.status, founding = EXCLUDED.founding""".update.run
       .transact(xa)
       .unit
 
@@ -430,16 +442,20 @@ class BetaRequestRepoLive(xa: Transactor[Task]) extends BetaRequestRepo {
     // back the household/billing inserts too, so a double-approve can never mint a second household.
     val txn: ConnectionIO[HouseholdId] =
       for {
-        hid <-
-          sql"INSERT INTO households(name, slug, router_cap) VALUES($householdName, $slug, $routerCap) RETURNING id"
-            .query[HouseholdId]
-            .unique
-        _   <-
-          sql"INSERT INTO household_billing(household_id, status, founding) VALUES($hid, $billingStatus, $founding)".update.run
-        // #2286: seed the new household's global-sentinel profile in the SAME transaction, so a
-        // provisioned household always has its `Global` policy row (else GET /api/profiles/global
-        // 404s and the household can't author global policy). SSOT insert; idempotent per household.
-        _   <- ProfileSeed.insertGlobalSentinel(hid)
+        // #2355: households + household_billing + global-sentinel via the ONE
+        // [[HouseholdSeed.insertHousehold]] primitive — the same fragment HouseholdRepoLive.create
+        // composes, so billing can never be seeded on one path and skipped on the other (the drift
+        // this collapses). #2286: the global-sentinel is part of that unit, so a provisioned
+        // household always has its `Global` policy row. Sequenced INSIDE this txn (not a second
+        // .transact) so the beta_requests stamp below shares the transaction — a non-pending target
+        // rolls the household/billing/sentinel inserts back too (double-approve guard).
+        hid <- HouseholdSeed.insertHousehold(
+          householdName,
+          slug,
+          routerCap,
+          billingStatus,
+          founding,
+        )
         n   <-
           sql"""UPDATE beta_requests
                 SET status='approved', decided_at=$decidedAt, decided_by=$decidedBy,
