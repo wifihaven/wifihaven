@@ -1,0 +1,285 @@
+/* wifihaven install-guide styles (#2364).
+ *
+ * Shared by the install hub (install/index.html) and the per-router flash guides
+ * (install/flint2.html, install/flint.html, install/wax206.html). Same brand tokens
+ * as the marketing landing page (../index.html / docs/brand.md) so the guides read
+ * as part of wifihaven.net. Plain CSS, no build step — matches the marketing site's
+ * no-toolchain approach. */
+
+:root {
+  --terracotta: #c2693a;
+  --terracotta-dark: #a8582e;
+  --slate: #3a5a6c;
+  --cream: #f2e8d5;
+  --offwhite: #fafaf7;
+  --ink: #1f1b16;
+  --muted: #6b7f8a;
+  --border: rgba(58, 90, 108, 0.14);
+  --amber-bg: #fdf6ec;
+  --amber-border: #e6c88f;
+  --amber-ink: #8a5a12;
+}
+* {
+  box-sizing: border-box;
+}
+html {
+  scroll-behavior: smooth;
+}
+body {
+  margin: 0;
+  font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  color: var(--ink);
+  background: var(--offwhite);
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+a {
+  color: var(--terracotta);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+.wrap {
+  max-width: 820px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+/* Header (mirrors the landing nav) */
+header {
+  border-bottom: 1px solid rgba(58, 90, 108, 0.12);
+  background: #fff;
+}
+.nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 24px;
+  max-width: 1040px;
+  margin: 0 auto;
+}
+.nav img {
+  height: 30px;
+  display: block;
+}
+.nav-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.cta {
+  display: inline-block;
+  background: var(--terracotta);
+  color: #fff;
+  font-weight: 600;
+  padding: 10px 20px;
+  border-radius: 10px;
+  font-size: 15px;
+}
+.cta:hover {
+  background: var(--terracotta-dark);
+  text-decoration: none;
+}
+
+/* Article */
+main {
+  padding: 40px 0 72px;
+}
+.crumbs {
+  font-size: 13px;
+  color: var(--muted);
+  margin: 0 0 18px;
+}
+.crumbs a {
+  color: var(--muted);
+}
+h1 {
+  font-size: 34px;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  color: var(--slate);
+  margin: 0 0 10px;
+}
+.lede {
+  font-size: 18px;
+  color: rgba(31, 27, 22, 0.82);
+  margin: 0 0 28px;
+}
+h2 {
+  font-size: 23px;
+  color: var(--slate);
+  letter-spacing: -0.015em;
+  margin: 38px 0 10px;
+  padding-top: 8px;
+}
+h3 {
+  font-size: 17px;
+  color: var(--slate);
+  margin: 26px 0 8px;
+}
+p,
+li {
+  font-size: 16px;
+}
+ul,
+ol {
+  padding-left: 22px;
+}
+li {
+  margin: 6px 0;
+}
+strong {
+  color: var(--ink);
+}
+
+/* Callout / warning boxes */
+.callout {
+  background: var(--cream);
+  border-radius: 14px;
+  padding: 18px 22px;
+  margin: 22px 0;
+  font-size: 15.5px;
+}
+.callout strong {
+  color: var(--slate);
+}
+.warn {
+  background: var(--amber-bg);
+  border: 1px solid var(--amber-border);
+  border-radius: 14px;
+  padding: 18px 22px;
+  margin: 22px 0;
+  font-size: 15.5px;
+  color: var(--amber-ink);
+}
+.warn strong {
+  color: var(--amber-ink);
+}
+
+/* Code */
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13.5px;
+  background: rgba(58, 90, 108, 0.08);
+  padding: 1.5px 6px;
+  border-radius: 6px;
+  color: var(--slate);
+  word-break: break-word;
+}
+pre {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+  overflow-x: auto;
+  margin: 14px 0;
+}
+pre code {
+  background: none;
+  padding: 0;
+  color: var(--ink);
+  font-size: 13px;
+  white-space: pre;
+}
+.filename {
+  display: block;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 12.5px;
+  color: var(--slate);
+  word-break: break-all;
+}
+
+/* Cards (install hub) */
+.cards {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+  margin: 24px 0;
+}
+.card {
+  display: block;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 22px 24px;
+  color: inherit;
+}
+.card:hover {
+  text-decoration: none;
+  border-color: rgba(194, 105, 58, 0.5);
+  box-shadow: 0 14px 34px -28px rgba(58, 90, 108, 0.5);
+}
+.card h3 {
+  margin: 0 0 4px;
+  color: var(--slate);
+}
+.card p {
+  margin: 0 0 6px;
+  font-size: 15px;
+  color: rgba(31, 27, 22, 0.8);
+}
+.card .go {
+  font-weight: 600;
+  color: var(--terracotta);
+  font-size: 14px;
+}
+
+/* Spec table */
+.spec {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  margin: 18px 0;
+  width: 100%;
+  border-collapse: collapse;
+}
+.spec th,
+.spec td {
+  text-align: left;
+  padding: 10px 14px;
+  font-size: 15px;
+  border-bottom: 1px solid rgba(58, 90, 108, 0.1);
+  vertical-align: top;
+}
+.spec tr:last-child th,
+.spec tr:last-child td {
+  border-bottom: 0;
+}
+.spec th {
+  color: var(--slate);
+  font-weight: 600;
+  width: 34%;
+  background: rgba(242, 232, 213, 0.4);
+}
+
+/* Steps */
+.next {
+  border-top: 1px solid var(--border);
+  margin-top: 40px;
+  padding-top: 20px;
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+footer {
+  text-align: center;
+  padding: 32px 24px 48px;
+  font-size: 14px;
+  color: rgba(31, 27, 22, 0.55);
+  border-top: 1px solid rgba(58, 90, 108, 0.1);
+}
+
+@media (max-width: 620px) {
+  h1 {
+    font-size: 27px;
+  }
+  .nav-actions .ghost {
+    display: none;
+  }
+  .spec th {
+    width: 42%;
+  }
+}

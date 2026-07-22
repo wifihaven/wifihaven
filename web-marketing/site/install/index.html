@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#3A5A6C" />
+    <title>Set up your router — wifihaven install guides</title>
+    <meta
+      name="description"
+      content="Flash vanilla OpenWrt onto your wifihaven router, then install the agent. Per-router flash guides for the GL.iNet Flint 2, Flint, and Netgear WAX206 — with sysupgrade images, checksums, and recovery."
+    />
+    <link rel="icon" type="image/svg+xml" href="/brand/favicon.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/brand/favicon-32.png" />
+    <link rel="shortcut icon" href="/brand/favicon.ico" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/install/guide.css" />
+  </head>
+  <body>
+    <header>
+      <nav class="nav">
+        <a href="/" aria-label="wifihaven home">
+          <img src="/brand/lockup-horizontal.svg" alt="wifihaven" />
+        </a>
+        <div class="nav-actions">
+          <a class="ghost" href="https://app.wifihaven.net">Open the app</a>
+          <a class="cta" href="https://app.wifihaven.net/beta">Request beta access</a>
+        </div>
+      </nav>
+    </header>
+
+    <main>
+      <div class="wrap">
+        <p class="crumbs"><a href="/">wifihaven</a> → Set up your router</p>
+        <h1>Set up your router</h1>
+        <p class="lede">
+          wifihaven runs as a small agent on an OpenWrt router — that router becomes your household
+          gateway and enforces every profile, schedule, and blocklist at the connection layer. This
+          page gets you from a boxed router to a running agent.
+        </p>
+
+        <div class="warn">
+          <strong>Flash vanilla OpenWrt first — this is the supported path.</strong> Every router
+          we recommend must run <strong>vanilla OpenWrt</strong> before the agent will work. The
+          GL.iNet boxes ship GL.iNet’s <em>own forked</em> OpenWrt-based firmware out of the box,
+          but that stock firmware is <strong>not a supported target</strong>: the agent can’t
+          install on it and has no way to enforce blocking there. So “it already runs OpenWrt” is
+          not enough — it still needs a clean vanilla-OpenWrt flash, exactly like the mainline
+          Netgear. The per-router guides below walk that flash, the checksum check, and the recovery
+          path if anything goes wrong.
+        </div>
+
+        <h2>1. Pick your router and flash it</h2>
+        <p>
+          Choose your model for a step-by-step flash guide — image download, checksum verification,
+          the flash method for that vendor, and how to recover if a flash goes wrong.
+        </p>
+        <div class="cards">
+          <a class="card" href="/install/flint2">
+            <h3>GL.iNet Flint 2 (GL-MT6000)</h3>
+            <p>
+              The reference hardware. Quad-core aarch64, dual-band Wi-Fi 6, 2.5G WAN — headroom for
+              line-rate filtering at gigabit.
+            </p>
+            <span class="go">Flash guide →</span>
+          </a>
+          <a class="card" href="/install/flint">
+            <h3>GL.iNet Flint (GL-AX1800)</h3>
+            <p>
+              The smaller, cheaper sibling — Wi-Fi 6, gigabit Ethernet. A solid pick for lighter
+              households.
+            </p>
+            <span class="go">Flash guide →</span>
+          </a>
+          <a class="card" href="/install/wax206">
+            <h3>Netgear WAX206 (AX3200)</h3>
+            <p>
+              An inexpensive mainline-OpenWrt target (MediaTek MT7622, Wi-Fi 6, 2.5G WAN). Great
+              value if you’re comfortable flashing.
+            </p>
+            <span class="go">Flash guide →</span>
+          </a>
+        </div>
+        <p>
+          Running different OpenWrt hardware? Any router on the
+          <a href="https://openwrt.org/toh/start" target="_blank" rel="noopener"
+            >OpenWrt supported-devices list</a
+          >
+          works — flash vanilla OpenWrt from the
+          <a href="https://firmware-selector.openwrt.org/" target="_blank" rel="noopener"
+            >OpenWrt Firmware Selector</a
+          >, then jump to step 2.
+        </p>
+
+        <h2 id="2-install-the-wifihaven-agent">2. Install the wifihaven agent</h2>
+        <p>
+          Once the router is on vanilla OpenWrt, SSH in as <code>root</code> and run the one-line
+          installer:
+        </p>
+        <pre><code>sh -c "$(uclient-fetch -qO - https://raw.githubusercontent.com/wifihaven/wifihaven/main/openwrt/install.sh)"</code></pre>
+        <p>
+          It installs the agent and prompts for the API URL (accept the default cloud API), a
+          one-time enrollment token, and your LAN prefix. The full walkthrough — including
+          verification and troubleshooting — is in the
+          <a
+            href="https://github.com/wifihaven/wifihaven/blob/main/docs/install-openwrt.md"
+            target="_blank"
+            rel="noopener"
+            >OpenWrt install guide</a
+          >
+          on GitHub.
+        </p>
+
+        <h2>3. Get your enrollment token</h2>
+        <p>
+          The installer asks for a one-time enrollment token. Create a router on the
+          <strong>Routers</strong> tab in the app to mint one, then paste it into the installer when
+          prompted.
+        </p>
+
+        <div class="next">
+          <a class="cta" href="https://app.wifihaven.net/routers?add=1">Get an enrollment token →</a>
+          <a class="ghost" href="https://github.com/wifihaven/wifihaven/tree/main/docs"
+            >Browse all docs on GitHub</a
+          >
+        </div>
+      </div>
+    </main>
+
+    <footer>
+      <p>
+        wifihaven — a haven for the household network. ·
+        <a href="https://github.com/wifihaven/wifihaven">Source on GitHub</a>
+      </p>
+    </footer>
+  </body>
+</html>
