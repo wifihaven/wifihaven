@@ -276,6 +276,10 @@ function DeviceRowEditor({
           data-testid={`device-profile-select-${device.mac}`}
           className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-2.5 text-brand-ink"
         >
+          {/* #2366 — explicit null option so an unassigned device's displayed
+              selection matches state (no phantom first-profile), assigning is a
+              genuine onChange → autosave, and a profile can be removed. */}
+          <option value="">No profile</option>
           {profiles.map(p => <option key={p.profile.id} value={p.profile.id}>{p.profile.name}</option>)}
         </select>
       </div>

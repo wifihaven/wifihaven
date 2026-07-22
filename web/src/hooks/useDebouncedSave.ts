@@ -19,6 +19,13 @@ export interface UseDebouncedSave {
   retry: () => Promise<void>
 }
 
+// Sentinel for "no value pending / no value queued". A plain `null` can't serve
+// as the sentinel because `null` is itself a legitimate saved value (e.g. a
+// nullable device profileId — #2366): using `null` to mean "empty" swallowed
+// the save that cleared a field.
+const NONE = Symbol('none')
+type Pending<T> = T | typeof NONE
+
 // #973: debounce field changes into a single save. Tracks the LATEST baseline
 // (the value the caller considers "saved") so re-renders that resync from
 // server state don't redundantly fire a save. The `key` lets a caller reset
@@ -34,8 +41,8 @@ export function useDebouncedSave<T>(
   const [error, setError] = useState<string | null>(null)
   const baselineRef = useRef<T>(value)
   const lastKeyRef  = useRef(key)
-  const pendingRef  = useRef<T | null>(null)
-  const failedRef   = useRef<T | null>(null)
+  const pendingRef  = useRef<Pending<T>>(NONE)
+  const failedRef   = useRef<Pending<T>>(NONE)
   const timerRef    = useRef<ReturnType<typeof setTimeout> | null>(null)
   const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const eq = equals ?? Object.is
@@ -44,7 +51,7 @@ export function useDebouncedSave<T>(
   if (key !== lastKeyRef.current) {
     lastKeyRef.current = key
     baselineRef.current = value
-    pendingRef.current = null
+    pendingRef.current = NONE
     if (timerRef.current) clearTimeout(timerRef.current)
     setStatus('idle')
     setError(null)
@@ -56,9 +63,9 @@ export function useDebouncedSave<T>(
     try {
       await save(v)
       baselineRef.current = v
-      failedRef.current = null
+      failedRef.current = NONE
       // If newer changes came in while saving, leave them for the next tick.
-      if (pendingRef.current != null && !eq(pendingRef.current, v)) {
+      if (pendingRef.current !== NONE && !eq(pendingRef.current, v)) {
         // pendingRef holds the latest value; let the effect re-schedule.
         setStatus('dirty')
       } else {
@@ -85,8 +92,8 @@ export function useDebouncedSave<T>(
     if (timerRef.current) clearTimeout(timerRef.current)
     timerRef.current = setTimeout(() => {
       const v = pendingRef.current
-      pendingRef.current = null
-      if (v !== null) void commit(v as T)
+      pendingRef.current = NONE
+      if (v !== NONE) void commit(v)
     }, delayMs)
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current)
@@ -104,15 +111,15 @@ export function useDebouncedSave<T>(
       timerRef.current = null
     }
     const v = pendingRef.current
-    pendingRef.current = null
-    if (v !== null && !eq(v as T, baselineRef.current)) {
-      await commit(v as T)
+    pendingRef.current = NONE
+    if (v !== NONE && !eq(v, baselineRef.current)) {
+      await commit(v)
     }
   }
 
   async function retry() {
     const v = failedRef.current
-    if (v !== null) await commit(v as T)
+    if (v !== NONE) await commit(v)
   }
 
   const dirty = !eq(value, baselineRef.current)
