@@ -2334,10 +2334,13 @@ def requireWriter(req: Request, auth: AuthService): IO[ApiError, JwtClaims] =
  * #2132 (multi-tenant P5-2, epic #622): the OPERATOR gate — admin AND a member of household 1 (the
  * deployment operator's household, `HouseholdId.Default`). This is the ONE deliberate, narrow
  * exception to the "no cross-household admin" non-goal (docs/design/multi-tenant-isolation.md §9),
- * scoped tightly: the only surface behind it reads/writes `beta_requests` rows — which belong to no
- * household until approval — never another household's data. Documented as v1-pragmatic; a real ops
- * console remains a future, deliberately-privileged surface. Any non-household-1 admin gets 403,
- * indistinguishable from a plain forbidden-role (no cross-household enumeration signal).
+ * scoped tightly to a handful of operator-console surfaces: the `beta_requests` review/approval
+ * queue (rows that belong to no household until approval) and, since #2356, the `free_forever`
+ * billing grant/revoke on an arbitrary `household_billing` row (partners / friends-and-family /
+ * internal households) — a deliberately-privileged operator capability, never self-serve.
+ * Documented as v1-pragmatic; a real ops console remains a future, deliberately-privileged surface.
+ * Any non-household-1 admin gets 403, indistinguishable from a plain forbidden-role (no
+ * cross-household enumeration signal).
  */
 def requireOperator(req: Request, auth: AuthService): IO[ApiError, JwtClaims] =
   requireAdmin(req, auth).flatMap { claims =>

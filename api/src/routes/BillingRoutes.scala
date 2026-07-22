@@ -87,6 +87,35 @@ object BillingRoutes {
           handle.mapError(ErrorMapper.errorToResponse)
         },
 
+      // ── Operator: grant a household the free_forever status (#2356) ────────────
+      // requireOperator (admin AND household 1) — the same narrow cross-household gate beta approval
+      // uses. Acts on an ARBITRARY household id (not claims.hh), which is exactly the operator's
+      // privileged capability. Never self-serve.
+      Method.POST / "api" / "operator" / "households" / long("id") / "free-forever" ->
+        handler { (id: Long, req: Request) =>
+          val handle: ZIO[Any, ApiError, Response] = for {
+            _ <- requireOperator(req, auth)
+            _ <- billing
+              .grantFreeForever(wifihaven.shared.types.HouseholdId(id))
+              .mapError(billingErrorToApi)
+            _ <- AppMetrics.recordFreeForever("grant")
+          } yield Response.status(Status.Ok)
+          handle.mapError(ErrorMapper.errorToResponse)
+        },
+
+      // ── Operator: revoke free_forever, returning the household to beta (#2356) ──
+      Method.DELETE / "api" / "operator" / "households" / long("id") / "free-forever" ->
+        handler { (id: Long, req: Request) =>
+          val handle: ZIO[Any, ApiError, Response] = for {
+            _ <- requireOperator(req, auth)
+            _ <- billing
+              .revokeFreeForever(wifihaven.shared.types.HouseholdId(id))
+              .mapError(billingErrorToApi)
+            _ <- AppMetrics.recordFreeForever("revoke")
+          } yield Response.status(Status.Ok)
+          handle.mapError(ErrorMapper.errorToResponse)
+        },
+
       // ── Public: signature-verified Stripe webhook → the status machine ─────────
       Method.POST / "api" / "billing" / "webhook" ->
         handler { (req: Request) =>
@@ -128,20 +157,26 @@ object BillingRoutes {
 
   // The webhook never leaks WHY to the caller; these outcomes only feed the checkout/portal metric.
   private def checkoutOutcome(e: BillingError): String = e match {
-    case BillingError.NotConfigured => "not_configured"
-    case BillingError.NoBillingRow  => "no_billing_row"
-    case BillingError.NoCustomer    => "no_customer"
-    case BillingError.Stripe(_)     => "stripe_error"
-    case BillingError.Db(_)         => "error"
+    case BillingError.NotConfigured  => "not_configured"
+    case BillingError.NoBillingRow   => "no_billing_row"
+    case BillingError.NoCustomer     => "no_customer"
+    case BillingError.FreeForever    => "free_forever"
+    case BillingError.NotFreeForever => "not_free_forever"
+    case BillingError.Stripe(_)      => "stripe_error"
+    case BillingError.Db(_)          => "error"
   }
 
   private def billingErrorToApi(e: BillingError): ApiError = e match {
     // Billing not configured (self-hosted / no keys) → 404, the route effectively doesn't exist.
-    case BillingError.NotConfigured => ApiError.NotFound("billing not configured")
-    case BillingError.NoBillingRow  => ApiError.NotFound("no billing record for this household")
-    case BillingError.NoCustomer    =>
+    case BillingError.NotConfigured  => ApiError.NotFound("billing not configured")
+    case BillingError.NoBillingRow   => ApiError.NotFound("no billing record for this household")
+    case BillingError.NoCustomer     =>
       ApiError.Wrapped(Response.status(Status.Conflict))
-    case BillingError.Stripe(_)     => ApiError.Internal("billing provider error")
-    case BillingError.Db(c)         => ApiError.Db(c)
+    // #2356: a free_forever household is never billed (checkout/portal backstop), and revoking a
+    // household that isn't free_forever is a no-op — both are 409 Conflict (state, not "not found").
+    case BillingError.FreeForever    => ApiError.Wrapped(Response.status(Status.Conflict))
+    case BillingError.NotFreeForever => ApiError.Wrapped(Response.status(Status.Conflict))
+    case BillingError.Stripe(_)      => ApiError.Internal("billing provider error")
+    case BillingError.Db(c)          => ApiError.Db(c)
   }
 }

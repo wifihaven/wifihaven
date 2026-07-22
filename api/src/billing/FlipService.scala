@@ -1,7 +1,13 @@
 package wifihaven.api.billing
 
 import wifihaven.api.FlipConfig
-import wifihaven.api.db.{BetaCohort, BetaCohortRepo, HouseholdBillingRepo, HouseholdRepo}
+import wifihaven.api.db.{
+  BetaCohort,
+  BetaCohortRepo,
+  HouseholdBilling,
+  HouseholdBillingRepo,
+  HouseholdRepo,
+}
 import wifihaven.api.metrics.AppMetrics
 import wifihaven.api.notify.Notifier
 import wifihaven.api.policy.PolicyService
@@ -188,6 +194,8 @@ final case class FlipService(
         beta = counts.getOrElse("beta", 0),
         active = counts.getOrElse("active", 0),
         lapsed = counts.getOrElse("lapsed", 0),
+        // #2356: publish the free_forever count too (0 when none) so the status is never invisible.
+        freeForever = counts.getOrElse(HouseholdBilling.FreeForever, 0),
       )
     }
 }
