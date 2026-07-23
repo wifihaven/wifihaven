@@ -1,0 +1,46 @@
+-- V83__household_settings_enforcement_disabled.sql
+-- #2382: server-level per-household "disable enforcement" escape hatch
+-- (schema-only foundation). Sibling to the router-level offline hatch #2381;
+-- this one is server-driven — easy to reach (dashboard, any device) but does
+-- NOT work when the API is down. Refs #622.
+--
+-- The flag is a BEHAVIORAL SETTING, so it lives on `household_settings`
+-- (schedules-reset, heartbeat filter, unmanaged-MAC policy, ambient gate,
+-- block-encrypted-DNS, notify-email …) — NOT on `households`, which holds tenant
+-- identity/metadata (name, slug, billing linkage). This keeps the households =
+-- metadata / household_settings = behavior split until the two tables are merged
+-- (#2387).
+--
+-- Depends on #2386 (V82 identity + seed-on-create + boot backfill + fail-loud
+-- getForHousehold): a per-household flag on `household_settings` is only
+-- leak-safe once EVERY household owns its own settings row. Before #2386 a beta
+-- household had no row and `getForHousehold` fell back to household #1's row —
+-- putting the flag here without #2386 would leak household #1's
+-- enforcement-disabled state to every rowless household, AND a scoped write
+-- (`WHERE household_id=…`) would no-op for it. #2386 guarantees the row, so this
+-- migration stacks on top of it.
+--
+-- When true, PolicyService ships a fully PERMISSIVE (allow-all) snapshot for the
+-- household via the SAME path a `lapsed` household takes (#2137) — no new wire
+-- field, no router change; the router stays a dumb applier and just receives
+-- blocked=false for every MAC.
+--
+-- SCHEMA-ONLY PR (per docs/process/migrations.md#migrations-back-compat): SQL +
+-- docs only, no source/tests. The scoped read/write on HouseholdSettingsRepo,
+-- the PolicyService permissive gate, the admin dashboard toggle, and the SPA
+-- surface land in the stacked source PR (#2382). Until then the column is inert.
+-- The unconditional (#2098) feature suite applying V83 over the seeded schema
+-- (embedded Postgres) is the clean-apply / back-compat gate.
+--
+-- `household_settings` is a small metadata table (one row per household), NOT
+-- one of the unbounded-growth event tables. ADD COLUMN with a constant default
+-- is metadata-only in PG 11+ (no table rewrite), so this is safe on the Flyway
+-- startup critical path even at prod data volume
+-- (docs/process/migrations.md#migrations-prod-data-volume).
+--
+-- Back-compat contract: NOT NULL DEFAULT FALSE means image-(N-1) — which never
+-- names the column in any INSERT/UPDATE — keeps working unchanged; existing
+-- rows and any new rows it writes get the default (enforcement ON).
+
+ALTER TABLE household_settings
+  ADD COLUMN enforcement_disabled BOOLEAN NOT NULL DEFAULT FALSE;
