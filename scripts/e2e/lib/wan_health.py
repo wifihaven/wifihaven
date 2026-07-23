@@ -42,6 +42,43 @@ _SMOKE_CHECK_NIL = re.compile(
 )
 
 
+def _blob(logs: tuple[str, ...]) -> str:
+    return "\n".join(l for l in logs if l)
+
+
+def smoke_check_nil_signature(*logs: str) -> bool:
+    """True iff a blob shows the ``policy.apply`` smoke-check-``nil`` line.
+
+    This is the *per-scenario-reliable* half of the flake: the agent logs it
+    only when a ``policy.apply`` runs against a dead upstream. It is NOT present
+    in a healthy base snapshot's log ring (the snapshot is taken after a healthy
+    policy fetch + smoke check), so unlike the boot-time ``udhcpc: no lease``
+    line it does not get baked in and replayed on every ``loadvm`` restore.
+    Callers gate a *skip* on this (plus a live control-host DNS probe), never on
+    the raw udhcpc line, so a genuine enforcement regression stays loud.
+    """
+    blob = _blob(logs)
+    return bool(blob and _SMOKE_CHECK_NIL.search(blob))
+
+
 def wan_lease_flake_signature(*logs: str) -> bool:
-    """STUB (RED): real implementation lands in the next commit."""
-    return False
+    """True iff any log blob shows the SLIRP guest-WAN-DHCP boot-flake signature.
+
+    Two views of the same root (no WAN lease -> no upstream DNS): the guest's
+    ``udhcpc: no lease`` give-up, and/or the agent's ``policy.apply`` smoke check
+    resolving its probe host to ``"nil"`` for lack of an upstream. Either alone
+    is sufficient.
+
+    Broadest matcher, used for human-facing root-cause CONTEXT (skip messages,
+    failure diagnostics) -- it includes the boot-time ``udhcpc: no lease`` line.
+    Do NOT gate a skip on this: that udhcpc line is a cold-boot transient the
+    base snapshot captures and ``loadvm`` replays every scenario, so it would
+    misfire. Gate on :func:`smoke_check_nil_signature` (per-scenario reliable)
+    plus a live control-host probe instead.
+
+    Pure text matcher (no I/O) so it is unit-testable without a VM.
+    """
+    blob = _blob(logs)
+    if not blob:
+        return False
+    return bool(_UDHCPC_NO_LEASE.search(blob) or _SMOKE_CHECK_NIL.search(blob))

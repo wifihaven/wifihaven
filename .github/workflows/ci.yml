@@ -644,9 +644,12 @@ jobs:
   # ── E2E helper-lib unit tests (#2179) ───────────────────────────────────
   # Pure-python cover for scripts/e2e/lib. Introduced to gate the staging
   # test-router pruner's selection logic (stale_routers.select_stale_test_routers,
-  # used by prune_stale_staging_routers.py). Scoped to test_stale_routers.py so
-  # it doesn't retroactively turn on the other lib test files (which predate any
-  # CI runner and may need extra wiring) — those can be folded in separately.
+  # used by prune_stale_staging_routers.py). Scoped to an explicit allowlist of
+  # test files (not the whole dir) so it doesn't retroactively turn on the older
+  # lib test files that predate any CI runner and may need extra wiring — those
+  # can be folded in separately. Members:
+  #   test_stale_routers.py — staging test-router pruner selection (#2179)
+  #   test_wan_health.py    — guest-WAN-DHCP Gate-2 flake signature (#2390)
   e2e-lib-tests:
     name: E2E lib unit tests
     needs: changes
@@ -664,7 +667,7 @@ jobs:
         # CWD = the lib dir so the modules import bare (the established
         # convention for scripts/e2e/lib/test_*.py — no package prefix).
         working-directory: scripts/e2e/lib
-        run: python -m pytest test_stale_routers.py -v
+        run: python -m pytest test_stale_routers.py test_wan_health.py -v
 
   # ── render.yaml: YAML parse check ───────────────────────────────────────
   render-blueprint:

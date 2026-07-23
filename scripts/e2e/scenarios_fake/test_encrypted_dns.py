@@ -44,7 +44,7 @@ import pytest
 from lib.vm import client_exec, router_ssh
 from lib.wait import wait_until
 
-from ._observers import dig_ipv4_answers
+from ._observers import dig_ipv4_answers, skip_if_upstream_degraded
 from .snapshot_builder import SnapshotBuilder
 
 pytestmark = pytest.mark.encrypted_dns
@@ -152,6 +152,15 @@ def test_block_encrypted_dns_enforced(router, client, fake_api):
     # break the network" assertion — opportunistic DoH/hardcoded-DNS clients
     # fall back to the router's resolver and stay online.
     lan = dig_ipv4_answers(client, NORMAL_HOST)
+    if not lan:
+        # #2390: an empty answer here is the dominant Gate-2 flake, not a broken
+        # network. NORMAL_HOST (example.com) is itself a control apex, so if the
+        # guest lost its SLIRP WAN lease (no upstream) this resolves to nothing
+        # and skip_if_upstream_degraded classifies + skips. A genuine
+        # "toggle broke the LAN resolver" regression keeps upstream healthy
+        # (control hosts resolve, no in-scenario smoke-check nil) → falls through
+        # to the hard assert below and red-gates.
+        skip_if_upstream_degraded(client, f"LAN-resolver fallback for {NORMAL_HOST}")
     assert lan, (
         f"{NORMAL_HOST} must still resolve via the LAN resolver after the toggle "
         "is on (opportunistic fallback — network must NOT be broken)"

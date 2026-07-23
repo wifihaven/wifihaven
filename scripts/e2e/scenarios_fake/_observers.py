@@ -13,9 +13,12 @@ from __future__ import annotations
 
 import re
 
+import pytest
+
 from lib.traffic import dns_query, http_get
-from lib.vm import client_exec, router_nft_set, router_ssh
+from lib.vm import client_exec, router_nft_set, router_serial_log, router_ssh
 from lib.wait import wait_until
+from lib.wan_health import smoke_check_nil_signature, wan_lease_flake_signature
 
 
 BLOCKED_MACS_SET = "blocked_macs"
@@ -163,6 +166,82 @@ def dns_egress_degraded(client) -> bool:
     of our e2e zone. False as soon as any control resolves (egress is healthy;
     a failure to resolve OUR records is then a real zone/terraform problem)."""
     return not any(dig_ipv4_answers(client, h) for h in EGRESS_CONTROL_HOSTS)
+
+
+# ── Guest-WAN-DHCP boot flake (#2390) ────────────────────────────────────────
+#
+# The router VM's WAN NIC is qemu user-mode (SLIRP) networking with an internal
+# DHCP server. On the shared self-hosted KVM host a cold boot / snapshot cycle
+# occasionally loses the DHCP handshake (busybox `udhcpc: no lease, failing`)
+# under coincident memory/IO pressure; the guest then has no upstream, so the
+# agent's policy.apply smoke check resolves its probe host to "nil" and the
+# scenario running at the time times out on a block-page / fallback assertion.
+# It reads as 1 random scenario failing out of ~51 — an environmental flake,
+# not an enforcement regression (#2034 / #2158 family).
+#
+# We classify it two ways, and gate a *skip* only on signals that cannot fire
+# on a healthy scenario:
+#   1. dns_egress_degraded(client) — a LIVE control-host probe; the upstream is
+#      provably dead right now.
+#   2. router_wan_lease_degraded() — the agent logged an IN-SCENARIO
+#      policy.apply smoke-check "nil". Reliable per-scenario (a healthy base
+#      snapshot's log ring never contains it). We deliberately do NOT gate on
+#      the boot-time `udhcpc: no lease` line: it is a cold-boot transient the
+#      base snapshot captures and loadvm replays on every restore, so gating on
+#      it would swallow genuine regressions. That line is still surfaced (via
+#      wan_lease_flake_signature) as root-cause CONTEXT in the skip reason.
+
+
+def router_wan_lease_degraded() -> bool:
+    """True iff the router's LIVE agent log shows an in-scenario policy.apply
+    smoke-check "nil" — per-scenario-reliable evidence the guest lost its WAN
+    upstream during this scenario (see lib.wan_health). Read-only; returns False
+    if the router is unreachable (let the caller's own timeout speak)."""
+    try:
+        r = router_ssh("logread -e wifihaven | tail -n 200", check=False, timeout=10)
+    except Exception:  # noqa: BLE001
+        return False
+    return smoke_check_nil_signature((r.stdout or "") + (r.stderr or ""))
+
+
+def _wan_flake_context() -> str:
+    """Best-effort root-cause string (udhcpc-no-lease / smoke-check-nil) pulled
+    from the router serial + agent log, for the skip reason. Empty if neither
+    is found or the router is unreachable."""
+    serial = agent = ""
+    try:
+        serial = router_serial_log(tail=200) or ""
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        r = router_ssh("logread -e wifihaven | tail -n 200", check=False, timeout=10)
+        agent = (r.stdout or "") + (r.stderr or "")
+    except Exception:  # noqa: BLE001
+        pass
+    return "present" if wan_lease_flake_signature(serial, agent) else "absent"
+
+
+def skip_if_upstream_degraded(client, what: str) -> None:
+    """Skip (not fail) the calling test when the router's upstream is degraded.
+
+    Fires when EITHER the live control-host DNS probe fails
+    (:func:`dns_egress_degraded`) OR the agent logged an in-scenario
+    smoke-check-"nil" (:func:`router_wan_lease_degraded`) — both being the
+    guest-WAN-DHCP / external-egress flake (#2390 / #2034), an environmental
+    blip on the shared KVM host, NOT an enforcement regression. A genuine
+    regression shows neither (control hosts resolve, no in-scenario nil), so
+    enforcement assertions downstream of this guard still red-gate loudly.
+    """
+    if dns_egress_degraded(client) or router_wan_lease_degraded():
+        pytest.skip(
+            f"router upstream degraded (#2390/#2034): {what} failed while control "
+            f"hosts {EGRESS_CONTROL_HOSTS} did not resolve through the router "
+            f"upstream and/or the agent logged a policy.apply smoke-check \"nil\" "
+            f"(guest-WAN-DHCP / egress blip on the shared KVM host — root-cause "
+            f"log signature: {_wan_flake_context()}). Not an enforcement "
+            f"regression; enforcement assertions left intact. Re-run to pick up a "
+            f"healthy boot."
+        )
 
 
 def dig_ipv6_answers(client, host: str) -> list[str]:

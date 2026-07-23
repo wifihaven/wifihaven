@@ -87,13 +87,12 @@ import time
 import pytest
 
 from ._observers import (
-    EGRESS_CONTROL_HOSTS,
     bl_set_name,
     dig_ipv4_answers,
-    dns_egress_degraded,
     ea_set_name,
     eb_set_name,
     mac_in_blocked_set,
+    skip_if_upstream_degraded,
     wait_bl_set_populated,
     wait_block_page,
     wait_ea_set_populated,
@@ -205,15 +204,28 @@ def _skip_if_egress_degraded(client, what: str) -> None:
     Enforcement assertions (block page, eb_/ea_/bl_ membership) are NEVER guarded
     by this — they run only after a successful resolution and remain hard, so a
     real enforcement regression still red-gates.
+
+    #2390: also skips on the guest-WAN-DHCP flake (agent smoke-check "nil" in
+    the current scenario) — the same environmental root, one layer down: a lost
+    SLIRP DHCP lease means no upstream, so both our records AND the control
+    hosts stop resolving. Delegates to the shared ``skip_if_upstream_degraded``.
     """
-    if dns_egress_degraded(client):
-        pytest.skip(
-            f"external DNS egress degraded (#2034): {what} did not resolve, and "
-            f"neither did control hosts {EGRESS_CONTROL_HOSTS} "
-            f"through the router upstream — an environmental egress blip on the "
-            f"shared CD host, not an enforcement regression. Enforcement "
-            f"assertions left intact; re-run to pick up a healthy egress window."
-        )
+    skip_if_upstream_degraded(client, what)
+
+
+def _wait_block_page_or_skip(client, host: str, *, timeout_s: float = 120):
+    """``wait_block_page``, but on timeout classify a guest-WAN-DHCP / egress
+    flake (#2390) as a skip rather than a hard fail.
+
+    When the guest loses its SLIRP WAN lease the resolved/eb_/bl_ nft sets never
+    populate, so the block-page DNAT never fires and this wait times out — an
+    environmental blip, not a DNAT regression. A genuine block-page regression
+    (upstream healthy) re-raises the ``TimeoutError`` and red-gates."""
+    try:
+        return wait_block_page(client, host=host, timeout_s=timeout_s)
+    except TimeoutError:
+        skip_if_upstream_degraded(client, f"block page for {host}")
+        raise
 
 
 def _wait_for_chain_resolution(client, *, timeout_s: float = 120) -> list[str]:
@@ -346,7 +358,7 @@ def test_eb_direct_requery_blocked(router, client, fake_api):
     # Primary assertion: HTTP/80 to the leaf's branded hostname hits the block page.
     # The DNAT rule fires because the leaf IP should now be in eb_<brand>; the
     # connection never reaches 93.184.216.34.
-    probe = wait_block_page(client, host=LEAF_HOST, timeout_s=120)
+    probe = _wait_block_page_or_skip(client, LEAF_HOST, timeout_s=120)
     assert probe.http_code == 200, (
         f"expected block page (HTTP 200) for {LEAF_HOST}, got {probe.http_code!r}"
     )
@@ -638,7 +650,7 @@ def test_bl_direct_requery_blocked(router, client, fake_api):
     # Primary assertion: HTTP/80 to the leaf hits the block page. The bl_
     # category drop + DNAT fires because the leaf IP is now in bl_<id>;
     # the connection never reaches 93.184.216.34.
-    probe = wait_block_page(client, host=LEAF_HOST, timeout_s=120)
+    probe = _wait_block_page_or_skip(client, LEAF_HOST, timeout_s=120)
     assert probe.http_code == 200, (
         f"expected block page (HTTP 200) for {LEAF_HOST}, got {probe.http_code!r} — "
         f"bl_ category drop may be missing the directly-queried leaf IP"

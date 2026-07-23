@@ -6,7 +6,7 @@ DHCP boot-flake signature matcher so the Gate-2 skip-guard classifies the flake
 correctly without red-gating the router deploy -- and, just as important, does
 NOT swallow a genuine enforcement/upstream regression.
 """
-from wan_health import wan_lease_flake_signature
+from wan_health import smoke_check_nil_signature, wan_lease_flake_signature
 
 # Representative router console / agent-log lines (syslog-prefixed, as the
 # harness reads them via router_serial_log / `logread -e wifihaven`).
@@ -55,3 +55,25 @@ def test_smoke_check_with_real_but_wrong_ip_is_not_flagged():
         '-- got "9.9.9.9" for tiktok.com (expected a real upstream IP)'
     )
     assert wan_lease_flake_signature(line) is False
+    assert smoke_check_nil_signature(line) is False
+
+
+# ── smoke_check_nil_signature: the per-scenario-reliable skip-gate signal ─────
+
+
+def test_smoke_nil_signal_matches_smoke_line():
+    assert smoke_check_nil_signature(SMOKE_NIL_LINE) is True
+
+
+def test_smoke_nil_signal_ignores_bare_udhcpc_line():
+    # The gate must NOT fire on the boot-time udhcpc line alone -- it is a
+    # cold-boot transient baked into the base snapshot and replayed on every
+    # loadvm restore, so gating on it would swallow genuine regressions.
+    assert smoke_check_nil_signature(UDHCPC_LINE) is False
+    # ...while the broad matcher still surfaces it for diagnostics/context.
+    assert wan_lease_flake_signature(UDHCPC_LINE) is True
+
+
+def test_smoke_nil_signal_empty_is_false():
+    assert smoke_check_nil_signature() is False
+    assert smoke_check_nil_signature("", "") is False
