@@ -166,6 +166,27 @@ Full details, verified against the agent code, are in
 [docs/enforcement-expectations.md](enforcement-expectations.md) — read it before
 debugging a block that seems ineffective.
 
+### Emergency: turn off all blocking (escape hatch)
+
+If blocking ever breaks the internet, a policy is wrong, or the WifiHaven server
+is down and you just need the internet back, you can **disable all enforcement on
+this router**. It works **even when the server is unreachable** (the switch is
+local to the router) and takes effect within a few seconds — no reboot needed:
+
+```sh
+wifihaven-disable     # turn off ALL blocking; every device gets normal internet
+wifihaven-enable      # restore normal blocking
+```
+
+Or in LuCI: **Services → WifiHaven → Settings → "Disable all WifiHaven
+enforcement"**, then **Save & Apply**. This is a reversible pause — it does not
+uninstall anything or lose your settings.
+
+There is also a per-household off switch in the web dashboard
+([#2382](https://github.com/wifihaven/wifihaven/issues/2382)), which is easier but
+needs the server to be up. The router switch above is the **offline** fallback.
+Full details: [docs/escape-hatch.md](escape-hatch.md).
+
 ## 4. Enrolling against the cloud API
 
 This section is for the **new main-house router** being brought up against the

@@ -149,6 +149,22 @@ local ws_spool_max      = tonumber(uci_get_ws("spool_max_bytes", "1048576"))
 -- ~5 s in non-ws mode). No-op unless ws_enabled == "1".
 local ws_apply_int      = tonumber(uci_get_ws("apply_interval", "2"))
 
+-- #2381: the local enforcement escape hatch. Reads wifihaven.settings.
+-- enforcement_disabled FRESH on every call (a NEW cursor, not the cached
+-- startup `cursor`) so an operator toggling it live — via `wifihaven-disable`,
+-- LuCI Save&Apply, or `uci set … && uci commit` — takes effect WITHOUT an agent
+-- restart, which is the whole point of an offline hatch. When true the apply
+-- pipeline renders a permissive ruleset (no drops, no block-page DNAT — see
+-- render.lua/policy.lua) so all forwarded traffic passes regardless of snapshot
+-- freshness. Deliberately independent of the API: it is evaluated on the router
+-- from local UCI, so it works when the API is unreachable. Accepts the common
+-- truthy spellings so a hand-edited config value still reads as "on".
+local function enforcement_disabled()
+  local c = uci.cursor()
+  local v = c:get("wifihaven", "settings", "enforcement_disabled")
+  return v == "1" or v == "true" or v == "yes" or v == "on"
+end
+
 log.init({ debug = debug_opt })
 -- #771: PKG_VERSION baked at install time into /usr/lib/wifihaven/VERSION.
 -- nil on a checkout / older install — header is then simply omitted.
@@ -791,16 +807,28 @@ local function apply_and_publish(snap, reason)
   -- #1325: capture the about-to-reset enforcement-drop counters before apply
   -- rebuilds the ruleset and zeroes them.
   fold_enforcement_drops()
+  -- #2381: read the escape-hatch flag fresh here (the single apply seam shared
+  -- by the poll, ws-push, blocklist, and flag-change paths) so bypass is
+  -- honored no matter which trigger fired. When set, policy.apply renders a
+  -- permissive ruleset regardless of `snap`.
+  local enf_disabled = enforcement_disabled()
   local at0 = clock.monotonic_seconds()
   local applied = policy.apply(snap, write_file, run_cmd, log,
                                { on_apply = record_apply(reason),
-                                 phase_timer = apply_phase_timer })
+                                 phase_timer = apply_phase_timer,
+                                 enforcement_disabled = enf_disabled })
   metrics.observe(mreg, "policy_apply_duration_seconds", {},
                   clock.monotonic_seconds() - at0)
   if applied then
-    render.update_shared(snap, nft_sets, blocked_macs, blocked_reason,
+    -- #2381: in bypass, rebuild the conntrack/usage-side per-MAC label tables
+    -- from an EMPTY snapshot so no MAC is tagged blocked (nothing is actually
+    -- dropped) — otherwise a "paused" MAC's now-allowed flows would be
+    -- mislabelled on POST /api/router/events. nft_sets (hostname attribution)
+    -- is untouched by update_shared, so per-device usage attribution survives.
+    local shared_snap = enf_disabled and { devices = {}, profiles = {} } or snap
+    render.update_shared(shared_snap, nft_sets, blocked_macs, blocked_reason,
                          eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac,
-                         make_bl_member_iterator(snap))
+                         make_bl_member_iterator(shared_snap))
   end
   return applied
 end
@@ -841,7 +869,20 @@ local ts = {
   -- Shared conntrack event batcher, wired up by register_batcher once
   -- conntrack.watch starts (#1126 nflog drain reuses it).
   events_batcher     = nil,
+  -- #2381 escape hatch. `enforcement_disabled_applied` is the flag value the
+  -- last apply ran under; on_tick compares the live value against it and forces
+  -- a re-apply on a toggle so a steady-state (304 / ws-dormant / API-down)
+  -- agent still flips within one cycle without a snapshot change. Reader +
+  -- empty-snapshot placeholder are stashed on `ts` so on_tick reaches them via
+  -- the already-captured `ts` upvalue and adds NO new upvalue (the Lua 5.1
+  -- 60-upvalue load limit that bit #1930 — guarded by lua_compile_spec.sh).
+  enforcement_disabled_applied = false,
+  enforcement_read   = enforcement_disabled,
+  empty_snapshot     = { devices = {}, profiles = {} },
 }
+-- Seed the applied-state to what enforcement is ACTUALLY running under after
+-- the startup applies below, so on_tick doesn't spuriously re-apply on its
+-- first pass. Set just before the scheduler loop starts (after startup apply).
 local activity_tracker     = usage.new_tracker()
 local usage_queue          = usage.new_queue()  -- retry queue for failed POSTs (#309)
 
@@ -878,6 +919,13 @@ end
 -- #2001: the etag the agent last observed on flash, so the startup save below
 -- can detect a concurrent ws-sidecar push that arrived during the (slow) apply
 -- and avoid clobbering it. nil when there is no cached snapshot.
+-- #2381: honor the escape hatch from the very first boot apply — a router that
+-- reboots while in bypass must come up permissive, not enforcing the cached
+-- snapshot. Read once here; on_tick reconciles any later toggle.
+local enf_boot = enforcement_disabled()
+if enf_boot then
+  log.info("startup: enforcement DISABLED via wifihaven.settings.enforcement_disabled (#2381 escape hatch) — applying permissive ruleset; all forwarded traffic will pass")
+end
 local startup_disk_etag = nil
 do
   local cached = policy.load_snapshot(read_file, log)
@@ -886,11 +934,13 @@ do
     local t0 = clock.monotonic_seconds()
     local applied = policy.apply(cached, write_file, run_cmd, log,
                                  { on_apply = record_apply("boot"),
-                                   phase_timer = apply_phase_timer })
+                                   phase_timer = apply_phase_timer,
+                                   enforcement_disabled = enf_boot })
     metrics.observe(mreg, "policy_apply_duration_seconds", {},
                     clock.monotonic_seconds() - t0)
     if applied then
-      render.update_shared(cached, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac, make_bl_member_iterator(cached))
+      local boot_shared = enf_boot and ts.empty_snapshot or cached
+      render.update_shared(boot_shared, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac, make_bl_member_iterator(boot_shared))
       ts.last_snapshot = cached
       log.info("startup: applied cached policy from /etc/wifihaven/policy.json")
     else
@@ -918,11 +968,13 @@ do
     local at0 = clock.monotonic_seconds()
     local applied = policy.apply(snap, write_file, run_cmd, log,
                                  { on_apply = record_apply("boot"),
-                                   phase_timer = apply_phase_timer })
+                                   phase_timer = apply_phase_timer,
+                                   enforcement_disabled = enf_boot })
     metrics.observe(mreg, "policy_apply_duration_seconds", {},
                     clock.monotonic_seconds() - at0)
     if applied then
-      render.update_shared(snap, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac, make_bl_member_iterator(snap))
+      local boot_shared = enf_boot and ts.empty_snapshot or snap
+      render.update_shared(boot_shared, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac, make_bl_member_iterator(boot_shared))
       ts.current_etag = etag
       ts.last_snapshot = snap
       policy.mark_poll_success(os.time())
@@ -948,6 +1000,9 @@ do
   ts.last_ws_apply_run      = mono
   ts.last_activity_sample   = mono
   ts.last_nflog_run         = mono
+  -- #2381: record the flag value the startup applies just ran under, so the
+  -- on_tick flag-change reconciler doesn't spuriously re-apply on its first pass.
+  ts.enforcement_disabled_applied = enf_boot
 end
 
 -- Snapshot nft counters for the activity tracker.  Cheap (same JSON we'd
@@ -1121,6 +1176,36 @@ conntrack.watch({
     local mono = clock.monotonic_seconds()
     local wall = os.time()
 
+    -- #2381 escape-hatch reconciler. Runs every tick (a cheap local UCI read via
+    -- ts.enforcement_read — no fork, no network) so a live toggle of
+    -- wifihaven.settings.enforcement_disabled takes effect within one heartbeat
+    -- even when the policy poll is otherwise idle (steady-state 304, ws-dormant,
+    -- or API-down failover — none of which re-apply on their own). On a CHANGE
+    -- we force a re-apply through the shared apply_and_publish seam, which reads
+    -- the flag itself and renders permissive (bypass on) or restores full
+    -- enforcement (bypass off). We render the last known snapshot; with none yet
+    -- (cold boot) we apply the empty snapshot, which under bypass still tears
+    -- down the #308 boot default-deny skeleton so the internet works. Uses only
+    -- already-captured upvalues (ts, log, apply_and_publish) — no new upvalue
+    -- (Lua 5.1 60-upvalue load limit, #1930).
+    do
+      local enf_now = ts.enforcement_read()
+      if enf_now ~= ts.enforcement_disabled_applied then
+        local snap_to_apply = ts.last_snapshot or ts.empty_snapshot
+        if apply_and_publish(snap_to_apply, "policy_change") then
+          ts.enforcement_disabled_applied = enf_now
+          if enf_now then
+            log.warn("enforcement DISABLED (#2381 escape hatch): tore down all blocking + block-page DNAT; all forwarded traffic now passes. Re-enable with `wifihaven-enable`.")
+          else
+            log.info("enforcement RE-ENABLED (#2381 escape hatch cleared): restored normal blocking.")
+          end
+        else
+          log.warn("enforcement toggle (#2381) apply failed; will retry next tick (target=%s)",
+                   tostring(enf_now))
+        end
+      end
+    end
+
     -- Policy timer
     if (mono - ts.last_policy_run) >= policy_int then
       ts.last_policy_run = mono
@@ -1189,7 +1274,13 @@ conntrack.watch({
       -- in that case; a 304 needs an explicit re-apply to drop the
       -- failover chain. The transition trips on a single failed poll
       -- (#422 — no 300s cushion).
-      if fetch_ok ~= nil then
+      --
+      -- #2381: while the escape hatch is active the permissive ruleset owns the
+      -- plane — skip the failover re-render entirely so a sustained API outage
+      -- doesn't re-install the failover drop chain over the bypass. The
+      -- flag-change reconciler at the top of on_tick re-establishes full
+      -- enforcement (and failover resumes) the moment the hatch is cleared.
+      if fetch_ok ~= nil and not ts.enforcement_disabled_applied then
         local should_apply, fo_opts, new_in_failover =
           policy.failover_transition(ts.in_failover_render, fetch_ok)
         if should_apply and not snap and ts.last_snapshot then
@@ -1523,6 +1614,15 @@ conntrack.watch({
       -- reports are failing to upload and the operator has time to react
       -- before the bucket cap (usage.MAX_QUEUE_BUCKETS) starts dropping data.
       metrics.set_gauge(mreg, "usage_queue_depth", {}, #usage_queue.buckets)
+      -- #2381: surface the escape hatch to the fleet dashboard. 1 = this router
+      -- is in local bypass (all enforcement torn down), 0 = normal. Reports the
+      -- APPLIED state (not just the flag) so the gauge tracks what enforcement is
+      -- actually doing. A router silently in bypass is a support signal — this is
+      -- the observability half of the additive-wire nice-to-have (issue #2381),
+      -- shipped as a metric instead of a wire field so it needs no router↔API
+      -- wire change. Unlabelled (router_id/installation_id are added server-side).
+      metrics.set_gauge(mreg, "enforcement_disabled", {},
+                        ts.enforcement_disabled_applied and 1 or 0)
       -- #1325/#1302: fold the external cumulative sources (nftables drop
       -- counters; the dns-tail query-result tally) into the registry just
       -- before the push so the batch carries their latest deltas.

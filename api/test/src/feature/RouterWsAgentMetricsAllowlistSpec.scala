@@ -45,6 +45,13 @@ object RouterWsAgentMetricsAllowlistSpec extends ZIOSpecDefault {
     test("policy_poll_skipped_total carries reason (the dormancy gate enum)") {
       hasEntry("policy_poll_skipped_total", Set("reason"))
     },
+    // #2381 — the local enforcement escape hatch gauge (1 = router in bypass).
+    // Router_id/installation_id only; no per-mac/host dimension. The firewall
+    // must permit it or the whole /api/router/metrics push is rejected and the
+    // dashboard never sees a router that has silently disabled all blocking.
+    test("enforcement_disabled is a fleet gauge with no extra labels (#2381)") {
+      hasEntry("enforcement_disabled", Set.empty)
+    },
     test("a forbidden per-mac label on a ws series is rejected") {
       val rejected = Metric.counter("metrics_rejected_total").tagged("reason", "forbidden_label")
       for {

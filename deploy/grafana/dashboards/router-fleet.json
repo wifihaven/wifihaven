@@ -826,6 +826,37 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Routers with enforcement disabled (escape hatch, #2381)",
+      "description": "max by (router_id) (enforcement_disabled) — value 1 means that router has the LOCAL enforcement escape hatch ON (wifihaven.settings.enforcement_disabled, set via wifihaven-disable or the LuCI toggle): all blocking + the block-page DNAT are torn down and every device on it has unfiltered internet. A legitimate parent/operator action for a server outage or bad policy, but a router unexpectedly sitting at 1 is silently unenforced — a support signal. Reports the APPLIED state; steady-state expectation is 0 across the fleet. The server-driven per-household equivalent is #2382 (needs the API up); this gauge covers the OFFLINE hatch.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 96 },
+      "id": 26,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "min": 0,
+          "max": 1,
+          "custom": { "drawStyle": "line", "fillOpacity": 30, "showPoints": "always", "lineWidth": 2, "thresholdsStyle": { "mode": "line" } },
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "max by (router_id) (enforcement_disabled{env=\"$env\"})",
+          "legendFormat": "{{router_id}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",

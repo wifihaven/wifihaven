@@ -144,7 +144,7 @@ describe("policy.apply with enforcement_disabled", function()
       { enforcement_disabled = true, read_fn = function(_p) return nil end })
     assert.is_true(ok)
     local found_nft = false
-    for _, cmd in ipairs(reloads) do if cmd:find("nft -f") then found_nft = true end end
+    for _, cmd in ipairs(reloads) do if cmd:find("nft -f", 1, true) then found_nft = true end end
     assert.is_true(found_nft, "expected an `nft -f` load of the permissive ruleset")
   end)
 

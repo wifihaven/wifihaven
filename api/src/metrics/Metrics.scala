@@ -218,6 +218,13 @@ object MetricGuard {
     "policy_poll_skipped_total"                 -> Set("reason", "router_id", "installation_id"),
     "agent_uptime_seconds"                      -> Set("router_id", "installation_id"),
     "agent_version"                             -> Set("version", "router_id", "installation_id"),
+    // #2381 — the local enforcement escape hatch. 1 = this router is in bypass
+    // (all blocking + block-page DNAT torn down locally, e.g. via
+    // wifihaven-disable / the LuCI toggle), 0 = normal enforcement. Reports the
+    // APPLIED state so the gauge tracks what enforcement is actually doing. No
+    // per-mac/host dimension — router_id/installation_id only. Lets the fleet
+    // dashboard flag a router silently running unfiltered (a support signal).
+    "enforcement_disabled"                      -> Set("router_id", "installation_id"),
     "dns_queries_total"                         -> Set("result", "router_id", "installation_id"),
     // #573 / #1650 / #1653 — TLS ClientHello SNI capture outcomes from the wifihaven-sni-tail
     // sidecar. `result` ∈ {parsed, reassembled, incomplete, dropped_byte_cap, not_handshake,

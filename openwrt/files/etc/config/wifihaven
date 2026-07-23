@@ -81,6 +81,27 @@ config wifihaven 'wifihaven'
 config sni 'sni'
 	option enabled '1'
 
+# #2381 enforcement escape hatch. Lives in its own named `config settings
+# 'settings'` section, read as `wifihaven.settings.enforcement_disabled`. When
+# set to '1' the agent SHORT-CIRCUITS all enforcement on the next apply: every
+# nftables forward-drop (per-MAC blocks, extraBlocked, category blocklists,
+# blockIpOnly) AND the block-page HTTP DNAT are torn down, so ALL forwarded
+# traffic passes. This is the LOCAL, OFFLINE escape hatch — it is re-read fresh
+# on every apply cycle and is INDEPENDENT of the policy snapshot, so it works
+# even when the API server is unreachable (a server outage, a bad policy, or
+# "the internet is broken and I need it back NOW"). Unlike the ws/sni toggles it
+# does NOT require a service restart — the agent applies the change within one
+# poll cycle. Toggle it from the CLI with the one-word helpers:
+#   wifihaven-disable   # turn OFF all blocking (bypass on)
+#   wifihaven-enable    # restore normal enforcement (bypass off)
+# or directly: `uci set wifihaven.settings.enforcement_disabled=1 && uci commit
+# wifihaven`. Also exposed as a labelled toggle in LuCI (Services -> WifiHaven
+# -> Settings). The server-driven per-household equivalent is #2382, which needs
+# the API to be up; THIS hatch is the fallback for when it is not. See
+# docs/escape-hatch.md.
+config settings 'settings'
+	option enforcement_disabled '0'
+
 # Websocket transport sidecar (wifihaven-ws) toggle + tuning (#1848). Lives in
 # its own named `config ws 'ws'` section, read as `wifihaven.ws.<opt>`. DEFAULT
 # OFF: until the persistent-ws transport is proven in the field the agent uses

@@ -419,4 +419,15 @@ Watch the agent log:
 
 The admin UI -> Routers should show a fresh last_seen_at for this router
 within ~60 seconds.
+
+Emergency off switch (escape hatch):
+  If blocking ever breaks the internet, a policy is wrong, or the WifiHaven
+  server is down, you can turn OFF all enforcement on this router — it works
+  even with the server unreachable and takes effect within seconds:
+
+    wifihaven-disable     # turn off all blocking (internet works normally)
+    wifihaven-enable      # restore normal blocking
+
+  Or in LuCI: Services -> WifiHaven -> Settings -> "Disable all WifiHaven
+  enforcement". Full details: docs/escape-hatch.md.
 EOF

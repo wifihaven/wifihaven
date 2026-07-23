@@ -274,6 +274,24 @@ For a Flint 2 talking to the production cloud API, the prompt answers are:
 
 Verify per `install-openwrt.md §3`.
 
+### Emergency: turn off all blocking (escape hatch)
+
+If blocking ever breaks the internet, a policy is wrong, or the WifiHaven server
+is down, you can **disable all enforcement on this router** — it works even when
+the server is unreachable and takes effect within seconds (no reboot):
+
+```sh
+wifihaven-disable     # turn off ALL blocking; every device gets normal internet
+wifihaven-enable      # restore normal blocking
+```
+
+Or in LuCI: **Services → WifiHaven → Settings → "Disable all WifiHaven
+enforcement"** → **Save & Apply**. Reversible; nothing is uninstalled. The
+easier per-household dashboard toggle
+([#2382](https://github.com/wifihaven/wifihaven/issues/2382)) needs the server up;
+this router switch is the offline fallback. Full details:
+[docs/escape-hatch.md](escape-hatch.md).
+
 ## 5. Known drift on OpenWRT 25.12.x (apk-based)
 
 The published install path was developed primarily against opkg-based OpenWRT.
