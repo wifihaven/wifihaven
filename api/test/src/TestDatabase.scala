@@ -357,6 +357,13 @@ object TestLayers {
           .query[HouseholdId]
           .unique
           .transact(xa)
+      // #2386: seed household B's OWN settings row, mirroring production's atomic creation unit
+      // (HouseholdSeed.insertHousehold). Without it, getForHousehold(hhB) now fails loud (the id=1
+      // fallback that used to leak household #1's settings was removed). All columns default; id
+      // auto-generates (V82).
+      _        <-
+        sql"INSERT INTO household_settings(household_id) VALUES ($hhB) ON CONFLICT (household_id) DO NOTHING".update.run
+          .transact(xa)
       // profileB is paused so a cross-household leak on the /decision path is observable: if
       // household A's decide ever resolved this row it would BLOCK, but scoped correctly A never
       // finds it and allows.

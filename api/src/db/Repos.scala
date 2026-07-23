@@ -81,6 +81,20 @@ object HouseholdSeed {
           SELECT h.id, $DefaultBillingStatus, $DefaultFounding
           FROM households h
           WHERE NOT EXISTS (SELECT 1 FROM household_billing hb WHERE hb.household_id = h.id)""".update.run
+
+  /**
+   * #2386: idempotent boot-time backfill for households minted before the per-household settings
+   * row was seeded on every create path. Gives every rowless household its OWN default settings row
+   * (all columns default; `id` auto-generates via V82), so `getForHousehold` never has to fall back
+   * to household #1's row — the cross-tenant leak this fix closes. The NOT EXISTS guard makes a
+   * re-run a no-op and never touches an existing settings row. One-shot cleanup after it deploys is
+   * tracked under #1608 (see [[wifihaven.api.Main]] boot seed).
+   */
+  val backfillMissingSettings: ConnectionIO[Int] =
+    sql"""INSERT INTO household_settings(household_id)
+          SELECT h.id
+          FROM households h
+          WHERE NOT EXISTS (SELECT 1 FROM household_settings hs WHERE hs.household_id = h.id)""".update.run
 }
 
 case class DbUser(
