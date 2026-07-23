@@ -1,10 +1,11 @@
-"""Unit cover for wan_health.wan_lease_flake_signature (#2390).
+"""Unit cover for wan_health signature matchers (#2390).
 
 Runs bare from scripts/e2e/lib (the established convention for the
 `E2E lib unit tests` job); no VM, no network. Pins the shared-host guest-WAN
-DHCP boot-flake signature matcher so the Gate-2 skip-guard classifies the flake
-correctly without red-gating the router deploy -- and, just as important, does
-NOT swallow a genuine enforcement/upstream regression.
+DHCP boot-flake signature matchers used to LABEL a WAN heal in the CI logs
+(conftest._wait_for_router_wan_healthy) -- confirming the smoke-check-nil half
+is recognized, the boot-time udhcpc line is treated as the weaker signal, and a
+real-but-wrong smoke IP is not mistaken for the flake.
 """
 from wan_health import smoke_check_nil_signature, wan_lease_flake_signature
 
@@ -58,7 +59,7 @@ def test_smoke_check_with_real_but_wrong_ip_is_not_flagged():
     assert smoke_check_nil_signature(line) is False
 
 
-# ── smoke_check_nil_signature: the per-scenario-reliable skip-gate signal ─────
+# ── smoke_check_nil_signature: the per-scenario-reliable root-cause signal ────
 
 
 def test_smoke_nil_signal_matches_smoke_line():
@@ -66,11 +67,12 @@ def test_smoke_nil_signal_matches_smoke_line():
 
 
 def test_smoke_nil_signal_ignores_bare_udhcpc_line():
-    # The gate must NOT fire on the boot-time udhcpc line alone -- it is a
-    # cold-boot transient baked into the base snapshot and replayed on every
-    # loadvm restore, so gating on it would swallow genuine regressions.
+    # smoke_check_nil is the stronger, per-scenario-reliable signal: the
+    # boot-time udhcpc line alone is a cold-boot transient the base snapshot
+    # captures and loadvm replays every scenario, so it must NOT be mistaken for
+    # an in-scenario smoke-nil.
     assert smoke_check_nil_signature(UDHCPC_LINE) is False
-    # ...while the broad matcher still surfaces it for diagnostics/context.
+    # ...while the broad matcher still surfaces it as the weaker fallback tag.
     assert wan_lease_flake_signature(UDHCPC_LINE) is True
 
 

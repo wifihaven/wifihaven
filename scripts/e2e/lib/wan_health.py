@@ -12,11 +12,15 @@ whichever scenario is running times out on a block-page / fallback assertion.
 It presents as *1 random scenario failing out of ~51* -- an environmental boot
 flake, NOT an enforcement regression. Same contention family as #2034 / #2158.
 
-This module is the precise signature matcher the harness uses to classify such
-a failure as the flake (skip with a clear reason) rather than red-gating the
-whole router deploy. Kept a PURE text matcher (no I/O, no VM, no intra-lib
-imports) so it is unit-testable in the ``E2E lib unit tests`` CI job and
-imports bare (``import wan_health``) from ``scripts/e2e/lib``.
+The harness heals this at the source: the ``router`` fixture warms/re-kicks the
+WAN after every ``loadvm`` restore (``conftest._wait_for_router_wan_healthy``)
+so scenarios run on a healthy upstream instead of flaking — no scenario is
+skipped. This module is the precise signature matcher that fixture uses to
+LABEL a heal in the CI logs (udhcpc no-lease vs policy.apply smoke-check nil),
+so when the heal fires you can see WHY the WAN was cold. Kept a PURE text
+matcher (no I/O, no VM, no intra-lib imports) so it is unit-testable in the
+``E2E lib unit tests`` CI job and imports bare (``import wan_health``) from
+``scripts/e2e/lib``.
 """
 from __future__ import annotations
 
@@ -53,9 +57,8 @@ def smoke_check_nil_signature(*logs: str) -> bool:
     only when a ``policy.apply`` runs against a dead upstream. It is NOT present
     in a healthy base snapshot's log ring (the snapshot is taken after a healthy
     policy fetch + smoke check), so unlike the boot-time ``udhcpc: no lease``
-    line it does not get baked in and replayed on every ``loadvm`` restore.
-    Callers gate a *skip* on this (plus a live control-host DNS probe), never on
-    the raw udhcpc line, so a genuine enforcement regression stays loud.
+    line it does not get baked in and replayed on every ``loadvm`` restore. The
+    heal-log labeler prefers it as the stronger, more-specific root-cause tag.
     """
     blob = _blob(logs)
     return bool(blob and _SMOKE_CHECK_NIL.search(blob))
@@ -69,12 +72,11 @@ def wan_lease_flake_signature(*logs: str) -> bool:
     resolving its probe host to ``"nil"`` for lack of an upstream. Either alone
     is sufficient.
 
-    Broadest matcher, used for human-facing root-cause CONTEXT (skip messages,
-    failure diagnostics) -- it includes the boot-time ``udhcpc: no lease`` line.
-    Do NOT gate a skip on this: that udhcpc line is a cold-boot transient the
-    base snapshot captures and ``loadvm`` replays every scenario, so it would
-    misfire. Gate on :func:`smoke_check_nil_signature` (per-scenario reliable)
-    plus a live control-host probe instead.
+    Broadest matcher, used for the human-facing root-cause tag in the WAN-heal
+    log -- it includes the boot-time ``udhcpc: no lease`` line. Note that udhcpc
+    line is a cold-boot transient the base snapshot captures and ``loadvm``
+    replays every scenario, so it is a WEAK signal on its own; the labeler
+    checks :func:`smoke_check_nil_signature` first and only falls back to this.
 
     Pure text matcher (no I/O) so it is unit-testable without a VM.
     """

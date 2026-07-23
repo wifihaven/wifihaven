@@ -48,6 +48,10 @@ from lib.vm import (  # noqa: E402
     router_up,
 )
 from lib.wait import wait_for_client_dns  # noqa: E402
+from lib.wan_health import (  # noqa: E402
+    smoke_check_nil_signature,
+    wan_lease_flake_signature,
+)
 
 log = logging.getLogger(__name__)
 
@@ -241,6 +245,9 @@ def router_session(fake_server, fake_api) -> EnrolledRouter:
     _wait_for_fake_slirp_ready(port=fake_server.port, timeout_s=120)
     # Confirm the agent has issued at least one policy poll before snapshotting.
     fake_api.wait_for_policy_fetch(timeout_s=180)
+    # Take the base snapshot on a warm WAN so restores start from a healthy
+    # upstream (#2390).
+    _wait_for_router_wan_healthy()
     router_snapshot(BASE_SNAPSHOT)
     log.info("fake-mode base snapshot taken: %s", BASE_SNAPSHOT)
     try:
@@ -259,6 +266,9 @@ def router(router_session, fake_server, fake_api) -> EnrolledRouter:
     router_restore(BASE_SNAPSHOT)
     fake_api.reset()
     _wait_for_fake_slirp_ready(port=fake_server.port, timeout_s=60)
+    # Heal a lost/cold WAN lease so the scenario runs on a healthy upstream
+    # instead of flaking on the #2390 guest-WAN-DHCP boot race.
+    _wait_for_router_wan_healthy()
     return router_session
 
 
@@ -393,6 +403,105 @@ def _wait_for_fake_slirp_ready(*, port: int, timeout_s: float = 60, interval_s: 
     raise TimeoutError(
         f"fake API never reachable from router after {timeout_s}s "
         f"({attempts} attempts, last code={last!r})"
+    )
+
+
+# ── Router WAN warm-up + heal (#2390) ────────────────────────────────────────
+#
+# The router VM's WAN NIC is qemu user-mode (SLIRP) networking with an internal
+# DHCP server. After a `loadvm` restore the NIC re-DHCPs and the SLIRP
+# UDP-forward table starts cold; on the shared KVM host, occasionally udhcpc
+# loses the lease outright (`udhcpc: no lease, failing`) so the router has no
+# WAN upstream. The agent's policy.apply smoke check then resolves its probe
+# host to "nil", the resolved_/eb_/bl_ nft sets never populate, and whichever
+# scenario runs next flakes on a block-page / fallback assertion (1 random fail
+# of ~51). `wait_for_client_dns` already gates the CLIENT on the same cold-SLIRP
+# warm-up; this does the ROUTER side and, unlike a passive wait, actively HEALS
+# a lost lease (`ifup wan`) so the scenario runs on a healthy WAN instead of
+# being skipped or failed.
+
+# Stable third-party apexes used to prove the router's upstream path is warm.
+# Resolving either proves WAN lease + SLIRP UDP-forward + upstream are all live
+# — exactly the condition a scenario needs. They are egress-dependent on
+# purpose (there is no shorter honest proof the upstream works); a persistent
+# external-egress outage is the separate #2034 concern handled per-test, not
+# here.
+_WAN_HEALTH_HOSTS = ("one.one.one.one", "example.com")
+
+
+def _router_upstream_resolves() -> bool:
+    """True iff the router's own resolver answers a control host — the
+    post-restore WAN path (lease + SLIRP UDP-forward table + upstream) is warm."""
+    for host in _WAN_HEALTH_HOSTS:
+        # NB: keep the regex out of the f-string — its `{1,3}` quantifiers would
+        # be parsed as f-string fields. Adjacent-literal concat side-steps that.
+        cmd = (
+            f"nslookup {host} 127.0.0.1 2>/dev/null | sed -n '/^Name:/,$p' | "
+            r"grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n1"
+        )
+        res = router_ssh(cmd, check=False, timeout=10)
+        if (res.stdout or "").strip():
+            return True
+    return False
+
+
+def _wan_flake_note() -> str:
+    """Diagnostic tag for the heal log: read the router's agent log for the
+    #2390 flake signature so a heal that fires in CI records WHY the WAN was
+    cold (udhcpc no-lease vs policy.apply smoke-check nil)."""
+    try:
+        r = router_ssh(
+            "logread -e wifihaven | grep -E 'udhcpc: *no lease|smoke check failed' "
+            "| tail -n 20",
+            check=False, timeout=10,
+        )
+        blob = r.stdout or ""
+    except Exception:  # noqa: BLE001
+        return "router log unavailable"
+    if smoke_check_nil_signature(blob):
+        return "root cause: policy.apply smoke-check nil (no upstream)"
+    if wan_lease_flake_signature(blob):
+        return "root cause: udhcpc no-lease"
+    return "no #2390 flake signature in log"
+
+
+def _wait_for_router_wan_healthy(*, timeout_s: float = 120, kick_interval_s: float = 25) -> None:
+    """Retry until the router's WAN upstream is healthy, healing it if needed.
+
+    Poll the router's own resolver for a control host; if it stays cold, re-kick
+    `ifup wan` to force a fresh DHCP lease (the #2390 fix — heal, don't skip).
+    Returns as soon as the upstream resolves. If it never warms within the
+    budget — a persistent WAN/egress problem, not the transient boot flake — log
+    and proceed: the scenario's own assertions and the #2034 egress guard then
+    speak, so a genuine outage still surfaces rather than being hidden."""
+    deadline = time.monotonic() + timeout_s
+    started = time.monotonic()
+    # Give the natural post-restore warm-up (cf. wait_for_client_dns) a grace
+    # window before forcibly kicking the interface.
+    last_kick = started
+    attempts = 0
+    while time.monotonic() < deadline:
+        attempts += 1
+        if _router_upstream_resolves():
+            if attempts > 1:
+                log.info(
+                    "router WAN upstream healthy after %.1fs (%d attempts)",
+                    time.monotonic() - started, attempts,
+                )
+            return
+        now = time.monotonic()
+        if now - last_kick >= kick_interval_s:
+            log.warning(
+                "router WAN upstream cold (attempt %d) — re-kicking `ifup wan` [%s]",
+                attempts, _wan_flake_note(),
+            )
+            router_ssh("ifup wan", check=False, timeout=30)
+            last_kick = now
+        time.sleep(3)
+    log.warning(
+        "router WAN upstream never warmed after %.0fs (%d attempts); proceeding "
+        "— scenario assertions + #2034 egress guard will speak [%s]",
+        timeout_s, attempts, _wan_flake_note(),
     )
 
 
