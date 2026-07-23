@@ -154,6 +154,16 @@ object Main extends ZIOAppDefault {
             // (under #1608).
             bf <- HouseholdSeed.backfillMissingBilling.transact(xaForSeed)
             _  <- ZIO.logInfo(s"household_billing backfilled for rowless households (inserted=$bf)")
+            // #2386: backfill a household_settings row for any pre-existing household minted before
+            // the per-household settings row was seeded on every create path. Without its own row,
+            // getForHousehold used to fall back to household #1's settings (a cross-tenant leak) and
+            // now fails loud — so every household must have one. Idempotent (NOT EXISTS guard);
+            // household 1 already has its row from `ensureDefault` above, so it is untouched.
+            // One-shot cleanup after deploy tracked under #1608.
+            bfs         <- HouseholdSeed.backfillMissingSettings.transact(xaForSeed)
+            _           <- ZIO.logInfo(
+              s"household_settings backfilled for rowless households (inserted=$bfs)",
+            )
             // #2356: seed the operator household (id 1) as free_forever — it is internal and never
             // billing-gated, so it must never enter the beta→paid funnel or be charged. Idempotent
             // upsert (re-asserted every boot, unlike an ordinary household whose free_forever is an
