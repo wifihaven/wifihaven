@@ -92,11 +92,19 @@ fi
 
 (cd "$WORK/data" && tar czf "$WORK/data.tar.gz" .)
 
-# ── assemble .ipk (ar archive, same as opkg expects) ─────────────────────────
+# ── assemble .ipk (portable ar; plain member names, no GNU trailing slash) ────
+# GNU `ar` writes SysV-style member names with a trailing slash, which OpenWrt
+# 21.02-era opkg rejects as "Malformed package file" (#2363). Hand-assemble the
+# ar container via the shared helper so member names are byte-for-byte correct
+# regardless of the build host's `ar`. See ar-append.sh for the full rationale;
+# ipk_ar_format_spec.test.sh pins the resulting member names.
+# shellcheck source=openwrt/ar-append.sh
+. "$SCRIPT_DIR/ar-append.sh"
+
 rm -f "$OUT_IPK"
-ar r "$OUT_IPK" \
-    "$WORK/debian-binary" \
-    "$WORK/control.tar.gz" \
-    "$WORK/data.tar.gz"
+wh_ar_init "$OUT_IPK"
+wh_ar_append "$OUT_IPK" debian-binary  "$WORK/debian-binary"
+wh_ar_append "$OUT_IPK" control.tar.gz "$WORK/control.tar.gz"
+wh_ar_append "$OUT_IPK" data.tar.gz    "$WORK/data.tar.gz"
 
 echo "Built: $OUT_IPK"
