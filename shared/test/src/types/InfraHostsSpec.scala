@@ -5,25 +5,40 @@ import zio.test.*
 object InfraHostsSpec extends ZIOSpecDefault {
 
   def spec = suite("InfraHosts")(
-    test("apex entries match every subdomain (gvt2 download shards, ls.apple services)") {
+    test(
+      "apex entries match every subdomain (ls.apple services; #2369-demoted gvt2 via background)",
+    ) {
       assertTrue(
-        InfraHosts.isInfra("gvt2.com"),
-        InfraHosts.isInfra("r3---sn-abc.gvt2.com"),
-        InfraHosts.isInfra("beacons3.gvt2.com"),
-        InfraHosts.isInfra("gvt3.com"),
+        // canonical apex still matches every subdomain on the allow side
         InfraHosts.isInfra("gsp-ssl.ls.apple.com"),
-        InfraHosts.isInfra("b1.nel.goog"),
+        // #2369: gvt2/gvt3/nel.goog were demoted to suppressOnly — apex matching still works,
+        // now on the background (suppression) side, not the allow (isInfra) side.
+        InfraHosts.isBackground("gvt2.com"),
+        InfraHosts.isBackground("r3---sn-abc.gvt2.com"),
+        InfraHosts.isBackground("beacons3.gvt2.com"),
+        InfraHosts.isBackground("gvt3.com"),
+        InfraHosts.isBackground("b1.nel.goog"),
+        !InfraHosts.isInfra("gvt2.com"),
+        !InfraHosts.isInfra("gvt3.com"),
+        !InfraHosts.isInfra("b1.nel.goog"),
       )
     },
     test("exact-host entries match the host and its subdomains") {
       assertTrue(
         InfraHosts.isInfra("connectivitycheck.gstatic.com"),
-        InfraHosts.isInfra("safebrowsingohttpgateway.googleapis.com"),
+        InfraHosts.isInfra("ocsp.pki.goog"),
         InfraHosts.isInfra("events.launchdarkly.com"),
         InfraHosts.isInfra("ocsp.digicert.com"),
+        // #2369: safebrowsingohttpgateway was demoted — still background, no longer allow-carved.
+        InfraHosts.isBackground("safebrowsingohttpgateway.googleapis.com"),
+        !InfraHosts.isInfra("safebrowsingohttpgateway.googleapis.com"),
       )
     },
-    test("#1503 expansion covers the observed #1499 leaking infra classes") {
+    test("#1503 expansion covers the observed #1499 leaking infra classes (suppression)") {
+      // #1499 was an over-COUNT leak — the concern is presence SUPPRESSION (`isBackground`), which
+      // #2369 preserves for every host below. The Google-fronted subset (gvt2/gvt3/nel.goog/
+      // app-analytics/safebrowsing*) is now suppress-only rather than allow+suppress (see the
+      // #2369 tests), but it is still fully suppressed — the #1499 fix is intact.
       val expanded = List(
         "x.gvt2.com",
         "x.gvt3.com",
@@ -35,7 +50,7 @@ object InfraHostsSpec extends ZIOSpecDefault {
         "safebrowsing.google.com",
         "safebrowsingohttpgateway.googleapis.com",
       )
-      assertTrue(expanded.forall(InfraHosts.isInfra))
+      assertTrue(expanded.forall(InfraHosts.isBackground))
     },
     test("BOUNDARY: per-app CDN / asset hosts are NOT infra (they must attribute and count)") {
       // The seam that keeps suppression from re-opening the #1446 undercount: rotating per-app
@@ -73,8 +88,10 @@ object InfraHostsSpec extends ZIOSpecDefault {
     },
     test("matchedPattern returns the canonical pattern that matched") {
       assertTrue(
-        InfraHosts.matchedPattern("r3---sn-abc.gvt2.com").contains("gvt2.com"),
+        InfraHosts.matchedPattern("gsp-ssl.ls.apple.com").contains("ls.apple.com"),
         InfraHosts.matchedPattern("www.tinkercad.com").isEmpty,
+        // #2369: gvt2 is no longer canonical, so the allow-side matcher returns None for it.
+        InfraHosts.matchedPattern("r3---sn-abc.gvt2.com").isEmpty,
       )
     },
     test("every canonical entry is a parseable lowercased hostname (valid for extraAllowed)") {
@@ -112,7 +129,10 @@ object InfraHostsSpec extends ZIOSpecDefault {
     },
     test("#1525 canonical hosts are both allowed and background; the boundary holds for both") {
       assertTrue(
-        InfraHosts.isInfra("gvt2.com") && InfraHosts.isBackground("gvt2.com"),
+        // #2369: gvt2 moved to suppressOnly; `ls.apple.com` is a still-canonical apex example.
+        InfraHosts.isInfra("gsp-ssl.ls.apple.com") && InfraHosts.isBackground(
+          "gsp-ssl.ls.apple.com",
+        ),
         // app/CDN hosts are neither allowed nor suppressed.
         !InfraHosts.isBackground("www.tinkercad.com"),
         !InfraHosts.isBackground("firestore.googleapis.com"),
@@ -539,6 +559,68 @@ object InfraHostsSpec extends ZIOSpecDefault {
         "ssl.gstatic.com",
       )
       assertTrue(stillEngagement.forall(h => !InfraHosts.isCloudBackground(h)))
+    },
+    test("#2369 Google shared-GFE infra hosts are suppressed but NOT allow-carved") {
+      // These Google telemetry / analytics / safe-browsing / download-beacon hosts front on
+      // Google's SHARED GFE anycast pool — the same IPs `youtube.com` / `googlevideo.com`
+      // resolve to. Allow-carving them (canonical → `PolicyService.infraAllowHosts` →
+      // `global.extraAllowed`) put those shared IPs into `@global_allow`, and `extraAllowed`
+      // beats `extraBlocked` at the IP layer (feedback_extraallowed_beats_blocked / #421), so a
+      // host-block on a Google property leaked whenever it landed on a shared IP. #2369 live
+      // evidence: `142.251.46.142` was in BOTH `eb_youtube_com` and `global_allow` (added by
+      // `app-analytics-services.com`) → the `ip daddr != @global_allow` guard was false → drop
+      // skipped → YouTube reachable via that IP. `clientservices.googleapis.com` was observed
+      // resolving to YouTube's exact frontend IP.
+      //
+      // Fix: demote them from [[InfraHosts.canonical]] (allow + suppress) to
+      // [[InfraHosts.suppressOnly]] (suppress ONLY). They stay dropped from presence counting
+      // (#1503/#1499 background-suppression PRESERVED — `isBackground` still true, so gvt2's
+      // ~36% background share keeps being suppressed), but are no longer reachable through a
+      // block — exactly the anti-tunnel reasoning `suppressOnly` was created for
+      // (`mask*.icloud.com` Private Relay).
+      val googleSharedFrontend = List(
+        "app-analytics-services.com",    // #2369 confirmed in youtube.com's pool
+        "v1.app-analytics-services.com",
+        "clientservices.googleapis.com", // #2369 resolved to youtube.com's exact IP
+        "gvt2.com",
+        "r3---sn-abc.gvt2.com",
+        "beacons3.gvt2.com",
+        "gvt3.com",
+        "beacons.gvt3.com",
+        "nel.goog",
+        "b1.nel.goog",
+        "safebrowsing.google.com",
+        "safebrowsingohttpgateway.googleapis.com",
+      )
+      assertTrue(
+        // #1503/#1499 presence-suppression PRESERVED — they remain on the background set.
+        googleSharedFrontend.forall(InfraHosts.isBackground),
+        // …but they are NO LONGER allow-carved through the block (the #2369 leak fix).
+        googleSharedFrontend.forall(h => !InfraHosts.isInfra(h)),
+        // matchedPattern (canonical-only) no longer resolves them either.
+        InfraHosts.matchedPattern("r3---sn-abc.gvt2.com").isEmpty,
+      )
+    },
+    test("#2369 connectivity-critical infra stays allow-carved (the design boundary)") {
+      // The design line the #2369 fix draws: allow-carve survives ONLY for connectivity-critical
+      // infra. OCSP responders validate TLS certs for the hosts a device legitimately reaches
+      // under a block (including allowed apps), so they stay carved even though `ocsp.pki.goog`
+      // also fronts on a Google pool — breaking TLS validation is a broader, user-visible failure
+      // than the narrow residual leak, which the SNI sidecar (follow-up) closes fully.
+      // Connectivity / captive-portal probes likewise stay carved. This test guards against
+      // over-removing the connectivity tier while closing the telemetry leak.
+      val stillCarved = List(
+        "ocsp.pki.goog",                 // Google Trust Services OCSP — TLS validation
+        "ocsp.digicert.com",
+        "ocsp.apple.com",
+        "connectivitycheck.gstatic.com", // connectivity probe
+        "captive.apple.com",
+        "www.msftconnecttest.com",
+      )
+      assertTrue(
+        stillCarved.forall(InfraHosts.isInfra),
+        stillCarved.forall(InfraHosts.isBackground),
+      )
     },
   )
 }

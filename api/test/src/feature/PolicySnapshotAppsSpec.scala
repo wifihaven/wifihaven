@@ -692,6 +692,41 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
         assertTrue(!ea.contains("khanacademy.org")) &&
         assertTrue(!ea.contains("connectivitycheck.gstatic.com"))
     },
+    test(
+      "#2369: Google shared-frontend telemetry hosts are dropped from the fleet-wide allow set",
+    ) {
+      // #2369 root cause: `PolicyService.infraAllowHosts` (→ `global.extraAllowed`, flattened
+      // into the router's `@global_allow`) carried Google telemetry / analytics / safe-browsing
+      // hosts that front on YouTube's shared GFE anycast pool, so a host-block on a Google
+      // property leaked whenever it landed on a shared IP (`extraAllowed` beats `extraBlocked`
+      // at the IP layer — #421). The fix demotes them to `InfraHosts.suppressOnly`, so they
+      // leave the allow set entirely while staying suppressed from presence (#1503, pinned in
+      // InfraHostsSpec). Pin the leak-fix invariant end-to-end through snapshot assembly: these
+      // hosts are NOT in `global.extraAllowed` (so they cannot carve YouTube's shared IP out of
+      // a block), while connectivity-critical infra (OCSP responder, connectivity probe) still
+      // is — the design boundary the fix draws.
+      val leaked = Set(
+        "app-analytics-services.com",
+        "clientservices.googleapis.com",
+        "gvt2.com",
+        "gvt3.com",
+        "nel.goog",
+        "safebrowsing.google.com",
+        "safebrowsingohttpgateway.googleapis.com",
+      )
+      for {
+        _    <- cleanDb
+        pr   <- ZIO.service[ProfileRepo]
+        _    <- TestLayers.seedKidsProfile(pr)
+        svc  <- makePs
+        snap <- svc.snapshot
+        ga = snap.global.extraAllowed.map(_.value).toSet
+      } yield assertTrue(ga.intersect(leaked).isEmpty) &&
+        assertTrue(PolicyService.infraAllowHosts.map(_.value).toSet.intersect(leaked).isEmpty) &&
+        // the design boundary: connectivity-critical infra is still allow-carved
+        assertTrue(ga.contains("ocsp.pki.goog")) &&
+        assertTrue(ga.contains("connectivitycheck.gstatic.com"))
+    },
     test("#1418: profile round-trips pauseMode through the repo") {
       for {
         _   <- cleanDb
