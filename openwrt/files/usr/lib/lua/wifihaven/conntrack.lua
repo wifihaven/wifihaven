@@ -343,7 +343,7 @@ function M.arp_lookup_mac(src_ip, arp_table)
 end
 
 -- ---------------------------------------------------------------------------
--- parse_arp_table() -> { ip -> mac }
+-- parse_arp_table(lan_dev) -> { ip -> mac }
 --
 -- Reads /proc/net/arp at call time (v4) AND `ip -6 neigh` (v6 NDP cache).
 -- The kernel exposes the v4 ARP table as a proc file but the v6 NDP cache
@@ -357,8 +357,19 @@ end
 -- `mac == client.mac AND host.value contains LEAF_HOST` — a nil mac fails
 -- the assert and is_wan_bound's #1690 family-fork looks like it didn't
 -- close the loop. (#1691.)
+--
+-- #2368: when `lan_dev` is given, the v6 neigh query is scoped to that dev
+-- (`ip -6 neigh show dev <lan_dev>`) so ONLY LAN-bridge neighbors enter the
+-- set. Unfiltered, `ip -6 neigh show` returns neighbors on every interface —
+-- including the WAN — and the upstream/default router (which emits its own
+-- IPv6 via RA/DHCPv6-PD/NDP) shows up as a neighbor on the WAN iface. That
+-- made is_wan_bound class the router's self-sourced flows as LAN (src in set,
+-- dst not) and the agent autocreated the edge router as a phantom household
+-- device. The v4 half stays unfiltered — is_wan_bound bounds v4 by
+-- `lan_prefix`, so a WAN v4 gateway never passes and needs no dev scoping.
+-- Omitting `lan_dev` preserves the pre-#2368 unfiltered behavior (back-compat).
 -- ---------------------------------------------------------------------------
-function M.parse_arp_table()
+function M.parse_arp_table(lan_dev)
   local result = {}
   -- /proc/net/arp columns: IP, HWtype, Flags, HWaddr, Mask, Device
   local f = io.open("/proc/net/arp", "r")
@@ -378,8 +389,18 @@ function M.parse_arp_table()
   --   `fdaa:bbbb:cccc::147 dev br-lan lladdr 02:e2:fa:8e:c2:ce STALE`
   --   `fe80::2 dev eth1  used 0/0/0 probes 6 FAILED`   (no lladdr — skip)
   -- The `lladdr <mac>` token is the load-bearing piece; entries in FAILED
-  -- state have no lladdr and we skip them naturally.
-  local pf = io.popen("ip -6 neigh show 2>/dev/null")
+  -- state have no lladdr and we skip them naturally. `show dev <lan_dev>`
+  -- (#2368) drops the `dev …` token from each line, but the ip/lladdr parse
+  -- is position-independent and unaffected. `lan_dev` is interpolated into a
+  -- shell command, so require it to look like a real interface name
+  -- (alphanumerics plus `.`/`_`/`-`, e.g. br-lan, eth0.2) before trusting it —
+  -- defense-in-depth against a malformed UCI value; anything else falls back to
+  -- the unfiltered dump.
+  local dev_ok = lan_dev and lan_dev ~= "" and lan_dev:match("^[%w._-]+$")
+  local neigh_cmd = dev_ok
+    and ("ip -6 neigh show dev " .. lan_dev .. " 2>/dev/null")
+    or  "ip -6 neigh show 2>/dev/null"
+  local pf = io.popen(neigh_cmd)
   if pf then
     for line in pf:lines() do
       local ip = line:match("^(%S+)")
@@ -1030,11 +1051,13 @@ function M.is_wan_bound(flow, lan_prefix, lan_prefix_v6, lan_ip_set)
        and flow.dst_ip:sub(1, #lan_prefix) ~= lan_prefix
   end
   -- v6: neighbor-membership (preferred) unioned with an optional authored prefix.
-  -- lan_ip_set may include neighbors from all interfaces (parse_arp_table runs
-  -- `ip -6 neigh show` without a dev filter), but that's safe here: an internet
-  -- dst reached via the default route is never on-link, so it can't appear and
-  -- falsely mark a flow LAN-internal; and a WAN host's src is never a forwarded
-  -- LAN flow's src.
+  -- lan_ip_set MUST be scoped to LAN-bridge neighbors (parse_arp_table(lan_dev),
+  -- #2368). The earlier "all interfaces is safe" assumption was FALSE: the
+  -- upstream/default router emits its own IPv6 (RA/DHCPv6-PD/NDP), so an
+  -- unscoped `ip -6 neigh show` puts the WAN gateway's LL/ULA in the set as a
+  -- flow *src* with a non-LAN dst → classed LAN-sourced → the edge router
+  -- autocreated as a phantom device. Scoping the set to the LAN dev keeps only
+  -- real LAN neighbors (GUA/ULA/privacy addrs, #1796) here.
   local src_lan, dst_lan = false, false
   if lan_ip_set then
     src_lan = lan_ip_set[flow.src_ip] ~= nil
@@ -1069,6 +1092,10 @@ end
 --   lan_prefix     string    default "192.168.1."
 --   lan_prefix_v6  string    optional v6 LAN ULA prefix (e.g. "fdaa:bbbb:cccc:")
 --                            — when unset, v6 flows are filtered out (#1688).
+--   lan_dev        string    LAN bridge dev (e.g. "br-lan") — scopes the v6 NDP
+--                            neighbor set so WAN-side neighbors (the upstream
+--                            router) don't autocreate as devices (#2368). Empty
+--                            → unfiltered (back-compat).
 --   max_batch      int       default 50
 --   flush_interval int       default 10  (seconds)
 --   max_retries    int       default 3
@@ -1091,6 +1118,10 @@ function M.watch(cfg)
   local log           = cfg.log            or default_log()
   local lan_prefix    = cfg.lan_prefix     or "192.168.1."
   local lan_prefix_v6 = cfg.lan_prefix_v6  or ""
+  -- #2368: LAN bridge dev used to scope the v6 NDP neighbor set so WAN-side
+  -- neighbors (the upstream/default router) never enter it. Empty → unfiltered
+  -- (back-compat); the agent passes the probed `network.lan.device`.
+  local lan_dev       = cfg.lan_dev        or ""
   local max_batch     = cfg.max_batch      or 50
   local flush_int  = cfg.flush_interval or 10
   local max_retry  = cfg.max_retries    or 3
@@ -1202,7 +1233,8 @@ function M.watch(cfg)
   local function neighbor_table()
     local now = os.time()
     if arp_cache and arp_cache_sec == now then return arp_cache end
-    arp_cache, arp_cache_sec = M.parse_arp_table(), now
+    -- #2368: scope the v6 NDP set to the LAN bridge dev.
+    arp_cache, arp_cache_sec = M.parse_arp_table(lan_dev), now
     return arp_cache
   end
 
@@ -1219,8 +1251,10 @@ function M.watch(cfg)
     local lan_ip_set = (flow and flow.src_ip:find(":", 1, true)) and neighbor_table() or nil
     if flow and M.is_wan_bound(flow, lan_prefix, lan_prefix_v6, lan_ip_set) then
       -- v6 reuses the cached neighbor table (src is guaranteed present — it just
-      -- passed the membership check); v4 fetches a fresh ARP table as before.
-      local arp = lan_ip_set or M.parse_arp_table()
+      -- passed the membership check); v4 fetches a fresh ARP table as before
+      -- (lan_dev scopes only the v6 half; the v4 /proc/net/arp lookup is
+      -- unaffected — #2368).
+      local arp = lan_ip_set or M.parse_arp_table(lan_dev)
       local mac_candidate = M.arp_lookup_mac(flow.src_ip, arp)
       -- Parse the lease file when (a) MAC is new, or (b) MAC is pending a
       -- late hostname (#249 — re-emit dhcp_lease once dnsmasq writes it).

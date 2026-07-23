@@ -187,6 +187,104 @@ describe("parse_arp_table", function()
 end)
 
 -- ---------------------------------------------------------------------------
+-- 2c. parse_arp_table LAN-dev scoping (#2368)
+--
+-- `ip -6 neigh show` with NO dev filter returns neighbors on EVERY interface,
+-- including the WAN. The upstream/default router emits its own IPv6 (Router
+-- Advertisements, DHCPv6-PD, NDP), so its LL/ULA land in the neighbor set on
+-- the WAN iface (eth1). is_wan_bound then classes the router's self-sourced
+-- flows as LAN (src in set, dst not) → the agent autocreates the edge router
+-- as a phantom household device (MAC 94:83:c4:d4:9d:d9 → device-d49dd9). The
+-- fix scopes the v6 neigh query to the LAN bridge dev, so only true LAN
+-- neighbors enter the set. Must NOT regress #1796 (real LAN GUA/ULA/privacy
+-- addresses still attribute).
+-- ---------------------------------------------------------------------------
+describe("parse_arp_table LAN-dev scoping (#2368)", function()
+  -- Real runtime shape from the Flint 2 hardware-validation run (#2334):
+  local LAN_NEIGH = "fdaa:bbbb:cccc::147 lladdr 02:e2:fa:8e:c2:ce REACHABLE"
+  local WAN_GW_LL  = "fe80::9683:c4ff:fed4:9dd9 dev eth1 lladdr 94:83:c4:d4:9d:d9 router REACHABLE"
+  local WAN_GW_ULA = "fdcd:f224:23d6::1 dev eth1 lladdr 94:83:c4:d4:9d:d9 router REACHABLE"
+
+  -- Model the kernel's own dev filtering: `ip -6 neigh show dev br-lan`
+  -- returns only the LAN neighbor; the unfiltered form returns WAN neighbors
+  -- too. Records the last v6-neigh command so tests can assert the filter.
+  local last_neigh_cmd
+  local function with_neigh_stub(body)
+    last_neigh_cmd = nil
+    local saved_open, saved_popen = io.open, io.popen
+    io.open = function() return nil end  -- no v4 arp for these cases
+    io.popen = function(cmd)
+      if not cmd:match("ip %-6 neigh") then return nil end
+      last_neigh_cmd = cmd
+      local lines = cmd:match("dev%s")
+        and { LAN_NEIGH }                            -- kernel scoped to a dev
+        or  { LAN_NEIGH, WAN_GW_LL, WAN_GW_ULA }     -- unfiltered: all ifaces
+      local i = 0
+      return {
+        lines = function() return function() i = i + 1; return lines[i] end end,
+        read  = function() return nil end,
+        close = function() end,
+      }
+    end
+    local ok, err = pcall(body)
+    io.open, io.popen = saved_open, saved_popen
+    assert(ok, err)
+  end
+
+  it("scopes the v6 neigh query to the given LAN dev", function()
+    with_neigh_stub(function()
+      conntrack.parse_arp_table("br-lan")
+      assert.is_truthy(last_neigh_cmd:match("dev%s+br%-lan"))
+    end)
+  end)
+
+  it("excludes WAN-side neighbors when scoped to the LAN dev", function()
+    with_neigh_stub(function()
+      local set = conntrack.parse_arp_table("br-lan")
+      assert.equal("02:e2:fa:8e:c2:ce", set["fdaa:bbbb:cccc::147"])  -- LAN kept
+      assert.is_nil(set["fe80::9683:c4ff:fed4:9dd9"])                -- WAN LL dropped
+      assert.is_nil(set["fdcd:f224:23d6::1"])                        -- WAN ULA dropped
+    end)
+  end)
+
+  it("a WAN-gateway v6 flow is NOT wan-bound with the LAN-scoped set", function()
+    with_neigh_stub(function()
+      local set = conntrack.parse_arp_table("br-lan")
+      -- upstream router sources its own traffic to an internet dst
+      assert.is_false(conntrack.is_wan_bound(
+        { src_ip = "fdcd:f224:23d6::1", dst_ip = "2606:4700::1111" }, nil, nil, set))
+      -- but a real LAN v6 neighbor still attributes (#1796 not regressed)
+      assert.is_true(conntrack.is_wan_bound(
+        { src_ip = "fdaa:bbbb:cccc::147", dst_ip = "2606:4700::1111" }, nil, nil, set))
+    end)
+  end)
+
+  it("without a lan_dev the query is unfiltered (back-compat)", function()
+    with_neigh_stub(function()
+      local set = conntrack.parse_arp_table()
+      assert.is_nil(last_neigh_cmd:match("dev%s"))
+      assert.equal("94:83:c4:d4:9d:d9", set["fdcd:f224:23d6::1"])  -- WAN present pre-scope
+    end)
+  end)
+
+  it("rejects a lan_dev with shell metacharacters (no injection)", function()
+    with_neigh_stub(function()
+      conntrack.parse_arp_table("br-lan; rm -rf /")
+      -- unsafe value is not interpolated; falls back to the unfiltered dump
+      assert.is_nil(last_neigh_cmd:match("rm"))
+      assert.is_nil(last_neigh_cmd:match("dev%s"))
+    end)
+  end)
+
+  it("accepts a VLAN-style dev name (eth0.2)", function()
+    with_neigh_stub(function()
+      conntrack.parse_arp_table("eth0.2")
+      assert.is_truthy(last_neigh_cmd:match("dev%s+eth0%.2"))
+    end)
+  end)
+end)
+
+-- ---------------------------------------------------------------------------
 -- 3. Event serialization
 -- ---------------------------------------------------------------------------
 
