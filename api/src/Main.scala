@@ -648,86 +648,44 @@ object Main extends ZIOAppDefault {
       val metricsRoutes: Routes[Any, Response] =
         MetricsRoutes.routes(cfg.metrics, promPublisher)
 
+      // #2379: these three chunks are built by top-level `private def`s (see below) so their
+      // large subtrees leave the `allRoutes` method tree and don't crash the amd64 pickler. The
+      // stateful bindings resolved above are threaded in as explicit params (NOT re-resolved), so
+      // rate-limiter / ws-registry / event-bus state is shared, not forked.
       val systemRoutes: Routes[Any, Response] =
-        VersionRoutes.routes(wifihaven.api.BuildInfo.fromEnv) ++
-          AuthRoutes.routes(auth, userRepo, upRepo, loginRateLimiter) ++
-          // #2308: forgot-password request (public) + token consume / reset (public). Both rate-
-          // limited + enumeration-safe.
-          PasswordResetRoutes.routes(passwordReset, forgotPwRateLimiter, resetPwRateLimiter) ++
-          // #2132: beta request intake (public) + operator approval/reject + invite accept (public).
-          BetaRoutes.routes(auth, betaService, betaRepo, userRepo, betaReqRateLimiter) ++
-          // #2135: billing status (admin) + Checkout/Portal starts (admin) + signature-verified
-          // Stripe webhook (public). Disabled installs 404 the admin surfaces and no-op the webhook.
-          BillingRoutes.routes(
-            auth,
-            billing,
-            // #2137: a read failure degrades to "no window" rather than failing the billing page.
-            flipService.currentWindow.orElseSucceed(
-              wifihaven.api.billing.FlipService.FlipWindow(open = false, flipDate = None),
-            ),
-          ) ++
-          // #2199: admin-only server-signed Plain widget identity. Dark (returns {configured:false})
-          // until the operator sets the Plain widget app id + identity secret.
-          SupportRoutes.routes(auth, support) ++
-          // #2200: the Plain new-message webhook (signature-verified, authenticated-origin-gated
-          // cloud-agent dispatch — UI-originated or a #2307 registered-admin email) + the agent's
-          // token-authenticated callback endpoints. Off unless
-          // support.responderEnabled is set explicitly (#2265): webhook no-ops, agent endpoints 404.
-          SupportAgentRoutes.routes(supportResponder) ++
-          // #2203: the PRESS/PR inbox — a public, unauthenticated inbound webhook from the Cloudflare
-          // Email Worker (signature-verified, NO household gate) + the press agent's
-          // token-authenticated EMAIL-reply callback (destination locked into the token). Off unless
-          // press.responderEnabled is set explicitly (#2265): webhook no-ops, agent endpoint 404.
-          // The press agent holds no household data token (public audience).
-          PressAgentRoutes.routes(pressResponder) ++
-          // #2296: the household-1-only admin read of the recorded press correspondence log. Press is
-          // a company-global channel (no household_id); a non-default household gets 404 (not 403),
-          // so the log's existence is not disclosed across the tenant boundary.
-          PressRoutes.routes(auth, pressLog) ++
-          // #2233: the operator-only press-OUTREACH send surface (preview = dry-run default; send
-          // requires confirm:true + resolved fill tokens + configured email). Both endpoints 404
-          // unless press.outreach.enabled (dark-by-default #2265) and for any non-operator household.
-          PressOutreachRoutes.routes(
-            auth,
-            cfg.pressOutreach,
-            cfg.email.enabled,
-            pressEmailSender,
-            pressLog,
-            pressContacts,
-            pressRelease,
-          ) ++
-          ProfileRoutes.routes(
-            auth,
-            profileRepo,
-            tlRepo,
-            upRepo,
-            userRepo,
-            namedSchedRepo,
-            // #1538: same cache instance TimeRoutes uses, so a schedule detach busts the
-            // per-profile time-status entry instead of leaving a stale "paused for schedule".
-            timeCache,
-            // #1849: bust the computed-snapshot cache on a profile/schedule mutation.
-            // #1970 (S3): also nudge `stale{profiles}` so an open SPA re-fetches the class-(3)
-            // profiles resource (design §3.2) — composed onto the existing invalidate callback, so
-            // every profile mutation publishes without touching the route's signature.
-            policy.invalidate <* spaEventBus.publish(SpaEvent.Stale(StaleTopic.Profiles)),
-          ) ++
-          ScheduleRoutes.routes(
-            auth,
-            namedSchedRepo,
-            policy.invalidate <* spaEventBus.publish(SpaEvent.Stale(StaleTopic.Schedules)),
-          ) ++
-          HouseholdSettingsRoutes.routes(auth, hsRepo, policy.invalidate) ++
-          DeviceRoutes.routes(
-            auth,
-            deviceRepo,
-            upRepo,
-            profileRepo,
-            policy.invalidate <* spaEventBus.publish(SpaEvent.Stale(StaleTopic.Devices)),
-          )
+        buildSystemRoutes(
+          auth,
+          userRepo,
+          upRepo,
+          loginRateLimiter,
+          passwordReset,
+          forgotPwRateLimiter,
+          resetPwRateLimiter,
+          betaService,
+          betaRepo,
+          betaReqRateLimiter,
+          billing,
+          flipService,
+          support,
+          supportResponder,
+          pressResponder,
+          pressLog,
+          cfg,
+          pressEmailSender,
+          pressContacts,
+          pressRelease,
+          profileRepo,
+          tlRepo,
+          namedSchedRepo,
+          timeCache,
+          policy,
+          spaEventBus,
+          hsRepo,
+          deviceRepo,
+        )
 
       val statsRoutes: Routes[Any, Response] =
-        TimeRoutes.routes(
+        buildStatsRoutes(
           auth,
           deviceRepo,
           tlRepo,
@@ -740,98 +698,51 @@ object Main extends ZIOAppDefault {
           timeStatus,
           clock,
           timeCache,
-          // #1849: a +Time grant can lift a TimeLimit block, so bust the computed-snapshot cache.
-          policy.invalidate,
-          // #1974 (S6a): the grant changes remaining-minutes — push fresh timeStatus/appUsage live.
+          policy,
           spaEventBus,
           ambientRepoR,
-        ) ++
-          LogRoutes.routes(auth, connRepo, upRepo) ++
-          UsageRoutes.routes(
-            auth,
-            deviceRepo,
-            trafficRepo,
-            upRepo,
-            profileRepo,
-            appRepo,
-            rollupRepo2,
-            hsRepo,
-            atlRepo,
-            appRollupRepo,
-            clock,
-            ambientRepoR,
-          ) ++
-          DashboardNowRoutes.routes(
-            auth,
-            trafficRepo,
-            connRepo,
-            deviceRepo,
-            profileRepo,
-            upRepo,
-            atlRepo,
-            clock,
-          ) ++
-          BlocklistRoutes.routes(auth, blRepo, blCache, blFetcher2, bundledBlocklists) ++
-          // #335: kid-side block page support. Unauthenticated — the router DNATs blocked
-          // traffic to the SPA's /blocked, which calls GET /api/blocked?mac=&host= to render
-          // the reason + today's usage. Accidentally removed from registration in #1060;
-          // re-wired here so the kid-friendly path stops falling back to the legacy
-          // router-supplied `reason` query string.
-          BlockedRoutes.routes(
-            policy,
-            deviceRepo,
-            profileRepo,
-            blRepo,
-            timeStatus,
-            hsRepo,
-            clock,
-          )
+          connRepo,
+          appRepo,
+          rollupRepo2,
+          appRollupRepo,
+          blRepo,
+          blCache,
+          blFetcher2,
+          bundledBlocklists,
+        )
 
       val routerAndAdminRoutes: Routes[Any, Response] =
-        RouterRoutes.routes(routerRepo, policy, routerAuth, blockEvRepo) ++
-          AdminRouterRoutes.routes(auth, routerRepo, userRepo, entitlements) ++
-          RollupAdminRoutes.routes(auth, rollupRepo2) ++
-          RouterIngestRoutes.routes(routerAuth, routerIngest) ++
-          // #1846: additive websocket transport. REST ingest/poll/metrics above stay fully live.
-          RouterWsRoutes.routes(
-            routerAuth,
-            wsRegistry,
-            routerIngest,
-            routerMetrics,
-            routerRepo,
-            policy,
-          ) ++
-          RouterMetricsRoutes.routes(routerAuth, routerMetrics) ++
-          // #1968/#1969: additive browser-facing websocket endpoint (`GET /api/ws`). S2 (#1969)
-          // authorizes the upgrade via the `wh_ws` cookie (existing AuthService.verify) + the §8
-          // Origin allowlist (cfg.ws); push sources are S3/S4. The SPA has no ws client yet (S5), so
-          // this reads idle in prod until then.
-          SpaWsRoutes.routes(auth, spaWsRegistry, clock, cfg.ws) ++
-          AlertRoutes.routes(
-            auth,
-            alertRepo,
-            deviceRepo,
-            profileRepo,
-            extRepo,
-            appRepo,
-            hsRepo,
-            notifier,
-            clock,
-            accessReqRateLimiter,
-          ) ++
-          AppRoutes.routes(auth, appRepo, profileRepo, upRepo, blRepo, templates) ++
-          AdminDebugRoutes.routes(auth, policy) ++
-          DebugRoutes.routes(
-            cfg.debugEnabled,
-            cfg,
-            deviceRepo,
-            profileRepo,
-            connRepo,
-            usageRepo,
-            trafficRepo,
-            clock,
-            timeCache,
-          )
+        buildRouterAndAdminRoutes(
+          auth,
+          routerRepo,
+          routerAuth,
+          policy,
+          blockEvRepo,
+          userRepo,
+          entitlements,
+          rollupRepo2,
+          routerIngest,
+          wsRegistry,
+          routerMetrics,
+          spaWsRegistry,
+          clock,
+          cfg,
+          alertRepo,
+          deviceRepo,
+          profileRepo,
+          extRepo,
+          appRepo,
+          hsRepo,
+          notifier,
+          accessReqRateLimiter,
+          upRepo,
+          blRepo,
+          templates,
+          connRepo,
+          usageRepo,
+          trafficRepo,
+          timeCache,
+        )
 
       val spaRoutes: Routes[Any, Response] =
         if (cfg.http.serveSpa) StaticRoutes.routes(cfg.http.staticDir) else Routes.empty
@@ -890,4 +801,284 @@ object Main extends ZIOAppDefault {
       // SpaPush consumer and add the SPA `now`-trigger sink to the (now multi-subscriber) publisher.
       (assembled, wsRegistry, spaWsRegistry, spaEventBus)
     }
+
+  // #2379: `allRoutes`'s `yield` used to build every route chunk inline, making it a
+  // ~440-line method whose tree crashed the Scala 3.3.3 pickler on the amd64 clean
+  // full-compile (`AssertionError: unresolved symbols: method allRoutes ... when
+  // pickling`, TreePickler.scala:829) while compiling fine on macOS/arm64 and in the
+  // warm/incremental CI test job. This is the same "compiles locally, fails on Linux
+  // CI" Scala limit #1177 dodged one level down (splitting the flat `++` chain into
+  // typed chunks); here we push the three big chunks OUT of the method tree into
+  // top-level `private def`s so those subtrees leave `allRoutes`. Every stateful
+  // binding is threaded as an EXPLICIT parameter — never re-resolved via
+  // `ZIO.service`/`.make` inside these helpers — so rate-limiter / ws-registry /
+  // event-bus state is not forked. Behavior, route ordering, and `++` composition are
+  // identical to the inline form; only the compiled tree shape changes.
+  private def buildSystemRoutes(
+      auth: AuthService,
+      userRepo: UserRepo,
+      upRepo: UserProfileRepo,
+      loginRateLimiter: RateLimiter,
+      passwordReset: PasswordResetService,
+      forgotPwRateLimiter: RateLimiter,
+      resetPwRateLimiter: RateLimiter,
+      betaService: BetaService,
+      betaRepo: BetaRequestRepo,
+      betaReqRateLimiter: RateLimiter,
+      billing: wifihaven.api.billing.BillingService,
+      flipService: wifihaven.api.billing.FlipService,
+      support: wifihaven.api.support.SupportService,
+      supportResponder: wifihaven.api.support.SupportResponder,
+      pressResponder: wifihaven.api.press.PressResponder,
+      pressLog: wifihaven.api.db.PressMessageRepo,
+      cfg: AppConfig,
+      pressEmailSender: wifihaven.api.notify.EmailSender,
+      pressContacts: List[wifihaven.api.press.PressOutreach.Contact],
+      pressRelease: String,
+      profileRepo: ProfileRepo,
+      tlRepo: TimeLimitRepo,
+      namedSchedRepo: NamedScheduleRepo,
+      timeCache: TimeStatusCache,
+      policy: PolicyService,
+      spaEventBus: SpaEventBus,
+      hsRepo: HouseholdSettingsRepo,
+      deviceRepo: DeviceRepo,
+  ): Routes[Any, Response] =
+    VersionRoutes.routes(wifihaven.api.BuildInfo.fromEnv) ++
+      AuthRoutes.routes(auth, userRepo, upRepo, loginRateLimiter) ++
+      // #2308: forgot-password request (public) + token consume / reset (public). Both rate-
+      // limited + enumeration-safe.
+      PasswordResetRoutes.routes(passwordReset, forgotPwRateLimiter, resetPwRateLimiter) ++
+      // #2132: beta request intake (public) + operator approval/reject + invite accept (public).
+      BetaRoutes.routes(auth, betaService, betaRepo, userRepo, betaReqRateLimiter) ++
+      // #2135: billing status (admin) + Checkout/Portal starts (admin) + signature-verified
+      // Stripe webhook (public). Disabled installs 404 the admin surfaces and no-op the webhook.
+      BillingRoutes.routes(
+        auth,
+        billing,
+        // #2137: a read failure degrades to "no window" rather than failing the billing page.
+        flipService.currentWindow.orElseSucceed(
+          wifihaven.api.billing.FlipService.FlipWindow(open = false, flipDate = None),
+        ),
+      ) ++
+      // #2199: admin-only server-signed Plain widget identity. Dark (returns {configured:false})
+      // until the operator sets the Plain widget app id + identity secret.
+      SupportRoutes.routes(auth, support) ++
+      // #2200: the Plain new-message webhook (signature-verified, authenticated-origin-gated
+      // cloud-agent dispatch — UI-originated or a #2307 registered-admin email) + the agent's
+      // token-authenticated callback endpoints. Off unless
+      // support.responderEnabled is set explicitly (#2265): webhook no-ops, agent endpoints 404.
+      SupportAgentRoutes.routes(supportResponder) ++
+      // #2203: the PRESS/PR inbox — a public, unauthenticated inbound webhook from the Cloudflare
+      // Email Worker (signature-verified, NO household gate) + the press agent's
+      // token-authenticated EMAIL-reply callback (destination locked into the token). Off unless
+      // press.responderEnabled is set explicitly (#2265): webhook no-ops, agent endpoint 404.
+      // The press agent holds no household data token (public audience).
+      PressAgentRoutes.routes(pressResponder) ++
+      // #2296: the household-1-only admin read of the recorded press correspondence log. Press is
+      // a company-global channel (no household_id); a non-default household gets 404 (not 403),
+      // so the log's existence is not disclosed across the tenant boundary.
+      PressRoutes.routes(auth, pressLog) ++
+      // #2233: the operator-only press-OUTREACH send surface (preview = dry-run default; send
+      // requires confirm:true + resolved fill tokens + configured email). Both endpoints 404
+      // unless press.outreach.enabled (dark-by-default #2265) and for any non-operator household.
+      PressOutreachRoutes.routes(
+        auth,
+        cfg.pressOutreach,
+        cfg.email.enabled,
+        pressEmailSender,
+        pressLog,
+        pressContacts,
+        pressRelease,
+      ) ++
+      ProfileRoutes.routes(
+        auth,
+        profileRepo,
+        tlRepo,
+        upRepo,
+        userRepo,
+        namedSchedRepo,
+        // #1538: same cache instance TimeRoutes uses, so a schedule detach busts the
+        // per-profile time-status entry instead of leaving a stale "paused for schedule".
+        timeCache,
+        // #1849: bust the computed-snapshot cache on a profile/schedule mutation.
+        // #1970 (S3): also nudge `stale{profiles}` so an open SPA re-fetches the class-(3)
+        // profiles resource (design §3.2) — composed onto the existing invalidate callback, so
+        // every profile mutation publishes without touching the route's signature.
+        policy.invalidate <* spaEventBus.publish(SpaEvent.Stale(StaleTopic.Profiles)),
+      ) ++
+      ScheduleRoutes.routes(
+        auth,
+        namedSchedRepo,
+        policy.invalidate <* spaEventBus.publish(SpaEvent.Stale(StaleTopic.Schedules)),
+      ) ++
+      HouseholdSettingsRoutes.routes(auth, hsRepo, policy.invalidate) ++
+      DeviceRoutes.routes(
+        auth,
+        deviceRepo,
+        upRepo,
+        profileRepo,
+        policy.invalidate <* spaEventBus.publish(SpaEvent.Stale(StaleTopic.Devices)),
+      )
+
+  private def buildStatsRoutes(
+      auth: AuthService,
+      deviceRepo: DeviceRepo,
+      tlRepo: TimeLimitRepo,
+      atlRepo: AppTimeLimitRepo,
+      trafficRepo: TrafficReportRepo,
+      extRepo: TimeExtensionRepo,
+      profileRepo: ProfileRepo,
+      upRepo: UserProfileRepo,
+      hsRepo: HouseholdSettingsRepo,
+      timeStatus: wifihaven.api.policy.TimeStatusService,
+      clock: Clock,
+      timeCache: TimeStatusCache,
+      policy: PolicyService,
+      spaEventBus: SpaEventBus,
+      ambientRepoR: wifihaven.api.db.AmbientHostsRepo,
+      connRepo: ConnectionEventRepo,
+      appRepo: AppRepo,
+      rollupRepo2: RollupRepo,
+      appRollupRepo: wifihaven.api.db.AppUsedRollupRepo,
+      blRepo: BlocklistRepo,
+      blCache: BlocklistCache,
+      blFetcher2: BlocklistFetcher,
+      bundledBlocklists: Map[wifihaven.shared.types.BlocklistId, BundledBlocklist],
+  ): Routes[Any, Response] =
+    TimeRoutes.routes(
+      auth,
+      deviceRepo,
+      tlRepo,
+      atlRepo,
+      trafficRepo,
+      extRepo,
+      profileRepo,
+      upRepo,
+      hsRepo,
+      timeStatus,
+      clock,
+      timeCache,
+      // #1849: a +Time grant can lift a TimeLimit block, so bust the computed-snapshot cache.
+      policy.invalidate,
+      // #1974 (S6a): the grant changes remaining-minutes — push fresh timeStatus/appUsage live.
+      spaEventBus,
+      ambientRepoR,
+    ) ++
+      LogRoutes.routes(auth, connRepo, upRepo) ++
+      UsageRoutes.routes(
+        auth,
+        deviceRepo,
+        trafficRepo,
+        upRepo,
+        profileRepo,
+        appRepo,
+        rollupRepo2,
+        hsRepo,
+        atlRepo,
+        appRollupRepo,
+        clock,
+        ambientRepoR,
+      ) ++
+      DashboardNowRoutes.routes(
+        auth,
+        trafficRepo,
+        connRepo,
+        deviceRepo,
+        profileRepo,
+        upRepo,
+        atlRepo,
+        clock,
+      ) ++
+      BlocklistRoutes.routes(auth, blRepo, blCache, blFetcher2, bundledBlocklists) ++
+      // #335: kid-side block page support. Unauthenticated — the router DNATs blocked
+      // traffic to the SPA's /blocked, which calls GET /api/blocked?mac=&host= to render
+      // the reason + today's usage. Accidentally removed from registration in #1060;
+      // re-wired here so the kid-friendly path stops falling back to the legacy
+      // router-supplied `reason` query string.
+      BlockedRoutes.routes(
+        policy,
+        deviceRepo,
+        profileRepo,
+        blRepo,
+        timeStatus,
+        hsRepo,
+        clock,
+      )
+
+  private def buildRouterAndAdminRoutes(
+      auth: AuthService,
+      routerRepo: RouterRepo,
+      routerAuth: RouterAuth,
+      policy: PolicyService,
+      blockEvRepo: BlockEventRepo,
+      userRepo: UserRepo,
+      entitlements: EntitlementsRepo,
+      rollupRepo2: RollupRepo,
+      routerIngest: RouterIngestService,
+      wsRegistry: RouterWsRegistry,
+      routerMetrics: RouterMetricsService,
+      spaWsRegistry: SpaWsRegistry,
+      clock: Clock,
+      cfg: AppConfig,
+      alertRepo: AlertRepo,
+      deviceRepo: DeviceRepo,
+      profileRepo: ProfileRepo,
+      extRepo: TimeExtensionRepo,
+      appRepo: AppRepo,
+      hsRepo: HouseholdSettingsRepo,
+      notifier: Notifier,
+      accessReqRateLimiter: RateLimiter,
+      upRepo: UserProfileRepo,
+      blRepo: BlocklistRepo,
+      templates: Map[wifihaven.shared.types.AppTemplateId, AppTemplate],
+      connRepo: ConnectionEventRepo,
+      usageRepo: TimeUsageRepo,
+      trafficRepo: TrafficReportRepo,
+      timeCache: TimeStatusCache,
+  ): Routes[Any, Response] =
+    RouterRoutes.routes(routerRepo, policy, routerAuth, blockEvRepo) ++
+      AdminRouterRoutes.routes(auth, routerRepo, userRepo, entitlements) ++
+      RollupAdminRoutes.routes(auth, rollupRepo2) ++
+      RouterIngestRoutes.routes(routerAuth, routerIngest) ++
+      // #1846: additive websocket transport. REST ingest/poll/metrics above stay fully live.
+      RouterWsRoutes.routes(
+        routerAuth,
+        wsRegistry,
+        routerIngest,
+        routerMetrics,
+        routerRepo,
+        policy,
+      ) ++
+      RouterMetricsRoutes.routes(routerAuth, routerMetrics) ++
+      // #1968/#1969: additive browser-facing websocket endpoint (`GET /api/ws`). S2 (#1969)
+      // authorizes the upgrade via the `wh_ws` cookie (existing AuthService.verify) + the §8
+      // Origin allowlist (cfg.ws); push sources are S3/S4. The SPA has no ws client yet (S5), so
+      // this reads idle in prod until then.
+      SpaWsRoutes.routes(auth, spaWsRegistry, clock, cfg.ws) ++
+      AlertRoutes.routes(
+        auth,
+        alertRepo,
+        deviceRepo,
+        profileRepo,
+        extRepo,
+        appRepo,
+        hsRepo,
+        notifier,
+        clock,
+        accessReqRateLimiter,
+      ) ++
+      AppRoutes.routes(auth, appRepo, profileRepo, upRepo, blRepo, templates) ++
+      AdminDebugRoutes.routes(auth, policy) ++
+      DebugRoutes.routes(
+        cfg.debugEnabled,
+        cfg,
+        deviceRepo,
+        profileRepo,
+        connRepo,
+        usageRepo,
+        trafficRepo,
+        clock,
+        timeCache,
+      )
 }
