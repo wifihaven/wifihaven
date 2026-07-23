@@ -91,6 +91,42 @@ bypass (the `enforcement_disabled` metric reads 1).
 
 ---
 
+## Dashboard off switch (server-driven — needs the WifiHaven server up) — #2382
+
+The easier switch, for everyday "just turn it off for now": a toggle in the
+WifiHaven web dashboard. It turns off **all** blocking for the whole
+household — profiles, schedules, time limits, blocked sites, and category
+blocklists — so every device gets normal, unfiltered internet within seconds.
+Turn it back off to restore normal blocking; nothing is uninstalled and no
+settings are lost.
+
+**Where:** dashboard → **Admin** → **"Turn off all blocking (escape hatch)"**.
+You must be signed in as a household **admin** to change it (any member can see
+its state).
+
+**Important — it needs the WifiHaven server to be reachable.** Because the
+decision is made on the server, this switch does **not** help during a server
+outage or when the internet is down (you couldn't load the dashboard anyway).
+For those cases use the **router off switch** above, which works offline.
+
+Under the hood the server just ships a fully *permissive* policy for the
+household (the same "allow everything" snapshot it already uses so a lapsed
+account never bricks the network), and the router applies it blind — it never
+learns *why*, it simply stops dropping traffic. So this is **not** a second
+enforcement mechanism; it reuses the existing pass-through path. The flag is a
+per-household setting (`household_settings.enforcement_disabled`), scoped so one
+household's switch never affects another.
+
+### How to tell it's working
+
+While it's on, the household's devices browse normally and the block page never
+appears. Server-side, the **"Permissive snapshots by reason"** panel on the
+Enforcement dashboard shows a non-zero `enforcement_disabled` rate (the
+`policy_permissive_snapshot_total{reason="enforcement_disabled"}` series) —
+that's the signal a household is currently running with blocking off.
+
+---
+
 ## Why this is safe and reversible
 
 - It's a **pause**, not an uninstall. Your profiles, schedules, blocklists, and

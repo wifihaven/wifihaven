@@ -367,9 +367,6 @@ for the GL-MT6000.
 
 - [`install-openwrt.md`](install-openwrt.md) — the canonical OpenWRT-side
   install once the box is flashed and on baseline OpenWRT.
-- [`disable-enforcement.md`](disable-enforcement.md) — the two **escape
-  hatches** for turning off all blocking (dashboard toggle vs. on-router
-  toggle) — where the "off switch" is when a policy gets in the way.
 - [`architecture.md`](architecture.md) — agent design.
 - OpenWRT firmware selector: <https://firmware-selector.openwrt.org/>
 - OpenWRT GL-MT6000 device page:
