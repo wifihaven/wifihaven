@@ -4,7 +4,7 @@ import type {
   ForgotPasswordAck, ForgotPasswordRequest, ResetPasswordRequest, ResetPasswordResponse,
   Alert, AppDetail, ApproveAlertRequest, BlockedInfoResponse, BlocklistHosts, BlocklistSummary, CreateRouterRequest, CreateRouterResponse, CreateUserRequest,
   DashboardNow, DashboardStats, Device,
-  CreateAccessRequest, DeviceTimeStatus, DeviceTimeStatusWeek, HouseholdSettings, LoginResponse, MeResponse, ProfileAppWeeklyUsage, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek, ProfileUsageByApp,
+  CreateAccessRequest, DeviceTimeStatus, DeviceTimeStatusWeek, EnforcementStatus, HouseholdSettings, LoginResponse, MeResponse, ProfileAppWeeklyUsage, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek, ProfileUsageByApp,
   ConnectionEventSeriesPage, QueryLogPage,
   PatchUserRequest,
   NamedSchedule, NamedScheduleRequest,
@@ -306,6 +306,11 @@ export const api = {
     get: () => req<HouseholdSettings>('GET', '/household/settings'),
     patch: (data: Record<string, unknown>) =>
       req<void>('PATCH', '/household/settings', data),
+    // #2382: the server-level "disable enforcement" escape hatch (admin write).
+    getEnforcement: () =>
+      req<EnforcementStatus>('GET', '/household/enforcement'),
+    setEnforcement: (enforcementDisabled: boolean) =>
+      req<EnforcementStatus>('PUT', '/household/enforcement', { enforcementDisabled }),
   },
 
   // ── Devices ────────────────────────────────────────────────────────────

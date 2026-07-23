@@ -104,6 +104,8 @@ object PolicyServiceLive {
       // constructions build the normal enforcing snapshot; the flip lifecycle spec passes a
       // repo-backed reader to exercise the lapsed→permissive path.
       billingStatusOf: HouseholdId => Task[Option[String]] = _ => ZIO.succeed(Some("active")),
+      // #2382: the escape-hatch reader; see the class-level doc. Defaulted to "never disabled".
+      enforcementDisabledOf: HouseholdId => Task[Boolean] = _ => ZIO.succeed(false),
   ): PolicyServiceLive = {
     val tss = new TimeStatusServiceLive(
       profileRepo,
@@ -133,6 +135,7 @@ object PolicyServiceLive {
       namedScheduleRepo,
       cacheEnabled,
       billingStatusOf = billingStatusOf,
+      enforcementDisabledOf = enforcementDisabledOf,
     )
   }
 }
@@ -181,6 +184,14 @@ class PolicyServiceLive(
     // installs (only household 1, seeded `active`) build the normal enforcing snapshot unchanged;
     // the production layer wires the real `HouseholdBillingRepo` read.
     billingStatusOf: HouseholdId => Task[Option[String]] = _ => ZIO.succeed(Some("active")),
+    // #2382: the server-level per-household "disable enforcement" escape hatch. When this reads
+    // `true` for a household, `buildSnapshot` serves the SAME permissive (allow-all) snapshot a
+    // `lapsed` household gets (no new wire field, no router change — the router stays a dumb applier
+    // and never learns why). Defaulted to "never disabled" so the ~40 direct test constructions and
+    // single-tenant installs build the normal enforcing snapshot unchanged; the production layer
+    // wires the real `HouseholdSettingsRepo.enforcementDisabled` read (behavioral setting). Fails
+    // toward enforcing on a read blip (false) so a transient DB hiccup never flips the fleet permissive.
+    enforcementDisabledOf: HouseholdId => Task[Boolean] = _ => ZIO.succeed(false),
 ) extends PolicyService {
 
   // #1849: the cached snapshot. Process-local `AtomicReference` (matching the existing
@@ -351,23 +362,40 @@ class PolicyServiceLive(
     ZIO.succeed(publisher.set(p))
 
   private def buildSnapshot(household: HouseholdId): Task[PolicySnapshot] =
-    // #2137: a lapsed household gets a permissive snapshot — enforcement stops (§5.3). This is the
-    // ONLY billing-aware branch in the enforcement path; the router wire is never gated, the
-    // permissive snapshot serves through the existing fields exactly like a household with no policy.
-    billingStatusOf(household).flatMap {
-      case Some("lapsed") =>
-        clock.instant.flatMap { now =>
-          val snap = PolicyService.permissiveSnapshot(now)
-          // Still meter the build so the computed:cache_hit ratio and the global-policy gauge stay
-          // coherent; a permissive snapshot has an empty global section (0 allow hosts, 0 default-deny).
-          AppMetrics
-            .setGlobalPolicy(snap.global.extraAllowed.size, 0)
-            .zipRight(logSnapshotChanged(snap))
-            .zipRight(AppMetrics.recordSnapshotBuild("computed"))
-            .zipLeft(buildBarrier)
-            .as(snap)
-        }
-      case _              => buildEnforcingSnapshot(household)
+    // A household gets a PERMISSIVE snapshot — enforcement stops — for either of two reasons, both
+    // resolved ENTIRELY server-side and collapsed into the same allow-all wire shape (no new field;
+    // the router stays a dumb applier and never learns why):
+    //   - #2137: the billing status is `lapsed` (beta→paid flip stop-enforcement, §5.3 "never brick
+    //     the network").
+    //   - #2382: the operator flipped the server-level per-household "disable enforcement" escape
+    //     hatch (`household_settings.enforcement_disabled`).
+    // These are the ONLY branches in the enforcement path that short-circuit to permissive; the
+    // router wire is never gated, the permissive snapshot serves through the existing fields exactly
+    // like a household with no policy. `enforcementDisabled` takes precedence for the metric reason
+    // (an explicit operator override is the more actionable signal than an incidental lapse).
+    for {
+      status   <- billingStatusOf(household)
+      disabled <- enforcementDisabledOf(household)
+      snap     <-
+        if (disabled) permissiveBuild("enforcement_disabled")
+        else if (status.contains("lapsed")) permissiveBuild("lapsed")
+        else buildEnforcingSnapshot(household)
+    } yield snap
+
+  // #2137/#2382: build (and meter) the shared permissive snapshot. `reason` ∈
+  // {lapsed, enforcement_disabled} labels `policy_permissive_snapshot_total`. Still records the
+  // normal `recordSnapshotBuild("computed")` + global-policy gauge so the cache-hit ratio and the
+  // global-policy gauge stay coherent (a permissive snapshot has an empty global section).
+  private def permissiveBuild(reason: String): Task[PolicySnapshot] =
+    clock.instant.flatMap { now =>
+      val snap = PolicyService.permissiveSnapshot(now)
+      AppMetrics
+        .setGlobalPolicy(snap.global.extraAllowed.size, 0)
+        .zipRight(logSnapshotChanged(snap))
+        .zipRight(AppMetrics.recordSnapshotBuild("computed"))
+        .zipRight(AppMetrics.recordPermissiveSnapshot(reason))
+        .zipLeft(buildBarrier)
+        .as(snap)
     }
 
   private def buildEnforcingSnapshot(household: HouseholdId): Task[PolicySnapshot] =
@@ -1003,6 +1031,20 @@ object PolicyService {
                   s"policy: billing-status read failed for household ${hid.value}: ${e.getMessage}",
                 )
                 .as(None)
+            },
+        // #2382: the escape-hatch reader — the flag is a behavioral setting, read straight off the
+        // household's own `household_settings` row (leak-safe per-household via #2386). Like the
+        // billing read it fails toward ENFORCING (false) on a DB blip so a transient hiccup never
+        // flips a household permissive.
+        enforcementDisabledOf = hid =>
+          hsr
+            .enforcementDisabled(hid)
+            .catchAll { e =>
+              ZIO
+                .logWarning(
+                  s"policy: enforcement-disabled read failed for household ${hid.value}: ${e.getMessage}",
+                )
+                .as(false)
             },
       )
   }

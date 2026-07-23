@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '@/api/client'
-import type { HouseholdSettings, UnmanagedMacPolicy } from '@/types/api'
+import type { EnforcementStatus, HouseholdSettings, UnmanagedMacPolicy } from '@/types/api'
 import { TimezonePicker } from '@/components/TimezonePicker'
 import { PageLoader } from './DashboardPage'
 import { useDebouncedSave, mergeSaveStatus } from '@/hooks/useDebouncedSave'
@@ -32,12 +32,89 @@ export function AdminPage() {
         <p className="text-sm text-brand-text-muted mt-1">Settings that apply to the whole household.</p>
       </div>
 
+      <DisableEnforcementCard />
       {hs && <DailyResetCard value={hs} reload={reload} />}
       {hs && <HeartbeatFilterCard value={hs} reload={reload} />}
       {hs && <NotifyEmailCard value={hs} reload={reload} />}
       {hs && <BlockEncryptedDnsCard value={hs} reload={reload} />}
       {hs && <AmbientGateCard value={hs} reload={reload} />}
       {hs && <UnmanagedMacPolicyCard value={hs} reload={reload} />}
+    </div>
+  )
+}
+
+// #2382 — the server-level per-household "disable enforcement" escape hatch. When on, ALL blocking
+// for the household stops (every device passes through). It is the easy dashboard equivalent of the
+// on-router escape hatch (#2381) — but because it is server-driven it does NOT work if the API/
+// server is unreachable; the copy points the user at the on-router toggle for an outage. Its own
+// query (not household settings) since it is backed by the households table, not household_settings.
+function DisableEnforcementCard() {
+  const [status, setStatus] = useState<EnforcementStatus | null>(null)
+  const [disabled, setDisabled] = useState(false)
+
+  useEffect(() => {
+    api.household.getEnforcement()
+      .then(s => { setStatus(s); setDisabled(s.enforcementDisabled) })
+      .catch(() => { /* leave null → the card shows its loading affordance */ })
+  }, [])
+
+  const save = useDebouncedSave(
+    disabled,
+    async (next) => {
+      const s = await api.household.setEnforcement(next)
+      setStatus(s)
+    },
+    // This card loads its value asynchronously (it is backed by its own endpoint, not the parent's
+    // already-loaded settings), so the initial `disabled=false` is a placeholder, not the saved
+    // baseline. Key the save on load state: when the fetch resolves, the baseline resets to the
+    // just-loaded value instead of treating "false → loaded true" as a user edit and firing a
+    // spurious PUT (+ snapshot invalidation) on every page visit where the hatch is already on.
+    { key: status === null ? 'loading' : 'loaded' },
+  )
+
+  return (
+    <div
+      data-testid="disable-enforcement-card"
+      className="bg-white rounded-2xl border border-brand-border p-5 space-y-3"
+    >
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="font-bold text-brand-ink">Turn off all blocking (escape hatch)</h2>
+        <SaveStatusBadge
+          testId="disable-enforcement-save-status"
+          status={save.status}
+          error={save.error}
+          onRetry={save.retry}
+        />
+      </div>
+
+      <p className="text-xs text-brand-text">
+        Flips off <em>all</em> enforcement for the whole household — schedules, time limits, blocked
+        sites, and category blocklists — so every device gets the open internet. Use this when a
+        setting is blocking something it shouldn&rsquo;t and you just need things working right now,
+        then turn it back on. While it&rsquo;s on, nothing on this network is filtered.
+      </p>
+      <p className="text-xs text-brand-text-muted">
+        This works from anywhere but <strong>only while the WifiHaven server is reachable</strong>.
+        If the internet is down or the server is unreachable, use the on-router escape hatch instead
+        (the &ldquo;Disable enforcement&rdquo; toggle in your router&rsquo;s LuCI admin, or the
+        <code className="mx-1">wifihaven-disable</code> command over SSH).
+      </p>
+      {status === null ? (
+        <p className="text-sm text-brand-text-muted" data-testid="disable-enforcement-loading">
+          Loading&hellip;
+        </p>
+      ) : (
+        <label className="flex items-center gap-2 text-sm text-brand-ink">
+          <input
+            type="checkbox"
+            checked={disabled}
+            onChange={e => setDisabled(e.target.checked)}
+            data-testid="disable-enforcement-toggle"
+            className="h-4 w-4"
+          />
+          Disable all blocking for this household
+        </label>
+      )}
     </div>
   )
 }

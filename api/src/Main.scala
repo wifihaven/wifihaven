@@ -923,6 +923,10 @@ object Main extends ZIOAppDefault {
         policy.invalidate <* spaEventBus.publish(SpaEvent.Stale(StaleTopic.Schedules)),
       ) ++
       HouseholdSettingsRoutes.routes(auth, hsRepo, policy.invalidate) ++
+      // #2382: the server-level per-household "disable enforcement" escape hatch (admin-write). The
+      // flag is a behavioral setting on household_settings; a toggle busts the computed-snapshot
+      // cache so the permissive/enforcing flip reaches connected ws routers and the next REST poll.
+      HouseholdEnforcementRoutes.routes(auth, hsRepo, policy.invalidate) ++
       DeviceRoutes.routes(
         auth,
         deviceRepo,

@@ -366,6 +366,34 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "title": "Permissive snapshots by reason (#2382 / #2137)",
+      "description": "sum by (reason) (rate(policy_permissive_snapshot_total[5m])) — how often PolicyService serves a fully PERMISSIVE (allow-all) snapshot instead of a household's real policy, so ALL blocking is off for that household. reason=enforcement_disabled is the server-level #2382 escape-hatch toggle (an admin turned enforcement off from the dashboard); reason=lapsed is the beta→paid flip stop-enforcement path (#2137). A sustained non-zero rate on enforcement_disabled means at least one household is running with blocking OFF — expected briefly while someone uses the escape hatch, worth noticing if it stays on. API-side series (no router_id label), so this is not filtered by the Router variable.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 41 },
+      "id": 12,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "ops",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 15, "showPoints": "never", "lineWidth": 1 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (reason) (rate(policy_permissive_snapshot_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{reason}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",
