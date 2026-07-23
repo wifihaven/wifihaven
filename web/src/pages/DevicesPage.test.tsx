@@ -185,6 +185,67 @@ describe('DevicesPage — inline autosave edit (#1000)', () => {
     }
   })
 
+  // #2366 — the inline editor <select> must carry a "No profile" option so
+  // (a) a device with no current profile shows a selection that matches state
+  // (not a phantom first-profile the browser paints when value='' matches no
+  // <option>), (b) assigning from "No profile" is a genuine onChange that fires
+  // autosave, and (c) a profile can be removed (PATCH {profileId:null}).
+  it('a device with no current profile shows "No profile" selected; picking one fires PATCH {profileId}', async () => {
+    // profileId points at a since-deleted profile → the device lists as managed
+    // (profileId !== null) but renders a "No profile" pill and, pre-fix, the
+    // editor painted the first real profile as selected while state stayed
+    // orphaned → clicking Done fired no PATCH (the silent no-op).
+    const orphan: Device = {
+      id: 3, mac: 'aa:bb:cc:dd:ee:03', name: 'Old Tablet',
+      profileId: 999, profileName: null,
+      lastSeenIp: null, lastSeenAt: null,
+    }
+    ;(api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([orphan])
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    try {
+      renderPage()
+      const row = await screen.findByTestId('device-row-aa:bb:cc:dd:ee:03')
+      await user.click(within(row).getByRole('button', { name: /Edit/ }))
+      const editor = await screen.findByTestId('device-editor-aa:bb:cc:dd:ee:03')
+      const select = within(editor).getByTestId(
+        'device-profile-select-aa:bb:cc:dd:ee:03',
+      ) as HTMLSelectElement
+      // The displayed selection matches state: "No profile", not a phantom.
+      expect(within(editor).getByRole('option', { name: 'No profile' })).toBeInTheDocument()
+      expect(select.value).toBe('')
+
+      await user.selectOptions(select, '1')
+      await vi.advanceTimersByTimeAsync(700)
+
+      expect(api.devices.patch).toHaveBeenCalledWith('aa:bb:cc:dd:ee:03', { profileId: 1 })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('removing a profile inline fires PATCH {profileId:null}', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    try {
+      renderPage()
+      const ipadRow = await screen.findByTestId(`device-row-${mac}`)
+      await user.click(within(ipadRow).getByRole('button', { name: /Edit/ }))
+      const editor = await screen.findByTestId(`device-editor-${mac}`)
+      const select = within(editor).getByTestId(
+        `device-profile-select-${mac}`,
+      ) as HTMLSelectElement
+      expect(select.value).toBe('1') // starts assigned to Kids
+
+      await user.selectOptions(select, '')
+      await vi.advanceTimersByTimeAsync(700)
+
+      expect(api.devices.patch).toHaveBeenCalledWith(mac, { profileId: null })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('PATCH failure surfaces inline error + Retry; dirty value retained; Retry re-sends', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
