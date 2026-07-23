@@ -368,7 +368,7 @@ class PolicyServiceLive(
     //   - #2137: the billing status is `lapsed` (beta→paid flip stop-enforcement, §5.3 "never brick
     //     the network").
     //   - #2382: the operator flipped the server-level per-household "disable enforcement" escape
-    //     hatch (`households.enforcement_disabled`).
+    //     hatch (`household_settings.enforcement_disabled`).
     // These are the ONLY branches in the enforcement path that short-circuit to permissive; the
     // router wire is never gated, the permissive snapshot serves through the existing fields exactly
     // like a household with no policy. `enforcementDisabled` takes precedence for the metric reason
