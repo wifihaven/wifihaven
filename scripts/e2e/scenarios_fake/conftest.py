@@ -438,7 +438,13 @@ def _router_upstream_resolves() -> bool:
             f"nslookup {host} 127.0.0.1 2>/dev/null | sed -n '/^Name:/,$p' | "
             r"grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n1"
         )
-        res = router_ssh(cmd, check=False, timeout=10)
+        try:
+            res = router_ssh(cmd, check=False, timeout=10)
+        except Exception:  # noqa: BLE001
+            # A transient SSH timeout/hiccup mid-heal must NOT abort the fixture
+            # (run() raises TimeoutExpired even with check=False) — treat it as
+            # "not warm yet" so the caller keeps polling/kicking.
+            continue
         if (res.stdout or "").strip():
             return True
     return False
@@ -501,7 +507,10 @@ def _wait_for_router_wan_healthy(*, timeout_s: float = 60, kick_interval_s: floa
                 "router WAN upstream cold (attempt %d) — re-kicking `ifup wan` [%s]",
                 attempts, _wan_flake_note(),
             )
-            router_ssh("ifup wan", check=False, timeout=30)
+            try:
+                router_ssh("ifup wan", check=False, timeout=30)
+            except Exception:  # noqa: BLE001
+                pass  # best-effort heal; keep polling regardless
             last_kick = now
         time.sleep(3)
     log.warning(
