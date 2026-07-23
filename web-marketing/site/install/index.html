@@ -123,6 +123,44 @@
           prompted.
         </p>
 
+        <h2 id="4-what-to-expect-when-you-block">4. What to expect when you enable blocking</h2>
+        <p>
+          wifihaven blocks at the <strong>connection layer</strong>, not by faking DNS — so a block
+          you just turned on is <strong>not instant</strong>. The router learns a site’s addresses
+          when a device looks them up through it, so a new block becomes fully effective only after
+          the policy reaches the router (a few seconds) <em>and</em> the device does a fresh DNS
+          lookup for that site. Until then, cached lookups and connections already open keep working.
+        </p>
+        <div class="callout">
+          <strong>Testing a block right away?</strong> Flush the device’s DNS cache and reload the
+          site — that forces a fresh lookup through the router and the block takes hold. Give it a
+          minute or two otherwise; it warms up on its own. A blocked <code>http://</code> site shows
+          the block page; a blocked <code>https://</code> site shows a certificate warning or simply
+          fails to connect (we don’t intercept encrypted traffic — that’s expected, not a bug).
+        </div>
+        <p>Some device settings route around any network-level filter by design:</p>
+        <ul>
+          <li>
+            <strong>A VPN or Cloudflare WARP</strong> sends all traffic (including DNS) off your
+            network through the VPN, where the router can’t see or filter it.
+          </li>
+          <li>
+            <strong>“Secure DNS” / DoH / DoT / iCloud Private Relay</strong> bypass the router’s DNS,
+            so it never learns which site a device is visiting. wifihaven has opt-in settings to
+            counter these (strict IP-only mode and an encrypted-DNS block), off by default.
+          </li>
+        </ul>
+        <p>
+          If a block seems ineffective, check for those first. The full, engineering-level
+          explanation is in
+          <a
+            href="https://github.com/wifihaven/wifihaven/blob/main/docs/enforcement-expectations.md"
+            target="_blank"
+            rel="noopener"
+            >How enforcement takes effect</a
+          >.
+        </p>
+
         <div class="next">
           <a class="cta" href="https://app.wifihaven.net/routers?add=1">Get an enrollment token →</a>
           <a class="ghost" href="https://github.com/wifihaven/wifihaven/tree/main/docs"
