@@ -124,6 +124,15 @@ export interface HouseholdSettings {
   notifyEmail: string | null
 }
 
+// #2382 — the server-level per-household "disable enforcement" escape hatch. When
+// `enforcementDisabled` is true the household's router snapshot goes fully
+// permissive (ALL blocking off) — the easy dashboard equivalent of the
+// router-level offline hatch (#2381). Because it is server-driven it does NOT
+// help during an API outage; for that, use the on-router LuCI/CLI toggle.
+export interface EnforcementStatus {
+  enforcementDisabled: boolean
+}
+
 export interface TimeLimit {
   id: number
   profileId: number

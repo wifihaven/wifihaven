@@ -443,5 +443,9 @@ Then jump to §3 to verify.
   agent.
 - [`docs/enforcement-expectations.md`](enforcement-expectations.md) — how a
   block warms up, what HTTPS blocks look like, and what can bypass filtering.
+- [`docs/disable-enforcement.md`](disable-enforcement.md) — the two **escape
+  hatches** for turning off all blocking: the dashboard toggle (easy, needs the
+  server up) and the on-router toggle (works offline). Read this so you know
+  where the "off switch" is before you need it.
 - [`docs/deploy.md`](deploy.md) — overall CD pipeline for both deployment
   targets.

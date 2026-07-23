@@ -1023,6 +1023,15 @@ case class UpdateHouseholdSettingsRequest(
 ) derives JsonCodec
 
 /**
+ * #2382: the server-level per-household "disable enforcement" escape hatch, as seen by the SPA.
+ * When `enforcementDisabled` is true the household's router snapshot goes fully permissive (all
+ * blocking OFF) — the easy dashboard equivalent of the router-level offline hatch (#2381). Shared
+ * by `GET /api/household/enforcement` (read) and `PUT /api/household/enforcement` (admin write).
+ */
+case class EnforcementStatusResponse(enforcementDisabled: Boolean) derives JsonCodec
+case class SetEnforcementRequest(enforcementDisabled: Boolean) derives JsonCodec
+
+/**
  * #961: how the household treats MACs that have appeared on the network but are not yet enrolled
  * into any profile.
  *

@@ -505,6 +505,25 @@ trait HouseholdSettingsRepo {
   def getForHousehold(household: HouseholdId): Task[HouseholdSettings]
   def update(s: HouseholdSettings): Task[Unit]
 
+  /**
+   * #2382: the server-level per-household "disable enforcement" escape hatch, read straight off the
+   * household's OWN `household_settings` row (`WHERE household_id = ?`, no id=1 fallback), so one
+   * household's flag can never be read for another (multi-tenant isolation, epic #2085). Every
+   * household owns its row post-#2386, so a missing row (a provisioning bug) reads `false` —
+   * failing toward ENFORCING, never leaking another tenant's state. This is the ONE narrow field
+   * read without the full `getForHousehold` decode, so the [[wifihaven.api.policy.PolicyService]]
+   * permissive gate doesn't pay for the whole settings row.
+   */
+  def enforcementDisabled(household: HouseholdId): Task[Boolean]
+
+  /**
+   * #2382: set the escape-hatch flag on the household's OWN row (`WHERE household_id = ?`). Returns
+   * true when a row was updated, false when the household has no settings row — the route maps the
+   * latter to 404 rather than silently succeeding. (Post-#2386 every household has a row, so
+   * `false` signals a genuinely unknown household.)
+   */
+  def setEnforcementDisabled(household: HouseholdId, disabled: Boolean): Task[Boolean]
+
   /** Insert the default row if missing, using `defaultZone` as the install-time tz. */
   def ensureDefault(defaultZone: ZoneId): Task[Unit]
 }
@@ -1672,6 +1691,26 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
             ),
           )
       },
+    )
+
+  // #2382: escape-hatch read/write, scoped to the household's OWN row (`WHERE household_id`, no
+  // id=1 fallback). A missing row reads `false` so the permissive gate fails toward enforcing.
+  def enforcementDisabled(household: HouseholdId) =
+    DbMetrics.timed("householdSettings.enforcementDisabled")(
+      (fr"SELECT enforcement_disabled FROM household_settings WHERE" ++
+        SqlFragments.householdEq(household))
+        .query[Boolean]
+        .option
+        .map(_.getOrElse(false))
+        .transact(xa),
+    )
+
+  def setEnforcementDisabled(household: HouseholdId, disabled: Boolean) =
+    DbMetrics.timed("householdSettings.setEnforcementDisabled")(
+      (fr"UPDATE household_settings SET enforcement_disabled=$disabled, updated_at=NOW() WHERE" ++
+        SqlFragments.householdEq(household)).update.run
+        .map(_ > 0)
+        .transact(xa),
     )
 
   def update(s: HouseholdSettings): Task[Unit] = {

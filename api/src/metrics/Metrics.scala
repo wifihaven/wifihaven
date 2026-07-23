@@ -321,6 +321,11 @@ object MetricGuard {
     // fixed 2-value enums — bounded, no per-mac / per-host dimension. (Without these entries the
     // firewall would reject both names as unknown_name and the series would never emit.)
     "policy_snapshot_build_total"               -> Set("result"),
+    // #2382 — how often PolicyService serves a fully permissive (allow-all) snapshot instead of the
+    // household's real policy, by `reason` ∈ {lapsed, enforcement_disabled} — a fixed 2-value enum,
+    // bounded, no per-household dimension. A sustained rate on `enforcement_disabled` is the signal
+    // that a household is running with all blocking OFF via the #2382 escape hatch.
+    "policy_permissive_snapshot_total"          -> Set("reason"),
     "router_ws_policy_push_total"               -> Set("result"),
     // #1968 — SPA-websocket transport (server side, design `docs/design/spa-websocket.md` §7).
     // `spa_ws_connections_active` is the live count of open /api/ws channels per `role`
@@ -1006,6 +1011,16 @@ object AppMetrics {
   // enum (bounded label, per docs/process/instrumentation.md).
   def recordSnapshotBuild(result: String): UIO[Unit] =
     MetricGuard.counter("policy_snapshot_build_total", Map("result" -> result))
+
+  // #2382: counts each time PolicyService serves a fully PERMISSIVE (allow-all) snapshot instead of
+  // the household's real policy, split by why. `reason` ∈ {lapsed, enforcement_disabled} — a fixed
+  // 2-value enum (bounded label, per docs/process/instrumentation.md): `lapsed` is the beta→paid
+  // flip stop-enforcement path (#2137), `enforcement_disabled` is the server-level escape-hatch
+  // toggle (#2382). Fires on each permissive build (alongside recordSnapshotBuild("computed")), so a
+  // sustained rate on `enforcement_disabled` is the operational signal that a household is currently
+  // running with all blocking OFF.
+  def recordPermissiveSnapshot(reason: String): UIO[Unit] =
+    MetricGuard.counter("policy_permissive_snapshot_total", Map("reason" -> reason))
 
   // #1849: emitted by RouterWsRegistry.publishPolicy for each fan-out attempt of a changed snapshot.
   // `result` ∈ {ok, channel_closed} — `ok` = the frame was handed to the channel, `channel_closed`

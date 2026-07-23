@@ -8,6 +8,9 @@ vi.mock('@/api/client', () => ({
       get: vi.fn(),
       update: vi.fn(),
       patch: vi.fn(),
+      // #2382 — the escape-hatch card queries these on mount / write.
+      getEnforcement: vi.fn(),
+      setEnforcement: vi.fn(),
     },
   },
 }))
@@ -59,6 +62,18 @@ beforeEach(() => {
           ...(patch.unmanagedMacPolicy ?? {}),
         },
       }
+    },
+  )
+  // #2382 — the escape-hatch flag has its own server-of-record (it is backed by the households
+  // table, not household_settings), so mock it separately as a simple get/set round-trip.
+  let enforcementDisabled = false
+  ;(api.household.getEnforcement as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+    async () => ({ enforcementDisabled }),
+  )
+  ;(api.household.setEnforcement as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+    async (next: boolean) => {
+      enforcementDisabled = next
+      return { enforcementDisabled }
     },
   )
 })
@@ -256,5 +271,48 @@ describe('AdminPage — ambient anchor-gate toggle (#2077)', () => {
     await waitFor(() =>
       expect((screen.getByTestId('ambient-gate-enabled') as HTMLInputElement).checked).toBe(true),
     )
+  })
+})
+
+describe('AdminPage — disable-enforcement escape hatch (#2382)', () => {
+  it('renders the toggle reflecting the stored flag (off by default)', async () => {
+    render(<AdminPage />)
+    const toggle = await screen.findByTestId('disable-enforcement-toggle') as HTMLInputElement
+    expect(toggle.checked).toBe(false)
+  })
+
+  it('warns that it needs the server up and points to the on-router hatch', async () => {
+    render(<AdminPage />)
+    await screen.findByTestId('disable-enforcement-toggle')
+    const card = screen.getByTestId('disable-enforcement-card')
+    expect(card.textContent).toMatch(/only while the WifiHaven server is reachable/i)
+    expect(card.textContent).toMatch(/on-router escape hatch/i)
+  })
+
+  it('toggling on calls setEnforcement(true) and reflects the persisted flag', async () => {
+    const user = userEvent.setup()
+    render(<AdminPage />)
+    await screen.findByTestId('disable-enforcement-toggle')
+
+    await user.click(screen.getByTestId('disable-enforcement-toggle'))
+
+    await waitFor(() =>
+      expect(api.household.setEnforcement).toHaveBeenCalledWith(true),
+    )
+    await waitFor(() =>
+      expect((screen.getByTestId('disable-enforcement-toggle') as HTMLInputElement).checked).toBe(true),
+    )
+  })
+
+  it('does NOT fire a spurious write when it loads an already-disabled household', async () => {
+    // The card loads its flag asynchronously, so the async "false → loaded true" transition must not
+    // be mistaken for a user edit (which would PUT + invalidate the snapshot on every page visit).
+    vi.mocked(api.household.getEnforcement).mockResolvedValue({ enforcementDisabled: true })
+    render(<AdminPage />)
+    const toggle = await screen.findByTestId('disable-enforcement-toggle') as HTMLInputElement
+    expect(toggle.checked).toBe(true)
+    // Well past the 500ms debounce: no save should have been scheduled from the load.
+    await new Promise(r => setTimeout(r, 800))
+    expect(api.household.setEnforcement).not.toHaveBeenCalled()
   })
 })
