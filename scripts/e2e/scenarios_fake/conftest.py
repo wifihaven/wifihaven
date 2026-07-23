@@ -49,6 +49,7 @@ from lib.vm import (  # noqa: E402
 )
 from lib.wait import wait_for_client_dns  # noqa: E402
 from lib.wan_health import (  # noqa: E402
+    CONTROL_APEX_HOSTS,
     smoke_check_nil_signature,
     wan_lease_flake_signature,
 )
@@ -246,8 +247,9 @@ def router_session(fake_server, fake_api) -> EnrolledRouter:
     # Confirm the agent has issued at least one policy poll before snapshotting.
     fake_api.wait_for_policy_fetch(timeout_s=180)
     # Take the base snapshot on a warm WAN so restores start from a healthy
-    # upstream (#2390).
-    _wait_for_router_wan_healthy()
+    # upstream (#2390). Larger budget here — a cold base snapshot would poison
+    # every restore, and this runs once per session (not per scenario).
+    _wait_for_router_wan_healthy(timeout_s=120)
     router_snapshot(BASE_SNAPSHOT)
     log.info("fake-mode base snapshot taken: %s", BASE_SNAPSHOT)
     try:
@@ -420,19 +422,16 @@ def _wait_for_fake_slirp_ready(*, port: int, timeout_s: float = 60, interval_s: 
 # a lost lease (`ifup wan`) so the scenario runs on a healthy WAN instead of
 # being skipped or failed.
 
-# Stable third-party apexes used to prove the router's upstream path is warm.
-# Resolving either proves WAN lease + SLIRP UDP-forward + upstream are all live
-# — exactly the condition a scenario needs. They are egress-dependent on
-# purpose (there is no shorter honest proof the upstream works); a persistent
-# external-egress outage is the separate #2034 concern handled per-test, not
-# here.
-_WAN_HEALTH_HOSTS = ("one.one.one.one", "example.com")
-
-
 def _router_upstream_resolves() -> bool:
     """True iff the router's own resolver answers a control host — the
-    post-restore WAN path (lease + SLIRP UDP-forward table + upstream) is warm."""
-    for host in _WAN_HEALTH_HOSTS:
+    post-restore WAN path (lease + SLIRP UDP-forward table + upstream) is warm.
+
+    Uses the shared CONTROL_APEX_HOSTS: resolving either proves WAN lease +
+    SLIRP UDP-forward + upstream are all live — exactly the condition a scenario
+    needs. They are egress-dependent on purpose (there is no shorter honest
+    proof the upstream works); a persistent external-egress outage is the
+    separate #2034 concern handled per-test, not here."""
+    for host in CONTROL_APEX_HOSTS:
         # NB: keep the regex out of the f-string — its `{1,3}` quantifiers would
         # be parsed as f-string fields. Adjacent-literal concat side-steps that.
         cmd = (
@@ -465,15 +464,22 @@ def _wan_flake_note() -> str:
     return "no #2390 flake signature in log"
 
 
-def _wait_for_router_wan_healthy(*, timeout_s: float = 120, kick_interval_s: float = 25) -> None:
+def _wait_for_router_wan_healthy(*, timeout_s: float = 60, kick_interval_s: float = 20) -> None:
     """Retry until the router's WAN upstream is healthy, healing it if needed.
 
     Poll the router's own resolver for a control host; if it stays cold, re-kick
     `ifup wan` to force a fresh DHCP lease (the #2390 fix — heal, don't skip).
-    Returns as soon as the upstream resolves. If it never warms within the
-    budget — a persistent WAN/egress problem, not the transient boot flake — log
-    and proceed: the scenario's own assertions and the #2034 egress guard then
-    speak, so a genuine outage still surfaces rather than being hidden."""
+    Returns as soon as the upstream resolves — the transient flake heals within a
+    few seconds of a kick, so the happy path costs one nslookup. If it never
+    warms within the budget — a persistent WAN/egress problem, not the transient
+    boot flake — log and proceed: the scenario's own assertions and the #2034
+    egress guard then speak, so a genuine outage still surfaces rather than being
+    hidden.
+
+    The per-scenario budget is kept modest on purpose: a persistent outage must
+    not multiply into a >75m Gate-timeout cancellation across ~51 scenarios
+    (worst case ≈ 51 × timeout_s), so keep timeout_s small here; the
+    once-per-session base-snapshot warm-up passes a larger budget."""
     deadline = time.monotonic() + timeout_s
     started = time.monotonic()
     # Give the natural post-restore warm-up (cf. wait_for_client_dns) a grace

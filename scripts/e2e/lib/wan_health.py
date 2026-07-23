@@ -26,6 +26,13 @@ from __future__ import annotations
 
 import re
 
+# Stable third-party apexes that resolve whenever external DNS egress is healthy
+# and do NOT depend on our infra/cloudflare zone. Single source for both the
+# router-side WAN warm-up probe (conftest._router_upstream_resolves) and the
+# client-side egress-degraded guard (_observers.EGRESS_CONTROL_HOSTS) so the two
+# never drift.
+CONTROL_APEX_HOSTS = ("one.one.one.one", "example.com")
+
 # busybox udhcpc's terminal give-up line for the WAN interface, e.g.
 #   ... daemon.err wifihaven-agent: udhcpc: no lease, failing
 # Match the stable core regardless of syslog facility/prefix. Deliberately does

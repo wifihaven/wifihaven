@@ -16,6 +16,7 @@ import re
 from lib.traffic import dns_query, http_get
 from lib.vm import client_exec, router_nft_set, router_ssh
 from lib.wait import wait_until
+from lib.wan_health import CONTROL_APEX_HOSTS
 
 
 BLOCKED_MACS_SET = "blocked_macs"
@@ -153,8 +154,10 @@ def dig_ipv4_answers(client, host: str) -> list[str]:
 #   * control hosts resolve, our records don't → real zone problem → fail
 #   * control hosts also fail to resolve       → egress degraded   → skip
 # These controls are stable third-party apexes that do NOT depend on
-# infra/cloudflare; they answer whenever upstream egress is healthy.
-EGRESS_CONTROL_HOSTS = ("one.one.one.one", "example.com")
+# infra/cloudflare; they answer whenever upstream egress is healthy. Single-
+# sourced in lib.wan_health so the router-side WAN warm-up probe uses the same
+# set (#2390).
+EGRESS_CONTROL_HOSTS = CONTROL_APEX_HOSTS
 
 
 def dns_egress_degraded(client) -> bool:
