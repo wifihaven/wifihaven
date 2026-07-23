@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
+import { newProfileDefaults } from '@/api/profileDefaults'
 import { useAlerts, useDevices, useHouseholdSettings, useProfiles, useInvalidators } from '@/api/queries'
 import { useAuth } from '@/hooks/useAuth'
 import { useEscapeClose } from '@/hooks/useEscapeClose'
@@ -50,6 +51,13 @@ export function DevicesPage() {
   useEscapeClose(() => setEditing(null), editing !== null)
   const [form,     setForm]     = useState({ mac: '', name: '', profileId: 0 })
   const [editingMac, setEditingMac] = useState<string | null>(null)
+  // #2367 — inline "+ New profile…" creation from within the Add-Device modal,
+  // so a brand-new (zero-profile) household can onboard its first device without
+  // bouncing to Profiles. When the household has no profiles, the creator is
+  // shown in place of the (otherwise empty/invalid) select.
+  const [creatingProfile, setCreatingProfile] = useState(false)
+  const [newProfileName,  setNewProfileName]  = useState('')
+  const [newProfileError, setNewProfileError] = useState<string | null>(null)
   const highlightMac = useHighlightFromQuery(devices)
 
   const upsertMutation = useMutation({
@@ -60,6 +68,27 @@ export function DevicesPage() {
       return invalidators.deviceMutated()
     },
   })
+
+  // Reuse the same create endpoint + safe-by-default shape ProfilesPage uses
+  // (#978 via newProfileDefaults), so an inline-created profile is identical to
+  // one made on /profiles.
+  const createProfileMutation = useMutation({
+    mutationFn: (name: string) => api.profiles.create(newProfileDefaults(name)),
+    onSuccess: async (created) => {
+      setForm(f => ({ ...f, profileId: created.id }))
+      setCreatingProfile(false)
+      setNewProfileName('')
+      setNewProfileError(null)
+      await invalidators.profileMutated()
+    },
+  })
+
+  async function createProfile() {
+    const trimmed = newProfileName.trim()
+    if (!trimmed) { setNewProfileError('Name is required'); return }
+    setNewProfileError(null)
+    await createProfileMutation.mutateAsync(trimmed)
+  }
 
   const deleteMutation = useMutation({
     mutationFn: (mac: string) => api.devices.delete(mac),
@@ -75,9 +104,15 @@ export function DevicesPage() {
     await deleteMutation.mutateAsync(mac)
   }
 
-  function addUnknown(mac: string) {
+  // Open the create/enroll modal. On an empty household start in profile-create
+  // mode so the operator is prompted to make the first profile (#2367) rather
+  // than facing an empty select.
+  function openCreate(mac: string) {
     setEditing({} as Device)
     setForm({ mac, name: '', profileId: profiles[0]?.profile.id ?? 0 })
+    setCreatingProfile(profiles.length === 0)
+    setNewProfileName('')
+    setNewProfileError(null)
   }
 
   if (loading) return <PageLoader />
@@ -93,7 +128,7 @@ export function DevicesPage() {
         <h1 className="text-xl font-bold text-brand-ink">Devices</h1>
         {isAdmin && (
           <button
-            onClick={() => { setEditing({} as Device); setForm({ mac: '', name: '', profileId: profiles[0]?.profile.id ?? 0 }) }}
+            onClick={() => openCreate('')}
             className="bg-brand-accent hover:bg-brand-accent-dark text-white text-sm font-semibold px-4 py-2 rounded-xl transition-colors"
           >
             + Add Device
@@ -180,7 +215,7 @@ export function DevicesPage() {
                 </div>
                 {isAdmin && (
                   <button
-                    onClick={() => addUnknown(d.mac)}
+                    onClick={() => openCreate(d.mac)}
                     data-testid={`unmanaged-enroll-${d.mac}`}
                     className="text-xs text-brand-accent hover:text-brand-accent bg-brand-accent/10 px-3 py-1.5 rounded-lg transition-colors shrink-0"
                   >Enroll</button>
@@ -199,14 +234,61 @@ export function DevicesPage() {
             <Field label="Name" value={form.name} onChange={v => setForm(f => ({...f, name: v}))} placeholder="Kid's iPad" />
             <div>
               <label className="block text-xs font-semibold text-brand-text-muted uppercase tracking-wider mb-2">Profile</label>
-              <select value={form.profileId} onChange={e => setForm(f => ({...f, profileId: Number(e.target.value)}))}
-                className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-3 text-brand-ink">
-                {profiles.map(p => <option key={p.profile.id} value={p.profile.id}>{p.profile.name}</option>)}
-              </select>
+              {profiles.length > 0 && (
+                <select
+                  value={creatingProfile ? '__new__' : form.profileId}
+                  onChange={e => {
+                    if (e.target.value === '__new__') {
+                      setCreatingProfile(true)
+                      setNewProfileError(null)
+                    } else {
+                      setCreatingProfile(false)
+                      setForm(f => ({...f, profileId: Number(e.target.value)}))
+                    }
+                  }}
+                  className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-3 text-brand-ink">
+                  {profiles.map(p => <option key={p.profile.id} value={p.profile.id}>{p.profile.name}</option>)}
+                  <option value="__new__">+ New profile…</option>
+                </select>
+              )}
+              {creatingProfile && (
+                <div data-testid="add-device-new-profile" className="mt-2 space-y-2">
+                  {profiles.length === 0 && (
+                    <p className="text-xs text-brand-text-muted">Create your first profile to assign this device.</p>
+                  )}
+                  <input
+                    type="text"
+                    value={newProfileName}
+                    onChange={e => setNewProfileName(e.target.value)}
+                    data-testid="add-device-new-profile-name"
+                    placeholder="Profile name"
+                    className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-3 text-brand-ink placeholder-brand-text-muted focus:outline-none focus:border-brand-accent"
+                  />
+                  {newProfileError && (
+                    <p data-testid="add-device-new-profile-error" className="text-sm text-red-700">{newProfileError}</p>
+                  )}
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={createProfile}
+                      disabled={createProfileMutation.isPending}
+                      data-testid="add-device-create-profile"
+                      className="flex-1 py-2.5 rounded-xl bg-brand-accent text-white text-sm font-semibold disabled:opacity-60"
+                    >Create profile</button>
+                    {profiles.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => { setCreatingProfile(false); setNewProfileName(''); setNewProfileError(null) }}
+                        className="flex-1 py-2.5 rounded-xl bg-brand-alt text-brand-text text-sm font-medium"
+                      >Cancel</button>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
             <div className="flex gap-3 pt-2">
               <button onClick={() => setEditing(null)} className="flex-1 py-3 rounded-xl bg-brand-alt text-brand-text font-medium">Cancel</button>
-              <button onClick={save} className="flex-1 py-3 rounded-xl bg-brand-accent text-white font-semibold">Save</button>
+              <button onClick={save} disabled={creatingProfile} className="flex-1 py-3 rounded-xl bg-brand-accent text-white font-semibold disabled:opacity-60">Save</button>
             </div>
           </div>
         </div>
