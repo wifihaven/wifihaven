@@ -299,8 +299,18 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
   -- after #1788). Tests inject opts.bl_shard_exists; production uses the
   -- module-level default_bl_shard_exists which stats the canonical shard path.
   local bl_shard_exists = opts.bl_shard_exists or default_bl_shard_exists
+  -- #2381: the local enforcement escape hatch. The agent sets this from the
+  -- UCI flag wifihaven.settings.enforcement_disabled (read fresh each apply).
+  -- When true, render.dnsmasq/render.nft emit a PERMISSIVE ruleset (no drops,
+  -- no block-page DNAT, no nftset= populators) so all forwarded traffic passes
+  -- regardless of snapshot freshness. render.nft already receives the full
+  -- `opts`; render.dnsmasq gets a fresh opts table below, so forward the flag
+  -- explicitly. Also skips the ea_ carve backfill (below) — the permissive
+  -- ruleset declares no ea_ sets to seed.
+  local enforcement_disabled = opts.enforcement_disabled and true or false
   local dnsmasq_content = timed("render_dnsmasq", function()
     return render.dnsmasq(snapshot, {
+      enforcement_disabled = enforcement_disabled,
       bl_shard_exists = function(id)
         local ok = bl_shard_exists(id)
         if not ok then
@@ -416,7 +426,7 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
   -- enabled path left out of #2094's scope. Only ea_/ea6_ fail CLOSED — a
   -- carved host silently dropped — which is the confirmed #2094 symptom.
   local ea_backfilled = 0
-  if nft_ok then
+  if nft_ok and not enforcement_disabled then
     timed("ea_backfill", function()
     local carve = {}
     for mac, hosts in pairs(render.effective_extra_allowed_by_mac(snapshot)) do

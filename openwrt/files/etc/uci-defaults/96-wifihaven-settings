@@ -1,0 +1,23 @@
+#!/bin/sh
+# #2381: ensure the `config settings 'settings'` section exists so the escape
+# hatch (wifihaven.settings.enforcement_disabled) is toggleable from LuCI and
+# readable by the agent on EVERY install — including an in-place package upgrade
+# that preserved a hand-edited /etc/config/wifihaven from before this section
+# shipped (opkg/apk keeps a modified conffile and drops the new one as
+# .opkg-new/.apk-new, so the new stanza wouldn't otherwise land).
+#
+# The agent already fails safe when the key is absent (missing => enforcement
+# ON) and the wifihaven-disable/-enable helpers self-create the section, so this
+# is belt-and-suspenders for the LuCI NamedSection toggle. Idempotent: it only
+# writes when the section/option is missing, so it never clobbers an operator's
+# current value. uci-defaults runs once at first boot after procd is up and is
+# removed on a zero exit (retried on non-zero) — same idiom as 95-wifihaven-uhttpd.
+if [ -z "$(uci -q get wifihaven.settings)" ]; then
+  uci set wifihaven.settings=settings
+fi
+if [ -z "$(uci -q get wifihaven.settings.enforcement_disabled)" ]; then
+  uci set wifihaven.settings.enforcement_disabled='0'
+fi
+uci commit wifihaven
+
+exit 0

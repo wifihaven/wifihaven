@@ -80,4 +80,28 @@ local ws_enabled = ws:option(Flag, "enabled", translate("Enable WebSocket transp
 ws_enabled.default = "0"
 ws_enabled.rmempty = false
 
+-- ── Emergency: disable all enforcement (escape hatch, #2381) ─────────────────
+-- Lives in its own named `config settings 'settings'` section
+-- (wifihaven.settings.enforcement_disabled). Unlike the cadence/ws options
+-- above, this takes effect WITHOUT a service restart: the agent re-reads the
+-- flag on every apply cycle and flips within ~1s. It is the LOCAL, OFFLINE
+-- override — it works even when the API server is unreachable.
+local hatch = m:section(NamedSection, "settings", "settings",
+  translate("Emergency: disable all blocking"))
+hatch.addremove = false
+
+local enf_disabled = hatch:option(Flag, "enforcement_disabled",
+  translate("Disable all WifiHaven enforcement"),
+  translate("EMERGENCY ESCAPE HATCH. When ON, this router stops ALL blocking — " ..
+    "profiles, schedules, time limits, blocked sites, and category blocklists — " ..
+    "and every device gets normal, unfiltered internet. Turn this on if the " ..
+    "internet is broken, a policy is wrong, or the WifiHaven server is down. It " ..
+    "works even when the server is unreachable and takes effect within a few " ..
+    "seconds (no restart needed). It does not uninstall anything; turn it back " ..
+    "off to restore normal blocking. Equivalent CLI: wifihaven-disable / " ..
+    "wifihaven-enable. The dashboard toggle (#2382) does the same per household " ..
+    "but needs the server up; this is the offline fallback."))
+enf_disabled.default = "0"
+enf_disabled.rmempty = false
+
 return m

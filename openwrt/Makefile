@@ -103,6 +103,9 @@ define Package/wifihaven/install
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/usr/sbin/wifihaven-ws $(1)/usr/sbin/
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/usr/sbin/wifihaven-update $(1)/usr/sbin/
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/usr/sbin/wifihaven-rotate-dnsmasq-log $(1)/usr/sbin/
+	# #2381 enforcement escape-hatch CLI helpers (wifihaven-disable / -enable).
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/usr/sbin/wifihaven-disable $(1)/usr/sbin/
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/usr/sbin/wifihaven-enable $(1)/usr/sbin/
 
 	$(INSTALL_DIR) $(1)/usr/lib/lua/wifihaven
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/files/usr/lib/lua/wifihaven/*.lua $(1)/usr/lib/lua/wifihaven/
@@ -134,6 +137,8 @@ define Package/wifihaven/install
 
 	$(INSTALL_DIR) $(1)/etc/uci-defaults
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/etc/uci-defaults/95-wifihaven-uhttpd $(1)/etc/uci-defaults/
+	# #2381: ensure the enforcement-escape-hatch `settings` UCI section exists.
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/etc/uci-defaults/96-wifihaven-settings $(1)/etc/uci-defaults/
 endef
 
 define Package/wifihaven/postinst

@@ -1,0 +1,21 @@
+#!/bin/sh
+# wifihaven-enable — restore normal WifiHaven enforcement on THIS router (#2381).
+#
+# Clears the local escape-hatch flag (wifihaven.settings.enforcement_disabled=0)
+# and commits it. On its next apply cycle (within ~1s) the agent re-installs the
+# full enforcement plane from the current policy snapshot — the inverse of
+# wifihaven-disable. Safe to run any time; a no-op if enforcement is already on.
+set -e
+
+uci set wifihaven.settings=settings 2>/dev/null || true
+uci set wifihaven.settings.enforcement_disabled='0'
+uci commit wifihaven
+
+cat <<'EOF'
+WifiHaven enforcement RE-ENABLED (escape hatch off).
+
+Normal blocking (profiles, schedules, time limits, blocklists) is being restored
+from the current policy within a few seconds.
+
+Watch it take effect:   logread -f | grep wifihaven
+EOF

@@ -1,0 +1,36 @@
+#!/bin/sh
+# wifihaven-disable — turn OFF all WifiHaven enforcement on THIS router (#2381).
+#
+# The escape hatch. Sets the local UCI flag wifihaven.settings.enforcement_disabled=1
+# and commits it. On its next apply cycle (within ~1s) the agent tears down ALL
+# blocking — every nftables forward-drop (paused/scheduled/time-limit whole-MAC
+# blocks, per-site extraBlocked, category blocklists, blockIpOnly) AND the
+# block-page HTTP redirect — so all forwarded traffic passes and every device
+# has normal internet.
+#
+# This works even when the API server is DOWN: the flag lives on the router and
+# is read locally, independent of the policy snapshot. Use it for a server
+# outage, a bad policy, or "the internet is broken and I need it back right now."
+#
+# It does NOT uninstall anything and does NOT lose your settings — it is a
+# reversible pause. Restore normal blocking any time with:  wifihaven-enable
+#
+# The server-driven per-household equivalent is the dashboard toggle (#2382),
+# which is easier but needs the API to be up. This is the offline fallback.
+set -e
+
+uci set wifihaven.settings=settings 2>/dev/null || true
+uci set wifihaven.settings.enforcement_disabled='1'
+uci commit wifihaven
+
+cat <<'EOF'
+WifiHaven enforcement DISABLED (escape hatch on).
+
+All blocking on this router is being torn down; every device will have normal,
+unfiltered internet within a few seconds. This persists across reboots and works
+even if the WifiHaven server is unreachable.
+
+Re-enable normal blocking with:   wifihaven-enable
+
+Watch it take effect:             logread -f | grep wifihaven
+EOF
