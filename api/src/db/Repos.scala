@@ -68,6 +68,13 @@ object HouseholdSeed {
       _   <-
         sql"INSERT INTO household_billing(household_id, status, founding) VALUES($hid, $billingStatus, $founding)".update.run
       _   <- ProfileSeed.insertGlobalSentinel(hid)
+      // #2386: the household's OWN household_settings row is part of the atomic creation unit —
+      // households + household_billing + global-sentinel + settings, so no create path can leave a
+      // household reading another tenant's config. All settings columns have DB defaults, so only
+      // household_id is supplied; `id` auto-generates (V82 identity). A fresh household has no
+      // settings row yet, so ON CONFLICT is just belt-and-braces against a retried create.
+      _   <-
+        sql"INSERT INTO household_settings(household_id) VALUES($hid) ON CONFLICT (household_id) DO NOTHING".update.run
     } yield hid
 
   /**
@@ -1645,17 +1652,25 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
       ),
     )
 
-  // #2107: household-scoped settings read for the router snapshot/decide paths. household_settings is
-  // still a SINGLE-ROW table (V16 `CHECK (id = 1)`); the per-household split — dropping that CHECK and
-  // seeding a settings row per household — lands in sub-issue E (#2108). Until then a non-default
-  // household has no settings row of its own, so it inherits the canonical default row (`get`) rather
-  // than failing the snapshot build. For `HouseholdId.Default` the scoped read hits its own row
-  // directly and the fallback is never taken.
+  // #2107/#2386: household-scoped settings read for the router snapshot/decide paths. Every household
+  // owns its OWN settings row — seeded atomically at creation ([[HouseholdSeed.insertHousehold]]) and
+  // backfilled for pre-existing households at boot ([[backfillMissingSettings]]). A missing row is
+  // therefore a provisioning BUG, so this FAILS LOUD (matching `get`'s id=1 contract) rather than
+  // falling back to household #1's row — that fallback was a live cross-tenant leak (#2386: a beta
+  // household with no row of its own read household #1's block-encrypted-DNS / unmanaged-MAC policy /
+  // reset tz / notify-email). No silent default: per no-dark-by-default, a rowless household surfaces
+  // as an error instead of silently inheriting another tenant's config.
   def getForHousehold(household: HouseholdId): Task[HouseholdSettings] =
     DbMetrics.timed("householdSettings.getForHousehold")(
       selectSettings(SqlFragments.householdEq(household)).flatMap {
         case Some(s) => ZIO.succeed(s)
-        case None    => get
+        case None    =>
+          ZIO.fail(
+            new RuntimeException(
+              s"household_settings row missing for household ${household.value} " +
+                "(every household must own its settings row; see #2386)",
+            ),
+          )
       },
     )
 
