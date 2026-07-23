@@ -192,29 +192,41 @@ def dns_egress_degraded(client) -> bool:
 #      wan_lease_flake_signature) as root-cause CONTEXT in the skip reason.
 
 
+# Grep the WHOLE log ring for the signature phrases, not a position-limited
+# `tail`: the smoke-check-"nil" is logged early (when the scenario pushes its
+# snapshot) but the guard runs at block-page timeout up to ~120s later, by which
+# point >200 tail lines of routine agent chatter can have rolled the line off.
+# `logread -e wifihaven` filters to agent lines; grepping the phrase across the
+# full ring keeps detection robust to log-roll while staying bounded (only the
+# matching lines are returned). `grep` exits 1 on no match — harmless with
+# check=False; the matcher then sees empty output.
+_SMOKE_NIL_GREP = "logread -e wifihaven | grep -F 'smoke check failed'"
+_FLAKE_GREP = "logread -e wifihaven | grep -E 'udhcpc: *no lease|smoke check failed'"
+
+
 def router_wan_lease_degraded() -> bool:
     """True iff the router's LIVE agent log shows an in-scenario policy.apply
     smoke-check "nil" — per-scenario-reliable evidence the guest lost its WAN
     upstream during this scenario (see lib.wan_health). Read-only; returns False
     if the router is unreachable (let the caller's own timeout speak)."""
     try:
-        r = router_ssh("logread -e wifihaven | tail -n 200", check=False, timeout=10)
+        r = router_ssh(_SMOKE_NIL_GREP, check=False, timeout=10)
     except Exception:  # noqa: BLE001
         return False
     return smoke_check_nil_signature((r.stdout or "") + (r.stderr or ""))
 
 
 def _wan_flake_context() -> str:
-    """Best-effort root-cause string (udhcpc-no-lease / smoke-check-nil) pulled
-    from the router serial + agent log, for the skip reason. Empty if neither
-    is found or the router is unreachable."""
+    """Best-effort root-cause tag (udhcpc-no-lease / smoke-check-nil) pulled from
+    the router serial + agent log, for the skip reason. "absent" if neither is
+    found or the router is unreachable."""
     serial = agent = ""
     try:
-        serial = router_serial_log(tail=200) or ""
+        serial = router_serial_log(tail=400) or ""
     except Exception:  # noqa: BLE001
         pass
     try:
-        r = router_ssh("logread -e wifihaven | tail -n 200", check=False, timeout=10)
+        r = router_ssh(_FLAKE_GREP, check=False, timeout=10)
         agent = (r.stdout or "") + (r.stderr or "")
     except Exception:  # noqa: BLE001
         pass
