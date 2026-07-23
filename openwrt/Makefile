@@ -137,6 +137,8 @@ define Package/wifihaven/install
 
 	$(INSTALL_DIR) $(1)/etc/uci-defaults
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/etc/uci-defaults/95-wifihaven-uhttpd $(1)/etc/uci-defaults/
+	# #2381: ensure the enforcement-escape-hatch `settings` UCI section exists.
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/etc/uci-defaults/96-wifihaven-settings $(1)/etc/uci-defaults/
 endef
 
 define Package/wifihaven/postinst
