@@ -129,10 +129,20 @@ set -euo pipefail
 # /api/health; true REQUIRES the full chain or boot fails loudly. Flip via render.yaml PR at go-live,
 # AFTER the secrets are set (config precedes code).
 : "${WIFIHAVEN_PRESS_RESPONDER_ENABLED:=false}"
+# #2327: which cloud-agent transport the press responder dispatches through — EXPLICIT named value
+# (managed-agents = Anthropic Managed Agents session, API-credit billed; claude-code-cloud = a
+# Claude Code Cloud routine fired per message, Claude-subscription billed). Only the SELECTED
+# transport's config chain is required at boot; an unknown value fails boot loudly.
+: "${WIFIHAVEN_PRESS_DISPATCHER:=managed-agents}"
 : "${WIFIHAVEN_PRESS_WEBHOOK_SECRET:=}"
 : "${WIFIHAVEN_PRESS_ANTHROPIC_API_KEY:=}"
 : "${WIFIHAVEN_PRESS_CLAUDE_AGENT_ID:=}"
 : "${WIFIHAVEN_PRESS_CLAUDE_ENVIRONMENT_ID:=}"
+# #2327: claude-code-cloud transport — the pre-provisioned press routine id + its per-routine bearer
+# token (from the routine's "API trigger" in the Claude Code web UI). Required only when dispatcher =
+# claude-code-cloud.
+: "${WIFIHAVEN_PRESS_CLAUDE_CODE_ROUTINE_ID:=}"
+: "${WIFIHAVEN_PRESS_CLAUDE_CODE_ROUTINE_TOKEN:=}"
 : "${WIFIHAVEN_PRESS_AGENT_TOKEN_SECRET:=}"
 : "${WIFIHAVEN_PRESS_AGENT_API_BASE:=https://api.wifihaven.net}"
 : "${WIFIHAVEN_PRESS_DEPLOYMENT_ENV:=}"
@@ -224,14 +234,17 @@ wifihaven {
     githubSupportBotToken = "${WIFIHAVEN_SUPPORT_GITHUB_BOT_TOKEN}"
   }
   press {
-    responderEnabled    = ${WIFIHAVEN_PRESS_RESPONDER_ENABLED}
-    webhookSecret       = "${WIFIHAVEN_PRESS_WEBHOOK_SECRET}"
-    anthropicApiKey     = "${WIFIHAVEN_PRESS_ANTHROPIC_API_KEY}"
-    claudeAgentId       = "${WIFIHAVEN_PRESS_CLAUDE_AGENT_ID}"
-    claudeEnvironmentId = "${WIFIHAVEN_PRESS_CLAUDE_ENVIRONMENT_ID}"
-    agentTokenSecret    = "${WIFIHAVEN_PRESS_AGENT_TOKEN_SECRET}"
-    agentApiBase        = "${WIFIHAVEN_PRESS_AGENT_API_BASE}"
-    deploymentEnv       = "${WIFIHAVEN_PRESS_DEPLOYMENT_ENV}"
+    responderEnabled       = ${WIFIHAVEN_PRESS_RESPONDER_ENABLED}
+    dispatcher             = "${WIFIHAVEN_PRESS_DISPATCHER}"
+    webhookSecret          = "${WIFIHAVEN_PRESS_WEBHOOK_SECRET}"
+    anthropicApiKey        = "${WIFIHAVEN_PRESS_ANTHROPIC_API_KEY}"
+    claudeAgentId          = "${WIFIHAVEN_PRESS_CLAUDE_AGENT_ID}"
+    claudeEnvironmentId    = "${WIFIHAVEN_PRESS_CLAUDE_ENVIRONMENT_ID}"
+    claudeCodeRoutineId    = "${WIFIHAVEN_PRESS_CLAUDE_CODE_ROUTINE_ID}"
+    claudeCodeRoutineToken = "${WIFIHAVEN_PRESS_CLAUDE_CODE_ROUTINE_TOKEN}"
+    agentTokenSecret       = "${WIFIHAVEN_PRESS_AGENT_TOKEN_SECRET}"
+    agentApiBase           = "${WIFIHAVEN_PRESS_AGENT_API_BASE}"
+    deploymentEnv          = "${WIFIHAVEN_PRESS_DEPLOYMENT_ENV}"
   }
 }
 EOF
