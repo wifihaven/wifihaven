@@ -218,20 +218,22 @@ services:
       - key: WIFIHAVEN_SUPPORT_PLAIN_APP_ID
         sync: false
       # #2200: the Claude support responder on STAGING (test Plain + test Managed Agent). #2265: NO
-      # dark-by-default — RESPONDER_ENABLED / ISSUE_FILING_ENABLED are explicit flags (flip to true
-      # via PR at go-live, AFTER the secrets below are set — config precedes code); with a flag true
-      # and any required key missing the API refuses to boot, bulk-listing the gaps. GITHUB_BOT_TOKEN
-      # is fine-grained, Issues:write ONLY (the structural no-PR scope, #2241). NEVER commit values.
+      # dark-by-default — RESPONDER_ENABLED / ISSUE_FILING_ENABLED are explicit flags. RESPONDER is
+      # flipped true at go-live (#2335), AFTER the claude-code-cloud routine secrets below were set —
+      # config precedes code; with a flag true and any required key missing the API refuses to boot,
+      # bulk-listing the gaps. ISSUE_FILING stays false until GITHUB_BOT_TOKEN is set (fine-grained,
+      # Issues:write ONLY, the structural no-PR scope, #2241). NEVER commit values.
       - key: WIFIHAVEN_SUPPORT_RESPONDER_ENABLED
-        value: "false"
+        value: "true"
       - key: WIFIHAVEN_SUPPORT_ISSUE_FILING_ENABLED
         value: "false"
       # #2300: cloud-agent transport — "managed-agents" (Anthropic Managed Agents, API-credit billed)
       # or "claude-code-cloud" (a Claude Code Cloud routine fired per message, Claude-subscription
       # billed — the credit-free path). Only the selected transport's config chain is required at
-      # boot; an unknown value fails boot. Flip via PR alongside the routine secrets below.
+      # boot; an unknown value fails boot. Flipped to claude-code-cloud at go-live (#2335) — the routine
+      # id + token secrets below are set.
       - key: WIFIHAVEN_SUPPORT_DISPATCHER
-        value: managed-agents
+        value: claude-code-cloud
       - key: WIFIHAVEN_SUPPORT_ANTHROPIC_API_KEY
         sync: false
       - key: WIFIHAVEN_SUPPORT_CLAUDE_AGENT_ID
