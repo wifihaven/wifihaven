@@ -27,20 +27,30 @@ import zio.json.*
  * consent-scoped, short-TTL) → dispatch a cloud-agent session ([[CloudAgentDispatcher]]). The
  * inbound message text is UNTRUSTED DATA end to end.
  *
+ * Before the origin gate runs, the #2403 LOOP GUARD drops any event that is not an inbound,
+ * customer-authored message ([[PlainWebhook.InboundCustomerEventTypes]] + `actorType ==
+ * "customer"`) — our own outbound `thread.chat_sent` reply can never re-trigger a dispatch, even if
+ * the Plain webhook is subscribed to every event type.
+ *
  * The gate admits a thread to the AI responder on EITHER of two authenticated origins; everything
  * else burns no tokens (#2307, refining the 2026-07-14 UI-only constraint):
- *   - **UI-originated**: the #2199 identified widget stamps `tenantIdentifier = household_id` on
- *     the Plain customer, so a `tenantIdentifier` that resolves to a real household is a proven
- *     authenticated submission.
+ *   - **UI-originated**: the #2199 identified widget stamps `household_id` on the Plain customer's
+ *     `externalId`, so a `customer.externalId` (`tenantIdentifier`) that resolves to a real
+ *     household is a proven authenticated submission.
  *   - **Registered-admin email**: a NEW inbound email (no resolvable tenant) whose From address
  *     matches a registered household ADMIN (`users.email`, globally unique, V67). We resolve THAT
  *     admin's household and dispatch bound to it, exactly as if UI-originated (the #2241 token
  *     binds to the sender's household).
  *
- * A new email from an UNREGISTERED address gets a FIXED static reject via the outbound Plain reply
+ * A NEW thread from an UNREGISTERED address gets a FIXED static reject via the outbound Plain reply
  * — no Claude call, no dispatch, no token, no persisted support thread — so a flood of cold email
- * cannot burn tokens (the token-burn guard the UI-only rule used to provide, preserved). A
- * CONTINUATION message with no resolvable tenant stays `skipped_unauthenticated` (unchanged).
+ * cannot burn tokens (the token-burn guard the UI-only rule used to provide, preserved). The reject
+ * fires ONLY on the new-thread event, so an ongoing unregistered thread is not re-rejected on every
+ * message (backscatter guard); an unregistered continuation with no resolvable origin is silently
+ * `skipped_unauthenticated`. Because Plain carries the message body only on the per-message events
+ * (`thread.chat_received` / `thread.email_received`), a registered admin whose inbound email
+ * resolves no tenant is admitted per message that carries a body — dispatch is rate-capped
+ * per-thread + globally, so this is bounded, not open-ended.
  *
  * **Agent-facing ([[agentReply]] / [[agentFileIssue]] / [[agentHousehold]])**: the dispatched
  * agent's ONLY credential is the token; every side effect comes back through these endpoints where
@@ -106,22 +116,50 @@ final case class SupportResponder(
       }
 
   /**
-   * The AUTHENTICATED-ORIGIN gate + dispatch (#2307). A thread reaches the AI responder on EITHER
-   * origin, else it burns no tokens: (1) a `tenantIdentifier` that resolves to a real household
-   * (the #2199 UI-origin path); (2) failing that, a NEW inbound email whose From matches a
-   * registered household admin. A new email from an unregistered address gets a static reject (no
-   * dispatch); a continuation with no resolvable tenant is `skipped_unauthenticated` (unchanged).
+   * The loop guard + AUTHENTICATED-ORIGIN gate + dispatch (#2403 / #2307).
+   *
+   * FIRST, the #2403 loop guard: only an INBOUND, CUSTOMER-authored event is actionable
+   * ([[PlainWebhook.InboundCustomerEventTypes]] + `actorType == "customer"`). Our own outbound
+   * `thread.chat_sent` reply — or any non-customer actor — is `SkippedNotInbound`, so the
+   * assistant's reply can never re-trigger a dispatch (a reply loop), even if the Plain webhook is
+   * subscribed to every event type.
+   *
+   * THEN the origin gate — a thread reaches the AI responder on EITHER origin, else it burns no
+   * tokens: (1) a `customer.externalId` (`tenantIdentifier`) that resolves to a real household (the
+   * #2199 UI-origin path); (2) failing that, an inbound email whose From matches a registered
+   * household admin. An unregistered NEW thread gets a static reject (no dispatch); anything else
+   * with no resolvable origin is `skipped_unauthenticated`. A dispatch also requires a non-empty
+   * message — a `thread.thread_created` carries no body (the text arrives on the following
+   * `thread.chat_received` / `thread.email_received`), so it never dispatches an empty session.
    */
   private def dispatchIfAuthorized(event: PlainNewMessageEvent): UIO[WebhookOutcome] =
-    resolveTenantHousehold(event).flatMap {
-      case Some((hh, household)) =>
-        rateLimitedDispatch(event, hh, household, WebhookOutcome.Dispatched)
-      case None                  =>
-        // No provable UI origin. A NEW email is gated on the sender being a registered admin; a
-        // continuation stays skipped (its origin was already decided when the thread opened).
-        if event.isNewThread then emailIntakeGate(event)
-        else ZIO.succeed(WebhookOutcome.SkippedUnauthenticated)
-    }
+    if !isActionableInbound(event) then ZIO.succeed(WebhookOutcome.SkippedNotInbound)
+    else
+      resolveTenantHousehold(event).flatMap {
+        case Some((hh, household)) if event.messageText.nonEmpty =>
+          rateLimitedDispatch(event, hh, household, WebhookOutcome.Dispatched)
+        case Some(_)                                             =>
+          // Identified, but a bodyless metadata event (e.g. thread_created) — nothing to answer;
+          // the real message rides the following chat_received/email_received.
+          ZIO.succeed(WebhookOutcome.SkippedNotInbound)
+        case None                                                =>
+          // No provable UI origin. An inbound email is gated on the sender being a registered admin.
+          event.customerEmail match {
+            case Some(_) => emailIntakeGate(event)
+            case None    => ZIO.succeed(WebhookOutcome.SkippedUnauthenticated)
+          }
+      }
+
+  /**
+   * #2403 loop guard: the event is an inbound CUSTOMER message we may act on. The event-type
+   * allowlist excludes our own outbound `thread.chat_sent` (the reply-loop source) and every non-
+   * message event; the actor check is the second guard — if an author is present it must be the
+   * `customer`, so an agent/system-authored event on an allowlisted type is still skipped. An
+   * absent actor is non-blocking (the allowlist already bounds the surface).
+   */
+  private def isActionableInbound(event: PlainNewMessageEvent): Boolean =
+    PlainWebhook.InboundCustomerEventTypes.contains(event.eventType) &&
+      event.actorType.forall(_ == "customer")
 
   /**
    * Resolve the UI-origin tenant to a household. The tenant must parse AND resolve to an existing
@@ -138,10 +176,13 @@ final case class SupportResponder(
     }
 
   /**
-   * #2307 email-intake gate: a NEW inbound email with no resolvable tenant. Resolve the From
-   * address to a registered household ADMIN and dispatch bound to THAT admin's household
-   * (authenticated, as if UI-originated); otherwise emit the fixed static reject. No AI call ever
-   * runs on the reject path (the token-burn guard the UI-only rule used to provide).
+   * #2307 email-intake gate: an inbound email with no resolvable tenant. Resolve the From address
+   * to a registered household ADMIN and dispatch bound to THAT admin's household (authenticated, as
+   * if UI-originated); otherwise emit the fixed static reject — but only on a NEW thread, so an
+   * ongoing unregistered thread is not re-rejected on every message (the backscatter guard). No AI
+   * call ever runs on the reject path (the token-burn guard the UI-only rule used to provide). A
+   * registered admin's bodyless `thread.thread_created` is skipped (the answerable message rides
+   * the following `thread.email_received`, which carries the body).
    *
    * TRUST BOUNDARY: SMTP `From` is spoofable, so this gate trusts Plain's upstream MX (#2198) to
    * have accepted the message under its own SPF/DKIM/spam handling before signing + firing the
@@ -160,12 +201,16 @@ final case class SupportResponder(
       case None        => ZIO.succeed(WebhookOutcome.SkippedUnauthenticated) // no From to gate on
       case Some(email) =>
         resolveAdminHousehold(email).flatMap {
-          case Some((hh, household)) if event.threadId.nonEmpty =>
+          case Some((hh, household)) if event.threadId.nonEmpty && event.messageText.nonEmpty =>
             rateLimitedDispatch(event, hh, household, WebhookOutcome.EmailRegisteredDispatched)
-          case Some(_)                                          =>
-            ZIO.succeed(WebhookOutcome.SkippedUnauthenticated) // registered but no thread to bind
-          case None                                             =>
-            staticReject(event)
+          case Some(_)                                                                        =>
+            // Registered, but no thread to bind or a bodyless new-thread event — the answerable
+            // message rides the following body event (chat_received/email_received).
+            ZIO.succeed(WebhookOutcome.SkippedUnauthenticated)
+          case None                                                                           =>
+            // Unregistered: reject a NEW thread once; skip continuations (no re-reject backscatter).
+            if event.isNewThread then staticReject(event)
+            else ZIO.succeed(WebhookOutcome.SkippedUnauthenticated)
         }
     }
 
@@ -423,6 +468,9 @@ object SupportResponder {
     // #2307: a NEW inbound email from an UNREGISTERED address → the fixed static reject (no AI).
     case EmailUnregisteredRejected
     case SkippedUnauthenticated
+    // #2403 loop guard: a non-inbound / non-customer event (our own `thread.chat_sent` reply, a
+    // non-customer actor, or a bodyless identified metadata event) — deliberately never dispatched.
+    case SkippedNotInbound
     case RateLimited
     case InvalidSignature
     case Malformed
@@ -435,6 +483,7 @@ object SupportResponder {
       case EmailRegisteredDispatched => "email_registered_dispatched"
       case EmailUnregisteredRejected => "email_unregistered_rejected"
       case SkippedUnauthenticated    => "skipped_unauthenticated"
+      case SkippedNotInbound         => "skipped_not_inbound"
       case RateLimited               => "rate_limited"
       case InvalidSignature          => "invalid_signature"
       case Malformed                 => "malformed"

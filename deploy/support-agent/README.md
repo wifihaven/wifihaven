@@ -43,7 +43,7 @@ at create time, so an update never disturbs in-flight support sessions.
 | `WIFIHAVEN_SUPPORT_RESPONDER_ENABLED` | `false` in render.yaml — flip to `true` via PR at go-live, after everything below is set (#2265) |
 | `WIFIHAVEN_SUPPORT_ISSUE_FILING_ENABLED` | `false` in render.yaml — flip with (or after) the responder once the bot token is set |
 | `WIFIHAVEN_SUPPORT_DISPATCHER` | `managed-agents` (default) in render.yaml, or `claude-code-cloud` (#2300 — subscription-billed routine; see below). Only the selected transport's keys are required at boot; an unknown value refuses boot |
-| `WIFIHAVEN_SUPPORT_PLAIN_WEBHOOK_SECRET` | Plain workspace webhook signing secret (Plain → Settings → Webhooks; point the webhook at `POST https://<api-host>/api/support/webhook`, thread/message-created events) |
+| `WIFIHAVEN_SUPPORT_PLAIN_WEBHOOK_SECRET` | Plain workspace webhook signing secret (Plain → Settings → Webhooks; point the webhook at `POST https://<api-host>/api/support/webhook`). Subscribe to the **inbound customer** events only: `thread.thread_created`, `thread.chat_received`, `thread.email_received`. The API additionally loop-guards on the event type + `actorType`, so subscribing to more (e.g. `thread.chat_sent`, our own outbound reply) is safe but unnecessary — those are skipped, never re-dispatched (#2403) |
 | `WIFIHAVEN_SUPPORT_ANTHROPIC_API_KEY` | (dispatcher=managed-agents) Anthropic API key (session creation only) |
 | `WIFIHAVEN_SUPPORT_CLAUDE_AGENT_ID` | (dispatcher=managed-agents) agent id printed by `apply.sh` |
 | `WIFIHAVEN_SUPPORT_CLAUDE_ENVIRONMENT_ID` | (dispatcher=managed-agents) environment id printed by `apply.sh` |
