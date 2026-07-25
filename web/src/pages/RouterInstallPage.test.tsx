@@ -44,11 +44,28 @@ describe('RouterInstallPage — #2234 post-registration router-install page', ()
 
   it('lists suggested OpenWRT hardware including the reference router (Flint 2)', () => {
     renderPage()
-    // The Flint 2 is the documented reference hardware (docs/install-flint2.md).
-    expect(screen.getByText(/Flint 2/i)).toBeInTheDocument()
+    // The Flint 2 is the documented reference hardware / Medium tier
+    // (docs/install-openwrt.md "Choosing your hardware"). #2398 also references it by name in the
+    // High-tier "coming" note ("the Flint 2 is the top recommendation"), so it appears more than
+    // once — assert presence, not a single occurrence.
+    expect(screen.getAllByText(/Flint 2/i).length).toBeGreaterThan(0)
     // The OpenWRT flashing prerequisite must be called out.
     expect(screen.getByText(/Prerequisite/i)).toBeInTheDocument()
     expect(screen.getAllByText(/OpenWRT/i).length).toBeGreaterThan(0)
+  })
+
+  it('presents the Low/Medium/High tiers and demotes the WAX206 out of them (#2398)', () => {
+    renderPage()
+    // Recommended tiers carry Low/Medium labels; the WAX206 is relabeled an alternative.
+    expect(screen.getByText(/Medium — recommended/i)).toBeInTheDocument()
+    expect(screen.getByText(/Low — value/i)).toBeInTheDocument()
+    // The High tier (Flint 3, Wi-Fi 7) is designated but not yet adoptable — shown as a "coming"
+    // note referencing #2397, NOT a purchasable card.
+    expect(screen.getByText(/Flint 3/i)).toBeInTheDocument()
+    expect(screen.getByText(/coming soon/i)).toBeInTheDocument()
+    // The WAX206 is demoted under an "Other supported hardware" heading, not a recommended tier.
+    expect(screen.getByText(/Other supported hardware/i)).toBeInTheDocument()
+    expect(screen.getByText(/Alternative — advanced/i)).toBeInTheDocument()
   })
 
   it('makes clear EVERY router (incl. GL.iNet) needs a vanilla-OpenWRT flash — not just mainline', () => {

@@ -1,11 +1,20 @@
 # Installing WifiHaven on a Netgear WAX206 (AX3200)
 
-Hardware-specific install path for the **Netgear WAX206 (AX3200)** — an
-inexpensive mainline-OpenWRT target on the same MediaTek MT7622 platform as the
-well-known Linksys E8450 / Belkin RT3200. This doc covers everything you do to
+Hardware-specific install path for the **Netgear WAX206 (AX3200)** — a
+mainline-OpenWRT target on the same MediaTek MT7622 platform as the well-known
+Linksys E8450 / Belkin RT3200. This doc covers everything you do to
 the box *before* the generic [`install-openwrt.md`](install-openwrt.md) flow
 takes over: flashing OpenWRT, baseline OpenWRT config, and the recovery path if
 the flash bricks.
+
+> **Alternative / advanced hardware — not one of the recommended tiers.** The
+> recommended lineup is the three GL.iNet routers (Low = Flint, Medium =
+> Flint 2, High = Flint 3) — see
+> [Choosing your hardware](install-openwrt.md#choosing-your-hardware). The
+> WAX206 is a fine target if you're comfortable flashing, but it prices *above*
+> the Flint (~$95–110 vs ~$80), so it doesn't fit the "value" slot, and — like
+> every supported router — it requires flashing **vanilla OpenWRT** first (§1).
+> Netgear stock firmware is not a supported target.
 
 If you're installing WifiHaven on different OpenWRT hardware, skip directly to
 [`install-openwrt.md`](install-openwrt.md) — only the sections marked
@@ -29,8 +38,10 @@ If you're installing WifiHaven on different OpenWRT hardware, skip directly to
 - **Dual-band 802.11ax** (AX3200).
 - **512 MB DDR3 RAM**, **256 MB SPI-NAND** flash.
 - One **2.5G WAN** port + four **gigabit** LAN, USB 3.0.
-- Great value if you're comfortable flashing — this is the "cheap target you
-  flash yourself" option in the recommended lineup.
+- A solid "flash it yourself" target if you're comfortable with the process —
+  though it's an [alternative, not one of the recommended
+  tiers](install-openwrt.md#choosing-your-hardware) (it prices above the Low-tier
+  Flint).
 
 ## Hardware orientation
 

@@ -7,7 +7,7 @@
     <title>Set up your router — wifihaven install guides</title>
     <meta
       name="description"
-      content="Flash vanilla OpenWrt onto your wifihaven router, then install the agent. Per-router flash guides for the GL.iNet Flint 2, Flint, and Netgear WAX206 — with sysupgrade images, checksums, and recovery."
+      content="Flash vanilla OpenWrt onto your wifihaven router, then install the agent. Low/Medium/High hardware tiers — GL.iNet Flint (~$80), Flint 2 (~$150, recommended), Flint 3 (Wi-Fi 7, coming) — plus the Netgear WAX206, with flash guides, checksums, and recovery."
     />
     <link rel="icon" type="image/svg+xml" href="/brand/favicon.svg" />
     <link rel="icon" type="image/png" sizes="32x32" href="/brand/favicon-32.png" />
@@ -56,32 +56,49 @@
 
         <h2>1. Pick your router and flash it</h2>
         <p>
-          Choose your model for a step-by-step flash guide — image download, checksum verification,
-          the flash method for that vendor, how to <strong>turn on Wi-Fi</strong> (vanilla OpenWrt
-          ships with it off), and how to recover if a flash goes wrong.
+          The recommended lineup is three GL.iNet tiers — pick one by budget. All are Wi-Fi 6 or
+          better and handle line-rate filtering at gigabit. Each guide is a step-by-step flash —
+          image download, checksum verification, the flash method for that vendor, how to
+          <strong>turn on Wi-Fi</strong> (vanilla OpenWrt ships with it off), and how to recover if a
+          flash goes wrong.
         </p>
         <div class="cards">
           <a class="card" href="/install/flint2">
-            <h3>GL.iNet Flint 2 (GL-MT6000)</h3>
+            <h3>Medium — GL.iNet Flint 2 (GL-MT6000)</h3>
             <p>
-              The reference hardware. Quad-core aarch64, dual-band Wi-Fi 6, 2.5G WAN — headroom for
-              line-rate filtering at gigabit.
+              <strong>Recommended.</strong> Our reference hardware (~$150) — the best-tested path.
+              Quad-core aarch64, dual-band Wi-Fi 6, 2.5G WAN, headroom for line-rate filtering at
+              gigabit.
             </p>
             <span class="go">Flash guide →</span>
           </a>
           <a class="card" href="/install/flint">
-            <h3>GL.iNet Flint (GL-AX1800)</h3>
+            <h3>Low — GL.iNet Flint (GL-AX1800)</h3>
             <p>
-              The smaller, cheaper sibling — Wi-Fi 6, gigabit Ethernet. A solid pick for lighter
-              households.
+              The value option (~$80) — the cheapest supported router. Wi-Fi 6, gigabit Ethernet;
+              plenty for most households.
             </p>
             <span class="go">Flash guide →</span>
           </a>
+        </div>
+        <div class="callout">
+          <strong>High — GL.iNet Flint 3 (GL-BE9300), Wi-Fi 7:</strong> the highest-end option,
+          <strong>coming soon</strong>. Not yet adoptable — vanilla OpenWrt WAN + Wi-Fi are still in
+          progress (<a
+            href="https://github.com/wifihaven/wifihaven/issues/2397"
+            target="_blank"
+            rel="noopener"
+            >#2397</a
+          >). Until it lands, the Flint 2 (Medium) is the top recommendation.
+        </div>
+        <h3>Other supported hardware</h3>
+        <div class="cards">
           <a class="card" href="/install/wax206">
             <h3>Netgear WAX206 (AX3200)</h3>
             <p>
-              An inexpensive mainline-OpenWrt target (MediaTek MT7622, Wi-Fi 6, 2.5G WAN). Great
-              value if you’re comfortable flashing.
+              An <strong>alternative / advanced</strong> target — not one of the recommended tiers
+              (it prices above the Flint, ~$95–110). A solid mainline-OpenWrt box (MediaTek MT7622,
+              Wi-Fi 6, 2.5G WAN) if you’re comfortable flashing.
             </p>
             <span class="go">Flash guide →</span>
           </a>
