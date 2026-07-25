@@ -44,8 +44,11 @@ describe('RouterInstallPage — #2234 post-registration router-install page', ()
 
   it('lists suggested OpenWRT hardware including the reference router (Flint 2)', () => {
     renderPage()
-    // The Flint 2 is the documented reference hardware (docs/install-flint2.md).
-    expect(screen.getByText(/Flint 2/i)).toBeInTheDocument()
+    // The Flint 2 is the documented reference hardware / Medium tier
+    // (docs/install-openwrt.md "Choosing your hardware"). #2398 also references it by name in the
+    // High-tier "coming" note ("the Flint 2 is the top recommendation"), so it appears more than
+    // once — assert presence, not a single occurrence.
+    expect(screen.getAllByText(/Flint 2/i).length).toBeGreaterThan(0)
     // The OpenWRT flashing prerequisite must be called out.
     expect(screen.getByText(/Prerequisite/i)).toBeInTheDocument()
     expect(screen.getAllByText(/OpenWRT/i).length).toBeGreaterThan(0)

@@ -14,9 +14,11 @@ import { copyToClipboard } from '@/lib/clipboard'
 export const ROUTER_INSTALL_COMMAND =
   'sh -c "$(uclient-fetch -qO - https://raw.githubusercontent.com/wifihaven/wifihaven/main/openwrt/install.sh)"'
 
-// #2234 — a short, opinionated list of known-good OpenWRT hardware, coordinated with the
-// in-repo hardware docs (docs/install-flint2.md names the Flint 2 as the reference router).
-// Deliberately NOT an exhaustive compatibility matrix.
+// #2234 / #2398 — a short, opinionated list of known-good OpenWRT hardware, coordinated with the
+// in-repo hardware docs (docs/install-openwrt.md "Choosing your hardware" table). The recommended
+// lineup is three GL.iNet tiers — Low (Flint), Medium (Flint 2, reference/recommended), and High
+// (Flint 3, Wi-Fi 7, not yet adoptable — #2397). Deliberately NOT an exhaustive compatibility
+// matrix.
 //
 // #2364 — EVERY router in this list must be flashed to *vanilla* OpenWRT before the agent will
 // work. The GL.iNet boxes ship GL.iNet's own *forked* OpenWRT-based firmware out of the box, but
@@ -33,10 +35,14 @@ export const ROUTER_INSTALL_COMMAND =
 // rot-proof search fallback `https://www.amazon.com/s?k=<model>&tag=wifihaven-20`, which always
 // resolves and still carries the tag. The Belkin RT3200 / Linksys E8450 was dropped here: it is
 // no longer reliably available on Amazon (discontinued). Its replacement, the Netgear WAX206,
-// is the same MediaTek MT7622 mainline-OpenWRT platform as the RT3200 — the same "cheap target
-// you flash yourself" role — and is a currently-stocked amazon.com listing.
+// is the same MediaTek MT7622 mainline-OpenWRT platform as the RT3200. #2398 — the WAX206 is an
+// *alternative / advanced* target, not one of the recommended GL.iNet tiers: it prices above the
+// Low-tier Flint, so it never fit the "value" slot. It stays listed (the flash knowledge is valid)
+// under "other supported hardware", with its guide + affiliate link intact.
 interface SuggestedRouter {
   name: string
+  // #2398 — the Low/Medium/High tier label (or "Alternative" for non-tier hardware).
+  tier: string
   detail: string
   note?: string
   // Verified amazon.com product URL carrying tag=wifihaven-20 (Amazon Associates).
@@ -45,27 +51,37 @@ interface SuggestedRouter {
   guide: string
 }
 
-const SUGGESTED_ROUTERS: SuggestedRouter[] = [
+// #2398 — the two purchasable recommended tiers. Medium (Flint 2) is the reference hardware and
+// leads the list; Low (Flint) is the value option. High (Flint 3) is designated but not yet
+// adoptable (#2397), so it appears as a note, not a purchasable card.
+const RECOMMENDED_ROUTERS: SuggestedRouter[] = [
   {
     name: 'GL.iNet Flint 2 (GL-MT6000)',
+    tier: 'Medium — recommended',
     detail:
-      'Our reference hardware. Quad-core aarch64, dual-band Wi-Fi 6, 2.5G WAN — plenty of headroom for line-rate filtering and accounting at gigabit.',
+      'Our reference hardware and the best-tested path (~$150). Quad-core aarch64, dual-band Wi-Fi 6, 2.5G WAN — plenty of headroom for line-rate filtering and accounting at gigabit.',
     note: 'Ships GL.iNet’s forked firmware — flash vanilla OpenWRT first (guide below).',
     amazon: 'https://www.amazon.com/dp/B0CP7S3117?tag=wifihaven-20',
     guide: 'https://wifihaven.net/install/flint2',
   },
   {
     name: 'GL.iNet Flint (GL-AX1800)',
+    tier: 'Low — value',
     detail:
-      'The smaller sibling — Wi-Fi 6, gigabit Ethernet. A solid, cheaper option for lighter households.',
+      'The value option — the cheapest supported router (~$80). Wi-Fi 6, gigabit Ethernet; plenty for most households.',
     note: 'Ships GL.iNet’s forked firmware — flash vanilla OpenWRT first (guide below).',
     amazon: 'https://www.amazon.com/dp/B09HBW45ZJ?tag=wifihaven-20',
     guide: 'https://wifihaven.net/install/flint',
   },
+]
+
+// #2398 — alternative / advanced hardware, kept but demoted out of the recommended tiers.
+const OTHER_HARDWARE: SuggestedRouter[] = [
   {
     name: 'Netgear WAX206 (AX3200)',
+    tier: 'Alternative — advanced',
     detail:
-      'An inexpensive mainline-OpenWRT target with strong community support (MediaTek MT7622, Wi-Fi 6, 2.5G WAN). Great value if you’re comfortable flashing.',
+      'Not one of the recommended tiers — it prices above the Low-tier Flint (~$95–110). A solid mainline-OpenWRT target (MediaTek MT7622, Wi-Fi 6, 2.5G WAN) if you’re comfortable flashing.',
     note: 'Ships Netgear stock firmware — flash vanilla OpenWRT first (guide below).',
     amazon: 'https://www.amazon.com/dp/B098BRF91P?tag=wifihaven-20',
     guide: 'https://wifihaven.net/install/wax206',
@@ -97,6 +113,10 @@ export function RouterInstallPage() {
       {/* Step 1 — hardware */}
       <section className="space-y-4">
         <h2 className="text-base font-semibold text-brand-ink">1. Suggested hardware</h2>
+        <p className="text-sm text-brand-text">
+          The recommended lineup is three GL.iNet tiers — pick one by budget. All are Wi-Fi 6 or
+          better and handle line-rate filtering at gigabit.
+        </p>
         <div className="bg-amber-500/10 border border-amber-500/30 text-amber-700 text-sm rounded-xl px-4 py-3">
           <strong>Prerequisite — flash vanilla OpenWRT first.</strong> Every router below must run{' '}
           <strong>vanilla OpenWRT</strong> (23.05.x with <code className="font-mono">opkg</code>, or
@@ -107,50 +127,32 @@ export function RouterInstallPage() {
           the per-router flash guide on each card — it walks the flash, checksum, and recovery.
         </div>
         <ul className="space-y-3">
-          {SUGGESTED_ROUTERS.map(r => (
-            <li
-              key={r.name}
-              className="bg-white rounded-2xl border border-brand-border px-5 py-4"
-            >
-              <p className="font-medium text-brand-ink">{r.name}</p>
-              <p className="text-sm text-brand-text mt-1">{r.detail}</p>
-              {r.note && (
-                <p className="text-xs text-brand-text-muted mt-1.5">{r.note}</p>
-              )}
-              <div className="flex items-center gap-4 mt-2.5">
-                {/* #2364 — per-router "flash vanilla OpenWRT" guide on the marketing site. The
-                    primary action: it's what makes the box usable. External (wifihaven.net vs the
-                    app's own host), so it opens in a new tab. */}
-                <a
-                  href={r.guide}
-                  target="_blank"
-                  rel="noopener"
-                  className="inline-flex items-center gap-1 text-xs font-semibold text-brand-accent hover:text-brand-accent-dark"
-                >
-                  Flash &amp; install guide
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-                    <polyline points="15 3 21 3 21 9" />
-                    <line x1="10" y1="14" x2="21" y2="3" />
-                  </svg>
-                </a>
-                {/* #2301 — affiliate link. rel="sponsored" flags the paid relationship (Amazon
-                    Associates / SEO), noopener hardens the new tab. */}
-                <a
-                  href={r.amazon}
-                  target="_blank"
-                  rel="sponsored noopener"
-                  className="inline-flex items-center gap-1 text-xs font-semibold text-brand-text-muted hover:text-brand-ink"
-                >
-                  View on Amazon
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-                    <polyline points="15 3 21 3 21 9" />
-                    <line x1="10" y1="14" x2="21" y2="3" />
-                  </svg>
-                </a>
-              </div>
-            </li>
+          {RECOMMENDED_ROUTERS.map(r => (
+            <RouterCard key={r.name} r={r} />
+          ))}
+        </ul>
+        {/* #2398 — High tier (Flint 3, Wi-Fi 7) is designated but not yet adoptable (#2397); shown
+            as a note, not a purchasable card, so we don't steer buyers to hardware that doesn't
+            work yet. */}
+        <div className="bg-brand-alt border border-brand-border text-sm text-brand-text rounded-xl px-4 py-3">
+          <strong className="text-brand-ink">High tier — GL.iNet Flint 3 (GL-BE9300), Wi-Fi 7:</strong>{' '}
+          the highest-end option, <strong>coming soon</strong>. Not yet adoptable — vanilla OpenWRT
+          WAN + Wi-Fi are still in progress (
+          <a
+            href="https://github.com/wifihaven/wifihaven/issues/2397"
+            target="_blank"
+            rel="noopener"
+            className="font-semibold text-brand-accent hover:text-brand-accent-dark"
+          >
+            #2397
+          </a>
+          ). Until it lands, the Flint 2 (Medium) is the top recommendation.
+        </div>
+        {/* #2398 — WAX206 demoted out of the recommended tiers into "other supported hardware". */}
+        <h3 className="text-sm font-semibold text-brand-ink pt-1">Other supported hardware</h3>
+        <ul className="space-y-3">
+          {OTHER_HARDWARE.map(r => (
+            <RouterCard key={r.name} r={r} />
           ))}
         </ul>
         {/* #2301 — Amazon Associates requires a visible affiliate disclosure near the links. */}
@@ -201,6 +203,56 @@ export function RouterInstallPage() {
         </Link>
       </section>
     </div>
+  )
+}
+
+// #2398 — one hardware card: name + tier badge, blurb, flash-guide + Amazon links. Shared by the
+// recommended-tier list and the "other supported hardware" list.
+function RouterCard({ r }: { r: SuggestedRouter }) {
+  return (
+    <li className="bg-white rounded-2xl border border-brand-border px-5 py-4">
+      <div className="flex items-baseline justify-between gap-3">
+        <p className="font-medium text-brand-ink">{r.name}</p>
+        <span className="shrink-0 text-xs font-semibold text-brand-text-muted uppercase tracking-wide">
+          {r.tier}
+        </span>
+      </div>
+      <p className="text-sm text-brand-text mt-1">{r.detail}</p>
+      {r.note && <p className="text-xs text-brand-text-muted mt-1.5">{r.note}</p>}
+      <div className="flex items-center gap-4 mt-2.5">
+        {/* #2364 — per-router "flash vanilla OpenWRT" guide on the marketing site. The primary
+            action: it's what makes the box usable. External (wifihaven.net vs the app's own host),
+            so it opens in a new tab. */}
+        <a
+          href={r.guide}
+          target="_blank"
+          rel="noopener"
+          className="inline-flex items-center gap-1 text-xs font-semibold text-brand-accent hover:text-brand-accent-dark"
+        >
+          Flash &amp; install guide
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+            <polyline points="15 3 21 3 21 9" />
+            <line x1="10" y1="14" x2="21" y2="3" />
+          </svg>
+        </a>
+        {/* #2301 — affiliate link. rel="sponsored" flags the paid relationship (Amazon
+            Associates / SEO), noopener hardens the new tab. */}
+        <a
+          href={r.amazon}
+          target="_blank"
+          rel="sponsored noopener"
+          className="inline-flex items-center gap-1 text-xs font-semibold text-brand-text-muted hover:text-brand-ink"
+        >
+          View on Amazon
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+            <polyline points="15 3 21 3 21 9" />
+            <line x1="10" y1="14" x2="21" y2="3" />
+          </svg>
+        </a>
+      </div>
+    </li>
   )
 }
 
