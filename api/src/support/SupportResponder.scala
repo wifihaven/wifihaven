@@ -42,10 +42,15 @@ import zio.json.*
  *     admin's household and dispatch bound to it, exactly as if UI-originated (the #2241 token
  *     binds to the sender's household).
  *
- * A new email from an UNREGISTERED address gets a FIXED static reject via the outbound Plain reply
+ * A NEW thread from an UNREGISTERED address gets a FIXED static reject via the outbound Plain reply
  * — no Claude call, no dispatch, no token, no persisted support thread — so a flood of cold email
- * cannot burn tokens (the token-burn guard the UI-only rule used to provide, preserved). A
- * CONTINUATION message with no resolvable tenant stays `skipped_unauthenticated` (unchanged).
+ * cannot burn tokens (the token-burn guard the UI-only rule used to provide, preserved). The reject
+ * fires ONLY on the new-thread event, so an ongoing unregistered thread is not re-rejected on every
+ * message (backscatter guard); an unregistered continuation with no resolvable origin is silently
+ * `skipped_unauthenticated`. Because Plain carries the message body only on the per-message events
+ * (`thread.chat_received` / `thread.email_received`), a registered admin whose inbound email
+ * resolves no tenant is admitted per message that carries a body — dispatch is rate-capped
+ * per-thread + globally, so this is bounded, not open-ended.
  *
  * **Agent-facing ([[agentReply]] / [[agentFileIssue]] / [[agentHousehold]])**: the dispatched
  * agent's ONLY credential is the token; every side effect comes back through these endpoints where

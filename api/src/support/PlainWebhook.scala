@@ -102,11 +102,13 @@ object PlainWebhook {
         val thread      = objField(inner, "thread")
         val customerObj = thread.flatMap(t => objField(t, "customer"))
         // The household id is the customer's externalId — what upsertCustomer writes as
-        // `identifier.externalId = household_id`. Plain's thread payload has no tenant object, so
-        // this is the UI-origin key. Defensive fallbacks: a thread `tenant.externalId` (only present
-        // on tenant-update events) and the legacy `tenantIdentifier` shape.
-        val tenant      = customerObj
-          .flatMap(c => str(c, "externalId"))
+        // `identifier.externalId = household_id`. It is BOTH the origin key (`tenant`) and the reply
+        // target (`customer`), so read it once.
+        val externalId  = customerObj.flatMap(c => str(c, "externalId")).filter(_.nonEmpty)
+        // Plain's thread payload has no tenant object, so `externalId` is the UI-origin key.
+        // Defensive fallbacks: a thread `tenant.externalId` (only present on tenant-update events)
+        // and the legacy `tenantIdentifier` shape.
+        val tenant      = externalId
           .orElse(thread.flatMap(t => objField(t, "tenant")).flatMap(o => str(o, "externalId")))
           .orElse(
             thread.flatMap(t => objField(t, "tenantIdentifier")).flatMap(o => str(o, "externalId")),
@@ -118,9 +120,7 @@ object PlainWebhook {
         // The Plain customer identifier for a reply/reject write: the externalId (household id) for an
         // identified customer, else the customer's internal id (`c_…`) so a cold-email reply still
         // has a target.
-        val customer    = customerObj
-          .flatMap(c => str(c, "externalId"))
-          .filter(_.nonEmpty)
+        val customer    = externalId
           .orElse(customerObj.flatMap(c => str(c, "id")))
           .orElse(thread.flatMap(t => str(t, "customerId")))
           .getOrElse("")
