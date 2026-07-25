@@ -1,0 +1,16 @@
+# JVM options for the Mill launcher JVM — the process that runs the Scala 3
+# (dotty) compiler in-process. Read automatically by mill from the repo root
+# (MILL_JVM_OPTS_PATH, default .mill-jvm-opts), one option per line.
+#
+# Why -Xss16m: dotty's TreePickler pickles the typed AST by deep recursion.
+# On our large `api` module (notably Main.scala's server-startup
+# for-comprehension and allRoutes) the recursion depth occasionally overflows
+# the default ~1m JVM thread stack, and dotty reports it as
+# "Recursion limit exceeded while pickling ... try to increase the stacksize
+# using the -Xss JVM option". The overflow is non-deterministic (it depends on
+# tree shape / compilation order), so it slips through PR CI and then crashes
+# the post-merge Master API/UI CD image build, blocking prod deploys — twice so
+# far, each time "fixed" only by relocating code to shrink the tree (#2379/#2380,
+# #2392/#2393), which just moves the crash. Raising the compiler stack removes
+# the root cause regardless of tree shape. See #2395.
+-Xss16m

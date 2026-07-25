@@ -22,7 +22,10 @@ RUN apt-get update -qq && apt-get install -y -qq curl git ca-certificates \
       -o /usr/local/bin/mill \
  && chmod +x /usr/local/bin/mill
 WORKDIR /src
-COPY build.mill .scalafmt.conf .scalafix.conf ./
+# .mill-jvm-opts raises the compiler JVM stack (-Xss) so dotty's TreePickler
+# can't overflow on the large `api` module (#2395). Must land in /src before
+# `mill api.assembly` runs below, or the crash recurs in this image build.
+COPY build.mill .mill-jvm-opts .scalafmt.conf .scalafix.conf ./
 COPY shared shared
 COPY api api
 RUN mill api.assembly \
