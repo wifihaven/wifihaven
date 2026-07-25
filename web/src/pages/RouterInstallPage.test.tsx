@@ -54,6 +54,20 @@ describe('RouterInstallPage — #2234 post-registration router-install page', ()
     expect(screen.getAllByText(/OpenWRT/i).length).toBeGreaterThan(0)
   })
 
+  it('presents the Low/Medium/High tiers and demotes the WAX206 out of them (#2398)', () => {
+    renderPage()
+    // Recommended tiers carry Low/Medium labels; the WAX206 is relabeled an alternative.
+    expect(screen.getByText(/Medium — recommended/i)).toBeInTheDocument()
+    expect(screen.getByText(/Low — value/i)).toBeInTheDocument()
+    // The High tier (Flint 3, Wi-Fi 7) is designated but not yet adoptable — shown as a "coming"
+    // note referencing #2397, NOT a purchasable card.
+    expect(screen.getByText(/Flint 3/i)).toBeInTheDocument()
+    expect(screen.getByText(/coming soon/i)).toBeInTheDocument()
+    // The WAX206 is demoted under an "Other supported hardware" heading, not a recommended tier.
+    expect(screen.getByText(/Other supported hardware/i)).toBeInTheDocument()
+    expect(screen.getByText(/Alternative — advanced/i)).toBeInTheDocument()
+  })
+
   it('makes clear EVERY router (incl. GL.iNet) needs a vanilla-OpenWRT flash — not just mainline', () => {
     // #2364 — the old copy said GL.iNet "ships an OpenWRT-based firmware out of the box", which
     // wrongly implied those boxes were ready to go. Stock GL firmware is NOT supported (#2304/
