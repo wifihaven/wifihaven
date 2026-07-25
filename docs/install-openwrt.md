@@ -22,7 +22,7 @@ line-rate filtering at gigabit.
 |---|---|---|---|---|---|
 | **Low** | GL.iNet **Flint** (GL-AX1800) | ~$80 | Wi-Fi 6 | The value option — cheapest supported router, plenty for most households. | [`install-flint.md`](install-flint.md) |
 | **Medium** | GL.iNet **Flint 2** (GL-MT6000) | ~$150 | Wi-Fi 6 | **Recommended.** The reference hardware WifiHaven is developed and validated against. | [`install-flint2.md`](install-flint2.md) |
-| **High** | GL.iNet **Flint 3** (GL-BE9300) | — | Wi-Fi 7 | Highest-end option. **Coming — not yet adoptable**; vanilla OpenWRT WAN + Wi-Fi are still WIP ([#2397](https://github.com/wifihaven/wifihaven/issues/2397)). |  — |
+| **High** | GL.iNet **Flint 3** (GL-BE9300) | — | Wi-Fi 7 | Highest-end option. **Coming — not yet adoptable**; vanilla OpenWRT WAN + Wi-Fi are still WIP ([#2397](https://github.com/wifihaven/wifihaven/issues/2397)). | — |
 
 **Short answers for common questions:**
 
