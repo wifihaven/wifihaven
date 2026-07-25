@@ -11,6 +11,45 @@ streams connection events to the WifiHaven API. dnsmasq on the router resolves
 DNS normally — it is not the enforcement plane (see
 [`architecture.md` §0](architecture.md#0-enforcement-model)).
 
+## Choosing your hardware
+
+WifiHaven runs on any router that can flash **vanilla OpenWRT**, but the
+supported lineup is three GL.iNet routers — one flash procedure, one support
+story. Pick a tier by budget; all three are Wi-Fi 6 or better and handle
+line-rate filtering at gigabit.
+
+| Tier | Router | Price | Wi-Fi | Who it's for | Install guide |
+|---|---|---|---|---|---|
+| **Low** | GL.iNet **Flint** (GL-AX1800) | ~$80 | Wi-Fi 6 | The value option — cheapest supported router, plenty for most households. | [`install-flint.md`](install-flint.md) |
+| **Medium** | GL.iNet **Flint 2** (GL-MT6000) | ~$150 | Wi-Fi 6 | **Recommended.** The reference hardware WifiHaven is developed and validated against. | [`install-flint2.md`](install-flint2.md) |
+| **High** | GL.iNet **Flint 3** (GL-BE9300) | — | Wi-Fi 7 | Highest-end option. **Coming — not yet adoptable**; vanilla OpenWRT WAN + Wi-Fi are still WIP ([#2397](https://github.com/wifihaven/wifihaven/issues/2397)). |  — |
+
+**Short answers for common questions:**
+
+- *Which router should I buy?* — The **Flint 2** (Medium). It's the reference
+  hardware, so it's the best-tested path.
+- *Cheapest option?* — The **Flint** (Low), ~$80.
+- *Best / highest-end option?* — The **Flint 3** (High, Wi-Fi 7) once it's
+  adoptable ([#2397](https://github.com/wifihaven/wifihaven/issues/2397)); until
+  then, buy the **Flint 2**.
+
+> **You must flash vanilla OpenWRT first.** All three GL.iNet routers ship with
+> GL.iNet's own *forked* firmware, which is **not a verified target**
+> ([#2304](https://github.com/wifihaven/wifihaven/issues/2304)). Each install
+> guide above walks the flash before installing the agent. See the **Supported
+> firmware baseline** note under [§1 Prerequisites](#1-prerequisites) for the
+> full rationale.
+
+**Other supported hardware.** The **Netgear WAX206** (MT7622) also works if
+you're comfortable flashing — it's an alternative/advanced target, not one of
+the recommended tiers (it prices *above* the Flint at ~$95–110, so it doesn't
+fit the "value" slot). Flash guide: [`install-wax206.md`](install-wax206.md).
+Any other mainline-OpenWRT router with `dnsmasq-full`, `nftables`, and `uhttpd`
+can run the agent too.
+
+If WifiHaven is ever blocking something it shouldn't, every router has an
+[escape hatch](escape-hatch.md) to turn off all blocking.
+
 ## 1. Prerequisites
 
 > **Supported firmware baseline.** The agent is currently validated only on
@@ -22,11 +61,13 @@ DNS normally — it is not the enforcement plane (see
 > script only checks for `apk`-or-`opkg` + `uci` + `jsonfilter`, so it may
 > *start* on stock GL.iNet firmware, but that path is unverified: GL.iNet's own
 > firewall/UI layer and dnsmasq management have not been tested against the
-> agent's nftables and nftset config. Flash vanilla OpenWRT first — per-router
-> flash guides: [`install-flint2.md`](install-flint2.md) (Flint 2 / GL-MT6000),
-> [`install-flint.md`](install-flint.md) (Flint / GL-AX1800), and
-> [`install-wax206.md`](install-wax206.md) (Netgear WAX206) — that is the
-> supported path.
+> agent's nftables and nftset config. Flash vanilla OpenWRT first — the
+> recommended tiers are the GL.iNet **Flint 2** (Medium),
+> [`install-flint2.md`](install-flint2.md), and **Flint** (Low),
+> [`install-flint.md`](install-flint.md); see
+> [Choosing your hardware](#choosing-your-hardware) above for the full tier
+> table and the alternative Netgear WAX206
+> ([`install-wax206.md`](install-wax206.md)) target.
 
 - A router running **OpenWRT 23.05.x** (opkg / `.ipk`) **or OpenWRT 24.10+ /
   SNAPSHOT** (apk / `.apk`). CI builds and attaches both artifacts to every

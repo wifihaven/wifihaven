@@ -1,7 +1,11 @@
 # Installing WifiHaven on a GL.iNet Flint 2 (GL-MT6000)
 
 Hardware-specific install path for the **GL.iNet Flint 2 (GL-MT6000)** — the
-reference hardware for the production WifiHaven household router. This doc
+**Medium / recommended tier** (~$150, Wi-Fi 6) and the reference hardware
+WifiHaven is developed and validated against, so it's the best-tested path. On
+a tighter budget, the Low tier is the [Flint / GL-AX1800](install-flint.md)
+(~$80). See [Choosing your hardware](install-openwrt.md#choosing-your-hardware)
+for the full Low/Medium/High tier table. This doc
 covers everything you do to the box *before* the generic
 [`install-openwrt.md`](install-openwrt.md) flow takes over: flashing OpenWRT,
 baseline OpenWRT config, and the recovery path if the flash bricks.

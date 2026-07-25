@@ -74,10 +74,12 @@ installs the matching artifact. Full walkthrough: [`docs/install-openwrt.md`](do
 > vanilla OpenWRT**. Many recommended routers (e.g. GL.iNet models) ship
 > GL.iNet's own *forked* OpenWRT firmware, which is **not yet a verified
 > target** ([#2304](https://github.com/wifihaven/wifihaven/issues/2304)). Flash
-> vanilla OpenWRT first — per-router flash guides:
-> [Flint 2 / GL-MT6000](docs/install-flint2.md),
-> [Flint / GL-AX1800](docs/install-flint.md),
-> [Netgear WAX206](docs/install-wax206.md).
+> vanilla OpenWRT first. The recommended hardware is three GL.iNet tiers —
+> **Low** [Flint / GL-AX1800](docs/install-flint.md) (~$80),
+> **Medium** [Flint 2 / GL-MT6000](docs/install-flint2.md) (~$150, recommended),
+> **High** Flint 3 / GL-BE9300 (Wi-Fi 7, [coming — #2397](https://github.com/wifihaven/wifihaven/issues/2397)).
+> The [Netgear WAX206](docs/install-wax206.md) is an alternative target. See
+> [Choosing your hardware](docs/install-openwrt.md#choosing-your-hardware).
 
 **3. OPNsense router agent** — installer not yet published. See the
 [`opnsense/`](opnsense/) directory for the in-progress plugin.
