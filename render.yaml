@@ -269,13 +269,13 @@ services:
       # is an explicit flag (flip to true via PR at go-live, AFTER the secrets below AND email are set);
       # with it true and any required key missing the API refuses to boot. NEVER commit values.
       - key: WIFIHAVEN_PRESS_RESPONDER_ENABLED
-        value: "false"
+        value: "true"
       # #2327: press cloud-agent transport — "managed-agents" (Anthropic Managed Agents, API-credit
       # billed) or "claude-code-cloud" (a Claude Code Cloud routine fired per message, Claude-
       # subscription billed — the credit-free path). Only the selected transport's config chain is
       # required at boot; an unknown value fails boot. Flip via PR alongside the routine secrets below.
       - key: WIFIHAVEN_PRESS_DISPATCHER
-        value: managed-agents
+        value: claude-code-cloud
       - key: WIFIHAVEN_PRESS_WEBHOOK_SECRET
         sync: false
       - key: WIFIHAVEN_PRESS_ANTHROPIC_API_KEY
