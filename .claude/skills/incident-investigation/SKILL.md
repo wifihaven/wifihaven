@@ -85,18 +85,31 @@ Pull the API logs for the **failing route around the onset window** and read
 the real error / stack / message. Match what you find against the failure class
 from Step 1 — if they disagree, trust the log and re-classify.
 
-**This step is service-agnostic by design.** The log *backend* will change; the
-investigation step does not:
+**Query Grafana Cloud Loki first — it is the primary log source.** The API
+ships every deployed log line to Loki, indexed and LogQL-queryable across
+staging + prod. Full label set + copy-pasteable queries + the CLI-token caveat
+live in [`docs/ops/grafana-cloud.md`](../../../docs/ops/grafana-cloud.md)
+(§ *Querying logs from Loki* `{#querying-logs}`) — that doc is the source of
+truth for the label set; do not re-derive it here.
 
-- **Today: Render.** Logs come from the Render service. The Render root key is
-  out-of-band **in memory** — load it into a shell var, **never echo, print, or
-  commit it**, and mask it in any captured output. Read-only on prod always
-  (see `AGENTS.md` → *Safety rules for running EXPLAIN against prod* for the
-  same cred-masking / read-only discipline).
-- **Future: structured-log indexing service.** When centralized structured
-  logging lands, this step becomes "query the log-indexing service for the
-  route + window" instead of tailing Render. **This is a dependency to update
-  when that service ships** — revise this section then.
+- **Primary: Loki.** Open **`wifihaven.grafana.net` → Explore → Loki** and
+  query the failing route around the onset window. Stream labels are
+  `service="wifihaven-api"`, `env="staging"|"production"`, `level`; `route` /
+  `status` / `mac` / etc. ride **structured metadata** (`| key="value"` after
+  the selector). E.g. errors on the alarming route:
+
+  ```logql
+  {service="wifihaven-api", env="production", level="ERROR"} | route=`/api/router/usage`
+  ```
+
+  A scriptable `logcli`/HTTP path exists but currently needs a `logs:read`
+  token that is **not yet provisioned** (the only Loki token is push-scope) —
+  use the Explore UI until then (see the grafana-cloud.md caveat).
+- **Fallback: Render.** Only if Loki itself is unavailable, tail the Render
+  service logs. The Render root key is out-of-band **in memory** — load it into
+  a shell var, **never echo, print, or commit it**, and mask it in any captured
+  output. Read-only on prod always (see `AGENTS.md` → *Safety rules for running
+  EXPLAIN against prod* for the same cred-masking / read-only discipline).
 
 **If the error is NOT in the logs, that is itself a finding.** A failure the
 operator cannot see in logs is an observability gap. Capture it and **file an
@@ -152,7 +165,8 @@ Common payoffs once the evidence is in hand:
   latency) from status-code + response-time — before touching code.
 - **Capture the actual error body / stack BEFORE proposing a cause.**
 - **Read-only on prod; mask creds; never echo secrets.** Same discipline for
-  Render logs as for prod `EXPLAIN` (`AGENTS.md`).
+  log access (Loki read tokens, Render fallback creds) as for prod `EXPLAIN`
+  (`AGENTS.md`).
 - **Fast mitigation beats root-cause speed.** If onset correlates with a deploy,
   **revert the correlated PR** (CD redeploys) to stop the bleeding *while* you
   root-cause. Mitigation and diagnosis are parallel tracks, not sequential.
