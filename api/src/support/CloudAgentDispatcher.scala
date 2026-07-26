@@ -1,6 +1,7 @@
 package wifihaven.api.support
 
 import wifihaven.api.SupportConfig
+import wifihaven.api.metrics.AppMetrics
 import zio.*
 
 /**
@@ -123,9 +124,14 @@ object CloudAgentDispatcher {
       }
     }
 
-  /** No-op dispatcher used when the responder is explicitly disabled (#2265 named flag). */
+  /**
+   * No-op dispatcher used when the responder is explicitly disabled (#2265 named flag). #2438: the
+   * disabled outcome is metered (`support_dispatch_total{outcome="disabled"}`) so a dispatch
+   * attempt against a dark responder is visible at the dispatcher level, not only the webhook.
+   */
   val Disabled: CloudAgentDispatcher = new CloudAgentDispatcher {
-    def dispatch(req: AgentDispatch): UIO[DispatchOutcome] = ZIO.succeed(DispatchOutcome.Disabled)
+    def dispatch(req: AgentDispatch): UIO[DispatchOutcome] =
+      CloudAgentObservability.disabled(AppMetrics.supportDispatch)
   }
 
   /** Public no-op instance for specs that don't drive the responder. */
@@ -197,19 +203,28 @@ object CloudAgentDispatcher {
   private def neutralizeTags(s: String): String = ManagedAgents.neutralizeTags(s)
 
   /**
-   * Fail-open envelope shared by every live transport: a completed fire-and-forget `run` is
-   * [[DispatchOutcome.Dispatched]]; any transport error is logged and collapsed to
-   * [[DispatchOutcome.Error]] so a cloud hiccup never fails the webhook response (Plain would
-   * retry-storm a 5xx). ONE definition so the two transports can't drift on the fail-open contract.
+   * Fail-open + observability envelope shared by every live transport, delegating to the shared
+   * [[CloudAgentObservability]] (which BOTH the support and press dispatchers use, so the two
+   * audiences and the two transports can't drift): a completed fire-and-forget `run` is
+   * [[DispatchOutcome.Dispatched]] (INFO +
+   * `support_dispatch_total{outcome="dispatched",transport}`); any transport error is logged
+   * (enriched WARN carrying transport + thread + the real cause) and collapsed to
+   * [[DispatchOutcome.Error]] (+ `{outcome="error",transport}`) so a cloud hiccup never fails the
+   * webhook response (Plain would retry-storm a 5xx). #2438 — no customer content ever reaches the
+   * log: only the bounded transport label + the Plain threadId + the error message.
    */
-  private def dispatched(run: Task[Unit]): UIO[DispatchOutcome] =
-    run
-      .as(DispatchOutcome.Dispatched)
-      .catchAll(e =>
-        ZIO
-          .logWarning(s"support agent dispatch errored: ${e.getMessage}")
-          .as(DispatchOutcome.Error),
-      )
+  private def dispatched(
+      transport: String,
+      threadId: String,
+      run: Task[Unit],
+  ): UIO[DispatchOutcome] =
+    CloudAgentObservability.dispatched(
+      audience = "support",
+      transport = transport,
+      threadRef = Some(threadId),
+      record = AppMetrics.supportDispatch,
+      run = run,
+    )
 
   /**
    * Live Managed Agents transport: delegates the create-session + kickoff plumbing to the shared
@@ -221,6 +236,8 @@ object CloudAgentDispatcher {
   final class Live(cfg: SupportConfig) extends CloudAgentDispatcher {
     def dispatch(req: AgentDispatch): UIO[DispatchOutcome] =
       dispatched(
+        CloudAgentObservability.ManagedAgents,
+        req.threadId,
         ManagedAgents.dispatchSession(
           anthropicApiBase = cfg.anthropicApiBase,
           anthropicApiKey = cfg.anthropicApiKeyTrimmed,
@@ -243,6 +260,8 @@ object CloudAgentDispatcher {
   final class ClaudeCodeCloudLive(cfg: SupportConfig) extends CloudAgentDispatcher {
     def dispatch(req: AgentDispatch): UIO[DispatchOutcome] =
       dispatched(
+        CloudAgentObservability.ClaudeCodeCloud,
+        req.threadId,
         ClaudeCodeRoutines.fireRoutine(
           apiBase = cfg.anthropicApiBase,
           routineId = cfg.claudeCodeRoutineIdTrimmed,

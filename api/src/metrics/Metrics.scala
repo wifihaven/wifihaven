@@ -108,6 +108,12 @@ object MetricGuard {
       // household growth, so it satisfies the §4 cardinality firewall. (`status` for the
       // households-by-billing-status gauge is already a known key.)
       "window",
+      // #2438 — cloud-agent dispatch transport for `support_dispatch_total` / `press_dispatch_total`.
+      // A fixed 2-value enum (managed-agents | claude-code-cloud —
+      // CloudAgentObservability.{ManagedAgents,ClaudeCodeCloud}); bounded by the code (the supported
+      // dispatchers), not by user/household/thread growth, so it satisfies the §4 cardinality
+      // firewall. (`outcome` is already a known key.)
+      "transport",
     )
 
   /**
@@ -493,6 +499,15 @@ object MetricGuard {
     // the `issue` action's rate feeds the #2241 volume alert. Both bounded, never per-household.
     "support_ai_draft_total"                        -> Set("outcome"),
     "support_agent_action_total"                    -> Set("op", "outcome"),
+    // #2438 — the dispatcher-level cloud-agent dispatch outcome, additive to (and disambiguating)
+    // `support_ai_draft_total`. `support_dispatch_total{outcome,transport}` counts each dispatch
+    // ATTEMPT at the transport boundary: outcome ∈ dispatched | error | disabled; transport ∈
+    // managed-agents | claude-code-cloud (absent on the `disabled` no-op, which selects no
+    // transport). Emitted from the shared CloudAgentObservability envelope so support + press share
+    // ONE code path. The webhook-level draft metric conflates dispatch failures with gating/skip
+    // outcomes; this series isolates a silent cloud-trigger failure (#2408). Bounded enums, never a
+    // per-household / per-thread label.
+    "support_dispatch_total"                        -> Set("outcome", "transport"),
     // #2419 — the in-conversation data-access consent lifecycle on ONE series:
     // `support_consent_total{outcome}` (requested | request_already_granted | request_rate_limited |
     // request_disabled | request_error — the AGENT's ask; granted | revoked | revoke_noop | invalid
@@ -507,6 +522,10 @@ object MetricGuard {
     // The #808 lesson: without these entries the firewall rejects the name and the series never emits.
     "press_ai_draft_total"                          -> Set("outcome"),
     "press_agent_action_total"                      -> Set("op", "outcome"),
+    // #2438 — the press dispatcher-level dispatch outcome, the press twin of
+    // `support_dispatch_total` (same shared CloudAgentObservability envelope, separate series so the
+    // public-press audience graphs + alerts independently). Same bounded {outcome,transport} space.
+    "press_dispatch_total"                          -> Set("outcome", "transport"),
     // #2296 — the press correspondence log (V71). `press_message_recorded_total{direction,outcome}`
     // counts each best-effort AUDIT write by direction (inbound | outbound) × outcome (ok | error).
     // `error` is a fail-open recording miss — the webhook/reply path still succeeded, but the audit
@@ -779,6 +798,17 @@ object AppMetrics {
   def supportAgentAction(action: String, outcome: String): UIO[Unit] =
     MetricGuard.counter("support_agent_action_total", Map("op" -> action, "outcome" -> outcome))
 
+  // #2438 — the dispatcher-level dispatch outcome, emitted from the shared CloudAgentObservability
+  // envelope (never a bare Metric.*). `outcome` ∈ dispatched | error | disabled; `transport` (when
+  // present) ∈ managed-agents | claude-code-cloud. The `disabled` no-op selects no transport, so it
+  // passes None and the metric carries only `outcome` (a subset of the allowed keys). Never a
+  // per-household / per-thread label.
+  def supportDispatch(outcome: String, transport: Option[String]): UIO[Unit] =
+    MetricGuard.counter(
+      "support_dispatch_total",
+      Map("outcome" -> outcome) ++ transport.map("transport" -> _),
+    )
+
   // ── #2419: in-conversation data-access consent ────────────────────────────────
   // The whole consent lifecycle on ONE series so a grant can be read against the request that
   // preceded it. Emitted from SupportResponder; `outcome` is a bounded enum, never a per-household
@@ -805,6 +835,15 @@ object AppMetrics {
 
   def pressAgentAction(action: String, outcome: String): UIO[Unit] =
     MetricGuard.counter("press_agent_action_total", Map("op" -> action, "outcome" -> outcome))
+
+  // #2438 — the press twin of supportDispatch, emitted from the SAME shared CloudAgentObservability
+  // envelope. Same bounded {outcome,transport} space; separate series so press graphs/alerts on its
+  // own dispatch health. Never a per-sender / per-thread label.
+  def pressDispatch(outcome: String, transport: Option[String]): UIO[Unit] =
+    MetricGuard.counter(
+      "press_dispatch_total",
+      Map("outcome" -> outcome) ++ transport.map("transport" -> _),
+    )
 
   // ── #2296: press correspondence log (V71) ────────────────────────────────────
   // Emitted from PressResponder's fail-open audit writes. `direction` ∈ {inbound, outbound},
