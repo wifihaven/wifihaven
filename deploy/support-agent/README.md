@@ -97,6 +97,13 @@ before filing (`SupportPrivacy.scrubForIssue`, applied at the `GithubIssueClient
 The target repo and REST base are **constants**, not config (`GithubIssueClient.Repo` / `ApiBase`) —
 the only knobs are the flag and the token.
 
+`POST /api/support/agent/issues` answers `{"ok":true,"number":2455,"url":"https://github.com/..."}`
+(#2461) — parsed out of GitHub's create-issue response, so the agent can point the customer at the
+tracking issue in the **public** repo. `number`/`url` are absent if GitHub's body was unreadable;
+that is still a successful filing, and the agent is instructed never to invent a link. The agent
+offers the link **only when the customer asked** for something to be filed — an unrequested
+"I filed #2455" reads as noise and implies a fix commitment we have not made.
+
 ### 1. The token (operator; cannot be automated)
 
 Create a **dedicated machine account** (e.g. `wifihaven-support-bot`), invite it to the repo, and

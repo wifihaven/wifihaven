@@ -97,7 +97,9 @@ object SupportAgentRoutes {
               .fail(ApiError.BadRequest("empty issue"))
               .when(post.title.trim.isEmpty)
             result <- responder.agentFileIssue(bearerToken(req), post.title, post.body)
-            resp   <- toResponse(result)
+            // #2461: on success the response carries the created issue's number + public URL so
+            // the agent can quote the link back to the customer.
+            resp   <- result.fold(toResponse, filed => ZIO.succeed(Response.json(filed.toJson)))
           } yield resp
           handle.mapError(ErrorMapper.errorToResponse)
         },

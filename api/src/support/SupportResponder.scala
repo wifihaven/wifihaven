@@ -409,20 +409,32 @@ final case class SupportResponder(
    * volume metric feeds the operator alert), auto-labeled `support-agent` and PII-scrubbed inside
    * [[GithubIssueClient]] — the #2241 compensating control: the body that leaves this process never
    * embeds raw household-data output.
+   *
+   * On success it answers the created [[FiledIssue]] (#2461) — the number + public URL the agent
+   * may quote to the customer; every failure stays the bounded [[AgentActionResult]] the route maps
+   * to a status.
    */
-  def agentFileIssue(bearer: Option[String], title: String, body: String): UIO[AgentActionResult] =
-    withClaims("issue", bearer) { claims =>
+  def agentFileIssue(
+      bearer: Option[String],
+      title: String,
+      body: String,
+  ): UIO[Either[AgentActionResult, FiledIssue]] =
+    withClaimsE("issue", bearer) { claims =>
       // Same short-circuit as dispatch: a thread-capped caller must not drain the global budget.
       issueThreadLimiter.tryAcquire(s"thread:${claims.threadId}").flatMap { threadOk =>
-        if !threadOk then done("issue", AgentActionResult.RateLimited)
+        if !threadOk then doneE("issue", AgentActionResult.RateLimited)
         else
           issueGlobalLimiter.tryAcquire("global").flatMap { globalOk =>
-            if !globalOk then done("issue", AgentActionResult.RateLimited)
+            if !globalOk then doneE("issue", AgentActionResult.RateLimited)
             else
               github.fileIssue(IssueFileRequest(title, body, claims.threadId)).flatMap {
-                case IssueOutcome.Filed    => done("issue", AgentActionResult.Ok)
-                case IssueOutcome.Disabled => done("issue", AgentActionResult.Disabled)
-                case IssueOutcome.Error    => done("issue", AgentActionResult.Error)
+                // #2461: the created issue's identity rides back out so the agent can offer the
+                // customer a link. The metric label stays the bounded `ok` — never the number.
+                case IssueOutcome.Filed(ref) =>
+                  done("issue", AgentActionResult.Ok)
+                    .as(Right(FiledIssue(ref.map(_.number), ref.map(_.url))))
+                case IssueOutcome.Disabled   => doneE("issue", AgentActionResult.Disabled)
+                case IssueOutcome.Error      => doneE("issue", AgentActionResult.Error)
               }
           }
       }
@@ -723,6 +735,10 @@ final case class SupportResponder(
 
   private def done(action: String, r: AgentActionResult): UIO[AgentActionResult] =
     AppMetrics.supportAgentAction(action, AgentActionResult.label(r)).as(r)
+
+  /** [[done]] for the `Either`-shaped endpoints — same single metric derivation, left-biased. */
+  private def doneE[A](action: String, r: AgentActionResult): UIO[Either[AgentActionResult, A]] =
+    done(action, r).map(Left(_))
 }
 
 object SupportResponder {
@@ -918,6 +934,17 @@ object SupportResponder {
       case Disabled    => "disabled"
       case Error       => "error"
     }
+  }
+
+  /**
+   * #2461 — the issue-filing response. `number`/`url` point at the issue in the PUBLIC target repo
+   * (`GithubIssueClient.Repo`), so the agent may quote the link to a customer. Both are optional:
+   * an issue that GitHub created but whose response we could not read back is still a success, and
+   * the agent then simply has no link to offer rather than an invented one.
+   */
+  final case class FiledIssue(number: Option[Int], url: Option[String], ok: Boolean = true)
+  object FiledIssue {
+    given JsonCodec[FiledIssue] = DeriveJsonCodec.gen[FiledIssue]
   }
 
   /**
