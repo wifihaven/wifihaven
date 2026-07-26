@@ -492,7 +492,12 @@ object SupportConsentSpec
         // Count PROMPTS, not writes: #2460's grant-time nudge is a separate, server-authored write
         // on this thread (the timeline read is empty here, so the resume falls back to it).
         prompts = writes.count(_.markdown.contains(s"$AppBaseUrl/support/consent?g="))
-      } yield assertTrue(again == Status.Ok, prompts == 1)
+      } yield assertTrue(
+        again == Status.Ok,
+        prompts == 1,
+        // Total stays pinned too: the prompt plus exactly one grant-time nudge, nothing else.
+        writes.size == 2,
+      )
     },
     // ── #2460: the grant CLOSES THE LOOP (the customer does nothing more) ──────
     test("granting consent RESUMES the conversation: the last customer question is re-dispatched") {
@@ -561,6 +566,25 @@ object SupportConsentSpec
         second   <- postConsent(h, Some(jwtTok), grant)
         twice    <- h.dispatch.dispatches.get.map(_.size)
       } yield assertTrue(first == Status.Ok, second == Status.Ok, once == 1, twice == 1)
+    },
+    test("the grant WRITE itself reports the transition, so the resume can't race a second click") {
+      // The #2460 idempotency key is decided by the statement that WRITES, not by a preceding read
+      // — a read-then-write would let two concurrent Allow clicks both see "not live" and both
+      // re-dispatch. Pinned at the repo so the property survives any refactor of the responder.
+      for {
+        _      <- cleanDb
+        hhRepo <- ZIO.service[HouseholdRepo]
+        repo   <- ZIO.service[SupportConsentRepo]
+        hh     <- hhRepo.create("Family W", "family-w")
+        now    <- ZIO.serviceWithZIO[Clock](_.instant)
+        exp = now.plus(SupportResponder.ConsentTtl)
+        first  <- repo.grant(hh, "th_w", None, now, exp)
+        second <- repo.grant(hh, "th_w", None, now, exp)
+        // …but a grant that follows a WITHDRAWAL is a real transition again: the customer said yes
+        // a second time, so the conversation gets picked back up.
+        _      <- repo.revoke(hh, "th_w", now)
+        third  <- repo.grant(hh, "th_w", None, now, exp)
+      } yield assertTrue(first, !second, third)
     },
     test(
       "resume with unreadable history: the grant still lands and a server-authored nudge posts",

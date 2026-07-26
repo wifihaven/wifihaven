@@ -59,11 +59,12 @@ Bounds on the resume, all of which a review must preserve:
 
 | Property | Behaviour |
 | --- | --- |
-| Idempotency | Keyed on the no-live-grant → granted **transition** (read before the UPSERT). Re-confirming a live grant meters `resume_skipped` and dispatches nothing, so a page reload cannot double-answer. |
-| Cost | Draws `dispatchThreadLimiter` then `dispatchGlobalLimiter`, exactly like an inbound dispatch (`resume_rate_limited` when capped). The grant still lands — consent is never lost to a cost cap. |
+| Idempotency | Keyed on the no-live-grant → granted **transition**, reported by the same statement that writes it (`SupportConsentRepo.grant` returns a Boolean; the `prev` CTE takes a row lock). Re-confirming a live grant meters `resume_skipped` and dispatches nothing, so neither a page reload nor two concurrent Allow clicks can double-answer. |
+| Cost | Draws `dispatchThreadLimiter` then `dispatchGlobalLimiter` through the shared `withDispatchCaps`, exactly like an inbound dispatch (`resume_rate_limited` when capped). The grant still lands — consent is never lost to a cost cap. |
 | Loop guard | Untouched. The #2403/#2404 guard lives on the inbound webhook path; the agent's eventual reply still arrives as a `thread.chat_sent` that the guard drops. |
 | Unreadable thread | Fail-open. If Plain's timeline read yields nothing (a hiccup, or the #2452 `timeline:read` gap) we cannot know what to re-ask, so a FIXED server-authored nudge posts instead (`resume_no_message`). It is never agent-authored and carries no consent URL (#2453). |
-| Latency | Capped at `SupportResponder.ResumeBudget`; past it the customer's POST returns and the dispatch completes on its own fiber. The grant is committed before the resume starts. |
+| Latency | The resume runs INLINE on the consent POST, bounded by the two legs' own transport timeouts (`PlainClient.HistoryTimeout`, then the dispatcher's `RequestTimeout`). It is deliberately not wrapped in a ZIO timeout: that would *interrupt* the dispatch the customer is waiting on and drop its metric sample, rather than backgrounding it. The grant commits first, so nothing here can cost the customer's consent. |
+| One dispatch primitive | The resume does not fork the dispatch assembly — it calls the same `withDispatchCaps` + `dispatchAgentSession` the webhook path calls, so the caps ordering, the #2241 mint audit line, the token shape, and the #2416 config-vs-transient split cannot drift between the two paths. |
 
 **Known gap — the consent link still opens in the same tab.** We post the link as
 markdown (`textContent`/`markdownContent` on Plain's `replyToThread`); markdown

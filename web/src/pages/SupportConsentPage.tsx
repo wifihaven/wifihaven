@@ -72,10 +72,16 @@ export function SupportConsentPage() {
           </>
         ) : state === 'granted' ? (
           <>
+            {/*
+              Deliberately does NOT promise an answer. The server tries to pick the question back
+              up on its own (#2460), but that resume can be rate-limited, disabled, or fail — and
+              this response is the same 'granted' in every one of those cases, so claiming "it's
+              already answering" would be a lie the page cannot check.
+            */}
             <p className="text-brand-text text-sm">
-              Thanks — the support assistant can now see your account summary for that conversation,
-              and it's already going back to answer your question. It expires on its own, and you
-              can withdraw it here at any time.
+              Thanks — the support assistant can now see your account summary for that conversation.
+              Head back to the chat: if it hasn't picked your question back up, just ask again. The
+              permission expires on its own, and you can withdraw it here at any time.
             </p>
             {/*
               #2460: the granted state used to dead-end — "Withdraw this permission" was the only

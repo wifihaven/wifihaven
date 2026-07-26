@@ -29,6 +29,13 @@ trait SupportConsentRepo {
    * UPSERTs on the UNIQUE `(household_id, thread_id)` key — a re-grant after expiry or revocation
    * refreshes the window and CLEARS `revoked_at` rather than accumulating history rows.
    * `grantedByUserId` is the audit trail (which admin granted).
+   *
+   * Returns TRUE iff this call TRANSITIONED the pair from no-live-grant to live — i.e. there was no
+   * row, or the row was revoked/expired. A re-confirmation of a grant that was already live returns
+   * false. #2460 keys the consent RESUME (the server re-dispatching the customer's question) off
+   * that transition, so it must be decided by the same statement that writes: a separate
+   * read-then-write would let two concurrent Allow clicks both observe "not live" and both
+   * re-dispatch, double-answering the customer.
    */
   def grant(
       household: HouseholdId,
@@ -36,7 +43,7 @@ trait SupportConsentRepo {
       grantedByUserId: Option[UserId],
       now: Instant,
       expiresAt: Instant,
-  ): Task[Unit]
+  ): Task[Boolean]
 
   /**
    * Withdraw consent ahead of expiry (the customer's "stop allowing" action). Stamps `revoked_at`
@@ -62,17 +69,28 @@ class SupportConsentRepoLive(xa: Transactor[Task]) extends SupportConsentRepo {
       grantedByUserId: Option[UserId],
       now: Instant,
       expiresAt: Instant,
-  ): Task[Unit] =
-    sql"""INSERT INTO support_thread_consent
-            (household_id, thread_id, granted_by_user_id, granted_at, expires_at, revoked_at)
-          VALUES ($household, $threadId, $grantedByUserId, $now, $expiresAt, NULL)
-          ON CONFLICT (household_id, thread_id) DO UPDATE
-            SET granted_by_user_id = EXCLUDED.granted_by_user_id,
-                granted_at         = EXCLUDED.granted_at,
-                expires_at         = EXCLUDED.expires_at,
-                revoked_at         = NULL""".update.run
-      .transact(xa)
-      .unit
+  ): Task[Boolean] =
+    // ONE transaction decides both the write and whether it was a TRANSITION (#2460). The prior
+    // state is read `FOR UPDATE`, so the row lock is held across the upsert: a second grant for the
+    // same pair blocks until this commits and then observes the LIVE row, reporting `false`. (Two
+    // simultaneous FIRST grants — no row to lock yet — can still both report `true`; they carry the
+    // same question, and the dispatch caps bound the cost.) Deliberately two statements rather than
+    // a CTE: a read CTE alongside a data-modifying one does not reliably observe the pre-write
+    // state, which is the whole signal here.
+    (for {
+      prev <- sql"""SELECT (revoked_at IS NULL AND expires_at > $now)
+                      FROM support_thread_consent
+                     WHERE household_id = $household AND thread_id = $threadId
+                     FOR UPDATE""".query[Boolean].option
+      _    <- sql"""INSERT INTO support_thread_consent
+                     (household_id, thread_id, granted_by_user_id, granted_at, expires_at, revoked_at)
+                   VALUES ($household, $threadId, $grantedByUserId, $now, $expiresAt, NULL)
+                   ON CONFLICT (household_id, thread_id) DO UPDATE
+                     SET granted_by_user_id = EXCLUDED.granted_by_user_id,
+                         granted_at         = EXCLUDED.granted_at,
+                         expires_at         = EXCLUDED.expires_at,
+                         revoked_at         = NULL""".update.run
+    } yield !prev.getOrElse(false)).transact(xa)
 
   def revoke(household: HouseholdId, threadId: String, now: Instant): Task[Boolean] =
     sql"""UPDATE support_thread_consent SET revoked_at = $now
