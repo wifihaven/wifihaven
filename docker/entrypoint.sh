@@ -35,8 +35,9 @@ set -euo pipefail
 # keeps the prod default. Before #2250 the beta invite base had NO env binding and the email base
 # had one but no staging value, so both fell through to the prod default even on staging.
 : "${WIFIHAVEN_APP_BASE_URL:=https://app.wifihaven.net}"
-# #2135: Stripe billing. Empty WIFIHAVEN_STRIPE_SECRET_KEY (the default) DISABLES billing entirely —
-# the self-hosted single-install path never bills, so the /api/billing/* admin routes 404 and the
+# #2135: Stripe billing. WIFIHAVEN_STRIPE_ENABLED is the off-switch, NOT the absence of a key
+# (#2266): with it false — the default — the self-hosted single-install path never bills, so
+# POST /api/billing/checkout and GET /api/billing/portal 404 "billing not configured" and the
 # webhook no-ops. Cloud/staging set the secret + webhook signing secret (Render sync:false secrets)
 # plus the test/live-mode price ids + promo code. Secrets are NEVER committed (docs/process/security.md).
 # appBaseUrl defaults to the shared WIFIHAVEN_APP_BASE_URL (#2250) but keeps its own override.

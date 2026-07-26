@@ -167,7 +167,8 @@ object BillingRoutes {
   }
 
   private def billingErrorToApi(e: BillingError): ApiError = e match {
-    // Billing not configured (self-hosted / no keys) → 404, the route effectively doesn't exist.
+    // Billing off via the explicit stripe.enabled=false flag (self-hosted; #2266 — NOT "no keys",
+    // which fails boot under enabled=true) → 404, the route effectively doesn't exist.
     case BillingError.NotConfigured  => ApiError.NotFound("billing not configured")
     case BillingError.NoBillingRow   => ApiError.NotFound("no billing record for this household")
     case BillingError.NoCustomer     =>
