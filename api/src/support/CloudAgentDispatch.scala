@@ -67,14 +67,24 @@ object CloudAgentDispatch {
   }
 
   /**
-   * Classify a dispatch failure. A 4xx from either agent boundary is PERMANENT — these APIs reject
-   * on credentials, resource ids, and the beta header, none of which change by themselves.
-   * Everything else (transport, timeout, 5xx, a 2xx whose body lacked a session id) is TRANSIENT.
-   * Reads the typed [[CloudAgentHttpError.status]], never the message text.
+   * The 4xx statuses that DO self-heal, so they must NOT be attributed as a config gap: 408 Request
+   * Timeout, 425 Too Early, and 429 Too Many Requests are load/timing signals, not a wrong key.
+   * Every other 4xx from these APIs is a credential / resource-id / beta-header rejection — none of
+   * which change by themselves.
+   */
+  private val TransientClientStatuses: Set[Int] = Set(408, 425, 429)
+
+  /**
+   * Classify a dispatch failure. A 4xx from either agent boundary is PERMANENT except the
+   * self-healing statuses above. Everything else (transport, timeout, 5xx, a 2xx whose body lacked
+   * a session id) is TRANSIENT. Reads the typed [[CloudAgentHttpError.status]], never the message
+   * text.
    */
   def classify(e: Throwable): FailureKind = e match {
-    case h: CloudAgentHttpError if h.status >= 400 && h.status < 500 => FailureKind.Permanent
-    case _                                                           => FailureKind.Transient
+    case h: CloudAgentHttpError
+        if h.status >= 400 && h.status < 500 && !TransientClientStatuses.contains(h.status) =>
+      FailureKind.Permanent
+    case _ => FailureKind.Transient
   }
 
   /** The `reason` label for a classified failure. */
@@ -102,8 +112,6 @@ object CloudAgentDispatch {
       " — PROVISIONING GAP: the referenced cloud resource does not exist; fix the id " +
         "({support,press}.claudeAgentId / .claudeEnvironmentId for managed-agents, " +
         "{support,press}.claudeCodeRoutineId for claude-code-cloud)"
-    case 429       =>
-      " — the cloud agent quota/rate ceiling was hit; raise the limit or reduce dispatch volume"
     case _         =>
       " — PROVISIONING GAP: the agent boundary rejected the request as invalid; check the " +
         "dispatcher config (keys, ids, beta header) — a 4xx never self-heals"

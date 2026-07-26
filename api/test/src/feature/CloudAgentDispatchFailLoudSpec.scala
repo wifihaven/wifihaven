@@ -98,10 +98,36 @@ object CloudAgentDispatchFailLoudSpec
   private def seriesLines(body: String, name: String): List[String] =
     body.linesIterator.filter(l => !l.startsWith("#") && l.startsWith(name)).toList
 
-  /** Does `name` have a sample carrying BOTH `outcome=error` and the given `reason`? */
-  private def hasErrorReason(body: String, name: String, reason: String): Boolean =
+  /**
+   * The current counter value of `name{outcome="error",reason=…}` (0 when the sample doesn't exist
+   * yet). Prometheus counters are cumulative and this JVM's registry is shared across the whole
+   * suite, so every assertion below is a BEFORE→AFTER **delta** — otherwise a later test could be
+   * satisfied by an earlier test's increment and the suite would silently stop discriminating.
+   */
+  private def errorReasonValue(body: String, name: String, reason: String): Double =
     seriesLines(body, name)
-      .exists(l => l.contains("""outcome="error"""") && l.contains(s"""reason="$reason""""))
+      .find(l => l.contains("""outcome="error"""") && l.contains(s"""reason="$reason""""))
+      .flatMap(_.split(' ').lift(1))
+      .flatMap(v => scala.util.Try(v.toDouble).toOption)
+      .getOrElse(0.0)
+
+  /**
+   * Drive `run`, and report how much each `reason` bucket of `name` moved. A correct classification
+   * moves EXACTLY ONE bucket — so each test asserts both "+1 on the expected reason" and "+0 on the
+   * other", which is what makes e.g. the 429 case a real pin rather than a coincidence.
+   */
+  private def deltas[R, E, A](name: String, run: ZIO[R, E, A]) =
+    for {
+      _      <- tickPublisher
+      before <- scrape.catchAll(r => r.body.asString.orDie)
+      out    <- run
+      _      <- tickPublisher
+      after  <- scrape.catchAll(r => r.body.asString.orDie)
+    } yield (
+      out,
+      errorReasonValue(after, name, "config") - errorReasonValue(before, name, "config"),
+      errorReasonValue(after, name, "transient") - errorReasonValue(before, name, "transient"),
+    )
 
   // ── Support: LIVE dispatcher against the stub boundary ─────────────────────
   private def supportCfg(apiBase: String, dispatcher: String) = SupportConfig(
@@ -236,84 +262,103 @@ object CloudAgentDispatchFailLoudSpec
   def spec = suite("Cloud-agent dispatch fail-loud attribution (#2416)")(
     test("support: a 401 (revoked Anthropic key) attributes reason=config, not transient") {
       for {
-        _    <- cleanDb
-        out  <- driveSupport(401, "th2416a")
-        _    <- tickPublisher
-        body <- scrape.catchAll(r => r.body.asString.orDie)
+        _   <- cleanDb
+        res <- deltas("support_ai_draft_total", driveSupport(401, "th2416a"))
+        (out, config, transient) = res
       } yield assertTrue(
         // Fail-open preserved: the webhook still resolves to a metered outcome, never a defect.
         SupportResponder.WebhookOutcome.label(out) == "error",
-        hasErrorReason(body, "support_ai_draft_total", "config"),
+        config == 1.0,
+        transient == 0.0,
       )
     },
     test("support: a 404 (wrong agent/environment id) also attributes reason=config") {
       for {
-        _    <- cleanDb
-        out  <- driveSupport(404, "th2416b")
-        _    <- tickPublisher
-        body <- scrape.catchAll(r => r.body.asString.orDie)
+        _   <- cleanDb
+        res <- deltas("support_ai_draft_total", driveSupport(404, "th2416b"))
+        (out, config, transient) = res
       } yield assertTrue(
         SupportResponder.WebhookOutcome.label(out) == "error",
-        hasErrorReason(body, "support_ai_draft_total", "config"),
+        config == 1.0,
+        transient == 0.0,
       )
     },
     test("support: a 500 stays in the TRANSIENT bucket (reason=transient)") {
       for {
-        _    <- cleanDb
-        out  <- driveSupport(500, "th2416c")
-        _    <- tickPublisher
-        body <- scrape.catchAll(r => r.body.asString.orDie)
+        _   <- cleanDb
+        res <- deltas("support_ai_draft_total", driveSupport(500, "th2416c"))
+        (out, config, transient) = res
       } yield assertTrue(
         SupportResponder.WebhookOutcome.label(out) == "error",
-        hasErrorReason(body, "support_ai_draft_total", "transient"),
+        transient == 1.0,
+        config == 0.0,
       )
     },
     test(
       "support: a 400 on the claude-code-cloud routine (stale beta header) attributes reason=config",
     ) {
       for {
-        _    <- cleanDb
-        out  <- driveSupport(400, "th2416d", dispatcher = "claude-code-cloud")
-        _    <- tickPublisher
-        body <- scrape.catchAll(r => r.body.asString.orDie)
+        _   <- cleanDb
+        res <- deltas(
+          "support_ai_draft_total",
+          driveSupport(400, "th2416d", dispatcher = "claude-code-cloud"),
+        )
+        (out, config, transient) = res
       } yield assertTrue(
         SupportResponder.WebhookOutcome.label(out) == "error",
-        hasErrorReason(body, "support_ai_draft_total", "config"),
+        config == 1.0,
+        transient == 0.0,
+      )
+    },
+    test("support: a 429 is TRANSIENT, not a config gap — a rate ceiling self-heals") {
+      for {
+        _   <- cleanDb
+        res <- deltas("support_ai_draft_total", driveSupport(429, "th2416rl"))
+        (out, config, transient) = res
+      } yield assertTrue(
+        SupportResponder.WebhookOutcome.label(out) == "error",
+        // 408/425/429 are 4xx but load/timing signals — attributing them to `config` would page an
+        // operator to "rotate the key" for a quota blip that fixes itself.
+        transient == 1.0,
+        config == 0.0,
       )
     },
     test("press: a 401 attributes reason=config on the SEPARATE press series") {
       for {
-        _    <- cleanDb
-        out  <- drivePress(401, "reporter-a@example.com")
-        _    <- tickPublisher
-        body <- scrape.catchAll(r => r.body.asString.orDie)
+        _   <- cleanDb
+        res <- deltas("press_ai_draft_total", drivePress(401, "reporter-a@example.com"))
+        (out, config, transient) = res
       } yield assertTrue(
         PressResponder.WebhookOutcome.label(out) == "error",
-        hasErrorReason(body, "press_ai_draft_total", "config"),
+        config == 1.0,
+        transient == 0.0,
       )
     },
     test(
-      "press: a 500 stays in the TRANSIENT bucket (the shared classifier agrees on both paths)",
+      "press: a 503 stays in the TRANSIENT bucket (the shared classifier agrees on both paths)",
     ) {
       for {
-        _    <- cleanDb
-        out  <- drivePress(503, "reporter-b@example.com")
-        _    <- tickPublisher
-        body <- scrape.catchAll(r => r.body.asString.orDie)
+        _   <- cleanDb
+        res <- deltas("press_ai_draft_total", drivePress(503, "reporter-b@example.com"))
+        (out, config, transient) = res
       } yield assertTrue(
         PressResponder.WebhookOutcome.label(out) == "error",
-        hasErrorReason(body, "press_ai_draft_total", "transient"),
+        transient == 1.0,
+        config == 0.0,
       )
     },
     test("press: a 404 on the claude-code-cloud routine attributes reason=config") {
       for {
-        _    <- cleanDb
-        out  <- drivePress(404, "reporter-c@example.com", dispatcher = "claude-code-cloud")
-        _    <- tickPublisher
-        body <- scrape.catchAll(r => r.body.asString.orDie)
+        _   <- cleanDb
+        res <- deltas(
+          "press_ai_draft_total",
+          drivePress(404, "reporter-c@example.com", dispatcher = "claude-code-cloud"),
+        )
+        (out, config, transient) = res
       } yield assertTrue(
         PressResponder.WebhookOutcome.label(out) == "error",
-        hasErrorReason(body, "press_ai_draft_total", "config"),
+        config == 1.0,
+        transient == 0.0,
       )
     },
     test("a SUCCESSFUL dispatch carries reason=none — the label is on every emitted sample") {
