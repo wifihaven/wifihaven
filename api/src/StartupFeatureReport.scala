@@ -78,7 +78,7 @@ object StartupFeatureReport {
       // #2429/#2266 rule 3: with no address published, the SPA renders NO support line at all —
       // an off state that must be observable at boot and on /api/debug/config rather than an
       // unlabeled silent branch. (When the widget is on, the address is REQUIRED and boot fails
-      // without it — AppConfig.validateRequired via SupportConfig.missingWidgetEmailKeys.)
+      // without it — AppConfig.validateRequired via SupportConfig.widgetEmailConfigErrors.)
       FeatureState(
         "support-email",
         support.supportEmailOpt.isDefined,

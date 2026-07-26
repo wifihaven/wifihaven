@@ -37,12 +37,11 @@ export function SupportFooter() {
 
   return (
     <footer
-      className={
-        'mx-auto w-full max-w-7xl px-4 pb-6 pt-2 text-center text-xs text-brand-text-muted ' +
-        // Clear the bottom-right Plain bubble's column on desktop, where the footer can land at the
-        // viewport bottom on a short page. On mobile the bubble is not rendered inline with this.
-        (chatAvailable ? 'md:pr-20' : '')
-      }
+      // `md:pr-20` clears the bottom-right Plain bubble's column on desktop, where the footer can
+      // land at the viewport bottom on a short page — only needed when a bubble is actually there.
+      className={`mx-auto w-full max-w-7xl px-4 pb-6 pt-2 text-center text-xs text-brand-text-muted ${
+        chatAvailable ? 'md:pr-20' : ''
+      }`.trim()}
     >
       <p>
         Email{' '}

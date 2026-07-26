@@ -640,8 +640,11 @@ case class SupportConfig(
    * no support line (no dark-by-default). Kept OUT of [[missingRequiredKeys]] because that list's
    * trigger is the responder / issue-filing flags: this key's trigger is
    * `support.plain.widgetEnabled`, and folding it in would report a factually wrong cause.
+   *
+   * Returns FULLY-WORDED messages, not bare keys (hence `…Errors`, not `…Keys` like its sibling) —
+   * `AppConfig.validateRequired` appends them verbatim rather than mapping a cause onto them.
    */
-  def missingWidgetEmailKeys: List[String] =
+  def widgetEmailConfigErrors: List[String] =
     if plain.widgetEnabled && emailAddressTrimmed.isEmpty then
       List(
         "wifihaven.support.emailAddress must be set when wifihaven.support.plain.widgetEnabled=true " +
@@ -861,7 +864,7 @@ object AppConfig {
       // message is emitted separately rather than folded into the responder/issue-filing wording
       // above — an operator debugging a boot crash must be pointed at the flag that actually
       // required the key. Already fully worded, so no mapping here.
-      cfg.support.missingWidgetEmailKeys ++
+      cfg.support.widgetEmailConfigErrors ++
       // #2203: the press responder is the same EXPLICIT-flag shape — a true `press.responderEnabled`
       // makes its whole config chain required, bulk-listed here so it accumulates with the rest.
       cfg.press.missingRequiredKeys.map(k =>
