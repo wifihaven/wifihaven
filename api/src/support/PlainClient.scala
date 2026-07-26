@@ -364,16 +364,27 @@ object PlainClient {
   private def typeNameOf(j: Json): Option[String] =
     objField(j, "__typename").collect { case Json.Str(s) => s }
 
-  // How many timeline entries Plain returned, regardless of whether any parsed. The discriminator
-  // between "this thread genuinely has no prior turns" (empty) and "Plain sent entries we could not
-  // read" (unparsed — schema drift), which must never share a bucket.
-  private[api] def timelineEntryCount(body: String): Int =
+  // How many timeline entries Plain returned that we SHOULD have been able to read — entries whose
+  // `entry.__typename` is on the customer-visible allowlist. The discriminator behind the `unparsed`
+  // bucket: "we asked for turns, Plain sent turn-shaped entries, and NONE parsed" is schema drift.
+  //
+  // Counting ALL edges here would be wrong (review run 2): a long, actively-managed thread whose
+  // most recent entries are all status flips, assignments, and internal notes is perfectly healthy,
+  // and every one of those is an edge — it would fire an ERROR-level "SCHEMA DRIFT" on every message
+  // of that thread. Entries we deliberately DROP must not count as entries we failed to read.
+  private[api] def readableEntryCount(body: String): Int =
     Json.decoder
       .decodeJson(body)
       .toOption
       .flatMap { json =>
         navigate(json, List("data", "thread", "timelineEntries", "edges")).collect {
-          case Json.Arr(items) => items.size
+          case Json.Arr(items) =>
+            items.count { edge =>
+              objField(edge, "node")
+                .flatMap(objField(_, "entry"))
+                .flatMap(typeNameOf)
+                .exists(CustomerVisibleEntryTypes.contains)
+            }
         }
       }
       .getOrElse(0)
@@ -395,6 +406,14 @@ object PlainClient {
    * (UTC ISO-8601 sorts lexicographically) so we do not depend on the connection's return order —
    * but ONLY when every kept entry carries one; if any timestamp is missing we keep Plain's own
    * order rather than float the undated entries to the top.
+   *
+   * Be explicit about what that fallback costs, since the kickoff asserts "oldest first"
+   * unconditionally: with it engaged, both the transcript order and
+   * [[SupportResponder.priorTurns]]' TRAILING echo match ride on Plain's connection order. It is
+   * not a correctness hazard — a wrong order costs the agent clarity and at worst leaves the echo
+   * turn in — and it is unreachable while [[Live.ThreadTimelineQuery]] selects `timestamp { iso8601
+   * }` on every entry, which is why it stays a quiet fallback rather than a drop or a third parse
+   * of the body to meter it.
    */
   private[support] def parseThreadHistory(body: String): List[PlainThreadMessage] =
     Json.decoder.decodeJson(body).toOption.toList.flatMap { json =>
@@ -709,18 +728,20 @@ object PlainClient {
           .timeoutTo(Left("timed out"): Either[String, String])(identity)(HistoryTimeout)
           .flatMap {
             case Right(body)  =>
-              val msgs = parseThreadHistory(body)
+              val msgs     = parseThreadHistory(body)
+              // Only the entries we SHOULD have read — a thread whose recent timeline is all notes
+              // and status flips is healthy, not drifted (bound once: this re-parses the body).
+              val readable = readableEntryCount(body)
               if msgs.nonEmpty then AppMetrics.supportThreadHistory("ok").as(msgs)
-              else if timelineEntryCount(body) > 0 then
-                // Plain returned timeline entries and NOT ONE parsed into a turn. That is schema
-                // DRIFT (the actor / entry union shapes moved), not a quiet thread — and it must
-                // not hide in `empty`, which is also the normal first-message outcome. Its own
-                // bucket, logged loud, because it will never self-heal.
+              else if readable > 0 then
+                // Plain returned turn-SHAPED entries and NOT ONE parsed into a turn. That is schema
+                // DRIFT (the actor / entry union shapes moved), not a quiet thread — its own bucket,
+                // logged loud, because it will never self-heal.
                 ZIO.logError(
-                  s"plain threadTimeline returned ${timelineEntryCount(body)} entries but none " +
-                    "parsed into a turn — SCHEMA DRIFT: Plain's timeline actor/entry shapes no " +
-                    "longer match PlainClient.parseThreadHistory; the support responder is " +
-                    "answering every message with no thread context",
+                  s"plain threadTimeline returned $readable message entries but none parsed into " +
+                    "a turn — SCHEMA DRIFT: Plain's timeline actor/entry shapes no longer match " +
+                    "PlainClient.parseThreadHistory; the support responder is answering every " +
+                    "message with no thread context",
                 ) *> AppMetrics.supportThreadHistory("unparsed").as(Nil)
               else AppMetrics.supportThreadHistory("empty").as(Nil)
             case Left(detail) =>

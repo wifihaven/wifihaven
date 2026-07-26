@@ -452,13 +452,25 @@ object PlainClientWireSpec extends ZIOSpecDefault {
         )
       }
     },
-    test("#2430: entries Plain returns that NONE parse ⇒ its own bucket, not silent `empty`") {
-      // Schema drift must not hide in `empty` (the normal first-message outcome). Entries present +
-      // zero turns parsed is its own loud, metered state; the read still degrades to no history.
-      val drifted =
+    test(
+      "#2430: MESSAGE entries that none parse ⇒ the drift bucket; notes/status ⇒ plain `empty`",
+    ) {
+      // The `unparsed` discriminator counts only entries we SHOULD have been able to read. Drift =
+      // Plain sent turn-shaped entries (chat/email) and not one produced a turn. A busy thread whose
+      // recent timeline is all internal notes and status flips is HEALTHY — counting those would fire
+      // an ERROR-level "SCHEMA DRIFT" on every message of that thread (review run 2).
+      val drifted        =
         """{"data":{"thread":{"id":"th_bound","timelineEntries":{"edges":[
           |{"node":{"timestamp":{"iso8601":"2026-07-20T10:00:01Z"},"actor":{"__typename":"CustomerActor"},
-          | "entry":{"__typename":"SomeNewEntryKind","body":"hi"}}}
+          | "entry":{"__typename":"ChatEntry","renamedBodyField":"hi"}}}
+          |]}}}}""".stripMargin
+      // Every entry here is one we deliberately DROP — not a thing we failed to read.
+      val busyButHealthy =
+        """{"data":{"thread":{"id":"th_bound","timelineEntries":{"edges":[
+          |{"node":{"timestamp":{"iso8601":"2026-07-20T10:00:01Z"},"actor":{"__typename":"UserActor"},
+          | "entry":{"__typename":"NoteEntry","text":"internal: check the router logs"}}},
+          |{"node":{"timestamp":{"iso8601":"2026-07-20T10:00:02Z"},"actor":{"__typename":"SystemActor"},
+          | "entry":{"__typename":"ThreadStatusTransitionedEntry"}}}
           |]}}}}""".stripMargin
       ZIO.scoped {
         for {
@@ -471,9 +483,12 @@ object PlainClientWireSpec extends ZIOSpecDefault {
             .serviceWithZIO[PlainClient](_.threadHistory("th_bound", 30))
             .provide(PlainClient.layer, ZLayer.succeed(cfg))
         } yield assertTrue(
+          // either way the read degrades to no history — only the metered bucket differs.
           msgs.isEmpty,
-          // the discriminator the metric buckets on: entries WERE returned.
-          PlainClient.timelineEntryCount(drifted) == 1,
+          // a turn-shaped entry we could not read IS the drift signal…
+          PlainClient.readableEntryCount(drifted) == 1,
+          // …while a thread of notes + status transitions is not (it meters `empty`, no ERROR).
+          PlainClient.readableEntryCount(busyButHealthy) == 0,
         )
       }
     },

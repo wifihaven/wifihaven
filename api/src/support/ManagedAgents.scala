@@ -68,11 +68,15 @@ object ManagedAgents {
   private def grp(m: Regex.Match, i: Int): String = Option(m.group(i)).getOrElse("")
 
   // The frame delimiters the kickoffs emit: `<customer_message>` (#2261) and, since #2430, the
-  // `<thread_history>` transcript with its per-turn `<message from="…">` entries.
+  // `<thread_history>` transcript with its per-turn `<message from="…">` entries. The set is shared
+  // by BOTH responders even though the press kickoff has no `<message>` frame — one definition, so
+  // the two can't drift, at the cost of bracketing a `<message>` a press contact happened to type.
   private val FrameTagNames: String = "customer_message|thread_history|message"
 
-  private val fullFrameTag         = s"(?i)<(/?)($FrameTagNames)([^>]*)>".r
-  private val unterminatedFrameTag = s"(?i)<(/?)($FrameTagNames)".r
+  // `\s*` after `<` / `</` so a spaced-out `< message from="…">` — which an LLM still reads as a
+  // tag — cannot slip past either pass.
+  private val fullFrameTag         = s"(?i)<\\s*(/?)\\s*($FrameTagNames)([^>]*)>".r
+  private val unterminatedFrameTag = s"(?i)<\\s*(/?)\\s*($FrameTagNames)".r
 
   /**
    * Create a Managed Agents session against `agentId`/`environmentId` and send `kickoff` as the
