@@ -40,8 +40,8 @@ at create time, so an update never disturbs in-flight support sessions.
 
 | Env var | Value |
 |---|---|
-| `WIFIHAVEN_SUPPORT_RESPONDER_ENABLED` | `false` in render.yaml — flip to `true` via PR at go-live, after everything below is set (#2265) |
-| `WIFIHAVEN_SUPPORT_ISSUE_FILING_ENABLED` | `false` in render.yaml — flip with (or after) the responder once the bot token is set |
+| `WIFIHAVEN_SUPPORT_RESPONDER_ENABLED` | `true` on staging (#2335), `false` on prod — flip to `true` via PR at go-live, after everything below is set for that environment (#2265) |
+| `WIFIHAVEN_SUPPORT_ISSUE_FILING_ENABLED` | `true` on staging (#2427), `false` on prod — flip with (or after) the responder once that environment's bot token is set. See [GitHub issue filing](#issue-filing) below |
 | `WIFIHAVEN_SUPPORT_DISPATCHER` | `managed-agents` (default) in render.yaml, or `claude-code-cloud` (#2300 — subscription-billed routine; see below). Only the selected transport's keys are required at boot; an unknown value refuses boot |
 | `WIFIHAVEN_SUPPORT_PLAIN_WEBHOOK_SECRET` | Plain workspace webhook signing secret (Plain → Settings → Webhooks; point the webhook at `POST https://<api-host>/api/support/webhook`). Subscribe to the **inbound customer** events only: `thread.thread_created`, `thread.chat_received`, `thread.email_received`. The API additionally loop-guards on the event type + `actorType`, so subscribing to more (e.g. `thread.chat_sent`, our own outbound reply) is safe but unnecessary — those are skipped, never re-dispatched (#2403) |
 | `WIFIHAVEN_SUPPORT_ANTHROPIC_API_KEY` | (dispatcher=managed-agents) Anthropic API key (session creation only) |
@@ -52,7 +52,7 @@ at create time, so an update never disturbs in-flight support sessions.
 | `WIFIHAVEN_SUPPORT_AGENT_TOKEN_SECRET` | `generateValue: true` in render.yaml (auto) |
 | `WIFIHAVEN_SUPPORT_AGENT_API_BASE` | set in render.yaml (`api.wifihaven.net` / `api-staging.wifihaven.net`) |
 | `WIFIHAVEN_SUPPORT_DEPLOYMENT_ENV` | set in render.yaml (`prod` / `staging`) — the kickoff's deployment line |
-| `WIFIHAVEN_SUPPORT_GITHUB_BOT_TOKEN` | fine-grained PAT for the dedicated bot account, **Issues: read+write ONLY** on `wifihaven/wifihaven` — no `contents`, no `pull_requests` (the structural no-PR guarantee, #2241) |
+| `WIFIHAVEN_SUPPORT_GITHUB_BOT_TOKEN` | fine-grained PAT for the dedicated bot account, **Issues: Read and write ONLY** on `wifihaven/wifihaven` — no `Contents`, no `Pull requests` (the structural no-PR guarantee, #2241). Full recipe + rotation: [GitHub issue filing](#issue-filing) |
 
 **Plain machine-user API key permissions (`WIFIHAVEN_SUPPORT_PLAIN_API_KEY`).** The responder
 holds **no Plain key** — it posts the reply back through the API's `/api/support/agent/*`
@@ -66,9 +66,77 @@ toggle. The exact permission set, the find-key-id query, and the grant mutations
 [`docs/ops/plain-setup.md` §5.1](../../docs/ops/plain-setup.md#no-permissions-ui) (per-environment:
 staging + prod each have their own machine user + key).
 
-GitHub bot: create a dedicated machine account (e.g. `wifihaven-support-bot`), grant it the
-fine-grained token above, and nothing else. Issues it files are auto-labeled `support-agent` and
-rate-limited (3/thread/hour, 10/hour global); the API strips PII from every body before filing.
+<a id="issue-filing"></a>
+
+## GitHub issue filing — enabling + token rotation (#2241 / #2427)
+
+Issue filing is the support agent's **escalation** path: it turns "this is broken" into a tracked
+`wifihaven/wifihaven` issue instead of an answer the agent can't give. Issues are auto-labeled
+`support-agent` and rate-limited (3/thread/hour, 10/hour global); the API strips PII from every body
+before filing (`SupportPrivacy.scrubForIssue`, applied at the `GithubIssueClient` trait boundary).
+The target repo and REST base are **constants**, not config (`GithubIssueClient.Repo` / `ApiBase`) —
+the only knobs are the flag and the token.
+
+### 1. The token (operator; cannot be automated)
+
+Create a **dedicated machine account** (e.g. `wifihaven-support-bot`), invite it to the repo, and
+mint a **fine-grained** personal access token from that account
+(<https://github.com/settings/personal-access-tokens>):
+
+- **Resource owner** → `wifihaven`; **Repository access** → *Only select repositories* →
+  `wifihaven/wifihaven`.
+- **Repository permissions** → **Issues: Read and write**. **Everything else: No access** —
+  explicitly **no `Contents`** and **no `Pull requests`**. That is the #2241 structural no-PR
+  guarantee: the bot *cannot* push code or open/merge a PR because the token lacks the scope, not
+  because a prompt tells it not to.
+- **Account permissions** → none.
+- Note the **expiry date** (see rotation below).
+
+The token is never committed. It goes in **one** place: the Render env var
+`WIFIHAVEN_SUPPORT_GITHUB_BOT_TOKEN` (declared `sync: false` in `render.yaml`) on the
+`wifihaven-api-staging` / `wifihaven-api-prod` service. The cloud agent itself never sees it — only
+the API server holds it.
+
+### 2. Enable order: token first, then the flag — the API refuses to boot otherwise
+
+`WIFIHAVEN_SUPPORT_ISSUE_FILING_ENABLED=true` with an empty
+`WIFIHAVEN_SUPPORT_GITHUB_BOT_TOKEN` makes `AppConfig` list `support.githubSupportBotToken` in
+`missingRequiredKeys` and **crash the boot** (`api/src/Config.scala`) — the #2265 no-dark-by-default
+posture: a required secret's absence is a bug, never a silent disable. So, **per environment**:
+
+1. Set `WIFIHAVEN_SUPPORT_GITHUB_BOT_TOKEN` in Render (§1). Config precedes code.
+2. *Then* flip that service's `WIFIHAVEN_SUPPORT_ISSUE_FILING_ENABLED` to `"true"` via a
+   `render.yaml` PR.
+
+**Staging first, prod after** — validate on staging (below) before flipping prod. Note prod's
+`WIFIHAVEN_SUPPORT_RESPONDER_ENABLED` is still `"false"`, so prod issue filing has no producer until
+the responder is flipped there too; sequence the two together.
+
+### 3. Verify after enabling
+
+- Startup log flips from `support-agent issue filing DISABLED (support.issueFilingEnabled=false)` to
+  `support-agent issue filing ENABLED (fine-grained Issues:write bot token)`
+  (`api/src/support/GithubIssueClient.scala`). The startup feature report emits a second line for the
+  same flag — `wifihaven.support.issueFilingEnabled=true — support-agent files GitHub issues (bot
+  token)` (`api/src/StartupFeatureReport.scala`, `support-issue-filing`) — so grep for either.
+- Drive one support message that should escalate; confirm a new `support-agent`-labeled issue appears
+  in `wifihaven/wifihaven` and `support_agent_action_total{op="issue",outcome="ok"}` increments on the
+  Grafana support dashboard (`deploy/grafana/dashboards/support.json`, "Agent-filed issues (24h)").
+
+### 4. Rotation
+
+Fine-grained PATs **cap at roughly one year** of validity, so this token *will* expire — rotation is
+scheduled maintenance, not an exception. Put the expiry on the calendar and re-mint with the same
+scope (§1), setting the new value in Render before the old one lapses; the flag stays `true` across
+the swap (only the secret changes, so no `render.yaml` PR is needed).
+
+An expired, revoked, or mis-scoped token makes GitHub answer `401` / `403` / `404`. That is a
+**misconfiguration, not a transient blip** — but **today it does not fail loud**: `GithubIssueClient`
+maps every non-2xx to a `logWarning` + `IssueOutcome.Error`, and there is no checked-in alert rule on
+`support_agent_action_total` (the dashboard's "volume alert feed" is a panel, not a rule). So
+until [#2415](https://github.com/wifihaven/wifihaven/issues/2415) lands, a lapsed token shows up only
+as `outcome="error"` on the dashboard and a flat filed-issues count — **watch the panel after each
+rotation**. #2415 is what will promote those statuses to a loud failure.
 
 ## Claude Code Cloud routine transport (#2300)
 
