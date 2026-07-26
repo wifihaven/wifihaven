@@ -68,8 +68,14 @@ object SecurityHeadersSpec extends ZIOSpecDefault {
     // host, so it broke every AI reply's avatar until #2418. Pinned so it can't be dropped again
     // (#2115 lesson: a silently dropped img-src host breaks images with no test failure).
     test("img-src allowlists Plain's machine-user avatar host (#2418)") {
-      val csp = SecurityHeaders.ContentSecurityPolicy
-      assertTrue(csp.contains("https://static-assets.plain.com"))
+      // Scoped to the img-src directive, not the whole policy: the host must be allowed for images
+      // specifically, so moving it to another directive has to fail this test.
+      val imgSrc = SecurityHeaders.ContentSecurityPolicy
+        .split(';')
+        .map(_.trim)
+        .find(_.startsWith("img-src"))
+        .getOrElse("")
+      assertTrue(imgSrc.contains("https://static-assets.plain.com"))
     },
     // Over-broadening guard: Plain documents no iframe, so we must NOT loosen frame-ancestors or add
     // a wildcard for Plain — the additions are exact hosts only.
