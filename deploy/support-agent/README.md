@@ -57,7 +57,8 @@ at create time, so an update never disturbs in-flight support sessions.
 **Plain machine-user API key permissions (`WIFIHAVEN_SUPPORT_PLAIN_API_KEY`).** The responder
 holds **no Plain key** — it posts the reply back through the API's `/api/support/agent/*`
 endpoints, and the **API server's** `PlainClient` is what writes to Plain (`upsertCustomer` /
-`upsertTenant` / `thread:reply`). That machine-user key (set on the `wifihaven-api-*` service, not
+`upsertTenant`, and the thread write — `createThread` today, a reply mutation post-#2240). That
+machine-user key (set on the `wifihaven-api-*` service, not
 here) must carry the right `permissions` array or those writes return **`403 Forbidden`** —
 permissions are set via Plain's GraphQL `createApiKey` / `updateApiKey` mutations, **not** a UI
 toggle. The exact permission set, the find-key-id query, and the grant mutations live in

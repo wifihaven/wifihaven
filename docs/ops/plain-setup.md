@@ -155,7 +155,8 @@ key is shared by all support write paths):
 | `tenant:create` | `upsertTenant` — create the household tenant |
 | `customerTenantMembership:create` | link the customer to its household tenant (the `tenantIdentifiers` membership on `upsertCustomer`) |
 | `customerTenantMembership:delete` | re-link / correct a customer's household tenant membership |
-| `thread:reply` | post the AI reply into the thread (#2200 responder → API `/api/support/agent/*` → `PlainClient`) |
+| `thread:create` | post the AI reply into the thread **as it works today** — `SupportResponder.agentReply` → `PlainClient.writeThread`, whose live impl is the `createThread` mutation (`api/src/support/PlainClient.scala`), which needs `thread:create` |
+| `thread:reply` | the AI reply **post-#2240** — switching `writeThread` to a reply-to-thread mutation against the existing thread is a not-yet-landed `TODO(#2240)` (`api/src/support/SupportResponder.scala`); grant this alongside `thread:create` so the key is ready before and after that switch |
 
 This is the array confirmed to clear the `403` on the customer + tenant upserts. The
 `plan` / `founding` **tenant-field** writes (§7.3 entitlement) additionally exercise
@@ -192,7 +193,7 @@ query {
 mutation {
   updateApiKey(input: {
     apiKeyId: "<apiKey_...>",
-    permissions: ["customer:create","customer:edit","tenant:read","tenant:create","customerTenantMembership:create","customerTenantMembership:delete","thread:reply"]
+    permissions: ["customer:create","customer:edit","tenant:read","tenant:create","customerTenantMembership:create","customerTenantMembership:delete","thread:create","thread:reply"]
   }) { apiKey { id permissions } }
 }
 ```
@@ -206,7 +207,7 @@ mutation {
   createApiKey(input: {
     machineUserId: "<mu_...>",
     description: "identified-chat integration",
-    permissions: ["customer:create","customer:edit","tenant:read","tenant:create","customerTenantMembership:create","customerTenantMembership:delete","thread:reply"]
+    permissions: ["customer:create","customer:edit","tenant:read","tenant:create","customerTenantMembership:create","customerTenantMembership:delete","thread:create","thread:reply"]
   }) { apiKeySecret }
 }
 ```
