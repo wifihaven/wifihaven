@@ -136,6 +136,40 @@ object StartupConfigSpec extends ZIOSpecDefault {
             |""".stripMargin
         bootValidate(hocon(goodSecret, full)).exit.map(ex => assertTrue(ex.isSuccess))
       },
+      test("#2429: the Plain widget on without support.emailAddress crashes boot, naming the key") {
+        // A deployment that ships the chat widget has a hosted support desk, so it MUST publish the
+        // inbox the SPA renders (#2429). Missing ⇒ fail loud, not a silently-absent support line.
+        val widgetNoEmail =
+          """  support {
+            |    plain { widgetEnabled = true, appId = "app_x", identitySecret = "s" }
+            |  }
+            |""".stripMargin
+        for {
+          c  <- loadVia(hocon(goodSecret, widgetNoEmail))
+          ex <- bootValidate(hocon(goodSecret, widgetNoEmail)).exit
+        } yield assertTrue(
+          AppConfig.validateRequired(c).exists(_.contains("support.emailAddress")),
+          ex.isFailure,
+        )
+      },
+      test("#2429: the Plain widget on WITH support.emailAddress boots clean") {
+        val widgetWithEmail =
+          """  support {
+            |    plain { widgetEnabled = true, appId = "app_x", identitySecret = "s" }
+            |    emailAddress = "support@staging.wifihaven.net"
+            |  }
+            |""".stripMargin
+        bootValidate(hocon(goodSecret, widgetWithEmail)).exit.map(ex => assertTrue(ex.isSuccess))
+      },
+      test("#2429: with the widget off, support.emailAddress is not required (self-hosted)") {
+        bootValidate(
+          hocon(
+            goodSecret,
+            """  support { plain { widgetEnabled = false } }
+              |""".stripMargin,
+          ),
+        ).exit.map(ex => assertTrue(ex.isSuccess))
+      },
     ),
     suite("optional features are observable — enabled/disabled + reason (rule 3)")(
       test("email disabled by default: reason names the explicit flag (#2266)") {

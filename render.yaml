@@ -265,6 +265,11 @@ services:
         value: staging
       - key: WIFIHAVEN_SUPPORT_GITHUB_BOT_TOKEN
         sync: false
+      # #2429: the support inbox the SPA publishes to logged-in admins. STAGING routes through the
+      # `support_staging_to_plain` Cloudflare Email Routing rule (infra/cloudflare/main.tf) into the
+      # same Plain workspace. A literal, not a secret; required because the widget is enabled above.
+      - key: WIFIHAVEN_SUPPORT_EMAIL_ADDRESS
+        value: support@staging.wifihaven.net
       # #2203: the Claude PRESS/PR responder on STAGING. Press email arrives via Cloudflare Email
       # Routing → an Email Worker (deploy/press-worker/) that HMAC-signs + POSTs to /api/press/inbound;
       # the reply is EMAILED back to the sender via Resend (the WIFIHAVEN_EMAIL_* config above must be
@@ -548,6 +553,11 @@ services:
         value: prod
       - key: WIFIHAVEN_SUPPORT_GITHUB_BOT_TOKEN
         sync: false
+      # #2429: the support inbox the SPA publishes to logged-in admins. PROD routes through the
+      # `support_to_plain` Cloudflare Email Routing rule (infra/cloudflare/main.tf) into Plain.
+      # A literal, not a secret; required because the widget is enabled above.
+      - key: WIFIHAVEN_SUPPORT_EMAIL_ADDRESS
+        value: support@wifihaven.net
       # #2203: the Claude PRESS/PR responder on PROD (live press@ Email Worker + prod Managed Agent).
       # Press email arrives via Cloudflare Email Routing → an Email Worker → /api/press/inbound; the
       # reply is EMAILED back to the sender via Resend (WIFIHAVEN_EMAIL_* must be set). A SEPARATE

@@ -23,6 +23,7 @@ const configured: SupportIdentityResponse = {
   fullName: 'The Test Family',
   plan: 'beta',
   founding: true,
+  supportEmail: 'support@staging.wifihaven.net',
 }
 
 const dark: SupportIdentityResponse = {
@@ -34,6 +35,8 @@ const dark: SupportIdentityResponse = {
   fullName: null,
   plan: null,
   founding: null,
+  // #2429: the dark response still carries the address — email works with the chat widget off.
+  supportEmail: 'support@staging.wifihaven.net',
 }
 
 beforeEach(() => {

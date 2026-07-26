@@ -46,13 +46,19 @@ final case class SupportService(
    */
   def identity(claims: JwtClaims): UIO[SupportIdentityResponse] =
     // Gate 1: widget unconfigured (no app id / no identity secret) ⇒ dark, no work, no Plain call.
+    // #2429: BOTH dark responses still carry `supportEmail` — the chat widget being off does not
+    // make the support inbox unreachable, so the SPA degrades to the email-only affordance.
     if !cfg.plain.widgetEnabled then
-      AppMetrics.supportIdentity("disabled").as(SupportIdentityResponse.disabled)
+      AppMetrics
+        .supportIdentity("disabled")
+        .as(SupportIdentityResponse.disabled(cfg.supportEmailOpt))
     else
       resolveEmail(claims.hh, claims.sub).flatMap {
         // Gate 2: caller has no email ⇒ not identifiable ⇒ dark (username-only / self-hosted admin).
         case None        =>
-          AppMetrics.supportIdentity("no_email").as(SupportIdentityResponse.disabled)
+          AppMetrics
+            .supportIdentity("no_email")
+            .as(SupportIdentityResponse.disabled(cfg.supportEmailOpt))
         case Some(email) =>
           for {
             household <- householdRepo.findById(claims.hh).catchAll(_ => ZIO.none)
@@ -81,6 +87,7 @@ final case class SupportService(
             fullName = Some(fullName),
             plan = billing.map(_.status),
             founding = billing.map(_.founding),
+            supportEmail = cfg.supportEmailOpt,
           )
       }
 

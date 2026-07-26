@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { useAuth } from '@/hooks/useAuth'
 import { useSupportIdentity } from '@/api/queries'
+import type { SupportIdentityResponse } from '@/types/api'
 
 // #2199 (support intake B, epic #2197): the identified Plain chat widget, rendered ONLY inside the
 // authenticated admin SPA (this component mounts inside the Layout, which is behind RequireAuth).
@@ -30,6 +31,26 @@ declare global {
   }
 }
 
+/**
+ * Whether the Plain chat bubble is actually on screen for this caller: the server says the widget
+ * is configured AND every value needed to boot the identified widget is present. The SINGLE source
+ * of this predicate (#2429) — [[SupportWidget]] gates its boot on it and `SupportFooter` gates the
+ * "or click the chat icon" half of its copy on it, so the footer can never promise a bubble that
+ * isn't rendering. Admin-ness is the caller's own check (the API 403s non-admins).
+ */
+export type IdentifiedSupport = SupportIdentityResponse & {
+  appId: string
+  email: string
+  emailHash: string
+}
+
+export function supportWidgetActive(
+  data: SupportIdentityResponse | undefined,
+): data is IdentifiedSupport {
+  if (!data || !data.configured) return false
+  return Boolean(data.appId && data.email && data.emailHash)
+}
+
 export function SupportWidget() {
   const { isAdmin } = useAuth()
   // Admin-only: the API 403s non-admins, so only enable the fetch for admins to avoid a wasted 403.
@@ -41,8 +62,7 @@ export function SupportWidget() {
     // Render nothing unless the caller is an admin AND the server says the widget is configured and
     // the caller is identifiable. `configured=false` (dark) short-circuits here — no script, no init.
     if (!isAdmin) return
-    if (!data || !data.configured) return
-    if (!data.appId || !data.email || !data.emailHash) return
+    if (!supportWidgetActive(data)) return
     if (bootedRef.current) return
     bootedRef.current = true
 

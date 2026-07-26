@@ -561,6 +561,15 @@ case class SupportConfig(
     agentApiBase: String = "https://api.wifihaven.net",
     deploymentEnv: String = "",
     githubSupportBotToken: String = "",
+    // #2429: the customer-facing support inbox for THIS deployment — support@wifihaven.net on prod,
+    // support@staging.wifihaven.net on staging (both live Cloudflare Email Routing rules into Plain,
+    // `support_to_plain` / `support_staging_to_plain` in infra/cloudflare/main.tf). A per-service
+    // literal in render.yaml, NOT a secret and NOT derived from `deploymentEnv` — an explicit named
+    // value (#2265) so a new environment can't silently publish the wrong address. Shipped to the SPA
+    // on GET /api/support/identity so the address has ONE source of truth. Empty = the self-hosted
+    // no-hosted-support posture (no address to publish ⇒ the SPA shows no support line); REQUIRED
+    // when the Plain widget is on, since a shipped support desk must publish where to write.
+    emailAddress: String = "",
 ) {
   val dispatcherTrimmed: String             = dispatcher.trim
   val anthropicApiKeyTrimmed: String        = anthropicApiKey.trim
@@ -572,6 +581,10 @@ case class SupportConfig(
   val agentApiBaseTrimmed: String           = agentApiBase.trim.stripSuffix("/")
   val deploymentEnvTrimmed: String          = deploymentEnv.trim
   val githubSupportBotTokenTrimmed: String  = githubSupportBotToken.trim
+  val emailAddressTrimmed: String           = emailAddress.trim
+
+  // #2429: the address to publish in the SPA, or None on the self-hosted no-support-desk posture.
+  val supportEmailOpt: Option[String] = Option(emailAddressTrimmed).filter(_.nonEmpty)
 
   // #2265: fail LOUD, in bulk. With the responder explicitly enabled, EVERY config the chain needs
   // is required — webhook verification, the Plain write key (the reply path), the Anthropic
@@ -618,7 +631,13 @@ case class SupportConfig(
       if issueFilingEnabled && githubSupportBotTokenTrimmed.isEmpty then
         List("support.githubSupportBotToken")
       else Nil
-    responderKeys ++ issueKeys
+    // #2429: a deployment that ships the Plain chat widget has a hosted support desk, so it MUST
+    // publish the inbox address the SPA renders. Missing ⇒ fail boot here rather than silently
+    // rendering no support line (no dark-by-default).
+    val emailKeys     =
+      if plain.widgetEnabled && emailAddressTrimmed.isEmpty then List("support.emailAddress")
+      else Nil
+    responderKeys ++ issueKeys ++ emailKeys
   }
 
   // #2200: the agent-facing endpoints authenticate solely with the HMAC agent token, whose secret
