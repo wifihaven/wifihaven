@@ -350,11 +350,14 @@ object StartupConfigSpec extends ZIOSpecDefault {
         assertTrue(StripeConfig.validate(StripeConfig(enabled = false, webhookSecret = "")).isEmpty)
       },
       test("stripe: BOTH secret gaps are reported in one pass (rule 4) (#2414)") {
-        val errs = StripeConfig.validate(StripeConfig(enabled = true))
+        val errs     = StripeConfig.validate(StripeConfig(enabled = true))
+        // Assert each expected key is named and that nothing UNEXPECTED is reported, rather than
+        // pinning an exact count — if priceMonthly/priceAnnual are ever promoted to required this
+        // still holds without a test edit (a test edit forced by a later change hides regressions).
+        val expected = Set("wifihaven.stripe.secretKey", "wifihaven.stripe.webhookSecret")
         assertTrue(
-          errs.exists(_.contains("wifihaven.stripe.secretKey")),
-          errs.exists(_.contains("wifihaven.stripe.webhookSecret")),
-          errs.length == 2,
+          expected.forall(k => errs.exists(_.contains(k))),
+          errs.forall(e => expected.exists(e.contains)),
         )
       },
       test("stripe: enabled is the explicit flag, NOT derived from secretKey") {
@@ -370,7 +373,7 @@ object StartupConfigSpec extends ZIOSpecDefault {
           jwt = JwtConfig("short", 24),
           cors = CorsConfig(""),
           email = EmailConfig(enabled = true),  // both secrets missing
-          stripe = StripeConfig(enabled = true),// secretKey missing
+          stripe = StripeConfig(enabled = true),// both stripe secrets missing
         )
         val errs = AppConfig.validateRequired(cfg)
         assertTrue(
@@ -396,7 +399,9 @@ object StartupConfigSpec extends ZIOSpecDefault {
           )
         val on                                            = rep(
           EmailConfig(enabled = true, resendApiKey = "re_x", fromAddress = "a@b.co"),
-          StripeConfig(enabled = true, secretKey = "sk_x"),
+          // #2414: a billing-on config the boot gate would actually ACCEPT — before, this fixture
+          // left webhookSecret unset, a state validateRequired now makes impossible at runtime.
+          StripeConfig(enabled = true, secretKey = "sk_x", webhookSecret = "whsec_x"),
         )
         val off = rep(EmailConfig(enabled = false), StripeConfig(enabled = false))
         assertTrue(
@@ -405,6 +410,10 @@ object StartupConfigSpec extends ZIOSpecDefault {
           !off.find(_.name == "email-notifications").get.enabled,
           !off.find(_.name == "stripe-billing").get.enabled,
           off.find(_.name == "stripe-billing").get.detail.contains("enabled=false"),
+          // #2414: the enabled detail names BOTH required secrets, so the reported posture matches
+          // the gate that guarantees it (StripeConfig.validate).
+          on.find(_.name == "stripe-billing").get.detail.contains("secretKey"),
+          on.find(_.name == "stripe-billing").get.detail.contains("webhookSecret"),
         )
       },
     ),

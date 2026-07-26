@@ -49,8 +49,15 @@ payload is rejected with 400 and changes no state.
 Never commit the secret key or webhook signing secret. On cloud they are Render-managed `sync:false`
 env vars (see [`render.yaml`](../../render.yaml)); on self-hosted they go in the `stripe {}` block of
 `application.conf` (see [`config/application.conf.example`](../../config/application.conf.example)).
-An **empty** secret key disables billing entirely — the `/api/billing/*` admin routes 404 and the
-webhook no-ops — which is the correct self-hosted default (self-hosted installs never bill).
+**Absence of a secret is NOT the off-switch** — `wifihaven.stripe.enabled` is
+(`WIFIHAVEN_STRIPE_ENABLED`; #2266, no-dark-by-default rule 3). `enabled=false` is the correct
+self-hosted default (self-hosted installs never bill): the `/api/billing/*` admin routes return
+not-configured and no secret is required. With `enabled=true`, **both** `secretKey` and
+`webhookSecret` are REQUIRED, and an empty one **fails boot** naming the missing key
+(`StripeConfig.validate` → `AppConfig.validateRequired`) — it does not disable anything. So set both
+secrets *before* flipping `WIFIHAVEN_STRIPE_ENABLED` to `true` in an environment. The
+`webhookSecret` half is #2414: without it every delivery would answer HTTP 200 and no-op, so Stripe
+would record success, never retry, and no subscription state would ever advance.
 
 ## Basil coupon-duration caveat (pre-build verification)
 

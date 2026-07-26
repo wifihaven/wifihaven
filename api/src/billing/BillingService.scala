@@ -171,7 +171,7 @@ final case class BillingService(
     // HTTP 200 (see BillingRoutes), Stripe then never retries, and subscription state silently
     // never advances. It stays for the enabled=false posture (self-hosted never bills), and logs at
     // ERROR as defense-in-depth: if it ever fires with billing on, the boot gate has regressed.
-    if cfg.webhookSecret.trim.isEmpty then
+    if cfg.webhookSecretTrimmed.isEmpty then
       ZIO
         .logError(
           "Stripe webhook arrived but wifihaven.stripe.webhookSecret is unset while " +
@@ -182,7 +182,9 @@ final case class BillingService(
         .as(WebhookOutcome.NotConfigured)
     else
       clock.instant.flatMap { now =>
-        StripeWebhook.verifyAndParse(payload, sigHeader, cfg.webhookSecret, now) match {
+        // #2414: verify against the SAME trimmed value the boot gate accepted (see
+        // StripeConfig.webhookSecretTrimmed) — not the raw field, which could differ by whitespace.
+        StripeWebhook.verifyAndParse(payload, sigHeader, cfg.webhookSecretTrimmed, now) match {
           case Left(_)      => ZIO.succeed(WebhookOutcome.InvalidSignature)
           case Right(event) => applyEvent(event, now)
         }

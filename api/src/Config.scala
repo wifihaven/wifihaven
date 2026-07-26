@@ -317,6 +317,14 @@ case class StripeConfig(
 
   val foundingPromoCodeOpt: Option[String] =
     Option(foundingPromoCode).map(_.trim).filter(_.nonEmpty)
+
+  // #2414: the ONE trimmed form of the webhook signing secret, mirroring
+  // PlainConfig/PressConfig.webhookSecretTrimmed. Every consumer — StripeConfig.validate's
+  // boot gate, BillingService.handleWebhook's guard, and the HMAC verification itself — reads
+  // this, so "blank?" is decided once and the value the gate accepted is the value we verify
+  // against. Trimming in the gate but verifying with the untrimmed string would let a secret
+  // pasted with surrounding whitespace pass boot and then fail every HMAC check.
+  val webhookSecretTrimmed: String = webhookSecret.trim
 }
 
 object StripeConfig {
@@ -339,7 +347,7 @@ object StripeConfig {
     else
       List(
         "wifihaven.stripe.secretKey"     -> cfg.secretKey.trim,
-        "wifihaven.stripe.webhookSecret" -> cfg.webhookSecret.trim,
+        "wifihaven.stripe.webhookSecret" -> cfg.webhookSecretTrimmed,
       ).collect {
         case (k, v) if v.isEmpty =>
           s"$k must be set when wifihaven.stripe.enabled=true (billing is on) — " +
