@@ -754,15 +754,34 @@ case class PressConfig(
     agentTokenTtlMinutes: Int = 30,
     agentApiBase: String = "https://api.wifihaven.net",
     deploymentEnv: String = "",
-    // #2407: the verified press From-address the autonomous reply is sent FROM (e.g.
-    // "press@staging.wifihaven.net" / "press@wifihaven.net"). Without this the reply falls back to the
-    // shared #578 alerts@ notification sender — off-brand for a journalist. Reply-To is set to this
-    // same press mailbox so a human follow-up threads back to the Cloudflare-Email-Worker-watched
-    // inbox. Required when the responder is enabled (missingRequiredKeys) — no dark-by-default (#2265).
+    // #2407: the press From-address the autonomous reply is sent FROM. Without this the reply falls
+    // back to the shared #578 alerts@ notification sender — off-brand for a journalist.
+    //
+    // MUST sit on a Resend-VERIFIED sending domain. Resend verifies per-DOMAIN, and only the apex
+    // `wifihaven.net` is verified (`resend._domainkey` DKIM + the `send.wifihaven.net` return-path
+    // MX, infra/cloudflare/main.tf) — `staging.wifihaven.net` is a SEPARATE, unverified domain to
+    // Resend, so staging borrows the apex as `press-staging@`. This also satisfies DMARC: `adkim=s`
+    // requires the DKIM `d=` to strict-align with the From domain. Ships in display-name form —
+    // "WifiHaven Press <press-staging@wifihaven.net>" / "WifiHaven Press <press@wifihaven.net>"
+    // (render.yaml) — matching every other outbound identity.
+    //
+    // The apex-with-env-suffix shape follows the shared notification sender, which #2407 observed
+    // sending as "alerts-staging@wifihaven.net" on staging. That value is NOT in-repo to cite
+    // (`WIFIHAVEN_EMAIL_FROM_ADDRESS` is `sync: false` in render.yaml) — it is an observed
+    // deployment value, not a checked-in convention.
     fromAddress: String = "",
+    // #2407: the Reply-To carried on that reply — the press mailbox the Cloudflare Email Worker
+    // watches ("press@staging.wifihaven.net" / "press@wifihaven.net"), so a journalist's human
+    // follow-up threads back into the responder pipeline. DELIBERATELY separate from `fromAddress`:
+    // Reply-To is exempt from DMARC alignment, so it may name the routed inbox even where that
+    // subdomain is not a verified Resend SENDING domain. (PressOutreachConfig models the same
+    // From/Reply-To split, under the shorter field name `replyTo`.) Required when the responder is
+    // enabled — no dark-by-default (#2265).
+    replyToAddress: String = "",
 ) {
   val dispatcherTrimmed: String             = dispatcher.trim
   val fromAddressTrimmed: String            = fromAddress.trim
+  val replyToAddressTrimmed: String         = replyToAddress.trim
   val webhookSecretTrimmed: String          = webhookSecret.trim
   val anthropicApiKeyTrimmed: String        = anthropicApiKey.trim
   val claudeAgentIdTrimmed: String          = claudeAgentId.trim
@@ -792,8 +811,10 @@ case class PressConfig(
           "press.webhookSecret"    -> webhookSecretTrimmed,
           "press.agentTokenSecret" -> agentTokenSecretTrimmed,
           "press.deploymentEnv"    -> deploymentEnvTrimmed,
-          // #2407: the reply must go out FROM a press identity, not the shared alerts@ sender.
+          // #2407: the reply must go out FROM a press identity, not the shared alerts@ sender, and
+          // must thread follow-ups back to the Worker-watched press inbox.
           "press.fromAddress"      -> fromAddressTrimmed,
+          "press.replyToAddress"   -> replyToAddressTrimmed,
         ).collect { case (k, v) if v.isEmpty => k }
       // #2327: only the SELECTED transport's config chain is required. An unknown dispatcher value is
       // itself a boot failure (explicit named value, #2265) — the operator sees the valid set.

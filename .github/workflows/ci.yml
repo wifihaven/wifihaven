@@ -161,6 +161,12 @@ jobs:
               - 'openwrt/test/**'
               - '**/*.bats'
               - '**/*.test.sh'
+              # #2407: docker/entrypoint.sh renders application.conf, and
+              # docker/scripts/check-entrypoint-wiring.test.sh (#2405) is the gate that catches a
+              # render.yaml key added without matching entrypoint wiring. Without this glob the
+              # guard ran only when the guard ITSELF changed — so a PR that adds a key and forgets
+              # the entrypoint reports "Shell Tests: skipping" and sails past its own gate.
+              - 'docker/**'
             render:
               - '.github/workflows/ci.yml'
               - 'render.yaml'
