@@ -124,7 +124,10 @@ final case class SupportService(
           attributes = attributes.result(),
         ),
       )
-      .flatMap(o => AppMetrics.supportCustomerUpsert(PlainOutcome.label(o)))
+      // #2435: `support_customer_upsert_total` is metered INSIDE PlainClient, where the failure
+      // REASON is known (reconciled / email_collision / permission / schema). One producer, one
+      // series — metering here too would double-count and could only ever carry the outcome.
+      .unit
   }
 }
 

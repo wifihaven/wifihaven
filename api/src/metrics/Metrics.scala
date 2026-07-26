@@ -488,7 +488,13 @@ object MetricGuard {
     // PlainOutcome enum (ok | disabled | error). Both bounded, never per-household / per-email. The
     // #808 lesson: without these entries the firewall rejects the name and the series never emits.
     "support_widget_identity_total"                 -> Set("outcome"),
-    "support_customer_upsert_total"                 -> Set("outcome"),
+    // #2435 added the bounded `reason` dimension: ok (upserted first try) | reconciled (collided on
+    // Plain's workspace-wide customer-email uniqueness, then bound onto the household by patching
+    // externalId + joining the tenant) | email_collision (collided AND the reconcile failed — the
+    // mapping is BROKEN and will not self-heal) | permission (machine-user lacks customer:edit /
+    // customerTenantMembership:create) | schema (the customer mutation no longer matches Plain's
+    // schema) | error (transient/other) | disabled (the write API is explicitly off, #2266).
+    "support_customer_upsert_total"                 -> Set("outcome", "reason"),
     // #2240 — the household→Plain TENANT entitlement write (household name + plan/founding tenant
     // fields). Separate from the customer upsert so a silently-failing entitlement path (e.g. the
     // plan/founding field schemas not yet registered at go-live) is visible in metrics, not only
@@ -829,8 +835,14 @@ object AppMetrics {
   def supportIdentity(outcome: String): UIO[Unit] =
     MetricGuard.counter("support_widget_identity_total", Map("outcome" -> outcome))
 
-  def supportCustomerUpsert(outcome: String): UIO[Unit] =
-    MetricGuard.counter("support_customer_upsert_total", Map("outcome" -> outcome))
+  // #2435 — emitted from PlainClient (where the reason is known), NOT from SupportService. `reason`
+  // attributes the outcome: ok | reconciled | email_collision | permission | schema | error |
+  // disabled — bounded, never per-household / per-email.
+  def supportCustomerUpsert(outcome: String, reason: String): UIO[Unit] =
+    MetricGuard.counter(
+      "support_customer_upsert_total",
+      Map("outcome" -> outcome, "reason" -> reason),
+    )
 
   // #2240/#2410 — the household→Plain TENANT entitlement write (name + plan/founding fields).
   // Metered separately from the customer upsert so a failing entitlement path is observable, not

@@ -69,7 +69,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "Household → Plain customer upsert outcomes",
-      "description": "sum by (outcome) (rate(support_customer_upsert_total{env=\"$env\"}[5m])) — ok (mapping written to Plain) / disabled (Plain write API unconfigured — no API key, dark) / error (Plain returned non-2xx or a GraphQL error; fail-open, the identity response is unaffected). A persistent 'error' share means the household→customer mapping isn't reaching Plain — check the API key / GraphQL endpoint.",
+      "description": "sum by (outcome) (rate(support_customer_upsert_total{env=\"$env\"}[5m])) — ok (mapping written to Plain, whether first-try or reconciled) / disabled (Plain write API explicitly off, #2266) / error (Plain returned non-2xx or a GraphQL error; fail-open, the identity response is unaffected). A persistent 'error' share means the household→customer mapping isn't reaching Plain. This panel is the aggregate; the '#2435' panel splits it by reason so a BROKEN, non-self-healing mapping (email_collision / permission / schema) is distinguishable from a transient miss.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 9, "x": 15, "y": 0 },
       "id": 3,
@@ -437,6 +437,32 @@
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "expr": "sum(increase(operator_escalation_total{env=\"$env\",channel=\"support\",kind=\"escalated\"}[24h]))",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Customer↔household mapping by reason — broken-mapping watch (#2435)",
+      "description": "sum by (reason) (rate(support_customer_upsert_total{env=\"$env\"}[5m])) — HOW the household→Plain customer mapping resolved. ok = upserted on the first try (the common path). reconciled = the household admin's email was already held by a Plain customer with NO externalId (Plain auto-creates one from an inbound support email, #2198), and we bound it onto the household by patching externalId + joining the tenant — a self-healed collision, expected on any household that emailed support before loading the widget. email_collision = that reconcile FAILED: the mapping is BROKEN and will NEVER self-heal (the email is taken forever), so the household's widget messages resolve no tenantIdentifier and fall through to the email-intake fallback or are dropped as skipped_unauthenticated. permission (machine-user lacks customer:edit / customerTenantMembership:create) and schema (our UpsertCustomerInput no longer matches Plain's schema) are the other non-self-healing PROVISIONING GAPS. ALERT on any sustained email_collision / permission / schema rate — each is a fix, not a blip, and the API also logs each at ERROR with the fix named inline. error = the transient/other bucket; disabled = the write API is explicitly off (#2266).",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 64 },
+      "id": 18,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "reqps",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1, "stacking": { "mode": "normal", "group": "A" } }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (reason) (rate(support_customer_upsert_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{reason}}",
           "refId": "A"
         }
       ]
