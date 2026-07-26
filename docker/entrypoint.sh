@@ -37,8 +37,10 @@ set -euo pipefail
 : "${WIFIHAVEN_APP_BASE_URL:=https://app.wifihaven.net}"
 # #2135: Stripe billing. WIFIHAVEN_STRIPE_ENABLED is the off-switch, NOT the absence of a key
 # (#2266): with it false — the default — the self-hosted single-install path never bills, so
-# POST /api/billing/checkout and GET /api/billing/portal 404 "billing not configured" and the
-# webhook no-ops. Cloud/staging set the secret + webhook signing secret (Render sync:false secrets)
+# POST /api/billing/checkout and GET /api/billing/portal 404 "billing not configured" (GET
+# /api/billing is ungated), and the webhook no-ops because its signing secret is unset too —
+# handleWebhook branches on the secret, not on the flag.
+# Cloud/staging set the secret + webhook signing secret (Render sync:false secrets)
 # plus the test/live-mode price ids + promo code. Secrets are NEVER committed (docs/process/security.md).
 # appBaseUrl defaults to the shared WIFIHAVEN_APP_BASE_URL (#2250) but keeps its own override.
 # #2266: EXPLICIT enable flag — billing is off unless set true, NOT inferred from the key. When

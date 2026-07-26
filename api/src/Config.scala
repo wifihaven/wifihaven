@@ -290,8 +290,8 @@ case class BetaConfig(
 // self-hosted single-install posture — which never bills — and `POST /api/billing/checkout` +
 // `GET /api/billing/portal` then fail 404-shaped "billing not configured" (`GET /api/billing`
 // itself is ungated and still reports the household's row). Under `enabled = true` an empty
-// `secretKey` or `webhookSecret` FAILS BOOT
-// (`StripeConfig.validate`, #2414); it does not disable anything. Secrets (`secretKey`,
+// `secretKey` or `webhookSecret` FAILS BOOT (`StripeConfig.validate`, #2414); it does not disable
+// anything. Secrets (`secretKey`,
 // `webhookSecret`) come from env via the entrypoint-rendered HOCON, NEVER committed
 // (docs/process/security.md). Price ids / promo code differ between Stripe test and live modes, so
 // they are config too (not constants). `appBaseUrl` is the SPA origin the hosted Checkout / Portal

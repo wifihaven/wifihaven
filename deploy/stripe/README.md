@@ -54,9 +54,8 @@ env vars (see [`render.yaml`](../../render.yaml)); on self-hosted they go in the
 self-hosted default (self-hosted installs never bill): `POST /api/billing/checkout` and
 `GET /api/billing/portal` then return **404** `"billing not configured"` and no secret is required
 (`GET /api/billing` itself is not gated — it still reports the household's billing row). With
-`enabled=true`,
-**both** `secretKey` and
-`webhookSecret` are REQUIRED, and an empty one **fails boot** naming the missing key
+`enabled=true`, **both** `secretKey` and `webhookSecret` are REQUIRED, and an empty one
+**fails boot** naming the missing key
 (`StripeConfig.validate` → `AppConfig.validateRequired`) — it does not disable anything. So set both
 secrets *before* flipping `WIFIHAVEN_STRIPE_ENABLED` to `true` in an environment. The
 `webhookSecret` half is #2414: without it every delivery would answer HTTP 200 and no-op, so Stripe
