@@ -133,7 +133,7 @@ the swap (only the secret changes, so no `render.yaml` PR is needed).
 An expired, revoked, or mis-scoped token makes GitHub answer `401` / `403` / `404`. That is a
 **misconfiguration, not a transient blip** — but **today it does not fail loud**: `GithubIssueClient`
 maps every non-2xx to a `logWarning` + `IssueOutcome.Error`, and there is no checked-in alert rule on
-`support_agent_action_total` (the dashboard's "volume alert feed" panel is a graph, not a rule). So
+`support_agent_action_total` (the dashboard's "volume alert feed" is a panel, not a rule). So
 until [#2415](https://github.com/wifihaven/wifihaven/issues/2415) lands, a lapsed token shows up only
 as `outcome="error"` on the dashboard and a flat filed-issues count — **watch the panel after each
 rotation**. #2415 is what will promote those statuses to a loud failure.
