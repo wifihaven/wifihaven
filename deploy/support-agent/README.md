@@ -40,7 +40,7 @@ at create time, so an update never disturbs in-flight support sessions.
 
 | Env var | Value |
 |---|---|
-| `WIFIHAVEN_SUPPORT_RESPONDER_ENABLED` | `false` in render.yaml — flip to `true` via PR at go-live, after everything below is set (#2265) |
+| `WIFIHAVEN_SUPPORT_RESPONDER_ENABLED` | `true` on staging (#2335), `false` on prod — flip to `true` via PR at go-live, after everything below is set for that environment (#2265) |
 | `WIFIHAVEN_SUPPORT_ISSUE_FILING_ENABLED` | `true` on staging (#2427), `false` on prod — flip with (or after) the responder once that environment's bot token is set. See [GitHub issue filing](#issue-filing) below |
 | `WIFIHAVEN_SUPPORT_DISPATCHER` | `managed-agents` (default) in render.yaml, or `claude-code-cloud` (#2300 — subscription-billed routine; see below). Only the selected transport's keys are required at boot; an unknown value refuses boot |
 | `WIFIHAVEN_SUPPORT_PLAIN_WEBHOOK_SECRET` | Plain workspace webhook signing secret (Plain → Settings → Webhooks; point the webhook at `POST https://<api-host>/api/support/webhook`). Subscribe to the **inbound customer** events only: `thread.thread_created`, `thread.chat_received`, `thread.email_received`. The API additionally loop-guards on the event type + `actorType`, so subscribing to more (e.g. `thread.chat_sent`, our own outbound reply) is safe but unnecessary — those are skipped, never re-dispatched (#2403) |
@@ -115,7 +115,10 @@ the responder is flipped there too; sequence the two together.
 ### 3. Verify after enabling
 
 - Startup log flips from `support-agent issue filing DISABLED (support.issueFilingEnabled=false)` to
-  `support-agent issue filing ENABLED (fine-grained Issues:write bot token)`.
+  `support-agent issue filing ENABLED (fine-grained Issues:write bot token)`
+  (`api/src/support/GithubIssueClient.scala`). The startup feature report emits a second line for the
+  same flag — `wifihaven.support.issueFilingEnabled=true — support-agent files GitHub issues (bot
+  token)` (`api/src/StartupFeatureReport.scala`, `support-issue-filing`) — so grep for either.
 - Drive one support message that should escalate; confirm a new `support-agent`-labeled issue appears
   in `wifihaven/wifihaven` and `support_agent_action_total{op="issue",outcome="ok"}` increments on the
   Grafana support dashboard (`deploy/grafana/dashboards/support.json`, "Agent-filed issues (24h)").
@@ -128,10 +131,12 @@ scope (§1), setting the new value in Render before the old one lapses; the flag
 the swap (only the secret changes, so no `render.yaml` PR is needed).
 
 An expired, revoked, or mis-scoped token makes GitHub answer `401` / `403` / `404`. That is a
-**misconfiguration, not a transient blip**, and
-[#2415](https://github.com/wifihaven/wifihaven/issues/2415) is what makes those statuses fail loud
-instead of reading as an ordinary retryable error — so a lapsed token surfaces as an alert rather
-than as issue filing quietly stopping.
+**misconfiguration, not a transient blip** — but **today it does not fail loud**: `GithubIssueClient`
+maps every non-2xx to a `logWarning` + `IssueOutcome.Error`, and there is no checked-in alert rule on
+`support_agent_action_total` (the dashboard's "volume alert feed" panel is a graph, not a rule). So
+until [#2415](https://github.com/wifihaven/wifihaven/issues/2415) lands, a lapsed token shows up only
+as `outcome="error"` on the dashboard and a flat filed-issues count — **watch the panel after each
+rotation**. #2415 is what will promote those statuses to a loud failure.
 
 ## Claude Code Cloud routine transport (#2300)
 

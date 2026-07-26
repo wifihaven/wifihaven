@@ -223,10 +223,11 @@ services:
       # dark-by-default — RESPONDER_ENABLED / ISSUE_FILING_ENABLED are explicit flags. RESPONDER is
       # flipped true at go-live (#2335), AFTER the claude-code-cloud routine secrets below were set —
       # config precedes code; with a flag true and any required key missing the API refuses to boot,
-      # bulk-listing the gaps. ISSUE_FILING flipped true on STAGING at #2427, AFTER GITHUB_BOT_TOKEN
-      # was set (fine-grained, Issues:write ONLY, the structural no-PR scope, #2241) — with the flag
-      # true and the token unset the API REFUSES TO BOOT (Config.missingRequiredKeys). Prod stays
-      # false until staging is validated AND prod's own bot token is set. NEVER commit values.
+      # bulk-listing the gaps. ISSUE_FILING flipped true on STAGING at #2427; GITHUB_BOT_TOKEN
+      # (fine-grained, Issues:write ONLY, the structural no-PR scope, #2241) MUST be set on the
+      # service FIRST — with the flag true and the token unset the API REFUSES TO BOOT
+      # (Config.missingRequiredKeys). Prod stays false until staging is validated AND prod's own
+      # bot token is set. NEVER commit values.
       - key: WIFIHAVEN_SUPPORT_RESPONDER_ENABLED
         value: "true"
       - key: WIFIHAVEN_SUPPORT_ISSUE_FILING_ENABLED
