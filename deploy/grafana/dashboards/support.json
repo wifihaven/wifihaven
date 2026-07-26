@@ -12,7 +12,7 @@
       }
     ]
   },
-  "description": "WifiHaven Plain support integration (#2199 + #2200, epic #2197): server-signed widget-identity outcomes, household→Plain customer-upsert outcomes, the #2200 Claude responder's webhook outcomes (support_ai_draft_total{outcome} from SupportResponder — dispatched / skipped_unauthenticated / rate_limited / invalid_signature / malformed / disabled / error), and the cloud agent's callback actions (support_agent_action_total{op,outcome} — reply / issue / household_read). All labels are bounded enums (never per-email / per-household / per-thread). The responder runs iff the explicit support.responderEnabled flag is set (#2265 — no dark-by-default; a true flag with missing config refuses to boot); disabled installs count outcomes as disabled and dispatch nothing. See issues #2206, #2200, #2241, #2265. #2419 adds the data-access consent lifecycle (support_consent_total{outcome} — the agent's REQUEST vs the customer's grant/revoke, plus the household-mismatch guard): consent is recorded server-side from the customer's own authenticated action, so the agent can ask but can never self-grant.",
+  "description": "WifiHaven Plain support integration (#2199 + #2200, epic #2197): server-signed widget-identity outcomes, household→Plain customer-upsert outcomes, the #2200 Claude responder's webhook outcomes (support_ai_draft_total{outcome} from SupportResponder — dispatched / skipped_unauthenticated / rate_limited / invalid_signature / malformed / disabled / error), and the cloud agent's callback actions (support_agent_action_total{op,outcome} — reply / issue / household_read). All labels are bounded enums (never per-email / per-household / per-thread). The responder runs iff the explicit support.responderEnabled flag is set (#2265 — no dark-by-default; a true flag with missing config refuses to boot); disabled installs count outcomes as disabled and dispatch nothing. See issues #2206, #2200, #2241, #2265. #2419 adds the data-access consent lifecycle (support_consent_total{outcome} — the agent's REQUEST vs the customer's grant/revoke, plus the household-mismatch guard): consent is recorded server-side from the customer's own authenticated action, so the agent can ask but can never self-grant. #2438 adds support_dispatch_total{outcome,transport} — the dispatcher-level cloud-trigger outcome (dispatched / error / disabled) at the transport boundary, isolating a silent non-2xx trigger failure the conflated draft metric can't surface.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -294,6 +294,32 @@
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "expr": "sum(increase(support_consent_total{env=\"$env\",outcome=\"household_mismatch\"}[24h]))",
           "legendFormat": "mismatches (24h)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Cloud-agent dispatch outcomes (#2438)",
+      "description": "sum by (outcome, transport) (rate(support_dispatch_total{env=\"$env\"}[5m])) — the dispatcher-level cloud-trigger outcome, measured at the transport boundary (CloudAgentObservability): dispatched (the Managed Agents session / Claude Code Cloud routine trigger returned 2xx) / error (the trigger returned non-2xx or the call threw — the cloud agent NEVER started) / disabled (the responder is dark, #2265; carries no transport). transport ∈ managed-agents (API-credit billed) | claude-code-cloud (subscription billed). This is the series the #2408 go-live gap needed: the webhook panel's 'dispatched' outcome only means a session was ATTEMPTED — a silent non-2xx trigger failure shows up as 'error' HERE and nowhere else. ALERT on any sustained 'error' rate while the responder is enabled (each is a support reply that never went out). Emitted for BOTH audiences from one shared envelope; the press twin is press_dispatch_total on the Press dashboard.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "id": 12,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "reqps",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1, "stacking": { "mode": "normal", "group": "A" } }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (outcome, transport) (rate(support_dispatch_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{outcome}} / {{transport}}",
           "refId": "A"
         }
       ]

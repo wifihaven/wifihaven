@@ -1,7 +1,8 @@
 package wifihaven.api.press
 
 import wifihaven.api.PressConfig
-import wifihaven.api.support.{ClaudeCodeRoutines, ManagedAgents}
+import wifihaven.api.metrics.AppMetrics
+import wifihaven.api.support.{ClaudeCodeRoutines, CloudAgentObservability, ManagedAgents}
 import zio.*
 
 /**
@@ -118,9 +119,14 @@ object PressAgentDispatcher {
       }
     }
 
-  /** No-op dispatcher used when the press responder is explicitly disabled (#2265 named flag). */
+  /**
+   * No-op dispatcher used when the press responder is explicitly disabled (#2265 named flag).
+   * #2438: the disabled outcome is metered (`press_dispatch_total{outcome="disabled"}`) so a
+   * dispatch attempt against a dark press responder is visible at the dispatcher level.
+   */
   val Disabled: PressAgentDispatcher = new PressAgentDispatcher {
-    def dispatch(req: PressDispatch): UIO[DispatchOutcome] = ZIO.succeed(DispatchOutcome.Disabled)
+    def dispatch(req: PressDispatch): UIO[DispatchOutcome] =
+      CloudAgentObservability.disabled(AppMetrics.pressDispatch)
   }
 
   /** Public no-op instance for specs that don't drive the responder. */
@@ -180,19 +186,24 @@ object PressAgentDispatcher {
   }
 
   /**
-   * Fail-open envelope shared by every live transport: a completed fire-and-forget `run` is
-   * [[DispatchOutcome.Dispatched]]; any transport error is logged and collapsed to
-   * [[DispatchOutcome.Error]] so a cloud hiccup never fails the webhook response (the Worker would
-   * retry a 5xx). ONE definition so the two transports can't drift on the fail-open contract.
+   * Fail-open + observability envelope shared by every live transport, delegating to the shared
+   * [[CloudAgentObservability]] (the SAME envelope the #2200 support dispatcher uses, so the two
+   * audiences and the two transports can't drift): a completed fire-and-forget `run` is
+   * [[DispatchOutcome.Dispatched]] (INFO + `press_dispatch_total{outcome="dispatched",transport}`);
+   * any transport error is logged (enriched WARN carrying transport + the real cause) and collapsed
+   * to [[DispatchOutcome.Error]] (+ `{outcome="error",transport}`) so a cloud hiccup never fails
+   * the webhook response (the Worker would retry a 5xx). #2438 — no sender / message content ever
+   * reaches the log (press carries no non-PII thread handle at dispatch, so the log is untagged by
+   * thread): only the bounded transport label + the error message.
    */
-  private def dispatched(run: Task[Unit]): UIO[DispatchOutcome] =
-    run
-      .as(DispatchOutcome.Dispatched)
-      .catchAll(e =>
-        ZIO
-          .logWarning(s"press agent dispatch errored: ${e.getMessage}")
-          .as(DispatchOutcome.Error),
-      )
+  private def dispatched(transport: String, run: Task[Unit]): UIO[DispatchOutcome] =
+    CloudAgentObservability.dispatched(
+      audience = "press",
+      transport = transport,
+      threadRef = None,
+      record = AppMetrics.pressDispatch,
+      run = run,
+    )
 
   /**
    * Live press Managed Agents transport: delegates the create-session + kickoff plumbing to the
@@ -201,6 +212,7 @@ object PressAgentDispatcher {
   final class Live(cfg: PressConfig) extends PressAgentDispatcher {
     def dispatch(req: PressDispatch): UIO[DispatchOutcome] =
       dispatched(
+        CloudAgentObservability.ManagedAgents,
         ManagedAgents.dispatchSession(
           anthropicApiBase = cfg.anthropicApiBase,
           anthropicApiKey = cfg.anthropicApiKeyTrimmed,
@@ -223,6 +235,7 @@ object PressAgentDispatcher {
   final class ClaudeCodeCloudLive(cfg: PressConfig) extends PressAgentDispatcher {
     def dispatch(req: PressDispatch): UIO[DispatchOutcome] =
       dispatched(
+        CloudAgentObservability.ClaudeCodeCloud,
         ClaudeCodeRoutines.fireRoutine(
           apiBase = cfg.anthropicApiBase,
           routineId = cfg.claudeCodeRoutineIdTrimmed,
