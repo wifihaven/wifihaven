@@ -44,7 +44,7 @@ committed to the repo — you enter values out-of-band in Render.
 |---|---|---|---|---|
 | 1 | **Chat App ID** | Settings → Chat → **Create a Chat App** | `WIFIHAVEN_SUPPORT_PLAIN_APP_ID` | widget (with #3) |
 | 2 | **Chat identity secret** (HMAC for verified customers) | Settings → Chat → your chat app → authentication / identity verification | `WIFIHAVEN_SUPPORT_PLAIN_IDENTITY_SECRET` | widget (with #1) |
-| 3 | **API key** (machine user) | Settings → machine user → **Add API Key** → copy once | `WIFIHAVEN_SUPPORT_PLAIN_API_KEY` | write API (customer upsert; #2200 draft posts) |
+| 3 | **API key** (machine user) | Settings → machine user → **Add API Key** → copy once, **then grant its `permissions` array via GraphQL** (§5.1 — no UI toggle; fixes `403 Forbidden`) | `WIFIHAVEN_SUPPORT_PLAIN_API_KEY` | write API (customer upsert; #2200 draft posts) |
 | 4 | **Request-signing secret** (workspace-global) | Settings → **Request signing** | `WIFIHAVEN_SUPPORT_PLAIN_WEBHOOK_SECRET` | webhook verify (consumed by #2200) |
 
 Two gates, independent:
@@ -118,32 +118,106 @@ identity. You don't wire any of that; you only provide the App ID + identity sec
 
 ---
 
-## 5. API key — machine user (write API)
+## 5. API key — machine user (write API) {#machine-user-permissions}
 
 1. Settings → create a **machine user**.
-2. **Add API Key** and grant the scopes our two code paths need (least privilege — one
-   key is shared by both):
+2. **Add API Key** (Settings → machine user → **Add API Key**) and copy the secret. This
+   mints the key and the bearer token, **but it does NOT grant any permissions** — see the
+   next step, which is the part that's easy to miss.
+3. **Grant the key its permissions via GraphQL (required — fixes `403 Forbidden`).** See
+   below.
+4. **Copy the key immediately** — Plain shows the **secret** (`plainApiKey_…`, sent by the
+   code as `Authorization: Bearer …`) **once**. → value #3. The key's **id**
+   (`apiKey_…`, distinct from the secret) is what you pass to the permission mutations
+   below; you can look it up any time (§5.2), so only the secret is truly once-only.
 
-   | Scope | Why | For |
-   |---|---|---|
-   | `customer:create` | `upsertCustomer` (household → Plain customer) | **#2199 (now)** |
-   | `customer:edit` | `upsertCustomer` updates an existing customer | **#2199 (now)** |
-   | `tenant:create` / `tenant:edit` | `upsertTenant` — sets the household name on the Plain tenant *(verify exact scope strings)* | **#2240 (now)** |
-   | `tenantField:create` / `tenantField:edit` | `upsertTenantField` — writes the `plan` / `founding` entitlement fields *(verify exact scope strings)* | **#2240 (now)** |
-   | `customer:read` | look up the household by `tenantIdentifier`/`externalId` for draft context | #2200 |
-   | `thread:create` | `createThread` — the `PlainClient.writeThread` seam | #2200 |
-   | `thread:reply` | post the AI-drafted reply into the thread | #2200 |
-   | `threadEvent:create` | post the draft as an AI-labeled note/event (if #2200 uses a note vs an unsent reply) | #2200 |
+### 5.1 Permissions are an API-key array set via GraphQL — there is no UI toggle {#no-permissions-ui}
 
-   **Strict minimum for what's merged today (#2199 + #2240):** `customer:create` +
-   `customer:edit` + the `tenant:*` / `tenantField:*` scopes (the household→tenant name +
-   plan/founding entitlement writes). **Recommended:** grant the full set now — the key is shown once and
-   #2200 lands next, so this avoids re-issuing. The exact draft-posting scope
-   (`thread:reply` vs `threadEvent:create`) is #2200's implementation choice; granting
-   both keeps it unblocked. **Do NOT grant** `customer:delete`, `customer:impersonate`,
-   `thread:assign`, or `thread:unassign` — nothing we do needs them.
-3. **Copy the key immediately** (`plainApiKey_…`) — Plain shows it **once**. → value #3.
-   Sent by the code as `Authorization: Bearer …`.
+> **This cost a live debugging + a Plain support email to discover during staging
+> go-live.** `PlainClient` calls to `upsertCustomer` / `upsertTenant` returned
+> **`403 {"message":"Forbidden"}`** even though the API key was valid, and the
+> machine-user settings page had **no permissions/roles control** anywhere on it.
+> Plain support clarified: **machine-user API access is scoped by the API key's
+> `permissions` array, and that array is set ONLY through Plain's GraphQL
+> `createApiKey` / `updateApiKey` mutations — there is no UI to edit it.** A key whose
+> `permissions` array is missing a permission returns `403 Forbidden` on the
+> corresponding write. A freshly "Add API Key"'d key can come with an empty/insufficient
+> array, which is why the writes 403 until you run the mutation below.
+
+**The exact permission set WifiHaven's support integration needs** (least privilege — one
+key is shared by all support write paths):
+
+| Permission | What it's for |
+|---|---|
+| `customer:create` | `upsertCustomer` — create the identified-widget customer (household → Plain customer) |
+| `customer:edit` | `upsertCustomer` — update an existing customer |
+| `tenant:read` | `upsertTenant` — read back the tenant's internal `id` (needed to key the tenant-field writes) |
+| `tenant:create` | `upsertTenant` — create the household tenant |
+| `customerTenantMembership:create` | link the customer to its household tenant (the `tenantIdentifiers` membership on `upsertCustomer`) |
+| `customerTenantMembership:delete` | re-link / correct a customer's household tenant membership |
+| `thread:reply` | post the AI reply into the thread (#2200 responder → API `/api/support/agent/*` → `PlainClient`) |
+
+This is the array confirmed to clear the `403` on the customer + tenant upserts. The
+`plan` / `founding` **tenant-field** writes (§7.3 entitlement) additionally exercise
+`upsertTenantField`; that path is **fail-open** (a permission or schema gap is logged and
+ignored — see `upsertTenantEntitlement` in `api/src/support/PlainClient.scala`), so add
+`tenantField:create` / `tenantField:edit` to the array only if you want those entitlement
+fields populated. **Do NOT grant** `customer:delete`, `customer:impersonate`,
+`thread:assign`, or `thread:unassign` — nothing we do needs them.
+
+**Where to run the mutations:** Plain's **API playground** in the dashboard (it runs as
+the authenticated admin, so it can mint/grant keys). Docs for the write operations these
+permissions gate: <https://www.plain.com/docs/graphql/customers/upsert> and
+<https://www.plain.com/docs/graphql/tenants/upsert>.
+
+### 5.2 Find the API key's id
+
+Permissions are set on the key's **id** (`apiKey_…`), not its secret. List a machine
+user's keys — `apiKeys` is a **Relay connection**, so you must go through `edges { node }`:
+
+```graphql
+query {
+  machineUser(machineUserId: "<mu_...>") {
+    apiKeys(first: 20) { edges { node { id description } } }
+  }
+}
+```
+
+### 5.3 Grant the permissions
+
+**Preferred — `updateApiKey`** (keeps the existing secret, so the
+`WIFIHAVEN_SUPPORT_PLAIN_API_KEY` already set in Render does **not** need rotating):
+
+```graphql
+mutation {
+  updateApiKey(input: {
+    apiKeyId: "<apiKey_...>",
+    permissions: ["customer:create","customer:edit","tenant:read","tenant:create","customerTenantMembership:create","customerTenantMembership:delete","thread:reply"]
+  }) { apiKey { id permissions } }
+}
+```
+
+**Alternative — `createApiKey`** (mints a **new** key; its `apiKeySecret` is returned
+**once** at creation → store it immediately and update the Render
+`WIFIHAVEN_SUPPORT_PLAIN_API_KEY` secret to the new value):
+
+```graphql
+mutation {
+  createApiKey(input: {
+    machineUserId: "<mu_...>",
+    description: "identified-chat integration",
+    permissions: ["customer:create","customer:edit","tenant:read","tenant:create","customerTenantMembership:create","customerTenantMembership:delete","thread:reply"]
+  }) { apiKeySecret }
+}
+```
+
+### 5.4 Do this for BOTH environments
+
+Each workspace (the **test** workspace wired to staging and the **live** workspace wired
+to prod, §0) has its **own** machine user and its own API key, so the `403` fix above is
+**per-environment**: run §5.1–§5.3 once against the staging workspace and once against the
+prod workspace. If prod go-live 403s on the customer/tenant upserts, the prod key's
+`permissions` array is the first thing to check.
 
 ---
 

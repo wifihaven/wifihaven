@@ -209,6 +209,8 @@ services:
         value: "true"
       - key: WIFIHAVEN_SUPPORT_WRITE_ENABLED
         value: "true"
+      # The machine-user key must carry the right `permissions` array or the customer/tenant
+      # upserts 403 — permissions are set via GraphQL, not a UI toggle. See docs/ops/plain-setup.md §5.1.
       - key: WIFIHAVEN_SUPPORT_PLAIN_API_KEY
         sync: false
       - key: WIFIHAVEN_SUPPORT_PLAIN_WEBHOOK_SECRET
@@ -488,6 +490,8 @@ services:
         value: "true"
       - key: WIFIHAVEN_SUPPORT_WRITE_ENABLED
         value: "true"
+      # The machine-user key must carry the right `permissions` array or the customer/tenant
+      # upserts 403 — permissions are set via GraphQL, not a UI toggle. See docs/ops/plain-setup.md §5.1.
       - key: WIFIHAVEN_SUPPORT_PLAIN_API_KEY
         sync: false
       - key: WIFIHAVEN_SUPPORT_PLAIN_WEBHOOK_SECRET
