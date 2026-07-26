@@ -160,11 +160,19 @@ key is shared by all support write paths):
 
 This is the array confirmed to clear the `403` on the customer + tenant upserts. The
 `plan` / `founding` **tenant-field** writes (§7.3 entitlement) additionally exercise
-`upsertTenantField`; that path is **fail-open** (a permission or schema gap is logged and
-ignored — see `upsertTenantEntitlement` in `api/src/support/PlainClient.scala`), so add
-`tenantField:create` / `tenantField:edit` to the array only if you want those entitlement
-fields populated. **Do NOT grant** `customer:delete`, `customer:impersonate`,
-`thread:assign`, or `thread:unassign` — nothing we do needs them.
+`upsertTenantField`; to have those fields populated, add `tenantField:create` /
+`tenantField:update` to the array (the scope is `:update`, **not** `:edit` — Plain's
+permission enum has no `tenantField:edit`) **and** register the `plan` / `founding` field
+schemas (§7.3, a dashboard step — no `tenantFieldSchema:*` permission is needed, since the
+code only writes field *values*, never creates schemas). That path is **fail-open only
+w.r.t. the customer upsert** — a permission or schema gap does not fail `upsertCustomer` —
+but it is **not silent**: each failure is logged and metered as
+`support_tenant_upsert_total{outcome="error"}` (`upsertTenantEntitlement` in
+`api/src/support/PlainClient.scala`; panel in `deploy/grafana/dashboards/support.json`).
+Making that gap fully fail-loud + attributable is tracked in
+[#2410](https://github.com/wifihaven/wifihaven/issues/2410). **Do NOT grant**
+`customer:delete`, `customer:impersonate`, `thread:assign`, or `thread:unassign` —
+nothing we do needs them.
 
 **Where to run the mutations:** Plain's **API playground** in the dashboard (it runs as
 the authenticated admin, so it can mint/grant keys). Docs for the write operations these
@@ -209,6 +217,19 @@ mutation {
     description: "identified-chat integration",
     permissions: ["customer:create","customer:edit","tenant:read","tenant:create","customerTenantMembership:create","customerTenantMembership:delete","thread:create","thread:reply"]
   }) { apiKeySecret }
+}
+```
+
+**To also populate the `plan` / `founding` entitlement fields** (§5.1, §7.3), use the full
+array below — the same core set plus `tenantField:create` / `tenantField:update` (the scope
+is `:update`, **not** `:edit`, which Plain's enum rejects with `Value needs to be one of: …`):
+
+```graphql
+mutation {
+  updateApiKey(input: {
+    apiKeyId: "<apiKey_...>",
+    permissions: ["customer:create","customer:edit","tenant:read","tenant:create","customerTenantMembership:create","customerTenantMembership:delete","thread:create","thread:reply","tenantField:create","tenantField:update"]
+  }) { apiKey { id permissions } }
 }
 ```
 
