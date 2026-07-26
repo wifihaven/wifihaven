@@ -7,8 +7,9 @@ import zio.*
  * Cloud routines), carrying the HTTP **status** as data rather than only inside a message string.
  *
  * The status is the load-bearing bit: it is what separates a PERMANENT misconfiguration (a revoked
- * key, a wrong agent/routine id, a stale beta header — 4xx, never self-heals) from a TRANSIENT
- * upstream hiccup (5xx, timeout, transport error). Before #2416 both boundaries failed with a bare
+ * key, a wrong agent/routine id, a stale beta header — a 4xx that no retry fixes) from a TRANSIENT
+ * upstream hiccup (5xx, timeout, transport error, and the self-healing 4xx enumerated in
+ * `CloudAgentDispatch.TransientClientStatuses`). Before #2416 both boundaries failed with a bare
  * `RuntimeException` whose message embedded the status, so the dispatchers could only
  * substring-match to recover it — a brittle re-parse of text we produced ourselves. Callers
  * classify with [[CloudAgentDispatch.classify]]; nobody should read the message to decide.
@@ -67,12 +68,16 @@ object CloudAgentDispatch {
   }
 
   /**
-   * The 4xx statuses that DO self-heal, so they must NOT be attributed as a config gap: 408 Request
-   * Timeout, 425 Too Early, and 429 Too Many Requests are load/timing signals, not a wrong key.
-   * Every other 4xx from these APIs is a credential / resource-id / beta-header rejection — none of
-   * which change by themselves.
+   * The 4xx statuses that DO self-heal, so they must NOT be attributed as a config gap. Sourced
+   * from the HTTP semantics of the two statuses themselves (RFC 9110 §15.5.9 `408 Request Timeout`
+   * — the server gave up waiting on the request; RFC 6585 §4 `429 Too Many Requests` — a rate/quota
+   * ceiling): both are load/timing signals that the SAME request can succeed on later with no
+   * config change. Every other 4xx from these APIs is a credential / resource-id / beta-header
+   * rejection — none of which change by themselves. Kept deliberately minimal: a status is only
+   * listed here when "retrying the identical request can succeed" is true by definition, not merely
+   * plausible.
    */
-  private val TransientClientStatuses: Set[Int] = Set(408, 425, 429)
+  private val TransientClientStatuses: Set[Int] = Set(408, 429)
 
   /**
    * Classify a dispatch failure. A 4xx from either agent boundary is PERMANENT except the
@@ -94,15 +99,25 @@ object CloudAgentDispatch {
   }
 
   /**
-   * The likely FIX for a permanent 4xx, named inline in the log line so an operator reading the
+   * A candidate fix for a permanent 4xx, named inline in the log line so an operator reading the
    * error doesn't have to go derive it. Deliberately lists both transports' keys — one classifier
    * serves the Managed Agents and Claude Code Cloud paths for both audiences, and the log already
    * carries which audience it is.
+   *
+   * These are HINTS, hedged as such: the authoritative detail is the upstream response body, which
+   * `dispatched` logs verbatim alongside this string. The hint must never read as a diagnosis the
+   * body contradicts (a 400 can also be a quota/credit or oversized-request rejection, not a stale
+   * header), so read the body first.
    */
   def provisioningHint(status: Int): String = status match {
+    // The stale-beta-header guess for a 400 is the pre-existing suspicion recorded at
+    // ClaudeCodeRoutines.RoutineBeta ("a stale beta header 400s at the boundary") — a repo comment,
+    // not a vendor-documented error contract, so it is offered as one candidate among others rather
+    // than asserted. It applies to ManagedAgents.ManagedAgentsBeta by symmetry (same required
+    // `anthropic-beta` header mechanism), not from separate evidence.
     case 400       =>
-      " — PROVISIONING GAP: the request was rejected at the boundary; the most likely cause is a " +
-        "STALE hard-coded anthropic-beta header (ManagedAgents.ManagedAgentsBeta / " +
+      " — check the response body above first; if it does not name a cause, a candidate is a STALE " +
+        "hard-coded anthropic-beta header (ManagedAgents.ManagedAgentsBeta / " +
         "ClaudeCodeRoutines.RoutineBeta) — bump it to the currently documented value"
     case 401 | 403 =>
       " — PROVISIONING GAP: the credential is revoked, wrong, or under-scoped; rotate it " +
@@ -113,8 +128,9 @@ object CloudAgentDispatch {
         "({support,press}.claudeAgentId / .claudeEnvironmentId for managed-agents, " +
         "{support,press}.claudeCodeRoutineId for claude-code-cloud)"
     case _         =>
-      " — PROVISIONING GAP: the agent boundary rejected the request as invalid; check the " +
-        "dispatcher config (keys, ids, beta header) — a 4xx never self-heals"
+      " — the agent boundary rejected the request and will keep doing so until something changes; " +
+        "read the response body above for the cause (it may be config — keys, ids, beta header — " +
+        "or a request-level rejection such as quota/credit or size)"
   }
 
   /**
@@ -139,14 +155,16 @@ object CloudAgentDispatch {
             }
             ZIO
               .logError(
-                s"$audience agent dispatch FAILED PERMANENTLY [reason=${Reason.Config}]: " +
+                s"$audience agent dispatch FAILED PERMANENTLY " +
+                  s"[reason=${reasonFor(FailureKind.Permanent)}]: " +
                   s"${e.getMessage}${provisioningHint(status)}",
               )
               .as(DispatchOutcome.ConfigError)
           case FailureKind.Transient =>
             ZIO
               .logWarning(
-                s"$audience agent dispatch errored [reason=${Reason.Transient}]: ${e.getMessage}",
+                s"$audience agent dispatch errored " +
+                  s"[reason=${reasonFor(FailureKind.Transient)}]: ${e.getMessage}",
               )
               .as(DispatchOutcome.Error)
         },

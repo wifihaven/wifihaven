@@ -790,11 +790,18 @@ object SupportResponder {
      * the label and a PromQL `sum by (reason)` never silently drops one. Bounded by this match —
      * never a per-thread / per-household value (the §4 cardinality firewall). The vocabulary is
      * [[CloudAgentDispatch.Reason]], shared with the press path.
+     *
+     * EXHAUSTIVE on purpose — no `case _`. A future dispatch-failure outcome added to the enum must
+     * fail to COMPILE here rather than silently label itself `none`, which would be invisible
+     * (`outcome=error` is unchanged, so only the `reason` slice would be wrong).
      */
     def reason(o: WebhookOutcome): String = o match {
       case ConfigError => CloudAgentDispatch.Reason.Config
       case Error       => CloudAgentDispatch.Reason.Transient
-      case _           => CloudAgentDispatch.Reason.None
+      case Dispatched | EmailRegisteredDispatched | EmailUnregisteredRejected |
+          SkippedUnauthenticated | SkippedNotInbound | RateLimited | InvalidSignature | Malformed |
+          Disabled =>
+        CloudAgentDispatch.Reason.None
     }
   }
 

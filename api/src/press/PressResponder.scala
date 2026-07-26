@@ -303,11 +303,17 @@ object PressResponder {
      * the label. Bounded by this match — never a per-sender / per-thread value (the §4 cardinality
      * firewall). The vocabulary is [[wifihaven.api.support.CloudAgentDispatch.Reason]], shared with
      * support so the two audiences read identically on their (deliberately separate) series.
+     *
+     * EXHAUSTIVE on purpose — no `case _`, for the same reason as the support twin: a future
+     * dispatch-failure outcome must fail to COMPILE here rather than silently label itself `none`.
      */
     def reason(o: WebhookOutcome): String = o match {
-      case ConfigError => wifihaven.api.support.CloudAgentDispatch.Reason.Config
-      case Error       => wifihaven.api.support.CloudAgentDispatch.Reason.Transient
-      case _           => wifihaven.api.support.CloudAgentDispatch.Reason.None
+      case ConfigError                                                        =>
+        wifihaven.api.support.CloudAgentDispatch.Reason.Config
+      case Error                                                              =>
+        wifihaven.api.support.CloudAgentDispatch.Reason.Transient
+      case Dispatched | RateLimited | InvalidSignature | Malformed | Disabled =>
+        wifihaven.api.support.CloudAgentDispatch.Reason.None
     }
   }
 

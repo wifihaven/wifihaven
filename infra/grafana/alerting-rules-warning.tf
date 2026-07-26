@@ -1,5 +1,7 @@
 # Warning (notify, look-today) alert rules — W1–W5
 # (#1405, parent #1381). Implements docs/design/alerting.md §7.2.
+# W6–W7 (#2416) extend the set with the two cloud-agent "permanently dead
+# responder" rules; see their inline comment below.
 #
 # Every expression is grounded in a series emitted today (§2 "alert only on
 # series that exist"; grep api/src) — except W5, which is shipped DISABLED
@@ -69,6 +71,32 @@ locals {
       # forward and the counter is reliable.
       paused  = true
       summary = "Blocklist fetches are failing on the router (category enforcement degrades). DISABLED until the router-pushed counter is trustworthy in prod (#1382)."
+    }
+    # W6/W7 (#2416) — a cloud-agent responder that is PERMANENTLY dead. `reason="config"`
+    # is only ever emitted for a 4xx at the Anthropic boundary (a revoked key, a wrong
+    # agent-or-routine id, a stale anthropic-beta header), which by construction never
+    # self-heals — so unlike the transient bucket, ANY sustained rate is a human-fix
+    # signal, and the threshold is the same gt=0 the other never-should-happen counters
+    # use. Deliberately does NOT alert on `reason="transient"`: a 5xx/timeout blip is
+    # expected noise. Support and press are separate rules because the series are
+    # separate (the two audiences alert independently) and the remediation differs.
+    w6 = {
+      title    = "W6 Support responder permanently dead (config)"
+      expr     = "sum(rate(support_ai_draft_total{env=\"prod\",outcome=\"error\",reason=\"config\"}[15m]))"
+      window_s = 900
+      gt       = 0
+      for      = "15m"
+      paused   = false
+      summary  = "Support cloud-agent dispatch is failing with a 4xx at the Anthropic boundary — a revoked/wrong anthropicApiKey, a wrong claudeAgentId/claudeEnvironmentId/claudeCodeRoutineId, or a stale anthropic-beta header. This NEVER self-heals: customers get no AI reply until a human rotates the key, fixes the id, or bumps the header. The API logs each occurrence at ERROR with the likely fix named inline."
+    }
+    w7 = {
+      title    = "W7 Press responder permanently dead (config)"
+      expr     = "sum(rate(press_ai_draft_total{env=\"prod\",outcome=\"error\",reason=\"config\"}[15m]))"
+      window_s = 900
+      gt       = 0
+      for      = "15m"
+      paused   = false
+      summary  = "Press cloud-agent dispatch is failing with a 4xx at the Anthropic boundary (same causes as W6, press credentials/ids). Journalists get no reply until a human fixes the config; the inbound webhook still returns 200 (fail-open by design), so this counter is the only signal. The API logs each occurrence at ERROR with the fix named inline."
     }
   }
 }
