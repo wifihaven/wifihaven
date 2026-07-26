@@ -75,8 +75,42 @@ object PlainClientWireSpec extends ZIOSpecDefault {
       )(s => ZIO.attempt(s.stop(0)).ignore)
     } yield new CaptureServer(server, bodiesRef)
 
+  // A capture server that returns an ARBITRARY response body (to model Plain's HTTP-200 payload-level
+  // failures — `{"data":{"<op>":{"...":null,"error":{"message":"..."}}}}`), still stashing every
+  // request body in order (#2408).
+  private def captureServerReturning(resp: String): ZIO[Scope, Throwable, CaptureServer] =
+    for {
+      bodiesRef <- Ref.make(List.empty[String])
+      runtime   <- ZIO.runtime[Any]
+      server    <- ZIO.acquireRelease(
+        ZIO.attempt {
+          val s = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0)
+          s.createContext(
+            "/",
+            (exchange: HttpExchange) => {
+              val body             = new String(exchange.getRequestBody.readAllBytes(), "UTF-8")
+              Unsafe.unsafe { implicit u =>
+                runtime.unsafe.run(bodiesRef.update(_ :+ body)).getOrThrowFiberFailure()
+              }
+              val out: Array[Byte] = resp.getBytes("UTF-8")
+              exchange.sendResponseHeaders(200, out.length.toLong)
+              val os: OutputStream = exchange.getResponseBody
+              os.write(out)
+              os.close()
+            },
+          )
+          s.start()
+          s
+        },
+      )(s => ZIO.attempt(s.stop(0)).ignore)
+    } yield new CaptureServer(server, bodiesRef)
+
   private def parse(body: String): Json =
     Json.decoder.decodeJson(body).toOption.get
+
+  // The GraphQL `query` string of a recorded request body (for asserting the mutation name).
+  private def queryOf(body: String): String =
+    field(parse(body), "query").collect { case Json.Str(q) => q }.getOrElse("")
 
   // Drill `input.onCreate` / `input.onUpdate` etc. out of a parsed variables object.
   private def field(j: Json, path: String*): Option[Json] =
@@ -253,6 +287,60 @@ object PlainClientWireSpec extends ZIOSpecDefault {
 
           ok && tenantShape && twoFields && planField && foundingField && noNameField
         }
+      }
+    },
+    // #2408 Problem 1: Plain returns HTTP 200 for a mutation-level FAILURE, carrying a PAYLOAD-level
+    // `error { message }` with a null result object — NOT a top-level `errors` array. The old
+    // `!body.contains("\"errors\"")` check passed it as success, so a dropped write reported Ok and
+    // the real Plain error was never logged. The generalized check must classify this Error.
+    test(
+      "#2408: an HTTP-200 payload-level error / null result object ⇒ PlainOutcome.Error, not Ok",
+    ) {
+      ZIO.scoped {
+        for {
+          cap <- captureServerReturning(
+            """{"data":{"replyToThread":{"error":{"message":"thread not found: th_x"}}}}""",
+          )
+          base = s"http://127.0.0.1:${cap.server.getAddress.getPort}/"
+          cfg  = SupportConfig(plain =
+            PlainConfig(writeEnabled = true, apiKey = "test-key", apiBase = base),
+          )
+          outcome <- ZIO
+            .serviceWithZIO[PlainClient](
+              _.writeThread(PlainThreadWrite(threadId = "th_x", markdown = "the answer")),
+            )
+            .provide(PlainClient.layer, ZLayer.succeed(cfg))
+        } yield assertTrue(outcome == PlainOutcome.Error)
+      }
+    },
+    // #2408 Problem 2: the reply must post INTO the customer's existing thread via `replyToThread`
+    // (threadId + textContent/markdownContent), NEVER `createThread`.
+    test("#2408: writeThread emits replyToThread targeting the bound threadId") {
+      ZIO.scoped {
+        for {
+          cap <- captureServerReturning("""{"data":{"replyToThread":{"error":null}}}""")
+          base = s"http://127.0.0.1:${cap.server.getAddress.getPort}/"
+          cfg  = SupportConfig(plain =
+            PlainConfig(writeEnabled = true, apiKey = "test-key", apiBase = base),
+          )
+          outcome <- ZIO
+            .serviceWithZIO[PlainClient](
+              _.writeThread(PlainThreadWrite(threadId = "th_bound", markdown = "the answer")),
+            )
+            .provide(PlainClient.layer, ZLayer.succeed(cfg))
+          bodies  <- cap.bodies.get
+          vars = varsForOp(bodies, "replyToThread").getOrElse(Json.Null)
+        } yield assertTrue(
+          // A `null`-error payload with the reply mutation is a real success.
+          outcome == PlainOutcome.Ok,
+          // The reply targets the EXISTING thread — replyToThread, never createThread.
+          bodies.exists(queryOf(_).contains("replyToThread")),
+          !bodies.exists(queryOf(_).contains("createThread")),
+          field(vars, "input", "threadId").contains(Json.Str("th_bound")),
+          // textContent is required by Plain's schema; markdownContent carries the rich body.
+          field(vars, "input", "textContent").contains(Json.Str("the answer")),
+          field(vars, "input", "markdownContent").contains(Json.Str("the answer")),
+        )
       }
     },
     test("writeEnabled=false ⇒ Disabled no-op, no network call (ships dark, #2266)") {

@@ -56,12 +56,18 @@ final case class PlainCustomerUpsert(
     attributes: Map[String, String],
 )
 
-/** A create-or-reply thread write (#2200 seam). `markdown` is the AI-drafted body. */
+/**
+ * A reply-into-thread write (#2200 seam). `threadId` is the customer's existing Plain thread the
+ * reply posts INTO (#2408 — the customer-visible send); `markdown` is the AI-drafted body. The
+ * remaining fields are legacy `createThread` inputs kept default-empty during the #2408 red→green
+ * transition and removed once the live client swaps to `replyToThread`.
+ */
 final case class PlainThreadWrite(
-    customerExternalId: String,
-    tenantIdentifier: String,
-    title: String,
+    threadId: String,
     markdown: String,
+    customerExternalId: String = "",
+    tenantIdentifier: String = "",
+    title: String = "",
 )
 
 /** Bounded outcome enum — also the label space for the support metrics (never per-household). */

@@ -262,9 +262,9 @@ final case class SupportResponder(
       if !ok then ZIO.succeed(WebhookOutcome.RateLimited)
       else {
         val write = PlainThreadWrite(
-          // No household — this sender maps to no tenant. #2240 switches writeThread to a
-          // reply-INTO-thread mutation against event.threadId (the customer-visible email reply);
-          // the trait seam keeps that a go-live provisioning change, not a code change here.
+          // No household — this sender maps to no tenant. #2408 switches writeThread to a
+          // reply-INTO-thread mutation against event.threadId (the customer-visible email reply).
+          threadId = event.threadId,
           customerExternalId = event.customerExternalId,
           tenantIdentifier = "",
           title = UnregisteredRejectTitle,
@@ -327,12 +327,12 @@ final case class SupportResponder(
   def agentReply(bearer: Option[String], markdown: String): UIO[AgentActionResult] =
     withClaims("reply", bearer) { claims =>
       val write = PlainThreadWrite(
+        // #2408: the reply posts INTO the customer's existing thread (`claims.threadId`, the
+        // customer-visible send), NOT a new createThread. The thread binding comes from the verified
+        // token — the request body carries only the reply text.
+        threadId = claims.threadId,
         customerExternalId = claims.householdId.value.toString,
         tenantIdentifier = claims.householdId.value.toString,
-        // TODO(#2240): PlainClient.writeThread's live impl uses createThread; switching to the
-        // reply-to-thread mutation against `claims.threadId` (the customer-visible send) is a
-        // go-live Plain-provisioning item. The trait seam is deliberate — the thread binding is
-        // enforced HERE either way.
         title = s"[AI reply] support thread ${claims.threadId}",
         markdown = s"$AiReplyAttribution\n\n$markdown",
       )
