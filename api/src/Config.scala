@@ -701,16 +701,22 @@ case class PressConfig(
     // MUST sit on a Resend-VERIFIED sending domain. Resend verifies per-DOMAIN, and only the apex
     // `wifihaven.net` is verified (`resend._domainkey` DKIM + the `send.wifihaven.net` return-path
     // MX, infra/cloudflare/main.tf) — `staging.wifihaven.net` is a SEPARATE, unverified domain to
-    // Resend, so staging borrows the apex as "press-staging@wifihaven.net", mirroring the existing
-    // "alerts-staging@wifihaven.net" convention. Prod uses "press@wifihaven.net". This also satisfies
-    // DMARC: `adkim=s` requires the DKIM `d=` to strict-align with the From domain.
+    // Resend, so staging borrows the apex as "press-staging@wifihaven.net". Prod uses
+    // "press@wifihaven.net". This also satisfies DMARC: `adkim=s` requires the DKIM `d=` to
+    // strict-align with the From domain.
+    //
+    // The apex-with-env-suffix shape follows the shared notification sender, which #2407 observed
+    // sending as "alerts-staging@wifihaven.net" on staging. That value is NOT in-repo to cite
+    // (`WIFIHAVEN_EMAIL_FROM_ADDRESS` is `sync: false` in render.yaml) — it is an observed
+    // deployment value, not a checked-in convention.
     fromAddress: String = "",
     // #2407: the Reply-To carried on that reply — the press mailbox the Cloudflare Email Worker
     // watches ("press@staging.wifihaven.net" / "press@wifihaven.net"), so a journalist's human
     // follow-up threads back into the responder pipeline. DELIBERATELY separate from `fromAddress`:
     // Reply-To is exempt from DMARC alignment, so it may name the routed inbox even where that
-    // subdomain is not a verified Resend SENDING domain. (Same From/Reply-To split PressOutreachConfig
-    // already models.) Required when the responder is enabled — no dark-by-default (#2265).
+    // subdomain is not a verified Resend SENDING domain. (PressOutreachConfig models the same
+    // From/Reply-To split, under the shorter field name `replyTo`.) Required when the responder is
+    // enabled — no dark-by-default (#2265).
     replyToAddress: String = "",
 ) {
   val dispatcherTrimmed: String             = dispatcher.trim

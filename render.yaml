@@ -309,10 +309,10 @@ services:
         value: staging
       # #2407: the press From-address the autonomous reply is sent FROM. Resend verifies per-DOMAIN
       # and only the apex wifihaven.net is verified, so staging borrows the apex as `press-staging@`
-      # (mirroring alerts-staging@) — `staging.wifihaven.net` is a separate, UNVERIFIED Resend domain
-      # and a From there would be rejected outright under our `p=reject; adkim=s` DMARC.
+      # — `staging.wifihaven.net` is a separate, UNVERIFIED Resend domain and a From there would be
+      # rejected outright under our `p=reject; sp=reject; adkim=s` DMARC.
       - key: WIFIHAVEN_PRESS_FROM_ADDRESS
-        value: press-staging@wifihaven.net
+        value: "WifiHaven Press <press-staging@wifihaven.net>"
       # #2407: Reply-To — the press mailbox the CF Email Worker actually watches, so a journalist's
       # human follow-up threads back into the responder pipeline. Reply-To is exempt from DMARC
       # alignment, so it may name the subdomain even though the From cannot. Both required when
@@ -597,10 +597,10 @@ services:
       - key: WIFIHAVEN_PRESS_DEPLOYMENT_ENV
         value: prod
       # #2407: the press From-address the autonomous reply is sent FROM. The apex wifihaven.net IS a
-      # verified Resend sending domain, so prod's From and Reply-To are the same address — unlike
+      # verified Resend sending domain, so prod's From and Reply-To are the same mailbox — unlike
       # staging, which must borrow the apex because staging.wifihaven.net is unverified.
       - key: WIFIHAVEN_PRESS_FROM_ADDRESS
-        value: press@wifihaven.net
+        value: "WifiHaven Press <press@wifihaven.net>"
       # #2407: Reply-To — the press mailbox the CF Email Worker watches, so a journalist's human
       # follow-up threads back into the responder pipeline. Both required when RESPONDER_ENABLED=true.
       - key: WIFIHAVEN_PRESS_REPLY_TO_ADDRESS

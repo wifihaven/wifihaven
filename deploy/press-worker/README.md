@@ -43,9 +43,14 @@ The outbound reply carries **two different addresses**, and the split is deliber
 Resend verifies per-**domain**, and only the apex `wifihaven.net` is verified (the
 `resend._domainkey` DKIM + the `send.wifihaven.net` return-path MX in
 `infra/cloudflare/main.tf`). `staging.wifihaven.net` is a *separate*, unverified domain to Resend —
-adding it is a paid plan add-on — so staging borrows the apex as `press-staging@`, mirroring the
-existing `alerts-staging@wifihaven.net` convention. The `staging` DKIM that does exist belongs to
-**Postmark**, for Plain's `support@` mail, and does not cover Resend.
+adding it is a paid plan add-on — so staging borrows the apex as `press-staging@`. The `staging`
+DKIM that does exist belongs to **Postmark**, for Plain's `support@` mail, and does not cover
+Resend.
+
+(The apex-with-env-suffix shape follows the shared notification sender, observed in
+[#2407](https://github.com/wifihaven/wifihaven/issues/2407) sending as
+`alerts-staging@wifihaven.net`. That value is `sync: false` in `render.yaml`, so it is an observed
+deployment value rather than something checked in.)
 
 This matters because our DMARC is `p=reject; sp=reject; adkim=s`: a From on the unverified
 subdomain is **rejected outright**, not spam-filed. `adkim=s` also requires the DKIM `d=` to
@@ -58,6 +63,12 @@ human follow-up thread back into the pipeline.
 Both keys are **required** when `press.responderEnabled` is true (`PressConfig.missingRequiredKeys`,
 #2265 no-dark-by-default) — boot fails loudly rather than silently falling back to the shared
 `alerts@` notification sender.
+
+**Caveat:** `press-staging@wifihaven.net` is a *sending-only* identity — no Email Routing rule binds
+it, and there is no apex catch-all. Mail addressed to it (a bounce/DSN, an out-of-office, or a
+client that ignores `Reply-To`) is rejected at the apex MX rather than reaching the Worker. That is
+acceptable because every reply we send sets `Reply-To` to the routed inbox, but it is why the two
+keys must not be collapsed back into one.
 
 ## Provisioning — declarative (no manual `wrangler deploy`, no dashboard clicks)
 

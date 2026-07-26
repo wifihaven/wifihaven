@@ -69,7 +69,9 @@ object PressResponderSpec
     // #2407: From and Reply-To are DISTINCT on staging. The From must sit on a Resend-verified
     // domain, and only the apex `wifihaven.net` is verified — `staging.wifihaven.net` is a separate
     // (unverified) domain to Resend. Reply-To carries the routed CF-Email-Worker inbox instead.
-    fromAddress = "press-staging@wifihaven.net",
+    // The From keeps the display-name form render.yaml ships, so the assertions below exercise the
+    // real deployed shape rather than a bare-address simplification.
+    fromAddress = "WifiHaven Press <press-staging@wifihaven.net>",
     replyToAddress = "press@staging.wifihaven.net",
   )
 
@@ -317,10 +319,14 @@ object PressResponderSpec
           //
           // From and Reply-To are deliberately DIFFERENT addresses here. The From must sit on a
           // Resend-VERIFIED domain: only the apex `wifihaven.net` is verified, so staging borrows it
-          // as `press-staging@` (mirroring the `alerts-staging@` convention) rather than the
-          // unverified `staging.wifihaven.net` subdomain, which Resend would reject outright. It also
-          // keeps DMARC happy — `adkim=s` demands the DKIM `d=` strict-align with the From domain.
-          emails.head.from.contains("press-staging@wifihaven.net"),
+          // as `press-staging@` rather than the unverified `staging.wifihaven.net` subdomain, which
+          // Resend would reject outright. It also keeps DMARC happy — `adkim=s` demands the DKIM
+          // `d=` strict-align with the From domain.
+          //
+          // NOTE: `from`/`replyTo` are Option[String], so `.contains` here is Option.contains —
+          // EXACT equality on the whole header, not a substring test. That is what we want: it pins
+          // the display-name form verbatim, and would catch a bare-address or alerts@ regression.
+          emails.head.from.contains("WifiHaven Press <press-staging@wifihaven.net>"),
           // Reply-To is exempt from DMARC alignment, so it can point at the CF-Email-Worker-watched
           // inbox — a journalist's human follow-up threads back into the responder pipeline.
           emails.head.replyTo.contains("press@staging.wifihaven.net"),
