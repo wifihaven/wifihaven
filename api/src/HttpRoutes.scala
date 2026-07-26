@@ -121,6 +121,10 @@ object HttpRoutes {
       // keeps re-asking, or a prompt-injected one, must not be able to spam the customer).
       supportConsentRepo    <- ZIO.service[wifihaven.api.db.SupportConsentRepo]
       consentThreadLimiter  <- RateLimiterLive.make(maxAttempts = 3, windowSeconds = 60 * 60)
+      // #2437: the cap on how often ONE thread can page the operator (3/hour). An escalation is a
+      // human interrupt, so a looping or prompt-injected agent must not be able to turn our alert
+      // mailbox into a firehose; 3/hour still lets a genuine back-and-forth re-escalate.
+      escalateThreadLimiter <- RateLimiterLive.make(maxAttempts = 3, windowSeconds = 60 * 60)
       supportResponder = wifihaven.api.support.SupportResponder(
         cfg.support,
         householdRepo,
@@ -142,6 +146,10 @@ object HttpRoutes {
         // The consent link's origin: the ONE per-env SPA origin the API already carries (#2250),
         // shared with the password-reset / dashboard links rather than a new support.* key.
         cfg.email.appBaseUrl,
+        // #2437: the operator-notification seam — the same #578 Notifier the alert/beta/reset paths
+        // use, so an escalation reaches a human without inventing a transport.
+        notifier,
+        escalateThreadLimiter,
       )
       // #2203: the PRESS responder — the public inbound webhook (from the Cloudflare Email Worker)
       // → rate-cap → dispatch pipeline, plus the press agent's reply-target-bound EMAIL callback.
@@ -159,6 +167,8 @@ object HttpRoutes {
       pressDispatchSenderLimiter <- RateLimiterLive.make(maxAttempts = 4, windowSeconds = 60 * 60)
       pressDispatchGlobalLimiter <-
         RateLimiterLive.make(maxAttempts = 50, windowSeconds = 24 * 60 * 60)
+      // #2437: the per-sender cap on operator pages from the press agent (3/hour), matching support's.
+      pressEscalateLimiter       <- RateLimiterLive.make(maxAttempts = 3, windowSeconds = 60 * 60)
       pressResponder = wifihaven.api.press.PressResponder(
         cfg.press,
         pressEmailSender,
@@ -167,6 +177,10 @@ object HttpRoutes {
         clock,
         pressDispatchSenderLimiter,
         pressDispatchGlobalLimiter,
+        // #2437: press has NO inbox — this Notifier is the ONLY way a press inquiry (or an escalation
+        // of one) reaches a human at all.
+        notifier,
+        pressEscalateLimiter,
       )
       // #2233: the operator-run press-OUTREACH send capability. The media-contacts manifest + the
       // sendable release template load from bundled resources at boot (fail-fast if malformed), like

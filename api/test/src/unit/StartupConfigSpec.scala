@@ -107,6 +107,10 @@ object StartupConfigSpec extends ZIOSpecDefault {
               errs.exists(_.contains("support.claudeEnvironmentId")),
               errs.exists(_.contains("support.agentTokenSecret")),
               errs.exists(_.contains("support.deploymentEnv")),
+              // #2437: the escalation label is part of that chain — without it an escalated thread is
+              // indistinguishable from an AI-resolved one in the Plain inbox, so it must fail boot
+              // rather than degrade to an invisible handoff.
+              errs.exists(_.contains("support.plain.escalationLabelTypeId")),
               // …and boot actually CRASHES with them (not just a pure-list check).
               ex.isFailure,
               bootMsg.contains("support.claudeAgentId"),
@@ -128,7 +132,7 @@ object StartupConfigSpec extends ZIOSpecDefault {
         val full =
           """  support {
             |    responderEnabled = true
-            |    plain { apiKey = "k", webhookSecret = "w" }
+            |    plain { apiKey = "k", webhookSecret = "w", escalationLabelTypeId = "lt_x" }
             |    anthropicApiKey = "sk"
             |    claudeAgentId = "agent_x", claudeEnvironmentId = "env_x"
             |    agentTokenSecret = "secret-at-least-32-chars-long!!x", deploymentEnv = "staging"
@@ -176,6 +180,49 @@ object StartupConfigSpec extends ZIOSpecDefault {
               |""".stripMargin,
           ),
         ).exit.map(ex => assertTrue(ex.isSuccess))
+      },
+      test("#2437: email on + a responder on with NO operator mailbox crashes boot") {
+        // The escalation notice is emailed to ONE operator mailbox. With the transport enabled and a
+        // responder live, an unset mailbox would silently drop every escalation — the exact failure
+        // #2437 fixes — so it is a REQUIRED key, not a degrade-to-nothing.
+        val noOperator =
+          """  email { enabled = true, resendApiKey = "re_x", fromAddress = "alerts@x.test" }
+            |  support {
+            |    responderEnabled = true
+            |    plain { apiKey = "k", webhookSecret = "w", escalationLabelTypeId = "lt_x" }
+            |    anthropicApiKey = "sk"
+            |    claudeAgentId = "agent_x", claudeEnvironmentId = "env_x"
+            |    agentTokenSecret = "secret-at-least-32-chars-long!!x", deploymentEnv = "staging"
+            |  }
+            |""".stripMargin
+        for {
+          errs <- loadVia(hocon(goodSecret, noOperator)).map(AppConfig.validateRequired)
+          ex   <- bootValidate(hocon(goodSecret, noOperator)).exit
+          withOperator = noOperator.replace(
+            """fromAddress = "alerts@x.test" }""",
+            """fromAddress = "alerts@x.test", operatorAddress = "ops@x.test" }""",
+          )
+          okEx <- bootValidate(hocon(goodSecret, withOperator)).exit
+        } yield assertTrue(
+          errs.exists(_.contains("wifihaven.email.operatorAddress")),
+          ex.isFailure,
+          // …and setting the mailbox is all that was missing.
+          okEx.isSuccess,
+        )
+      },
+      test("#2437: with the email transport explicitly OFF no operator mailbox is required") {
+        // A self-hosted install that sends no email cannot misaddress a notice; that disabled state is
+        // named + reported by StartupFeatureReport rather than being an unlabelled silent branch.
+        val emailOff =
+          """  support {
+            |    responderEnabled = true
+            |    plain { apiKey = "k", webhookSecret = "w", escalationLabelTypeId = "lt_x" }
+            |    anthropicApiKey = "sk"
+            |    claudeAgentId = "agent_x", claudeEnvironmentId = "env_x"
+            |    agentTokenSecret = "secret-at-least-32-chars-long!!x", deploymentEnv = "staging"
+            |  }
+            |""".stripMargin
+        bootValidate(hocon(goodSecret, emailOff)).exit.map(ex => assertTrue(ex.isSuccess))
       },
     ),
     suite("optional features are observable — enabled/disabled + reason (rule 3)")(
@@ -273,6 +320,10 @@ object StartupConfigSpec extends ZIOSpecDefault {
               "support-email",
               "support-write-api",
               "support-responder",
+              // #2437: the escalation NOTICE channel is its own reported state — with the email
+              // transport off a support escalation still labels the Plain thread but emails nobody,
+              // and that degraded shape must be named rather than inferred from two other flags.
+              "escalation-notices",
               "support-issue-filing",
               "metrics-endpoint",
               "metrics-scrape-token",

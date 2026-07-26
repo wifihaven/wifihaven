@@ -11,12 +11,16 @@ import wifihaven.shared.Clock
 import wifihaven.shared.Clock.TestClock
 import wifihaven.shared.types.HouseholdId
 import wifihaven.testinfra.*
+import com.sun.net.httpserver.{HttpExchange, HttpServer}
 import doobie.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 import zio.{Clock as _, *}
 import zio.http.*
 import zio.json.*
 import zio.test.*
+
+import java.io.OutputStream
+import java.net.InetSocketAddress
 
 /**
  * #2437 — **an escalation is not complete until a human has been notified.** Both responders tell
@@ -99,14 +103,6 @@ object EscalationSpec
   // ── Harness ─────────────────────────────────────────────────────────────────
   // The REAL Notifier rendering path over a recording EmailSender: the notice's recipient, subject,
   // and body are what a live Resend send would carry, with only the network stubbed.
-  private def notifierOver(
-      emails: Ref[List[EmailSender.Sent]],
-      cfg: EmailConfig = emailCfg,
-  ): ZIO[HouseholdSettingsRepo, Nothing, Notifier] =
-    ZIO.serviceWith[HouseholdSettingsRepo](hs =>
-      new Notifier.EmailNotifier(hs, EmailSender.recording(emails), cfg),
-    )
-
   private final case class SupportHarness(
       routes: Routes[Any, Response],
       plain: PlainClient.Recorder,
@@ -227,6 +223,34 @@ object EscalationSpec
     Ref.make(TestClock.schoolDayAfternoon).map(new TestClock(_): Clock).flatMap { c =>
       RateLimiterLive.make(maxAttempts, windowSeconds).provideEnvironment(ZEnvironment(c))
     }
+
+  // A stand-in for Plain's GraphQL endpoint that answers every mutation with one payload-level
+  // `error { message }` — the shape Plain uses for a validation/permission failure (HTTP 200 with an
+  // error in the body). Returns the base URL to point a live PlainClient at.
+  private def plainErrorServer(message: String): ZIO[Scope, Throwable, String] = {
+    val payload =
+      s"""{"data":{"addLabels":{"error":{"message":${message.toJson}}}}}"""
+    ZIO
+      .acquireRelease(
+        ZIO.attempt {
+          val srv = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0)
+          srv.createContext(
+            "/",
+            (exchange: HttpExchange) => {
+              exchange.getRequestBody.readAllBytes()
+              val out: Array[Byte] = payload.getBytes("UTF-8")
+              exchange.sendResponseHeaders(200, out.length.toLong)
+              val os: OutputStream = exchange.getResponseBody
+              os.write(out)
+              os.close()
+            },
+          )
+          srv.start()
+          srv
+        },
+      )(srv => ZIO.attempt(srv.stop(0)).ignore)
+      .map(srv => s"http://127.0.0.1:${srv.getAddress.getPort}/graphql")
+  }
 
   private def toOperator(emails: List[EmailSender.Sent]): List[EmailSender.Sent] =
     emails.filter(_.to == OperatorAddress)
@@ -427,6 +451,72 @@ object EscalationSpec
           notices.head.htmlBody.contains("Family Q"),
           notices.head.htmlBody.contains("th_esc_1"),
           notices.head.htmlBody.contains("refund"),
+        )
+      }
+    },
+    test(
+      "support escalate is rate-capped per thread so a looping session can't page the operator",
+    ) {
+      // The mirror of the press cap above. Advertised as a safety property in
+      // deploy/support-agent/README.md ("capped at 3/thread/hour"), so it is pinned, not assumed.
+      for {
+        _       <- cleanDb
+        hhRepo  <- ZIO.service[HouseholdRepo]
+        hh      <- hhRepo.create("Family S", "family-s")
+        limiter <- liveLimiter(maxAttempts = 2, windowSeconds = 3600)
+        h       <- supportHarness(escalateThreadLimiter = limiter)
+        clock   <- ZIO.service[Clock]
+        now     <- clock.instant
+        token = ConsentToken.mint(
+          hh,
+          "th_esc_cap",
+          dataAccess = false,
+          now,
+          java.time.Duration.ofMinutes(30),
+          SupportTokenSecret,
+        )
+        body  = """{"note":"looping"}"""
+        _      <- post(h.routes, "/api/support/agent/escalate", body, bearer = Some(token))
+        _      <- post(h.routes, "/api/support/agent/escalate", body, bearer = Some(token))
+        s3     <- post(h.routes, "/api/support/agent/escalate", body, bearer = Some(token))
+        marks  <- h.plain.marks.get
+        emails <- h.emails.get
+      } yield assertTrue(
+        s3 == Status.TooManyRequests,
+        // The capped call neither marked the thread again nor emailed a third time.
+        marks.size == 2,
+        toOperator(emails).size == 2,
+      )
+    },
+    test("no addLabels failure is ever reported as a successful mark") {
+      // Through the LIVE client at the HTTP boundary (Plain's GraphQL stubbed by a JDK server), so
+      // this pins the real payload→outcome mapping rather than a helper in isolation.
+      //
+      // The #2446 review finding: an earlier `already`+`label` substring match reported genuine
+      // provisioning failures ("label type has already been archived") as PlainOutcome.Ok, which
+      // would leave the thread UNMARKED while the "escalated threads NOT marked" panel read zero —
+      // the silent degradation this whole change exists to kill. There is now NO failure-to-success
+      // mapping at all: whether Plain even errors on a duplicate label is unverified, and #2449
+      // resolves that from a captured staging response instead of a guess.
+      def outcomeFor(errorMessage: String): ZIO[Scope, Throwable, PlainOutcome] =
+        plainErrorServer(errorMessage).flatMap { base =>
+          new PlainClient.Live(
+            supportCfg.copy(plain = supportCfg.plain.copy(writeEnabled = true, apiBase = base)),
+          ).markThread(PlainThreadMark("th_x", List(EscalationLabelId)))
+        }
+
+      ZIO.scoped {
+        for {
+          dup      <- outcomeFor("label_with_given_type_already_added_to_thread: nothing to do")
+          archived <- outcomeFor("This label type has already been archived")
+          closed   <- outcomeFor("Thread has already been closed; cannot add a label")
+          denied   <- outcomeFor("Forbidden: missing label:create permission")
+        } yield assertTrue(
+          // Every payload-level error is loud, so an unmarked thread is always visible as such.
+          dup == PlainOutcome.Error,
+          archived == PlainOutcome.Error,
+          closed == PlainOutcome.Error,
+          denied == PlainOutcome.Error,
         )
       }
     },

@@ -57,6 +57,7 @@ Also provision the **Email Worker** — see [`../press-worker/README.md`](../pre
 | `WIFIHAVEN_PRESS_AGENT_API_BASE` | set in render.yaml (`api.wifihaven.net` / `api-staging.wifihaven.net`) |
 | `WIFIHAVEN_PRESS_DEPLOYMENT_ENV` | set in render.yaml (`prod` / `staging`) — the kickoff's deployment line |
 | `WIFIHAVEN_EMAIL_RESEND_API_KEY` / `WIFIHAVEN_EMAIL_FROM_ADDRESS` | **required** — the reply is emailed via Resend; the API won't boot with press on and email off. Reuses the #578 sender; set `FROM_ADDRESS` to a press-appropriate identity if desired. |
+| `WIFIHAVEN_EMAIL_OPERATOR_ADDRESS` | **required (#2437)** — the operator mailbox every press notice is emailed to. Press has no monitored inbox, so this address IS the inbox: every accepted inbound gets a "new inquiry" email and every escalation gets an "ESCALATION — a human must follow up" one. With email enabled and press on, an unset value **fails boot** rather than dropping the notice. |
 
 ## Claude Code Cloud routine transport (#2327)
 
@@ -107,6 +108,32 @@ separate from the support routine):**
 names the active dispatcher in its `detail`, so the billed path is observable; the same line is
 emitted to the startup log. Routine CRUD is web-UI-only today; only `/fire` is API-driven, so step
 1's prompt and step 3's network policy are manual per environment.
+
+## Escalation — press has no inbox, so this IS the inbox (#2437)
+
+Two operator emails come out of this pipeline, both through the #578 Resend transport to
+`WIFIHAVEN_EMAIL_OPERATOR_ADDRESS`:
+
+- **every accepted inbound** (`kind=received`): sender, subject, and the full message. Press email
+  reaches a Cloudflare Email Worker, not a mailbox, and nothing in the SPA reads `press_messages` —
+  so before #2437 a journalist could write in and no human at WifiHaven would ever know. Sent
+  regardless of whether the agent dispatch succeeded, because a failed dispatch is exactly when the
+  operator most needs to know.
+- **every escalation** (`kind=escalated`): the agent calls `POST /api/press/agent/escalate` with its
+  reply-target-bound token, and the server emails a distinctly-subjected notice carrying the sender,
+  the subject, the ORIGINAL message re-read from `press_messages` by the id on the signed token, and
+  the agent's one-line reason. The peer identity comes from the token, so a hijacked agent can no
+  more misreport a journalist than it can redirect the reply.
+
+Escalation is **structural** — only that endpoint call registers one, so a journalist who writes "a
+team member will follow up" in their own email has escalated nothing. Capped at 3/sender/hour.
+Panels: "Operator notices: inquiries received vs escalated" and "Press operator notices that never
+sent" on `deploy/grafana/dashboards/press.json`.
+
+**Re-paste the routine prompt.** #2437 changed [`agent.yaml`](agent.yaml)'s `system:` block (the new
+step 4). On the `claude-code-cloud` transport the routine prompt is web-UI-only, so the change is
+INERT until an operator pastes the updated prompt into the press routine at
+<https://claude.ai/code/routines>.
 
 ## Cost + safety guardrails
 

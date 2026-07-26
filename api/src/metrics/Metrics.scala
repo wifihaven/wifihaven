@@ -114,6 +114,13 @@ object MetricGuard {
       // dispatchers), not by user/household/thread growth, so it satisfies the §4 cardinality
       // firewall. (`outcome` is already a known key.)
       "transport",
+      // #2437 — the operator-escalation funnel's two dimensions on `operator_escalation_total`.
+      // `channel` is a fixed 2-value enum (support | press — `Notifier.EscalationChannel`), `kind`
+      // a fixed 2-value enum (received | escalated — `Notifier.EscalationKind`). Both bounded by
+      // the code, not by sender / thread / household growth, so they satisfy the §4 cardinality
+      // firewall. (`outcome` — the transport result — is already a known key.)
+      "channel",
+      "kind",
     )
 
   /**
@@ -423,6 +430,14 @@ object MetricGuard {
     // same bounded transport enum as beta_invite_email_total (EmailOutcome.label): sent / failed /
     // skipped_disabled (email unconfigured). Never a per-recipient label.
     "password_reset_email_total"           -> Set("outcome"),
+    // #2437 — the operator-escalation funnel: "an escalation is not complete until a human has been
+    // notified". `channel` ∈ {support, press} (EscalationChannel.label); `kind` ∈ {received,
+    // escalated} (EscalationKind.label — `received` is press's new-inquiry FYI, `escalated` is the
+    // agent handing off to a human); `outcome` is the bounded transport enum from EmailOutcome.label
+    // (sent / failed / skipped_disabled) plus `skipped_no_recipient` (no operator mailbox — only
+    // reachable with the email transport off; the key is REQUIRED when it is on). Escalation RATE is
+    // kind="escalated" over the channel total. Never a per-sender / per-thread / per-household label.
+    "operator_escalation_total"            -> Set("channel", "kind", "outcome"),
     // #808 — partition runway gauge. `partition_weeks_ahead{table}` is the count of consecutive
     // weekly partitions present from the current ISO week for each RANGE-partitioned ingest table
     // (set each run by PartitionMaintenanceJob). `table` is the bounded 2-value enum above. The
@@ -495,8 +510,11 @@ object MetricGuard {
     // `skipped_unauthenticated` a continuation with no resolvable tenant, `rate_limited` the
     // per-thread/global dispatch (or reject) cost caps, `invalid_signature` the security rejection.
     // `support_agent_action_total{op,outcome}` counts the cloud agent's callback
-    // actions (reply | issue | household_read × ok | denied | rate_limited | disabled | error) —
-    // the `issue` action's rate feeds the #2241 volume alert. Both bounded, never per-household.
+    // actions (reply | issue | household_read | consent_request | escalate | escalate_mark ×
+    // ok | denied | rate_limited | disabled | error) — the `issue` action's rate feeds the #2241
+    // volume alert; #2437 adds `escalate` (the agent handing off) and `escalate_mark` (the SERVER's
+    // Plain `addLabels` write that makes the handoff visible in the inbox — an `error` there means
+    // the label id / `label:create` permission is misprovisioned). Both bounded, never per-household.
     // #2416 added the bounded `reason` dimension so `outcome=error` is attributed to WHY the cloud
     // agent could not be dispatched: config (a 4xx at the Anthropic boundary — revoked key, wrong
     // agent-or-routine id, stale anthropic-beta header; PERMANENT, never self-heals, also logged at
@@ -539,8 +557,9 @@ object MetricGuard {
     // #2203 — the Claude PRESS/PR responder (dark until keys set). `press_ai_draft_total{outcome}`
     // counts each inbound PRESS Plain webhook by a bounded enum (dispatched | skipped | rate_limited
     // | invalid_signature | malformed | disabled | error); `press_agent_action_total{op,outcome}`
-    // counts the press agent's draft callback (reply × ok | denied | rate_limited | disabled |
-    // error). Separate series from support so the public-press audience is graphed independently.
+    // counts the press agent's callbacks (reply | escalate — #2437's structural handoff signal —
+    // × ok | denied | rate_limited | disabled | error). Separate series from support so the
+    // public-press audience is graphed independently.
     // The #808 lesson: without these entries the firewall rejects the name and the series never emits.
     // #2416: `reason` (config | transient | none) attributes a dispatch failure exactly as on the
     // support series — SAME bounded vocabulary from the ONE shared classifier, deliberately SEPARATE
@@ -737,6 +756,18 @@ object AppMetrics {
   // sent | failed | skipped_disabled (email unconfigured). Never a per-recipient label.
   def passwordResetEmail(outcome: String): UIO[Unit] =
     MetricGuard.counter("password_reset_email_total", Map("outcome" -> outcome))
+
+  // #2437 — the operator-escalation funnel, emitted from Notifier.escalation (the ONE place a notice
+  // is rendered + sent, so this counter can't drift from the sends). `channel` ∈ {support, press},
+  // `kind` ∈ {received, escalated}, `outcome` ∈ {sent, failed, skipped_disabled,
+  // skipped_no_recipient}. All three are bounded enums — never a per-sender / per-thread label. This
+  // is THE escalation-volume signal: a rising kind="escalated" share means the responders are handing
+  // off more than expected, and any non-`sent` outcome means a human was owed a notice and missed it.
+  def operatorEscalation(channel: String, kind: String, outcome: String): UIO[Unit] =
+    MetricGuard.counter(
+      "operator_escalation_total",
+      Map("channel" -> channel, "kind" -> kind, "outcome" -> outcome),
+    )
 
   // ── #2135: Stripe billing ────────────────────────────────────────────────────
   // Emitted from BillingRoutes. `recordBillingWebhook` counts each processed webhook by its bounded

@@ -53,6 +53,12 @@ trait PlainClient {
    * dispatches with the latest message alone.
    */
   def threadHistory(threadId: String, limit: Int): UIO[List[PlainThreadMessage]]
+   * #2437 — MARK a thread so the operator's inbox is filterable: apply Plain label type(s) to the
+   * thread (Plain's `addLabels`). The one write in this trait that is not customer-visible — it
+   * changes inbox metadata, never the conversation. Used when the support agent escalates, so
+   * "waiting on a human" is a filter instead of a full read of every thread. Never fails.
+   */
+  def markThread(req: PlainThreadMark): UIO[PlainOutcome]
 }
 
 /**
@@ -100,6 +106,18 @@ final case class PlainCustomerUpsert(
 final case class PlainThreadWrite(
     threadId: String,
     markdown: String,
+)
+
+/**
+ * #2437 — a thread MARK (Plain `addLabels`). `threadId` is the thread to label — always the
+ * token-bound one, never anything an agent supplied; `labelTypeIds` are Plain label TYPE ids
+ * (`lt_…`) from config, because Plain's `addLabels` has no name-based form
+ * (https://www.plain.com/docs — "You can add multiple labels to a thread with a call to
+ * addLabels").
+ */
+final case class PlainThreadMark(
+    threadId: String,
+    labelTypeIds: List[String],
 )
 
 /** Bounded outcome enum — also the label space for the support metrics (never per-household). */
@@ -218,6 +236,8 @@ object PlainClient {
       ZIO.succeed(PlainOutcome.Disabled)
     def threadHistory(threadId: String, limit: Int): UIO[List[PlainThreadMessage]] =
       AppMetrics.supportThreadHistory("disabled").as(Nil)
+    def markThread(req: PlainThreadMark): UIO[PlainOutcome]         =
+      ZIO.succeed(PlainOutcome.Disabled)
   }
 
   /** Public no-op instance for specs that don't drive Plain. */
@@ -781,6 +801,69 @@ object PlainClient {
                 })
                 .as(Nil)
           }
+    // ── #2437: thread marking (escalation label) ────────────────────────────────
+    // Plain's `addLabels(input: AddLabelsInput!)` with `{ threadId, labelTypeIds }` (verified against
+    // https://www.plain.com/docs — "You can add multiple labels to a thread with a call to
+    // addLabels"; it needs the `label:create` API-key permission, see docs/ops/plain-setup.md §5.1).
+    // The selection is deliberately ONLY `error { message }`: every Plain mutation payload carries
+    // that, so we assume nothing further about the output shape (selecting a field Plain doesn't have
+    // would fail the whole mutation). Hence `resultKey = None`.
+    private val AddLabelsMutation: String =
+      """mutation addLabels($input: AddLabelsInput!) {
+        |  addLabels(input: $input) { error { message } }
+        |}""".stripMargin
+
+    private def markThreadVars(req: PlainThreadMark): Json =
+      Json.Obj(
+        "input" -> Json.Obj(
+          "threadId"     -> Json.Str(req.threadId),
+          "labelTypeIds" -> Json.Arr(req.labelTypeIds.map(Json.Str(_))*),
+        ),
+      )
+
+    def markThread(req: PlainThreadMark): UIO[PlainOutcome] =
+      // No label ids ⇒ nothing to write. Cannot happen in a configuration that boots (the label id is
+      // required when the support responder is enabled), so this is a guard, not a disable switch.
+      if req.labelTypeIds.forall(_.trim.isEmpty) then
+        ZIO
+          .logError(
+            "plain addLabels skipped: no escalation label type id configured " +
+              "(wifihaven.support.plain.escalationLabelTypeId) — the escalated thread is UNMARKED",
+          )
+          .as(PlainOutcome.Error)
+      else
+        sendForBody(
+          AddLabelsMutation,
+          markThreadVars(req),
+          Expect("addLabels", None),
+        ).flatMap {
+          case Right(_)     => ZIO.succeed(PlainOutcome.Ok)
+          // EVERY failure is loud. A miss here is usually a PROVISIONING gap (wrong label id, or the
+          // key lacks `label:create`), not a blip: the escalated thread stays invisible in the
+          // inbox. LOUD (logError) per the no-dark-by-default bar (#2410's precedent), and the
+          // caller meters it.
+          //
+          // Deliberately NO "already labelled ⇒ Ok" special case. Plain documents a
+          // `label_with_given_type_already_added_to_thread` validation code, but this selection —
+          // like every other mutation here — carries only `error { message }`, and `payloadError`
+          // reads only `message`, so that code is never observable in `detail`; and adding `code` to
+          // the selection is unverified against Plain's schema (a field they don't have fails the
+          // WHOLE mutation, breaking all labelling). Matching the wording loosely was worse still:
+          // `already`+`label` also swallows "label type has already been archived", reporting a real
+          // provisioning failure as success. So we assert nothing we cannot observe. If Plain turns
+          // out to error on a duplicate label, that shows up as a benign non-zero on the
+          // "escalated threads NOT marked" panel until TODO(#2449) resolves the real behavior from a
+          // captured staging response (docs/ops/plain-setup.md §8 step 4).
+          case Left(detail) =>
+            ZIO
+              .logError(
+                s"plain addLabels failed: $detail — PROVISIONING GAP: check " +
+                  "wifihaven.support.plain.escalationLabelTypeId and that the Plain machine-user key " +
+                  "has the `label:create` permission (docs/ops/plain-setup.md §5.1); the escalated " +
+                  "thread is UNMARKED in the inbox",
+              )
+              .as(PlainOutcome.Error)
+        }
 
     private def post(
         query: String,
@@ -851,6 +934,9 @@ object PlainClient {
       history: Ref[List[PlainThreadMessage]],
       historyReads: Ref[List[String]],
       historyFails: Ref[Boolean],
+      // #2437: thread MARKS (escalation labels), so a spec can assert an escalated thread is labelled
+      // and — the load-bearing half — that an AI-resolved one is NOT.
+      marks: Ref[List[PlainThreadMark]],
   )
 
   def recording(rec: Recorder): PlainClient = new PlainClient {
@@ -864,6 +950,8 @@ object PlainClient {
         case true  => ZIO.succeed(Nil)
         case false => rec.history.get.map(_.takeRight(limit))
       }
+    def markThread(req: PlainThreadMark): UIO[PlainOutcome]         =
+      rec.marks.update(_ :+ req).as(PlainOutcome.Ok)
   }
 
   def recorder: UIO[Recorder] =
@@ -874,4 +962,6 @@ object PlainClient {
       r <- Ref.make(List.empty[String])
       f <- Ref.make(false)
     } yield Recorder(c, t, h, r, f)
+      m <- Ref.make(List.empty[PlainThreadMark])
+    } yield Recorder(c, t, m)
 }

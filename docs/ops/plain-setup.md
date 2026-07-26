@@ -156,6 +156,7 @@ key is shared by all support write paths):
 | `tenant:edit` | `upsertTenant` — update an existing household tenant (the upsert's update path — its name + the entitlement field writes). **Missing this returned `Insufficient permissions, missing "tenant:edit"` on `/api/support/identity` during staging go-live.** |
 | `customerTenantMembership:create` | link the customer to its household tenant (the `tenantIdentifiers` membership on `upsertCustomer`) |
 | `customerTenantMembership:delete` | re-link / correct a customer's household tenant membership |
+| `label:create` | **#2437** — apply the `needs-human` **escalation label** to a thread when the support agent hands off (`SupportResponder.agentEscalate` → `PlainClient.markThread`, Plain's `addLabels` mutation). This is what makes an escalated thread FILTERABLE in the inbox instead of indistinguishable from an AI-resolved one. Missing it → `addLabels` fails, logged `logError` and metered `support_agent_action_total{op="escalate_mark",outcome="error"}`. **Required.** |
 | `thread:reply` | post the AI reply into the customer's existing thread — `SupportResponder.agentReply` → `PlainClient.writeThread`, whose live impl is Plain's `replyToThread` mutation (`api/src/support/PlainClient.scala`, #2408 — the customer-visible send). **Required.** |
 | `thread:read` | read the bound thread's timeline so the responder can see the conversation so far — `SupportResponder.dispatchFor` → `PlainClient.threadHistory` (`api/src/support/PlainClient.scala`, #2430 — the stateless responder fires a FRESH cloud session per inbound message, so without this every follow-up is answered with no memory of the thread). **Required.** Fail-open (a missing grant costs context, never the webhook) but **not silent**: each denial is logged at ERROR and metered `support_thread_history_total{outcome="permission"}` (panel in `deploy/grafana/dashboards/support.json`). |
 
@@ -213,7 +214,7 @@ query {
 mutation {
   updateApiKey(input: {
     apiKeyId: "<apiKey_...>",
-    permissions: ["customer:create","customer:edit","tenant:read","tenant:create","tenant:edit","customerTenantMembership:create","customerTenantMembership:delete","thread:reply","thread:read"]
+    permissions: ["customer:create","customer:edit","tenant:read","tenant:create","tenant:edit","customerTenantMembership:create","customerTenantMembership:delete","thread:reply","thread:read","label:create"]
   }) { apiKey { id permissions } }
 }
 ```
@@ -227,7 +228,7 @@ mutation {
   createApiKey(input: {
     machineUserId: "<mu_...>",
     description: "identified-chat integration",
-    permissions: ["customer:create","customer:edit","tenant:read","tenant:create","tenant:edit","customerTenantMembership:create","customerTenantMembership:delete","thread:reply","thread:read"]
+    permissions: ["customer:create","customer:edit","tenant:read","tenant:create","tenant:edit","customerTenantMembership:create","customerTenantMembership:delete","thread:reply","thread:read","label:create"]
   }) { apiKeySecret }
 }
 ```
@@ -240,16 +241,46 @@ is `:update`, **not** `:edit`, which Plain's enum rejects with `Value needs to b
 mutation {
   updateApiKey(input: {
     apiKeyId: "<apiKey_...>",
-    permissions: ["customer:create","customer:edit","tenant:read","tenant:create","tenant:edit","customerTenantMembership:create","customerTenantMembership:delete","thread:reply","thread:read","tenantField:create","tenantField:update"]
+    permissions: ["customer:create","customer:edit","tenant:read","tenant:create","tenant:edit","customerTenantMembership:create","customerTenantMembership:delete","thread:reply","thread:read","label:create","tenantField:create","tenantField:update"]
   }) { apiKey { id permissions } }
 }
 ```
 
-### 5.4 Do this for BOTH environments
+### 5.4 Create the escalation label + record its id (#2437) {#escalation-label}
+
+An escalation is not complete until a human has been notified. The support agent's handoff has
+two server-side halves: an email to `wifihaven.email.operatorAddress`, and a **label on the
+Plain thread** so the operator can filter the inbox for "waiting on a human" rather than reading
+every thread. The label half needs one piece of workspace state:
+
+1. In Plain, open **Settings → Labels** *(verify the exact label + location against your
+   workspace — Plain's navigation moves)* and **create a label type**, e.g. `Needs human`.
+2. Copy its **label type id** (`lt_…`). Plain's UI exposes this by hovering the label type and
+   choosing **Copy label ID**; you can also read it with
+   `query { labelTypes(first: 50) { edges { node { id name } } } }` in the API playground.
+3. **Commit it to `render.yaml`** as `WIFIHAVEN_SUPPORT_PLAIN_ESCALATION_LABEL_TYPE_ID`
+   (`value:`, not `sync: false`) on that environment's service — the id is workspace state,
+   not a secret, so it belongs in declarative config rather than a dashboard entry. It is
+   **per-environment**: staging's test workspace and prod's live workspace have different
+   ids for the same label name. Staging's is already committed; prod's goes in the same PR
+   that flips prod's `WIFIHAVEN_SUPPORT_RESPONDER_ENABLED` to `true`.
+4. Grant the key `label:create` (§5.1) — Plain's `addLabels` is gated on it.
+
+`addLabels` takes label **type ids**, not names — there is no name-based form — which is why
+the id has to be config rather than a constant in the code.
+
+**This is required, not optional.** With `support.responderEnabled=true` and the id unset the
+API **refuses to boot** (`AppConfig.validateRequired`), because a support escalation that
+cannot mark the thread is exactly the invisible handoff [#2437](https://github.com/wifihaven/wifihaven/issues/2437)
+exists to fix. Grant the permission and set the id as a pair, per environment. Watch
+"Escalated threads NOT marked in Plain" on `deploy/grafana/dashboards/support.json` — it should
+sit at zero; non-zero means a wrong id or a missing `label:create`.
+
+### 5.5 Do this for BOTH environments
 
 Each workspace (the **test** workspace wired to staging and the **live** workspace wired
 to prod, §0) has its **own** machine user and its own API key, so the `403` fix above is
-**per-environment**: run §5.1–§5.3 once against the staging workspace and once against the
+**per-environment**: run §5.1–§5.4 once against the staging workspace and once against the
 prod workspace. If prod go-live 403s on the customer/tenant upserts, the prod key's
 `permissions` array is the first thing to check.
 
@@ -346,6 +377,26 @@ these:
    and `externalId` set — that's the household-gating mapping working.
 3. Send a test email to `support@wifihaven.net` and a test chat → both land in the Plain
    inbox. (Auto-drafted replies are #2200, separate.)
+4. **Fire one real escalation and confirm the label lands (#2437).** Do this on staging
+   *before* the prod flip — the `addLabels` mutation shape and the `label:create` grant are
+   only exercised for real here, and a wrong field name or a missing permission otherwise
+   surfaces solely as a `logError` in prod (the #2418 lesson: Plain's docs are not always
+   complete). From a staging support conversation, get the agent to hand off (ask for a
+   human), then check all three:
+   - the thread carries the `Needs human` label in the Plain inbox;
+   - an escalation email arrived at `WIFIHAVEN_EMAIL_OPERATOR_ADDRESS`;
+   - `support_agent_action_total{op="escalate_mark",outcome="ok"}` incremented, and the
+     "Escalated threads NOT marked in Plain" panel is still zero.
+
+   If the email arrived but the label is missing, the mark half is broken: check the label
+   type id and the `label:create` permission (§5.1, §5.4) before flipping prod.
+
+   While you are here, **escalate the same thread a second time and capture Plain's literal
+   response** — whether Plain is idempotent on a duplicate label or returns an error (and with
+   what wording) is unverified, and until it is, a duplicate shows up as a non-zero on the
+   "expect 0" panel. Paste the captured response into
+   [#2449](https://github.com/wifihaven/wifihaven/issues/2449), which is what turns it into
+   verified handling instead of a guess.
 
 Once staging looks right, repeat §1–§6 against the live workspace + `wifihaven-api-prod`.
 

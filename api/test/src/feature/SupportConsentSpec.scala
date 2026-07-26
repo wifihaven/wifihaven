@@ -3,6 +3,7 @@ package wifihaven.api.feature
 import wifihaven.api.{JwtConfig, PlainConfig, SupportConfig}
 import wifihaven.api.auth.*
 import wifihaven.api.db.*
+import wifihaven.api.notify.Notifier
 import wifihaven.api.routes.{SupportAgentRoutes, SupportConsentRoutes}
 import wifihaven.api.support.*
 import wifihaven.shared.Clock
@@ -106,6 +107,10 @@ object SupportConsentSpec
         RateLimiter.allowAll,
         consentThreadLimiter,
         AppBaseUrl,
+        // #2437: this suite asserts the consent flow — a log-only notifier keeps it from depending
+        // on the escalation-notification transport.
+        Notifier.logOnly,
+        RateLimiter.allowAll,
       )
       auth      = AuthServiceLive(userRepo, jwt, clock, hhRepo): AuthService
     } yield Harness(

@@ -203,6 +203,12 @@ services:
         sync: false
       - key: WIFIHAVEN_EMAIL_FROM_ADDRESS
         sync: false
+      # #2437: the OPERATOR mailbox every support/press ESCALATION notice is emailed to — the human
+      # end of "a team member will follow up". REQUIRED whenever email is enabled AND a responder is
+      # on: with it unset the API refuses to boot rather than silently drop escalations. sync:false
+      # (it's a real person's address, not committed). Set it BEFORE this code deploys.
+      - key: WIFIHAVEN_EMAIL_OPERATOR_ADDRESS
+        sync: false
       # #2199: Plain helpdesk integration on STAGING (test Plain workspace). Secrets are sync:false
       # (entrypoint.sh renders them into the config `support.plain {}` block). WEBHOOK_SECRET is
       # consumed by #2200. NEVER commit values.
@@ -223,6 +229,16 @@ services:
         sync: false
       - key: WIFIHAVEN_SUPPORT_PLAIN_APP_ID
         sync: false
+      # #2437: the Plain LABEL TYPE id (`lt_…`) the server applies when the support agent escalates,
+      # so the operator can filter the inbox for "waiting on a human". NOT a secret — it is workspace
+      # state (Settings → Labels, docs/ops/plain-setup.md §5.4), so it is committed here rather than
+      # entered in the dashboard: declarative config beats a dashboard toggle, and a committed value
+      # can't drift out from under the code. Workspace-specific — this is the STAGING (test) workspace's
+      # `Needs human` label; prod's live workspace has a different id. The machine-user key ALSO needs
+      # the `label:create` permission (§5.1) or the write 403s. REQUIRED when RESPONDER_ENABLED=true:
+      # an escalation that cannot mark the thread is an invisible handoff, so boot fails instead.
+      - key: WIFIHAVEN_SUPPORT_PLAIN_ESCALATION_LABEL_TYPE_ID
+        value: lt_01KYFWXH8GM4JNEZ8C38GGSAP8
       # #2200: the Claude support responder on STAGING (test Plain + test Managed Agent). #2265: NO
       # dark-by-default — RESPONDER_ENABLED / ISSUE_FILING_ENABLED are explicit flags. RESPONDER is
       # flipped true at go-live (#2335), AFTER the claude-code-cloud routine secrets below were set —
@@ -507,6 +523,12 @@ services:
         sync: false
       - key: WIFIHAVEN_EMAIL_FROM_ADDRESS
         sync: false
+      # #2437: the OPERATOR mailbox every support/press ESCALATION notice is emailed to — the human
+      # end of "a team member will follow up". REQUIRED whenever email is enabled AND a responder is
+      # on: with it unset the API refuses to boot rather than silently drop escalations. sync:false
+      # (it's a real person's address, not committed). Set it BEFORE this code deploys.
+      - key: WIFIHAVEN_EMAIL_OPERATOR_ADDRESS
+        sync: false
       # #2199: Plain helpdesk integration on PROD (live Plain workspace). Secrets are sync:false
       # (entrypoint.sh renders them into the config `support.plain {}` block). WEBHOOK_SECRET is
       # consumed by #2200 (the Claude responder). NEVER commit values.
@@ -526,6 +548,15 @@ services:
       - key: WIFIHAVEN_SUPPORT_PLAIN_IDENTITY_SECRET
         sync: false
       - key: WIFIHAVEN_SUPPORT_PLAIN_APP_ID
+        sync: false
+      # #2437: the Plain LABEL TYPE id (`lt_…`) the server applies when the support agent escalates,
+      # so the operator can filter the inbox for "waiting on a human". NOT a secret — workspace state
+      # (Settings → Labels, docs/ops/plain-setup.md §5.4), so it is committed rather than dashboard-set,
+      # the same as staging above. Left UNSET here because the label does not exist in the LIVE Plain
+      # workspace yet and its id differs from staging's; prod's RESPONDER_ENABLED is still "false", so
+      # nothing requires it. Create the label in the live workspace and commit its id in the SAME PR
+      # that flips prod's responder on — with the flag true and this unset, the API refuses to boot.
+      - key: WIFIHAVEN_SUPPORT_PLAIN_ESCALATION_LABEL_TYPE_ID
         sync: false
       # #2200: the Claude support responder on PROD (live Plain + prod Managed Agent). #2265: NO
       # dark-by-default — same explicit-flag pattern as staging (flip via PR at go-live, after the

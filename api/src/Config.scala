@@ -385,10 +385,18 @@ case class EmailConfig(
     resendApiKey: String = "",
     fromAddress: String = "",
     appBaseUrl: String = "https://app.wifihaven.net",
+    // #2437: the OPERATOR mailbox every escalation notice is addressed to — the human end of "a team
+    // member will follow up". ONE key shared by BOTH responders (support + press): "where operator
+    // mail goes" is one fact, not a per-feature one (single-source-of-truth), and it belongs to the
+    // outbound-email transport rather than to either responder's config chain. REQUIRED when email
+    // is enabled AND a responder is on (see [[AppConfig.validateRequired]]) — an escalation with
+    // nowhere to go is exactly the silent drop #2437 exists to kill.
+    operatorAddress: String = "",
 ) {
-  val apiKeyTrimmed: String = resendApiKey.trim
-  val fromTrimmed: String   = fromAddress.trim
-  def dashboardUrl: String  = appBaseUrl.stripSuffix("/")
+  val apiKeyTrimmed: String          = resendApiKey.trim
+  val fromTrimmed: String            = fromAddress.trim
+  val operatorAddressTrimmed: String = operatorAddress.trim
+  def dashboardUrl: String           = appBaseUrl.stripSuffix("/")
 
   // #2308: the emailed password-reset link, `<appBaseUrl>/reset-password?token=…`. Reuses the same
   // per-env `appBaseUrl` (#2250) as the dashboard link so a reset points at the right host
@@ -515,11 +523,20 @@ case class PlainConfig(
     identitySecret: String = "",
     appId: String = "",
     apiBase: String = "https://core-api.uk.plain.com/graphql/v1",
+    // #2437: the Plain LABEL TYPE id (`lt_…`) applied to a thread when the support agent escalates,
+    // so the operator can filter the inbox for "waiting on a human" instead of reading every thread.
+    // Workspace state, not a secret: the operator creates the label once (Settings → Labels) and
+    // copies its id (docs/ops/plain-setup.md §5.4). Plain's `addLabels` takes label TYPE ids, not
+    // names — there is no name-based form — so the id has to be config. REQUIRED when the support
+    // responder is enabled (SupportConfig.missingRequiredKeys): an escalation that cannot mark the
+    // thread is the invisible-handoff bug #2437 fixes, so it must fail boot, never degrade silently.
+    escalationLabelTypeId: String = "",
 ) {
-  val apiKeyTrimmed: String         = apiKey.trim
-  val webhookSecretTrimmed: String  = webhookSecret.trim
-  val identitySecretTrimmed: String = identitySecret.trim
-  val appIdTrimmed: String          = appId.trim
+  val apiKeyTrimmed: String                = apiKey.trim
+  val webhookSecretTrimmed: String         = webhookSecret.trim
+  val identitySecretTrimmed: String        = identitySecret.trim
+  val appIdTrimmed: String                 = appId.trim
+  val escalationLabelTypeIdTrimmed: String = escalationLabelTypeId.trim
 }
 
 object PlainConfig {
@@ -628,10 +645,13 @@ case class SupportConfig(
         // secret, and the deployment identity that rides in every kickoff.
         val common    =
           List(
-            "support.plain.apiKey"        -> plain.apiKeyTrimmed,
-            "support.plain.webhookSecret" -> plain.webhookSecretTrimmed,
-            "support.agentTokenSecret"    -> agentTokenSecretTrimmed,
-            "support.deploymentEnv"       -> deploymentEnvTrimmed,
+            "support.plain.apiKey"                -> plain.apiKeyTrimmed,
+            "support.plain.webhookSecret"         -> plain.webhookSecretTrimmed,
+            "support.agentTokenSecret"            -> agentTokenSecretTrimmed,
+            "support.deploymentEnv"               -> deploymentEnvTrimmed,
+            // #2437: the escalation label the SERVER applies when the agent hands off — without it
+            // an escalated thread is indistinguishable from an AI-resolved one in the Plain inbox.
+            "support.plain.escalationLabelTypeId" -> plain.escalationLabelTypeIdTrimmed,
           ).collect { case (k, v) if v.isEmpty => k }
         // #2300: only the SELECTED transport's config chain is required. An unknown dispatcher value
         // is itself a boot failure (explicit named value, #2265) — the operator sees the valid set.
@@ -940,6 +960,21 @@ object AppConfig {
          List(
            "wifihaven.email.enabled (+ resendApiKey + fromAddress) must be set when press outreach " +
              "is enabled — the release is emailed via the Resend transport (#2233/#2265)",
+         )
+       else Nil) ++
+      // #2437 cross-check: both responders promise the sender that "a team member will follow up"
+      // when they escalate, and that promise is backed by an EMAIL to the operator. With email
+      // enabled and a responder on, an unset operator mailbox would silently drop every escalation
+      // notice — the exact failure #2437 fixes — so fail boot loudly instead. Gated on
+      // `email.enabled` because with the transport explicitly off there is no send to misaddress
+      // (that disabled state is itself named + reported by StartupFeatureReport).
+      (if cfg.email.enabled &&
+         (cfg.support.responderEnabled || cfg.press.responderEnabled) &&
+         cfg.email.operatorAddressTrimmed.isEmpty
+       then
+         List(
+           "wifihaven.email.operatorAddress must be set when a support/press responder is enabled " +
+             "— escalations are emailed to the operator, and an unset mailbox drops them (#2437)",
          )
        else Nil)
 

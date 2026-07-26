@@ -21,9 +21,11 @@ import zio.json.*
  *     returns 200 so the Worker does not retry and the response never leaks WHY (the metric carries
  *     the outcome).
  *
- *   - AGENT `POST /api/press/agent/reply` — the press agent's ONLY side-effect channel,
- *     authenticated solely by the per-session reply-target-bound [[wifihaven.api.press.PressToken]]
- *     as `Authorization: Bearer`. Denials are uniform (401) so a prober learns nothing.
+ *   - AGENT `POST /api/press/agent/reply` and `POST /api/press/agent/escalate` (#2437 — the
+ *     STRUCTURAL handoff signal that emails the operator, since press has no inbox), authenticated
+ *     solely by the per-session reply-target-bound [[wifihaven.api.press.PressToken]] as
+ *     `Authorization: Bearer`. Neither takes a recipient: both derive the peer from the token.
+ *     Denials are uniform (401) so a prober learns nothing.
  */
 object PressAgentRoutes {
 
@@ -73,6 +75,23 @@ object PressAgentRoutes {
               .fail(ApiError.BadRequest("empty reply"))
               .when(post.markdown.trim.isEmpty)
             result <- responder.agentReply(bearerToken(req), post.markdown)
+            resp   <- toResponse(result)
+          } yield resp
+          handle.mapError(ErrorMapper.errorToResponse)
+        },
+
+      // ── Agent: hand this inquiry to a human (#2437) ─────────────────────────────
+      // The STRUCTURAL escalation signal for press. Press has no inbox, so this notice IS the handoff:
+      // the agent calls it alongside its courteous holding reply, and the server emails the operator
+      // the sender, subject, the original message (re-read by the id on the SIGNED token) and the
+      // agent's note. The peer identity is token-derived — a hijacked agent cannot report a different
+      // journalist any more than it can redirect the reply.
+      Method.POST / "api" / "press" / "agent" / "escalate" ->
+        handler { (req: Request) =>
+          val handle: ZIO[Any, ApiError, Response] = for {
+            body   <- capped(req)
+            note   <- escalationNote("press", body)
+            result <- responder.agentEscalate(bearerToken(req), note)
             resp   <- toResponse(result)
           } yield resp
           handle.mapError(ErrorMapper.errorToResponse)

@@ -79,6 +79,14 @@ trait PressMessageRepo {
    * is a peer we don't re-outreach.
    */
   def outboundPeers(): Task[Set[String]]
+
+  /**
+   * #2437 — one row by primary key, for the escalation notice: the press responder re-reads the
+   * ORIGINAL inquiry (by the id carried on the signed session token) so the operator email quotes
+   * what the journalist actually wrote, not something the agent could have rewritten. `None` when
+   * the row does not exist (the fail-open inbound recording missed, so the token carries id 0).
+   */
+  def findById(id: Long): Task[Option[PressMessage]]
 }
 
 class PressMessageRepoLive(xa: Transactor[Task]) extends PressMessageRepo {
@@ -111,6 +119,13 @@ class PressMessageRepoLive(xa: Transactor[Task]) extends PressMessageRepo {
       fr"FROM press_messages ORDER BY created_at DESC, id DESC LIMIT ${limit.toLong}")
       .query[PressMessage]
       .to[List]
+      .transact(xa)
+
+  // #2437: primary-key lookup — an index-organised single-row fetch, no plan concern.
+  def findById(id: Long): Task[Option[PressMessage]] =
+    (fr"SELECT" ++ cols ++ fr"FROM press_messages WHERE id = $id")
+      .query[PressMessage]
+      .option
       .transact(xa)
 
   def outboundPeers(): Task[Set[String]] =

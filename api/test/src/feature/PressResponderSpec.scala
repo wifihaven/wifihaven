@@ -3,7 +3,7 @@ package wifihaven.api.feature
 import wifihaven.api.PressConfig
 import wifihaven.api.auth.{RateLimiter, RateLimiterLive}
 import wifihaven.api.db.*
-import wifihaven.api.notify.{EmailOutcome, EmailSender}
+import wifihaven.api.notify.{EmailOutcome, EmailSender, Notifier}
 import wifihaven.api.press.*
 import wifihaven.api.routes.PressAgentRoutes
 import wifihaven.api.support.SupportService
@@ -100,6 +100,10 @@ object PressResponderSpec
         pressLog,
         clock,
         dispatchSenderLimiter,
+        RateLimiter.allowAll,
+        // #2437: this suite asserts the dispatch/reply paths — a log-only notifier keeps it from
+        // depending on the operator-notification transport (EscalationSpec covers that).
+        Notifier.logOnly,
         RateLimiter.allowAll,
       )
     } yield (PressAgentRoutes.routes(responder), Stubs(emailRef, dispRec), clock)
@@ -366,6 +370,8 @@ object PressResponderSpec
           clock,
           RateLimiter.allowAll,
           RateLimiter.allowAll,
+          Notifier.logOnly,
+          RateLimiter.allowAll,
         )
         routes    = PressAgentRoutes.routes(responder)
         token       <- mintToken(clock, "reporter@example.com")
@@ -475,6 +481,8 @@ object PressResponderSpec
           pressLog,
           clock,
           RateLimiter.allowAll,
+          RateLimiter.allowAll,
+          Notifier.logOnly,
           RateLimiter.allowAll,
         )
         routes    = PressAgentRoutes.routes(responder)

@@ -5,7 +5,7 @@ import wifihaven.api.auth.*
 import wifihaven.api.beta.*
 import wifihaven.api.db.*
 import wifihaven.api.db.TypeMeta.given
-import wifihaven.api.notify.{EmailOutcome, EmailSender, Notifier}
+import wifihaven.api.notify.{EmailOutcome, EmailSender, EscalationNotice, Notifier}
 import wifihaven.api.routes.*
 import wifihaven.shared.*
 import wifihaven.shared.types.*
@@ -48,6 +48,8 @@ object BetaProvisioningSpec
         daysUntilFlip: Int,
     ): UIO[Unit] = ZIO.unit
     def passwordReset(email: String, resetUrl: String, ttlMinutes: Int): UIO[Unit]      = ZIO.unit
+    // #2437: this suite drives no escalation path; the notice is a no-op here.
+    def escalation(notice: EscalationNotice): UIO[Unit]                                 = ZIO.unit
   }
 
   private def makeAuth =

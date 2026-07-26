@@ -57,8 +57,8 @@ at create time, so an update never disturbs in-flight support sessions.
 **Plain machine-user API key permissions (`WIFIHAVEN_SUPPORT_PLAIN_API_KEY`).** The responder
 holds **no Plain key** — it posts the reply back through the API's `/api/support/agent/*`
 endpoints, and the **API server's** `PlainClient` is what writes to Plain (`upsertCustomer` /
-`upsertTenant`, and the thread write — Plain's `replyToThread` into the customer's existing
-thread, #2408). That
+`upsertTenant`, the thread write — Plain's `replyToThread` into the customer's existing
+thread, #2408 — and, since #2437, the **escalation label** write, Plain's `addLabels`). That
 machine-user key (set on the `wifihaven-api-*` service, not
 here) must carry the right `permissions` array or those writes return **`403 Forbidden`** —
 permissions are set via Plain's GraphQL `createApiKey` / `updateApiKey` mutations, **not** a UI
@@ -75,6 +75,16 @@ staging + prod each have their own machine user + key).
 > `support_thread_history_total{outcome="permission"}` (panel: *Thread-history reads — responder
 > context watch* on the Support dashboard). Nothing else changes: the agent still holds no Plain
 > key, and the read is scoped to the single bound thread.
+
+> **#2437 added ONE permission and ONE config value.** The escalation path needs
+> **`label:create`** on the machine-user key — re-run the `updateApiKey` mutation in
+> [`docs/ops/plain-setup.md` §5.3](../../docs/ops/plain-setup.md#no-permissions-ui) with
+> `label:create` appended to the `permissions` array — and a `Needs human` label type whose id goes
+> in `WIFIHAVEN_SUPPORT_PLAIN_ESCALATION_LABEL_TYPE_ID`
+> ([§5.4](../../docs/ops/plain-setup.md#escalation-label)). Both are **required** when
+> `WIFIHAVEN_SUPPORT_RESPONDER_ENABLED=true`: the API refuses to boot without the id, and without
+> the permission `addLabels` 403s and escalated threads stay invisible in the inbox
+> (`support_agent_action_total{op="escalate_mark",outcome="error"}`). Do it per environment.
 
 <a id="issue-filing"></a>
 
@@ -200,8 +210,22 @@ emitted to the startup log. Routine CRUD is web-UI-only today; only `/fire` is A
 > agent is re-applied automatically on main-merge, but the routine's prompt is web-UI-only — a
 > prompt change is INERT on that transport until an operator pastes it into the routine at
 > <https://claude.ai/code/routines>. Redo step 1's paste whenever this file's `system:` block
-> changes (most recently: the #2419 "ask for data-access consent instead of dead-ending"
-> instructions).
+> changes (most recently: the #2437 "escalate before promising human follow-up" instructions, and
+> the #2419 "ask for data-access consent instead of dead-ending" ones).
+
+## Escalation — the handoff that reaches a human (#2437)
+
+"A human teammate will follow up" used to notify nobody. It now takes a call: when the agent hands
+off it POSTs `/api/support/agent/escalate` (`{"note": "one line on why"}`) with its thread-bound
+token, and the SERVER does two things the agent cannot fake or aim — labels the token-bound thread
+with the escalation label (so the operator filters the inbox for "waiting on a human" instead of
+reading every thread) and emails `wifihaven.email.operatorAddress`.
+
+Escalation is **structural**: only that call registers one. Nothing text-matches the reply or the
+customer's message, so a customer who types "a team member will follow up" has escalated nothing,
+and an agent that writes the sentence without calling escalate has not either. It is capped at
+3/thread/hour so a looping session cannot firehose the operator. Watch "Escalations to a human" and
+"Escalated threads NOT marked in Plain" on the Grafana support dashboard.
 
 ## Data-access consent (#2419)
 

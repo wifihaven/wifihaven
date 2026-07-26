@@ -12,7 +12,7 @@
       }
     ]
   },
-  "description": "WifiHaven Plain support integration (#2199 + #2200, epic #2197): server-signed widget-identity outcomes, household→Plain customer-upsert outcomes, the #2200 Claude responder's webhook outcomes (support_ai_draft_total{outcome,reason} from SupportResponder — dispatched / skipped_unauthenticated / rate_limited / invalid_signature / malformed / disabled / error), and the cloud agent's callback actions (support_agent_action_total{op,outcome} — reply / issue / household_read). All labels are bounded enums (never per-email / per-household / per-thread). The responder runs iff the explicit support.responderEnabled flag is set (#2265 — no dark-by-default; a true flag with missing config refuses to boot); disabled installs count outcomes as disabled and dispatch nothing. See issues #2206, #2200, #2241, #2265. #2419 adds the data-access consent lifecycle (support_consent_total{outcome} — the agent's REQUEST vs the customer's grant/revoke, plus the household-mismatch guard): consent is recorded server-side from the customer's own authenticated action, so the agent can ask but can never self-grant. #2438 adds support_dispatch_total{outcome,transport} — the dispatcher-level cloud-trigger outcome (dispatched / error / disabled) at the transport boundary, isolating a silent non-2xx trigger failure the conflated draft metric can't surface.",
+  "description": "WifiHaven Plain support integration (#2199 + #2200, epic #2197): server-signed widget-identity outcomes, household→Plain customer-upsert outcomes, the #2200 Claude responder's webhook outcomes (support_ai_draft_total{outcome,reason} from SupportResponder — dispatched / skipped_unauthenticated / rate_limited / invalid_signature / malformed / disabled / error), and the cloud agent's callback actions (support_agent_action_total{op,outcome} — reply / issue / household_read). All labels are bounded enums (never per-email / per-household / per-thread). The responder runs iff the explicit support.responderEnabled flag is set (#2265 — no dark-by-default; a true flag with missing config refuses to boot); disabled installs count outcomes as disabled and dispatch nothing. See issues #2206, #2200, #2241, #2265. #2419 adds the data-access consent lifecycle (support_consent_total{outcome} — the agent's REQUEST vs the customer's grant/revoke, plus the household-mismatch guard): consent is recorded server-side from the customer's own authenticated action, so the agent can ask but can never self-grant. #2438 adds support_dispatch_total{outcome,transport} — the dispatcher-level cloud-trigger outcome (dispatched / error / disabled) at the transport boundary, isolating a silent non-2xx trigger failure the conflated draft metric can't surface. #2437 adds operator_escalation_total{channel=\"support\",kind,outcome} — the operator-notification funnel behind an escalation — plus the support_agent_action_total ops escalate (the agent's structural handoff) and escalate_mark (the SERVER's Plain addLabels write that makes the handoff visible in the inbox).",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -372,6 +372,71 @@
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "expr": "sum by (reason) (rate(support_ai_draft_total{env=\"$env\",outcome=\"error\"}[5m]))",
           "legendFormat": "{{reason}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Escalations to a human (#2437)",
+      "description": "sum by (outcome) (rate(operator_escalation_total{env=\"$env\",channel=\"support\",kind=\"escalated\"}[5m])) — #2437. Every support thread the AI handed off, by how the operator notice landed. A rising rate means the responder is escalating more than expected. Any series that is not `sent` means a human was owed a notice and did not get the email (failed = Resend rejected it, skipped_disabled = the email transport is off, skipped_no_recipient = no wifihaven.email.operatorAddress); the in-Plain needs-human label is the second, independent channel (see the unmarked-threads panel).",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 56 },
+      "id": 15,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "reqps",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1, "stacking": { "mode": "normal", "group": "A" } }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byRegexp", "options": ".*(failed|skipped).*" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }]
+          }
+        ]
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (outcome) (rate(operator_escalation_total{env=\"$env\",channel=\"support\",kind=\"escalated\"}[5m]))",
+          "legendFormat": "{{outcome}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Escalated threads NOT marked in Plain (24h) — expect 0 (#2437)",
+      "description": "sum(increase(support_agent_action_total{env=\"$env\",op=\"escalate_mark\",outcome=~\"error|disabled\"}[24h])) — the server's Plain addLabels write failed, so an escalated thread is INVISIBLE under the needs-a-human inbox filter and the operator is back to reading every thread. Non-zero is a provisioning gap, not a blip: check wifihaven.support.plain.escalationLabelTypeId and that the Plain machine-user API key carries the `label:create` permission (docs/ops/plain-setup.md §5.1).",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 56 },
+      "id": 16,
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "short", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "background", "graphMode": "none", "textMode": "auto" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(increase(support_agent_action_total{env=\"$env\",op=\"escalate_mark\",outcome=~\"error|disabled\"}[24h]))",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Support escalations handed off (24h) (#2437)",
+      "description": "sum(increase(operator_escalation_total{env=\"$env\",channel=\"support\",kind=\"escalated\"}[24h])) — how many support conversations the AI handed to a human in the last 24h. Not an error signal: it is the human-workload number, and the counterweight to support_ai_draft_total when asking whether the assistant is resolving enough on its own.",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 56 },
+      "id": 17,
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "short", "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "area", "textMode": "auto" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(increase(operator_escalation_total{env=\"$env\",channel=\"support\",kind=\"escalated\"}[24h]))",
           "refId": "A"
         }
       ]

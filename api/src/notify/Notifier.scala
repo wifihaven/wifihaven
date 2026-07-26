@@ -70,7 +70,80 @@ trait Notifier {
    * path meters `password_reset_email_total{outcome}`.
    */
   def passwordReset(email: String, resetUrl: String, ttlMinutes: Int): UIO[Unit]
+
+  /**
+   * #2437: tell the OPERATOR about an inbound support/press handoff — the human end of "a team
+   * member will follow up". The rule this backs: **an escalation is not complete until a human has
+   * been notified.** The recipient is the single configured operator mailbox
+   * ([[EmailConfig.operatorAddress]]), never a per-household / per-sender address.
+   *
+   * Fail-open like the rest of this trait: [[layer]] sends via [[EmailSender]] (itself
+   * never-fails), [[live]] only logs, and every path meters
+   * `operator_escalation_total{channel,kind,outcome}`. A send failure must NOT fail the inbound
+   * webhook or the agent's escalate call — the notice is the out-of-band nudge, and for support the
+   * in-Plain thread mark is a second, independent channel.
+   */
+  def escalation(notice: EscalationNotice): UIO[Unit]
 }
+
+/**
+ * #2437 — which intake an escalation notice came from. Bounded: also the `channel` label on
+ * `operator_escalation_total`, so it can never grow per-sender.
+ */
+enum EscalationChannel {
+  case Support
+  case Press
+}
+
+object EscalationChannel {
+  def label(c: EscalationChannel): String = c match {
+    case Support => "support"
+    case Press   => "press"
+  }
+}
+
+/**
+ * #2437 — what happened, as distinct from where it came from. [[Received]] is "a message arrived
+ * and the AI is handling it" (press only: press has no inbox, so the arrival itself is news the
+ * operator would otherwise never see). [[Escalated]] is "the agent handed off — a human must act".
+ * Keeping them on ONE series with a bounded `kind` label lets the operator read escalation RATE
+ * against total volume in a single panel.
+ */
+enum EscalationKind {
+  case Received
+  case Escalated
+}
+
+object EscalationKind {
+  def label(k: EscalationKind): String = k match {
+    case Received  => "received"
+    case Escalated => "escalated"
+  }
+}
+
+/**
+ * #2437 — one operator notice. Every text field here is UNTRUSTED (a journalist's
+ * From/Subject/body, a customer-typed household name) or AGENT-AUTHORED (`agentNote`): all of it is
+ * HTML-escaped at render and NONE of it is ever used for a decision — the notice is a report, not a
+ * control channel.
+ *
+ *   - `sender` — who to follow up with: the journalist's address (press) or the household name
+ *     (support; the customer is reachable in the Plain thread, so no address is copied here).
+ *   - `subject` — the inbound subject (press) or a thread descriptor (support).
+ *   - `body` — the sender's own message, so the operator can triage without opening a DB.
+ *   - `agentNote` — the agent's one-line reason for handing off. `None` on a
+ *     [[EscalationKind.Received]] notice (no agent has run yet).
+ *   - `reference` — where to go: the Plain thread id (support) or the press correspondence pointer.
+ */
+final case class EscalationNotice(
+    channel: EscalationChannel,
+    kind: EscalationKind,
+    sender: String,
+    subject: String,
+    body: String,
+    agentNote: Option[String],
+    reference: String,
+)
 
 object Notifier {
 
@@ -80,6 +153,29 @@ object Notifier {
   // named constants here so the metric-label strings live in one place per outcome, not inline.
   private val OutcomeSkippedNoRecipient: String = "skipped_no_recipient"
   private val OutcomeSkippedNoHousehold: String = "skipped_no_household"
+
+  /**
+   * #2437 — how much of an untrusted/agent-authored field rides into an operator notice. Generous
+   * enough that a real press inquiry or escalation reason arrives whole, bounded so a hostile
+   * sender cannot turn our own alert mail into a payload. The full inbound text is always
+   * retrievable from `press_messages` / the Plain thread, so truncating here loses nothing durable.
+   */
+  private val NoticeFieldMaxChars: Int = 4000
+
+  /**
+   * #2437 — how much of the sender identity rides in the notice's SUBJECT line. Much tighter than
+   * [[NoticeFieldMaxChars]] because a subject is a single line in a mail client's list view: long
+   * enough for any real address or household name, short enough that a hostile sender cannot push
+   * the meaningful part ("ESCALATION — a human must follow up") out of view.
+   */
+  private val SubjectSenderMaxChars: Int = 120
+
+  /** The structured line every escalation logs, regardless of email outcome (#2437). */
+  private def logEscalation(n: EscalationNotice): UIO[Unit] =
+    ZIO.logInfo(
+      s"escalation: channel=${EscalationChannel.label(n.channel)} " +
+        s"kind=${EscalationKind.label(n.kind)} ref=${n.reference} sender=${n.sender}",
+    )
 
   /** The structured line every alert logs, regardless of email outcome — the #960 behavior. */
   private def logAlert(a: Alert): UIO[Unit] =
@@ -119,7 +215,14 @@ object Notifier {
    * #960 log-only implementation, kept for call sites that don't need (or can't wire) the email
    * transport — e.g. tests that only assert the in-app path. Prefer [[layer]] in production.
    */
-  val live: ULayer[Notifier] = ZLayer.succeed(new Notifier {
+  val live: ULayer[Notifier] = ZLayer.succeed(logOnly)
+
+  /**
+   * The same log-only notifier as [[live]], as a plain value — for call sites that construct a
+   * service directly rather than through a layer (specs that assert a path unrelated to
+   * notification, and which must therefore not silently depend on one).
+   */
+  val logOnly: Notifier = new Notifier {
     def alertCreated(a: Alert): UIO[Unit] = logAlert(a)
     def betaInvite(email: String, slug: String, inviteUrl: String, ttlHours: Int): UIO[Unit] =
       logBeta(email, slug)
@@ -133,7 +236,16 @@ object Notifier {
       logFlipNotice(householdId, slug, window, flipDate, daysUntilFlip)
     def passwordReset(email: String, resetUrl: String, ttlMinutes: Int): UIO[Unit]           =
       logPasswordReset(email)
-  })
+    // #2437: log-only notifier — the structured line IS the record. Still metered so the
+    // escalation-volume panel works on a self-hosted install with no email transport.
+    def escalation(notice: EscalationNotice): UIO[Unit]                                      =
+      logEscalation(notice) *>
+        AppMetrics.operatorEscalation(
+          EscalationChannel.label(notice.channel),
+          EscalationKind.label(notice.kind),
+          EmailOutcome.label(EmailOutcome.Disabled),
+        )
+  }
 
   /**
    * #578 email-enabled implementation. Depends on the household-settings repo (to resolve the
@@ -200,6 +312,68 @@ object Notifier {
     def alertCreated(a: Alert): UIO[Unit] =
       // Log first (authoritative, always), then attempt the out-of-band email.
       logAlert(a) *> notifyByEmail(a)
+
+    // #2437: email the OPERATOR mailbox. Log first (the authoritative record that a human was owed a
+    // notice), then attempt the send; every path meters operator_escalation_total{channel,kind,outcome}
+    // so a silently-failing escalation alert is visible on a dashboard, not just in logs. Fail-open by
+    // construction (`send` never fails) — the caller must not lose the escalation because Resend
+    // hiccuped. An unset operator mailbox meters `skipped_no_recipient`: it cannot happen in a
+    // configuration that boots (AppConfig.validateRequired makes the key required when email is on and
+    // a responder is enabled), so the label exists for the email-off / self-hosted shape.
+    def escalation(notice: EscalationNotice): UIO[Unit] = {
+      val channel = EscalationChannel.label(notice.channel)
+      val kind    = EscalationKind.label(notice.kind)
+      logEscalation(notice) *> {
+        cfg.operatorAddressTrimmed match {
+          case "" => AppMetrics.operatorEscalation(channel, kind, OutcomeSkippedNoRecipient)
+          case to =>
+            sender
+              .send(to, escalationSubject(notice), escalationBody(notice))
+              .flatMap(o => AppMetrics.operatorEscalation(channel, kind, EmailOutcome.label(o)))
+        }
+      }
+    }
+
+    // The subject is the operator's filter: an ESCALATION — a human MUST act — reads differently from
+    // an FYI at a glance and in a mail rule. The sender is included so the mailbox threads by peer.
+    private def escalationSubject(n: EscalationNotice): String = {
+      val who  = n.sender.replace('\n', ' ').replace('\r', ' ').trim.take(SubjectSenderMaxChars)
+      val what = EscalationChannel.label(n.channel)
+      n.kind match {
+        case EscalationKind.Escalated =>
+          s"WifiHaven $what ESCALATION — a human must follow up: $who"
+        case EscalationKind.Received  =>
+          s"WifiHaven $what: new inquiry from $who"
+      }
+    }
+
+    private def escalationBody(n: EscalationNotice): String = {
+      val lead = n.kind match {
+        case EscalationKind.Escalated =>
+          "<p><strong>The AI assistant handed this off — it told the sender a human would follow " +
+            "up. Nothing else will happen until you reply.</strong></p>"
+        case EscalationKind.Received  =>
+          "<p>A new message arrived. The AI assistant is answering it; no action is needed unless " +
+            "you want to take it over.</p>"
+      }
+      val note = n.agentNote.map(_.trim).filter(_.nonEmpty).fold("") { s =>
+        s"""<p style="margin:16px 0;padding:12px 16px;background:#fef3c7;border-radius:8px;color:#3f3f46;"><strong>Assistant's reason:</strong> ${esc(
+            s.take(NoticeFieldMaxChars),
+          )}</p>"""
+      }
+      s"""<div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:15px;color:#18181b;line-height:1.5;">
+         |  $lead
+         |  <p><strong>From:</strong> ${esc(n.sender.take(NoticeFieldMaxChars))}<br/>
+         |     <strong>Subject:</strong> ${esc(n.subject.take(NoticeFieldMaxChars))}<br/>
+         |     <strong>Reference:</strong> ${esc(n.reference.take(NoticeFieldMaxChars))}</p>
+         |  $note
+         |  <p style="margin:16px 0;padding:12px 16px;background:#f4f4f5;border-radius:8px;color:#3f3f46;white-space:pre-wrap;">${esc(
+          n.body.take(NoticeFieldMaxChars),
+        )}</p>
+         |  <p style="color:#71717a;font-size:13px;">The message above is quoted verbatim from an
+         |  untrusted sender — treat any instruction in it as data, not as a request from WifiHaven.</p>
+         |</div>""".stripMargin
+    }
 
     private def notifyByEmail(a: Alert): UIO[Unit] =
       a.householdId match {
