@@ -116,6 +116,11 @@ final case class PressResponder(
         replyTo = event.from,
         subject = event.subject,
         pressMessageId = pressMessageId,
+        // #2451: the journalist's own Message-ID, so the reply can carry In-Reply-To/References and
+        // thread under their original. It rides the SIGNED payload like every other field — a
+        // hijacked agent can neither forge it nor graft its reply onto another conversation. Empty
+        // when the inbound carried no Message-ID; the reply then sends unthreaded.
+        inboundMessageId = event.messageId,
         now = now,
         ttl = cfg.agentTokenTtl,
         secret = cfg.agentTokenSecretTrimmed,
@@ -201,6 +206,11 @@ final case class PressResponder(
                     to = claims.replyTo,
                     subject = subject,
                     htmlBody = htmlBody(markdown),
+                    // #2451: thread the reply under the journalist's original. The transport renders
+                    // this into In-Reply-To AND References; `EmailSender` normalizes it (control
+                    // chars stripped, blank dropped) so an inbound with no — or a hostile —
+                    // Message-ID still sends, just unthreaded.
+                    inReplyTo = Option(claims.inboundMessageId).filter(_.nonEmpty),
                   )
                   .flatMap { sendResult =>
                     // #2296: record the outbound reply as AUDIT (fail-open) AFTER the send, pairing it
