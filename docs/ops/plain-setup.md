@@ -390,11 +390,14 @@ these:
       `TenantFieldSchemaInput` but carry no behaviour we depend on.
 
       **`source` is the one value we have not confirmed against a live workspace.** In Plain's
-      schema it is a free-form `String` (not an enum) that namespaces the schema; the analogous
-      `Tenant.source` enum is `API` / `HUBSPOT` / `SALESFORCE`, so `"API"` is the reasonable
-      choice for schemas we create over the API. It does **not** affect our value writes —
-      `UpsertTenantFieldInput` keys on `tenantFieldIdentifier { tenantId, externalFieldId }` and
-      never mentions `source`.
+      schema it is a free-form `String` (not an enum) that namespaces the schema by originating
+      system — Plain documents no required value or convention for it. `"API"` above is our
+      choice by analogy with the `Tenant.source` enum (`API` / `HUBSPOT` / `SALESFORCE`); a
+      system name like `"wifihaven"` would be equally valid. **What matters is picking one and
+      always reusing it** — the pair (`source`, `externalFieldId`) is what identifies a schema,
+      so switching `source` later registers a *duplicate* rather than updating. It does **not**
+      affect our value writes — `UpsertTenantFieldInput` keys on
+      `tenantFieldIdentifier { tenantId, externalFieldId }` and never mentions `source`.
 
       If Plain changes the input shape, re-derive it by introspection rather than guessing:
 
@@ -425,8 +428,18 @@ these:
 
       Expect exactly one `plan` (`STRING_TYPE`) and one `founding` (`BOOLEAN_TYPE`) node. If a
       duplicate `externalFieldId` appears under two different `source` values, delete the stray
-      one (`deleteTenantFieldSchema`) before going further. If the workspace already had schemas
-      registered under some other `source`, copy that value rather than introducing `"API"`.
+      one before going further. If the workspace already had schemas registered under some other
+      `source`, copy that value rather than introducing `"API"`.
+
+      ```graphql
+      mutation {
+        deleteTenantFieldSchema(input: { tenantFieldSchemaId: "<tfs_...>" }) { error { message } }
+      }
+      ```
+
+      > **Deleting a schema also removes any tenant field values stored against it**
+      > ([Plain docs](https://www.plain.com/docs/graphql/tenants/tenant-fields)). Only delete a
+      > schema you just created in error — never one whose fields are already populated.
    4. Ensure the machine-user key carries `tenantField:create` + `tenantField:update` (§5.1/§5.3).
       The schema existing is necessary but **not** sufficient — the key still needs permission to
       write the values.
