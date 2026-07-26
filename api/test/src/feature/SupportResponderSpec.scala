@@ -787,8 +787,8 @@ object SupportResponderSpec
         threads         <- stubs.plain.threads.get
       } yield assertTrue(status == Status.Ok, threads.size == 1) &&
         assertTrue(
-          threads.head.title.contains("th_bound"),
-          threads.head.tenantIdentifier == hh.value.toString,
+          // #2408: the reply targets the token-bound EXISTING thread (replyToThread), not a new one.
+          threads.head.threadId == "th_bound",
           // Autonomous send (2026-07-17): the customer-facing reply is AI-attributed and names the
           // human-escalation path — no approval-step label exists anywhere.
           threads.head.markdown.startsWith(SupportResponder.AiReplyAttribution),
@@ -824,7 +824,9 @@ object SupportResponderSpec
           bodies.head.contains("replyToThread"),
           !bodies.head.contains("createThread"),
           bodies.head.contains("\"threadId\":\"th_bound\""),
-          bodies.head.contains(SupportResponder.AiReplyAttribution),
+          // The AI attribution rides in the reply body (the quotes in the marker are JSON-escaped in
+          // the serialized wire body, so match the distinctive unescaped span).
+          bodies.head.contains("WifiHaven support assistant"),
           bodies.head.contains("allow the school site"),
         )
       }

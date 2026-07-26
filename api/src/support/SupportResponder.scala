@@ -262,12 +262,9 @@ final case class SupportResponder(
       if !ok then ZIO.succeed(WebhookOutcome.RateLimited)
       else {
         val write = PlainThreadWrite(
-          // No household — this sender maps to no tenant. #2408 switches writeThread to a
-          // reply-INTO-thread mutation against event.threadId (the customer-visible email reply).
+          // No household — this sender maps to no tenant. #2408: the reject replies INTO the
+          // cold-email thread (event.threadId, the customer-visible email reply), not a new thread.
           threadId = event.threadId,
-          customerExternalId = event.customerExternalId,
-          tenantIdentifier = "",
-          title = UnregisteredRejectTitle,
           markdown = UnregisteredRejectTemplate,
         )
         plain.writeThread(write).as(WebhookOutcome.EmailUnregisteredRejected)
@@ -328,12 +325,9 @@ final case class SupportResponder(
     withClaims("reply", bearer) { claims =>
       val write = PlainThreadWrite(
         // #2408: the reply posts INTO the customer's existing thread (`claims.threadId`, the
-        // customer-visible send), NOT a new createThread. The thread binding comes from the verified
-        // token — the request body carries only the reply text.
+        // customer-visible send via Plain's replyToThread), NOT a new createThread. The thread
+        // binding comes from the verified token — the request body carries only the reply text.
         threadId = claims.threadId,
-        customerExternalId = claims.householdId.value.toString,
-        tenantIdentifier = claims.householdId.value.toString,
-        title = s"[AI reply] support thread ${claims.threadId}",
         markdown = s"$AiReplyAttribution\n\n$markdown",
       )
       plain.writeThread(write).flatMap {
@@ -451,7 +445,6 @@ object SupportResponder {
    * sender's own address is registered (their own info). Points the sender at the two authenticated
    * intake paths (in-app chat / beta access).
    */
-  val UnregisteredRejectTitle: String    = "Re: your message to WifiHaven support"
   val UnregisteredRejectTemplate: String =
     "Thanks for reaching out. WifiHaven support is available to registered customers — please " +
       "sign in at https://app.wifihaven.net and use the in-app support chat. If you don't have an " +
