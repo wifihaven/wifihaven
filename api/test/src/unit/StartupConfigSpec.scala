@@ -324,8 +324,37 @@ object StartupConfigSpec extends ZIOSpecDefault {
             .exists(
               _.contains("wifihaven.stripe.secretKey"),
             ),
-          StripeConfig.validate(StripeConfig(enabled = true, secretKey = "sk_x")).isEmpty,
+          StripeConfig
+            .validate(StripeConfig(enabled = true, secretKey = "sk_x", webhookSecret = "whsec_x"))
+            .isEmpty,
           StripeConfig.validate(StripeConfig(enabled = false, secretKey = "")).isEmpty,
+        )
+      },
+      // #2414: billing could boot with enabled=true and NO webhookSecret, and then EVERY Stripe
+      // webhook silently no-opped while returning HTTP 200 (BillingService.handleWebhook →
+      // WebhookOutcome.NotConfigured → Response.ok), so Stripe marked delivery successful, never
+      // retried, and no subscription state ever advanced. Boot-checkable prerequisite ⇒ fail HARD
+      // at startup (no-dark-by-default rule 1), not a runtime log.
+      test("stripe: enabled=true + empty webhookSecret fails boot (#2414)") {
+        val errs = StripeConfig.validate(StripeConfig(enabled = true, secretKey = "sk_x"))
+        assertTrue(errs.exists(_.contains("wifihaven.stripe.webhookSecret")))
+      },
+      test("stripe: a blank-but-nonempty webhookSecret is still a gap (#2414)") {
+        assertTrue(
+          StripeConfig
+            .validate(StripeConfig(enabled = true, secretKey = "sk_x", webhookSecret = "   "))
+            .exists(_.contains("wifihaven.stripe.webhookSecret")),
+        )
+      },
+      test("stripe: enabled=false never requires webhookSecret (deliberate off) (#2414)") {
+        assertTrue(StripeConfig.validate(StripeConfig(enabled = false, webhookSecret = "")).isEmpty)
+      },
+      test("stripe: BOTH secret gaps are reported in one pass (rule 4) (#2414)") {
+        val errs = StripeConfig.validate(StripeConfig(enabled = true))
+        assertTrue(
+          errs.exists(_.contains("wifihaven.stripe.secretKey")),
+          errs.exists(_.contains("wifihaven.stripe.webhookSecret")),
+          errs.length == 2,
         )
       },
       test("stripe: enabled is the explicit flag, NOT derived from secretKey") {
@@ -348,7 +377,9 @@ object StartupConfigSpec extends ZIOSpecDefault {
           errs.exists(_.contains("wifihaven.jwt.secret")),
           errs.exists(_.contains("wifihaven.email.")),
           errs.exists(_.contains("wifihaven.stripe.secretKey")),
-          errs.length >= 3,
+          // #2414: the webhookSecret gap accumulates here too rather than short-circuiting.
+          errs.exists(_.contains("wifihaven.stripe.webhookSecret")),
+          errs.length >= 4,
         )
       },
       test("feature report reflects the explicit email/stripe flags") {
