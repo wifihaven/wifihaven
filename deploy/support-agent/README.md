@@ -54,6 +54,17 @@ at create time, so an update never disturbs in-flight support sessions.
 | `WIFIHAVEN_SUPPORT_DEPLOYMENT_ENV` | set in render.yaml (`prod` / `staging`) — the kickoff's deployment line |
 | `WIFIHAVEN_SUPPORT_GITHUB_BOT_TOKEN` | fine-grained PAT for the dedicated bot account, **Issues: read+write ONLY** on `wifihaven/wifihaven` — no `contents`, no `pull_requests` (the structural no-PR guarantee, #2241) |
 
+**Plain machine-user API key permissions (`WIFIHAVEN_SUPPORT_PLAIN_API_KEY`).** The responder
+holds **no Plain key** — it posts the reply back through the API's `/api/support/agent/*`
+endpoints, and the **API server's** `PlainClient` is what writes to Plain (`upsertCustomer` /
+`upsertTenant`, and the thread write — `createThread` today, a reply mutation post-#2240). That
+machine-user key (set on the `wifihaven-api-*` service, not
+here) must carry the right `permissions` array or those writes return **`403 Forbidden`** —
+permissions are set via Plain's GraphQL `createApiKey` / `updateApiKey` mutations, **not** a UI
+toggle. The exact permission set, the find-key-id query, and the grant mutations live in
+[`docs/ops/plain-setup.md` §5.1](../../docs/ops/plain-setup.md#no-permissions-ui) (per-environment:
+staging + prod each have their own machine user + key).
+
 GitHub bot: create a dedicated machine account (e.g. `wifihaven-support-bot`), grant it the
 fine-grained token above, and nothing else. Issues it files are auto-labeled `support-agent` and
 rate-limited (3/thread/hour, 10/hour global); the API strips PII from every body before filing.
