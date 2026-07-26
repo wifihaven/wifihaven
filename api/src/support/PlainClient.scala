@@ -172,8 +172,10 @@ object PlainClient {
           case Some(msg) => Left(s"GraphQL errors: $msg")
           case None      =>
             navigate(json, List("data", expect.payloadKey)) match {
-              case None          => Left(s"no ${expect.payloadKey} in response")
-              case Some(payload) =>
+              // Absent OR explicitly null payload — the mutation did not land (defense-in-depth: a
+              // null payload with no top-level errors must never read as success, #2408).
+              case None | Some(Json.Null) => Left(s"no ${expect.payloadKey} in response")
+              case Some(payload)          =>
                 payloadError(payload) match {
                   case Some(msg) => Left(s"Plain error: $msg")
                   case None      =>

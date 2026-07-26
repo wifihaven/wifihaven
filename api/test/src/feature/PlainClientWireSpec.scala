@@ -313,6 +313,24 @@ object PlainClientWireSpec extends ZIOSpecDefault {
         } yield assertTrue(outcome == PlainOutcome.Error)
       }
     },
+    // #2408 defense-in-depth: an explicitly-null payload (no result, no error, no top-level errors)
+    // must never read as success — the mutation did not land.
+    test("#2408: an HTTP-200 null mutation payload ⇒ PlainOutcome.Error, not Ok") {
+      ZIO.scoped {
+        for {
+          cap <- captureServerReturning("""{"data":{"replyToThread":null}}""")
+          base = s"http://127.0.0.1:${cap.server.getAddress.getPort}/"
+          cfg  = SupportConfig(plain =
+            PlainConfig(writeEnabled = true, apiKey = "test-key", apiBase = base),
+          )
+          outcome <- ZIO
+            .serviceWithZIO[PlainClient](
+              _.writeThread(PlainThreadWrite(threadId = "th_x", markdown = "the answer")),
+            )
+            .provide(PlainClient.layer, ZLayer.succeed(cfg))
+        } yield assertTrue(outcome == PlainOutcome.Error)
+      }
+    },
     // #2408 Problem 2: the reply must post INTO the customer's existing thread via `replyToThread`
     // (threadId + textContent/markdownContent), NEVER `createThread`.
     test("#2408: writeThread emits replyToThread targeting the bound threadId") {
