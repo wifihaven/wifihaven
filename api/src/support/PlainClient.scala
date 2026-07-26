@@ -53,6 +53,8 @@ trait PlainClient {
    * dispatches with the latest message alone.
    */
   def threadHistory(threadId: String, limit: Int): UIO[List[PlainThreadMessage]]
+
+  /**
    * #2437 — MARK a thread so the operator's inbox is filterable: apply Plain label type(s) to the
    * thread (Plain's `addLabels`). The one write in this trait that is not customer-visible — it
    * changes inbox metadata, never the conversation. Used when the support agent escalates, so
@@ -236,7 +238,7 @@ object PlainClient {
       ZIO.succeed(PlainOutcome.Disabled)
     def threadHistory(threadId: String, limit: Int): UIO[List[PlainThreadMessage]] =
       AppMetrics.supportThreadHistory("disabled").as(Nil)
-    def markThread(req: PlainThreadMark): UIO[PlainOutcome]         =
+    def markThread(req: PlainThreadMark): UIO[PlainOutcome]                        =
       ZIO.succeed(PlainOutcome.Disabled)
   }
 
@@ -808,7 +810,7 @@ object PlainClient {
     // The selection is deliberately ONLY `error { message }`: every Plain mutation payload carries
     // that, so we assume nothing further about the output shape (selecting a field Plain doesn't have
     // would fail the whole mutation). Hence `resultKey = None`.
-    private val AddLabelsMutation: String =
+    private val AddLabelsMutation: String                                          =
       """mutation addLabels($input: AddLabelsInput!) {
         |  addLabels(input: $input) { error { message } }
         |}""".stripMargin
@@ -950,7 +952,7 @@ object PlainClient {
         case true  => ZIO.succeed(Nil)
         case false => rec.history.get.map(_.takeRight(limit))
       }
-    def markThread(req: PlainThreadMark): UIO[PlainOutcome]         =
+    def markThread(req: PlainThreadMark): UIO[PlainOutcome]                        =
       rec.marks.update(_ :+ req).as(PlainOutcome.Ok)
   }
 
@@ -961,7 +963,6 @@ object PlainClient {
       h <- Ref.make(List.empty[PlainThreadMessage])
       r <- Ref.make(List.empty[String])
       f <- Ref.make(false)
-    } yield Recorder(c, t, h, r, f)
       m <- Ref.make(List.empty[PlainThreadMark])
-    } yield Recorder(c, t, m)
+    } yield Recorder(c, t, h, r, f, m)
 }
