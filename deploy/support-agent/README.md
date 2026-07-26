@@ -66,6 +66,16 @@ toggle. The exact permission set, the find-key-id query, and the grant mutations
 [`docs/ops/plain-setup.md` §5.1](../../docs/ops/plain-setup.md#no-permissions-ui) (per-environment:
 staging + prod each have their own machine user + key).
 
+> **#2430 added a READ permission: `thread:read`.** The API now fetches the bound thread's prior
+> timeline entries per dispatch and renders them into the kickoff, so the agent can see the
+> conversation so far (it fires a **fresh session per inbound message** and would otherwise answer
+> every follow-up with no memory). Add `thread:read` to the `permissions` array via `updateApiKey`
+> (§5.3) **in both workspaces**. The read is fail-open — a missing grant costs context, never the
+> webhook — but it is not silent: each denial logs at ERROR with the fix inline and increments
+> `support_thread_history_total{outcome="permission"}` (panel: *Thread-history reads — responder
+> context watch* on the Support dashboard). Nothing else changes: the agent still holds no Plain
+> key, and the read is scoped to the single bound thread.
+
 <a id="issue-filing"></a>
 
 ## GitHub issue filing — enabling + token rotation (#2241 / #2427)

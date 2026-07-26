@@ -1031,5 +1031,116 @@ object SupportResponderSpec
         ZTestLogger.default,
       )
     },
+
+    // ── #2430: the dispatch carries the thread's conversation so far ────────────
+    // The responder is stateless (a FRESH cloud session per inbound message), so without this read
+    // the agent answers every follow-up in isolation. The rendering contract is pinned in
+    // unit/SupportThreadHistorySpec; here we pin the WIRING: the read happens, it is scoped to the
+    // bound thread, the transcript reaches the kickoff, and a failed read never costs the dispatch.
+    test("a continuation dispatch carries the thread's prior turns, scoped to the bound thread") {
+      for {
+        _               <- cleanDb
+        hhRepo          <- ZIO.service[HouseholdRepo]
+        hh              <- hhRepo.create("Family H", "family-h")
+        (routes, stubs) <- makeRoutes(liveCfg)
+        _               <- stubs.plain.history.set(
+          List(
+            PlainThreadMessage(ThreadMessageRole.Customer, "my son's iPad is blocked at 4pm"),
+            PlainThreadMessage(ThreadMessageRole.AiAssistant, "That's his weekday schedule."),
+            PlainThreadMessage(ThreadMessageRole.HumanTeammate, "Sameer here — taking a look."),
+          ),
+        )
+        msg  = "what about the other device?"
+        body = payload(Some(hh.value), "th_cont", msg)
+        status     <- postWebhook(routes, body, Some(sign(body)))
+        dispatches <- stubs.dispatch.dispatches.get
+        reads      <- stubs.plain.historyReads.get
+      } yield {
+        val (req, kickoff) = dispatches.head
+        assertTrue(
+          status == Status.Ok,
+          dispatches.size == 1,
+          // the history read was made, ONCE, for the BOUND thread and no other.
+          reads == List("th_cont"),
+          req.history.size == 3,
+        ) &&
+        assertTrue(
+          // role-labeled, oldest-first, inside the untrusted transcript frame…
+          kickoff.contains(
+            "<message from=\"customer\">\nmy son's iPad is blocked at 4pm\n</message>",
+          ),
+          kickoff.contains(
+            "<message from=\"ai_assistant\">\nThat's his weekday schedule.\n</message>",
+          ),
+          kickoff.contains(
+            "<message from=\"human_teammate\">\nSameer here — taking a look.\n</message>",
+          ),
+          kickoff.indexOf("my son's iPad") < kickoff.indexOf("Sameer here"),
+          // …and the NEW message is still the unambiguous "answer this" signal, last.
+          kickoff.contains(s"<customer_message>\n$msg\n</customer_message>"),
+          kickoff.endsWith("</customer_message>"),
+          kickoff.indexOf("</thread_history>") < kickoff.lastIndexOf("<customer_message>"),
+        )
+      }
+    },
+    test("the inbound message is not duplicated into the transcript it also appears in") {
+      // Plain fires the webhook once the message is already ON the timeline, so the fetched history
+      // normally ends with an echo of it. That echo is dropped — the words appear ONCE, in
+      // <customer_message> — while an identical message sent EARLIER stays a real prior turn.
+      for {
+        _               <- cleanDb
+        hhRepo          <- ZIO.service[HouseholdRepo]
+        hh              <- hhRepo.create("Family E", "family-e")
+        (routes, stubs) <- makeRoutes(liveCfg)
+        // deliberately regex-metachar-free — the assertion below counts occurrences with `split`.
+        msg = "is it still blocked"
+        _ <- stubs.plain.history.set(
+          List(
+            PlainThreadMessage(ThreadMessageRole.Customer, msg),
+            PlainThreadMessage(ThreadMessageRole.AiAssistant, "Not any more."),
+            PlainThreadMessage(ThreadMessageRole.Customer, msg),
+          ),
+        )
+        body = payload(Some(hh.value), "th_echo", msg)
+        _          <- postWebhook(routes, body, Some(sign(body)))
+        dispatches <- stubs.dispatch.dispatches.get
+      } yield {
+        val (req, kickoff) = dispatches.head
+        assertTrue(
+          // the trailing echo is gone; the earlier identical turn survives.
+          req.history.size == 2,
+          req.history.last.role == ThreadMessageRole.AiAssistant,
+          kickoff
+            .split(s"\n$msg\n", -1)
+            .length - 1 == 2, // once in history, once as the new message
+          kickoff.endsWith(s"<customer_message>\n$msg\n</customer_message>"),
+        )
+      }
+    },
+    test("a failed history read still dispatches with the latest message (webhook never fails)") {
+      // The read is fail-open: a Plain hiccup, a timeout, or a missing `thread:read` grant costs
+      // CONTEXT, never the dispatch — the same rule as "a cloud hiccup must never fail the webhook".
+      for {
+        _               <- cleanDb
+        hhRepo          <- ZIO.service[HouseholdRepo]
+        hh              <- hhRepo.create("Family F", "family-f")
+        (routes, stubs) <- makeRoutes(liveCfg)
+        _               <- stubs.plain.historyFails.set(true)
+        msg  = "my router dropped off the dashboard"
+        body = payload(Some(hh.value), "th_fail", msg)
+        status     <- postWebhook(routes, body, Some(sign(body)))
+        dispatches <- stubs.dispatch.dispatches.get
+      } yield {
+        val (req, kickoff) = dispatches.head
+        assertTrue(
+          status == Status.Ok,
+          dispatches.size == 1,
+          req.history.isEmpty,
+          // degraded exactly to the pre-#2430 kickoff: no empty/garbage transcript frame.
+          !kickoff.contains("<thread_history>"),
+          kickoff.contains(s"<customer_message>\n$msg\n</customer_message>"),
+        )
+      }
+    },
   ) @@ TestAspect.sequential
 }

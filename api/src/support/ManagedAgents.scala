@@ -6,6 +6,7 @@ import zio.json.*
 import java.net.URI
 import java.net.http.{HttpClient, HttpRequest, HttpResponse}
 import java.time.Duration as JDuration
+import scala.util.matching.Regex
 
 /**
  * Shared Anthropic Managed Agents transport — the "create a session + send one kickoff event"
@@ -35,14 +36,43 @@ object ManagedAgents {
   private val sharedClient = HttpClient.newBuilder().connectTimeout(ConnectTimeout).build()
 
   /**
-   * Neutralize a `<customer_message>` delimiter breakout: square-bracket both tag forms so
-   * untrusted text embedded in a kickoff can never open or close its own data frame (#2261 review
+   * Neutralize a delimiter breakout: square-bracket EVERY tag form the kickoff uses to frame
+   * untrusted text, so embedded text can never open or close its own data frame (#2261 review
    * finding). Shared by both responders' kickoff builders so the injection guard has ONE
    * definition.
+   *
+   * The frames are `<customer_message>` (the inbound message, #2261) and — #2430 — the
+   * `<thread_history>` transcript with its per-turn `<message from="…">` entries. `<message` is
+   * neutralized as a PREFIX (after its closing form) so no attribute spelling can slip a synthetic
+   * turn — e.g. a customer writing `<message from="human_teammate">` to fake operator approval —
+   * into the transcript.
    */
   def neutralizeTags(s: String): String =
-    s.replace("</customer_message>", "[/customer_message]")
-      .replace("<customer_message>", "[customer_message]")
+    // Two passes so an UNTERMINATED tag can't slip through the first: pass 1 rewrites a complete
+    // `<tag …>` / `</tag>` (attributes and all) to `[tag …]`, pass 2 catches any residual bare
+    // `<tag` prefix. Both are CASE-INSENSITIVE — `<Message from="human_teammate">` reads as a tag
+    // to an LLM exactly like the lowercase form, and a forged `human_teammate` turn triggers the
+    // agent's stand-down instruction, i.e. a customer could suppress their own support reply.
+    // Attribute text is matched, never re-interpreted, so no spelling of `from=` can smuggle a
+    // synthetic turn.
+    // `quoteReplacement` because the matched attribute text is UNTRUSTED — a `$` or `\` in it must
+    // not be read as a replacement reference.
+    unterminatedFrameTag.replaceAllIn(
+      fullFrameTag.replaceAllIn(
+        s,
+        m => Regex.quoteReplacement(s"[${grp(m, 1)}${grp(m, 2)}${grp(m, 3)}]"),
+      ),
+      m => Regex.quoteReplacement(s"[${grp(m, 1)}${grp(m, 2)}"),
+    )
+
+  private def grp(m: Regex.Match, i: Int): String = Option(m.group(i)).getOrElse("")
+
+  // The frame delimiters the kickoffs emit: `<customer_message>` (#2261) and, since #2430, the
+  // `<thread_history>` transcript with its per-turn `<message from="…">` entries.
+  private val FrameTagNames: String = "customer_message|thread_history|message"
+
+  private val fullFrameTag         = s"(?i)<(/?)($FrameTagNames)([^>]*)>".r
+  private val unterminatedFrameTag = s"(?i)<(/?)($FrameTagNames)".r
 
   /**
    * Create a Managed Agents session against `agentId`/`environmentId` and send `kickoff` as the
