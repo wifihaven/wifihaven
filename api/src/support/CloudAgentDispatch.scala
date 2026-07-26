@@ -73,9 +73,14 @@ object CloudAgentDispatch {
    * — the server gave up waiting on the request; RFC 6585 §4 `429 Too Many Requests` — a rate/quota
    * ceiling): both are load/timing signals that the SAME request can succeed on later with no
    * config change. Every other 4xx from these APIs is a credential / resource-id / beta-header
-   * rejection — none of which change by themselves. Kept deliberately minimal: a status is only
-   * listed here when "retrying the identical request can succeed" is true by definition, not merely
-   * plausible.
+   * rejection — none of which change by themselves.
+   *
+   * Kept deliberately minimal: a status earns a place here only if BOTH (a) retrying the identical
+   * request can succeed without a config change, and (b) these two APIs can actually emit it over
+   * our transport. `425 Too Early` passes (a) — RFC 8470 §5.2 makes it retryable on a fresh
+   * connection — but fails (b): it is a TLS early-data status, and the JDK `HttpClient` calls here
+   * never send early data, so listing it would be speculation rather than classification. If one of
+   * these APIs is ever observed returning it, add it with the observation cited.
    */
   private val TransientClientStatuses: Set[Int] = Set(408, 429)
 
@@ -147,24 +152,25 @@ object CloudAgentDispatch {
     run
       .as(DispatchOutcome.Dispatched)
       .catchAll(e =>
+        // The scrutinee is bound and passed to `reasonFor`, rather than each arm re-stating its own
+        // kind: the logged reason and the metered reason then provably come from ONE function, so a
+        // future change to the vocabulary can't leave the log and the label disagreeing.
         classify(e) match {
-          case FailureKind.Permanent =>
+          case kind @ FailureKind.Permanent =>
             val status = e match {
               case h: CloudAgentHttpError => h.status
               case _                      => 0
             }
             ZIO
               .logError(
-                s"$audience agent dispatch FAILED PERMANENTLY " +
-                  s"[reason=${reasonFor(FailureKind.Permanent)}]: " +
+                s"$audience agent dispatch FAILED PERMANENTLY [reason=${reasonFor(kind)}]: " +
                   s"${e.getMessage}${provisioningHint(status)}",
               )
               .as(DispatchOutcome.ConfigError)
-          case FailureKind.Transient =>
+          case kind @ FailureKind.Transient =>
             ZIO
               .logWarning(
-                s"$audience agent dispatch errored " +
-                  s"[reason=${reasonFor(FailureKind.Transient)}]: ${e.getMessage}",
+                s"$audience agent dispatch errored [reason=${reasonFor(kind)}]: ${e.getMessage}",
               )
               .as(DispatchOutcome.Error)
         },

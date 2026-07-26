@@ -317,7 +317,7 @@ object CloudAgentDispatchFailLoudSpec
         (out, config, transient) = res
       } yield assertTrue(
         SupportResponder.WebhookOutcome.label(out) == "error",
-        // 408/425/429 are 4xx but load/timing signals — attributing them to `config` would page an
+        // 408 and 429 are 4xx but load/timing signals — attributing them to `config` would page an
         // operator to "rotate the key" for a quota blip that fixes itself.
         transient == 1.0,
         config == 0.0,

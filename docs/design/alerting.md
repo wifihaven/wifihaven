@@ -313,6 +313,36 @@ stated alongside.
   trustworthy in prod. **Author the rule but keep it disabled / file behind the
   router-counter readiness issue** so it activates when the fleet rolls forward.
 
+**W6. Support responder permanently dead (config)**
+([#2416](https://github.com/wifihaven/wifihaven/issues/2416))
+- Query: `sum(rate(support_ai_draft_total{env="prod",outcome="error",reason="config"}[15m]))`
+- Fire when `> 0` **for 15m**.
+- Rationale: `reason="config"` is emitted **only** for a non-self-healing 4xx at
+  the Anthropic boundary — a revoked/wrong `anthropicApiKey` (401), a wrong
+  `claudeAgentId` / `claudeEnvironmentId` / `claudeCodeRoutineId` (404), or a
+  stale hard-coded `anthropic-beta` header (400). By construction none of those
+  recover without a human, so unlike the sibling `reason="transient"` bucket
+  (transport / timeout / 5xx / 408 / 429) **any** sustained rate is actionable —
+  hence the same `> 0` threshold the other never-should-happen counters use.
+  Dispatch is fail-open by design (the inbound webhook still returns 200), so
+  this counter and the ERROR log line are the only signals that customers are
+  getting no AI reply. Warning, not critical: support degrades, enforcement does
+  not.
+- **Inert in prod until go-live.** The support responder is flag-off in prod
+  (`WIFIHAVEN_SUPPORT_RESPONDER_ENABLED: "false"`, `render.yaml`) and live on
+  staging only, so the rule cannot fire until #2335 flips it. Ships **enabled**
+  rather than `is_paused` (contrast W5): there is nothing about the rule itself to
+  fix, so arming with the feature flag avoids a second flip to forget.
+
+**W7. Press responder permanently dead (config)**
+([#2416](https://github.com/wifihaven/wifihaven/issues/2416))
+- Query: `sum(rate(press_ai_draft_total{env="prod",outcome="error",reason="config"}[15m]))`
+- Fire when `> 0` **for 15m**.
+- Rationale: identical failure model to W6, on the press credentials/ids. Kept a
+  **separate rule on a separate series** because the two audiences are graphed and
+  alerted independently and the remediation differs. Also inert in prod until
+  #2337 flips `WIFIHAVEN_PRESS_RESPONDER_ENABLED`.
+
 ## 8. Gaps — metrics not yet emitted
 
 These are alerts worth having whose metric does not (reliably) exist yet. They
@@ -350,7 +380,8 @@ Filed under the **Alerting & Paging** epic, one per coherent chunk:
    as specified. Validation per [§10](#10-validation).
 4. **[#1404](https://github.com/wifihaven/wifihaven/issues/1404) — First
    warning rule set** ([§7.2](#72-warning--notify-look-today)): W1–W4
-   (+ W5 disabled, bound to its readiness issue).
+   (+ W5 disabled, bound to its readiness issue). Extended by
+   [#2416](https://github.com/wifihaven/wifihaven/issues/2416) with W6–W7.
 5. **[#1405](https://github.com/wifihaven/wifihaven/issues/1405) —
    Deploy-failure signal** ([§8](#8-gaps--metrics-not-yet-emitted)): extend
    `deploy-webhook` to emit `render_deploy_total{lifecycle}` (or adopt native

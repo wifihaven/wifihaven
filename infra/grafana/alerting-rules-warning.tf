@@ -1,7 +1,6 @@
-# Warning (notify, look-today) alert rules — W1–W5
-# (#1405, parent #1381). Implements docs/design/alerting.md §7.2.
-# W6–W7 (#2416) extend the set with the two cloud-agent "permanently dead
-# responder" rules; see their inline comment below.
+# Warning (notify, look-today) alert rules — W1–W7
+# (W1–W5: #1405, parent #1381. W6–W7: #2416.) Implements
+# docs/design/alerting.md §7.2.
 #
 # Every expression is grounded in a series emitted today (§2 "alert only on
 # series that exist"; grep api/src) — except W5, which is shipped DISABLED
@@ -9,7 +8,17 @@
 # trustworthy in prod (§8 + #1382). It is authored now so it activates with a
 # one-line flip once the fleet rolls forward.
 #
-# All five carry severity=warning + env=prod labels, which the notification
+# W6–W7 (#2416) are a third case, distinct from both: their series and labels
+# exist and are emitted, but the FEATURE behind them is switched off in prod
+# (`WIFIHAVEN_{SUPPORT,PRESS}_RESPONDER_ENABLED: "false"` on
+# wifihaven-api-prod, render.yaml) — it is live on staging only. So they are
+# INERT in prod today and cannot fire until the prod go-live flips those flags
+# (#2335 support / #2337 press). They ship UNPAUSED deliberately (unlike W5):
+# there is nothing about the rules themselves to fix, so activating with the
+# feature flag — no second flip to forget — is the safer default. Read them as
+# coverage that arms itself at go-live, NOT as live prod coverage today.
+#
+# All seven carry severity=warning + env=prod labels, which the notification
 # policy in alerting.tf routes to the wifihaven-warning (email) contact point.
 # None of these are ratio queries, so unlike the critical set (§7.1) they need
 # no zero-traffic guard — a counter that never increments is simply absent
@@ -21,7 +30,7 @@
 # and the rate/increase window come straight from §7.2.
 
 locals {
-  # Keyed w1..w5 (stable resource addressing). `window_s` bounds the data fetch
+  # Keyed w1..w7 (stable resource addressing). `window_s` bounds the data fetch
   # and must cover the rate/increase window in `expr`. `paused` ships W5 off.
   warning_rules = {
     w1 = {
@@ -72,14 +81,20 @@ locals {
       paused  = true
       summary = "Blocklist fetches are failing on the router (category enforcement degrades). DISABLED until the router-pushed counter is trustworthy in prod (#1382)."
     }
-    # W6/W7 (#2416) — a cloud-agent responder that is PERMANENTLY dead. `reason="config"`
-    # is only ever emitted for a 4xx at the Anthropic boundary (a revoked key, a wrong
-    # agent-or-routine id, a stale anthropic-beta header), which by construction never
-    # self-heals — so unlike the transient bucket, ANY sustained rate is a human-fix
-    # signal, and the threshold is the same gt=0 the other never-should-happen counters
-    # use. Deliberately does NOT alert on `reason="transient"`: a 5xx/timeout blip is
-    # expected noise. Support and press are separate rules because the series are
-    # separate (the two audiences alert independently) and the remediation differs.
+    # W6/W7 (#2416) — a cloud-agent responder that is PERMANENTLY dead. INERT IN PROD
+    # TODAY: both responders are flag-off in prod and live on staging only, so these
+    # cannot fire until go-live flips them (#2335 / #2337) — see the header note.
+    # `reason="config"` is only ever emitted for a non-self-healing 4xx at the Anthropic
+    # boundary (a revoked key, a wrong agent-or-routine id, a stale anthropic-beta
+    # header), none of which recover without a human — so unlike the transient bucket,
+    # ANY sustained rate is actionable, and the threshold is the same gt=0 the other
+    # never-should-happen counters use. Deliberately does NOT alert on
+    # `reason="transient"`: a 5xx/timeout blip is expected noise. A SUSTAINED transient
+    # rate (a long Anthropic outage, or a 429 that is really an exhausted quota rather
+    # than a burst ceiling) is a real remaining hole, but it needs a threshold tuned
+    # against prod traffic — tracked separately in #2443. Support and press are separate
+    # rules because the series are separate (the two audiences alert independently) and
+    # the remediation differs.
     w6 = {
       title    = "W6 Support responder permanently dead (config)"
       expr     = "sum(rate(support_ai_draft_total{env=\"prod\",outcome=\"error\",reason=\"config\"}[15m]))"
