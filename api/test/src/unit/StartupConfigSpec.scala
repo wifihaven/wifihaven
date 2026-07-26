@@ -358,6 +358,7 @@ object StartupConfigSpec extends ZIOSpecDefault {
         assertTrue(
           expected.forall(k => errs.exists(_.contains(k))),
           errs.forall(e => expected.exists(e.contains)),
+          errs.distinct.size == errs.size, // no key reported twice
         )
       },
       test("stripe: enabled is the explicit flag, NOT derived from secretKey") {

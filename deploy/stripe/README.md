@@ -51,8 +51,10 @@ env vars (see [`render.yaml`](../../render.yaml)); on self-hosted they go in the
 `application.conf` (see [`config/application.conf.example`](../../config/application.conf.example)).
 **Absence of a secret is NOT the off-switch** — `wifihaven.stripe.enabled` is
 (`WIFIHAVEN_STRIPE_ENABLED`; #2266, no-dark-by-default rule 3). `enabled=false` is the correct
-self-hosted default (self-hosted installs never bill): the `/api/billing/*` admin routes return
-not-configured and no secret is required. With `enabled=true`, **both** `secretKey` and
+self-hosted default (self-hosted installs never bill): `POST /api/billing/checkout` and
+`/portal` then return **404** `"billing not configured"` and no secret is required (`GET
+/api/billing` is not gated — it still reports the household's billing row). With `enabled=true`,
+**both** `secretKey` and
 `webhookSecret` are REQUIRED, and an empty one **fails boot** naming the missing key
 (`StripeConfig.validate` → `AppConfig.validateRequired`) — it does not disable anything. So set both
 secrets *before* flipping `WIFIHAVEN_STRIPE_ENABLED` to `true` in an environment. The

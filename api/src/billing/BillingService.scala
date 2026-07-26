@@ -268,7 +268,9 @@ object WebhookOutcome {
 /** Typed failures the billing routes map to HTTP statuses. */
 sealed trait BillingError
 object BillingError {
-  case object NotConfigured  extends BillingError // billing disabled (no keys) → 404-shaped
+  // #2266/#2414: disabled by the explicit `stripe.enabled=false` flag, NOT by absent keys — under
+  // enabled=true a missing secretKey/webhookSecret fails boot instead of landing here.
+  case object NotConfigured  extends BillingError // billing disabled by flag → 404-shaped
   case object NoBillingRow   extends BillingError // household has no household_billing row
   case object NoCustomer     extends BillingError // no Stripe Customer yet (provisioning gap)
   case object FreeForever    extends BillingError // #2356: household is free_forever → never billed

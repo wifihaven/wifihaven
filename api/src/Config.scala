@@ -285,9 +285,12 @@ case class BetaConfig(
 }
 
 // #2135 (multi-tenant P5-5, epic #622) — Stripe billing (design docs/design/multi-tenant-launch.md
-// §5, pricing-analysis.md §7). The whole block is optional; an empty `secretKey` DISABLES billing
-// entirely (`enabled = false`) so the self-hosted single-install path — which never bills — starts
-// clean and the /api/billing/* routes return 404-shaped "not configured". Secrets (`secretKey`,
+// §5, pricing-analysis.md §7). Billing is OPTIONAL but its off-state is the explicit `enabled` flag,
+// NOT the absence of a secret (#2266, no-dark-by-default rule 3): `enabled = false` is the
+// self-hosted single-install posture — which never bills — and `POST /api/billing/checkout` +
+// `/portal` then fail 404-shaped "billing not configured" (`GET /api/billing` still reports the
+// household's row). Under `enabled = true` an empty `secretKey` or `webhookSecret` FAILS BOOT
+// (`StripeConfig.validate`, #2414); it does not disable anything. Secrets (`secretKey`,
 // `webhookSecret`) come from env via the entrypoint-rendered HOCON, NEVER committed
 // (docs/process/security.md). Price ids / promo code differ between Stripe test and live modes, so
 // they are config too (not constants). `appBaseUrl` is the SPA origin the hosted Checkout / Portal

@@ -67,7 +67,9 @@ object StartupFeatureReport {
           "wifihaven.stripe.enabled=true — secretKey + webhookSecret required & set, " +
             "/api/billing/* live"
         else
-          "wifihaven.stripe.enabled=false — billing off, /api/billing/* return not-configured (#2135/#2266)",
+          // Only checkout/portal are gated; GET /api/billing still reports the household's row.
+          "wifihaven.stripe.enabled=false — billing off, checkout/portal return " +
+            "not-configured (#2135/#2266)",
       ),
       FeatureState(
         "support-widget",
