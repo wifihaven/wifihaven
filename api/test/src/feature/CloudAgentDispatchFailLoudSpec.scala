@@ -146,12 +146,13 @@ object CloudAgentDispatchFailLoudSpec
 
   private def supportResponder(cfg: SupportConfig) =
     for {
-      hhRepo   <- ZIO.service[HouseholdRepo]
-      userRepo <- ZIO.service[UserRepo]
-      billRepo <- ZIO.service[HouseholdBillingRepo]
-      devRepo  <- ZIO.service[DeviceRepo]
-      profRepo <- ZIO.service[ProfileRepo]
-      clock    <- ZIO.service[Clock]
+      hhRepo      <- ZIO.service[HouseholdRepo]
+      userRepo    <- ZIO.service[UserRepo]
+      billRepo    <- ZIO.service[HouseholdBillingRepo]
+      devRepo     <- ZIO.service[DeviceRepo]
+      profRepo    <- ZIO.service[ProfileRepo]
+      consentRepo <- ZIO.service[SupportConsentRepo]
+      clock       <- ZIO.service[Clock]
       dispatcher = CloudAgentDispatcher.transportFor(cfg) match {
         case CloudAgentDispatcher.Transport.ClaudeCodeCloud =>
           new CloudAgentDispatcher.ClaudeCodeCloudLive(cfg)
@@ -164,6 +165,7 @@ object CloudAgentDispatchFailLoudSpec
       billRepo,
       devRepo,
       profRepo,
+      consentRepo,
       PlainClient.noop,
       GithubIssueClient.noop,
       dispatcher,
@@ -173,6 +175,8 @@ object CloudAgentDispatchFailLoudSpec
       RateLimiter.allowAll,
       RateLimiter.allowAll,
       RateLimiter.allowAll,
+      RateLimiter.allowAll,
+      "https://app.example.test",
     )
 
   // A UI-originated customer chat on an identified thread (the household resolves), so the responder
