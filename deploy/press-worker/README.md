@@ -31,6 +31,34 @@ wifihaven-press-worker  ──HMAC-signed POST──▶  POST /api/press/inbound
                                             API emails the reply → the original sender (Resend)
 ```
 
+## Reply identity: From ≠ Reply-To (#2407)
+
+The outbound reply carries **two different addresses**, and the split is deliberate:
+
+| | staging | prod | why |
+|---|---|---|---|
+| **From** (`WIFIHAVEN_PRESS_FROM_ADDRESS`) | `press-staging@wifihaven.net` | `press@wifihaven.net` | must be on a Resend-**verified sending domain** |
+| **Reply-To** (`WIFIHAVEN_PRESS_REPLY_TO_ADDRESS`) | `press@staging.wifihaven.net` | `press@wifihaven.net` | must be an address Email Routing actually **delivers to this Worker** |
+
+Resend verifies per-**domain**, and only the apex `wifihaven.net` is verified (the
+`resend._domainkey` DKIM + the `send.wifihaven.net` return-path MX in
+`infra/cloudflare/main.tf`). `staging.wifihaven.net` is a *separate*, unverified domain to Resend —
+adding it is a paid plan add-on — so staging borrows the apex as `press-staging@`, mirroring the
+existing `alerts-staging@wifihaven.net` convention. The `staging` DKIM that does exist belongs to
+**Postmark**, for Plain's `support@` mail, and does not cover Resend.
+
+This matters because our DMARC is `p=reject; sp=reject; adkim=s`: a From on the unverified
+subdomain is **rejected outright**, not spam-filed. `adkim=s` also requires the DKIM `d=` to
+strict-align with the From domain — which the apex satisfies.
+
+Reply-To is exempt from DMARC alignment, so it can safely name `press@staging.wifihaven.net`, the
+address the routing rules above actually bind to this Worker. That's what makes a journalist's
+human follow-up thread back into the pipeline.
+
+Both keys are **required** when `press.responderEnabled` is true (`PressConfig.missingRequiredKeys`,
+#2265 no-dark-by-default) — boot fails loudly rather than silently falling back to the shared
+`alerts@` notification sender.
+
 ## Provisioning — declarative (no manual `wrangler deploy`, no dashboard clicks)
 
 Both halves are configured in-repo and applied by CI on merge (`docs/process/declarative-config.md`).

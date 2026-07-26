@@ -147,14 +147,16 @@ final case class PressResponder(
               case Right(claims) =>
                 val subject = replySubject(claims.subject)
                 // #2407: send FROM the press identity (not the shared #578 alerts@ notification
-                // sender). Reply-To points at the same press mailbox so a journalist's human
-                // follow-up threads back to the Cloudflare-Email-Worker-watched inbox. The recipient
-                // stays server-locked to the token's `replyTo` — only the From/Reply-To identity
-                // changes, never the destination.
+                // sender). From and Reply-To are SEPARATE addresses: the From must sit on a
+                // Resend-verified sending domain (the apex — staging borrows it as press-staging@),
+                // while Reply-To names the press mailbox the Cloudflare Email Worker actually
+                // watches, so a journalist's human follow-up threads back into the pipeline. The
+                // recipient stays server-locked to the token's `replyTo` — only the From/Reply-To
+                // identity changes, never the destination.
                 email
                   .sendAs(
                     from = cfg.fromAddressTrimmed,
-                    replyTo = Some(cfg.fromAddressTrimmed),
+                    replyTo = Some(cfg.replyToAddressTrimmed),
                     to = claims.replyTo,
                     subject = subject,
                     htmlBody = htmlBody(markdown),
