@@ -35,9 +35,11 @@ wifihaven-press-worker  ──HMAC-signed POST──▶  POST /api/press/inbound
 
 The outbound reply carries **two different addresses**, and the split is deliberate:
 
+These are the values `render.yaml` ships — set them verbatim, display name included:
+
 | | staging | prod | why |
 |---|---|---|---|
-| **From** (`WIFIHAVEN_PRESS_FROM_ADDRESS`) | `press-staging@wifihaven.net` | `press@wifihaven.net` | must be on a Resend-**verified sending domain** |
+| **From** (`WIFIHAVEN_PRESS_FROM_ADDRESS`) | `WifiHaven Press <press-staging@wifihaven.net>` | `WifiHaven Press <press@wifihaven.net>` | the mailbox must be on a Resend-**verified sending domain** |
 | **Reply-To** (`WIFIHAVEN_PRESS_REPLY_TO_ADDRESS`) | `press@staging.wifihaven.net` | `press@wifihaven.net` | must be an address Email Routing actually **delivers to this Worker** |
 
 Resend verifies per-**domain**, and only the apex `wifihaven.net` is verified (the

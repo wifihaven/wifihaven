@@ -33,7 +33,7 @@ object PressClaudeCodeDispatcherSpec extends ZIOSpecDefault {
     claudeEnvironmentId = "env_x",
     agentTokenSecret = "secret",
     deploymentEnv = "staging",
-    fromAddress = "press-staging@wifihaven.net",
+    fromAddress = "WifiHaven Press <press-staging@wifihaven.net>",
     replyToAddress = "press@staging.wifihaven.net",
   )
 
@@ -45,7 +45,7 @@ object PressClaudeCodeDispatcherSpec extends ZIOSpecDefault {
     claudeCodeRoutineToken = "sk-ant-oat01-routine-token",
     agentTokenSecret = "secret",
     deploymentEnv = "staging",
-    fromAddress = "press-staging@wifihaven.net",
+    fromAddress = "WifiHaven Press <press-staging@wifihaven.net>",
     replyToAddress = "press@staging.wifihaven.net",
   )
 

@@ -701,9 +701,10 @@ case class PressConfig(
     // MUST sit on a Resend-VERIFIED sending domain. Resend verifies per-DOMAIN, and only the apex
     // `wifihaven.net` is verified (`resend._domainkey` DKIM + the `send.wifihaven.net` return-path
     // MX, infra/cloudflare/main.tf) — `staging.wifihaven.net` is a SEPARATE, unverified domain to
-    // Resend, so staging borrows the apex as "press-staging@wifihaven.net". Prod uses
-    // "press@wifihaven.net". This also satisfies DMARC: `adkim=s` requires the DKIM `d=` to
-    // strict-align with the From domain.
+    // Resend, so staging borrows the apex as `press-staging@`. This also satisfies DMARC: `adkim=s`
+    // requires the DKIM `d=` to strict-align with the From domain. Ships in display-name form —
+    // "WifiHaven Press <press-staging@wifihaven.net>" / "WifiHaven Press <press@wifihaven.net>"
+    // (render.yaml) — matching every other outbound identity.
     //
     // The apex-with-env-suffix shape follows the shared notification sender, which #2407 observed
     // sending as "alerts-staging@wifihaven.net" on staging. That value is NOT in-repo to cite
