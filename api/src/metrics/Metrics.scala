@@ -471,8 +471,14 @@ object MetricGuard {
     // #2240 — the household→Plain TENANT entitlement write (household name + plan/founding tenant
     // fields). Separate from the customer upsert so a silently-failing entitlement path (e.g. the
     // plan/founding field schemas not yet registered at go-live) is visible in metrics, not only
-    // logs. Bounded PlainOutcome enum (ok | error); Disabled never reaches the Live client.
-    "support_tenant_upsert_total"                   -> Set("outcome"),
+    // logs. #2410 added the bounded `reason` dimension so `outcome=error` is attributed to WHY the
+    // entitlement context failed to reach Plain: permission (the machine-user lacks tenantField:*) |
+    // schema (the plan/founding field schemas aren't registered) | tenant (the tenant upsert step
+    // failed) | field_write (a transient/other field-write miss) | ok (success). permission/schema
+    // are the fail-loud PROVISIONING-GAP signals (a fix, not a blip); tenant/field_write are the
+    // transient bucket. `outcome` (PlainOutcome enum: ok | error) is preserved so the existing
+    // aggregate panel keeps working. Both bounded, never per-field / per-tenant.
+    "support_tenant_upsert_total"                   -> Set("outcome", "reason"),
     // #2200 — the Claude support responder (dark until keys set). `support_ai_draft_total{outcome}`
     // (the #2200-specified series name, kept though v1 sends replies rather than drafts)
     // counts each inbound Plain webhook by a bounded enum (dispatched | email_registered_dispatched
@@ -745,10 +751,15 @@ object AppMetrics {
   def supportCustomerUpsert(outcome: String): UIO[Unit] =
     MetricGuard.counter("support_customer_upsert_total", Map("outcome" -> outcome))
 
-  // #2240 — the household→Plain TENANT entitlement write (name + plan/founding fields). Metered
-  // separately from the customer upsert so a failing entitlement path is observable, not log-only.
-  def supportTenantUpsert(outcome: String): UIO[Unit] =
-    MetricGuard.counter("support_tenant_upsert_total", Map("outcome" -> outcome))
+  // #2240/#2410 — the household→Plain TENANT entitlement write (name + plan/founding fields).
+  // Metered separately from the customer upsert so a failing entitlement path is observable, not
+  // log-only. `reason` (#2410) attributes an error: permission | schema | tenant | field_write | ok
+  // — bounded, never per-field / per-tenant.
+  def supportTenantUpsert(outcome: String, reason: String): UIO[Unit] =
+    MetricGuard.counter(
+      "support_tenant_upsert_total",
+      Map("outcome" -> outcome, "reason" -> reason),
+    )
 
   // ── #2200: Claude support responder (dark until keys set) ─────────────────────
   // Emitted from SupportResponder. `supportAiDraft` counts each inbound Plain webhook by outcome
