@@ -10,10 +10,9 @@ import java.time.Duration as JDuration
 /**
  * #2300 (support intake C follow-up, epic #2197) — the Claude Code Cloud transport: fire a
  * pre-provisioned **routine** on demand, one run per inbound support message. The alternative to
- * [[ManagedAgents]] behind the ONE [[CloudAgentObservabilityer]] trait, added because Claude Code
- * Cloud routines bill against the **Claude subscription** (Pro/Max/Team) rather than the
- * pay-as-you-go **API credits** the Managed Agents session consumes — the credits we can't get
- * provisioned.
+ * [[ManagedAgents]] behind the ONE [[CloudAgentDispatcher]] trait, added because Claude Code Cloud
+ * routines bill against the **Claude subscription** (Pro/Max/Team) rather than the pay-as-you-go
+ * **API credits** the Managed Agents session consumes — the credits we can't get provisioned.
  *
  * TRIGGER MODEL (spiked 2026-07-18, cited in the PR): Claude Code Cloud routines expose an
  * on-demand **API trigger** — `POST /v1/claude_code/routines/{routine_id}/fire` with the routine's
@@ -51,7 +50,7 @@ object ClaudeCodeRoutines {
   // reply, a 400 loses it. Last-resort only: truncation drops the TAIL of the kickoff (the untrusted
   // customer text, and at worst its closing </customer_message> delimiter), never the head — the
   // SECURITY preamble + opening delimiter that establish injection containment are front-loaded by
-  // CloudAgentObservabilityer.kickoffPrompt, so a cut tail loses content, not containment.
+  // CloudAgentDispatcher.kickoffPrompt, so a cut tail loses content, not containment.
   private val MaxTextChars: Int = 65536
 
   private val sharedClient = HttpClient.newBuilder().connectTimeout(ConnectTimeout).build()
