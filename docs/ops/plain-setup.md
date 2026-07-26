@@ -355,11 +355,17 @@ these:
 
    1. Open Plain's **API playground** (dashboard → API playground). It runs as the
       **authenticated admin**, which is the identity that needs the **`tenantFieldSchema:create`**
-      permission. The *machine-user API key* does **not** need `tenantFieldSchema:*` — it only
-      writes field *values* (`upsertTenantField`), never schemas.
+      permission (per Plain's [tenant-fields docs](https://www.plain.com/docs/graphql/tenants/tenant-fields)
+      — permission scopes are free-form strings in the published GraphQL schema, so this one is
+      sourced from the prose docs, not the type dump). The *machine-user API key* does **not**
+      need `tenantFieldSchema:*` — it only writes field *values* (`upsertTenantField`), never
+      schemas.
    2. Run the mutation below. `upsertTenantFieldSchema` is a create-or-update that takes an
-      **array**, so both schemas land in one call. Each schema is identified by the pair
-      (`source`, `externalFieldId`), so re-running it is idempotent.
+      **array**, so both schemas land in one call. Plain's docs say each schema is identified by
+      the pair (`source`, `externalFieldId`) — meaning a re-run with the *same* pair updates
+      rather than duplicates. That uniqueness rule is Plain's prose claim; it is **not** visible
+      in the published GraphQL types, so treat it as unconfirmed and verify with the listing
+      query in step 3 rather than relying on it.
 
       ```graphql
       mutation {
@@ -370,6 +376,7 @@ these:
           ]
         }) {
           tenantFieldSchemas { id source externalFieldId label type }
+          result
           error { message }
         }
       }
@@ -387,12 +394,7 @@ these:
       `Tenant.source` enum is `API` / `HUBSPOT` / `SALESFORCE`, so `"API"` is the reasonable
       choice for schemas we create over the API. It does **not** affect our value writes —
       `UpsertTenantFieldInput` keys on `tenantFieldIdentifier { tenantId, externalFieldId }` and
-      never mentions `source`. If the mutation rejects `"API"`, list what an existing workspace
-      uses and copy it:
-
-      ```graphql
-      query { tenantFieldSchemas(first: 50) { edges { node { id source externalFieldId label type } } } }
-      ```
+      never mentions `source`.
 
       If Plain changes the input shape, re-derive it by introspection rather than guessing:
 
@@ -412,7 +414,20 @@ these:
       `TenantFieldType` enum is `STRING_TYPE` / `NUMBER_TYPE` / `BOOLEAN_TYPE` / `STRING_ARRAY`
       / `DATETIME_TYPE` — Plain's prose docs also mention `ENUM_TYPE`, which the published enum
       does not contain. Neither of our two fields uses it.)*
-   3. Ensure the machine-user key carries `tenantField:create` + `tenantField:update` (§5.1/§5.3).
+   3. **List the schemas back and confirm exactly two exist.** Do this positively — do *not*
+      wait for an error. Because `source` is a free-form `String`, a wrong value is likely to be
+      **accepted**, and a later re-run with a corrected `source` would then create a *second*
+      schema rather than update the first:
+
+      ```graphql
+      query { tenantFieldSchemas(first: 50) { edges { node { id source externalFieldId label type } } } }
+      ```
+
+      Expect exactly one `plan` (`STRING_TYPE`) and one `founding` (`BOOLEAN_TYPE`) node. If a
+      duplicate `externalFieldId` appears under two different `source` values, delete the stray
+      one (`deleteTenantFieldSchema`) before going further. If the workspace already had schemas
+      registered under some other `source`, copy that value rather than introducing `"API"`.
+   4. Ensure the machine-user key carries `tenantField:create` + `tenantField:update` (§5.1/§5.3).
       The schema existing is necessary but **not** sufficient — the key still needs permission to
       write the values.
 
