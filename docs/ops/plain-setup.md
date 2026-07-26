@@ -161,6 +161,7 @@ key is shared by all support write paths):
 | `thread:read` | read the bound thread's timeline so the responder can see the conversation so far — `SupportResponder.dispatchFor` → `PlainClient.threadHistory` (`api/src/support/PlainClient.scala`, #2430 — the stateless responder fires a FRESH cloud session per inbound message, so without this every follow-up is answered with no memory of the thread). **Required.** Fail-open (a missing grant costs context, never the webhook) but **not silent**: each denial is logged at ERROR and metered `support_thread_history_total{outcome="permission"}` (panel in `deploy/grafana/dashboards/support.json`). |
 | `timeline:read` | read the thread's **timeline entries** — the `timelineEntries { edges { node … } }` selection inside `PlainClient.ThreadTimelineQuery` (#2430/#2441). `thread:read` alone is **not** enough: it authorizes the `thread` lookup, the entries underneath it need this scope. Discovered during staging validation. |
 | `tenantField:create` / `tenantField:update` | write the `plan` / `founding` entitlement **values** on the household tenant — `upsertTenantField` (§7.3). The scope is `:update`, **not** `:edit`. |
+| `webhookTarget:read` | in the validated staging array; **no caller in our code** — nothing in the repo references `webhookTarget` (we *receive* Plain's webhooks at `/api/support/webhook`, we never read the target config back). Granted during validation; keep it. |
 | `tenantFieldSchema:read` | in the validated staging array. **No explicit caller in our code** — `PlainClient` issues no schema query — so Plain appears to require it implicitly alongside the `tenantField` value writes. Granted during validation; keep it. |
 | `customer:read` | in the validated staging array; **no explicit caller in our code** (we only `upsertCustomer`). Granted during validation; keep it. |
 
@@ -228,7 +229,7 @@ entitlement field writes, thread history, AI reply), not a set assembled from th
 mutation {
   updateApiKey(input: {
     apiKeyId: "<apiKey_...>",
-    permissions: ["thread:read","timeline:read","tenantFieldSchema:read","customer:read","customer:create","customer:edit","tenant:read","tenant:create","tenant:edit","customerTenantMembership:create","customerTenantMembership:delete","thread:reply","label:create","tenantField:create","tenantField:update"]
+    permissions: ["thread:read","webhookTarget:read","timeline:read","tenantFieldSchema:read","customer:read","customer:create","customer:edit","tenant:read","tenant:create","tenant:edit","customerTenantMembership:create","customerTenantMembership:delete","thread:reply","label:create","tenantField:create","tenantField:update"]
   }) { apiKey { id permissions } }
 }
 ```
@@ -242,7 +243,7 @@ mutation {
   createApiKey(input: {
     machineUserId: "<mu_...>",
     description: "identified-chat integration",
-    permissions: ["thread:read","timeline:read","tenantFieldSchema:read","customer:read","customer:create","customer:edit","tenant:read","tenant:create","tenant:edit","customerTenantMembership:create","customerTenantMembership:delete","thread:reply","label:create","tenantField:create","tenantField:update"]
+    permissions: ["thread:read","webhookTarget:read","timeline:read","tenantFieldSchema:read","customer:read","customer:create","customer:edit","tenant:read","tenant:create","tenant:edit","customerTenantMembership:create","customerTenantMembership:delete","thread:reply","label:create","tenantField:create","tenantField:update"]
   }) { apiKeySecret }
 }
 ```
@@ -261,7 +262,7 @@ Plain-side call requires them. Auditing them down to least privilege is tracked 
 [#2470](https://github.com/wifihaven/wifihaven/issues/2470).
 
 **Echo the response.** `updateApiKey` returns the resulting `permissions` array — read it
-back and confirm all 15 scopes are present before moving on.
+back and confirm all 16 scopes are present before moving on.
 
 ### 5.4 Create the escalation label + record its id (#2437) {#escalation-label}
 
