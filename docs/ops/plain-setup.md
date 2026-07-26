@@ -153,10 +153,10 @@ key is shared by all support write paths):
 | `customer:edit` | `upsertCustomer` — update an existing customer |
 | `tenant:read` | `upsertTenant` — read back the tenant's internal `id` (needed to key the tenant-field writes) |
 | `tenant:create` | `upsertTenant` — create the household tenant |
+| `tenant:edit` | `upsertTenant` — update an existing household tenant (the upsert's update path — its name + the entitlement field writes). **Missing this returned `Insufficient permissions, missing "tenant:edit"` on `/api/support/identity` during staging go-live.** |
 | `customerTenantMembership:create` | link the customer to its household tenant (the `tenantIdentifiers` membership on `upsertCustomer`) |
 | `customerTenantMembership:delete` | re-link / correct a customer's household tenant membership |
-| `thread:create` | post the AI reply into the thread **as it works today** — `SupportResponder.agentReply` → `PlainClient.writeThread`, whose live impl is the `createThread` mutation (`api/src/support/PlainClient.scala`), which needs `thread:create` |
-| `thread:reply` | the AI reply **post-#2240** — switching `writeThread` to a reply-to-thread mutation against the existing thread is a not-yet-landed `TODO(#2240)` (`api/src/support/SupportResponder.scala`); grant this alongside `thread:create` so the key is ready before and after that switch |
+| `thread:reply` | post the AI reply into the customer's existing thread — `SupportResponder.agentReply` → `PlainClient.writeThread`, whose live impl is Plain's `replyToThread` mutation (`api/src/support/PlainClient.scala`, #2408 — the customer-visible send). **Required.** |
 
 This is the array confirmed to clear the `403` on the customer + tenant upserts. The
 `plan` / `founding` **tenant-field** writes ([§7.3 entitlement](#entitlement-fields))
@@ -173,9 +173,11 @@ not fail `upsertCustomer` — but it is **not silent**: each failure is logged a
 `api/src/support/PlainClient.scala`; panel in `deploy/grafana/dashboards/support.json`).
 Making that gap fully fail-loud + attributable — a broken credential should *fail*, not
 degrade into a metered no-op — is tracked in
-[#2410](https://github.com/wifihaven/wifihaven/issues/2410). **Do NOT grant**
-`customer:delete`, `customer:impersonate`, `thread:assign`, or `thread:unassign` —
-nothing we do needs them.
+[#2410](https://github.com/wifihaven/wifihaven/issues/2410). **`thread:create` is no
+longer needed** — #2408 replaced the old `createThread` send with `replyToThread`
+(`thread:reply`), so the previously-granted `thread:create` can be dropped from the
+array. **Do NOT grant** `customer:delete`, `customer:impersonate`, `thread:assign`, or
+`thread:unassign` — nothing we do needs them.
 
 **Where to run the mutations:** Plain's **API playground** in the dashboard (it runs as
 the authenticated admin, so it can mint/grant keys). Docs for the write operations these
@@ -204,7 +206,7 @@ query {
 mutation {
   updateApiKey(input: {
     apiKeyId: "<apiKey_...>",
-    permissions: ["customer:create","customer:edit","tenant:read","tenant:create","customerTenantMembership:create","customerTenantMembership:delete","thread:create","thread:reply"]
+    permissions: ["customer:create","customer:edit","tenant:read","tenant:create","tenant:edit","customerTenantMembership:create","customerTenantMembership:delete","thread:reply"]
   }) { apiKey { id permissions } }
 }
 ```
@@ -218,7 +220,7 @@ mutation {
   createApiKey(input: {
     machineUserId: "<mu_...>",
     description: "identified-chat integration",
-    permissions: ["customer:create","customer:edit","tenant:read","tenant:create","customerTenantMembership:create","customerTenantMembership:delete","thread:create","thread:reply"]
+    permissions: ["customer:create","customer:edit","tenant:read","tenant:create","tenant:edit","customerTenantMembership:create","customerTenantMembership:delete","thread:reply"]
   }) { apiKeySecret }
 }
 ```
@@ -231,7 +233,7 @@ is `:update`, **not** `:edit`, which Plain's enum rejects with `Value needs to b
 mutation {
   updateApiKey(input: {
     apiKeyId: "<apiKey_...>",
-    permissions: ["customer:create","customer:edit","tenant:read","tenant:create","customerTenantMembership:create","customerTenantMembership:delete","thread:create","thread:reply","tenantField:create","tenantField:update"]
+    permissions: ["customer:create","customer:edit","tenant:read","tenant:create","tenant:edit","customerTenantMembership:create","customerTenantMembership:delete","thread:reply","tenantField:create","tenantField:update"]
   }) { apiKey { id permissions } }
 }
 ```
