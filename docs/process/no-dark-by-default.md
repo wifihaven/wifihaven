@@ -45,7 +45,7 @@ This has been an expensive, recurring failure class for us:
 The root cause in each is identical: **absence of config was treated as
 "disabled" instead of as an error.**
 
-## The four rules
+## The five rules
 
 ### 1. Required config fails loud
 
@@ -93,6 +93,57 @@ diagnosable from a single boot attempt — an operator shouldn't fix one key,
 redeploy, discover the next, and repeat. Accumulate the errors and fail with the
 full list.
 
+### 5. Best-effort side-writes — split by cause: skip flakes, but a bad credential means broken
+
+Runtime best-effort / enrichment side-writes (an external call made *alongside* a
+primary operation, not on its critical path) are the one place a non-fatal
+failure is legitimate — but only for the right *cause*. It is tempting to make
+these uniformly non-fatal ("don't let the enrichment crash the request") and call
+a logged/metered failure good enough. That is wrong for a whole class of failure.
+**Sort side-write failures by cause, because the cause dictates whether you may
+skip or must fail:**
+
+- **Transient / genuinely-optional failure** — a network blip, a timeout, an
+  upstream 5xx, a truly best-effort enrichment the request does not need. **Skip
+  it**: keep the failure non-fatal so the primary request still succeeds. Even
+  then it MUST be **logged** and **metered with an attributable `{outcome}`** — a
+  bounded counter, never a bare `catch` / `.ignore` — so a path that has quietly
+  stopped producing anything is visible on a dashboard, not inferred only from
+  user reports.
+- **Broken credential / misconfiguration** — a wrong, expired, or under-scoped
+  API key (a 401/403), a missing permission, an unprovisioned dependency, an
+  unregistered schema. **This is not optional degradation — the integration is
+  simply broken, and we should be broken too.** It is the same class as the
+  missing-secret bug above, so it must **fail loud**: fail the request, or —
+  better, when the credential/permission/schema is checkable ahead of time —
+  **fail at provisioning/startup** so it never reaches a live request. Metering a
+  403 and continuing is exactly the silent-degradation anti-pattern; a bad
+  credential must not be swallowed into a log line or a dashboard blip.
+
+The dividing line is **recoverable-by-config**: if setting a key, granting a
+permission, or registering a schema would fix it, it is a config bug and belongs
+in the fail-loud path — not behind a metric. Flakiness cannot be fixed by config,
+so it may be skipped (and metered).
+
+**Worked example — the Plain tenant-entitlement write
+([#2410](https://github.com/wifihaven/wifihaven/issues/2410)).**
+`PlainClient.upsertCustomer` runs `upsertTenantEntitlement` as a best-effort
+follow-on (`.zipLeft`, `api/src/support/PlainClient.scala`): the household's
+`plan` / `founding` tenant fields are written *after* the customer upsert. Today,
+if the machine-user key lacks `tenantField:create` / `tenantField:update`, or the
+`plan` (String) / `founding` (Boolean) tenant-field schemas
+(`docs/ops/plain-setup.md` §7.3) aren't registered, each field write **fails**
+(a 403 for the missing permission, a field error for an unregistered schema),
+the path records `outcome=error` on `support_tenant_upsert_total` (via
+`AppMetrics.supportTenantUpsert`), and the customer upsert still returns success
+while the entitlement fields silently never appear. The metric makes that
+*observable* — but a 403 from an under-permissioned key is a **broken
+credential**, not a flake, so metering-and-continuing is the wrong handling:
+**[#2410](https://github.com/wifihaven/wifihaven/issues/2410) makes that path
+fail** (surfaced at provisioning, where the permission/schema gap is knowable,
+rather than degrading a live write into a metered no-op). A genuine transient
+tenant-write hiccup, by contrast, is fine to skip-and-meter.
+
 ## Anti-patterns — grep for these
 
 These shapes are the tell. Every one of them means "absence of config ⇒ feature
@@ -113,7 +164,21 @@ off, silently":
 - **A client/layer that returns a no-op instance when unconfigured** (e.g. a
   `Disabled`/`noop` transport selected by missing keys) *without* an explicit
   `enabled=false` decision, a startup log line, and a health-endpoint signal.
+- **A best-effort side-write that treats a broken credential like a flake** —
+  `foo().catchAll(e => ZIO.logWarning(...))`, or even `... *> meter("error")`, on
+  an enrichment call that 401/403s because a key is wrong or under-permissioned.
+  A metric makes it visible but does **not** make it acceptable: a
+  config-recoverable failure belongs in the fail-loud path (fail the request, or
+  fail at provisioning), not behind a log line or a counter (rule 5).
+- **A best-effort side-write whose failure path is a bare log-and-continue with
+  no metric** — even for a legitimately-skippable transient failure, swallowing
+  it with no `{outcome}` counter means a path that has gone dark is invisible.
+  Add the bounded counter (rule 5).
 
 When you find one on a **required** feature, convert it to fail-loud (rule 1).
 When the feature is genuinely optional, convert it to an explicit, logged,
-observable flag (rule 3). Either way, never leave the silent branch.
+observable flag (rule 3). When it's a best-effort side-write, split by cause
+(rule 5): a broken-credential / permission / provisioning failure fails loud (the
+request, or better at startup); only a genuinely-transient / optional failure is
+skipped — and even then it is logged + metered. Either way, never leave the
+silent branch.

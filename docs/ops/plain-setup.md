@@ -159,17 +159,20 @@ key is shared by all support write paths):
 | `thread:reply` | the AI reply **post-#2240** — switching `writeThread` to a reply-to-thread mutation against the existing thread is a not-yet-landed `TODO(#2240)` (`api/src/support/SupportResponder.scala`); grant this alongside `thread:create` so the key is ready before and after that switch |
 
 This is the array confirmed to clear the `403` on the customer + tenant upserts. The
-`plan` / `founding` **tenant-field** writes (§7.3 entitlement) additionally exercise
-`upsertTenantField`; to have those fields populated, add `tenantField:create` /
-`tenantField:update` to the array (the scope is `:update`, **not** `:edit` — Plain's
-permission enum has no `tenantField:edit`) **and** register the `plan` / `founding` field
-schemas (§7.3, a dashboard step — no `tenantFieldSchema:*` permission is needed, since the
-code only writes field *values*, never creates schemas). That path is **fail-open only
-w.r.t. the customer upsert** — a permission or schema gap does not fail `upsertCustomer` —
-but it is **not silent**: each failure is logged and metered as
+`plan` / `founding` **tenant-field** writes ([§7.3 entitlement](#entitlement-fields))
+additionally exercise `upsertTenantField`; to have those fields populated, add
+`tenantField:create` / `tenantField:update` to the array (the scope is `:update`, **not**
+`:edit` — Plain's permission enum has no `tenantField:edit`) **and** register the `plan` /
+`founding` field schemas ([§7.3](#entitlement-fields), a dashboard step — no
+`tenantFieldSchema:*` permission is needed, since the code only writes field *values*, never
+creates schemas). **Grant the permission and register the schema as a pair, or leave both
+off — a half-configured entitlement path is a broken credential, not an optional feature.**
+That path is **fail-open only w.r.t. the customer upsert** — a permission or schema gap does
+not fail `upsertCustomer` — but it is **not silent**: each failure is logged and metered as
 `support_tenant_upsert_total{outcome="error"}` (`upsertTenantEntitlement` in
 `api/src/support/PlainClient.scala`; panel in `deploy/grafana/dashboards/support.json`).
-Making that gap fully fail-loud + attributable is tracked in
+Making that gap fully fail-loud + attributable — a broken credential should *fail*, not
+degrade into a metered no-op — is tracked in
 [#2410](https://github.com/wifihaven/wifihaven/issues/2410). **Do NOT grant**
 `customer:delete`, `customer:impersonate`, `thread:assign`, or `thread:unassign` —
 nothing we do needs them.
@@ -277,7 +280,7 @@ these:
    lowercased-email)`. Plain's chat-auth doc is the authority on the exact field name (it
    may be `customerHash`) and hashed value — we reconcile `SupportWidget.tsx` +
    `SupportService` to match.
-3. **Entitlement fields (on the TENANT, not the customer).** Plain's customer input has **no**
+3. <a id="entitlement-fields"></a>**Entitlement fields (on the TENANT, not the customer).** Plain's customer input has **no**
    custom-field/attributes channel — `UpsertCustomerOnCreateInput`/`OnUpdateInput`
    (team-plain/typescript-sdk `src/graphql/types.ts`) expose only `fullName` / `email` /
    `externalId` / `shortName` / `tenantIdentifiers`. Entitlement is **household-level**, and each
@@ -292,8 +295,12 @@ these:
    **Register these two tenant-field schemas in the workspace before go-live** (Settings → Tenants →
    Fields *(verify label)*), using **exactly** those external field ids and types — the code keys
    `upsertTenantField` on `externalFieldId: "plan"` / `"founding"`, so a mismatched id/type fails
-   the field write (logged, fail-open — the widget + customer/tenant mapping still work). Until the
-   schemas exist, plan/founding simply don't appear on the tenant; nothing else breaks.
+   the field write. Today that failure is metered (`support_tenant_upsert_total{outcome="error"}`)
+   and fail-open w.r.t. the customer upsert — the widget + customer/tenant mapping still work, but
+   the fields silently stay empty. A missing schema / permission is a misconfiguration, not an
+   optional feature, so [#2410](https://github.com/wifihaven/wifihaven/issues/2410) hardens this
+   case to **fail** rather than degrade; register the schemas (and grant §5.1's `tenantField`
+   permissions) before go-live so the write path is fully wired, not half-configured.
    (`PlainClient.upsertTenantEntitlement` — the `upsertCustomer` DTO drives the tenant + field writes
    automatically once the write key is set.)
 
