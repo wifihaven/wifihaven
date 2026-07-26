@@ -158,11 +158,19 @@ object CloudAgentDispatcher {
     val safeName = neutralizeTags(
       req.householdName.replace('\n', ' ').replace('\r', ' '),
     ).take(120)
+    // #2419: with no data scope the agent must ASK, not dead-end — so the no-consent branch names
+    // the request-consent endpoint instead of only stating the refusal. Requesting consent does
+    // NOT grant it: the server posts its own prompt into the thread and only the customer's
+    // authenticated action records the grant, which the NEXT dispatch's token reflects.
     val consent  =
       if req.dataConsent then
         s"The customer consented to household data access: GET $agentApiBase/api/support/agent/household with the token."
       else
-        "The customer did NOT consent to household data access — answer without it (the household endpoint will refuse the token)."
+        "The customer has NOT (yet) granted household data access — the household endpoint will refuse this token. " +
+          "If answering needs their account details, do NOT just say you lack permission: offer to look it up, " +
+          s"and POST $agentApiBase/api/support/agent/request-consent (no body) — we will post a permission prompt " +
+          "into this thread. Then tell them you've asked and what to expect. You cannot grant this yourself; their " +
+          "approval arrives on a later message. Meanwhile answer as much as you can without account data."
     s"""New support message on Plain thread ${req.threadId} from household "$safeName"$plan.
        |$envLine
        |

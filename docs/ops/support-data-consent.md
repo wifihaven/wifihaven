@@ -32,9 +32,10 @@ That is a dead end, not an answer.
 3. The SERVER posts a fixed, server-authored consent prompt into that thread
    (never agent-authored text), carrying a signed, short-TTL consent link:
    `<appBaseUrl>/support/consent?g=<grant token>`. The grant token is HMAC-signed
-   under the agent-token secret with a distinct `g1` version prefix, so it is
-   domain-separated from the `v1` agent token — neither verifier accepts the
-   other's tokens.
+   under the agent-token secret with a distinct `g1` version prefix, and the MAC
+   is computed over `"<version>.<payload>"` — the version is **bound into the
+   signature**, so re-labelling one token family as the other fails the signature
+   outright rather than relying on the payloads happening to parse differently.
 4. The customer opens the link **signed in to the dashboard** and clicks Allow.
    The SPA posts the grant token to `POST /api/support/consent` with their normal
    session JWT. The server verifies the grant token, requires the JWT's household
@@ -59,8 +60,13 @@ widget that stamps `dataConsent` on submission.
 - (a) puts the decision at the moment it is needed, in the customer's own words
   ("may I look that up?"), and works identically on both origins.
 
-(b) is not lost: a widget-stamped `dataConsent` still mints a data-scoped token.
-(a) is additive to it.
+(b) is not merely unimplemented — the vestigial hook for it is **removed**. The
+webhook parser used to read a `dataConsent` boolean off the Plain payload and OR
+it into the token's scope; nothing ever set it, and an unverifiable inbound
+boolean feeding a security decision is exactly what this issue set out to
+eliminate. Data access now has ONE source: the `support_thread_consent` record.
+If widget-side consent is ever wanted, it must go through the same server-side
+grant, not a payload flag.
 
 ## Scope and duration
 
@@ -95,7 +101,8 @@ one #2259 (the agent-token revocation list) exists to close; it is bounded by
   in a household-B token.
 - Every consent request, grant, mismatch, and revocation is audit-logged
   (household + thread, never the token) and metered on
-  `support_consent_total{outcome}`.
+  `support_consent_total{outcome}`. A withdrawal of a grant that was not live
+  meters as `revoke_noop`, so the panel counts real withdrawals.
 
 ## Schema
 
@@ -108,6 +115,23 @@ one #2259 (the agent-token revocation list) exists to close; it is bounded by
 | `granted_by_user_id` | FK → `users`, `ON DELETE SET NULL` — audit trail of which admin granted |
 | `granted_at` / `expires_at` / `revoked_at` | the grant window |
 | `UNIQUE (household_id, thread_id)` | one record per thread; a re-grant UPSERTs |
+
+## Deploying the MAC change (one-time, #2419)
+
+The signature now covers `"<version>.<payload>"` rather than the payload alone,
+for both `ConsentToken` (`v1`) and `ConsentGrant` (`g1`). That is a **breaking
+change to already-issued agent tokens**: for up to
+`support.agentTokenTtlMinutes` (default 30) after the deploy, a cloud-agent
+session dispatched by the previous image holds a token the new image will not
+verify. Those sessions fail their callback with the uniform 401 and their draft
+never reaches the customer; they meter as
+`support_agent_action_total{outcome="denied"}`.
+
+So: **a short denied spike immediately after this deploy is expected, not an
+attack.** It self-clears within the token TTL — every subsequent inbound message
+mints a fresh token. Nothing else is affected (the SPA JWT and the press token
+are separate secrets and separate code paths), and no consent links exist yet at
+first deploy.
 
 ## Operator notes
 

@@ -493,6 +493,12 @@ object MetricGuard {
     // the `issue` action's rate feeds the #2241 volume alert. Both bounded, never per-household.
     "support_ai_draft_total"                        -> Set("outcome"),
     "support_agent_action_total"                    -> Set("op", "outcome"),
+    // #2419 — the in-conversation data-access consent lifecycle on ONE series:
+    // `support_consent_total{outcome}` (requested | request_already_granted | request_rate_limited |
+    // request_disabled | request_error — the AGENT's ask; granted | revoked | revoke_noop | invalid
+    // | expired | household_mismatch | disabled | error — the CUSTOMER's action). Bounded enum, never a
+    // per-household / per-thread label.
+    "support_consent_total"                         -> Set("outcome"),
     // #2203 — the Claude PRESS/PR responder (dark until keys set). `press_ai_draft_total{outcome}`
     // counts each inbound PRESS Plain webhook by a bounded enum (dispatched | skipped | rate_limited
     // | invalid_signature | malformed | disabled | error); `press_agent_action_total{op,outcome}`
@@ -772,6 +778,20 @@ object AppMetrics {
 
   def supportAgentAction(action: String, outcome: String): UIO[Unit] =
     MetricGuard.counter("support_agent_action_total", Map("op" -> action, "outcome" -> outcome))
+
+  // ── #2419: in-conversation data-access consent ────────────────────────────────
+  // The whole consent lifecycle on ONE series so a grant can be read against the request that
+  // preceded it. Emitted from SupportResponder; `outcome` is a bounded enum, never a per-household
+  // / per-thread label:
+  //   requested | request_already_granted | request_rate_limited | request_disabled |
+  //   request_error   — the AGENT-side ask (the server posts the prompt into the thread);
+  //   granted | revoked | revoke_noop (a withdrawal of a grant that was not live — idempotent for
+  //   the customer, but not a real withdrawal) | invalid | expired | household_mismatch | disabled |
+  //   error   — the CUSTOMER-side action on POST /api/support/consent.
+  // `household_mismatch` is the security-relevant one (a consent link redeemed by another
+  // household's session, which writes nothing) — it should be flat zero in normal operation.
+  def supportConsent(outcome: String): UIO[Unit] =
+    MetricGuard.counter("support_consent_total", Map("outcome" -> outcome))
 
   // ── #2203: Claude press/PR responder (dark until keys set) ───────────────────
   // Emitted from PressResponder. `pressAiDraft` counts each inbound PRESS Plain webhook by outcome

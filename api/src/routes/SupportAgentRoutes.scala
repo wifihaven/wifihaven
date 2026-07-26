@@ -20,12 +20,13 @@ import zio.json.*
  *     so Plain does not retry-storm and the response never leaks WHY (the metric carries the
  *     outcome).
  *
- *   - AGENT `POST /api/support/agent/reply`, `POST /api/support/agent/issues`, `GET
- *     /api/support/agent/household` — the cloud agent's ONLY side-effect channels, authenticated
- *     solely by the per-session [[wifihaven.api.support.ConsentToken]] (thread- + household-bound,
- *     consent-scoped, short-TTL) as `Authorization: Bearer`. No JWT, no admin session — and
- *     conversely no other route in the API accepts this token. Denials are deliberately uniform
- *     (401 "unauthorized") so a probing caller learns nothing about why.
+ *   - AGENT `POST /api/support/agent/reply`, `POST /api/support/agent/issues`, `POST
+ *     /api/support/agent/request-consent`, `GET /api/support/agent/household` — the cloud agent's
+ *     ONLY side-effect channels, authenticated solely by the per-session
+ *     [[wifihaven.api.support.ConsentToken]] (thread- + household-bound, consent-scoped, short-TTL)
+ *     as `Authorization: Bearer`. No JWT, no admin session — and conversely no other route in the
+ *     API accepts this token. Denials are deliberately uniform (401 "unauthorized") so a probing
+ *     caller learns nothing about why.
  */
 object SupportAgentRoutes {
 
@@ -95,6 +96,21 @@ object SupportAgentRoutes {
               .fail(ApiError.BadRequest("empty issue"))
               .when(post.title.trim.isEmpty)
             result <- responder.agentFileIssue(bearerToken(req), post.title, post.body)
+            resp   <- toResponse(result)
+          } yield resp
+          handle.mapError(ErrorMapper.errorToResponse)
+        },
+
+      // ── Agent: ASK the customer for data-access consent (#2419) ─────────────────
+      // The agent's alternative to dead-ending on an account question. It carries NO body: the
+      // agent supplies no text and names no thread — the server posts its OWN fixed prompt into
+      // the token-bound thread. Requesting consent is not having it: this route cannot create a
+      // consent record (only the customer's JWT-authenticated POST /api/support/consent can), so
+      // a hijacked agent cannot widen its own data scope.
+      Method.POST / "api" / "support" / "agent" / "request-consent" ->
+        handler { (req: Request) =>
+          val handle: ZIO[Any, ApiError, Response] = for {
+            result <- responder.agentRequestConsent(bearerToken(req))
             resp   <- toResponse(result)
           } yield resp
           handle.mapError(ErrorMapper.errorToResponse)
