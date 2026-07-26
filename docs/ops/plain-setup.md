@@ -360,23 +360,19 @@ these:
       sourced from the prose docs, not the type dump). The *machine-user API key* does **not**
       need `tenantFieldSchema:*` — it only writes field *values* (`upsertTenantField`), never
       schemas.
-   2. Run the mutation below. `upsertTenantFieldSchema` is a create-or-update that takes an
-      **array**, so both schemas land in one call. Plain's docs say each schema is identified by
-      the pair (`source`, `externalFieldId`) — meaning a re-run with the *same* pair updates
-      rather than duplicates. That uniqueness rule is Plain's prose claim; it is **not** visible
-      in the published GraphQL types, so treat it as unconfirmed and verify with the listing
-      query in step 3 rather than relying on it.
+   2. Run the mutation below **verbatim**. `upsertTenantFieldSchema` is a create-or-update that
+      takes an **array**, so both schemas land in one call. This exact mutation was run
+      successfully against the **staging** Plain workspace and returned
+      `{"data":{"upsertTenantFieldSchema":{"error":null}}}`:
 
       ```graphql
       mutation {
         upsertTenantFieldSchema(input: {
           tenantFieldSchemas: [
-            { source: "API", externalFieldId: "plan",     label: "Plan",     type: STRING_TYPE,  isVisible: true, order: 1 },
-            { source: "API", externalFieldId: "founding", label: "Founding", type: BOOLEAN_TYPE, isVisible: true, order: 2 }
+            { source: "wifihaven", externalFieldId: "plan",     label: "Plan",     type: STRING_TYPE,  isVisible: true, order: 1 },
+            { source: "wifihaven", externalFieldId: "founding", label: "Founding", type: BOOLEAN_TYPE, isVisible: true, order: 2 }
           ]
         }) {
-          tenantFieldSchemas { id source externalFieldId label type }
-          result
           error { message }
         }
       }
@@ -386,18 +382,20 @@ these:
       `PlainClient` sends — `PlanFieldId = "plan"` (`STRING_TYPE`) and
       `FoundingFieldId = "founding"` (`BOOLEAN_TYPE`) in
       [`api/src/support/PlainClient.scala`](../../api/src/support/PlainClient.scala). The `label`
-      is free-form display text. `isVisible` / `order` are required by
-      `TenantFieldSchemaInput` but carry no behaviour we depend on.
+      is free-form display text.
 
-      **`source` is the one value we have not confirmed against a live workspace.** In Plain's
-      schema it is a free-form `String` (not an enum) that namespaces the schema by originating
-      system — Plain documents no required value or convention for it. `"API"` above is our
-      choice by analogy with the `Tenant.source` enum (`API` / `HUBSPOT` / `SALESFORCE`); a
-      system name like `"wifihaven"` would be equally valid. **What matters is picking one and
-      always reusing it** — the pair (`source`, `externalFieldId`) is what identifies a schema,
-      so switching `source` later registers a *duplicate* rather than updating. It does **not**
-      affect our value writes — `UpsertTenantFieldInput` keys on
-      `tenantFieldIdentifier { tenantId, externalFieldId }` and never mentions `source`.
+      **`isVisible` and `order` are required** (`Boolean!` / `Int!`) and are easy to miss — the
+      mutation is rejected without them. Neither carries behaviour we depend on; they only
+      control display in Plain's tenant UI.
+
+      **`source` is our own namespace, not a Plain-mandated value.** It is a free-form `String!`
+      (not an enum) that tags the schema with its originating system; Plain requires no
+      particular value. We use `"wifihaven"`. It does **not** participate in our value writes:
+      `PlainClient` sends `UpsertTenantFieldInput = { tenantFieldIdentifier { tenantId,
+      externalFieldId }, type, <valueKey> }` and never sends `source`, so the schema↔value join
+      is `externalFieldId` (+ matching `type`) alone. Still, **pick one and always reuse it** —
+      a schema is identified by the pair (`source`, `externalFieldId`), so re-running with a
+      different `source` registers a *duplicate* schema rather than updating the first.
 
       If Plain changes the input shape, re-derive it by introspection rather than guessing:
 
@@ -409,18 +407,19 @@ these:
       }
       ```
 
-      *(Shape above verified against Plain's published GraphQL schema —
-      `team-plain/typescript-sdk` `src/graphql/types.ts`: `MutationUpsertTenantFieldSchemaArgs
-      { input: UpsertTenantFieldSchemaInput }`, `UpsertTenantFieldSchemaInput
-      { tenantFieldSchemas: Array<TenantFieldSchemaInput> }`, `TenantFieldSchemaInput
-      { source, externalFieldId, label, type, options?, isVisible, order }`. Note the live
+      *(Shape above confirmed by live introspection of Plain's API, and by the mutation running
+      successfully against the staging workspace. `UpsertTenantFieldSchemaInput` has exactly one
+      field, `tenantFieldSchemas: [TenantFieldSchemaInput!]!`. `TenantFieldSchemaInput` is
+      `{ source: String!, externalFieldId: ID!, label: String!, type: TenantFieldType!,
+      options: [String!], isVisible: Boolean!, order: Int! }` — every field non-null except
+      `options`, which applies to `ENUM_TYPE` only. Note the published SDK's
       `TenantFieldType` enum is `STRING_TYPE` / `NUMBER_TYPE` / `BOOLEAN_TYPE` / `STRING_ARRAY`
       / `DATETIME_TYPE` — Plain's prose docs also mention `ENUM_TYPE`, which the published enum
       does not contain. Neither of our two fields uses it.)*
    3. **List the schemas back and confirm exactly two exist.** Do this positively — do *not*
-      wait for an error. Because `source` is a free-form `String`, a wrong value is likely to be
-      **accepted**, and a later re-run with a corrected `source` would then create a *second*
-      schema rather than update the first:
+      wait for an error. Because `source` is a free-form `String`, a typo'd value is **accepted**
+      rather than rejected, and a later re-run with a corrected `source` then creates a *second*
+      schema rather than updating the first:
 
       ```graphql
       query { tenantFieldSchemas(first: 50) { edges { node { id source externalFieldId label type } } } }
@@ -429,7 +428,10 @@ these:
       Expect exactly one `plan` (`STRING_TYPE`) and one `founding` (`BOOLEAN_TYPE`) node. If a
       duplicate `externalFieldId` appears under two different `source` values, delete the stray
       one before going further. If the workspace already had schemas registered under some other
-      `source`, copy that value rather than introducing `"API"`.
+      `source`, copy that value rather than introducing `"wifihaven"`.
+
+      **Staging is done** (registered 2026-07-26). **Prod is still pending** — it must be run in
+      the prod workspace before go-live.
 
       ```graphql
       mutation {
