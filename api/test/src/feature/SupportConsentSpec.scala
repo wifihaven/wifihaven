@@ -77,6 +77,9 @@ object SupportConsentSpec
   private def makeHarness(
       cfg: SupportConfig = liveCfg,
       consentThreadLimiter: RateLimiter = RateLimiter.allowAll,
+      // #2460: the resume-on-grant re-dispatch draws the SAME per-thread dispatch cap as an inbound
+      // message, so a spec can model the cap being exhausted.
+      dispatchThreadLimiter: RateLimiter = RateLimiter.allowAll,
   ) =
     for {
       hhRepo      <- ZIO.service[HouseholdRepo]
@@ -102,7 +105,7 @@ object SupportConsentSpec
         clock,
         RateLimiter.allowAll,
         RateLimiter.allowAll,
-        RateLimiter.allowAll,
+        dispatchThreadLimiter,
         RateLimiter.allowAll,
         RateLimiter.allowAll,
         consentThreadLimiter,
@@ -486,7 +489,140 @@ object SupportConsentSpec
         // customer already said yes, so the server must NOT post a second permission prompt.
         again    <- agentPost(h, "/api/support/agent/request-consent", Some(agent))
         writes   <- h.plain.threads.get
-      } yield assertTrue(again == Status.Ok, writes.size == 1)
+        // Count PROMPTS, not writes: #2460's grant-time nudge is a separate, server-authored write
+        // on this thread (the timeline read is empty here, so the resume falls back to it).
+        prompts = writes.count(_.markdown.contains(s"$AppBaseUrl/support/consent?g="))
+      } yield assertTrue(again == Status.Ok, prompts == 1)
+    },
+    // ── #2460: the grant CLOSES THE LOOP (the customer does nothing more) ──────
+    test("granting consent RESUMES the conversation: the last customer question is re-dispatched") {
+      for {
+        _        <- cleanDb
+        hhRepo   <- ZIO.service[HouseholdRepo]
+        userRepo <- ZIO.service[UserRepo]
+        billRepo <- ZIO.service[HouseholdBillingRepo]
+        h        <- makeHarness()
+        hh       <- hhRepo.create("Family Q", "family-q")
+        _        <- billRepo.create(hh, "beta", founding = true)
+        jwtTok   <- seedAdmin(h, userRepo, hh, "family-q", "admin_q", "pwpwpwpw11")
+        agent    <- mintAgentToken(hh, "th_q", dataAccess = false)
+        _        <- agentPost(h, "/api/support/agent/request-consent", Some(agent))
+        grant    <- grantTokenFromThread(h).someOrFail(new RuntimeException("no consent link"))
+        // The thread SO FAR: the customer's unanswered question, then the server's consent prompt.
+        prompt   <- h.plain.threads.get.map(_.last.markdown)
+        _        <- h.plain.history.set(
+          List(
+            PlainThreadMessage(ThreadMessageRole.Customer, "how many devices do I have?"),
+            PlainThreadMessage(ThreadMessageRole.AiAssistant, prompt),
+          ),
+        )
+        before   <- h.dispatch.dispatches.get.map(_.size)
+        status   <- postConsent(h, Some(jwtTok), grant)
+        after    <- h.dispatch.dispatches.get.map(_.drop(before).map(_._1))
+        now      <- ZIO.serviceWithZIO[Clock](_.instant)
+        claims = after.headOption.flatMap(r =>
+          ConsentToken.verify(r.agentToken, now, TokenSecret).toOption,
+        )
+        writes <- h.plain.threads.get
+      } yield assertTrue(
+        status == Status.Ok,
+        // EXACTLY one resume — the customer's original question, answered with the scope they
+        // just granted, without them having to find their way back and re-ask.
+        after.size == 1,
+        after.head.threadId == "th_q",
+        after.head.dataConsent,
+        after.head.customerMessage == "how many devices do I have?",
+        claims.exists(c => c.householdId == hh && c.threadId == "th_q" && c.dataAccess),
+        // The resume carries the thread context, but NOT the consent prompt that sits after the
+        // question — the link is never fed back into the agent's context.
+        !after.head.history.exists(_.text.contains("/support/consent?g=")),
+        // Server-authored nudge is the FALLBACK only — a real re-dispatch posts nothing itself.
+        writes.size == 1,
+      )
+    },
+    test("the resume is idempotent per grant: re-confirming a LIVE consent re-dispatches nothing") {
+      for {
+        _        <- cleanDb
+        hhRepo   <- ZIO.service[HouseholdRepo]
+        userRepo <- ZIO.service[UserRepo]
+        h        <- makeHarness()
+        hh       <- hhRepo.create("Family P", "family-p")
+        jwtTok   <- seedAdmin(h, userRepo, hh, "family-p", "admin_p", "pwpwpwpw11")
+        agent    <- mintAgentToken(hh, "th_p", dataAccess = false)
+        _        <- agentPost(h, "/api/support/agent/request-consent", Some(agent))
+        grant    <- grantTokenFromThread(h).someOrFail(new RuntimeException("no consent link"))
+        _        <- h.plain.history.set(
+          List(PlainThreadMessage(ThreadMessageRole.Customer, "why is my iPad blocked?")),
+        )
+        first    <- postConsent(h, Some(jwtTok), grant)
+        once     <- h.dispatch.dispatches.get.map(_.size)
+        // The customer reloads the page / clicks Allow again: the grant is already live, so this
+        // must NOT queue a second agent session (or a second answer) for the same question.
+        second   <- postConsent(h, Some(jwtTok), grant)
+        twice    <- h.dispatch.dispatches.get.map(_.size)
+      } yield assertTrue(first == Status.Ok, second == Status.Ok, once == 1, twice == 1)
+    },
+    test(
+      "resume with unreadable history: the grant still lands and a server-authored nudge posts",
+    ) {
+      for {
+        _        <- cleanDb
+        hhRepo   <- ZIO.service[HouseholdRepo]
+        userRepo <- ZIO.service[UserRepo]
+        h        <- makeHarness()
+        hh       <- hhRepo.create("Family H", "family-h")
+        jwtTok   <- seedAdmin(h, userRepo, hh, "family-h", "admin_h", "pwpwpwpw11")
+        agent    <- mintAgentToken(hh, "th_h", dataAccess = false)
+        _        <- agentPost(h, "/api/support/agent/request-consent", Some(agent))
+        grant    <- grantTokenFromThread(h).someOrFail(new RuntimeException("no consent link"))
+        // Plain's timeline read is fail-open (a missing `timeline:read` grant yields Nil, #2452) —
+        // we then cannot know what to re-ask, so the loop closes with a nudge instead of a crash.
+        _        <- h.plain.historyFails.set(true)
+        status   <- postConsent(h, Some(jwtTok), grant)
+        now      <- ZIO.serviceWithZIO[Clock](_.instant)
+        live     <- h.consentRepo.isGranted(hh, "th_h", now)
+        writes   <- h.plain.threads.get
+        redisp   <- h.dispatch.dispatches.get
+      } yield assertTrue(
+        status == Status.Ok,
+        live,
+        redisp.isEmpty,
+        writes.size == 2,
+        writes.last.threadId == "th_h",
+        // Server-authored, and it carries NO consent URL (#2453 — the link must not re-enter the
+        // thread context).
+        writes.last.markdown == SupportResponder.consentGrantedNudge,
+        !writes.last.markdown.contains("/support/consent?g="),
+      )
+    },
+    test(
+      "the resume draws the dispatch cap: a thread at its ceiling grants, but does not dispatch",
+    ) {
+      for {
+        _        <- cleanDb
+        hhRepo   <- ZIO.service[HouseholdRepo]
+        userRepo <- ZIO.service[UserRepo]
+        h        <- makeHarness(dispatchThreadLimiter = denyAll)
+        hh       <- hhRepo.create("Family M", "family-m")
+        jwtTok   <- seedAdmin(h, userRepo, hh, "family-m", "admin_m", "pwpwpwpw11")
+        agent    <- mintAgentToken(hh, "th_m", dataAccess = false)
+        _        <- agentPost(h, "/api/support/agent/request-consent", Some(agent))
+        grant    <- grantTokenFromThread(h).someOrFail(new RuntimeException("no consent link"))
+        _        <- h.plain.history.set(
+          List(PlainThreadMessage(ThreadMessageRole.Customer, "what plan am I on?")),
+        )
+        status   <- postConsent(h, Some(jwtTok), grant)
+        now      <- ZIO.serviceWithZIO[Clock](_.instant)
+        live     <- h.consentRepo.isGranted(hh, "th_m", now)
+        redisp   <- h.dispatch.dispatches.get
+        writes   <- h.plain.threads.get
+      } yield assertTrue(
+        // The customer's grant is never lost to a cost cap — only the free follow-up is.
+        status == Status.Ok,
+        live,
+        redisp.isEmpty,
+        writes.size == 1,
+      )
     },
     test("re-labelling one token family as the other fails the SIGNATURE, not just the parse") {
       // The version tag is bound INTO the MAC, so `v1.<b64>.<sig>` rewritten to `g1.<b64>.<sig>`
