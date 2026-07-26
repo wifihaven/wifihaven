@@ -33,9 +33,16 @@ object SecurityHeaders {
     "https://chat.uk.plain.com " +
       "https://prod-uk-services-attachm-attachmentsuploadbucket2-1l2e4906o2asm.s3.eu-west-2.amazonaws.com"
   private val PlainStyleSrc   = "https://fonts.googleapis.com"
+  // #2418: static-assets.plain.com is NOT in Plain's documented list but the SDK hard-depends on it
+  // for machine-user/AI-agent avatars: an agent message's `actor.avatarUrl` for an API_USER machine
+  // user is https://static-assets.plain.com/email-images/machine-user.png (verified live against the
+  // staging workspace via chat.uk.plain.com/chat/getMessages), and the SDK bundle also hard-codes
+  // https://static-assets.plain.com/avatars/ari-avatar.svg for AI_AGENT machine users. Without this
+  // host every AI reply renders a broken-image placeholder instead of the support avatar.
   private val PlainImgSrc     =
     "https://prod-uk-services-workspac-workspacefilespublicbuck-vs4gjqpqjkh6.s3.amazonaws.com " +
       "https://prod-uk-services-attachm-attachmentsbucket28b3ccf-uwfssb4vt2us.s3.eu-west-2.amazonaws.com " +
+      "https://static-assets.plain.com " +
       "https://i0.wp.com"
 
   val ContentSecurityPolicy: String =

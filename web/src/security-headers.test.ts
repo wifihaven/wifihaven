@@ -48,6 +48,14 @@ describe('web/public/_headers CSP (Cloudflare Pages copy)', () => {
     ) // img-src attachment bucket
   })
 
+  // #2418: the SDK renders an agent message's avatar from `actor.avatarUrl`, which for an API_USER
+  // machine user is https://static-assets.plain.com/email-images/machine-user.png (and the bundle
+  // hard-codes .../avatars/ari-avatar.svg for AI_AGENT). Plain's published CSP list omits this host,
+  // so it broke every AI reply's avatar until #2418. Pinned so it can't be dropped again.
+  it("allowlists Plain's machine-user avatar host so AI replies show an avatar (#2418)", () => {
+    expect(headers).toContain('https://static-assets.plain.com')
+  })
+
   // Over-broadening guard: Plain documents no iframe, so the additions must stay exact hosts — no
   // wildcard, and frame-ancestors 'none' unchanged.
   it('does not introduce wildcards or loosen frame-ancestors for Plain (#2240)', () => {

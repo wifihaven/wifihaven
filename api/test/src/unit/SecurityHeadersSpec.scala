@@ -62,6 +62,15 @@ object SecurityHeadersSpec extends ZIOSpecDefault {
         ),
       )    // img-src attachment bucket
     },
+    // #2418: the SDK renders an agent message's avatar from `actor.avatarUrl`, which for an API_USER
+    // machine user is https://static-assets.plain.com/email-images/machine-user.png (and the bundle
+    // hard-codes .../avatars/ari-avatar.svg for AI_AGENT). Plain's published CSP list omits this
+    // host, so it broke every AI reply's avatar until #2418. Pinned so it can't be dropped again
+    // (#2115 lesson: a silently dropped img-src host breaks images with no test failure).
+    test("img-src allowlists Plain's machine-user avatar host (#2418)") {
+      val csp = SecurityHeaders.ContentSecurityPolicy
+      assertTrue(csp.contains("https://static-assets.plain.com"))
+    },
     // Over-broadening guard: Plain documents no iframe, so we must NOT loosen frame-ancestors or add
     // a wildcard for Plain — the additions are exact hosts only.
     test("Plain additions do not introduce wildcards or loosen frame-ancestors (#2240)") {
