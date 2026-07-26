@@ -294,15 +294,35 @@ these:
      = `plan`, type **String**.
    - **`founding`** (boolean) → a tenant field, `externalFieldId` = `founding`, type **Boolean**.
 
-   **Register these two tenant-field schemas in the workspace before go-live** (Settings → Tenants →
-   Fields *(verify label)*), using **exactly** those external field ids and types — the code keys
-   `upsertTenantField` on `externalFieldId: "plan"` / `"founding"`, so a mismatched id/type fails
-   the field write. Today that failure is metered (`support_tenant_upsert_total{outcome="error"}`)
-   and fail-open w.r.t. the customer upsert — the widget + customer/tenant mapping still work, but
-   the fields silently stay empty. A missing schema / permission is a misconfiguration, not an
-   optional feature, so [#2410](https://github.com/wifihaven/wifihaven/issues/2410) hardens this
-   case to **fail** rather than degrade; register the schemas (and grant §5.1's `tenantField`
-   permissions) before go-live so the write path is fully wired, not half-configured.
+   **Register these two tenant-field schemas in the workspace before go-live**, using **exactly**
+   the external field ids and types below — they must match what the code sends. `PlainClient` keys
+   `upsertTenantField` on `externalFieldId: "plan"` (`STRING_TYPE`) / `"founding"` (`BOOLEAN_TYPE`)
+   (`api/src/support/PlainClient.scala`), so a mismatched id or type fails the field write. Today
+   that failure is metered (`support_tenant_upsert_total{outcome="error"}`) and fail-open w.r.t. the
+   customer upsert — the widget + customer/tenant mapping still work, but the fields silently stay
+   empty. A missing schema / permission is a **misconfiguration, not an optional feature**, so
+   [#2410](https://github.com/wifihaven/wifihaven/issues/2410) hardens this case to **fail** rather
+   than degrade — register the schemas (and grant §5.1's `tenantField` permissions) before go-live
+   so the write path is fully wired, not half-configured. Do this **per workspace** (staging + prod),
+   same as the API key (§5.4):
+
+   1. In Plain, open **Settings → Tenants → Fields** *(verify the exact label against your
+      workspace — it's the tenant-field-**schema** editor. Plain also exposes `tenantFieldSchema:*`
+      in its permission enum, so you can script schema creation via the API playground as the
+      authenticated admin if you prefer; the machine-user key does **not** need `tenantFieldSchema:*`
+      — it only writes field values.)*
+   2. **Add a field** — external id **`plan`**, type **String** (`STRING_TYPE`). The display label
+      is free (e.g. "Plan"); only the external id + type are load-bearing.
+   3. **Add a field** — external id **`founding`**, type **Boolean** (`BOOLEAN_TYPE`), label e.g.
+      "Founding".
+   4. Ensure the machine-user key carries `tenantField:create` + `tenantField:update` (§5.1/§5.3).
+      The schema existing is necessary but **not** sufficient — the key still needs permission to
+      write the values.
+
+   **Verify it took:** log in as an admin (§8) to trigger an identity resolve, then confirm the
+   household's Plain **tenant** now shows `plan` / `founding`, and that
+   `support_tenant_upsert_total{outcome="ok"}` increments (not `outcome="error"`) on the support
+   dashboard (`deploy/grafana/dashboards/support.json`).
    (`PlainClient.upsertTenantEntitlement` — the `upsertCustomer` DTO drives the tenant + field writes
    automatically once the write key is set.)
 
