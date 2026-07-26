@@ -3,6 +3,7 @@ package wifihaven.api.feature
 import wifihaven.api.{PlainConfig, SupportConfig}
 import wifihaven.api.auth.{RateLimiter, RateLimiterLive}
 import wifihaven.api.db.*
+import wifihaven.api.notify.Notifier
 import wifihaven.api.routes.SupportAgentRoutes
 import wifihaven.api.support.*
 import wifihaven.api.support.SupportResponder.HouseholdSummary
@@ -65,7 +66,13 @@ object SupportResponderSpec
   private val liveCfg = SupportConfig(
     responderEnabled = true,
     issueFilingEnabled = true,
-    plain = PlainConfig(apiKey = "plain-api-key-test", webhookSecret = WebhookSecret),
+    plain = PlainConfig(
+      apiKey = "plain-api-key-test",
+      webhookSecret = WebhookSecret,
+      // #2437: boot-required alongside the credentials — an escalated thread that cannot be
+      // labelled is invisible in the operator's inbox.
+      escalationLabelTypeId = "lt_escalated_test",
+    ),
     anthropicApiKey = "sk-ant-test",
     claudeAgentId = "agent_test",
     claudeEnvironmentId = "env_test",
@@ -82,7 +89,13 @@ object SupportResponderSpec
     responderEnabled = true,
     issueFilingEnabled = true,
     dispatcher = "claude-code-cloud",
-    plain = PlainConfig(apiKey = "plain-api-key-test", webhookSecret = WebhookSecret),
+    plain = PlainConfig(
+      apiKey = "plain-api-key-test",
+      webhookSecret = WebhookSecret,
+      // #2437: boot-required alongside the credentials — an escalated thread that cannot be
+      // labelled is invisible in the operator's inbox.
+      escalationLabelTypeId = "lt_escalated_test",
+    ),
     claudeCodeRoutineId = "routine_test",
     claudeCodeRoutineToken = "sk-ant-oat01-test",
     agentTokenSecret = TokenSecret,
@@ -138,6 +151,10 @@ object SupportResponderSpec
         rejectLimiter,
         RateLimiter.allowAll,
         "https://app.example.test",
+        // #2437: this suite asserts paths unrelated to escalation — a log-only notifier keeps it
+        // from depending on the notification transport.
+        Notifier.logOnly,
+        RateLimiter.allowAll,
       )
     } yield (SupportAgentRoutes.routes(responder), Stubs(plainRec, ghRec, dispRec))
 
@@ -205,6 +222,10 @@ object SupportResponderSpec
         RateLimiter.allowAll,
         RateLimiter.allowAll,
         "https://app.example.test",
+        // #2437: this suite asserts paths unrelated to escalation — a log-only notifier keeps it
+        // from depending on the notification transport.
+        Notifier.logOnly,
+        RateLimiter.allowAll,
       )
     } yield SupportAgentRoutes.routes(responder)
 
@@ -714,6 +735,9 @@ object SupportResponderSpec
         missing.contains("support.claudeEnvironmentId"),
         missing.contains("support.agentTokenSecret"),
         missing.contains("support.deploymentEnv"),
+        // #2437: the escalation label id is part of the same chain — without it the SERVER cannot
+        // mark an escalated thread, which is the invisible-handoff bug, so it must fail boot too.
+        missing.contains("support.plain.escalationLabelTypeId"),
         liveCfg.missingRequiredKeys.isEmpty,
       )
       // These gaps flow into the canonical AppConfig.validateRequired (#2266 framework), which fails

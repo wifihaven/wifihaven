@@ -117,6 +117,23 @@ object StartupFeatureReport {
           "wifihaven.support.responderEnabled=false — inbound support webhook no-ops, agent " +
             "endpoints 404 (#2200/#2265)",
       ),
+      // #2437: an escalation is not complete until a human has been notified — so the state of the
+      // NOTICE channel is reported in its own right, not left to be inferred from `email-enabled`
+      // plus `support-responder`. With the email transport off, a support escalation still labels
+      // the Plain thread (an independent channel), but no operator email goes out; that degraded
+      // shape is NAMED here rather than being an unlabelled silent branch (#2266 rule 3).
+      FeatureState(
+        "escalation-notices",
+        email.enabled && email.operatorAddressTrimmed.nonEmpty,
+        if email.enabled && email.operatorAddressTrimmed.nonEmpty then
+          "wifihaven.email.operatorAddress set — support/press escalations email the operator (#2437)"
+        else if !email.enabled then
+          "wifihaven.email.enabled=false — escalations are LOGGED and (for support) labelled in " +
+            "Plain, but no operator email is sent (#2437)"
+        else
+          "wifihaven.email.operatorAddress unset — escalations reach no operator mailbox; this is " +
+            "a boot failure whenever a responder is enabled (#2437)",
+      ),
       FeatureState(
         "support-issue-filing",
         support.issueFilingEnabled,

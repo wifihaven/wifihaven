@@ -12,6 +12,7 @@ import wifihaven.api.db.{
   UserRepo,
 }
 import wifihaven.api.metrics.AppMetrics
+import wifihaven.api.notify.{EscalationChannel, EscalationKind, EscalationNotice, Notifier}
 import wifihaven.shared.{Clock, UserRole}
 import wifihaven.shared.types.HouseholdId
 import zio.*
@@ -107,6 +108,13 @@ final case class SupportResponder(
     // 16-field nested-derivation ceiling (see Config.scala), and "where the dashboard lives" is one
     // fact, not a per-feature one (single-source-of-truth).
     appBaseUrl: String,
+    // #2437: the #578 operator-notification seam. The support agent's escalation reaches a human two
+    // independent ways — the in-Plain thread mark (filterable inbox) and this out-of-band notice — so
+    // one channel failing does not silently drop the handoff.
+    notifier: Notifier,
+    // #2437: bounds how often ONE thread can page the operator. An agent stuck in a loop (or a
+    // prompt-injected one) must not be able to turn our own alert mailbox into a firehose.
+    escalateThreadLimiter: RateLimiter,
 ) {
   import SupportResponder.*
 
@@ -459,6 +467,77 @@ final case class SupportResponder(
       }
     }
 
+  // ── #2437: escalation — the handoff that actually reaches a human ────────────
+
+  /**
+   * The agent hands this thread to a human (#2437). Two server-side effects, neither of which the
+   * agent can aim or fake:
+   *
+   *   1. MARK the token-bound Plain thread with the configured escalation label, so the operator
+   *      can FILTER the inbox for "waiting on a human" instead of reading every thread (before
+   *      this, an escalated thread was indistinguishable from an AI-resolved one). 2. NOTIFY the
+   *      operator out-of-band via the #578 [[Notifier]], carrying the household, the thread, and
+   *      the agent's one-line reason.
+   *
+   * Escalation is STRUCTURAL: it is registered ONLY by a call to this endpoint with a valid
+   * thread-bound token. Nothing ever text-matches the reply or the customer's message for phrases
+   * like "a team member will follow up" — a customer who types that sentence has not escalated
+   * anything, and an agent that writes it without calling here has not either (the prompt requires
+   * both; the metric shows the gap if a session ever skips it).
+   *
+   * `note` is AGENT-AUTHORED text. It rides into the operator email HTML-escaped and is never used
+   * for a decision — it cannot select a thread, a household, or a recipient (all three come from
+   * the verified token / config).
+   *
+   * Fail-open on the notify half (the [[Notifier]] never fails); the thread-mark outcome is metered
+   * and logged LOUD on failure, but does NOT fail the agent's call — the escalation happened, and
+   * making the agent retry would only re-page the operator.
+   */
+  def agentEscalate(bearer: Option[String], note: Option[String]): UIO[AgentActionResult] =
+    withClaims("escalate", bearer) { claims =>
+      escalateThreadLimiter.tryAcquire(s"escalate:${claims.threadId}").flatMap { ok =>
+        if !ok then done("escalate", AgentActionResult.RateLimited)
+        else escalate(claims, note)
+      }
+    }
+
+  private def escalate(
+      claims: ConsentToken.Claims,
+      note: Option[String],
+  ): UIO[AgentActionResult] = {
+    val hh = claims.householdId
+    for {
+      // Audit trail (#2241 discipline) — household + thread, never the agent's prose.
+      _         <- ZIO.logInfo(
+        s"support: agent ESCALATED household=${hh.value} thread=${claims.threadId}",
+      )
+      // 1) The inbox-visible mark. The thread comes from the token and the label from config, so the
+      // agent chooses neither. A failure is loud inside PlainClient and metered here.
+      mark      <- plain.markThread(
+        PlainThreadMark(
+          threadId = claims.threadId,
+          labelTypeIds = List(cfg.plain.escalationLabelTypeIdTrimmed),
+        ),
+      )
+      _         <- AppMetrics.supportAgentAction("escalate_mark", PlainOutcome.label(mark))
+      // 2) The out-of-band operator notice. The household NAME (not an address) identifies the
+      // customer — the conversation itself lives in Plain, so nothing else needs copying out.
+      household <- householdRepo.findById(hh).catchAll(_ => ZIO.none)
+      _         <- notifier.escalation(
+        EscalationNotice(
+          channel = EscalationChannel.Support,
+          kind = EscalationKind.Escalated,
+          sender = household.map(_.name).getOrElse(s"household ${hh.value}"),
+          subject = s"Plain thread ${claims.threadId}",
+          body = SupportResponder.EscalationBodyHint,
+          agentNote = note.map(_.trim).filter(_.nonEmpty),
+          reference = claims.threadId,
+        ),
+      )
+      r         <- done("escalate", AgentActionResult.Ok)
+    } yield r
+  }
+
   // ── #2419: the in-conversation data-access consent flow ─────────────────────
 
   /**
@@ -674,6 +753,17 @@ object SupportResponder {
    */
   val AiReplyAttribution: String =
     "🤖 *WifiHaven support assistant — reply \"talk to a human\" any time and a teammate will follow up.*"
+
+  /**
+   * #2437 — what the support escalation notice puts in the "message" slot. Unlike press (where the
+   * inbound email body IS the whole context and lives in `press_messages`), a support conversation
+   * lives in Plain and can be many messages long: copying a snapshot of it into an email would be a
+   * second, stale copy of customer data outside the helpdesk. So the notice points AT the thread
+   * instead — the reference field carries the thread id.
+   */
+  val EscalationBodyHint: String =
+    "Open this thread in Plain to read the conversation and reply. It is labelled for escalation, " +
+      "so it also shows up under the needs-a-human filter in the inbox."
 
   /**
    * The FIXED reject a new email from an unregistered sender receives (#2307). Static — NEVER

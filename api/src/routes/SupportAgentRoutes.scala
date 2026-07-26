@@ -21,12 +21,13 @@ import zio.json.*
  *     outcome).
  *
  *   - AGENT `POST /api/support/agent/reply`, `POST /api/support/agent/issues`, `POST
- *     /api/support/agent/request-consent`, `GET /api/support/agent/household` — the cloud agent's
- *     ONLY side-effect channels, authenticated solely by the per-session
- *     [[wifihaven.api.support.ConsentToken]] (thread- + household-bound, consent-scoped, short-TTL)
- *     as `Authorization: Bearer`. No JWT, no admin session — and conversely no other route in the
- *     API accepts this token. Denials are deliberately uniform (401 "unauthorized") so a probing
- *     caller learns nothing about why.
+ *     /api/support/agent/request-consent`, `POST /api/support/agent/escalate` (#2437 — the
+ *     STRUCTURAL handoff signal: the server labels the thread + emails the operator), `GET
+ *     /api/support/agent/household` — the cloud agent's ONLY side-effect channels, authenticated
+ *     solely by the per-session [[wifihaven.api.support.ConsentToken]] (thread- + household-bound,
+ *     consent-scoped, short-TTL) as `Authorization: Bearer`. No JWT, no admin session — and
+ *     conversely no other route in the API accepts this token. Denials are deliberately uniform
+ *     (401 "unauthorized") so a probing caller learns nothing about why.
  */
 object SupportAgentRoutes {
 
@@ -111,6 +112,23 @@ object SupportAgentRoutes {
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
             result <- responder.agentRequestConsent(bearerToken(req))
+            resp   <- toResponse(result)
+          } yield resp
+          handle.mapError(ErrorMapper.errorToResponse)
+        },
+
+      // ── Agent: hand this thread to a human (#2437) ───────────────────────────────
+      // The STRUCTURAL escalation signal. The agent calls this instead of only writing "a human will
+      // follow up" — the server then labels the token-bound thread (so the inbox is filterable) and
+      // emails the operator. The body carries at most a one-line `note`; the thread, the household,
+      // and the label all come from the verified token / config, so nothing here is aimable. An
+      // absent or empty body is accepted (a hijack-proof escalation must not be blockable on syntax).
+      Method.POST / "api" / "support" / "agent" / "escalate" ->
+        handler { (req: Request) =>
+          val handle: ZIO[Any, ApiError, Response] = for {
+            body   <- capped(req)
+            note   <- escalationNote("support", body)
+            result <- responder.agentEscalate(bearerToken(req), note)
             resp   <- toResponse(result)
           } yield resp
           handle.mapError(ErrorMapper.errorToResponse)

@@ -4,7 +4,14 @@ import wifihaven.api.PressConfig
 import wifihaven.api.auth.RateLimiter
 import wifihaven.api.db.PressMessageRepo
 import wifihaven.api.metrics.AppMetrics
-import wifihaven.api.notify.{EmailOutcome, EmailSender}
+import wifihaven.api.notify.{
+  EmailOutcome,
+  EmailSender,
+  EscalationChannel,
+  EscalationKind,
+  EscalationNotice,
+  Notifier,
+}
 import wifihaven.shared.Clock
 import zio.*
 
@@ -44,6 +51,13 @@ final case class PressResponder(
     // token-billing dispatch — the per-thread (per-sender) + global rate caps ARE the abuse control.
     dispatchSenderLimiter: RateLimiter,
     dispatchGlobalLimiter: RateLimiter,
+    // #2437: the #578 operator-notification seam. Press has NO inbox — `press@` goes to a Cloudflare
+    // Email Worker and the correspondence log has no consumer — so this is the ONLY way a press
+    // inquiry, or an escalation of one, reaches a human at all.
+    notifier: Notifier,
+    // #2437: bounds how often ONE sender's session can page the operator, so an agent stuck in a loop
+    // (or a prompt-injected one) cannot turn our own alert mailbox into a firehose.
+    escalateLimiter: RateLimiter,
 ) {
   import PressResponder.*
 
@@ -114,6 +128,28 @@ final case class PressResponder(
           subject = event.subject,
           agentToken = token,
           pressMessage = event.messageText,
+        ),
+      )
+      // #2437: tell the OPERATOR a press inquiry landed. Press has no inbox and no SPA view of
+      // `press_messages`, so without this a journalist could be answered — or not answered at all
+      // (a dispatch error) — with nobody at WifiHaven ever knowing. Emitted for every accepted
+      // inbound REGARDLESS of the dispatch outcome, precisely because a failed dispatch is when the
+      // operator most needs to know. Fail-open: `escalation` never fails, so this can neither break
+      // the webhook nor make the Worker retry. Volume is bounded by the rate caps above.
+      _       <- notifier.escalation(
+        EscalationNotice(
+          channel = EscalationChannel.Press,
+          kind = EscalationKind.Received,
+          sender = event.from,
+          subject = event.subject,
+          body = event.messageText,
+          agentNote = None,
+          // Our own durable pointer when the audit write landed. When it did NOT (that recording is
+          // fail-open), this falls back to the Worker-supplied message id — which swaps the slot's
+          // trust class from server-authored to sender-influenced. Safe because the notice escapes
+          // every field at render and treats all of them as untrusted regardless.
+          reference =
+            if pressMessageId > 0 then s"press_messages id=$pressMessageId" else event.messageId,
         ),
       )
     } yield outcome match {
@@ -191,6 +227,94 @@ final case class PressResponder(
         }
       }
 
+  // ── #2437: escalation — the handoff that actually reaches a human ────────────
+
+  /**
+   * The press agent hands this inquiry to a human (#2437) — a journalist asking to schedule a call,
+   * anything the agent cannot answer from public information. The agent still emails its courteous
+   * holding reply via [[agentReply]]; THIS call is what makes the promise true, notifying the
+   * operator out-of-band via the #578 [[Notifier]] with the sender, the subject, the original
+   * message (re-read from the correspondence log by the id on the SIGNED token, never from the
+   * request), and the agent's one-line reason.
+   *
+   * Escalation is STRUCTURAL: only a call to this endpoint with a valid token registers one.
+   * Nothing text-matches the reply or the inbound email — a journalist who writes "a team member
+   * will follow up" in their own message has escalated nothing.
+   *
+   * The `note` is AGENT-AUTHORED and rides into the operator email HTML-escaped; it selects
+   * nothing. The sender identity comes from the token, so a hijacked agent cannot make us report a
+   * different peer (the same destination-locking that makes the autonomous reply safe).
+   */
+  def agentEscalate(bearer: Option[String], note: Option[String]): UIO[AgentActionResult] =
+    if !cfg.agentEndpointsEnabled then
+      AppMetrics.pressAgentAction("escalate", "disabled").as(AgentActionResult.Disabled)
+    else
+      clock.instant.flatMap { now =>
+        bearer.map(_.trim).filter(_.nonEmpty) match {
+          case None        =>
+            AppMetrics.pressAgentAction("escalate", "denied").as(AgentActionResult.Denied)
+          case Some(token) =>
+            PressToken.verify(token, now, cfg.agentTokenSecretTrimmed) match {
+              case Left(_)       =>
+                AppMetrics.pressAgentAction("escalate", "denied").as(AgentActionResult.Denied)
+              case Right(claims) =>
+                escalateLimiter.tryAcquire(s"escalate:${claims.replyTo}").flatMap { ok =>
+                  if !ok then
+                    AppMetrics
+                      .pressAgentAction("escalate", "rate_limited")
+                      .as(AgentActionResult.RateLimited)
+                  else escalate(claims, note)
+                }
+            }
+        }
+      }
+
+  private def escalate(
+      claims: PressToken.Claims,
+      note: Option[String],
+  ): UIO[AgentActionResult] =
+    for {
+      // Audit trail for every escalation — the peer + the log row, never the token.
+      _    <- ZIO.logInfo(
+        s"press: agent ESCALATED reply-to=${claims.replyTo} pressMessageId=${claims.pressMessageId}",
+      )
+      // The original inquiry, re-read from the audit log by the id the SIGNED token carries — so the
+      // operator sees what the journalist actually wrote, not a copy the agent could have edited.
+      // Best-effort: a missing/unreadable row degrades to a pointer, never blocks the notice.
+      body <- inboundBody(claims.pressMessageId)
+      _    <- notifier.escalation(
+        EscalationNotice(
+          channel = EscalationChannel.Press,
+          kind = EscalationKind.Escalated,
+          sender = claims.replyTo,
+          subject = claims.subject,
+          body = body,
+          agentNote = note.map(_.trim).filter(_.nonEmpty),
+          reference =
+            if claims.pressMessageId > 0 then s"press_messages id=${claims.pressMessageId}"
+            else "press_messages row unavailable",
+        ),
+      )
+      r    <- AppMetrics.pressAgentAction("escalate", "ok").as(AgentActionResult.Ok)
+    } yield r
+
+  /**
+   * The inbound message text for a recorded press row, or a pointer when it cannot be read (id 0
+   * because the fail-open inbound recording missed, the row is gone, or a DB blip). Never fails:
+   * the operator notice matters more than the quote inside it.
+   */
+  private def inboundBody(pressMessageId: Long): UIO[String] =
+    if pressMessageId <= 0 then ZIO.succeed(PressResponder.MissingInboundBody)
+    else
+      pressLog
+        .findById(pressMessageId)
+        .map(_.map(_.body).getOrElse(PressResponder.MissingInboundBody))
+        .catchAll(e =>
+          ZIO
+            .logWarning(s"press: escalation body lookup failed (fail-open): ${e.getMessage}")
+            .as(PressResponder.MissingInboundBody),
+        )
+
   // ── #2296: fail-open correspondence-log recording ────────────────────────────
 
   /**
@@ -236,6 +360,15 @@ final case class PressResponder(
 }
 
 object PressResponder {
+
+  /**
+   * #2437 — what the escalation notice quotes when the inbound row cannot be read (the fail-open
+   * recording missed, or the row is gone). Says so plainly rather than sending an empty quote block
+   * that reads like the journalist wrote nothing.
+   */
+  val MissingInboundBody: String =
+    "(the original message could not be read back from the press correspondence log — check the " +
+      "press@ mailbox / press_messages)"
 
   /** `Re:`-prefix the original subject, without double-prefixing a subject that already has one. */
   def replySubject(original: String): String = {

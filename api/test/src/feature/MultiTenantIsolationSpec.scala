@@ -5,7 +5,7 @@ import wifihaven.api.auth.*
 import wifihaven.api.beta.*
 import wifihaven.api.db.*
 import wifihaven.api.db.TypeMeta.given
-import wifihaven.api.notify.Notifier
+import wifihaven.api.notify.{EscalationNotice, Notifier}
 import wifihaven.api.policy.*
 import wifihaven.api.routes.*
 import wifihaven.shared.*
@@ -76,6 +76,8 @@ object MultiTenantIsolationSpec
         daysUntilFlip: Int,
     ): UIO[Unit] = ZIO.unit
     def passwordReset(email: String, resetUrl: String, ttlMinutes: Int): UIO[Unit]      = ZIO.unit
+    // #2437: this suite drives no escalation path; the notice is a no-op here.
+    def escalation(notice: EscalationNotice): UIO[Unit]                                 = ZIO.unit
   }
 
   // #2132: build the beta pipeline stack (service + routes) over the real repos.

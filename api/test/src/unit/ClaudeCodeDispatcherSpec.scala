@@ -23,7 +23,11 @@ object ClaudeCodeDispatcherSpec extends ZIOSpecDefault {
 
   // A fully-configured responder cfg for each transport (the recorder stands in for the network in
   // feature tests, so no live key shape matters here — these only drive selection + validation).
-  private val plainSet = PlainConfig(apiKey = "k", webhookSecret = "w")
+  // `escalationLabelTypeId` joined the common required chain in #2437 — an escalated thread that
+  // cannot be labelled is invisible in the operator's inbox, so it is boot-required alongside the
+  // Plain credentials rather than optional.
+  private val plainSet =
+    PlainConfig(apiKey = "k", webhookSecret = "w", escalationLabelTypeId = "lt_x")
 
   private val managedCfg = SupportConfig(
     responderEnabled = true,

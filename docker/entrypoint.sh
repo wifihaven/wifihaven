@@ -75,6 +75,10 @@ set -euo pipefail
 : "${WIFIHAVEN_EMAIL_ENABLED:=false}"
 : "${WIFIHAVEN_EMAIL_RESEND_API_KEY:=}"
 : "${WIFIHAVEN_EMAIL_FROM_ADDRESS:=}"
+# #2437: the OPERATOR mailbox every support/press escalation notice is emailed to. REQUIRED when
+# email is enabled AND a responder is on (AppConfig.validateRequired) — an escalation with nowhere to
+# go is a silent drop, so boot fails rather than degrading.
+: "${WIFIHAVEN_EMAIL_OPERATOR_ADDRESS:=}"
 # #2250: derive the "review in dashboard" link host from the shared SPA origin (own override still
 # honored). Before #2250 this had an env binding but no staging value, so staging alert/email links
 # pointed at the prod SPA.
@@ -90,6 +94,10 @@ set -euo pipefail
 : "${WIFIHAVEN_SUPPORT_PLAIN_WEBHOOK_SECRET:=}"
 : "${WIFIHAVEN_SUPPORT_PLAIN_IDENTITY_SECRET:=}"
 : "${WIFIHAVEN_SUPPORT_PLAIN_APP_ID:=}"
+# #2437: the Plain label TYPE id applied to a thread when the support agent escalates, so the
+# operator can filter the inbox for "waiting on a human". Required when the support responder is
+# enabled (SupportConfig.missingRequiredKeys); the key also needs Plain's `label:create` permission.
+: "${WIFIHAVEN_SUPPORT_PLAIN_ESCALATION_LABEL_TYPE_ID:=}"
 # #2200: the Claude support responder (cloud-agent dispatch per UI-originated Plain message, #2241
 # access model). DARK unless the WHOLE responder chain is set: WEBHOOK_SECRET (above) + the
 # Anthropic session-create triple (API key + pre-provisioned agent id + environment id, see
@@ -214,6 +222,7 @@ wifihaven {
     enabled      = ${WIFIHAVEN_EMAIL_ENABLED}
     resendApiKey = "${WIFIHAVEN_EMAIL_RESEND_API_KEY}"
     fromAddress  = "${WIFIHAVEN_EMAIL_FROM_ADDRESS}"
+    operatorAddress = "${WIFIHAVEN_EMAIL_OPERATOR_ADDRESS}"
     appBaseUrl   = "${WIFIHAVEN_EMAIL_APP_BASE_URL}"
   }
   beta {
@@ -232,6 +241,7 @@ wifihaven {
       webhookSecret  = "${WIFIHAVEN_SUPPORT_PLAIN_WEBHOOK_SECRET}"
       identitySecret = "${WIFIHAVEN_SUPPORT_PLAIN_IDENTITY_SECRET}"
       appId          = "${WIFIHAVEN_SUPPORT_PLAIN_APP_ID}"
+      escalationLabelTypeId = "${WIFIHAVEN_SUPPORT_PLAIN_ESCALATION_LABEL_TYPE_ID}"
     }
     responderEnabled       = ${WIFIHAVEN_SUPPORT_RESPONDER_ENABLED}
     issueFilingEnabled     = ${WIFIHAVEN_SUPPORT_ISSUE_FILING_ENABLED}

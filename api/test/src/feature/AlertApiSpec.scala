@@ -3,7 +3,7 @@ package wifihaven.api.feature
 import wifihaven.api.JwtConfig
 import wifihaven.api.auth.*
 import wifihaven.api.db.*
-import wifihaven.api.notify.Notifier
+import wifihaven.api.notify.{EscalationNotice, Notifier}
 import wifihaven.api.routes.*
 import wifihaven.shared.*
 import wifihaven.shared.Clock.TestClock
@@ -53,6 +53,8 @@ object AlertApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         daysUntilFlip: Int,
     ): UIO[Unit] = ZIO.unit
     def passwordReset(email: String, resetUrl: String, ttlMinutes: Int): UIO[Unit] = ZIO.unit
+    // #2437: this suite drives no escalation path; the notice is a no-op here.
+    def escalation(notice: EscalationNotice): UIO[Unit]                            = ZIO.unit
   }
 
   private val mac1       = MacAddress.unsafe("aa:bb:cc:11:22:33")

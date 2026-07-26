@@ -3,7 +3,7 @@ package wifihaven.api.feature
 import wifihaven.api.FlipConfig
 import wifihaven.api.billing.FlipService
 import wifihaven.api.db.*
-import wifihaven.api.notify.Notifier
+import wifihaven.api.notify.{EscalationNotice, Notifier}
 import wifihaven.api.policy.{PolicyService, PolicyServiceLive}
 import wifihaven.shared.*
 import wifihaven.shared.types.*
@@ -61,6 +61,8 @@ object BetaFlipLifecycleSpec
         daysUntilFlip: Int,
     ): UIO[Unit] = ref.update(_ :+ (householdId, window))
     def passwordReset(email: String, resetUrl: String, ttlMinutes: Int): UIO[Unit]      = ZIO.unit
+    // #2437: this suite drives no escalation path; the notice is a no-op here.
+    def escalation(notice: EscalationNotice): UIO[Unit]                                 = ZIO.unit
   }
 
   private def mkPolicy(clock: Clock, billing: HouseholdBillingRepo) =

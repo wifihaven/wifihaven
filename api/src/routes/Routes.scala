@@ -2243,6 +2243,32 @@ private def bearerToken(req: Request): Option[String] =
   }
 
 /**
+ * #2437: the ONE parser for an agent escalate body, shared by [[SupportAgentRoutes]] and
+ * [[PressAgentRoutes]] so the two channels cannot drift on how tolerant it is.
+ *
+ * The body is a single optional one-liner (`{"note": "..."}`) that rides into the operator email as
+ * escaped text; it selects nothing (the thread/household/peer and the label all come from the
+ * verified token and config). So this is deliberately TOLERANT: a blank body, `{}`, or even
+ * malformed JSON still escalates, with no note. Rejecting an escalation over body syntax would
+ * recreate the silent drop #2437 exists to fix — a promise of human follow-up with nobody notified.
+ */
+private final case class AgentEscalatePost(note: Option[String] = None)
+private object AgentEscalatePost {
+  given JsonCodec[AgentEscalatePost] = DeriveJsonCodec.gen[AgentEscalatePost]
+}
+
+private def escalationNote(channel: String, body: String): UIO[Option[String]] =
+  if body.trim.isEmpty then ZIO.none
+  else
+    body.fromJson[AgentEscalatePost] match {
+      case Right(p) => ZIO.succeed(p.note.map(_.trim).filter(_.nonEmpty))
+      case Left(e)  =>
+        ZIO
+          .logWarning(s"$channel: unparseable escalate body, escalating without a note: $e")
+          .as(None)
+    }
+
+/**
  * #2079/#2081: best-effort client IP for rate-limit keying.
  *
  * Deliberately does NOT trust the first (leftmost) hop of `X-Forwarded-For`: our own reverse-proxy
