@@ -4,7 +4,7 @@ import wifihaven.api.{MetricsConfig, PlainConfig, PressConfig, SupportConfig}
 import wifihaven.api.auth.RateLimiter
 import wifihaven.api.db.*
 import wifihaven.api.metrics.MetricsRuntime
-import wifihaven.api.notify.EmailSender
+import wifihaven.api.notify.{EmailSender, Notifier}
 import wifihaven.api.press.{PressAgentDispatcher, PressResponder}
 import wifihaven.api.routes.MetricsRoutes
 import wifihaven.api.support.*
@@ -178,6 +178,10 @@ object CloudAgentDispatchFailLoudSpec
       RateLimiter.allowAll,
       RateLimiter.allowAll,
       "https://app.example.test",
+      // #2437: this suite asserts DISPATCH fail-loudness, not escalation — a log-only notifier keeps
+      // it from depending on the notification transport.
+      Notifier.logOnly,
+      RateLimiter.allowAll,
     )
 
   // A UI-originated customer chat on an identified thread (the household resolves), so the responder
@@ -243,6 +247,9 @@ object CloudAgentDispatchFailLoudSpec
       pressLog,
       clock,
       RateLimiter.allowAll,
+      RateLimiter.allowAll,
+      // #2437: same — dispatch fail-loudness is the subject here, not the operator notice.
+      Notifier.logOnly,
       RateLimiter.allowAll,
     )
 
