@@ -1,0 +1,121 @@
+# Support data-access consent (#2419)
+
+How the Claude support responder gets permission to read the customer's own
+household summary — and why it can never grant itself that permission.
+
+Refs: [#2419](https://github.com/wifihaven/wifihaven/issues/2419),
+[#2241](https://github.com/wifihaven/wifihaven/issues/2241) (the agent token),
+[#2200](https://github.com/wifihaven/wifihaven/issues/2200) (the responder),
+[#2199](https://github.com/wifihaven/wifihaven/issues/2199) (the identified
+widget), [#2259](https://github.com/wifihaven/wifihaven/issues/2259) (agent-token
+revocation).
+
+## The problem
+
+The #2241 token carries a `dataAccess` scope; only with it does
+`GET /api/support/agent/household` return the (bounded) account summary. That
+scope was sourced from a `dataConsent` flag on the Plain webhook payload which
+**nothing ever set** — so it was always false, and the agent's only option on an
+account question was to decline:
+
+> "I don't have permission to look up your account details for this thread, so I
+> can't pull the exact number for you directly here."
+
+That is a dead end, not an answer.
+
+## The flow
+
+1. The customer asks something that needs account data.
+2. The agent, having no data scope, calls
+   `POST /api/support/agent/request-consent` with its existing thread-bound
+   token. It **requests**; it does not grant.
+3. The SERVER posts a fixed, server-authored consent prompt into that thread
+   (never agent-authored text), carrying a signed, short-TTL consent link:
+   `<appBaseUrl>/support/consent?g=<grant token>`. The grant token is HMAC-signed
+   under the agent-token secret with a distinct `g1` version prefix, so it is
+   domain-separated from the `v1` agent token — neither verifier accepts the
+   other's tokens.
+4. The customer opens the link **signed in to the dashboard** and clicks Allow.
+   The SPA posts the grant token to `POST /api/support/consent` with their normal
+   session JWT. The server verifies the grant token, requires the JWT's household
+   to equal the token's household, and records the grant in
+   `support_thread_consent` (V84).
+5. The customer's next message dispatches an agent session whose token is minted
+   with `dataAccess=true`, and the agent answers the question.
+
+## Why design (a), server-mediated, and not (b), widget-side consent
+
+The issue offered a second option: a consent control in the #2199 identified
+widget that stamps `dataConsent` on submission.
+
+- (b) requires consent **before** the question is asked. The customer has no idea
+  yet whether their question needs account data, so it is either a permanent
+  always-on toggle (over-broad) or a checkbox most people ignore (back to the
+  dead end).
+- (b) cannot rescue a conversation already in progress — which is exactly the
+  reported symptom.
+- (b) only works for the widget origin. The #2307 email-intake path has no
+  widget, so an email-origin thread could never consent.
+- (a) puts the decision at the moment it is needed, in the customer's own words
+  ("may I look that up?"), and works identically on both origins.
+
+(b) is not lost: a widget-stamped `dataConsent` still mints a data-scoped token.
+(a) is additive to it.
+
+## Scope and duration
+
+| Property | Value | Why |
+| --- | --- | --- |
+| Scope | one `(household_id, thread_id)` pair | Both are in the UNIQUE key and in every lookup, so consent on thread A grants nothing on thread B, and household A's row can never widen a household-B token. |
+| Duration | 24 hours from the grant | A support conversation's active window. Long enough for an async back-and-forth, short enough that a forgotten grant lapses on its own. Re-granting is one click. |
+| Revocation | `revoked_at` stamped by the customer's "stop allowing" action | Ahead-of-expiry withdrawal, without waiting out the TTL. A live grant is `revoked_at IS NULL AND expires_at > now`. |
+| Granularity of the data | unchanged — the bounded `HouseholdSummary` (name, plan, counts, profile names + pause state) | Consent widens the token's DATA SCOPE only; it never widens what the endpoint returns, nor the household/thread binding. |
+
+Because the token TTL is minutes while the consent TTL is 24 hours, revoking
+consent takes effect on the next dispatch at the latest — an already-minted
+data-scoped token stays valid until it expires. That residual window is the same
+one #2259 (the agent-token revocation list) exists to close; it is bounded by
+`support.agentTokenTtlMinutes`.
+
+## The security boundary
+
+- **Consent is recorded server-side from an explicit CUSTOMER action.** The only
+  writer is `POST /api/support/consent`, authenticated by the customer's session
+  JWT and scoped to `claims.hh`. Nothing parses the inbound message text for
+  agreement: a message saying "I consent" — or a prompt-injection string
+  impersonating one — changes nothing.
+- **The agent cannot self-grant.** Its token authorises `request-consent` (which
+  makes the server post a prompt) and nothing more. Requesting consent and having
+  consent are separate privileges, enforced by separate credentials — the agent
+  holds no JWT and there is no code path from an agent-token-authenticated
+  request to a `support_thread_consent` row.
+- **Cross-household is impossible by construction.** The grant endpoint refuses a
+  grant token whose household differs from the JWT's; the dispatch lookup keys on
+  the household the webhook already resolved. A household-A grant cannot appear
+  in a household-B token.
+- Every consent request, grant, mismatch, and revocation is audit-logged
+  (household + thread, never the token) and metered on
+  `support_consent_total{outcome}`.
+
+## Schema
+
+`support_thread_consent` (V84):
+
+| Column | Notes |
+| --- | --- |
+| `household_id` | FK → `households`, `ON DELETE CASCADE` |
+| `thread_id` | the Plain thread id (Plain owns threads; we mirror nothing) |
+| `granted_by_user_id` | FK → `users`, `ON DELETE SET NULL` — audit trail of which admin granted |
+| `granted_at` / `expires_at` / `revoked_at` | the grant window |
+| `UNIQUE (household_id, thread_id)` | one record per thread; a re-grant UPSERTs |
+
+## Operator notes
+
+- The agent prompt lives in `deploy/support-agent/agent.yaml`. The Claude Code
+  Cloud routine transport (#2300/#2327) keeps its prompt in the web UI, so after
+  any change to that `system:` block the operator must **re-paste the prompt into
+  the routine** at claude.ai/code/routines — otherwise the live path still runs
+  the old prompt.
+- If a customer reports the assistant asking for permission repeatedly, check
+  whether their grant is expiring (24h) or whether the consent link is being
+  opened while signed out — the grant POST requires an authenticated session.
