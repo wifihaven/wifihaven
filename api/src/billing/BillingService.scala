@@ -166,7 +166,20 @@ final case class BillingService(
    * Returns a bounded [[WebhookOutcome]] for the metric — never a per-customer/-household value.
    */
   def handleWebhook(payload: String, sigHeader: Option[String]): UIO[WebhookOutcome] =
-    if cfg.webhookSecret.trim.isEmpty then ZIO.succeed(WebhookOutcome.NotConfigured)
+    // #2414: this branch is UNREACHABLE while billing is enabled — StripeConfig.validate now fails
+    // boot when `enabled=true` and `webhookSecret` is unset, because reaching here answers Stripe
+    // HTTP 200 (see BillingRoutes), Stripe then never retries, and subscription state silently
+    // never advances. It stays for the enabled=false posture (self-hosted never bills), and logs at
+    // ERROR as defense-in-depth: if it ever fires with billing on, the boot gate has regressed.
+    if cfg.webhookSecret.trim.isEmpty then
+      ZIO
+        .logError(
+          "Stripe webhook arrived but wifihaven.stripe.webhookSecret is unset while " +
+            "wifihaven.stripe.enabled=true — dropping it unverified; the #2414 boot guard should " +
+            "have prevented this deploy from starting",
+        )
+        .when(cfg.enabled)
+        .as(WebhookOutcome.NotConfigured)
     else
       clock.instant.flatMap { now =>
         StripeWebhook.verifyAndParse(payload, sigHeader, cfg.webhookSecret, now) match {

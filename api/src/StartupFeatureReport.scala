@@ -62,7 +62,10 @@ object StartupFeatureReport {
         "stripe-billing",
         stripe.enabled,
         if stripe.enabled then
-          "wifihaven.stripe.enabled=true — secretKey required & set, /api/billing/* live"
+          // #2414: webhookSecret joined secretKey as boot-required — with it unset every webhook
+          // would 200-and-no-op, so "enabled" now guarantees both are present.
+          "wifihaven.stripe.enabled=true — secretKey + webhookSecret required & set, " +
+            "/api/billing/* live"
         else
           "wifihaven.stripe.enabled=false — billing off, /api/billing/* return not-configured (#2135/#2266)",
       ),

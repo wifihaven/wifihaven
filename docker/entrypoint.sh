@@ -42,6 +42,8 @@ set -euo pipefail
 # appBaseUrl defaults to the shared WIFIHAVEN_APP_BASE_URL (#2250) but keeps its own override.
 # #2266: EXPLICIT enable flag — billing is off unless set true, NOT inferred from the key. When
 # true, an unset secretKey FAILS BOOT (AppConfig.validateRequired). Default false = self-hosted off.
+# #2414: an unset WIFIHAVEN_STRIPE_WEBHOOK_SECRET under enabled=true fails boot too — without it
+# every Stripe webhook 200s and no-ops, so Stripe never retries and subscriptions never advance.
 : "${WIFIHAVEN_STRIPE_ENABLED:=false}"
 : "${WIFIHAVEN_STRIPE_SECRET_KEY:=}"
 : "${WIFIHAVEN_STRIPE_WEBHOOK_SECRET:=}"

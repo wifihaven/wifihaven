@@ -110,7 +110,9 @@ wifihaven {
   # stripe {
   #   # #2266: EXPLICIT enable flag (no dark-by-default). Billing is off unless set
   #   # true — NOT inferred from secretKey presence. When true, secretKey is REQUIRED
-  #   # and an unset key FAILS BOOT (rather than silently no-opping).
+  #   # and an unset key FAILS BOOT (rather than silently no-opping). #2414: webhookSecret
+  #   # is required under enabled=true too — without it every Stripe webhook answers 200
+  #   # and no-ops, Stripe never retries, and subscription state never advances.
   #   enabled           = false
   #   secretKey         = ""   # Stripe secret API key (sk_test_… / sk_live_…) — SECRET
   #   webhookSecret     = ""   # Webhook signing secret (whsec_…) — SECRET

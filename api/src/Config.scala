@@ -295,10 +295,10 @@ case class BetaConfig(
 case class StripeConfig(
     // #2266: EXPLICIT named enable flag (no dark-by-default). Billing is off by default and turns on
     // only when the operator sets `enabled=true` — NOT inferred from `secretKey` presence. A true
-    // flag makes `secretKey` REQUIRED (StripeConfig.validate → AppConfig.validateRequired fails boot),
-    // so a cloud deploy that means to bill but dropped the key crashes loudly instead of silently
-    // no-opping. Default false = the self-hosted / never-bills posture, logged at boot + on
-    // /api/debug/config.
+    // flag makes `secretKey` AND `webhookSecret` REQUIRED (StripeConfig.validate →
+    // AppConfig.validateRequired fails boot; #2414 added the latter), so a cloud deploy that means
+    // to bill but dropped either key crashes loudly instead of silently no-opping. Default false =
+    // the self-hosted / never-bills posture, logged at boot + on /api/debug/config.
     enabled: Boolean = false,
     secretKey: String = "",
     webhookSecret: String = "",
@@ -322,13 +322,29 @@ case class StripeConfig(
 object StripeConfig {
   // #2266: with billing explicitly enabled, `secretKey` is REQUIRED — an unset key then fails boot
   // (accumulated by AppConfig.validateRequired) rather than the old silent secretKey-presence no-op.
+  //
+  // #2414: `webhookSecret` is EQUALLY required, for the same reason and a worse failure mode.
+  // Without it BillingService.handleWebhook short-circuits to WebhookOutcome.NotConfigured, which
+  // BillingRoutes maps to HTTP 200 — so Stripe records the delivery as successful and NEVER
+  // retries, and no subscription transition (checkout.session.completed → active,
+  // invoice.payment_failed / customer.subscription.deleted → lapsed) ever lands. Billing
+  // half-works forever and looks green from Stripe's dashboard; the only runtime signal,
+  // `wifihaven_billing_webhook_total{outcome=not_configured}`, is indistinguishable from the
+  // intentional self-hosted billing-off posture. The prerequisite is pure config, checkable at boot
+  // with no live call, and never self-heals — so it FAILS HARD at startup (no-dark-by-default rule 1)
+  // rather than degrading at runtime. Both gaps are returned so boot reports them together
+  // (rule 4). enabled=false requires neither: that is the deliberate, named off-state (rule 3).
   private[api] def validate(cfg: StripeConfig): List[String] =
-    Option
-      .when(cfg.enabled && cfg.secretKey.trim.isEmpty)(
-        "wifihaven.stripe.secretKey must be set when wifihaven.stripe.enabled=true (billing is on) — " +
-          "set the key (or enabled=false to disable billing on this deploy)",
-      )
-      .toList
+    if !cfg.enabled then Nil
+    else
+      List(
+        "wifihaven.stripe.secretKey"     -> cfg.secretKey.trim,
+        "wifihaven.stripe.webhookSecret" -> cfg.webhookSecret.trim,
+      ).collect {
+        case (k, v) if v.isEmpty =>
+          s"$k must be set when wifihaven.stripe.enabled=true (billing is on) — " +
+            "set it (or enabled=false to disable billing on this deploy)"
+      }
 }
 
 // #578 — outbound email transport for admin notifications (the deferred
