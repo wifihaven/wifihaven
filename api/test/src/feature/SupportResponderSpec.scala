@@ -936,5 +936,67 @@ object SupportResponderSpec
         )
       }
     },
+    test(
+      "#2431: every webhook delivery logs its bounded outcome (thread + eventType), never the message text",
+    ) {
+      // The per-thread "why wasn't this answered?" trail the bounded supportAiDraft{outcome} counter
+      // can't give: a SILENT skip used to require a manual investigation (the 2026-07-26 03:45 UTC
+      // loop-guard skip of our own thread.chat_sent echoes). Drive a NON-actionable inbound
+      // (thread.chat_sent, our own reply) → SkippedNotInbound, and assert the outcome + thread +
+      // eventType are logged while the (distinctive, PII-shaped) message text NEVER is.
+      (for {
+        _           <- cleanDb
+        (routes, _) <- makeRoutes(liveCfg)
+        secretText = "PLEASE-LEAK-MY-SECRET-DEVICE-MAC-aa:bb:cc:dd:ee:ff"
+        body       = payload(
+          Some(1L),
+          "th_logpin",
+          secretText,
+          eventType = "thread.chat_sent",
+          actorType = "user",
+        )
+        _    <- postWebhook(routes, body, Some(sign(body)))
+        logs <- ZTestLogger.logOutput
+      } yield {
+        val outcomeLine = logs.find(e =>
+          e.logLevel == LogLevel.Info && e.message().contains("support webhook outcome="),
+        )
+        assertTrue(
+          outcomeLine.exists(e =>
+            e.message().contains("outcome=skipped_not_inbound") &&
+              e.message().contains("thread=th_logpin") &&
+              e.message().contains("eventType=thread.chat_sent"),
+          ),
+          // PII guard: the customer message text NEVER appears in ANY log line.
+          logs.forall(e => !e.message().contains(secretText)),
+        )
+      }).provideSome[TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task]](
+        ZTestLogger.default,
+      )
+    },
+    test(
+      "#2431: a pre-parse outcome (forged signature) logs the outcome with thread/eventType = -",
+    ) {
+      // The signature/malformed/disabled branches have no parsed event, so thread + eventType are
+      // unknown and log as "-" — the outcome label is still recorded so a rejected delivery isn't
+      // silent.
+      (for {
+        _           <- cleanDb
+        (routes, _) <- makeRoutes(liveCfg)
+        body = payload(Some(1L), "th_forged", "does not matter, signature is bad")
+        _    <- postWebhook(routes, body, Some("deadbeef" * 8))
+        logs <- ZTestLogger.logOutput
+      } yield assertTrue(
+        logs.exists(e =>
+          e.logLevel == LogLevel.Info &&
+            e.message().contains("support webhook outcome=") &&
+            e.message().contains("outcome=invalid_signature") &&
+            e.message().contains("thread=-") &&
+            e.message().contains("eventType=-"),
+        ),
+      )).provideSome[TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task]](
+        ZTestLogger.default,
+      )
+    },
   ) @@ TestAspect.sequential
 }
