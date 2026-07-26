@@ -107,6 +107,14 @@ object SupportResponderSpec
   // /api/debug/config via StartupFeatureReport, and inert: webhook no-ops, agent endpoints 404.
   private val darkCfg = SupportConfig()
 
+  // #2461: the issue-filing route's response shape, decoded from the wire so the pin asserts what
+  // the agent actually receives (number/url optional — a 2xx GitHub body we could not parse must
+  // still be a success, just without a link).
+  private final case class FiledIssueBody(ok: Boolean, number: Option[Int], url: Option[String])
+  private object FiledIssueBody {
+    given JsonCodec[FiledIssueBody] = DeriveJsonCodec.gen[FiledIssueBody]
+  }
+
   private final case class Stubs(
       plain: PlainClient.Recorder,
       github: GithubIssueClient.Recorder,
@@ -942,6 +950,30 @@ object SupportResponderSpec
             i.body.contains("[redacted-ip]") &&
             !i.title.contains("parent@example.com")
           },
+        )
+    },
+    test("#2461: a filed issue's number + url come back so the agent can quote the link") {
+      for {
+        _              <- cleanDb
+        hhRepo         <- ZIO.service[HouseholdRepo]
+        hh             <- hhRepo.create("Family L", "fam-l")
+        (routes, _)    <- makeRoutes(liveCfg)
+        token          <- mintToken(hh, "th_link", dataAccess = false)
+        (status, body) <- agentPost(
+          routes,
+          "/api/support/agent/issues",
+          """{"title":"Blocking silently fails","body":"repro steps"}""",
+          Some(token),
+        )
+        filed = body.fromJson[FiledIssueBody].toOption
+      } yield assertTrue(status == Status.Ok) &&
+        // The route must hand the agent a quotable, PUBLIC link — not a bare {"ok":true}.
+        assertTrue(
+          filed.map(_.ok).contains(true),
+          filed.flatMap(_.number).exists(_ > 0),
+          filed
+            .flatMap(_.url)
+            .exists(_.startsWith("https://github.com/wifihaven/wifihaven/issues/")),
         )
     },
     test("injection pin: an exfiltration order in the message changes nothing structurally") {
