@@ -234,7 +234,14 @@ object PlainClient {
   // failure: logError with the fix named inline, so it is visible beyond a WARN nobody reads. Only
   // the transient bucket stays a warning. Fail-open is preserved either way — the identity endpoint
   // still answers; this only makes a broken mapping observable.
-  private def logCustomerFailure(op: String, reason: String, detail: String): UIO[Unit] =
+  //
+  // `detail` is passed through [[redactBody]] first (review NIT): it carries up to 500 chars of the
+  // raw Plain response, and on THIS path the request we sent — and so plausibly the response that
+  // echoes it — contains the household admin's EMAIL ADDRESS. The Plain error message itself names
+  // the condition without the address, which is what an operator acts on, so the body tail is
+  // stripped before it reaches the logs / Loki. Same reasoning as the #2430 thread-timeline path.
+  private def logCustomerFailure(op: String, reason: String, rawDetail: String): UIO[Unit] = {
+    val detail = redactBody(rawDetail)
     reason match {
       case CustomerReason.EmailCollision =>
         ZIO.logError(
@@ -248,8 +255,9 @@ object PlainClient {
       case CustomerReason.Permission     =>
         ZIO.logError(
           s"plain $op failed [reason=$reason]: $detail — PROVISIONING GAP: the Plain machine-user " +
-            "API key lacks the customer:edit permission; grant it (docs/ops/plain-setup.md §5.1) " +
-            "so the household→customer mapping can be written",
+            "API key lacks a permission this write needs — `customer:edit` for the upsert, " +
+            "`customerTenantMembership:create` for the household-membership join; grant it " +
+            "(docs/ops/plain-setup.md §5.1) so the household→customer mapping can be written",
         )
       case CustomerReason.Schema         =>
         ZIO.logError(
@@ -260,6 +268,7 @@ object PlainClient {
       case _                             =>
         ZIO.logWarning(s"plain $op failed [reason=$reason]: $detail")
     }
+  }
 
   // A single small GraphQL POST; shorter than the blocklist fetcher's multi-MB pulls. Support is
   // best-effort and fail-open, so a slow Plain shouldn't tie up the caller's fiber for long.
@@ -654,6 +663,15 @@ object PlainClient {
     // The reconcile keys the SAME mutation on `identifier: { emailAddress }` — the only identifier
     // that can reach a customer Plain created for us — and patches `onUpdate.externalId`
     // (`OptionalStringInput`, a wrapped `{ value }`) to the household id.
+    //
+    // LOAD-BEARING INVARIANT: `users.email` is GLOBALLY unique — `uq_users_email UNIQUE (email)`,
+    // `api/resources/db/migration/V67__users_email.sql`. That is the whole reason keying on the
+    // email workspace-wide is safe: at most one household can ever present a given address, so the
+    // customer this re-points can only belong to the household asking. If that unique key were ever
+    // relaxed to per-household (the direction the #2125 / #2140 multi-tenant work pushes), this
+    // becomes a CROSS-TENANT HIJACK — household B's identity call would seize household A's Plain
+    // customer and, via #2430's thread-timeline read, feed A's conversation to B's responder.
+    // Widening `uq_users_email` therefore requires revisiting this method, not just the migration.
     private def reconcileCustomerVars(req: PlainCustomerUpsert): Json =
       Json.Obj(
         "input" -> Json.Obj(
@@ -681,6 +699,21 @@ object PlainClient {
         ),
       )
 
+    // A failed reconcile leg, attributed. Review finding: hard-coding `email_collision` on BOTH
+    // legs mislabelled the one denial an operator most needs to see — the membership grant. A
+    // `customerTenantMembership:create` denial can ONLY surface on `addCustomerToTenants`, and the
+    // dashboard/MetricGuard text promises `permission` covers it, so the reconcile legs classify
+    // the same way the primary path does. `email_collision` stays the bucket for a collision we
+    // genuinely could not reconcile for any other reason (all three are permanent + logError).
+    private def reconcileFailure(op: String, detail: String): UIO[(PlainOutcome, String)] = {
+      val reason = classifyFieldFailure(detail) match {
+        case Reason.Permission => CustomerReason.Permission
+        case Reason.Schema     => CustomerReason.Schema
+        case _                 => CustomerReason.EmailCollision
+      }
+      logCustomerFailure(op, reason, detail).as((PlainOutcome.Error, reason))
+    }
+
     // Run the reconcile: patch the externalId, then assert household membership. BOTH halves must
     // land — a patched customer with no tenant membership is still a broken mapping, so a failed
     // join is an error, not a half-success.
@@ -690,12 +723,7 @@ object PlainClient {
         reconcileCustomerVars(req),
         Expect("upsertCustomer", Some("customer")),
       ).flatMap {
-        case Left(f)  =>
-          logCustomerFailure(
-            "upsertCustomer(reconcile)",
-            CustomerReason.EmailCollision,
-            f.detail,
-          ).as((PlainOutcome.Error, CustomerReason.EmailCollision))
+        case Left(f)  => reconcileFailure("upsertCustomer(reconcile)", f.detail)
         case Right(_) =>
           sendForBody(
             AddCustomerToTenantsMutation,
@@ -709,12 +737,7 @@ object PlainClient {
                     s"${req.externalId} (Plain had auto-created it from an inbound support email)",
                 )
                 .as((PlainOutcome.Ok, CustomerReason.Reconciled))
-            case Left(f)  =>
-              logCustomerFailure(
-                "addCustomerToTenants",
-                CustomerReason.EmailCollision,
-                f.detail,
-              ).as((PlainOutcome.Error, CustomerReason.EmailCollision))
+            case Left(f)  => reconcileFailure("addCustomerToTenants", f.detail)
           }
       }
 
@@ -725,6 +748,16 @@ object PlainClient {
       // exist if this still ran afterwards. It remains best-effort and never flips the customer
       // outcome (a missing tenant-field schema or a tenant hiccup is logged + metered, not fatal).
       //
+      // Necessary but NOT sufficient, and deliberately so (review finding): `upsertTenantEntitlement`
+      // short-circuits when there is nothing household-level to carry (`fullName` empty AND no
+      // attributes), which `SupportService.identity` can produce — it `catchAll`s the household and
+      // billing lookups to `None`, so a DB blip degrades the payload to "no household context". In
+      // that state no tenant is written and a reconcile's membership join has no target, so it FAILS
+      // — loudly, attributed, and metered, which is the correct outcome for a degraded read: we do
+      // not want to invent a Plain tenant from an empty household name (Plain's `UpsertTenantInput.
+      // name` is required and emptiness-checked, so it would be rejected anyway). The mapping is
+      // retried on the household's next identity call, when the repo read succeeds.
+      //
       // The customer upsert is the primary write and its outcome is what we return/meter.
       upsertTenantEntitlement(req) *>
         sendForBody(
@@ -734,6 +767,11 @@ object PlainClient {
         ).flatMap {
           case Right(_) => ZIO.succeed((PlainOutcome.Ok, CustomerReason.Ok))
           case Left(f)  =>
+            // Deliberately PAYLOAD-only: Plain reports this condition as HTTP 200 + a
+            // `MutationError` on `data.upsertCustomer.error` (verified live, #2435), never as a
+            // non-2xx or a top-level `errors[]`. A response in either of those shapes is a different
+            // failure and falls through to the attributed non-collision branch below rather than
+            // triggering a reconcile against an unverified error shape.
             if f.body.flatMap(payloadErrorCode(_, "upsertCustomer")).contains(EmailCollisionCode)
             then reconcileCustomer(req)
             else {
@@ -835,8 +873,9 @@ object PlainClient {
         // every field write succeed; `error`/<reason> if any step fails — `tenant` for the tenant
         // step, `permission`/`schema`/`field_write` for a field write. Each failure is logged LOUD
         // (logError) and metered so a silently-failing entitlement path is visible beyond the logs.
-        // Fail-open is preserved: this whole method rides as a `zipLeft` follow-on and never flips
-        // the customer upsert outcome.
+        // Fail-open is preserved: this whole method runs as a side-step ahead of the customer upsert
+        // (#2435 moved it from a `zipLeft` follow-on to a `*>` predecessor so the reconcile's
+        // membership join has a tenant to join) and never flips the customer upsert outcome.
         sendForBody(
           UpsertTenantMutation,
           upsertTenantVars(req.tenantIdentifier, req.fullName),

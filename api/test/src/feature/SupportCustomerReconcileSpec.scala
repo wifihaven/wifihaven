@@ -136,6 +136,23 @@ object SupportCustomerReconcileSpec extends ZIOSpecDefault {
       .filter(l => !l.startsWith("#") && l.startsWith("support_customer_upsert_total"))
       .toList
 
+  /**
+   * The counter VALUE for one `{outcome,reason}` pair, 0.0 when the series is absent. The
+   * Prometheus registry is shared across the suite and `TestAspect.sequential` means an earlier
+   * test's samples are still there, so a presence-only assertion (`lines.exists`) can pass on
+   * someone else's increment (review NIT). Tests that own a reason another test also emits assert a
+   * DELTA instead.
+   */
+  private def counterValue(body: String, outcome: String, reason: String): Double =
+    customerUpsertLines(body)
+      .filter(l => l.contains(s"""outcome="$outcome"""") && l.contains(s"""reason="$reason""""))
+      // `<name>{<labels>} <value> [<timestamp>]` — the VALUE is the first field after the label set,
+      // not the last field on the line (the publisher appends a millis timestamp).
+      .flatMap(_.split('}').drop(1).headOption)
+      .flatMap(_.trim.split("\\s+").headOption)
+      .flatMap(v => scala.util.Try(v.toDouble).toOption)
+      .sum
+
   private def driveUpsert(base: String): UIO[PlainOutcome] =
     ZIO
       .serviceWithZIO[PlainClient](
@@ -228,49 +245,72 @@ object SupportCustomerReconcileSpec extends ZIOSpecDefault {
       }
     },
     test("a successful reconcile meters outcome=ok reason=reconciled") {
+      // Asserted as a DELTA, not presence: an earlier test in this sequential suite already emitted
+      // this exact `{outcome,reason}` pair into the shared registry, so `lines.exists` would pass
+      // even if THIS drive metered nothing (review NIT).
       ZIO.scoped {
         for {
           cap <- routingServer()
           base = s"http://127.0.0.1:${cap.server.getAddress.getPort}/"
-          _    <- driveUpsert(base)
-          _    <- tickPublisher
-          body <- scrape.catchAll(resp => resp.body.asString.orDie)
-          lines = customerUpsertLines(body)
+          _      <- tickPublisher
+          before <- scrape.catchAll(resp => resp.body.asString.orDie)
+          _      <- driveUpsert(base)
+          _      <- tickPublisher
+          after  <- scrape.catchAll(resp => resp.body.asString.orDie)
         } yield assertTrue(
-          lines.exists(l => l.contains("""outcome="ok"""") && l.contains("""reason="reconciled"""")),
+          counterValue(after, "ok", "reconciled") - counterValue(before, "ok", "reconciled") == 1.0,
         )
       }
     },
     test("a FAILED reconcile is an error, attributed reason=email_collision — never a false Ok") {
       // The permanent-misconfiguration case: the collision is real and the reconcile could not
-      // establish the mapping. It must not masquerade as success (#2408 rigor).
+      // establish the mapping. It must not masquerade as success (#2408 rigor). This failure carries
+      // no permission/schema marker, so it lands in the `email_collision` catch-all.
       ZIO.scoped {
         for {
           cap <- routingServer(reconcileResp =
-            """{"data":{"upsertCustomer":{"customer":null,"error":{"message":"You do not have permission to perform this action.","code":"forbidden","type":"FORBIDDEN"}}}}""",
+            """{"data":{"upsertCustomer":{"customer":null,"error":{"message":"internal server error","code":"internal","type":"INTERNAL"}}}}""",
           )
           base = s"http://127.0.0.1:${cap.server.getAddress.getPort}/"
+          _       <- tickPublisher
+          before  <- scrape.catchAll(resp => resp.body.asString.orDie)
           outcome <- driveUpsert(base)
           _       <- tickPublisher
-          body    <- scrape.catchAll(resp => resp.body.asString.orDie)
-          lines = customerUpsertLines(body)
+          after   <- scrape.catchAll(resp => resp.body.asString.orDie)
         } yield assertTrue(
           outcome == PlainOutcome.Error,
-          lines.exists(l =>
-            l.contains("""outcome="error"""") && l.contains("""reason="email_collision""""),
-          ),
+          counterValue(after, "error", "email_collision") -
+            counterValue(before, "error", "email_collision") == 1.0,
         )
       }
     },
-    test("a reconcile whose tenant JOIN fails is still an error, not a silent half-mapping") {
+    test(
+      "a reconcile whose tenant JOIN is DENIED attributes reason=permission, not email_collision",
+    ) {
+      // Review finding: hard-coding `email_collision` on both reconcile legs mislabelled the one
+      // denial the dashboard promises `permission` covers — `customerTenantMembership:create` can
+      // ONLY be denied on `addCustomerToTenants`. And it is still an error, not a silent
+      // half-mapping: a customer patched with the household id but never joined to the tenant is
+      // just as broken as no patch at all.
       ZIO.scoped {
         for {
           cap <- routingServer(tenantsResp =
             """{"data":{"addCustomerToTenants":{"error":{"message":"Insufficient permissions, missing \"customerTenantMembership:create\"","code":"insufficient_permissions","type":"FORBIDDEN"}}}}""",
           )
           base = s"http://127.0.0.1:${cap.server.getAddress.getPort}/"
+          _       <- tickPublisher
+          before  <- scrape.catchAll(resp => resp.body.asString.orDie)
           outcome <- driveUpsert(base)
-        } yield assertTrue(outcome == PlainOutcome.Error)
+          _       <- tickPublisher
+          after   <- scrape.catchAll(resp => resp.body.asString.orDie)
+        } yield assertTrue(
+          outcome == PlainOutcome.Error,
+          counterValue(after, "error", "permission") -
+            counterValue(before, "error", "permission") == 1.0,
+          // and NOT mislabelled as the generic collision bucket
+          counterValue(after, "error", "email_collision") ==
+            counterValue(before, "error", "email_collision"),
+        )
       }
     },
     test("a clean first-try upsert meters outcome=ok reason=ok and does NOT reconcile") {
