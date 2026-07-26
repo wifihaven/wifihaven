@@ -694,10 +694,16 @@ final case class SupportResponder(
 
   private def applyGrant(claims: JwtClaims, g: ConsentGrant.Claims, now: Instant) =
     for {
+      // #2460 idempotency key: was this (household, thread) ALREADY live before this click? The
+      // grant itself is an UPSERT, so it cannot tell us — and re-confirming a live consent (a page
+      // reload, a re-opened link, a second Allow) must not queue a second agent session or a second
+      // answer for the same question. Read BEFORE the write; a fail-closed lookup reads `false`,
+      // which at worst resumes a conversation that was already resumed.
+      wasLive <- consentGranted(claims.hh, g.threadId, now)
       // Audit pointer: WHICH admin granted. Best-effort — a DB blip on the lookup must not lose
       // the customer's consent, so the grant is still recorded (with a null actor).
-      user <- userRepo.findByUsername(claims.hh, claims.sub).catchAll(_ => ZIO.none)
-      res  <- consentRepo
+      user    <- userRepo.findByUsername(claims.hh, claims.sub).catchAll(_ => ZIO.none)
+      res     <- consentRepo
         .grant(claims.hh, g.threadId, user.map(_.id), now, now.plus(SupportResponder.ConsentTtl))
         .foldZIO(
           e =>
@@ -709,7 +715,130 @@ final case class SupportResponder(
                 s"thread=${g.threadId} by=${claims.sub} ttlHours=${SupportResponder.ConsentTtl.toHours}",
             ) *> AppMetrics.supportConsent("granted").as(ConsentResult.Granted),
         )
+      // The grant row is committed BEFORE the resume, so the token minted below is guaranteed to
+      // carry the scope the customer just granted.
+      _ <- ZIO.when(res == ConsentResult.Granted && !wasLive)(resumeAfterGrant(claims.hh, g, now))
+      _ <- ZIO.when(res == ConsentResult.Granted && wasLive)(
+        AppMetrics.supportConsent("resume_skipped"),
+      )
     } yield res
+
+  /**
+   * #2460 — CLOSE THE LOOP. Consent used to be consumed only by the NEXT inbound webhook, so a
+   * customer who clicked Allow got nothing: the consent link had navigated them out of the page
+   * hosting the chat widget, and the assistant never learned the grant happened. The conversation
+   * dead-ended exactly the way #2419 was created to stop it dead-ending.
+   *
+   * So the SERVER finishes the turn: read the thread, take the customer's last message — the
+   * question that made the agent ask for permission in the first place — and re-dispatch it with a
+   * `dataAccess=true` token. The customer does nothing; they come back (whenever they come back) to
+   * an answer.
+   *
+   * Bounded and non-bypassing by construction:
+   *   - IDEMPOTENT per grant — the caller only runs this on a transition from no-live-grant to
+   *     granted, so a repeat Allow re-dispatches nothing and cannot double-answer;
+   *   - it draws the ORDINARY dispatch caps (per-thread then global, same short-circuit as the
+   *     webhook path) — a resume is a real agent session and costs real tokens;
+   *   - it does NOT trip the #2403/#2404 loop guard: that guard lives on the inbound webhook path
+   *     and drops our own outbound writes, which is untouched here. The agent's eventual reply
+   *     still arrives as a `thread.chat_sent` the guard drops, so the loop terminates;
+   *   - customer-visible latency is capped ([[ResumeBudget]]): past it the POST returns and the
+   *     dispatch finishes on its own fiber. The grant is already committed either way.
+   */
+  private def resumeAfterGrant(
+      hh: HouseholdId,
+      g: ConsentGrant.Claims,
+      now: Instant,
+  ): UIO[Unit] =
+    plain
+      .threadHistory(g.threadId, PlainClient.HistoryFetchLimit)
+      .flatMap { history =>
+        // The turns BEFORE the customer's last message, and that message itself. Everything after
+        // it is dropped, which is also what keeps the server's consent prompt (and its link) out of
+        // the agent's context on this path.
+        history.lastIndexWhere(_.role == ThreadMessageRole.Customer) match {
+          case -1  => nudgeAfterGrant(g.threadId)
+          case idx =>
+            redispatchAfterGrant(hh, g.threadId, history(idx).text, history.take(idx), now)
+        }
+      }
+      .disconnect
+      .timeoutTo(())(identity)(SupportResponder.ResumeBudget)
+      .unit
+
+  /**
+   * The re-dispatch itself: the customer's own last message, answered under the scope they just
+   * granted. Drawn from the SAME cost buckets as an inbound dispatch — a thread that has exhausted
+   * its per-thread cap grants fine (the customer's consent is never lost to a cost cap) but gets no
+   * free follow-up session; the metric says which happened.
+   */
+  private def redispatchAfterGrant(
+      hh: HouseholdId,
+      threadId: String,
+      customerMessage: String,
+      history: List[PlainThreadMessage],
+      now: Instant,
+  ): UIO[Unit] =
+    dispatchThreadLimiter.tryAcquire(s"thread:$threadId").flatMap { threadOk =>
+      if !threadOk then AppMetrics.supportConsent("resume_rate_limited")
+      else
+        dispatchGlobalLimiter.tryAcquire("global").flatMap { globalOk =>
+          if !globalOk then AppMetrics.supportConsent("resume_rate_limited")
+          else
+            for {
+              household <- householdRepo.findById(hh).catchAll(_ => ZIO.none)
+              billing   <- billingRepo.findByHousehold(hh).catchAll(_ => ZIO.none)
+              token = ConsentToken.mint(
+                household = hh,
+                threadId = threadId,
+                dataAccess = true,
+                now = now,
+                ttl = cfg.agentTokenTtl,
+                secret = cfg.agentTokenSecretTrimmed,
+              )
+              // Same audit trail as every other mint (#2241) — household + thread + scope.
+              _       <- ZIO.logInfo(
+                s"support: consent granted — resuming thread=$threadId household=${hh.value} " +
+                  "with a dataAccess=true agent session",
+              )
+              outcome <- dispatcher.dispatch(
+                AgentDispatch(
+                  threadId = threadId,
+                  householdName = household.map(_.name).getOrElse(""),
+                  plan = billing.map(_.status),
+                  dataConsent = true,
+                  agentToken = token,
+                  customerMessage = customerMessage,
+                  history = history,
+                ),
+              )
+              _       <- AppMetrics.supportConsent(outcome match {
+                case DispatchOutcome.Dispatched                          => "resumed"
+                case DispatchOutcome.Disabled                            => "resume_disabled"
+                case DispatchOutcome.Error | DispatchOutcome.ConfigError => "resume_error"
+              })
+            } yield ()
+        }
+    }
+
+  /**
+   * The fail-open fallback: we could not read the thread (Plain hiccup, or the `timeline:read`
+   * permission gap of #2452), so we do not know what to re-ask. Rather than leaving the customer on
+   * a terminal page with nothing happening, post a SERVER-AUTHORED nudge telling them the
+   * permission landed and one more message will get their answer.
+   *
+   * Server-authored is load-bearing (#2419 anti-phishing): the agent supplies no text on any
+   * consent-adjacent write, so a prompt-injected agent cannot craft a message under our
+   * attribution. It carries NO consent URL (#2453).
+   */
+  private def nudgeAfterGrant(threadId: String): UIO[Unit] =
+    plain
+      .writeThread(PlainThreadWrite(threadId, SupportResponder.consentGrantedNudge))
+      .flatMap {
+        case PlainOutcome.Ok       => AppMetrics.supportConsent("resume_no_message")
+        case PlainOutcome.Disabled => AppMetrics.supportConsent("resume_disabled")
+        case PlainOutcome.Error    => AppMetrics.supportConsent("resume_error")
+      }
 
   /**
    * Withdraw. The repo's Boolean says whether a LIVE grant was actually revoked; a withdrawal of an
@@ -901,6 +1030,27 @@ object SupportResponder {
        |and you can withdraw it from the same page at any time. If you'd rather not, just ignore
        |this and tell me what you're seeing — I'll help without it, or hand you to a human
        |teammate.""".stripMargin
+
+  /**
+   * #2460 — how long a customer's consent POST may wait on the resume before we hand the browser
+   * its 200 and let the dispatch finish on its own fiber. The two legs it covers are separately
+   * bounded (`PlainClient.HistoryTimeout` 8s + the dispatcher's own 30s request timeout), which
+   * adds up to a wait no customer should sit through behind a spinner — and the grant is committed
+   * BEFORE the resume starts, so a timeout costs the follow-up's promptness, never the consent.
+   */
+  val ResumeBudget: Duration = 12.seconds
+
+  /**
+   * #2460 — the fail-open nudge posted when the grant lands but the thread is unreadable, so we
+   * cannot tell what to re-ask (a Plain hiccup or the #2452 `timeline:read` gap). FIXED and
+   * SERVER-AUTHORED — the agent supplies no text on any consent-adjacent write (#2419
+   * anti-phishing) — and deliberately carries NO consent URL (#2453).
+   */
+  val consentGrantedNudge: String =
+    s"""$AiReplyAttribution
+       |
+       |Thanks — I can see your account summary for this conversation now. Ask me your question
+       |again and I'll take a look.""".stripMargin
 
   /**
    * #2419 — the outcome of a CUSTOMER consent action (`POST /api/support/consent`). Bounded enum;

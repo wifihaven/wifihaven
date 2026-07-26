@@ -352,6 +352,32 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Consent grants that dead-ended (24h) — expect 0",
+      "description": "sum(increase(support_consent_total{env=\"$env\",outcome=~\"resume_rate_limited|resume_disabled|resume_error\"}[24h])) — #2460: a customer granted data access and the server FAILED to close the loop for them. Every grant emits exactly one resume_* outcome. Benign ones: resumed (the customer's last question was re-dispatched under the new scope — the happy path), resume_no_message (Plain's timeline was unreadable so the fixed server-authored nudge posted instead — check the thread-history panel for a thread:read/timeline:read gap), resume_skipped (a re-confirmed LIVE grant — the idempotency guard doing its job). The three counted HERE are the ones where the customer gets nothing back: resume_rate_limited (the thread hit its dispatch cap — the grant landed, the follow-up did not), resume_disabled (the dispatcher or Plain client is unconfigured), resume_error (the dispatch or the nudge write failed). Sustained non-zero means customers are granting permission and still being left waiting — the exact symptom #2460 fixed.",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 40 },
+      "id": 15,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto", "colorMode": "background", "graphMode": "none", "justifyMode": "auto" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(increase(support_consent_total{env=\"$env\",outcome=~\"resume_rate_limited|resume_disabled|resume_error\"}[24h]))",
+          "legendFormat": "dead-ended grants (24h)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "Support dispatch failures by reason — dead-responder watch (#2416)",
       "description": "sum by (reason) (rate(support_ai_draft_total{env=\"$env\",outcome=\"error\"}[5m])) — WHY the support cloud agent could not be dispatched. Complements the #2438 'Cloud-agent dispatch outcomes' panel, which counts dispatch attempts by {outcome,transport}: this one splits the ERROR bucket by cause. config = a non-self-healing 4xx at the Anthropic boundary: a revoked/wrong anthropicApiKey (401), a wrong claudeAgentId / claudeEnvironmentId / claudeCodeRoutineId (404), or a STALE hard-coded anthropic-beta header (400). Those NEVER self-heal — the responder is dead until a human rotates the key, fixes the id, or bumps the header, and the API also logs each at ERROR with the fix named inline. transient = transport / timeout / 5xx, plus the 4xx that ARE load/timing signals (408, 429) — expected noise. ALERT on any sustained 'config' rate (warning rule W6, infra/grafana/alerting-rules-warning.tf); ignore isolated 'transient' blips. Dispatch is fail-open by design, so the webhook keeps returning 200 either way.",
       "type": "timeseries",

@@ -934,7 +934,12 @@ object AppMetrics {
   //   error   — the CUSTOMER-side action on POST /api/support/consent;
   //   read_withdrawn | read_no_scope   — #2476, the agent's household READ refused because no LIVE
   //   grant existed at read time. `read_withdrawn` is the security-interesting one: the token WAS
-  //   minted with data scope, and the customer withdrew before the agent used it.
+  //   minted with data scope, and the customer withdrew before the agent used it;
+  //   resumed | resume_no_message (the thread was unreadable, so the server-authored nudge posted
+  //   instead) | resume_skipped (a re-confirmed LIVE grant — the idempotency guard) |
+  //   resume_rate_limited | resume_disabled | resume_error   — #2460, the SERVER finishing the turn
+  //   on a grant so the customer does not have to find their way back and re-ask. A `granted` with
+  //   no accompanying resume_* means the loop did NOT close.
   // `household_mismatch` is the security-relevant one (a consent link redeemed by another
   // household's session, which writes nothing) — it should be flat zero in normal operation.
   def supportConsent(outcome: String): UIO[Unit]       =
