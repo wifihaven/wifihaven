@@ -66,7 +66,11 @@ object PressResponderSpec
     claudeEnvironmentId = "env_press_test",
     agentTokenSecret = TokenSecret,
     deploymentEnv = "staging",
-    fromAddress = "press@staging.wifihaven.net",
+    // #2407: From and Reply-To are DISTINCT on staging. The From must sit on a Resend-verified
+    // domain, and only the apex `wifihaven.net` is verified — `staging.wifihaven.net` is a separate
+    // (unverified) domain to Resend. Reply-To carries the routed CF-Email-Worker inbox instead.
+    fromAddress = "press-staging@wifihaven.net",
+    replyToAddress = "press@staging.wifihaven.net",
   )
 
   // Flag false (the default) ⇒ the feature is EXPLICITLY off (#2265) — webhook no-ops, agent
@@ -230,6 +234,7 @@ object PressResponderSpec
         missing.contains("press.agentTokenSecret"),
         missing.contains("press.deploymentEnv"),
         missing.contains("press.fromAddress"),
+        missing.contains("press.replyToAddress"),
         liveCfg.missingRequiredKeys.isEmpty,
       )
     },
@@ -308,9 +313,16 @@ object PressResponderSpec
       } yield assertTrue(status == Status.Ok, emails.size == 1) &&
         assertTrue(
           // #2407: sent via `sendAs` under the press From-address — NOT the shared alerts@ sender the
-          // plain `send` path (from = None on the recorder) would leave. Reply-To threads any human
-          // follow-up back to the press mailbox the Cloudflare Email Worker watches.
-          emails.head.from.contains("press@staging.wifihaven.net"),
+          // plain `send` path (from = None on the recorder) would leave.
+          //
+          // From and Reply-To are deliberately DIFFERENT addresses here. The From must sit on a
+          // Resend-VERIFIED domain: only the apex `wifihaven.net` is verified, so staging borrows it
+          // as `press-staging@` (mirroring the `alerts-staging@` convention) rather than the
+          // unverified `staging.wifihaven.net` subdomain, which Resend would reject outright. It also
+          // keeps DMARC happy — `adkim=s` demands the DKIM `d=` strict-align with the From domain.
+          emails.head.from.contains("press-staging@wifihaven.net"),
+          // Reply-To is exempt from DMARC alignment, so it can point at the CF-Email-Worker-watched
+          // inbox — a journalist's human follow-up threads back into the responder pipeline.
           emails.head.replyTo.contains("press@staging.wifihaven.net"),
           // The destination stays server-locked to the token's sender (unchanged by #2407).
           emails.head.to == "reporter@example.com",
