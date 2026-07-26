@@ -116,6 +116,11 @@ object HttpRoutes {
       // the ceiling is generous, but bounded globally so a spammer forging many cold-email threads
       // can't turn us into a reply-amplification (backscatter) source.
       rejectLimiter         <- RateLimiterLive.make(maxAttempts = 100, windowSeconds = 60 * 60)
+      // #2419: the per-(household, thread) data-access consent record (V84) + the cap on how often
+      // the agent can make us post a consent prompt into ONE thread (3/hour — an assistant that
+      // keeps re-asking, or a prompt-injected one, must not be able to spam the customer).
+      supportConsentRepo    <- ZIO.service[wifihaven.api.db.SupportConsentRepo]
+      consentThreadLimiter  <- RateLimiterLive.make(maxAttempts = 3, windowSeconds = 60 * 60)
       supportResponder = wifihaven.api.support.SupportResponder(
         cfg.support,
         householdRepo,
@@ -123,6 +128,7 @@ object HttpRoutes {
         billingRepo,
         deviceRepo,
         profileRepo,
+        supportConsentRepo,
         plainClient,
         githubIssues,
         agentDispatcher,
@@ -132,6 +138,10 @@ object HttpRoutes {
         dispatchThreadLimiter,
         dispatchGlobalLimiter,
         rejectLimiter,
+        consentThreadLimiter,
+        // The consent link's origin: the ONE per-env SPA origin the API already carries (#2250),
+        // shared with the password-reset / dashboard links rather than a new support.* key.
+        cfg.email.appBaseUrl,
       )
       // #2203: the PRESS responder — the public inbound webhook (from the Cloudflare Email Worker)
       // → rate-cap → dispatch pipeline, plus the press agent's reply-target-bound EMAIL callback.
@@ -447,6 +457,9 @@ object HttpRoutes {
       // #2199: admin-only server-signed Plain widget identity. Dark (returns {configured:false})
       // until the operator sets the Plain widget app id + identity secret.
       SupportRoutes.routes(auth, support) ++
+      // #2419: the customer's JWT-authenticated consent action — the ONE writer of a data-access
+      // consent record (the agent can only ASK, via its thread-bound token).
+      SupportConsentRoutes.routes(auth, supportResponder) ++
       // #2200: the Plain new-message webhook (signature-verified, authenticated-origin-gated
       // cloud-agent dispatch — UI-originated or a #2307 registered-admin email) + the agent's
       // token-authenticated callback endpoints. Off unless

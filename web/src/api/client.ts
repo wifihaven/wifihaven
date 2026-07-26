@@ -573,6 +573,12 @@ export const api = {
   // ── Support (#2199): server-signed Plain widget identity (admin) ─────────
   support: {
     identity: () => req<SupportIdentityResponse>('GET', '/support/identity'),
+    // #2419: redeem (or withdraw) the signed consent link the server posted into a support thread.
+    // Authenticated — the household is taken from the caller's session, never from this request —
+    // and it is the ONLY writer of data-access consent: the support agent can ask for consent but
+    // can never grant itself any.
+    consent: (grant: string, allow: boolean) =>
+      req<{ status: string }>('POST', '/support/consent', { grant, allow }),
   },
 
   // ── Routers (admin) ────────────────────────────────────────────────────

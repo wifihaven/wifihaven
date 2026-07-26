@@ -1,13 +1,14 @@
 package wifihaven.api.support
 
 import wifihaven.api.SupportConfig
-import wifihaven.api.auth.RateLimiter
+import wifihaven.api.auth.{JwtClaims, RateLimiter}
 import wifihaven.api.db.{
   DeviceRepo,
   Household,
   HouseholdBillingRepo,
   HouseholdRepo,
   ProfileRepo,
+  SupportConsentRepo,
   UserRepo,
 }
 import wifihaven.api.metrics.AppMetrics
@@ -15,6 +16,8 @@ import wifihaven.shared.{Clock, UserRole}
 import wifihaven.shared.types.HouseholdId
 import zio.*
 import zio.json.*
+
+import java.time.Instant
 
 /**
  * #2200 (support intake C, epic #2197) — the Claude support responder, wired to Plain per the #2241
@@ -75,6 +78,10 @@ final case class SupportResponder(
     billingRepo: HouseholdBillingRepo,
     deviceRepo: DeviceRepo,
     profileRepo: ProfileRepo,
+    // #2419: the server-side per-(household, thread) data-access consent record (V84). The ONLY
+    // thing that widens a minted token's `dataAccess` scope beyond the widget-stamped flag — and
+    // the only writer is the CUSTOMER's own JWT-authenticated grant ([[recordConsent]]).
+    consentRepo: SupportConsentRepo,
     plain: PlainClient,
     github: GithubIssueClient,
     dispatcher: CloudAgentDispatcher,
@@ -91,6 +98,15 @@ final case class SupportResponder(
     // threads cannot turn us into a reply-amplification (backscatter) source. Global bucket — the
     // reject is a fixed string, not a per-thread cost.
     rejectLimiter: RateLimiter,
+    // #2419: bounds how often the agent can make us post a consent prompt into ONE thread — an
+    // agent stuck in a loop (or a prompt-injected one) must not be able to spam the customer.
+    consentThreadLimiter: RateLimiter,
+    // #2419: the SPA origin the consent link points at (`<appBaseUrl>/support/consent?g=…`).
+    // Sourced from the ONE per-env SPA origin the API already carries (`wifihaven.email.appBaseUrl`,
+    // #2250) rather than a new `support.*` key — SupportConfig sits at zio-config-magnolia's
+    // 16-field nested-derivation ceiling (see Config.scala), and "where the dashboard lives" is one
+    // fact, not a per-feature one (single-source-of-truth).
+    appBaseUrl: String,
 ) {
   import SupportResponder.*
 
@@ -280,24 +296,30 @@ final case class SupportResponder(
     for {
       billing <- billingRepo.findByHousehold(hh).catchAll(_ => ZIO.none)
       now     <- clock.instant
-      token = ConsentToken.mint(
+      // #2419: the token's data scope is the widget-stamped flag OR a LIVE server-side grant for
+      // THIS (household, thread). Both key columns are bound to state we already resolved, so a
+      // grant on another thread/household can never widen this token; a DB blip degrades to NO
+      // access (fail-closed — never grant on error).
+      granted <- consentGranted(hh, event.threadId, now)
+      dataAccess = event.consent || granted
+      token      = ConsentToken.mint(
         household = hh,
         threadId = event.threadId,
-        dataAccess = event.consent,
+        dataAccess = dataAccess,
         now = now,
         ttl = cfg.agentTokenTtl,
         secret = cfg.agentTokenSecretTrimmed,
       )
       // Audit trail for every mint (#2241) — household + thread + scope, never the token.
       _       <- ZIO.logInfo(
-        s"support: minted agent token for household=${hh.value} thread=${event.threadId} dataAccess=${event.consent}",
+        s"support: minted agent token for household=${hh.value} thread=${event.threadId} dataAccess=$dataAccess",
       )
       outcome <- dispatcher.dispatch(
         AgentDispatch(
           threadId = event.threadId,
           householdName = household.name,
           plan = billing.map(_.status),
-          dataConsent = event.consent,
+          dataConsent = dataAccess,
           agentToken = token,
           customerMessage = event.messageText,
         ),
@@ -400,6 +422,155 @@ final case class SupportResponder(
       }
     }
 
+  // ── #2419: the in-conversation data-access consent flow ─────────────────────
+
+  /**
+   * AGENT-side half: "ask the customer for permission" (#2419). The agent — which cannot read
+   * household data without the consent scope — calls this instead of dead-ending, and the SERVER
+   * posts a FIXED, server-authored consent prompt into the token-bound thread carrying a signed
+   * [[ConsentGrant]] link. It is deliberately not the agent's own words: the agent supplies no text
+   * here, so a prompt-injected agent cannot craft a phishing message under our attribution.
+   *
+   * This REQUESTS consent; it does not grant it. There is no path from this endpoint to a
+   * `support_thread_consent` row — only [[recordConsent]], authenticated by the CUSTOMER's session
+   * JWT, writes one. A thread that already has a live grant is a no-op Ok (nothing to ask), so a
+   * confused agent can't re-prompt a customer who already said yes; everything else is capped by
+   * `consentThreadLimiter`.
+   */
+  def agentRequestConsent(bearer: Option[String]): UIO[AgentActionResult] =
+    withClaims("consent_request", bearer) { claims =>
+      clock.instant.flatMap { now =>
+        consentGranted(claims.householdId, claims.threadId, now).flatMap {
+          case true  =>
+            // Already consented — no prompt, no spam. The next dispatch already carries the scope.
+            AppMetrics.supportConsent("request_already_granted") *>
+              done("consent_request", AgentActionResult.Ok)
+          case false =>
+            consentThreadLimiter.tryAcquire(s"consent:${claims.threadId}").flatMap { ok =>
+              if !ok then
+                AppMetrics.supportConsent("request_rate_limited") *>
+                  done("consent_request", AgentActionResult.RateLimited)
+              else postConsentPrompt(claims, now)
+            }
+        }
+      }
+    }
+
+  private def postConsentPrompt(
+      claims: ConsentToken.Claims,
+      now: Instant,
+  ): UIO[AgentActionResult] = {
+    val grant = ConsentGrant.mint(
+      household = claims.householdId,
+      threadId = claims.threadId,
+      now = now,
+      ttl = SupportResponder.ConsentLinkTtl,
+      secret = cfg.agentTokenSecretTrimmed,
+    )
+    val write = PlainThreadWrite(
+      threadId = claims.threadId,
+      markdown = SupportResponder.consentPromptTemplate(consentUrl(grant)),
+    )
+    // Audit every request (#2241 discipline) — household + thread, never the link/token.
+    ZIO.logInfo(
+      s"support: consent requested for household=${claims.householdId.value} thread=${claims.threadId}",
+    ) *>
+      plain.writeThread(write).flatMap {
+        case PlainOutcome.Ok       =>
+          AppMetrics.supportConsent("requested") *> done("consent_request", AgentActionResult.Ok)
+        case PlainOutcome.Disabled =>
+          AppMetrics.supportConsent("request_disabled") *>
+            done("consent_request", AgentActionResult.Disabled)
+        case PlainOutcome.Error    =>
+          AppMetrics.supportConsent("request_error") *>
+            done("consent_request", AgentActionResult.Error)
+      }
+  }
+
+  /** `<appBaseUrl>/support/consent?g=<grant token>` — the customer-facing consent link. */
+  private def consentUrl(grant: String): String =
+    s"${appBaseUrl.trim.stripSuffix("/")}/support/consent?g=$grant"
+
+  /**
+   * CUSTOMER-side half: record (or withdraw) the grant (#2419). Called from the JWT-authenticated
+   * `POST /api/support/consent`, so the acting household is `claims.hh` — resolved from the
+   * customer's OWN session, never from a request field and never from message text.
+   *
+   * The `grant` token proves WHICH thread was asked; the JWT proves WHO is answering. Both are
+   * required and they must agree: a consent link for household A redeemed by a household-B session
+   * is refused ([[ConsentResult.Mismatch]]) and writes nothing. The recorded scope is exactly
+   * `(claims.hh, grantClaims.threadId)` — the household comes from the SESSION, so even a forged
+   * household in a (necessarily well-signed) link could not aim a grant at another tenant.
+   */
+  def recordConsent(claims: JwtClaims, grant: String, allow: Boolean): UIO[ConsentResult] =
+    if !cfg.agentEndpointsEnabled then
+      AppMetrics.supportConsent("disabled").as(ConsentResult.Disabled)
+    else
+      clock.instant.flatMap { now =>
+        ConsentGrant.verify(grant.trim, now, cfg.agentTokenSecretTrimmed) match {
+          case Left(ConsentGrant.Err.Expired)         =>
+            AppMetrics.supportConsent("expired").as(ConsentResult.Invalid)
+          case Left(_)                                =>
+            AppMetrics.supportConsent("invalid").as(ConsentResult.Invalid)
+          case Right(g) if g.householdId != claims.hh =>
+            // The one cross-tenant shape this endpoint can see: a link minted for another
+            // household. Loud, metered, and it writes NOTHING.
+            ZIO.logWarning(
+              s"support: consent household mismatch — link household=${g.householdId.value} " +
+                s"session household=${claims.hh.value} thread=${g.threadId}",
+            ) *> AppMetrics.supportConsent("household_mismatch").as(ConsentResult.Mismatch)
+          case Right(g)                               =>
+            if allow then applyGrant(claims, g, now) else applyRevoke(claims, g, now)
+        }
+      }
+
+  private def applyGrant(claims: JwtClaims, g: ConsentGrant.Claims, now: Instant) =
+    for {
+      // Audit pointer: WHICH admin granted. Best-effort — a DB blip on the lookup must not lose
+      // the customer's consent, so the grant is still recorded (with a null actor).
+      user <- userRepo.findByUsername(claims.hh, claims.sub).catchAll(_ => ZIO.none)
+      res  <- consentRepo
+        .grant(claims.hh, g.threadId, user.map(_.id), now, now.plus(SupportResponder.ConsentTtl))
+        .foldZIO(
+          e =>
+            ZIO.logWarning(s"support: consent grant failed: ${e.getMessage}") *>
+              AppMetrics.supportConsent("error").as(ConsentResult.Error),
+          _ =>
+            ZIO.logInfo(
+              s"support: data-access consent GRANTED household=${claims.hh.value} " +
+                s"thread=${g.threadId} by=${claims.sub} ttlHours=${SupportResponder.ConsentTtl.toHours}",
+            ) *> AppMetrics.supportConsent("granted").as(ConsentResult.Granted),
+        )
+    } yield res
+
+  private def applyRevoke(claims: JwtClaims, g: ConsentGrant.Claims, now: Instant) =
+    consentRepo
+      .revoke(claims.hh, g.threadId, now)
+      .foldZIO(
+        e =>
+          ZIO.logWarning(s"support: consent revoke failed: ${e.getMessage}") *>
+            AppMetrics.supportConsent("error").as(ConsentResult.Error),
+        _ =>
+          ZIO.logInfo(
+            s"support: data-access consent REVOKED household=${claims.hh.value} " +
+              s"thread=${g.threadId} by=${claims.sub}",
+          ) *> AppMetrics.supportConsent("revoked").as(ConsentResult.Revoked),
+      )
+
+  /**
+   * Is there a LIVE customer grant for this (household, thread)? Fail-CLOSED: a DB error is logged
+   * and read as "no consent" — the responder must never widen a token's scope because a lookup
+   * failed. The ONE reader of the consent record (single-source-of-truth).
+   */
+  private def consentGranted(hh: HouseholdId, threadId: String, now: Instant): UIO[Boolean] =
+    consentRepo
+      .isGranted(hh, threadId, now)
+      .catchAll(e =>
+        ZIO
+          .logWarning(s"support: consent lookup failed (treating as no consent): ${e.getMessage}")
+          .as(false),
+      )
+
   // ── Token plumbing ───────────────────────────────────────────────────────────
 
   private def withClaims(action: String, bearer: Option[String])(
@@ -449,6 +620,55 @@ object SupportResponder {
     "Thanks for reaching out. WifiHaven support is available to registered customers — please " +
       "sign in at https://app.wifihaven.net and use the in-app support chat. If you don't have an " +
       "account yet, you can request beta access at https://app.wifihaven.net/beta."
+
+  /**
+   * #2419 — how long a customer's data-access grant stays live. Per-THREAD and time-boxed: a
+   * support conversation's active window, long enough for an async back-and-forth, short enough
+   * that a forgotten grant lapses on its own. Re-granting is one click (the agent just asks again).
+   * A constant, not config: it is a security property of the flow, not a per-deployment knob.
+   */
+  val ConsentTtl: java.time.Duration = java.time.Duration.ofHours(24)
+
+  /**
+   * #2419 — how long a posted consent LINK can be redeemed. Matches [[ConsentTtl]] so a customer
+   * who reads the thread the next morning can still act on it; the link is a capability to be
+   * ASKED, not a grant (redeeming it still needs their authenticated session).
+   */
+  val ConsentLinkTtl: java.time.Duration = java.time.Duration.ofHours(24)
+
+  /**
+   * #2419 — the FIXED, server-authored consent prompt posted into the thread when the agent asks
+   * for data access. Never agent-authored: the agent supplies no text on that path, so it cannot
+   * craft a phishing message under our attribution. Names exactly what is shared, that it is
+   * read-only, that it is scoped to this conversation, and how to say no (do nothing).
+   */
+  def consentPromptTemplate(consentUrl: String): String =
+    s"""$AiReplyAttribution
+       |
+       |To answer that I need to look at your account — your plan, your profiles, and how many
+       |devices you have. I can't see any of that without your permission.
+       |
+       |**[Allow me to read your account summary]($consentUrl)**
+       |
+       |You'll be asked to confirm in your WifiHaven dashboard (you'll need to be signed in). It's
+       |read-only, it covers this conversation only, it expires after 24 hours, and you can withdraw
+       |it from the same page at any time. If you'd rather not, just ignore this and tell me what
+       |you're seeing — I'll help without it, or hand you to a human teammate.""".stripMargin
+
+  /**
+   * #2419 — the outcome of a CUSTOMER consent action (`POST /api/support/consent`). Bounded enum;
+   * the route maps it to a status and it labels `support_consent_total{outcome}`.
+   */
+  enum ConsentResult {
+    case Granted
+    case Revoked
+    // Bad, tampered, or expired consent link — the customer can ask the assistant for a new one.
+    case Invalid
+    // The link belongs to another household than the authenticated session. Writes nothing.
+    case Mismatch
+    case Disabled
+    case Error
+  }
 
   /**
    * Bounded outcome enum for the webhook path — the `support_ai_draft_total{outcome}` label set.

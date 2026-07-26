@@ -118,6 +118,24 @@ names the active dispatcher in its `detail`, so the billed path is observable; t
 emitted to the startup log. Routine CRUD is web-UI-only today; only `/fire` is API-driven, so step
 1's prompt and step 3's network policy are manual per environment.
 
+> **Re-paste the prompt after every `agent.yaml` `system:` change (#2419).** The Managed Agents
+> agent is re-applied automatically on main-merge, but the routine's prompt is web-UI-only — a
+> prompt change is INERT on that transport until an operator pastes it into the routine at
+> <https://claude.ai/code/routines>. Redo step 1's paste whenever this file's `system:` block
+> changes (most recently: the #2419 "ask for data-access consent instead of dead-ending"
+> instructions).
+
+## Data-access consent (#2419)
+
+The agent has no household data by default. When a question needs it, the agent calls
+`POST /api/support/agent/request-consent` with its thread-bound token and the SERVER posts a fixed
+consent prompt — carrying a signed `<appBaseUrl>/support/consent?g=…` link — into that thread. Only
+the customer's own authenticated action on that page records the grant, scoped to `(household,
+thread)` for 24 hours; the NEXT dispatch for that thread then mints a token with `dataAccess=true`.
+The agent can ask, but can never grant itself access. See
+[`docs/ops/support-data-consent.md`](../../docs/ops/support-data-consent.md); the lifecycle is on
+the Grafana support dashboard ("Data-access consent lifecycle").
+
 ## Cost guardrails
 
 Only authenticated UI-originated threads can trigger a session (`skipped_unauthenticated` otherwise),
