@@ -168,6 +168,26 @@ object SupportEntitlementFailLoudSpec extends ZIOSpecDefault {
         )
       }
     },
+    test(
+      "an unrecognized field-write error falls to reason=field_write (the transient/other bucket)",
+    ) {
+      ZIO.scoped {
+        for {
+          cap <- routingServer(fieldResp =
+            """{"data":{"upsertTenantField":{"tenantField":null,"error":{"message":"internal server error"}}}}""",
+          )
+          base = s"http://127.0.0.1:${cap.server.getAddress.getPort}/"
+          _    <- driveUpsert(base)
+          _    <- tickPublisher
+          body <- scrape.catchAll(resp => resp.body.asString.orDie)
+          lines = tenantUpsertLines(body)
+        } yield assertTrue(
+          lines.exists(l =>
+            l.contains("""outcome="error"""") && l.contains("""reason="field_write""""),
+          ),
+        )
+      }
+    },
     test("a fully successful entitlement write attributes outcome=ok reason=ok") {
       ZIO.scoped {
         for {
