@@ -84,6 +84,56 @@ object PlainClient {
 
   private val UserAgent: String = "wifihaven-api/1 (+https://wifihaven.net)"
 
+  // ── #2410: entitlement-write failure attribution ───────────────────────────
+  // The bounded `reason` label on `support_tenant_upsert_total` — WHY the household→Plain
+  // entitlement (plan/founding tenant fields) failed to land, so an operator can tell a
+  // PROVISIONING GAP (a fix) apart from a transient hiccup (a blip). Enum-bounded, never
+  // per-field/per-tenant (the §4 cardinality firewall).
+  private object Reason {
+    val Ok         = "ok"
+    val Permission = "permission"  // machine-user lacks the tenantField:* permission
+    val Schema     = "schema"      // the plan/founding tenant-field schema isn't registered
+    val Tenant     = "tenant"      // the upsertTenant step itself failed (fields never reached)
+    val FieldWrite = "field_write" // a transient / other field-write miss
+  }
+
+  // Map a field-write failure detail to its `reason` bucket. Best-effort over the Plain error
+  // MESSAGE TEXT: Plain returns HTTP 200 with a payload `error { message }` for BOTH a permission
+  // denial and an unregistered field, and the wording — not a stable machine code we can rely on —
+  // is all it gives us. So the match is on substrings, and anything unrecognized falls to
+  // `field_write` (the transient/other catch-all) rather than inventing precision the API doesn't
+  // expose. permission ← auth/forbidden markers; schema ← not-found/unknown-field markers.
+  private[support] def classifyFieldFailure(detail: String): String = {
+    val d = detail.toLowerCase
+    if d.contains("permission") || d.contains("forbidden") || d.contains("unauthorized") ||
+      d.contains("not authorized") || d.contains("http 401") || d.contains("http 403")
+    then Reason.Permission
+    else if d.contains("not found") || d.contains("does not exist") || d.contains("no such") ||
+      d.contains("unknown field") || d.contains("unrecognized")
+    then Reason.Schema
+    else Reason.FieldWrite
+  }
+
+  // #2410: entitlement-write failures are LOUD — `logError`, not `logWarning` (the no-dark-by-default
+  // bar), carrying the attributed `reason`. permission/schema are a provisioning gap discovered at
+  // FIRST WRITE (the prerequisite is Plain-workspace state, not local config, so it can't be checked
+  // at boot without a live Plain call — and support boot must stay fail-open), so the message names
+  // the fix inline. Fail-open is preserved: this only makes the drop observable; the customer upsert
+  // outcome is untouched. The legitimate "entitlement off" state is the EXPLICIT `writeEnabled=false`
+  // flag (the Disabled client, logged at config validation), never a silent runtime no-op.
+  private def logEntitlementFailure(op: String, reason: String, detail: String): UIO[Unit] = {
+    val hint = reason match {
+      case Reason.Permission =>
+        " — PROVISIONING GAP: the Plain machine-user API key lacks the tenantField:* permission; " +
+          "grant it (docs/ops/plain-setup.md §5.1) so plan/founding entitlement reaches Plain"
+      case Reason.Schema     =>
+        " — PROVISIONING GAP: the plan/founding tenant-field schema is not registered in the Plain " +
+          "workspace; register it (docs/ops/plain-setup.md §7.3) so entitlement writes land"
+      case _                 => ""
+    }
+    ZIO.logError(s"plain $op failed [reason=$reason]: $detail$hint")
+  }
+
   // A single small GraphQL POST; shorter than the blocklist fetcher's multi-MB pulls. Support is
   // best-effort and fail-open, so a slow Plain shouldn't tie up the caller's fiber for long.
   private val ConnectTimeout: JDuration = JDuration.ofSeconds(10)
@@ -350,37 +400,53 @@ object PlainClient {
       // Nothing household-level to carry ⇒ no tenant write at all (and nothing to meter).
       if req.fullName.isEmpty && req.attributes.isEmpty then ZIO.unit
       else
-        // Aggregate outcome: `ok` only when the tenant upsert AND every field write succeed;
-        // `error` if any step fails (a missing field schema at go-live, a tenant hiccup, …). Metered
-        // so a silently-failing entitlement path is visible beyond the per-step log warnings.
+        // Aggregate outcome + attributed reason (#2410): `ok`/`ok` only when the tenant upsert AND
+        // every field write succeed; `error`/<reason> if any step fails — `tenant` for the tenant
+        // step, `permission`/`schema`/`field_write` for a field write. Each failure is logged LOUD
+        // (logError) and metered so a silently-failing entitlement path is visible beyond the logs.
+        // Fail-open is preserved: this whole method rides as a `zipLeft` follow-on and never flips
+        // the customer upsert outcome.
         sendForBody(
           UpsertTenantMutation,
           upsertTenantVars(req.tenantIdentifier, req.fullName),
-          "upsertTenant",
           Expect("upsertTenant", Some("tenant")),
         ).flatMap {
-          case None       => ZIO.succeed(PlainOutcome.Error) // already logged
-          case Some(body) =>
+          case Left(detail) =>
+            // The tenant step itself failed — the fields are never reached. Attributed `tenant`.
+            logEntitlementFailure("upsertTenant", Reason.Tenant, detail)
+              .as((PlainOutcome.Error, Reason.Tenant))
+          case Right(body)  =>
             tenantIdFrom(body) match {
               case None           =>
-                ZIO
-                  .logWarning("plain upsertTenant: no tenant id in response; skipping fields")
-                  .as(PlainOutcome.Error)
+                logEntitlementFailure(
+                  "upsertTenant",
+                  Reason.Tenant,
+                  "no tenant id in response; skipping fields",
+                ).as((PlainOutcome.Error, Reason.Tenant))
               case Some(tenantId) =>
                 ZIO
                   .foreach(tenantFieldWrites(req, tenantId)) { case (vars, op) =>
-                    post(
+                    sendForBody(
                       UpsertTenantFieldMutation,
                       vars,
-                      op,
                       Expect("upsertTenantField", Some("tenantField")),
-                    )
+                    ).flatMap {
+                      case Right(_)     => ZIO.succeed(None)
+                      case Left(detail) =>
+                        val reason = classifyFieldFailure(detail)
+                        logEntitlementFailure(op, reason, detail).as(Some(reason))
+                    }
                   }
-                  .map(os =>
-                    if os.forall(_ == PlainOutcome.Ok) then PlainOutcome.Ok else PlainOutcome.Error,
-                  )
+                  // First failure attributes the aggregate; a permission/schema gap fails every
+                  // field identically, so the first is representative.
+                  .map(_.flatten.headOption match {
+                    case None         => (PlainOutcome.Ok, Reason.Ok)
+                    case Some(reason) => (PlainOutcome.Error, reason)
+                  })
             }
-        }.flatMap(o => AppMetrics.supportTenantUpsert(PlainOutcome.label(o)))
+        }.flatMap { case (o, reason) =>
+          AppMetrics.supportTenantUpsert(PlainOutcome.label(o), reason)
+        }
 
     // Navigate `data.upsertTenant.tenant.id` out of the response body. Best-effort: any parse miss
     // yields None (logged by the caller), never throws.
@@ -432,21 +498,24 @@ object PlainClient {
         op: String,
         expect: Expect,
     ): UIO[PlainOutcome] =
-      sendForBody(query, variables, op, expect).map {
-        case Some(_) => PlainOutcome.Ok
-        case None    => PlainOutcome.Error
+      sendForBody(query, variables, expect).flatMap {
+        case Right(_)      => ZIO.succeed(PlainOutcome.Ok)
+        // Customer/thread writes are fail-open best-effort context: a miss is logged at warning (not
+        // error) and mapped to Error. Entitlement writes DON'T go through `post` — they call
+        // `sendForBody` directly and log LOUD (logError) with an attributed reason (#2410).
+        case Left(problem) => ZIO.logWarning(s"plain $op failed: $problem").as(PlainOutcome.Error)
       }
 
-    // One blocking HTTPS POST. Returns `Some(body)` when the response is a clean success for `expect`
-    // (2xx, no top-level errors, no payload error, expected result id present), else `None` — logging
-    // the REAL Plain cause so a dropped write is observable (#2408). Callers that need the response
-    // body (tenant-id extraction) read it; `post` just maps presence to Ok/Error.
+    // One blocking HTTPS POST. Returns `Right(body)` when the response is a clean success for
+    // `expect` (2xx, no top-level errors, no payload error, expected result id present), else
+    // `Left(detail)` carrying the REAL Plain cause so the caller can log AND attribute the failure
+    // (#2408 observability, #2410 reason attribution). This method no longer logs — the caller owns
+    // the level (warning for fail-open customer/thread writes, error for entitlement writes).
     private def sendForBody(
         query: String,
         variables: Json,
-        op: String,
         expect: Expect,
-    ): UIO[Option[String]] =
+    ): UIO[Either[String, String]] =
       ZIO
         .attemptBlocking {
           val payload = GqlRequest(query, variables).toJson
@@ -460,24 +529,19 @@ object PlainClient {
             .build()
           client.send(httpReq, HttpResponse.BodyHandlers.ofString())
         }
-        .flatMap { resp =>
+        .map { resp =>
           val body = resp.body()
           if resp.statusCode() / 100 != 2 then
-            ZIO
-              .logWarning(s"plain $op failed: HTTP ${resp.statusCode()} (body: ${body.take(500)})")
-              .as(None)
+            Left(s"HTTP ${resp.statusCode()} (body: ${body.take(500)})")
           else
             // Plain returns 200 for mutation-level failures too, so inspect the payload: a top-level
             // `errors` array, a payload `error { message }`, or a missing result id is a failed write.
             checkPayload(body, expect) match {
-              case Right(_)      => ZIO.succeed(Some(body))
-              case Left(problem) =>
-                ZIO
-                  .logWarning(s"plain $op failed: $problem (body: ${body.take(500)})")
-                  .as(None)
+              case Right(_)      => Right(body)
+              case Left(problem) => Left(s"$problem (body: ${body.take(500)})")
             }
         }
-        .catchAll(e => ZIO.logWarning(s"plain $op errored: ${e.getMessage}").as(None))
+        .catchAll(e => ZIO.succeed(Left(s"transport error: ${e.getMessage}")))
   }
 
   /**

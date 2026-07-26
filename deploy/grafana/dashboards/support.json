@@ -197,7 +197,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "Household → Plain tenant entitlement upsert outcomes (#2240)",
-      "description": "sum by (outcome) (rate(support_tenant_upsert_total{env=\"$env\"}[5m])) — the household→Plain TENANT write (household name + plan/founding tenant fields), separate from the customer upsert. ok (name + all fields written) / error (tenant upsert failed, or a field write failed — most commonly the plan/founding tenant-field schemas not yet registered in the Plain workspace at go-live; fail-open, the identity response is unaffected). A persistent 'error' share means entitlement context isn't reaching Plain — register the field schemas (docs/ops/plain-setup.md §7.3) or check the API key / GraphQL endpoint.",
+      "description": "sum by (outcome) (rate(support_tenant_upsert_total{env=\"$env\"}[5m])) — the household→Plain TENANT write (household name + plan/founding tenant fields), separate from the customer upsert. ok (name + all fields written) / error (tenant upsert failed, or a field write failed). Fail-open, the identity response is unaffected. This panel is the aggregate; the '#2410' panel next to it slices error by reason so a PROVISIONING GAP (permission / schema — needs a fix) is distinguishable from a transient tenant/field hiccup.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
       "id": 8,
@@ -216,6 +216,32 @@
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "expr": "sum by (outcome) (rate(support_tenant_upsert_total{env=\"$env\"}[5m]))",
           "legendFormat": "{{outcome}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Entitlement write failures by reason — provisioning-gap watch (#2410)",
+      "description": "sum by (reason) (rate(support_tenant_upsert_total{env=\"$env\",outcome=\"error\"}[5m])) — WHY the household→Plain entitlement write failed. permission (the machine-user API key lacks the tenantField:* permission — grant it, docs/ops/plain-setup.md §5.1) and schema (the plan/founding tenant-field schemas are not registered in the Plain workspace — register them, docs/ops/plain-setup.md §7.3) are PROVISIONING GAPS: they will NEVER self-heal until fixed, and the API also logs each at ERROR with the fix inline. tenant / field_write are the transient/other bucket (a Plain hiccup — usually self-heals). ALERT on any sustained permission or schema rate; a transient tenant/field_write blip is expected noise.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "id": 9,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "reqps",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1, "stacking": { "mode": "normal", "group": "A" } }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (reason) (rate(support_tenant_upsert_total{env=\"$env\",outcome=\"error\"}[5m]))",
+          "legendFormat": "{{reason}}",
           "refId": "A"
         }
       ]
