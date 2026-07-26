@@ -75,6 +75,18 @@ object StartupFeatureReport {
           "wifihaven.support.plain.widgetEnabled=false — identified chat widget renders nothing " +
             "(#2199/#2266)",
       ),
+      // #2429/#2266 rule 3: with no address published, the SPA renders NO support line at all —
+      // an off state that must be observable at boot and on /api/debug/config rather than an
+      // unlabeled silent branch. (When the widget is on, the address is REQUIRED and boot fails
+      // without it — AppConfig.validateRequired via SupportConfig.missingWidgetEmailKeys.)
+      FeatureState(
+        "support-email",
+        support.supportEmailOpt.isDefined,
+        support.supportEmailOpt.fold(
+          "wifihaven.support.emailAddress unset — no hosted support desk; the SPA shows no support " +
+            "line (self-hosted posture, #2429)",
+        )(addr => s"wifihaven.support.emailAddress=$addr — published to admins in the SPA (#2429)"),
+      ),
       FeatureState(
         "support-write-api",
         support.plain.writeEnabled,

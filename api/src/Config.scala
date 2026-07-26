@@ -631,14 +631,23 @@ case class SupportConfig(
       if issueFilingEnabled && githubSupportBotTokenTrimmed.isEmpty then
         List("support.githubSupportBotToken")
       else Nil
-    // #2429: a deployment that ships the Plain chat widget has a hosted support desk, so it MUST
-    // publish the inbox address the SPA renders. Missing ⇒ fail boot here rather than silently
-    // rendering no support line (no dark-by-default).
-    val emailKeys     =
-      if plain.widgetEnabled && emailAddressTrimmed.isEmpty then List("support.emailAddress")
-      else Nil
-    responderKeys ++ issueKeys ++ emailKeys
+    responderKeys ++ issueKeys
   }
+
+  /**
+   * #2429: a deployment that ships the Plain chat widget has a hosted support desk, so it MUST
+   * publish the inbox address the SPA renders — missing ⇒ fail boot rather than silently rendering
+   * no support line (no dark-by-default). Kept OUT of [[missingRequiredKeys]] because that list's
+   * trigger is the responder / issue-filing flags: this key's trigger is
+   * `support.plain.widgetEnabled`, and folding it in would report a factually wrong cause.
+   */
+  def missingWidgetEmailKeys: List[String] =
+    if plain.widgetEnabled && emailAddressTrimmed.isEmpty then
+      List(
+        "wifihaven.support.emailAddress must be set when wifihaven.support.plain.widgetEnabled=true " +
+          "— the SPA publishes it as the support inbox (#2429/#2265)",
+      )
+    else Nil
 
   // #2200: the agent-facing endpoints authenticate solely with the HMAC agent token, whose secret
   // the responder validation guarantees when enabled; disabled ⇒ 404-shaped denial.
@@ -848,6 +857,11 @@ object AppConfig {
       cfg.support.missingRequiredKeys.map(k =>
         s"$k must be set when the support responder / issue filing is enabled (#2265)",
       ) ++
+      // #2429 cross-check: the widget half has its OWN trigger (`plain.widgetEnabled`), so its
+      // message is emitted separately rather than folded into the responder/issue-filing wording
+      // above — an operator debugging a boot crash must be pointed at the flag that actually
+      // required the key. Already fully worded, so no mapping here.
+      cfg.support.missingWidgetEmailKeys ++
       // #2203: the press responder is the same EXPLICIT-flag shape — a true `press.responderEnabled`
       // makes its whole config chain required, bulk-listed here so it accumulates with the rest.
       cfg.press.missingRequiredKeys.map(k =>

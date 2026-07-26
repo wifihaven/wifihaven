@@ -11,12 +11,17 @@ import { supportWidgetActive } from './SupportWidget'
 //   2. The address is ENVIRONMENT-CORRECT and never hardcoded here: it rides on the identity
 //      response (`supportEmail`, from `support.emailAddress`) so the API is the single source of
 //      truth — support@wifihaven.net on prod, support@staging.wifihaven.net on staging.
-//   3. It never promises a chat icon that isn't there. The Plain widget is dark-able
+//   3. It doesn't promise a chat icon the SERVER says isn't there. The Plain widget is dark-able
 //      (`widgetEnabled=false`, or an unidentifiable caller), so the "or click the chat icon" half is
-//      gated on the SAME predicate the widget boots on ([[supportWidgetActive]]).
+//      gated on the SAME predicate the widget boots on ([[supportWidgetActive]]) rather than a
+//      second copy of that rule. Note the limit of that guarantee: the predicate proves the
+//      server-side config is complete, not that the Plain SDK actually loaded — a blocked script
+//      (the #2418 CSP class) would still leave the wording claiming a bubble. Email is the
+//      always-valid half, which is why it leads.
 //
-// It renders in normal flow (not fixed), above the mobile-nav spacer, so it can't overlap the
-// bottom-right Plain bubble or the fixed mobile nav.
+// It renders in normal flow (not fixed), above the mobile-nav spacer, so it clears the fixed mobile
+// nav; the right padding keeps the centered sentence out of the bottom-right Plain bubble's column
+// at narrow desktop widths.
 export function SupportFooter() {
   const { isAdmin } = useAuth()
   // Same query key as SupportWidget (staleTime: Infinity) — this shares the cached response rather
@@ -31,7 +36,14 @@ export function SupportFooter() {
   const chatAvailable = supportWidgetActive(data)
 
   return (
-    <footer className="mx-auto w-full max-w-7xl px-4 pb-6 pt-2 text-center text-xs text-brand-text-muted">
+    <footer
+      className={
+        'mx-auto w-full max-w-7xl px-4 pb-6 pt-2 text-center text-xs text-brand-text-muted ' +
+        // Clear the bottom-right Plain bubble's column on desktop, where the footer can land at the
+        // viewport bottom on a short page. On mobile the bubble is not rendered inline with this.
+        (chatAvailable ? 'md:pr-20' : '')
+      }
+    >
       <p>
         Email{' '}
         <a

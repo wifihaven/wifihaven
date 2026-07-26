@@ -35,8 +35,9 @@ declare global {
  * Whether the Plain chat bubble is actually on screen for this caller: the server says the widget
  * is configured AND every value needed to boot the identified widget is present. The SINGLE source
  * of this predicate (#2429) — [[SupportWidget]] gates its boot on it and `SupportFooter` gates the
- * "or click the chat icon" half of its copy on it, so the footer can never promise a bubble that
- * isn't rendering. Admin-ness is the caller's own check (the API 403s non-admins).
+ * "or click the chat icon" half of its copy on it, so the two can't drift. It reflects the SERVER's
+ * answer, not SDK load success: a blocked/failed Plain script still leaves this true. Admin-ness is
+ * the caller's own check (the API 403s non-admins).
  */
 export type IdentifiedSupport = SupportIdentityResponse & {
   appId: string
