@@ -26,9 +26,9 @@ import java.time.Duration as JDuration
  * The two halves:
  *   - [[upsertCustomer]] carries the household→Plain-customer mapping (#2199 scope 3):
  *     `tenantIdentifier = household_id`, `externalId`, plan/entitlement + bounded account context.
- *   - [[writeThread]] is the create-or-reply seam #2200's Claude responder posts AI drafts into. It
- *     ships now (not invented later) so #2200 reuses this exact trait — but it has no producer in
- *     THIS PR (the identity/mapping path only calls `upsertCustomer`).
+ *   - [[writeThread]] is the reply-into-thread seam #2200's Claude responder posts AI drafts into —
+ *     Plain's `replyToThread` against the customer's existing thread (#2408), the customer-visible
+ *     send.
  */
 trait PlainClient {
 
@@ -36,9 +36,8 @@ trait PlainClient {
   def upsertCustomer(req: PlainCustomerUpsert): UIO[PlainOutcome]
 
   /**
-   * Create-or-reply a Plain thread for a customer (#2200 seam — post an AI-drafted reply). Never
-   * fails. No producer in this PR; the trait method exists so #2200 wires into it without a wire or
-   * trait change.
+   * Post an AI-drafted reply INTO a customer's existing Plain thread (#2200 seam, #2408 — Plain's
+   * `replyToThread`, the customer-visible send). Never fails.
    */
   def writeThread(req: PlainThreadWrite): UIO[PlainOutcome]
 }
@@ -56,11 +55,13 @@ final case class PlainCustomerUpsert(
     attributes: Map[String, String],
 )
 
-/** A create-or-reply thread write (#2200 seam). `markdown` is the AI-drafted body. */
+/**
+ * A reply-into-thread write (#2200 seam). `threadId` is the customer's existing Plain thread the
+ * reply posts INTO (#2408 — the customer-visible send, via Plain's `replyToThread`); `markdown` is
+ * the AI-drafted body.
+ */
 final case class PlainThreadWrite(
-    customerExternalId: String,
-    tenantIdentifier: String,
-    title: String,
+    threadId: String,
     markdown: String,
 )
 
@@ -113,12 +114,83 @@ object PlainClient {
 
   // ── GraphQL request shapes ─────────────────────────────────────────────────
   // Plain's write API is a single GraphQL endpoint; we send `{query, variables}`. The mutation
-  // strings are kept minimal (upsertCustomer's identifier + tenant + attributes). A non-2xx or a
-  // GraphQL `errors` array is treated as a failed write (logged, metered Error) — never thrown.
+  // strings are kept minimal (upsertCustomer's identifier + tenant + attributes). A failed write —
+  // non-2xx, a top-level GraphQL `errors` array, a payload-level `error { message }`, or a missing
+  // expected result id — is logged with the real Plain cause and metered Error, never thrown.
   private final case class GqlRequest(query: String, variables: Json)
   private object GqlRequest {
     given JsonEncoder[GqlRequest] = DeriveJsonEncoder.gen[GqlRequest]
   }
+
+  /**
+   * What a successful Plain mutation payload must contain (#2408). Plain returns HTTP 200 for BOTH
+   * transport errors (a top-level `errors` array) AND mutation-level failures (a payload `error {
+   * message }` with a null result object), so success is NOT "2xx without the substring errors". A
+   * write succeeds only when there is no top-level errors array, no payload error, and — when the
+   * mutation returns a result object — the expected `<resultKey>.id` is present.
+   *   - `payloadKey`: the mutation field under `data` (e.g. `createThread`, `replyToThread`).
+   *   - `resultKey`: the object whose `id` proves the write landed (e.g. `thread`, `customer`), or
+   *     `None` for a mutation that returns only `{ error }` (Plain's `replyToThread`).
+   */
+  private final case class Expect(payloadKey: String, resultKey: Option[String])
+
+  // ── Plain response inspection (#2408) ──────────────────────────────────────
+  // Pure navigation over a parsed Plain response; any structural miss is a failure reason (logged),
+  // never a throw.
+  private def objField(j: Json, key: String): Option[Json] = j match {
+    case o: Json.Obj => o.fields.collectFirst { case (k, v) if k == key => v }
+    case _           => None
+  }
+
+  private def navigate(j: Json, path: List[String]): Option[Json] =
+    path.foldLeft(Option(j))((acc, k) => acc.flatMap(objField(_, k)))
+
+  // The concatenated messages of a non-empty top-level GraphQL `errors` array, if present.
+  private def topLevelErrors(json: Json): Option[String] =
+    objField(json, "errors") match {
+      case Some(Json.Arr(items)) if items.nonEmpty =>
+        val msgs = items.flatMap(it => objField(it, "message").collect { case Json.Str(m) => m })
+        Some(if msgs.isEmpty then "unspecified" else msgs.mkString("; "))
+      case _                                       => None
+    }
+
+  // A non-null payload `error` object's message (or "unspecified" if it carries none).
+  private def payloadError(payload: Json): Option[String] =
+    objField(payload, "error").flatMap {
+      case Json.Null => None
+      case e         =>
+        Some(objField(e, "message").collect { case Json.Str(m) => m }.getOrElse("unspecified"))
+    }
+
+  // Left(reason) when `body` is NOT a clean success for `expect`; Right(()) otherwise. The reason is
+  // the real Plain cause the caller logs so a dropped write is observable instead of reported Ok.
+  private def checkPayload(body: String, expect: Expect): Either[String, Unit] =
+    Json.decoder.decodeJson(body) match {
+      case Left(err)   => Left(s"unparseable response: $err")
+      case Right(json) =>
+        topLevelErrors(json) match {
+          case Some(msg) => Left(s"GraphQL errors: $msg")
+          case None      =>
+            navigate(json, List("data", expect.payloadKey)) match {
+              // Absent OR explicitly null payload — the mutation did not land (defense-in-depth: a
+              // null payload with no top-level errors must never read as success, #2408).
+              case None | Some(Json.Null) => Left(s"no ${expect.payloadKey} in response")
+              case Some(payload)          =>
+                payloadError(payload) match {
+                  case Some(msg) => Left(s"Plain error: $msg")
+                  case None      =>
+                    expect.resultKey match {
+                      case None     => Right(())
+                      case Some(rk) =>
+                        navigate(payload, List(rk, "id")) match {
+                          case Some(Json.Str(id)) if id.nonEmpty => Right(())
+                          case _ => Left(s"missing $rk.id in response")
+                        }
+                    }
+                }
+            }
+        }
+    }
 
   /**
    * Live Plain GraphQL transport. One blocking HTTPS POST per call (same JDK-HttpClient /
@@ -191,7 +263,12 @@ object PlainClient {
       // tenant entitlement (household name + plan/founding fields) is a best-effort follow-on that
       // must never flip the customer outcome — a missing tenant-field schema (not yet registered at
       // go-live) or a tenant hiccup is logged and ignored.
-      post(UpsertCustomerMutation, upsertCustomerVars(req), "upsertCustomer")
+      post(
+        UpsertCustomerMutation,
+        upsertCustomerVars(req),
+        "upsertCustomer",
+        Expect("upsertCustomer", Some("customer")),
+      )
         .zipLeft(upsertTenantEntitlement(req))
 
     // ── Tenant entitlement (#2240) ─────────────────────────────────────────────
@@ -280,6 +357,7 @@ object PlainClient {
           UpsertTenantMutation,
           upsertTenantVars(req.tenantIdentifier, req.fullName),
           "upsertTenant",
+          Expect("upsertTenant", Some("tenant")),
         ).flatMap {
           case None       => ZIO.succeed(PlainOutcome.Error) // already logged
           case Some(body) =>
@@ -291,7 +369,12 @@ object PlainClient {
               case Some(tenantId) =>
                 ZIO
                   .foreach(tenantFieldWrites(req, tenantId)) { case (vars, op) =>
-                    post(UpsertTenantFieldMutation, vars, op)
+                    post(
+                      UpsertTenantFieldMutation,
+                      vars,
+                      op,
+                      Expect("upsertTenantField", Some("tenantField")),
+                    )
                   }
                   .map(os =>
                     if os.forall(_ == PlainOutcome.Ok) then PlainOutcome.Ok else PlainOutcome.Error,
@@ -313,35 +396,57 @@ object PlainClient {
           .collect { case Json.Str(s) => s }
       }
 
-    private val CreateThreadMutation: String =
-      """mutation createThread($input: CreateThreadInput!) {
-        |  createThread(input: $input) { thread { id } error { message } }
+    // #2408: post the reply INTO the customer's existing thread. Plain's `replyToThread` sends
+    // through the thread's channel (chat/email) as a customer-visible message — unlike `createThread`
+    // which opens a NEW thread the customer never sees on their conversation. It returns only
+    // `{ error }` (no result object), so the success check is `resultKey = None`.
+    private val ReplyToThreadMutation: String =
+      """mutation replyToThread($input: ReplyToThreadInput!) {
+        |  replyToThread(input: $input) { error { message } }
         |}""".stripMargin
 
+    // `ReplyToThreadInput` (Plain schema, team-plain/typescript-sdk src/graphql/types.ts):
+    //   threadId: ID!            — the existing thread the reply posts into (the token binding)
+    //   textContent: String!     — REQUIRED plain-text body (Plain's fallback rendering)
+    //   markdownContent: String  — optional rich body; our draft IS markdown, so send it as both.
     private def writeThreadVars(req: PlainThreadWrite): Json =
       Json.Obj(
         "input" -> Json.Obj(
-          "customerIdentifier" -> Json.Obj("externalId" -> Json.Str(req.customerExternalId)),
-          "title"              -> Json.Str(req.title),
-          "components"         -> Json.Arr(
-            Json.Obj("componentText" -> Json.Obj("text" -> Json.Str(req.markdown))),
-          ),
+          "threadId"        -> Json.Str(req.threadId),
+          "textContent"     -> Json.Str(req.markdown),
+          "markdownContent" -> Json.Str(req.markdown),
         ),
       )
 
     def writeThread(req: PlainThreadWrite): UIO[PlainOutcome] =
-      post(CreateThreadMutation, writeThreadVars(req), "createThread")
+      post(
+        ReplyToThreadMutation,
+        writeThreadVars(req),
+        "replyToThread",
+        Expect("replyToThread", None),
+      )
 
-    private def post(query: String, variables: Json, op: String): UIO[PlainOutcome] =
-      sendForBody(query, variables, op).map {
+    private def post(
+        query: String,
+        variables: Json,
+        op: String,
+        expect: Expect,
+    ): UIO[PlainOutcome] =
+      sendForBody(query, variables, op, expect).map {
         case Some(_) => PlainOutcome.Ok
         case None    => PlainOutcome.Error
       }
 
-    // One blocking HTTPS POST. Returns `Some(body)` on a 2xx with no top-level GraphQL `errors`
-    // array (the shared success check), else `None` (logged). Callers that need the response body
-    // (tenant-id extraction) read it; `post` just maps presence to Ok/Error.
-    private def sendForBody(query: String, variables: Json, op: String): UIO[Option[String]] =
+    // One blocking HTTPS POST. Returns `Some(body)` when the response is a clean success for `expect`
+    // (2xx, no top-level errors, no payload error, expected result id present), else `None` — logging
+    // the REAL Plain cause so a dropped write is observable (#2408). Callers that need the response
+    // body (tenant-id extraction) read it; `post` just maps presence to Ok/Error.
+    private def sendForBody(
+        query: String,
+        variables: Json,
+        op: String,
+        expect: Expect,
+    ): UIO[Option[String]] =
       ZIO
         .attemptBlocking {
           val payload = GqlRequest(query, variables).toJson
@@ -356,18 +461,21 @@ object PlainClient {
           client.send(httpReq, HttpResponse.BodyHandlers.ofString())
         }
         .flatMap { resp =>
-          // A 2xx with no top-level GraphQL `errors` array is a success. Plain returns 200 for
-          // GraphQL errors too, so inspect the body — but keep it a substring check (no schema
-          // coupling): if the body advertises an error we log + meter Error, else Ok.
           val body = resp.body()
-          if resp.statusCode() / 100 == 2 && !body.contains("\"errors\"") then
-            ZIO.succeed(Some(body))
-          else
+          if resp.statusCode() / 100 != 2 then
             ZIO
-              .logWarning(
-                s"plain $op failed: HTTP ${resp.statusCode()} (body: ${body.take(500)})",
-              )
+              .logWarning(s"plain $op failed: HTTP ${resp.statusCode()} (body: ${body.take(500)})")
               .as(None)
+          else
+            // Plain returns 200 for mutation-level failures too, so inspect the payload: a top-level
+            // `errors` array, a payload `error { message }`, or a missing result id is a failed write.
+            checkPayload(body, expect) match {
+              case Right(_)      => ZIO.succeed(Some(body))
+              case Left(problem) =>
+                ZIO
+                  .logWarning(s"plain $op failed: $problem (body: ${body.take(500)})")
+                  .as(None)
+            }
         }
         .catchAll(e => ZIO.logWarning(s"plain $op errored: ${e.getMessage}").as(None))
   }

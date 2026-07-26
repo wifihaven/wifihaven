@@ -10,12 +10,16 @@ import wifihaven.shared.Clock
 import wifihaven.shared.Clock.TestClock
 import wifihaven.shared.types.HouseholdId
 import wifihaven.testinfra.*
+import com.sun.net.httpserver.{HttpExchange, HttpServer}
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 import doobie.*
 import zio.{Clock as _, *}
 import zio.http.*
 import zio.json.*
 import zio.test.*
+
+import java.io.OutputStream
+import java.net.InetSocketAddress
 
 /**
  * #2200 (support intake C, epic #2197) — the Claude responder wired to Plain under the #2241 access
@@ -130,6 +134,69 @@ object SupportResponderSpec
         rejectLimiter,
       )
     } yield (SupportAgentRoutes.routes(responder), Stubs(plainRec, ghRec, dispRec))
+
+  // #2408: the reply path's acceptance requires the Plain client faked at the HTTP BOUNDARY only
+  // (not the recorder), so a full-stack test can assert the LIVE client emits `replyToThread` against
+  // the bound threadId and that a payload-level Plain error surfaces as HTTP 500. A JDK HttpServer
+  // stands in for Plain's GraphQL endpoint, capturing every request body and returning `resp`.
+  private final class PlainCapture(val server: HttpServer, val bodies: Ref[List[String]])
+
+  private def plainCaptureServer(resp: String): ZIO[Scope, Throwable, PlainCapture] =
+    for {
+      bodiesRef <- Ref.make(List.empty[String])
+      runtime   <- ZIO.runtime[Any]
+      server    <- ZIO.acquireRelease(
+        ZIO.attempt {
+          val s = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0)
+          s.createContext(
+            "/",
+            (exchange: HttpExchange) => {
+              val body             = new String(exchange.getRequestBody.readAllBytes(), "UTF-8")
+              Unsafe.unsafe { implicit u =>
+                runtime.unsafe.run(bodiesRef.update(_ :+ body)).getOrThrowFiberFailure()
+              }
+              val out: Array[Byte] = resp.getBytes("UTF-8")
+              exchange.sendResponseHeaders(200, out.length.toLong)
+              val os: OutputStream = exchange.getResponseBody
+              os.write(out)
+              os.close()
+            },
+          )
+          s.start()
+          s
+        },
+      )(s => ZIO.attempt(s.stop(0)).ignore)
+    } yield new PlainCapture(server, bodiesRef)
+
+  // The SAME wiring as `makeRoutes`, but with the LIVE Plain client pointed at `apiBase` (writeEnabled
+  // forced on) instead of the recorder — everything else is real (repos, routes, token plumbing).
+  private def makeRoutesLivePlain(cfg: SupportConfig, apiBase: String) =
+    for {
+      hhRepo   <- ZIO.service[HouseholdRepo]
+      userRepo <- ZIO.service[UserRepo]
+      billRepo <- ZIO.service[HouseholdBillingRepo]
+      devRepo  <- ZIO.service[DeviceRepo]
+      profRepo <- ZIO.service[ProfileRepo]
+      clock    <- ZIO.service[Clock]
+      liveCfg   = cfg.copy(plain = cfg.plain.copy(writeEnabled = true, apiBase = apiBase))
+      responder = SupportResponder(
+        liveCfg,
+        hhRepo,
+        userRepo,
+        billRepo,
+        devRepo,
+        profRepo,
+        new PlainClient.Live(liveCfg),
+        GithubIssueClient.noop,
+        CloudAgentDispatcher.noop,
+        clock,
+        RateLimiter.allowAll,
+        RateLimiter.allowAll,
+        RateLimiter.allowAll,
+        RateLimiter.allowAll,
+        RateLimiter.allowAll,
+      )
+    } yield SupportAgentRoutes.routes(responder)
 
   // A Plain webhook delivery in its REAL envelope shape (#2403): `{workspaceId, payload:{eventType,
   // chat, thread}, id}` — the eventType lives at `payload.eventType`, NOT at a top-level `type`, and
@@ -720,14 +787,72 @@ object SupportResponderSpec
         threads         <- stubs.plain.threads.get
       } yield assertTrue(status == Status.Ok, threads.size == 1) &&
         assertTrue(
-          threads.head.title.contains("th_bound"),
-          threads.head.tenantIdentifier == hh.value.toString,
+          // #2408: the reply targets the token-bound EXISTING thread (replyToThread), not a new one.
+          threads.head.threadId == "th_bound",
           // Autonomous send (2026-07-17): the customer-facing reply is AI-attributed and names the
           // human-escalation path — no approval-step label exists anywhere.
           threads.head.markdown.startsWith(SupportResponder.AiReplyAttribution),
           threads.head.markdown.contains("allow the school site"),
           SupportResponder.AiReplyAttribution.toLowerCase.contains("human"),
         )
+    },
+    test(
+      "#2408: agentReply posts INTO the token-bound thread via replyToThread (full stack, live Plain at HTTP boundary)",
+    ) {
+      ZIO.scoped {
+        for {
+          _   <- cleanDb
+          cap <- plainCaptureServer("""{"data":{"replyToThread":{"error":null}}}""")
+          base = s"http://127.0.0.1:${cap.server.getAddress.getPort}/"
+          hhRepo             <- ZIO.service[HouseholdRepo]
+          hh                 <- hhRepo.create("Family R", "fam-r")
+          routes             <- makeRoutesLivePlain(liveCfg, base)
+          token              <- mintToken(hh, "th_bound", dataAccess = false)
+          (status, respBody) <- agentPost(
+            routes,
+            "/api/support/agent/reply",
+            """{"markdown":"Here is how to allow the school site..."}""",
+            Some(token),
+          )
+          bodies             <- cap.bodies.get
+        } yield assertTrue(
+          status == Status.Ok,
+          respBody.contains("\"ok\":true"),
+          bodies.size == 1,
+          // The reply posts INTO the existing thread — replyToThread against the bound threadId,
+          // never a new createThread — and carries the AI-attributed body.
+          bodies.head.contains("replyToThread"),
+          !bodies.head.contains("createThread"),
+          bodies.head.contains("\"threadId\":\"th_bound\""),
+          // The AI attribution rides in the reply body (the quotes in the marker are JSON-escaped in
+          // the serialized wire body, so match the distinctive unescaped span).
+          bodies.head.contains("WifiHaven support assistant"),
+          bodies.head.contains("allow the school site"),
+        )
+      }
+    },
+    test(
+      "#2408: a Plain payload-level error surfaces as HTTP 500, not {\"ok\":true} (full stack)",
+    ) {
+      ZIO.scoped {
+        for {
+          _   <- cleanDb
+          cap <- plainCaptureServer(
+            """{"data":{"replyToThread":{"error":{"message":"thread not found"}}}}""",
+          )
+          base = s"http://127.0.0.1:${cap.server.getAddress.getPort}/"
+          hhRepo      <- ZIO.service[HouseholdRepo]
+          hh          <- hhRepo.create("Family E", "fam-e")
+          routes      <- makeRoutesLivePlain(liveCfg, base)
+          token       <- mintToken(hh, "th_bound", dataAccess = false)
+          (status, _) <- agentPost(
+            routes,
+            "/api/support/agent/reply",
+            """{"markdown":"the answer"}""",
+            Some(token),
+          )
+        } yield assertTrue(status == Status.InternalServerError)
+      }
     },
     test("issue filing scrubs PII from the body (compensating control) and is rate-limited") {
       for {

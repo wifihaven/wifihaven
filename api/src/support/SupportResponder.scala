@@ -262,12 +262,9 @@ final case class SupportResponder(
       if !ok then ZIO.succeed(WebhookOutcome.RateLimited)
       else {
         val write = PlainThreadWrite(
-          // No household — this sender maps to no tenant. #2240 switches writeThread to a
-          // reply-INTO-thread mutation against event.threadId (the customer-visible email reply);
-          // the trait seam keeps that a go-live provisioning change, not a code change here.
-          customerExternalId = event.customerExternalId,
-          tenantIdentifier = "",
-          title = UnregisteredRejectTitle,
+          // No household — this sender maps to no tenant. #2408: the reject replies INTO the
+          // cold-email thread (event.threadId, the customer-visible email reply), not a new thread.
+          threadId = event.threadId,
           markdown = UnregisteredRejectTemplate,
         )
         plain.writeThread(write).as(WebhookOutcome.EmailUnregisteredRejected)
@@ -327,13 +324,10 @@ final case class SupportResponder(
   def agentReply(bearer: Option[String], markdown: String): UIO[AgentActionResult] =
     withClaims("reply", bearer) { claims =>
       val write = PlainThreadWrite(
-        customerExternalId = claims.householdId.value.toString,
-        tenantIdentifier = claims.householdId.value.toString,
-        // TODO(#2240): PlainClient.writeThread's live impl uses createThread; switching to the
-        // reply-to-thread mutation against `claims.threadId` (the customer-visible send) is a
-        // go-live Plain-provisioning item. The trait seam is deliberate — the thread binding is
-        // enforced HERE either way.
-        title = s"[AI reply] support thread ${claims.threadId}",
+        // #2408: the reply posts INTO the customer's existing thread (`claims.threadId`, the
+        // customer-visible send via Plain's replyToThread), NOT a new createThread. The thread
+        // binding comes from the verified token — the request body carries only the reply text.
+        threadId = claims.threadId,
         markdown = s"$AiReplyAttribution\n\n$markdown",
       )
       plain.writeThread(write).flatMap {
@@ -451,7 +445,6 @@ object SupportResponder {
    * sender's own address is registered (their own info). Points the sender at the two authenticated
    * intake paths (in-app chat / beta access).
    */
-  val UnregisteredRejectTitle: String    = "Re: your message to WifiHaven support"
   val UnregisteredRejectTemplate: String =
     "Thanks for reaching out. WifiHaven support is available to registered customers — please " +
       "sign in at https://app.wifihaven.net and use the in-app support chat. If you don't have an " +
