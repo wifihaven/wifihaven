@@ -514,6 +514,21 @@ object MetricGuard {
     // | expired | household_mismatch | disabled | error — the CUSTOMER's action). Bounded enum, never a
     // per-household / per-thread label.
     "support_consent_total"                         -> Set("outcome"),
+    // #2430 — the per-dispatch Plain thread-history read that gives the stateless responder its
+    // conversation context. `support_thread_history_total{outcome}` counts each read by a bounded
+    // enum: ok (the read returned at least one turn) | empty (Plain returned no readable timeline
+    // entries at all) |
+    // permission (the machine-user key lacks `thread:read`) | schema (Plain rejected the query) |
+    // unparsed (Plain returned timeline entries but NONE parsed into a turn — the actor/entry union
+    // shapes drifted) | error (a transient/other miss, incl. timeout) | disabled (the Plain client
+    // is unconfigured). permission/schema/unparsed are the PROVISIONING-GAP / DRIFT signals — they
+    // never self-heal and are each also logged at ERROR with the fix inline; they are deliberately
+    // NOT folded into `empty` (the normal first-message outcome) or `error` (the transient bucket),
+    // because a fail-open path that hides in an expected bucket is not observable at all.
+    // Every non-ok outcome degrades to "dispatch with the latest message alone" —
+    // the webhook never fails — so this series is the ONLY way a permanently context-less responder
+    // is visible. Bounded, never per-thread / per-household.
+    "support_thread_history_total"                  -> Set("outcome"),
     // #2203 — the Claude PRESS/PR responder (dark until keys set). `press_ai_draft_total{outcome}`
     // counts each inbound PRESS Plain webhook by a bounded enum (dispatched | skipped | rate_limited
     // | invalid_signature | malformed | disabled | error); `press_agent_action_total{op,outcome}`
@@ -820,8 +835,21 @@ object AppMetrics {
   //   error   — the CUSTOMER-side action on POST /api/support/consent.
   // `household_mismatch` is the security-relevant one (a consent link redeemed by another
   // household's session, which writes nothing) — it should be flat zero in normal operation.
-  def supportConsent(outcome: String): UIO[Unit] =
+  def supportConsent(outcome: String): UIO[Unit]       =
     MetricGuard.counter("support_consent_total", Map("outcome" -> outcome))
+  // #2430 — the per-dispatch Plain thread-history read (the responder's conversation context).
+  // Emitted from PlainClient. Outcome is a bounded enum: ok | empty | permission | schema |
+  // unparsed | error | disabled. The read is fail-open, so this series is the only signal that the
+  // responder is answering every message context-free — and permission/schema/unparsed are the
+  // never-self-healing ones, kept out of the `error` transient bucket on purpose.
+  //
+  // NOTE what `ok` does and does not mean: it measures the READ, not the amount of CONTEXT the
+  // agent got. Plain fires the webhook once the inbound message is already ON the timeline, so even
+  // a genuine first message normally reads back one turn (its own echo, which SupportResponder
+  // .priorTurns then strips) — that is `ok`, with an empty transcript. `empty` is therefore the rare
+  // case of a thread with no readable entries at all, not the common first-message case.
+  def supportThreadHistory(outcome: String): UIO[Unit] =
+    MetricGuard.counter("support_thread_history_total", Map("outcome" -> outcome))
 
   // ── #2203: Claude press/PR responder (dark until keys set) ───────────────────
   // Emitted from PressResponder. `pressAiDraft` counts each inbound PRESS Plain webhook by outcome

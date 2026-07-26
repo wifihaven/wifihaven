@@ -296,6 +296,11 @@ final case class SupportResponder(
   ): UIO[WebhookOutcome] =
     for {
       billing    <- billingRepo.findByHousehold(hh).catchAll(_ => ZIO.none)
+      // #2430: the conversation SO FAR on this thread. The responder is stateless — every inbound
+      // message fires a FRESH cloud session — so without this the agent answers each message in
+      // isolation. Scoped to the bound thread; fail-open (the read never fails, it yields Nil), so
+      // a Plain hiccup or a missing `thread:read` grant costs context, never the webhook.
+      prior      <- plain.threadHistory(event.threadId, PlainClient.HistoryFetchLimit)
       now        <- clock.instant
       // #2419: the token's data scope comes from ONE place — a LIVE server-side consent record for
       // THIS (household, thread), written only by the customer's own authenticated grant. Both key
@@ -324,6 +329,7 @@ final case class SupportResponder(
           dataConsent = dataAccess,
           agentToken = token,
           customerMessage = event.messageText,
+          history = priorTurns(prior, event.messageText),
         ),
       )
     } yield outcome match {
@@ -636,6 +642,26 @@ final case class SupportResponder(
 }
 
 object SupportResponder {
+
+  /**
+   * #2430 — the PRIOR turns of a thread: the fetched timeline minus the message we are dispatching
+   * on. Plain fires the webhook once the inbound message is already ON the timeline, so the fetched
+   * history normally ENDS with an echo of it; leaving that in would render the same words twice
+   * (once as history, once as `<customer_message>`) and read as if the customer said it twice.
+   *
+   * Only a TRAILING customer echo is dropped, and only on an exact (trimmed) text match — an
+   * identical message the customer genuinely sent earlier in the thread is a real prior turn and
+   * stays. Pure, so the rule is unit-pinnable.
+   */
+  def priorTurns(
+      fetched: List[PlainThreadMessage],
+      latest: String,
+  ): List[PlainThreadMessage] =
+    fetched.lastOption match {
+      case Some(m) if m.role == ThreadMessageRole.Customer && m.text.trim == latest.trim =>
+        fetched.init
+      case _                                                                             => fetched
+    }
 
   /**
    * The attribution on every agent-authored reply — the customer sees the answer came from the AI

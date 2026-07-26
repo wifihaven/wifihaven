@@ -4,6 +4,7 @@ import wifihaven.api.{PlainConfig, SupportConfig}
 import wifihaven.api.support.*
 import com.sun.net.httpserver.{HttpExchange, HttpServer}
 import zio.*
+import zio.json.EncoderOps
 import zio.json.ast.Json
 import zio.test.*
 
@@ -359,6 +360,172 @@ object PlainClientWireSpec extends ZIOSpecDefault {
           field(vars, "input", "textContent").contains(Json.Str("the answer")),
           field(vars, "input", "markdownContent").contains(Json.Str("the answer")),
         )
+      }
+    },
+    // ── #2430: the thread-timeline READ that gives the stateless responder its context ──
+    test("#2430: threadHistory queries ONLY the bound thread and role-labels the turns") {
+      // Plain's timeline is a union of actors × entries. We keep the two customer-visible message
+      // kinds (ChatEntry / EmailEntry) and label the role from the ACTOR: customer, us (the
+      // machine user posts every AI reply), or a human teammate. Everything else — here a NoteEntry
+      // (operator-only commentary that must never reach the prompt) and a system status transition
+      // — is DROPPED. Order comes from `timestamp.iso8601`, so a connection returning newest-first
+      // still renders oldest-first.
+      val timeline =
+        """{"data":{"thread":{"id":"th_bound","timelineEntries":{"edges":[
+          |{"node":{"timestamp":{"iso8601":"2026-07-20T10:00:03Z"},"actor":{"__typename":"UserActor"},
+          | "entry":{"__typename":"EmailEntry","textContent":"Sameer here, taking a look."}}},
+          |{"node":{"timestamp":{"iso8601":"2026-07-20T10:00:02Z"},"actor":{"__typename":"MachineUserActor"},
+          | "entry":{"__typename":"ChatEntry","text":"That's his weekday schedule."}}},
+          |{"node":{"timestamp":{"iso8601":"2026-07-20T10:00:01Z"},"actor":{"__typename":"CustomerActor"},
+          | "entry":{"__typename":"ChatEntry","text":"my son's iPad is blocked"}}},
+          |{"node":{"timestamp":{"iso8601":"2026-07-20T10:00:04Z"},"actor":{"__typename":"UserActor"},
+          | "entry":{"__typename":"NoteEntry","text":"internal: check the router logs"}}},
+          |{"node":{"timestamp":{"iso8601":"2026-07-20T10:00:05Z"},"actor":{"__typename":"SystemActor"},
+          | "entry":{"__typename":"ThreadStatusTransitionedEntry"}}}
+          |]}}}}""".stripMargin
+      ZIO.scoped {
+        for {
+          cap <- captureServerReturning(timeline)
+          base = s"http://127.0.0.1:${cap.server.getAddress.getPort}/"
+          cfg  = SupportConfig(plain =
+            PlainConfig(writeEnabled = true, apiKey = "test-key", apiBase = base),
+          )
+          msgs   <- ZIO
+            .serviceWithZIO[PlainClient](_.threadHistory("th_bound", 30))
+            .provide(PlainClient.layer, ZLayer.succeed(cfg))
+          bodies <- cap.bodies.get
+          vars = bodies.headOption
+            .map(parse)
+            .flatMap(field(_, "variables"))
+            .getOrElse(Json.Null)
+        } yield assertTrue(
+          // the query is scoped to the ONE bound thread — no customer/tenant/household parameter.
+          bodies.size == 1,
+          queryOf(bodies.head).contains("thread(threadId: $threadId)"),
+          queryOf(bodies.head).contains("timelineEntries(last: $last)"),
+          field(vars, "threadId").contains(Json.Str("th_bound")),
+          // oldest-first by timestamp, regardless of the order Plain returned them in.
+          msgs == List(
+            PlainThreadMessage(ThreadMessageRole.Customer, "my son's iPad is blocked"),
+            PlainThreadMessage(ThreadMessageRole.AiAssistant, "That's his weekday schedule."),
+            PlainThreadMessage(ThreadMessageRole.HumanTeammate, "Sameer here, taking a look."),
+          ),
+        )
+      }
+    },
+    test("#2430: the ACTOR decides the role — quoted AI attribution never promotes a turn") {
+      // Review finding (run 1): a content heuristic that outranked the actor mislabeled ordinary
+      // traffic. On the email intake a customer replying QUOTES our reply — attribution line and
+      // all — back at us in `EmailEntry.textContent`. That turn is the CUSTOMER's; labelling it
+      // `ai_assistant` would make the agent read the customer's words as its own prior answer AND
+      // defeat the echo dedup (which matches on the Customer role). It is also a forgery vector:
+      // the attribution string is visible in every AI reply, so anyone can paste it.
+      val quoted   =
+        SupportResponder.AiReplyAttribution + " > you said it was the schedule. No, it wasn't."
+      val timeline =
+        s"""{"data":{"thread":{"id":"th_bound","timelineEntries":{"edges":[
+           |{"node":{"timestamp":{"iso8601":"2026-07-20T10:00:01Z"},"actor":{"__typename":"CustomerActor"},
+           | "entry":{"__typename":"EmailEntry","textContent":${quoted.toJson}}}},
+           |{"node":{"timestamp":{"iso8601":"2026-07-20T10:00:02Z"},"actor":{"__typename":"MachineUserActor"},
+           | "entry":{"__typename":"ChatEntry","text":"Let me check."}}},
+           |{"node":{"timestamp":{"iso8601":"2026-07-20T10:00:03Z"},"actor":null,
+           | "entry":{"__typename":"ChatEntry","text":${(SupportResponder.AiReplyAttribution + " an unknown-actor reply of ours").toJson}}}}
+           |]}}}}""".stripMargin
+      ZIO.scoped {
+        for {
+          cap <- captureServerReturning(timeline)
+          base = s"http://127.0.0.1:${cap.server.getAddress.getPort}/"
+          cfg  = SupportConfig(plain =
+            PlainConfig(writeEnabled = true, apiKey = "test-key", apiBase = base),
+          )
+          msgs <- ZIO
+            .serviceWithZIO[PlainClient](_.threadHistory("th_bound", 30))
+            .provide(PlainClient.layer, ZLayer.succeed(cfg))
+        } yield assertTrue(
+          msgs.map(_.role) == List(
+            // the quoted-attribution turn stays the CUSTOMER's — the actor wins…
+            ThreadMessageRole.Customer,
+            ThreadMessageRole.AiAssistant,
+            // …and the attribution check still applies where there is NO authoritative actor.
+            ThreadMessageRole.AiAssistant,
+          ),
+        )
+      }
+    },
+    test(
+      "#2430: MESSAGE entries that none parse ⇒ the drift bucket; notes/status ⇒ plain `empty`",
+    ) {
+      // The `unparsed` discriminator counts only entries we SHOULD have been able to read. Drift =
+      // Plain sent turn-shaped entries (chat/email) and not one produced a turn. A busy thread whose
+      // recent timeline is all internal notes and status flips is HEALTHY — counting those would fire
+      // an ERROR-level "SCHEMA DRIFT" on every message of that thread (review run 2).
+      val drifted        =
+        """{"data":{"thread":{"id":"th_bound","timelineEntries":{"edges":[
+          |{"node":{"timestamp":{"iso8601":"2026-07-20T10:00:01Z"},"actor":{"__typename":"CustomerActor"},
+          | "entry":{"__typename":"ChatEntry","renamedBodyField":"hi"}}}
+          |]}}}}""".stripMargin
+      // Every entry here is one we deliberately DROP — not a thing we failed to read.
+      val busyButHealthy =
+        """{"data":{"thread":{"id":"th_bound","timelineEntries":{"edges":[
+          |{"node":{"timestamp":{"iso8601":"2026-07-20T10:00:01Z"},"actor":{"__typename":"UserActor"},
+          | "entry":{"__typename":"NoteEntry","text":"internal: check the router logs"}}},
+          |{"node":{"timestamp":{"iso8601":"2026-07-20T10:00:02Z"},"actor":{"__typename":"SystemActor"},
+          | "entry":{"__typename":"ThreadStatusTransitionedEntry"}}}
+          |]}}}}""".stripMargin
+      ZIO.scoped {
+        for {
+          cap <- captureServerReturning(drifted)
+          base = s"http://127.0.0.1:${cap.server.getAddress.getPort}/"
+          cfg  = SupportConfig(plain =
+            PlainConfig(writeEnabled = true, apiKey = "test-key", apiBase = base),
+          )
+          msgs <- ZIO
+            .serviceWithZIO[PlainClient](_.threadHistory("th_bound", 30))
+            .provide(PlainClient.layer, ZLayer.succeed(cfg))
+        } yield assertTrue(
+          // either way the read degrades to no history — only the metered bucket differs.
+          msgs.isEmpty,
+          // a turn-shaped entry we could not read IS the drift signal…
+          PlainClient.readableEntryCount(drifted) == 1,
+          // …while a thread of notes + status transitions is not (it meters `empty`, no ERROR).
+          PlainClient.readableEntryCount(busyButHealthy) == 0,
+        )
+      }
+    },
+    test("#2430: a failure detail never carries customer conversation text into the logs") {
+      // `sendForBody` appends up to 500 chars of the raw response body; on THIS path that body is
+      // the customer's own messages (a GraphQL partial failure is a 200 whose `data` still carries
+      // the timeline). It is stripped before it reaches the log line / Loki.
+      val detail =
+        "GraphQL errors: something broke (body: {\"data\":{\"thread\":{\"timelineEntries\":" +
+          "{\"edges\":[{\"node\":{\"entry\":{\"text\":\"my kid's iPad is blocked\"}}}]}}}})"
+      assertTrue(
+        PlainClient.redactBody(detail) == "GraphQL errors: something broke (body redacted)",
+        !PlainClient.redactBody(detail).contains("my kid's iPad"),
+        // a detail with no body tail is passed through unchanged.
+        PlainClient.redactBody("timed out") == "timed out",
+        // a GraphQL query-validation error is SCHEMA drift, not the transient bucket.
+        PlainClient.classifyFieldFailure(
+          "GraphQL errors: Cannot query field \"timelineEntries\" on type \"Thread\"",
+        ) == "schema",
+      )
+    },
+    test("#2430: a thread-history read failure degrades to no history, never a failure") {
+      // The `thread:read` permission gap Plain reports as a payload error — fail-open, so the
+      // dispatch still happens with the latest message alone (SupportResponderSpec pins that end).
+      ZIO.scoped {
+        for {
+          cap <- captureServerReturning(
+            """{"errors":[{"message":"Insufficient permissions, missing \"thread:read\""}]}""",
+          )
+          base = s"http://127.0.0.1:${cap.server.getAddress.getPort}/"
+          cfg  = SupportConfig(plain =
+            PlainConfig(writeEnabled = true, apiKey = "test-key", apiBase = base),
+          )
+          msgs <- ZIO
+            .serviceWithZIO[PlainClient](_.threadHistory("th_bound", 30))
+            .provide(PlainClient.layer, ZLayer.succeed(cfg))
+        } yield assertTrue(msgs.isEmpty)
       }
     },
     test("writeEnabled=false ⇒ Disabled no-op, no network call (ships dark, #2266)") {

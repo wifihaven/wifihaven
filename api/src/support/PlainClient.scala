@@ -40,7 +40,44 @@ trait PlainClient {
    * `replyToThread`, the customer-visible send). Never fails.
    */
   def writeThread(req: PlainThreadWrite): UIO[PlainOutcome]
+
+  /**
+   * #2430 — read the PRIOR conversation on ONE Plain thread, oldest-first, so the per-message cloud
+   * dispatch can carry context (the responder is stateless: every inbound message fires a fresh
+   * session). Scoped to the single `threadId` the dispatch is bound to — there is no parameter
+   * through which another thread, customer, or household could be read.
+   *
+   * The returned text is UNTRUSTED CUSTOMER/OPERATOR DATA; the caller is responsible for framing
+   * and bounding it ([[wifihaven.api.support.CloudAgentDispatcher.kickoffPrompt]]). Never fails: an
+   * unconfigured client, a permission gap, or a transport error yields `Nil` so the webhook still
+   * dispatches with the latest message alone.
+   */
+  def threadHistory(threadId: String, limit: Int): UIO[List[PlainThreadMessage]]
 }
+
+/**
+ * Who authored one prior turn on a support thread (#2430). Derived from Plain's timeline-entry
+ * ACTOR, so the agent can tell its own earlier answers from the customer's words — and can see that
+ * a HUMAN TEAMMATE already took the thread over (the escalation/handoff signal).
+ */
+enum ThreadMessageRole {
+  case Customer
+  case AiAssistant
+  case HumanTeammate
+}
+
+object ThreadMessageRole {
+
+  /** The label rendered into the kickoff transcript — a closed set, never free text. */
+  def label(r: ThreadMessageRole): String = r match {
+    case Customer      => "customer"
+    case AiAssistant   => "ai_assistant"
+    case HumanTeammate => "human_teammate"
+  }
+}
+
+/** One prior turn on a support thread (#2430). `text` is UNTRUSTED. */
+final case class PlainThreadMessage(role: ThreadMessageRole, text: String)
 
 /**
  * Household → Plain customer mapping payload (#2199 scope 3). `tenantIdentifier` is Plain's native
@@ -103,13 +140,17 @@ object PlainClient {
   // is all it gives us. So the match is on substrings, and anything unrecognized falls to
   // `field_write` (the transient/other catch-all) rather than inventing precision the API doesn't
   // expose. permission ← auth/forbidden markers; schema ← not-found/unknown-field markers.
-  private[support] def classifyFieldFailure(detail: String): String = {
+  private[api] def classifyFieldFailure(detail: String): String = {
     val d = detail.toLowerCase
     if d.contains("permission") || d.contains("forbidden") || d.contains("unauthorized") ||
       d.contains("not authorized") || d.contains("http 401") || d.contains("http 403")
     then Reason.Permission
     else if d.contains("not found") || d.contains("does not exist") || d.contains("no such") ||
-      d.contains("unknown field") || d.contains("unrecognized")
+      d.contains("unknown field") || d.contains("unrecognized") ||
+      // GraphQL query VALIDATION errors — how Plain reports a field/type we asked for that its
+      // schema no longer has (#2430's thread-timeline read). Same class as an unregistered field:
+      // a drift that will never self-heal, not a transient blip.
+      d.contains("cannot query field") || d.contains("did you mean")
     then Reason.Schema
     else Reason.FieldWrite
   }
@@ -140,6 +181,24 @@ object PlainClient {
   private val RequestTimeout: JDuration = JDuration.ofSeconds(20)
 
   /**
+   * #2430 — how many of a thread's most recent timeline entries we ask Plain for. Deliberately
+   * larger than the kickoff's message cap ([[CloudAgentDispatcher.MaxHistoryMessages]]) because the
+   * timeline also carries non-message entries (status transitions, notes) that we discard, so the
+   * fetch window has to over-read to fill the render window. Bounded on BOTH sides: this caps what
+   * Plain returns, the render caps what reaches the prompt.
+   */
+  val HistoryFetchLimit: Int = 30
+
+  // A hard ZIO-level bound on the history read, on top of the HTTP client's own timeouts. History
+  // is pure enrichment: a slow Plain must degrade to "no history" quickly rather than hold the
+  // webhook fiber open (Plain retry-storms a slow/5xx webhook). `disconnect` so the CALLER returns
+  // immediately instead of waiting on the uninterruptible blocking send — note the send itself is
+  // not interruptible, so the borrowed blocking thread is released on the HTTP client's own
+  // `RequestTimeout` (20s), not at 8s. What is bounded here is the webhook's latency, not the
+  // thread's.
+  private val HistoryTimeout: Duration = 8.seconds
+
+  /**
    * Config-gated layer. When [[SupportConfig.writeEnabled]] is false (no Plain API key — the
    * self-hosted default and any deployment that hasn't set the key) this yields the no-op
    * [[Disabled]] client whose every call returns [[PlainOutcome.Disabled]] without touching the
@@ -153,10 +212,12 @@ object PlainClient {
 
   /** No-op client used when the Plain write API is unconfigured. */
   val Disabled: PlainClient = new PlainClient {
-    def upsertCustomer(req: PlainCustomerUpsert): UIO[PlainOutcome] =
+    def upsertCustomer(req: PlainCustomerUpsert): UIO[PlainOutcome]                =
       ZIO.succeed(PlainOutcome.Disabled)
-    def writeThread(req: PlainThreadWrite): UIO[PlainOutcome]       =
+    def writeThread(req: PlainThreadWrite): UIO[PlainOutcome]                      =
       ZIO.succeed(PlainOutcome.Disabled)
+    def threadHistory(threadId: String, limit: Int): UIO[List[PlainThreadMessage]] =
+      AppMetrics.supportThreadHistory("disabled").as(Nil)
   }
 
   /** Public no-op instance for specs that don't drive Plain. */
@@ -240,6 +301,138 @@ object PlainClient {
                 }
             }
         }
+    }
+
+  // ── #2430: thread-timeline read → role-labeled prior turns ─────────────────
+  // Plain's timeline is a union: each entry carries an ACTOR (who) and an ENTRY (what). We keep
+  // only the two customer-visible message kinds — `ChatEntry` (the in-app widget) and `EmailEntry`
+  // (the #2198 email intake) — and DISCARD everything else, including `NoteEntry`: internal notes
+  // are operator-only commentary and must never be fed to the responder (they are not part of the
+  // customer conversation, and putting them in the prompt risks them leaking into a reply).
+  //
+  // The ONLY timeline entry types that carry a turn of the CUSTOMER-VISIBLE conversation: the
+  // in-app chat widget (#2199) and the email intake (#2198). Everything else is dropped — most
+  // importantly `NoteEntry`, Plain's INTERNAL operator note, which is not part of the conversation
+  // and must never be fed to the responder (it would risk operator-only commentary surfacing in a
+  // reply). An unknown/new Plain entry type is dropped by the same rule, so a schema addition can
+  // never silently widen what the agent reads.
+  private val CustomerVisibleEntryTypes: Set[String] = Set("ChatEntry", "EmailEntry")
+
+  // Role comes from the ACTOR, which is Plain's own authoritative record of who wrote the turn:
+  // `CustomerActor` is the customer, `MachineUserActor` is US (the machine-user API key posts every
+  // AI reply, #2408), a real `UserActor` is a HUMAN TEAMMATE who took the thread over. System /
+  // deleted actors carry no conversational turn and are dropped.
+  //
+  // The actor ALWAYS wins. Message CONTENT never promotes a turn's role — the
+  // [[SupportResponder.AiReplyAttribution]] line is visible verbatim in every AI reply on the
+  // customer's own thread, so anyone can paste it, and an ordinary email reply QUOTES it back to us
+  // inside `EmailEntry.textContent`. Letting content decide would (a) hand a customer a forged
+  // `ai_assistant` frame — the very thing `ManagedAgents.neutralizeTags` closes at the tag layer —
+  // and (b) relabel a quoted-reply customer turn as the AI's own, both mislabelling the transcript
+  // and defeating [[SupportResponder.priorTurns]]'s echo dedup (which matches on the Customer role).
+  // The attribution check therefore runs ONLY when the actor is unknown, where there is nothing
+  // authoritative to override.
+  private def roleOf(actorType: Option[String], text: String): Option[ThreadMessageRole] =
+    actorType match {
+      case Some("CustomerActor")    => Some(ThreadMessageRole.Customer)
+      case Some("MachineUserActor") => Some(ThreadMessageRole.AiAssistant)
+      case Some("UserActor")        => Some(ThreadMessageRole.HumanTeammate)
+      case Some(_) | None           =>
+        // Unknown / absent actor: the only signal left. A turn carrying our own attribution line is
+        // one of our replies reported under an actor type we don't recognise; anything else is
+        // dropped rather than guessed at.
+        Option.when(text.contains(SupportResponder.AiReplyAttribution))(
+          ThreadMessageRole.AiAssistant,
+        )
+    }
+
+  // The first non-empty string among the message-bearing fields of the entry union — the two the
+  // query actually selects (`ChatEntry.text`, `EmailEntry.textContent`), plus `markdownContent` as
+  // forward-tolerance if the selection ever widens. Plain text is preferred: the markdown variant
+  // carries the same words plus markup we don't need in the prompt.
+  private def entryText(entry: Json): Option[String] =
+    // The entry-type ALLOWLIST is load-bearing, not belt-and-braces: it is what keeps an internal
+    // `NoteEntry` (operator-only commentary) out of the responder's prompt. Anything not on the
+    // list contributes no turn even if it happens to carry a text-shaped field.
+    if !typeNameOf(entry).exists(CustomerVisibleEntryTypes.contains) then None
+    else
+      List("text", "textContent", "markdownContent")
+        .flatMap(k => objField(entry, k).collect { case Json.Str(s) => s })
+        .map(_.trim)
+        .find(_.nonEmpty)
+
+  private def typeNameOf(j: Json): Option[String] =
+    objField(j, "__typename").collect { case Json.Str(s) => s }
+
+  // How many timeline entries Plain returned that we SHOULD have been able to read — entries whose
+  // `entry.__typename` is on the customer-visible allowlist. The discriminator behind the `unparsed`
+  // bucket: "we asked for turns, Plain sent turn-shaped entries, and NONE parsed" is schema drift.
+  //
+  // Counting ALL edges here would be wrong (review run 2): a long, actively-managed thread whose
+  // most recent entries are all status flips, assignments, and internal notes is perfectly healthy,
+  // and every one of those is an edge — it would fire an ERROR-level "SCHEMA DRIFT" on every message
+  // of that thread. Entries we deliberately DROP must not count as entries we failed to read.
+  private[api] def readableEntryCount(body: String): Int =
+    Json.decoder
+      .decodeJson(body)
+      .toOption
+      .flatMap { json =>
+        navigate(json, List("data", "thread", "timelineEntries", "edges")).collect {
+          case Json.Arr(items) =>
+            items.count { edge =>
+              objField(edge, "node")
+                .flatMap(objField(_, "entry"))
+                .flatMap(typeNameOf)
+                .exists(CustomerVisibleEntryTypes.contains)
+            }
+        }
+      }
+      .getOrElse(0)
+
+  // Strip the `(body: …)` tail `sendForBody` appends to a failure detail. On the thread-timeline
+  // path that tail is CUSTOMER CONVERSATION TEXT (a GraphQL partial failure is an HTTP 200 whose
+  // `data` still carries the timeline), and it must not reach the logs / Loki.
+  private[api] def redactBody(detail: String): String =
+    detail.indexOf(" (body:") match {
+      case -1 => detail
+      case i  => detail.take(i) + " (body redacted)"
+    }
+
+  /**
+   * Pure parse of a `thread { timelineEntries { edges { node … } } }` response into OLDEST-FIRST
+   * prior turns. Structure-tolerant by construction: any entry we can't read (unknown union member,
+   * missing actor, empty body) is DROPPED, never a failure — a Plain schema addition degrades the
+   * transcript, it never breaks a dispatch. Ordering is taken from each entry's `timestamp.iso8601`
+   * (UTC ISO-8601 sorts lexicographically) so we do not depend on the connection's return order —
+   * but ONLY when every kept entry carries one; if any timestamp is missing we keep Plain's own
+   * order rather than float the undated entries to the top.
+   *
+   * Be explicit about what that fallback costs, since the kickoff asserts "oldest first"
+   * unconditionally: with it engaged, both the transcript order and
+   * [[SupportResponder.priorTurns]]' TRAILING echo match ride on Plain's connection order. It is
+   * not a correctness hazard — a wrong order costs the agent clarity and at worst leaves the echo
+   * turn in — and it is unreachable while [[Live.ThreadTimelineQuery]] selects `timestamp { iso8601
+   * }` on every entry, which is why it stays a quiet fallback rather than a drop or a third parse
+   * of the body to meter it.
+   */
+  private[support] def parseThreadHistory(body: String): List[PlainThreadMessage] =
+    Json.decoder.decodeJson(body).toOption.toList.flatMap { json =>
+      val edges = navigate(json, List("data", "thread", "timelineEntries", "edges")) match {
+        case Some(Json.Arr(items)) => items.toList
+        case _                     => Nil
+      }
+      val rows  = edges.flatMap { edge =>
+        objField(edge, "node").toList.flatMap { node =>
+          val ts = navigate(node, List("timestamp", "iso8601")).collect { case Json.Str(s) => s }
+          for {
+            entry <- objField(node, "entry").toList
+            text  <- entryText(entry).toList
+            actor = objField(node, "actor").flatMap(typeNameOf)
+            role <- roleOf(actor, text).toList
+          } yield (ts.getOrElse(""), PlainThreadMessage(role, text))
+        }
+      }
+      (if rows.forall(_._1.nonEmpty) then rows.sortBy(_._1) else rows).map(_._2)
     }
 
   /**
@@ -492,6 +685,103 @@ object PlainClient {
         Expect("replyToThread", None),
       )
 
+    // ── #2430: the bound thread's prior turns ──────────────────────────────────
+    // The ONE read this integration performs. Scoped by construction: `threadId` is the single
+    // parameter and it comes from the webhook event the dispatch is bound to, so there is no shape
+    // in which another thread, customer, or household is readable. Requires the machine-user key's
+    // `thread:read` permission (docs/ops/plain-setup.md §5.1) — a missing grant is a PROVISIONING
+    // GAP, logged loud + metered `permission` below, not a silent degrade.
+    //
+    // `timelineEntries(last:)` asks for the most recent N; we request `__typename` on the actor and
+    // the entry unions so [[parseThreadHistory]] can label the role and pick out the message body.
+    private val ThreadTimelineQuery: String =
+      """query threadTimeline($threadId: ID!, $last: Int!) {
+        |  thread(threadId: $threadId) {
+        |    id
+        |    timelineEntries(last: $last) {
+        |      edges {
+        |        node {
+        |          timestamp { iso8601 }
+        |          actor { __typename }
+        |          entry {
+        |            __typename
+        |            ... on ChatEntry { text }
+        |            ... on EmailEntry { textContent }
+        |          }
+        |        }
+        |      }
+        |    }
+        |  }
+        |}""".stripMargin
+
+    def threadHistory(threadId: String, limit: Int): UIO[List[PlainThreadMessage]] =
+      if threadId.isEmpty then AppMetrics.supportThreadHistory("empty").as(Nil)
+      else
+        sendForBody(
+          ThreadTimelineQuery,
+          Json.Obj(
+            "threadId" -> Json.Str(threadId),
+            "last"     -> Json.Num(java.math.BigDecimal.valueOf(limit.toLong)),
+          ),
+          Expect("thread", None),
+        ).disconnect
+          .timeoutTo(Left("timed out"): Either[String, String])(identity)(HistoryTimeout)
+          .flatMap {
+            case Right(body)  =>
+              val msgs     = parseThreadHistory(body)
+              // Only the entries we SHOULD have read — a thread whose recent timeline is all notes
+              // and status flips is healthy, not drifted (bound once: this re-parses the body).
+              val readable = readableEntryCount(body)
+              if msgs.nonEmpty then AppMetrics.supportThreadHistory("ok").as(msgs)
+              else if readable > 0 then
+                // Plain returned turn-SHAPED entries and NOT ONE parsed into a turn. That is schema
+                // DRIFT (the actor / entry union shapes moved), not a quiet thread — its own bucket,
+                // logged loud, because it will never self-heal.
+                ZIO.logError(
+                  s"plain threadTimeline returned $readable message entries but none parsed into " +
+                    "a turn — SCHEMA DRIFT: Plain's timeline actor/entry shapes no longer match " +
+                    "PlainClient.parseThreadHistory; the support responder is answering every " +
+                    "message with no thread context",
+                ) *> AppMetrics.supportThreadHistory("unparsed").as(Nil)
+              else AppMetrics.supportThreadHistory("empty").as(Nil)
+            case Left(detail) =>
+              // Fail-open (the dispatch proceeds with the latest message alone) but NOT silent: a
+              // permission or schema miss is a misconfiguration, so it is logged at ERROR with the
+              // fix named inline, exactly like the #2410 entitlement path — and gets its own metric
+              // bucket, since neither self-heals. Transient misses stay a warning + `error`.
+              //
+              // `detail` carries up to 500 chars of the raw Plain response body, which on THIS path
+              // is customer conversation text — every other sendForBody caller logs inputs we
+              // authored. So the body is stripped before it reaches the log/Loki; the reason plus
+              // the GraphQL error text is what an operator acts on.
+              val reason = classifyFieldFailure(detail)
+              val safe   = redactBody(detail)
+              val log    = reason match {
+                case Reason.Permission =>
+                  ZIO.logError(
+                    s"plain threadTimeline failed [reason=$reason]: $safe — PROVISIONING GAP: " +
+                      "the Plain machine-user API key lacks the thread:read permission; grant it " +
+                      "(docs/ops/plain-setup.md §5.1) so the support responder can see the " +
+                      "conversation so far",
+                  )
+                case Reason.Schema     =>
+                  ZIO.logError(
+                    s"plain threadTimeline failed [reason=$reason]: $safe — SCHEMA DRIFT: Plain " +
+                      "rejected the thread-timeline query; PlainClient.ThreadTimelineQuery no " +
+                      "longer matches Plain's schema and the responder has no thread context",
+                  )
+                case _                 =>
+                  ZIO.logWarning(s"plain threadTimeline failed [reason=$reason]: $safe")
+              }
+              log *> AppMetrics
+                .supportThreadHistory(reason match {
+                  case Reason.Permission => "permission"
+                  case Reason.Schema     => "schema"
+                  case _                 => "error"
+                })
+                .as(Nil)
+          }
+
     private def post(
         query: String,
         variables: Json,
@@ -549,9 +839,18 @@ object PlainClient {
    * reports [[PlainOutcome.Ok]]. Used by the feature suite to assert the mapping carried the right
    * `tenantIdentifier` + entitlement attributes without a network.
    */
+  /**
+   * `history` is the canned transcript [[threadHistory]] returns (seed it to model a continuation
+   * thread); `historyReads` records the thread ids it was asked for, so a spec can pin that the
+   * read is scoped to the BOUND thread. `historyFails` models a Plain hiccup / permission gap — the
+   * read then behaves exactly like the live client's fail-open path (`Nil`).
+   */
   final case class Recorder(
       customers: Ref[List[PlainCustomerUpsert]],
       threads: Ref[List[PlainThreadWrite]],
+      history: Ref[List[PlainThreadMessage]],
+      historyReads: Ref[List[String]],
+      historyFails: Ref[Boolean],
   )
 
   def recording(rec: Recorder): PlainClient = new PlainClient {
@@ -559,11 +858,20 @@ object PlainClient {
       rec.customers.update(_ :+ req).as(PlainOutcome.Ok)
     def writeThread(req: PlainThreadWrite): UIO[PlainOutcome]       =
       rec.threads.update(_ :+ req).as(PlainOutcome.Ok)
+
+    def threadHistory(threadId: String, limit: Int): UIO[List[PlainThreadMessage]] =
+      rec.historyReads.update(_ :+ threadId) *> rec.historyFails.get.flatMap {
+        case true  => ZIO.succeed(Nil)
+        case false => rec.history.get.map(_.takeRight(limit))
+      }
   }
 
   def recorder: UIO[Recorder] =
     for {
       c <- Ref.make(List.empty[PlainCustomerUpsert])
       t <- Ref.make(List.empty[PlainThreadWrite])
-    } yield Recorder(c, t)
+      h <- Ref.make(List.empty[PlainThreadMessage])
+      r <- Ref.make(List.empty[String])
+      f <- Ref.make(false)
+    } yield Recorder(c, t, h, r, f)
 }
