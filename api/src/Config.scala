@@ -285,20 +285,24 @@ case class BetaConfig(
 }
 
 // #2135 (multi-tenant P5-5, epic #622) — Stripe billing (design docs/design/multi-tenant-launch.md
-// §5, pricing-analysis.md §7). The whole block is optional; an empty `secretKey` DISABLES billing
-// entirely (`enabled = false`) so the self-hosted single-install path — which never bills — starts
-// clean and the /api/billing/* routes return 404-shaped "not configured". Secrets (`secretKey`,
-// `webhookSecret`) come from env via the entrypoint-rendered HOCON, NEVER committed
-// (docs/process/security.md). Price ids / promo code differ between Stripe test and live modes, so
+// §5, pricing-analysis.md §7). Billing is OPTIONAL but its off-state is the explicit `enabled` flag,
+// NOT the absence of a secret (#2266, no-dark-by-default rule 3): `enabled = false` is the
+// self-hosted single-install posture — which never bills — and `POST /api/billing/checkout` +
+// `GET /api/billing/portal` then fail 404-shaped "billing not configured" (`GET /api/billing` is
+// admin-authed but NOT config-gated, so it still reports the household's row). Under
+// `enabled = true` an empty `secretKey` or `webhookSecret` FAILS BOOT (`StripeConfig.validate`,
+// #2414); it does not disable anything. Secrets (`secretKey`, `webhookSecret`) come from env via
+// the entrypoint-rendered HOCON, NEVER committed (docs/process/security.md). Price ids / promo
+// code differ between Stripe test and live modes, so
 // they are config too (not constants). `appBaseUrl` is the SPA origin the hosted Checkout / Portal
 // return to.
 case class StripeConfig(
     // #2266: EXPLICIT named enable flag (no dark-by-default). Billing is off by default and turns on
     // only when the operator sets `enabled=true` — NOT inferred from `secretKey` presence. A true
-    // flag makes `secretKey` REQUIRED (StripeConfig.validate → AppConfig.validateRequired fails boot),
-    // so a cloud deploy that means to bill but dropped the key crashes loudly instead of silently
-    // no-opping. Default false = the self-hosted / never-bills posture, logged at boot + on
-    // /api/debug/config.
+    // flag makes `secretKey` AND `webhookSecret` REQUIRED (StripeConfig.validate →
+    // AppConfig.validateRequired fails boot; #2414 added the latter), so a cloud deploy that means
+    // to bill but dropped either key crashes loudly instead of silently no-opping. Default false =
+    // the self-hosted / never-bills posture, logged at boot + on /api/debug/config.
     enabled: Boolean = false,
     secretKey: String = "",
     webhookSecret: String = "",
@@ -317,18 +321,42 @@ case class StripeConfig(
 
   val foundingPromoCodeOpt: Option[String] =
     Option(foundingPromoCode).map(_.trim).filter(_.nonEmpty)
+
+  // #2414: the ONE trimmed form of the webhook signing secret, mirroring
+  // PlainConfig/PressConfig.webhookSecretTrimmed. Every consumer — StripeConfig.validate's
+  // boot gate, BillingService.handleWebhook's guard, and the HMAC verification itself — reads
+  // this, so "blank?" is decided once and the value the gate accepted is the value we verify
+  // against. Trimming in the gate but verifying with the untrimmed string would let a secret
+  // pasted with surrounding whitespace pass boot and then fail every HMAC check.
+  val webhookSecretTrimmed: String = webhookSecret.trim
 }
 
 object StripeConfig {
   // #2266: with billing explicitly enabled, `secretKey` is REQUIRED — an unset key then fails boot
   // (accumulated by AppConfig.validateRequired) rather than the old silent secretKey-presence no-op.
+  //
+  // #2414: `webhookSecret` is EQUALLY required, for the same reason and a worse failure mode.
+  // Without it BillingService.handleWebhook short-circuits to WebhookOutcome.NotConfigured, which
+  // BillingRoutes maps to HTTP 200 — so Stripe records the delivery as successful and NEVER
+  // retries, and no subscription transition (checkout.session.completed → active,
+  // invoice.payment_failed / customer.subscription.deleted → lapsed) ever lands. Billing
+  // half-works forever and looks green from Stripe's dashboard; the only runtime signal,
+  // `wifihaven_billing_webhook_total{outcome=not_configured}`, is indistinguishable from the
+  // intentional self-hosted billing-off posture. The prerequisite is pure config, checkable at boot
+  // with no live call, and never self-heals — so it FAILS HARD at startup (no-dark-by-default rule 1)
+  // rather than degrading at runtime. Both gaps are returned so boot reports them together
+  // (rule 4). enabled=false requires neither: that is the deliberate, named off-state (rule 3).
   private[api] def validate(cfg: StripeConfig): List[String] =
-    Option
-      .when(cfg.enabled && cfg.secretKey.trim.isEmpty)(
-        "wifihaven.stripe.secretKey must be set when wifihaven.stripe.enabled=true (billing is on) — " +
-          "set the key (or enabled=false to disable billing on this deploy)",
-      )
-      .toList
+    if !cfg.enabled then Nil
+    else
+      List(
+        "wifihaven.stripe.secretKey"     -> cfg.secretKey.trim,
+        "wifihaven.stripe.webhookSecret" -> cfg.webhookSecretTrimmed,
+      ).collect {
+        case (k, v) if v.isEmpty =>
+          s"$k must be set when wifihaven.stripe.enabled=true (billing is on) — " +
+            "set it (or enabled=false to disable billing on this deploy)"
+      }
 }
 
 // #578 — outbound email transport for admin notifications (the deferred

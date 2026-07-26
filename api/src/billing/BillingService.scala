@@ -166,10 +166,25 @@ final case class BillingService(
    * Returns a bounded [[WebhookOutcome]] for the metric — never a per-customer/-household value.
    */
   def handleWebhook(payload: String, sigHeader: Option[String]): UIO[WebhookOutcome] =
-    if cfg.webhookSecret.trim.isEmpty then ZIO.succeed(WebhookOutcome.NotConfigured)
+    // #2414: this branch is UNREACHABLE while billing is enabled — StripeConfig.validate now fails
+    // boot when `enabled=true` and `webhookSecret` is unset, because reaching here answers Stripe
+    // HTTP 200 (see BillingRoutes), Stripe then never retries, and subscription state silently
+    // never advances. It stays for the enabled=false posture (self-hosted never bills), and logs at
+    // ERROR as defense-in-depth: if it ever fires with billing on, the boot gate has regressed.
+    if cfg.webhookSecretTrimmed.isEmpty then
+      ZIO
+        .logError(
+          "Stripe webhook arrived but wifihaven.stripe.webhookSecret is unset while " +
+            "wifihaven.stripe.enabled=true — dropping it unverified; the #2414 boot guard should " +
+            "have prevented this deploy from starting",
+        )
+        .when(cfg.enabled)
+        .as(WebhookOutcome.NotConfigured)
     else
       clock.instant.flatMap { now =>
-        StripeWebhook.verifyAndParse(payload, sigHeader, cfg.webhookSecret, now) match {
+        // #2414: verify against the SAME trimmed value the boot gate accepted (see
+        // StripeConfig.webhookSecretTrimmed) — not the raw field, which could differ by whitespace.
+        StripeWebhook.verifyAndParse(payload, sigHeader, cfg.webhookSecretTrimmed, now) match {
           case Left(_)      => ZIO.succeed(WebhookOutcome.InvalidSignature)
           case Right(event) => applyEvent(event, now)
         }
@@ -253,7 +268,9 @@ object WebhookOutcome {
 /** Typed failures the billing routes map to HTTP statuses. */
 sealed trait BillingError
 object BillingError {
-  case object NotConfigured  extends BillingError // billing disabled (no keys) → 404-shaped
+  // #2266/#2414: disabled by the explicit `stripe.enabled=false` flag, NOT by absent keys — under
+  // enabled=true a missing secretKey/webhookSecret fails boot instead of landing here.
+  case object NotConfigured  extends BillingError // billing disabled by flag → 404-shaped
   case object NoBillingRow   extends BillingError // household has no household_billing row
   case object NoCustomer     extends BillingError // no Stripe Customer yet (provisioning gap)
   case object FreeForever    extends BillingError // #2356: household is free_forever → never billed
