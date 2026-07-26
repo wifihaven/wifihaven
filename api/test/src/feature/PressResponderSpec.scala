@@ -66,6 +66,7 @@ object PressResponderSpec
     claudeEnvironmentId = "env_press_test",
     agentTokenSecret = TokenSecret,
     deploymentEnv = "staging",
+    fromAddress = "press@staging.wifihaven.net",
   )
 
   // Flag false (the default) ⇒ the feature is EXPLICITLY off (#2265) — webhook no-ops, agent
@@ -228,6 +229,7 @@ object PressResponderSpec
         missing.contains("press.claudeEnvironmentId"),
         missing.contains("press.agentTokenSecret"),
         missing.contains("press.deploymentEnv"),
+        missing.contains("press.fromAddress"),
         liveCfg.missingRequiredKeys.isEmpty,
       )
     },

@@ -33,6 +33,7 @@ object PressClaudeCodeDispatcherSpec extends ZIOSpecDefault {
     claudeEnvironmentId = "env_x",
     agentTokenSecret = "secret",
     deploymentEnv = "staging",
+    fromAddress = "press@staging.wifihaven.net",
   )
 
   private val claudeCodeCfg = PressConfig(
@@ -43,6 +44,7 @@ object PressClaudeCodeDispatcherSpec extends ZIOSpecDefault {
     claudeCodeRoutineToken = "sk-ant-oat01-routine-token",
     agentTokenSecret = "secret",
     deploymentEnv = "staging",
+    fromAddress = "press@staging.wifihaven.net",
   )
 
   private val sampleDispatch = wifihaven.api.press.PressDispatch(
@@ -90,6 +92,7 @@ object PressClaudeCodeDispatcherSpec extends ZIOSpecDefault {
         missing.contains("press.webhookSecret"),
         missing.contains("press.agentTokenSecret"),
         missing.contains("press.deploymentEnv"),
+        missing.contains("press.fromAddress"),
         // … but the Managed Agents transport keys are NOT required when it isn't selected.
         !missing.contains("press.anthropicApiKey"),
         !missing.contains("press.claudeAgentId"),

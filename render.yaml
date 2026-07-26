@@ -307,6 +307,11 @@ services:
         value: https://api-staging.wifihaven.net
       - key: WIFIHAVEN_PRESS_DEPLOYMENT_ENV
         value: staging
+      # #2407: the verified press From-address the autonomous reply is sent FROM (Reply-To is set to
+      # the same mailbox so a journalist's human follow-up threads back to the CF-Email-Worker inbox).
+      # Must be a verified Resend sender for wifihaven.net. Required when RESPONDER_ENABLED=true.
+      - key: WIFIHAVEN_PRESS_FROM_ADDRESS
+        value: press@staging.wifihaven.net
 
   # ── Production API ─────────────────────────────────────────────────────────
   - type: web
@@ -584,6 +589,11 @@ services:
         value: https://api.wifihaven.net
       - key: WIFIHAVEN_PRESS_DEPLOYMENT_ENV
         value: prod
+      # #2407: the verified press From-address the autonomous reply is sent FROM (Reply-To is set to
+      # the same mailbox so a journalist's human follow-up threads back to the CF-Email-Worker inbox).
+      # Must be a verified Resend sender for wifihaven.net. Required when RESPONDER_ENABLED=true.
+      - key: WIFIHAVEN_PRESS_FROM_ADDRESS
+        value: press@wifihaven.net
 
   # ── Metrics collector: Grafana Alloy → Grafana Cloud ─────────────────────────
   # #1208: the cloud APP-metrics path. Alloy (Prometheus agent-mode) scrapes

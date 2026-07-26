@@ -695,8 +695,15 @@ case class PressConfig(
     agentTokenTtlMinutes: Int = 30,
     agentApiBase: String = "https://api.wifihaven.net",
     deploymentEnv: String = "",
+    // #2407: the verified press From-address the autonomous reply is sent FROM (e.g.
+    // "press@staging.wifihaven.net" / "press@wifihaven.net"). Without this the reply falls back to the
+    // shared #578 alerts@ notification sender — off-brand for a journalist. Reply-To is set to this
+    // same press mailbox so a human follow-up threads back to the Cloudflare-Email-Worker-watched
+    // inbox. Required when the responder is enabled (missingRequiredKeys) — no dark-by-default (#2265).
+    fromAddress: String = "",
 ) {
   val dispatcherTrimmed: String             = dispatcher.trim
+  val fromAddressTrimmed: String            = fromAddress.trim
   val webhookSecretTrimmed: String          = webhookSecret.trim
   val anthropicApiKeyTrimmed: String        = anthropicApiKey.trim
   val claudeAgentIdTrimmed: String          = claudeAgentId.trim
@@ -726,6 +733,8 @@ case class PressConfig(
           "press.webhookSecret"    -> webhookSecretTrimmed,
           "press.agentTokenSecret" -> agentTokenSecretTrimmed,
           "press.deploymentEnv"    -> deploymentEnvTrimmed,
+          // #2407: the reply must go out FROM a press identity, not the shared alerts@ sender.
+          "press.fromAddress"      -> fromAddressTrimmed,
         ).collect { case (k, v) if v.isEmpty => k }
       // #2327: only the SELECTED transport's config chain is required. An unknown dispatcher value is
       // itself a boot failure (explicit named value, #2265) — the operator sees the valid set.
