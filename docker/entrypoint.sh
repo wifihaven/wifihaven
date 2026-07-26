@@ -146,6 +146,7 @@ set -euo pipefail
 : "${WIFIHAVEN_PRESS_AGENT_TOKEN_SECRET:=}"
 : "${WIFIHAVEN_PRESS_AGENT_API_BASE:=https://api.wifihaven.net}"
 : "${WIFIHAVEN_PRESS_DEPLOYMENT_ENV:=}"
+: "${WIFIHAVEN_PRESS_FROM_ADDRESS:=}"
 
 export WIFIHAVEN_LOG_LEVEL WIFIHAVEN_DEBUG
 
@@ -245,6 +246,7 @@ wifihaven {
     agentTokenSecret       = "${WIFIHAVEN_PRESS_AGENT_TOKEN_SECRET}"
     agentApiBase           = "${WIFIHAVEN_PRESS_AGENT_API_BASE}"
     deploymentEnv          = "${WIFIHAVEN_PRESS_DEPLOYMENT_ENV}"
+    fromAddress            = "${WIFIHAVEN_PRESS_FROM_ADDRESS}"
   }
 }
 EOF

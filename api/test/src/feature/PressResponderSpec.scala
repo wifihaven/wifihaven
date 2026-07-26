@@ -66,6 +66,7 @@ object PressResponderSpec
     claudeEnvironmentId = "env_press_test",
     agentTokenSecret = TokenSecret,
     deploymentEnv = "staging",
+    fromAddress = "press@staging.wifihaven.net",
   )
 
   // Flag false (the default) ⇒ the feature is EXPLICITLY off (#2265) — webhook no-ops, agent
@@ -228,6 +229,7 @@ object PressResponderSpec
         missing.contains("press.claudeEnvironmentId"),
         missing.contains("press.agentTokenSecret"),
         missing.contains("press.deploymentEnv"),
+        missing.contains("press.fromAddress"),
         liveCfg.missingRequiredKeys.isEmpty,
       )
     },
@@ -288,6 +290,30 @@ object PressResponderSpec
           sTampered == Status.Unauthorized,
           sExpired == Status.Unauthorized,
           sNoToken == Status.Unauthorized,
+        )
+    },
+    test(
+      "the reply is emailed FROM the press identity, not the alerts@ notification sender (#2407)",
+    ) {
+      for {
+        _                      <- cleanDb
+        (routes, stubs, clock) <- makeRoutes(liveCfg)
+        token                  <- mintToken(clock, "reporter@example.com", subject = "Story")
+        (status, _)            <- agentReply(
+          routes,
+          """{"markdown":"Happy to share our public overview..."}""",
+          Some(token),
+        )
+        emails                 <- stubs.emails.get
+      } yield assertTrue(status == Status.Ok, emails.size == 1) &&
+        assertTrue(
+          // #2407: sent via `sendAs` under the press From-address — NOT the shared alerts@ sender the
+          // plain `send` path (from = None on the recorder) would leave. Reply-To threads any human
+          // follow-up back to the press mailbox the Cloudflare Email Worker watches.
+          emails.head.from.contains("press@staging.wifihaven.net"),
+          emails.head.replyTo.contains("press@staging.wifihaven.net"),
+          // The destination stays server-locked to the token's sender (unchanged by #2407).
+          emails.head.to == "reporter@example.com",
         )
     },
     test("a signature-valid but malformed envelope (no from/text) is skipped, not dispatched") {

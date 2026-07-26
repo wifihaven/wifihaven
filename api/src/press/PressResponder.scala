@@ -146,27 +146,40 @@ final case class PressResponder(
                 AppMetrics.pressAgentAction("reply", "denied").as(AgentActionResult.Denied)
               case Right(claims) =>
                 val subject = replySubject(claims.subject)
-                email.send(claims.replyTo, subject, htmlBody(markdown)).flatMap { sendResult =>
-                  // #2296: record the outbound reply as AUDIT (fail-open) AFTER the send, pairing it
-                  // to the inbound row via the token's pressMessageId. Only Sent/Failed are real
-                  // send attempts worth logging; a Disabled send (dark install) emitted no email.
-                  val record = sendResult match {
-                    case EmailOutcome.Sent     => recordOutbound(claims, subject, markdown, "sent")
-                    case EmailOutcome.Failed   =>
-                      recordOutbound(claims, subject, markdown, "failed")
-                    case EmailOutcome.Disabled => ZIO.unit
+                // #2407: send FROM the press identity (not the shared #578 alerts@ notification
+                // sender). Reply-To points at the same press mailbox so a journalist's human
+                // follow-up threads back to the Cloudflare-Email-Worker-watched inbox. The recipient
+                // stays server-locked to the token's `replyTo` — only the From/Reply-To identity
+                // changes, never the destination.
+                email
+                  .sendAs(
+                    from = cfg.fromAddressTrimmed,
+                    replyTo = Some(cfg.fromAddressTrimmed),
+                    to = claims.replyTo,
+                    subject = subject,
+                    htmlBody = htmlBody(markdown),
+                  )
+                  .flatMap { sendResult =>
+                    // #2296: record the outbound reply as AUDIT (fail-open) AFTER the send, pairing it
+                    // to the inbound row via the token's pressMessageId. Only Sent/Failed are real
+                    // send attempts worth logging; a Disabled send (dark install) emitted no email.
+                    val record = sendResult match {
+                      case EmailOutcome.Sent   => recordOutbound(claims, subject, markdown, "sent")
+                      case EmailOutcome.Failed =>
+                        recordOutbound(claims, subject, markdown, "failed")
+                      case EmailOutcome.Disabled => ZIO.unit
+                    }
+                    record *> (sendResult match {
+                      case EmailOutcome.Sent     =>
+                        AppMetrics.pressAgentAction("reply", "ok").as(AgentActionResult.Ok)
+                      case EmailOutcome.Disabled =>
+                        AppMetrics
+                          .pressAgentAction("reply", "disabled")
+                          .as(AgentActionResult.Disabled)
+                      case EmailOutcome.Failed   =>
+                        AppMetrics.pressAgentAction("reply", "error").as(AgentActionResult.Error)
+                    })
                   }
-                  record *> (sendResult match {
-                    case EmailOutcome.Sent     =>
-                      AppMetrics.pressAgentAction("reply", "ok").as(AgentActionResult.Ok)
-                    case EmailOutcome.Disabled =>
-                      AppMetrics
-                        .pressAgentAction("reply", "disabled")
-                        .as(AgentActionResult.Disabled)
-                    case EmailOutcome.Failed   =>
-                      AppMetrics.pressAgentAction("reply", "error").as(AgentActionResult.Error)
-                  })
-                }
             }
         }
       }
