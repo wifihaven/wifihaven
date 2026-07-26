@@ -497,7 +497,14 @@ object MetricGuard {
     // `support_agent_action_total{op,outcome}` counts the cloud agent's callback
     // actions (reply | issue | household_read × ok | denied | rate_limited | disabled | error) —
     // the `issue` action's rate feeds the #2241 volume alert. Both bounded, never per-household.
-    "support_ai_draft_total"                        -> Set("outcome"),
+    // #2416 added the bounded `reason` dimension so `outcome=error` is attributed to WHY the cloud
+    // agent could not be dispatched: config (a 4xx at the Anthropic boundary — revoked key, wrong
+    // agent-or-routine id, stale anthropic-beta header; PERMANENT, never self-heals, also logged at
+    // ERROR with the fix named) | transient (transport / timeout / 5xx — may self-heal) | none (every
+    // non-dispatch-failure outcome, so no sample is missing the label). `outcome` is unchanged —
+    // both failure kinds still report `error` — so existing panels and alerts keep working. Both
+    // bounded, never per-thread / per-household.
+    "support_ai_draft_total"                        -> Set("outcome", "reason"),
     "support_agent_action_total"                    -> Set("op", "outcome"),
     // #2438 — the dispatcher-level cloud-agent dispatch outcome, additive to (and disambiguating)
     // `support_ai_draft_total`. `support_dispatch_total{outcome,transport}` counts each dispatch
@@ -535,7 +542,10 @@ object MetricGuard {
     // counts the press agent's draft callback (reply × ok | denied | rate_limited | disabled |
     // error). Separate series from support so the public-press audience is graphed independently.
     // The #808 lesson: without these entries the firewall rejects the name and the series never emits.
-    "press_ai_draft_total"                          -> Set("outcome"),
+    // #2416: `reason` (config | transient | none) attributes a dispatch failure exactly as on the
+    // support series — SAME bounded vocabulary from the ONE shared classifier, deliberately SEPARATE
+    // series so the two audiences alert independently. Never per-sender / per-thread.
+    "press_ai_draft_total"                          -> Set("outcome", "reason"),
     "press_agent_action_total"                      -> Set("op", "outcome"),
     // #2438 — the press dispatcher-level dispatch outcome, the press twin of
     // `support_dispatch_total` (same shared CloudAgentObservability envelope, separate series so the
@@ -806,9 +816,14 @@ object AppMetrics {
   // (dispatched | skipped_unauthenticated | rate_limited | invalid_signature | malformed |
   // disabled | error); `supportAgentAction` counts each token-authenticated agent callback by
   // (op, outcome). Both bounded enums — never a per-household / per-thread label.
+  // #2416 — `reason` attributes a dispatch failure: config (permanent 4xx at the Anthropic boundary)
+  // | transient (transport / 5xx) | none. Bounded by SupportResponder.WebhookOutcome.reason.
 
-  def supportAiDraft(outcome: String): UIO[Unit] =
-    MetricGuard.counter("support_ai_draft_total", Map("outcome" -> outcome))
+  def supportAiDraft(outcome: String, reason: String): UIO[Unit] =
+    MetricGuard.counter(
+      "support_ai_draft_total",
+      Map("outcome" -> outcome, "reason" -> reason),
+    )
 
   def supportAgentAction(action: String, outcome: String): UIO[Unit] =
     MetricGuard.counter("support_agent_action_total", Map("op" -> action, "outcome" -> outcome))
@@ -857,9 +872,14 @@ object AppMetrics {
   // `pressAgentAction` counts each token-authenticated press agent callback by (op, outcome). Both
   // bounded enums — never a per-sender / per-thread label. Separate series from support so the two
   // audiences are graphed and alerted independently.
+  // #2416 — `reason` attributes a dispatch failure with the SAME bounded vocabulary as support
+  // (config | transient | none), from the ONE shared CloudAgentDispatch classifier.
 
-  def pressAiDraft(outcome: String): UIO[Unit] =
-    MetricGuard.counter("press_ai_draft_total", Map("outcome" -> outcome))
+  def pressAiDraft(outcome: String, reason: String): UIO[Unit] =
+    MetricGuard.counter(
+      "press_ai_draft_total",
+      Map("outcome" -> outcome, "reason" -> reason),
+    )
 
   def pressAgentAction(action: String, outcome: String): UIO[Unit] =
     MetricGuard.counter("press_agent_action_total", Map("op" -> action, "outcome" -> outcome))

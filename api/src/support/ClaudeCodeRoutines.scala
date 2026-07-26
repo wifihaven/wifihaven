@@ -93,11 +93,12 @@ object ClaudeCodeRoutines {
       }
       .flatMap { resp =>
         if resp.statusCode() / 100 == 2 then ZIO.unit
+        // #2416: fail with the STATUS as typed data (see ManagedAgents.post). A 4xx here is a
+        // permanent misconfiguration — a revoked routine token (401), a wrong routine id (404), or a
+        // stale `RoutineBeta` header (400) — and never self-heals on retry.
         else
           ZIO.fail(
-            new RuntimeException(
-              s"HTTP ${resp.statusCode()} on routines/$routineId/fire: ${resp.body().take(300)}",
-            ),
+            CloudAgentHttpError(resp.statusCode(), s"routines/$routineId/fire", resp.body()),
           )
       }
 
