@@ -1147,4 +1147,9 @@ export interface SupportIdentityResponse {
   fullName: string | null
   plan: string | null
   founding: boolean | null
+  // #2429: the environment-correct support inbox for THIS deployment (support@wifihaven.net on
+  // prod, support@staging.wifihaven.net on staging) — the API is the single source of truth, the
+  // SPA never derives it. Present even when `configured` is false: the chat widget being dark does
+  // not make email unreachable. `null` = no hosted support desk (self-hosted).
+  supportEmail: string | null
 }

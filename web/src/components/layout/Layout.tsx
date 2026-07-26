@@ -5,6 +5,7 @@ import { useMe } from '@/api/queries'
 import { ApiUnreachableBanner } from '@/components/ApiUnreachableBanner'
 import { ConversionBanner } from '@/components/ConversionBanner'
 import { SupportWidget } from '@/components/SupportWidget'
+import { SupportFooter } from '@/components/SupportFooter'
 
 interface NavItem {
   to: string
@@ -253,6 +254,11 @@ export function Layout() {
       <main className="flex-1 max-w-7xl mx-auto w-full px-4 py-6">
         <Outlet />
       </main>
+
+      {/* #2429: the in-product support affordance — admin-only, environment-correct address, and
+          the chat-icon half only when the Plain bubble is actually rendering. In normal flow above
+          the mobile-nav spacer so it overlaps neither the fixed nav nor the chat bubble. */}
+      <SupportFooter />
 
       {/* Mobile bottom nav */}
       <nav className="md:hidden fixed bottom-0 inset-x-0 bg-white border-t border-brand-border z-50">

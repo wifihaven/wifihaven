@@ -589,6 +589,15 @@ case class SupportConfig(
     agentApiBase: String = "https://api.wifihaven.net",
     deploymentEnv: String = "",
     githubSupportBotToken: String = "",
+    // #2429: the customer-facing support inbox for THIS deployment — support@wifihaven.net on prod,
+    // support@staging.wifihaven.net on staging (both live Cloudflare Email Routing rules into Plain,
+    // `support_to_plain` / `support_staging_to_plain` in infra/cloudflare/main.tf). A per-service
+    // literal in render.yaml, NOT a secret and NOT derived from `deploymentEnv` — an explicit named
+    // value (#2265) so a new environment can't silently publish the wrong address. Shipped to the SPA
+    // on GET /api/support/identity so the address has ONE source of truth. Empty = the self-hosted
+    // no-hosted-support posture (no address to publish ⇒ the SPA shows no support line); REQUIRED
+    // when the Plain widget is on, since a shipped support desk must publish where to write.
+    emailAddress: String = "",
 ) {
   val dispatcherTrimmed: String             = dispatcher.trim
   val anthropicApiKeyTrimmed: String        = anthropicApiKey.trim
@@ -600,6 +609,10 @@ case class SupportConfig(
   val agentApiBaseTrimmed: String           = agentApiBase.trim.stripSuffix("/")
   val deploymentEnvTrimmed: String          = deploymentEnv.trim
   val githubSupportBotTokenTrimmed: String  = githubSupportBotToken.trim
+  val emailAddressTrimmed: String           = emailAddress.trim
+
+  // #2429: the address to publish in the SPA, or None on the self-hosted no-support-desk posture.
+  val supportEmailOpt: Option[String] = Option(emailAddressTrimmed).filter(_.nonEmpty)
 
   // #2265: fail LOUD, in bulk. With the responder explicitly enabled, EVERY config the chain needs
   // is required — webhook verification, the Plain write key (the reply path), the Anthropic
@@ -648,6 +661,24 @@ case class SupportConfig(
       else Nil
     responderKeys ++ issueKeys
   }
+
+  /**
+   * #2429: a deployment that ships the Plain chat widget has a hosted support desk, so it MUST
+   * publish the inbox address the SPA renders — missing ⇒ fail boot rather than silently rendering
+   * no support line (no dark-by-default). Kept OUT of [[missingRequiredKeys]] because that list's
+   * trigger is the responder / issue-filing flags: this key's trigger is
+   * `support.plain.widgetEnabled`, and folding it in would report a factually wrong cause.
+   *
+   * Returns FULLY-WORDED messages, not bare keys (hence `…Errors`, not `…Keys` like its sibling) —
+   * `AppConfig.validateRequired` appends them verbatim rather than mapping a cause onto them.
+   */
+  def widgetEmailConfigErrors: List[String] =
+    if plain.widgetEnabled && emailAddressTrimmed.isEmpty then
+      List(
+        "wifihaven.support.emailAddress must be set when wifihaven.support.plain.widgetEnabled=true " +
+          "— the SPA publishes it as the support inbox (#2429/#2265)",
+      )
+    else Nil
 
   // #2200: the agent-facing endpoints authenticate solely with the HMAC agent token, whose secret
   // the responder validation guarantees when enabled; disabled ⇒ 404-shaped denial.
@@ -857,6 +888,11 @@ object AppConfig {
       cfg.support.missingRequiredKeys.map(k =>
         s"$k must be set when the support responder / issue filing is enabled (#2265)",
       ) ++
+      // #2429 cross-check: the widget half has its OWN trigger (`plain.widgetEnabled`), so its
+      // message is emitted separately rather than folded into the responder/issue-filing wording
+      // above — an operator debugging a boot crash must be pointed at the flag that actually
+      // required the key. Already fully worded, so no mapping here.
+      cfg.support.widgetEmailConfigErrors ++
       // #2203: the press responder is the same EXPLICIT-flag shape — a true `press.responderEnabled`
       // makes its whole config chain required, bulk-listed here so it accumulates with the rest.
       cfg.press.missingRequiredKeys.map(k =>

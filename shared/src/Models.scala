@@ -892,12 +892,23 @@ case class SupportIdentityResponse(
     // never a gate on reading replies.
     plan: Option[String] = None,
     founding: Option[Boolean] = None,
+    // #2429: the environment-correct support inbox (`support.emailAddress` —
+    // support@wifihaven.net on prod, support@staging.wifihaven.net on staging; both are live
+    // Cloudflare Email Routing rules into the same Plain workspace). The API is the SINGLE SOURCE
+    // OF TRUTH for it so the SPA never duplicates environment logic. Unlike every other field it is
+    // present on the DARK response TOO: when the chat widget is off (or the caller is not
+    // identifiable) email is still a working support path, so the SPA degrades its affordance to
+    // email-only rather than hiding it. `None` = no hosted support desk (the self-hosted posture)
+    // ⇒ the SPA shows no support line at all.
+    supportEmail: Option[String] = None,
 ) derives JsonCodec
 
 object SupportIdentityResponse {
-  // The dark response: widget unconfigured, or the caller is not identifiable. The SPA renders
-  // nothing on `configured=false`.
-  val disabled: SupportIdentityResponse = SupportIdentityResponse(configured = false)
+  // The dark response: widget unconfigured, or the caller is not identifiable. The SPA renders no
+  // widget on `configured=false` — but still renders the email-only support line when
+  // `supportEmail` is set (#2429).
+  def disabled(supportEmail: Option[String] = None): SupportIdentityResponse =
+    SupportIdentityResponse(configured = false, supportEmail = supportEmail)
 }
 
 case class MeResponse(

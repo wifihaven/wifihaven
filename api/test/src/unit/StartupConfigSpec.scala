@@ -136,6 +136,47 @@ object StartupConfigSpec extends ZIOSpecDefault {
             |""".stripMargin
         bootValidate(hocon(goodSecret, full)).exit.map(ex => assertTrue(ex.isSuccess))
       },
+      test("#2429: the Plain widget on without support.emailAddress crashes boot, naming the key") {
+        // A deployment that ships the chat widget has a hosted support desk, so it MUST publish the
+        // inbox the SPA renders (#2429). Missing ⇒ fail loud, not a silently-absent support line.
+        val widgetNoEmail =
+          """  support {
+            |    plain { widgetEnabled = true, appId = "app_x", identitySecret = "s" }
+            |  }
+            |""".stripMargin
+        for {
+          c  <- loadVia(hocon(goodSecret, widgetNoEmail))
+          ex <- bootValidate(hocon(goodSecret, widgetNoEmail)).exit
+          errs = AppConfig.validateRequired(c)
+        } yield assertTrue(
+          errs.exists(_.contains("wifihaven.support.emailAddress")),
+          // The message must name the flag that ACTUALLY required the key — the responder /
+          // issue-filing wording would send an operator to the wrong switch.
+          errs.exists(_.contains("wifihaven.support.plain.widgetEnabled=true")),
+          !errs.exists(e =>
+            e.contains("emailAddress") && e.contains("support responder / issue filing"),
+          ),
+          ex.isFailure,
+        )
+      },
+      test("#2429: the Plain widget on WITH support.emailAddress boots clean") {
+        val widgetWithEmail =
+          """  support {
+            |    plain { widgetEnabled = true, appId = "app_x", identitySecret = "s" }
+            |    emailAddress = "support@staging.wifihaven.net"
+            |  }
+            |""".stripMargin
+        bootValidate(hocon(goodSecret, widgetWithEmail)).exit.map(ex => assertTrue(ex.isSuccess))
+      },
+      test("#2429: with the widget off, support.emailAddress is not required (self-hosted)") {
+        bootValidate(
+          hocon(
+            goodSecret,
+            """  support { plain { widgetEnabled = false } }
+              |""".stripMargin,
+          ),
+        ).exit.map(ex => assertTrue(ex.isSuccess))
+      },
     ),
     suite("optional features are observable — enabled/disabled + reason (rule 3)")(
       test("email disabled by default: reason names the explicit flag (#2266)") {
@@ -189,6 +230,26 @@ object StartupConfigSpec extends ZIOSpecDefault {
           )
         }
       },
+      test("#2429: the support address reports its state — unset names the key + the consequence") {
+        // Rule 3: "no support line in the SPA" must be an OBSERVABLE off state, not an unlabeled
+        // silent branch derived from an empty string.
+        for {
+          off <- loadVia(hocon(goodSecret))
+          on  <- loadVia(
+            hocon(
+              goodSecret,
+              """  support { emailAddress = "support@staging.wifihaven.net" }
+                |""".stripMargin,
+            ),
+          )
+          offState = StartupFeatureReport.states(off).find(_.name == "support-email")
+          onState  = StartupFeatureReport.states(on).find(_.name == "support-email")
+        } yield assertTrue(
+          offState.exists(s => !s.enabled && s.detail.contains("wifihaven.support.emailAddress")),
+          offState.exists(_.detail.contains("no support line")),
+          onState.exists(s => s.enabled && s.detail.contains("support@staging.wifihaven.net")),
+        )
+      },
       test("support responder/issue-filing report ENABLED when their #2265 flags are true") {
         val on =
           """  support { responderEnabled = true, issueFilingEnabled = true }
@@ -209,6 +270,7 @@ object StartupConfigSpec extends ZIOSpecDefault {
               "email-notifications",
               "stripe-billing",
               "support-widget",
+              "support-email",
               "support-write-api",
               "support-responder",
               "support-issue-filing",

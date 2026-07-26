@@ -3,6 +3,7 @@ import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { withQuery } from '@/test/queryWrapper'
+import type { SupportIdentityResponse } from '@/types/api'
 
 const navigateMock = vi.fn()
 const logoutMock = vi.fn()
@@ -24,10 +25,12 @@ vi.mock('@/hooks/useAuth', () => ({
 
 // #2133: the operator nav item is driven by the isOperator API signal (useMe), not the JWT role.
 let mockMe: { isOperator?: boolean } | undefined = undefined
+// #2199 / #2429: Layout mounts SupportWidget + SupportFooter, both of which read the widget
+// identity. Unset by default in tests (no widget, no support line).
+let mockIdentity: SupportIdentityResponse | undefined = undefined
 vi.mock('@/api/queries', () => ({
   useMe: () => ({ data: mockMe }),
-  // #2199: Layout mounts SupportWidget, which reads the widget identity. Dark by default in tests.
-  useSupportIdentity: () => ({ data: undefined }),
+  useSupportIdentity: () => ({ data: mockIdentity }),
 }))
 
 import { Layout } from './Layout'
@@ -37,6 +40,7 @@ beforeEach(() => {
   logoutMock.mockReset()
   mockAuth = { username: 'alice', role: 'admin', isAdmin: true, logout: logoutMock }
   mockMe = undefined
+  mockIdentity = undefined
 })
 
 function renderLayout() {
@@ -167,5 +171,69 @@ describe('Layout — header', () => {
   it('renders username and role', () => {
     renderLayout()
     expect(screen.getByText(/alice · admin/)).toBeInTheDocument()
+  })
+})
+
+// #2429: the in-product support affordance at the bottom of the shell. Three invariants: admin-only,
+// the address comes from the API (environment signal — never hardcoded in the SPA), and the
+// "click the chat icon" half appears ONLY when the Plain widget is actually rendering.
+describe('Layout — support affordance (#2429)', () => {
+  const identified: SupportIdentityResponse = {
+    configured: true,
+    appId: 'plainApp_123',
+    email: 'alice@example.com',
+    emailHash: 'deadbeefhash',
+    tenantIdentifier: '7',
+    fullName: 'The Test Family',
+    plan: 'beta',
+    founding: true,
+    supportEmail: 'support@staging.wifihaven.net',
+  }
+
+  // Widget dark (unconfigured / unidentifiable caller) but the inbox is still reachable.
+  const darkWidget: SupportIdentityResponse = {
+    configured: false,
+    appId: null,
+    email: null,
+    emailHash: null,
+    tenantIdentifier: null,
+    fullName: null,
+    plan: null,
+    founding: null,
+    supportEmail: 'support@wifihaven.net',
+  }
+
+  it('shows the email link AND the chat-icon wording for an admin with the widget live', () => {
+    mockIdentity = identified
+    renderLayout()
+    const link = screen.getByRole('link', { name: 'support@staging.wifihaven.net' })
+    expect(link).toHaveAttribute('href', 'mailto:support@staging.wifihaven.net')
+    expect(screen.getByText(/click the chat icon for support/)).toBeInTheDocument()
+  })
+
+  it('degrades to email-only when the chat widget is dark — never promises a missing icon', () => {
+    mockIdentity = darkWidget
+    renderLayout()
+    // The address is the one the API reported for THIS environment, not a hardcoded default.
+    const link = screen.getByRole('link', { name: 'support@wifihaven.net' })
+    expect(link).toHaveAttribute('href', 'mailto:support@wifihaven.net')
+    expect(screen.queryByText(/chat icon/)).not.toBeInTheDocument()
+    expect(screen.getByText(/for support/)).toBeInTheDocument()
+  })
+
+  it('shows nothing for non-admins even when the identity payload is present', () => {
+    mockIdentity = identified
+    mockAuth = { username: 'bob', role: 'child', isAdmin: false, logout: logoutMock }
+    renderLayout()
+    expect(screen.queryByText(/for support/)).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('link', { name: /support@staging\.wifihaven\.net/ }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('shows nothing when the deployment publishes no support address (self-hosted)', () => {
+    mockIdentity = { ...darkWidget, supportEmail: null }
+    renderLayout()
+    expect(screen.queryByText(/for support/)).not.toBeInTheDocument()
   })
 })

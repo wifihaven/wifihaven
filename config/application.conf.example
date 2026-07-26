@@ -243,5 +243,11 @@ wifihaven {
   #   # (no contents / no pull_requests ⇒ no-PR is structural, #2241). Required when
   #   # issueFilingEnabled = true. SECRET. (The target repo + REST base are constants, not config.)
   #   githubSupportBotToken = ""
+  #   # #2429: the customer-facing support inbox this deployment publishes in the SPA — the API
+  #   # ships it on GET /api/support/identity so the address has ONE source of truth (the SPA never
+  #   # derives it from the hostname). support@wifihaven.net on prod, support@staging.wifihaven.net
+  #   # on staging. Empty (the self-hosted default) = no hosted support desk and the SPA shows no
+  #   # support line; REQUIRED when plain.widgetEnabled = true.
+  #   emailAddress          = ""
   # }
 }

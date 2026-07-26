@@ -123,6 +123,11 @@ set -euo pipefail
 # customer (prod) or an operator test (staging).
 : "${WIFIHAVEN_SUPPORT_DEPLOYMENT_ENV:=}"
 : "${WIFIHAVEN_SUPPORT_GITHUB_BOT_TOKEN:=}"
+# #2429: the customer-facing support inbox this deployment publishes in the SPA
+# (support@wifihaven.net on prod, support@staging.wifihaven.net on staging — both Cloudflare Email
+# Routing rules into Plain). A per-service literal, not a secret. Empty = self-hosted, no hosted
+# support desk (the SPA then shows no support line); REQUIRED when the Plain widget is enabled.
+: "${WIFIHAVEN_SUPPORT_EMAIL_ADDRESS:=}"
 # #2203: the Claude PRESS/PR responder (cloud-agent reply per inbound PUBLIC press email). Press
 # arrives at press@wifihaven.net via Cloudflare Email Routing → an Email Worker (deploy/press-worker/)
 # that HMAC-signs + POSTs to /api/press/inbound; the reply is EMAILED back to the sender via the #578
@@ -239,6 +244,7 @@ wifihaven {
     agentApiBase          = "${WIFIHAVEN_SUPPORT_AGENT_API_BASE}"
     deploymentEnv         = "${WIFIHAVEN_SUPPORT_DEPLOYMENT_ENV}"
     githubSupportBotToken = "${WIFIHAVEN_SUPPORT_GITHUB_BOT_TOKEN}"
+    emailAddress          = "${WIFIHAVEN_SUPPORT_EMAIL_ADDRESS}"
   }
   press {
     responderEnabled       = ${WIFIHAVEN_PRESS_RESPONDER_ENABLED}

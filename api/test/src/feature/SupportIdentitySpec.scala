@@ -44,16 +44,25 @@ object SupportIdentitySpec
   private val IdentitySecret = "plain-chat-identity-secret-xyz"
   private val AppId          = "plainApp_123"
 
+  // #2429: the SPA's support line renders the address the API reports, so the fixtures pin one —
+  // a deployment with the widget on MUST publish one (SupportConfig.missingRequiredKeys).
+  private val SupportEmail = "support@staging.wifihaven.net"
+
   // Widget ON: #2266 explicit flag + both the public app id and the identity secret set. Write API
   // OFF here — the recorder stub stands in for the Plain write client, so we assert the mapping
   // without a network.
   private val widgetCfg =
-    SupportConfig(plain =
-      PlainConfig(widgetEnabled = true, identitySecret = IdentitySecret, appId = AppId),
+    SupportConfig(
+      plain = PlainConfig(widgetEnabled = true, identitySecret = IdentitySecret, appId = AppId),
+      emailAddress = SupportEmail,
     )
 
-  // Everything default ⇒ DARK (widgetEnabled=false, writeEnabled=false).
-  private val darkCfg = SupportConfig()
+  // Widget DARK (widgetEnabled=false, writeEnabled=false) but the inbox is still published — the
+  // #2429 email-only case.
+  private val darkCfg = SupportConfig(emailAddress = SupportEmail)
+
+  // Self-hosted: no widget AND no support desk ⇒ nothing for the SPA to render.
+  private val noSupportCfg = SupportConfig()
 
   private def makeAuth =
     for {
@@ -132,6 +141,10 @@ object SupportIdentitySpec
         expectedHashA = SupportService.hmacSha256Hex(IdentitySecret, "a@example.com")
         expectedHashB = SupportService.hmacSha256Hex(IdentitySecret, "b@example.com")
       } yield assertTrue(sA == Status.Ok, sB == Status.Ok) &&
+        // #2429: the deployment's support inbox rides on the identity so the SPA renders it without
+        // duplicating environment logic.
+        assertTrue(idA.supportEmail.contains(SupportEmail)) &&
+        assertTrue(idB.supportEmail.contains(SupportEmail)) &&
         // A's identity is A's household + A's email hash — never B's.
         assertTrue(idA.configured) &&
         assertTrue(idA.appId.contains(AppId)) &&
@@ -191,7 +204,9 @@ object SupportIdentitySpec
         (s, body) <- getIdentity(routes, Some(token))
         id        <- parse(body)
         customers <- rec.customers.get
-      } yield assertTrue(s == Status.Ok, !id.configured, id.emailHash.isEmpty, customers.isEmpty)
+      } yield assertTrue(s == Status.Ok, !id.configured, id.emailHash.isEmpty, customers.isEmpty) &&
+        // #2429: unidentifiable ⇒ no chat widget, but email still works, so the address ships.
+        assertTrue(id.supportEmail.contains(SupportEmail))
     },
     test("with no Plain keys set everything is DARK (configured=false, no upsert) — back-compat") {
       for {
@@ -223,8 +238,35 @@ object SupportIdentitySpec
           id.emailHash.isEmpty,
           id.tenantIdentifier.isEmpty,
         ) &&
+        // #2429: the widget is dark but the inbox is published — the SPA degrades to email-only.
+        assertTrue(id.supportEmail.contains(SupportEmail)) &&
         // Dark ⇒ no Plain call at all.
         assertTrue(customers.isEmpty)
+    },
+    // #2429: self-hosted with no hosted support desk ⇒ no address on the wire, so the SPA shows no
+    // support line at all (rather than publishing a wifihaven.net inbox that isn't theirs).
+    test("with no support address configured the identity carries none (self-hosted)") {
+      for {
+        _        <- cleanDb
+        userRepo <- ZIO.service[UserRepo]
+        hhRepo   <- ZIO.service[HouseholdRepo]
+        billRepo <- ZIO.service[HouseholdBillingRepo]
+        auth     <- makeAuth
+        _        <- seedAdmin(
+          auth,
+          userRepo,
+          HouseholdId.Default,
+          "admin_d",
+          "d@example.com",
+          "pwpwpwpw44",
+        )
+        rec      <- PlainClient.recorder
+        svc = SupportService(noSupportCfg, userRepo, hhRepo, billRepo, PlainClient.recording(rec))
+        routes = SupportRoutes.routes(auth, svc)
+        token     <- login(auth, "admin_d", "pwpwpwpw44")
+        (s, body) <- getIdentity(routes, Some(token))
+        id        <- parse(body)
+      } yield assertTrue(s == Status.Ok, !id.configured, id.supportEmail.isEmpty)
     },
   ) @@ TestAspect.sequential
 }
