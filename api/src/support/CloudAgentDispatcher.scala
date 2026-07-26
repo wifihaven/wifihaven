@@ -68,11 +68,26 @@ final case class AgentDispatch(
     history: List[PlainThreadMessage] = Nil,
 )
 
-/** Bounded outcome enum — part of the label space for the webhook metric (never per-household). */
+/**
+ * Bounded outcome enum — part of the label space for the webhook metric (never per-household).
+ *
+ * #2416 splits the old single `Error` into two: [[ConfigError]] for a 4xx from the agent boundary
+ * (a revoked key / wrong agent-or-routine id / stale beta header — PERMANENT, never self-heals,
+ * logged at ERROR with the fix named) and [[Error]] for transport / timeout / 5xx (transient,
+ * logged at warning). The split is made ONCE, in [[CloudAgentObservability.classify]], and both
+ * still record `outcome="error"` on the #2438 dispatcher-level series — so that series stays a
+ * 3-value enum and the two failure kinds are told apart by the bounded `reason` label on the
+ * webhook series.
+ */
 enum DispatchOutcome {
   case Dispatched
   case Disabled
+
+  /** Transient failure: transport error, timeout, 5xx, or a 2xx whose body was unusable. */
   case Error
+
+  /** #2416 — permanent 4xx misconfiguration at the agent boundary. Needs a human fix. */
+  case ConfigError
 }
 
 object CloudAgentDispatcher {

@@ -333,9 +333,12 @@ final case class SupportResponder(
         ),
       )
     } yield outcome match {
-      case DispatchOutcome.Dispatched => success
-      case DispatchOutcome.Disabled   => WebhookOutcome.Disabled
-      case DispatchOutcome.Error      => WebhookOutcome.Error
+      case DispatchOutcome.Dispatched  => success
+      case DispatchOutcome.Disabled    => WebhookOutcome.Disabled
+      case DispatchOutcome.Error       => WebhookOutcome.Error
+      // #2416: a permanent 4xx at the agent boundary — already logged at ERROR with the fix named by
+      // CloudAgentObservability. Same `outcome=error`, distinct `reason=config`.
+      case DispatchOutcome.ConfigError => WebhookOutcome.ConfigError
     }
 
   /**
@@ -362,8 +365,10 @@ final case class SupportResponder(
         s"eventType=${event.map(_.eventType).getOrElse("-")}",
     )
 
+  // #2416: `reason` rides alongside `outcome` on every sample (`none` when there is nothing to
+  // attribute), both bounded by WebhookOutcome — no per-thread / per-household label ever.
   private def meter(o: WebhookOutcome): UIO[WebhookOutcome] =
-    AppMetrics.supportAiDraft(WebhookOutcome.label(o)).as(o)
+    AppMetrics.supportAiDraft(WebhookOutcome.label(o), WebhookOutcome.reason(o)).as(o)
 
   // ── Agent-facing: the token-authenticated callback endpoints ────────────────
 
@@ -750,7 +755,17 @@ object SupportResponder {
     case InvalidSignature
     case Malformed
     case Disabled
+
+    /** A TRANSIENT cloud-agent dispatch failure (transport / timeout / 5xx) — may self-heal. */
     case Error
+
+    /**
+     * #2416 — a PERMANENT cloud-agent dispatch failure: a 4xx from the Anthropic boundary (revoked
+     * key, wrong agent-or-routine id, stale beta header). Labels as `outcome=error` exactly like
+     * [[Error]] (so existing panels and alerts are unchanged) but carries `reason=config`, and the
+     * dispatcher logged it at ERROR with the likely fix named inline.
+     */
+    case ConfigError
   }
   object WebhookOutcome {
     def label(o: WebhookOutcome): String = o match {
@@ -763,7 +778,30 @@ object SupportResponder {
       case InvalidSignature          => "invalid_signature"
       case Malformed                 => "malformed"
       case Disabled                  => "disabled"
-      case Error                     => "error"
+      // #2416: both dispatch-failure cases keep the SAME `outcome` value — the aggregate
+      // `outcome=error` series is unchanged; they differ only on `reason` below.
+      case Error | ConfigError       => "error"
+    }
+
+    /**
+     * #2416 — the bounded `reason` companion label on `support_ai_draft_total`: WHY a dispatch
+     * failed, so a permanently-dead responder (`config`) is distinguishable from a blip
+     * (`transient`). Every other outcome is `none` (nothing to attribute), so no sample is missing
+     * the label and a PromQL `sum by (reason)` never silently drops one. Bounded by this match —
+     * never a per-thread / per-household value (the §4 cardinality firewall). The vocabulary is
+     * [[CloudAgentObservability.Reason]], shared with the press path.
+     *
+     * EXHAUSTIVE on purpose — no `case _`. A future dispatch-failure outcome added to the enum must
+     * fail to COMPILE here rather than silently label itself `none`, which would be invisible
+     * (`outcome=error` is unchanged, so only the `reason` slice would be wrong).
+     */
+    def reason(o: WebhookOutcome): String = o match {
+      case ConfigError => CloudAgentObservability.Reason.Config
+      case Error       => CloudAgentObservability.Reason.Transient
+      case Dispatched | EmailRegisteredDispatched | EmailUnregisteredRejected |
+          SkippedUnauthenticated | SkippedNotInbound | RateLimited | InvalidSignature | Malformed |
+          Disabled =>
+        CloudAgentObservability.Reason.None
     }
   }
 

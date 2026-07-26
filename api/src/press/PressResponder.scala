@@ -117,13 +117,18 @@ final case class PressResponder(
         ),
       )
     } yield outcome match {
-      case wifihaven.api.support.DispatchOutcome.Dispatched => WebhookOutcome.Dispatched
-      case wifihaven.api.support.DispatchOutcome.Disabled   => WebhookOutcome.Disabled
-      case wifihaven.api.support.DispatchOutcome.Error      => WebhookOutcome.Error
+      case wifihaven.api.support.DispatchOutcome.Dispatched  => WebhookOutcome.Dispatched
+      case wifihaven.api.support.DispatchOutcome.Disabled    => WebhookOutcome.Disabled
+      case wifihaven.api.support.DispatchOutcome.Error       => WebhookOutcome.Error
+      // #2416: a permanent 4xx at the agent boundary — already logged at ERROR with the fix named by
+      // the SHARED CloudAgentObservability classifier. Same `outcome=error`, distinct `reason=config`.
+      case wifihaven.api.support.DispatchOutcome.ConfigError => WebhookOutcome.ConfigError
     }
 
+  // #2416: `reason` rides alongside `outcome` on every sample (`none` when there is nothing to
+  // attribute), both bounded by WebhookOutcome — no per-sender / per-thread label ever.
   private def meter(o: WebhookOutcome): UIO[WebhookOutcome] =
-    AppMetrics.pressAiDraft(WebhookOutcome.label(o)).as(o)
+    AppMetrics.pressAiDraft(WebhookOutcome.label(o), WebhookOutcome.reason(o)).as(o)
 
   // ── Agent-facing: the token-authenticated email-reply callback ──────────────
 
@@ -267,16 +272,48 @@ object PressResponder {
     case InvalidSignature
     case Malformed
     case Disabled
+
+    /** A TRANSIENT cloud-agent dispatch failure (transport / timeout / 5xx) — may self-heal. */
     case Error
+
+    /**
+     * #2416 — a PERMANENT cloud-agent dispatch failure: a 4xx from the Anthropic boundary (revoked
+     * key, wrong agent-or-routine id, stale beta header). Labels as `outcome=error` exactly like
+     * [[Error]] (so existing panels and alerts are unchanged) but carries `reason=config`, and the
+     * shared dispatcher logged it at ERROR with the likely fix named inline.
+     */
+    case ConfigError
   }
   object WebhookOutcome {
     def label(o: WebhookOutcome): String = o match {
-      case Dispatched       => "dispatched"
-      case RateLimited      => "rate_limited"
-      case InvalidSignature => "invalid_signature"
-      case Malformed        => "malformed"
-      case Disabled         => "disabled"
-      case Error            => "error"
+      case Dispatched          => "dispatched"
+      case RateLimited         => "rate_limited"
+      case InvalidSignature    => "invalid_signature"
+      case Malformed           => "malformed"
+      case Disabled            => "disabled"
+      // #2416: both dispatch-failure cases keep the SAME `outcome` value — the aggregate
+      // `outcome=error` series is unchanged; they differ only on `reason` below.
+      case Error | ConfigError => "error"
+    }
+
+    /**
+     * #2416 — the bounded `reason` companion label on `press_ai_draft_total`: WHY a dispatch
+     * failed, so a permanently-dead press responder (`config`) is distinguishable from a blip
+     * (`transient`). Every other outcome is `none` (nothing to attribute), so no sample is missing
+     * the label. Bounded by this match — never a per-sender / per-thread value (the §4 cardinality
+     * firewall). The vocabulary is [[wifihaven.api.support.CloudAgentObservability.Reason]], shared
+     * with support so the two audiences read identically on their (deliberately separate) series.
+     *
+     * EXHAUSTIVE on purpose — no `case _`, for the same reason as the support twin: a future
+     * dispatch-failure outcome must fail to COMPILE here rather than silently label itself `none`.
+     */
+    def reason(o: WebhookOutcome): String = o match {
+      case ConfigError                                                        =>
+        wifihaven.api.support.CloudAgentObservability.Reason.Config
+      case Error                                                              =>
+        wifihaven.api.support.CloudAgentObservability.Reason.Transient
+      case Dispatched | RateLimited | InvalidSignature | Malformed | Disabled =>
+        wifihaven.api.support.CloudAgentObservability.Reason.None
     }
   }
 

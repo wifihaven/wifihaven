@@ -144,10 +144,10 @@ object ManagedAgents {
       }
       .flatMap { resp =>
         if resp.statusCode() / 100 == 2 then ZIO.succeed(resp.body())
-        else
-          ZIO.fail(
-            new RuntimeException(s"HTTP ${resp.statusCode()} on $path: ${resp.body().take(300)}"),
-          )
+        // #2416: fail with the STATUS as typed data, not buried in a message string the caller would
+        // have to re-parse. A 4xx here is a permanent misconfiguration (revoked key / wrong
+        // agent-or-environment id / stale beta header); CloudAgentObservability.classify reads the status.
+        else ZIO.fail(CloudAgentHttpError(resp.statusCode(), path, resp.body()))
       }
 
   private def sessionIdOf(body: String): Option[String] =
