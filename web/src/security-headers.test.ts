@@ -70,8 +70,9 @@ describe('web/public/_headers CSP (Cloudflare Pages copy)', () => {
   })
 
   // Over-broadening guard: Plain documents no iframe, so the additions must stay exact hosts — no
-  // wildcard, and frame-ancestors 'none' unchanged. Asserted on the whole file so a wildcard can't
-  // hide in a comment either.
+  // wildcard, and frame-ancestors 'none' unchanged. Mixed targets on purpose: the positive is
+  // asserted on the extracted directive (a comment must not be able to satisfy it), while the two
+  // negatives are asserted on the whole file so a wildcard can't hide in a comment either.
   it('does not introduce wildcards or loosen frame-ancestors for Plain (#2240)', () => {
     expect(csp).toContain("frame-ancestors 'none'")
     expect(headers).not.toContain('*.plain.com')
