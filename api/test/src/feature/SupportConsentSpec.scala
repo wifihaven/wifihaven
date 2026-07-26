@@ -394,30 +394,36 @@ object SupportConsentSpec
     },
     test("consent expires, and can be withdrawn before it does") {
       for {
-        _         <- cleanDb
-        hhRepo    <- ZIO.service[HouseholdRepo]
-        userRepo  <- ZIO.service[UserRepo]
-        h         <- makeHarness()
-        hh        <- hhRepo.create("Family E", "family-e")
-        jwtTok    <- seedAdmin(h, userRepo, hh, "family-e", "admin_e", "pwpwpwpw11")
-        agent     <- mintAgentToken(hh, "th_e", dataAccess = false)
-        _         <- agentPost(h, "/api/support/agent/request-consent", Some(agent))
-        grant     <- grantTokenFromThread(h).someOrFail(new RuntimeException("no consent link"))
-        _         <- postConsent(h, Some(jwtTok), grant)
-        now       <- ZIO.serviceWithZIO[Clock](_.instant)
-        liveNow   <- h.consentRepo.isGranted(hh, "th_e", now)
+        _            <- cleanDb
+        hhRepo       <- ZIO.service[HouseholdRepo]
+        userRepo     <- ZIO.service[UserRepo]
+        h            <- makeHarness()
+        hh           <- hhRepo.create("Family E", "family-e")
+        jwtTok       <- seedAdmin(h, userRepo, hh, "family-e", "admin_e", "pwpwpwpw11")
+        agent        <- mintAgentToken(hh, "th_e", dataAccess = false)
+        _            <- agentPost(h, "/api/support/agent/request-consent", Some(agent))
+        grant        <- grantTokenFromThread(h).someOrFail(new RuntimeException("no consent link"))
+        _            <- postConsent(h, Some(jwtTok), grant)
+        now          <- ZIO.serviceWithZIO[Clock](_.instant)
+        liveNow      <- h.consentRepo.isGranted(hh, "th_e", now)
         // Past the 24h window the SAME row is no longer a live grant (time-boxed by construction).
-        liveLater <- h.consentRepo
+        liveLater    <- h.consentRepo
           .isGranted(hh, "th_e", now.plus(SupportResponder.ConsentTtl).plusSeconds(60))
         // …and the customer can withdraw it ahead of expiry from the same page.
-        revoked   <- postConsent(h, Some(jwtTok), grant, allow = false)
-        liveAfter <- h.consentRepo.isGranted(hh, "th_e", now)
-        onNext    <- dispatchAndToken(h, hh, "th_e", "and now?")
+        revoked      <- postConsent(h, Some(jwtTok), grant, allow = false)
+        liveAfter    <- h.consentRepo.isGranted(hh, "th_e", now)
+        // A SECOND withdrawal is idempotent for the customer — still 200, still no consent (the
+        // metric distinguishes it as revoke_noop; the customer sees the end state they asked for).
+        revokedAgain <- postConsent(h, Some(jwtTok), grant, allow = false)
+        liveAfter2   <- h.consentRepo.isGranted(hh, "th_e", now)
+        onNext       <- dispatchAndToken(h, hh, "th_e", "and now?")
       } yield assertTrue(
         liveNow,
         !liveLater,
         revoked == Status.Ok,
         !liveAfter,
+        revokedAgain == Status.Ok,
+        !liveAfter2,
         onNext.exists(!_.dataConsent),
       )
     },
@@ -443,11 +449,11 @@ object SupportConsentSpec
       // The version tag is bound INTO the MAC, so `v1.<b64>.<sig>` rewritten to `g1.<b64>.<sig>`
       // (and the reverse) is a BadSignature — the domain separation does not rest on the payload
       // happening to have a different arity.
+      // Pure functions — no DB and no harness needed (docs/process/testing.md: unit level for a
+      // crypto edge case).
       for {
-        _ <- cleanDb
-        h <- makeHarness()
-        hh = HouseholdId(7L)
         now <- ZIO.serviceWithZIO[Clock](_.instant)
+        hh    = HouseholdId(7L)
         agent = ConsentToken
           .mint(hh, "th_swap", true, now, java.time.Duration.ofMinutes(30), TokenSecret)
         link  = ConsentGrant.mint(hh, "th_swap", now, java.time.Duration.ofHours(1), TokenSecret)

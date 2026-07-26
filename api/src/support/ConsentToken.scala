@@ -35,8 +35,10 @@ import java.util.Base64
  * the agent (or anything reading the session transcript) cannot forge, widen, or extend a token.
  * The MAC covers `"<version>.<b64>"`, so the version tag is BOUND into the signature: the #2419
  * consent link ([[ConsentGrant]], `g1`) shares this secret, and MACing the payload alone would let
- * either token be re-labelled as the other and pass its signature check. This is a functional
- * capability, not a policy the model could be argued out of.
+ * either token be re-labelled as the other and pass its signature check. (The press token
+ * `wifihaven.api.press.PressToken` has its OWN secret so it is unaffected, but it still MACs the
+ * payload alone — symmetry tracked in [#2426](https://github.com/wifihaven/wifihaven/issues/2426).)
+ * This is a functional capability, not a policy the model could be argued out of.
  *
  * NOTE (revocation): the TTL is deliberately short (minutes), which bounds the exposure window; an
  * explicit revocation list is tracked as a follow-up (TODO(#2259)). The other #2241 properties

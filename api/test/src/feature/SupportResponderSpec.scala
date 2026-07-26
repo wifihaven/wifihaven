@@ -324,18 +324,24 @@ object SupportResponderSpec
     },
     test("UI-originated message dispatches an agent: delimited data + bound token in the kickoff") {
       for {
-        _           <- cleanDb
-        hhRepo      <- ZIO.service[HouseholdRepo]
-        billRepo    <- ZIO.service[HouseholdBillingRepo]
-        hh          <- hhRepo.create("Family Q", "family-q")
-        _           <- billRepo.create(hh, "beta", founding = true)
+        _               <- cleanDb
+        hhRepo          <- ZIO.service[HouseholdRepo]
+        billRepo        <- ZIO.service[HouseholdBillingRepo]
+        hh              <- hhRepo.create("Family Q", "family-q")
+        _               <- billRepo.create(hh, "beta", founding = true)
         // #2419: data scope now comes ONLY from the server-side consent record the customer wrote
         // (the retired payload `dataConsent` flag was never set by anything). Seeding a live grant
         // here keeps this test's `dataAccess` assertion — it is the same pin, from the real source.
-        consentRepo <- ZIO.service[SupportConsentRepo]
-        clockSeed   <- ZIO.service[Clock]
-        seedNow     <- clockSeed.instant
-        _           <- consentRepo.grant(hh, "th_ui_1", None, seedNow, seedNow.plusSeconds(3600))
+        consentRepo     <- ZIO.service[SupportConsentRepo]
+        clockSeed       <- ZIO.service[Clock]
+        seedNow         <- clockSeed.instant
+        _               <- consentRepo.grant(
+          hh,
+          "th_ui_1",
+          None,
+          seedNow,
+          seedNow.plus(SupportResponder.ConsentTtl),
+        )
         (routes, stubs) <- makeRoutes(liveCfg)
         msg  = "My kid's iPad is blocked during homework time, how do I allow the school site?"
         body = payload(Some(hh.value), "th_ui_1", msg)
@@ -375,16 +381,22 @@ object SupportResponderSpec
       // and the kickoff is byte-for-byte the Managed Agents kickoff (it just rides the routine's
       // `text` field instead of a session event). The recorder proves the responder path is identical.
       for {
-        _           <- cleanDb
-        hhRepo      <- ZIO.service[HouseholdRepo]
-        billRepo    <- ZIO.service[HouseholdBillingRepo]
-        hh          <- hhRepo.create("Family C", "family-c")
-        _           <- billRepo.create(hh, "beta", founding = true)
+        _               <- cleanDb
+        hhRepo          <- ZIO.service[HouseholdRepo]
+        billRepo        <- ZIO.service[HouseholdBillingRepo]
+        hh              <- hhRepo.create("Family C", "family-c")
+        _               <- billRepo.create(hh, "beta", founding = true)
         // #2419: same as above — the data scope comes from the server-side grant, not the payload.
-        consentRepo <- ZIO.service[SupportConsentRepo]
-        clockSeed   <- ZIO.service[Clock]
-        seedNow     <- clockSeed.instant
-        _           <- consentRepo.grant(hh, "th_ccc_1", None, seedNow, seedNow.plusSeconds(3600))
+        consentRepo     <- ZIO.service[SupportConsentRepo]
+        clockSeed       <- ZIO.service[Clock]
+        seedNow         <- clockSeed.instant
+        _               <- consentRepo.grant(
+          hh,
+          "th_ccc_1",
+          None,
+          seedNow,
+          seedNow.plus(SupportResponder.ConsentTtl),
+        )
         (routes, stubs) <- makeRoutes(liveCccCfg)
         msg  = "Why is my phone blocked at dinner?"
         body = payload(Some(hh.value), "th_ccc_1", msg)

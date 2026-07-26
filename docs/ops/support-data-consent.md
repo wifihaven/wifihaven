@@ -116,6 +116,23 @@ one #2259 (the agent-token revocation list) exists to close; it is bounded by
 | `granted_at` / `expires_at` / `revoked_at` | the grant window |
 | `UNIQUE (household_id, thread_id)` | one record per thread; a re-grant UPSERTs |
 
+## Deploying the MAC change (one-time, #2419)
+
+The signature now covers `"<version>.<payload>"` rather than the payload alone,
+for both `ConsentToken` (`v1`) and `ConsentGrant` (`g1`). That is a **breaking
+change to already-issued agent tokens**: for up to
+`support.agentTokenTtlMinutes` (default 30) after the deploy, a cloud-agent
+session dispatched by the previous image holds a token the new image will not
+verify. Those sessions fail their callback with the uniform 401 and their draft
+never reaches the customer; they meter as
+`support_agent_action_total{outcome="denied"}`.
+
+So: **a short denied spike immediately after this deploy is expected, not an
+attack.** It self-clears within the token TTL — every subsequent inbound message
+mints a fresh token. Nothing else is affected (the SPA JWT and the press token
+are separate secrets and separate code paths), and no consent links exist yet at
+first deploy.
+
 ## Operator notes
 
 - The agent prompt lives in `deploy/support-agent/agent.yaml`. The Claude Code
