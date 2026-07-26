@@ -220,10 +220,18 @@ mutation {
 }
 ```
 
-To also populate the `plan` / `founding` entitlement fields (§5.1, §7.3), append
-`"tenantField:create","tenantField:update"` to the `permissions` array above — note the
-scope is `tenantField:update`, **not** `tenantField:edit` (which Plain's enum rejects with
-`Value needs to be one of: …`).
+**To also populate the `plan` / `founding` entitlement fields** (§5.1, §7.3), use the full
+array below — the same core set plus `tenantField:create` / `tenantField:update` (the scope
+is `:update`, **not** `:edit`, which Plain's enum rejects with `Value needs to be one of: …`):
+
+```graphql
+mutation {
+  updateApiKey(input: {
+    apiKeyId: "<apiKey_...>",
+    permissions: ["customer:create","customer:edit","tenant:read","tenant:create","customerTenantMembership:create","customerTenantMembership:delete","thread:create","thread:reply","tenantField:create","tenantField:update"]
+  }) { apiKey { id permissions } }
+}
+```
 
 ### 5.4 Do this for BOTH environments
 
