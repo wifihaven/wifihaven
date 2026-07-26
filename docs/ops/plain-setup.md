@@ -165,9 +165,11 @@ This is the array confirmed to clear the `403` on the customer + tenant upserts.
 additionally exercise `upsertTenantField`; to have those fields populated, add
 `tenantField:create` / `tenantField:update` to the array (the scope is `:update`, **not**
 `:edit` — Plain's permission enum has no `tenantField:edit`) **and** register the `plan` /
-`founding` field schemas ([§7.3](#entitlement-fields), a dashboard step — no
-`tenantFieldSchema:*` permission is needed, since the code only writes field *values*, never
-creates schemas). **Grant the permission and register the schema as a pair, or leave both
+`founding` field schemas ([§7.3](#entitlement-fields) — an **API-only** step; there is no
+Plain UI for creating tenant-field schemas. The *machine-user key* still needs no
+`tenantFieldSchema:*` permission, since the code only writes field *values*, never creates
+schemas — the schema mutation is run once by the authenticated admin in the API playground).
+**Grant the permission and register the schema as a pair, or leave both
 off — a half-configured entitlement path is a broken credential, not an optional feature.**
 That path is **fail-open only w.r.t. the customer upsert** — a permission or schema gap does
 not fail `upsertCustomer` — but it is **not silent**: each failure is logged and metered as
@@ -344,16 +346,73 @@ these:
    so the write path is fully wired, not half-configured. Do this **per workspace** (staging + prod),
    same as the API key (§5.4):
 
-   1. In Plain, open **Settings → Tenants → Fields** *(verify the exact label against your
-      workspace — it's the tenant-field-**schema** editor. Plain also exposes `tenantFieldSchema:*`
-      in its permission enum, so you can script schema creation via the API playground as the
-      authenticated admin if you prefer; the machine-user key does **not** need `tenantFieldSchema:*`
-      — it only writes field values.)*
-   2. **Add a field** — external id **`plan`**, type **String** (`STRING_TYPE`). The display label
-      is free (e.g. "Plan"); only the external id + type are load-bearing.
-   3. **Add a field** — external id **`founding`**, type **Boolean** (`BOOLEAN_TYPE`), label e.g.
-      "Founding".
-   4. Ensure the machine-user key carries `tenantField:create` + `tenantField:update` (§5.1/§5.3).
+   > **Tenant field schemas CANNOT be created in the Plain web UI — they are API-only.**
+   > The tenant-fields screen in Plain's settings only *lists* schemas; with none registered it
+   > says *"No tenant fields created yet. Tenant fields can be created in the Plain API."*
+   > There is no "Add a field" button. Create them with the `upsertTenantFieldSchema` mutation
+   > below. (This corrected a wrong UI-first procedure —
+   > [#2448](https://github.com/wifihaven/wifihaven/issues/2448).)
+
+   1. Open Plain's **API playground** (dashboard → API playground). It runs as the
+      **authenticated admin**, which is the identity that needs the **`tenantFieldSchema:create`**
+      permission. The *machine-user API key* does **not** need `tenantFieldSchema:*` — it only
+      writes field *values* (`upsertTenantField`), never schemas.
+   2. Run the mutation below. `upsertTenantFieldSchema` is a create-or-update that takes an
+      **array**, so both schemas land in one call. Each schema is identified by the pair
+      (`source`, `externalFieldId`), so re-running it is idempotent.
+
+      ```graphql
+      mutation {
+        upsertTenantFieldSchema(input: {
+          tenantFieldSchemas: [
+            { source: "API", externalFieldId: "plan",     label: "Plan",     type: STRING_TYPE,  isVisible: true, order: 1 },
+            { source: "API", externalFieldId: "founding", label: "Founding", type: BOOLEAN_TYPE, isVisible: true, order: 2 }
+          ]
+        }) {
+          tenantFieldSchemas { id source externalFieldId label type }
+          error { message }
+        }
+      }
+      ```
+
+      The `externalFieldId` and `type` values are **load-bearing** and must match exactly what
+      `PlainClient` sends — `PlanFieldId = "plan"` (`STRING_TYPE`) and
+      `FoundingFieldId = "founding"` (`BOOLEAN_TYPE`) in
+      [`api/src/support/PlainClient.scala`](../../api/src/support/PlainClient.scala). The `label`
+      is free-form display text. `isVisible` / `order` are required by
+      `TenantFieldSchemaInput` but carry no behaviour we depend on.
+
+      **`source` is the one value we have not confirmed against a live workspace.** In Plain's
+      schema it is a free-form `String` (not an enum) that namespaces the schema; the analogous
+      `Tenant.source` enum is `API` / `HUBSPOT` / `SALESFORCE`, so `"API"` is the reasonable
+      choice for schemas we create over the API. It does **not** affect our value writes —
+      `UpsertTenantFieldInput` keys on `tenantFieldIdentifier { tenantId, externalFieldId }` and
+      never mentions `source`. If the mutation rejects `"API"`, list what an existing workspace
+      uses and copy it:
+
+      ```graphql
+      query { tenantFieldSchemas(first: 50) { edges { node { id source externalFieldId label type } } } }
+      ```
+
+      If Plain changes the input shape, re-derive it by introspection rather than guessing:
+
+      ```graphql
+      query {
+        __type(name: "TenantFieldSchemaInput") {
+          inputFields { name type { name kind ofType { name kind ofType { name } } } }
+        }
+      }
+      ```
+
+      *(Shape above verified against Plain's published GraphQL schema —
+      `team-plain/typescript-sdk` `src/graphql/types.ts`: `MutationUpsertTenantFieldSchemaArgs
+      { input: UpsertTenantFieldSchemaInput }`, `UpsertTenantFieldSchemaInput
+      { tenantFieldSchemas: Array<TenantFieldSchemaInput> }`, `TenantFieldSchemaInput
+      { source, externalFieldId, label, type, options?, isVisible, order }`. Note the live
+      `TenantFieldType` enum is `STRING_TYPE` / `NUMBER_TYPE` / `BOOLEAN_TYPE` / `STRING_ARRAY`
+      / `DATETIME_TYPE` — Plain's prose docs also mention `ENUM_TYPE`, which the published enum
+      does not contain. Neither of our two fields uses it.)*
+   3. Ensure the machine-user key carries `tenantField:create` + `tenantField:update` (§5.1/§5.3).
       The schema existing is necessary but **not** sufficient — the key still needs permission to
       write the values.
 
