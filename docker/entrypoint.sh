@@ -38,7 +38,8 @@ set -euo pipefail
 # #2135: Stripe billing. WIFIHAVEN_STRIPE_ENABLED is the off-switch, NOT the absence of a key
 # (#2266): with it false — the default — the self-hosted single-install path never bills, so
 # POST /api/billing/checkout and GET /api/billing/portal 404 "billing not configured" (GET
-# /api/billing is ungated), and the webhook no-ops because its signing secret is unset too —
+# /api/billing is admin-authed but NOT config-gated), and the webhook no-ops because its
+# signing secret is unset too —
 # handleWebhook branches on the secret, not on the flag.
 # Cloud/staging set the secret + webhook signing secret (Render sync:false secrets)
 # plus the test/live-mode price ids + promo code. Secrets are NEVER committed (docs/process/security.md).
