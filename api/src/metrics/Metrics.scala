@@ -873,7 +873,7 @@ object AppMetrics {
   // bounded enums — never a per-sender / per-thread label. Separate series from support so the two
   // audiences are graphed and alerted independently.
   // #2416 — `reason` attributes a dispatch failure with the SAME bounded vocabulary as support
-  // (config | transient | none), from the ONE shared CloudAgentDispatch classifier.
+  // (config | transient | none), from the ONE shared CloudAgentObservability classifier.
 
   def pressAiDraft(outcome: String, reason: String): UIO[Unit] =
     MetricGuard.counter(

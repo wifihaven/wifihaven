@@ -38,8 +38,9 @@ import java.net.InetSocketAddress
  * `transient` (5xx / transport).
  *
  * BOTH audiences are pinned because they share ONE classifier
- * ([[wifihaven.api.support.CloudAgentDispatch]]) — if it drifts on one path, a test here fails.
- * Fail-open is pinned too: the webhook still reports success-shaped handling and never throws.
+ * ([[wifihaven.api.support.CloudAgentObservability]]) — if it drifts on one path, a test here
+ * fails. Fail-open is pinned too: the webhook still reports success-shaped handling and never
+ * throws.
  */
 object CloudAgentDispatchFailLoudSpec
     extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock] {

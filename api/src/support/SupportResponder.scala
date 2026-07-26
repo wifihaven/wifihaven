@@ -337,7 +337,7 @@ final case class SupportResponder(
       case DispatchOutcome.Disabled    => WebhookOutcome.Disabled
       case DispatchOutcome.Error       => WebhookOutcome.Error
       // #2416: a permanent 4xx at the agent boundary — already logged at ERROR with the fix named by
-      // CloudAgentDispatch. Same `outcome=error`, distinct `reason=config`.
+      // CloudAgentObservability. Same `outcome=error`, distinct `reason=config`.
       case DispatchOutcome.ConfigError => WebhookOutcome.ConfigError
     }
 
@@ -789,19 +789,19 @@ object SupportResponder {
      * (`transient`). Every other outcome is `none` (nothing to attribute), so no sample is missing
      * the label and a PromQL `sum by (reason)` never silently drops one. Bounded by this match —
      * never a per-thread / per-household value (the §4 cardinality firewall). The vocabulary is
-     * [[CloudAgentDispatch.Reason]], shared with the press path.
+     * [[CloudAgentObservability.Reason]], shared with the press path.
      *
      * EXHAUSTIVE on purpose — no `case _`. A future dispatch-failure outcome added to the enum must
      * fail to COMPILE here rather than silently label itself `none`, which would be invisible
      * (`outcome=error` is unchanged, so only the `reason` slice would be wrong).
      */
     def reason(o: WebhookOutcome): String = o match {
-      case ConfigError => CloudAgentDispatch.Reason.Config
-      case Error       => CloudAgentDispatch.Reason.Transient
+      case ConfigError => CloudAgentObservability.Reason.Config
+      case Error       => CloudAgentObservability.Reason.Transient
       case Dispatched | EmailRegisteredDispatched | EmailUnregisteredRejected |
           SkippedUnauthenticated | SkippedNotInbound | RateLimited | InvalidSignature | Malformed |
           Disabled =>
-        CloudAgentDispatch.Reason.None
+        CloudAgentObservability.Reason.None
     }
   }
 
