@@ -3,8 +3,10 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 
+class ForbiddenError extends Error {}
 vi.mock('@/api/client', () => ({
   api: { support: { consent: vi.fn() } },
+  isForbiddenError: (e: unknown) => e instanceof ForbiddenError,
 }))
 
 const authState = { isAuthenticated: true }
@@ -66,6 +68,17 @@ describe('SupportConsentPage — /support/consent (#2419)', () => {
 
     expect(await screen.findByText(/no longer valid/i)).toBeInTheDocument()
     expect(screen.queryByText(/can now see your account summary/i)).not.toBeInTheDocument()
+  })
+
+  it('tells a wrong-account / non-admin visitor what to do instead of blaming the link', async () => {
+    consentMock.mockRejectedValue(new ForbiddenError('forbidden'))
+    const user = userEvent.setup()
+    renderPage()
+
+    await user.click(screen.getByRole('button', { name: /^allow$/i }))
+
+    expect(await screen.findByText(/not for this account/i)).toBeInTheDocument()
+    expect(screen.queryByText(/no longer valid/i)).not.toBeInTheDocument()
   })
 
   it('asks a signed-out visitor to sign in instead of posting', async () => {

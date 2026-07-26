@@ -22,18 +22,6 @@ import java.time.Instant
 // repo. `(household, thread)` is the whole key and is supplied by the caller from already-verified
 // state, so a household-A grant can never widen a household-B token.
 
-/**
- * A live consent grant as the dispatch path needs it. Deliberately projects only the window
- * (`expiresAt` / `revokedAt`) and the audit pointer; the `(household, thread)` key is what the
- * caller already had in hand.
- */
-final case class DbSupportThreadConsent(
-    grantedByUserId: Option[UserId],
-    grantedAt: Instant,
-    expiresAt: Instant,
-    revokedAt: Option[Instant],
-)
-
 trait SupportConsentRepo {
 
   /**
@@ -64,9 +52,6 @@ trait SupportConsentRepo {
    * household can never satisfy it.
    */
   def isGranted(household: HouseholdId, threadId: String, now: Instant): Task[Boolean]
-
-  /** Read the raw row (live or not) — the audit/read-back path used by tests and diagnostics. */
-  def find(household: HouseholdId, threadId: String): Task[Option[DbSupportThreadConsent]]
 }
 
 class SupportConsentRepoLive(xa: Transactor[Task]) extends SupportConsentRepo {
@@ -104,13 +89,4 @@ class SupportConsentRepoLive(xa: Transactor[Task]) extends SupportConsentRepo {
       .option
       .transact(xa)
       .map(_.isDefined)
-
-  def find(household: HouseholdId, threadId: String): Task[Option[DbSupportThreadConsent]] =
-    sql"""SELECT granted_by_user_id, granted_at, expires_at, revoked_at
-          FROM support_thread_consent
-          WHERE household_id = $household AND thread_id = $threadId"""
-      .query[(Option[UserId], Instant, Instant, Option[Instant])]
-      .map { case (u, g, e, r) => DbSupportThreadConsent(u, g, e, r) }
-      .option
-      .transact(xa)
 }

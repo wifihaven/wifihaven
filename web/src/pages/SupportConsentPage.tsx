@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { api } from '@/api/client'
+import { api, isForbiddenError } from '@/api/client'
 import { useAuth } from '@/hooks/useAuth'
 
 /**
@@ -32,11 +32,16 @@ export function SupportConsentPage() {
     try {
       await api.support.consent(grant, allow)
       setState(allow ? 'granted' : 'revoked')
-    } catch {
-      // A stale/tampered link (400) or a link for another account (403). The copy stays generic —
-      // either way the fix is the same: ask the assistant for a fresh link.
+    } catch (e) {
+      // 403 = the link belongs to another account, or this signed-in user is not an admin — a
+      // different problem from a stale link, and telling them "the link is broken" would send them
+      // in circles. Everything else (400 stale/tampered link, 5xx, network) gets the generic copy:
+      // the fix is the same, ask the assistant for a fresh link.
+      const forbidden = isForbiddenError(e)
       setError(
-        'That permission link is no longer valid. Ask the assistant in your support conversation to send a new one.',
+        forbidden
+          ? 'That permission link is not for this account. Sign in as an admin of the account that opened the support conversation.'
+          : 'That permission link is no longer valid. Ask the assistant in your support conversation to send a new one.',
       )
       setState('idle')
     }
@@ -69,7 +74,7 @@ export function SupportConsentPage() {
           <>
             <p className="text-brand-text text-sm">
               Thanks — the support assistant can now see your account summary for that conversation.
-              It expires after 24 hours, and you can withdraw it here at any time.
+              It expires on its own, and you can withdraw it here at any time.
             </p>
             <button
               onClick={() => submit(false)}
@@ -92,7 +97,7 @@ export function SupportConsentPage() {
             <ul className="text-brand-text text-sm text-left mt-4 space-y-1 list-disc list-inside">
               <li>Read-only. It cannot change any settings.</li>
               <li>This support conversation only.</li>
-              <li>Expires after 24 hours, and you can withdraw it here sooner.</li>
+              <li>Expires on its own, and you can withdraw it here sooner.</li>
               <li>No browsing history, device names, or per-site activity is shared.</li>
             </ul>
             {error && <p className="text-sm text-red-600 mt-4">{error}</p>}

@@ -24,8 +24,9 @@ import javax.crypto.spec.SecretKeySpec
  * `tenantIdentifier` (the household id stamped on the customer by the #2199 identified-widget
  * upsert — the UI-origin key the responder gates on), the `actorType` (who authored the message —
  * the #2403 loop-guard key: only `customer`-authored inbound events are acted on), the inbound
- * message text (UNTRUSTED DATA), and a consent flag. Inbound text is quoted to Claude as content,
- * never as instructions (#2200 injection model).
+ * message text (UNTRUSTED DATA). Inbound text is quoted to Claude as content, never as instructions
+ * (#2200 injection model). #2419: NO consent flag is parsed here — data access is decided solely by
+ * the server-side consent record the customer writes.
  *
  * #2403 — the wire shape here is Plain's REAL webhook envelope, verified against
  * `core-api.uk.plain.com/webhooks/schema/latest.json`:
@@ -134,7 +135,6 @@ object PlainWebhook {
             tenantIdentifier = tenant,
             actorType = actorType(inner, thread),
             messageText = messageText(inner),
-            consent = consentFlag(thread, inner),
           ),
         )
       case _              => None
@@ -205,18 +205,14 @@ object PlainWebhook {
           objField(c, "componentText").flatMap(t => str(t, "text")).get
       })
 
-  // Consent — the customer opted into per-household data access (#2241). Read from a thread label /
-  // attribute or a top-level flag; absent ⇒ false (no data token minted).
-  private def consentFlag(thread: Option[Json.Obj], inner: Json.Obj): Boolean =
-    boolField(inner, "dataConsent")
-      .orElse(thread.flatMap(t => boolField(t, "dataConsent")))
-      .getOrElse(false)
+  // #2419 — there is deliberately NO consent flag parsed off this payload. The data-access scope of
+  // the #2241 token is decided ONLY by the server-side `support_thread_consent` record the customer
+  // writes with their own authenticated action (SupportResponder.recordConsent); an inbound-payload
+  // boolean is not a customer action we can verify, and OR-ing one into a security decision is
+  // exactly the shape #2419 set out to remove. Do not re-add a `dataConsent` reader here.
 
   private def str(o: Json.Obj, key: String): Option[String] =
     o.fields.collectFirst { case (k, Json.Str(v)) if k == key => v }
-
-  private def boolField(o: Json.Obj, key: String): Option[Boolean] =
-    o.fields.collectFirst { case (k, Json.Bool(v)) if k == key => v }
 
   private def objField(o: Json.Obj, key: String): Option[Json.Obj] =
     o.fields.collectFirst { case (k, v: Json.Obj) if k == key => v }
@@ -234,7 +230,8 @@ object PlainWebhook {
  * gate: an inbound email with no resolvable tenant is admitted to the responder iff this address
  * matches a registered household admin, else a NEW thread gets a static reject. `messageText` is
  * UNTRUSTED customer content (#2200 injection model): quoted to Claude as data, never as
- * instructions.
+ * instructions. There is NO consent field: data-access scope comes solely from the server-side
+ * consent record (#2419), never from this payload.
  */
 final case class PlainNewMessageEvent(
     eventType: String,
@@ -245,5 +242,4 @@ final case class PlainNewMessageEvent(
     tenantIdentifier: Option[String],
     actorType: Option[String],
     messageText: String,
-    consent: Boolean,
 )

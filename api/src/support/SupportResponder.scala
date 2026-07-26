@@ -204,9 +204,10 @@ final case class SupportResponder(
    * have accepted the message under its own SPF/DKIM/spam handling before signing + firing the
    * webhook — we treat `customerEmail` as authenticated by Plain, not by us. The blast radius of a
    * forged-From admin email is deliberately bounded and does NOT include data exfiltration:
-   *   - consent (`event.consent` → the token's `dataAccess`) is never set from a cold email — only
-   *     the #2199 identified widget stamps `dataConsent`, so a forged-From dispatch mints a
-   *     data-scope-LESS token: the agent can reply but the household-read endpoint refuses it;
+   *   - data-access scope is never set from the inbound payload at all (#2419): it comes only from
+   *     a server-side consent record the CUSTOMER wrote from their authenticated session, so a
+   *     forged-From dispatch mints a data-scope-LESS token — the agent can reply, but the
+   *     household-read endpoint refuses it;
    *   - the reply is delivered by Plain to the spoofed address (the REAL admin), not the forger;
    *   - dispatch is rate-capped (per-thread + global), so the worst case is bounded dispatch-budget
    *     burn, not an open-ended bill or a leak.
@@ -294,15 +295,16 @@ final case class SupportResponder(
       success: WebhookOutcome,
   ): UIO[WebhookOutcome] =
     for {
-      billing <- billingRepo.findByHousehold(hh).catchAll(_ => ZIO.none)
-      now     <- clock.instant
-      // #2419: the token's data scope is the widget-stamped flag OR a LIVE server-side grant for
-      // THIS (household, thread). Both key columns are bound to state we already resolved, so a
-      // grant on another thread/household can never widen this token; a DB blip degrades to NO
-      // access (fail-closed — never grant on error).
-      granted <- consentGranted(hh, event.threadId, now)
-      dataAccess = event.consent || granted
-      token      = ConsentToken.mint(
+      billing    <- billingRepo.findByHousehold(hh).catchAll(_ => ZIO.none)
+      now        <- clock.instant
+      // #2419: the token's data scope comes from ONE place — a LIVE server-side consent record for
+      // THIS (household, thread), written only by the customer's own authenticated grant. Both key
+      // columns are bound to state we already resolved, so a grant on another thread/household can
+      // never widen this token; a DB blip degrades to NO access (fail-closed — never grant on
+      // error). Nothing on the inbound payload can set this (the parser no longer reads a
+      // `dataConsent` flag at all).
+      dataAccess <- consentGranted(hh, event.threadId, now)
+      token = ConsentToken.mint(
         household = hh,
         threadId = event.threadId,
         dataAccess = dataAccess,
@@ -543,6 +545,12 @@ final case class SupportResponder(
         )
     } yield res
 
+  /**
+   * Withdraw. The repo's Boolean says whether a LIVE grant was actually revoked; a withdrawal of an
+   * already-expired / already-revoked / never-granted thread is idempotent for the customer (still
+   * 200 — the end state they asked for holds) but meters as `revoke_noop`, so the consent panel
+   * counts real withdrawals rather than inflating on repeat clicks.
+   */
   private def applyRevoke(claims: JwtClaims, g: ConsentGrant.Claims, now: Instant) =
     consentRepo
       .revoke(claims.hh, g.threadId, now)
@@ -550,11 +558,13 @@ final case class SupportResponder(
         e =>
           ZIO.logWarning(s"support: consent revoke failed: ${e.getMessage}") *>
             AppMetrics.supportConsent("error").as(ConsentResult.Error),
-        _ =>
+        revokedLive =>
           ZIO.logInfo(
             s"support: data-access consent REVOKED household=${claims.hh.value} " +
-              s"thread=${g.threadId} by=${claims.sub}",
-          ) *> AppMetrics.supportConsent("revoked").as(ConsentResult.Revoked),
+              s"thread=${g.threadId} by=${claims.sub} wasLive=$revokedLive",
+          ) *> AppMetrics
+            .supportConsent(if revokedLive then "revoked" else "revoke_noop")
+            .as(ConsentResult.Revoked),
       )
 
   /**
@@ -630,11 +640,12 @@ object SupportResponder {
   val ConsentTtl: java.time.Duration = java.time.Duration.ofHours(24)
 
   /**
-   * #2419 — how long a posted consent LINK can be redeemed. Matches [[ConsentTtl]] so a customer
-   * who reads the thread the next morning can still act on it; the link is a capability to be
-   * ASKED, not a grant (redeeming it still needs their authenticated session).
+   * #2419 — how long a posted consent LINK can be redeemed. Derived from [[ConsentTtl]] (not a
+   * second literal, so the two cannot drift) so a customer who reads the thread the next morning
+   * can still act on it; the link is a capability to be ASKED, not a grant — redeeming it still
+   * needs their authenticated session.
    */
-  val ConsentLinkTtl: java.time.Duration = java.time.Duration.ofHours(24)
+  val ConsentLinkTtl: java.time.Duration = ConsentTtl
 
   /**
    * #2419 — the FIXED, server-authored consent prompt posted into the thread when the agent asks
@@ -651,9 +662,10 @@ object SupportResponder {
        |**[Allow me to read your account summary]($consentUrl)**
        |
        |You'll be asked to confirm in your WifiHaven dashboard (you'll need to be signed in). It's
-       |read-only, it covers this conversation only, it expires after 24 hours, and you can withdraw
-       |it from the same page at any time. If you'd rather not, just ignore this and tell me what
-       |you're seeing — I'll help without it, or hand you to a human teammate.""".stripMargin
+       |read-only, it covers this conversation only, it expires after ${ConsentTtl.toHours} hours,
+       |and you can withdraw it from the same page at any time. If you'd rather not, just ignore
+       |this and tell me what you're seeing — I'll help without it, or hand you to a human
+       |teammate.""".stripMargin
 
   /**
    * #2419 — the outcome of a CUSTOMER consent action (`POST /api/support/consent`). Bounded enum;

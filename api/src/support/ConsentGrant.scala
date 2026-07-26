@@ -24,10 +24,12 @@ import java.util.Base64
  *
  * Wire shape mirrors [[ConsentToken]] — `g1.<b64url(payload)>.<hmacHex>` over
  * `householdId|threadId|expEpochSeconds` — but with a DISTINCT `g1` version prefix, signed under
- * the same agent-token secret. The differing prefix is deliberate domain separation: neither
- * verifier accepts the other's tokens (a `g1` string fails [[ConsentToken.verify]]'s version match,
- * and a `v1` agent token fails this one), so a consent link can never be replayed as an agent
- * credential or vice-versa. Pinned by SupportConsentSpec.
+ * the same agent-token secret. The prefix is domain separation and it is CRYPTOGRAPHIC, not
+ * cosmetic: the MAC is computed over `"<version>.<b64>"`, so re-labelling a `v1` agent token as
+ * `g1` (or the reverse) invalidates the signature outright — the version is bound into the MAC, not
+ * merely compared. Do not "simplify" either side to MAC the payload alone: that would leave the
+ * separation resting on a payload-parse accident. A consent link therefore can never be replayed as
+ * an agent credential or vice-versa. Pinned by SupportConsentSpec.
  */
 object ConsentGrant {
 
@@ -55,7 +57,7 @@ object ConsentGrant {
     val payload = s"${household.value}|${sanitize(threadId)}|$exp"
     val b64     =
       Base64.getUrlEncoder.withoutPadding.encodeToString(payload.getBytes(StandardCharsets.UTF_8))
-    s"$Version.$b64.${hmacHex(secret, b64)}"
+    s"$Version.$b64.${hmacHex(secret, s"$Version.$b64")}"
   }
 
   /**
@@ -67,7 +69,7 @@ object ConsentGrant {
   def verify(token: String, now: Instant, secret: String): Either[Err, Claims] =
     token.split("\\.", 3) match {
       case Array(Version, b64, sig) =>
-        if !constantTimeEquals(sig, hmacHex(secret, b64)) then Left(Err.BadSignature)
+        if !constantTimeEquals(sig, hmacHex(secret, s"$Version.$b64")) then Left(Err.BadSignature)
         else
           decode(b64).flatMap { case (household, thread, exp) =>
             if now.getEpochSecond > exp then Left(Err.Expired)

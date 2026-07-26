@@ -33,7 +33,10 @@ import java.util.Base64
  * Wire shape: an HMAC-signed opaque string `v1.<b64url(payload)>.<hmacHex>` where `payload` is
  * `householdId|threadId|dataAccess|expEpochSeconds`. Signed server-side under a dedicated secret so
  * the agent (or anything reading the session transcript) cannot forge, widen, or extend a token.
- * This is a functional capability, not a policy the model could be argued out of.
+ * The MAC covers `"<version>.<b64>"`, so the version tag is BOUND into the signature: the #2419
+ * consent link ([[ConsentGrant]], `g1`) shares this secret, and MACing the payload alone would let
+ * either token be re-labelled as the other and pass its signature check. This is a functional
+ * capability, not a policy the model could be argued out of.
  *
  * NOTE (revocation): the TTL is deliberately short (minutes), which bounds the exposure window; an
  * explicit revocation list is tracked as a follow-up (TODO(#2259)). The other #2241 properties
@@ -79,7 +82,7 @@ object ConsentToken {
     val payload = s"${household.value}|${sanitize(threadId)}|$dataAccess|$exp"
     val b64     =
       Base64.getUrlEncoder.withoutPadding.encodeToString(payload.getBytes(StandardCharsets.UTF_8))
-    s"$Version.$b64.${hmacHex(secret, b64)}"
+    s"$Version.$b64.${hmacHex(secret, s"$Version.$b64")}"
   }
 
   /**
@@ -90,7 +93,7 @@ object ConsentToken {
   def verify(token: String, now: Instant, secret: String): Either[Err, Claims] =
     token.split("\\.", 3) match {
       case Array(Version, b64, sig) =>
-        if !constantTimeEquals(sig, hmacHex(secret, b64)) then Left(Err.BadSignature)
+        if !constantTimeEquals(sig, hmacHex(secret, s"$Version.$b64")) then Left(Err.BadSignature)
         else
           decode(b64).flatMap { case (household, thread, dataAccess, exp) =>
             if now.getEpochSecond > exp then Left(Err.Expired)

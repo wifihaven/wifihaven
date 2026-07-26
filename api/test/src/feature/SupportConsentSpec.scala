@@ -421,6 +421,46 @@ object SupportConsentSpec
         onNext.exists(!_.dataConsent),
       )
     },
+    test("a second ask on an already-consented thread posts NO second prompt (anti-nag)") {
+      for {
+        _        <- cleanDb
+        hhRepo   <- ZIO.service[HouseholdRepo]
+        userRepo <- ZIO.service[UserRepo]
+        h        <- makeHarness()
+        hh       <- hhRepo.create("Family R", "family-r")
+        jwtTok   <- seedAdmin(h, userRepo, hh, "family-r", "admin_r", "pwpwpwpw11")
+        agent    <- mintAgentToken(hh, "th_r", dataAccess = false)
+        _        <- agentPost(h, "/api/support/agent/request-consent", Some(agent))
+        grant    <- grantTokenFromThread(h).someOrFail(new RuntimeException("no consent link"))
+        _        <- postConsent(h, Some(jwtTok), grant)
+        // The agent asks again (a confused run, or a second question in the same thread): the
+        // customer already said yes, so the server must NOT post a second permission prompt.
+        again    <- agentPost(h, "/api/support/agent/request-consent", Some(agent))
+        writes   <- h.plain.threads.get
+      } yield assertTrue(again == Status.Ok, writes.size == 1)
+    },
+    test("re-labelling one token family as the other fails the SIGNATURE, not just the parse") {
+      // The version tag is bound INTO the MAC, so `v1.<b64>.<sig>` rewritten to `g1.<b64>.<sig>`
+      // (and the reverse) is a BadSignature — the domain separation does not rest on the payload
+      // happening to have a different arity.
+      for {
+        _ <- cleanDb
+        h <- makeHarness()
+        hh = HouseholdId(7L)
+        now <- ZIO.serviceWithZIO[Clock](_.instant)
+        agent = ConsentToken
+          .mint(hh, "th_swap", true, now, java.time.Duration.ofMinutes(30), TokenSecret)
+        link  = ConsentGrant.mint(hh, "th_swap", now, java.time.Duration.ofHours(1), TokenSecret)
+        agentAsLink = ConsentGrant.verify(agent.replaceFirst("^v1\\.", "g1."), now, TokenSecret)
+        linkAsAgent = ConsentToken.verify(link.replaceFirst("^g1\\.", "v1."), now, TokenSecret)
+      } yield assertTrue(
+        agentAsLink == Left(ConsentGrant.Err.BadSignature),
+        linkAsAgent == Left(ConsentToken.Err.BadSignature),
+        // …and each still verifies under its OWN family.
+        ConsentGrant.verify(link, now, TokenSecret).isRight,
+        ConsentToken.verify(agent, now, TokenSecret).isRight,
+      )
+    },
     test("the consent prompt is capped per thread so the agent cannot spam the customer") {
       for {
         _      <- cleanDb

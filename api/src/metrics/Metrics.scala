@@ -495,8 +495,8 @@ object MetricGuard {
     "support_agent_action_total"                    -> Set("op", "outcome"),
     // #2419 — the in-conversation data-access consent lifecycle on ONE series:
     // `support_consent_total{outcome}` (requested | request_already_granted | request_rate_limited |
-    // request_disabled | request_error — the AGENT's ask; granted | revoked | invalid | expired |
-    // household_mismatch | disabled | error — the CUSTOMER's action). Bounded enum, never a
+    // request_disabled | request_error — the AGENT's ask; granted | revoked | revoke_noop | invalid
+    // | expired | household_mismatch | disabled | error — the CUSTOMER's action). Bounded enum, never a
     // per-household / per-thread label.
     "support_consent_total"                         -> Set("outcome"),
     // #2203 — the Claude PRESS/PR responder (dark until keys set). `press_ai_draft_total{outcome}`
@@ -785,8 +785,9 @@ object AppMetrics {
   // / per-thread label:
   //   requested | request_already_granted | request_rate_limited | request_disabled |
   //   request_error   — the AGENT-side ask (the server posts the prompt into the thread);
-  //   granted | revoked | invalid | expired | household_mismatch | disabled | error
-  //                   — the CUSTOMER-side action on POST /api/support/consent.
+  //   granted | revoked | revoke_noop (a withdrawal of a grant that was not live — idempotent for
+  //   the customer, but not a real withdrawal) | invalid | expired | household_mismatch | disabled |
+  //   error   — the CUSTOMER-side action on POST /api/support/consent.
   // `household_mismatch` is the security-relevant one (a consent link redeemed by another
   // household's session, which writes nothing) — it should be flat zero in normal operation.
   def supportConsent(outcome: String): UIO[Unit] =
