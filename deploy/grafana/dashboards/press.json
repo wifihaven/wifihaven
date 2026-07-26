@@ -47,7 +47,7 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "title": "Agent reply callbacks",
+      "title": "Agent callback actions",
       "description": "sum by (op, outcome) (rate(press_agent_action_total{env=\"$env\"}[5m])) — the dispatched press agent's token-authenticated reply callback: op=reply × ok (the reply was emailed to the sender — destination locked into the token) / denied (bad/expired/missing token — uniform 401) / disabled (responder dark) / error (Resend send failed). There is deliberately no issue-filing or household-read op (press is public — no data path). Emitted by PressResponder.agentReply.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
