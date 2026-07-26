@@ -118,17 +118,17 @@ final case class SupportResponder(
    * body; nothing is parsed or acted on for an unsigned/forged payload.
    */
   def handleWebhook(rawBody: String, sigHeader: Option[String]): UIO[WebhookOutcome] =
-    if !cfg.responderEnabled then meter(WebhookOutcome.Disabled)
+    if !cfg.responderEnabled then finish(WebhookOutcome.Disabled, None)
     else
       PlainWebhook.verifyAndParse(rawBody, sigHeader, cfg.plain.webhookSecretTrimmed) match {
         case Left(PlainWebhook.VerifyError.MissingSignature) | Left(
               PlainWebhook.VerifyError.BadSignature,
             ) =>
-          meter(WebhookOutcome.InvalidSignature)
+          finish(WebhookOutcome.InvalidSignature, None)
         case Left(PlainWebhook.VerifyError.MalformedPayload) =>
-          meter(WebhookOutcome.Malformed)
+          finish(WebhookOutcome.Malformed, None)
         case Right(event)                                    =>
-          dispatchIfAuthorized(event).flatMap(meter)
+          dispatchIfAuthorized(event).flatMap(finish(_, Some(event)))
       }
 
   /**
@@ -331,6 +331,30 @@ final case class SupportResponder(
       case DispatchOutcome.Disabled   => WebhookOutcome.Disabled
       case DispatchOutcome.Error      => WebhookOutcome.Error
     }
+
+  /**
+   * The single webhook choke point: LOG the resolved outcome (per-thread correlation) AND meter it.
+   * Every branch of [[handleWebhook]] routes through here, so a SKIP / REJECT / RATE-LIMIT /
+   * MALFORMED is never silent — the aggregate `supportAiDraft{outcome}` counter can't answer "why
+   * wasn't THIS thread answered?" on its own (#2431: a loop-guard skip of our own
+   * `thread.chat_sent` echoes used to require a manual investigation).
+   */
+  private def finish(o: WebhookOutcome, event: Option[PlainNewMessageEvent]): UIO[WebhookOutcome] =
+    logWebhookOutcome(o, event) *> meter(o)
+
+  /**
+   * One INFO line per webhook delivery: the bounded [[WebhookOutcome]] label plus, when a parsed
+   * event is available, the Plain `threadId` and `eventType` — both bounded, non-PII (the mint log
+   * already establishes `thread=<id>` as loggable). Pre-parse outcomes (InvalidSignature /
+   * Malformed / Disabled) carry no event, so both correlation fields log as `-`. NEVER the message
+   * text, customer email, or any customer content (UNTRUSTED PII — see the class comment).
+   */
+  private def logWebhookOutcome(o: WebhookOutcome, event: Option[PlainNewMessageEvent]): UIO[Unit] =
+    ZIO.logInfo(
+      s"support webhook outcome=${WebhookOutcome.label(o)} " +
+        s"thread=${event.map(_.threadId).filter(_.nonEmpty).getOrElse("-")} " +
+        s"eventType=${event.map(_.eventType).getOrElse("-")}",
+    )
 
   private def meter(o: WebhookOutcome): UIO[WebhookOutcome] =
     AppMetrics.supportAiDraft(WebhookOutcome.label(o)).as(o)
