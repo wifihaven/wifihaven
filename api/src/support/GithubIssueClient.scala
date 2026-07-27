@@ -49,12 +49,12 @@ final case class IssueRef(number: Int, url: String)
  * (#2461) so the agent can quote the link; `None` means the issue WAS created but we could not read
  * back its identity — still a success, just without a link to offer.
  *
- * METRIC LABELS: the sole consumer ([[SupportResponder.agentFileIssue]]) collapses each case to a
- * bounded label — the `AgentActionResult.label` strings for the failure cases, plus `ok_no_link`
- * for a [[Filed]] with no readable ref (`SupportResponder.issueFiledOutcome`, the one place that
- * derivation lives). The label space stays a small fixed set whatever the payload: the [[IssueRef]]
- * is response data only — never put an issue number in a metric label (unbounded cardinality —
- * docs/process/instrumentation.md).
+ * METRIC LABELS: the sole consumer ([[SupportResponder.agentFileIssue]]) collapses every case to a
+ * `SupportResponder.AgentActionResult` and meters `AgentActionResult.label`, so the label space is
+ * exactly that enum whatever the payload — a [[Filed]] with no readable ref maps to `OkNoLink`
+ * (still a success; see `AgentActionResult.SuccessLabels`, which the Grafana volume panel mirrors).
+ * The [[IssueRef]] is response data only — never put an issue number in a metric label (unbounded
+ * cardinality — docs/process/instrumentation.md).
  *
  * Shaped for #2458: a future "matched an existing issue instead of creating a duplicate" case adds
  * a constructor carrying the same [[IssueRef]], so the customer is pointed at the canonical issue
@@ -122,8 +122,14 @@ object GithubIssueClient {
     given JsonDecoder[CreatedIssue] = DeriveJsonDecoder.gen[CreatedIssue]
   }
 
-  /** The one prefix an issue URL may have if we are going to show it to a customer. */
-  private val PublicIssuePrefix: String = s"https://github.com/$Repo/issues/"
+  /**
+   * The one prefix an issue URL may have if we are going to show it to a customer. Derived from
+   * [[Repo]], which is a hardcoded constant with no config escape hatch — so a repo rename, org
+   * rename, or transfer makes GitHub return a new canonical `html_url`, every filing fails this
+   * check, and the agent stops offering links until [[Repo]] is updated. That failure is visible
+   * (`outcome=ok_no_link` plus a log line naming this cause) rather than silent.
+   */
+  private[support] val PublicIssuePrefix: String = s"https://github.com/$Repo/issues/"
 
   /**
    * #2461 — read the created issue's identity out of GitHub's 2xx body. Pure and total: any body we
@@ -167,19 +173,27 @@ object GithubIssueClient {
           client.send(httpReq, HttpResponse.BodyHandlers.ofString())
         }
         .flatMap { resp =>
-          if resp.statusCode() / 100 == 2 then
+          if resp.statusCode() / 100 == 2 then {
             // #2461: GitHub returns the created issue here — read its number + browser URL so the
             // agent can point the customer at it. An unreadable body is still a successful filing.
-            parseCreated(resp.body()) match {
+            val createdBody = resp.body()
+            parseCreated(createdBody) match {
               case some @ Some(_) => ZIO.succeed(IssueOutcome.Filed(some))
               case None           =>
+                // Two very different causes, and the metric collapses both to `ok_no_link`, so the
+                // log line is the discriminator: an unparseable body is likely transient or a
+                // GitHub response-shape change, whereas a parseable body whose html_url failed the
+                // repo-prefix check means the repo was renamed/transferred and EVERY filing will
+                // now lose its link until `Repo` is updated.
+                val cause =
+                  if createdBody.fromJson[CreatedIssue].isRight then
+                    s"the created issue's html_url is not under $PublicIssuePrefix (repo renamed or transferred?)"
+                  else "the create response was unreadable"
                 ZIO
-                  .logWarning(
-                    "github issue filed but the create response was unreadable; no link to offer",
-                  )
+                  .logWarning(s"github issue filed but $cause; no link to offer")
                   .as(IssueOutcome.Filed(None))
             }
-          else
+          } else
             ZIO
               .logWarning(
                 s"github issue-filing failed: HTTP ${resp.statusCode()} (${resp.body().take(300)})",

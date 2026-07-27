@@ -147,7 +147,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "Agent-filed issues (24h) — volume alert feed",
-      "description": "sum(increase(support_agent_action_total{env=\"$env\",op=\"issue\",outcome=\"ok\"}[24h])) — GitHub issues the support agent filed in the last 24h (the #2241 volume-alert feed). The per-thread (3/h) + global (10/h) rate limits cap the ceiling; a value near the cap means the agent is filing aggressively — review the support-agent label on GitHub.",
+      "description": "sum(increase(support_agent_action_total{env=\"$env\",op=\"issue\",outcome=~\"ok|ok_no_link\"}[24h])) — GitHub issues the support agent filed in the last 24h (the #2241 volume-alert feed). The per-thread (3/h) + global (10/h) rate limits cap the ceiling; a value near the cap means the agent is filing aggressively — review the support-agent label on GitHub. Counts BOTH success outcomes (#2461): `ok_no_link` is a real filed issue whose link we could not read back, so excluding it would under-report actual GitHub issues created.",
       "type": "stat",
       "gridPos": { "h": 6, "w": 6, "x": 0, "y": 16 },
       "id": 6,
@@ -163,7 +163,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum(increase(support_agent_action_total{env=\"$env\",op=\"issue\",outcome=\"ok\"}[24h]))",
+          "expr": "sum(increase(support_agent_action_total{env=\"$env\",op=\"issue\",outcome=~\"ok|ok_no_link\"}[24h]))",
           "legendFormat": "issues (24h)",
           "refId": "A"
         }

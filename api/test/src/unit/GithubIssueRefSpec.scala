@@ -12,7 +12,9 @@ import zio.test.*
  *
  * The load-bearing properties: a real GitHub create-issue response yields the number + browser URL
  * verbatim; a body that is truncated, non-JSON, or missing either field yields None rather than a
- * fabricated link (an over-promised issue link is worse than none).
+ * fabricated link (an over-promised issue link is worse than none); and a `html_url` outside the
+ * public target repo is REJECTED — that last one is what the customer-facing "safe to hand out
+ * verbatim" claim on `IssueRef` actually rests on.
  */
 object GithubIssueRefSpec extends ZIOSpecDefault {
 

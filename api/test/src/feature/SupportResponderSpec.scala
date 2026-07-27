@@ -127,7 +127,9 @@ object SupportResponderSpec
       dispatchThreadLimiter: RateLimiter = RateLimiter.allowAll,
       rejectLimiter: RateLimiter = RateLimiter.allowAll,
       // #2461: swap in a GithubIssueClient that files WITHOUT a readable ref, to pin the
-      // no-link-available branch through the real route. Default keeps the recorder.
+      // no-link-available branch through the real route. Default keeps the recorder. NOTE: when
+      // this is passed, `Stubs.github` is NOT wired to the responder — a negative assertion on it
+      // (`issues.isEmpty`) would pass vacuously, so don't; assert on the response instead.
       githubOverride: Option[GithubIssueClient] = None,
   ) =
     for {
@@ -1000,10 +1002,17 @@ object SupportResponderSpec
         )
         filed = body.fromJson[FiledIssueBody].toOption
       } yield assertTrue(status == Status.Ok) &&
-        assertTrue(filed.map(_.ok).contains(true)) &&
         // The agent's prompt contract is that the fields are ABSENT, not null — it must not quote
-        // "issue #null". Pinned on the raw body because a null would decode to the same None.
-        assertTrue(!body.contains("number"), !body.contains("url"))
+        // "issue #null". Pinned on the exact body: a null would decode to the same None, and an
+        // equality pin also catches a stray extra field the prompt does not know about.
+        assertTrue(filed.map(_.ok).contains(true), body.trim == """{"ok":true}""")
+    },
+    test("#2461: both filing successes count as filed — the volume feed must not under-report") {
+      // The #2241 volume panel ("Agent-filed issues (24h)",
+      // deploy/grafana/dashboards/support.json) matches outcome=~"ok|ok_no_link". Splitting `ok`
+      // into two success values silently halved that count until this was caught in review, so the
+      // matcher's vocabulary is pinned to the enum it mirrors rather than hand-maintained.
+      assertTrue(SupportResponder.AgentActionResult.SuccessLabels == List("ok", "ok_no_link"))
     },
     test("injection pin: an exfiltration order in the message changes nothing structurally") {
       for {

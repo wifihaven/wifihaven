@@ -431,8 +431,9 @@ final case class SupportResponder(
                 // #2461: the created issue's identity rides back out so the agent can offer the
                 // customer a link. The metric label stays the bounded `ok` — never the number.
                 case IssueOutcome.Filed(ref) =>
-                  AppMetrics
-                    .supportAgentAction("issue", issueFiledOutcome(ref))
+                  // Same `done` metering choke point as every other branch — only the RESULT
+                  // differs, so there is still exactly one place the label is derived.
+                  done("issue", issueFiledOutcome(ref))
                     .as(Right(FiledIssue(ref.map(_.number), ref.map(_.url))))
                 case IssueOutcome.Disabled   => doneE("issue", AgentActionResult.Disabled)
                 case IssueOutcome.Error      => doneE("issue", AgentActionResult.Error)
@@ -738,15 +739,16 @@ final case class SupportResponder(
     AppMetrics.supportAgentAction(action, AgentActionResult.label(r)).as(r)
 
   /**
-   * #2461 — the issue-filing success label. Both values are a SUCCESS to the agent (the issue
+   * #2461 — the issue-filing success result. Both values are a SUCCESS to the agent (the issue
    * exists either way), but "filed but GitHub's create response was unreadable" is a real
-   * degradation the operator must be able to see: the agent has no link to offer. Bounded to
-   * exactly two strings, and the ONLY place `ok_no_link` is derived. `outcome` is an
-   * already-allowed label key for `support_agent_action_total`, so this adds no series and no
-   * dashboard change — the existing support panel slices `by (op, outcome)`.
+   * degradation the operator must be able to see: the agent has no link to offer. Returns the
+   * bounded [[AgentActionResult]] rather than a bare string so the label stays type-enforced;
+   * `outcome` is an already-allowed label key for `support_agent_action_total`, so this adds a
+   * VALUE, not a new key. Any "how many issues did we file" query must match
+   * [[AgentActionResult.SuccessLabels]], not just `ok`.
    */
-  private def issueFiledOutcome(ref: Option[IssueRef]): String =
-    if ref.isDefined then AgentActionResult.label(AgentActionResult.Ok) else "ok_no_link"
+  private def issueFiledOutcome(ref: Option[IssueRef]): AgentActionResult =
+    if ref.isDefined then AgentActionResult.Ok else AgentActionResult.OkNoLink
 
   /** [[done]] for the `Either`-shaped endpoints — same single metric derivation, left-biased. */
   private def doneE[A](action: String, r: AgentActionResult): UIO[Either[AgentActionResult, A]] =
@@ -924,13 +926,20 @@ object SupportResponder {
   }
 
   /**
-   * Bounded result enum for the agent endpoints — the `support_agent_action_total` outcome set.
-   * `Denied` is any token failure (missing / tampered / expired — uniform to the caller);
-   * `NoConsent` is a VALID token without the data scope (the household read's 403). Both meter as
-   * "denied" so the label space stays bounded.
+   * Bounded result enum for the agent endpoints — the `support_agent_action_total` outcome set, and
+   * the ONLY place a value in that set is minted (keep `Metrics.scala`'s enumeration in step by
+   * reading it off this enum, not by hand). `Denied` is any token failure (missing / tampered /
+   * expired — uniform to the caller); `NoConsent` is a VALID token without the data scope (the
+   * household read's 403). Both meter as "denied" so the label space stays bounded.
+   *
+   * `OkNoLink` (#2461) is a SUCCESS — the issue was created — that we could not read a link back
+   * for. It is a distinct label because the operator needs to see it, but every "did the filing
+   * succeed" query must count it alongside `Ok`: see [[SuccessLabels]], which the Grafana volume
+   * panel's `outcome=~` matcher mirrors.
    */
   enum AgentActionResult   {
     case Ok
+    case OkNoLink
     case Denied
     case NoConsent
     case RateLimited
@@ -940,12 +949,20 @@ object SupportResponder {
   object AgentActionResult {
     def label(r: AgentActionResult): String = r match {
       case Ok          => "ok"
+      case OkNoLink    => "ok_no_link"
       case Denied      => "denied"
       case NoConsent   => "denied"
       case RateLimited => "rate_limited"
       case Disabled    => "disabled"
       case Error       => "error"
     }
+
+    /**
+     * The labels that mean "the action succeeded" — what a volume/success query must match. Derived
+     * from the enum so adding another success case cannot leave a dashboard silently under-counting
+     * (the #2461 miss: splitting `ok` hid real filings from the #2241 volume panel).
+     */
+    val SuccessLabels: List[String] = List(Ok, OkNoLink).map(label)
   }
 
   /**

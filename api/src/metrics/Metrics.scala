@@ -511,10 +511,15 @@ object MetricGuard {
     // per-thread/global dispatch (or reject) cost caps, `invalid_signature` the security rejection.
     // `support_agent_action_total{op,outcome}` counts the cloud agent's callback
     // actions (reply | issue | household_read | consent_request | escalate | escalate_mark ×
-    // ok | denied | rate_limited | disabled | error) — the `issue` action's rate feeds the #2241
-    // volume alert; #2437 adds `escalate` (the agent handing off) and `escalate_mark` (the SERVER's
-    // Plain `addLabels` write that makes the handoff visible in the inbox — an `error` there means
-    // the label id / `label:create` permission is misprovisioned). Both bounded, never per-household.
+    // ok | ok_no_link | denied | rate_limited | disabled | error) — the `issue` action's rate feeds
+    // the #2241 volume alert; #2437 adds `escalate` (the agent handing off) and `escalate_mark` (the
+    // SERVER's Plain `addLabels` write that makes the handoff visible in the inbox — an `error`
+    // there means the label id / `label:create` permission is misprovisioned). Both bounded, never
+    // per-household. #2461 added `ok_no_link`: a SUCCESS (the GitHub issue exists) whose create
+    // response we could not read a link back from, so the agent has no link to offer. Any "how many
+    // issues did we file" query must match BOTH success values (`outcome=~"ok|ok_no_link"`, as the
+    // volume panel does) — the outcome set is minted ONLY by SupportResponder.AgentActionResult,
+    // whose `SuccessLabels` is the authority for that matcher.
     // #2416 added the bounded `reason` dimension so `outcome=error` is attributed to WHY the cloud
     // agent could not be dispatched: config (a 4xx at the Anthropic boundary — revoked key, wrong
     // agent-or-routine id, stale anthropic-beta header; PERMANENT, never self-heals, also logged at

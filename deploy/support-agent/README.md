@@ -151,8 +151,11 @@ the responder is flipped there too; sequence the two together.
   same flag — `wifihaven.support.issueFilingEnabled=true — support-agent files GitHub issues (bot
   token)` (`api/src/StartupFeatureReport.scala`, `support-issue-filing`) — so grep for either.
 - Drive one support message that should escalate; confirm a new `support-agent`-labeled issue appears
-  in `wifihaven/wifihaven` and `support_agent_action_total{op="issue",outcome="ok"}` increments on the
-  Grafana support dashboard (`deploy/grafana/dashboards/support.json`, "Agent-filed issues (24h)").
+  in `wifihaven/wifihaven` and that "Agent-filed issues (24h)" increments on the Grafana support
+  dashboard (`deploy/grafana/dashboards/support.json`). That panel counts BOTH success outcomes,
+  `outcome=~"ok|ok_no_link"` — if it is rising on `ok_no_link` alone, filing works but the link does
+  not, which points at the repo having been renamed/transferred away from `GithubIssueClient.Repo`
+  (the log line names that cause explicitly).
 
 ### 4. Rotation
 
