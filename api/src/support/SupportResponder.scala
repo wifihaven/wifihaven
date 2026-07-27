@@ -409,20 +409,34 @@ final case class SupportResponder(
    * volume metric feeds the operator alert), auto-labeled `support-agent` and PII-scrubbed inside
    * [[GithubIssueClient]] — the #2241 compensating control: the body that leaves this process never
    * embeds raw household-data output.
+   *
+   * On success it answers the created [[FiledIssue]] (#2461) — the number + public URL the agent
+   * may quote to the customer; every failure stays the bounded [[AgentActionResult]] the route maps
+   * to a status.
    */
-  def agentFileIssue(bearer: Option[String], title: String, body: String): UIO[AgentActionResult] =
-    withClaims("issue", bearer) { claims =>
+  def agentFileIssue(
+      bearer: Option[String],
+      title: String,
+      body: String,
+  ): UIO[Either[AgentActionResult, FiledIssue]] =
+    withClaimsE("issue", bearer) { claims =>
       // Same short-circuit as dispatch: a thread-capped caller must not drain the global budget.
       issueThreadLimiter.tryAcquire(s"thread:${claims.threadId}").flatMap { threadOk =>
-        if !threadOk then done("issue", AgentActionResult.RateLimited)
+        if !threadOk then doneE("issue", AgentActionResult.RateLimited)
         else
           issueGlobalLimiter.tryAcquire("global").flatMap { globalOk =>
-            if !globalOk then done("issue", AgentActionResult.RateLimited)
+            if !globalOk then doneE("issue", AgentActionResult.RateLimited)
             else
               github.fileIssue(IssueFileRequest(title, body, claims.threadId)).flatMap {
-                case IssueOutcome.Filed    => done("issue", AgentActionResult.Ok)
-                case IssueOutcome.Disabled => done("issue", AgentActionResult.Disabled)
-                case IssueOutcome.Error    => done("issue", AgentActionResult.Error)
+                // #2461: the created issue's identity rides back out so the agent can offer the
+                // customer a link. The metric label stays the bounded `ok` — never the number.
+                case IssueOutcome.Filed(ref) =>
+                  // Same `done` metering choke point as every other branch — only the RESULT
+                  // differs, so there is still exactly one place the label is derived.
+                  done("issue", issueFiledOutcome(ref))
+                    .as(Right(FiledIssue(ref.map(_.number), ref.map(_.url))))
+                case IssueOutcome.Disabled   => doneE("issue", AgentActionResult.Disabled)
+                case IssueOutcome.Error      => doneE("issue", AgentActionResult.Error)
               }
           }
       }
@@ -723,6 +737,22 @@ final case class SupportResponder(
 
   private def done(action: String, r: AgentActionResult): UIO[AgentActionResult] =
     AppMetrics.supportAgentAction(action, AgentActionResult.label(r)).as(r)
+
+  /**
+   * #2461 — the issue-filing success result. Both values are a SUCCESS to the agent (the issue
+   * exists either way), but "filed but GitHub's create response was unreadable" is a real
+   * degradation the operator must be able to see: the agent has no link to offer. Returns the
+   * bounded [[AgentActionResult]] rather than a bare string so the label stays type-enforced;
+   * `outcome` is an already-allowed label key for `support_agent_action_total`, so this adds a
+   * VALUE, not a new key. Any "how many issues did we file" query must match
+   * [[AgentActionResult.SuccessLabels]], not just `ok`.
+   */
+  private def issueFiledOutcome(ref: Option[IssueRef]): AgentActionResult =
+    if ref.isDefined then AgentActionResult.Ok else AgentActionResult.OkNoLink
+
+  /** [[done]] for the `Either`-shaped endpoints — same single metric derivation, left-biased. */
+  private def doneE[A](action: String, r: AgentActionResult): UIO[Either[AgentActionResult, A]] =
+    done(action, r).map(Left(_))
 }
 
 object SupportResponder {
@@ -896,13 +926,20 @@ object SupportResponder {
   }
 
   /**
-   * Bounded result enum for the agent endpoints — the `support_agent_action_total` outcome set.
-   * `Denied` is any token failure (missing / tampered / expired — uniform to the caller);
-   * `NoConsent` is a VALID token without the data scope (the household read's 403). Both meter as
-   * "denied" so the label space stays bounded.
+   * Bounded result enum for the agent endpoints — the `support_agent_action_total` outcome set, and
+   * the ONLY place a value in that set is minted (keep `Metrics.scala`'s enumeration in step by
+   * reading it off this enum, not by hand). `Denied` is any token failure (missing / tampered /
+   * expired — uniform to the caller); `NoConsent` is a VALID token without the data scope (the
+   * household read's 403). Both meter as "denied" so the label space stays bounded.
+   *
+   * `OkNoLink` (#2461) is a SUCCESS — the issue was created — that we could not read a link back
+   * for. It is a distinct label because the operator needs to see it, but every "did the filing
+   * succeed" query must count it alongside `Ok`: see [[SuccessLabels]], which the Grafana volume
+   * panel's `outcome=~` matcher mirrors.
    */
   enum AgentActionResult   {
     case Ok
+    case OkNoLink
     case Denied
     case NoConsent
     case RateLimited
@@ -912,12 +949,39 @@ object SupportResponder {
   object AgentActionResult {
     def label(r: AgentActionResult): String = r match {
       case Ok          => "ok"
+      case OkNoLink    => "ok_no_link"
       case Denied      => "denied"
       case NoConsent   => "denied"
       case RateLimited => "rate_limited"
       case Disabled    => "disabled"
       case Error       => "error"
     }
+
+    /** The cases that mean "the action succeeded" — the ONE place success is defined. */
+    private def isSuccess(r: AgentActionResult): Boolean = r match {
+      case Ok | OkNoLink                                       => true
+      case Denied | NoConsent | RateLimited | Disabled | Error => false
+    }
+
+    /**
+     * The labels a volume/success query must match, DERIVED from the enum (not a hand-written
+     * mirror) by filtering `values`. Adding a success case — e.g. #2458's "matched an existing
+     * issue" — automatically widens this, and `SupportMetricsContractSpec` asserts the #2241
+     * Grafana panel's `outcome=~` matcher against it, so the dashboard cannot silently drift back
+     * to under-counting the way it did when `ok` was first split.
+     */
+    val SuccessLabels: Set[String] = values.filter(isSuccess).map(label).toSet
+  }
+
+  /**
+   * #2461 — the issue-filing response. `number`/`url` point at the issue in the PUBLIC target repo
+   * (`GithubIssueClient.Repo`), so the agent may quote the link to a customer. Both are optional:
+   * an issue that GitHub created but whose response we could not read back is still a success, and
+   * the agent then simply has no link to offer rather than an invented one.
+   */
+  final case class FiledIssue(number: Option[Int], url: Option[String], ok: Boolean = true)
+  object FiledIssue {
+    given JsonCodec[FiledIssue] = DeriveJsonCodec.gen[FiledIssue]
   }
 
   /**

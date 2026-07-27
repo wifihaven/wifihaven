@@ -97,7 +97,9 @@ object SupportAgentRoutes {
               .fail(ApiError.BadRequest("empty issue"))
               .when(post.title.trim.isEmpty)
             result <- responder.agentFileIssue(bearerToken(req), post.title, post.body)
-            resp   <- toResponse(result)
+            // #2461: on success the response carries the created issue's number + public URL so
+            // the agent can quote the link back to the customer.
+            resp   <- result.fold(toResponse, filed => ZIO.succeed(Response.json(filed.toJson)))
           } yield resp
           handle.mapError(ErrorMapper.errorToResponse)
         },
@@ -159,6 +161,10 @@ object SupportAgentRoutes {
 
   private def toResponse(r: AgentActionResult): ZIO[Any, ApiError, Response] = r match {
     case AgentActionResult.Ok          => ZIO.succeed(Response.json("""{"ok":true}"""))
+    // #2461: a metric-only distinction — both success values are the same plain `ok` to the caller.
+    // Only the issue-filing route can produce it, and that route answers the richer FiledIssue body
+    // directly (its success never reaches here), so this case exists for exhaustivity.
+    case AgentActionResult.OkNoLink    => ZIO.succeed(Response.json("""{"ok":true}"""))
     // Uniform denial: bad token, expired token, missing header — the caller learns nothing more.
     case AgentActionResult.Denied      => ZIO.fail(ApiError.Unauthorized("unauthorized"))
     case AgentActionResult.NoConsent   => ZIO.fail(ApiError.Forbidden("no data consent"))

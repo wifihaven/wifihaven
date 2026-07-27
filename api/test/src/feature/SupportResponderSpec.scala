@@ -107,6 +107,14 @@ object SupportResponderSpec
   // /api/debug/config via StartupFeatureReport, and inert: webhook no-ops, agent endpoints 404.
   private val darkCfg = SupportConfig()
 
+  // #2461: the issue-filing route's response shape, decoded from the wire so the pin asserts what
+  // the agent actually receives (number/url optional — a 2xx GitHub body we could not parse must
+  // still be a success, just without a link).
+  private final case class FiledIssueBody(ok: Boolean, number: Option[Int], url: Option[String])
+  private object FiledIssueBody {
+    given JsonCodec[FiledIssueBody] = DeriveJsonCodec.gen[FiledIssueBody]
+  }
+
   private final case class Stubs(
       plain: PlainClient.Recorder,
       github: GithubIssueClient.Recorder,
@@ -118,6 +126,11 @@ object SupportResponderSpec
       issueThreadLimiter: RateLimiter = RateLimiter.allowAll,
       dispatchThreadLimiter: RateLimiter = RateLimiter.allowAll,
       rejectLimiter: RateLimiter = RateLimiter.allowAll,
+      // #2461: swap in a GithubIssueClient that files WITHOUT a readable ref, to pin the
+      // no-link-available branch through the real route. Default keeps the recorder. NOTE: when
+      // this is passed, `Stubs.github` is NOT wired to the responder — a negative assertion on it
+      // (`issues.isEmpty`) would pass vacuously, so don't; assert on the response instead.
+      githubOverride: Option[GithubIssueClient] = None,
   ) =
     for {
       hhRepo      <- ZIO.service[HouseholdRepo]
@@ -141,7 +154,7 @@ object SupportResponderSpec
         profRepo,
         consentRepo,
         PlainClient.recording(plainRec),
-        GithubIssueClient.recording(ghRec),
+        githubOverride.getOrElse(GithubIssueClient.recording(ghRec)),
         CloudAgentDispatcher.recording(dispRec),
         clock,
         issueThreadLimiter,
@@ -943,6 +956,56 @@ object SupportResponderSpec
             !i.title.contains("parent@example.com")
           },
         )
+    },
+    test("#2461: a filed issue's number + url come back so the agent can quote the link") {
+      for {
+        _              <- cleanDb
+        hhRepo         <- ZIO.service[HouseholdRepo]
+        hh             <- hhRepo.create("Family L", "fam-l")
+        (routes, _)    <- makeRoutes(liveCfg)
+        token          <- mintToken(hh, "th_link", dataAccess = false)
+        (status, body) <- agentPost(
+          routes,
+          "/api/support/agent/issues",
+          """{"title":"Blocking silently fails","body":"repro steps"}""",
+          Some(token),
+        )
+        filed = body.fromJson[FiledIssueBody].toOption
+      } yield assertTrue(status == Status.Ok) &&
+        // The route must hand the agent a quotable, PUBLIC link — not a bare {"ok":true}. The
+        // recorder mints the URL itself, so this pins the ROUTE PLUMBING (the ref survives
+        // responder → JSON → wire); GithubIssueRefSpec is what pins parseCreated's reading of a
+        // real GitHub body.
+        assertTrue(
+          filed.map(_.ok).contains(true),
+          filed.flatMap(_.number).contains(GithubIssueClient.RecorderFirstIssueNumber),
+          filed
+            .flatMap(_.url)
+            .contains(
+              s"https://github.com/wifihaven/wifihaven/issues/${GithubIssueClient.RecorderFirstIssueNumber}",
+            ),
+        )
+    },
+    test("#2461: an unreadable create response is still a 200 — success, just with no link") {
+      for {
+        _           <- cleanDb
+        hhRepo      <- ZIO.service[HouseholdRepo]
+        hh          <- hhRepo.create("Family M", "fam-m")
+        // GitHub accepted the filing but we could not read back its identity.
+        (routes, _) <- makeRoutes(liveCfg, githubOverride = Some(GithubIssueClient.filedWithoutRef))
+        token       <- mintToken(hh, "th_nolink", dataAccess = false)
+        (status, body) <- agentPost(
+          routes,
+          "/api/support/agent/issues",
+          """{"title":"Blocking silently fails","body":"repro steps"}""",
+          Some(token),
+        )
+        filed = body.fromJson[FiledIssueBody].toOption
+      } yield assertTrue(status == Status.Ok) &&
+        // The agent's prompt contract is that the fields are ABSENT, not null — it must not quote
+        // "issue #null". Pinned on the exact body: a null would decode to the same None, and an
+        // equality pin also catches a stray extra field the prompt does not know about.
+        assertTrue(filed.map(_.ok).contains(true), body.trim == """{"ok":true}""")
     },
     test("injection pin: an exfiltration order in the message changes nothing structurally") {
       for {

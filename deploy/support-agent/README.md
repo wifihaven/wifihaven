@@ -97,6 +97,17 @@ before filing (`SupportPrivacy.scrubForIssue`, applied at the `GithubIssueClient
 The target repo and REST base are **constants**, not config (`GithubIssueClient.Repo` / `ApiBase`) —
 the only knobs are the flag and the token.
 
+`POST /api/support/agent/issues` answers `{"ok":true,"number":2455,"url":"https://github.com/..."}`
+(#2461) — parsed out of GitHub's create-issue response, so the agent can point the customer at the
+tracking issue in the **public** repo (a `html_url` outside `wifihaven/wifihaven` is rejected, so
+"safe to show a customer" is structural, not trusted). `number`/`url` are absent if GitHub's body was
+unreadable; that is still a successful filing, and the agent is instructed never to invent a link —
+it meters as `support_agent_action_total{op="issue",outcome="ok_no_link"}`, a bounded extra value on
+the existing series that surfaces on the support dashboard's `by (op, outcome)` panel, so a
+systematic unreadable-body regression is not silent. The agent
+offers the link **only when the customer asked** for something to be filed — an unrequested
+"I filed #2455" reads as noise and implies a fix commitment we have not made.
+
 ### 1. The token (operator; cannot be automated)
 
 Create a **dedicated machine account** (e.g. `wifihaven-support-bot`), invite it to the repo, and
@@ -140,8 +151,11 @@ the responder is flipped there too; sequence the two together.
   same flag — `wifihaven.support.issueFilingEnabled=true — support-agent files GitHub issues (bot
   token)` (`api/src/StartupFeatureReport.scala`, `support-issue-filing`) — so grep for either.
 - Drive one support message that should escalate; confirm a new `support-agent`-labeled issue appears
-  in `wifihaven/wifihaven` and `support_agent_action_total{op="issue",outcome="ok"}` increments on the
-  Grafana support dashboard (`deploy/grafana/dashboards/support.json`, "Agent-filed issues (24h)").
+  in `wifihaven/wifihaven` and that "Agent-filed issues (24h)" increments on the Grafana support
+  dashboard (`deploy/grafana/dashboards/support.json`). That panel counts BOTH success outcomes,
+  `outcome=~"ok|ok_no_link"` — if it is rising on `ok_no_link` alone, filing works but the link does
+  not, which points at the repo having been renamed/transferred away from `GithubIssueClient.Repo`
+  (the log line names that cause explicitly).
 
 ### 4. Rotation
 
