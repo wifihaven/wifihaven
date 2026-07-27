@@ -39,8 +39,11 @@ import zio.*
  *     inside an explicit `<customer_message>` delimiter (tags neutralized), framed as
  *     data-not-instructions; the agent's system prompt hardens the rule. #2487: the sender ADDRESS
  *     and SUBJECT are attacker-controlled to the same degree, so they ride inside that same frame
- *     as labeled `From:` / `Subject:` lines — nothing sender-supplied appears in the kickoff's
- *     instruction zone, the region above the frame that the model reads as its own orders.
+ *     as labeled `From:` / `Subject:` lines — no sender-supplied PLAINTEXT appears in the kickoff's
+ *     instruction zone, the region above the frame that the model reads as its own orders. (The
+ *     [[PressToken]] above the frame does base64-carry the reply-to + subject inside its MAC'd
+ *     payload; that is opaque credential material the agent forwards verbatim, not prose it reads
+ *     as instructions, and tampering with it fails verification.)
  *
  * Fail-open by construction: every method returns a UIO that never fails — a transport error is
  * logged and surfaced as [[wifihaven.api.support.DispatchOutcome.Error]] so a cloud hiccup never
