@@ -160,6 +160,12 @@ object SupportConsentSpec
   /**
    * #2460: a dispatcher that completes `done` after recording — the deterministic "the forked
    * resume finished its work" signal a spec awaits instead of sleeping on a background fiber.
+   *
+   * Awaiting it is a SUFFICIENT join because the dispatch is the resume's last effect that touches
+   * the DB (`billingRepo.findByHousehold` runs before it, inside `dispatchAgentSession`; everything
+   * after is metric/mapping only). If a repo write is ever added AFTER the dispatch, this stops
+   * being a join and the released fiber can race the next test's `DROP DATABASE` — signal from the
+   * new last effect instead.
    */
   private def signalling(
       inner: CloudAgentDispatcher,
@@ -661,7 +667,10 @@ object SupportConsentSpec
         resumed.head.dataConsent,
       )
       // A regression in the runner (inline again, or dropped) parks or never signals; without this
-      // the suite would stall unattributed instead of failing named.
+      // the suite would stall unattributed instead of failing named. The budget covers this test's
+      // whole body — including the `cleanDb` template clone — so it is set well above the ~20s the
+      // suite's other DB-cloning tests take, not tuned to the assertion; a KVM-host-contention
+      // slowdown (the #2394 class) must not turn it red on its own.
     } @@ TestAspect.timeout(60.seconds),
     test("the grant WRITE itself reports the transition, not a preceding read") {
       // The #2460 idempotency key is decided by the transaction that WRITES: a separate
@@ -719,7 +728,7 @@ object SupportConsentSpec
       )
     },
     test(
-      "the resume draws the dispatch cap: a thread at its ceiling grants, but does not dispatch",
+      "the resume draws the dispatch cap — but the fail-open nudge is not on it",
     ) {
       for {
         _        <- cleanDb
@@ -750,15 +759,18 @@ object SupportConsentSpec
         _        <- capped.plain.historyFails.set(true)
         _        <- postConsent(capped, Some(jwt2), grant2)
         writes2  <- capped.plain.threads.get
+        redisp2  <- capped.dispatch.dispatches.get
       } yield assertTrue(
         // The customer's grant is never lost to a cost cap — only the free follow-up is.
         status == Status.Ok,
         live,
         redisp.isEmpty,
         writes.size == 1,
-        // Prompt + nudge: the cheap fallback survives the cap.
+        // Prompt + nudge: the cheap fallback survives the cap…
         writes2.size == 2,
         writes2.last.markdown == SupportResponder.consentGrantedNudge,
+        // …and the cap still does its job — no session was started for it.
+        redisp2.isEmpty,
       )
     },
     test("re-labelling one token family as the other fails the SIGNATURE, not just the parse") {

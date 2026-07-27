@@ -807,7 +807,9 @@ final case class SupportResponder(
    *     nudge). This is why the read comes before the caps here and after them on the webhook path:
    *     there the read is on the request fiber and a capped thread must not pay for it, here the
    *     whole resume is already off the request fiber, so a wasted Plain read costs nobody's
-   *     latency;
+   *     latency. The accepted price is that one Plain call and one fiber ride on every grant
+   *     TRANSITION, capped or not (a revoke→grant cycle is a transition each time) — cheap next to
+   *     an agent session, and the sessions themselves are what the caps protect;
    *   - it does NOT trip the #2403/#2404 loop guard: that guard lives on the inbound webhook path
    *     and drops our own outbound writes, which is untouched here. The agent's eventual reply
    *     still arrives as a `thread.chat_sent` the guard drops, so the loop terminates;
