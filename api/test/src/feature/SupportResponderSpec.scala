@@ -1007,13 +1007,6 @@ object SupportResponderSpec
         // equality pin also catches a stray extra field the prompt does not know about.
         assertTrue(filed.map(_.ok).contains(true), body.trim == """{"ok":true}""")
     },
-    test("#2461: both filing successes count as filed — the volume feed must not under-report") {
-      // The #2241 volume panel ("Agent-filed issues (24h)",
-      // deploy/grafana/dashboards/support.json) matches outcome=~"ok|ok_no_link". Splitting `ok`
-      // into two success values silently halved that count until this was caught in review, so the
-      // matcher's vocabulary is pinned to the enum it mirrors rather than hand-maintained.
-      assertTrue(SupportResponder.AgentActionResult.SuccessLabels == List("ok", "ok_no_link"))
-    },
     test("injection pin: an exfiltration order in the message changes nothing structurally") {
       for {
         _               <- cleanDb

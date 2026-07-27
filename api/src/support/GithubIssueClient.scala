@@ -132,20 +132,50 @@ object GithubIssueClient {
   private[support] val PublicIssuePrefix: String = s"https://github.com/$Repo/issues/"
 
   /**
-   * #2461 — read the created issue's identity out of GitHub's 2xx body. Pure and total: any body we
-   * cannot read (truncated, non-JSON, either field absent) yields None, so the agent falls back to
-   * "filed, no link" rather than quoting a link we invented.
+   * Why we have no link to offer for an issue GitHub did create. The metric collapses every failure
+   * to `ok_no_link`, so this reason — carried out of the ONE derivation that decides it, never
+   * re-inferred by the caller — is what tells an operator which hunt to start.
+   */
+  enum CreatedParse {
+    case Parsed(ref: IssueRef)
+
+    /** Body was truncated, not JSON, or missing `number` / `html_url`. Likely transient. */
+    case Unreadable
+
+    /**
+     * Body parsed, but `html_url` is not under [[PublicIssuePrefix]] — the repo was renamed or
+     * transferred, so EVERY filing loses its link until [[Repo]] is updated.
+     */
+    case ForeignRepo(url: String)
+  }
+
+  /**
+   * #2461 — read the created issue's identity out of GitHub's 2xx body. Pure and total: anything we
+   * cannot read yields a non-[[CreatedParse.Parsed]] reason, so the agent falls back to "filed, no
+   * link" rather than quoting a link we invented.
    *
    * The URL is additionally required to sit under [[PublicIssuePrefix]]. The request always targets
    * [[Repo]] so this holds in practice — the check makes "the link we hand a customer points at our
    * public repo" a property of the code rather than of a comment.
+   *
+   * This is the SINGLE place a create-response is judged: the reason rides out on the return so no
+   * caller has to re-derive it (and mis-attribute it once a third condition exists).
    */
+  def parseCreatedDetailed(body: String): CreatedParse =
+    body.fromJson[CreatedIssue] match {
+      case Left(_)  => CreatedParse.Unreadable
+      case Right(c) =>
+        if c.htmlUrl.startsWith(PublicIssuePrefix) then
+          CreatedParse.Parsed(IssueRef(c.number, c.htmlUrl))
+        else CreatedParse.ForeignRepo(c.htmlUrl)
+    }
+
+  /** [[parseCreatedDetailed]] with the reason discarded — for callers that only need the ref. */
   def parseCreated(body: String): Option[IssueRef] =
-    body
-      .fromJson[CreatedIssue]
-      .toOption
-      .filter(_.htmlUrl.startsWith(PublicIssuePrefix))
-      .map(c => IssueRef(c.number, c.htmlUrl))
+    parseCreatedDetailed(body) match {
+      case CreatedParse.Parsed(ref) => Some(ref)
+      case _                        => None
+    }
 
   /**
    * Live GitHub transport. One blocking HTTPS POST to the REST create-issue endpoint (same
@@ -176,21 +206,25 @@ object GithubIssueClient {
           if resp.statusCode() / 100 == 2 then {
             // #2461: GitHub returns the created issue here — read its number + browser URL so the
             // agent can point the customer at it. An unreadable body is still a successful filing.
-            val createdBody = resp.body()
-            parseCreated(createdBody) match {
-              case some @ Some(_) => ZIO.succeed(IssueOutcome.Filed(some))
-              case None           =>
-                // Two very different causes, and the metric collapses both to `ok_no_link`, so the
-                // log line is the discriminator: an unparseable body is likely transient or a
-                // GitHub response-shape change, whereas a parseable body whose html_url failed the
-                // repo-prefix check means the repo was renamed/transferred and EVERY filing will
-                // now lose its link until `Repo` is updated.
-                val cause =
-                  if createdBody.fromJson[CreatedIssue].isRight then
-                    s"the created issue's html_url is not under $PublicIssuePrefix (repo renamed or transferred?)"
-                  else "the create response was unreadable"
+            // The metric collapses every no-link cause to `ok_no_link`, so the log line is the
+            // operator's only discriminator — it reads the reason off the ONE derivation rather
+            // than re-inferring which condition failed.
+            parseCreatedDetailed(resp.body()) match {
+              case CreatedParse.Parsed(ref)    =>
+                ZIO.succeed(IssueOutcome.Filed(Some(ref)))
+              case CreatedParse.Unreadable     =>
                 ZIO
-                  .logWarning(s"github issue filed but $cause; no link to offer")
+                  .logWarning(
+                    "github issue filed but the create response was unreadable; no link to offer",
+                  )
+                  .as(IssueOutcome.Filed(None))
+              case CreatedParse.ForeignRepo(u) =>
+                ZIO
+                  .logWarning(
+                    s"github issue filed but its html_url ($u) is not under $PublicIssuePrefix " +
+                      s"— was $Repo renamed or transferred? every filing loses its link until " +
+                      "GithubIssueClient.Repo is updated",
+                  )
                   .as(IssueOutcome.Filed(None))
             }
           } else

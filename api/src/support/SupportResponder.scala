@@ -957,12 +957,20 @@ object SupportResponder {
       case Error       => "error"
     }
 
+    /** The cases that mean "the action succeeded" — the ONE place success is defined. */
+    private def isSuccess(r: AgentActionResult): Boolean = r match {
+      case Ok | OkNoLink                                       => true
+      case Denied | NoConsent | RateLimited | Disabled | Error => false
+    }
+
     /**
-     * The labels that mean "the action succeeded" — what a volume/success query must match. Derived
-     * from the enum so adding another success case cannot leave a dashboard silently under-counting
-     * (the #2461 miss: splitting `ok` hid real filings from the #2241 volume panel).
+     * The labels a volume/success query must match, DERIVED from the enum (not a hand-written
+     * mirror) by filtering `values`. Adding a success case — e.g. #2458's "matched an existing
+     * issue" — automatically widens this, and `SupportMetricsContractSpec` asserts the #2241
+     * Grafana panel's `outcome=~` matcher against it, so the dashboard cannot silently drift back
+     * to under-counting the way it did when `ok` was first split.
      */
-    val SuccessLabels: List[String] = List(Ok, OkNoLink).map(label)
+    val SuccessLabels: Set[String] = values.filter(isSuccess).map(label).toSet
   }
 
   /**
