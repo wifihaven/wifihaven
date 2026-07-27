@@ -580,15 +580,20 @@ object MetricGuard {
     // is visible. Bounded, never per-thread / per-household.
     "support_thread_history_total"                  -> Set("outcome"),
     // #2452 — the BOOT-time audit of the Plain machine-user key's own permission array (Plain's
-    // `myPermissions` query). `support_permission_probe_total{outcome}`: ok (every required
-    // permission granted) | missing (a PROVISIONING GAP — one or more required permissions absent;
-    // also logged at ERROR naming ALL of them plus the exact updateApiKey mutation) | unreachable
-    // (Plain did not answer, so the grants are unverified this boot — says NOTHING about what is
-    // granted) | skipped (the Plain write client is unconfigured, nothing to audit). One sample per
-    // boot. `missing` is the never-self-healing signal: the permissions behind it are
-    // Plain-WORKSPACE state that no redeploy can fix, and the features they gate (#2430 thread
-    // history, #2240 tenant entitlement) are fail-open — so without this series they are INERT and
-    // invisible. Bounded enum, never a per-permission / per-workspace label.
+    // `myPermissions` query). `support_permission_probe_total{outcome}`, one sample per boot:
+    //   ok          — every required permission granted.
+    //   missing     — a PROVISIONING GAP: required permissions absent. Also logged at ERROR naming
+    //                 ALL of them plus the exact updateApiKey mutation.
+    //   broken      — Plain REJECTED the credential (401/403: revoked / rotated / wrong key) or its
+    //                 probe shape drifted. Every Plain call is failing, not just the probe.
+    //   unreachable — transport / timeout / 5xx: we could not ask. Says NOTHING about the grants.
+    //   skipped     — the Plain write client is unconfigured; nothing to audit.
+    // `missing` and `broken` are the never-self-healing signals and are BOTH logged at ERROR;
+    // `unreachable` is the transient one and is a warning — the same config-vs-transient boundary
+    // `support_dispatch_total{reason}` draws (#2416), so an outage never reads as a misconfiguration
+    // or vice versa. Without this series the features these permissions gate (#2430 thread history,
+    // #2240 tenant entitlement) are fail-open, hence INERT and invisible. Bounded enum, never a
+    // per-permission / per-workspace label.
     "support_permission_probe_total"                -> Set("outcome"),
     // #2203 — the Claude PRESS/PR responder (dark until keys set). `press_ai_draft_total{outcome}`
     // counts each inbound PRESS Plain webhook by a bounded enum (dispatched | skipped | rate_limited
@@ -977,9 +982,10 @@ object AppMetrics {
     MetricGuard.counter("support_thread_history_total", Map("outcome" -> outcome))
 
   // #2452 — the boot-time Plain API-key permission audit (PlainPermissionAudit). ONE sample per
-  // boot: ok | missing | unreachable | skipped. `missing` is a PROVISIONING GAP that no redeploy
-  // fixes (the permission array is Plain-workspace state) and it silently disables the fail-open
-  // features gated on it, so it is the alertable one — it should be flat zero.
+  // boot: ok | missing | broken | unreachable | skipped. `missing` (required permissions absent)
+  // and `broken` (the key itself rejected, or Plain's probe shape drifted) are the PROVISIONING
+  // GAPS that no redeploy fixes — both silently disable the fail-open features gated on them, both
+  // log at ERROR, and both should be flat zero. `unreachable` is the transient bucket.
   def supportPermissionProbe(outcome: String): UIO[Unit] =
     MetricGuard.counter("support_permission_probe_total", Map("outcome" -> outcome))
 

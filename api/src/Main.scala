@@ -56,7 +56,9 @@ object Main extends ZIOAppDefault {
         // permission. FORKED: a live third-party call must never delay the port bind, and boot must
         // never die on Plain being down (see `PlainPermissionAudit` for why this is
         // loud-and-alertable rather than a boot crash).
-        _         <- PlainPermissionAudit.run(cfg.support, PlainClient.make(cfg.support)).forkScoped
+        _         <- ZIO
+          .serviceWithZIO[PlainClient](PlainPermissionAudit.run(cfg.support, _))
+          .forkScoped
         _         <- ZIO
           .logWarning(
             "WIFIHAVEN_DEBUG=1 set — /api/debug/* endpoints are MOUNTED (loopback only). " +

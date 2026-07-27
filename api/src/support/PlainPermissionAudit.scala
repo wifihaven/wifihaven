@@ -99,13 +99,14 @@ object PlainPermissionAudit {
     else
       client.grantedPermissions.map {
         case PlainPermissionRead.NotConfigured       => PlainPermissionAuditResult.Skipped
+        case PlainPermissionRead.Broken(detail)      => PlainPermissionAuditResult.Broken(detail)
         case PlainPermissionRead.Unreachable(detail) =>
           PlainPermissionAuditResult.Unreachable(detail)
         case PlainPermissionRead.Granted(granted)    =>
           // ALL gaps at once (no-dark-by-default rule 4): an operator who fixes one and reboots to
           // find the next is exactly the loop #2452 was.
           val missing = (need -- granted).toList.sorted
-          if missing.isEmpty then PlainPermissionAuditResult.Ok(granted)
+          if missing.isEmpty then PlainPermissionAuditResult.Ok(need.size, granted.size)
           else PlainPermissionAuditResult.Missing(missing, granted)
       }
   }
@@ -127,10 +128,10 @@ object PlainPermissionAudit {
     check(cfg, client).flatMap {
       case PlainPermissionAuditResult.Skipped             =>
         AppMetrics.supportPermissionProbe("skipped")
-      case PlainPermissionAuditResult.Ok(granted)         =>
+      case PlainPermissionAuditResult.Ok(need, total)     =>
         ZIO.logInfo(
-          s"plain api-key permissions OK — all ${required(cfg).size} required permissions granted " +
-            s"(${granted.size} total on the key)",
+          s"plain api-key permissions OK — all $need required permissions granted " +
+            s"($total total on the key)",
         ) *> AppMetrics.supportPermissionProbe("ok")
       case PlainPermissionAuditResult.Missing(missing, _) =>
         ZIO.logError(
@@ -139,10 +140,23 @@ object PlainPermissionAudit {
             s"feature behind it is INERT (thread history → the responder answers with no memory; " +
             s"tenant fields → the operator sees no entitlement). Fix: ${remediation(cfg)}",
         ) *> AppMetrics.supportPermissionProbe("missing")
+      case PlainPermissionAuditResult.Broken(detail)      =>
+        // The credential itself is rejected (401/403) or Plain's probe shape drifted. PERMANENT and
+        // total — this is not "the audit failed", it is "every Plain call is failing" — so it is
+        // as loud as `missing` and deliberately NOT in the transient `unreachable` bucket, whose
+        // whole documented meaning is "wait, this self-heals" (the #2416 config-vs-transient
+        // boundary).
+        ZIO.logError(
+          s"plain api-key permission probe REJECTED by Plain: $detail — PROVISIONING GAP: the " +
+            "machine-user API key is not usable at all (revoked / rotated / wrong secret), or " +
+            "Plain's myPermissions shape changed. EVERY Plain call is failing, not just this " +
+            "probe. Check WIFIHAVEN_SUPPORT_PLAIN_API_KEY against the workspace's live key " +
+            "(docs/ops/plain-setup.md §5.2).",
+        ) *> AppMetrics.supportPermissionProbe("broken")
       case PlainPermissionAuditResult.Unreachable(detail) =>
-        // NOT a permission gap: we could not ask. Transient by assumption, so warning + its own
-        // bucket — folding it into `missing` would send an operator to grant permissions they
-        // already hold.
+        // NOT a permission gap and NOT a broken credential: we could not ask at all (transport,
+        // timeout, 5xx). Transient, so warning + its own bucket — folding it into `missing` would
+        // send an operator to grant permissions they already hold.
         ZIO.logWarning(
           s"plain api-key permission probe could not reach Plain: $detail — the key's permissions " +
             "are UNVERIFIED this boot (docs/ops/plain-setup.md §5.1)",
@@ -151,20 +165,27 @@ object PlainPermissionAudit {
 }
 
 /**
- * #2452 — the audit outcome. `Missing` and `Unreachable` are separate cases on purpose: "you lack
- * X" and "we could not ask" demand different operator actions.
+ * #2452 — the audit outcome. `Missing`, `Broken`, and `Unreachable` are separate cases on purpose:
+ * "you lack X", "your key is rejected outright", and "we could not ask" demand three different
+ * operator actions, and only the last one self-heals.
  */
 enum PlainPermissionAuditResult {
 
   /** The Plain write client is not configured, so there is nothing to audit. */
   case Skipped
 
-  /** Every required permission is granted. `granted` is the key's full array. */
-  case Ok(granted: Set[String])
+  /** Every required permission is granted. Carries the two counts the log line reports. */
+  case Ok(required: Int, granted: Int)
 
   /** `missing` is EVERY required permission the key lacks, sorted — never just the first. */
   case Missing(missing: List[String], granted: Set[String])
 
-  /** Plain did not answer (outage, transport, schema drift). Says nothing about the grants. */
+  /**
+   * PERMANENT: Plain rejected the credential (401/403 — revoked / rotated / wrong key) or its own
+   * probe shape drifted. The integration is wholly broken, not just unverified.
+   */
+  case Broken(detail: String)
+
+  /** TRANSIENT: Plain did not answer (transport, timeout, 5xx). Says nothing about the grants. */
   case Unreachable(detail: String)
 }

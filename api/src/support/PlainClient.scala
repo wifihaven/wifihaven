@@ -73,20 +73,32 @@ trait PlainClient {
    * #2452 — read the permission array of the API key we are authenticating WITH. The one
    * prerequisite of this integration that lives in Plain-workspace state rather than local config,
    * so it cannot be checked by `AppConfig.validateRequired`; [[PlainPermissionAudit]] runs this at
-   * boot and reports every gap. Never fails: a Plain outage yields
-   * [[PlainPermissionRead.Unreachable]], NOT a false permission gap.
+   * boot and reports every gap. Never fails, and never reports a false gap: a transient outage
+   * yields [[PlainPermissionRead.Unreachable]] and a rejected credential
+   * [[PlainPermissionRead.Broken]] — three distinct answers, not one.
    */
   def grantedPermissions: UIO[PlainPermissionRead]
 }
 
 /**
- * #2452 — the outcome of reading the machine-user key's own permission array. `Unreachable` is
- * deliberately distinct from an empty `Granted`: "Plain did not answer" and "Plain says you hold
- * nothing" are different operator actions (wait vs. grant), and conflating them is exactly how the
- * original defect stayed invisible.
+ * #2452 — the outcome of reading the machine-user key's own permission array. Three failure shapes,
+ * split because they need three different operator actions and conflating them is exactly how this
+ * class of defect stays invisible:
+ *
+ *   - [[Granted]] — Plain answered with the key's array (which may still be missing entries).
+ *   - [[Broken]] — PERMANENT. Plain rejected the credential itself (401/403 — a revoked, rotated,
+ *     or wrong key) or its own probe shape drifted. Never self-heals; the whole integration is
+ *     down, not just the audit. This is the "broken credential ⇒ we should be broken too" case in
+ *     docs/process/no-dark-by-default.md, so it is reported LOUD, not as an outage.
+ *   - [[Unreachable]] — TRANSIENT. Transport error, timeout, 5xx. Says nothing about the grants.
+ *
+ * The same `config | transient` boundary `CloudAgentObservability.classify` draws for dispatch
+ * (#2416) — and it is drawn here by the SAME primitive [[PlainClient.classifyFieldFailure]] that
+ * already classifies Plain failure text, not a second hand-rolled match.
  */
 enum PlainPermissionRead {
   case Granted(permissions: Set[String])
+  case Broken(detail: String)
   case Unreachable(detail: String)
   case NotConfigured
 }
@@ -425,15 +437,10 @@ object PlainClient {
    * network — so the write half ships dark. When enabled it yields the live GraphQL client.
    */
   val layer: ZLayer[SupportConfig, Nothing, PlainClient] =
-    ZLayer.fromFunction((cfg: SupportConfig) => make(cfg))
-
-  /**
-   * The config→client decision, as a plain function, so callers outside the ZLayer graph (the #2452
-   * boot audit in `Main`) select the same client the request path gets rather than re-deriving the
-   * gate — one decision, one place (docs/process/single-source-of-truth.md).
-   */
-  def make(cfg: SupportConfig): PlainClient =
-    if cfg.plain.writeEnabled then new Live(cfg) else Disabled
+    ZLayer.fromFunction { (cfg: SupportConfig) =>
+      if cfg.plain.writeEnabled then new Live(cfg): PlainClient
+      else Disabled
+    }
 
   /** No-op client used when the Plain write API is unconfigured. */
   val Disabled: PlainClient = new PlainClient {
@@ -1260,22 +1267,45 @@ object PlainClient {
     private val MyPermissionsQuery: String                                         =
       """query myPermissions { myPermissions { permissions } }"""
 
+    // Bounded exactly like `threadHistory`'s read (and for the same reason): the JDK client's own
+    // ConnectTimeout + RequestTimeout can hold a borrowed blocking thread for 30s against a
+    // black-holed Plain. The audit is pure observability, so it must give up quickly.
+    private val ProbeTimeout: Duration = 10.seconds
+
     def grantedPermissions: UIO[PlainPermissionRead] =
-      sendForBody(MyPermissionsQuery, Json.Obj(), Expect("myPermissions", None)).map {
-        case Right(body)  =>
-          navigate(
-            Json.decoder.decodeJson(body).getOrElse(Json.Null),
-            List("data", "myPermissions", "permissions"),
-          ) match {
-            case Some(Json.Arr(items)) =>
-              PlainPermissionRead.Granted(items.collect { case Json.Str(p) => p }.toSet)
-            // A 200 whose payload has no permissions array is Plain-schema drift, not a grant gap —
-            // reporting it as `Granted(empty)` would tell an operator to grant everything.
-            case _                     =>
-              PlainPermissionRead.Unreachable("myPermissions response carried no permissions array")
-          }
-        case Left(detail) => PlainPermissionRead.Unreachable(redactBody(detail))
-      }
+      sendForBody(MyPermissionsQuery, Json.Obj(), Expect("myPermissions", None)).disconnect
+        .timeoutTo(Left("timed out"): Either[String, String])(identity)(ProbeTimeout)
+        .map {
+          case Right(body)  =>
+            navigate(
+              Json.decoder.decodeJson(body).getOrElse(Json.Null),
+              List("data", "myPermissions", "permissions"),
+            ) match {
+              case Some(Json.Arr(items)) =>
+                PlainPermissionRead.Granted(items.collect { case Json.Str(p) => p }.toSet)
+              // A 200 whose payload has no permissions array is Plain-schema DRIFT, not a grant gap
+              // and not an outage — reporting it as `Granted(empty)` would tell an operator to
+              // grant everything, and as `Unreachable` would tell them to wait for a self-heal that
+              // never comes. It is permanent, so it is Broken.
+              case _                     =>
+                PlainPermissionRead.Broken(
+                  "myPermissions response carried no permissions array — Plain's probe shape drifted",
+                )
+            }
+          // The split that matters: a 401/403 means the KEY ITSELF is rejected — revoked, rotated
+          // out from under us, or simply wrong — and `myPermissions` needs no permission of its own,
+          // so it cannot be an under-grant. That is a PERMANENT misconfiguration in which every
+          // Plain call is failing, not an outage to wait out (no-dark-by-default: a broken
+          // credential means the integration is broken and we should be too). Classified by the
+          // SAME `classifyFieldFailure` primitive the entitlement + timeline paths use, so the
+          // 401/403/permission vocabulary lives in one place.
+          case Left(detail) =>
+            val safe = redactBody(detail)
+            classifyFieldFailure(safe) match {
+              case Reason.Permission | Reason.Schema => PlainPermissionRead.Broken(safe)
+              case _                                 => PlainPermissionRead.Unreachable(safe)
+            }
+        }
 
     // ── #2437: thread marking (escalation label) ────────────────────────────────
     // Plain's `addLabels(input: AddLabelsInput!)` with `{ threadId, labelTypeIds }` (verified against

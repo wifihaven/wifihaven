@@ -5,6 +5,7 @@ import wifihaven.api.support.*
 import wifihaven.api.{PlainConfig, SupportConfig}
 import zio.*
 import zio.json.ast.Json
+import zio.metrics.Metric
 import zio.test.*
 
 import java.io.OutputStream
@@ -91,6 +92,48 @@ object PlainPermissionAuditSpec extends ZIOSpecDefault {
         case _           => None
       }
       .getOrElse("")
+
+  private def counterValue(name: String, labels: (String, String)*): UIO[Double] =
+    labels
+      .foldLeft(Metric.counter(name))((m, kv) => m.tagged(kv._1, kv._2))
+      .value
+      .map(_.count)
+
+  /**
+   * Drive `PlainPermissionAudit.run` — the function `Main` actually calls — against a stubbed Plain
+   * and assert it meters EXACTLY the expected `outcome` bucket and no neighbouring one. The
+   * neighbour check is the point: the buckets carry different operator instructions (act now vs.
+   * wait it out), so landing in the wrong one is the failure mode, not just a wrong count.
+   */
+  private def probeOutcomeFor(
+      status: Int,
+      body: String,
+      expected: String,
+  ): ZIO[Any, Throwable, TestResult] = {
+    val buckets = List("ok", "missing", "broken", "unreachable", "skipped")
+    ZIO.scoped {
+      for {
+        s <- stub(status, body)
+        base   = s"http://127.0.0.1:${s.server.getAddress.getPort}/"
+        cfg    = cfgFor(base, responder = true)
+        client = new PlainClient.Live(cfg)
+        before <- ZIO.foreach(buckets)(b =>
+          counterValue("support_permission_probe_total", "outcome" -> b).map(v => (b, v)),
+        )
+        _      <- PlainPermissionAudit.run(cfg, client)
+        after  <- ZIO.foreach(buckets)(b =>
+          counterValue("support_permission_probe_total", "outcome" -> b).map(v => (b, v)),
+        )
+        beforeByBucket = before.toMap
+        deltas: Map[String, Double] = after.toMap.map { case (b, v) =>
+          (b, v - beforeByBucket(b))
+        }
+      } yield assertTrue(
+        deltas(expected) == 1.0,
+        (deltas - expected).values.forall(_ == 0.0),
+      )
+    }
+  }
 
   def spec = suite("Plain API-key permission audit (#2452)")(
     test("the required set contains the two permissions the runbook omitted") {
@@ -180,6 +223,84 @@ object PlainPermissionAuditSpec extends ZIOSpecDefault {
         } yield assertTrue(res.isInstanceOf[PlainPermissionAuditResult.Unreachable])
       }
     },
+    // ── the credential itself is rejected: PERMANENT, not an outage ────────────
+    // The trap this pins: `unreachable` is documented (dashboard + runbook) as transient and
+    // safe to wait out. A revoked / rotated / wrong key 401s forever — routing it into that
+    // bucket would tell the operator to ignore the one signal that every Plain call is dead.
+    test("a 401 — a revoked or wrong key — is Broken, NOT Unreachable") {
+      ZIO.scoped {
+        for {
+          s <- stub(401, """{"error":"unauthorized"}""")
+          base   = s"http://127.0.0.1:${s.server.getAddress.getPort}/"
+          cfg    = cfgFor(base, responder = true)
+          client = new PlainClient.Live(cfg)
+          res <- PlainPermissionAudit.check(cfg, client)
+        } yield assertTrue(
+          res.isInstanceOf[PlainPermissionAuditResult.Broken],
+          !res.isInstanceOf[PlainPermissionAuditResult.Unreachable],
+        )
+      }
+    },
+    test("a 403 on the probe is Broken — myPermissions needs no permission of its own") {
+      ZIO.scoped {
+        for {
+          s <- stub(403, """{"message":"Forbidden"}""")
+          base   = s"http://127.0.0.1:${s.server.getAddress.getPort}/"
+          cfg    = cfgFor(base, responder = true)
+          client = new PlainClient.Live(cfg)
+          res <- PlainPermissionAudit.check(cfg, client)
+        } yield assertTrue(res.isInstanceOf[PlainPermissionAuditResult.Broken])
+      }
+    },
+    test("a 200 with no permissions array is Broken (probe drift), never Granted(empty)") {
+      ZIO.scoped {
+        for {
+          s <- stub(200, """{"data":{"myPermissions":{"scopes":[]}}}""")
+          base   = s"http://127.0.0.1:${s.server.getAddress.getPort}/"
+          cfg    = cfgFor(base, responder = true)
+          client = new PlainClient.Live(cfg)
+          res <- PlainPermissionAudit.check(cfg, client)
+        } yield res match {
+          case PlainPermissionAuditResult.Broken(_) => assertTrue(true)
+          // Granted(empty) would report all 14 as "missing" and send the operator to re-grant
+          // permissions they already hold; Unreachable would tell them to wait out drift.
+          case other                                =>
+            assertTrue(false) ?? s"expected Broken, got $other"
+        }
+      }
+    },
+    // ── the reporting half: `run` is what Main calls, so pin its metric outcomes ─
+    suite("run — the boot report (the function Main actually calls)")(
+      test("a complete key meters ok") {
+        probeOutcomeFor(200, permissionsBody(PlainPermissionAudit.required(cfgFor("", true))), "ok")
+      },
+      test("a gap meters missing, the never-self-healing provisioning signal") {
+        probeOutcomeFor(
+          200,
+          permissionsBody(
+            PlainPermissionAudit.required(cfgFor("", true)) -- Set("timeline:read"),
+          ),
+          "missing",
+        )
+      },
+      test("a rejected credential meters broken, NOT unreachable") {
+        probeOutcomeFor(401, """{"error":"unauthorized"}""", "broken")
+      },
+      test("a Plain 5xx meters unreachable, NOT broken") {
+        probeOutcomeFor(503, "upstream unavailable", "unreachable")
+      },
+      test("an unconfigured client meters skipped and makes no call") {
+        val cfg = SupportConfig(plain = PlainConfig(writeEnabled = false))
+        for {
+          before <- counterValue("support_permission_probe_total", "outcome" -> "skipped")
+          _      <- PlainPermissionAudit.run(cfg, PlainClient.Disabled)
+          after  <- counterValue("support_permission_probe_total", "outcome" -> "skipped")
+        } yield assertTrue(after == before + 1)
+      },
+      // The metric registry is process-global, so these before/after deltas are only meaningful
+      // when one probe runs at a time — the default is to run a suite's tests concurrently, which
+      // makes each test see its siblings' increments in the NEIGHBOUR buckets.
+    ) @@ TestAspect.sequential,
     test("an unconfigured Plain client is Skipped and touches no network") {
       val cfg = SupportConfig(plain = PlainConfig(writeEnabled = false))
       for {

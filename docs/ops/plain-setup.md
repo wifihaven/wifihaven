@@ -275,6 +275,13 @@ later mutation that omits a scope **revokes** it. Use the array below verbatim: 
 exact set the staging key carries after end-to-end validation (customer + tenant upserts,
 entitlement field writes, thread history, AI reply), not a set assembled from the table.
 
+> This array is a hand-copy of `PlainPermissionAudit`'s
+> `CorePermissions ++ ResponderPermissions ++ RecommendedPermissions`. Nothing mechanically
+> enforces that they stay equal yet —
+> [#2478](https://github.com/wifihaven/wifihaven/issues/2478) tracks a CI guard. Until it
+> lands, the boot audit is the backstop: a stale array here shows up as
+> `plain api-key permissions INCOMPLETE` on the next boot.
+
 **Preferred — `updateApiKey`** (keeps the existing secret, so the
 `WIFIHAVEN_SUPPORT_PLAIN_API_KEY` already set in Render does **not** need rotating):
 
