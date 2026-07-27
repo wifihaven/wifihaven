@@ -371,18 +371,38 @@ final case class SupportResponder(
         )
         // #2471: the send outcome IS the outcome. Discarding it here reported a reject Plain had
         // refused as a completed one — and `support_ai_draft_total{outcome}` is built on this
-        // label, so the dashboard showed a healthy reject path while zero rejects were delivered
-        // (docs/process/no-dark-by-default.md: a permanent misconfiguration must be attributable,
-        // not logged-and-continued behind a success label). `PlainClient` already logged the
-        // underlying error at WARN; this makes it visible in the metric too.
-        plain.writeThread(write).map {
-          case PlainOutcome.Ok => WebhookOutcome.EmailUnregisteredRejected
-          // Both failure shapes collapse to ONE outcome: `Error` (Plain accepted the call and
-          // refused the send) and `Disabled` (no API key — unreachable while `responderEnabled`
-          // demands one, kept for exhaustiveness) are equally undelivered, and `PlainOutcome`
-          // carries no cause to attribute beyond that. See `WebhookOutcome.reason`.
-          case PlainOutcome.Error | PlainOutcome.Disabled =>
-            WebhookOutcome.EmailRejectSendFailed
+        // label, so the dashboard showed a healthy reject path while zero rejects were delivered.
+        // Per docs/process/no-dark-by-default.md a config-recoverable failure must FAIL LOUD; a
+        // metric alone makes it visible but does not make it acceptable, which is why the refusal
+        // branch below logs at ERROR with the fix named rather than only metering.
+        plain.writeThread(write).flatMap {
+          case PlainOutcome.Ok       =>
+            ZIO.succeed(WebhookOutcome.EmailUnregisteredRejected)
+          // `Disabled` is NOT a failure: the write half is switched off by the EXPLICIT named flag
+          // `wifihaven.support.plain.writeEnabled` (`PlainClient.layer`), which is reported at
+          // startup — a deliberate off-state, exactly what `WebhookOutcome.Disabled` means. It is
+          // reachable on its own: `SupportConfig.missingRequiredKeys` requires `plain.apiKey` when
+          // `writeEnabled=true`, but never requires `writeEnabled` itself, so
+          // `responderEnabled=true` + `writeEnabled=false` boots. Routing it here would light the
+          // "Plain REFUSED to send" tile and send an operator to Plain's email settings over our
+          // own flag.
+          case PlainOutcome.Disabled => ZIO.succeed(WebhookOutcome.Disabled)
+          // A genuine refusal: Plain accepted the call and would not send. Config-recoverable and
+          // permanent, so it FAILS LOUD with the fix named inline
+          // (docs/process/no-dark-by-default.md — a metric makes it visible but does not make it
+          // acceptable), matching how `PlainClient.addLabels` treats the sibling provisioning gap.
+          // The generic `post` path only logs this at WARNING, which is right for best-effort
+          // context writes but not for the reject, which IS the customer-facing action.
+          case PlainOutcome.Error    =>
+            ZIO
+              .logError(
+                "plain reject send FAILED — PROVISIONING GAP: the unregistered-sender reject was " +
+                  "never delivered. Check that the Plain workspace has email SENDING enabled " +
+                  "(Settings → Channels → Email §3 \"Sending emails\" verified and §4 \"Enable " +
+                  "email\" on) — see docs/ops/plain-setup.md §3.1; the preceding " +
+                  "`plain replyToThread failed` line carries Plain's own message",
+              )
+              .as(WebhookOutcome.EmailRejectSendFailed)
         }
       }
     }
@@ -1246,7 +1266,10 @@ object SupportResponder {
      * NOTHING. Terminal and distinct from [[EmailUnregisteredRejected]] on purpose: the two used to
      * share that success label, which let a workspace with email sending disabled look like a
      * healthy reject path on the Grafana support panel while every reject was dropped (the live
-     * staging failure, 2026-07-26). The `outcome` value alone is the alarm — expect a flat zero.
+     * staging failure, 2026-07-26). Expect a flat zero; the refusal also logs at ERROR.
+     *
+     * A REFUSAL only — an explicitly-disabled write half (`plain.writeEnabled=false`) is
+     * [[Disabled]], not this, so a deliberate off-state never reads as a provisioning gap.
      */
     case EmailRejectSendFailed
     case SkippedUnauthenticated

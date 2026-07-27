@@ -135,7 +135,9 @@ dig +short CNAME plain-bounces.staging.wifihaven.net                 # expect pm
 
 Then, in the Plain workspace for that environment:
 
-1. **Settings → Channels → Email**, section **3. Sending emails**. It lists the same TXT
+1. **Settings → Channels → Email** (the sidebar path in the Plain UI as of 2026-07-26; §3
+   above and Plain's own docs call the same screen "Settings → Email"), section
+   **3. Sending emails**. It lists the same TXT
    and CNAME. **Diff them against what `dig` returned** — if the selector Plain shows
    differs from the one in `main.tf`, Plain reissued it and the Terraform needs updating
    *first*; do not paste a record into the Cloudflare dashboard
@@ -151,8 +153,12 @@ registered household admin (a personal Gmail is ideal — a registered address t
 dispatch path instead), email the environment's support address, then check the API log:
 
 ```sh
-# staging: srv-d8549fgjo89c73buvkf0, owner tea-d8543pmk1jcs73aqoja0
-# the Render logs API `text=` filter is the practical way to find these among router noise
+# Service/owner ids as of 2026-07-26 — they are not carried anywhere in the repo, so if these
+# 404, look them up in the Render dashboard rather than trusting this line.
+OWNER=tea-d8543pmk1jcs73aqoja0
+SERVICE=srv-d8549fgjo89c73buvkf0   # wifihaven-api-staging
+
+# The Render logs API `text=` filter is the practical way to find these among router noise.
 curl -sG -H "Authorization: Bearer $RENDER_API_TOKEN" \
   --data-urlencode "ownerId=$OWNER" --data-urlencode "resource=$SERVICE" \
   --data-urlencode "text=webhook outcome" https://api.render.com/v1/logs

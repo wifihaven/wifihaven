@@ -136,6 +136,10 @@ object SupportResponderSpec
       // this is passed, `Stubs.github` is NOT wired to the responder — a negative assertion on it
       // (`issues.isEmpty`) would pass vacuously, so don't; assert on the response instead.
       githubOverride: Option[GithubIssueClient] = None,
+      // #2471: override the Plain client to model a write half that is EXPLICITLY off
+      // (`PlainClient.Disabled`, what `PlainClient.layer` yields for `plain.writeEnabled=false`).
+      // Defaults to the recorder, so every existing caller is unchanged.
+      plain: Option[PlainClient] = None,
   ) =
     for {
       hhRepo      <- ZIO.service[HouseholdRepo]
@@ -158,7 +162,7 @@ object SupportResponderSpec
         devRepo,
         profRepo,
         consentRepo,
-        PlainClient.recording(plainRec),
+        plain.getOrElse(PlainClient.recording(plainRec)),
         githubOverride.getOrElse(GithubIssueClient.recording(ghRec)),
         CloudAgentDispatcher.recording(dispRec),
         clock,
@@ -669,6 +673,23 @@ object SupportResponderSpec
         outcome == SupportResponder.WebhookOutcome.EmailRejectSendFailed,
         // Bounded metric label — an enum case, never a synthesized string (thread id, address).
         SupportResponder.WebhookOutcome.label(outcome) == "email_reject_send_failed",
+      )
+    },
+    test("#2471: an explicitly DISABLED write half is `disabled`, not a send FAILURE") {
+      for {
+        _          <- cleanDb
+        // `PlainClient.Disabled` is what `PlainClient.layer` yields when the EXPLICIT named flag
+        // `plain.writeEnabled` is false — a deliberate off-state, not a provisioning gap.
+        // `responderEnabled=true` + `writeEnabled=false` boots (Config only requires `apiKey` when
+        // `writeEnabled` is true), so this is reachable, and it must NOT light the
+        // "Plain REFUSED to send" tile or send an operator to Plain's email settings.
+        (_, stubs) <- makeRoutes(liveCfg, plain = Some(PlainClient.Disabled))
+        body = threadCreatedPayload(Some("spammer@evil.example"), "th_email_write_dark")
+        outcome <- stubs.responder.handleWebhook(body, Some(sign(body)))
+      } yield assertTrue(
+        outcome == SupportResponder.WebhookOutcome.Disabled,
+        outcome != SupportResponder.WebhookOutcome.EmailRejectSendFailed,
+        SupportResponder.WebhookOutcome.label(outcome) == "disabled",
       )
     },
     test(
