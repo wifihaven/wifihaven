@@ -494,8 +494,12 @@ object MetricGuard {
     // email_collision (collided AND the reconcile failed for no more specific cause — the mapping is
     // BROKEN and will not self-heal) | permission (machine-user lacks customer:edit for the upsert,
     // or customerTenantMembership:create for the membership join) | schema (the customer mutation no
-    // longer matches Plain's schema) | error (transient/other) | disabled (the write API is
-    // explicitly off, #2266). Both labels bounded, never per-household / per-email.
+    // longer matches Plain's schema) | tenant_missing (the membership join had no TENANT to join to
+    // because the tenant write failed — the specific cause is on support_tenant_upsert_total
+    // {reason=tenant}, so treat that series as the fix and this one as the consequence) | error
+    // (transient/other — including a join whose tenant was merely SKIPPED for want of household
+    // context, which the next identity call repairs) | disabled (the write API is explicitly off,
+    // #2266). Both labels bounded, never per-household / per-email.
     "support_customer_upsert_total"                 -> Set("outcome", "reason"),
     // #2240 — the household→Plain TENANT entitlement write (household name + plan/founding tenant
     // fields). Separate from the customer upsert so a silently-failing entitlement path (e.g. the

@@ -322,8 +322,8 @@ object SupportCustomerReconcileSpec extends ZIOSpecDefault {
           counterValue(after, "error", "permission") -
             counterValue(before, "error", "permission") == 1.0,
           // and NOT mislabelled as the generic collision bucket
-          counterValue(after, "error", "email_collision") ==
-            counterValue(before, "error", "email_collision"),
+          counterValue(after, "error", "email_collision") -
+            counterValue(before, "error", "email_collision") == 0.0,
         )
       }
     },
@@ -354,13 +354,13 @@ object SupportCustomerReconcileSpec extends ZIOSpecDefault {
           outcome == PlainOutcome.Error,
           counterValue(after, "error", "error") - counterValue(before, "error", "error") == 1.0,
           // and NOT in either permanent bucket
-          counterValue(after, "error", "schema") == counterValue(before, "error", "schema"),
-          counterValue(after, "error", "email_collision") ==
-            counterValue(before, "error", "email_collision"),
+          counterValue(after, "error", "schema") - counterValue(before, "error", "schema") == 0.0,
+          counterValue(after, "error", "email_collision") -
+            counterValue(before, "error", "email_collision") == 0.0,
         )
       }
     },
-    test("a JOIN target missing after the tenant write FAILED is permanent, not transient") {
+    test("a JOIN target missing after the tenant write FAILED gets its OWN permanent bucket") {
       // The other half of the same finding: `not_found` says the target is missing, never WHY, so a
       // permanently-failed tenant write must NOT ride the transient bucket just because the join
       // reports the same code. The tenant failure itself is separately logError'd + metered on
@@ -380,10 +380,14 @@ object SupportCustomerReconcileSpec extends ZIOSpecDefault {
           after   <- scrape.catchAll(resp => resp.body.asString.orDie)
         } yield assertTrue(
           outcome == PlainOutcome.Error,
+          // its OWN bucket, not the generic collision one: the cause is specific and already
+          // attributed on support_tenant_upsert_total{reason=tenant}
+          counterValue(after, "error", "tenant_missing") -
+            counterValue(before, "error", "tenant_missing") == 1.0,
           counterValue(after, "error", "email_collision") -
-            counterValue(before, "error", "email_collision") == 1.0,
+            counterValue(before, "error", "email_collision") == 0.0,
           // NOT laundered into the transient bucket
-          counterValue(after, "error", "error") == counterValue(before, "error", "error"),
+          counterValue(after, "error", "error") - counterValue(before, "error", "error") == 0.0,
         )
       }
     },
@@ -406,7 +410,7 @@ object SupportCustomerReconcileSpec extends ZIOSpecDefault {
           allVarsForOp(bodies, "upsertTenant").size == 1,
           outcome == PlainOutcome.Error,
           counterValue(after, "error", "schema") - counterValue(before, "error", "schema") == 1.0,
-          counterValue(after, "error", "error") == counterValue(before, "error", "error"),
+          counterValue(after, "error", "error") - counterValue(before, "error", "error") == 0.0,
         )
       }
     },

@@ -172,6 +172,13 @@ object PlainClient {
     val EmailCollision = "email_collision" // collided AND the reconcile failed — a broken mapping
     val Permission     = "permission"      // machine-user lacks customer:edit / membership perms
     val Schema         = "schema"          // the customer mutation no longer matches Plain's schema
+    // The membership join had no TENANT to join to because the tenant write itself failed. Its own
+    // bucket rather than `email_collision` (review): that bucket means "collided with no more
+    // specific cause", and here the cause is specific, already attributed on
+    // `support_tenant_upsert_total{reason=tenant}` — and the collision bucket's remediation text
+    // names `customer:edit` / `customerTenantMembership:create`, which are the WRONG permissions to
+    // send an operator to for a failed `upsertTenant`.
+    val TenantMissing  = "tenant_missing"
     val Error          = "error"           // a transient / other miss
     val Disabled       = "disabled"        // the Plain write API is explicitly off (#2266)
   }
@@ -320,6 +327,16 @@ object PlainClient {
           s"plain $op failed [reason=$reason]: $detail — SCHEMA DRIFT: Plain rejected the customer " +
             "mutation; PlainClient's UpsertCustomerInput shape no longer matches Plain's schema " +
             "and NO household→customer mapping is being written",
+        )
+      case CustomerReason.TenantMissing  =>
+        // Deliberately does NOT repeat the collision text's customer:edit /
+        // customerTenantMembership:create remediation — those are the wrong permissions here. The
+        // cause is the tenant write, which logged its own attributed failure moments earlier.
+        ZIO.logError(
+          s"plain $op failed [reason=$reason]: $detail — the household→Plain customer mapping is " +
+            "BROKEN because the Plain TENANT it joins to was never written: see the preceding " +
+            "`plain upsertTenant failed` line (and support_tenant_upsert_total{reason=tenant}) for " +
+            "the actual cause — this join cannot succeed until that write does",
         )
       case _                             =>
         ZIO.logWarning(s"plain $op failed [reason=$reason]: $detail")
@@ -781,9 +798,9 @@ object PlainClient {
     //   - `Skipped` — no household context to write, so no tenant exists yet. TRANSIENT: the next
     //     identity call with a healthy read writes it and the reconcile lands.
     //   - `Failed` — `upsertTenant` itself failed, so the tenant does not exist and will not appear
-    //     on its own. PERMANENT for this call; already `logError`'d and metered under
-    //     `support_tenant_upsert_total{reason=tenant}` (#2410), so the customer side just needs a
-    //     permanent bucket rather than its own alert.
+    //     on its own. PERMANENT for this call, and attributed `tenant_missing`: the cause is already
+    //     named on `support_tenant_upsert_total{reason=tenant}` (#2410), so this bucket's job is to
+    //     point there rather than raise a second, differently-worded alert.
     //   - `Written` — the tenant DOES exist, so a `not_found` here is about something else (the
     //     customer identifier, or a contract change). Genuinely anomalous: keep the ordinary
     //     attribution, which routes not-found prose to `schema`.
@@ -797,13 +814,14 @@ object PlainClient {
     private def joinFailure(f: PlainFailure, tenant: TenantWrite): UIO[(PlainOutcome, String)] = {
       val targetMissing =
         f.body.flatMap(payloadErrorCode(_, "addCustomerToTenants")).contains(NotFoundCode)
-      val ordinary      = customerReason(f.detail, CustomerReason.EmailCollision)
+      // by-name: the Skipped / Failed arms below never need it
+      def ordinary      = customerReason(f.detail, CustomerReason.EmailCollision)
       val reason        =
         if !targetMissing then ordinary
         else
           tenant match {
             case TenantWrite.Skipped => CustomerReason.Error
-            case TenantWrite.Failed  => CustomerReason.EmailCollision
+            case TenantWrite.Failed  => CustomerReason.TenantMissing
             case TenantWrite.Written => ordinary
           }
       logCustomerFailure("addCustomerToTenants", reason, f.detail).as((PlainOutcome.Error, reason))
