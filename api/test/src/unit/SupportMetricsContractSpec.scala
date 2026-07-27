@@ -33,10 +33,17 @@ object SupportMetricsContractSpec extends ZIOSpecDefault {
   /** The panel whose count must include EVERY success label — the #2241 volume-alert feed. */
   private val VolumePanelTitlePrefix = "Agent-filed issues (24h)"
 
-  /** Mill's cwd at test time is not the repo root, so walk up to find the checked-in dashboard. */
+  /**
+   * Mill's cwd at test time is not the repo root, so walk up to find the checked-in dashboard — but
+   * STOP at the first checkout root (`build.mill`). Worktrees live at
+   * `<repo>/.claude/worktrees/<name>`, so the PARENT checkout also contains this path; without the
+   * stop, a lookup starting below a worktree that lacked the file would silently validate the
+   * parent checkout's dashboard and let this branch's regression pass.
+   */
   private def findDashboard(p: java.nio.file.Path): Option[java.nio.file.Path] =
     if (p == null) None
     else if (Files.exists(p.resolve(DashboardPath))) Some(p.resolve(DashboardPath))
+    else if (Files.exists(p.resolve("build.mill"))) None
     else findDashboard(p.getParent)
 
   private lazy val dashboard: Either[String, Json] =
@@ -80,16 +87,18 @@ object SupportMetricsContractSpec extends ZIOSpecDefault {
     test("its outcome matcher covers EVERY success label the enum can emit") {
       // A PromQL `=~` alternation, order-insensitive: what matters is that no success value is
       // missing (which under-counts) — extra unrelated values would be a different bug.
-      val matcher              = "outcome=~\"([^\"]+)\"".r
-      val matched: Set[String] = volumePanelExprs.flatMap { expr =>
-        matcher.findAllMatchIn(expr).flatMap(_.group(1).split('|')).toList
-      }.toSet
+      //
+      // Checked PER EXPR, never on the union across targets: a panel with one good
+      // `outcome=~"ok|ok_no_link"` target and one under-counting `outcome="ok"` target would pass a
+      // union check, the good target masking the bad one.
+      val matcher                             = "outcome=~\"([^\"]+)\"".r
+      def labelsIn(expr: String): Set[String] =
+        matcher.findAllMatchIn(expr).flatMap(_.group(1).split('|')).toSet
 
-      val missing = AgentActionResult.SuccessLabels -- matched
-      assertTrue(
-        missing.isEmpty,
-        AgentActionResult.SuccessLabels.subsetOf(matched),
-      )
+      val shortfalls =
+        volumePanelExprs.map(e => e -> (AgentActionResult.SuccessLabels -- labelsIn(e)))
+      assertTrue(shortfalls.forall(_._2.isEmpty)) &&
+      assertTrue(shortfalls.nonEmpty)
     },
     test("success is exactly ok + ok_no_link, derived from the enum") {
       // Guards the derivation itself: a new case must be classified deliberately, not default into
