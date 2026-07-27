@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useCallback } from 'react'
 import { api } from '@/api/client'
 import { setHouseholdCookie } from '@/api/householdCookie'
+import { readMustChangePassword, setMustChangePassword } from '@/api/mustChangePassword'
 import type { UserRole } from '@/types/api'
 
 interface AuthState {
@@ -10,6 +11,8 @@ interface AuthState {
   // #586: mirrors the server's must_change_password flag. True immediately
   // after login when the server sends mustChangePassword:true. Cleared
   // (set to false) by the web after a successful password change.
+  // #2492: persisted (see @/api/mustChangePassword) so it survives a page load —
+  // the transport also sets it when the API 403s password_change_required.
   mustChangePassword: boolean
 }
 
@@ -43,10 +46,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     token:               localStorage.getItem('token'),
     username:            localStorage.getItem('username'),
     role:                readRole(),
-    // mustChangePassword is not persisted across page reloads: after a reload
-    // the API will enforce the flag via 403 on the first authenticated call,
-    // which the client handles via the normal 403 handler in client.ts.
-    mustChangePassword:  false,
+    // #2492: restored from storage so a reload (or the transport's redirect to /account)
+    // doesn't forget that a forced change is pending. The API still enforces it via 403 on
+    // the first authenticated call; that handler writes the same flag.
+    mustChangePassword:  readMustChangePassword(),
   }))
 
   const login = useCallback(async (identifier: string, password: string) => {
@@ -60,6 +63,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     localStorage.setItem('username', resp.username)
     localStorage.setItem('role', resp.role)
     const mcp = resp.mustChangePassword ?? false
+    // #2492: the server's answer is authoritative — a normal login also CLEARS any stale
+    // persisted flag left behind by a previous session on this browser.
+    setMustChangePassword(mcp)
     setState({
       token:              resp.token,
       username:           resp.username,
@@ -75,11 +81,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     localStorage.removeItem('token')
     localStorage.removeItem('username')
     localStorage.removeItem('role')
+    setMustChangePassword(false)
     setState({ token: null, username: null, role: null, mustChangePassword: false })
   }, [])
 
   // Called by AccountPage after a successful password change to allow navigation.
   const clearMustChangePassword = useCallback(() => {
+    setMustChangePassword(false)
     setState(prev => ({ ...prev, mustChangePassword: false }))
   }, [])
 

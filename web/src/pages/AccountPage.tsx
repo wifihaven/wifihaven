@@ -4,7 +4,7 @@ import { api } from '@/api/client'
 import { useAuth } from '@/hooks/useAuth'
 
 export function AccountPage() {
-  const { username, isAdmin, mustChangePassword, clearMustChangePassword } = useAuth()
+  const { username, isAdmin, mustChangePassword, logout } = useAuth()
   const navigate = useNavigate()
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword]         = useState('')
@@ -38,12 +38,14 @@ export function AccountPage() {
       setCurrentPassword('')
       setNewPassword('')
       setConfirmPassword('')
-      // #586: clear the client-side flag so nav unlocks, then redirect to
-      // the dashboard if this was a forced-change flow.
-      if (mustChangePassword) {
-        clearMustChangePassword()
-        navigate('/dashboard')
-      }
+      // #2492: the rotation bumps token_version server-side (#2080), so the JWT this session
+      // is holding is revoked the instant the change lands. Navigating into the app (the old
+      // `navigate('/dashboard')`) therefore always ended in a bare 401 bounce to /login with
+      // no explanation — the "it never completes" half of the first-login report. Sign out
+      // cleanly instead and hand the user to /login with a notice. `logout` also clears the
+      // persisted must-change flag, so the forced-change gate is released.
+      logout()
+      navigate('/login', { state: { passwordChanged: true } })
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to change password'
       setError(msg.includes('401') || msg.toLowerCase().includes('unauth')

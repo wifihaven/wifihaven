@@ -22,12 +22,12 @@ let mockAuth: {
   username: string
   isAdmin: boolean
   mustChangePassword: boolean
-  clearMustChangePassword: () => void
+  logout: () => void
 } = {
   username: 'alice',
   isAdmin: true,
   mustChangePassword: false,
-  clearMustChangePassword: vi.fn(),
+  logout: vi.fn(),
 }
 
 beforeEach(() => {
@@ -36,7 +36,7 @@ beforeEach(() => {
     username: 'alice',
     isAdmin: true,
     mustChangePassword: false,
-    clearMustChangePassword: vi.fn(),
+    logout: vi.fn(),
   }
   ;(api.auth.changePassword as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
 })
@@ -64,7 +64,7 @@ describe('AccountPage — role display', () => {
   })
 
   it('shows readonly role for non-admin user', () => {
-    mockAuth = { username: 'bob', isAdmin: false, mustChangePassword: false, clearMustChangePassword: vi.fn() }
+    mockAuth = { username: 'bob', isAdmin: false, mustChangePassword: false, logout: vi.fn() }
     renderPage()
     expect(screen.getByText('readonly')).toBeInTheDocument()
   })
@@ -72,7 +72,7 @@ describe('AccountPage — role display', () => {
 
 describe('AccountPage — must-change-password banner', () => {
   it('shows the banner when mustChangePassword is true', () => {
-    mockAuth = { username: 'alice', isAdmin: true, mustChangePassword: true, clearMustChangePassword: vi.fn() }
+    mockAuth = { username: 'alice', isAdmin: true, mustChangePassword: true, logout: vi.fn() }
     renderPage()
     expect(screen.getByText(/Password change required/i)).toBeInTheDocument()
   })
@@ -82,14 +82,16 @@ describe('AccountPage — must-change-password banner', () => {
     expect(screen.queryByText(/Password change required/i)).not.toBeInTheDocument()
   })
 
-  it('calls clearMustChangePassword after successful change when mustChangePassword is true', async () => {
-    const clearMustChangePassword = vi.fn()
-    mockAuth = { username: 'alice', isAdmin: true, mustChangePassword: true, clearMustChangePassword }
+  // #2492: the rotation revokes this session's JWT server-side (#2080), so a successful change
+  // signs the user out (which also clears the must-change flag) and sends them back to /login.
+  it('signs the user out after a successful forced change', async () => {
+    const logout = vi.fn()
+    mockAuth = { username: 'alice', isAdmin: true, mustChangePassword: true, logout }
     const user = userEvent.setup()
     renderPage()
     await fillFields(user, 'oldpass12', 'newpass34', 'newpass34')
     await user.click(screen.getByRole('button', { name: /Update password/ }))
-    await waitFor(() => expect(clearMustChangePassword).toHaveBeenCalled())
+    await waitFor(() => expect(logout).toHaveBeenCalled())
   })
 })
 

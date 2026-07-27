@@ -6,7 +6,7 @@
 // AND in storage) and routes forward — no bounce back to /account.
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
-import { MemoryRouter, Routes, Route } from 'react-router-dom'
+import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom'
 import userEvent from '@testing-library/user-event'
 
 vi.mock('@/api/client', () => ({
@@ -24,13 +24,18 @@ beforeEach(() => {
   ;(api.auth.changePassword as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
 })
 
+function LoginProbe() {
+  const state = useLocation().state as { passwordChanged?: boolean } | null
+  return <div>login page{state?.passwordChanged ? ' — password updated' : ''}</div>
+}
+
 function renderAccount() {
   return render(
     <AuthProvider>
       <MemoryRouter initialEntries={['/account']}>
         <Routes>
           <Route path="/account" element={<AccountPage />} />
-          <Route path="/dashboard" element={<div>dashboard landing</div>} />
+          <Route path="/login" element={<LoginProbe />} />
         </Routes>
       </MemoryRouter>
     </AuthProvider>,
@@ -58,7 +63,10 @@ describe('first-login password change (#2492)', () => {
     expect(screen.getByText(/Password change required/i)).toBeInTheDocument()
   })
 
-  it('a successful change clears the flag and routes forward without bouncing back', async () => {
+  // The rotation bumps token_version server-side (#2080), so the session's JWT is dead the
+  // moment the change lands: routing into the app could only end in a 401 bounce. The user is
+  // signed out cleanly and told to sign in again — and the forced-change gate is released.
+  it('a successful change clears the flag and routes forward, with the re-login reason', async () => {
     localStorage.setItem('token', 't')
     localStorage.setItem('username', 'kid')
     localStorage.setItem('role', 'child')
@@ -67,7 +75,10 @@ describe('first-login password change (#2492)', () => {
     renderAccount()
     await submitNewPassword()
 
-    await waitFor(() => expect(screen.getByText('dashboard landing')).toBeInTheDocument())
+    await waitFor(() =>
+      expect(screen.getByText('login page — password updated')).toBeInTheDocument(),
+    )
     expect(readMustChangePassword()).toBe(false)
+    expect(localStorage.getItem('token')).toBeNull()
   })
 })

@@ -1,4 +1,5 @@
 import { apiHealth } from '@/api/apiHealth'
+import { setMustChangePassword } from '@/api/mustChangePassword'
 import type {
   AcceptInviteRequest, AcceptInviteResponse, ApproveBetaResponse, BetaRequestAck, BetaRequestStatus, BetaRequestSummary, CreateBetaRequest,
   ForgotPasswordAck, ForgotPasswordRequest, ResetPasswordRequest, ResetPasswordResponse,
@@ -70,6 +71,20 @@ export function isForbiddenError(e: unknown): boolean {
   return e instanceof ForbiddenError
 }
 
+// #2492: the server's must_change_password 403. A ForbiddenError subclass so the existing
+// React Query retry policy already skips it — retrying is pointless (only POST
+// /auth/change-password can clear the flag) and every retry re-ran the redirect below.
+export class PasswordChangeRequiredError extends ForbiddenError {
+  constructor() {
+    super('password_change_required')
+    this.name = 'PasswordChangeRequiredError'
+  }
+}
+
+// The route hosting the change-password form (#586). It is the one authenticated route
+// reachable while the flag is set, so it is also the one route we must never bounce off.
+const CHANGE_PASSWORD_PATH = '/account'
+
 async function req<T>(
   method: string,
   path: string,
@@ -136,13 +151,24 @@ async function req<T>(
   }
 
   // #586: server enforces must_change_password — redirect to /account so
-  // the operator can set a new password before using any other route.
+  // the user can set a new password before using any other route.
   if (res.status === 403) {
     apiHealth.reportSuccess()
     const text = await res.text().catch(() => '')
     if (text.includes('password_change_required')) {
-      window.location.href = '/account'
-      throw new Error('password_change_required')
+      // #2492: remember the forced-change state across the hard navigation below (and across
+      // any later reload) — it drives the /account banner, the RequirePwChanged gate, and the
+      // post-change redirect. React state alone doesn't survive a full page load.
+      setMustChangePassword(true)
+      // #2492: only navigate when we are NOT already on the change-password route. /account
+      // renders inside the authenticated Layout, which itself calls /api/me (and /api/alerts),
+      // and those 403 while the flag is set — so assigning location.href here reloads the page
+      // the user is already on, remounting the layout, 403ing again: an infinite reload loop
+      // that made the form unusable. Landing there once is enough; the page reads the flag.
+      if (window.location.pathname !== CHANGE_PASSWORD_PATH) {
+        window.location.href = CHANGE_PASSWORD_PATH
+      }
+      throw new PasswordChangeRequiredError()
     }
     // #2069: typed so React Query never hot-retries an authorization denial.
     throw new ForbiddenError(text || `HTTP 403`)
