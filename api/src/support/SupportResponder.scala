@@ -337,6 +337,9 @@ final case class SupportResponder(
           dataConsent = dataAccess,
           agentToken = token,
           customerMessage = event.messageText,
+          // #2481: the email subject is part of the customer's message — a question in the subject
+          // with a signature-only body is ordinary email, and dropping it made those unanswerable.
+          subject = event.subject,
           history = priorTurns(prior, event.messageText),
         ),
       )

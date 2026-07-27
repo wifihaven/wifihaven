@@ -12,8 +12,8 @@ import zio.test.*
  *
  * The carrier is VERIFIED against Plain's published webhook schema
  * (`core-api.uk.plain.com/webhooks/schema/latest.json`, fetched 2026-07-26):
- *   - `threadEmailReceivedPublicEventPayload` = `{eventType, thread, email}`, and
- *     `email.subject` is `{"type": ["string", "null"]}` — the real, nullable subject carrier;
+ *   - `threadEmailReceivedPublicEventPayload` = `{eventType, thread, email}`, and `email.subject`
+ *     is `{"type": ["string", "null"]}` — the real, nullable subject carrier;
  *   - `thread.title` is a REQUIRED `string` on every thread payload — a usable fallback on an email
  *     event (Plain titles an email thread from its subject), but NOT a subject on a chat thread,
  *     where the title is derived from the first chat message. So the fallback is scoped to payloads
@@ -44,7 +44,9 @@ object SupportSubjectSpec extends ZIOSpecDefault {
       s""""customer":{"id":"c_1","externalId":"7"}}}}"""
   }
 
-  /** A `thread.chat_received` delivery — no subject anywhere; the thread title is the first chat. */
+  /**
+   * A `thread.chat_received` delivery — no subject anywhere; the thread title is the first chat.
+   */
   private def chatPayload(body: String): String =
     s"""{"workspaceId":"w_1","id":"pEv_chat","payload":{"eventType":"thread.chat_received",""" +
       s""""chat":{"text":${quote(body)},"createdBy":{"actorType":"customer"}},""" +
@@ -124,7 +126,9 @@ object SupportSubjectSpec extends ZIOSpecDefault {
       )
     },
     test("an email with no subject key at all falls back to the thread title") {
-      assertTrue(parse(emailPayload(None, "the body")).map(_.subject) == Right(Some("Re: something")))
+      assertTrue(
+        parse(emailPayload(None, "the body")).map(_.subject) == Right(Some("Re: something")),
+      )
     },
 
     // ── 4. INJECTION: the subject is untrusted, exactly like the body ─────────
