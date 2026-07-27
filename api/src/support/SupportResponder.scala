@@ -369,7 +369,21 @@ final case class SupportResponder(
           threadId = event.threadId,
           markdown = UnregisteredRejectTemplate,
         )
-        plain.writeThread(write).as(WebhookOutcome.EmailUnregisteredRejected)
+        // #2471: the send outcome IS the outcome. Discarding it here reported a reject Plain had
+        // refused as a completed one — and `support_ai_draft_total{outcome}` is built on this
+        // label, so the dashboard showed a healthy reject path while zero rejects were delivered
+        // (docs/process/no-dark-by-default.md: a permanent misconfiguration must be attributable,
+        // not logged-and-continued behind a success label). `PlainClient` already logged the
+        // underlying error at WARN; this makes it visible in the metric too.
+        plain.writeThread(write).map {
+          case PlainOutcome.Ok => WebhookOutcome.EmailUnregisteredRejected
+          // Both failure shapes collapse to ONE outcome: `Error` (Plain accepted the call and
+          // refused the send) and `Disabled` (no API key — unreachable while `responderEnabled`
+          // demands one, kept for exhaustiveness) are equally undelivered, and `PlainOutcome`
+          // carries no cause to attribute beyond that. See `WebhookOutcome.reason`.
+          case PlainOutcome.Error | PlainOutcome.Disabled =>
+            WebhookOutcome.EmailRejectSendFailed
+        }
       }
     }
 
@@ -1223,8 +1237,18 @@ object SupportResponder {
     // #2307: a NEW inbound email whose From matched a registered household admin → dispatched
     // (authenticated), kept distinct from the UI-origin `Dispatched` for cost/attribution.
     case EmailRegisteredDispatched
-    // #2307: a NEW inbound email from an UNREGISTERED address → the fixed static reject (no AI).
+    // #2307: a NEW inbound email from an UNREGISTERED address → the fixed static reject (no AI),
+    // and Plain ACCEPTED the send. Success-shaped: the customer got the reject.
     case EmailUnregisteredRejected
+
+    /**
+     * #2471 — the reject was decided correctly and Plain REFUSED to send it, so the customer got
+     * NOTHING. Terminal and distinct from [[EmailUnregisteredRejected]] on purpose: the two used to
+     * share that success label, which let a workspace with email sending disabled look like a
+     * healthy reject path on the Grafana support panel while every reject was dropped (the live
+     * staging failure, 2026-07-26). The `outcome` value alone is the alarm — expect a flat zero.
+     */
+    case EmailRejectSendFailed
     case SkippedUnauthenticated
     // #2403 loop guard: a non-inbound / non-customer event (our own `thread.chat_sent` reply, a
     // non-customer actor, or a bodyless identified metadata event) — deliberately never dispatched.
@@ -1250,6 +1274,9 @@ object SupportResponder {
       case Dispatched                => "dispatched"
       case EmailRegisteredDispatched => "email_registered_dispatched"
       case EmailUnregisteredRejected => "email_unregistered_rejected"
+      // #2471: a SEPARATE series, deliberately not folded into the reject or the generic error
+      // bucket — an undelivered reject is its own failure and should read as zero on the panel.
+      case EmailRejectSendFailed     => "email_reject_send_failed"
       case SkippedUnauthenticated    => "skipped_unauthenticated"
       case SkippedNotInbound         => "skipped_not_inbound"
       case RateLimited               => "rate_limited"
@@ -1276,9 +1303,16 @@ object SupportResponder {
     def reason(o: WebhookOutcome): String = o match {
       case ConfigError => CloudAgentObservability.Reason.Config
       case Error       => CloudAgentObservability.Reason.Transient
+      // #2471: `EmailRejectSendFailed` is `none` on PURPOSE, not by omission. `reason` attributes a
+      // CLOUD-AGENT dispatch failure, and `PlainClient` collapses every send failure — non-2xx,
+      // GraphQL error, transport — into a single `PlainOutcome.Error` with no cause attached. There
+      // is nothing to attribute here, and splitting it config/transient would be a guess: the live
+      // failure ("Emails are not enabled for this workspace") is permanent config, but a Plain 5xx
+      // is transient, and the two are indistinguishable at this seam. The outcome label carries the
+      // signal. Attribution needs a cause on `PlainOutcome` first — a separate change.
       case Dispatched | EmailRegisteredDispatched | EmailUnregisteredRejected |
-          SkippedUnauthenticated | SkippedNotInbound | RateLimited | InvalidSignature | Malformed |
-          Disabled =>
+          EmailRejectSendFailed | SkippedUnauthenticated | SkippedNotInbound | RateLimited |
+          InvalidSignature | Malformed | Disabled =>
         CloudAgentObservability.Reason.None
     }
   }

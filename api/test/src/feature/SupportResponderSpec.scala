@@ -647,16 +647,16 @@ object SupportResponderSpec
     },
     test("#2471: a static reject whose Plain send FAILS never reports a completed reject") {
       for {
-        _               <- cleanDb
-        (_, stubs)      <- makeRoutes(liveCfg)
+        _          <- cleanDb
+        (_, stubs) <- makeRoutes(liveCfg)
         // The live failure this pins (staging, 2026-07-26): the Plain workspace had email SENDING
         // disabled, so every `replyToThread` came back `"Emails are not enabled for this
         // workspace"`. The write is attempted and refused — `PlainOutcome.Error`.
-        _               <- stubs.plain.writeFails.set(true)
+        _          <- stubs.plain.writeFails.set(true)
         body = threadCreatedPayload(Some("spammer@evil.example"), "th_email_send_fail")
-        outcome         <- stubs.responder.handleWebhook(body, Some(sign(body)))
-        threads         <- stubs.plain.threads.get
-        dispatches      <- stubs.dispatch.dispatches.get
+        outcome    <- stubs.responder.handleWebhook(body, Some(sign(body)))
+        threads    <- stubs.plain.threads.get
+        dispatches <- stubs.dispatch.dispatches.get
       } yield assertTrue(
         // The reject was still DECIDED and ATTEMPTED — this is a delivery failure, not a
         // policy change. No AI call either way (the #2307 token-burn guard is untouched).
@@ -666,16 +666,19 @@ object SupportResponderSpec
         // #2471 this returned EmailUnregisteredRejected unconditionally, so the metric and the
         // dashboard showed a healthy reject path while ZERO rejects were delivered.
         outcome != SupportResponder.WebhookOutcome.EmailUnregisteredRejected,
+        outcome == SupportResponder.WebhookOutcome.EmailRejectSendFailed,
         // Bounded metric label — an enum case, never a synthesized string (thread id, address).
         SupportResponder.WebhookOutcome.label(outcome) == "email_reject_send_failed",
       )
     },
-    test("#2471 regression pin: a reject Plain ACCEPTS still reports the completed-reject outcome") {
+    test(
+      "#2471 regression pin: a reject Plain ACCEPTS still reports the completed-reject outcome",
+    ) {
       for {
         _          <- cleanDb
         (_, stubs) <- makeRoutes(liveCfg)
         body = threadCreatedPayload(Some("spammer@evil.example"), "th_email_send_ok")
-        outcome    <- stubs.responder.handleWebhook(body, Some(sign(body)))
+        outcome <- stubs.responder.handleWebhook(body, Some(sign(body)))
       } yield assertTrue(
         outcome == SupportResponder.WebhookOutcome.EmailUnregisteredRejected,
         SupportResponder.WebhookOutcome.label(outcome) == "email_unregistered_rejected",
