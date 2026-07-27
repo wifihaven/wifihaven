@@ -44,6 +44,10 @@ import zio.test.*
  *     to it via `in_reply_to`; recording is FAIL-OPEN (a DB failure never breaks the webhook or the
  *     reply); the [[PressToken]] round-trips the recorded `pressMessageId` and still rejects
  *     tampering/expiry.
+ *   - #2451: the reply THREADS — the journalist's inbound `Message-ID` rides the signed token and
+ *     lands on the outbound `In-Reply-To`/`References`; repointing it fails the MAC; a missing
+ *     Message-ID still sends (just unthreaded); a control-char-bearing one cannot inject a header;
+ *     and a pre-#2451 4-field token still verifies (the mid-deploy in-flight session).
  */
 object PressResponderSpec
     extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task]] {
@@ -153,6 +157,7 @@ object PressResponderSpec
       replyTo: String,
       subject: String = "Press inquiry",
       pressMessageId: Long = 0L,
+      inboundMessageId: String = "",
       ttlMinutes: Long = 30,
   ): UIO[String] =
     clock.instant.map { now =>
@@ -160,11 +165,24 @@ object PressResponderSpec
         replyTo,
         subject,
         pressMessageId,
+        inboundMessageId,
         now,
         java.time.Duration.ofMinutes(ttlMinutes),
         TokenSecret,
       )
     }
+
+  // #2451 — hand-assemble a token so a test can mint a payload shape `PressToken.mint` no longer
+  // produces (the pre-#2451 4-field body) or splice a foreign signature onto a body. `sign` is the
+  // same primitive PressToken uses internally (HMAC-SHA256 hex over the base64url body).
+  private def b64(s: String): String =
+    java.util.Base64.getUrlEncoder.withoutPadding
+      .encodeToString(s.getBytes(java.nio.charset.StandardCharsets.UTF_8))
+
+  private def tokenFromPayload(payload: String): String = {
+    val body = b64(payload)
+    s"v1.$body.${SupportService.hmacSha256Hex(TokenSecret, body)}"
+  }
 
   def spec = suite("Claude press/PR responder (#2203 / #2296)")(
     test("unsigned or forged inbound is rejected and nothing is dispatched") {
@@ -284,6 +302,7 @@ object PressResponderSpec
           "reporter@example.com",
           "Story",
           0L,
+          "",
           now.minusSeconds(3600),
           java.time.Duration.ofMinutes(1),
           TokenSecret,
@@ -532,6 +551,7 @@ object PressResponderSpec
           "reporter@example.com",
           "Story",
           4242L,
+          "",
           now,
           java.time.Duration.ofMinutes(30),
           TokenSecret,
@@ -546,6 +566,7 @@ object PressResponderSpec
           "reporter@example.com",
           "Story",
           7L,
+          "",
           now.minusSeconds(3600),
           java.time.Duration.ofMinutes(1),
           TokenSecret,
@@ -555,6 +576,188 @@ object PressResponderSpec
         okClaims.exists(c => c.pressMessageId == 4242L && c.replyTo == "reporter@example.com"),
         tamperedClaims == Left(PressToken.Err.BadSignature),
         expiredClaims == Left(PressToken.Err.Expired),
+      )
+    },
+    // ── #2451: RFC 5322 reply threading (In-Reply-To / References) ────────────────
+    test(
+      "PressToken round-trips the inbound Message-ID UNDER the MAC — repointing it is rejected",
+    ) {
+      for {
+        clock <- ZIO.service[Clock]
+        now   <- clock.instant
+        ttl       = java.time.Duration.ofMinutes(30)
+        good      = PressToken.mint(
+          "reporter@example.com",
+          "Story",
+          4242L,
+          "<orig@mail.example>",
+          now,
+          ttl,
+          TokenSecret,
+        )
+        claims    = PressToken.verify(good, now, TokenSecret)
+        // Repointing: mint a SECOND token whose only difference is the Message-ID, then splice the
+        // first token's signature onto it. If the Message-ID were outside the MAC this would verify.
+        other     = PressToken.mint(
+          "reporter@example.com",
+          "Story",
+          4242L,
+          "<attacker@evil.example>",
+          now,
+          ttl,
+          TokenSecret,
+        )
+        repointed = {
+          val g = good.split("\\.")
+          val o = other.split("\\.")
+          s"${o(0)}.${o(1)}.${g(2)}"
+        }
+      } yield assertTrue(
+        claims.exists(_.inboundMessageId == "<orig@mail.example>"),
+        // sanity: the bodies really do differ, so the splice is a genuine repoint attempt
+        good.split("\\.")(1) != other.split("\\.")(1),
+        PressToken.verify(repointed, now, TokenSecret) == Left(PressToken.Err.BadSignature),
+      )
+    },
+    test(
+      "a pre-#2451 4-field token still verifies (mid-deploy in-flight session), with no thread",
+    ) {
+      for {
+        clock <- ZIO.service[Clock]
+        now   <- clock.instant
+        exp           = now.plusSeconds(1800).getEpochSecond
+        legacy        = tokenFromPayload(s"${b64("reporter@example.com")}|${b64("Story")}|77|$exp")
+        claims        = PressToken.verify(legacy, now, TokenSecret)
+        // A CURRENT token whose Message-ID is simply empty must NOT be reported as legacy — that
+        // distinction is what #2459 waits on before deleting the tolerant arm, so an empty
+        // Message-ID must not masquerade as an old token.
+        current       = PressToken.mint(
+          "reporter@example.com",
+          "Story",
+          77L,
+          "",
+          now,
+          java.time.Duration.ofMinutes(30),
+          TokenSecret,
+        )
+        currentClaims = PressToken.verify(current, now, TokenSecret)
+      } yield assertTrue(
+        claims.exists(c =>
+          c.replyTo == "reporter@example.com" && c.subject == "Story" && c.pressMessageId == 77L &&
+            c.inboundMessageId.isEmpty && c.legacyPayload,
+        ),
+        currentClaims.exists(c => c.inboundMessageId.isEmpty && !c.legacyPayload),
+      )
+    },
+    test("the reply carries In-Reply-To/References matching the inbound Message-ID (#2451)") {
+      for {
+        _                  <- cleanDb
+        pressLog           <- ZIO.service[PressMessageRepo]
+        (routes, stubs, _) <- makeRoutes(liveCfg)
+        // A full round trip: the Worker's envelope carries the journalist's Message-ID, the dispatch
+        // mints a token from it, and the agent's reply must thread under it.
+        msgId = "<CAErNG3wLc7@mail.gmail.com>"
+        body  =
+          s"""{"from":"reporter@techdaily.example","subject":"Comment request","text":"a question?","messageId":${msgId.toJson}}"""
+        _          <- postInbound(routes, body, Some(sign(body)))
+        dispatches <- stubs.dispatch.dispatches.get
+        rows       <- pressLog.listRecent(50)
+        token = dispatches.head._1.agentToken
+        (sReply, _) <- agentReply(routes, """{"markdown":"a public reply"}""", Some(token))
+        emails      <- stubs.emails.get
+      } yield assertTrue(sReply == Status.Ok, emails.size == 1) &&
+        assertTrue(
+          // The header is the SAME Message-ID that was persisted on the inbound row — one value,
+          // carried on the signed token, not re-derived anywhere.
+          rows.find(_.direction == "inbound").exists(_.messageId == msgId),
+          // The recorded map IS the map the live transport would POST as `ResendRequest.headers`
+          // (both come from `EmailSender.threadingHeaders`), so this pins the header NAMES too —
+          // dropping the field, renaming a header, or emitting only one of the pair fails here.
+          emails.head.headers.contains(Map("In-Reply-To" -> msgId, "References" -> msgId)),
+        )
+    },
+    test("an inbound with NO Message-ID still replies successfully, with no threading headers") {
+      for {
+        _                  <- cleanDb
+        (routes, stubs, _) <- makeRoutes(liveCfg)
+        // The Worker could not extract a Message-ID (mail client omitted it / parse miss) — the send
+        // must not regress; it just cannot thread.
+        body =
+          """{"from":"reporter@example.com","subject":"Comment request","text":"a question?"}"""
+        _          <- postInbound(routes, body, Some(sign(body)))
+        dispatches <- stubs.dispatch.dispatches.get
+        token = dispatches.head._1.agentToken
+        (sReply, _) <- agentReply(routes, """{"markdown":"a public reply"}""", Some(token))
+        emails      <- stubs.emails.get
+      } yield assertTrue(sReply == Status.Ok, emails.size == 1) &&
+        assertTrue(
+          emails.head.to == "reporter@example.com",
+          emails.head.headers.isEmpty,
+        )
+    },
+    test("a control-char-bearing Message-ID cannot inject an outbound header (#2451)") {
+      for {
+        _                  <- cleanDb
+        (routes, stubs, _) <- makeRoutes(liveCfg)
+        // The Message-ID comes from the sender's mail client — attacker-controlled — and flows into
+        // an outbound email header. The CR/LF and everything appended after the real msg-id must be
+        // gone before it gets there; the send itself must still succeed.
+        hostile = "<a@b>\r\nBcc: attacker@evil.example"
+        body    =
+          s"""{"from":"reporter@example.com","subject":"Q","text":"a question?","messageId":${hostile.toJson}}"""
+        _          <- postInbound(routes, body, Some(sign(body)))
+        dispatches <- stubs.dispatch.dispatches.get
+        token = dispatches.head._1.agentToken
+        (sReply, _) <- agentReply(routes, """{"markdown":"a public reply"}""", Some(token))
+        emails      <- stubs.emails.get
+      } yield assertTrue(sReply == Status.Ok, emails.size == 1) &&
+        assertTrue(
+          // Only the leading angle-addr survives — the smuggled `Bcc:` line is discarded, not
+          // emitted as part of a malformed header value.
+          emails.head.headers.contains(Map("In-Reply-To" -> "<a@b>", "References" -> "<a@b>")),
+        )
+    },
+    test("EmailSender.threadingId keeps only a well-formed leading msg-id (#2451)") {
+      // A direct pin on the sanitizer itself, so removing any part of it fails HERE rather than
+      // depending on PressInbound's ingest-side control-char strip to cover for it.
+      def longId(total: Int): String = "<" + ("x" * (total - 2)) + ">"
+      val cases                      = List(
+        // in                                        expected
+        Some("<abc@mail.example>")                        -> Some("<abc@mail.example>"),
+        Some("  <abc@mail.example>  ")                    -> Some("<abc@mail.example>"),
+        Some("<a@b>\r\nBcc: attacker@evil.test")          -> Some("<a@b>"),
+        Some("<a@b> and then some prose")                 -> Some("<a@b>"),
+        Some("")                                          -> None,
+        Some("   ")                                       -> None,
+        // No angle brackets, whitespace inside, or an unclosed bracket is not an RFC 5322 msg-id —
+        // dropped, so the reply sends unthreaded rather than with a header a relay may reject.
+        Some("abc@mail.example")                          -> None,
+        Some("<a b@c>")                                   -> None,
+        Some("<unclosed@mail.example")                    -> None,
+        Some("Bcc: attacker@evil.test <a@b>")             -> None,
+        None                                              -> None,
+        // Longest id that still fits one RFC 5322 header line once the LONGEST field name we emit
+        // (`In-Reply-To: `) is counted — kept; one character more is dropped, because an over-long
+        // header risks a relay rejection, and under this transport a rejected send means NOT
+        // DELIVERED at all.
+        Some(longId(EmailSender.MaxThreadingIdChars))     ->
+          Some(longId(EmailSender.MaxThreadingIdChars)),
+        Some(longId(EmailSender.MaxThreadingIdChars + 1)) -> None,
+      )
+      assertTrue(cases.forall((in, want) => EmailSender.threadingId(in) == want)) &&
+      assertTrue(
+        // The boundary cases above are expressed in terms of the constant, so they would survive a
+        // regression that dropped the field-name budget. Pin the ABSOLUTE limit independently:
+        // rendered under the longest header name we emit, the accepted maximum is exactly the 998
+        // characters RFC 5322 §2.1.1 allows on one header line, and one more would exceed it.
+        ("In-Reply-To: " + longId(EmailSender.MaxThreadingIdChars)).length == 998,
+      ) &&
+      assertTrue(
+        // The pair is rendered from the SAME normalized id, and absent entirely when there is none.
+        EmailSender.threadingHeaders(Some("<a@b>")) ==
+          Some(Map("In-Reply-To" -> "<a@b>", "References" -> "<a@b>")),
+        EmailSender.threadingHeaders(Some("not-a-msg-id")).isEmpty,
+        EmailSender.threadingHeaders(None).isEmpty,
       )
     },
   ) @@ TestAspect.sequential

@@ -31,12 +31,25 @@ import java.util.Base64
  *     reading the session transcript) cannot forge, widen, redirect, or extend a token.
  *
  * Wire shape: `v1.<b64url(payload)>.<hmacHex>` where `payload` is
- * `b64(replyTo)|b64(subject)|pressMessageId|expEpochSeconds` (`replyTo`/`subject` base64url'd so
- * neither an email nor a subject can smuggle the `|` delimiter; `pressMessageId` and `exp` are bare
- * decimal). `pressMessageId` (#2296) is the id of the recorded inbound `press_messages` row this
- * session answers, so the reply callback can pair the outbound row to its inquiry — it rides the
- * SIGNED payload (like every other field), so a hijacked agent can neither forge nor repoint it,
- * and `0` means "no inbound row was recorded" (fail-open: the inbound insert failed).
+ * `b64(replyTo)|b64(subject)|pressMessageId|expEpochSeconds|b64(inboundMessageId)`
+ * (`replyTo`/`subject`/`inboundMessageId` base64url'd so none of them can smuggle the `|`
+ * delimiter; `pressMessageId` and `exp` are bare decimal). `pressMessageId` (#2296) is the id of
+ * the recorded inbound `press_messages` row this session answers, so the reply callback can pair
+ * the outbound row to its inquiry — it rides the SIGNED payload (like every other field), so a
+ * hijacked agent can neither forge nor repoint it, and `0` means "no inbound row was recorded"
+ * (fail-open: the inbound insert failed). `inboundMessageId` (#2451) is the journalist's RFC 5322
+ * `Message-ID` the reply threads under (`In-Reply-To`/`References`); empty means the inbound
+ * carried none, in which case the reply sends unthreaded. It is inside the MAC for the same reason
+ * the reply target is: a prompt-hijacked agent must not be able to graft its reply onto somebody
+ * else's conversation.
+ *
+ * '''Rollout (#2451).''' [[verify]] also accepts the pre-#2451 4-field payload (no
+ * `inboundMessageId`), resolving it to an empty Message-ID. Tokens are short-TTL
+ * (`press.agentTokenTtlMinutes`, 30 by default) and are both minted and verified by this server —
+ * this is NOT the router wire contract — so the only exposure is a session dispatched by the old
+ * build and redeemed by the new one. That window is real though, and failing it would silently drop
+ * a journalist's reply. TODO(#2459): delete the 4-field arm once the deploy has been live longer
+ * than one token TTL.
  */
 object PressToken {
 
@@ -57,23 +70,37 @@ object PressToken {
       replyTo: String,
       subject: String,
       pressMessageId: Long,
+      // #2451 — the journalist's inbound RFC 5322 Message-ID the reply threads under. Empty when the
+      // inbound carried none (or the token predates #2451); the reply then sends unthreaded.
+      inboundMessageId: String,
       expiresAt: Instant,
+      // #2451 — true when this token used the pre-#2451 4-field payload, i.e. it was minted by a
+      // build older than the running one. Distinguishes "old token" from "inbound had no
+      // Message-ID", which the empty `inboundMessageId` alone cannot: the reply path logs it, and
+      // that is the signal #2459 waits to go quiet before deleting the tolerant arm. Deliberately
+      // has NO default: a site that forgot to pass it would default to "not legacy" and
+      // UNDER-report exactly the traffic #2459 is waiting on, so the compiler asks every time.
+      legacyPayload: Boolean,
   )
 
   /**
-   * Mint a token binding `replyTo` + `subject` + the recorded inbound `pressMessageId`, expiring at
-   * `now + ttl`. Server-side only. Pass `pressMessageId = 0` when no inbound row was recorded.
+   * Mint a token binding `replyTo` + `subject` + the recorded inbound `pressMessageId` + the
+   * inbound `Message-ID`, expiring at `now + ttl`. Server-side only. Pass `pressMessageId = 0` when
+   * no inbound row was recorded, and `inboundMessageId = ""` when the inbound carried no
+   * Message-ID.
    */
   def mint(
       replyTo: String,
       subject: String,
       pressMessageId: Long,
+      inboundMessageId: String,
       now: Instant,
       ttl: java.time.Duration,
       secret: String,
   ): String = {
     val exp     = now.plus(ttl).getEpochSecond
-    val payload = s"${b64(replyTo)}|${b64(subject)}|$pressMessageId|$exp"
+    val payload =
+      s"${b64(replyTo)}|${b64(subject)}|$pressMessageId|$exp|${b64(inboundMessageId)}"
     val body    =
       Base64.getUrlEncoder.withoutPadding.encodeToString(payload.getBytes(StandardCharsets.UTF_8))
     s"$Version.$body.${hmacHex(secret, body)}"
@@ -88,20 +115,41 @@ object PressToken {
       case Array(Version, body, sig) =>
         if !constantTimeEquals(sig, hmacHex(secret, body)) then Left(Err.BadSignature)
         else
-          decode(body).flatMap { case (replyTo, subject, pressMessageId, exp) =>
-            if now.getEpochSecond > exp then Left(Err.Expired)
-            else Right(Claims(replyTo, subject, pressMessageId, Instant.ofEpochSecond(exp)))
+          decode(body).flatMap {
+            case (replyTo, subject, pressMessageId, exp, inboundMessageId, legacyPayload) =>
+              if now.getEpochSecond > exp then Left(Err.Expired)
+              else
+                Right(
+                  Claims(
+                    replyTo,
+                    subject,
+                    pressMessageId,
+                    inboundMessageId,
+                    Instant.ofEpochSecond(exp),
+                    legacyPayload,
+                  ),
+                )
           }
       case _                         => Left(Err.Malformed)
     }
 
-  private def decode(body: String): Either[Err, (String, String, Long, Long)] =
+  // Returns the payload fields plus a flag for WHICH arity matched, so the caller can tell a
+  // legacy token from a current one whose Message-ID happens to be empty.
+  private def decode(body: String): Either[Err, (String, String, Long, Long, String, Boolean)] =
     scala.util
       .Try {
         val raw = new String(Base64.getUrlDecoder.decode(body), StandardCharsets.UTF_8)
-        raw.split("\\|", 4) match {
-          case Array(r, s, m, e) => (unb64(r), unb64(s), m.toLong, e.toLong)
-          case _                 => throw new IllegalArgumentException("bad payload")
+        // `-1` keeps trailing empty fields, so a 5-field payload whose Message-ID is empty still
+        // yields 5 parts — and the arity match below is then exact: a future 6-field payload falls
+        // through to Malformed instead of silently folding its 6th field into `mid`.
+        raw.split("\\|", -1) match {
+          case Array(r, s, m, e, mid) => (unb64(r), unb64(s), m.toLong, e.toLong, unb64(mid), false)
+          // TODO(#2459): the pre-#2451 4-field payload — accepted so a session dispatched by the old
+          // build and redeemed by the new one still verifies (its reply just can't thread). Delete
+          // once the #2451 deploy has been live longer than one token TTL; `legacyPayload` on the
+          // claims is what tells you this arm has stopped being hit.
+          case Array(r, s, m, e)      => (unb64(r), unb64(s), m.toLong, e.toLong, "", true)
+          case _                      => throw new IllegalArgumentException("bad payload")
         }
       }
       .toEither

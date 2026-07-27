@@ -116,6 +116,15 @@ final case class PressResponder(
         replyTo = event.from,
         subject = event.subject,
         pressMessageId = pressMessageId,
+        // #2451: the journalist's own Message-ID, so the reply can carry In-Reply-To/References and
+        // thread under their original. It rides the SIGNED payload like every other field — a
+        // hijacked agent can neither forge it nor graft its reply onto another conversation. Empty
+        // when the inbound carried no Message-ID; the reply then sends unthreaded. Truncated so an
+        // attacker-controlled field cannot inflate the bearer token without bound. Truncation can
+        // never re-point a thread: a msg-id ends at its first `>`, so either that `>` survives and
+        // the id is intact, or it doesn't and the value fails the shape check at send time and the
+        // reply goes out unthreaded.
+        inboundMessageId = event.messageId.take(MaxMessageIdChars),
         now = now,
         ttl = cfg.agentTokenTtl,
         secret = cfg.agentTokenSecretTrimmed,
@@ -186,7 +195,11 @@ final case class PressResponder(
               case Left(_)       =>
                 AppMetrics.pressAgentAction("reply", "denied").as(AgentActionResult.Denied)
               case Right(claims) =>
-                val subject = replySubject(claims.subject)
+                val subject   = replySubject(claims.subject)
+                // #2451: normalize HERE via the same primitive the transport uses, so the log line
+                // below reports what will actually go on the wire rather than a second opinion.
+                val inReplyTo =
+                  EmailSender.threadingId(Some(claims.inboundMessageId).filter(_.nonEmpty))
                 // #2407: send FROM the press identity (not the shared #578 alerts@ notification
                 // sender). From and Reply-To are SEPARATE addresses: the From must sit on a
                 // Resend-verified sending domain (the apex — staging borrows it as press-staging@),
@@ -194,35 +207,52 @@ final case class PressResponder(
                 // watches, so a journalist's human follow-up threads back into the pipeline. The
                 // recipient stays server-locked to the token's `replyTo` — only the From/Reply-To
                 // identity changes, never the destination.
-                email
-                  .sendAs(
-                    from = cfg.fromAddressTrimmed,
-                    replyTo = Some(cfg.replyToAddressTrimmed),
-                    to = claims.replyTo,
-                    subject = subject,
-                    htmlBody = htmlBody(markdown),
-                  )
-                  .flatMap { sendResult =>
-                    // #2296: record the outbound reply as AUDIT (fail-open) AFTER the send, pairing it
-                    // to the inbound row via the token's pressMessageId. Only Sent/Failed are real
-                    // send attempts worth logging; a Disabled send (dark install) emitted no email.
-                    val record = sendResult match {
-                      case EmailOutcome.Sent   => recordOutbound(claims, subject, markdown, "sent")
-                      case EmailOutcome.Failed =>
-                        recordOutbound(claims, subject, markdown, "failed")
-                      case EmailOutcome.Disabled => ZIO.unit
+                // #2451: the original bug was that 100% of replies went out unthreaded and NOTHING
+                // surfaced it, so say so per reply. `threaded=false` is legitimate on its own (the
+                // inbound carried no Message-ID, or it wasn't a well-formed msg-id), but a
+                // sustained run of it is the signal that this fix has regressed. `legacyToken` is
+                // reported SEPARATELY rather than folded into `threaded=false`, because it answers
+                // a different question: it is what has to go quiet before #2459 deletes the
+                // tolerant pre-#2451 payload arm. The Message-ID itself is not logged — it is
+                // attacker-controlled sender content.
+                ZIO.logInfo(
+                  s"press: sending reply to ${claims.replyTo} " +
+                    s"(threaded=${inReplyTo.isDefined}, legacyToken=${claims.legacyPayload})",
+                ) *>
+                  email
+                    .sendAs(
+                      from = cfg.fromAddressTrimmed,
+                      replyTo = Some(cfg.replyToAddressTrimmed),
+                      to = claims.replyTo,
+                      subject = subject,
+                      htmlBody = htmlBody(markdown),
+                      // #2451: thread the reply under the journalist's original — the transport
+                      // renders this into In-Reply-To AND References. Already normalized above; a
+                      // missing or malformed Message-ID resolves to None, so the reply still sends,
+                      // just unthreaded.
+                      inReplyTo = inReplyTo,
+                    )
+                    .flatMap { sendResult =>
+                      // #2296: record the outbound reply as AUDIT (fail-open) AFTER the send, pairing it
+                      // to the inbound row via the token's pressMessageId. Only Sent/Failed are real
+                      // send attempts worth logging; a Disabled send (dark install) emitted no email.
+                      val record = sendResult match {
+                        case EmailOutcome.Sent => recordOutbound(claims, subject, markdown, "sent")
+                        case EmailOutcome.Failed   =>
+                          recordOutbound(claims, subject, markdown, "failed")
+                        case EmailOutcome.Disabled => ZIO.unit
+                      }
+                      record *> (sendResult match {
+                        case EmailOutcome.Sent     =>
+                          AppMetrics.pressAgentAction("reply", "ok").as(AgentActionResult.Ok)
+                        case EmailOutcome.Disabled =>
+                          AppMetrics
+                            .pressAgentAction("reply", "disabled")
+                            .as(AgentActionResult.Disabled)
+                        case EmailOutcome.Failed   =>
+                          AppMetrics.pressAgentAction("reply", "error").as(AgentActionResult.Error)
+                      })
                     }
-                    record *> (sendResult match {
-                      case EmailOutcome.Sent     =>
-                        AppMetrics.pressAgentAction("reply", "ok").as(AgentActionResult.Ok)
-                      case EmailOutcome.Disabled =>
-                        AppMetrics
-                          .pressAgentAction("reply", "disabled")
-                          .as(AgentActionResult.Disabled)
-                      case EmailOutcome.Failed   =>
-                        AppMetrics.pressAgentAction("reply", "error").as(AgentActionResult.Error)
-                    })
-                  }
             }
         }
       }
@@ -360,6 +390,15 @@ final case class PressResponder(
 }
 
 object PressResponder {
+
+  /**
+   * #2451 — cap on the inbound `Message-ID` carried on the token, so an attacker-controlled field
+   * cannot inflate the bearer token without bound. Reuses
+   * [[wifihaven.api.notify.EmailSender.MaxThreadingIdChars]] rather than picking a second number:
+   * that is the longest id that can be rendered into an RFC 5322 header line at all, so anything
+   * beyond it could never thread regardless.
+   */
+  val MaxMessageIdChars: Int = EmailSender.MaxThreadingIdChars
 
   /**
    * #2437 — what the escalation notice quotes when the inbound row cannot be read (the fail-open

@@ -74,7 +74,11 @@ object PressInbound {
                 // JSON-encodes the subject so raw injection is already prevented; this is belt+braces.)
                 subject = str(root, "subject").map(stripControl).getOrElse(""),
                 messageText = t,
-                messageId = str(root, "messageId").map(stripControl).getOrElse(""),
+                // Trimmed as well as control-stripped, exactly like `from`. The id is bounded
+                // downstream (PressResponder truncates it before minting), so leading whitespace
+                // left on it would eat into that budget and could chop the closing `>` off an
+                // otherwise-valid id — silently costing the reply its thread (#2451).
+                messageId = str(root, "messageId").map(stripControl).map(_.trim).getOrElse(""),
               ),
             )
           case _                  => None
