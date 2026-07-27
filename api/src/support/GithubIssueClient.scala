@@ -39,8 +39,8 @@ final case class IssueFileRequest(title: String, body: String, threadId: String)
 /**
  * A pointer to an issue in the PUBLIC target repo — safe to hand to a customer verbatim (#2461).
  * `url` is GitHub's own `html_url` (the browser link) as returned by the create call; the Live
- * transport never reconstructs it from the number, and [[GithubIssueClient.parseCreated]] rejects
- * any URL outside the public target repo, so "safe to show a customer" is structural.
+ * transport never reconstructs it from the number, and [[GithubIssueClient.parseCreatedDetailed]]
+ * rejects any URL outside the public target repo, so "safe to show a customer" is structural.
  */
 final case class IssueRef(number: Int, url: String)
 
