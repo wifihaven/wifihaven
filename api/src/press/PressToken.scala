@@ -74,6 +74,11 @@ object PressToken {
       // inbound carried none (or the token predates #2451); the reply then sends unthreaded.
       inboundMessageId: String,
       expiresAt: Instant,
+      // #2451 — true when this token used the pre-#2451 4-field payload, i.e. it was minted by a
+      // build older than the running one. Distinguishes "old token" from "inbound had no
+      // Message-ID", which the empty `inboundMessageId` alone cannot: the reply path logs it, and
+      // that is the signal #2459 waits to go quiet before deleting the tolerant arm.
+      legacyPayload: Boolean = false,
   )
 
   /**
@@ -108,23 +113,27 @@ object PressToken {
       case Array(Version, body, sig) =>
         if !constantTimeEquals(sig, hmacHex(secret, body)) then Left(Err.BadSignature)
         else
-          decode(body).flatMap { case (replyTo, subject, pressMessageId, exp, inboundMessageId) =>
-            if now.getEpochSecond > exp then Left(Err.Expired)
-            else
-              Right(
-                Claims(
-                  replyTo,
-                  subject,
-                  pressMessageId,
-                  inboundMessageId,
-                  Instant.ofEpochSecond(exp),
-                ),
-              )
+          decode(body).flatMap {
+            case (replyTo, subject, pressMessageId, exp, inboundMessageId, legacyPayload) =>
+              if now.getEpochSecond > exp then Left(Err.Expired)
+              else
+                Right(
+                  Claims(
+                    replyTo,
+                    subject,
+                    pressMessageId,
+                    inboundMessageId,
+                    Instant.ofEpochSecond(exp),
+                    legacyPayload,
+                  ),
+                )
           }
       case _                         => Left(Err.Malformed)
     }
 
-  private def decode(body: String): Either[Err, (String, String, Long, Long, String)] =
+  // Returns the payload fields plus a flag for WHICH arity matched, so the caller can tell a
+  // legacy token from a current one whose Message-ID happens to be empty.
+  private def decode(body: String): Either[Err, (String, String, Long, Long, String, Boolean)] =
     scala.util
       .Try {
         val raw = new String(Base64.getUrlDecoder.decode(body), StandardCharsets.UTF_8)
@@ -132,11 +141,12 @@ object PressToken {
         // yields 5 parts — and the arity match below is then exact: a future 6-field payload falls
         // through to Malformed instead of silently folding its 6th field into `mid`.
         raw.split("\\|", -1) match {
-          case Array(r, s, m, e, mid) => (unb64(r), unb64(s), m.toLong, e.toLong, unb64(mid))
+          case Array(r, s, m, e, mid) => (unb64(r), unb64(s), m.toLong, e.toLong, unb64(mid), false)
           // TODO(#2459): the pre-#2451 4-field payload — accepted so a session dispatched by the old
           // build and redeemed by the new one still verifies (its reply just can't thread). Delete
-          // once the #2451 deploy has been live longer than one token TTL.
-          case Array(r, s, m, e)      => (unb64(r), unb64(s), m.toLong, e.toLong, "")
+          // once the #2451 deploy has been live longer than one token TTL; `legacyPayload` on the
+          // claims is what tells you this arm has stopped being hit.
+          case Array(r, s, m, e)      => (unb64(r), unb64(s), m.toLong, e.toLong, "", true)
           case _                      => throw new IllegalArgumentException("bad payload")
         }
       }

@@ -625,14 +625,28 @@ object PressResponderSpec
       for {
         clock <- ZIO.service[Clock]
         now   <- clock.instant
-        exp    = now.plusSeconds(1800).getEpochSecond
-        legacy = tokenFromPayload(s"${b64("reporter@example.com")}|${b64("Story")}|77|$exp")
-        claims = PressToken.verify(legacy, now, TokenSecret)
+        exp           = now.plusSeconds(1800).getEpochSecond
+        legacy        = tokenFromPayload(s"${b64("reporter@example.com")}|${b64("Story")}|77|$exp")
+        claims        = PressToken.verify(legacy, now, TokenSecret)
+        // A CURRENT token whose Message-ID is simply empty must NOT be reported as legacy — that
+        // distinction is what #2459 waits on before deleting the tolerant arm, so an empty
+        // Message-ID must not masquerade as an old token.
+        current       = PressToken.mint(
+          "reporter@example.com",
+          "Story",
+          77L,
+          "",
+          now,
+          java.time.Duration.ofMinutes(30),
+          TokenSecret,
+        )
+        currentClaims = PressToken.verify(current, now, TokenSecret)
       } yield assertTrue(
         claims.exists(c =>
           c.replyTo == "reporter@example.com" && c.subject == "Story" && c.pressMessageId == 77L &&
-            c.inboundMessageId.isEmpty,
+            c.inboundMessageId.isEmpty && c.legacyPayload,
         ),
+        currentClaims.exists(c => c.inboundMessageId.isEmpty && !c.legacyPayload),
       )
     },
     test("the reply carries In-Reply-To/References matching the inbound Message-ID (#2451)") {
@@ -706,21 +720,28 @@ object PressResponderSpec
     test("EmailSender.threadingId keeps only a well-formed leading msg-id (#2451)") {
       // A direct pin on the sanitizer itself, so removing any part of it fails HERE rather than
       // depending on PressInbound's ingest-side control-char strip to cover for it.
-      val cases = List(
+      def longId(total: Int): String = "<" + ("x" * (total - 2)) + ">"
+      val cases                      = List(
         // in                                        expected
-        Some("<abc@mail.example>")               -> Some("<abc@mail.example>"),
-        Some("  <abc@mail.example>  ")           -> Some("<abc@mail.example>"),
-        Some("<a@b>\r\nBcc: attacker@evil.test") -> Some("<a@b>"),
-        Some("<a@b> and then some prose")        -> Some("<a@b>"),
-        Some("")                                 -> None,
-        Some("   ")                              -> None,
+        Some("<abc@mail.example>")                        -> Some("<abc@mail.example>"),
+        Some("  <abc@mail.example>  ")                    -> Some("<abc@mail.example>"),
+        Some("<a@b>\r\nBcc: attacker@evil.test")          -> Some("<a@b>"),
+        Some("<a@b> and then some prose")                 -> Some("<a@b>"),
+        Some("")                                          -> None,
+        Some("   ")                                       -> None,
         // No angle brackets, whitespace inside, or an unclosed bracket is not an RFC 5322 msg-id —
         // dropped, so the reply sends unthreaded rather than with a header a relay may reject.
-        Some("abc@mail.example")                 -> None,
-        Some("<a b@c>")                          -> None,
-        Some("<unclosed@mail.example")           -> None,
-        Some("Bcc: attacker@evil.test <a@b>")    -> None,
-        None                                     -> None,
+        Some("abc@mail.example")                          -> None,
+        Some("<a b@c>")                                   -> None,
+        Some("<unclosed@mail.example")                    -> None,
+        Some("Bcc: attacker@evil.test <a@b>")             -> None,
+        None                                              -> None,
+        // Longest id that still fits one RFC 5322 header line once `References: ` is counted —
+        // kept; one character more is dropped, because an over-long header risks a relay
+        // rejection, and under this transport a rejected send means NOT DELIVERED at all.
+        Some(longId(EmailSender.MaxThreadingIdChars))     ->
+          Some(longId(EmailSender.MaxThreadingIdChars)),
+        Some(longId(EmailSender.MaxThreadingIdChars + 1)) -> None,
       )
       assertTrue(cases.forall((in, want) => EmailSender.threadingId(in) == want)) &&
       assertTrue(

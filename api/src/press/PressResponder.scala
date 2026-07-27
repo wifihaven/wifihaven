@@ -120,9 +120,10 @@ final case class PressResponder(
         // thread under their original. It rides the SIGNED payload like every other field — a
         // hijacked agent can neither forge it nor graft its reply onto another conversation. Empty
         // when the inbound carried no Message-ID; the reply then sends unthreaded. Truncated so an
-        // attacker-controlled field cannot inflate the bearer token without bound — a real msg-id
-        // must fit on one header line anyway (RFC 5322 §2.1.1: 998 chars max, excluding CRLF), and
-        // a truncated one simply fails the msg-id shape check at send time and sends unthreaded.
+        // attacker-controlled field cannot inflate the bearer token without bound. Truncation can
+        // never re-point a thread: a msg-id ends at its first `>`, so either that `>` survives and
+        // the id is intact, or it doesn't and the value fails the shape check at send time and the
+        // reply goes out unthreaded.
         inboundMessageId = event.messageId.take(MaxMessageIdChars),
         now = now,
         ttl = cfg.agentTokenTtl,
@@ -198,7 +199,7 @@ final case class PressResponder(
                 // #2451: normalize HERE via the same primitive the transport uses, so the log line
                 // below reports what will actually go on the wire rather than a second opinion.
                 val inReplyTo =
-                  EmailSender.threadingId(Option(claims.inboundMessageId).filter(_.nonEmpty))
+                  EmailSender.threadingId(Some(claims.inboundMessageId).filter(_.nonEmpty))
                 // #2407: send FROM the press identity (not the shared #578 alerts@ notification
                 // sender). From and Reply-To are SEPARATE addresses: the From must sit on a
                 // Resend-verified sending domain (the apex — staging borrows it as press-staging@),
@@ -207,14 +208,16 @@ final case class PressResponder(
                 // recipient stays server-locked to the token's `replyTo` — only the From/Reply-To
                 // identity changes, never the destination.
                 // #2451: the original bug was that 100% of replies went out unthreaded and NOTHING
-                // surfaced it, so say so per reply. `threaded=false` is legitimate (the inbound
-                // carried no Message-ID, it wasn't a well-formed msg-id, or the token predates
-                // #2451 — see PressToken's rollout note) but a sustained run of it is the signal
-                // that this fix has regressed, and it is also what confirms the legacy-token arm
-                // has gone quiet before #2459 deletes it. The id itself is not logged — it is
+                // surfaced it, so say so per reply. `threaded=false` is legitimate on its own (the
+                // inbound carried no Message-ID, or it wasn't a well-formed msg-id), but a
+                // sustained run of it is the signal that this fix has regressed. `legacyToken` is
+                // reported SEPARATELY rather than folded into `threaded=false`, because it answers
+                // a different question: it is what has to go quiet before #2459 deletes the
+                // tolerant pre-#2451 payload arm. The Message-ID itself is not logged — it is
                 // attacker-controlled sender content.
                 ZIO.logInfo(
-                  s"press: replying to ${claims.replyTo} (threaded=${inReplyTo.isDefined})",
+                  s"press: sending reply to ${claims.replyTo} " +
+                    s"(threaded=${inReplyTo.isDefined}, legacyToken=${claims.legacyPayload})",
                 ) *>
                   email
                     .sendAs(
@@ -389,12 +392,13 @@ final case class PressResponder(
 object PressResponder {
 
   /**
-   * #2451 — cap on the inbound `Message-ID` carried on the token. RFC 5322 §2.1.1 limits a header
-   * line to 998 characters excluding the CRLF, so nothing longer could ever be a valid `Message-ID`
-   * to begin with; the cap is here so an attacker-controlled field cannot inflate the bearer token
-   * without bound.
+   * #2451 — cap on the inbound `Message-ID` carried on the token, so an attacker-controlled field
+   * cannot inflate the bearer token without bound. Reuses
+   * [[wifihaven.api.notify.EmailSender.MaxThreadingIdChars]] rather than picking a second number:
+   * that is the longest id that can be rendered into an RFC 5322 header line at all, so anything
+   * beyond it could never thread regardless.
    */
-  val MaxMessageIdChars: Int = 998
+  val MaxMessageIdChars: Int = EmailSender.MaxThreadingIdChars
 
   /**
    * #2437 — what the escalation notice quotes when the inbound row cannot be read (the fail-open

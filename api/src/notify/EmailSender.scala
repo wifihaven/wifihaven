@@ -111,11 +111,24 @@ object EmailSender {
     raw
       .map(_.filter(c => !c.isControl).trim)
       .flatMap(MsgIdPrefix.findPrefixOf)
+      .filter(_.length <= MaxThreadingIdChars)
 
   // RFC 5322 §3.6.4: `msg-id = "<" id-left "@" id-right ">"`, and §3.2.2 forbids folding
   // whitespace inside it — so a valid id has no space and no nested angle bracket. Anchored at the
   // start (`findPrefixOf`), which is what discards anything appended after the id.
   private val MsgIdPrefix = "<[^<>\\s]+>".r
+
+  // RFC 5322 §2.1.1 caps a header LINE at 998 characters excluding the CRLF — field name and
+  // separator included. Budget for the longest of the two names we emit so the rendered line
+  // cannot exceed the limit; an id that doesn't fit isn't a usable header value, and emitting an
+  // over-long one risks a relay rejection, which under this transport means the reply is not
+  // delivered at all (worse than not threading). Derived from the header name, not hardcoded.
+  //
+  // Public so callers that persist or carry a Message-ID around can bound it to the same number
+  // rather than inventing a second one — anything longer could never be emitted anyway.
+  private val ThreadingHeaderNames: List[String] = List("In-Reply-To", "References")
+  val MaxThreadingIdChars: Int                   =
+    998 - ThreadingHeaderNames.map(_.length + ": ".length).max
 
   /**
    * #2451 — the RFC 5322 threading pair, exactly as it goes on the wire. This is the SINGLE
@@ -126,7 +139,7 @@ object EmailSender {
    * assertion and a live send cannot diverge.
    */
   def threadingHeaders(inReplyTo: Option[String]): Option[Map[String, String]] =
-    threadingId(inReplyTo).map(id => Map("In-Reply-To" -> id, "References" -> id))
+    threadingId(inReplyTo).map(id => ThreadingHeaderNames.map(_ -> id).toMap)
 
   /** No-op sender used when email is unconfigured. */
   val Disabled: EmailSender = new EmailSender {
