@@ -603,9 +603,9 @@ object PlainConfig {
  * read trusted that baked flag. Under a 30-minute TTL a customer's WITHDRAWAL therefore bit within
  * half an hour; under 24h it would not have bitten until the next day. Rather than trade a
  * customer's withdrawal for the reply fix, `SupportResponder.agentHousehold` now RE-READS the grant
- * at read time (#2476), so a withdrawal takes effect immediately and the residual window is gone
- * regardless of the TTL. `support_consent_total{outcome="read_withdrawn"}` counts exactly that
- * case.
+ * at read time (#2476), so a withdrawal bites on the very next read rather than at token expiry —
+ * independent of the TTL. (It cannot un-deliver a summary a session already read BEFORE the
+ * withdrawal; nothing can.) `support_consent_total{outcome="read_withdrawn"}` counts exactly that.
  *
  * The one thing that genuinely does erode is incident response: with a 30-minute window "just wait
  * for it to expire" was a plausible answer to a suspected leak, and at 24h it is not. TODO(#2259) —

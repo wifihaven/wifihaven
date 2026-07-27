@@ -458,17 +458,22 @@ final case class SupportResponder(
    * the token expired — a residual window bounded by the agent-token TTL. #2473 raised that TTL
    * from 30 minutes to 24 hours (a cloud-agent run can be paused on usage limits and resume hours
    * later), which would have stretched the residual window to a full day. Re-reading closes it
-   * instead of trading a customer's withdrawal for the reply fix. It costs one indexed lookup per
-   * read, on a path that already does four repo queries.
+   * instead of trading a customer's withdrawal for the reply fix. It costs one indexed lookup, and
+   * only on a token that CLAIMS data access — a scope-less token is refused before the lookup, and
+   * a scoped one is already on a path that does four repo queries.
    *
    * Fail-CLOSED both ways: [[consentGranted]] reads a DB error as "no consent", and the token scope
    * is still required, so this only ever narrows access.
    */
   def agentHousehold(bearer: Option[String]): UIO[Either[AgentActionResult, HouseholdSummary]] =
-    withClaimsE("household_read", bearer) { claims =>
-      clock.instant
-        .flatMap(now => consentGranted(claims.householdId, claims.threadId, now))
-        .flatMap(live => householdRead(claims, live))
+    withClaimsE("household_read", bearer) { (claims, now) =>
+      // The token scope is free to check and refuses the COMMON case (most threads never grant), so
+      // it short-circuits ahead of the grant lookup — the DB round trip is only spent on a token
+      // that actually claims data access.
+      if !claims.dataAccess then householdRead(claims, liveGrant = false)
+      else
+        consentGranted(claims.householdId, claims.threadId, now)
+          .flatMap(live => householdRead(claims, live))
     }
 
   private def householdRead(
@@ -742,10 +747,15 @@ final case class SupportResponder(
   private def withClaims(action: String, bearer: Option[String])(
       f: ConsentToken.Claims => UIO[AgentActionResult],
   ): UIO[AgentActionResult] =
-    withClaimsE(action, bearer)(claims => f(claims).map(Left(_))).map(_.merge)
+    withClaimsE(action, bearer)((claims, _) => f(claims).map(Left(_))).map(_.merge)
 
+  /**
+   * `f` receives the SAME `now` the token was verified against, so a caller that needs the current
+   * time (the #2476 consent re-read) evaluates it on one consistent instant rather than reading the
+   * clock a second time.
+   */
   private def withClaimsE[A](action: String, bearer: Option[String])(
-      f: ConsentToken.Claims => UIO[Either[AgentActionResult, A]],
+      f: (ConsentToken.Claims, Instant) => UIO[Either[AgentActionResult, A]],
   ): UIO[Either[AgentActionResult, A]] =
     if !cfg.agentEndpointsEnabled then
       AppMetrics.supportAgentAction(action, "disabled").as(Left(AgentActionResult.Disabled))
@@ -759,7 +769,7 @@ final case class SupportResponder(
           case Some(token) =>
             ConsentToken.verify(token, now, cfg.agentTokenSecretTrimmed) match {
               case Left(err)     => denyLoudly(action, AgentTokenRejection.reasonFor(err))
-              case Right(claims) => f(claims)
+              case Right(claims) => f(claims, now)
             }
         }
       }
