@@ -159,15 +159,23 @@ key is shared by all support write paths):
 | `label:create` | **#2437** — apply the `needs-human` **escalation label** to a thread when the support agent hands off (`SupportResponder.agentEscalate` → `PlainClient.markThread`, Plain's `addLabels` mutation). This is what makes an escalated thread FILTERABLE in the inbox instead of indistinguishable from an AI-resolved one. Missing it → `addLabels` fails, logged `logError` and metered `support_agent_action_total{op="escalate_mark",outcome="error"}`. **Required.** |
 | `thread:reply` | post the AI reply into the customer's existing thread — `SupportResponder.agentReply` → `PlainClient.writeThread`, whose live impl is Plain's `replyToThread` mutation (`api/src/support/PlainClient.scala`, #2408 — the customer-visible send). **Required.** |
 | `thread:read` | read the bound thread's timeline so the responder can see the conversation so far — `SupportResponder.dispatchFor` → `PlainClient.threadHistory` (`api/src/support/PlainClient.scala`, #2430 — the stateless responder fires a FRESH cloud session per inbound message, so without this every follow-up is answered with no memory of the thread). **Required.** Fail-open (a missing grant costs context, never the webhook) but **not silent**: each denial is logged at ERROR and metered `support_thread_history_total{outcome="permission"}` (panel in `deploy/grafana/dashboards/support.json`). |
+| `timeline:read` | read the thread's **timeline entries** — the `timelineEntries { edges { node … } }` selection inside `PlainClient.ThreadTimelineQuery` (#2430/#2441). `thread:read` alone is **not** enough: it authorizes the `thread` lookup, the entries underneath it need this scope. Discovered during staging validation. |
+| `tenantField:create` / `tenantField:update` | write the `plan` / `founding` entitlement **values** on the household tenant — `upsertTenantField` (§7.3). The scope is `:update`, **not** `:edit`. |
+| `webhookTarget:read` | in the validated staging array; **no caller in our code** — nothing in the repo references `webhookTarget` (we *receive* Plain's webhooks at `/api/support/webhook`, we never read the target config back). Granted during validation; keep it pending the [#2470](https://github.com/wifihaven/wifihaven/issues/2470) least-privilege audit. |
+| `tenantFieldSchema:read` | in the validated staging array. **No explicit caller in our code** — `PlainClient` issues no schema query — so Plain appears to require it implicitly alongside the `tenantField` value writes. Granted during validation; keep it pending the [#2470](https://github.com/wifihaven/wifihaven/issues/2470) least-privilege audit. |
+| `customer:read` | in the validated staging array; **no explicit caller in our code** (we only `upsertCustomer`). Granted during validation; keep it pending the [#2470](https://github.com/wifihaven/wifihaven/issues/2470) least-privilege audit. |
 
 This is the array confirmed to clear the `403` on the customer + tenant upserts. The
 `plan` / `founding` **tenant-field** writes ([§7.3 entitlement](#entitlement-fields))
 additionally exercise `upsertTenantField`; to have those fields populated, add
 `tenantField:create` / `tenantField:update` to the array (the scope is `:update`, **not**
 `:edit` — Plain's permission enum has no `tenantField:edit`) **and** register the `plan` /
-`founding` field schemas ([§7.3](#entitlement-fields), a dashboard step — no
-`tenantFieldSchema:*` permission is needed, since the code only writes field *values*, never
-creates schemas). **Grant the permission and register the schema as a pair, or leave both
+`founding` field schemas ([§7.3](#entitlement-fields) — an **API-only** step; there is no
+Plain UI for creating tenant-field schemas. The *machine-user key* does not need
+**`tenantFieldSchema:create`** — it only writes field *values*, never creates schemas, and
+the schema mutation is run once by the authenticated admin in the API playground. It does
+carry **`tenantFieldSchema:read`**, which the validated staging array includes).
+**Grant the permission and register the schema as a pair, or leave both
 off — a half-configured entitlement path is a broken credential, not an optional feature.**
 That path is **fail-open only w.r.t. the customer upsert** — a permission or schema gap does
 not fail `upsertCustomer` — but it is **not silent**: each failure is logged and metered as
@@ -176,9 +184,11 @@ not fail `upsertCustomer` — but it is **not silent**: each failure is logged a
 Making that gap fully fail-loud + attributable — a broken credential should *fail*, not
 degrade into a metered no-op — is tracked in
 [#2410](https://github.com/wifihaven/wifihaven/issues/2410).
-[#2430](https://github.com/wifihaven/wifihaven/issues/2430) **added `thread:read`** to the
-required set (the responder reads the bound thread's timeline so it can see the conversation
-so far). It is a **new grant on an existing key**, so re-run the `updateApiKey` mutation in
+[#2430](https://github.com/wifihaven/wifihaven/issues/2430) **added `thread:read` *and*
+`timeline:read`** to the required set (the responder reads the bound thread's timeline so it
+can see the conversation so far — `thread:read` authorizes the thread lookup, `timeline:read`
+the entries under it, and **both** are needed). They are **new grants on an existing key**, so
+re-run the `updateApiKey` mutation in
 §5.3 for **both** environments — until you do, the responder keeps answering every follow-up
 with no memory of the thread and `support_thread_history_total{outcome="permission"}` climbs.
 **`thread:create` is no
@@ -207,6 +217,11 @@ query {
 
 ### 5.3 Grant the permissions
 
+Grant the **whole array in one call** — `permissions` is set wholesale, not merged, so a
+later mutation that omits a scope **revokes** it. Use the array below verbatim: it is the
+exact set the staging key carries after end-to-end validation (customer + tenant upserts,
+entitlement field writes, thread history, AI reply), not a set assembled from the table.
+
 **Preferred — `updateApiKey`** (keeps the existing secret, so the
 `WIFIHAVEN_SUPPORT_PLAIN_API_KEY` already set in Render does **not** need rotating):
 
@@ -214,7 +229,7 @@ query {
 mutation {
   updateApiKey(input: {
     apiKeyId: "<apiKey_...>",
-    permissions: ["customer:create","customer:edit","tenant:read","tenant:create","tenant:edit","customerTenantMembership:create","customerTenantMembership:delete","thread:reply","thread:read","label:create"]
+    permissions: ["thread:read","webhookTarget:read","timeline:read","tenantFieldSchema:read","customer:read","customer:create","customer:edit","tenant:read","tenant:create","tenant:edit","customerTenantMembership:create","customerTenantMembership:delete","thread:reply","label:create","tenantField:create","tenantField:update"]
   }) { apiKey { id permissions } }
 }
 ```
@@ -228,23 +243,26 @@ mutation {
   createApiKey(input: {
     machineUserId: "<mu_...>",
     description: "identified-chat integration",
-    permissions: ["customer:create","customer:edit","tenant:read","tenant:create","tenant:edit","customerTenantMembership:create","customerTenantMembership:delete","thread:reply","thread:read","label:create"]
+    permissions: ["thread:read","webhookTarget:read","timeline:read","tenantFieldSchema:read","customer:read","customer:create","customer:edit","tenant:read","tenant:create","tenant:edit","customerTenantMembership:create","customerTenantMembership:delete","thread:reply","label:create","tenantField:create","tenantField:update"]
   }) { apiKeySecret }
 }
 ```
 
-**To also populate the `plan` / `founding` entitlement fields** (§5.1, §7.3), use the full
-array below — the same core set plus `tenantField:create` / `tenantField:update` (the scope
-is `:update`, **not** `:edit`, which Plain's enum rejects with `Value needs to be one of: …`):
+Note the `tenantField` scope is `:update`, **not** `:edit` — Plain's enum rejects `:edit`
+with `Value needs to be one of: …`. The `tenantField:*` grants only populate `plan` /
+`founding` if the field **schemas** are also registered ([§7.3](#entitlement-fields)) —
+grant and register as a pair.
 
-```graphql
-mutation {
-  updateApiKey(input: {
-    apiKeyId: "<apiKey_...>",
-    permissions: ["customer:create","customer:edit","tenant:read","tenant:create","tenant:edit","customerTenantMembership:create","customerTenantMembership:delete","thread:reply","thread:read","label:create","tenantField:create","tenantField:update"]
-  }) { apiKey { id permissions } }
-}
-```
+`tenantFieldSchema:read` and `customer:read` are in this array because the validated staging
+key carries them, even though no code path under `api/src/support/` calls an operation that
+obviously needs them (see the table above). They are read scopes on data we already touch, so
+keeping them costs little; **do not drop them without re-running
+[§7.3](#entitlement-fields)'s *Verify it took* check**, since it is not established which
+Plain-side call requires them. Auditing them down to least privilege is tracked in
+[#2470](https://github.com/wifihaven/wifihaven/issues/2470).
+
+**Echo the response.** `updateApiKey` returns the resulting `permissions` array — read it
+back and confirm all 16 scopes are present before moving on.
 
 ### 5.4 Create the escalation label + record its id (#2437) {#escalation-label}
 
@@ -344,15 +362,102 @@ these:
    so the write path is fully wired, not half-configured. Do this **per workspace** (staging + prod),
    same as the API key (§5.4):
 
-   1. In Plain, open **Settings → Tenants → Fields** *(verify the exact label against your
-      workspace — it's the tenant-field-**schema** editor. Plain also exposes `tenantFieldSchema:*`
-      in its permission enum, so you can script schema creation via the API playground as the
-      authenticated admin if you prefer; the machine-user key does **not** need `tenantFieldSchema:*`
-      — it only writes field values.)*
-   2. **Add a field** — external id **`plan`**, type **String** (`STRING_TYPE`). The display label
-      is free (e.g. "Plan"); only the external id + type are load-bearing.
-   3. **Add a field** — external id **`founding`**, type **Boolean** (`BOOLEAN_TYPE`), label e.g.
-      "Founding".
+   > **Tenant field schemas CANNOT be created in the Plain web UI — they are API-only.**
+   > The tenant-fields screen in Plain's settings only *lists* schemas; with none registered it
+   > says *"No tenant fields created yet. Tenant fields can be created in the Plain API."*
+   > There is no "Add a field" button. Create them with the `upsertTenantFieldSchema` mutation
+   > below. (This corrected a wrong UI-first procedure —
+   > [#2448](https://github.com/wifihaven/wifihaven/issues/2448).)
+
+   1. Open Plain's **API playground** (dashboard → API playground). It runs as the
+      **authenticated admin**, which is the identity that needs the **`tenantFieldSchema:create`**
+      permission (per Plain's [tenant-fields docs](https://www.plain.com/docs/graphql/tenants/tenant-fields)
+      — permission scopes are free-form strings in the published GraphQL schema, so this one is
+      sourced from the prose docs, not the type dump). The *machine-user API key* does **not**
+      need `tenantFieldSchema:create` — it only writes field *values* (`upsertTenantField`),
+      never schemas. It does carry `tenantFieldSchema:read` (§5.1/§5.3).
+   2. Run the mutation below **verbatim**. `upsertTenantFieldSchema` is a create-or-update that
+      takes an **array**, so both schemas land in one call. This exact mutation was run
+      successfully against the **staging** Plain workspace and returned
+      `{"data":{"upsertTenantFieldSchema":{"error":null}}}`:
+
+      ```graphql
+      mutation {
+        upsertTenantFieldSchema(input: {
+          tenantFieldSchemas: [
+            { source: "wifihaven", externalFieldId: "plan",     label: "Plan",     type: STRING_TYPE,  isVisible: true, order: 1 },
+            { source: "wifihaven", externalFieldId: "founding", label: "Founding", type: BOOLEAN_TYPE, isVisible: true, order: 2 }
+          ]
+        }) {
+          error { message }
+        }
+      }
+      ```
+
+      The `externalFieldId` and `type` values are **load-bearing** and must match exactly what
+      `PlainClient` sends — `PlanFieldId = "plan"` (`STRING_TYPE`) and
+      `FoundingFieldId = "founding"` (`BOOLEAN_TYPE`) in
+      [`api/src/support/PlainClient.scala`](../../api/src/support/PlainClient.scala). The `label`
+      is free-form display text.
+
+      **`isVisible` and `order` are required** (`Boolean!` / `Int!`) and are easy to miss — the
+      mutation is rejected without them. Neither carries behaviour we depend on; they only
+      control display in Plain's tenant UI.
+
+      **`source` is our own namespace, not a Plain-mandated value.** It is a free-form `String!`
+      (not an enum) that tags the schema with its originating system; Plain requires no
+      particular value. We use `"wifihaven"`. It does **not** participate in our value writes:
+      `PlainClient` sends `UpsertTenantFieldInput = { tenantFieldIdentifier { tenantId,
+      externalFieldId }, type, <valueKey> }` and never sends `source`, so the schema↔value join
+      is `externalFieldId` (+ matching `type`) alone. Still, **pick one and always reuse it** —
+      a schema is identified by the pair (`source`, `externalFieldId`), so re-running with a
+      different `source` registers a *duplicate* schema rather than updating the first.
+
+      If Plain changes the input shape, re-derive it by introspection rather than guessing:
+
+      ```graphql
+      query {
+        __type(name: "TenantFieldSchemaInput") {
+          inputFields { name type { name kind ofType { name kind ofType { name } } } }
+        }
+      }
+      ```
+
+      *(Shape above confirmed by live introspection of Plain's API, and by the mutation running
+      successfully against the staging workspace. `UpsertTenantFieldSchemaInput` has exactly one
+      field, `tenantFieldSchemas: [TenantFieldSchemaInput!]!`. `TenantFieldSchemaInput` is
+      `{ source: String!, externalFieldId: ID!, label: String!, type: TenantFieldType!,
+      options: [String!], isVisible: Boolean!, order: Int! }` — every field non-null except
+      `options`, which applies to `ENUM_TYPE` only. Note the published SDK's
+      `TenantFieldType` enum is `STRING_TYPE` / `NUMBER_TYPE` / `BOOLEAN_TYPE` / `STRING_ARRAY`
+      / `DATETIME_TYPE` — Plain's prose docs also mention `ENUM_TYPE`, which the published enum
+      does not contain. Neither of our two fields uses it.)*
+   3. **List the schemas back and confirm exactly two exist.** Do this positively — do *not*
+      wait for an error. Because `source` is a free-form `String`, a typo'd value is **accepted**
+      rather than rejected, and a later re-run with a corrected `source` then creates a *second*
+      schema rather than updating the first:
+
+      ```graphql
+      query { tenantFieldSchemas(first: 50) { edges { node { id source externalFieldId label type } } } }
+      ```
+
+      Expect exactly one `plan` (`STRING_TYPE`) and one `founding` (`BOOLEAN_TYPE`) node. If a
+      duplicate `externalFieldId` appears under two different `source` values, delete the stray
+      one before going further. If the workspace already had schemas registered under some other
+      `source`, copy that value rather than introducing `"wifihaven"`.
+
+      **Staging is done** (registered 2026-07-26). **Prod is still pending** — it must be run in
+      the prod workspace before go-live.
+
+      ```graphql
+      mutation {
+        deleteTenantFieldSchema(input: { tenantFieldSchemaId: "<tfs_...>" }) { error { message } }
+      }
+      ```
+
+      > **Deleting a schema also removes any tenant field values stored against it**
+      > ([Plain docs](https://www.plain.com/docs/graphql/tenants/tenant-fields)). Only delete a
+      > schema you just created in error — never one whose fields are already populated.
    4. Ensure the machine-user key carries `tenantField:create` + `tenantField:update` (§5.1/§5.3).
       The schema existing is necessary but **not** sufficient — the key still needs permission to
       write the values.
