@@ -109,10 +109,11 @@ object EscalationChannel {
  * for AI-handled traffic; support has the Plain inbox).
  *
  * That leaves ONE case, so this enum carries no branching today — it is kept because `kind` is a
- * live label on `operator_escalation_total` (`MetricGuard.Allowed`) that shipped panels already
- * select and group by; collapsing it would be a metric-shape change for no behavioural gain. Treat
- * a second case as something to ADD when a second reason to mail the operator actually exists, not
- * as a slot waiting to be filled.
+ * live label on `operator_escalation_total` (`MetricGuard.Allowed`) that shipped panels SELECT on
+ * (`kind="escalated"` in `deploy/grafana/dashboards/press.json` and `support.json`); dropping it
+ * would break those queries for no behavioural gain. Nothing groups by it. Treat a second case as
+ * something to ADD when a second reason to mail the operator actually exists, not as a slot waiting
+ * to be filled.
  */
 enum EscalationKind {
   case Escalated
