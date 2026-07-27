@@ -381,8 +381,9 @@ final case class SupportResponder(
           // `Disabled` is NOT a failure: the write half is switched off by the EXPLICIT named flag
           // `wifihaven.support.plain.writeEnabled` (`PlainClient.layer`), which is reported at
           // startup — a deliberate off-state, exactly what `WebhookOutcome.Disabled` means. It is
-          // reachable on its own: `SupportConfig.missingRequiredKeys` requires `plain.apiKey` when
-          // `writeEnabled=true`, but never requires `writeEnabled` itself, so
+          // reachable on its own: `PlainConfig.validate` requires `plain.apiKey` when
+          // `writeEnabled=true`, and `SupportConfig.missingRequiredKeys` requires it when
+          // `responderEnabled=true`, but NOTHING requires `writeEnabled` itself, so
           // `responderEnabled=true` + `writeEnabled=false` boots. Routing it here would light the
           // "Plain REFUSED to send" tile and send an operator to Plain's email settings over our
           // own flag.
@@ -1279,6 +1280,14 @@ object SupportResponder {
     case RateLimited
     case InvalidSignature
     case Malformed
+
+    /**
+     * An EXPLICIT named flag is off, so nothing was attempted. TWO producers, both deliberate:
+     * `responderEnabled=false` (the whole responder is dark — `handleWebhook`'s first branch), and
+     * `plain.writeEnabled=false` (the responder runs but the Plain write half is dark, so a static
+     * reject is decided and not sent). Never a failure — a REFUSED send is
+     * [[EmailRejectSendFailed]].
+     */
     case Disabled
 
     /** A TRANSIENT cloud-agent dispatch failure (transport / timeout / 5xx) — may self-heal. */

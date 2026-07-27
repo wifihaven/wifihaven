@@ -136,10 +136,6 @@ object SupportResponderSpec
       // this is passed, `Stubs.github` is NOT wired to the responder — a negative assertion on it
       // (`issues.isEmpty`) would pass vacuously, so don't; assert on the response instead.
       githubOverride: Option[GithubIssueClient] = None,
-      // #2471: override the Plain client to model a write half that is EXPLICITLY off
-      // (`PlainClient.Disabled`, what `PlainClient.layer` yields for `plain.writeEnabled=false`).
-      // Defaults to the recorder, so every existing caller is unchanged.
-      plain: Option[PlainClient] = None,
   ) =
     for {
       hhRepo      <- ZIO.service[HouseholdRepo]
@@ -162,7 +158,7 @@ object SupportResponderSpec
         devRepo,
         profRepo,
         consentRepo,
-        plain.getOrElse(PlainClient.recording(plainRec)),
+        PlainClient.recording(plainRec),
         githubOverride.getOrElse(GithubIssueClient.recording(ghRec)),
         CloudAgentDispatcher.recording(dispRec),
         clock,
@@ -678,15 +674,23 @@ object SupportResponderSpec
     test("#2471: an explicitly DISABLED write half is `disabled`, not a send FAILURE") {
       for {
         _          <- cleanDb
-        // `PlainClient.Disabled` is what `PlainClient.layer` yields when the EXPLICIT named flag
-        // `plain.writeEnabled` is false — a deliberate off-state, not a provisioning gap.
-        // `responderEnabled=true` + `writeEnabled=false` boots (Config only requires `apiKey` when
-        // `writeEnabled` is true), so this is reachable, and it must NOT light the
+        // The write half is off via the EXPLICIT named flag `plain.writeEnabled`
+        // (`PlainClient.layer` then yields its `Disabled` client) — a deliberate off-state, not a
+        // provisioning gap. Reachable on its own: `PlainConfig.validate` requires `apiKey` when
+        // `writeEnabled=true` and `SupportConfig.missingRequiredKeys` requires it when
+        // `responderEnabled=true`, but NOTHING requires `writeEnabled` itself, so
+        // `responderEnabled=true` + `writeEnabled=false` boots. It must NOT light the
         // "Plain REFUSED to send" tile or send an operator to Plain's email settings.
-        (_, stubs) <- makeRoutes(liveCfg, plain = Some(PlainClient.Disabled))
+        (_, stubs) <- makeRoutes(liveCfg)
+        _          <- stubs.plain.writeDisabled.set(true)
         body = threadCreatedPayload(Some("spammer@evil.example"), "th_email_write_dark")
         outcome <- stubs.responder.handleWebhook(body, Some(sign(body)))
+        threads <- stubs.plain.threads.get
       } yield assertTrue(
+        // The DISCRIMINATOR. `handleWebhook` short-circuits to this SAME outcome when
+        // `responderEnabled=false`, so without proving the write was actually ATTEMPTED this test
+        // would stay green while asserting nothing about the mapping it exists to pin.
+        threads.size == 1,
         outcome == SupportResponder.WebhookOutcome.Disabled,
         outcome != SupportResponder.WebhookOutcome.EmailRejectSendFailed,
         SupportResponder.WebhookOutcome.label(outcome) == "disabled",

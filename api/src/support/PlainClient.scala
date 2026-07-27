@@ -432,10 +432,13 @@ object PlainClient {
   private[support] val HistoryTimeout: Duration = 8.seconds
 
   /**
-   * Config-gated layer. When [[SupportConfig.writeEnabled]] is false (no Plain API key — the
-   * self-hosted default and any deployment that hasn't set the key) this yields the no-op
-   * [[Disabled]] client whose every call returns [[PlainOutcome.Disabled]] without touching the
-   * network — so the write half ships dark. When enabled it yields the live GraphQL client.
+   * Config-gated layer, keyed on the EXPLICIT named flag `plain.writeEnabled` — NOT on secret
+   * presence (#2471: conflating the two sent an operator hunting a Plain provisioning gap over our
+   * own off-switch; see docs/process/no-dark-by-default.md on named flags vs derived-from-absence).
+   * When [[SupportConfig.writeEnabled]] is false (the self-hosted default and any deployment that
+   * hasn't set the key) this yields the no-op [[Disabled]] client whose every call returns
+   * [[PlainOutcome.Disabled]] without touching the network — so the write half ships dark. When
+   * enabled it yields the live GraphQL client.
    */
   val layer: ZLayer[SupportConfig, Nothing, PlainClient] =
     ZLayer.fromFunction { (cfg: SupportConfig) =>
@@ -1489,15 +1492,22 @@ object PlainClient {
       // (the attempt happened) but reports [[PlainOutcome.Error]], exactly like the live client,
       // so a spec can pin that a caller propagates the failure instead of discarding it.
       writeFails: Ref[Boolean],
+      // #2471: model the EXPLICITLY-off write half (`plain.writeEnabled=false`, what
+      // `PlainClient.layer` yields as the `Disabled` client). Distinct from `writeFails`: this is a
+      // deliberate off-state, not a refusal. Still RECORDS the attempt, unlike the real `Disabled`
+      // client — that is the point, so a spec can prove the call site actually ran rather than
+      // matching some earlier short-circuit that returns the same outcome.
+      writeDisabled: Ref[Boolean],
   )
 
   def recording(rec: Recorder): PlainClient = new PlainClient {
     def upsertCustomer(req: PlainCustomerUpsert): UIO[PlainOutcome] =
       rec.customers.update(_ :+ req).as(PlainOutcome.Ok)
     def writeThread(req: PlainThreadWrite): UIO[PlainOutcome]       =
-      rec.threads.update(_ :+ req) *> rec.writeFails.get.map {
-        case true  => PlainOutcome.Error
-        case false => PlainOutcome.Ok
+      rec.threads.update(_ :+ req) *> rec.writeFails.get.zip(rec.writeDisabled.get).map {
+        case (true, _) => PlainOutcome.Error
+        case (_, true) => PlainOutcome.Disabled
+        case _         => PlainOutcome.Ok
       }
 
     def threadHistory(threadId: String, limit: Int): UIO[List[PlainThreadMessage]] =
@@ -1524,5 +1534,6 @@ object PlainClient {
       f <- Ref.make(false)
       m <- Ref.make(List.empty[PlainThreadMark])
       w <- Ref.make(false)
-    } yield Recorder(c, t, h, r, f, m, w)
+      d <- Ref.make(false)
+    } yield Recorder(c, t, h, r, f, m, w, d)
 }
