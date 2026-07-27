@@ -1484,13 +1484,21 @@ object PlainClient {
       // #2437: thread MARKS (escalation labels), so a spec can assert an escalated thread is labelled
       // and — the load-bearing half — that an AI-resolved one is NOT.
       marks: Ref[List[PlainThreadMark]],
+      // #2471: model a Plain workspace that ACCEPTS the call and REFUSES the send ("Emails are not
+      // enabled for this workspace" — a permanent provisioning gap). The write is still RECORDED
+      // (the attempt happened) but reports [[PlainOutcome.Error]], exactly like the live client,
+      // so a spec can pin that a caller propagates the failure instead of discarding it.
+      writeFails: Ref[Boolean],
   )
 
   def recording(rec: Recorder): PlainClient = new PlainClient {
     def upsertCustomer(req: PlainCustomerUpsert): UIO[PlainOutcome] =
       rec.customers.update(_ :+ req).as(PlainOutcome.Ok)
     def writeThread(req: PlainThreadWrite): UIO[PlainOutcome]       =
-      rec.threads.update(_ :+ req).as(PlainOutcome.Ok)
+      rec.threads.update(_ :+ req) *> rec.writeFails.get.map {
+        case true  => PlainOutcome.Error
+        case false => PlainOutcome.Ok
+      }
 
     def threadHistory(threadId: String, limit: Int): UIO[List[PlainThreadMessage]] =
       rec.historyReads.update(_ :+ threadId) *> rec.historyFails.get.flatMap {
@@ -1515,5 +1523,6 @@ object PlainClient {
       r <- Ref.make(List.empty[String])
       f <- Ref.make(false)
       m <- Ref.make(List.empty[PlainThreadMark])
-    } yield Recorder(c, t, h, r, f, m)
+      w <- Ref.make(false)
+    } yield Recorder(c, t, h, r, f, m, w)
 }

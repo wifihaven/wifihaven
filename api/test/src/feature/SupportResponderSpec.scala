@@ -119,6 +119,11 @@ object SupportResponderSpec
       plain: PlainClient.Recorder,
       github: GithubIssueClient.Recorder,
       dispatch: CloudAgentDispatcher.Recorder,
+      // #2471: the responder itself, so a spec can assert the resolved `WebhookOutcome` — the
+      // `support_ai_draft_total{outcome}` LABEL — and not just the HTTP status. The route
+      // deliberately answers 200 for both a DELIVERED and an UNDELIVERED reject (Plain must not
+      // retry-storm), so the status cannot tell the two apart; the outcome is the only signal.
+      responder: SupportResponder,
   )
 
   private def makeRoutes(
@@ -169,7 +174,7 @@ object SupportResponderSpec
         Notifier.logOnly,
         RateLimiter.allowAll,
       )
-    } yield (SupportAgentRoutes.routes(responder), Stubs(plainRec, ghRec, dispRec))
+    } yield (SupportAgentRoutes.routes(responder), Stubs(plainRec, ghRec, dispRec, responder))
 
   // #2408: the reply path's acceptance requires the Plain client faked at the HTTP BOUNDARY only
   // (not the recorder), so a full-stack test can assert the LIVE client emits `replyToThread` against
@@ -638,6 +643,42 @@ object SupportResponderSpec
         // Generic wording — names no account, points at the authenticated intake paths.
         threads.head.markdown.contains("registered customers"),
         threads.head.markdown.contains("app.wifihaven.net"),
+      )
+    },
+    test("#2471: a static reject whose Plain send FAILS never reports a completed reject") {
+      for {
+        _               <- cleanDb
+        (_, stubs)      <- makeRoutes(liveCfg)
+        // The live failure this pins (staging, 2026-07-26): the Plain workspace had email SENDING
+        // disabled, so every `replyToThread` came back `"Emails are not enabled for this
+        // workspace"`. The write is attempted and refused — `PlainOutcome.Error`.
+        _               <- stubs.plain.writeFails.set(true)
+        body = threadCreatedPayload(Some("spammer@evil.example"), "th_email_send_fail")
+        outcome         <- stubs.responder.handleWebhook(body, Some(sign(body)))
+        threads         <- stubs.plain.threads.get
+        dispatches      <- stubs.dispatch.dispatches.get
+      } yield assertTrue(
+        // The reject was still DECIDED and ATTEMPTED — this is a delivery failure, not a
+        // policy change. No AI call either way (the #2307 token-burn guard is untouched).
+        threads.size == 1,
+        dispatches.isEmpty,
+        // The load-bearing pin: an undelivered reject must NEVER wear the success label. Before
+        // #2471 this returned EmailUnregisteredRejected unconditionally, so the metric and the
+        // dashboard showed a healthy reject path while ZERO rejects were delivered.
+        outcome != SupportResponder.WebhookOutcome.EmailUnregisteredRejected,
+        // Bounded metric label — an enum case, never a synthesized string (thread id, address).
+        SupportResponder.WebhookOutcome.label(outcome) == "email_reject_send_failed",
+      )
+    },
+    test("#2471 regression pin: a reject Plain ACCEPTS still reports the completed-reject outcome") {
+      for {
+        _          <- cleanDb
+        (_, stubs) <- makeRoutes(liveCfg)
+        body = threadCreatedPayload(Some("spammer@evil.example"), "th_email_send_ok")
+        outcome    <- stubs.responder.handleWebhook(body, Some(sign(body)))
+      } yield assertTrue(
+        outcome == SupportResponder.WebhookOutcome.EmailUnregisteredRejected,
+        SupportResponder.WebhookOutcome.label(outcome) == "email_unregistered_rejected",
       )
     },
     test("#2307: a registered NON-ADMIN new thread is NOT admitted — it gets the static reject") {
