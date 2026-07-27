@@ -518,8 +518,11 @@ object MetricGuard {
     // #2200 — the Claude support responder (dark until keys set). `support_ai_draft_total{outcome}`
     // (the #2200-specified series name, kept though v1 sends replies rather than drafts)
     // counts each inbound Plain webhook by a bounded enum (dispatched | email_registered_dispatched
-    // | email_unregistered_rejected | skipped_unauthenticated | rate_limited | invalid_signature |
-    // malformed | disabled | error) — `dispatched` is a UI-origin thread, `email_registered_dispatched`
+    // | email_unregistered_rejected | email_reject_send_failed | skipped_unauthenticated |
+    // skipped_not_inbound | rate_limited | invalid_signature | malformed | disabled | error) —
+    // `email_reject_send_failed` (#2471) is that same static reject DECIDED but REFUSED by Plain, so
+    // the customer got nothing (expect a flat zero); `skipped_not_inbound` is the #2403 loop guard.
+    // `dispatched` is a UI-origin thread, `email_registered_dispatched`
     // a #2307 registered-admin-email new thread admitted to the AI, `email_unregistered_rejected` a
     // #2307 unregistered new email that got the fixed static reject (NO AI/token burn),
     // `skipped_unauthenticated` a continuation with no resolvable tenant, `rate_limited` the
