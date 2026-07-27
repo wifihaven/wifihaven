@@ -431,7 +431,8 @@ final case class SupportResponder(
                 // #2461: the created issue's identity rides back out so the agent can offer the
                 // customer a link. The metric label stays the bounded `ok` — never the number.
                 case IssueOutcome.Filed(ref) =>
-                  done("issue", AgentActionResult.Ok)
+                  AppMetrics
+                    .supportAgentAction("issue", issueFiledOutcome(ref))
                     .as(Right(FiledIssue(ref.map(_.number), ref.map(_.url))))
                 case IssueOutcome.Disabled   => doneE("issue", AgentActionResult.Disabled)
                 case IssueOutcome.Error      => doneE("issue", AgentActionResult.Error)
@@ -735,6 +736,17 @@ final case class SupportResponder(
 
   private def done(action: String, r: AgentActionResult): UIO[AgentActionResult] =
     AppMetrics.supportAgentAction(action, AgentActionResult.label(r)).as(r)
+
+  /**
+   * #2461 — the issue-filing success label. Both values are a SUCCESS to the agent (the issue
+   * exists either way), but "filed but GitHub's create response was unreadable" is a real
+   * degradation the operator must be able to see: the agent has no link to offer. Bounded to
+   * exactly two strings, and the ONLY place `ok_no_link` is derived. `outcome` is an already-allowed
+   * label key for `support_agent_action_total`, so this adds no series and no dashboard change —
+   * the existing support panel slices `by (op, outcome)`.
+   */
+  private def issueFiledOutcome(ref: Option[IssueRef]): String =
+    if ref.isDefined then AgentActionResult.label(AgentActionResult.Ok) else "ok_no_link"
 
   /** [[done]] for the `Either`-shaped endpoints — same single metric derivation, left-biased. */
   private def doneE[A](action: String, r: AgentActionResult): UIO[Either[AgentActionResult, A]] =

@@ -38,7 +38,9 @@ final case class IssueFileRequest(title: String, body: String, threadId: String)
 
 /**
  * A pointer to an issue in the PUBLIC target repo — safe to hand to a customer verbatim (#2461).
- * `url` is GitHub's own `html_url` (the browser link), never reconstructed from the number here.
+ * `url` is GitHub's own `html_url` (the browser link) as returned by the create call; the Live
+ * transport never reconstructs it from the number, and [[GithubIssueClient.parseCreated]] rejects
+ * any URL outside the public target repo, so "safe to show a customer" is structural.
  */
 final case class IssueRef(number: Int, url: String)
 
@@ -48,9 +50,11 @@ final case class IssueRef(number: Int, url: String)
  * back its identity — still a success, just without a link to offer.
  *
  * METRIC LABELS: the sole consumer ([[SupportResponder.agentFileIssue]]) collapses each case to a
- * bounded `AgentActionResult` and meters `AgentActionResult.label` — so the outcome LABEL is one of
- * three fixed strings whatever the payload. The [[IssueRef]] is response data only: never put an
- * issue number in a metric label (unbounded cardinality — docs/process/instrumentation.md).
+ * bounded label — the `AgentActionResult.label` strings for the failure cases, plus `ok_no_link`
+ * for a [[Filed]] with no readable ref (`SupportResponder.issueFiledOutcome`, the one place that
+ * derivation lives). The label space stays a small fixed set whatever the payload: the [[IssueRef]]
+ * is response data only — never put an issue number in a metric label (unbounded cardinality —
+ * docs/process/instrumentation.md).
  *
  * Shaped for #2458: a future "matched an existing issue instead of creating a duplicate" case adds
  * a constructor carrying the same [[IssueRef]], so the customer is pointed at the canonical issue
@@ -118,13 +122,24 @@ object GithubIssueClient {
     given JsonDecoder[CreatedIssue] = DeriveJsonDecoder.gen[CreatedIssue]
   }
 
+  /** The one prefix an issue URL may have if we are going to show it to a customer. */
+  private val PublicIssuePrefix: String = s"https://github.com/$Repo/issues/"
+
   /**
    * #2461 — read the created issue's identity out of GitHub's 2xx body. Pure and total: any body we
    * cannot read (truncated, non-JSON, either field absent) yields None, so the agent falls back to
    * "filed, no link" rather than quoting a link we invented.
+   *
+   * The URL is additionally required to sit under [[PublicIssuePrefix]]. The request always targets
+   * [[Repo]] so this holds in practice — the check makes "the link we hand a customer points at our
+   * public repo" a property of the code rather than of a comment.
    */
   def parseCreated(body: String): Option[IssueRef] =
-    body.fromJson[CreatedIssue].toOption.map(c => IssueRef(c.number, c.htmlUrl))
+    body
+      .fromJson[CreatedIssue]
+      .toOption
+      .filter(_.htmlUrl.startsWith(PublicIssuePrefix))
+      .map(c => IssueRef(c.number, c.htmlUrl))
 
   /**
    * Live GitHub transport. One blocking HTTPS POST to the REST create-issue endpoint (same
@@ -193,8 +208,18 @@ object GithubIssueClient {
       // out of GitHub's response, so specs can assert what the agent is told.
       rec.issues.updateAndGet(_ :+ sanitize(req)).map { recorded =>
         val n = RecorderFirstIssueNumber + recorded.size - 1
-        IssueOutcome.Filed(Some(IssueRef(n, s"https://github.com/$Repo/issues/$n")))
+        IssueOutcome.Filed(Some(IssueRef(n, s"$PublicIssuePrefix$n")))
       }
+  }
+
+  /**
+   * Test client for the OTHER #2461 branch: GitHub accepted the filing but its response was
+   * unreadable, so there is no link to offer. Behaviourally a success — the route must still answer
+   * 200, just without `number`/`url`.
+   */
+  val filedWithoutRef: GithubIssueClient = new GithubIssueClient {
+    def fileIssue(req: IssueFileRequest): UIO[IssueOutcome] =
+      ZIO.succeed(IssueOutcome.Filed(None))
   }
 
   def recorder: UIO[Recorder] = Ref.make(List.empty[IssueFileRequest]).map(Recorder.apply)

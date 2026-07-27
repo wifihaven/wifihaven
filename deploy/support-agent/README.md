@@ -99,8 +99,12 @@ the only knobs are the flag and the token.
 
 `POST /api/support/agent/issues` answers `{"ok":true,"number":2455,"url":"https://github.com/..."}`
 (#2461) — parsed out of GitHub's create-issue response, so the agent can point the customer at the
-tracking issue in the **public** repo. `number`/`url` are absent if GitHub's body was unreadable;
-that is still a successful filing, and the agent is instructed never to invent a link. The agent
+tracking issue in the **public** repo (a `html_url` outside `wifihaven/wifihaven` is rejected, so
+"safe to show a customer" is structural, not trusted). `number`/`url` are absent if GitHub's body was
+unreadable; that is still a successful filing, and the agent is instructed never to invent a link —
+it meters as `support_agent_action_total{op="issue",outcome="ok_no_link"}`, a bounded extra value on
+the existing series that surfaces on the support dashboard's `by (op, outcome)` panel, so a
+systematic unreadable-body regression is not silent. The agent
 offers the link **only when the customer asked** for something to be filed — an unrequested
 "I filed #2455" reads as noise and implies a fix commitment we have not made.
 
