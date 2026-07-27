@@ -1,5 +1,6 @@
 import { apiHealth } from '@/api/apiHealth'
 import { setMustChangePassword } from '@/api/mustChangePassword'
+import { ACCOUNT_PATH } from '@/routes'
 import type {
   AcceptInviteRequest, AcceptInviteResponse, ApproveBetaResponse, BetaRequestAck, BetaRequestStatus, BetaRequestSummary, CreateBetaRequest,
   ForgotPasswordAck, ForgotPasswordRequest, ResetPasswordRequest, ResetPasswordResponse,
@@ -81,9 +82,14 @@ export class PasswordChangeRequiredError extends ForbiddenError {
   }
 }
 
-// The route hosting the change-password form (#586). It is the one authenticated route
-// reachable while the flag is set, so it is also the one route we must never bounce off.
-const CHANGE_PASSWORD_PATH = '/account'
+// `/account` hosts the change-password form (#586) — the one authenticated route reachable while
+// the flag is set, so the one route we must never bounce off. Shared with App.tsx's route + guard
+// via ACCOUNT_PATH so the three can't drift apart.
+// A trailing slash is stripped so `/account/` counts as "already there": the browser treats the two
+// as the same page, and an exact compare would re-enter the hard navigation — the #2492 loop.
+function isOnChangePasswordPage(): boolean {
+  return window.location.pathname.replace(/\/+$/, '') === ACCOUNT_PATH
+}
 
 async function req<T>(
   method: string,
@@ -146,6 +152,10 @@ async function req<T>(
     // 401 is an auth-state outcome, not an API-down signal. The API answered.
     apiHealth.reportSuccess()
     localStorage.removeItem('token')
+    // #2492: the session is gone, so the forced-change state goes with it — otherwise the next
+    // AuthProvider mount comes up with the flag set and no session behind it. Login rewrites it
+    // from the server's answer anyway; this just closes the window.
+    setMustChangePassword(false)
     window.location.href = '/login'
     throw new Error('Unauthorised')
   }
@@ -165,8 +175,8 @@ async function req<T>(
       // and those 403 while the flag is set — so assigning location.href here reloads the page
       // the user is already on, remounting the layout, 403ing again: an infinite reload loop
       // that made the form unusable. Landing there once is enough; the page reads the flag.
-      if (window.location.pathname !== CHANGE_PASSWORD_PATH) {
-        window.location.href = CHANGE_PASSWORD_PATH
+      if (!isOnChangePasswordPage()) {
+        window.location.href = ACCOUNT_PATH
       }
       throw new PasswordChangeRequiredError()
     }

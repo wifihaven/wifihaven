@@ -10,13 +10,11 @@ export function AccountPage() {
   const [newPassword, setNewPassword]         = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [error,   setError]   = useState('')
-  const [success, setSuccess] = useState(false)
   const [loading, setLoading] = useState(false)
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setError('')
-    setSuccess(false)
 
     if (newPassword !== confirmPassword) {
       setError('New password and confirmation do not match')
@@ -34,10 +32,6 @@ export function AccountPage() {
     setLoading(true)
     try {
       await api.auth.changePassword(currentPassword, newPassword)
-      setSuccess(true)
-      setCurrentPassword('')
-      setNewPassword('')
-      setConfirmPassword('')
       // #2492: the rotation bumps token_version server-side (#2080), so the JWT this session
       // is holding is revoked the instant the change lands. Navigating into the app (the old
       // `navigate('/dashboard')`) therefore always ended in a bare 401 bounce to /login with
@@ -111,11 +105,6 @@ export function AccountPage() {
           {error && (
             <div className="bg-red-500/10 border border-red-500/20 rounded-lg px-4 py-3 text-red-700 text-sm">
               {error}
-            </div>
-          )}
-          {success && (
-            <div className="bg-brand-accent/10 border border-brand-accent/20 rounded-lg px-4 py-3 text-brand-accent text-sm">
-              Password updated.
             </div>
           )}
 

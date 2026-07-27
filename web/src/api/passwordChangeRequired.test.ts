@@ -8,7 +8,7 @@
 // reload loop. That is the observed "page flashes and the password can never be changed".
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { api, isForbiddenError } from './client'
-import { readMustChangePassword } from './mustChangePassword'
+import { readMustChangePassword, setMustChangePassword } from './mustChangePassword'
 
 function forbiddenPasswordChange(): Response {
   return {
@@ -60,6 +60,16 @@ describe('password_change_required 403 (#2492)', () => {
     expect(window.location.href).toBe('/account')
   })
 
+  // The browser treats /account and /account/ as the same page, so an exact compare would
+  // re-enter the hard navigation and reinstate the loop on a trailing-slash URL.
+  it('treats a trailing-slash /account/ as already being on the page', async () => {
+    stubLocation('/account/')
+
+    await expect(api.auth.me()).rejects.toThrow()
+
+    expect(window.location.href).toBe('')
+  })
+
   it('is a typed forbidden error so React Query never hot-retries it (#2069)', async () => {
     stubLocation('/account')
 
@@ -74,5 +84,23 @@ describe('password_change_required 403 (#2492)', () => {
     await expect(api.auth.me()).rejects.toThrow()
 
     expect(readMustChangePassword()).toBe(true)
+  })
+
+  // The session is gone, so the forced-change state goes with it — otherwise the next
+  // AuthProvider mount comes up with the flag set and no session behind it.
+  it('a 401 clears the persisted flag along with the token', async () => {
+    stubLocation('/account')
+    setMustChangePassword(true)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      headers: new Headers(),
+      text: () => Promise.resolve('Unauthorised'),
+    } as unknown as Response))
+
+    await expect(api.auth.me()).rejects.toThrow()
+
+    expect(readMustChangePassword()).toBe(false)
+    expect(localStorage.getItem('token')).toBeNull()
   })
 })

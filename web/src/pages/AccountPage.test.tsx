@@ -96,18 +96,17 @@ describe('AccountPage — must-change-password banner', () => {
 })
 
 describe('AccountPage — password change', () => {
-  it('calls api.auth.changePassword and clears fields on success', async () => {
+  // #2492: success no longer leaves the user on this page — the rotation revokes the session's
+  // JWT (#2080), so the page signs out and hands off to /login, which carries the confirmation.
+  // AccountPage.firstLogin.test.tsx pins the redirect end-to-end through the real AuthProvider.
+  it('calls api.auth.changePassword and signs out on success', async () => {
     const user = userEvent.setup()
     renderPage()
     await fillFields(user, 'oldpass12', 'newpass34', 'newpass34')
     await user.click(screen.getByRole('button', { name: /Update password/ }))
 
     await waitFor(() => expect(api.auth.changePassword).toHaveBeenCalledWith('oldpass12', 'newpass34'))
-    expect(await screen.findByText(/Password updated/)).toBeInTheDocument()
-    const inputs = document.querySelectorAll('input[type="password"]')
-    expect((inputs[0] as HTMLInputElement).value).toBe('')
-    expect((inputs[1] as HTMLInputElement).value).toBe('')
-    expect((inputs[2] as HTMLInputElement).value).toBe('')
+    expect(mockAuth.logout).toHaveBeenCalled()
   })
 
   it('rejects when new and confirm do not match', async () => {

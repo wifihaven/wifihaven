@@ -26,7 +26,6 @@ interface AuthContextValue extends AuthState {
     password: string,
   ) => Promise<{ mustChangePassword: boolean }>
   logout: () => void
-  clearMustChangePassword: () => void
   isAdmin: boolean
   isAdult: boolean      // admin or adult — can edit linked profiles
   isChild: boolean
@@ -85,12 +84,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setState({ token: null, username: null, role: null, mustChangePassword: false })
   }, [])
 
-  // Called by AccountPage after a successful password change to allow navigation.
-  const clearMustChangePassword = useCallback(() => {
-    setMustChangePassword(false)
-    setState(prev => ({ ...prev, mustChangePassword: false }))
-  }, [])
-
   const isAdmin = state.role === 'admin'
   const isAdult = state.role === 'admin' || state.role === 'adult'
   const isChild = state.role === 'child'
@@ -100,7 +93,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       ...state,
       login,
       logout,
-      clearMustChangePassword,
       isAdmin,
       isAdult,
       isChild,

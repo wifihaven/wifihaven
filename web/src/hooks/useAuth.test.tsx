@@ -148,14 +148,6 @@ describe('useAuth — mustChangePassword persistence (#2492)', () => {
     expect(readMustChangePassword()).toBe(false)
   })
 
-  it('clearMustChangePassword clears the persisted flag too', () => {
-    setMustChangePassword(true)
-    const { result } = renderHook(() => useAuth(), { wrapper })
-    act(() => { result.current.clearMustChangePassword() })
-    expect(result.current.mustChangePassword).toBe(false)
-    expect(readMustChangePassword()).toBe(false)
-  })
-
   it('logout clears the persisted flag', () => {
     localStorage.setItem('token', 't')
     setMustChangePassword(true)
