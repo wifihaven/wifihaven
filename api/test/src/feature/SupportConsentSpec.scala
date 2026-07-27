@@ -668,7 +668,7 @@ object SupportConsentSpec
       )
       // A regression in the runner (inline again, or dropped) parks or never signals; without this
       // the suite would stall unattributed instead of failing named. The budget covers this test's
-      // whole body — including the `cleanDb` template clone — so it is set well above the ~20s the
+      // whole body — including the `cleanDb` template clone — so it is set well above what the
       // suite's other DB-cloning tests take, not tuned to the assertion; a KVM-host-contention
       // slowdown (the #2394 class) must not turn it red on its own.
     } @@ TestAspect.timeout(60.seconds),
@@ -769,7 +769,9 @@ object SupportConsentSpec
         // Prompt + nudge: the cheap fallback survives the cap…
         writes2.size == 2,
         writes2.last.markdown == SupportResponder.consentGrantedNudge,
-        // …and the cap still does its job — no session was started for it.
+        // …and the nudge path starts no session of its own — which is what makes the write above
+        // mean "nudge", not "answer". (It never reaches the caps: they wrap the re-dispatch branch,
+        // and an unreadable timeline never gets there.)
         redisp2.isEmpty,
       )
     },
