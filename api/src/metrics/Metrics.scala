@@ -841,9 +841,11 @@ object AppMetrics {
   def supportIdentity(outcome: String): UIO[Unit] =
     MetricGuard.counter("support_widget_identity_total", Map("outcome" -> outcome))
 
-  // #2435 — emitted from PlainClient (where the reason is known), NOT from SupportService. `reason`
-  // attributes the outcome: ok | reconciled | email_collision | permission | schema | error |
-  // disabled — bounded, never per-household / per-email.
+  // #2435 — emitted from PlainClient (where the reason is known), NOT from SupportService.
+  // `reason` is bounded and never per-household / per-email. The VALUES are defined once, in
+  // `PlainClient.CustomerReason` — that object is the source; every other listing (the
+  // MetricGuard.Allowed comment above, the Grafana panel descriptions) is a copy that has to be
+  // updated with it. Adding a value needs no MetricGuard change: `Allowed` gates label KEYS.
   def supportCustomerUpsert(outcome: String, reason: String): UIO[Unit] =
     MetricGuard.counter(
       "support_customer_upsert_total",
