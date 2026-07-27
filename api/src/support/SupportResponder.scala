@@ -463,8 +463,11 @@ final case class SupportResponder(
    * One INFO line per webhook delivery: the bounded [[WebhookOutcome]] label plus, when a parsed
    * event is available, the Plain `threadId` and `eventType` — both bounded, non-PII (the mint log
    * already establishes `thread=<id>` as loggable). Pre-parse outcomes (InvalidSignature /
-   * Malformed / Disabled) carry no event, so both correlation fields log as `-`. NEVER the message
-   * text, customer email, or any customer content (UNTRUSTED PII — see the class comment).
+   * Malformed, and `Disabled` when it comes from the responder-dark short-circuit) carry no event,
+   * so both correlation fields log as `-`. `Disabled` is NOT always pre-parse: since #2471 a dark
+   * Plain write half also resolves to it from `staticReject`, which runs post-parse, so a
+   * `disabled` line CAN carry a populated `thread=` / `eventType=`. NEVER the message text,
+   * customer email, or any customer content (UNTRUSTED PII — see the class comment).
    */
   private def logWebhookOutcome(o: WebhookOutcome, event: Option[PlainNewMessageEvent]): UIO[Unit] =
     ZIO.logInfo(
@@ -1282,11 +1285,13 @@ object SupportResponder {
     case Malformed
 
     /**
-     * An EXPLICIT named flag is off, so nothing was attempted. TWO producers, both deliberate:
-     * `responderEnabled=false` (the whole responder is dark — `handleWebhook`'s first branch), and
-     * `plain.writeEnabled=false` (the responder runs but the Plain write half is dark, so a static
-     * reject is decided and not sent). Never a failure — a REFUSED send is
-     * [[EmailRejectSendFailed]].
+     * An EXPLICIT named flag is off, so nothing was attempted. TWO deliberate CAUSES:
+     * `responderEnabled=false` (the whole responder is dark) and `plain.writeEnabled=false` (the
+     * responder runs but the Plain write half is dark, so a static reject is decided and not sent).
+     * Not a list of code sites — the first cause reaches this from `handleWebhook`'s short-circuit
+     * AND, defensively, from the dispatcher's own `Disabled` outcome, which
+     * `CloudAgentDispatcher.transportFor` gates on that same flag. Never a failure — a REFUSED send
+     * is [[EmailRejectSendFailed]].
      */
     case Disabled
 

@@ -172,9 +172,11 @@ Three things together mean it worked:
   success label).
 - **No** `WARN … plain replyToThread failed` line, and no `ERROR … plain reject send FAILED`.
   Search for `PlainClient` and expect nothing.
-- If you instead see `outcome=disabled`, this is **our** flag, not Plain's: the responder is
-  running but its Plain write half is off. Check `WIFIHAVEN_SUPPORT_WRITE_ENABLED` for that
-  service in `render.yaml` — §3.1 cannot fix it.
+- If you instead see `outcome=disabled`, the cause is one of **our** flags, not Plain's, and
+  §3.1 cannot fix either. Two producers: `WIFIHAVEN_SUPPORT_RESPONDER_ENABLED=false` (the whole
+  responder is dark — the likelier one on a fresh environment) or
+  `WIFIHAVEN_SUPPORT_WRITE_ENABLED=false` (the responder runs but its Plain write half is off, so
+  the reject is decided and never sent). Check both for that service in `render.yaml`.
 - A `eventType=thread.email_sent` webhook on the same thread — Plain only emits that when
   a message actually leaves. This is the strongest signal; prefer it over the absence of
   an error.

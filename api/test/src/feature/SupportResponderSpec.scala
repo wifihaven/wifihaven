@@ -652,7 +652,7 @@ object SupportResponderSpec
         // The live failure this pins (staging, 2026-07-26): the Plain workspace had email SENDING
         // disabled, so every `replyToThread` came back `"Emails are not enabled for this
         // workspace"`. The write is attempted and refused — `PlainOutcome.Error`.
-        _          <- stubs.plain.writeFails.set(true)
+        _          <- stubs.plain.writeOutcome.set(PlainOutcome.Error)
         body = threadCreatedPayload(Some("spammer@evil.example"), "th_email_send_fail")
         outcome    <- stubs.responder.handleWebhook(body, Some(sign(body)))
         threads    <- stubs.plain.threads.get
@@ -682,7 +682,7 @@ object SupportResponderSpec
         // `responderEnabled=true` + `writeEnabled=false` boots. It must NOT light the
         // "Plain REFUSED to send" tile or send an operator to Plain's email settings.
         (_, stubs) <- makeRoutes(liveCfg)
-        _          <- stubs.plain.writeDisabled.set(true)
+        _          <- stubs.plain.writeOutcome.set(PlainOutcome.Disabled)
         body = threadCreatedPayload(Some("spammer@evil.example"), "th_email_write_dark")
         outcome <- stubs.responder.handleWebhook(body, Some(sign(body)))
         threads <- stubs.plain.threads.get
