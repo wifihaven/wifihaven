@@ -146,14 +146,12 @@ object PressAgentDispatcher {
     val envLine  =
       if deploymentEnv.nonEmpty then s"Deployment: $deploymentEnv." else "Deployment: unspecified."
     // The sender address + subject are attacker-controlled (any From: / Subject:) and land in the
-    // kickoff's instruction zone — flatten newlines and neutralize tags so a hostile value can't
-    // fake an instruction line or open/close the data frame (#2261 review pattern). Length-capped.
-    val safeFrom = ManagedAgents
-      .neutralizeTags(req.from.replace('\n', ' ').replace('\r', ' '))
-      .take(160)
-    val safeSubj = ManagedAgents
-      .neutralizeTags(req.subject.replace('\n', ' ').replace('\r', ' '))
-      .take(200)
+    // kickoff's instruction zone — so both go through the SHARED untrusted-single-line renderer
+    // (flatten CR/LF, neutralize tags, trim, cap), and a hostile value can't fake an instruction
+    // line or open/close the data frame (#2261 review pattern). One definition, so the support and
+    // press paths can't drift on their injection guard (#2481 review).
+    val safeFrom = ManagedAgents.safeLine(req.from, 160)
+    val safeSubj = ManagedAgents.safeLine(req.subject, 200)
     // Neutralize delimiter breakout: a message containing the literal tag would otherwise escape
     // the data frame. Square-bracket both tag forms (#2261 review finding).
     val safeMsg  = ManagedAgents.neutralizeTags(req.pressMessage)

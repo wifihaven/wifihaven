@@ -135,7 +135,7 @@ object PlainWebhook {
             tenantIdentifier = tenant,
             actorType = actorType(inner, thread),
             messageText = messageText(inner),
-            subject = messageSubject(inner, thread),
+            subject = messageSubject(inner),
           ),
         )
       case _              => None
@@ -205,21 +205,24 @@ object PlainWebhook {
   // Carrier verified against Plain's published webhook schema
   // (`core-api.uk.plain.com/webhooks/schema/latest.json`, fetched 2026-07-26):
   // `threadEmailReceivedPublicEventPayload = {eventType, thread, email}` and `email.subject` is
-  // `{"type": ["string","null"]}`. `thread.title` is a REQUIRED string on every thread payload and
-  // Plain titles an EMAIL thread from its subject, so it is a sound fallback for a null/absent
-  // subject — but ONLY on a payload that carries an `email` component. On a CHAT thread the title
-  // is derived from the first chat message, so falling back there would just duplicate the body
-  // back as a fake subject. `chat` has no subject-shaped field at all ⇒ chat events yield None.
+  // `{"type": ["string","null"]}` — the one authoritative subject carrier. `chat` has no
+  // subject-shaped field at all (`{timelineEntryId, id, customerReadAt, text, attachments, …}`), so
+  // a chat event yields None.
+  //
+  // `thread.title` is deliberately NOT a fallback (#2481 review). It is a REQUIRED string on every
+  // thread payload, but the schema says nothing about how Plain DERIVES it, and it is not the
+  // customer's subject: a thread opened by chat and later continued by email, or one an operator
+  // retitled ("angry customer — refund"), would hand the agent someone else's words labeled
+  // `Subject:` — which it can then quote back in an autonomously-sent reply. A null subject is a
+  // subject-less email; we render no label rather than guess.
   //
   // UNTRUSTED, exactly like [[messageText]]: quoted to Claude as data inside the
   // `<customer_message>` frame (CloudAgentDispatcher.kickoffPrompt), never as instructions.
-  private def messageSubject(inner: Json.Obj, thread: Option[Json.Obj]): Option[String] =
-    objField(inner, "email").flatMap { email =>
-      str(email, "subject")
-        .map(_.trim)
-        .filter(_.nonEmpty)
-        .orElse(thread.flatMap(t => str(t, "title")).map(_.trim).filter(_.nonEmpty))
-    }
+  private def messageSubject(inner: Json.Obj): Option[String] =
+    objField(inner, "email")
+      .flatMap(email => str(email, "subject"))
+      .map(_.trim)
+      .filter(_.nonEmpty)
 
   private def firstComponentText(inner: Json.Obj): Option[String] =
     objField(inner, "timelineEntry")

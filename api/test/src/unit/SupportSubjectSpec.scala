@@ -13,12 +13,14 @@ import zio.test.*
  * The carrier is VERIFIED against Plain's published webhook schema
  * (`core-api.uk.plain.com/webhooks/schema/latest.json`, fetched 2026-07-26):
  *   - `threadEmailReceivedPublicEventPayload` = `{eventType, thread, email}`, and `email.subject`
- *     is `{"type": ["string", "null"]}` — the real, nullable subject carrier;
- *   - `thread.title` is a REQUIRED `string` on every thread payload — a usable fallback on an email
- *     event (Plain titles an email thread from its subject), but NOT a subject on a chat thread,
- *     where the title is derived from the first chat message. So the fallback is scoped to payloads
- *     that carry an `email` component; a `chat`-only payload yields no subject at all.
- *   - `chat` has no subject-shaped field (`{timelineEntryId, id, customerReadAt, text, …}`).
+ *     is `{"type": ["string", "null"]}` — the one authoritative, nullable subject carrier;
+ *   - `chat` has no subject-shaped field (`{timelineEntryId, id, customerReadAt, text, …}`), so a
+ *     chat event carries no subject at all.
+ *
+ * `thread.title` is deliberately NOT used as a fallback: the schema documents that it exists, never
+ * how Plain derives it, and it is not the customer's subject — a chat-opened thread continued by
+ * email, or one an operator retitled, would present someone else's words as the customer's subject
+ * (which the agent can quote back in an autonomously-sent reply). Pinned below.
  *
  * SECURITY: the subject is fully customer/attacker-controlled — the same untrusted class as the
  * body. It rides INSIDE the `<customer_message>` frame, newline-flattened, tag-neutralized and
@@ -115,19 +117,27 @@ object SupportSubjectSpec extends ZIOSpecDefault {
         k.exists(!_.contains("Subject:")),
       )
     },
-    test("a blank/whitespace subject renders no label either") {
+    test("a whitespace-only subject is no subject — and renders no label") {
       val event = parse(emailPayload(Some("   "), "the body"))
+      val k     = event.toOption.map(e => kickoff(e.subject, e.messageText))
       assertTrue(
-        // a whitespace-only subject is no subject — but the thread title on an EMAIL event is a
-        // legitimate fallback (Plain titles email threads from the subject).
-        event.map(_.subject) == Right(Some("Re: something")),
-        !kickoff(None, "the body").contains("Subject:"),
-        kickoff(None, "the body").contains("<customer_message>\nthe body\n</customer_message>"),
+        event.map(_.subject) == Right(None),
+        k.exists(!_.contains("Subject:")),
+        k.exists(_.contains("<customer_message>\nthe body\n</customer_message>")),
       )
     },
-    test("an email with no subject key at all falls back to the thread title") {
+    test("an email with NO subject key does NOT fall back to the thread title") {
+      // The thread title is not the customer's subject: a chat-opened thread continued by email, or
+      // one an operator retitled, would hand the agent someone else's words labeled `Subject:` —
+      // which the agent can quote back in an autonomously-sent reply. `email.subject` is the only
+      // authoritative carrier, so a subject-less email renders no label at all. (The payload here
+      // DOES carry `thread.title = "Re: something"`.)
+      val event = parse(emailPayload(None, "the body"))
+      val k     = event.toOption.map(e => kickoff(e.subject, e.messageText))
       assertTrue(
-        parse(emailPayload(None, "the body")).map(_.subject) == Right(Some("Re: something")),
+        event.map(_.subject) == Right(None),
+        k.exists(!_.contains("Subject:")),
+        k.exists(!_.contains("Re: something")),
       )
     },
 
@@ -161,9 +171,15 @@ object SupportSubjectSpec extends ZIOSpecDefault {
         k.endsWith("</customer_message>"),
       )
     },
-    test("an absurdly long subject is capped") {
+    test("an absurdly long subject is capped, and says it was truncated") {
       val k = kickoff(Some("s" * (CloudAgentDispatcher.MaxSubjectChars * 3)), "hello")
-      assertTrue(!k.contains("s" * (CloudAgentDispatcher.MaxSubjectChars + 1)))
+      assertTrue(
+        !k.contains("s" * (CloudAgentDispatcher.MaxSubjectChars + 1)),
+        // marked, like an over-long history turn — the agent must not read the cut as the whole
+        // subject.
+        k.contains("…[truncated]"),
+        k.endsWith("</customer_message>"),
+      )
     },
   )
 }

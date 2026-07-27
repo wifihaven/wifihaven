@@ -183,24 +183,26 @@ object CloudAgentDispatcher {
     // customer text can never open or close a <customer_message> frame itself.
     val safeMsg  = neutralizeTags(req.customerMessage)
     // #2481: the email subject, when there is one. It is customer-controlled to exactly the same
-    // degree as the body, so it gets the same treatment plus a newline flatten (a subject is a
-    // single line by definition, and multi-line text inside the frame could otherwise be dressed up
-    // as an instruction line) and a length cap. Rendered as a `Subject:` line INSIDE the
-    // `<customer_message>` frame — never above it, and never in a value treated as trusted (the
-    // session title stays the thread id). Absent/blank ⇒ NO label at all: the frame is byte-identical
-    // to the pre-#2481 rendering, which is what a chat message still gets.
+    // degree as the body, so it goes through the SHARED untrusted-single-line renderer
+    // ([[ManagedAgents.safeLine]]: flatten CR/LF — a subject is one line by definition, and
+    // multi-line text inside the frame could otherwise be dressed up as an instruction line — then
+    // neutralize, trim, cap). Rendered as a `Subject:` line INSIDE the `<customer_message>` frame:
+    // never above it, and never in a value treated as trusted (the session title stays the thread
+    // id). Absent/blank ⇒ NO label at all, so the frame is byte-identical to the pre-#2481
+    // rendering — which is what a chat message still gets. A capped subject says so, the same way
+    // an over-long history turn does, so the agent never reads a truncation as the whole subject.
     val subject  = req.subject
-      .map(s => neutralizeTags(s.replace('\n', ' ').replace('\r', ' ')).trim.take(MaxSubjectChars))
+      .map(s => ManagedAgents.safeLine(s, MaxSubjectChars))
       .filter(_.nonEmpty)
+      .map(s => if s.length == MaxSubjectChars then s"$s…[truncated]" else s)
       .map(s => s"Subject: $s\n\n")
       .getOrElse("")
     // The household name is ALSO customer-controlled (typed on the public beta-request form) and is
-    // interpolated into the kickoff's instruction zone — flatten newlines and neutralize tags so a
-    // hostile name can't fake an instruction line or open/close the data frame (#2261 review,
-    // run 3). Length-capped as defense-in-depth; a real household name is never this long.
-    val safeName = neutralizeTags(
-      req.householdName.replace('\n', ' ').replace('\r', ' '),
-    ).take(120)
+    // interpolated into the kickoff's instruction zone — so it goes through the same shared
+    // untrusted-single-line renderer, and a hostile name can't fake an instruction line or
+    // open/close the data frame (#2261 review, run 3). Length-capped as defense-in-depth; a real
+    // household name is never this long.
+    val safeName = ManagedAgents.safeLine(req.householdName, 120)
     // #2430: the bounded, role-labeled transcript of what came BEFORE this message (empty on a
     // first message — and on any degraded read, so a Plain hiccup just costs context).
     val history  = renderHistory(req.history)
@@ -266,9 +268,11 @@ object CloudAgentDispatcher {
   val MaxMessageChars: Int = 1500
 
   /**
-   * #2481 — at most this many characters of email SUBJECT reach the kickoff. Plain's schema caps a
-   * thread title at 500 chars and RFC-5322 subjects are conventionally far shorter; the cap is
-   * defense-in-depth so a hostile subject can't pad the prompt.
+   * #2481 — at most this many characters of email SUBJECT reach the kickoff. This is a CHOSEN
+   * prompt budget, not a value derived from any source: Plain's schema puts no `maxLength` on
+   * `email.subject` at all, so there is nothing upstream to inherit. It exists purely so a hostile
+   * subject cannot pad the prompt; a real subject is nowhere near it, and a truncated one is marked
+   * as truncated rather than silently shortened.
    */
   val MaxSubjectChars: Int = 300
 

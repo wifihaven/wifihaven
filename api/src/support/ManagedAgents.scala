@@ -65,6 +65,24 @@ object ManagedAgents {
       m => Regex.quoteReplacement(s"[${grp(m, 1)}${grp(m, 2)}"),
     )
 
+  /**
+   * The ONE way to render an untrusted SINGLE-LINE value (an email From, an email Subject, a
+   * household name) into a kickoff: flatten CR/LF, [[neutralizeTags]], trim, cap at `max`.
+   *
+   * Collapsed from four hand-copied copies of the same three steps across the two dispatchers
+   * (#2481 review): the copies had already drifted on `.trim`, and this is a security primitive — a
+   * hand-maintained copy of it is exactly the drift the single-source-of-truth rule forbids. The
+   * CAP stays the caller's (each site has its own budget); only the transform is shared.
+   *
+   * Order matters and is load-bearing: the newline flatten runs BEFORE neutralization (so a
+   * `<\ncustomer_message>` becomes `< customer_message>`, which the neutralizer's `\s*` still
+   * catches), and the cap runs AFTER it (neutralization never lengthens a match —
+   * `</customer_message>` → `[/customer_message]`, same length — so truncating the tail can only
+   * chop bracketed text, never re-expose a `<`).
+   */
+  def safeLine(s: String, max: Int): String =
+    neutralizeTags(s.replace('\n', ' ').replace('\r', ' ')).trim.take(max)
+
   private def grp(m: Regex.Match, i: Int): String = Option(m.group(i)).getOrElse("")
 
   // The frame delimiters the kickoffs emit: `<customer_message>` (#2261) and, since #2430, the
