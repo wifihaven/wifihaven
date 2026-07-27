@@ -118,14 +118,23 @@ final case class SupportResponder(
     escalateThreadLimiter: RateLimiter,
     // #2460: HOW the post-grant resume is run — the one thing about it that differs between
     // production and a spec. Production forks it as a DAEMON fiber so the customer's consent POST
-    // returns at once: the resume's two legs (the Plain timeline read, then the cloud-agent
-    // dispatch) are bounded only by their own transport timeouts, which together exceed the SPA's
-    // request timeout, so running it on the request fiber would let a SUCCESSFUL grant abort
-    // client-side and be reported to the customer as a broken link. A daemon fiber also survives a
-    // client disconnect, so every branch still meters exactly one `resume_*`. Specs pass `identity`
-    // to run it inline — the seam controls only WHERE the effect runs, never what it does.
-    // NOTE: this is the only parameter with a default, so it must stay LAST — every construction
-    // site (HttpRoutes, the specs) passes the ones above positionally.
+    // returns at once: the resume's two legs (the Plain timeline read at
+    // `PlainClient.HistoryTimeout`, then the cloud-agent dispatch at the transport's
+    // `RequestTimeout`) together exceed the SPA's own `REQUEST_TIMEOUT_MS` (web/src/api/client.ts),
+    // so running it on the request fiber would let a SUCCESSFUL grant abort client-side and be
+    // reported to the customer as a broken link. A daemon fiber also survives a client disconnect,
+    // so every branch still meters its `resume_*`. Specs pass `identity` to run it inline — the seam
+    // controls only WHERE the effect runs, never what it does.
+    //
+    // `forkDaemon`, NOT the `forkScoped` that #1247 moved the Main.scala background loops to: those
+    // are app-lifetime loops that must be interrupted before the Hikari pool closes, whereas this is
+    // a one-shot follow-up with no Scope in reach at the route layer. The accepted cost is a
+    // deploy-time window (bounded by the two transport timeouts) in which an in-flight resume can be
+    // interrupted or see a closing pool — the grant is already committed, so the customer keeps
+    // their consent and at worst re-asks; it is one dropped or `resume_error`-labelled sample.
+    //
+    // This is the ONLY parameter with a default, so it must stay LAST — every construction site
+    // (HttpRoutes, the specs) passes the ones above positionally.
     runResume: UIO[Unit] => UIO[Unit] = _.forkDaemon.unit,
 ) {
   import SupportResponder.*
@@ -790,9 +799,15 @@ final case class SupportResponder(
    * Bounded and non-bypassing by construction:
    *   - IDEMPOTENT per grant — the caller only runs this on a transition from no-live-grant to
    *     granted, so a repeat Allow re-dispatches nothing and cannot double-answer;
-   *   - it draws the ORDINARY dispatch caps FIRST, through the shared [[withDispatchCaps]] — a
-   *     resume is a real agent session and costs real tokens, and a capped thread pays for no reads
-   *     (same ordering as the webhook path, where the caps wrap [[dispatchFor]]);
+   *   - the ORDINARY dispatch caps are drawn through the shared [[withDispatchCaps]], but ONLY
+   *     around the branch that actually starts a session ([[redispatchAfterGrant]]) — a resume is a
+   *     real agent session and costs real tokens, while the fail-open nudge is a fixed string. The
+   *     caps are a DRAW, not a check, so gating the nudge on them would spend the shared daily AI
+   *     budget on threads that dispatch nothing (and, on a capped thread, silently swallow the
+   *     nudge). This is why the read comes before the caps here and after them on the webhook path:
+   *     there the read is on the request fiber and a capped thread must not pay for it, here the
+   *     whole resume is already off the request fiber, so a wasted Plain read costs nobody's
+   *     latency;
    *   - it does NOT trip the #2403/#2404 loop guard: that guard lives on the inbound webhook path
    *     and drops our own outbound writes, which is untouched here. The agent's eventual reply
    *     still arrives as a `thread.chat_sent` the guard drops, so the loop terminates;
@@ -812,35 +827,34 @@ final case class SupportResponder(
       g: ConsentGrant.Claims,
       now: Instant,
   ): UIO[Unit] =
-    withDispatchCaps(g.threadId)(AppMetrics.supportConsent("resume_rate_limited")) {
-      plain.threadHistory(g.threadId, PlainClient.HistoryFetchLimit).flatMap { history =>
-        // The customer's LAST turn is what we re-ask. Usually that is the unanswered question that
-        // made the agent request permission; if the customer also typed something after the prompt
-        // ("ok, approved"), that is what re-dispatches — the earlier turns ride along as history, so
-        // the agent still has the question. Everything AFTER the last customer turn is dropped,
-        // which also keeps the server's consent prompt (and its link) out of the agent's context.
-        history.lastIndexWhere(_.role == ThreadMessageRole.Customer) match {
-          case -1  => nudgeAfterGrant(g.threadId)
-          case idx =>
-            val latest = history(idx).text
-            // The prior-turns rule has ONE implementation (#2430): `priorTurns` drops a trailing
-            // customer echo of the message being dispatched, which is exactly `history.take(idx)`.
-            redispatchAfterGrant(
-              hh,
-              g.threadId,
-              latest,
-              priorTurns(history.take(idx + 1), latest),
-              now,
-            )
-        }
+    plain.threadHistory(g.threadId, PlainClient.HistoryFetchLimit).flatMap { history =>
+      // The customer's LAST turn is what we re-ask. Usually that is the unanswered question that
+      // made the agent request permission; if the customer also typed something after the prompt
+      // ("ok, approved"), that is what re-dispatches — the earlier turns ride along as history, so
+      // the agent still has the question. Everything AFTER the last customer turn is dropped,
+      // which also keeps the server's consent prompt (and its link) out of the agent's context.
+      history.lastIndexWhere(_.role == ThreadMessageRole.Customer) match {
+        case -1  => nudgeAfterGrant(g.threadId)
+        case idx =>
+          val latest = history(idx).text
+          // The prior-turns rule has ONE implementation (#2430): `priorTurns` drops a trailing
+          // customer echo of the message being dispatched, which is exactly `history.take(idx)`.
+          redispatchAfterGrant(
+            hh,
+            g.threadId,
+            latest,
+            priorTurns(history.take(idx + 1), latest),
+            now,
+          )
       }
     }
 
   /**
    * The re-dispatch itself: the customer's own last message, answered under the scope they just
-   * granted, assembled by the shared [[dispatchAgentSession]]. The caps are already drawn by
-   * [[resumeAfterGrant]] — a thread that has exhausted its per-thread cap still GRANTS (the
-   * customer's consent is never lost to a cost cap) but gets no free follow-up session. Every
+   * granted, assembled by the shared [[dispatchAgentSession]] and capped by the shared
+   * [[withDispatchCaps]] — a thread that has exhausted its per-thread cap still GRANTS (the
+   * customer's consent is never lost to a cost cap) but gets no free follow-up session. The caps
+   * wrap THIS branch only: they are a draw, so the fixed-string nudge must not spend one. Every
    * branch meters, so `granted` and `resume_*` always pair up.
    */
   private def redispatchAfterGrant(
@@ -850,37 +864,39 @@ final case class SupportResponder(
       history: List[PlainThreadMessage],
       now: Instant,
   ): UIO[Unit] =
-    householdRepo.findById(hh).catchAll(_ => ZIO.none).flatMap {
-      case None            =>
-        // The household row we resolved the session from is unreadable. Dispatching anyway would
-        // ship an empty household name into the kickoff; fail the resume visibly instead.
-        ZIO.logWarning(
-          s"support: consent resume skipped — household=${hh.value} unreadable thread=$threadId",
-        ) *> AppMetrics.supportConsent("resume_error")
-      case Some(household) =>
-        ZIO.logInfo(
-          s"support: consent granted — resuming thread=$threadId household=${hh.value} " +
-            "with a dataAccess=true agent session",
-        ) *>
-          dispatchAgentSession(
-            hh = hh,
-            householdName = household.name,
-            threadId = threadId,
-            customerMessage = customerMessage,
-            history = history,
-            dataAccess = true,
-            now = now,
-          ).flatMap(outcome =>
-            AppMetrics.supportConsent(outcome match {
-              case DispatchOutcome.Dispatched  => "resumed"
-              case DispatchOutcome.Disabled    => "resume_disabled"
-              case DispatchOutcome.Error       => "resume_error"
-              // #2416: a permanent 4xx at the agent boundary keeps its own bucket here too — a
-              // dead responder must not hide inside the transient one (the dispatcher already
-              // logged it at ERROR with the fix named).
-              case DispatchOutcome.ConfigError => "resume_config_error"
-            }),
-          )
+    withDispatchCaps(threadId)(AppMetrics.supportConsent("resume_rate_limited")) {
+      householdRepo.findById(hh).catchAll(_ => ZIO.none).flatMap {
+        case None            =>
+          // The household row we resolved the session from is unreadable. Dispatching anyway would
+          // ship an empty household name into the kickoff; fail the resume visibly instead.
+          ZIO.logWarning(
+            s"support: consent resume skipped — household=${hh.value} unreadable thread=$threadId",
+          ) *> AppMetrics.supportConsent("resume_error")
+        case Some(household) =>
+          ZIO.logInfo(
+            s"support: consent granted — resuming thread=$threadId household=${hh.value} " +
+              "with a dataAccess=true agent session",
+          ) *>
+            dispatchAgentSession(
+              hh = hh,
+              householdName = household.name,
+              threadId = threadId,
+              customerMessage = customerMessage,
+              history = history,
+              dataAccess = true,
+              now = now,
+            ).flatMap(outcome =>
+              AppMetrics.supportConsent(outcome match {
+                case DispatchOutcome.Dispatched  => "resumed"
+                case DispatchOutcome.Disabled    => "resume_disabled"
+                case DispatchOutcome.Error       => "resume_error"
+                // #2416: a permanent 4xx at the agent boundary keeps its own bucket here too — a
+                // dead responder must not hide inside the transient one (the dispatcher already
+                // logged it at ERROR with the fix named).
+                case DispatchOutcome.ConfigError => "resume_config_error"
+              }),
+            )
+      }
     }
 
   /**

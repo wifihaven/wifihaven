@@ -80,6 +80,12 @@ object SupportConsentSpec
       // #2460: the resume-on-grant re-dispatch draws the SAME per-thread dispatch cap as an inbound
       // message, so a spec can model the cap being exhausted.
       dispatchThreadLimiter: RateLimiter = RateLimiter.allowAll,
+      // #2460: when set, the responder's timeline read blocks on this gate until the spec completes
+      // it — the only way to observe whether the consent POST WAITS on the resume.
+      historyGate: Option[Promise[Nothing, Unit]] = None,
+      // #2460: keep PRODUCTION's `runResume` (forkDaemon) instead of the inline one, so the
+      // non-blocking property the fix exists for is exercised rather than configured away.
+      productionResume: Boolean = false,
   ) =
     for {
       hhRepo      <- ZIO.service[HouseholdRepo]
@@ -91,7 +97,10 @@ object SupportConsentSpec
       clock       <- ZIO.service[Clock]
       plainRec    <- PlainClient.recorder
       dispRec     <- CloudAgentDispatcher.recorder
-      responder = SupportResponder(
+      // Built with the PRODUCTION defaults, then narrowed: `productionResume = false` swaps in the
+      // inline runner so the assertions observe the resume deterministically (docs/process/testing
+      // .md — no wall-clock waits on a background fiber). The seam changes only WHERE it runs.
+      base      = SupportResponder(
         cfg,
         hhRepo,
         userRepo,
@@ -99,7 +108,7 @@ object SupportConsentSpec
         devRepo,
         profRepo,
         consentRepo,
-        PlainClient.recording(plainRec),
+        gated(PlainClient.recording(plainRec), historyGate),
         GithubIssueClient.noop,
         CloudAgentDispatcher.recording(dispRec),
         clock,
@@ -114,11 +123,8 @@ object SupportConsentSpec
         // on the escalation-notification transport.
         Notifier.logOnly,
         RateLimiter.allowAll,
-        // #2460: run the post-grant resume INLINE instead of production's `forkDaemon`, so the
-        // assertions below observe it deterministically (docs/process/testing.md — no wall-clock
-        // waits on a background fiber). The seam changes only WHERE the resume runs.
-        identity,
       )
+      responder = if productionResume then base else base.copy(runResume = identity)
       auth      = AuthServiceLive(userRepo, jwt, clock, hhRepo): AuthService
     } yield Harness(
       SupportAgentRoutes.routes(responder),
@@ -130,6 +136,22 @@ object SupportConsentSpec
     )
 
   // ── fixtures ────────────────────────────────────────────────────────────────
+
+  /**
+   * #2460: a Plain client whose TIMELINE READ parks until the gate is completed — everything else
+   * delegates. Lets a spec hold the resume mid-flight and assert on what the customer's request did
+   * meanwhile, with no wall-clock wait anywhere.
+   */
+  private def gated(inner: PlainClient, gate: Option[Promise[Nothing, Unit]]): PlainClient =
+    gate.fold(inner)(p =>
+      new PlainClient {
+        def upsertCustomer(req: PlainCustomerUpsert): UIO[PlainOutcome] = inner.upsertCustomer(req)
+        def writeThread(req: PlainThreadWrite): UIO[PlainOutcome]       = inner.writeThread(req)
+        def markThread(req: PlainThreadMark): UIO[PlainOutcome]         = inner.markThread(req)
+        def threadHistory(threadId: String, limit: Int): UIO[List[PlainThreadMessage]] =
+          p.await *> inner.threadHistory(threadId, limit)
+      },
+    )
 
   private def payload(tenant: Long, threadId: String, text: String): String =
     s"""{"workspaceId":"w_1","id":"pEv_chat","payload":{"eventType":"thread.chat_received",""" +
@@ -570,6 +592,42 @@ object SupportConsentSpec
         second   <- postConsent(h, Some(jwtTok), grant)
         twice    <- h.dispatch.dispatches.get.map(_.size)
       } yield assertTrue(first == Status.Ok, second == Status.Ok, once == 1, twice == 1)
+    },
+    test(
+      "the consent POST does NOT wait on the resume — production runs it off the request fiber",
+    ) {
+      // The regression this pins: the resume's two legs are bounded only by their transport
+      // timeouts, which together exceed the SPA's own request timeout — so running it on the
+      // request fiber let a grant that SUCCEEDED abort client-side and render as "that permission
+      // link is no longer valid". Uses the PRODUCTION `runResume`; the gate holds the resume inside
+      // its first leg, so the POST returning at all proves it did not wait.
+      for {
+        _        <- cleanDb
+        hhRepo   <- ZIO.service[HouseholdRepo]
+        userRepo <- ZIO.service[UserRepo]
+        gate     <- Promise.make[Nothing, Unit]
+        h        <- makeHarness(historyGate = Some(gate), productionResume = true)
+        hh       <- hhRepo.create("Family F", "family-f")
+        jwtTok   <- seedAdmin(h, userRepo, hh, "family-f", "admin_f", "pwpwpwpw11")
+        agent    <- mintAgentToken(hh, "th_f", dataAccess = false)
+        _        <- agentPost(h, "/api/support/agent/request-consent", Some(agent))
+        grant    <- grantTokenFromThread(h).someOrFail(new RuntimeException("no consent link"))
+        _        <- h.plain.history.set(
+          List(PlainThreadMessage(ThreadMessageRole.Customer, "why is my laptop blocked?")),
+        )
+        // The resume is parked on the gate for the whole of this call.
+        status   <- postConsent(h, Some(jwtTok), grant)
+        now      <- ZIO.serviceWithZIO[Clock](_.instant)
+        live     <- h.consentRepo.isGranted(hh, "th_f", now)
+        pending  <- h.dispatch.dispatches.get
+        // Release it so the fiber finishes rather than leaking into the next test.
+        _        <- gate.succeed(())
+      } yield assertTrue(
+        // The customer's grant is committed and acknowledged while the follow-up is still running.
+        status == Status.Ok,
+        live,
+        pending.isEmpty,
+      )
     },
     test("the grant WRITE itself reports the transition, not a preceding read") {
       // The #2460 idempotency key is decided by the transaction that WRITES: a separate

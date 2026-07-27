@@ -942,7 +942,9 @@ object AppMetrics {
   //   — #2460, the SERVER finishing the turn on a grant so the customer does not have to find their
   //   way back and re-ask. Every branch of the resume meters, and it runs on a daemon fiber (not the
   //   request fiber), so a `granted` is followed by exactly ONE resume_* even if the customer's
-  //   browser disconnects; a `granted` without one means the loop did NOT close.
+  //   browser disconnects — a process shutdown can still interrupt an in-flight resume, so a lone
+  //   unpaired `granted` around a deploy is that, not a dead-ended customer. A sustained gap means
+  //   the loop is NOT closing.
   // `household_mismatch` is the security-relevant one (a consent link redeemed by another
   // household's session, which writes nothing) — it should be flat zero in normal operation.
   def supportConsent(outcome: String): UIO[Unit]       =
