@@ -17,8 +17,8 @@ finding — just reconfirmed this run).
 |------|------:|-----:|-------------|
 | apple.com | 17.8 GB | 17548 | **mostly shared Apple OS infra** (App Store, Weather, Find My, system services) — only the `ess.apple.com` sliver is templated (`imessage` app, #1529); the rest is Truth-#1-documented shared-IP collateral, not actionable |
 | google.com | 7.3 GB | 5449 | **mostly shared Google infra** — only `play.google.com` is templated (`google-play` app, #1705/#1661); rest is Search/Drive/Gmail collateral, not actionable |
-| cdn-apple.com / mzstatic.com / aaplimg.com / icloud.com / icloud-content.com / apple-cloudkit.com / safebrowsing.apple | 8.2 GB combined | 3986 | **skip** — shared Apple CDN/sync/safety infra, no brand-specific kid-facing surface |
-| googleapis.com / googleusercontent.com / gstatic.com / gvt1-3.com / ggpht.com | 4.4 GB combined | 5895 | **skip** — shared Google CDN/API infra |
+| cdn-apple.com / mzstatic.com / aaplimg.com / icloud.com / icloud-content.com / apple-cloudkit.com / safebrowsing.apple | 7.59 GB combined | 3989 | **skip** — shared Apple CDN/sync/safety infra, no brand-specific kid-facing surface |
+| googleapis.com / googleusercontent.com / gstatic.com / gvt1-3.com / ggpht.com | 4.80 GB combined | 6214 | **skip** — shared Google CDN/API infra |
 | lego.com | 203 MB | 323 | `lego` app ✓ — Builder sub-experience hosts still all covered; see negative check below |
 | duolingo.com | 164 MB | 158 | `duolingo` app ✓ |
 | mathacademy.com | 101 MB | 360 | `math-academy` app ✓ |
