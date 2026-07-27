@@ -18,8 +18,7 @@ import zio.json.*
  *     response never leaks WHY (the metric carries the outcome). That deliberately includes the
  *     FAILURES: a reject Plain refused to send (#2471 `email_reject_send_failed`) still answers
  *     200, because a retry cannot fix a workspace that will not send. The outcome vocabulary lives
- *     on [[SupportResponder.WebhookOutcome]] and is not restated here — #2471 found four
- *     hand-copied copies of it that had drifted.
+ *     on [[SupportResponder.WebhookOutcome]] and is deliberately not restated here.
  *
  *   - AGENT `POST /api/support/agent/reply`, `POST /api/support/agent/issues`, `POST
  *     /api/support/agent/request-consent`, `POST /api/support/agent/escalate` (#2437 — the

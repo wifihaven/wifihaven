@@ -907,11 +907,10 @@ object AppMetrics {
   // `supportAgentAction` counts each token-authenticated agent callback by (op, outcome). Both
   // bounded enums — never a per-household / per-thread label.
   //
-  // The `outcome` VOCABULARY is deliberately NOT restated here. `SupportResponder.WebhookOutcome`
-  // and its exhaustive `label` are the single authority; this comment is one of several hand-copied
-  // lists that drifted (#2471 found four stale copies, this one among them — it had been missing
-  // #2307's two email outcomes and #2403's `skipped_not_inbound` long before #2471 added a fifth).
-  // Read `label` instead; #2489 adds the contract spec that makes the panel copies drift-proof too.
+  // The `outcome` VOCABULARY is deliberately NOT restated here — a hand-copied list of it drifted
+  // silently through several changes. `SupportResponder.WebhookOutcome.label` is the single
+  // authority (an exhaustive match, so a new case cannot be forgotten); the per-value SEMANTICS are
+  // annotated once on `MetricGuard.Allowed`'s entry for this series, above.
   // #2416 — `reason` attributes a dispatch failure: config (permanent 4xx at the Anthropic boundary)
   // | transient (transport / 5xx) | none. Bounded by SupportResponder.WebhookOutcome.reason.
 
