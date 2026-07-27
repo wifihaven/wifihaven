@@ -181,5 +181,14 @@ object SupportSubjectSpec extends ZIOSpecDefault {
         k.endsWith("</customer_message>"),
       )
     },
+    test("a subject that is EXACTLY at the cap is not falsely marked truncated") {
+      // The cap-and-mark predicate is `>`, not `==`: a value exactly `max` long was never cut, and
+      // labelling it truncated would tell the agent a complete subject is a fragment.
+      val k = kickoff(Some("s" * CloudAgentDispatcher.MaxSubjectChars), "hello")
+      assertTrue(
+        k.contains("Subject: " + "s" * CloudAgentDispatcher.MaxSubjectChars),
+        !k.contains("…[truncated]"),
+      )
+    },
   )
 }

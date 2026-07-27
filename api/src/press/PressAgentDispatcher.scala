@@ -133,6 +133,15 @@ object PressAgentDispatcher {
   val noop: PressAgentDispatcher = Disabled
 
   /**
+   * Caps on the two attacker-controlled single-line values the press kickoff carries (any sender
+   * can put anything in a From: / Subject:). Chosen prompt budgets, not values derived from a
+   * source — named rather than left as literals so the cap is greppable and reviewable (#2481
+   * review). The transform they cap is [[ManagedAgents.safeLine]], shared with the support path.
+   */
+  val MaxFromChars: Int    = 160
+  val MaxSubjectChars: Int = 200
+
+  /**
    * Build the kickoff user message for one inbound press message. Pure (unit-pinnable): the feature
    * suite asserts the untrusted text is delimited as data, the token rides out-of-band, the draft
    * (not send) + no-data contract is stated, and the endpoint is the PRESS reply endpoint. The
@@ -150,8 +159,8 @@ object PressAgentDispatcher {
     // (flatten CR/LF, neutralize tags, trim, cap), and a hostile value can't fake an instruction
     // line or open/close the data frame (#2261 review pattern). One definition, so the support and
     // press paths can't drift on their injection guard (#2481 review).
-    val safeFrom = ManagedAgents.safeLine(req.from, 160)
-    val safeSubj = ManagedAgents.safeLine(req.subject, 200)
+    val safeFrom = ManagedAgents.safeLine(req.from, MaxFromChars)
+    val safeSubj = ManagedAgents.safeLine(req.subject, MaxSubjectChars)
     // Neutralize delimiter breakout: a message containing the literal tag would otherwise escape
     // the data frame. Square-bracket both tag forms (#2261 review finding).
     val safeMsg  = ManagedAgents.neutralizeTags(req.pressMessage)

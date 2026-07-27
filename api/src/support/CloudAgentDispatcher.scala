@@ -189,12 +189,12 @@ object CloudAgentDispatcher {
     // neutralize, trim, cap). Rendered as a `Subject:` line INSIDE the `<customer_message>` frame:
     // never above it, and never in a value treated as trusted (the session title stays the thread
     // id). Absent/blank ⇒ NO label at all, so the frame is byte-identical to the pre-#2481
-    // rendering — which is what a chat message still gets. A capped subject says so, the same way
-    // an over-long history turn does, so the agent never reads a truncation as the whole subject.
+    // rendering — which is what a chat message still gets. `safeLine` also marks a capped value
+    // `…[truncated]` (ManagedAgents.capMarked, the same primitive the history renderer uses), so the
+    // agent never reads a cut subject as the whole subject.
     val subject  = req.subject
       .map(s => ManagedAgents.safeLine(s, MaxSubjectChars))
       .filter(_.nonEmpty)
-      .map(s => if s.length == MaxSubjectChars then s"$s…[truncated]" else s)
       .map(s => s"Subject: $s\n\n")
       .getOrElse("")
     // The household name is ALSO customer-controlled (typed on the public beta-request form) and is
@@ -202,7 +202,7 @@ object CloudAgentDispatcher {
     // untrusted-single-line renderer, and a hostile name can't fake an instruction line or
     // open/close the data frame (#2261 review, run 3). Length-capped as defense-in-depth; a real
     // household name is never this long.
-    val safeName = ManagedAgents.safeLine(req.householdName, 120)
+    val safeName = ManagedAgents.safeLine(req.householdName, MaxHouseholdNameChars)
     // #2430: the bounded, role-labeled transcript of what came BEFORE this message (empty on a
     // first message — and on any degraded read, so a Plain hiccup just costs context).
     val history  = renderHistory(req.history)
@@ -276,6 +276,14 @@ object CloudAgentDispatcher {
    */
   val MaxSubjectChars: Int = 300
 
+  /**
+   * …and at most this many characters of HOUSEHOLD NAME, which is customer-typed on the public
+   * beta-request form and lands in the kickoff's instruction zone. Also a chosen budget, not a
+   * derived one — `households.name` has no length constraint; a real household name is nowhere near
+   * it.
+   */
+  val MaxHouseholdNameChars: Int = 120
+
   private val OmittedMarker: String = "[earlier messages omitted]"
 
   /**
@@ -292,10 +300,9 @@ object CloudAgentDispatcher {
     //    would silently lose a turn), drop anything that ends up empty.
     val turns   = history.flatMap { m =>
       val raw  = m.text.trim
-      val cut  =
-        if raw.length > MaxMessageChars then raw.take(MaxMessageChars) + "…[truncated]"
-        else raw
-      val safe = neutralizeTags(cut)
+      // Same cap-and-say-so primitive the subject line uses — one definition of "truncated for the
+      // prompt", so the two can't drift on the marker or the predicate (#2481 review).
+      val safe = neutralizeTags(ManagedAgents.capMarked(raw, MaxMessageChars))
       Option.when(safe.nonEmpty)(
         s"<message from=\"${ThreadMessageRole.label(m.role)}\">\n$safe\n</message>",
       )
