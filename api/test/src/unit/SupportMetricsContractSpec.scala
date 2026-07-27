@@ -123,6 +123,9 @@ object SupportMetricsContractSpec extends ZIOSpecDefault {
       // EQUALITY, not containment: an outcome in the panel but NOT in DeadEnd would count a benign
       // case (resumed / resume_skipped / resume_no_message) as a dead end and make an "expect 0"
       // panel cry wolf, which is how such a panel stops being read.
+      //
+      // DeadEnd is DERIVED from the enum, so a new resume outcome classified dead-end widens it
+      // automatically and fails HERE — the forgotten-to-list case the hand-written set allowed.
       val matcher                             = "outcome=~\"([^\"]+)\"".r
       def labelsIn(expr: String): Set[String] =
         matcher.findAllMatchIn(expr).flatMap(_.group(1).split('|')).toSet
@@ -131,7 +134,7 @@ object SupportMetricsContractSpec extends ZIOSpecDefault {
       assertTrue(
         exprs.nonEmpty,
         exprs.forall(_.contains("support_consent_total")),
-        exprs.forall(labelsIn(_) == SupportResponder.ResumeOutcome.DeadEnd.toSet),
+        exprs.forall(labelsIn(_) == SupportResponder.ResumeOutcome.DeadEnd),
       )
     },
   )

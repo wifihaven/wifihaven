@@ -318,8 +318,9 @@ final case class SupportResponder(
       dataAccess: Boolean,
       now: Instant,
       // #2481: the inbound email's subject, when the message came in as email. `None` on chat, and
-      // on the #2460 resume — that re-dispatches a turn read back off the Plain timeline, where the
-      // subject is not carried; the question itself is the customer's message text.
+      // on the #2460 resume — that re-dispatches a turn read back off the Plain timeline, and
+      // `PlainThreadMessage` carries no subject (the timeline query selects none). So a resume of a
+      // thread whose question lived in the SUBJECT re-asks with the body alone; tracked by #2495.
       subject: Option[String] = None,
   ): UIO[DispatchOutcome] =
     for {
@@ -781,7 +782,7 @@ final case class SupportResponder(
       // (the idempotency guard) — the answer to that question is already on its way.
       _     <- ZIO.when(write.result == ConsentResult.Granted) {
         if write.transitioned then runResume(resumeAfterGrant(claims.hh, g, now))
-        else AppMetrics.supportConsent(ResumeOutcome.Skipped)
+        else meterResume(ResumeOutcome.Skipped)
       }
     } yield write.result
 
@@ -866,14 +867,14 @@ final case class SupportResponder(
       history: List[PlainThreadMessage],
       now: Instant,
   ): UIO[Unit] =
-    withDispatchCaps(threadId)(AppMetrics.supportConsent(ResumeOutcome.RateLimited)) {
+    withDispatchCaps(threadId)(meterResume(ResumeOutcome.RateLimited)) {
       householdRepo.findById(hh).catchAll(_ => ZIO.none).flatMap {
         case None            =>
           // The household row we resolved the session from is unreadable. Dispatching anyway would
           // ship an empty household name into the kickoff; fail the resume visibly instead.
           ZIO.logWarning(
             s"support: consent resume skipped — household=${hh.value} unreadable thread=$threadId",
-          ) *> AppMetrics.supportConsent(ResumeOutcome.Error)
+          ) *> meterResume(ResumeOutcome.Error)
         case Some(household) =>
           ZIO.logInfo(
             s"support: consent granted — resuming thread=$threadId household=${hh.value} " +
@@ -888,7 +889,7 @@ final case class SupportResponder(
               dataAccess = true,
               now = now,
             ).flatMap(outcome =>
-              AppMetrics.supportConsent(outcome match {
+              meterResume(outcome match {
                 case DispatchOutcome.Dispatched  => ResumeOutcome.Resumed
                 case DispatchOutcome.Disabled    => ResumeOutcome.Disabled
                 case DispatchOutcome.Error       => ResumeOutcome.Error
@@ -915,9 +916,9 @@ final case class SupportResponder(
     plain
       .writeThread(PlainThreadWrite(threadId, SupportResponder.consentGrantedNudge))
       .flatMap {
-        case PlainOutcome.Ok       => AppMetrics.supportConsent(ResumeOutcome.NoMessage)
-        case PlainOutcome.Disabled => AppMetrics.supportConsent(ResumeOutcome.Disabled)
-        case PlainOutcome.Error    => AppMetrics.supportConsent(ResumeOutcome.Error)
+        case PlainOutcome.Ok       => meterResume(ResumeOutcome.NoMessage)
+        case PlainOutcome.Disabled => meterResume(ResumeOutcome.Disabled)
+        case PlainOutcome.Error    => meterResume(ResumeOutcome.Error)
       }
 
   /**
@@ -941,6 +942,13 @@ final case class SupportResponder(
             .supportConsent(if revokedLive then "revoked" else "revoke_noop")
             .as(ConsentResult.Revoked),
       )
+
+  /**
+   * #2460 — meter one resume outcome. The ONE place a [[ResumeOutcome]] becomes a metric label, so
+   * the value the dashboard panel matches on cannot be spelled differently at any emit site.
+   */
+  private def meterResume(o: ResumeOutcome): UIO[Unit] =
+    AppMetrics.supportConsent(ResumeOutcome.label(o))
 
   /**
    * Is there a LIVE customer grant for this (household, thread)? Fail-CLOSED: a DB error is logged
@@ -1132,32 +1140,57 @@ object SupportResponder {
    * `SupportMetricsContractSpec` pins the panel's regex against it — so adding an outcome here
    * without widening the panel is a failing test rather than a months-later under-count.
    */
-  object ResumeOutcome {
+  enum ResumeOutcome {
 
     /** The customer's question was re-dispatched under the scope they just granted. */
-    val Resumed = "resumed"
+    case Resumed
 
-    /** No customer turn was readable on the thread, so the server-authored nudge posted instead. */
-    val NoMessage = "resume_no_message"
+    /** No CUSTOMER turn was readable on the thread, so the server-authored nudge posted instead. */
+    case NoMessage
 
     /** A re-confirmed LIVE grant — the idempotency guard; the answer is already on its way. */
-    val Skipped = "resume_skipped"
+    case Skipped
 
-    val RateLimited = "resume_rate_limited"
-    val Disabled    = "resume_disabled"
+    case RateLimited
+    case Disabled
 
     /** A transient dispatch / write failure. */
-    val Error = "resume_error"
+    case Error
 
     /** #2416 — a PERMANENT 4xx at the agent boundary, kept out of the transient bucket. */
-    val ConfigError = "resume_config_error"
+    case ConfigError
+  }
+
+  object ResumeOutcome {
+
+    /** The bounded `support_consent_total{outcome}` value. EXHAUSTIVE — no `case _`. */
+    def label(o: ResumeOutcome): String = o match {
+      case Resumed     => "resumed"
+      case NoMessage   => "resume_no_message"
+      case Skipped     => "resume_skipped"
+      case RateLimited => "resume_rate_limited"
+      case Disabled    => "resume_disabled"
+      case Error       => "resume_error"
+      case ConfigError => "resume_config_error"
+    }
 
     /**
-     * The outcomes where the customer granted permission and got NOTHING back. [[Skipped]] and
-     * [[NoMessage]] are deliberately absent: the first means the answer is already on its way, the
-     * second means we told them what to do next.
+     * Did the customer grant permission and get NOTHING back? EXHAUSTIVE on purpose — a new case
+     * must be classified deliberately here rather than defaulting into (or out of) the dashboard's
+     * dead-end count. [[Skipped]] and [[NoMessage]] are false: the first means the answer is
+     * already on its way, the second means we told them what to do next.
      */
-    val DeadEnd: List[String] = List(RateLimited, Disabled, Error, ConfigError)
+    def deadEnd(o: ResumeOutcome): Boolean = o match {
+      case RateLimited | Disabled | Error | ConfigError => true
+      case Resumed | NoMessage | Skipped                => false
+    }
+
+    /**
+     * DERIVED, not hand-listed (the [[AgentActionResult.SuccessLabels]] pattern): a new dead-end
+     * case widens this automatically, and `SupportMetricsContractSpec` then fails on the dashboard
+     * panel that did not widen with it.
+     */
+    val DeadEnd: Set[String] = values.filter(deadEnd).map(label).toSet
   }
 
   /**
