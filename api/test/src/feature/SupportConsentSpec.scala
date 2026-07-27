@@ -114,6 +114,10 @@ object SupportConsentSpec
         // on the escalation-notification transport.
         Notifier.logOnly,
         RateLimiter.allowAll,
+        // #2460: run the post-grant resume INLINE instead of production's `forkDaemon`, so the
+        // assertions below observe it deterministically (docs/process/testing.md — no wall-clock
+        // waits on a background fiber). The seam changes only WHERE the resume runs.
+        identity,
       )
       auth      = AuthServiceLive(userRepo, jwt, clock, hhRepo): AuthService
     } yield Harness(
@@ -567,10 +571,13 @@ object SupportConsentSpec
         twice    <- h.dispatch.dispatches.get.map(_.size)
       } yield assertTrue(first == Status.Ok, second == Status.Ok, once == 1, twice == 1)
     },
-    test("the grant WRITE itself reports the transition, so the resume can't race a second click") {
-      // The #2460 idempotency key is decided by the statement that WRITES, not by a preceding read
-      // — a read-then-write would let two concurrent Allow clicks both see "not live" and both
-      // re-dispatch. Pinned at the repo so the property survives any refactor of the responder.
+    test("the grant WRITE itself reports the transition, not a preceding read") {
+      // The #2460 idempotency key is decided by the transaction that WRITES: a separate
+      // read-then-write would let a second Allow on an already-live grant resume again and
+      // double-answer. Pinned at the repo, so the property survives any refactor of the responder.
+      // This pins the SEQUENTIAL semantics; the row lock that serializes a concurrent re-grant is
+      // not exercised here, and two simultaneous FIRST grants (no row to lock yet) can still both
+      // report a transition — see the note on SupportConsentRepo.grant.
       for {
         _      <- cleanDb
         hhRepo <- ZIO.service[HouseholdRepo]

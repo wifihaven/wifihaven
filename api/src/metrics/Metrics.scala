@@ -940,9 +940,9 @@ object AppMetrics {
   //   resume_rate_limited | resume_disabled | resume_error (transient) | resume_config_error (a
   //   permanent 4xx at the agent boundary — the #2416 split, kept out of the transient bucket)
   //   — #2460, the SERVER finishing the turn on a grant so the customer does not have to find their
-  //   way back and re-ask. Every `granted` is followed by exactly ONE resume_* (the resume runs
-  //   inline on the consent POST, so there is no branch that can drop its sample); a `granted`
-  //   without one means the loop did NOT close.
+  //   way back and re-ask. Every branch of the resume meters, and it runs on a daemon fiber (not the
+  //   request fiber), so a `granted` is followed by exactly ONE resume_* even if the customer's
+  //   browser disconnects; a `granted` without one means the loop did NOT close.
   // `household_mismatch` is the security-relevant one (a consent link redeemed by another
   // household's session, which writes nothing) — it should be flat zero in normal operation.
   def supportConsent(outcome: String): UIO[Unit]       =

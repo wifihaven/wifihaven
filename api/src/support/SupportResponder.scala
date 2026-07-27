@@ -116,6 +116,17 @@ final case class SupportResponder(
     // #2437: bounds how often ONE thread can page the operator. An agent stuck in a loop (or a
     // prompt-injected one) must not be able to turn our own alert mailbox into a firehose.
     escalateThreadLimiter: RateLimiter,
+    // #2460: HOW the post-grant resume is run — the one thing about it that differs between
+    // production and a spec. Production forks it as a DAEMON fiber so the customer's consent POST
+    // returns at once: the resume's two legs (the Plain timeline read, then the cloud-agent
+    // dispatch) are bounded only by their own transport timeouts, which together exceed the SPA's
+    // request timeout, so running it on the request fiber would let a SUCCESSFUL grant abort
+    // client-side and be reported to the customer as a broken link. A daemon fiber also survives a
+    // client disconnect, so every branch still meters exactly one `resume_*`. Specs pass `identity`
+    // to run it inline — the seam controls only WHERE the effect runs, never what it does.
+    // NOTE: this is the only parameter with a default, so it must stay LAST — every construction
+    // site (HttpRoutes, the specs) passes the ones above positionally.
+    runResume: UIO[Unit] => UIO[Unit] = _.forkDaemon.unit,
 ) {
   import SupportResponder.*
 
@@ -736,33 +747,34 @@ final case class SupportResponder(
     for {
       // Audit pointer: WHICH admin granted. Best-effort — a DB blip on the lookup must not lose
       // the customer's consent, so the grant is still recorded (with a null actor).
-      user <- userRepo.findByUsername(claims.hh, claims.sub).catchAll(_ => ZIO.none)
+      user  <- userRepo.findByUsername(claims.hh, claims.sub).catchAll(_ => ZIO.none)
       // #2460: `grant` reports whether it TRANSITIONED the pair from no-live-grant to live, decided
-      // by the same statement that writes (a separate read-then-write would let two concurrent
-      // Allow clicks both resume and double-answer). `None` on a failed write — nothing to resume.
-      res  <- consentRepo
+      // by the same transaction that writes (a separate read-then-write would let a second Allow on
+      // an already-live grant resume again and double-answer). A failed write transitions nothing.
+      write <- consentRepo
         .grant(claims.hh, g.threadId, user.map(_.id), now, now.plus(SupportResponder.ConsentTtl))
         .foldZIO(
           e =>
             ZIO.logWarning(s"support: consent grant failed: ${e.getMessage}") *>
-              AppMetrics.supportConsent("error").as(ConsentResult.Error -> None),
+              AppMetrics
+                .supportConsent("error")
+                .as(GrantWrite(ConsentResult.Error, transitioned = false)),
           transitioned =>
             ZIO.logInfo(
               s"support: data-access consent GRANTED household=${claims.hh.value} " +
                 s"thread=${g.threadId} by=${claims.sub} ttlHours=${SupportResponder.ConsentTtl.toHours}",
             ) *> AppMetrics
               .supportConsent("granted")
-              .as(ConsentResult.Granted -> Some(transitioned)),
+              .as(GrantWrite(ConsentResult.Granted, transitioned)),
         )
-      // The grant row is COMMITTED before the resume, so the token minted inside it is guaranteed to
+      // The grant row is COMMITTED before the resume, so the token the resume mints is guaranteed to
       // carry the scope the customer just granted. Re-confirming a still-live grant resumes nothing
       // (the idempotency guard) — the answer to that question is already on its way.
-      _    <- res._2 match {
-        case Some(true)  => resumeAfterGrant(claims.hh, g, now)
-        case Some(false) => AppMetrics.supportConsent("resume_skipped")
-        case None        => ZIO.unit
+      _     <- ZIO.when(write.result == ConsentResult.Granted) {
+        if write.transitioned then runResume(resumeAfterGrant(claims.hh, g, now))
+        else AppMetrics.supportConsent("resume_skipped")
       }
-    } yield res._1
+    } yield write.result
 
   /**
    * #2460 — CLOSE THE LOOP. Consent used to be consumed only by the NEXT inbound webhook, so a
@@ -778,51 +790,56 @@ final case class SupportResponder(
    * Bounded and non-bypassing by construction:
    *   - IDEMPOTENT per grant — the caller only runs this on a transition from no-live-grant to
    *     granted, so a repeat Allow re-dispatches nothing and cannot double-answer;
-   *   - it draws the ORDINARY dispatch caps through the shared [[withDispatchCaps]] — a resume is a
-   *     real agent session and costs real tokens;
+   *   - it draws the ORDINARY dispatch caps FIRST, through the shared [[withDispatchCaps]] — a
+   *     resume is a real agent session and costs real tokens, and a capped thread pays for no reads
+   *     (same ordering as the webhook path, where the caps wrap [[dispatchFor]]);
    *   - it does NOT trip the #2403/#2404 loop guard: that guard lives on the inbound webhook path
    *     and drops our own outbound writes, which is untouched here. The agent's eventual reply
    *     still arrives as a `thread.chat_sent` the guard drops, so the loop terminates;
-   *   - it runs INLINE on the consent POST, deliberately: every branch below emits exactly one
-   *     `resume_*` sample, which is what makes a dead-ended grant visible on the dashboard. It is
-   *     not wrapped in a ZIO timeout — a timeout INTERRUPTS the work rather than backgrounding it
-   *     (see the `disconnect` note on `PlainClient.threadHistory`), which would kill the very
-   *     dispatch the customer is waiting on AND drop its metric. The wait is bounded by the two
-   *     legs' own transport timeouts: the timeline read at `PlainClient.HistoryTimeout` and the
-   *     dispatch at the transport's `RequestTimeout` (`ManagedAgents` / `ClaudeCodeRoutines`). The
-   *     grant is committed BEFORE any of this, so nothing here can cost the customer's consent.
+   *   - it runs OFF the request fiber (`runResume`, `forkDaemon` in production). Both legs are
+   *     bounded only by their own transport timeouts — the timeline read at
+   *     [[PlainClient.HistoryTimeout]], the dispatch at the transport's `RequestTimeout`
+   *     (`ManagedAgents` / `ClaudeCodeRoutines`) — which together exceed the SPA's own request
+   *     timeout (`web/src/api/client.ts`), so running it inline would let a SUCCESSFUL grant abort
+   *     client-side and render as "that link is no longer valid". Forking also keeps the metric
+   *     honest: a ZIO timeout would INTERRUPT the dispatch the customer is waiting on and drop its
+   *     `resume_*` sample (see the `disconnect` note on [[PlainClient.threadHistory]]), whereas a
+   *     daemon fiber runs every branch below to completion. The grant is committed BEFORE any of
+   *     this, so nothing here can cost the customer's consent.
    */
   private def resumeAfterGrant(
       hh: HouseholdId,
       g: ConsentGrant.Claims,
       now: Instant,
   ): UIO[Unit] =
-    plain.threadHistory(g.threadId, PlainClient.HistoryFetchLimit).flatMap { history =>
-      // The customer's LAST turn is what we re-ask. Usually that is the unanswered question that
-      // made the agent request permission; if the customer also typed something after the prompt
-      // ("ok, approved"), that is what re-dispatches — the earlier turns ride along as history, so
-      // the agent still has the question. Everything AFTER the last customer turn is dropped, which
-      // is also what keeps the server's consent prompt (and its link) out of the agent's context.
-      history.lastIndexWhere(_.role == ThreadMessageRole.Customer) match {
-        case -1  => nudgeAfterGrant(g.threadId)
-        case idx =>
-          val latest = history(idx).text
-          // The prior-turns rule has ONE implementation (#2430): `priorTurns` drops a trailing
-          // customer echo of the message being dispatched, which is exactly `history.take(idx)`.
-          redispatchAfterGrant(
-            hh,
-            g.threadId,
-            latest,
-            priorTurns(history.take(idx + 1), latest),
-            now,
-          )
+    withDispatchCaps(g.threadId)(AppMetrics.supportConsent("resume_rate_limited")) {
+      plain.threadHistory(g.threadId, PlainClient.HistoryFetchLimit).flatMap { history =>
+        // The customer's LAST turn is what we re-ask. Usually that is the unanswered question that
+        // made the agent request permission; if the customer also typed something after the prompt
+        // ("ok, approved"), that is what re-dispatches — the earlier turns ride along as history, so
+        // the agent still has the question. Everything AFTER the last customer turn is dropped,
+        // which also keeps the server's consent prompt (and its link) out of the agent's context.
+        history.lastIndexWhere(_.role == ThreadMessageRole.Customer) match {
+          case -1  => nudgeAfterGrant(g.threadId)
+          case idx =>
+            val latest = history(idx).text
+            // The prior-turns rule has ONE implementation (#2430): `priorTurns` drops a trailing
+            // customer echo of the message being dispatched, which is exactly `history.take(idx)`.
+            redispatchAfterGrant(
+              hh,
+              g.threadId,
+              latest,
+              priorTurns(history.take(idx + 1), latest),
+              now,
+            )
+        }
       }
     }
 
   /**
    * The re-dispatch itself: the customer's own last message, answered under the scope they just
-   * granted. Assembled by the shared [[dispatchAgentSession]] and capped by the shared
-   * [[withDispatchCaps]] — a thread that has exhausted its per-thread cap still GRANTS (the
+   * granted, assembled by the shared [[dispatchAgentSession]]. The caps are already drawn by
+   * [[resumeAfterGrant]] — a thread that has exhausted its per-thread cap still GRANTS (the
    * customer's consent is never lost to a cost cap) but gets no free follow-up session. Every
    * branch meters, so `granted` and `resume_*` always pair up.
    */
@@ -833,39 +850,37 @@ final case class SupportResponder(
       history: List[PlainThreadMessage],
       now: Instant,
   ): UIO[Unit] =
-    withDispatchCaps(threadId)(AppMetrics.supportConsent("resume_rate_limited")) {
-      householdRepo.findById(hh).catchAll(_ => ZIO.none).flatMap {
-        case None            =>
-          // The household row we resolved the session from is unreadable. Dispatching anyway would
-          // ship an empty household name into the kickoff; fail the resume visibly instead.
-          ZIO.logWarning(
-            s"support: consent resume skipped — household=${hh.value} unreadable thread=$threadId",
-          ) *> AppMetrics.supportConsent("resume_error")
-        case Some(household) =>
-          ZIO.logInfo(
-            s"support: consent granted — resuming thread=$threadId household=${hh.value} " +
-              "with a dataAccess=true agent session",
-          ) *>
-            dispatchAgentSession(
-              hh = hh,
-              householdName = household.name,
-              threadId = threadId,
-              customerMessage = customerMessage,
-              history = history,
-              dataAccess = true,
-              now = now,
-            ).flatMap(outcome =>
-              AppMetrics.supportConsent(outcome match {
-                case DispatchOutcome.Dispatched  => "resumed"
-                case DispatchOutcome.Disabled    => "resume_disabled"
-                case DispatchOutcome.Error       => "resume_error"
-                // #2416: a permanent 4xx at the agent boundary keeps its own bucket here too — a
-                // dead responder must not hide inside the transient one (the dispatcher already
-                // logged it at ERROR with the fix named).
-                case DispatchOutcome.ConfigError => "resume_config_error"
-              }),
-            )
-      }
+    householdRepo.findById(hh).catchAll(_ => ZIO.none).flatMap {
+      case None            =>
+        // The household row we resolved the session from is unreadable. Dispatching anyway would
+        // ship an empty household name into the kickoff; fail the resume visibly instead.
+        ZIO.logWarning(
+          s"support: consent resume skipped — household=${hh.value} unreadable thread=$threadId",
+        ) *> AppMetrics.supportConsent("resume_error")
+      case Some(household) =>
+        ZIO.logInfo(
+          s"support: consent granted — resuming thread=$threadId household=${hh.value} " +
+            "with a dataAccess=true agent session",
+        ) *>
+          dispatchAgentSession(
+            hh = hh,
+            householdName = household.name,
+            threadId = threadId,
+            customerMessage = customerMessage,
+            history = history,
+            dataAccess = true,
+            now = now,
+          ).flatMap(outcome =>
+            AppMetrics.supportConsent(outcome match {
+              case DispatchOutcome.Dispatched  => "resumed"
+              case DispatchOutcome.Disabled    => "resume_disabled"
+              case DispatchOutcome.Error       => "resume_error"
+              // #2416: a permanent 4xx at the agent boundary keeps its own bucket here too — a
+              // dead responder must not hide inside the transient one (the dispatcher already
+              // logged it at ERROR with the fix named).
+              case DispatchOutcome.ConfigError => "resume_config_error"
+            }),
+          )
     }
 
   /**
@@ -1089,6 +1104,13 @@ object SupportResponder {
        |
        |Thanks — I can see your account summary for this conversation now. Ask me your question
        |again and I'll take a look.""".stripMargin
+
+  /**
+   * #2460 — what the consent WRITE did: the customer-facing result, plus whether it moved the
+   * `(household, thread)` pair from no-live-grant to live. Only a transition resumes the
+   * conversation; a re-confirmation of a still-live grant is the idempotency no-op.
+   */
+  private final case class GrantWrite(result: ConsentResult, transitioned: Boolean)
 
   /**
    * #2419 — the outcome of a CUSTOMER consent action (`POST /api/support/consent`). Bounded enum;
