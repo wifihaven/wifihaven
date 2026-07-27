@@ -656,8 +656,10 @@ object PressResponderSpec
           // The header is the SAME Message-ID that was persisted on the inbound row — one value,
           // carried on the signed token, not re-derived anywhere.
           rows.find(_.direction == "inbound").exists(_.messageId == msgId),
-          emails.head.inReplyTo.contains(msgId),
-          emails.head.references.contains(msgId),
+          // The recorded map IS the map the live transport would POST as `ResendRequest.headers`
+          // (both come from `EmailSender.threadingHeaders`), so this pins the header NAMES too —
+          // dropping the field, renaming a header, or emitting only one of the pair fails here.
+          emails.head.headers.contains(Map("In-Reply-To" -> msgId, "References" -> msgId)),
         )
     },
     test("an inbound with NO Message-ID still replies successfully, with no threading headers") {
@@ -676,8 +678,7 @@ object PressResponderSpec
       } yield assertTrue(sReply == Status.Ok, emails.size == 1) &&
         assertTrue(
           emails.head.to == "reporter@example.com",
-          emails.head.inReplyTo.isEmpty,
-          emails.head.references.isEmpty,
+          emails.head.headers.isEmpty,
         )
     },
     test("a control-char-bearing Message-ID cannot inject an outbound header (#2451)") {
@@ -685,7 +686,8 @@ object PressResponderSpec
         _                  <- cleanDb
         (routes, stubs, _) <- makeRoutes(liveCfg)
         // The Message-ID comes from the sender's mail client — attacker-controlled — and flows into
-        // an outbound email header. CR/LF and other control chars must be gone before it gets there.
+        // an outbound email header. The CR/LF and everything appended after the real msg-id must be
+        // gone before it gets there; the send itself must still succeed.
         hostile = "<a@b>\r\nBcc: attacker@evil.example"
         body    =
           s"""{"from":"reporter@example.com","subject":"Q","text":"a question?","messageId":${hostile.toJson}}"""
@@ -696,9 +698,38 @@ object PressResponderSpec
         emails      <- stubs.emails.get
       } yield assertTrue(sReply == Status.Ok, emails.size == 1) &&
         assertTrue(
-          emails.head.inReplyTo.exists(v => !v.contains("\r") && !v.contains("\n")),
-          emails.head.inReplyTo.contains("<a@b>Bcc: attacker@evil.example"),
+          // Only the leading angle-addr survives — the smuggled `Bcc:` line is discarded, not
+          // emitted as part of a malformed header value.
+          emails.head.headers.contains(Map("In-Reply-To" -> "<a@b>", "References" -> "<a@b>")),
         )
+    },
+    test("EmailSender.threadingId keeps only a well-formed leading msg-id (#2451)") {
+      // A direct pin on the sanitizer itself, so removing any part of it fails HERE rather than
+      // depending on PressInbound's ingest-side control-char strip to cover for it.
+      val cases = List(
+        // in                                        expected
+        Some("<abc@mail.example>")               -> Some("<abc@mail.example>"),
+        Some("  <abc@mail.example>  ")           -> Some("<abc@mail.example>"),
+        Some("<a@b>\r\nBcc: attacker@evil.test") -> Some("<a@b>"),
+        Some("<a@b> and then some prose")        -> Some("<a@b>"),
+        Some("")                                 -> None,
+        Some("   ")                              -> None,
+        // No angle brackets, whitespace inside, or an unclosed bracket is not an RFC 5322 msg-id —
+        // dropped, so the reply sends unthreaded rather than with a header a relay may reject.
+        Some("abc@mail.example")                 -> None,
+        Some("<a b@c>")                          -> None,
+        Some("<unclosed@mail.example")           -> None,
+        Some("Bcc: attacker@evil.test <a@b>")    -> None,
+        None                                     -> None,
+      )
+      assertTrue(cases.forall((in, want) => EmailSender.threadingId(in) == want)) &&
+      assertTrue(
+        // The pair is rendered from the SAME normalized id, and absent entirely when there is none.
+        EmailSender.threadingHeaders(Some("<a@b>")) ==
+          Some(Map("In-Reply-To" -> "<a@b>", "References" -> "<a@b>")),
+        EmailSender.threadingHeaders(Some("not-a-msg-id")).isEmpty,
+        EmailSender.threadingHeaders(None).isEmpty,
+      )
     },
   ) @@ TestAspect.sequential
 }

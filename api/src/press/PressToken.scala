@@ -128,7 +128,10 @@ object PressToken {
     scala.util
       .Try {
         val raw = new String(Base64.getUrlDecoder.decode(body), StandardCharsets.UTF_8)
-        raw.split("\\|", 5) match {
+        // `-1` keeps trailing empty fields, so a 5-field payload whose Message-ID is empty still
+        // yields 5 parts — and the arity match below is then exact: a future 6-field payload falls
+        // through to Malformed instead of silently folding its 6th field into `mid`.
+        raw.split("\\|", -1) match {
           case Array(r, s, m, e, mid) => (unb64(r), unb64(s), m.toLong, e.toLong, unb64(mid))
           // TODO(#2459): the pre-#2451 4-field payload — accepted so a session dispatched by the old
           // build and redeemed by the new one still verifies (its reply just can't thread). Delete

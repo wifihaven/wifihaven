@@ -92,24 +92,40 @@ object EmailSender {
     }
 
   /**
-   * #2451 — normalize a `Message-ID` for header use: strip control characters, trim, and drop it
-   * entirely if nothing is left. This is the authoritative sanitizer for the threading headers, and
-   * it sits HERE (at the header-render boundary) because the id is attacker-controlled — it comes
-   * from the sender's own mail client — and flows into an outbound email header. `PressInbound`
-   * also strips control chars when it parses the inbound envelope; that is belt-and-braces at
-   * ingest, this is the one that guards the write.
+   * #2451 — normalize a `Message-ID` for header use, returning `None` unless what is left is a
+   * well-formed RFC 5322 `msg-id` (an `angle-addr`: `<` … `>` with no whitespace or nested angle
+   * brackets). Control characters are stripped first, and only the LEADING angle-addr is kept, so
+   * anything appended after it — a smuggled `\r\nBcc:` line, trailing prose — is discarded rather
+   * than emitted.
    *
-   * Public so the recording senders normalize identically to [[Resend]] and specs can assert the
-   * value that would really be emitted.
+   * The shape check is not cosmetic. This value is attacker-controlled (it comes from the sender's
+   * own mail client) and goes into an outbound header, and the transport maps ANY non-2xx to
+   * [[EmailOutcome.Failed]] — so a malformed header that Resend/SES rejects would turn "unthreaded
+   * but delivered" into "not delivered", which is worse than not threading at all. Anything that
+   * isn't a clean msg-id is therefore dropped and the reply sends unthreaded.
+   *
+   * `PressInbound` also strips control chars when it parses the inbound envelope; that is
+   * belt-and-braces at ingest, this is the one that guards the write.
    */
   def threadingId(raw: Option[String]): Option[String] =
-    raw.map(_.filter(c => !c.isControl).trim).filter(_.nonEmpty)
+    raw
+      .map(_.filter(c => !c.isControl).trim)
+      .flatMap(MsgIdPrefix.findPrefixOf)
+
+  // RFC 5322 §3.6.4: `msg-id = "<" id-left "@" id-right ">"`, and §3.2.2 forbids folding
+  // whitespace inside it — so a valid id has no space and no nested angle bracket. Anchored at the
+  // start (`findPrefixOf`), which is what discards anything appended after the id.
+  private val MsgIdPrefix = "<[^<>\\s]+>".r
 
   /**
-   * #2451 — the RFC 5322 threading pair Resend renders verbatim. Both headers carry the SAME single
-   * id (this is a first-level reply to the journalist's original), so there is nothing to disagree.
+   * #2451 — the RFC 5322 threading pair, exactly as it goes on the wire. This is the SINGLE
+   * producer of the header names and of the rule that both carry the same id (this is a first-level
+   * reply to the journalist's original, so there is nothing to disagree — the accumulated-chain
+   * form RFC 5322 §3.6.4 describes for deeper replies is #2467); [[Resend]] puts its result
+   * straight into the request and the recording senders record its result verbatim, so a spec
+   * assertion and a live send cannot diverge.
    */
-  private def threadingHeaders(inReplyTo: Option[String]): Option[Map[String, String]] =
+  def threadingHeaders(inReplyTo: Option[String]): Option[Map[String, String]] =
     threadingId(inReplyTo).map(id => Map("In-Reply-To" -> id, "References" -> id))
 
   /** No-op sender used when email is unconfigured. */
@@ -126,9 +142,13 @@ object EmailSender {
       // #2233 — Resend's `reply_to` field (snake_case on the wire). Only set for the outreach path
       // via `sendAs`; `None` for the notification path so the JSON is byte-identical to before.
       reply_to: Option[List[String]] = None,
-      // #2451 — Resend's arbitrary-header escape hatch. Only set for the press-RESPONDER path (the
-      // RFC 5322 `In-Reply-To` / `References` threading pair); `None` everywhere else, so the JSON
-      // stays byte-identical for the notification and outreach paths.
+      // #2451 — Resend's custom-header escape hatch: `headers`, an object, documented as "Custom
+      // headers to add to the email" at https://resend.com/docs/api-reference/emails/send-email.
+      // The docs put no allowlist on WHICH headers, and do not name In-Reply-To / References
+      // specifically — so the field itself is verified, its acceptance of this particular pair is
+      // confirmed by the staging send (the operator's step) before prod. Only set for the
+      // press-RESPONDER path; `None` everywhere else, so the JSON stays byte-identical for the
+      // notification and outreach paths.
       headers: Option[Map[String, String]] = None,
   )
   private object ResendRequest {
@@ -165,12 +185,12 @@ object EmailSender {
         replyTo.map(_.trim).filter(_.nonEmpty).map(List(_))
       post(
         ResendRequest(
-          fromHeader,
-          List(to),
-          subject,
-          htmlBody,
-          replyHeader,
-          threadingHeaders(inReplyTo),
+          from = fromHeader,
+          to = List(to),
+          subject = subject,
+          html = htmlBody,
+          reply_to = replyHeader,
+          headers = threadingHeaders(inReplyTo),
         ),
       )
     }
@@ -216,13 +236,15 @@ object EmailSender {
       // plain `send` path, so existing recorders/assertions are unaffected.
       from: Option[String] = None,
       replyTo: Option[String] = None,
-      // #2451 — the RFC 5322 threading pair actually emitted (both carry the same normalized
-      // Message-ID). `None` when the reply cannot thread, and on the plain `send` path.
-      inReplyTo: Option[String] = None,
-      references: Option[String] = None,
+      // #2451 — the extra headers actually emitted, taken VERBATIM from the one producer
+      // ([[threadingHeaders]]) that [[Resend]] also feeds into `ResendRequest.headers`. Recording the
+      // producer's output rather than re-deriving the pair is what makes a spec assertion here
+      // equivalent to what a live send puts on the wire — if the header names or the pair changed,
+      // both move together. `None` when there is nothing to add, and on the plain `send` path.
+      headers: Option[Map[String, String]] = None,
   )
 
-  /** The `Sent` row a `sendAs` call would produce — normalized exactly as [[Resend]] would emit. */
+  /** The `Sent` row a `sendAs` call produces — the same header map [[Resend]] would POST. */
   private def sentAs(
       from: String,
       replyTo: Option[String],
@@ -230,10 +252,8 @@ object EmailSender {
       subject: String,
       htmlBody: String,
       inReplyTo: Option[String],
-  ): Sent = {
-    val id = threadingId(inReplyTo)
-    Sent(to, subject, htmlBody, Some(from), replyTo, id, id)
-  }
+  ): Sent =
+    Sent(to, subject, htmlBody, Some(from), replyTo, threadingHeaders(inReplyTo))
 
   def recording(ref: Ref[List[Sent]]): EmailSender = new EmailSender {
     def send(to: String, subject: String, htmlBody: String): UIO[EmailOutcome] =
