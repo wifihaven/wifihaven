@@ -91,6 +91,9 @@ function isOnChangePasswordPage(): boolean {
   return window.location.pathname.replace(/\/+$/, '') === ACCOUNT_PATH
 }
 
+// The one endpoint whose 401 does NOT mean "your session died" — see the 401 branch in `req`.
+const CHANGE_PASSWORD_ENDPOINT = '/auth/change-password'
+
 async function req<T>(
   method: string,
   path: string,
@@ -151,10 +154,16 @@ async function req<T>(
   if (res.status === 401) {
     // 401 is an auth-state outcome, not an API-down signal. The API answered.
     apiHealth.reportSuccess()
+    // #2492: change-password answers 401 when the CURRENT password is wrong
+    // (`Routes.scala` maps `AuthError.InvalidCredentials` → `ApiError.Unauthorized`), which says
+    // nothing about the session. Treating it as a dead session signed a first-login user out on a
+    // typo — stranding them back at login with the old password — and made AccountPage's "Current
+    // password is incorrect" message unreachable. Hand the error to the caller instead.
+    if (path === CHANGE_PASSWORD_ENDPOINT) throw new Error('HTTP 401 Unauthorised')
     localStorage.removeItem('token')
-    // #2492: the session is gone, so the forced-change state goes with it — otherwise the next
-    // AuthProvider mount comes up with the flag set and no session behind it. Login rewrites it
-    // from the server's answer anyway; this just closes the window.
+    // The session really is gone here, so the forced-change state goes with it — otherwise the
+    // next AuthProvider mount comes up with the flag set and no session behind it. Login rewrites
+    // it from the server's answer anyway; this just closes the window.
     setMustChangePassword(false)
     window.location.href = '/login'
     throw new Error('Unauthorised')
@@ -227,7 +236,7 @@ export const api = {
     login: (identifier: string, password: string) =>
       req<LoginResponse>('POST', '/auth/login', { identifier, password }, true),
     changePassword: (currentPassword: string, newPassword: string) =>
-      req<void>('POST', '/auth/change-password', { currentPassword, newPassword }),
+      req<void>('POST', CHANGE_PASSWORD_ENDPOINT, { currentPassword, newPassword }),
     // #2308: public, unauthenticated + rate-limited. Always returns the same content-free ack
     // whether or not the email is registered (no enumeration) — the UI shows one success state.
     forgotPassword: (email: string) =>

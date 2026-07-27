@@ -86,6 +86,26 @@ describe('password_change_required 403 (#2492)', () => {
     expect(readMustChangePassword()).toBe(true)
   })
 
+  // A wrong CURRENT password answers 401 too (Routes.scala maps InvalidCredentials →
+  // Unauthorized). Signing the user out there stranded a first-login user at the login page
+  // after a typo, holding only the old password, and hid AccountPage's error message.
+  it('a 401 from change-password keeps the session so the caller can show the error', async () => {
+    stubLocation('/account')
+    setMustChangePassword(true)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      headers: new Headers(),
+      text: () => Promise.resolve('Invalid credentials'),
+    } as unknown as Response))
+
+    await expect(api.auth.changePassword('wrong', 'NewPassword123')).rejects.toThrow(/401/)
+
+    expect(window.location.href).toBe('')
+    expect(localStorage.getItem('token')).toBe('tok')
+    expect(readMustChangePassword()).toBe(true)
+  })
+
   // The session is gone, so the forced-change state goes with it — otherwise the next
   // AuthProvider mount comes up with the flag set and no session behind it.
   it('a 401 clears the persisted flag along with the token', async () => {

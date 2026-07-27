@@ -2,6 +2,7 @@ import React, { useState } from 'react'
 import { useNavigate, useLocation, Link } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { getHouseholdCookie } from '@/api/householdCookie'
+import { ACCOUNT_PATH } from '@/routes'
 
 /**
  * #2164 (single-identifier login, design §4): compose the string actually posted to the server from
@@ -77,7 +78,7 @@ export function LoginPage() {
       // Redirect to the account page so the operator is forced to rotate
       // before reaching any other part of the UI.
       if (mustChangePassword) {
-        navigate('/account')
+        navigate(ACCOUNT_PATH)
       } else {
         navigate('/dashboard')
       }

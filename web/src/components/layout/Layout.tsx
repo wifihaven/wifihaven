@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Outlet, NavLink, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { useMe } from '@/api/queries'
+import { ACCOUNT_PATH } from '@/routes'
 import { ApiUnreachableBanner } from '@/components/ApiUnreachableBanner'
 import { ConversionBanner } from '@/components/ConversionBanner'
 import { SupportWidget } from '@/components/SupportWidget'
@@ -197,7 +198,7 @@ export function Layout() {
 
           <div className="flex items-center gap-3">
             <NavLink
-              to="/account"
+              to={ACCOUNT_PATH}
               className={({ isActive }) =>
                 `hidden sm:block text-xs font-mono px-2 py-1 rounded transition-colors ${
                   isActive
