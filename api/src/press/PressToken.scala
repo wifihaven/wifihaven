@@ -26,9 +26,21 @@ import java.util.Base64
  *     endpoint EMAILS the agent's copy to THAT address only, regardless of what the request body or
  *     the (untrusted) message said. This is the load-bearing control for autonomous send: a
  *     hijacked agent cannot email an attacker-chosen recipient;
- *   - **short-TTL** — expiry is minted in and checked against an injected clock;
+ *   - **expiring** — expiry is minted in and checked against an injected clock. #2473 raised the
+ *     default lifetime from 30 minutes to 24h ([[wifihaven.api.AgentTokenTtl]]) because a
+ *     cloud-agent run can be paused on subscription usage limits and resumed hours later, so a
+ *     minutes-long TTL guaranteed the journalist's reply was thrown away on resume. **TTL is
+ *     therefore no longer the primary bound on a leaked token** — and for press it never was the
+ *     load-bearing one: the token carries NO household and NO data scope, and the reply is
+ *     destination-locked to the ONE address it was minted for, so the worst a leaked press token
+ *     can do is email that same journalist. The "just wait for it to expire" response to a
+ *     suspected leak is what a 24h TTL costs, which raises the value of TODO(#2259) (explicit
+ *     agent-token revocation) — not implemented here;
  *   - **unforgeable** — HMAC-signed server-side under a dedicated secret so the agent (or anything
- *     reading the session transcript) cannot forge, widen, redirect, or extend a token.
+ *     reading the session transcript) cannot forge, widen, redirect, or extend a token;
+ *   - **loudly rejected** — since #2473 a rejected callback increments
+ *     `agent_token_rejected_total{channel="press",op,reason}` and logs, so an expired token
+ *     silently eating a reply is observable.
  *
  * Wire shape: `v1.<b64url(payload)>.<hmacHex>` where `payload` is
  * `b64(replyTo)|b64(subject)|pressMessageId|expEpochSeconds|b64(inboundMessageId)`
@@ -44,12 +56,13 @@ import java.util.Base64
  * else's conversation.
  *
  * '''Rollout (#2451).''' [[verify]] also accepts the pre-#2451 4-field payload (no
- * `inboundMessageId`), resolving it to an empty Message-ID. Tokens are short-TTL
- * (`press.agentTokenTtlMinutes`, 30 by default) and are both minted and verified by this server —
- * this is NOT the router wire contract — so the only exposure is a session dispatched by the old
- * build and redeemed by the new one. That window is real though, and failing it would silently drop
- * a journalist's reply. TODO(#2459): delete the 4-field arm once the deploy has been live longer
- * than one token TTL.
+ * `inboundMessageId`), resolving it to an empty Message-ID. Tokens expire
+ * (`press.agentTokenTtlMinutes`) and are both minted and verified by this server — this is NOT the
+ * router wire contract — so the only exposure is a session dispatched by the old build and redeemed
+ * by the new one. That window is real though, and failing it would silently drop a journalist's
+ * reply. TODO(#2459): delete the 4-field arm once the deploy has been live longer than one token
+ * TTL — note that #2473 raised that TTL from 30 minutes to **24 hours**, so the wait is a day, not
+ * half an hour.
  */
 object PressToken {
 

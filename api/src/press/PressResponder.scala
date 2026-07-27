@@ -12,6 +12,7 @@ import wifihaven.api.notify.{
   EscalationNotice,
   Notifier,
 }
+import wifihaven.api.observability.AgentTokenRejection
 import wifihaven.shared.Clock
 import zio.*
 
@@ -188,11 +189,12 @@ final case class PressResponder(
       clock.instant.flatMap { now =>
         bearer.map(_.trim).filter(_.nonEmpty) match {
           case None        =>
-            AppMetrics.pressAgentAction("reply", "denied").as(AgentActionResult.Denied)
+            // #2473: loud on the shared rejection series — a rejected callback is a reply the
+            // journalist never received, not just another `denied` sample.
+            denyLoudly("reply", AgentTokenRejection.Reason.Missing)
           case Some(token) =>
             PressToken.verify(token, now, cfg.agentTokenSecretTrimmed) match {
-              case Left(_)       =>
-                AppMetrics.pressAgentAction("reply", "denied").as(AgentActionResult.Denied)
+              case Left(err)     => denyLoudly("reply", AgentTokenRejection.reasonFor(err))
               case Right(claims) =>
                 val subject   = replySubject(claims.subject)
                 // #2451: normalize HERE via the same primitive the transport uses, so the log line
@@ -281,11 +283,10 @@ final case class PressResponder(
       clock.instant.flatMap { now =>
         bearer.map(_.trim).filter(_.nonEmpty) match {
           case None        =>
-            AppMetrics.pressAgentAction("escalate", "denied").as(AgentActionResult.Denied)
+            denyLoudly("escalate", AgentTokenRejection.Reason.Missing)
           case Some(token) =>
             PressToken.verify(token, now, cfg.agentTokenSecretTrimmed) match {
-              case Left(_)       =>
-                AppMetrics.pressAgentAction("escalate", "denied").as(AgentActionResult.Denied)
+              case Left(err)     => denyLoudly("escalate", AgentTokenRejection.reasonFor(err))
               case Right(claims) =>
                 escalateLimiter.tryAcquire(s"escalate:${claims.replyTo}").flatMap { ok =>
                   if !ok then
@@ -297,6 +298,16 @@ final case class PressResponder(
             }
         }
       }
+
+  /**
+   * #2473 — the ONE press-side token rejection path (the press twin of SupportResponder's). Log +
+   * meter the loud shared series, then return the SAME uniform 401-shaped `Denied` (and the same
+   * `press_agent_action_total{denied}` sample) every rejection has always returned: the response is
+   * identical for every reason, so a public caller learns nothing about WHY it failed.
+   */
+  private def denyLoudly(op: String, reason: String): UIO[AgentActionResult] =
+    AgentTokenRejection.rejected(AgentTokenRejection.Channel.Press, op, reason) *>
+      AppMetrics.pressAgentAction(op, "denied").as(AgentActionResult.Denied)
 
   private def escalate(
       claims: PressToken.Claims,

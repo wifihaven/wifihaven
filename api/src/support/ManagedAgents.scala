@@ -22,7 +22,7 @@ import scala.util.matching.Regex
  * sessions, never agents.
  *
  * SECURITY (both audiences): the agent receives ZERO vendor secrets. Its only credential is the
- * short-TTL, thread-bound token carried in the kickoff (out-of-band — the kickoff is the session's
+ * expiring, thread-bound token carried in the kickoff (out-of-band — the kickoff is the session's
  * user message, never sender-visible text). The Anthropic key stays server-side here.
  */
 object ManagedAgents {

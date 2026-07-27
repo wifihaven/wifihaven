@@ -2,7 +2,7 @@
 
 The Claude support responder is a **cloud agent**: the API server receives Plain's signed
 new-message webhook, gates it to **UI-originated threads only** (the #2199 identified widget stamps
-`tenantIdentifier = household_id`; cold email never dispatches), mints a short-TTL thread- and
+`tenantIdentifier = household_id`; cold email never dispatches), mints a thread- and
 household-bound session token, and creates one **Anthropic Managed Agents session** per message.
 The agent writes a reply and posts it back through the API's token-authenticated
 `/api/support/agent/...` endpoints, where it is **sent to the customer directly** (autonomous send

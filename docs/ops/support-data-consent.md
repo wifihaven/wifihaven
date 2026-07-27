@@ -77,11 +77,24 @@ grant, not a payload flag.
 | Revocation | `revoked_at` stamped by the customer's "stop allowing" action | Ahead-of-expiry withdrawal, without waiting out the TTL. A live grant is `revoked_at IS NULL AND expires_at > now`. |
 | Granularity of the data | unchanged — the bounded `HouseholdSummary` (name, plan, counts, profile names + pause state) | Consent widens the token's DATA SCOPE only; it never widens what the endpoint returns, nor the household/thread binding. |
 
-Because the token TTL is minutes while the consent TTL is 24 hours, revoking
-consent takes effect on the next dispatch at the latest — an already-minted
-data-scoped token stays valid until it expires. That residual window is the same
-one #2259 (the agent-token revocation list) exists to close; it is bounded by
-`support.agentTokenTtlMinutes`.
+**Revoking consent takes effect immediately (#2476).** `dataAccess` is stamped
+into the token once, at mint — but the household read does not stop there: it
+RE-READS the `support_thread_consent` record on every call, and refuses (403,
+metered `support_consent_total{outcome="read_withdrawn"}`) when there is no live
+grant. Both must hold, so a withdrawal bites on the very next read by an
+already-minted, still-unexpired, still-data-scoped token.
+
+That re-read exists because of #2473. The agent-token TTL was 30 minutes and is
+now 24 hours (a cloud-agent run can be paused on subscription usage limits and
+resumed hours later; a token that dies mid-pause silently throws away the
+customer's answer). Had the read kept trusting the mint-time stamp, that change
+would have stretched the post-withdrawal residual window from ≤30 minutes to a
+full day. Re-reading removes the window entirely instead, independent of the TTL.
+
+What #2473 does still cost is incident response: with a 30-minute window,
+waiting out a suspected leaked token was plausible; at 24 hours it is not.
+#2259 (an explicit agent-token revocation list) is what closes that, and this
+change raises its priority.
 
 ## The security boundary
 
@@ -121,7 +134,9 @@ one #2259 (the agent-token revocation list) exists to close; it is bounded by
 The signature now covers `"<version>.<payload>"` rather than the payload alone,
 for both `ConsentToken` (`v1`) and `ConsentGrant` (`g1`). That is a **breaking
 change to already-issued agent tokens**: for up to
-`support.agentTokenTtlMinutes` (default 30) after the deploy, a cloud-agent
+`support.agentTokenTtlMinutes` (30 at the time; the default is 1440 since #2473,
+so a comparable future rollover would take a day to self-clear, not half an hour)
+after the deploy, a cloud-agent
 session dispatched by the previous image holds a token the new image will not
 verify. Those sessions fail their callback with the uniform 401 and their draft
 never reaches the customer; they meter as

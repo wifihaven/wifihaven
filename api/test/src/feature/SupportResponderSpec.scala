@@ -798,6 +798,18 @@ object SupportResponderSpec
         _           <- billRepo.create(hhA, "beta", founding = false)
         _           <- billRepo.create(hhB, "active", founding = true)
         (routes, _) <- makeRoutes(liveCfg)
+        // #2476: the read re-checks the LIVE grant, so a data-scoped token needs a real consent row
+        // — seed the one the customer would have created for THIS (household, thread).
+        consentRepo <- ZIO.service[SupportConsentRepo]
+        clockA      <- ZIO.service[Clock]
+        nowA        <- clockA.instant
+        _           <- consentRepo.grant(
+          hhA,
+          "th_a",
+          None,
+          nowA,
+          nowA.plus(SupportResponder.ConsentTtl),
+        )
         tokenA      <- mintToken(hhA, "th_a", dataAccess = true)
         (sA, bodyA) <- agentGetHousehold(routes, Some(tokenA))
         summaryA    <-

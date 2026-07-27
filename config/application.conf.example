@@ -230,10 +230,15 @@ wifihaven {
   #   claudeCodeRoutineId    = ""
   #   # The per-routine bearer token from the routine's API trigger (Authorization: Bearer). SECRET.
   #   claudeCodeRoutineToken = ""
-  #   # HMAC secret for the per-session agent token (thread- + household-bound, short-TTL,
+  #   # HMAC secret for the per-session agent token (thread- + household-bound, expiring,
   #   # consent-scoped — the dispatched agent's ONLY credential). Generate ≥32 random chars. SECRET.
   #   agentTokenSecret      = ""
-  #   # agentTokenTtlMinutes = 30
+  #   # Agent-token lifetime. Must OUTLIVE a paused cloud-agent run: a claude-code-cloud routine can
+  #   # be suspended on subscription usage limits and resumed hours later, and a token that dies
+  #   # mid-pause silently throws away the customer's reply (#2473). Default 1440 (24h); anything
+  #   # under ~6h reproduces that failure. See `AgentTokenTtl` in api/src/Config.scala for the
+  #   # security trade-off. Clamped to ≥1.
+  #   # agentTokenTtlMinutes = 1440
   #   # The public base URL of THIS API — what the cloud agent calls back to (/api/support/agent/...).
   #   # agentApiBase        = "https://api.wifihaven.net"
   #   # Which deployment this API is ("staging" | "prod"; rides in the agent kickoff so a session

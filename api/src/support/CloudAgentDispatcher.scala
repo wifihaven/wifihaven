@@ -25,7 +25,7 @@ import zio.*
  * validated loudly at boot); flag false ⇒ the [[Disabled]] no-op, logged and health-visible.
  *
  * SECURITY MODEL (#2200 / #2241):
- *   - The agent receives **zero vendor secrets**. Its only credential is the short-TTL, thread- and
+ *   - The agent receives **zero vendor secrets**. Its only credential is the expiring, thread- and
  *     household-bound [[ConsentToken]] carried in the kickoff (out-of-band — the kickoff is the
  *     session's user message, never customer-visible text). Plain / GitHub / Anthropic keys stay
  *     server-side; every side effect routes back through our authenticated agent endpoints, where
@@ -51,7 +51,7 @@ trait CloudAgentDispatcher {
 
 /**
  * The inputs to a dispatch. `customerMessage` is UNTRUSTED. `agentToken` is the session's only
- * credential (thread- + household-bound, consent-scoped, short-TTL). `plan` is bounded account
+ * credential (thread- + household-bound, consent-scoped, expiring). `plan` is bounded account
  * context (billing status) — never another household's data.
  */
 final case class AgentDispatch(

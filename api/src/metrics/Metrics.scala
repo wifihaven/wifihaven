@@ -556,8 +556,9 @@ object MetricGuard {
     // #2419 — the in-conversation data-access consent lifecycle on ONE series:
     // `support_consent_total{outcome}` (requested | request_already_granted | request_rate_limited |
     // request_disabled | request_error — the AGENT's ask; granted | revoked | revoke_noop | invalid
-    // | expired | household_mismatch | disabled | error — the CUSTOMER's action). Bounded enum, never a
-    // per-household / per-thread label.
+    // | expired | household_mismatch | disabled | error — the CUSTOMER's action; #2476 adds
+    // read_withdrawn | read_no_scope — the AGENT's household READ refused for want of a LIVE grant).
+    // Bounded enum, never a per-household / per-thread label.
     "support_consent_total"                         -> Set("outcome"),
     // #2430 — the per-dispatch Plain thread-history read that gives the stateless responder its
     // conversation context. `support_thread_history_total{outcome}` counts each read by a bounded
@@ -586,6 +587,13 @@ object MetricGuard {
     // series so the two audiences alert independently. Never per-sender / per-thread.
     "press_ai_draft_total"                          -> Set("outcome", "reason"),
     "press_agent_action_total"                      -> Set("op", "outcome"),
+    // #2473 — the shared cloud-agent callback REJECTION series, for support AND press on one name
+    // (the failure mode and its fix are shared, so a single panel/alert must cover both).
+    // `channel` (support | press) × `op` (the five callback names) × `reason` (token_expired |
+    // invalid | missing) — every dimension a code-bounded enum from AgentTokenRejection, never a
+    // per-thread / per-sender label. This is the ONLY signal that a dispatched agent's answer was
+    // thrown away at the door; before #2473 it hid inside `…_agent_action_total{outcome="denied"}`.
+    "agent_token_rejected_total"                    -> Set("channel", "op", "reason"),
     // #2438 — the press dispatcher-level dispatch outcome, the press twin of
     // `support_dispatch_total` (same shared CloudAgentObservability envelope, separate series so the
     // public-press audience graphs + alerts independently). Same bounded {outcome,transport} space.
@@ -887,6 +895,19 @@ object AppMetrics {
   def supportAgentAction(action: String, outcome: String): UIO[Unit] =
     MetricGuard.counter("support_agent_action_total", Map("op" -> action, "outcome" -> outcome))
 
+  // #2473 — a cloud-agent callback REJECTED at the token check, for BOTH responders on ONE series
+  // (emitted from the shared AgentTokenRejection envelope, never a bare Metric.*). Every sample is a
+  // customer/journalist answer that did NOT get delivered. `channel` ∈ support | press;
+  // `op` is the callback name (reply | issue | household_read | escalate | consent_request);
+  // `reason` ∈ token_expired | invalid | missing — all bounded by AgentTokenRejection, never a
+  // per-thread / per-sender / per-household label. `token_expired` is the #2473 signal: it means the
+  // TTL is again shorter than the cloud transport's real round-trip latency.
+  def agentTokenRejected(channel: String, op: String, reason: String): UIO[Unit] =
+    MetricGuard.counter(
+      "agent_token_rejected_total",
+      Map("channel" -> channel, "op" -> op, "reason" -> reason),
+    )
+
   // #2438 — the dispatcher-level dispatch outcome, emitted from the shared CloudAgentObservability
   // envelope (never a bare Metric.*). `outcome` ∈ dispatched | error | disabled; `transport` (when
   // present) ∈ managed-agents | claude-code-cloud. The `disabled` no-op selects no transport, so it
@@ -906,7 +927,10 @@ object AppMetrics {
   //   request_error   — the AGENT-side ask (the server posts the prompt into the thread);
   //   granted | revoked | revoke_noop (a withdrawal of a grant that was not live — idempotent for
   //   the customer, but not a real withdrawal) | invalid | expired | household_mismatch | disabled |
-  //   error   — the CUSTOMER-side action on POST /api/support/consent.
+  //   error   — the CUSTOMER-side action on POST /api/support/consent;
+  //   read_withdrawn | read_no_scope   — #2476, the agent's household READ refused because no LIVE
+  //   grant existed at read time. `read_withdrawn` is the security-interesting one: the token WAS
+  //   minted with data scope, and the customer withdrew before the agent used it.
   // `household_mismatch` is the security-relevant one (a consent link redeemed by another
   // household's session, which writes nothing) — it should be flat zero in normal operation.
   def supportConsent(outcome: String): UIO[Unit]       =

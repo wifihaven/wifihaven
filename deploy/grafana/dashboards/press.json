@@ -358,6 +358,50 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Agent callbacks REFUSED at the token check (#2473)",
+      "description": "sum by (op, reason) (rate(agent_token_rejected_total{env=\"$env\",channel=\"press\"}[5m])) — Every sample is a cloud-agent callback we REFUSED at the token check — an answer that was generated and then thrown away at the door, so the customer/journalist received nothing. token_expired = a token WE minted outlived its TTL: the #2473 failure, where a claude-code-cloud run paused on subscription usage limits and resumed after the token had died. Sustained non-zero token_expired means agentTokenTtlMinutes is again shorter than the transport's real round-trip latency — raise it (api/src/Config.scala, AgentTokenTtl). invalid = malformed or wrongly-signed (a probe, or a secret rotation mid-flight); missing = no bearer at all. Both agent endpoints are public, so a low invalid/missing background rate is internet noise; token_expired never is.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 46 },
+      "id": 15,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "reqps",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1, "stacking": { "mode": "normal", "group": "A" } }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (op, reason) (rate(agent_token_rejected_total{env=\"$env\",channel=\"press\"}[5m]))",
+          "legendFormat": "{{op}} / {{reason}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Press replies lost to an EXPIRED token (24h) — expect 0 (#2473)",
+      "description": "sum(increase(agent_token_rejected_total{env=\"$env\",channel=\"press\",reason=\"token_expired\"}[24h])) — each one is a journalist whose inquiry was answered and never delivered. Same cause and same fix as the support panel: the token outlived its TTL because the cloud-agent run paused on usage limits and resumed hours later.",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 46 },
+      "id": 16,
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "short", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "area", "textMode": "auto" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(increase(agent_token_rejected_total{env=\"$env\",channel=\"press\",reason=\"token_expired\"}[24h]))",
+          "legendFormat": "expired (24h)",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",

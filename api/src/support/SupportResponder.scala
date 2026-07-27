@@ -13,6 +13,7 @@ import wifihaven.api.db.{
 }
 import wifihaven.api.metrics.AppMetrics
 import wifihaven.api.notify.{EscalationChannel, EscalationKind, EscalationNotice, Notifier}
+import wifihaven.api.observability.AgentTokenRejection
 import wifihaven.shared.{Clock, UserRole}
 import wifihaven.shared.types.HouseholdId
 import zio.*
@@ -28,7 +29,7 @@ import java.time.Instant
  *
  * **Inbound ([[handleWebhook]])**: Plain's signed new-message webhook → HMAC verify → the
  * AUTHENTICATED-ORIGIN gate → mint the per-session [[ConsentToken]] (thread- + household-bound,
- * consent-scoped, short-TTL) → dispatch a cloud-agent session ([[CloudAgentDispatcher]]). The
+ * consent-scoped, expiring) → dispatch a cloud-agent session ([[CloudAgentDispatcher]]). The
  * inbound message text is UNTRUSTED DATA end to end.
  *
  * Before the origin gate runs, the #2403 LOOP GUARD drops any event that is not an inbound,
@@ -419,7 +420,7 @@ final case class SupportResponder(
       title: String,
       body: String,
   ): UIO[Either[AgentActionResult, FiledIssue]] =
-    withClaimsE("issue", bearer) { claims =>
+    withClaimsE("issue", bearer) { (claims, _) =>
       // Same short-circuit as dispatch: a thread-capped caller must not drain the global budget.
       issueThreadLimiter.tryAcquire(s"thread:${claims.threadId}").flatMap { threadOk =>
         if !threadOk then doneE("issue", AgentActionResult.RateLimited)
@@ -444,41 +445,73 @@ final case class SupportResponder(
 
   /**
    * The consented household read (#2241): a bounded summary of the ONE household the token is bound
-   * to. Requires the token's `dataAccess` scope (minted only when the customer opted in at the UI
-   * submission); the household id comes from the token, so there is no parameter through which
-   * another household could be requested — single-household is enforced by construction.
+   * to. The household id comes from the token, so there is no parameter through which another
+   * household could be requested — single-household is enforced by construction.
+   *
+   * Consent is checked TWICE, and both must hold:
+   *   - `claims.dataAccess` — the scope stamped into the token at mint;
+   *   - a LIVE grant for this `(household, thread)` RIGHT NOW — re-read here, not trusted from the
+   *     token (#2476).
+   *
+   * The live re-read is what makes "stop allowing" take effect immediately. Before it, `dataAccess`
+   * was evaluated once at dispatch and the read trusted that stamp, so a withdrawal only bit once
+   * the token expired — a residual window bounded by the agent-token TTL. #2473 raised that TTL
+   * from 30 minutes to 24 hours (a cloud-agent run can be paused on usage limits and resume hours
+   * later), which would have stretched the residual window to a full day. Re-reading closes it
+   * instead of trading a customer's withdrawal for the reply fix. It costs one indexed lookup, and
+   * only on a token that CLAIMS data access — a scope-less token is refused before the lookup, and
+   * a scoped one is already on a path that does four repo queries.
+   *
+   * Fail-CLOSED both ways: [[consentGranted]] reads a DB error as "no consent", and the token scope
+   * is still required, so this only ever narrows access.
    */
   def agentHousehold(bearer: Option[String]): UIO[Either[AgentActionResult, HouseholdSummary]] =
-    withClaimsE("household_read", bearer) { claims =>
-      if !claims.dataAccess then
-        // Valid token, but minted WITHOUT the consent scope — the one 403-shaped denial (the route
-        // distinguishes it from a bad/expired token, which stays a uniform 401).
+    withClaimsE("household_read", bearer) { (claims, now) =>
+      // The token scope is free to check and refuses the COMMON case (most threads never grant), so
+      // it short-circuits ahead of the grant lookup — the DB round trip is only spent on a token
+      // that actually claims data access.
+      if !claims.dataAccess then householdRead(claims, liveGrant = false)
+      else
+        consentGranted(claims.householdId, claims.threadId, now)
+          .flatMap(live => householdRead(claims, live))
+    }
+
+  private def householdRead(
+      claims: ConsentToken.Claims,
+      liveGrant: Boolean,
+  ): UIO[Either[AgentActionResult, HouseholdSummary]] =
+    if !claims.dataAccess || !liveGrant then
+      // The one 403-shaped denial (the route distinguishes it from a bad/expired token, which stays
+      // a uniform 401). `read_withdrawn` (#2476) is the security-interesting half: a token that WAS
+      // minted with data scope, presented after the customer withdrew — it should be rare, and a
+      // rising rate means grants are being withdrawn mid-conversation.
+      AppMetrics
+        .supportConsent(if claims.dataAccess then "read_withdrawn" else "read_no_scope") *>
         AppMetrics
           .supportAgentAction("household_read", "denied")
           .as(Left(AgentActionResult.NoConsent))
-      else {
-        val hh = claims.householdId
-        for {
-          household <- householdRepo.findById(hh).catchAll(_ => ZIO.none)
-          billing   <- billingRepo.findByHousehold(hh).catchAll(_ => ZIO.none)
-          devices   <- deviceRepo.listAllForHousehold(hh).catchAll(_ => ZIO.succeed(Nil))
-          profiles  <- profileRepo.listAllForHousehold(hh).catchAll(_ => ZIO.succeed(Nil))
-          // Audit every consented read (#2241) — household + thread, never the data.
-          _         <- ZIO.logInfo(
-            s"support: agent household read household=${hh.value} thread=${claims.threadId}",
-          )
-          _         <- AppMetrics.supportAgentAction("household_read", "ok")
-        } yield Right(
-          HouseholdSummary(
-            name = household.map(_.name).getOrElse(""),
-            plan = billing.map(_.status),
-            founding = billing.map(_.founding),
-            deviceCount = devices.size,
-            profileCount = profiles.size,
-            profiles = profiles.map(p => ProfileSummary(p.name, p.paused)),
-          ),
+    else {
+      val hh = claims.householdId
+      for {
+        household <- householdRepo.findById(hh).catchAll(_ => ZIO.none)
+        billing   <- billingRepo.findByHousehold(hh).catchAll(_ => ZIO.none)
+        devices   <- deviceRepo.listAllForHousehold(hh).catchAll(_ => ZIO.succeed(Nil))
+        profiles  <- profileRepo.listAllForHousehold(hh).catchAll(_ => ZIO.succeed(Nil))
+        // Audit every consented read (#2241) — household + thread, never the data.
+        _         <- ZIO.logInfo(
+          s"support: agent household read household=${hh.value} thread=${claims.threadId}",
         )
-      }
+        _         <- AppMetrics.supportAgentAction("household_read", "ok")
+      } yield Right(
+        HouseholdSummary(
+          name = household.map(_.name).getOrElse(""),
+          plan = billing.map(_.status),
+          founding = billing.map(_.founding),
+          deviceCount = devices.size,
+          profileCount = profiles.size,
+          profiles = profiles.map(p => ProfileSummary(p.name, p.paused)),
+        ),
+      )
     }
 
   // ── #2437: escalation — the handoff that actually reaches a human ────────────
@@ -568,9 +601,12 @@ final case class SupportResponder(
    * `consentThreadLimiter`.
    */
   def agentRequestConsent(bearer: Option[String]): UIO[AgentActionResult] =
-    withClaims("consent_request", bearer) { claims =>
-      clock.instant.flatMap { now =>
-        consentGranted(claims.householdId, claims.threadId, now).flatMap {
+    // The OTHER callback that needs the current time: takes the verified `now` from the token check
+    // rather than reading the clock again, so the grant check, the link's expiry, and the token
+    // verification all sit on one instant.
+    withClaimsAt("consent_request", bearer) { (claims, now) =>
+      consentGranted(claims.householdId, claims.threadId, now)
+        .flatMap {
           case true  =>
             // Already consented — no prompt, no spam. The next dispatch already carries the scope.
             AppMetrics.supportConsent("request_already_granted") *>
@@ -583,7 +619,6 @@ final case class SupportResponder(
               else postConsentPrompt(claims, now)
             }
         }
-      }
     }
 
   private def postConsentPrompt(
@@ -714,10 +749,21 @@ final case class SupportResponder(
   private def withClaims(action: String, bearer: Option[String])(
       f: ConsentToken.Claims => UIO[AgentActionResult],
   ): UIO[AgentActionResult] =
-    withClaimsE(action, bearer)(claims => f(claims).map(Left(_))).map(_.merge)
+    withClaimsAt(action, bearer)((claims, _) => f(claims))
 
+  /** [[withClaims]] for a callback that also needs the instant the token was verified against. */
+  private def withClaimsAt(action: String, bearer: Option[String])(
+      f: (ConsentToken.Claims, Instant) => UIO[AgentActionResult],
+  ): UIO[AgentActionResult] =
+    withClaimsE(action, bearer)((claims, now) => f(claims, now).map(Left(_))).map(_.merge)
+
+  /**
+   * `f` receives the SAME `now` the token was verified against, so a caller that needs the current
+   * time (the #2476 consent re-read) evaluates it on one consistent instant rather than reading the
+   * clock a second time.
+   */
   private def withClaimsE[A](action: String, bearer: Option[String])(
-      f: ConsentToken.Claims => UIO[Either[AgentActionResult, A]],
+      f: (ConsentToken.Claims, Instant) => UIO[Either[AgentActionResult, A]],
   ): UIO[Either[AgentActionResult, A]] =
     if !cfg.agentEndpointsEnabled then
       AppMetrics.supportAgentAction(action, "disabled").as(Left(AgentActionResult.Disabled))
@@ -725,15 +771,26 @@ final case class SupportResponder(
       clock.instant.flatMap { now =>
         bearer.map(_.trim).filter(_.nonEmpty) match {
           case None        =>
-            AppMetrics.supportAgentAction(action, "denied").as(Left(AgentActionResult.Denied))
+            // #2473: a rejected callback is a customer answer that never arrived — it is LOUD on the
+            // shared `agent_token_rejected_total` series, not just another `denied` sample.
+            denyLoudly(action, AgentTokenRejection.Reason.Missing)
           case Some(token) =>
             ConsentToken.verify(token, now, cfg.agentTokenSecretTrimmed) match {
-              case Left(_)       =>
-                AppMetrics.supportAgentAction(action, "denied").as(Left(AgentActionResult.Denied))
-              case Right(claims) => f(claims)
+              case Left(err)     => denyLoudly(action, AgentTokenRejection.reasonFor(err))
+              case Right(claims) => f(claims, now)
             }
         }
       }
+
+  /**
+   * #2473 — the ONE support-side token rejection path: log + meter the loud shared series, then
+   * return the SAME uniform 401-shaped `Denied` (and the same `…_agent_action_total{denied}`
+   * sample) every rejection has always returned. The response is deliberately identical for every
+   * reason, so the caller learns nothing about WHY it failed — only our logs do.
+   */
+  private def denyLoudly[A](action: String, reason: String): UIO[Either[AgentActionResult, A]] =
+    AgentTokenRejection.rejected(AgentTokenRejection.Channel.Support, action, reason) *>
+      AppMetrics.supportAgentAction(action, "denied").as(Left(AgentActionResult.Denied))
 
   private def done(action: String, r: AgentActionResult): UIO[AgentActionResult] =
     AppMetrics.supportAgentAction(action, AgentActionResult.label(r)).as(r)

@@ -25,7 +25,7 @@ import zio.json.*
  *     STRUCTURAL handoff signal: the server labels the thread + emails the operator), `GET
  *     /api/support/agent/household` — the cloud agent's ONLY side-effect channels, authenticated
  *     solely by the per-session [[wifihaven.api.support.ConsentToken]] (thread- + household-bound,
- *     consent-scoped, short-TTL) as `Authorization: Bearer`. No JWT, no admin session — and
+ *     consent-scoped, expiring) as `Authorization: Bearer`. No JWT, no admin session — and
  *     conversely no other route in the API accepts this token. Denials are deliberately uniform
  *     (401 "unauthorized") so a probing caller learns nothing about why.
  */

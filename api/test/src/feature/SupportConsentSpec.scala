@@ -432,6 +432,44 @@ object SupportConsentSpec
         onNext.exists(!_.dataConsent),
       )
     },
+    test("#2476: withdrawing consent kills an ALREADY-MINTED data-scoped token's read at once") {
+      // The property #2473's 30m -> 24h token TTL would otherwise have eroded. `dataAccess` is
+      // stamped at mint, so if the read trusted that stamp a withdrawal would not bite until the
+      // token expired — up to a full day. The read re-reads the grant, so it bites immediately.
+      for {
+        _          <- cleanDb
+        hhRepo     <- ZIO.service[HouseholdRepo]
+        userRepo   <- ZIO.service[UserRepo]
+        billRepo   <- ZIO.service[HouseholdBillingRepo]
+        h          <- makeHarness()
+        hh         <- hhRepo.create("Family W", "family-w")
+        _          <- billRepo.create(hh, "beta", founding = false)
+        jwtTok     <- seedAdmin(h, userRepo, hh, "family-w", "admin_w", "pwpwpwpw11")
+        // The customer grants, and the next dispatch mints a token carrying the data scope.
+        asker      <- mintAgentToken(hh, "th_w", dataAccess = false)
+        _          <- agentPost(h, "/api/support/agent/request-consent", Some(asker))
+        grant      <- grantTokenFromThread(h).someOrFail(new RuntimeException("no consent link"))
+        _          <- postConsent(h, Some(jwtTok), grant)
+        dispatched <- dispatchAndToken(h, hh, "th_w", "how many devices do I have?")
+        agentTok = dispatched.map(_.agentToken).getOrElse("")
+        // That token reads fine while the grant is live.
+        before  <- agentGetHousehold(h, agentTok)
+        // The customer withdraws — WITHOUT the token expiring or a new dispatch happening.
+        revoked <- postConsent(h, Some(jwtTok), grant, allow = false)
+        // The SAME still-unexpired, still-data-scoped token now reads nothing.
+        after   <- agentGetHousehold(h, agentTok)
+        now     <- ZIO.serviceWithZIO[Clock](_.instant)
+        stillValid = ConsentToken.verify(agentTok, now, TokenSecret)
+      } yield assertTrue(
+        dispatched.exists(_.dataConsent),
+        before._1 == Status.Ok,
+        revoked == Status.Ok,
+        // 403 (no consent), NOT 401 — the token itself is untouched and still verifies; it is the
+        // GRANT that is gone. That distinction is what makes this a consent fix, not an expiry one.
+        after._1 == Status.Forbidden,
+        stillValid.exists(_.dataAccess),
+      )
+    },
     test("a second ask on an already-consented thread posts NO second prompt (anti-nag)") {
       for {
         _        <- cleanDb
