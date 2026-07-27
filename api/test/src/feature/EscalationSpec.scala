@@ -26,7 +26,8 @@ import java.net.InetSocketAddress
  * #2437 — **an escalation is not complete until a human has been notified.** Both responders tell
  * the sender "a team member will follow up" when they hand off; before this the promise was backed
  * by nothing: press notified NOBODY (press has no inbox — `press@` goes to a Cloudflare Email
- * Worker and the correspondence log has no consumer), and an escalated Plain thread was
+ * Worker, and an escalation is precisely the case the #2296 correspondence log cannot cover,
+ * because nothing tells the operator to go look), and an escalated Plain thread was
  * indistinguishable from an AI-resolved one (no label, no status), so the operator had to read
  * every thread.
  *
@@ -36,10 +37,11 @@ import java.net.InetSocketAddress
  * [[PlainClient]] (Plain GraphQL). Clock injected.
  *
  * The load-bearing pins:
- *   - PRESS: every accepted inbound press email notifies the operator with sender + subject + body
- *     (the "press has no inbox" fix), and an ESCALATION is a second, distinctly-subjected notice
- *     carrying the agent's note — so "the AI answered it" and "a human must act" are never
- *     confused;
+ *   - PRESS: an ESCALATION notifies the operator with sender + subject + the original inquiry + the
+ *     agent's note, and a routine accepted inbound notifies NOBODY (#2480 — `/press`, the #2296
+ *     correspondence log, is the monitoring surface for AI-handled traffic; an email per inbound
+ *     turns a browsable log into inbox noise). The operator mailbox means "a human must act",
+ *     nothing else;
  *   - SUPPORT: an escalation MARKS the Plain thread server-side (the `needs-human` label, so the
  *     inbox is filterable) AND notifies the operator; a normal AI-resolved thread is NOT marked;
  *   - escalation detection is STRUCTURAL — a dedicated, token-authenticated escalate endpoint. An
@@ -47,7 +49,9 @@ import java.net.InetSocketAddress
  *     (the anti-spoof pin: we never text-match untrusted or agent-authored prose);
  *   - the escalate endpoints inherit the existing token boundary (uniform 401 on a bad/missing
  *     token, 404 when the responder is off) and are rate-capped per thread/sender;
- *   - a notification-send failure NEVER fails the inbound webhook (fail-open, logged + metered).
+ *   - a notification-send failure NEVER fails the agent's escalate callback (fail-open, logged +
+ *     metered) — pinned by asserting the notice WAS attempted and the call still succeeded, so
+ *     "fail-open" can't be satisfied by silently not notifying at all.
  */
 object EscalationSpec
     extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task]] {
@@ -257,13 +261,17 @@ object EscalationSpec
 
   def spec = suite("escalations reach a human (#2437)")(
     // ── PRESS ────────────────────────────────────────────────────────────────
-    test("an accepted inbound press email notifies the operator with sender, subject and body") {
+    test("an accepted inbound press email does NOT email the operator (#2480)") {
+      // #2480: routine press traffic is monitored at `/press` — the #2296 correspondence log
+      // (`web/src/pages/PressPage.tsx` over `GET /api/press/messages`), not the operator's inbox.
+      // The per-inbound FYI #2446 added was justified by "press has no SPA view of press_messages",
+      // a premise already false when it was written. Only a HANDOFF — a human must act — mails.
       for {
         _ <- cleanDb
         h <- pressHarness()
         msg  = "I'm writing for TechDaily and would like a comment on parental controls."
         body = pressPayload("reporter@techdaily.example", msg, "Comment request")
-        status <- post(
+        status     <- post(
           h.routes,
           "/api/press/inbound",
           body,
@@ -271,19 +279,14 @@ object EscalationSpec
             PressInbound.SignatureHeader -> SupportService.hmacSha256Hex(PressWebhookSecret, body),
           ),
         )
-        emails <- h.emails.get
-      } yield {
-        val notices = toOperator(emails)
-        assertTrue(status == Status.Ok, notices.size == 1) &&
-        assertTrue(
-          // Enough to act on without opening a database: who, about what, and what they said.
-          notices.head.htmlBody.contains("reporter@techdaily.example"),
-          notices.head.htmlBody.contains("Comment request"),
-          notices.head.htmlBody.contains("comment on parental controls"),
-          // An AI-handled inquiry is NOT flagged as needing a human.
-          !notices.head.subject.contains("ESCALATION"),
-        )
-      }
+        dispatches <- h.dispatch.dispatches.get
+        emails     <- h.emails.get
+      } yield assertTrue(
+        status == Status.Ok,
+        // The inquiry is still accepted, recorded and handed to the agent — only the FYI is gone.
+        dispatches.size == 1,
+        toOperator(emails).isEmpty,
+      )
     },
     test("a press escalation notifies the operator, flagged ESCALATED, with the agent's note") {
       for {
@@ -388,28 +391,45 @@ object EscalationSpec
         emails <- h.emails.get
       } yield assertTrue(s3 == Status.TooManyRequests, toOperator(emails).size == 2)
     },
-    test("a failed operator notification never fails the inbound press webhook") {
+    test("a failed operator notification never fails the press escalate callback") {
+      // Post-#2480 the inbound path sends no notice at all, so the fail-open property lives where
+      // the notice now does: the agent's escalate callback. A Resend failure must not turn the
+      // handoff into an error the agent would retry — it is logged + metered instead.
+      //
+      // The failing sender RECORDS its attempts, so this distinguishes fail-open ("we tried to
+      // notify, the transport said no, the callback still succeeded") from doing nothing at all —
+      // a `status == Ok` assertion alone would pass just as happily if the notice were dropped.
       for {
-        _ <- cleanDb
+        _        <- cleanDb
+        attempts <- Ref.make(List.empty[EmailSender.Sent])
         failing = new EmailSender {
           def send(to: String, subject: String, htmlBody: String): UIO[EmailOutcome] =
-            ZIO.succeed(EmailOutcome.Failed)
+            attempts.update(_ :+ EmailSender.Sent(to, subject, htmlBody)).as(EmailOutcome.Failed)
         }
         h <- pressHarness(sender = Some(failing))
-        body    = pressPayload("reporter@example.com", "a question", "Q")
-        status     <- post(
-          h.routes,
-          "/api/press/inbound",
-          body,
-          Some(
-            PressInbound.SignatureHeader -> SupportService.hmacSha256Hex(PressWebhookSecret, body),
-          ),
+        now <- h.clock.instant
+        token = PressToken.mint(
+          "reporter@example.com",
+          "Story",
+          0L,
+          "",
+          now,
+          java.time.Duration.ofMinutes(30),
+          PressTokenSecret,
         )
-        dispatches <- h.dispatch.dispatches.get
-      } yield
-      // The journalist's message is still dispatched and the Worker is told 200 — the notification
-      // is fail-open (logged + metered), never a reason to drop or retry the inbound.
-      assertTrue(status == Status.Ok, dispatches.size == 1)
+        status <- post(
+          h.routes,
+          "/api/press/agent/escalate",
+          """{"note":"needs a human"}""",
+          bearer = Some(token),
+        )
+        tried  <- attempts.get
+      } yield assertTrue(
+        status == Status.Ok,
+        // The notice WAS attempted, to the operator mailbox, flagged as the handoff it is.
+        toOperator(tried).size == 1,
+        toOperator(tried).head.subject.contains("ESCALATION"),
+      )
     },
     // ── SUPPORT ──────────────────────────────────────────────────────────────
     test("a support escalation MARKS the Plain thread server-side and notifies the operator") {
@@ -599,9 +619,9 @@ object EscalationSpec
           toOperator(supEmails).isEmpty,
         ) &&
         assertTrue(
-          // Press still gets its ONE "new inquiry" notice (the inbox fix), and it is NOT escalated.
-          toOperator(pressNotes).size == 1,
-          !toOperator(pressNotes).head.subject.contains("ESCALATION"),
+          // …and press mails NOTHING for an inbound either (#2480): the spoofed wording cannot
+          // manufacture an operator notice, because no inbound ever produces one.
+          toOperator(pressNotes).isEmpty,
         )
     },
     test("support escalate: a bad/missing token is a uniform 401; a dark responder is a 404") {

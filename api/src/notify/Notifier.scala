@@ -103,20 +103,24 @@ object EscalationChannel {
 }
 
 /**
- * #2437 — what happened, as distinct from where it came from. [[Received]] is "a message arrived
- * and the AI is handling it" (press only: press has no inbox, so the arrival itself is news the
- * operator would otherwise never see). [[Escalated]] is "the agent handed off — a human must act".
- * Keeping them on ONE series with a bounded `kind` label lets the operator read escalation RATE
- * against total volume in a single panel.
+ * #2437 — what happened, as distinct from where it came from. [[Escalated]] is "the agent handed
+ * off — a human must act", and since #2480 it is the ONLY thing that mails the operator: the
+ * per-inbound `Received` FYI is gone (press's `/press` correspondence log is the monitoring surface
+ * for AI-handled traffic; support has the Plain inbox).
+ *
+ * That leaves ONE case, so this enum carries no branching today — it is kept because `kind` is a
+ * live label on `operator_escalation_total` (`MetricGuard.Allowed`) that shipped panels SELECT on
+ * (`kind="escalated"` in `deploy/grafana/dashboards/press.json` and `support.json`); dropping it
+ * would break those queries for no behavioural gain. Nothing groups by it. Treat a second case as
+ * something to ADD when a second reason to mail the operator actually exists, not as a slot waiting
+ * to be filled.
  */
 enum EscalationKind {
-  case Received
   case Escalated
 }
 
 object EscalationKind {
   def label(k: EscalationKind): String = k match {
-    case Received  => "received"
     case Escalated => "escalated"
   }
 }
@@ -131,8 +135,7 @@ object EscalationKind {
  *     (support; the customer is reachable in the Plain thread, so no address is copied here).
  *   - `subject` — the inbound subject (press) or a thread descriptor (support).
  *   - `body` — the sender's own message, so the operator can triage without opening a DB.
- *   - `agentNote` — the agent's one-line reason for handing off. `None` on a
- *     [[EscalationKind.Received]] notice (no agent has run yet).
+ *   - `agentNote` — the agent's one-line reason for handing off. `None` when the agent gave none.
  *   - `reference` — where to go: the Plain thread id (support) or the press correspondence pointer.
  */
 final case class EscalationNotice(
@@ -334,16 +337,15 @@ object Notifier {
       }
     }
 
-    // The subject is the operator's filter: an ESCALATION — a human MUST act — reads differently from
-    // an FYI at a glance and in a mail rule. The sender is included so the mailbox threads by peer.
+    // The subject is the operator's filter: ESCALATION — a human MUST act — is unmistakable at a
+    // glance and in a mail rule. The sender is included so the mailbox threads by peer. Since #2480
+    // this mailbox carries nothing else, so every notice reads as a to-do.
     private def escalationSubject(n: EscalationNotice): String = {
       val who  = n.sender.replace('\n', ' ').replace('\r', ' ').trim.take(SubjectSenderMaxChars)
       val what = EscalationChannel.label(n.channel)
       n.kind match {
         case EscalationKind.Escalated =>
           s"WifiHaven $what ESCALATION — a human must follow up: $who"
-        case EscalationKind.Received  =>
-          s"WifiHaven $what: new inquiry from $who"
       }
     }
 
@@ -352,9 +354,6 @@ object Notifier {
         case EscalationKind.Escalated =>
           "<p><strong>The AI assistant handed this off — it told the sender a human would follow " +
             "up. Nothing else will happen until you reply.</strong></p>"
-        case EscalationKind.Received  =>
-          "<p>A new message arrived. The AI assistant is answering it; no action is needed unless " +
-            "you want to take it over.</p>"
       }
       val note = n.agentNote.map(_.trim).filter(_.nonEmpty).fold("") { s =>
         s"""<p style="margin:16px 0;padding:12px 16px;background:#fef3c7;border-radius:8px;color:#3f3f46;"><strong>Assistant's reason:</strong> ${esc(

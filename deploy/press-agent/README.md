@@ -57,7 +57,7 @@ Also provision the **Email Worker** — see [`../press-worker/README.md`](../pre
 | `WIFIHAVEN_PRESS_AGENT_API_BASE` | set in render.yaml (`api.wifihaven.net` / `api-staging.wifihaven.net`) |
 | `WIFIHAVEN_PRESS_DEPLOYMENT_ENV` | set in render.yaml (`prod` / `staging`) — the kickoff's deployment line |
 | `WIFIHAVEN_EMAIL_RESEND_API_KEY` / `WIFIHAVEN_EMAIL_FROM_ADDRESS` | **required** — the reply is emailed via Resend; the API won't boot with press on and email off. Reuses the #578 sender; set `FROM_ADDRESS` to a press-appropriate identity if desired. |
-| `WIFIHAVEN_EMAIL_OPERATOR_ADDRESS` | **required (#2437)** — the operator mailbox every press notice is emailed to. Press has no monitored inbox, so this address IS the inbox: every accepted inbound gets a "new inquiry" email and every escalation gets an "ESCALATION — a human must follow up" one. With email enabled and press on, an unset value **fails boot** rather than dropping the notice. |
+| `WIFIHAVEN_EMAIL_OPERATOR_ADDRESS` | **required (#2437)** — the operator mailbox press escalations are emailed to. Press has no monitored inbox, so an escalation reaches a human only here: it arrives as "ESCALATION — a human must follow up". Routine, AI-handled inbound mails nothing (#2480 — read it at `/press`). With email enabled and press on, an unset value **fails boot** rather than dropping the notice. |
 
 ## Claude Code Cloud routine transport (#2327)
 
@@ -109,25 +109,35 @@ names the active dispatcher in its `detail`, so the billed path is observable; t
 emitted to the startup log. Routine CRUD is web-UI-only today; only `/fire` is API-driven, so step
 1's prompt and step 3's network policy are manual per environment.
 
-## Escalation — press has no inbox, so this IS the inbox (#2437)
+## Escalation — the operator mailbox means "a human must act" (#2437, #2480)
 
-Two operator emails come out of this pipeline, both through the #578 Resend transport to
+Exactly ONE operator email comes out of this pipeline, through the #578 Resend transport to
 `WIFIHAVEN_EMAIL_OPERATOR_ADDRESS`:
 
-- **every accepted inbound** (`kind=received`): sender, subject, and the full message. Press email
-  reaches a Cloudflare Email Worker, not a mailbox, and nothing in the SPA reads `press_messages` —
-  so before #2437 a journalist could write in and no human at WifiHaven would ever know. Sent
-  regardless of whether the agent dispatch succeeded, because a failed dispatch is exactly when the
-  operator most needs to know.
 - **every escalation** (`kind=escalated`): the agent calls `POST /api/press/agent/escalate` with its
-  reply-target-bound token, and the server emails a distinctly-subjected notice carrying the sender,
-  the subject, the ORIGINAL message re-read from `press_messages` by the id on the signed token, and
-  the agent's one-line reason. The peer identity comes from the token, so a hijacked agent can no
-  more misreport a journalist than it can redirect the reply.
+  reply-target-bound token, and the server emails a notice carrying the sender, the subject, the
+  ORIGINAL message re-read from `press_messages` by the id on the signed token, and the agent's
+  one-line reason. The peer identity comes from the token, so a hijacked agent can no more misreport
+  a journalist than it can redirect the reply.
+
+Routine, AI-handled traffic mails NOBODY. #2446 also emailed a `kind=received` FYI per accepted
+inbound; #2480 removed it. The monitoring surface for that traffic is the **`/press` correspondence
+log** (#2296 — `web/src/pages/PressPage.tsx` over `GET /api/press/messages`), where every inbound
+and every AI reply is browsable; an email per message turned that log into inbox noise.
+
+A silently FAILED dispatch — the other half of the original justification — is a metrics/alerting
+concern, not a notification one. #2416 made dispatch failures fail-loud and attributed: a permanent
+4xx at the agent boundary lands as `press_ai_draft_total{outcome="error",reason="config"}` plus an
+ERROR log naming the fix. **Know the gap:** the only armed alert is **W7**
+(`infra/grafana/alerting-rules-warning.tf`), whose expression is scoped `env="prod"` — and press is
+enabled in **staging only** (`render.yaml`: `WIFIHAVEN_PRESS_RESPONDER_ENABLED` `true` for staging,
+`false` for prod). So nothing pages in the environment where press runs today; that widening, and
+sustained-transient coverage, are tracked in #2443 (OPEN). Neither is a reason to mail the operator
+about every success.
 
 Escalation is **structural** — only that endpoint call registers one, so a journalist who writes "a
 team member will follow up" in their own email has escalated nothing. Capped at 3/sender/hour.
-Panels: "Operator notices: inquiries received vs escalated" and "Press operator notices that never
+Panels: "Operator escalation notices, by delivery outcome" and "Press operator notices that never
 sent" on `deploy/grafana/dashboards/press.json`.
 
 **Re-paste the routine prompt.** #2437 changed [`agent.yaml`](agent.yaml)'s `system:` block (the new
