@@ -103,6 +103,26 @@ final case class PressResponder(
         }
     }
 
+  /**
+   * #2480 — a routine inbound emails NOBODY. #2446 sent an operator FYI from here on the premise
+   * that "press has no inbox and no SPA view of `press_messages`". The second half was false since
+   * #2296: `/press` (`web/src/pages/PressPage.tsx` over `GET /api/press/messages`,
+   * `PressRoutes.scala`) IS the operator's surface for AI-handled press traffic, and an email per
+   * message turns a browsable log into inbox noise.
+   *
+   * The other half of that premise — a silently FAILED dispatch — is deliberately not re-solved
+   * here with a different notification. It is a metrics/alerting concern: #2416 made dispatch
+   * failures fail-loud and attributed, and a permanent 4xx surfaces as `outcome=error,
+   * reason=config` on `press_ai_draft_total` (the `WebhookOutcome.ConfigError` mapping below) plus
+   * an ERROR log naming the fix. **Coverage today is partial and worth knowing:** the only armed
+   * alert is W7 (`infra/grafana/alerting-rules-warning.tf`), which is scoped `env="prod"` — and
+   * press is enabled in STAGING only (`render.yaml`: `WIFIHAVEN_PRESS_RESPONDER_ENABLED` is `true`
+   * for staging, `false` for prod), so nothing pages in the environment where press currently runs.
+   * Sustained-transient alerting is tracked in #2443. Widening that coverage belongs in those
+   * issues; mailing the operator about every SUCCESS on the chance one failed does not.
+   *
+   * The operator mailbox now means exactly one thing: a human must act — see [[escalate]].
+   */
   private def dispatch(event: PressInboundEvent): UIO[WebhookOutcome] =
     for {
       now            <- clock.instant
@@ -140,15 +160,6 @@ final case class PressResponder(
           pressMessage = event.messageText,
         ),
       )
-      // #2480: a routine inbound emails NOBODY. #2446 sent an operator FYI here on the premise that
-      // "press has no inbox and no SPA view of `press_messages`" — false since #2296: `/press`
-      // (web/src/pages/PressPage.tsx over `GET /api/press/messages`) IS the operator's surface for
-      // AI-handled press traffic, and an email per message turns a browsable log into inbox noise.
-      // The other half of that premise — a silent dispatch FAILURE — is not re-solved here either:
-      // #2416 made dispatch failures fail-loud and attributed on `press_dispatch_total{outcome,
-      // transport}`, so a failure pages through metrics/alerting rather than by mailing the
-      // operator about every SUCCESS on the off chance one failed. The operator mailbox now means
-      // exactly one thing: a human must act — see `escalate` below.
     } yield outcome match {
       case wifihaven.api.support.DispatchOutcome.Dispatched  => WebhookOutcome.Dispatched
       case wifihaven.api.support.DispatchOutcome.Disabled    => WebhookOutcome.Disabled

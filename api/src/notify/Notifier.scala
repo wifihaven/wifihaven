@@ -106,9 +106,13 @@ object EscalationChannel {
  * #2437 — what happened, as distinct from where it came from. [[Escalated]] is "the agent handed
  * off — a human must act", and since #2480 it is the ONLY thing that mails the operator: the
  * per-inbound `Received` FYI is gone (press's `/press` correspondence log is the monitoring surface
- * for AI-handled traffic; support has the Plain inbox). The `kind` label survives as a bounded
- * dimension on `operator_escalation_total` so the existing panels keep their shape and a future "a
- * human must act" kind can join without a metric rename.
+ * for AI-handled traffic; support has the Plain inbox).
+ *
+ * That leaves ONE case, so this enum carries no branching today — it is kept because `kind` is a
+ * live label on `operator_escalation_total` (`MetricGuard.Allowed`) that shipped panels already
+ * select and group by; collapsing it would be a metric-shape change for no behavioural gain. Treat
+ * a second case as something to ADD when a second reason to mail the operator actually exists, not
+ * as a slot waiting to be filled.
  */
 enum EscalationKind {
   case Escalated

@@ -438,8 +438,7 @@ object MetricGuard {
     // dimension the panels already group by); `outcome` is the bounded transport enum from
     // EmailOutcome.label (sent / failed / skipped_disabled) plus `skipped_no_recipient` (no operator
     // mailbox — only reachable with the email transport off; the key is REQUIRED when it is on).
-    // Escalation RATE is this counter over the channel's inbound total (press_ai_draft_total /
-    // support_ai_draft_total). Never a per-sender / per-thread / per-household label.
+    // Never a per-sender / per-thread / per-household label.
     "operator_escalation_total"            -> Set("channel", "kind", "outcome"),
     // #808 — partition runway gauge. `partition_weeks_ahead{table}` is the count of consecutive
     // weekly partitions present from the current ISO week for each RANGE-partitioned ingest table

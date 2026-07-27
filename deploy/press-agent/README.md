@@ -123,10 +123,17 @@ Exactly ONE operator email comes out of this pipeline, through the #578 Resend t
 Routine, AI-handled traffic mails NOBODY. #2446 also emailed a `kind=received` FYI per accepted
 inbound; #2480 removed it. The monitoring surface for that traffic is the **`/press` correspondence
 log** (#2296 — `web/src/pages/PressPage.tsx` over `GET /api/press/messages`), where every inbound
-and every AI reply is browsable; an email per message turned that log into inbox noise. A silently
-FAILED dispatch — the other half of the original justification — is covered by the fail-loud,
-attributed `press_dispatch_total{outcome,transport}` path (#2416) and its alerting (#2443), not by
-mailing the operator about every success.
+and every AI reply is browsable; an email per message turned that log into inbox noise.
+
+A silently FAILED dispatch — the other half of the original justification — is a metrics/alerting
+concern, not a notification one. #2416 made dispatch failures fail-loud and attributed: a permanent
+4xx at the agent boundary lands as `press_ai_draft_total{outcome="error",reason="config"}` plus an
+ERROR log naming the fix. **Know the gap:** the only armed alert is **W7**
+(`infra/grafana/alerting-rules-warning.tf`), whose expression is scoped `env="prod"` — and press is
+enabled in **staging only** (`render.yaml`: `WIFIHAVEN_PRESS_RESPONDER_ENABLED` `true` for staging,
+`false` for prod). So nothing pages in the environment where press runs today; that widening, and
+sustained-transient coverage, are tracked in #2443 (OPEN). Neither is a reason to mail the operator
+about every success.
 
 Escalation is **structural** — only that endpoint call registers one, so a journalist who writes "a
 team member will follow up" in their own email has escalated nothing. Capped at 3/sender/hour.

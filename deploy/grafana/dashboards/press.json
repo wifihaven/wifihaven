@@ -297,7 +297,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "Operator escalation notices, by delivery outcome (#2437)",
-      "description": "sum by (kind, outcome) (rate(operator_escalation_total{env=\"$env\",channel=\"press\"}[5m])) — #2437. Press has NO monitored inbox, so these emails to the operator are the ONLY way a handoff reaches a human; routine inquiries are read at /press instead. kind=escalated — the only value emitted since #2480 retired the per-inbound kind=received FYI — is the agent handing off because it cannot answer from public info or the sender wants a person. Any outcome other than `sent` means the operator was owed a notice and did not get it — for press that is a silently dropped journalist.",
+      "description": "sum by (outcome) (rate(operator_escalation_total{env=\"$env\",channel=\"press\"}[5m])) — #2437. Press has NO monitored inbox, so these emails to the operator are the ONLY way a handoff reaches a human; routine, AI-handled inquiries are read at /press (the #2296 correspondence log) and mail nobody. Every sample is the agent handing off because it cannot answer from public info or the sender wants a person: kind=escalated is the only value emitted since #2480 retired the per-inbound kind=received FYI, so this deliberately does NOT slice by kind (nor pin kind=\"escalated\" in the selector — a future kind would show up here rather than vanish). Any outcome other than `sent` means the operator was owed a notice and did not get it — for press that is a silently dropped journalist.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 38 },
       "id": 12,
@@ -319,8 +319,8 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum by (kind, outcome) (rate(operator_escalation_total{env=\"$env\",channel=\"press\"}[5m]))",
-          "legendFormat": "{{kind}} / {{outcome}}",
+          "expr": "sum by (outcome) (rate(operator_escalation_total{env=\"$env\",channel=\"press\"}[5m]))",
+          "legendFormat": "{{outcome}}",
           "refId": "A"
         }
       ]

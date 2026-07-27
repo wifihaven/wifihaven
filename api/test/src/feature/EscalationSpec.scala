@@ -49,7 +49,9 @@ import java.net.InetSocketAddress
  *     (the anti-spoof pin: we never text-match untrusted or agent-authored prose);
  *   - the escalate endpoints inherit the existing token boundary (uniform 401 on a bad/missing
  *     token, 404 when the responder is off) and are rate-capped per thread/sender;
- *   - a notification-send failure NEVER fails the inbound webhook (fail-open, logged + metered).
+ *   - a notification-send failure NEVER fails the agent's escalate callback (fail-open, logged +
+ *     metered) — pinned by asserting the notice WAS attempted and the call still succeeded, so
+ *     "fail-open" can't be satisfied by silently not notifying at all.
  */
 object EscalationSpec
     extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task]] {
@@ -393,11 +395,16 @@ object EscalationSpec
       // Post-#2480 the inbound path sends no notice at all, so the fail-open property lives where
       // the notice now does: the agent's escalate callback. A Resend failure must not turn the
       // handoff into an error the agent would retry — it is logged + metered instead.
+      //
+      // The failing sender RECORDS its attempts, so this distinguishes fail-open ("we tried to
+      // notify, the transport said no, the callback still succeeded") from doing nothing at all —
+      // a `status == Ok` assertion alone would pass just as happily if the notice were dropped.
       for {
-        _ <- cleanDb
+        _        <- cleanDb
+        attempts <- Ref.make(List.empty[EmailSender.Sent])
         failing = new EmailSender {
           def send(to: String, subject: String, htmlBody: String): UIO[EmailOutcome] =
-            ZIO.succeed(EmailOutcome.Failed)
+            attempts.update(_ :+ EmailSender.Sent(to, subject, htmlBody)).as(EmailOutcome.Failed)
         }
         h <- pressHarness(sender = Some(failing))
         now <- h.clock.instant
@@ -416,7 +423,13 @@ object EscalationSpec
           """{"note":"needs a human"}""",
           bearer = Some(token),
         )
-      } yield assertTrue(status == Status.Ok)
+        tried  <- attempts.get
+      } yield assertTrue(
+        status == Status.Ok,
+        // The notice WAS attempted, to the operator mailbox, flagged as the handoff it is.
+        toOperator(tried).size == 1,
+        toOperator(tried).head.subject.contains("ESCALATION"),
+      )
     },
     // ── SUPPORT ──────────────────────────────────────────────────────────────
     test("a support escalation MARKS the Plain thread server-side and notifies the operator") {
