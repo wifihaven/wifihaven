@@ -1290,9 +1290,11 @@ object PlainClient {
 
     def grantedPermissions: UIO[PlainPermissionRead] =
       sendForBody(MyPermissionsQuery, Json.Obj(), Expect("myPermissions", None)).disconnect
-        .timeoutTo(Left("timed out"): Either[String, String])(identity)(ProbeTimeout)
+        .timeoutTo(Left(PlainFailure("timed out", None)): Either[PlainFailure, String])(identity)(
+          ProbeTimeout,
+        )
         .map {
-          case Right(body)  =>
+          case Right(body)   =>
             navigate(
               Json.decoder.decodeJson(body).getOrElse(Json.Null),
               List("data", "myPermissions", "permissions"),
@@ -1322,8 +1324,11 @@ object PlainClient {
           // called, not re-derived. Deliberately NOT `classifyFieldFailure`: that one matches
           // substrings, so it would file a 400/404/422 as transient and could be fooled by an
           // upstream HTML error page containing the word "forbidden".
-          case Left(detail) =>
-            val safe = redactBody(detail)
+          // `PlainFailure.body` (#2435) is deliberately ignored here: this probe reads only our own
+          // grant strings, so there is no `error.code` to branch on, and the raw body is exactly
+          // what must not reach the logs.
+          case Left(failure) =>
+            val safe = redactBody(failure.detail)
             statusOf(safe) match {
               case Some(status) =>
                 if CloudAgentObservability.isPermanentClientStatus(status) then

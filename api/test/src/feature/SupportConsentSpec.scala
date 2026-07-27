@@ -154,6 +154,9 @@ object SupportConsentSpec
         def markThread(req: PlainThreadMark): UIO[PlainOutcome]         = inner.markThread(req)
         def threadHistory(threadId: String, limit: Int): UIO[List[PlainThreadMessage]] =
           p.await *> inner.threadHistory(threadId, limit)
+        // #2452: the gate is specifically on the TIMELINE read — every other method delegates
+        // straight through, this one included.
+        def grantedPermissions: UIO[PlainPermissionRead] = inner.grantedPermissions
       },
     )
 
