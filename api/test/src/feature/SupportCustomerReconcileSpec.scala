@@ -313,6 +313,35 @@ object SupportCustomerReconcileSpec extends ZIOSpecDefault {
         )
       }
     },
+    test("a JOIN whose TENANT target is missing is transient `error`, NOT permanent `schema`") {
+      // Second review run: `classifyFieldFailure` maps every not-found to the SCHEMA bucket, which is
+      // right for an unregistered tenant FIELD (never self-heals) and wrong for the membership join,
+      // where a missing tenant just means `upsertTenantEntitlement` was skipped for want of household
+      // context — a degraded repo read that the next identity call fixes. Landing it in `schema`
+      // would fire a "SCHEMA DRIFT … will never self-heal" ERROR and a provisioning-gap alert for a
+      // passing DB blip. Keyed on Plain's `not_found` code, not the message prose.
+      ZIO.scoped {
+        for {
+          cap <- routingServer(tenantsResp =
+            """{"data":{"addCustomerToTenants":{"error":{"message":"Tenant not found","code":"not_found","type":"VALIDATION"}}}}""",
+          )
+          base = s"http://127.0.0.1:${cap.server.getAddress.getPort}/"
+          _       <- tickPublisher
+          before  <- scrape.catchAll(resp => resp.body.asString.orDie)
+          outcome <- driveUpsert(base)
+          _       <- tickPublisher
+          after   <- scrape.catchAll(resp => resp.body.asString.orDie)
+        } yield assertTrue(
+          // still an error — the mapping did NOT land, so it must never read as success
+          outcome == PlainOutcome.Error,
+          counterValue(after, "error", "error") - counterValue(before, "error", "error") == 1.0,
+          // and NOT in either permanent bucket
+          counterValue(after, "error", "schema") == counterValue(before, "error", "schema"),
+          counterValue(after, "error", "email_collision") ==
+            counterValue(before, "error", "email_collision"),
+        )
+      }
+    },
     test("a clean first-try upsert meters outcome=ok reason=ok and does NOT reconcile") {
       // The overwhelmingly common path must be untouched: ONE customer upsert, keyed on externalId,
       // no email-keyed re-upsert and no membership call.
