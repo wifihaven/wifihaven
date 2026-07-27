@@ -420,7 +420,7 @@ final case class SupportResponder(
       title: String,
       body: String,
   ): UIO[Either[AgentActionResult, FiledIssue]] =
-    withClaimsE("issue", bearer) { claims =>
+    withClaimsE("issue", bearer) { (claims, _) =>
       // Same short-circuit as dispatch: a thread-capped caller must not drain the global budget.
       issueThreadLimiter.tryAcquire(s"thread:${claims.threadId}").flatMap { threadOk =>
         if !threadOk then doneE("issue", AgentActionResult.RateLimited)

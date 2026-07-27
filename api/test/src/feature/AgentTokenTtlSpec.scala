@@ -180,8 +180,17 @@ object AgentTokenTtlSpec
     )
 
   private def mintPress(clock: TestClock, replyTo: String): UIO[String] =
-    clock.instant.map(
-      PressToken.mint(replyTo, "Press inquiry", 0L, _, pressCfg.agentTokenTtl, PressTokenSecret),
+    clock.instant.map(now =>
+      PressToken.mint(
+        replyTo = replyTo,
+        subject = "Press inquiry",
+        pressMessageId = 0L,
+        // #2451: no inbound Message-ID — this suite exercises the TTL, not reply threading.
+        inboundMessageId = "",
+        now = now,
+        ttl = pressCfg.agentTokenTtl,
+        secret = PressTokenSecret,
+      ),
     )
 
   private def post(

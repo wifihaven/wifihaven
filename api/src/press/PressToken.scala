@@ -56,12 +56,13 @@ import java.util.Base64
  * else's conversation.
  *
  * '''Rollout (#2451).''' [[verify]] also accepts the pre-#2451 4-field payload (no
- * `inboundMessageId`), resolving it to an empty Message-ID. Tokens are short-TTL
- * (`press.agentTokenTtlMinutes`, 30 by default) and are both minted and verified by this server —
- * this is NOT the router wire contract — so the only exposure is a session dispatched by the old
- * build and redeemed by the new one. That window is real though, and failing it would silently drop
- * a journalist's reply. TODO(#2459): delete the 4-field arm once the deploy has been live longer
- * than one token TTL.
+ * `inboundMessageId`), resolving it to an empty Message-ID. Tokens expire
+ * (`press.agentTokenTtlMinutes`) and are both minted and verified by this server — this is NOT the
+ * router wire contract — so the only exposure is a session dispatched by the old build and redeemed
+ * by the new one. That window is real though, and failing it would silently drop a journalist's
+ * reply. TODO(#2459): delete the 4-field arm once the deploy has been live longer than one token
+ * TTL — note that #2473 raised that TTL from 30 minutes to **24 hours**, so the wait is a day, not
+ * half an hour.
  */
 object PressToken {
 
