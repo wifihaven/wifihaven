@@ -135,6 +135,7 @@ object PlainWebhook {
             tenantIdentifier = tenant,
             actorType = actorType(inner, thread),
             messageText = messageText(inner),
+            subject = messageSubject(inner),
           ),
         )
       case _              => None
@@ -197,6 +198,32 @@ object PlainWebhook {
       .orElse(objField(inner, "message").flatMap(m => str(m, "text")))
       .getOrElse("")
 
+  // The EMAIL SUBJECT — the other half of the untrusted customer message (#2481). Putting the whole
+  // question in the subject and leaving a signature block in the body is ordinary email behaviour,
+  // and until #2481 every such message reached the agent as an effectively empty one.
+  //
+  // Carrier verified against Plain's published webhook schema
+  // (`core-api.uk.plain.com/webhooks/schema/latest.json`, fetched 2026-07-26):
+  // `threadEmailReceivedPublicEventPayload = {eventType, thread, email}` and `email.subject` is
+  // `{"type": ["string","null"]}` — the one authoritative subject carrier. `chat` has no
+  // subject-shaped field at all (`{timelineEntryId, id, customerReadAt, text, attachments, …}`), so
+  // a chat event yields None.
+  //
+  // `thread.title` is deliberately NOT a fallback (#2481 review). It is a REQUIRED string on every
+  // thread payload, but the schema says nothing about how Plain DERIVES it, and it is not the
+  // customer's subject: a thread opened by chat and later continued by email, or one an operator
+  // retitled ("angry customer — refund"), would hand the agent someone else's words labeled
+  // `Subject:` — which it can then quote back in an autonomously-sent reply. A null subject is a
+  // subject-less email; we render no label rather than guess.
+  //
+  // UNTRUSTED, exactly like [[messageText]]: quoted to Claude as data inside the
+  // `<customer_message>` frame (CloudAgentDispatcher.kickoffPrompt), never as instructions.
+  private def messageSubject(inner: Json.Obj): Option[String] =
+    objField(inner, "email")
+      .flatMap(email => str(email, "subject"))
+      .map(_.trim)
+      .filter(_.nonEmpty)
+
   private def firstComponentText(inner: Json.Obj): Option[String] =
     objField(inner, "timelineEntry")
       .flatMap(te => arrField(te, "components"))
@@ -231,7 +258,10 @@ object PlainWebhook {
  * matches a registered household admin, else a NEW thread gets a static reject. `messageText` is
  * UNTRUSTED customer content (#2200 injection model): quoted to Claude as data, never as
  * instructions. There is NO consent field: data-access scope comes solely from the server-side
- * consent record (#2419), never from this payload.
+ * consent record (#2419), never from this payload. `subject` (#2481) is the EMAIL subject line —
+ * present only on email-carrying payloads, and UNTRUSTED in exactly the same way as `messageText`
+ * (a question in the subject with a signature-only body is ordinary email, and dropping it made
+ * those messages unanswerable).
  */
 final case class PlainNewMessageEvent(
     eventType: String,
@@ -242,4 +272,5 @@ final case class PlainNewMessageEvent(
     tenantIdentifier: Option[String],
     actorType: Option[String],
     messageText: String,
+    subject: Option[String] = None,
 )

@@ -65,6 +65,43 @@ object ManagedAgents {
       m => Regex.quoteReplacement(s"[${grp(m, 1)}${grp(m, 2)}"),
     )
 
+  /**
+   * The ONE way to render an untrusted SINGLE-LINE value (an email From, an email Subject, a
+   * household name) into a kickoff: flatten CR/LF, [[neutralizeTags]], trim, cap at `max`.
+   *
+   * Collapsed from four hand-copied copies of the same three steps across the two dispatchers
+   * (#2481 review): the copies had already drifted on `.trim`, and this is a security primitive — a
+   * hand-maintained copy of it is exactly the drift the single-source-of-truth rule forbids. The
+   * CAP stays the caller's (each site has its own budget); only the transform is shared.
+   *
+   * Order matters and is load-bearing: the line-break flatten runs BEFORE neutralization (so a
+   * `<\ncustomer_message>` becomes `< customer_message>`, which the neutralizer's `\s*` still
+   * catches), and the cap runs AFTER it (neutralization never lengthens a match —
+   * `</customer_message>` → `[/customer_message]`, same length — so truncating the tail can only
+   * chop bracketed text, never re-expose a `<`).
+   */
+  def safeLine(s: String, max: Int): String =
+    capMarked(neutralizeTags(lineBreaks.replaceAllIn(s, " ")).trim, max)
+
+  /**
+   * Cap `s` at `max` characters, SAYING SO when it cuts — the one definition of "truncated for the
+   * prompt", shared by [[safeLine]] and the kickoffs' history renderer (#2481 review: the two had
+   * hand-copied the marker literal, with the copies drifting on the predicate).
+   *
+   * The predicate is `>`, not `==`: a value that is EXACTLY `max` characters long was not cut, and
+   * labelling it truncated would tell the agent a complete subject is a fragment.
+   */
+  def capMarked(s: String, max: Int): String =
+    if s.length > max then s.take(max) + TruncatedMarker else s
+
+  val TruncatedMarker: String = "…[truncated]"
+
+  // Everything an LLM may render as a line break inside a framed value — not just CR/LF: U+000B
+  // VT, U+000C FF, U+0085 NEL, U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR all break a
+  // line in some renderers, and a single-line value that can break its line can fake an
+  // instruction line (#2481 review). One class, in the one place that flattens.
+  private val lineBreaks = "[\\r\\n\\u000B\\u000C\\u0085\\u2028\\u2029]".r
+
   private def grp(m: Regex.Match, i: Int): String = Option(m.group(i)).getOrElse("")
 
   // The frame delimiters the kickoffs emit: `<customer_message>` (#2261) and, since #2430, the

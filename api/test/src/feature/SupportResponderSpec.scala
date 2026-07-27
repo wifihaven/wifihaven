@@ -271,15 +271,20 @@ object SupportResponderSpec
   // verified against Plain's webhook schema). No household is stamped (cold email never went through
   // the identified widget), but `thread.customer.email.email` carries the sender's From — the #2307
   // gate key. `email = None` models an email with no From.
+  // `subject` (#2481) is the email's Subject line — `email.subject` in Plain's schema (verified
+  // against core-api.uk.plain.com/webhooks/schema/latest.json). Absent by default, so every existing
+  // case still models a subject-less email.
   private def emailPayload(
       email: Option[String],
       threadId: String,
       text: String,
+      subject: Option[String] = None,
   ): String = {
     val emailJson =
       email.map(e => s""","email":{"email":${e.toJson},"isVerified":true}""").getOrElse("")
+    val subjJson  = subject.map(s => s""""subject":${s.toJson},""").getOrElse("")
     s"""{"workspaceId":"w_1","id":"pEv_email","payload":{"eventType":"thread.email_received",""" +
-      s""""email":{"textContent":${text.toJson},"createdBy":{"actorType":"customer"}},""" +
+      s""""email":{$subjJson"textContent":${text.toJson},"createdBy":{"actorType":"customer"}},""" +
       s""""thread":{"id":"$threadId","customer":{"id":"c_email","externalId":null$emailJson}}}}"""
   }
 
@@ -565,6 +570,51 @@ object SupportResponderSpec
           // The #2241 token binds to the SENDER's household, not any other.
           claims.exists(c => c.householdId == hh && c.threadId == "th_email_ok"),
           kickoff.contains(req.agentToken),
+        )
+      }
+    },
+    test("#2481: an email whose QUESTION is the subject reaches the agent end-to-end") {
+      // The reported bug: the operator emailed support with the question in the SUBJECT and only a
+      // signature block in the body, and the responder answered "your message came through without
+      // any details — just your signature block". The subject was dropped at the parser, so nothing
+      // downstream could carry it. Pinned through the full webhook → gate → dispatch stack.
+      for {
+        _               <- cleanDb
+        hhRepo          <- ZIO.service[HouseholdRepo]
+        billRepo        <- ZIO.service[HouseholdBillingRepo]
+        userRepo        <- ZIO.service[UserRepo]
+        hh              <- hhRepo.create("Family S", "family-s")
+        _               <- billRepo.create(hh, "active", founding = false)
+        _               <- userRepo.create(
+          "parent",
+          "hash",
+          "admin",
+          householdId = hh,
+          email = Some("parent@family-s.example"),
+        )
+        (routes, stubs) <- makeRoutes(liveCfg)
+        question = "How do I add a profile for a second child?"
+        sig      = "--\nSameer Brenn\nCreative Destruction"
+        body     = emailPayload(
+          Some("parent@family-s.example"),
+          "th_subject_only",
+          sig,
+          subject = Some(question),
+        )
+        status     <- postWebhook(routes, body, Some(sign(body)))
+        dispatches <- stubs.dispatch.dispatches.get
+      } yield {
+        val (req, kickoff) = dispatches.head
+        assertTrue(
+          status == Status.Ok,
+          dispatches.size == 1,
+          req.subject.contains(question),
+          // The question reaches the agent, INSIDE the untrusted frame (never above it).
+          kickoff.contains(s"Subject: $question"),
+          kickoff.indexOf("<customer_message>") < kickoff.indexOf(question),
+          kickoff.endsWith("</customer_message>"),
+          // …and the signature body still rides along, distinguishable from the subject.
+          kickoff.contains(sig),
         )
       }
     },
