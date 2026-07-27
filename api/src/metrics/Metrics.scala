@@ -483,12 +483,20 @@ object MetricGuard {
     // label. Lets the operator see when a household was moved to/from the never-billed status.
     "wifihaven_billing_free_forever_total"          -> Set("op"),
     // #2199 — Plain support integration (dark until keys set). `support_widget_identity_total{outcome}`
-    // counts each identity-endpoint call by a bounded enum (issued | no_email | disabled);
-    // `support_customer_upsert_total{outcome}` counts each household→Plain customer upsert by the
-    // PlainOutcome enum (ok | disabled | error). Both bounded, never per-household / per-email. The
-    // #808 lesson: without these entries the firewall rejects the name and the series never emits.
+    // counts each identity-endpoint call by a bounded enum (issued | no_email | disabled). Bounded,
+    // never per-household / per-email. The #808 lesson: without these entries the firewall rejects
+    // the name and the series never emits.
     "support_widget_identity_total"                 -> Set("outcome"),
-    "support_customer_upsert_total"                 -> Set("outcome"),
+    // `support_customer_upsert_total{outcome,reason}` counts each household→Plain customer upsert.
+    // `outcome` is the PlainOutcome enum (ok | disabled | error); #2435 added the bounded `reason`:
+    // ok (upserted first try) | reconciled (collided on Plain's workspace-wide customer-email
+    // uniqueness, then bound onto the household by patching externalId + joining the tenant) |
+    // email_collision (collided AND the reconcile failed for no more specific cause — the mapping is
+    // BROKEN and will not self-heal) | permission (machine-user lacks customer:edit for the upsert,
+    // or customerTenantMembership:create for the membership join) | schema (the customer mutation no
+    // longer matches Plain's schema) | error (transient/other) | disabled (the write API is
+    // explicitly off, #2266). Both labels bounded, never per-household / per-email.
+    "support_customer_upsert_total"                 -> Set("outcome", "reason"),
     // #2240 — the household→Plain TENANT entitlement write (household name + plan/founding tenant
     // fields). Separate from the customer upsert so a silently-failing entitlement path (e.g. the
     // plan/founding field schemas not yet registered at go-live) is visible in metrics, not only
@@ -829,8 +837,14 @@ object AppMetrics {
   def supportIdentity(outcome: String): UIO[Unit] =
     MetricGuard.counter("support_widget_identity_total", Map("outcome" -> outcome))
 
-  def supportCustomerUpsert(outcome: String): UIO[Unit] =
-    MetricGuard.counter("support_customer_upsert_total", Map("outcome" -> outcome))
+  // #2435 — emitted from PlainClient (where the reason is known), NOT from SupportService. `reason`
+  // attributes the outcome: ok | reconciled | email_collision | permission | schema | error |
+  // disabled — bounded, never per-household / per-email.
+  def supportCustomerUpsert(outcome: String, reason: String): UIO[Unit] =
+    MetricGuard.counter(
+      "support_customer_upsert_total",
+      Map("outcome" -> outcome, "reason" -> reason),
+    )
 
   // #2240/#2410 — the household→Plain TENANT entitlement write (name + plan/founding fields).
   // Metered separately from the customer upsert so a failing entitlement path is observable, not

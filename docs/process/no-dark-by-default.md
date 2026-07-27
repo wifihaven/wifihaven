@@ -128,8 +128,12 @@ so it may be skipped (and metered).
 **Worked example — the Plain tenant-entitlement write
 ([#2410](https://github.com/wifihaven/wifihaven/issues/2410)).**
 `PlainClient.upsertCustomer` runs `upsertTenantEntitlement` as a best-effort
-follow-on (`.zipLeft`, `api/src/support/PlainClient.scala`): the household's
-`plan` / `founding` tenant fields are written *after* the customer upsert. Today,
+step alongside the customer upsert (`api/src/support/PlainClient.scala`): the
+household's `plan` / `founding` tenant fields are written whether or not the
+customer half succeeds, and never flip the customer outcome. (Since
+[#2435](https://github.com/wifihaven/wifihaven/issues/2435) it runs *first* — the
+email-collision reconcile joins the customer to the household's Plain tenant, so
+that tenant has to exist by then.) Today,
 if the machine-user key lacks `tenantField:create` / `tenantField:update`, or the
 `plan` (String) / `founding` (Boolean) tenant-field schemas
 (`docs/ops/plain-setup.md` §7.3) aren't registered, each field write **fails**

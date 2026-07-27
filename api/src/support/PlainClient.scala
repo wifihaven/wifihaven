@@ -26,13 +26,20 @@ import java.time.Duration as JDuration
  * The two halves:
  *   - [[upsertCustomer]] carries the household→Plain-customer mapping (#2199 scope 3):
  *     `tenantIdentifier = household_id`, `externalId`, plan/entitlement + bounded account context.
+ *     It also RECONCILES the one collision Plain's own data model forces on us (#2435): a customer
+ *     Plain auto-created from an inbound support email holds the admin's address under no
+ *     `externalId`, so the externalId-keyed create collides permanently until we bind it.
  *   - [[writeThread]] is the reply-into-thread seam #2200's Claude responder posts AI drafts into —
  *     Plain's `replyToThread` against the customer's existing thread (#2408), the customer-visible
  *     send.
  */
 trait PlainClient {
 
-  /** Upsert a Plain customer for a WifiHaven household. Never fails. */
+  /**
+   * Upsert a Plain customer for a WifiHaven household, reconciling an email-keyed customer Plain
+   * already holds onto that household (#2435). Never fails — but the returned outcome is real: an
+   * [[PlainOutcome.Error]] means the household→customer mapping did NOT land.
+   */
   def upsertCustomer(req: PlainCustomerUpsert): UIO[PlainOutcome]
 
   /**
@@ -154,6 +161,31 @@ object PlainClient {
     val FieldWrite = "field_write" // a transient / other field-write miss
   }
 
+  // ── #2435: customer↔household mapping attribution ──────────────────────────
+  // The bounded `reason` label on `support_customer_upsert_total` — WHY the household→Plain
+  // CUSTOMER mapping landed (or didn't). Distinct from the tenant/entitlement vocabulary above
+  // because the failure modes are different: this path's signature failure is Plain's workspace-wide
+  // email uniqueness, and it is PERMANENT (the email is taken forever, so it never self-heals).
+  private[api] object CustomerReason {
+    val Ok             = "ok"              // upserted on the first try (the common path)
+    val Reconciled     = "reconciled"      // collided on email, then reconciled onto the household
+    val EmailCollision = "email_collision" // collided AND the reconcile failed — a broken mapping
+    val Permission     = "permission"      // machine-user lacks customer:edit / membership perms
+    val Schema         = "schema"          // the customer mutation no longer matches Plain's schema
+    val Error          = "error"           // a transient / other miss
+    val Disabled       = "disabled"        // the Plain write API is explicitly off (#2266)
+  }
+
+  /**
+   * Plain's fixed error code for the workspace-wide customer-email uniqueness violation
+   * (plain.com/docs/graphql/error-codes: "A customer with this email already exists in the
+   * workspace and can't be created again"). Matched on the CODE, not the English `message` —
+   * `MutationError` documents `code` as "a fixed error code that can be used to handle this error",
+   * so unlike the #2410 tenant-field classification (where Plain gives us only prose) this branch
+   * is contract, not a substring guess.
+   */
+  private[api] val EmailCollisionCode: String = "customer_already_exists_with_email"
+
   // Map a field-write failure detail to its `reason` bucket. Best-effort over the Plain error
   // MESSAGE TEXT: Plain returns HTTP 200 with a payload `error { message }` for BOTH a permission
   // denial and an unregistered field, and the wording — not a stable machine code we can rely on —
@@ -195,6 +227,49 @@ object PlainClient {
     ZIO.logError(s"plain $op failed [reason=$reason]: $detail$hint")
   }
 
+  // #2435: the customer↔household mapping is not "best-effort context" the way a plan field is — if
+  // it never lands, the household's widget messages carry no resolvable tenant and the responder
+  // silently falls through to the email-intake fallback. A PERMANENT failure (an unreconcilable
+  // email collision, a missing permission, schema drift) is therefore a misconfiguration-class
+  // failure: logError with the fix named inline, so it is visible beyond a WARN nobody reads. Only
+  // the transient bucket stays a warning. Fail-open is preserved either way — the identity endpoint
+  // still answers; this only makes a broken mapping observable.
+  //
+  // `detail` is passed through [[redactBody]] first (review NIT): it carries up to 500 chars of the
+  // raw Plain response, and on THIS path the request we sent — and so plausibly the response that
+  // echoes it — contains the household admin's EMAIL ADDRESS. The Plain error message itself names
+  // the condition without the address, which is what an operator acts on, so the body tail is
+  // stripped before it reaches the logs / Loki. Same reasoning as the #2430 thread-timeline path.
+  private def logCustomerFailure(op: String, reason: String, rawDetail: String): UIO[Unit] = {
+    val detail = redactBody(rawDetail)
+    reason match {
+      case CustomerReason.EmailCollision =>
+        ZIO.logError(
+          s"plain $op failed [reason=$reason]: $detail — the household→Plain customer mapping is " +
+            "BROKEN and will not self-heal: a Plain customer already holds this email with no " +
+            "externalId (auto-created from an inbound support email) and the reconcile could not " +
+            "bind it to the household. Widget messages from this customer resolve no tenant; " +
+            "check the machine-user's customer:edit + customerTenantMembership:create permissions " +
+            "(docs/ops/plain-setup.md §5.1)",
+        )
+      case CustomerReason.Permission     =>
+        ZIO.logError(
+          s"plain $op failed [reason=$reason]: $detail — PROVISIONING GAP: the Plain machine-user " +
+            "API key lacks a permission this write needs — `customer:edit` for the upsert, " +
+            "`customerTenantMembership:create` for the household-membership join; grant it " +
+            "(docs/ops/plain-setup.md §5.1) so the household→customer mapping can be written",
+        )
+      case CustomerReason.Schema         =>
+        ZIO.logError(
+          s"plain $op failed [reason=$reason]: $detail — SCHEMA DRIFT: Plain rejected the customer " +
+            "mutation; PlainClient's UpsertCustomerInput shape no longer matches Plain's schema " +
+            "and NO household→customer mapping is being written",
+        )
+      case _                             =>
+        ZIO.logWarning(s"plain $op failed [reason=$reason]: $detail")
+    }
+  }
+
   // A single small GraphQL POST; shorter than the blocklist fetcher's multi-MB pulls. Support is
   // best-effort and fail-open, so a slow Plain shouldn't tie up the caller's fiber for long.
   private val ConnectTimeout: JDuration = JDuration.ofSeconds(10)
@@ -233,7 +308,9 @@ object PlainClient {
   /** No-op client used when the Plain write API is unconfigured. */
   val Disabled: PlainClient = new PlainClient {
     def upsertCustomer(req: PlainCustomerUpsert): UIO[PlainOutcome]                =
-      ZIO.succeed(PlainOutcome.Disabled)
+      AppMetrics
+        .supportCustomerUpsert(PlainOutcome.label(PlainOutcome.Disabled), CustomerReason.Disabled)
+        .as(PlainOutcome.Disabled)
     def writeThread(req: PlainThreadWrite): UIO[PlainOutcome]                      =
       ZIO.succeed(PlainOutcome.Disabled)
     def threadHistory(threadId: String, limit: Int): UIO[List[PlainThreadMessage]] =
@@ -267,6 +344,15 @@ object PlainClient {
    */
   private final case class Expect(payloadKey: String, resultKey: Option[String])
 
+  /**
+   * A failed Plain call. `detail` is the human-readable cause the caller logs (it already carries a
+   * truncated `(body: …)` tail, stripped on the conversation-bearing path by [[redactBody]]).
+   * `body` is the RAW response when there was one — carried so a caller can branch on Plain's fixed
+   * `error.code` (#2435's email collision) instead of re-parsing prose out of `detail`. `None` for
+   * a transport error or a timeout, where no response body exists.
+   */
+  private final case class PlainFailure(detail: String, body: Option[String])
+
   // ── Plain response inspection (#2408) ──────────────────────────────────────
   // Pure navigation over a parsed Plain response; any structural miss is a failure reason (logged),
   // never a throw.
@@ -294,6 +380,15 @@ object PlainClient {
       case e         =>
         Some(objField(e, "message").collect { case Json.Str(m) => m }.getOrElse("unspecified"))
     }
+
+  // Plain's fixed `error.code` on a mutation payload, if the response carries one (#2435). Best
+  // effort over an already-parsed shape: any structural miss is None, never a throw.
+  private[api] def payloadErrorCode(body: String, payloadKey: String): Option[String] =
+    Json.decoder
+      .decodeJson(body)
+      .toOption
+      .flatMap(navigate(_, List("data", payloadKey, "error", "code")))
+      .collect { case Json.Str(c) => c }
 
   // Left(reason) when `body` is NOT a clean success for `expect`; Right(()) otherwise. The reason is
   // the real Plain cause the caller logs so a dropped write is observable instead of reported Ok.
@@ -470,9 +565,20 @@ object PlainClient {
       .build()
 
     // Plain's upsertCustomer mutation, keyed on our externalId. Attributes/tenant ride as variables.
+    // `error { code }` is selected alongside `message` because #2435's reconcile branches on Plain's
+    // FIXED code (`customer_already_exists_with_email`), never on the English prose.
     private val UpsertCustomerMutation: String =
       """mutation upsertCustomer($input: UpsertCustomerInput!) {
-        |  upsertCustomer(input: $input) { customer { id } error { message } }
+        |  upsertCustomer(input: $input) { customer { id } error { message code } }
+        |}""".stripMargin
+
+    // #2435: assert the reconciled customer's household (tenant) membership. Plain's
+    // `UpsertCustomerOnUpdateInput` has NO `tenantIdentifiers` (membership is a create-time field),
+    // so an already-existing customer can only be joined to the household through this mutation.
+    // `AddCustomerToTenantsOutput` returns `{ customer, error }`; we select only the error.
+    private val AddCustomerToTenantsMutation: String =
+      """mutation addCustomerToTenants($input: AddCustomerToTenantsInput!) {
+        |  addCustomerToTenants(input: $input) { error { message code } }
         |}""".stripMargin
 
     // `onCreate` and `onUpdate` are DIFFERENT Plain input types (`UpsertCustomerOnCreateInput` vs
@@ -502,12 +608,23 @@ object PlainClient {
     // customer input has NO attributes/customFields channel (only the fields above), so entitlement
     // cannot ride on the customer. It is HOUSEHOLD-level context and rides on the Plain *tenant*
     // instead (upsertTenant name + upsertTenantField) — see `upsertTenantEntitlement` below.
-    private def customerCreateFields(req: PlainCustomerUpsert): Json =
+    //
+    // `withExternalId` (#2435) adds `externalId` — `UpsertCustomerOnCreateInput.externalId: ID`, a
+    // BARE scalar. It is off on the primary path (the identifier already carries it) and on for the
+    // email-keyed reconcile, where nothing else would map a created customer to the household.
+    private def customerCreateFields(
+        req: PlainCustomerUpsert,
+        withExternalId: Boolean = false,
+    ): Json =
       Json.Obj(
-        "fullName"          -> Json.Str(req.fullName),
-        "email"             -> emailInput(req.email),
-        "tenantIdentifiers" -> Json.Arr(
-          Json.Obj("externalId" -> Json.Str(req.tenantIdentifier)),
+        Chunk(
+          "fullName"          -> Json.Str(req.fullName),
+          "email"             -> emailInput(req.email),
+          "tenantIdentifiers" -> Json.Arr(
+            Json.Obj("externalId" -> Json.Str(req.tenantIdentifier)),
+          ),
+        ) ++ Chunk.fromIterable(
+          Option.when(withExternalId)("externalId" -> Json.Str(req.externalId)),
         ),
       )
 
@@ -517,24 +634,161 @@ object PlainClient {
     //   email: EmailAddressInput     — { email, isVerified }
     // There is NO tenantIdentifiers on the update input, so it is deliberately omitted — the tenant
     // mapping is carried by onCreate above and persists across upserts.
-    private def customerUpdateFields(req: PlainCustomerUpsert): Json =
+    // `withExternalId` (#2435) adds `externalId` — `UpsertCustomerOnUpdateInput.externalId:
+    // OptionalStringInput`, a WRAPPED `{ value }` (NOT the create input's bare scalar). This is the
+    // patch that binds a pre-existing, email-keyed Plain customer to its household.
+    private def customerUpdateFields(
+        req: PlainCustomerUpsert,
+        withExternalId: Boolean = false,
+    ): Json =
       Json.Obj(
-        "fullName" -> Json.Obj("value" -> Json.Str(req.fullName)),
-        "email"    -> emailInput(req.email),
+        Chunk(
+          "fullName" -> Json.Obj("value" -> Json.Str(req.fullName)),
+          "email"    -> emailInput(req.email),
+        ) ++ Chunk.fromIterable(
+          Option.when(withExternalId)(
+            "externalId" -> Json.Obj("value" -> Json.Str(req.externalId)),
+          ),
+        ),
       )
 
-    def upsertCustomer(req: PlainCustomerUpsert): UIO[PlainOutcome] =
-      // The customer upsert is the primary write and its outcome is what we return/meter. The
-      // tenant entitlement (household name + plan/founding fields) is a best-effort follow-on that
-      // must never flip the customer outcome — a missing tenant-field schema (not yet registered at
-      // go-live) or a tenant hiccup is logged and ignored.
-      post(
-        UpsertCustomerMutation,
-        upsertCustomerVars(req),
-        "upsertCustomer",
-        Expect("upsertCustomer", Some("customer")),
+    // ── #2435: reconcile an email-keyed customer onto its household ─────────────
+    // Plain enforces customer-email uniqueness workspace-wide, and the #2198 email intake
+    // AUTO-CREATES a customer (no `externalId`) the first time someone emails support. If that
+    // happens before they ever load the widget — the ordinary beta path — the externalId-keyed
+    // upsert above can only CREATE, and the create collides on the taken email. Permanently: the
+    // email is never freed, so every later identity call for that household fails the same way and
+    // the household→customer mapping is never established.
+    //
+    // The reconcile keys the SAME mutation on `identifier: { emailAddress }` — the only identifier
+    // that can reach a customer Plain created for us — and patches `onUpdate.externalId`
+    // (`OptionalStringInput`, a wrapped `{ value }`) to the household id.
+    //
+    // LOAD-BEARING INVARIANT: `users.email` is GLOBALLY unique — `uq_users_email UNIQUE (email)`,
+    // `api/resources/db/migration/V67__users_email.sql`. That is the whole reason keying on the
+    // email workspace-wide is safe: at most one household can ever present a given address, so the
+    // customer this re-points can only belong to the household asking. If that unique key were ever
+    // relaxed to per-household (the direction the #2125 / #2140 multi-tenant work pushes), this
+    // becomes a CROSS-TENANT HIJACK — household B's identity call would seize household A's Plain
+    // customer and, via #2430's thread-timeline read, feed A's conversation to B's responder.
+    // Widening `uq_users_email` therefore requires revisiting this method, not just the migration.
+    private def reconcileCustomerVars(req: PlainCustomerUpsert): Json =
+      Json.Obj(
+        "input" -> Json.Obj(
+          // `UpsertCustomerIdentifierInput` — exactly ONE field may be set, so externalId is absent.
+          "identifier" -> Json.Obj("emailAddress" -> Json.Str(req.email)),
+          // We only get here because the email is taken, so onCreate is unreachable in practice —
+          // but it is a required input, and if Plain ever did create here the customer must still
+          // carry the household id (the identifier is the email, so nothing else would map it).
+          // `UpsertCustomerOnCreateInput.externalId: ID` — a BARE scalar, unlike the update's.
+          "onCreate"   -> customerCreateFields(req, withExternalId = true),
+          "onUpdate"   -> customerUpdateFields(req, withExternalId = true),
+        ),
       )
-        .zipLeft(upsertTenantEntitlement(req))
+
+    // `AddCustomerToTenantsInput` — `{ customerIdentifier: CustomerIdentifierInput,
+    // tenantIdentifiers: [TenantIdentifierInput] }`. Keyed on the externalId the reconcile just
+    // patched on, so the household id is the single identity used from here on.
+    private def addCustomerToTenantsVars(req: PlainCustomerUpsert): Json =
+      Json.Obj(
+        "input" -> Json.Obj(
+          "customerIdentifier" -> Json.Obj("externalId" -> Json.Str(req.externalId)),
+          "tenantIdentifiers"  -> Json.Arr(
+            Json.Obj("externalId" -> Json.Str(req.tenantIdentifier)),
+          ),
+        ),
+      )
+
+    // A failed reconcile leg, attributed. Review finding: hard-coding `email_collision` on BOTH
+    // legs mislabelled the one denial an operator most needs to see — the membership grant. A
+    // `customerTenantMembership:create` denial can ONLY surface on `addCustomerToTenants`, and the
+    // dashboard/MetricGuard text promises `permission` covers it, so the reconcile legs classify
+    // the same way the primary path does. `email_collision` stays the bucket for a collision we
+    // genuinely could not reconcile for any other reason (all three are permanent + logError).
+    private def reconcileFailure(op: String, detail: String): UIO[(PlainOutcome, String)] = {
+      val reason = classifyFieldFailure(detail) match {
+        case Reason.Permission => CustomerReason.Permission
+        case Reason.Schema     => CustomerReason.Schema
+        case _                 => CustomerReason.EmailCollision
+      }
+      logCustomerFailure(op, reason, detail).as((PlainOutcome.Error, reason))
+    }
+
+    // Run the reconcile: patch the externalId, then assert household membership. BOTH halves must
+    // land — a patched customer with no tenant membership is still a broken mapping, so a failed
+    // join is an error, not a half-success.
+    private def reconcileCustomer(req: PlainCustomerUpsert): UIO[(PlainOutcome, String)] =
+      sendForBody(
+        UpsertCustomerMutation,
+        reconcileCustomerVars(req),
+        Expect("upsertCustomer", Some("customer")),
+      ).flatMap {
+        case Left(f)  => reconcileFailure("upsertCustomer(reconcile)", f.detail)
+        case Right(_) =>
+          sendForBody(
+            AddCustomerToTenantsMutation,
+            addCustomerToTenantsVars(req),
+            Expect("addCustomerToTenants", None),
+          ).flatMap {
+            case Right(_) =>
+              ZIO
+                .logInfo(
+                  s"plain upsertCustomer reconciled an email-keyed customer onto household " +
+                    s"${req.externalId} (Plain had auto-created it from an inbound support email)",
+                )
+                .as((PlainOutcome.Ok, CustomerReason.Reconciled))
+            case Left(f)  => reconcileFailure("addCustomerToTenants", f.detail)
+          }
+      }
+
+    def upsertCustomer(req: PlainCustomerUpsert): UIO[PlainOutcome] =
+      // The tenant entitlement (household name + plan/founding fields) runs FIRST: it is what
+      // creates the Plain tenant, and #2435's reconcile joins the customer to that tenant by
+      // externalId — on a household whose very first Plain write collides, the tenant would not yet
+      // exist if this still ran afterwards. It remains best-effort and never flips the customer
+      // outcome (a missing tenant-field schema or a tenant hiccup is logged + metered, not fatal).
+      //
+      // Necessary but NOT sufficient, and deliberately so (review finding): `upsertTenantEntitlement`
+      // short-circuits when there is nothing household-level to carry (`fullName` empty AND no
+      // attributes), which `SupportService.identity` can produce — it `catchAll`s the household and
+      // billing lookups to `None`, so a DB blip degrades the payload to "no household context". In
+      // that state no tenant is written and a reconcile's membership join has no target, so it FAILS
+      // — loudly, attributed, and metered, which is the correct outcome for a degraded read: we do
+      // not want to invent a Plain tenant from an empty household name (Plain's `UpsertTenantInput.
+      // name` is required and emptiness-checked, so it would be rejected anyway). The mapping is
+      // retried on the household's next identity call, when the repo read succeeds.
+      //
+      // The customer upsert is the primary write and its outcome is what we return/meter.
+      upsertTenantEntitlement(req) *>
+        sendForBody(
+          UpsertCustomerMutation,
+          upsertCustomerVars(req),
+          Expect("upsertCustomer", Some("customer")),
+        ).flatMap {
+          case Right(_) => ZIO.succeed((PlainOutcome.Ok, CustomerReason.Ok))
+          case Left(f)  =>
+            // Deliberately PAYLOAD-only: Plain reports this condition as HTTP 200 + a
+            // `MutationError` on `data.upsertCustomer.error` (verified live, #2435), never as a
+            // non-2xx or a top-level `errors[]`. A response in either of those shapes is a different
+            // failure and falls through to the attributed non-collision branch below rather than
+            // triggering a reconcile against an unverified error shape.
+            if f.body.flatMap(payloadErrorCode(_, "upsertCustomer")).contains(EmailCollisionCode)
+            then reconcileCustomer(req)
+            else {
+              // Not the collision: attribute permission / schema (provisioning gaps, LOUD) apart
+              // from a transient miss (a warning), same split as the #2410 entitlement path.
+              val reason = classifyFieldFailure(f.detail) match {
+                case Reason.Permission => CustomerReason.Permission
+                case Reason.Schema     => CustomerReason.Schema
+                case _                 => CustomerReason.Error
+              }
+              logCustomerFailure("upsertCustomer", reason, f.detail).as(
+                (PlainOutcome.Error, reason),
+              )
+            }
+        }.flatMap { case (outcome, reason) =>
+          AppMetrics.supportCustomerUpsert(PlainOutcome.label(outcome), reason).as(outcome)
+        }
 
     // ── Tenant entitlement (#2240) ─────────────────────────────────────────────
     // Plain custom entitlement is HOUSEHOLD-level, and the household maps to a Plain *tenant*
@@ -619,18 +873,19 @@ object PlainClient {
         // every field write succeed; `error`/<reason> if any step fails — `tenant` for the tenant
         // step, `permission`/`schema`/`field_write` for a field write. Each failure is logged LOUD
         // (logError) and metered so a silently-failing entitlement path is visible beyond the logs.
-        // Fail-open is preserved: this whole method rides as a `zipLeft` follow-on and never flips
-        // the customer upsert outcome.
+        // Fail-open is preserved: this whole method runs as a side-step ahead of the customer upsert
+        // (#2435 moved it from a `zipLeft` follow-on to a `*>` predecessor so the reconcile's
+        // membership join has a tenant to join) and never flips the customer upsert outcome.
         sendForBody(
           UpsertTenantMutation,
           upsertTenantVars(req.tenantIdentifier, req.fullName),
           Expect("upsertTenant", Some("tenant")),
         ).flatMap {
-          case Left(detail) =>
+          case Left(f)     =>
             // The tenant step itself failed — the fields are never reached. Attributed `tenant`.
-            logEntitlementFailure("upsertTenant", Reason.Tenant, detail)
+            logEntitlementFailure("upsertTenant", Reason.Tenant, f.detail)
               .as((PlainOutcome.Error, Reason.Tenant))
-          case Right(body)  =>
+          case Right(body) =>
             tenantIdFrom(body) match {
               case None           =>
                 logEntitlementFailure(
@@ -646,10 +901,10 @@ object PlainClient {
                       vars,
                       Expect("upsertTenantField", Some("tenantField")),
                     ).flatMap {
-                      case Right(_)     => ZIO.succeed(None)
-                      case Left(detail) =>
-                        val reason = classifyFieldFailure(detail)
-                        logEntitlementFailure(op, reason, detail).as(Some(reason))
+                      case Right(_) => ZIO.succeed(None)
+                      case Left(f)  =>
+                        val reason = classifyFieldFailure(f.detail)
+                        logEntitlementFailure(op, reason, f.detail).as(Some(reason))
                     }
                   }
                   // First failure attributes the aggregate; a permission/schema gap fails every
@@ -747,9 +1002,11 @@ object PlainClient {
           ),
           Expect("thread", None),
         ).disconnect
-          .timeoutTo(Left("timed out"): Either[String, String])(identity)(HistoryTimeout)
+          .timeoutTo(Left(PlainFailure("timed out", None)): Either[PlainFailure, String])(identity)(
+            HistoryTimeout,
+          )
           .flatMap {
-            case Right(body)  =>
+            case Right(body)   =>
               val msgs     = parseThreadHistory(body)
               // Only the entries we SHOULD have read — a thread whose recent timeline is all notes
               // and status flips is healthy, not drifted (bound once: this re-parses the body).
@@ -766,7 +1023,7 @@ object PlainClient {
                     "message with no thread context",
                 ) *> AppMetrics.supportThreadHistory("unparsed").as(Nil)
               else AppMetrics.supportThreadHistory("empty").as(Nil)
-            case Left(detail) =>
+            case Left(failure) =>
               // Fail-open (the dispatch proceeds with the latest message alone) but NOT silent: a
               // permission or schema miss is a misconfiguration, so it is logged at ERROR with the
               // fix named inline, exactly like the #2410 entitlement path — and gets its own metric
@@ -776,8 +1033,8 @@ object PlainClient {
               // is customer conversation text — every other sendForBody caller logs inputs we
               // authored. So the body is stripped before it reaches the log/Loki; the reason plus
               // the GraphQL error text is what an operator acts on.
-              val reason = classifyFieldFailure(detail)
-              val safe   = redactBody(detail)
+              val reason = classifyFieldFailure(failure.detail)
+              val safe   = redactBody(failure.detail)
               val log    = reason match {
                 case Reason.Permission =>
                   ZIO.logError(
@@ -874,11 +1131,11 @@ object PlainClient {
         expect: Expect,
     ): UIO[PlainOutcome] =
       sendForBody(query, variables, expect).flatMap {
-        case Right(_)      => ZIO.succeed(PlainOutcome.Ok)
-        // Customer/thread writes are fail-open best-effort context: a miss is logged at warning (not
-        // error) and mapped to Error. Entitlement writes DON'T go through `post` — they call
-        // `sendForBody` directly and log LOUD (logError) with an attributed reason (#2410).
-        case Left(problem) => ZIO.logWarning(s"plain $op failed: $problem").as(PlainOutcome.Error)
+        case Right(_) => ZIO.succeed(PlainOutcome.Ok)
+        // Thread writes are fail-open best-effort context: a miss is logged at warning (not error)
+        // and mapped to Error. Entitlement (#2410) and customer (#2435) writes DON'T go through
+        // `post` — they call `sendForBody` directly and log LOUD with an attributed reason.
+        case Left(f)  => ZIO.logWarning(s"plain $op failed: ${f.detail}").as(PlainOutcome.Error)
       }
 
     // One blocking HTTPS POST. Returns `Right(body)` when the response is a clean success for
@@ -890,7 +1147,7 @@ object PlainClient {
         query: String,
         variables: Json,
         expect: Expect,
-    ): UIO[Either[String, String]] =
+    ): UIO[Either[PlainFailure, String]] =
       ZIO
         .attemptBlocking {
           val payload = GqlRequest(query, variables).toJson
@@ -907,16 +1164,17 @@ object PlainClient {
         .map { resp =>
           val body = resp.body()
           if resp.statusCode() / 100 != 2 then
-            Left(s"HTTP ${resp.statusCode()} (body: ${body.take(500)})")
+            Left(PlainFailure(s"HTTP ${resp.statusCode()} (body: ${body.take(500)})", Some(body)))
           else
             // Plain returns 200 for mutation-level failures too, so inspect the payload: a top-level
             // `errors` array, a payload `error { message }`, or a missing result id is a failed write.
             checkPayload(body, expect) match {
               case Right(_)      => Right(body)
-              case Left(problem) => Left(s"$problem (body: ${body.take(500)})")
+              case Left(problem) =>
+                Left(PlainFailure(s"$problem (body: ${body.take(500)})", Some(body)))
             }
         }
-        .catchAll(e => ZIO.succeed(Left(s"transport error: ${e.getMessage}")))
+        .catchAll(e => ZIO.succeed(Left(PlainFailure(s"transport error: ${e.getMessage}", None))))
   }
 
   /**
