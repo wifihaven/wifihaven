@@ -601,9 +601,12 @@ final case class SupportResponder(
    * `consentThreadLimiter`.
    */
   def agentRequestConsent(bearer: Option[String]): UIO[AgentActionResult] =
-    withClaims("consent_request", bearer) { claims =>
-      clock.instant.flatMap { now =>
-        consentGranted(claims.householdId, claims.threadId, now).flatMap {
+    // The OTHER callback that needs the current time: takes the verified `now` from the token check
+    // rather than reading the clock again, so the grant check, the link's expiry, and the token
+    // verification all sit on one instant.
+    withClaimsAt("consent_request", bearer) { (claims, now) =>
+      consentGranted(claims.householdId, claims.threadId, now)
+        .flatMap {
           case true  =>
             // Already consented — no prompt, no spam. The next dispatch already carries the scope.
             AppMetrics.supportConsent("request_already_granted") *>
@@ -616,7 +619,6 @@ final case class SupportResponder(
               else postConsentPrompt(claims, now)
             }
         }
-      }
     }
 
   private def postConsentPrompt(
@@ -747,7 +749,13 @@ final case class SupportResponder(
   private def withClaims(action: String, bearer: Option[String])(
       f: ConsentToken.Claims => UIO[AgentActionResult],
   ): UIO[AgentActionResult] =
-    withClaimsE(action, bearer)((claims, _) => f(claims).map(Left(_))).map(_.merge)
+    withClaimsAt(action, bearer)((claims, _) => f(claims))
+
+  /** [[withClaims]] for a callback that also needs the instant the token was verified against. */
+  private def withClaimsAt(action: String, bearer: Option[String])(
+      f: (ConsentToken.Claims, Instant) => UIO[AgentActionResult],
+  ): UIO[AgentActionResult] =
+    withClaimsE(action, bearer)((claims, now) => f(claims, now).map(Left(_))).map(_.merge)
 
   /**
    * `f` receives the SAME `now` the token was verified against, so a caller that needs the current
