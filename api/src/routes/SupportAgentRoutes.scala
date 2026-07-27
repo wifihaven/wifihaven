@@ -14,11 +14,12 @@ import zio.json.*
  *     design (Plain has no bearer token); the `Plain-Request-Signature` HMAC verified inside
  *     [[SupportResponder.handleWebhook]] IS the authentication, exactly like the Stripe webhook
  *     (#2135). Size-capped before anything is read. A bad signature is the one security-relevant
- *     rejection (400); every other outcome — dispatched, email_registered_dispatched /
- *     email_unregistered_rejected (the #2307 email-intake gate), skipped_unauthenticated (a
- *     continuation with no resolvable tenant), disabled, malformed, downstream error — returns 200
- *     so Plain does not retry-storm and the response never leaks WHY (the metric carries the
- *     outcome).
+ *     rejection (400); EVERY other outcome returns 200 so Plain does not retry-storm and the
+ *     response never leaks WHY (the metric carries the outcome). That deliberately includes the
+ *     FAILURES: a reject Plain refused to send (#2471 `email_reject_send_failed`) still answers
+ *     200, because a retry cannot fix a workspace that will not send. The outcome vocabulary lives
+ *     on [[SupportResponder.WebhookOutcome]] and is not restated here — #2471 found four
+ *     hand-copied copies of it that had drifted.
  *
  *   - AGENT `POST /api/support/agent/reply`, `POST /api/support/agent/issues`, `POST
  *     /api/support/agent/request-consent`, `POST /api/support/agent/escalate` (#2437 — the
