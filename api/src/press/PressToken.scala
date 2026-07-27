@@ -77,8 +77,10 @@ object PressToken {
       // #2451 — true when this token used the pre-#2451 4-field payload, i.e. it was minted by a
       // build older than the running one. Distinguishes "old token" from "inbound had no
       // Message-ID", which the empty `inboundMessageId` alone cannot: the reply path logs it, and
-      // that is the signal #2459 waits to go quiet before deleting the tolerant arm.
-      legacyPayload: Boolean = false,
+      // that is the signal #2459 waits to go quiet before deleting the tolerant arm. Deliberately
+      // has NO default: a site that forgot to pass it would default to "not legacy" and
+      // UNDER-report exactly the traffic #2459 is waiting on, so the compiler asks every time.
+      legacyPayload: Boolean,
   )
 
   /**

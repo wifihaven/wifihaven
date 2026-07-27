@@ -736,14 +736,22 @@ object PressResponderSpec
         Some("<unclosed@mail.example")                    -> None,
         Some("Bcc: attacker@evil.test <a@b>")             -> None,
         None                                              -> None,
-        // Longest id that still fits one RFC 5322 header line once `References: ` is counted —
-        // kept; one character more is dropped, because an over-long header risks a relay
-        // rejection, and under this transport a rejected send means NOT DELIVERED at all.
+        // Longest id that still fits one RFC 5322 header line once the LONGEST field name we emit
+        // (`In-Reply-To: `) is counted — kept; one character more is dropped, because an over-long
+        // header risks a relay rejection, and under this transport a rejected send means NOT
+        // DELIVERED at all.
         Some(longId(EmailSender.MaxThreadingIdChars))     ->
           Some(longId(EmailSender.MaxThreadingIdChars)),
         Some(longId(EmailSender.MaxThreadingIdChars + 1)) -> None,
       )
       assertTrue(cases.forall((in, want) => EmailSender.threadingId(in) == want)) &&
+      assertTrue(
+        // The boundary cases above are expressed in terms of the constant, so they would survive a
+        // regression that dropped the field-name budget. Pin the ABSOLUTE limit independently:
+        // rendered under the longest header name we emit, the accepted maximum is exactly the 998
+        // characters RFC 5322 §2.1.1 allows on one header line, and one more would exceed it.
+        ("In-Reply-To: " + longId(EmailSender.MaxThreadingIdChars)).length == 998,
+      ) &&
       assertTrue(
         // The pair is rendered from the SAME normalized id, and absent entirely when there is none.
         EmailSender.threadingHeaders(Some("<a@b>")) ==
