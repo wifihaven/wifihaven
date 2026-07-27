@@ -186,6 +186,29 @@ object PlainClient {
    */
   private[api] val EmailCollisionCode: String = "customer_already_exists_with_email"
 
+  /**
+   * Plain's fixed code for "an entity referenced in the request is unavailable" — documented on the
+   * same error-codes page with the example of creating an issue for a non-existent customer. On the
+   * #2435 membership join it means the TENANT we are joining to has not been written yet, which is
+   * a TRANSIENT state (see `Live.joinFailure`), not the permanent schema drift a not-found in the
+   * prose-classified #2410 path implies.
+   */
+  private[api] val NotFoundCode: String = "not_found"
+
+  /**
+   * `classifyFieldFailure`'s prose buckets projected onto the #2435 customer vocabulary, so the
+   * primary upsert and both reconcile legs share ONE mapping instead of three hand-copied matches
+   * (review NIT — a reason added to `classifyFieldFailure` had to be threaded into each copy). Only
+   * the FALLBACK differs per call site: an unrecognized failure on the primary upsert is a
+   * transient `error`, on a reconcile leg it is an unreconcilable `email_collision`.
+   */
+  private[api] def customerReason(detail: String, fallback: String): String =
+    classifyFieldFailure(detail) match {
+      case Reason.Permission => CustomerReason.Permission
+      case Reason.Schema     => CustomerReason.Schema
+      case _                 => fallback
+    }
+
   // Map a field-write failure detail to its `reason` bucket. Best-effort over the Plain error
   // MESSAGE TEXT: Plain returns HTTP 200 with a payload `error { message }` for BOTH a permission
   // denial and an unregistered field, and the wording — not a stable machine code we can rely on —
@@ -237,9 +260,15 @@ object PlainClient {
   //
   // `detail` is passed through [[redactBody]] first (review NIT): it carries up to 500 chars of the
   // raw Plain response, and on THIS path the request we sent — and so plausibly the response that
-  // echoes it — contains the household admin's EMAIL ADDRESS. The Plain error message itself names
-  // the condition without the address, which is what an operator acts on, so the body tail is
-  // stripped before it reaches the logs / Loki. Same reasoning as the #2430 thread-timeline path.
+  // echoes it — contains the household admin's EMAIL ADDRESS. Same reasoning as the #2430
+  // thread-timeline path.
+  //
+  // What survives redaction is the PROSE half — the Plain error message. The one message we have
+  // observed on this path does not carry the address ("A customer already exists with the provided
+  // email address", captured live on staging in #2435 and pinned in
+  // [[SupportCustomerReconcileSpec]]), and it is what an operator acts on, so it stays. That is an
+  // observation about one message, NOT a guarantee about every Plain message — accepted risk, called
+  // out here rather than asserted as a property of the API we cannot verify.
   private def logCustomerFailure(op: String, reason: String, rawDetail: String): UIO[Unit] = {
     val detail = redactBody(rawDetail)
     reason match {
@@ -705,13 +734,34 @@ object PlainClient {
     // dashboard/MetricGuard text promises `permission` covers it, so the reconcile legs classify
     // the same way the primary path does. `email_collision` stays the bucket for a collision we
     // genuinely could not reconcile for any other reason (all three are permanent + logError).
-    private def reconcileFailure(op: String, detail: String): UIO[(PlainOutcome, String)] = {
-      val reason = classifyFieldFailure(detail) match {
-        case Reason.Permission => CustomerReason.Permission
-        case Reason.Schema     => CustomerReason.Schema
-        case _                 => CustomerReason.EmailCollision
-      }
-      logCustomerFailure(op, reason, detail).as((PlainOutcome.Error, reason))
+    private def reconcileFailure(op: String, f: PlainFailure): UIO[(PlainOutcome, String)] = {
+      val reason = customerReason(f.detail, CustomerReason.EmailCollision)
+      logCustomerFailure(op, reason, f.detail).as((PlainOutcome.Error, reason))
+    }
+
+    // The membership join's target is the Plain TENANT that `upsertTenantEntitlement` writes, and
+    // that step is SKIPPED when there is no household context to carry (see `upsertCustomer`) — a
+    // state `SupportService.identity` reaches by degrading a failed repo read to `None`. Plain then
+    // answers the join with its `not_found` code, documented as "an entity referenced in the request
+    // is unavailable" (plain.com/docs/graphql/error-codes).
+    //
+    // That is TRANSIENT: the next identity call with a healthy read writes the tenant and the
+    // reconcile lands. It must therefore NOT reach the `schema` bucket — `classifyFieldFailure` maps
+    // every not-found to `Reason.Schema`, which is right for a tenant-FIELD write (an unregistered
+    // field never self-heals) and wrong here, where it would raise a "SCHEMA DRIFT … will never
+    // self-heal" ERROR and a PROVISIONING-GAP alert for a passing DB blip. Second review run caught
+    // this inversion: the #2410 bar cuts both ways, and reporting a transient miss as permanent
+    // burns the operator's trust in the alert just as badly as the reverse.
+    //
+    // Keyed on the error CODE, not the message prose — the same contract-over-wording choice as the
+    // collision detection itself.
+    private def joinFailure(f: PlainFailure): UIO[(PlainOutcome, String)] = {
+      val targetMissing =
+        f.body.flatMap(payloadErrorCode(_, "addCustomerToTenants")).contains(NotFoundCode)
+      val reason        =
+        if targetMissing then CustomerReason.Error
+        else customerReason(f.detail, CustomerReason.EmailCollision)
+      logCustomerFailure("addCustomerToTenants", reason, f.detail).as((PlainOutcome.Error, reason))
     }
 
     // Run the reconcile: patch the externalId, then assert household membership. BOTH halves must
@@ -723,7 +773,7 @@ object PlainClient {
         reconcileCustomerVars(req),
         Expect("upsertCustomer", Some("customer")),
       ).flatMap {
-        case Left(f)  => reconcileFailure("upsertCustomer(reconcile)", f.detail)
+        case Left(f)  => reconcileFailure("upsertCustomer(reconcile)", f)
         case Right(_) =>
           sendForBody(
             AddCustomerToTenantsMutation,
@@ -737,7 +787,7 @@ object PlainClient {
                     s"${req.externalId} (Plain had auto-created it from an inbound support email)",
                 )
                 .as((PlainOutcome.Ok, CustomerReason.Reconciled))
-            case Left(f)  => reconcileFailure("addCustomerToTenants", f.detail)
+            case Left(f)  => joinFailure(f)
           }
       }
 
@@ -777,11 +827,7 @@ object PlainClient {
             else {
               // Not the collision: attribute permission / schema (provisioning gaps, LOUD) apart
               // from a transient miss (a warning), same split as the #2410 entitlement path.
-              val reason = classifyFieldFailure(f.detail) match {
-                case Reason.Permission => CustomerReason.Permission
-                case Reason.Schema     => CustomerReason.Schema
-                case _                 => CustomerReason.Error
-              }
+              val reason = customerReason(f.detail, CustomerReason.Error)
               logCustomerFailure("upsertCustomer", reason, f.detail).as(
                 (PlainOutcome.Error, reason),
               )
