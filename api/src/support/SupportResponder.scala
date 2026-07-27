@@ -983,11 +983,18 @@ object SupportResponder {
   }
 
   /**
-   * Bounded result enum for the agent endpoints — the `support_agent_action_total` outcome set, and
-   * the ONLY place a value in that set is minted (keep `Metrics.scala`'s enumeration in step by
-   * reading it off this enum, not by hand). `Denied` is any token failure (missing / tampered /
-   * expired — uniform to the caller); `NoConsent` is a VALID token without the data scope (the
-   * household read's 403). Both meter as "denied" so the label space stays bounded.
+   * Bounded result enum for the agent endpoints — the outcome vocabulary for the `withClaims`-gated
+   * ops (`reply`, `issue`, `household_read`, `consent_request`, `escalate`). `Denied` is any token
+   * failure (missing / tampered / expired — uniform to the caller); `NoConsent` is a VALID token
+   * without the data scope (the household read's 403). Both meter as "denied" so the label space
+   * stays bounded.
+   *
+   * NOT the only minter of `support_agent_action_total{outcome}`: the #2437 `escalate_mark` op
+   * labels the SERVER's Plain `addLabels` write through `PlainClient.PlainOutcome.label` (`ok |
+   * disabled | error`), and a few call sites pass a literal. The vocabularies coincide today;
+   * [[SuccessLabels]] below is therefore scoped to what THIS enum mints, and the contract spec that
+   * consumes it checks the issue-filing panel only. Widening a success query to other ops means
+   * reconciling with `PlainOutcome` first.
    *
    * `OkNoLink` (#2461) is a SUCCESS — the issue was created — that we could not read a link back
    * for. It is a distinct label because the operator needs to see it, but every "did the filing

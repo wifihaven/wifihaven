@@ -45,6 +45,27 @@ object GithubIssueRefSpec extends ZIOSpecDefault {
           .isEmpty,
       )
     },
+    test("the REASON is discriminated — the operator's only signal points at the right hunt") {
+      // parseCreatedDetailed exists so the caller reads WHICH condition failed off the one
+      // derivation instead of re-inferring it. Both causes meter identically (`ok_no_link`), so the
+      // log line built from this is the operator's sole discriminator: "unreadable body" (transient
+      // / GitHub shape change) vs "foreign html_url" (repo renamed or transferred, EVERY filing
+      // loses its link). Swapping the two would send them hunting the wrong thing — pin it.
+      import GithubIssueClient.CreatedParse
+      assertTrue(
+        GithubIssueClient.parseCreated(realResponse).isDefined,
+        GithubIssueClient.parseCreatedDetailed(realResponse) match {
+          case CreatedParse.Parsed(ref) => ref.number == 2455
+          case _                        => false
+        },
+        GithubIssueClient.parseCreatedDetailed("not json at all") == CreatedParse.Unreadable,
+        GithubIssueClient.parseCreatedDetailed("") == CreatedParse.Unreadable,
+        GithubIssueClient.parseCreatedDetailed("""{"number":2455}""") == CreatedParse.Unreadable,
+        GithubIssueClient.parseCreatedDetailed(
+          """{"number":2455,"html_url":"https://github.com/someone-else/private/issues/2455"}""",
+        ) == CreatedParse.ForeignRepo("https://github.com/someone-else/private/issues/2455"),
+      )
+    },
     test("a url outside the public target repo is rejected — we only hand out our own links") {
       // The link's value is that it points at the PUBLIC wifihaven/wifihaven repo, so the customer
       // can open it. Enforce that structurally rather than trusting that the request targeted the
