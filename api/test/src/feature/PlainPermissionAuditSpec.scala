@@ -252,6 +252,47 @@ object PlainPermissionAuditSpec extends ZIOSpecDefault {
         } yield assertTrue(res.isInstanceOf[PlainPermissionAuditResult.Broken])
       }
     },
+    // The nesting level ABOVE the `{"scopes":[]}` case below: an absent or null `myPermissions`
+    // fails inside `sendForBody` ("no myPermissions in response") rather than in the parse, so it
+    // takes the Left branch — where a substring classifier would have filed permanent drift under
+    // the transient `unreachable` bucket. Same defect class, one layer up.
+    test("a 200 whose myPermissions is null is Broken, not Unreachable") {
+      ZIO.scoped {
+        for {
+          s <- stub(200, """{"data":{"myPermissions":null}}""")
+          base   = s"http://127.0.0.1:${s.server.getAddress.getPort}/"
+          cfg    = cfgFor(base, responder = true)
+          client = new PlainClient.Live(cfg)
+          res <- PlainPermissionAudit.check(cfg, client)
+        } yield assertTrue(
+          res.isInstanceOf[PlainPermissionAuditResult.Broken],
+          !res.isInstanceOf[PlainPermissionAuditResult.Unreachable],
+        )
+      }
+    },
+    // A 4xx that is NOT 401/403 is still the operator's problem (bad request, wrong endpoint, gone
+    // resource). A substring classifier would have missed every one of these.
+    test("400 and 404 are Broken too — the split is the STATUS, not the wording") {
+      ZIO.scoped {
+        for {
+          s400 <- stub(400, """{"message":"Bad Request"}""")
+          cfg400 = cfgFor(s"http://127.0.0.1:${s400.server.getAddress.getPort}/", responder = true)
+          r400 <- PlainPermissionAudit.check(cfg400, new PlainClient.Live(cfg400))
+          s404 <- stub(404, """{"message":"Not Found"}""")
+          cfg404 = cfgFor(s"http://127.0.0.1:${s404.server.getAddress.getPort}/", responder = true)
+          r404 <- PlainPermissionAudit.check(cfg404, new PlainClient.Live(cfg404))
+          // ...but 429 self-heals, so it stays transient — CloudAgentObservability's carve-out,
+          // inherited rather than re-decided.
+          s429 <- stub(429, """{"message":"Too Many Requests"}""")
+          cfg429 = cfgFor(s"http://127.0.0.1:${s429.server.getAddress.getPort}/", responder = true)
+          r429 <- PlainPermissionAudit.check(cfg429, new PlainClient.Live(cfg429))
+        } yield assertTrue(
+          r400.isInstanceOf[PlainPermissionAuditResult.Broken],
+          r404.isInstanceOf[PlainPermissionAuditResult.Broken],
+          r429.isInstanceOf[PlainPermissionAuditResult.Unreachable],
+        )
+      }
+    },
     test("a 200 with no permissions array is Broken (probe drift), never Granted(empty)") {
       ZIO.scoped {
         for {
@@ -297,10 +338,7 @@ object PlainPermissionAuditSpec extends ZIOSpecDefault {
           after  <- counterValue("support_permission_probe_total", "outcome" -> "skipped")
         } yield assertTrue(after == before + 1)
       },
-      // The metric registry is process-global, so these before/after deltas are only meaningful
-      // when one probe runs at a time — the default is to run a suite's tests concurrently, which
-      // makes each test see its siblings' increments in the NEIGHBOUR buckets.
-    ) @@ TestAspect.sequential,
+    ),
     test("an unconfigured Plain client is Skipped and touches no network") {
       val cfg = SupportConfig(plain = PlainConfig(writeEnabled = false))
       for {
@@ -339,5 +377,21 @@ object PlainPermissionAuditSpec extends ZIOSpecDefault {
           .contains("tenantFieldSchema:read"),
       )
     },
-  )
+    test("the HTTP status is recovered from our own framing, not from Plain's prose") {
+      assertTrue(
+        PlainClient.statusOf("HTTP 403 (body redacted)").contains(403),
+        PlainClient.statusOf("HTTP 503 (body redacted)").contains(503),
+        // Not HTTP failures at all — these must NOT read as a status.
+        PlainClient.statusOf("transport error: connection reset").isEmpty,
+        PlainClient.statusOf("timed out").isEmpty,
+        PlainClient.statusOf("no myPermissions in response").isEmpty,
+        // A body that merely MENTIONS a status is not our framing (the prefix is anchored).
+        PlainClient.statusOf("Plain error: upstream said HTTP 403").isEmpty,
+      )
+    },
+    // The whole suite is sequential: the `run` tests assert before/after deltas against the
+    // PROCESS-GLOBAL metric registry, and any concurrently-running sibling that also called `run`
+    // would show up in their neighbour buckets. Scoping this to the inner suite alone would hold
+    // only for as long as no outer sibling emits the series — a trap for whoever adds the next test.
+  ) @@ TestAspect.sequential
 }

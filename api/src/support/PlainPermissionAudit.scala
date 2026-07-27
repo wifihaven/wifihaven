@@ -126,21 +126,21 @@ object PlainPermissionAudit {
    */
   def run(cfg: SupportConfig, client: PlainClient): UIO[Unit] =
     check(cfg, client).flatMap {
-      case PlainPermissionAuditResult.Skipped             =>
+      case PlainPermissionAuditResult.Skipped              =>
         AppMetrics.supportPermissionProbe("skipped")
-      case PlainPermissionAuditResult.Ok(need, total)     =>
+      case PlainPermissionAuditResult.Ok(need, totalOnKey) =>
         ZIO.logInfo(
           s"plain api-key permissions OK — all $need required permissions granted " +
-            s"($total total on the key)",
+            s"($totalOnKey total on the key)",
         ) *> AppMetrics.supportPermissionProbe("ok")
-      case PlainPermissionAuditResult.Missing(missing, _) =>
+      case PlainPermissionAuditResult.Missing(missing, _)  =>
         ZIO.logError(
           s"plain api-key permissions INCOMPLETE — PROVISIONING GAP: the machine-user API key is " +
             s"missing ${missing.mkString(", ")}. Every Plain call gated on these fails 403 and the " +
             s"feature behind it is INERT (thread history → the responder answers with no memory; " +
             s"tenant fields → the operator sees no entitlement). Fix: ${remediation(cfg)}",
         ) *> AppMetrics.supportPermissionProbe("missing")
-      case PlainPermissionAuditResult.Broken(detail)      =>
+      case PlainPermissionAuditResult.Broken(detail)       =>
         // The credential itself is rejected (401/403) or Plain's probe shape drifted. PERMANENT and
         // total — this is not "the audit failed", it is "every Plain call is failing" — so it is
         // as loud as `missing` and deliberately NOT in the transient `unreachable` bucket, whose
@@ -153,7 +153,7 @@ object PlainPermissionAudit {
             "probe. Check WIFIHAVEN_SUPPORT_PLAIN_API_KEY against the workspace's live key " +
             "(docs/ops/plain-setup.md §5.2).",
         ) *> AppMetrics.supportPermissionProbe("broken")
-      case PlainPermissionAuditResult.Unreachable(detail) =>
+      case PlainPermissionAuditResult.Unreachable(detail)  =>
         // NOT a permission gap and NOT a broken credential: we could not ask at all (transport,
         // timeout, 5xx). Transient, so warning + its own bucket — folding it into `missing` would
         // send an operator to grant permissions they already hold.
@@ -174,8 +174,12 @@ enum PlainPermissionAuditResult {
   /** The Plain write client is not configured, so there is nothing to audit. */
   case Skipped
 
-  /** Every required permission is granted. Carries the two counts the log line reports. */
-  case Ok(required: Int, granted: Int)
+  /**
+   * Every required permission is granted. Two counts, named apart so they cannot be swapped at the
+   * call site: how many we NEEDED, and how many the key carries in total (`Missing.granted`, by
+   * contrast, is the full set).
+   */
+  case Ok(required: Int, totalOnKey: Int)
 
   /** `missing` is EVERY required permission the key lacks, sorted — never just the first. */
   case Missing(missing: List[String], granted: Set[String])

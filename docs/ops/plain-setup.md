@@ -279,8 +279,9 @@ entitlement field writes, thread history, AI reply), not a set assembled from th
 > `CorePermissions ++ ResponderPermissions ++ RecommendedPermissions`. Nothing mechanically
 > enforces that they stay equal yet —
 > [#2478](https://github.com/wifihaven/wifihaven/issues/2478) tracks a CI guard. Until it
-> lands, the boot audit is the backstop: a stale array here shows up as
-> `plain api-key permissions INCOMPLETE` on the next boot.
+> lands, the boot audit is a partial backstop: an array that *omits* a required permission shows
+> up as `plain api-key permissions INCOMPLETE` on the next boot — but an array carrying a stale
+> *extra* permission is invisible to it, since the audit only checks that what we need is present.
 
 **Preferred — `updateApiKey`** (keeps the existing secret, so the
 `WIFIHAVEN_SUPPORT_PLAIN_API_KEY` already set in Render does **not** need rotating):

@@ -589,9 +589,10 @@ object MetricGuard {
     //   unreachable — transport / timeout / 5xx: we could not ask. Says NOTHING about the grants.
     //   skipped     — the Plain write client is unconfigured; nothing to audit.
     // `missing` and `broken` are the never-self-healing signals and are BOTH logged at ERROR;
-    // `unreachable` is the transient one and is a warning — the same config-vs-transient boundary
-    // `support_dispatch_total{reason}` draws (#2416), so an outage never reads as a misconfiguration
-    // or vice versa. Without this series the features these permissions gate (#2430 thread history,
+    // `unreachable` is the transient one and is a warning. The line between them is the HTTP
+    // status, drawn by the very predicate `support_dispatch_total{reason}` uses
+    // (`CloudAgentObservability.isPermanentClientStatus`, #2416), so an outage never reads as a
+    // misconfiguration or vice versa. Without this series the features these permissions gate (#2430 thread history,
     // #2240 tenant entitlement) are fail-open, hence INERT and invisible. Bounded enum, never a
     // per-permission / per-workspace label.
     "support_permission_probe_total"                -> Set("outcome"),

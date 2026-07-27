@@ -92,9 +92,10 @@ trait PlainClient {
  *     docs/process/no-dark-by-default.md, so it is reported LOUD, not as an outage.
  *   - [[Unreachable]] — TRANSIENT. Transport error, timeout, 5xx. Says nothing about the grants.
  *
- * The same `config | transient` boundary `CloudAgentObservability.classify` draws for dispatch
- * (#2416) — and it is drawn here by the SAME primitive [[PlainClient.classifyFieldFailure]] that
- * already classifies Plain failure text, not a second hand-rolled match.
+ * The `Broken`/`Unreachable` line is the SAME permanent-vs-transient line #2416 draws at the
+ * cloud-agent boundary, and it is drawn by literally the same predicate —
+ * `CloudAgentObservability.isPermanentClientStatus` — so the two boundaries cannot drift
+ * (docs/process/single-source-of-truth.md).
  */
 enum PlainPermissionRead {
   case Granted(permissions: Set[String])
@@ -648,6 +649,15 @@ object PlainClient {
   // Strip the `(body: …)` tail `sendForBody` appends to a failure detail. On the thread-timeline
   // path that tail is CUSTOMER CONVERSATION TEXT (a GraphQL partial failure is an HTTP 200 whose
   // `data` still carries the timeline), and it must not reach the logs / Loki.
+  // #2452 — recover the HTTP status from a `sendForBody` failure detail. This reads OUR OWN
+  // framing (`sendForBody` authors the exact prefix `HTTP <status> ` for every non-2xx), not
+  // Plain's prose, so it is a structural read rather than a guess at someone else's wording — the
+  // distinction that makes it safe to route a permanent-vs-transient decision through it.
+  private val HttpStatusPrefix = """^HTTP (\d{3})\b""".r
+
+  private[api] def statusOf(detail: String): Option[Int] =
+    HttpStatusPrefix.findFirstMatchIn(detail).map(_.group(1).toInt)
+
   private[api] def redactBody(detail: String): String =
     detail.indexOf(" (body:") match {
       case -1 => detail
@@ -1270,6 +1280,12 @@ object PlainClient {
     // Bounded exactly like `threadHistory`'s read (and for the same reason): the JDK client's own
     // ConnectTimeout + RequestTimeout can hold a borrowed blocking thread for 30s against a
     // black-holed Plain. The audit is pure observability, so it must give up quickly.
+    //
+    // Deliberately BELOW `RequestTimeout` (20s) so a hung Plain resolves to `unreachable` rather
+    // than hanging the fiber; the cost is that a genuinely slow-but-healthy Plain also reads as
+    // `unreachable`, which is the harmless direction (unverified, not misreported). Slightly
+    // longer than `HistoryTimeout` because nothing waits on this one — it is a forked boot task,
+    // not a webhook's latency budget.
     private val ProbeTimeout: Duration = 10.seconds
 
     def grantedPermissions: UIO[PlainPermissionRead] =
@@ -1292,18 +1308,37 @@ object PlainClient {
                   "myPermissions response carried no permissions array — Plain's probe shape drifted",
                 )
             }
-          // The split that matters: a 401/403 means the KEY ITSELF is rejected — revoked, rotated
-          // out from under us, or simply wrong — and `myPermissions` needs no permission of its own,
-          // so it cannot be an under-grant. That is a PERMANENT misconfiguration in which every
-          // Plain call is failing, not an outage to wait out (no-dark-by-default: a broken
-          // credential means the integration is broken and we should be too). Classified by the
-          // SAME `classifyFieldFailure` primitive the entitlement + timeline paths use, so the
-          // 401/403/permission vocabulary lives in one place.
+          // The split that matters, and it is drawn on the HTTP STATUS, not on message text.
+          //
+          // A 4xx means the KEY ITSELF is rejected — revoked, rotated out from under us, or simply
+          // wrong — or that we are asking for something that does not exist. `myPermissions` needs
+          // no permission of its own, so a 403 here can never be an under-grant. Either way it is a
+          // PERMANENT misconfiguration in which every Plain call is failing, not an outage to wait
+          // out (no-dark-by-default: a broken credential means the integration is broken and we
+          // should be too). 5xx / timeout / transport is the transient half.
+          //
+          // That line is EXACTLY `CloudAgentObservability.isPermanentClientStatus` — the same
+          // predicate #2416 uses at the cloud-agent boundary, including its 408/429 carve-out —
+          // called, not re-derived. Deliberately NOT `classifyFieldFailure`: that one matches
+          // substrings, so it would file a 400/404/422 as transient and could be fooled by an
+          // upstream HTML error page containing the word "forbidden".
           case Left(detail) =>
             val safe = redactBody(detail)
-            classifyFieldFailure(safe) match {
-              case Reason.Permission | Reason.Schema => PlainPermissionRead.Broken(safe)
-              case _                                 => PlainPermissionRead.Unreachable(safe)
+            statusOf(safe) match {
+              case Some(status) =>
+                if CloudAgentObservability.isPermanentClientStatus(status) then
+                  PlainPermissionRead.Broken(safe)
+                else PlainPermissionRead.Unreachable(safe)
+              // No status ⇒ the failure is not an HTTP one. Transport errors and timeouts are
+              // transient; EVERYTHING else here is a payload-shape problem on a 200 — an absent or
+              // null `myPermissions`, an unparseable body, a GraphQL error on this fixed query —
+              // i.e. Plain-side DRIFT, which is permanent. The default is deliberately the LOUD
+              // side: a false `broken` cries wolf, a false `unreachable` hides the failure, and
+              // hiding is the entire bug #2452 exists to close.
+              case None         =>
+                if safe == "timed out" || safe.startsWith("transport error") then
+                  PlainPermissionRead.Unreachable(safe)
+                else PlainPermissionRead.Broken(safe)
             }
         }
 
