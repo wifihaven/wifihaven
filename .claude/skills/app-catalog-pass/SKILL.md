@@ -172,6 +172,28 @@ above is now wrong, fix the step too — don't just log around it.
 
 ## Learnings log (newest first)
 
+- **2026-07-27 (#2490)** — Another clean no-op: no new app, no host-set gap
+  (LEGO's `thelegogroup.com` corporate-analytics exclusion reconfirmed).
+  Clarified a latent trap in the gap-check method itself: a naive per-apex
+  match against `_index.yml` host lists reports `apple.com` and `google.com`
+  as "covered" because the aggregate apex traffic includes the templated
+  sliver hosts (`ess.apple.com` for `imessage`, `play.google.com` for
+  `google-play`) — but the vast majority of those multi-GB apexes is
+  unrelated shared-platform traffic (App Store, Search, Drive, iCloud sync),
+  not actionable. Don't read a large-byte apex matching an app slug as "fully
+  covered" — check which specific host inside the app's template actually
+  produced the match.
+- **2026-07-27 (#2490)** — `apple.news` (only `c.apple.news`, a single
+  content-delivery edge) is the same shape as `ess.apple.com`: one edge host
+  for an OS-bundled Apple app, no independent branded surface. Treated as
+  skip-with-note rather than templated, since iMessage's template was driven
+  by an explicit operator ask (#1529), not just traffic presence — don't
+  auto-template every single-edge Apple service that shows up.
+- **2026-07-27 (#2490)** — `genius.com` traffic was 100% `assets`/`t2`/
+  `librato-collector` (analytics/tracking subdomains), zero navigational
+  lyrics-page hits — a reminder that a brand-name apex with real bytes can
+  still be pure SDK/analytics collateral; check subdomain shape before
+  assuming a page-view.
 - **2026-07-20 (#2331)** — A mature catalog can still find a genuine new app in
   a low-byte, high-consistency cluster: `serato.com` (DJ software) was only
   8.9 MB / 106 hits, far below the multi-hundred-MB clusters that usually
