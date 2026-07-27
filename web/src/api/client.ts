@@ -99,10 +99,12 @@ const CHANGE_PASSWORD_ENDPOINT = '/auth/change-password'
 // wrong — the session is fine. The two are told apart by the response body, the same way the 403
 // branch sniffs `password_change_required`; branching on status+route alone would misreport an
 // expired or revoked token on that route as a wrong password and strand the user re-typing.
+// The exact server text is pinned api-side by AuthApiSpec's "401s with the exact
+// wrong-current-password body (#2492)" test, so a reword there fails CI instead of silently
+// reinstating the sign-out-on-typo behaviour here.
 const CURRENT_PASSWORD_INCORRECT = 'Current password incorrect'
 
 export class UnauthorizedError extends Error {
-  readonly status = 401
   constructor(message: string) {
     super(message)
     this.name = 'UnauthorizedError'

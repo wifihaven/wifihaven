@@ -3,23 +3,23 @@ import { render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import userEvent from '@testing-library/user-event'
 
-class FakeCurrentPasswordIncorrectError extends Error {}
-
-vi.mock('@/api/client', () => ({
+// #2492: mock ONLY the network surface — the real `CurrentPasswordIncorrectError` and its
+// predicate come through, so this test breaks if their semantics change rather than asserting
+// against a local re-implementation.
+vi.mock('@/api/client', async importOriginal => ({
+  ...(await importOriginal<typeof import('@/api/client')>()),
   api: {
     auth: {
       changePassword: vi.fn(),
     },
   },
-  // #2492: the page branches on the typed error, not on the message string.
-  isCurrentPasswordIncorrect: (e: unknown) => e instanceof FakeCurrentPasswordIncorrectError,
 }))
 
 vi.mock('@/hooks/useAuth', () => ({
   useAuth: () => mockAuth,
 }))
 
-import { api } from '@/api/client'
+import { api, CurrentPasswordIncorrectError } from '@/api/client'
 import { AccountPage } from './AccountPage'
 
 let mockAuth: {
@@ -141,7 +141,7 @@ describe('AccountPage — password change', () => {
   })
 
   it('maps the typed wrong-current-password error to "Current password is incorrect"', async () => {
-    (api.auth.changePassword as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(new FakeCurrentPasswordIncorrectError('Current password incorrect'))
+    (api.auth.changePassword as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(new CurrentPasswordIncorrectError('Current password incorrect'))
     const user = userEvent.setup()
     renderPage()
     await fillFields(user, 'oldpass12', 'newpass34', 'newpass34')
