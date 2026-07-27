@@ -68,6 +68,27 @@ trait PlainClient {
    * "waiting on a human" is a filter instead of a full read of every thread. Never fails.
    */
   def markThread(req: PlainThreadMark): UIO[PlainOutcome]
+
+  /**
+   * #2452 — read the permission array of the API key we are authenticating WITH. The one
+   * prerequisite of this integration that lives in Plain-workspace state rather than local config,
+   * so it cannot be checked by `AppConfig.validateRequired`; [[PlainPermissionAudit]] runs this at
+   * boot and reports every gap. Never fails: a Plain outage yields
+   * [[PlainPermissionRead.Unreachable]], NOT a false permission gap.
+   */
+  def grantedPermissions: UIO[PlainPermissionRead]
+}
+
+/**
+ * #2452 — the outcome of reading the machine-user key's own permission array. `Unreachable` is
+ * deliberately distinct from an empty `Granted`: "Plain did not answer" and "Plain says you hold
+ * nothing" are different operator actions (wait vs. grant), and conflating them is exactly how the
+ * original defect stayed invisible.
+ */
+enum PlainPermissionRead {
+  case Granted(permissions: Set[String])
+  case Unreachable(detail: String)
+  case NotConfigured
 }
 
 /**
@@ -263,6 +284,36 @@ object PlainClient {
     else Reason.FieldWrite
   }
 
+  // ── #2452: name the permission Plain ACTUALLY named ────────────────────────
+  // Plain reports a denial as `Insufficient permissions, missing "timeline:read".` The quoted token
+  // is Plain's OWN permission identifier — not customer data — so it is safe to log even though the
+  // response body stays redacted (`redactBody`), and it is the only thing that tells an operator
+  // what to grant.
+  //
+  // The match is deliberately narrow: `missing "<word>:<word>"`, i.e. a permission-SHAPED token
+  // only. A looser "text after `missing`" would lift arbitrary response prose — which on the
+  // thread-timeline path can be customer conversation text — straight past the redaction into Loki.
+  // Anything that does not match yields None, and the caller falls back to a generic hint rather
+  // than a confidently wrong permission name (the #2452 sub-defect: the old hardcoded `thread:read`
+  // was the operator's ONLY signal, and it was wrong).
+  private val MissingPermissionPattern = """missing\s+"([A-Za-z]+:[A-Za-z]+)"""".r
+
+  private[api] def missingPermissionName(detail: String): Option[String] =
+    MissingPermissionPattern.findFirstMatchIn(detail).map(_.group(1))
+
+  /** The operator-facing "what to grant" hint for a permission denial. Never guesses. */
+  private[api] def permissionGapHint(detail: String): String =
+    missingPermissionName(detail) match {
+      case Some(perm) =>
+        s"the Plain machine-user API key lacks the `$perm` permission; grant it with the " +
+          "`updateApiKey` mutation in docs/ops/plain-setup.md §5.3 (permissions are REPLACED in " +
+          "full — send the complete set from §5.1)"
+      case None       =>
+        "the Plain machine-user API key lacks a required permission (Plain did not name it in a " +
+          "form we can quote); re-run the `updateApiKey` mutation with the full set from " +
+          "docs/ops/plain-setup.md §5.1"
+    }
+
   // #2410: entitlement-write failures are LOUD — `logError`, not `logWarning` (the no-dark-by-default
   // bar), carrying the attributed `reason`. permission/schema are a provisioning gap discovered at
   // FIRST WRITE (the prerequisite is Plain-workspace state, not local config, so it can't be checked
@@ -374,10 +425,15 @@ object PlainClient {
    * network — so the write half ships dark. When enabled it yields the live GraphQL client.
    */
   val layer: ZLayer[SupportConfig, Nothing, PlainClient] =
-    ZLayer.fromFunction { (cfg: SupportConfig) =>
-      if cfg.plain.writeEnabled then new Live(cfg): PlainClient
-      else Disabled
-    }
+    ZLayer.fromFunction((cfg: SupportConfig) => make(cfg))
+
+  /**
+   * The config→client decision, as a plain function, so callers outside the ZLayer graph (the #2452
+   * boot audit in `Main`) select the same client the request path gets rather than re-deriving the
+   * gate — one decision, one place (docs/process/single-source-of-truth.md).
+   */
+  def make(cfg: SupportConfig): PlainClient =
+    if cfg.plain.writeEnabled then new Live(cfg) else Disabled
 
   /** No-op client used when the Plain write API is unconfigured. */
   val Disabled: PlainClient = new PlainClient {
@@ -391,6 +447,8 @@ object PlainClient {
       AppMetrics.supportThreadHistory("disabled").as(Nil)
     def markThread(req: PlainThreadMark): UIO[PlainOutcome]                        =
       ZIO.succeed(PlainOutcome.Disabled)
+    def grantedPermissions: UIO[PlainPermissionRead]                               =
+      ZIO.succeed(PlainPermissionRead.NotConfigured)
   }
 
   /** Public no-op instance for specs that don't drive Plain. */
@@ -1162,10 +1220,14 @@ object PlainClient {
               val safe   = redactBody(failure.detail)
               val log    = reason match {
                 case Reason.Permission =>
+                  // #2452: name the permission Plain ACTUALLY named. This path previously
+                  // hardcoded `thread:read` for ANY 403 — and the real cause on staging was
+                  // `timeline:read` (a SEPARATE permission gating `thread { timelineEntries }`).
+                  // Because the body is redacted, that wrong string was the operator's only
+                  // signal, and granting exactly what it asked for did not fix anything.
                   ZIO.logError(
                     s"plain threadTimeline failed [reason=$reason]: $safe — PROVISIONING GAP: " +
-                      "the Plain machine-user API key lacks the thread:read permission; grant it " +
-                      "(docs/ops/plain-setup.md §5.1) so the support responder can see the " +
+                      s"${permissionGapHint(safe)} — so the support responder cannot see the " +
                       "conversation so far",
                   )
                 case Reason.Schema     =>
@@ -1185,6 +1247,36 @@ object PlainClient {
                 })
                 .as(Nil)
           }
+    // ── #2452: the key's own permission array ──────────────────────────────────
+    // Plain's `myPermissions` — "Returns the full list of permission strings granted to the
+    // currently authenticated user or machine user in this workspace" (verified against Plain's
+    // published schema, https://core-api.uk.plain.com/graphql/v1/schema.graphql; `Permissions
+    // { permissions: [String!]! }`). It carries no `permission:read` requirement of its own — the
+    // sibling `permissions` query, which enumerates the workspace's whole vocabulary, is the one
+    // that does — so the probe cannot itself be the thing that is denied.
+    //
+    // Reads NOTHING about customers, threads, or conversations: the response is a list of our own
+    // grant strings.
+    private val MyPermissionsQuery: String                                         =
+      """query myPermissions { myPermissions { permissions } }"""
+
+    def grantedPermissions: UIO[PlainPermissionRead] =
+      sendForBody(MyPermissionsQuery, Json.Obj(), Expect("myPermissions", None)).map {
+        case Right(body)  =>
+          navigate(
+            Json.decoder.decodeJson(body).getOrElse(Json.Null),
+            List("data", "myPermissions", "permissions"),
+          ) match {
+            case Some(Json.Arr(items)) =>
+              PlainPermissionRead.Granted(items.collect { case Json.Str(p) => p }.toSet)
+            // A 200 whose payload has no permissions array is Plain-schema drift, not a grant gap —
+            // reporting it as `Granted(empty)` would tell an operator to grant everything.
+            case _                     =>
+              PlainPermissionRead.Unreachable("myPermissions response carried no permissions array")
+          }
+        case Left(detail) => PlainPermissionRead.Unreachable(redactBody(detail))
+      }
+
     // ── #2437: thread marking (escalation label) ────────────────────────────────
     // Plain's `addLabels(input: AddLabelsInput!)` with `{ threadId, labelTypeIds }` (verified against
     // https://www.plain.com/docs — "You can add multiple labels to a thread with a call to
@@ -1192,7 +1284,7 @@ object PlainClient {
     // The selection is deliberately ONLY `error { message }`: every Plain mutation payload carries
     // that, so we assume nothing further about the output shape (selecting a field Plain doesn't have
     // would fail the whole mutation). Hence `resultKey = None`.
-    private val AddLabelsMutation: String                                          =
+    private val AddLabelsMutation: String =
       """mutation addLabels($input: AddLabelsInput!) {
         |  addLabels(input: $input) { error { message } }
         |}""".stripMargin
@@ -1337,6 +1429,12 @@ object PlainClient {
       }
     def markThread(req: PlainThreadMark): UIO[PlainOutcome]                        =
       rec.marks.update(_ :+ req).as(PlainOutcome.Ok)
+
+    // #2452: the recorder models a FULLY GRANTED key — specs that drive the support stack are not
+    // about provisioning, and the audit's gap behaviour is pinned directly in
+    // `PlainPermissionAuditSpec` against a stubbed Plain endpoint.
+    def grantedPermissions: UIO[PlainPermissionRead] =
+      ZIO.succeed(PlainPermissionRead.Granted(PlainPermissionAudit.AllPermissions))
   }
 
   def recorder: UIO[Recorder] =

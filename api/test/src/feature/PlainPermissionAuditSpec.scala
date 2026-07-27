@@ -48,7 +48,7 @@ object PlainPermissionAuditSpec extends ZIOSpecDefault {
           s.createContext(
             "/",
             (exchange: HttpExchange) => {
-              val body = new String(exchange.getRequestBody.readAllBytes(), "UTF-8")
+              val body             = new String(exchange.getRequestBody.readAllBytes(), "UTF-8")
               Unsafe.unsafe { implicit u =>
                 runtime.unsafe.run(bodiesRef.update(_ :+ body)).getOrThrowFiberFailure()
               }
@@ -125,7 +125,9 @@ object PlainPermissionAuditSpec extends ZIOSpecDefault {
         !off.contains("label:create"),
         // The entitlement chain is required either way — upsertCustomer always writes tenant fields.
         off.contains("tenantFieldSchema:read"),
-        on.subsetOf(on) && off.subsetOf(on),
+        // Enabling the responder only ever ADDS requirements.
+        off.subsetOf(on),
+        (on -- off) == PlainPermissionAudit.ResponderPermissions,
       )
     },
     test("a key carrying every required permission audits Ok, via Plain's myPermissions query") {

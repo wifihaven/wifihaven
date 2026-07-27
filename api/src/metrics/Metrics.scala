@@ -579,6 +579,17 @@ object MetricGuard {
     // the webhook never fails — so this series is the ONLY way a permanently context-less responder
     // is visible. Bounded, never per-thread / per-household.
     "support_thread_history_total"                  -> Set("outcome"),
+    // #2452 — the BOOT-time audit of the Plain machine-user key's own permission array (Plain's
+    // `myPermissions` query). `support_permission_probe_total{outcome}`: ok (every required
+    // permission granted) | missing (a PROVISIONING GAP — one or more required permissions absent;
+    // also logged at ERROR naming ALL of them plus the exact updateApiKey mutation) | unreachable
+    // (Plain did not answer, so the grants are unverified this boot — says NOTHING about what is
+    // granted) | skipped (the Plain write client is unconfigured, nothing to audit). One sample per
+    // boot. `missing` is the never-self-healing signal: the permissions behind it are
+    // Plain-WORKSPACE state that no redeploy can fix, and the features they gate (#2430 thread
+    // history, #2240 tenant entitlement) are fail-open — so without this series they are INERT and
+    // invisible. Bounded enum, never a per-permission / per-workspace label.
+    "support_permission_probe_total"                -> Set("outcome"),
     // #2203 — the Claude PRESS/PR responder (dark until keys set). `press_ai_draft_total{outcome}`
     // counts each inbound PRESS Plain webhook by a bounded enum (dispatched | skipped | rate_limited
     // | invalid_signature | malformed | disabled | error); `press_agent_action_total{op,outcome}`
@@ -964,6 +975,13 @@ object AppMetrics {
   // case of a thread with no readable entries at all, not the common first-message case.
   def supportThreadHistory(outcome: String): UIO[Unit] =
     MetricGuard.counter("support_thread_history_total", Map("outcome" -> outcome))
+
+  // #2452 — the boot-time Plain API-key permission audit (PlainPermissionAudit). ONE sample per
+  // boot: ok | missing | unreachable | skipped. `missing` is a PROVISIONING GAP that no redeploy
+  // fixes (the permission array is Plain-workspace state) and it silently disables the fail-open
+  // features gated on it, so it is the alertable one — it should be flat zero.
+  def supportPermissionProbe(outcome: String): UIO[Unit] =
+    MetricGuard.counter("support_permission_probe_total", Map("outcome" -> outcome))
 
   // ── #2203: Claude press/PR responder (dark until keys set) ───────────────────
   // Emitted from PressResponder. `pressAiDraft` counts each inbound PRESS Plain webhook by outcome

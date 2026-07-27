@@ -202,6 +202,59 @@ the authenticated admin, so it can mint/grant keys). Docs for the write operatio
 permissions gate: <https://www.plain.com/docs/graphql/customers/upsert> and
 <https://www.plain.com/docs/graphql/tenants/upsert>.
 
+#### The API checks this at boot — you do not have to trust this table (#2452) {#permission-audit}
+
+At boot, whenever the Plain write client is enabled, the API reads the key's **own**
+permission array (Plain's `myPermissions` query: *"Returns the full list of permission strings
+granted to the currently authenticated user or machine user in this workspace"*) and compares
+it against what **this deployment's enabled features** need.
+
+The set it checks has ONE home in code —
+[`PlainPermissionAudit`](../../api/src/support/PlainPermissionAudit.scala): `CorePermissions`
+(always, when the write client is on) plus `ResponderPermissions` (only when
+`responderEnabled`). It is deliberately the **needed** set, not the **granted** set: the
+validated 16-scope array in §5.3 is a superset, because it also carries the scopes whose
+caller is not yet established (`webhookTarget:read`, and arguably `tenantFieldSchema:read` —
+[#2470](https://github.com/wifihaven/wifihaven/issues/2470)) plus the recommended-not-required
+`customer:read`. So the audit will never nag you about a scope nothing depends on, and if
+#2470 trims the array, `PlainPermissionAudit` is the one place to change.
+
+The outcomes:
+
+- **all granted** → one INFO line, `support_permission_probe_total{outcome="ok"}`;
+- **something missing** → an **ERROR** naming **every** gap at once (not the first) plus the
+  exact `updateApiKey` mutation to paste, and
+  `support_permission_probe_total{outcome="missing"}`;
+- **Plain rejects the request** (any 4xx except 408/429 — a revoked, rotated, or wrong key; a
+  wrong endpoint) **or its probe shape drifted** (a 200 with no `myPermissions` array) → an
+  **ERROR** and `{outcome="broken"}`. `myPermissions` needs no permission of its own, so a 403
+  here is never an under-grant: the credential is unusable and **every** Plain call is failing,
+  not just the probe. Check `WIFIHAVEN_SUPPORT_PLAIN_API_KEY` against the workspace's live key
+  (§5.2);
+- **Plain unreachable** (transport, timeout, 5xx, and the self-healing 408/429) → a warning and
+  `{outcome="unreachable"}` — the grants are simply *unverified* this boot. This is the one
+  **transient** bucket, and it is separate precisely so a rejected credential is never mistaken
+  for an outage you can wait out. The permanent/transient line is drawn on the HTTP **status**
+  by the same predicate the cloud-agent dispatcher uses (#2416), not by matching error wording.
+
+`missing` and `broken` are both permanent and both log at ERROR; only `unreachable` is a
+warning.
+
+**It does not crash boot**, deliberately. A missing permission is a misconfiguration
+([docs/process/no-dark-by-default.md](../process/no-dark-by-default.md)), but this check is a
+live call to a third party — crashing on its answer would let a Plain outage or a Plain-side
+permission rename take the whole API down (router enforcement, policy, usage ingest) for a
+degraded support desk. So it takes the doc's other sanctioned shape: a **loud alerting runtime
+error**. Watch the panel on `deploy/grafana/dashboards/support.json`; `missing` and `broken`
+should both be flat zero.
+
+To check by hand, run this in the API playground **authenticated as the machine user's key**
+(as the admin it reports *your* permissions, not the key's):
+
+```graphql
+query { myPermissions { permissions } }
+```
+
 ### 5.2 Find the API key's id
 
 Permissions are set on the key's **id** (`apiKey_…`), not its secret. List a machine
@@ -262,7 +315,21 @@ Plain-side call requires them. Auditing them down to least privilege is tracked 
 [#2470](https://github.com/wifihaven/wifihaven/issues/2470).
 
 **Echo the response.** `updateApiKey` returns the resulting `permissions` array — read it
-back and confirm all 16 scopes are present before moving on.
+back and confirm all 16 scopes are present before moving on. You can re-read them at any
+time as the machine-user key (this is also what the boot audit calls,
+§5.1 [permission audit](#permission-audit)):
+
+```graphql
+query { myPermissions { permissions } }
+```
+
+> The array above is a hand-copy relative to `PlainPermissionAudit`'s *needed* set in code
+> (§5.1). Nothing mechanically enforces that the two stay consistent —
+> [#2478](https://github.com/wifihaven/wifihaven/issues/2478) tracks a CI guard, and
+> [#2470](https://github.com/wifihaven/wifihaven/issues/2470) will change what the right array
+> is. The boot audit is a partial backstop in the meantime: it catches an array that *omits*
+> something needed, but an array carrying a stale *extra* scope is invisible to it.
+
 
 ### 5.4 Create the escalation label + record its id (#2437) {#escalation-label}
 
@@ -301,6 +368,23 @@ to prod, §0) has its **own** machine user and its own API key, so the `403` fix
 **per-environment**: run §5.1–§5.4 once against the staging workspace and once against the
 prod workspace. If prod go-live 403s on the customer/tenant upserts, the prod key's
 `permissions` array is the first thing to check.
+
+> **Status as of 2026-07-26 (#2452).** The **staging** key carries the full §5.3 array —
+> verified end-to-end. The **prod** key does **not**: it is still missing `timeline:read` and
+> `tenantFieldSchema:read`, so #2430 thread history and #2240 entitlement would ship inert.
+> Documentation does not fix a workspace. **Re-run §5.3's `updateApiKey` against the prod key
+> before prod go-live**, then confirm with `query { myPermissions { permissions } }` as that
+> key. Until you do, every prod boot logs `plain api-key permissions INCOMPLETE` and
+> `support_permission_probe_total{outcome="missing"}` is non-zero.
+
+> **Status as of 2026-07-26 (#2452).** The **staging** key carries the full §5.3 array —
+> verified live. The **prod** key does **not**: it is still missing `timeline:read` and
+> `tenantFieldSchema:read`. Correcting this document does not correct the prod workspace.
+> **Re-run the §5.3 `updateApiKey` mutation against the prod key before prod go-live**, then
+> confirm with `query { myPermissions { permissions } }` as that key. The boot audit
+> (§5.1 [permission audit](#permission-audit)) will otherwise log
+> `plain api-key permissions INCOMPLETE` on every prod boot and
+> `support_permission_probe_total{outcome="missing"}` will be non-zero.
 
 ---
 
@@ -472,6 +556,17 @@ these:
 ---
 
 ## 8. Verify (staging first)
+
+0. **Read the boot log for the permission audit (#2452).** On the first boot after the key is
+   granted, look for `config feature 'support-write-api'` followed by
+   `plain api-key permissions OK`. If you instead see
+   `plain api-key permissions INCOMPLETE — PROVISIONING GAP: … missing <perms>`, the message
+   names every gap and the exact `updateApiKey` mutation to run — do that before anything
+   below, because the features gated on those permissions are fail-open and will otherwise
+   look "fine" while doing nothing. `plain api-key permission probe REJECTED by Plain` is the
+   other ERROR to act on immediately — the key itself is unusable, so nothing Plain-side works
+   at all. Only `plain api-key permission probe could not reach Plain` is a *warning*: Plain
+   didn't answer, so the grants are unverified this boot; it self-heals.
 
 1. Log in as an **admin with an email** on staging → the Plain chat bubble should appear.
    If it doesn't, open the browser console:

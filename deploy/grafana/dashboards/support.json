@@ -536,6 +536,49 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Plain API-key permission gaps at boot (24h) — expect 0 (#2452)",
+      "description": "sum(increase(support_permission_probe_total{env=\"$env\",outcome=~\"missing|broken\"}[24h])) — the BOOT-time audit of the Plain machine-user API key's OWN permission array (Plain's `myPermissions` query) found a PERMANENT problem: `missing` = a required permission is not granted; `broken` = Plain rejected the request with a 4xx (a revoked, rotated, or wrong key; a wrong endpoint) or its probe shape drifted, meaning EVERY Plain call is failing, not just the probe. Neither is fixable by a redeploy: the permission array is Plain-WORKSPACE state, set only via the `updateApiKey` mutation. Every Plain call gated on a missing permission 403s, and because those paths are fail-open the feature behind them is simply INERT — thread history (#2430) means the responder answers every follow-up with no memory; tenant fields (#2240) mean the operator sees no entitlement. The boot ERROR log names EVERY missing permission at once plus the exact mutation to paste. Expect 0; non-zero is actionable immediately (docs/ops/plain-setup.md §5.1). Note `unreachable` is deliberately NOT counted here — that means Plain did not answer, so the grants are merely unverified this boot.",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 80 },
+      "id": 22,
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "short", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "background", "graphMode": "none", "textMode": "auto" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(increase(support_permission_probe_total{env=\"$env\",outcome=~\"missing|broken\"}[24h]))",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Plain API-key permission audit by outcome (#2452)",
+      "description": "sum by (outcome) (increase(support_permission_probe_total{env=\"$env\"}[$__rate_interval])) — one sample per API boot (#2452). ok = every permission this deployment's enabled features need is granted. missing = required permissions absent. broken = Plain returned a 4xx (rejected credential, wrong endpoint) or its probe shape drifted. missing and broken are both PERMANENT provisioning gaps, both logged at ERROR, and both counted on the stat panel beside this one — neither self-heals. unreachable = transport / timeout / 5xx / the self-healing 408 + 429, i.e. we could not ask; it says NOTHING about what is granted and is expected to be transient, which is exactly why it is a separate bucket — folding a rejected credential into it would tell an operator to wait out a problem that never resolves (the #2416 config-vs-transient boundary). skipped = the Plain write client is unconfigured (the self-hosted posture), nothing to audit.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 80 },
+      "id": 23,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1, "stacking": { "mode": "normal", "group": "A" } }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (outcome) (increase(support_permission_probe_total{env=\"$env\"}[$__rate_interval]))",
+          "legendFormat": "{{outcome}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",
