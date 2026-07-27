@@ -27,7 +27,7 @@ import zio.*
  * routine id / kickoff differ from support.
  *
  * SECURITY MODEL (#2203, the strongest injection posture — autonomous send to an untrusted party):
- *   - The press agent receives **zero vendor secrets**. Its only credential is the short-TTL
+ *   - The press agent receives **zero vendor secrets**. Its only credential is the expiring
  *     [[PressToken]] carried in the kickoff (out-of-band). It has NO household binding and NO
  *     data-access scope — the no-household-data guarantee is structural (no such token field, no
  *     such endpoint), not a prompt the model could be argued out of.

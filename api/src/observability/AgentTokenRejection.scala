@@ -71,11 +71,19 @@ object AgentTokenRejection {
   /**
    * Log + meter one rejected agent callback.
    *
-   * Level is deliberately split by who caused it. `token_expired` is OUR bug or misconfiguration —
-   * a token we minted, for a dispatch we made, whose answer is now lost — so it is an ERROR an
-   * operator should act on. `invalid` / `missing` are reachable by anyone on the internet (the
-   * agent endpoints are public, authenticated only by the bearer), so they are WARN: real signal,
-   * but not something an attacker can use to flood the error log.
+   * The METRIC is emitted for every reason — that is the signal, and a counter costs the same
+   * whether it is incremented once or a million times. The LOG LINE is not: the agent endpoints are
+   * public and their rate limiters are acquired AFTER token verification, so an unauthenticated
+   * caller can drive one log write per request straight into Loki. So the level is split by who can
+   * cause it:
+   *
+   *   - `token_expired` → **ERROR**. Only reachable with a token WE minted, for a dispatch WE made,
+   *     whose answer is now lost. An attacker cannot forge one, so it cannot be used to flood; and
+   *     it is the one an operator must act on, with the fix named inline.
+   *   - `invalid` / `missing` → **DEBUG**. Anyone on the internet can produce these at will, so
+   *     they must not be able to write to the operator's log at all. The counter (and its Grafana
+   *     panel) carries the signal, including the genuine case — a secret rotated mid-flight — which
+   *     shows up as a step change in the rate, not as one line per request.
    */
   def rejected(channel: String, op: String, reason: String): UIO[Unit] = {
     val line =
@@ -86,7 +94,7 @@ object AgentTokenRejection {
           s"$line (the token outlived its TTL — a cloud-agent run paused longer than " +
             s"wifihaven.$channel.agentTokenTtlMinutes; see #2473)",
         )
-      else ZIO.logWarning(line)
+      else ZIO.logDebug(line)
     log *> AppMetrics.agentTokenRejected(channel, op, reason)
   }
 }

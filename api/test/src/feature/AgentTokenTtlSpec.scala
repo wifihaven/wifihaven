@@ -327,7 +327,7 @@ object AgentTokenTtlSpec
         }
         .provideSome[Env](ZTestLogger.default)
     },
-    test("a forged or absent bearer is metered as invalid / missing, and only WARNed") {
+    test("a forged or absent bearer is metered as invalid / missing, and never logged loud") {
       ZIO
         .scoped {
           for {
@@ -342,17 +342,22 @@ object AgentTokenTtlSpec
             logs          <- ZTestLogger.logOutput
             writes        <- rig.plain.threads.get
           } yield {
-            val warns = logs.filter(_.logLevel == LogLevel.Warning).map(_.message())
+            val debugs = logs.filter(_.logLevel == LogLevel.Debug).map(_.message())
+            val loud   =
+              logs.filter(e => e.logLevel == LogLevel.Error || e.logLevel == LogLevel.Warning)
             assertTrue(
               sForged == Status.Unauthorized,
               sNone == Status.Unauthorized,
               writes.isEmpty,
+              // The COUNTER is the signal for these two — it is what the dashboard reads.
               afterInvalid - beforeInvalid >= 1.0,
               afterMissing - beforeMissing >= 1.0,
-              warns.exists(_.contains("reason=invalid")),
-              warns.exists(_.contains("reason=missing")),
-              // These two are reachable by anyone on the internet, so they must NOT flood ERROR.
-              logs.filter(_.logLevel == LogLevel.Error).isEmpty,
+              debugs.exists(_.contains("reason=invalid")),
+              debugs.exists(_.contains("reason=missing")),
+              // Both are reachable by anyone on the internet, and the agent endpoints' rate limiters
+              // are acquired AFTER token verification — so an unauthenticated caller must not be able
+              // to write a line into the operator's log at all, at ERROR or WARN.
+              loud.isEmpty,
             )
           }
         }

@@ -77,20 +77,24 @@ grant, not a payload flag.
 | Revocation | `revoked_at` stamped by the customer's "stop allowing" action | Ahead-of-expiry withdrawal, without waiting out the TTL. A live grant is `revoked_at IS NULL AND expires_at > now`. |
 | Granularity of the data | unchanged — the bounded `HouseholdSummary` (name, plan, counts, profile names + pause state) | Consent widens the token's DATA SCOPE only; it never widens what the endpoint returns, nor the household/thread binding. |
 
-Revoking consent takes effect on the next dispatch at the latest: `dataAccess` is
-evaluated once, when the token is minted, so an already-minted data-scoped token
-keeps reading until it expires. That residual window is bounded by
-`support.agentTokenTtlMinutes`.
+**Revoking consent takes effect immediately (#2476).** `dataAccess` is stamped
+into the token once, at mint — but the household read does not stop there: it
+RE-READS the `support_thread_consent` record on every call, and refuses (403,
+metered `support_consent_total{outcome="read_withdrawn"}`) when there is no live
+grant. Both must hold, so a withdrawal bites on the very next read by an
+already-minted, still-unexpired, still-data-scoped token.
 
-**#2473 changed how big that window is.** The agent-token TTL was 30 minutes; it
-is now 24 hours, because a cloud-agent run can be paused on subscription usage
-limits and resumed hours later, and a token that dies mid-pause silently throws
-away the customer's answer. The residual post-withdrawal window therefore grew
-from ≤30 minutes to ≤24 hours. Nothing else about the read changed — still one
-household, still the bounded summary, still audited — but the latency of a
-withdrawal is real. Two deferred controls close it, and this change raises the
-priority of both: #2259 (an explicit agent-token revocation list) and #2476
-(re-reading the consent record at read time, so a withdrawal is immediate).
+That re-read exists because of #2473. The agent-token TTL was 30 minutes and is
+now 24 hours (a cloud-agent run can be paused on subscription usage limits and
+resumed hours later; a token that dies mid-pause silently throws away the
+customer's answer). Had the read kept trusting the mint-time stamp, that change
+would have stretched the post-withdrawal residual window from ≤30 minutes to a
+full day. Re-reading removes the window entirely instead, independent of the TTL.
+
+What #2473 does still cost is incident response: with a 30-minute window,
+waiting out a suspected leaked token was plausible; at 24 hours it is not.
+#2259 (an explicit agent-token revocation list) is what closes that, and this
+change raises its priority.
 
 ## The security boundary
 

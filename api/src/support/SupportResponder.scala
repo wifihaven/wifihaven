@@ -445,41 +445,68 @@ final case class SupportResponder(
 
   /**
    * The consented household read (#2241): a bounded summary of the ONE household the token is bound
-   * to. Requires the token's `dataAccess` scope (minted only when the customer opted in at the UI
-   * submission); the household id comes from the token, so there is no parameter through which
-   * another household could be requested — single-household is enforced by construction.
+   * to. The household id comes from the token, so there is no parameter through which another
+   * household could be requested — single-household is enforced by construction.
+   *
+   * Consent is checked TWICE, and both must hold:
+   *   - `claims.dataAccess` — the scope stamped into the token at mint;
+   *   - a LIVE grant for this `(household, thread)` RIGHT NOW — re-read here, not trusted from the
+   *     token (#2476).
+   *
+   * The live re-read is what makes "stop allowing" take effect immediately. Before it, `dataAccess`
+   * was evaluated once at dispatch and the read trusted that stamp, so a withdrawal only bit once
+   * the token expired — a residual window bounded by the agent-token TTL. #2473 raised that TTL
+   * from 30 minutes to 24 hours (a cloud-agent run can be paused on usage limits and resume hours
+   * later), which would have stretched the residual window to a full day. Re-reading closes it
+   * instead of trading a customer's withdrawal for the reply fix. It costs one indexed lookup per
+   * read, on a path that already does four repo queries.
+   *
+   * Fail-CLOSED both ways: [[consentGranted]] reads a DB error as "no consent", and the token scope
+   * is still required, so this only ever narrows access.
    */
   def agentHousehold(bearer: Option[String]): UIO[Either[AgentActionResult, HouseholdSummary]] =
     withClaimsE("household_read", bearer) { claims =>
-      if !claims.dataAccess then
-        // Valid token, but minted WITHOUT the consent scope — the one 403-shaped denial (the route
-        // distinguishes it from a bad/expired token, which stays a uniform 401).
+      clock.instant
+        .flatMap(now => consentGranted(claims.householdId, claims.threadId, now))
+        .flatMap(live => householdRead(claims, live))
+    }
+
+  private def householdRead(
+      claims: ConsentToken.Claims,
+      liveGrant: Boolean,
+  ): UIO[Either[AgentActionResult, HouseholdSummary]] =
+    if !claims.dataAccess || !liveGrant then
+      // The one 403-shaped denial (the route distinguishes it from a bad/expired token, which stays
+      // a uniform 401). `read_withdrawn` (#2476) is the security-interesting half: a token that WAS
+      // minted with data scope, presented after the customer withdrew — it should be rare, and a
+      // rising rate means grants are being withdrawn mid-conversation.
+      AppMetrics
+        .supportConsent(if claims.dataAccess then "read_withdrawn" else "read_no_scope") *>
         AppMetrics
           .supportAgentAction("household_read", "denied")
           .as(Left(AgentActionResult.NoConsent))
-      else {
-        val hh = claims.householdId
-        for {
-          household <- householdRepo.findById(hh).catchAll(_ => ZIO.none)
-          billing   <- billingRepo.findByHousehold(hh).catchAll(_ => ZIO.none)
-          devices   <- deviceRepo.listAllForHousehold(hh).catchAll(_ => ZIO.succeed(Nil))
-          profiles  <- profileRepo.listAllForHousehold(hh).catchAll(_ => ZIO.succeed(Nil))
-          // Audit every consented read (#2241) — household + thread, never the data.
-          _         <- ZIO.logInfo(
-            s"support: agent household read household=${hh.value} thread=${claims.threadId}",
-          )
-          _         <- AppMetrics.supportAgentAction("household_read", "ok")
-        } yield Right(
-          HouseholdSummary(
-            name = household.map(_.name).getOrElse(""),
-            plan = billing.map(_.status),
-            founding = billing.map(_.founding),
-            deviceCount = devices.size,
-            profileCount = profiles.size,
-            profiles = profiles.map(p => ProfileSummary(p.name, p.paused)),
-          ),
+    else {
+      val hh = claims.householdId
+      for {
+        household <- householdRepo.findById(hh).catchAll(_ => ZIO.none)
+        billing   <- billingRepo.findByHousehold(hh).catchAll(_ => ZIO.none)
+        devices   <- deviceRepo.listAllForHousehold(hh).catchAll(_ => ZIO.succeed(Nil))
+        profiles  <- profileRepo.listAllForHousehold(hh).catchAll(_ => ZIO.succeed(Nil))
+        // Audit every consented read (#2241) — household + thread, never the data.
+        _         <- ZIO.logInfo(
+          s"support: agent household read household=${hh.value} thread=${claims.threadId}",
         )
-      }
+        _         <- AppMetrics.supportAgentAction("household_read", "ok")
+      } yield Right(
+        HouseholdSummary(
+          name = household.map(_.name).getOrElse(""),
+          plan = billing.map(_.status),
+          founding = billing.map(_.founding),
+          deviceCount = devices.size,
+          profileCount = profiles.size,
+          profiles = profiles.map(p => ProfileSummary(p.name, p.paused)),
+        ),
+      )
     }
 
   // ── #2437: escalation — the handoff that actually reaches a human ────────────

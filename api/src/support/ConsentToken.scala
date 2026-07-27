@@ -58,14 +58,15 @@ import java.util.Base64
  * construction), thread-bound reply, read-only with no mutation path, consent-scoped data access,
  * out-of-band mint, rate-limited and audit-logged.
  *
- * What the longer TTL DOES cost, honestly: (1) "just wait for it to expire" is no longer a workable
- * response to a suspected leak; and (2) `dataAccess` is baked in at MINT (SupportResponder reads
- * the live #2419 grant once and stamps the flag; [[Claims.dataAccess]] is what the household read
- * trusts), so the residual window after a customer WITHDRAWS consent grows from ≤30m to ≤TTL. Those
- * are the two deferred controls, and this change raises the priority of both: TODO(#2259) an
- * explicit agent-token revocation list, and TODO(#2476) re-reading the consent record at read time.
- * Neither is implemented as part of #2473 — see [[wifihaven.api.AgentTokenTtl]] for the full
- * write-up.
+ * Note that [[Claims.dataAccess]] is stamped at MINT (the responder reads the live #2419 grant once
+ * and bakes it in), so a longer TTL would have stretched the window in which an already-minted
+ * token survives a customer's WITHDRAWAL. It does not, because `SupportResponder.agentHousehold`
+ * re-reads the grant at read time (#2476): the stamp is necessary but no longer sufficient.
+ *
+ * What the longer TTL does still cost is incident response — "just wait for it to expire" is no
+ * longer a workable answer to a suspected leak. TODO(#2259), an explicit agent-token revocation
+ * list, is what closes that; not implemented as part of #2473. See [[wifihaven.api.AgentTokenTtl]]
+ * for the full write-up.
  */
 object ConsentToken {
 

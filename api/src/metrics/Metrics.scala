@@ -549,8 +549,9 @@ object MetricGuard {
     // #2419 — the in-conversation data-access consent lifecycle on ONE series:
     // `support_consent_total{outcome}` (requested | request_already_granted | request_rate_limited |
     // request_disabled | request_error — the AGENT's ask; granted | revoked | revoke_noop | invalid
-    // | expired | household_mismatch | disabled | error — the CUSTOMER's action). Bounded enum, never a
-    // per-household / per-thread label.
+    // | expired | household_mismatch | disabled | error — the CUSTOMER's action; #2476 adds
+    // read_withdrawn | read_no_scope — the AGENT's household READ refused for want of a LIVE grant).
+    // Bounded enum, never a per-household / per-thread label.
     "support_consent_total"                         -> Set("outcome"),
     // #2430 — the per-dispatch Plain thread-history read that gives the stateless responder its
     // conversation context. `support_thread_history_total{outcome}` counts each read by a bounded
@@ -917,7 +918,10 @@ object AppMetrics {
   //   request_error   — the AGENT-side ask (the server posts the prompt into the thread);
   //   granted | revoked | revoke_noop (a withdrawal of a grant that was not live — idempotent for
   //   the customer, but not a real withdrawal) | invalid | expired | household_mismatch | disabled |
-  //   error   — the CUSTOMER-side action on POST /api/support/consent.
+  //   error   — the CUSTOMER-side action on POST /api/support/consent;
+  //   read_withdrawn | read_no_scope   — #2476, the agent's household READ refused because no LIVE
+  //   grant existed at read time. `read_withdrawn` is the security-interesting one: the token WAS
+  //   minted with data scope, and the customer withdrew before the agent used it.
   // `household_mismatch` is the security-relevant one (a consent link redeemed by another
   // household's session, which writes nothing) — it should be flat zero in normal operation.
   def supportConsent(outcome: String): UIO[Unit]       =

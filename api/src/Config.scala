@@ -598,19 +598,19 @@ object PlainConfig {
  *   - **rate-limited + audit-logged** — every mint and redeem is logged and metered, and a rejected
  *     callback is now itself loud (`agent_token_rejected_total`, #2473).
  *
- * WHAT THIS DOES COST — one property genuinely erodes, and it is NOT the leak window. Consent is
- * evaluated ONCE, at mint: `SupportResponder` reads the live grant and bakes `dataAccess` into the
- * token, and the household read then trusts that baked flag rather than re-reading the record. So
- * the residual window after a customer WITHDRAWS consent — during which an already-minted
- * data-scoped token still reads — used to be bounded by the 30-minute TTL and is now bounded by
- * this one. Nothing else about the read changes (still one household, still the bounded summary,
- * still audited), but the latency of a withdrawal is real, and is stated here rather than glossed.
+ * WHAT IT WOULD HAVE COST, AND WHAT WAS DONE ABOUT IT. Consent used to be evaluated ONCE, at mint
+ * (`SupportResponder` read the live grant and baked `dataAccess` into the token), and the household
+ * read trusted that baked flag. Under a 30-minute TTL a customer's WITHDRAWAL therefore bit within
+ * half an hour; under 24h it would not have bitten until the next day. Rather than trade a
+ * customer's withdrawal for the reply fix, `SupportResponder.agentHousehold` now RE-READS the grant
+ * at read time (#2476), so a withdrawal takes effect immediately and the residual window is gone
+ * regardless of the TTL. `support_consent_total{outcome="read_withdrawn"}` counts exactly that
+ * case.
  *
- * That is exactly what the two deferred controls close, and this change raises the priority of
- * both: TODO(#2259) an explicit agent-token revocation list — with a 30-minute window "just wait
- * for it to expire" was a plausible answer to a suspected leak, and at 24h it is not — and
- * TODO(#2476) re-reading the consent record at read time so a withdrawal takes effect immediately.
- * Both are deliberately NOT implemented here: #2473 is the TTL + observability fix, kept tight.
+ * The one thing that genuinely does erode is incident response: with a 30-minute window "just wait
+ * for it to expire" was a plausible answer to a suspected leak, and at 24h it is not. TODO(#2259) —
+ * an explicit agent-token revocation list — is what closes that, is deliberately NOT implemented
+ * here (#2473 stays the TTL + observability fix), and is materially more valuable for this change.
  *
  * Per-environment tuning: the HOCON key `wifihaven.support.agentTokenTtlMinutes` /
  * `wifihaven.press.agentTokenTtlMinutes` still overrides this (self-hosted config file). NOTE that
