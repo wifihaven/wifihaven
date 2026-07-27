@@ -50,7 +50,12 @@ object SupportCustomerReconcileSpec extends ZIOSpecDefault {
     """{"data":{"upsertCustomer":{"customer":null,"error":{"message":"A customer already exists with the provided email address","code":"customer_already_exists_with_email","type":"VALIDATION"}}}}"""
   private val CustomerOk             = """{"data":{"upsertCustomer":{"customer":{"id":"c_1"}}}}"""
   private val TenantsOk              = """{"data":{"addCustomerToTenants":{"error":null}}}"""
-  private val TenantOk               = """{"data":{"upsertTenant":{"tenant":{"id":"t_1"}}}}"""
+
+  // Plain's `not_found` on the membership join: "An entity referenced in the request is not found."
+  // Says the target is missing, never WHY — which is why the caller threads TenantWrite in.
+  private val JoinTargetNotFound =
+    """{"data":{"addCustomerToTenants":{"error":{"message":"Tenant not found","code":"not_found","type":"VALIDATION"}}}}"""
+  private val TenantOk           = """{"data":{"upsertTenant":{"tenant":{"id":"t_1"}}}}"""
   private val FieldOk = """{"data":{"upsertTenantField":{"tenantField":{"id":"tf_1"}}}}"""
 
   /**
@@ -61,6 +66,7 @@ object SupportCustomerReconcileSpec extends ZIOSpecDefault {
   private def routingServer(
       reconcileResp: String = CustomerOk,
       tenantsResp: String = TenantsOk,
+      tenantResp: String = TenantOk,
       collide: Boolean = true,
   ): ZIO[Scope, Throwable, CaptureServer] =
     for {
@@ -79,7 +85,7 @@ object SupportCustomerReconcileSpec extends ZIOSpecDefault {
               val resp             =
                 if body.contains("addCustomerToTenants(input:") then tenantsResp
                 else if body.contains("upsertTenantField(input:") then FieldOk
-                else if body.contains("upsertTenant(input:") then TenantOk
+                else if body.contains("upsertTenant(input:") then tenantResp
                 else if body.contains("\"emailAddress\"") then reconcileResp
                 else if collide then CustomerEmailCollision
                 else CustomerOk
@@ -153,7 +159,13 @@ object SupportCustomerReconcileSpec extends ZIOSpecDefault {
       .flatMap(v => scala.util.Try(v.toDouble).toOption)
       .sum
 
-  private def driveUpsert(base: String): UIO[PlainOutcome] =
+  /**
+   * `householdContext = false` models the DEGRADED read: `SupportService.identity` `catchAll`s BOTH
+   * `householdRepo.findById` and `billingRepo.findByHousehold` to `None`, yielding an empty
+   * `fullName` and no `attributes` — the exact input on which `upsertTenantEntitlement`
+   * short-circuits and writes no tenant.
+   */
+  private def driveUpsert(base: String, householdContext: Boolean = true): UIO[PlainOutcome] =
     ZIO
       .serviceWithZIO[PlainClient](
         _.upsertCustomer(
@@ -161,8 +173,10 @@ object SupportCustomerReconcileSpec extends ZIOSpecDefault {
             externalId = "hh-7",
             tenantIdentifier = "7",
             email = "a@example.com",
-            fullName = "Family Seven",
-            attributes = Map("plan" -> "beta", "householdName" -> "Family Seven"),
+            fullName = if householdContext then "Family Seven" else "",
+            attributes =
+              if householdContext then Map("plan" -> "beta", "householdName" -> "Family Seven")
+              else Map.empty,
           ),
         ),
       )
@@ -313,17 +327,50 @@ object SupportCustomerReconcileSpec extends ZIOSpecDefault {
         )
       }
     },
-    test("a JOIN whose TENANT target is missing is transient `error`, NOT permanent `schema`") {
-      // Second review run: `classifyFieldFailure` maps every not-found to the SCHEMA bucket, which is
-      // right for an unregistered tenant FIELD (never self-heals) and wrong for the membership join,
-      // where a missing tenant just means `upsertTenantEntitlement` was skipped for want of household
-      // context — a degraded repo read that the next identity call fixes. Landing it in `schema`
-      // would fire a "SCHEMA DRIFT … will never self-heal" ERROR and a provisioning-gap alert for a
-      // passing DB blip. Keyed on Plain's `not_found` code, not the message prose.
+    test(
+      "a JOIN target missing because the tenant was SKIPPED is transient `error`, not `schema`",
+    ) {
+      // The reachable degraded-read path, end to end (review run 3): with NO household context
+      // `upsertTenantEntitlement` short-circuits, so no tenant is ever written and the join has no
+      // target. `classifyFieldFailure` maps every not-found to SCHEMA — right for an unregistered
+      // tenant FIELD (never self-heals), wrong here, where it would fire a "SCHEMA DRIFT … will never
+      // self-heal" ERROR and a provisioning-gap alert for a passing DB blip that the next identity
+      // call repairs. Asserts the WHOLE chain, not just the classification: no `upsertTenant` request
+      // was made at all.
       ZIO.scoped {
         for {
-          cap <- routingServer(tenantsResp =
-            """{"data":{"addCustomerToTenants":{"error":{"message":"Tenant not found","code":"not_found","type":"VALIDATION"}}}}""",
+          cap <- routingServer(tenantsResp = JoinTargetNotFound)
+          base = s"http://127.0.0.1:${cap.server.getAddress.getPort}/"
+          _       <- tickPublisher
+          before  <- scrape.catchAll(resp => resp.body.asString.orDie)
+          outcome <- driveUpsert(base, householdContext = false)
+          bodies  <- cap.bodies.get
+          _       <- tickPublisher
+          after   <- scrape.catchAll(resp => resp.body.asString.orDie)
+        } yield assertTrue(
+          // the short-circuit really happened — this is what makes the miss transient
+          allVarsForOp(bodies, "upsertTenant").isEmpty,
+          // still an error — the mapping did NOT land, so it must never read as success
+          outcome == PlainOutcome.Error,
+          counterValue(after, "error", "error") - counterValue(before, "error", "error") == 1.0,
+          // and NOT in either permanent bucket
+          counterValue(after, "error", "schema") == counterValue(before, "error", "schema"),
+          counterValue(after, "error", "email_collision") ==
+            counterValue(before, "error", "email_collision"),
+        )
+      }
+    },
+    test("a JOIN target missing after the tenant write FAILED is permanent, not transient") {
+      // The other half of the same finding: `not_found` says the target is missing, never WHY, so a
+      // permanently-failed tenant write must NOT ride the transient bucket just because the join
+      // reports the same code. The tenant failure itself is separately logError'd + metered on
+      // support_tenant_upsert_total{reason=tenant} (#2410); the customer side needs a PERMANENT bucket.
+      ZIO.scoped {
+        for {
+          cap <- routingServer(
+            tenantsResp = JoinTargetNotFound,
+            tenantResp =
+              """{"data":{"upsertTenant":{"tenant":null,"error":{"message":"You do not have permission to perform this action.","code":"forbidden","type":"FORBIDDEN"}}}}""",
           )
           base = s"http://127.0.0.1:${cap.server.getAddress.getPort}/"
           _       <- tickPublisher
@@ -332,13 +379,34 @@ object SupportCustomerReconcileSpec extends ZIOSpecDefault {
           _       <- tickPublisher
           after   <- scrape.catchAll(resp => resp.body.asString.orDie)
         } yield assertTrue(
-          // still an error — the mapping did NOT land, so it must never read as success
           outcome == PlainOutcome.Error,
-          counterValue(after, "error", "error") - counterValue(before, "error", "error") == 1.0,
-          // and NOT in either permanent bucket
-          counterValue(after, "error", "schema") == counterValue(before, "error", "schema"),
-          counterValue(after, "error", "email_collision") ==
-            counterValue(before, "error", "email_collision"),
+          counterValue(after, "error", "email_collision") -
+            counterValue(before, "error", "email_collision") == 1.0,
+          // NOT laundered into the transient bucket
+          counterValue(after, "error", "error") == counterValue(before, "error", "error"),
+        )
+      }
+    },
+    test("a JOIN not_found when the tenant WAS written keeps the ordinary attribution") {
+      // The tenant exists, so `not_found` is about something else (the customer identifier, or a
+      // contract change) — genuinely anomalous, and the transient bucket would be wrong. Guards the
+      // threading: if `TenantWrite` were ever collapsed back to "assume transient", this fails.
+      ZIO.scoped {
+        for {
+          cap <- routingServer(tenantsResp = JoinTargetNotFound)
+          base = s"http://127.0.0.1:${cap.server.getAddress.getPort}/"
+          _       <- tickPublisher
+          before  <- scrape.catchAll(resp => resp.body.asString.orDie)
+          outcome <- driveUpsert(base)
+          bodies  <- cap.bodies.get
+          _       <- tickPublisher
+          after   <- scrape.catchAll(resp => resp.body.asString.orDie)
+        } yield assertTrue(
+          // the tenant WAS written on this drive
+          allVarsForOp(bodies, "upsertTenant").size == 1,
+          outcome == PlainOutcome.Error,
+          counterValue(after, "error", "schema") - counterValue(before, "error", "schema") == 1.0,
+          counterValue(after, "error", "error") == counterValue(before, "error", "error"),
         )
       }
     },

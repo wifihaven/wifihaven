@@ -187,13 +187,39 @@ object PlainClient {
   private[api] val EmailCollisionCode: String = "customer_already_exists_with_email"
 
   /**
-   * Plain's fixed code for "an entity referenced in the request is unavailable" — documented on the
-   * same error-codes page with the example of creating an issue for a non-existent customer. On the
-   * #2435 membership join it means the TENANT we are joining to has not been written yet, which is
-   * a TRANSIENT state (see `Live.joinFailure`), not the permanent schema drift a not-found in the
-   * prose-classified #2410 path implies.
+   * Plain's fixed code for a referenced entity that isn't there. Quoted verbatim from
+   * plain.com/docs/graphql/error-codes: "An entity referenced in the request is not found. For
+   * example trying to create an issue for a customer that doesn't exist."
+   *
+   * Note what the source does and does not say: the entity is MISSING, with no statement about
+   * whether it will appear later. So this code alone cannot tell a transient miss from a permanent
+   * one — [[Live.joinFailure]] takes that from the threaded [[TenantWrite]] instead. (An earlier
+   * revision paraphrased this as "is unavailable", which read as evidence for transience the docs
+   * never offer; review run 3 caught it. The wording matters because "not found" is precisely the
+   * token [[classifyFieldFailure]] routes to `schema`.)
    */
-  private[api] val NotFoundCode: String = "not_found"
+  private val NotFoundCode: String = "not_found"
+
+  /**
+   * Did the Plain TENANT the #2435 membership join targets get written on this call? Threaded from
+   * [[Live.upsertTenantEntitlement]] into [[Live.joinFailure]] so a missing join target can be
+   * attributed from what the CALL SITE knows, instead of guessed at from Plain's `not_found` code
+   * (which reports that a referenced entity is missing, never why).
+   *
+   * `Written` tracks the `upsertTenant` step ONLY. A failed tenant-FIELD write leaves the tenant
+   * itself in place, and the join targets the tenant, not its fields.
+   */
+  private enum TenantWrite {
+
+    /** No household context to carry, so no tenant write was attempted — transient. */
+    case Skipped
+
+    /** `upsertTenant` landed; the join has a target. */
+    case Written
+
+    /** `upsertTenant` itself failed — no target, and it is already logError'd + metered (#2410). */
+    case Failed
+  }
 
   /**
    * `classifyFieldFailure`'s prose buckets projected onto the #2435 customer vocabulary, so the
@@ -202,7 +228,7 @@ object PlainClient {
    * the FALLBACK differs per call site: an unrecognized failure on the primary upsert is a
    * transient `error`, on a reconcile leg it is an unreconcilable `email_collision`.
    */
-  private[api] def customerReason(detail: String, fallback: String): String =
+  private def customerReason(detail: String, fallback: String): String =
     classifyFieldFailure(detail) match {
       case Reason.Permission => CustomerReason.Permission
       case Reason.Schema     => CustomerReason.Schema
@@ -263,12 +289,13 @@ object PlainClient {
   // echoes it — contains the household admin's EMAIL ADDRESS. Same reasoning as the #2430
   // thread-timeline path.
   //
-  // What survives redaction is the PROSE half — the Plain error message. The one message we have
-  // observed on this path does not carry the address ("A customer already exists with the provided
-  // email address", captured live on staging in #2435 and pinned in
-  // [[SupportCustomerReconcileSpec]]), and it is what an operator acts on, so it stays. That is an
-  // observation about one message, NOT a guarantee about every Plain message — accepted risk, called
-  // out here rather than asserted as a property of the API we cannot verify.
+  // What survives redaction is the PROSE half — the Plain error message — because that is what an
+  // operator acts on. Note this method is shared by the primary upsert, both reconcile legs and the
+  // membership join, so several different messages flow through it. The one we have actually observed
+  // carrying no address is the COLLISION message ("A customer already exists with the provided email
+  // address", captured live on staging in #2435 and pinned in [[SupportCustomerReconcileSpec]]). That
+  // is an observation about one message on one path, NOT a guarantee about every Plain message —
+  // accepted risk, called out here rather than asserted as a property of the API we cannot verify.
   private def logCustomerFailure(op: String, reason: String, rawDetail: String): UIO[Unit] = {
     val detail = redactBody(rawDetail)
     reason match {
@@ -739,35 +766,56 @@ object PlainClient {
       logCustomerFailure(op, reason, f.detail).as((PlainOutcome.Error, reason))
     }
 
-    // The membership join's target is the Plain TENANT that `upsertTenantEntitlement` writes, and
-    // that step is SKIPPED when there is no household context to carry (see `upsertCustomer`) — a
-    // state `SupportService.identity` reaches by degrading a failed repo read to `None`. Plain then
-    // answers the join with its `not_found` code, documented as "an entity referenced in the request
-    // is unavailable" (plain.com/docs/graphql/error-codes).
+    // The membership join's target is the Plain TENANT that `upsertTenantEntitlement` writes. When
+    // that target is absent Plain answers with its `not_found` code — "An entity referenced in the
+    // request is not found. For example trying to create an issue for a customer that doesn't exist."
+    // (plain.com/docs/graphql/error-codes, quoted verbatim).
     //
-    // That is TRANSIENT: the next identity call with a healthy read writes the tenant and the
-    // reconcile lands. It must therefore NOT reach the `schema` bucket — `classifyFieldFailure` maps
-    // every not-found to `Reason.Schema`, which is right for a tenant-FIELD write (an unregistered
-    // field never self-heals) and wrong here, where it would raise a "SCHEMA DRIFT … will never
-    // self-heal" ERROR and a PROVISIONING-GAP alert for a passing DB blip. Second review run caught
-    // this inversion: the #2410 bar cuts both ways, and reporting a transient miss as permanent
-    // burns the operator's trust in the alert just as badly as the reverse.
+    // Whether that is transient or permanent is NOT inferable from the code, and we must not try:
+    // `not_found` says the target is missing, never WHY. The caller already knows why — it ran the
+    // entitlement step — so the answer is THREADED IN as [[TenantWrite]] rather than re-derived here
+    // (review finding: re-deriving a decision the call site already holds is the dimension-1
+    // duplication this repo treats as a defect, and the first cut of this method guessed "transient"
+    // for every not-found, which mislabels a permanently-failed tenant write):
     //
-    // Keyed on the error CODE, not the message prose — the same contract-over-wording choice as the
-    // collision detection itself.
-    private def joinFailure(f: PlainFailure): UIO[(PlainOutcome, String)] = {
+    //   - `Skipped` — no household context to write, so no tenant exists yet. TRANSIENT: the next
+    //     identity call with a healthy read writes it and the reconcile lands.
+    //   - `Failed` — `upsertTenant` itself failed, so the tenant does not exist and will not appear
+    //     on its own. PERMANENT for this call; already `logError`'d and metered under
+    //     `support_tenant_upsert_total{reason=tenant}` (#2410), so the customer side just needs a
+    //     permanent bucket rather than its own alert.
+    //   - `Written` — the tenant DOES exist, so a `not_found` here is about something else (the
+    //     customer identifier, or a contract change). Genuinely anomalous: keep the ordinary
+    //     attribution, which routes not-found prose to `schema`.
+    //
+    // What must NOT happen is the transient case reaching `schema`: `classifyFieldFailure` maps every
+    // not-found there, which is right for a tenant-FIELD write (an unregistered field never
+    // self-heals) and wrong for a passing DB blip, where it raises a "SCHEMA DRIFT … will never
+    // self-heal" ERROR and a provisioning-gap alert. The #2410 bar cuts both ways: reporting a
+    // transient miss as permanent burns the operator's trust in the alert just as badly as the
+    // reverse.
+    private def joinFailure(f: PlainFailure, tenant: TenantWrite): UIO[(PlainOutcome, String)] = {
       val targetMissing =
         f.body.flatMap(payloadErrorCode(_, "addCustomerToTenants")).contains(NotFoundCode)
+      val ordinary      = customerReason(f.detail, CustomerReason.EmailCollision)
       val reason        =
-        if targetMissing then CustomerReason.Error
-        else customerReason(f.detail, CustomerReason.EmailCollision)
+        if !targetMissing then ordinary
+        else
+          tenant match {
+            case TenantWrite.Skipped => CustomerReason.Error
+            case TenantWrite.Failed  => CustomerReason.EmailCollision
+            case TenantWrite.Written => ordinary
+          }
       logCustomerFailure("addCustomerToTenants", reason, f.detail).as((PlainOutcome.Error, reason))
     }
 
     // Run the reconcile: patch the externalId, then assert household membership. BOTH halves must
     // land — a patched customer with no tenant membership is still a broken mapping, so a failed
     // join is an error, not a half-success.
-    private def reconcileCustomer(req: PlainCustomerUpsert): UIO[(PlainOutcome, String)] =
+    private def reconcileCustomer(
+        req: PlainCustomerUpsert,
+        tenant: TenantWrite,
+    ): UIO[(PlainOutcome, String)] =
       sendForBody(
         UpsertCustomerMutation,
         reconcileCustomerVars(req),
@@ -787,7 +835,7 @@ object PlainClient {
                     s"${req.externalId} (Plain had auto-created it from an inbound support email)",
                 )
                 .as((PlainOutcome.Ok, CustomerReason.Reconciled))
-            case Left(f)  => joinFailure(f)
+            case Left(f)  => joinFailure(f, tenant)
           }
       }
 
@@ -803,36 +851,41 @@ object PlainClient {
       // attributes), which `SupportService.identity` can produce — it `catchAll`s the household and
       // billing lookups to `None`, so a DB blip degrades the payload to "no household context". In
       // that state no tenant is written and a reconcile's membership join has no target, so it FAILS
-      // — loudly, attributed, and metered, which is the correct outcome for a degraded read: we do
-      // not want to invent a Plain tenant from an empty household name (Plain's `UpsertTenantInput.
-      // name` is required and emptiness-checked, so it would be rejected anyway). The mapping is
-      // retried on the household's next identity call, when the repo read succeeds.
+      // — loudly and metered, which is the correct outcome for a degraded read: we do not want to
+      // invent a Plain tenant from an empty household name (Plain's `UpsertTenantInput.name` is
+      // required and emptiness-checked, so it would be rejected anyway). The mapping is retried on
+      // the household's next identity call, when the repo read succeeds — which is exactly why that
+      // failure is attributed TRANSIENT, and why the step's [[TenantWrite]] is threaded into the
+      // reconcile instead of `joinFailure` guessing at it.
       //
       // The customer upsert is the primary write and its outcome is what we return/meter.
-      upsertTenantEntitlement(req) *>
-        sendForBody(
-          UpsertCustomerMutation,
-          upsertCustomerVars(req),
-          Expect("upsertCustomer", Some("customer")),
-        ).flatMap {
-          case Right(_) => ZIO.succeed((PlainOutcome.Ok, CustomerReason.Ok))
-          case Left(f)  =>
-            // Deliberately PAYLOAD-only: Plain reports this condition as HTTP 200 + a
-            // `MutationError` on `data.upsertCustomer.error` (verified live, #2435), never as a
-            // non-2xx or a top-level `errors[]`. A response in either of those shapes is a different
-            // failure and falls through to the attributed non-collision branch below rather than
-            // triggering a reconcile against an unverified error shape.
-            if f.body.flatMap(payloadErrorCode(_, "upsertCustomer")).contains(EmailCollisionCode)
-            then reconcileCustomer(req)
-            else {
-              // Not the collision: attribute permission / schema (provisioning gaps, LOUD) apart
-              // from a transient miss (a warning), same split as the #2410 entitlement path.
-              val reason = customerReason(f.detail, CustomerReason.Error)
-              logCustomerFailure("upsertCustomer", reason, f.detail).as(
-                (PlainOutcome.Error, reason),
-              )
-            }
-        }.flatMap { case (outcome, reason) =>
+      upsertTenantEntitlement(req)
+        .flatMap { tenant =>
+          sendForBody(
+            UpsertCustomerMutation,
+            upsertCustomerVars(req),
+            Expect("upsertCustomer", Some("customer")),
+          ).flatMap {
+            case Right(_) => ZIO.succeed((PlainOutcome.Ok, CustomerReason.Ok))
+            case Left(f)  =>
+              // Deliberately PAYLOAD-only: Plain reports this condition as HTTP 200 + a
+              // `MutationError` on `data.upsertCustomer.error` (verified live, #2435), never as a
+              // non-2xx or a top-level `errors[]`. A response in either of those shapes is a different
+              // failure and falls through to the attributed non-collision branch below rather than
+              // triggering a reconcile against an unverified error shape.
+              if f.body.flatMap(payloadErrorCode(_, "upsertCustomer")).contains(EmailCollisionCode)
+              then reconcileCustomer(req, tenant)
+              else {
+                // Not the collision: attribute permission / schema (provisioning gaps, LOUD) apart
+                // from a transient miss (a warning), same split as the #2410 entitlement path.
+                val reason = customerReason(f.detail, CustomerReason.Error)
+                logCustomerFailure("upsertCustomer", reason, f.detail).as(
+                  (PlainOutcome.Error, reason),
+                )
+              }
+          }
+        }
+        .flatMap { case (outcome, reason) =>
           AppMetrics.supportCustomerUpsert(PlainOutcome.label(outcome), reason).as(outcome)
         }
 
@@ -911,9 +964,15 @@ object PlainClient {
       List(plan, founding).flatten
     }
 
-    private def upsertTenantEntitlement(req: PlainCustomerUpsert): UIO[Unit] =
-      // Nothing household-level to carry ⇒ no tenant write at all (and nothing to meter).
-      if req.fullName.isEmpty && req.attributes.isEmpty then ZIO.unit
+    // Returns whether the TENANT the #2435 join targets now exists — see [[TenantWrite]]. The
+    // (outcome, reason) pair it computes for `support_tenant_upsert_total` is unchanged; the
+    // TenantWrite rides alongside so `joinFailure` need not re-derive it from Plain's response.
+    private def upsertTenantEntitlement(req: PlainCustomerUpsert): UIO[TenantWrite] =
+      // Nothing household-level to carry ⇒ no tenant write at all (and nothing to meter). NOTE the
+      // condition: BOTH `fullName` and `attributes` must be empty. In `SupportService.identity` the
+      // name comes from `householdRepo.findById` and the attributes from `billingRepo.findByHousehold`,
+      // each `catchAll`'d to `None`, so reaching here takes BOTH lookups degrading — not just one.
+      if req.fullName.isEmpty && req.attributes.isEmpty then ZIO.succeed(TenantWrite.Skipped)
       else
         // Aggregate outcome + attributed reason (#2410): `ok`/`ok` only when the tenant upsert AND
         // every field write succeed; `error`/<reason> if any step fails — `tenant` for the tenant
@@ -930,7 +989,7 @@ object PlainClient {
           case Left(f)     =>
             // The tenant step itself failed — the fields are never reached. Attributed `tenant`.
             logEntitlementFailure("upsertTenant", Reason.Tenant, f.detail)
-              .as((PlainOutcome.Error, Reason.Tenant))
+              .as(((PlainOutcome.Error, Reason.Tenant), TenantWrite.Failed))
           case Right(body) =>
             tenantIdFrom(body) match {
               case None           =>
@@ -938,7 +997,7 @@ object PlainClient {
                   "upsertTenant",
                   Reason.Tenant,
                   "no tenant id in response; skipping fields",
-                ).as((PlainOutcome.Error, Reason.Tenant))
+                ).as(((PlainOutcome.Error, Reason.Tenant), TenantWrite.Failed))
               case Some(tenantId) =>
                 ZIO
                   .foreach(tenantFieldWrites(req, tenantId)) { case (vars, op) =>
@@ -954,14 +1013,15 @@ object PlainClient {
                     }
                   }
                   // First failure attributes the aggregate; a permission/schema gap fails every
-                  // field identically, so the first is representative.
+                  // field identically, so the first is representative. Either way the TENANT is
+                  // `Written` — we hold its id — so the join has a target even if a field missed.
                   .map(_.flatten.headOption match {
-                    case None         => (PlainOutcome.Ok, Reason.Ok)
-                    case Some(reason) => (PlainOutcome.Error, reason)
+                    case None         => ((PlainOutcome.Ok, Reason.Ok), TenantWrite.Written)
+                    case Some(reason) => ((PlainOutcome.Error, reason), TenantWrite.Written)
                   })
             }
-        }.flatMap { case (o, reason) =>
-          AppMetrics.supportTenantUpsert(PlainOutcome.label(o), reason)
+        }.flatMap { case ((o, reason), tenant) =>
+          AppMetrics.supportTenantUpsert(PlainOutcome.label(o), reason).as(tenant)
         }
 
     // Navigate `data.upsertTenant.tenant.id` out of the response body. Best-effort: any parse miss
