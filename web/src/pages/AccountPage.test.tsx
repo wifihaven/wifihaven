@@ -3,12 +3,16 @@ import { render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import userEvent from '@testing-library/user-event'
 
+class FakeCurrentPasswordIncorrectError extends Error {}
+
 vi.mock('@/api/client', () => ({
   api: {
     auth: {
       changePassword: vi.fn(),
     },
   },
+  // #2492: the page branches on the typed error, not on the message string.
+  isCurrentPasswordIncorrect: (e: unknown) => e instanceof FakeCurrentPasswordIncorrectError,
 }))
 
 vi.mock('@/hooks/useAuth', () => ({
@@ -136,8 +140,8 @@ describe('AccountPage — password change', () => {
     expect(api.auth.changePassword).not.toHaveBeenCalled()
   })
 
-  it('maps 401 error to "Current password is incorrect"', async () => {
-    (api.auth.changePassword as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('HTTP 401 Unauthorised'))
+  it('maps the typed wrong-current-password error to "Current password is incorrect"', async () => {
+    (api.auth.changePassword as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(new FakeCurrentPasswordIncorrectError('Current password incorrect'))
     const user = userEvent.setup()
     renderPage()
     await fillFields(user, 'oldpass12', 'newpass34', 'newpass34')

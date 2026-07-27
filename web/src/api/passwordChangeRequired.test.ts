@@ -7,7 +7,7 @@
 // is already on, which re-mounts the layout, which 403s again: an infinite full-page
 // reload loop. That is the observed "page flashes and the password can never be changed".
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { api, isForbiddenError } from './client'
+import { api, isForbiddenError, isCurrentPasswordIncorrect } from './client'
 import { readMustChangePassword, setMustChangePassword } from './mustChangePassword'
 
 function forbiddenPasswordChange(): Response {
@@ -86,40 +86,57 @@ describe('password_change_required 403 (#2492)', () => {
     expect(readMustChangePassword()).toBe(true)
   })
 
-  // A wrong CURRENT password answers 401 too (Routes.scala maps InvalidCredentials →
-  // Unauthorized). Signing the user out there stranded a first-login user at the login page
-  // after a typo, holding only the old password, and hid AccountPage's error message.
-  it('a 401 from change-password keeps the session so the caller can show the error', async () => {
-    stubLocation('/account')
-    setMustChangePassword(true)
+})
+
+// #2492: the change-password route answers 401 for BOTH a wrong current password and a dead
+// token, so the two are told apart by the response body — branching on the route alone would
+// report an expired session as a wrong password and leave the user re-typing forever.
+describe('401 handling on the change-password route (#2492)', () => {
+  function stub401(body: string) {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: false,
       status: 401,
       headers: new Headers(),
-      text: () => Promise.resolve('Invalid credentials'),
+      text: () => Promise.resolve(body),
     } as unknown as Response))
+  }
 
-    await expect(api.auth.changePassword('wrong', 'NewPassword123')).rejects.toThrow(/401/)
+  it('a wrong current password keeps the session so the page can show the error', async () => {
+    stubLocation('/account')
+    setMustChangePassword(true)
+    stub401('Current password incorrect')
 
+    const err = await api.auth.changePassword('wrong', 'NewPassword123').catch((e: unknown) => e)
+
+    expect(isCurrentPasswordIncorrect(err)).toBe(true)
     expect(window.location.href).toBe('')
     expect(localStorage.getItem('token')).toBe('tok')
     expect(readMustChangePassword()).toBe(true)
   })
 
-  // The session is gone, so the forced-change state goes with it — otherwise the next
-  // AuthProvider mount comes up with the flag set and no session behind it.
-  it('a 401 clears the persisted flag along with the token', async () => {
+  it('an expired token on the SAME route still signs the user out', async () => {
     stubLocation('/account')
     setMustChangePassword(true)
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: false,
-      status: 401,
-      headers: new Headers(),
-      text: () => Promise.resolve('Unauthorised'),
-    } as unknown as Response))
+    stub401('Token expired')
+
+    const err = await api.auth.changePassword('right', 'NewPassword123').catch((e: unknown) => e)
+
+    expect(isCurrentPasswordIncorrect(err)).toBe(false)
+    expect(window.location.href).toBe('/login')
+    expect(localStorage.getItem('token')).toBeNull()
+    expect(readMustChangePassword()).toBe(false)
+  })
+
+  // The session is gone, so the forced-change state goes with it — otherwise the next
+  // AuthProvider mount comes up with the flag set and no session behind it.
+  it('a 401 on any other route clears the flag along with the token', async () => {
+    stubLocation('/account')
+    setMustChangePassword(true)
+    stub401('Unauthorised')
 
     await expect(api.auth.me()).rejects.toThrow()
 
+    expect(window.location.href).toBe('/login')
     expect(readMustChangePassword()).toBe(false)
     expect(localStorage.getItem('token')).toBeNull()
   })

@@ -1,6 +1,6 @@
 import React, { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { api } from '@/api/client'
+import { api, isCurrentPasswordIncorrect } from '@/api/client'
 import { useAuth } from '@/hooks/useAuth'
 
 export function AccountPage() {
@@ -41,10 +41,14 @@ export function AccountPage() {
       logout()
       navigate('/login', { state: { passwordChanged: true } })
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to change password'
-      setError(msg.includes('401') || msg.toLowerCase().includes('unauth')
-        ? 'Current password is incorrect'
-        : msg)
+      // #2492: the transport types this case (the server's "Current password incorrect" 401 on
+      // this route only), so the message no longer depends on string-matching '401'/'unauth' —
+      // which also caught session-expiry 401s and told the user their password was wrong.
+      if (isCurrentPasswordIncorrect(err)) {
+        setError('Current password is incorrect')
+      } else {
+        setError(err instanceof Error ? err.message : 'Failed to change password')
+      }
     } finally {
       setLoading(false)
     }

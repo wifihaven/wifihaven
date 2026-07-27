@@ -91,8 +91,35 @@ function isOnChangePasswordPage(): boolean {
   return window.location.pathname.replace(/\/+$/, '') === ACCOUNT_PATH
 }
 
-// The one endpoint whose 401 does NOT mean "your session died" — see the 401 branch in `req`.
 const CHANGE_PASSWORD_ENDPOINT = '/auth/change-password'
+
+// #2492: a 401 normally means the session died. The one exception is a BODY-level credential
+// rejection: `POST /auth/change-password` answers 401 `"Current password incorrect"` (the
+// `AuthError.InvalidCredentials` mapping in `Routes.scala`) when the submitted CURRENT password is
+// wrong — the session is fine. The two are told apart by the response body, the same way the 403
+// branch sniffs `password_change_required`; branching on status+route alone would misreport an
+// expired or revoked token on that route as a wrong password and strand the user re-typing.
+const CURRENT_PASSWORD_INCORRECT = 'Current password incorrect'
+
+export class UnauthorizedError extends Error {
+  readonly status = 401
+  constructor(message: string) {
+    super(message)
+    this.name = 'UnauthorizedError'
+  }
+}
+
+/** The session is intact — the user simply typed the wrong current password. */
+export class CurrentPasswordIncorrectError extends UnauthorizedError {
+  constructor(message: string) {
+    super(message)
+    this.name = 'CurrentPasswordIncorrectError'
+  }
+}
+
+export function isCurrentPasswordIncorrect(e: unknown): boolean {
+  return e instanceof CurrentPasswordIncorrectError
+}
 
 async function req<T>(
   method: string,
@@ -154,19 +181,20 @@ async function req<T>(
   if (res.status === 401) {
     // 401 is an auth-state outcome, not an API-down signal. The API answered.
     apiHealth.reportSuccess()
-    // #2492: change-password answers 401 when the CURRENT password is wrong
-    // (`Routes.scala` maps `AuthError.InvalidCredentials` → `ApiError.Unauthorized`), which says
-    // nothing about the session. Treating it as a dead session signed a first-login user out on a
-    // typo — stranding them back at login with the old password — and made AccountPage's "Current
-    // password is incorrect" message unreachable. Hand the error to the caller instead.
-    if (path === CHANGE_PASSWORD_ENDPOINT) throw new Error('HTTP 401 Unauthorised')
+    const text = await res.text().catch(() => '')
+    // #2492: a wrong CURRENT password on the change-password form is not a dead session. Signing
+    // the user out there stranded a first-login user back at the login page holding only the old
+    // password, and made AccountPage's "Current password is incorrect" unreachable.
+    if (path === CHANGE_PASSWORD_ENDPOINT && text.includes(CURRENT_PASSWORD_INCORRECT)) {
+      throw new CurrentPasswordIncorrectError(text)
+    }
     localStorage.removeItem('token')
     // The session really is gone here, so the forced-change state goes with it — otherwise the
     // next AuthProvider mount comes up with the flag set and no session behind it. Login rewrites
     // it from the server's answer anyway; this just closes the window.
     setMustChangePassword(false)
     window.location.href = '/login'
-    throw new Error('Unauthorised')
+    throw new UnauthorizedError(text || 'Unauthorised')
   }
 
   // #586: server enforces must_change_password — redirect to /account so
