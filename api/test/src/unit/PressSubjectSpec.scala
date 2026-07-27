@@ -76,7 +76,10 @@ object PressSubjectSpec extends ZIOSpecDefault {
       val k           = kickoff(from = hostileFrom, subject = hostileSubj)
       val zone        = k.substring(0, k.indexOf("<customer_message>"))
       assertTrue(
-        k.indexOf("<customer_message>") == k.lastIndexOf("<customer_message>"),
+        // case-insensitively, matching the closing-tag guard below: `neutralizeTags` is itself
+        // case-insensitive, so a case-variant opener must not be able to sneak in above the frame
+        // either.
+        k.split("(?i)<customer_message>", -1).length - 1 == 1,
         !zone.contains(hostileFrom),
         !zone.contains(hostileSubj),
         !zone.contains("attacker.example"),
