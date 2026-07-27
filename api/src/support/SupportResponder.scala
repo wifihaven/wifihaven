@@ -781,7 +781,7 @@ final case class SupportResponder(
       // (the idempotency guard) — the answer to that question is already on its way.
       _     <- ZIO.when(write.result == ConsentResult.Granted) {
         if write.transitioned then runResume(resumeAfterGrant(claims.hh, g, now))
-        else AppMetrics.supportConsent("resume_skipped")
+        else AppMetrics.supportConsent(ResumeOutcome.Skipped)
       }
     } yield write.result
 
@@ -866,14 +866,14 @@ final case class SupportResponder(
       history: List[PlainThreadMessage],
       now: Instant,
   ): UIO[Unit] =
-    withDispatchCaps(threadId)(AppMetrics.supportConsent("resume_rate_limited")) {
+    withDispatchCaps(threadId)(AppMetrics.supportConsent(ResumeOutcome.RateLimited)) {
       householdRepo.findById(hh).catchAll(_ => ZIO.none).flatMap {
         case None            =>
           // The household row we resolved the session from is unreadable. Dispatching anyway would
           // ship an empty household name into the kickoff; fail the resume visibly instead.
           ZIO.logWarning(
             s"support: consent resume skipped — household=${hh.value} unreadable thread=$threadId",
-          ) *> AppMetrics.supportConsent("resume_error")
+          ) *> AppMetrics.supportConsent(ResumeOutcome.Error)
         case Some(household) =>
           ZIO.logInfo(
             s"support: consent granted — resuming thread=$threadId household=${hh.value} " +
@@ -889,13 +889,13 @@ final case class SupportResponder(
               now = now,
             ).flatMap(outcome =>
               AppMetrics.supportConsent(outcome match {
-                case DispatchOutcome.Dispatched  => "resumed"
-                case DispatchOutcome.Disabled    => "resume_disabled"
-                case DispatchOutcome.Error       => "resume_error"
+                case DispatchOutcome.Dispatched  => ResumeOutcome.Resumed
+                case DispatchOutcome.Disabled    => ResumeOutcome.Disabled
+                case DispatchOutcome.Error       => ResumeOutcome.Error
                 // #2416: a permanent 4xx at the agent boundary keeps its own bucket here too — a
                 // dead responder must not hide inside the transient one (the dispatcher already
                 // logged it at ERROR with the fix named).
-                case DispatchOutcome.ConfigError => "resume_config_error"
+                case DispatchOutcome.ConfigError => ResumeOutcome.ConfigError
               }),
             )
       }
@@ -915,9 +915,9 @@ final case class SupportResponder(
     plain
       .writeThread(PlainThreadWrite(threadId, SupportResponder.consentGrantedNudge))
       .flatMap {
-        case PlainOutcome.Ok       => AppMetrics.supportConsent("resume_no_message")
-        case PlainOutcome.Disabled => AppMetrics.supportConsent("resume_disabled")
-        case PlainOutcome.Error    => AppMetrics.supportConsent("resume_error")
+        case PlainOutcome.Ok       => AppMetrics.supportConsent(ResumeOutcome.NoMessage)
+        case PlainOutcome.Disabled => AppMetrics.supportConsent(ResumeOutcome.Disabled)
+        case PlainOutcome.Error    => AppMetrics.supportConsent(ResumeOutcome.Error)
       }
 
   /**
@@ -1122,6 +1122,43 @@ object SupportResponder {
        |
        |Thanks — I can see your account summary for this conversation now. Ask me your question
        |again and I'll take a look.""".stripMargin
+
+  /**
+   * #2460 — the `support_consent_total{outcome}` values the post-grant RESUME emits. Named, in ONE
+   * place, because a dashboard panel selects a SUBSET of them by string, and #2461/#2482 is the
+   * worked example of that drifting silently: a split success label left a volume panel
+   * under-counting and nothing failed, because the panel is JSON and the label is a string.
+   * [[ResumeOutcome.DeadEnd]] is the subset the "Consent grants that dead-ended" panel counts, and
+   * `SupportMetricsContractSpec` pins the panel's regex against it — so adding an outcome here
+   * without widening the panel is a failing test rather than a months-later under-count.
+   */
+  object ResumeOutcome {
+
+    /** The customer's question was re-dispatched under the scope they just granted. */
+    val Resumed = "resumed"
+
+    /** No customer turn was readable on the thread, so the server-authored nudge posted instead. */
+    val NoMessage = "resume_no_message"
+
+    /** A re-confirmed LIVE grant — the idempotency guard; the answer is already on its way. */
+    val Skipped = "resume_skipped"
+
+    val RateLimited = "resume_rate_limited"
+    val Disabled    = "resume_disabled"
+
+    /** A transient dispatch / write failure. */
+    val Error = "resume_error"
+
+    /** #2416 — a PERMANENT 4xx at the agent boundary, kept out of the transient bucket. */
+    val ConfigError = "resume_config_error"
+
+    /**
+     * The outcomes where the customer granted permission and got NOTHING back. [[Skipped]] and
+     * [[NoMessage]] are deliberately absent: the first means the answer is already on its way, the
+     * second means we told them what to do next.
+     */
+    val DeadEnd: List[String] = List(RateLimited, Disabled, Error, ConfigError)
+  }
 
   /**
    * #2460 — what the consent WRITE did: the customer-facing result, plus whether it moved the

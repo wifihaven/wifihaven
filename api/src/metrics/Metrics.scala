@@ -935,8 +935,10 @@ object AppMetrics {
   //   read_withdrawn | read_no_scope   — #2476, the agent's household READ refused because no LIVE
   //   grant existed at read time. `read_withdrawn` is the security-interesting one: the token WAS
   //   minted with data scope, and the customer withdrew before the agent used it;
-  //   resumed | resume_no_message (the thread was unreadable, so the server-authored nudge posted
-  //   instead) | resume_skipped (a re-confirmed LIVE grant — the idempotency guard) |
+  //   resumed | resume_no_message (no CUSTOMER turn was readable on the thread — an empty/failed
+  //   timeline read, or a recent history with none — so we cannot know what to re-ask and the
+  //   server-authored nudge posted instead) | resume_skipped (a re-confirmed LIVE grant — the
+  //   idempotency guard) |
   //   resume_rate_limited | resume_disabled | resume_error (transient) | resume_config_error (a
   //   permanent 4xx at the agent boundary — the #2416 split, kept out of the transient bucket)
   //   — #2460, the SERVER finishing the turn on a grant so the customer does not have to find their
