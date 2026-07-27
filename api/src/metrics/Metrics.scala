@@ -434,11 +434,11 @@ object MetricGuard {
     // #2437 — the operator-escalation funnel: "an escalation is not complete until a human has been
     // notified". `channel` ∈ {support, press} (EscalationChannel.label); `kind` ∈ {escalated}
     // (EscalationKind.label — the agent handing off to a human; #2480 dropped press's per-inbound
-    // `received` FYI, so `escalated` is the only value emitted and the label is kept because
-    // shipped panels SELECT on it — `kind="escalated"` in press.json / support.json; nothing groups
-    // by it); `outcome` is the bounded transport enum from
-    // EmailOutcome.label (sent / failed / skipped_disabled) plus `skipped_no_recipient` (no operator
-    // mailbox — only reachable with the email transport off; the key is REQUIRED when it is on).
+    // `received` FYI, so `escalated` is the only value emitted and the label is kept because shipped
+    // panels SELECT on it — `kind="escalated"` in press.json / support.json; nothing groups by it);
+    // `outcome` is the bounded transport enum from EmailOutcome.label (sent / failed /
+    // skipped_disabled) plus `skipped_no_recipient` (no operator mailbox — only reachable with the
+    // email transport off; the key is REQUIRED when it is on).
     // Never a per-sender / per-thread / per-household label.
     "operator_escalation_total"            -> Set("channel", "kind", "outcome"),
     // #808 — partition runway gauge. `partition_weeks_ahead{table}` is the count of consecutive
