@@ -116,9 +116,10 @@ object MetricGuard {
       "transport",
       // #2437 — the operator-escalation funnel's two dimensions on `operator_escalation_total`.
       // `channel` is a fixed 2-value enum (support | press — `Notifier.EscalationChannel`), `kind`
-      // a fixed 2-value enum (received | escalated — `Notifier.EscalationKind`). Both bounded by
-      // the code, not by sender / thread / household growth, so they satisfy the §4 cardinality
-      // firewall. (`outcome` — the transport result — is already a known key.)
+      // a fixed enum whose only value is `escalated` since #2480 dropped the per-inbound `received`
+      // FYI (`Notifier.EscalationKind`). Both bounded by the code, not by sender / thread /
+      // household growth, so they satisfy the §4 cardinality firewall. (`outcome` — the transport
+      // result — is already a known key.)
       "channel",
       "kind",
     )
@@ -431,12 +432,14 @@ object MetricGuard {
     // skipped_disabled (email unconfigured). Never a per-recipient label.
     "password_reset_email_total"           -> Set("outcome"),
     // #2437 — the operator-escalation funnel: "an escalation is not complete until a human has been
-    // notified". `channel` ∈ {support, press} (EscalationChannel.label); `kind` ∈ {received,
-    // escalated} (EscalationKind.label — `received` is press's new-inquiry FYI, `escalated` is the
-    // agent handing off to a human); `outcome` is the bounded transport enum from EmailOutcome.label
-    // (sent / failed / skipped_disabled) plus `skipped_no_recipient` (no operator mailbox — only
-    // reachable with the email transport off; the key is REQUIRED when it is on). Escalation RATE is
-    // kind="escalated" over the channel total. Never a per-sender / per-thread / per-household label.
+    // notified". `channel` ∈ {support, press} (EscalationChannel.label); `kind` ∈ {escalated}
+    // (EscalationKind.label — the agent handing off to a human; #2480 dropped press's per-inbound
+    // `received` FYI, so `escalated` is the only value emitted and the label is kept as a bounded
+    // dimension the panels already group by); `outcome` is the bounded transport enum from
+    // EmailOutcome.label (sent / failed / skipped_disabled) plus `skipped_no_recipient` (no operator
+    // mailbox — only reachable with the email transport off; the key is REQUIRED when it is on).
+    // Escalation RATE is this counter over the channel's inbound total (press_ai_draft_total /
+    // support_ai_draft_total). Never a per-sender / per-thread / per-household label.
     "operator_escalation_total"            -> Set("channel", "kind", "outcome"),
     // #808 — partition runway gauge. `partition_weeks_ahead{table}` is the count of consecutive
     // weekly partitions present from the current ISO week for each RANGE-partitioned ingest table

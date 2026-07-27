@@ -51,9 +51,10 @@ final case class PressResponder(
     // token-billing dispatch — the per-thread (per-sender) + global rate caps ARE the abuse control.
     dispatchSenderLimiter: RateLimiter,
     dispatchGlobalLimiter: RateLimiter,
-    // #2437: the #578 operator-notification seam. Press has NO inbox — `press@` goes to a Cloudflare
-    // Email Worker and the correspondence log has no consumer — so this is the ONLY way a press
-    // inquiry, or an escalation of one, reaches a human at all.
+    // #2437: the #578 operator-notification seam, used for ESCALATIONS ONLY (#2480). Press has NO
+    // inbox — `press@` goes to a Cloudflare Email Worker — so a handoff would otherwise reach nobody:
+    // the #2296 correspondence log at `/press` is a pull surface, and an escalation is precisely the
+    // case where nothing would tell the operator to go look. Routine traffic is NOT mailed.
     notifier: Notifier,
     // #2437: bounds how often ONE sender's session can page the operator, so an agent stuck in a loop
     // (or a prompt-injected one) cannot turn our own alert mailbox into a firehose.
@@ -139,28 +140,15 @@ final case class PressResponder(
           pressMessage = event.messageText,
         ),
       )
-      // #2437: tell the OPERATOR a press inquiry landed. Press has no inbox and no SPA view of
-      // `press_messages`, so without this a journalist could be answered — or not answered at all
-      // (a dispatch error) — with nobody at WifiHaven ever knowing. Emitted for every accepted
-      // inbound REGARDLESS of the dispatch outcome, precisely because a failed dispatch is when the
-      // operator most needs to know. Fail-open: `escalation` never fails, so this can neither break
-      // the webhook nor make the Worker retry. Volume is bounded by the rate caps above.
-      _       <- notifier.escalation(
-        EscalationNotice(
-          channel = EscalationChannel.Press,
-          kind = EscalationKind.Received,
-          sender = event.from,
-          subject = event.subject,
-          body = event.messageText,
-          agentNote = None,
-          // Our own durable pointer when the audit write landed. When it did NOT (that recording is
-          // fail-open), this falls back to the Worker-supplied message id — which swaps the slot's
-          // trust class from server-authored to sender-influenced. Safe because the notice escapes
-          // every field at render and treats all of them as untrusted regardless.
-          reference =
-            if pressMessageId > 0 then s"press_messages id=$pressMessageId" else event.messageId,
-        ),
-      )
+      // #2480: a routine inbound emails NOBODY. #2446 sent an operator FYI here on the premise that
+      // "press has no inbox and no SPA view of `press_messages`" — false since #2296: `/press`
+      // (web/src/pages/PressPage.tsx over `GET /api/press/messages`) IS the operator's surface for
+      // AI-handled press traffic, and an email per message turns a browsable log into inbox noise.
+      // The other half of that premise — a silent dispatch FAILURE — is not re-solved here either:
+      // #2416 made dispatch failures fail-loud and attributed on `press_dispatch_total{outcome,
+      // transport}`, so a failure pages through metrics/alerting rather than by mailing the
+      // operator about every SUCCESS on the off chance one failed. The operator mailbox now means
+      // exactly one thing: a human must act — see `escalate` below.
     } yield outcome match {
       case wifihaven.api.support.DispatchOutcome.Dispatched  => WebhookOutcome.Dispatched
       case wifihaven.api.support.DispatchOutcome.Disabled    => WebhookOutcome.Disabled
