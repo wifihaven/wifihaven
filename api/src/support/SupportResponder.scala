@@ -741,9 +741,9 @@ final case class SupportResponder(
    * #2461 — the issue-filing success label. Both values are a SUCCESS to the agent (the issue
    * exists either way), but "filed but GitHub's create response was unreadable" is a real
    * degradation the operator must be able to see: the agent has no link to offer. Bounded to
-   * exactly two strings, and the ONLY place `ok_no_link` is derived. `outcome` is an already-allowed
-   * label key for `support_agent_action_total`, so this adds no series and no dashboard change —
-   * the existing support panel slices `by (op, outcome)`.
+   * exactly two strings, and the ONLY place `ok_no_link` is derived. `outcome` is an
+   * already-allowed label key for `support_agent_action_total`, so this adds no series and no
+   * dashboard change — the existing support panel slices `by (op, outcome)`.
    */
   private def issueFiledOutcome(ref: Option[IssueRef]): String =
     if ref.isDefined then AgentActionResult.label(AgentActionResult.Ok) else "ok_no_link"

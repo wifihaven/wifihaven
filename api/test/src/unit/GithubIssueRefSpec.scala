@@ -47,8 +47,8 @@ object GithubIssueRefSpec extends ZIOSpecDefault {
       // The link's value is that it points at the PUBLIC wifihaven/wifihaven repo, so the customer
       // can open it. Enforce that structurally rather than trusting that the request targeted the
       // right repo: a private-repo, look-alike, or foreign-host url must never reach a customer.
-      val foreign = (u: String) =>
-        GithubIssueClient.parseCreated(s"""{"number":2455,"html_url":"$u"}""")
+      val foreign =
+        (u: String) => GithubIssueClient.parseCreated(s"""{"number":2455,"html_url":"$u"}""")
       assertTrue(
         foreign("https://github.com/someone-else/private/issues/2455").isEmpty,
         foreign("https://github.com.evil.test/wifihaven/wifihaven/issues/2455").isEmpty,

@@ -986,12 +986,12 @@ object SupportResponderSpec
     },
     test("#2461: an unreadable create response is still a 200 — success, just with no link") {
       for {
-        _              <- cleanDb
-        hhRepo         <- ZIO.service[HouseholdRepo]
-        hh             <- hhRepo.create("Family M", "fam-m")
+        _           <- cleanDb
+        hhRepo      <- ZIO.service[HouseholdRepo]
+        hh          <- hhRepo.create("Family M", "fam-m")
         // GitHub accepted the filing but we could not read back its identity.
-        (routes, _)    <- makeRoutes(liveCfg, githubOverride = Some(GithubIssueClient.filedWithoutRef))
-        token          <- mintToken(hh, "th_nolink", dataAccess = false)
+        (routes, _) <- makeRoutes(liveCfg, githubOverride = Some(GithubIssueClient.filedWithoutRef))
+        token       <- mintToken(hh, "th_nolink", dataAccess = false)
         (status, body) <- agentPost(
           routes,
           "/api/support/agent/issues",
