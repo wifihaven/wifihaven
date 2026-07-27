@@ -53,7 +53,7 @@ trait PressAgentDispatcher {
 
 /**
  * The inputs to a press dispatch. `pressMessage` is UNTRUSTED public data. `agentToken` is the
- * session's only credential (reply-target-bound, NO household, NO data scope, short-TTL). `from` /
+ * session's only credential (reply-target-bound, NO household, NO data scope, expiring). `from` /
  * `subject` are context for the kickoff only — the actual reply destination is the one baked into
  * the token, never these fields.
  */

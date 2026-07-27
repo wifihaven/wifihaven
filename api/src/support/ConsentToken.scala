@@ -27,8 +27,13 @@ import java.util.Base64
  *   - **consent-scoped** — `dataAccess` is true only when the customer opted in ("give agent access
  *     to my data", #2241); without it the household-read endpoint returns 403 and the agent answers
  *     without data access;
- *   - **short-TTL** — expiry is minted in and checked against an injected clock;
- *   - **audit-logged / metered** — every mint and redeem is logged + metered (SupportResponder).
+ *   - **expiring** — expiry is minted in and checked against an injected clock. NOTE (#2473) this
+ *     is no longer a *short* TTL and is no longer the primary bound — see the revocation note
+ *     below;
+ *   - **audit-logged / metered** — every mint and redeem is logged + metered (SupportResponder),
+ *     and since #2473 a REJECTED callback is loud in its own right
+ *     (`agent_token_rejected_total{channel="support",op,reason}`), so an answer thrown away at the
+ *     token check can never again be silent.
  *
  * Wire shape: an HMAC-signed opaque string `v1.<b64url(payload)>.<hmacHex>` where `payload` is
  * `householdId|threadId|dataAccess|expEpochSeconds`. Signed server-side under a dedicated secret so
@@ -40,10 +45,27 @@ import java.util.Base64
  * payload alone — symmetry tracked in [#2426](https://github.com/wifihaven/wifihaven/issues/2426).)
  * This is a functional capability, not a policy the model could be argued out of.
  *
- * NOTE (revocation): the TTL is deliberately short (minutes), which bounds the exposure window; an
- * explicit revocation list is tracked as a follow-up (TODO(#2259)). The other #2241 properties
- * (read-only, single-household, thread-bound, consent-scoped, short-TTL, out-of-band, audit-logged)
- * hold today.
+ * NOTE (TTL and revocation) — #2473 changed this, so read it rather than assuming the old story.
+ * The TTL USED to be minutes, and "the exposure window is short" was a real part of the answer to
+ * "what if a token leaks". It no longer is: a cloud-agent run can be paused on subscription usage
+ * limits and resumed hours later, so a minutes-long TTL guaranteed the customer's reply was thrown
+ * away on resume (the observed #2473 failure). The default is now 24h ([[wifihaven.api
+ * .AgentTokenTtl]] carries the sizing rationale).
+ *
+ * **TTL is therefore no longer the primary bound.** The #2241 model still holds because it never
+ * rested on the TTL alone — every other property above is UNCHANGED and is what carries it: single
+ * household (scope derives from the verified token, so cross-tenant reads are impossible by
+ * construction), thread-bound reply, read-only with no mutation path, consent-scoped data access,
+ * out-of-band mint, rate-limited and audit-logged.
+ *
+ * What the longer TTL DOES cost, honestly: (1) "just wait for it to expire" is no longer a workable
+ * response to a suspected leak; and (2) `dataAccess` is baked in at MINT (SupportResponder reads
+ * the live #2419 grant once and stamps the flag; [[Claims.dataAccess]] is what the household read
+ * trusts), so the residual window after a customer WITHDRAWS consent grows from ≤30m to ≤TTL. Those
+ * are the two deferred controls, and this change raises the priority of both: TODO(#2259) an
+ * explicit agent-token revocation list, and TODO(#2476) re-reading the consent record at read time.
+ * Neither is implemented as part of #2473 — see [[wifihaven.api.AgentTokenTtl]] for the full
+ * write-up.
  */
 object ConsentToken {
 

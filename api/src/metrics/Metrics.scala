@@ -579,6 +579,13 @@ object MetricGuard {
     // series so the two audiences alert independently. Never per-sender / per-thread.
     "press_ai_draft_total"                          -> Set("outcome", "reason"),
     "press_agent_action_total"                      -> Set("op", "outcome"),
+    // #2473 — the shared cloud-agent callback REJECTION series, for support AND press on one name
+    // (the failure mode and its fix are shared, so a single panel/alert must cover both).
+    // `channel` (support | press) × `op` (the five callback names) × `reason` (token_expired |
+    // invalid | missing) — every dimension a code-bounded enum from AgentTokenRejection, never a
+    // per-thread / per-sender label. This is the ONLY signal that a dispatched agent's answer was
+    // thrown away at the door; before #2473 it hid inside `…_agent_action_total{outcome="denied"}`.
+    "agent_token_rejected_total"                    -> Set("channel", "op", "reason"),
     // #2438 — the press dispatcher-level dispatch outcome, the press twin of
     // `support_dispatch_total` (same shared CloudAgentObservability envelope, separate series so the
     // public-press audience graphs + alerts independently). Same bounded {outcome,transport} space.
@@ -877,6 +884,19 @@ object AppMetrics {
 
   def supportAgentAction(action: String, outcome: String): UIO[Unit] =
     MetricGuard.counter("support_agent_action_total", Map("op" -> action, "outcome" -> outcome))
+
+  // #2473 — a cloud-agent callback REJECTED at the token check, for BOTH responders on ONE series
+  // (emitted from the shared AgentTokenRejection envelope, never a bare Metric.*). Every sample is a
+  // customer/journalist answer that did NOT get delivered. `channel` ∈ support | press;
+  // `op` is the callback name (reply | issue | household_read | escalate | consent_request);
+  // `reason` ∈ token_expired | invalid | missing — all bounded by AgentTokenRejection, never a
+  // per-thread / per-sender / per-household label. `token_expired` is the #2473 signal: it means the
+  // TTL is again shorter than the cloud transport's real round-trip latency.
+  def agentTokenRejected(channel: String, op: String, reason: String): UIO[Unit] =
+    MetricGuard.counter(
+      "agent_token_rejected_total",
+      Map("channel" -> channel, "op" -> op, "reason" -> reason),
+    )
 
   // #2438 — the dispatcher-level dispatch outcome, emitted from the shared CloudAgentObservability
   // envelope (never a bare Metric.*). `outcome` ∈ dispatched | error | disabled; `transport` (when

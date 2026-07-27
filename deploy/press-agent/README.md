@@ -4,7 +4,7 @@ The Claude PRESS/PR responder is a **cloud agent** with a **different audience a
 the support responder (#2200): press arrives from the **public, unauthenticated** at
 `press@wifihaven.net`. A **Cloudflare Email Worker** ([`../press-worker/`](../press-worker/)) catches
 the address, HMAC-signs a small envelope, and POSTs it to the API's `/api/press/inbound`. The API
-verifies the signature, mints a short-TTL session token, and creates one **Anthropic Managed Agents
+verifies the signature, mints a per-session token, and creates one **Anthropic Managed Agents
 session** per message. The agent writes a reply and posts it back through the API's
 token-authenticated `/api/press/agent/reply` endpoint, where it is **emailed straight to the sender**
 (autonomous send — operator decision 2026-07-17; reply directly to the journalist, no approval step).

@@ -77,11 +77,20 @@ grant, not a payload flag.
 | Revocation | `revoked_at` stamped by the customer's "stop allowing" action | Ahead-of-expiry withdrawal, without waiting out the TTL. A live grant is `revoked_at IS NULL AND expires_at > now`. |
 | Granularity of the data | unchanged — the bounded `HouseholdSummary` (name, plan, counts, profile names + pause state) | Consent widens the token's DATA SCOPE only; it never widens what the endpoint returns, nor the household/thread binding. |
 
-Because the token TTL is minutes while the consent TTL is 24 hours, revoking
-consent takes effect on the next dispatch at the latest — an already-minted
-data-scoped token stays valid until it expires. That residual window is the same
-one #2259 (the agent-token revocation list) exists to close; it is bounded by
+Revoking consent takes effect on the next dispatch at the latest: `dataAccess` is
+evaluated once, when the token is minted, so an already-minted data-scoped token
+keeps reading until it expires. That residual window is bounded by
 `support.agentTokenTtlMinutes`.
+
+**#2473 changed how big that window is.** The agent-token TTL was 30 minutes; it
+is now 24 hours, because a cloud-agent run can be paused on subscription usage
+limits and resumed hours later, and a token that dies mid-pause silently throws
+away the customer's answer. The residual post-withdrawal window therefore grew
+from ≤30 minutes to ≤24 hours. Nothing else about the read changed — still one
+household, still the bounded summary, still audited — but the latency of a
+withdrawal is real. Two deferred controls close it, and this change raises the
+priority of both: #2259 (an explicit agent-token revocation list) and #2476
+(re-reading the consent record at read time, so a withdrawal is immediate).
 
 ## The security boundary
 
@@ -121,7 +130,9 @@ one #2259 (the agent-token revocation list) exists to close; it is bounded by
 The signature now covers `"<version>.<payload>"` rather than the payload alone,
 for both `ConsentToken` (`v1`) and `ConsentGrant` (`g1`). That is a **breaking
 change to already-issued agent tokens**: for up to
-`support.agentTokenTtlMinutes` (default 30) after the deploy, a cloud-agent
+`support.agentTokenTtlMinutes` (30 at the time; the default is 1440 since #2473,
+so a comparable future rollover would take a day to self-clear, not half an hour)
+after the deploy, a cloud-agent
 session dispatched by the previous image holds a token the new image will not
 verify. Those sessions fail their callback with the uniform 401 and their draft
 never reaches the customer; they meter as

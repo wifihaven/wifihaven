@@ -27,7 +27,7 @@ import java.time.Duration as JDuration
  * `/api/support/agent/` callbacks). This code only ever FIRES it, never creates it.
  *
  * SECURITY: unchanged from [[ManagedAgents]]. The run receives ZERO vendor secrets. Its only
- * credential is the short-TTL, thread- + household-bound token carried in the fired `text`
+ * credential is the expiring, thread- + household-bound token carried in the fired `text`
  * (out-of-band — the customer never sees it); every side effect routes back through OUR
  * authenticated agent endpoints. The per-routine bearer token stays server-side here.
  *

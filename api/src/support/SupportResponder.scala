@@ -13,6 +13,7 @@ import wifihaven.api.db.{
 }
 import wifihaven.api.metrics.AppMetrics
 import wifihaven.api.notify.{EscalationChannel, EscalationKind, EscalationNotice, Notifier}
+import wifihaven.api.observability.AgentTokenRejection
 import wifihaven.shared.{Clock, UserRole}
 import wifihaven.shared.types.HouseholdId
 import zio.*
@@ -28,7 +29,7 @@ import java.time.Instant
  *
  * **Inbound ([[handleWebhook]])**: Plain's signed new-message webhook → HMAC verify → the
  * AUTHENTICATED-ORIGIN gate → mint the per-session [[ConsentToken]] (thread- + household-bound,
- * consent-scoped, short-TTL) → dispatch a cloud-agent session ([[CloudAgentDispatcher]]). The
+ * consent-scoped, expiring) → dispatch a cloud-agent session ([[CloudAgentDispatcher]]). The
  * inbound message text is UNTRUSTED DATA end to end.
  *
  * Before the origin gate runs, the #2403 LOOP GUARD drops any event that is not an inbound,
@@ -725,15 +726,26 @@ final case class SupportResponder(
       clock.instant.flatMap { now =>
         bearer.map(_.trim).filter(_.nonEmpty) match {
           case None        =>
-            AppMetrics.supportAgentAction(action, "denied").as(Left(AgentActionResult.Denied))
+            // #2473: a rejected callback is a customer answer that never arrived — it is LOUD on the
+            // shared `agent_token_rejected_total` series, not just another `denied` sample.
+            denyLoudly(action, AgentTokenRejection.Reason.Missing)
           case Some(token) =>
             ConsentToken.verify(token, now, cfg.agentTokenSecretTrimmed) match {
-              case Left(_)       =>
-                AppMetrics.supportAgentAction(action, "denied").as(Left(AgentActionResult.Denied))
+              case Left(err)     => denyLoudly(action, AgentTokenRejection.reasonFor(err))
               case Right(claims) => f(claims)
             }
         }
       }
+
+  /**
+   * #2473 — the ONE support-side token rejection path: log + meter the loud shared series, then
+   * return the SAME uniform 401-shaped `Denied` (and the same `…_agent_action_total{denied}`
+   * sample) every rejection has always returned. The response is deliberately identical for every
+   * reason, so the caller learns nothing about WHY it failed — only our logs do.
+   */
+  private def denyLoudly[A](action: String, reason: String): UIO[Either[AgentActionResult, A]] =
+    AgentTokenRejection.rejected(AgentTokenRejection.Channel.Support, action, reason) *>
+      AppMetrics.supportAgentAction(action, "denied").as(Left(AgentActionResult.Denied))
 
   private def done(action: String, r: AgentActionResult): UIO[AgentActionResult] =
     AppMetrics.supportAgentAction(action, AgentActionResult.label(r)).as(r)
