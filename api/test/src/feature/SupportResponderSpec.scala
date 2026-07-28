@@ -1011,13 +1011,15 @@ object SupportResponderSpec
         hh              <- hhRepo.create("Family Dup", "fam-dup")
         (routes, stubs) <- makeRoutes(liveCfg)
         token           <- mintToken(hh, "th_dup", dataAccess = false)
-        body             = Map("markdown" -> s"$attribution\n\nHere is how to allow the school site...").toJson
-        (status, _)     <- agentPost(routes, "/api/support/agent/reply", body, Some(token))
-        threads         <- stubs.plain.threads.get
+        body = Map("markdown" -> s"$attribution\n\nHere is how to allow the school site...").toJson
+        (status, _) <- agentPost(routes, "/api/support/agent/reply", body, Some(token))
+        threads     <- stubs.plain.threads.get
       } yield assertTrue(status == Status.Ok, threads.size == 1) &&
         assertTrue(
           threads.head.markdown.startsWith(attribution),
-          threads.head.markdown.split(java.util.regex.Pattern.quote(attribution), -1).length - 1 == 1,
+          threads.head.markdown
+            .split(java.util.regex.Pattern.quote(attribution), -1)
+            .length - 1 == 1,
           threads.head.markdown.contains("allow the school site"),
         )
     },

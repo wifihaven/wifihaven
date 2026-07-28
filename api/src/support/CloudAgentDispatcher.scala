@@ -299,7 +299,12 @@ object CloudAgentDispatcher {
     // 1. per-turn: flatten to safe text, truncate an oversized turn (rather than dropping it, which
     //    would silently lose a turn), drop anything that ends up empty.
     val turns   = history.flatMap { m =>
-      val raw  = m.text.trim
+      // #2456: our own AI turns are STORED with the server-owned attribution header, and feeding
+      // that back is what taught the agent to reproduce it at the top of its own reply. The line
+      // carries no conversational content, so it never belongs in the transcript. Safe w.r.t.
+      // `PlainClient.roleOf`, whose `text.contains(AiReplyAttribution)` fallback role signal reads
+      // the RAW Plain entry upstream of this rendering, not the rendered history.
+      val raw  = SupportResponder.stripLeadingAttribution(m.text).trim
       // Same cap-and-say-so primitive the subject line uses — one definition of "truncated for the
       // prompt", so the two can't drift on the marker or the predicate (#2481 review).
       val safe = neutralizeTags(ManagedAgents.capMarked(raw, MaxMessageChars))
