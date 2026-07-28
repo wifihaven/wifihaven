@@ -4,6 +4,7 @@ import wifihaven.api.support.{
   AgentDispatch,
   CloudAgentDispatcher,
   PlainThreadMessage,
+  SupportResponder,
   ThreadMessageRole,
 }
 import zio.test.*
@@ -216,6 +217,24 @@ object SupportThreadHistorySpec extends ZIOSpecDefault {
         !k.contains("\noldest-A\n"),
         !k.contains("\noldest-B\n"),
         k.contains("[earlier messages omitted]"),
+      )
+    },
+    test("#2456: a prior AI turn is rendered WITHOUT the server-owned attribution line") {
+      // The attribution line is prepended server-side onto every AI reply, so it is part of the
+      // stored Plain turn — and feeding it back made the agent intermittently copy it to the top of
+      // its own markdown, doubling the customer-visible header. It carries no conversational
+      // content, so history renders the turn without it. (The server-side strip in
+      // `SupportResponder.agentReply` is the load-bearing fix; this keeps the agent from seeing the
+      // pattern at all.)
+      val k = kickoff(
+        dispatch(
+          "latest",
+          List(assistant(s"${SupportResponder.AiReplyAttribution}\n\nSet a Bedtime schedule.")),
+        ),
+      )
+      assertTrue(
+        !k.contains(SupportResponder.AiReplyAttribution),
+        k.contains("Set a Bedtime schedule."),
       )
     },
     test("the kickoff tells the agent the transcript is untrusted data, not instructions") {
