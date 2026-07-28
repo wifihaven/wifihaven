@@ -124,6 +124,12 @@ object SupportResponderSpec
       // deliberately answers 200 for both a DELIVERED and an UNDELIVERED reject (Plain must not
       // retry-storm), so the status cannot tell the two apart; the outcome is the only signal.
       responder: SupportResponder,
+      // #2505: how many effects the responder handed to the `runDetached` seam. Production forks
+      // those (`forkDaemon`) so neither the agent session nor the webhook ack waits on Plain; this
+      // suite runs them INLINE so its pins don't race the fork — which on its own would make the
+      // routing invisible (a bare call would look identical). Counting the hand-offs pins the
+      // DETACHMENT itself, deterministically and with no wall-clock wait (the #2042 flake class).
+      detachedRuns: Ref[Int],
   )
 
   private def makeRoutes(
@@ -151,6 +157,7 @@ object SupportResponderSpec
       ghRec       <- GithubIssueClient.recorder
       dispRec     <- CloudAgentDispatcher.recorder
       tracker     <- DispatchTracker.make(DispatchTracker.deadAfterFor(cfg))
+      detachedRef <- Ref.make(0)
       responder = SupportResponder(
         cfg,
         hhRepo,
@@ -175,15 +182,20 @@ object SupportResponderSpec
         Notifier.logOnly,
         RateLimiter.allowAll,
         tracker,
-        // #2505: run detached follow-ups INLINE, the same seam SupportConsentSpec uses. Production
-        // forks the #2505 mapping write so the webhook fiber never waits on Plain; a spec that
-        // asserts the write happened must not race that fork. Deterministic by construction — no
-        // wall-clock wait for a background fiber (the #2042 flake class). The seam changes only
-        // WHERE the effect runs, so nothing here is weakened: the consent resume, the only other
-        // caller, is asserted in SupportConsentSpec, which pins BOTH modes explicitly.
-        runDetached = identity,
+        // #2505: COUNT the hand-off, then run it INLINE — the same seam SupportConsentSpec uses.
+        // Production forks the mapping write so the webhook fiber never waits on Plain; a spec that
+        // asserts the write happened must not race that fork, and inline is deterministic where a
+        // wall-clock wait on a background fiber would be the #2042 flake class. The counter is what
+        // keeps the DETACHMENT itself asserted — inline execution alone would make a bare,
+        // un-detached call look identical. The seam changes only WHERE an effect runs, so nothing
+        // here is weakened: the consent resume, the only other caller, rides a route this suite
+        // never wires (`SupportConsentRoutes`) and is pinned in BOTH modes by SupportConsentSpec.
+        runDetached = eff => detachedRef.update(_ + 1) *> eff,
       )
-    } yield (SupportAgentRoutes.routes(responder), Stubs(plainRec, ghRec, dispRec, responder))
+    } yield (
+      SupportAgentRoutes.routes(responder),
+      Stubs(plainRec, ghRec, dispRec, responder, detachedRef),
+    )
 
   // #2408: the reply path's acceptance requires the Plain client faked at the HTTP BOUNDARY only
   // (not the recorder), so a full-stack test can assert the LIVE client emits `replyToThread` against
@@ -255,6 +267,9 @@ object SupportResponderSpec
         Notifier.logOnly,
         RateLimiter.allowAll,
         tracker,
+        // #2505: same inline seam as `makeRoutes`. This builder drives the LIVE Plain client, so a
+        // forked follow-up here would be a real HTTP call racing the capture server's teardown.
+        runDetached = identity,
       )
     } yield SupportAgentRoutes.routes(responder)
 
@@ -614,9 +629,14 @@ object SupportResponderSpec
         body = emailPayload(Some("parent@family-m.example"), "th_map", "my router is offline")
         status    <- postWebhook(routes, body, Some(sign(body)))
         customers <- stubs.plain.customers.get
+        detached  <- stubs.detachedRuns.get
       } yield assertTrue(
         status == Status.Ok,
         customers.size == 1,
+        // The write is DETACHED — handed to the seam production forks — so a slow Plain can hold
+        // open neither the agent session nor the webhook ack. A bare call would still land the
+        // upsert under this suite's inline seam, so this is the assertion that pins the routing.
+        detached == 1,
         // The mapping Plain keys on: externalId = tenantIdentifier = the household id.
         customers.head.externalId == hh.value.toString,
         customers.head.tenantIdentifier == hh.value.toString,
@@ -639,7 +659,8 @@ object SupportResponderSpec
         body = emailPayload(Some("stranger@nowhere.example"), "th_cold", "hello?")
         status    <- postWebhook(routes, body, Some(sign(body)))
         customers <- stubs.plain.customers.get
-      } yield assertTrue(status == Status.Ok, customers.isEmpty)
+        detached  <- stubs.detachedRuns.get
+      } yield assertTrue(status == Status.Ok, customers.isEmpty, detached == 0)
     },
     test("#2481: an email whose QUESTION is the subject reaches the agent end-to-end") {
       // The reported bug: the operator emailed support with the question in the SUBJECT and only a
