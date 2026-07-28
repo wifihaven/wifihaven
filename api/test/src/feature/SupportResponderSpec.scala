@@ -1023,6 +1023,20 @@ object SupportResponderSpec
           threads.head.markdown.contains("allow the school site"),
         )
     },
+    test("#2456: a reply that is NOTHING BUT the attribution line is rejected, not sent") {
+      // The empty-reply guard runs on the STRIPPED body, so this shape can't slip past it and send
+      // the customer a bare header with no answer while reporting Ok back to the agent.
+      for {
+        _               <- cleanDb
+        hhRepo          <- ZIO.service[HouseholdRepo]
+        hh              <- hhRepo.create("Family Bare", "fam-bare")
+        (routes, stubs) <- makeRoutes(liveCfg)
+        token           <- mintToken(hh, "th_bare", dataAccess = false)
+        body = Map("markdown" -> s"\n${SupportResponder.AiReplyAttribution}\n ").toJson
+        (status, _) <- agentPost(routes, "/api/support/agent/reply", body, Some(token))
+        threads     <- stubs.plain.threads.get
+      } yield assertTrue(status == Status.BadRequest, threads.isEmpty)
+    },
     test(
       "#2408: agentReply posts INTO the token-bound thread via replyToThread (full stack, live Plain at HTTP boundary)",
     ) {

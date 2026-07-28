@@ -237,6 +237,17 @@ object SupportThreadHistorySpec extends ZIOSpecDefault {
         k.contains("Set a Bedtime schedule."),
       )
     },
+    test("#2456: a CUSTOMER turn keeps a quoted attribution line — the strip is AI-turns only") {
+      // An email reply quotes our attribution line back at us (the case `PlainClient.roleOf` is
+      // built around). Stripping there would eat the head of the customer's own text, and a
+      // quote-only turn would empty out and vanish from the transcript at the nonEmpty filter.
+      val quoted = s"${SupportResponder.AiReplyAttribution}\n\nNo, that isn't what happened."
+      val k      = kickoff(dispatch("latest", List(customer(quoted))))
+      assertTrue(
+        k.contains(SupportResponder.AiReplyAttribution),
+        k.contains("No, that isn't what happened."),
+      )
+    },
     test("the kickoff tells the agent the transcript is untrusted data, not instructions") {
       val k = kickoff(dispatch("hi", List(customer("earlier"))))
       assertTrue(

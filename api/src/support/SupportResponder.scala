@@ -1116,8 +1116,14 @@ object SupportResponder {
    *
    * LEADING only: the line is a header, so a mid-body occurrence is the agent QUOTING an earlier
    * turn back to the customer, which is legitimate content and stays.
+   *
+   * EXACT match only, deliberately. The constant carries an emoji, markdown emphasis, an em dash
+   * and typographic quotes, and a near-miss reproduction (no 🤖, `-` for `—`, straight quotes) is
+   * NOT stripped — "exactly once" is a guarantee about VERBATIM copies, which is what the observed
+   * duplication is. A fuzzy match would risk eating customer- or agent-authored text that merely
+   * resembles the line, the worse failure.
    */
-  private[support] def stripLeadingAttribution(markdown: String): String = {
+  def stripLeadingAttribution(markdown: String): String = {
     @annotation.tailrec
     def go(s: String): String = {
       val t = s.stripLeading()
