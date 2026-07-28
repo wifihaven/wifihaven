@@ -20,8 +20,9 @@ const csp = headers.split('\n').find((l) => l.trim().startsWith('Content-Securit
 // some other directive (script-src/connect-src).
 const imgSrc = csp.split(';').find((d) => d.trim().startsWith('img-src')) ?? ''
 // Same scoping rationale for the directives pinned by #2468: a font host allowed only under
-// style-src does not let the browser fetch the woff2 file, and the analytics beacon needs both
-// script-src (to execute) and connect-src (to POST its report back).
+// style-src does not let the browser fetch the woff2 file. connect-src is extracted to pin the
+// analytics beacon host OUT of it — the auto-injected beacon reports same-origin, so it needs
+// script-src only; see the two beacon tests below for the sourcing.
 const fontSrc = csp.split(';').find((d) => d.trim().startsWith('font-src')) ?? ''
 const scriptSrc = csp.split(';').find((d) => d.trim().startsWith('script-src')) ?? ''
 const connectSrc = csp.split(';').find((d) => d.trim().startsWith('connect-src')) ?? ''
