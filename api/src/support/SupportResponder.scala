@@ -45,7 +45,9 @@ import java.time.Instant
  *   - **Registered-admin email**: a NEW inbound email (no resolvable tenant) whose From address
  *     matches a registered household ADMIN (`users.email`, globally unique, V67). We resolve THAT
  *     admin's household and dispatch bound to it, exactly as if UI-originated (the #2241 token
- *     binds to the sender's household).
+ *     binds to the sender's household). Resolving that admin ALSO stamps the household→Plain
+ *     customer mapping (#2505, [[mapCustomerToHousehold]]) — otherwise a customer who only ever
+ *     emails is never mapped, because #2435's reconcile runs on the SPA identity path alone.
  *
  * A NEW thread from an UNREGISTERED address gets a FIXED static reject via the outbound Plain reply
  * — no Claude call, no dispatch, no token, no persisted support thread — so a flood of cold email
@@ -253,18 +255,79 @@ final case class SupportResponder(
       case None        => ZIO.succeed(WebhookOutcome.SkippedUnauthenticated) // no From to gate on
       case Some(email) =>
         resolveAdminHousehold(email).flatMap {
-          case Some((hh, household)) if event.threadId.nonEmpty && event.messageText.nonEmpty =>
-            rateLimitedDispatch(event, hh, household, WebhookOutcome.EmailRegisteredDispatched)
-          case Some(_)                                                                        =>
-            // Registered, but no thread to bind or a bodyless new-thread event — the answerable
-            // message rides the following body event (chat_received/email_received).
-            ZIO.succeed(WebhookOutcome.SkippedUnauthenticated)
-          case None                                                                           =>
+          case Some((hh, household)) =>
+            val outcome =
+              if event.threadId.nonEmpty && event.messageText.nonEmpty then
+                rateLimitedDispatch(event, hh, household, WebhookOutcome.EmailRegisteredDispatched)
+              else
+                // Registered, but no thread to bind or a bodyless new-thread event — the answerable
+                // message rides the following body event (chat_received/email_received).
+                ZIO.succeed(WebhookOutcome.SkippedUnauthenticated)
+            // #2505: the mapping is stamped AFTER the dispatch decision, so a slow Plain write never
+            // sits between the customer's message and the agent session.
+            outcome <* mapCustomerToHousehold(hh, household, email)
+          case None                  =>
             // Unregistered: reject a NEW thread once; skip continuations (no re-reject backscatter).
             if event.isNewThread then staticReject(event)
             else ZIO.succeed(WebhookOutcome.SkippedUnauthenticated)
         }
     }
+
+  /**
+   * #2505 — stamp the household→Plain-customer mapping from the EMAIL path.
+   *
+   * #2435's reconcile fires from [[SupportService.identity]], i.e. only when an admin loads the
+   * SPA. A household whose admin emails support and never opens the dashboard was therefore never
+   * mapped: its Plain customer kept `externalId: null`, so the operator triaging the thread saw no
+   * tenant and no plan/entitlement context (the whole point of #2240), and every later message fell
+   * through to [[resolveAdminHousehold]] — a strictly narrower key (exact, case-sensitive
+   * `users.email` AND `role == Admin`), which treats a non-admin member or an
+   * aliased/differently-cased admin address as unregistered. Nothing retried it. The gate has just
+   * proven this sender IS a household admin and holds both halves the mapping needs, so it writes
+   * the same payload the identity path writes — [[PlainCustomerUpsert.forHousehold]] is the one
+   * builder, so the two producers cannot drift.
+   *
+   * Best-effort and off the critical path, but NOT silent (docs/process/no-dark-by-default.md): the
+   * write is idempotent, `PlainClient.upsertCustomer` never fails, and it meters
+   * `support_customer_upsert_total{outcome,reason}` itself — the SAME series and reason vocabulary
+   * #2435 settled on, so a broken mapping is attributable on the existing panel regardless of which
+   * producer attempted it. Metering here as well would double-count and could only carry the
+   * outcome, never the Plain-side reason.
+   *
+   * A degraded billing read is warned and degraded to "no plan attributes" rather than skipping the
+   * write: the externalId mapping — the load-bearing half — is worth stamping even when the
+   * entitlement context is momentarily unreadable, and the next call repairs the attributes. The
+   * household name is always present here (it came from a resolved row), so the tenant the
+   * membership join targets is always written.
+   */
+  private def mapCustomerToHousehold(
+      hh: HouseholdId,
+      household: Household,
+      email: String,
+  ): UIO[Unit] =
+    billingRepo
+      .findByHousehold(hh)
+      .catchAll(e =>
+        ZIO
+          .logWarning(
+            s"support: could not read billing for household ${hh.value} while mapping its Plain " +
+              s"customer; mapping without plan attributes: ${e.getMessage}",
+          )
+          .as(None),
+      )
+      .flatMap { billing =>
+        plain
+          .upsertCustomer(
+            PlainCustomerUpsert.forHousehold(
+              householdId = hh,
+              email = email,
+              householdName = household.name,
+              plan = billing.map(_.status),
+              founding = billing.map(_.founding),
+            ),
+          )
+          .unit
+      }
 
   /**
    * Resolve a sender From address to the household of the ADMIN who owns it. Match is exact

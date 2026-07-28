@@ -604,7 +604,7 @@ object SupportResponderSpec
           email = Some("parent@family-m.example"),
         )
         (routes, stubs) <- makeRoutes(liveCfg)
-        body       = emailPayload(Some("parent@family-m.example"), "th_map", "my router is offline")
+        body = emailPayload(Some("parent@family-m.example"), "th_map", "my router is offline")
         status    <- postWebhook(routes, body, Some(sign(body)))
         customers <- stubs.plain.customers.get
       } yield assertTrue(
@@ -629,7 +629,7 @@ object SupportResponderSpec
         hhRepo          <- ZIO.service[HouseholdRepo]
         _               <- hhRepo.create("Family U", "family-u")
         (routes, stubs) <- makeRoutes(liveCfg)
-        body       = emailPayload(Some("stranger@nowhere.example"), "th_cold", "hello?")
+        body = emailPayload(Some("stranger@nowhere.example"), "th_cold", "hello?")
         status    <- postWebhook(routes, body, Some(sign(body)))
         customers <- stubs.plain.customers.get
       } yield assertTrue(status == Status.Ok, customers.isEmpty)
