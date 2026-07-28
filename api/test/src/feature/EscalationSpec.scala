@@ -280,7 +280,7 @@ object EscalationSpec
         EscalationKind.label(EscalationKind.Escalated) == "escalated",
       )
     },
-    // ── PRESS ─────────────────────────────────────────────────────────────────────
+    // ── PRESS ────────────────────────────────────────────────────────────────
     test("an accepted inbound press email does NOT email the operator (#2480)") {
       // #2480: routine press traffic is monitored at `/press` — the #2296 correspondence log
       // (`web/src/pages/PressPage.tsx` over `GET /api/press/messages`), not the operator's inbox.

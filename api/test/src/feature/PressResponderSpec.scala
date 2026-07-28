@@ -207,9 +207,10 @@ object PressResponderSpec
       // The EMPTY / whitespace-only header is its own branch (`.map(_.trim).filter(_.nonEmpty)` in
       // PressInbound) and is exercised separately: a header present-but-blank must land on
       // MissingSignature, never fall through as "no header supplied, carry on". `headerSurvives`
-      // below first proves the transport actually DELIVERS a blank header rather than normalising
-      // it away — without that, the empty case would be byte-identical to the unsigned one and
-      // would pass for the wrong reason.
+      // below first checks that `addHeader(name, "")` actually leaves a readable empty header on
+      // the Request rather than dropping it — without that, the empty case would be
+      // indistinguishable from the unsigned one and would pass for the wrong reason. (It asserts
+      // on a Request built the same way `postInbound` builds one; there is no network here.)
       for {
         _                  <- cleanDb
         pressLog           <- ZIO.service[PressMessageRepo]
