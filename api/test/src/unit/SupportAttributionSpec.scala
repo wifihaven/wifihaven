@@ -1,6 +1,5 @@
 package wifihaven.api.unit
 
-import wifihaven.api.support.SupportResponder
 import wifihaven.api.support.SupportResponder.{stripLeadingAttribution, AiReplyAttribution}
 import zio.test.*
 
@@ -40,14 +39,24 @@ object SupportAttributionSpec extends ZIOSpecDefault {
       assertTrue(stripLeadingAttribution(s"\n  \n$AiReplyAttribution\n$body") == body)
     },
     test("a MID-BODY occurrence SURVIVES — the agent quoting an earlier turn is real content") {
-      val quoting = s"Earlier I said:\n\n> $AiReplyAttribution\n\n…and that still applies."
-      assertTrue(stripLeadingAttribution(quoting) == quoting)
+      val quoted = s"Earlier I said:\n\n> $AiReplyAttribution\n\n…and that still applies."
+      // Also the sharper shape: the VERBATIM line starting a line mid-body, no quote marker — the
+      // "leading only" claim has to hold on position alone, not on the `> ` prefix.
+      val bare   = s"Earlier I said:\n\n$AiReplyAttribution\n\n…and that still applies."
+      assertTrue(
+        stripLeadingAttribution(quoted) == quoted,
+        stripLeadingAttribution(bare) == bare,
+      )
     },
     test("markdown with no attribution at all is returned unchanged apart from leading blanks") {
       assertTrue(
         stripLeadingAttribution(body) == body,
         // trailing content is never touched — only the leading run is consumed.
         stripLeadingAttribution(s"$body\n") == s"$body\n",
+        // the unconditional `stripLeading()` also fires with no attribution present — the route now
+        // posts this stripped value, so pin the leading-blank behaviour rather than leaving it
+        // implied by the title.
+        stripLeadingAttribution(s"\n\n  $body") == body,
       )
     },
     test("a body that is NOTHING BUT the attribution line strips to empty") {
@@ -68,9 +77,11 @@ object SupportAttributionSpec extends ZIOSpecDefault {
       )
     },
     test("the strip is idempotent — the route and the responder both apply it") {
+      // The route strips to run the empty-reply guard on the body that will actually be posted, and
+      // `agentReply` strips again as the owner of the line — so re-applying must be a no-op.
       val once  = stripLeadingAttribution(s"$AiReplyAttribution\n\n$body")
       val twice = stripLeadingAttribution(once)
-      assertTrue(once == twice, SupportResponder.AiReplyAttribution.nonEmpty)
+      assertTrue(once == twice, once == body)
     },
   )
 }

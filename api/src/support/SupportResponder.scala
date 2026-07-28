@@ -1123,7 +1123,7 @@ object SupportResponder {
    * duplication is. A fuzzy match would risk eating customer- or agent-authored text that merely
    * resembles the line, the worse failure.
    */
-  def stripLeadingAttribution(markdown: String): String = {
+  private[api] def stripLeadingAttribution(markdown: String): String = {
     @annotation.tailrec
     def go(s: String): String = {
       val t = s.stripLeading()

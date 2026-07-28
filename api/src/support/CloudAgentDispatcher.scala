@@ -304,10 +304,19 @@ object CloudAgentDispatcher {
       // carries no conversational content, so it never belongs in the transcript.
       //
       // AI turns ONLY. A CUSTOMER turn can also begin with the line — an email reply quotes it back
-      // to us, the case `PlainClient.roleOf` is built around (see PlainClient.scala:585) — and
-      // stripping there would silently eat the head of the customer's own text, or empty a
-      // quote-only turn entirely and drop it at the `safe.nonEmpty` filter below. The role is
-      // authoritative here: it came from Plain's actor, upstream of this rendering.
+      // to us, the case `PlainClient.roleOf` is built around — and stripping there would silently
+      // eat the head of the customer's own text, or empty a quote-only turn entirely and drop it at
+      // the `safe.nonEmpty` filter below. `HumanTeammate` text is likewise human-authored, never
+      // server-owned, so it is left alone too.
+      //
+      // The guarantee this gate gives is EXACTLY as strong as the role, no stronger: for Plain's
+      // three known actor types the role is authoritative (it came from the actor, upstream of this
+      // rendering), but `roleOf` also has an UNKNOWN-actor fallback that infers `AiAssistant` from
+      // the presence of this very line. A turn labelled that way is by construction one that
+      // contains it, so if such a turn were really a customer quoting us, this still strips it. We
+      // accept that: it is the same bet `roleOf` already makes deliberately, it needs an actor type
+      // Plain does not document today, and the blast radius is prompt fidelity — never the
+      // customer-visible reply.
       val raw  =
         (if m.role == ThreadMessageRole.AiAssistant then
            SupportResponder.stripLeadingAttribution(m.text)
