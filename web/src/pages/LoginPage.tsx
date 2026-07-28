@@ -1,7 +1,8 @@
 import React, { useState } from 'react'
-import { useNavigate, Link } from 'react-router-dom'
+import { useNavigate, useLocation, Link } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { getHouseholdCookie } from '@/api/householdCookie'
+import { ACCOUNT_PATH } from '@/routes'
 
 /**
  * #2164 (single-identifier login, design §4): compose the string actually posted to the server from
@@ -61,6 +62,9 @@ export function LoginPage() {
   // #2220: read the cookie once at mount for the guidance line (the SUBMIT path re-reads it in
   // composeIdentifier, so a login mid-session still composes against the freshest value).
   const [hint] = useState(() => householdHint(getHouseholdCookie()))
+  // #2492: set by AccountPage after a successful change (the rotation revokes the session's JWT,
+  // so the user has to sign in again — say why instead of dumping them on a bare login form).
+  const passwordChanged = (useLocation().state as { passwordChanged?: boolean } | null)?.passwordChanged ?? false
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -74,7 +78,7 @@ export function LoginPage() {
       // Redirect to the account page so the operator is forced to rotate
       // before reaching any other part of the UI.
       if (mustChangePassword) {
-        navigate('/account')
+        navigate(ACCOUNT_PATH)
       } else {
         navigate('/dashboard')
       }
@@ -148,6 +152,15 @@ export function LoginPage() {
           {/* #2164: no household field. The identifier itself carries the household (email / an
               explicit slug/username / the wh_household cookie for a bare username), resolved
               server-side — design §4. */}
+
+          {/* #2492: AccountPage routes here after a successful change — the rotation revokes the
+              old JWT (#2080), so the session genuinely has to be re-established. Say so; otherwise
+              it reads as being kicked out for no reason. */}
+          {passwordChanged && !error && (
+            <div className="bg-brand-accent/10 border border-brand-accent/20 rounded-lg px-4 py-3 text-brand-accent text-sm">
+              Password updated. Sign in with your new password.
+            </div>
+          )}
 
           {error && (
             <div className="bg-red-500/10 border border-red-500/20 rounded-lg px-4 py-3 text-red-700 text-sm">

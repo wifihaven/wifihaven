@@ -1,22 +1,20 @@
 import React, { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { api } from '@/api/client'
+import { api, isCurrentPasswordIncorrect } from '@/api/client'
 import { useAuth } from '@/hooks/useAuth'
 
 export function AccountPage() {
-  const { username, isAdmin, mustChangePassword, clearMustChangePassword } = useAuth()
+  const { username, isAdmin, mustChangePassword, logout } = useAuth()
   const navigate = useNavigate()
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword]         = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [error,   setError]   = useState('')
-  const [success, setSuccess] = useState(false)
   const [loading, setLoading] = useState(false)
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setError('')
-    setSuccess(false)
 
     if (newPassword !== confirmPassword) {
       setError('New password and confirmation do not match')
@@ -34,21 +32,23 @@ export function AccountPage() {
     setLoading(true)
     try {
       await api.auth.changePassword(currentPassword, newPassword)
-      setSuccess(true)
-      setCurrentPassword('')
-      setNewPassword('')
-      setConfirmPassword('')
-      // #586: clear the client-side flag so nav unlocks, then redirect to
-      // the dashboard if this was a forced-change flow.
-      if (mustChangePassword) {
-        clearMustChangePassword()
-        navigate('/dashboard')
-      }
+      // #2492: the rotation bumps token_version server-side (#2080), so the JWT this session
+      // is holding is revoked the instant the change lands. Navigating into the app (the old
+      // `navigate('/dashboard')`) therefore always ended in a bare 401 bounce to /login with
+      // no explanation — the "it never completes" half of the first-login report. Sign out
+      // cleanly instead and hand the user to /login with a notice. `logout` also clears the
+      // persisted must-change flag, so the forced-change gate is released.
+      logout()
+      navigate('/login', { state: { passwordChanged: true } })
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to change password'
-      setError(msg.includes('401') || msg.toLowerCase().includes('unauth')
-        ? 'Current password is incorrect'
-        : msg)
+      // #2492: the transport types this case (the server's "Current password incorrect" 401 on
+      // this route only), so the message no longer depends on string-matching '401'/'unauth' —
+      // which also caught session-expiry 401s and told the user their password was wrong.
+      if (isCurrentPasswordIncorrect(err)) {
+        setError('Current password is incorrect')
+      } else {
+        setError(err instanceof Error ? err.message : 'Failed to change password')
+      }
     } finally {
       setLoading(false)
     }
@@ -109,11 +109,6 @@ export function AccountPage() {
           {error && (
             <div className="bg-red-500/10 border border-red-500/20 rounded-lg px-4 py-3 text-red-700 text-sm">
               {error}
-            </div>
-          )}
-          {success && (
-            <div className="bg-brand-accent/10 border border-brand-accent/20 rounded-lg px-4 py-3 text-brand-accent text-sm">
-              Password updated.
             </div>
           )}
 

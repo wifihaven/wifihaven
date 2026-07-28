@@ -30,6 +30,7 @@ import { SupportConsentPage } from '@/pages/SupportConsentPage'
 import { BetaRequestsPage } from '@/pages/BetaRequestsPage'
 import { PressPage } from '@/pages/PressPage'
 import { useMe } from '@/api/queries'
+import { ACCOUNT_PATH } from '@/routes'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { isAuthenticated } = useAuth()
@@ -40,7 +41,7 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
 // is set so the operator cannot reach any other route until they rotate.
 function RequirePwChanged({ children }: { children: React.ReactNode }) {
   const { mustChangePassword } = useAuth()
-  return mustChangePassword ? <Navigate to="/account" replace /> : <>{children}</>
+  return mustChangePassword ? <Navigate to={ACCOUNT_PATH} replace /> : <>{children}</>
 }
 
 function RequireAdmin({ children }: { children: React.ReactNode }) {
@@ -81,7 +82,8 @@ function AppRoutes() {
         All other protected routes redirect to /account until the flag clears.
       */}
       <Route path="/" element={<RequireAuth><WsProvider><AlertsNotifier /><WsStaleInvalidator /><Layout /></WsProvider></RequireAuth>}>
-        <Route path="account" element={<AccountPage />} />
+        {/* #2492: same ACCOUNT_PATH the transport's loop guard compares against — one source. */}
+        <Route path={ACCOUNT_PATH} element={<AccountPage />} />
         <Route index element={<RequirePwChanged><Navigate to="/dashboard" replace /></RequirePwChanged>} />
         <Route path="dashboard" element={<RequirePwChanged><DashboardPage /></RequirePwChanged>} />
         <Route path="devices"   element={<RequirePwChanged><DevicesPage /></RequirePwChanged>} />

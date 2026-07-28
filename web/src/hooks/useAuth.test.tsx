@@ -10,6 +10,7 @@ vi.mock('@/api/client', () => ({
 }))
 
 import { api } from '@/api/client'
+import { readMustChangePassword, setMustChangePassword } from '@/api/mustChangePassword'
 import { AuthProvider, useAuth } from './useAuth'
 
 function wrapper({ children }: { children: React.ReactNode }) {
@@ -110,6 +111,49 @@ describe('useAuth — logout', () => {
     expect(localStorage.getItem('role')).toBeNull()
     expect(result.current.isAuthenticated).toBe(false)
     expect(result.current.token).toBeNull()
+  })
+})
+
+// #2492: the forced-change state must survive a page reload. It used to live only in React
+// state, so any reload (including the 403 handler's own hard navigation) forgot it: the banner
+// vanished, RequirePwChanged stopped gating, and AccountPage's post-change
+// `navigate('/dashboard')` never fired because it is conditional on the flag.
+describe('useAuth — mustChangePassword persistence (#2492)', () => {
+  it('restores the flag from storage on a fresh mount (page reload)', () => {
+    localStorage.setItem('token', 't')
+    localStorage.setItem('role', 'child')
+    setMustChangePassword(true)
+    const { result } = renderHook(() => useAuth(), { wrapper })
+    expect(result.current.mustChangePassword).toBe(true)
+  })
+
+  it('login persists the server flag', async () => {
+    (api.auth.login as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      token: 'tok', username: 'emma', role: 'child', mustChangePassword: true,
+    })
+    const { result } = renderHook(() => useAuth(), { wrapper })
+    await act(async () => { await result.current.login('emma', 'pw') })
+    expect(result.current.mustChangePassword).toBe(true)
+    expect(readMustChangePassword()).toBe(true)
+  })
+
+  it('a normal (non-first) login clears any stale persisted flag', async () => {
+    setMustChangePassword(true)
+    ;(api.auth.login as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      token: 'tok', username: 'alice', role: 'admin', mustChangePassword: false,
+    })
+    const { result } = renderHook(() => useAuth(), { wrapper })
+    await act(async () => { await result.current.login('alice', 'pw') })
+    expect(result.current.mustChangePassword).toBe(false)
+    expect(readMustChangePassword()).toBe(false)
+  })
+
+  it('logout clears the persisted flag', () => {
+    localStorage.setItem('token', 't')
+    setMustChangePassword(true)
+    const { result } = renderHook(() => useAuth(), { wrapper })
+    act(() => { result.current.logout() })
+    expect(readMustChangePassword()).toBe(false)
   })
 })
 

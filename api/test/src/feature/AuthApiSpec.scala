@@ -120,6 +120,30 @@ object AuthApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
         assertTrue(respBody.nonEmpty) &&
         assertTrue(!cpResp.mustChangePassword)
     },
+    test("POST /api/auth/change-password 401s with the exact wrong-current-password body (#2492)") {
+      // The SPA distinguishes a wrong CURRENT password from a dead session by this body: the same
+      // route 401s for both (`requireAuthSkipPwCheck` for a missing/expired/revoked token,
+      // `AuthError.InvalidCredentials` for the credential itself), and only the credential case
+      // may keep the session. web/src/api/client.ts matches on this exact text, so it is a
+      // contract — reword it and a first-login user who mistypes gets signed out mid-rotation
+      // (the #2492 symptom) with nothing failing. This assertion is that pin.
+      for {
+        _               <- cleanDb
+        userRepo        <- ZIO.service[UserRepo]
+        auth            <- makeAuth
+        userProfileRepo <- ZIO.service[UserProfileRepo]
+        routes = AuthRoutes.routes(auth, userRepo, userProfileRepo, RateLimiter.allowAll)
+        token <- auth.login("admin", "changeme").map(_.token.value)
+        cpBody = ChangePasswordRequest("not-my-password", "newpassword123").toJson
+        cpReq  = Request
+          .post(URL.decode("/api/auth/change-password").toOption.get, Body.fromString(cpBody))
+          .addHeader(Header.Authorization.Bearer(token))
+          .addHeader(Header.ContentType(MediaType.application.json))
+        resp     <- routes.runZIO(cpReq)
+        respBody <- resp.body.asString
+      } yield assertTrue(resp.status == Status.Unauthorized) &&
+        assertTrue(respBody.contains("Current password incorrect"))
+    },
     test("POST /api/auth/login via HTTP handler") {
       for {
         _               <- cleanDb

@@ -1,4 +1,6 @@
 import { apiHealth } from '@/api/apiHealth'
+import { setMustChangePassword } from '@/api/mustChangePassword'
+import { ACCOUNT_PATH } from '@/routes'
 import type {
   AcceptInviteRequest, AcceptInviteResponse, ApproveBetaResponse, BetaRequestAck, BetaRequestStatus, BetaRequestSummary, CreateBetaRequest,
   ForgotPasswordAck, ForgotPasswordRequest, ResetPasswordRequest, ResetPasswordResponse,
@@ -70,6 +72,57 @@ export function isForbiddenError(e: unknown): boolean {
   return e instanceof ForbiddenError
 }
 
+// #2492: the server's must_change_password 403. A ForbiddenError subclass so the existing
+// React Query retry policy already skips it — retrying is pointless (only POST
+// /auth/change-password can clear the flag) and every retry re-ran the redirect below.
+export class PasswordChangeRequiredError extends ForbiddenError {
+  constructor() {
+    super('password_change_required')
+    this.name = 'PasswordChangeRequiredError'
+  }
+}
+
+// `/account` hosts the change-password form (#586) — the one authenticated route reachable while
+// the flag is set, so the one route we must never bounce off. Shared with App.tsx's route + guard
+// via ACCOUNT_PATH so the three can't drift apart.
+// A trailing slash is stripped so `/account/` counts as "already there": the browser treats the two
+// as the same page, and an exact compare would re-enter the hard navigation — the #2492 loop.
+function isOnChangePasswordPage(): boolean {
+  return window.location.pathname.replace(/\/+$/, '') === ACCOUNT_PATH
+}
+
+const CHANGE_PASSWORD_ENDPOINT = '/auth/change-password'
+
+// #2492: a 401 normally means the session died. The one exception is a BODY-level credential
+// rejection: `POST /auth/change-password` answers 401 `"Current password incorrect"` (the
+// `AuthError.InvalidCredentials` mapping in `Routes.scala`) when the submitted CURRENT password is
+// wrong — the session is fine. The two are told apart by the response body, the same way the 403
+// branch sniffs `password_change_required`; branching on status+route alone would misreport an
+// expired or revoked token on that route as a wrong password and strand the user re-typing.
+// The exact server text is pinned api-side by AuthApiSpec's "401s with the exact
+// wrong-current-password body (#2492)" test, so a reword there fails CI instead of silently
+// reinstating the sign-out-on-typo behaviour here.
+const CURRENT_PASSWORD_INCORRECT = 'Current password incorrect'
+
+export class UnauthorizedError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'UnauthorizedError'
+  }
+}
+
+/** The session is intact — the user simply typed the wrong current password. */
+export class CurrentPasswordIncorrectError extends UnauthorizedError {
+  constructor(message: string) {
+    super(message)
+    this.name = 'CurrentPasswordIncorrectError'
+  }
+}
+
+export function isCurrentPasswordIncorrect(e: unknown): boolean {
+  return e instanceof CurrentPasswordIncorrectError
+}
+
 async function req<T>(
   method: string,
   path: string,
@@ -130,19 +183,41 @@ async function req<T>(
   if (res.status === 401) {
     // 401 is an auth-state outcome, not an API-down signal. The API answered.
     apiHealth.reportSuccess()
+    const text = await res.text().catch(() => '')
+    // #2492: a wrong CURRENT password on the change-password form is not a dead session. Signing
+    // the user out there stranded a first-login user back at the login page holding only the old
+    // password, and made AccountPage's "Current password is incorrect" unreachable.
+    if (path === CHANGE_PASSWORD_ENDPOINT && text.includes(CURRENT_PASSWORD_INCORRECT)) {
+      throw new CurrentPasswordIncorrectError(text)
+    }
     localStorage.removeItem('token')
+    // The session really is gone here, so the forced-change state goes with it — otherwise the
+    // next AuthProvider mount comes up with the flag set and no session behind it. Login rewrites
+    // it from the server's answer anyway; this just closes the window.
+    setMustChangePassword(false)
     window.location.href = '/login'
-    throw new Error('Unauthorised')
+    throw new UnauthorizedError(text || 'Unauthorised')
   }
 
   // #586: server enforces must_change_password — redirect to /account so
-  // the operator can set a new password before using any other route.
+  // the user can set a new password before using any other route.
   if (res.status === 403) {
     apiHealth.reportSuccess()
     const text = await res.text().catch(() => '')
     if (text.includes('password_change_required')) {
-      window.location.href = '/account'
-      throw new Error('password_change_required')
+      // #2492: remember the forced-change state across the hard navigation below (and across
+      // any later reload) — it drives the /account banner, the RequirePwChanged gate, and the
+      // post-change redirect. React state alone doesn't survive a full page load.
+      setMustChangePassword(true)
+      // #2492: only navigate when we are NOT already on the change-password route. /account
+      // renders inside the authenticated Layout, which itself calls /api/me (and /api/alerts),
+      // and those 403 while the flag is set — so assigning location.href here reloads the page
+      // the user is already on, remounting the layout, 403ing again: an infinite reload loop
+      // that made the form unusable. Landing there once is enough; the page reads the flag.
+      if (!isOnChangePasswordPage()) {
+        window.location.href = ACCOUNT_PATH
+      }
+      throw new PasswordChangeRequiredError()
     }
     // #2069: typed so React Query never hot-retries an authorization denial.
     throw new ForbiddenError(text || `HTTP 403`)
@@ -191,7 +266,7 @@ export const api = {
     login: (identifier: string, password: string) =>
       req<LoginResponse>('POST', '/auth/login', { identifier, password }, true),
     changePassword: (currentPassword: string, newPassword: string) =>
-      req<void>('POST', '/auth/change-password', { currentPassword, newPassword }),
+      req<void>('POST', CHANGE_PASSWORD_ENDPOINT, { currentPassword, newPassword }),
     // #2308: public, unauthenticated + rate-limited. Always returns the same content-free ack
     // whether or not the email is registered (no enumeration) — the UI shows one success state.
     forgotPassword: (email: string) =>
