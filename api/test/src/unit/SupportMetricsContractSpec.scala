@@ -108,10 +108,15 @@ object SupportMetricsContractSpec extends ZIOSpecDefault {
       assertTrue(shortfalls.forall(_._2.isEmpty)) &&
       assertTrue(shortfalls.nonEmpty)
     },
-    test("success is exactly ok + ok_no_link, derived from the enum") {
+    test("success is exactly ok + ok_no_link + ok_duplicate, derived from the enum") {
       // Guards the derivation itself: a new case must be classified deliberately, not default into
-      // (or out of) the success set by accident.
-      assertTrue(AgentActionResult.SuccessLabels == Set("ok", "ok_no_link"))
+      // (or out of) the success set by accident. #2458 added `ok_duplicate` — the agent asked to
+      // file, we matched an ALREADY-OPEN issue and handed that one back instead of creating a
+      // duplicate. It is a success (the customer gets a real, canonical tracking link), so the
+      // volume panel must count it: an operator judging "is the agent filing too aggressively"
+      // wants the ask rate, and silently dropping the deduped asks would make the fix look like a
+      // traffic collapse.
+      assertTrue(AgentActionResult.SuccessLabels == Set("ok", "ok_no_link", "ok_duplicate"))
     },
     test("#2460: the dead-end panel counts EXACTLY the resume outcomes that mean 'got nothing'") {
       // Same drift class, second series: the "Consent grants that dead-ended" panel selects a
