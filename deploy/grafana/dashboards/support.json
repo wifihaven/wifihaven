@@ -779,6 +779,42 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Consented household reads that FAILED (24h) — expect 0 (#2462)",
+      "description": "sum(increase(support_agent_action_total{env=\"$env\",op=\"household_read\",outcome=\"error\"}[24h])) — the agent asked for the customer's account summary and a repo query THREW, so the read was refused (5xx) and the agent was told it has no data. Non-zero means customers asking account questions in that window were told we couldn't reach their account details instead of getting an answer — check Postgres health and grep the API log for `agent household read FAILED`, which carries the household, the thread, and the driver message. This series exists because the four reads used to be individually swallowed into an EMPTY summary metered ok (#2462): a total DB outage and a brand-new household produced the identical \"0 devices, 0 profiles\" answer, which the agent stated to the customer as account fact and then built troubleshooting advice on top of. A household that GENUINELY has nothing is NOT counted here — it still meters ok with real zeros. The distinction is failure-vs-empty, not zero-vs-nonzero.",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 88 },
+      "id": 34,
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "short", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "background", "graphMode": "none", "textMode": "auto" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(increase(support_agent_action_total{env=\"$env\",op=\"household_read\",outcome=\"error\"}[24h]))",
+          "legendFormat": "failed reads (24h)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Webhook origins we could NOT look up (24h) — expect 0 (#2462)",
+      "description": "sum(increase(support_ai_draft_total{env=\"$env\",outcome=\"origin_lookup_failed\"}[24h])) — resolving an inbound delivery's origin (the UI-origin households read, or the #2307 admin-email users read) THREW, so we never established whether the sender is a registered customer. The delivery is dropped: nothing dispatched, nothing said to the customer. Non-zero means real customer messages went unanswered — check Postgres health and grep the API log for `origin lookup FAILED`, which names the failing stage (tenant_household | admin_email | admin_household). This outcome is deliberately NOT folded into skipped_unauthenticated or email_unregistered_rejected: both of those ASSERT the sender has no registered origin, and acting on that assertion during a DB blip is what sent a registered, paying admin the #2307 \"you're not a registered customer\" static reject — metered as a routine reject, so nothing recorded it was wrong.",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 88 },
+      "id": 35,
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "short", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "background", "graphMode": "none", "textMode": "auto" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(increase(support_ai_draft_total{env=\"$env\",outcome=\"origin_lookup_failed\"}[24h]))",
+          "legendFormat": "unresolvable origins (24h)",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",

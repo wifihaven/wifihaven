@@ -525,7 +525,8 @@ object MetricGuard {
     // (the #2200-specified series name, kept though v1 sends replies rather than drafts)
     // counts each inbound Plain webhook by a bounded enum (dispatched | email_registered_dispatched
     // | email_unregistered_rejected | email_reject_send_failed | skipped_unauthenticated |
-    // skipped_not_inbound | rate_limited | invalid_signature | malformed | disabled | error) —
+    // origin_lookup_failed | skipped_not_inbound | rate_limited | invalid_signature | malformed |
+    // disabled | error) —
     // `email_reject_send_failed` (#2471) is that same static reject DECIDED but REFUSED by Plain, so
     // the customer got nothing (expect a flat zero); `skipped_not_inbound` is the #2403 loop guard.
     // `dispatched` is a UI-origin thread, `email_registered_dispatched`
@@ -533,6 +534,11 @@ object MetricGuard {
     // #2307 unregistered new email that got the fixed static reject (NO AI/token burn),
     // `skipped_unauthenticated` a continuation with no resolvable tenant, `rate_limited` the
     // per-thread/global dispatch (or reject) cost caps, `invalid_signature` the security rejection.
+    // #2462 added `origin_lookup_failed`: origin resolution THREW (a `households` / `users` read),
+    // so we never established whether the sender is registered — kept out of
+    // `skipped_unauthenticated` and `email_unregistered_rejected` because both of those ASSERT the
+    // sender has no origin, and acting on that assertion is what sent a registered admin the #2307
+    // "not a registered customer" reject during a DB blip. Expect a flat zero; also logs at ERROR.
     // `support_agent_action_total{op,outcome}` counts the cloud agent's callback
     // actions (reply | issue | household_read | consent_request | escalate | escalate_mark ×
     // ok | ok_no_link | denied | rate_limited | disabled | error) — the `issue` action's rate feeds
@@ -541,7 +547,11 @@ object MetricGuard {
     // there means the label id / `label:create` permission is misprovisioned). Both bounded, never
     // per-household. #2461 added `ok_no_link`, emitted for `op=issue` ONLY: a SUCCESS (the GitHub
     // issue exists) whose create response we could not read a link back from, so the agent has no
-    // link to offer. Any "how many issues did we file" query must therefore match BOTH success
+    // link to offer. #2462: on `op=household_read`, `outcome=error` means exactly one thing — the
+    // consented account read did not complete (a repo query threw) — since no other producer can
+    // mint it for that op. It used to be unmintable: every read was individually caught and the
+    // synthesized empty summary metered `ok`, so a Postgres outage and a brand-new household were
+    // the same sample AND the same customer-facing answer. Expect a flat zero. Any "how many issues did we file" query must therefore match BOTH success
     // values (`outcome=~"ok|ok_no_link"`, as the volume panel does); SupportResponder's
     // `AgentActionResult.SuccessLabels` is the authority for that matcher and
     // SupportMetricsContractSpec pins the panel against it. NOTE the outcome vocabulary has more

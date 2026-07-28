@@ -1933,15 +1933,15 @@ object SupportResponderSpec
     // the production ones on embedded Postgres (docs/process/testing.md).
     test("#2462: a household read whose DB query FAILS is refused, never answered with zeros") {
       (for {
-        _           <- cleanDb
-        hhRepo      <- ZIO.service[HouseholdRepo]
-        billRepo    <- ZIO.service[HouseholdBillingRepo]
-        hh          <- hhRepo.create("Family Z", "fam-z")
-        _           <- billRepo.create(hh, "active", founding = false)
-        consentRepo <- ZIO.service[SupportConsentRepo]
-        clock       <- ZIO.service[Clock]
-        now         <- clock.instant
-        _           <- consentRepo.grant(
+        _                     <- cleanDb
+        hhRepo                <- ZIO.service[HouseholdRepo]
+        billRepo              <- ZIO.service[HouseholdBillingRepo]
+        hh                    <- hhRepo.create("Family Z", "fam-z")
+        _                     <- billRepo.create(hh, "active", founding = false)
+        consentRepo           <- ZIO.service[SupportConsentRepo]
+        clock                 <- ZIO.service[Clock]
+        now                   <- clock.instant
+        _                     <- consentRepo.grant(
           hh,
           "th_z",
           "n_z",
@@ -1951,8 +1951,8 @@ object SupportResponderSpec
           now,
           now.plus(SupportResponder.ConsentTtl),
         )
-        (routes, _) <- makeRoutes(liveCfg)
-        token       <- mintToken(hh, "th_z", dataAccess = true)
+        (routes, _)           <- makeRoutes(liveCfg)
+        token                 <- mintToken(hh, "th_z", dataAccess = true)
         // Baseline: with the schema intact this household is GENUINELY empty — no devices — and
         // that stays a 200 carrying real zeros. Emptiness is not an error.
         (sEmpty, bodyEmpty)   <- agentGetHousehold(routes, Some(token))
