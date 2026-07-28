@@ -8,8 +8,9 @@
 # img-src also allows https://icons.duckduckgo.com: app templates render their favicons from
 # https://icons.duckduckgo.com/ip3/<domain>.ico, so the icon host must be allowlisted (#2115).
 # connect-src legitimately differs from the API copy (concrete hosts here vs ws:/wss: there).
-# The shared directives that must agree are pinned by web/src/security-headers.test.ts (this
-# copy) and api SecurityHeadersSpec (the Scala copy), so neither can silently drop them.
+# The shared directives that must agree — default-src 'self', font-src (#2468), the img-src icon
+# host, frame-ancestors 'none', and the Plain hosts — are pinned by web/src/security-headers.test.ts
+# (this copy) and api SecurityHeadersSpec (the Scala copy), so neither can silently drop them.
 # #2240: the Plain support chat widget (web/src/components/SupportWidget.tsx) injects
 # https://chat.cdn-plain.com/index.js and the SDK loads fonts/images/attachments and connects
 # to Plain's UK region. The exact hosts below are Plain's documented chat-widget CSP
@@ -21,19 +22,29 @@
 # serves machine-user/AI-agent avatars from it (actor.avatarUrl =
 # https://static-assets.plain.com/email-images/machine-user.png for API_USER machine users;
 # .../avatars/ari-avatar.svg is hard-coded in the bundle for AI_AGENT), so without it every AI
+# reply shows a broken-image placeholder.
 # #2468: font-src was absent entirely, so the Google Fonts woff2 files fell back to
 # default-src 'self' and were blocked — style-src allowed the CSS (fonts.googleapis.com) but the
 # files come from a different host (fonts.gstatic.com). web/index.html loads Inter from Google
 # Fonts, so the SPA rendered in the system fallback font in every environment from #2082 until
 # this line. Plain's documented widget CSP omits font-src too, but its SDK pulls the same Google
 # Fonts CSS, so this one host covers both.
-# #2468: script-src/connect-src also allow https://static.cloudflareinsights.com. Cloudflare Pages
-# auto-injects beacon.min.js from that host when Web Analytics is enabled on the project, and the
-# beacon POSTs its report back to the same host — so it needs both directives or Web Analytics is
-# enabled while collecting nothing. This host is deliberately absent from the API copy: the
-# self-hosted deploy has no Cloudflare in front of it, so no beacon is ever injected there.
+# #2468: script-src also allows https://static.cloudflareinsights.com — the Cloudflare Web
+# Analytics beacon, observed being injected into app-staging and blocked (the console violation in
+# #2468 is the evidence the injection happens; Web Analytics being enabled on the Pages project is
+# dashboard state, see infra/cloudflare/main.tf "Does NOT manage").
+# Host-only, not the documented https://static.cloudflareinsights.com/beacon.min.js path form:
+# Cloudflare appends a cache-buster segment (the observed URL is .../beacon.min.js/v4513226…), and
+# a CSP source path not ending in `/` must match the request path EXACTLY, so the path form would
+# not match what is actually requested.
+# connect-src gets NO beacon host: per Cloudflare's Web Analytics FAQ the beacon reports to
+# `connect-src 'self'` under AUTOMATIC injection (proxied — which is what these Pages custom
+# domains are) and only to cloudflareinsights.com under MANUAL embedding. The report is
+# same-origin /cdn-cgi/rum and is already covered by the existing 'self'.
+# The beacon host is deliberately absent from the API copy entirely: the self-hosted deploy has no
+# Cloudflare in front of it, so no beacon is ever injected there.
 /*
   X-Content-Type-Options: nosniff
   X-Frame-Options: DENY
   Strict-Transport-Security: max-age=31536000; includeSubDomains
-  Content-Security-Policy: default-src 'self'; script-src 'self' https://chat.cdn-plain.com https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https://icons.duckduckgo.com https://prod-uk-services-workspac-workspacefilespublicbuck-vs4gjqpqjkh6.s3.amazonaws.com https://prod-uk-services-attachm-attachmentsbucket28b3ccf-uwfssb4vt2us.s3.eu-west-2.amazonaws.com https://static-assets.plain.com https://i0.wp.com; connect-src 'self' https://api.wifihaven.net https://api-staging.wifihaven.net wss://api.wifihaven.net wss://api-staging.wifihaven.net https://chat.uk.plain.com https://prod-uk-services-attachm-attachmentsuploadbucket2-1l2e4906o2asm.s3.eu-west-2.amazonaws.com https://static.cloudflareinsights.com; frame-ancestors 'none'; base-uri 'self'; object-src 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self' https://chat.cdn-plain.com https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https://icons.duckduckgo.com https://prod-uk-services-workspac-workspacefilespublicbuck-vs4gjqpqjkh6.s3.amazonaws.com https://prod-uk-services-attachm-attachmentsbucket28b3ccf-uwfssb4vt2us.s3.eu-west-2.amazonaws.com https://static-assets.plain.com https://i0.wp.com; connect-src 'self' https://api.wifihaven.net https://api-staging.wifihaven.net wss://api.wifihaven.net wss://api-staging.wifihaven.net https://chat.uk.plain.com https://prod-uk-services-attachm-attachmentsuploadbucket2-1l2e4906o2asm.s3.eu-west-2.amazonaws.com; frame-ancestors 'none'; base-uri 'self'; object-src 'none'

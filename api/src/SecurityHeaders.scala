@@ -68,13 +68,14 @@ object SecurityHeaders {
       // duplicated for the Cloudflare Pages deploy in web/public/_headers
       // (connect-src legitimately differs: this file uses `ws: wss:`, _headers
       // lists concrete hosts; and _headers additionally allows
-      // https://static.cloudflareinsights.com in script-src/connect-src for the
-      // Web Analytics beacon Cloudflare Pages injects — #2468 — which has no
-      // counterpart here because the self-hosted deploy has no Cloudflare in
-      // front of it). The shared directives that must agree — default-src
-      // 'self', img-src icon host, frame-ancestors 'none', and the Plain hosts —
-      // are pinned on this side by SecurityHeadersSpec and on the _headers side by
-      // web/src/security-headers.test.ts, so neither can silently drop them.
+      // https://static.cloudflareinsights.com in script-src for the Web Analytics
+      // beacon Cloudflare Pages injects — #2468 — which has no counterpart here
+      // because the self-hosted deploy has no Cloudflare in front of
+      // it). The shared directives that must agree — default-src
+      // 'self', font-src (#2468), img-src icon host, frame-ancestors 'none', and
+      // the Plain hosts — are pinned on this side by SecurityHeadersSpec and on
+      // the _headers side by web/src/security-headers.test.ts, so neither can
+      // silently drop them.
       s"img-src 'self' data: https://icons.duckduckgo.com $PlainImgSrc; connect-src 'self' ws: wss: $PlainConnectSrc; " +
       "frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
 

@@ -93,15 +93,24 @@ describe('web/public/_headers CSP (Cloudflare Pages copy)', () => {
     expect(fontSrc).toContain('https://fonts.gstatic.com')
   })
 
-  // #2468: Cloudflare Pages auto-injects https://static.cloudflareinsights.com/beacon.min.js when
-  // Web Analytics is enabled on the project, and the beacon POSTs its report back to the same host —
-  // so it needs script-src (to execute) AND connect-src (to report). Without both, Web Analytics is
-  // enabled but collects nothing while logging a CSP violation on every page load. This host is
+  // #2468: Cloudflare Pages injects https://static.cloudflareinsights.com/beacon.min.js and
+  // script-src blocked it, so Web Analytics was enabled but collecting nothing. This host is
   // deliberately NOT in the API copy (api/src/SecurityHeaders.scala): the self-hosted deploy has no
   // Cloudflare in front of it, so the beacon is never injected there.
-  it('allowlists the Cloudflare Web Analytics beacon in script-src and connect-src (#2468)', () => {
+  it('allowlists the Cloudflare Web Analytics beacon script (#2468)', () => {
     expect(scriptSrc).toContain('https://static.cloudflareinsights.com')
-    expect(connectSrc).toContain('https://static.cloudflareinsights.com')
+  })
+
+  // #2468: the beacon host must NOT be in connect-src. Per Cloudflare's Web Analytics FAQ the
+  // report goes to `connect-src 'self'` under AUTOMATIC injection (proxied — which is what these
+  // Pages custom domains are, infra/cloudflare/main.tf) and only to cloudflareinsights.com under
+  // MANUAL embedding; the auto-injected beacon POSTs same-origin to /cdn-cgi/rum, already covered
+  // by 'self'. connect-src is load-bearing against JWT exfiltration, so widening it for a request
+  // the vendor documents will never be made is a real loosening — pinned negative so it does not
+  // creep back in on the "the beacon reports to its own host" assumption (which is wrong).
+  it('does not widen connect-src for the beacon — auto-injected reports are same-origin (#2468)', () => {
+    expect(connectSrc).not.toContain('cloudflareinsights.com')
+    expect(connectSrc).toContain("'self'")
   })
 
   it('does not introduce wildcards or loosen frame-ancestors for Plain (#2240)', () => {
