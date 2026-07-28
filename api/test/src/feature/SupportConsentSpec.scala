@@ -87,7 +87,7 @@ object SupportConsentSpec
       // which both pins that the forked resume RAN and joins the fiber before the test ends (an
       // escaped fiber would race the next test's DROP DATABASE).
       dispatchDone: Option[Promise[Nothing, Unit]] = None,
-      // #2460: keep PRODUCTION's `runResume` (forkDaemon) instead of the inline one, so the
+      // #2460: keep PRODUCTION's `runDetached` (forkDaemon) instead of the inline one, so the
       // non-blocking property the fix exists for is exercised rather than configured away.
       productionResume: Boolean = false,
   ) =
@@ -133,7 +133,7 @@ object SupportConsentSpec
         RateLimiter.allowAll,
         tracker,
       )
-      responder = if productionResume then base else base.copy(runResume = identity)
+      responder = if productionResume then base else base.copy(runDetached = identity)
       auth      = AuthServiceLive(userRepo, jwt, clock, hhRepo): AuthService
     } yield Harness(
       SupportAgentRoutes.routes(responder),
@@ -632,7 +632,7 @@ object SupportConsentSpec
       // The regression this pins: the resume's two legs are bounded only by their transport
       // timeouts, which together exceed the SPA's own request timeout — so running it on the
       // request fiber let a grant that SUCCEEDED abort client-side and render as "that permission
-      // link is no longer valid". Uses the PRODUCTION `runResume`; the gate holds the resume inside
+      // link is no longer valid". Uses the PRODUCTION `runDetached`; the gate holds the resume inside
       // its first leg, so the POST returning at all proves it did not wait.
       for {
         _        <- cleanDb

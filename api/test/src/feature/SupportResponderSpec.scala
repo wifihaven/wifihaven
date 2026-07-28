@@ -175,6 +175,13 @@ object SupportResponderSpec
         Notifier.logOnly,
         RateLimiter.allowAll,
         tracker,
+        // #2505: run detached follow-ups INLINE, the same seam SupportConsentSpec uses. Production
+        // forks the #2505 mapping write so the webhook fiber never waits on Plain; a spec that
+        // asserts the write happened must not race that fork. Deterministic by construction — no
+        // wall-clock wait for a background fiber (the #2042 flake class). The seam changes only
+        // WHERE the effect runs, so nothing here is weakened: the consent resume, the only other
+        // caller, is asserted in SupportConsentSpec, which pins BOTH modes explicitly.
+        runDetached = identity,
       )
     } yield (SupportAgentRoutes.routes(responder), Stubs(plainRec, ghRec, dispRec, responder))
 

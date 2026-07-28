@@ -471,18 +471,6 @@ object PlainClient {
   // resume) can cite the value instead of re-stating "8s" in prose and letting the two drift.
   private[support] val HistoryTimeout: Duration = 8.seconds
 
-  // #2505 — the same bound, for the household→Plain customer mapping written from the WEBHOOK path
-  // (`SupportResponder.mapCustomerToHousehold`). DERIVED from [[HistoryTimeout]] rather than
-  // restated, because it bounds the same thing for the same reason: how long ONE best-effort Plain
-  // write may hold the webhook fiber open before Plain gives up on our ack and redelivers. The
-  // mapping is not a single request — `upsertCustomer` chains the tenant write, the tenant fields,
-  // the customer upsert, and on an email collision the two-leg reconcile (see [[Live.upsertCustomer]])
-  // — each bounded only by the HTTP client's own `RequestTimeout`, so without a ZIO-level bound the
-  // worst case is multiples of it. As with the history read, `disconnect` at the call site means the
-  // send RUNS ON to completion and still meters its own `support_customer_upsert_total` outcome; what
-  // is bounded is the webhook's latency, not the write's attribution.
-  private[support] val CustomerMappingTimeout: Duration = HistoryTimeout
-
   /**
    * Config-gated layer, keyed on the EXPLICIT named flag `plain.writeEnabled` — NOT on secret
    * presence (#2471: conflating the two sent an operator hunting a Plain provisioning gap over our
