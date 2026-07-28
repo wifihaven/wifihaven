@@ -43,10 +43,12 @@ import java.time.{Duration, Instant}
  * everything dispatched after it.
  *
  * MEMORY IS BOUNDED BY CONSTRUCTION, not by an eviction policy: dispatch is globally capped at
- * 50/day (`HttpRoutes` `dispatchGlobalLimiter`) and every entry is removed at
- * [[DispatchTracker.deadAfterFor]] (the agent-token TTL, 24h by default) at the latest, so the live
- * map cannot exceed the day's dispatch budget — tens of entries, each a threadId + three small
- * fields.
+ * 50/day (`HttpRoutes` `dispatchGlobalLimiter`) and every entry is removed by
+ * [[DispatchTracker.deadAfterFor]] at the latest, so the live map holds at most one dispatch budget
+ * per retention window. At the default 24h TTL that is 50 entries; the bound scales linearly with
+ * the operator-tunable `support.agentTokenTtlMinutes` rather than being fixed (a 7-day TTL would
+ * make it ~350). Each entry is a threadId plus three small fields, so even a wildly-tuned TTL costs
+ * kilobytes.
  *
  * PII FIREWALL (the #2438 discipline): the only things logged are the Plain threadId, the household
  * id, the bounded transport label, and an age in seconds. Never the customer message, the reply,

@@ -157,14 +157,9 @@ object SupportDispatchCompletionSpec
 
   private def mintToken(hh: HouseholdId, threadId: String, dataAccess: Boolean = false) =
     ZIO.serviceWithZIO[Clock](_.instant).map { now =>
-      ConsentToken.mint(
-        hh,
-        threadId,
-        dataAccess,
-        now,
-        java.time.Duration.ofHours(24),
-        TokenSecret,
-      )
+      // The rig's TTL comes from the SAME config the tracker's dead threshold does, so retuning
+      // `agentTokenTtlMinutes` can never put `PastDead` beyond the test tokens' own expiry.
+      ConsentToken.mint(hh, threadId, dataAccess, now, liveCfg.agentTokenTtl, TokenSecret)
     }
 
   private def counter(outcome: String): UIO[Double] =
