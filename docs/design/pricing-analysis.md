@@ -331,6 +331,11 @@ red flag to investigate before public launch, not a reason to discount deeper.
   $15–20/mo for up to 3 routers), priced when real demand shows up — not
   built into #622's launch billing surface beyond keeping the price/entitlement
   lookup per-household rather than hardcoded.
+  The **customer-facing** phrasing of this — what a support agent tells someone
+  who asks "can I add another router?", and what to do for them today (manual
+  cap bump; no self-serve upgrade) — lives in
+  [`docs/support-faq.md` §Can I add another router?](../support-faq.md#can-i-add-another-router)
+  (#2499). Keep the two in sync when the multi-home tier actually opens.
 - The other future tier axes, reserved (not built) now — each is additive
   and none is needed at launch: **history retention length** (retention
   windows are per-deploy constants today, `RetentionSweepJob`; making them
