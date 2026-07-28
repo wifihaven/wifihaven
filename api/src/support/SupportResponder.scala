@@ -151,6 +151,13 @@ final case class SupportResponder(
     // committed, so the customer keeps their consent and at worst re-asks; the mapping is idempotent
     // and re-attempted on that household's next message. Either way it is one dropped sample.
     //
+    // Deliberately UNCAPPED and un-deduped: one fork per triggering event, so a new inbound email
+    // stamps the mapping about twice — on the bodyless `thread.thread_created` and again on the
+    // `email_received` that carries the body (and the earlier of the two is the better moment, not
+    // waste). That is fine at the rate it fires: forks track inbound CUSTOMER email, both callers
+    // are idempotent, and every leg is bounded by the transport's own `RequestTimeout`. A cap here
+    // would buy nothing the origin gate and the dispatch limiters do not already buy.
+    //
     // This is the ONLY parameter with a default, so it must stay LAST — every construction site
     // (HttpRoutes, the specs) passes the ones above positionally.
     runDetached: UIO[Unit] => UIO[Unit] = _.forkDaemon.unit,

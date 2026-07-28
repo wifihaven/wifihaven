@@ -191,9 +191,10 @@ object SupportResponderSpec
         // asserts the write happened must not race that fork, and inline is deterministic where a
         // wall-clock wait on a background fiber would be the #2042 flake class. The counter is what
         // keeps the ROUTING asserted — inline execution alone would make a bare, un-detached call
-        // look identical (see `Stubs.detachedRuns`). The seam changes only WHERE an effect runs, so nothing
-        // here is weakened: the consent resume, the only other caller, rides a route this suite
-        // never wires (`SupportConsentRoutes`) and is pinned in BOTH modes by SupportConsentSpec.
+        // look identical (see `Stubs.detachedRuns`). The seam changes only WHERE an effect runs, so
+        // nothing here is weakened: the consent resume, the only other caller, rides a route this
+        // suite never wires (`SupportConsentRoutes`) and is pinned in BOTH modes by
+        // SupportConsentSpec.
         runDetached = eff => detachedRef.update(_ + 1) *> eff,
       )
     } yield (
