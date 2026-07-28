@@ -45,8 +45,18 @@ object SecurityHeaders {
       "https://static-assets.plain.com " +
       "https://i0.wp.com"
 
+  // #2468: font-src was absent from both copies of this policy, so it fell back to
+  // `default-src 'self'` and every Google-Fonts woff2 was blocked. style-src allows the Google
+  // Fonts *stylesheet* host (fonts.googleapis.com) but the font FILES are served from a different
+  // host, fonts.gstatic.com, which was allowlisted nowhere — so the SPA (web/index.html loads
+  // Inter) rendered in the system fallback font in every environment from #2082 until this
+  // directive landed. Plain's documented widget CSP has no font-src either, but its SDK pulls the
+  // same Google Fonts CSS, so this one host covers our font and the widget's.
+  private val GoogleFontsFileSrc = "https://fonts.gstatic.com"
+
   val ContentSecurityPolicy: String =
     s"default-src 'self'; script-src 'self' $PlainScriptSrc; style-src 'self' 'unsafe-inline' $PlainStyleSrc; " +
+      s"font-src 'self' $GoogleFontsFileSrc; " +
       // connect-src explicitly lists ws:/wss: alongside 'self': the SPA-websocket
       // upgrade (GET /api/ws, web/src/api/wsClient.ts) is same-origin in the
       // self-hosted deploy, but 'self' isn't guaranteed by all browsers to cover a
@@ -57,7 +67,11 @@ object SecurityHeaders {
       // allowlisted or the Apps page shows broken icons (#2115). This CSP is
       // duplicated for the Cloudflare Pages deploy in web/public/_headers
       // (connect-src legitimately differs: this file uses `ws: wss:`, _headers
-      // lists concrete hosts). The shared directives that must agree — default-src
+      // lists concrete hosts; and _headers additionally allows
+      // https://static.cloudflareinsights.com in script-src/connect-src for the
+      // Web Analytics beacon Cloudflare Pages injects — #2468 — which has no
+      // counterpart here because the self-hosted deploy has no Cloudflare in
+      // front of it). The shared directives that must agree — default-src
       // 'self', img-src icon host, frame-ancestors 'none', and the Plain hosts —
       // are pinned on this side by SecurityHeadersSpec and on the _headers side by
       // web/src/security-headers.test.ts, so neither can silently drop them.
