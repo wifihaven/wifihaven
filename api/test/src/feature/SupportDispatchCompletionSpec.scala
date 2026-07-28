@@ -24,10 +24,11 @@ import zio.test.*
  * WHAT WENT WRONG (observed live 2026-07-26, #2335 validation). A registered admin emailed support.
  * The dispatch half was textbook — token minted, `support agent dispatched
  * transport=claude-code-cloud`, webhook `outcome=email_registered_dispatched` — and then NOTHING:
- * no `/api/support/agent/…` call ever arrived, then or three hours later. The customer got no reply,
- * while `support_dispatch_total{outcome="dispatched"}` counted the interaction a success. #2444
- * instruments the dispatch CALL and #2416 makes a 4xx on it fail loud; neither observes whether the
- * agent ever came back, so "answered the customer" and "silently died" were the same signal.
+ * no `/api/support/agent/…` call ever arrived, then or three hours later. The customer got no
+ * reply, while `support_dispatch_total{outcome="dispatched"}` counted the interaction a success.
+ * #2444 instruments the dispatch CALL and #2416 makes a 4xx on it fail loud; neither observes
+ * whether the agent ever came back, so "answered the customer" and "silently died" were the same
+ * signal.
  *
  * The load-bearing pins, driven through the REAL responder + routes (embedded Postgres, no repo
  * mocks — only the Plain / GitHub / cloud-agent transports are recorders, per
@@ -38,8 +39,8 @@ import zio.test.*
  *   - a dispatch that is never called back is reported at the WARN tier past `SlowAfter` —
  *     `{outcome="callback_slow"}` + a WARNING — and exactly ONCE, no matter how often the sweep
  *     runs (a suspended-then-resumed run must not spam);
- *   - past `DeadAfter` it is an attributable ERROR + `{outcome="no_callback"}` naming the thread and
- *     household, emitted exactly once (the entry is dropped);
+ *   - past `DeadAfter` it is an attributable ERROR + `{outcome="no_callback"}` naming the thread
+ *     and household, emitted exactly once (the entry is dropped);
  *   - `/escalate` and `/request-consent` close a dispatch too — they are the other two terminal
  *     agent actions — while a household READ does NOT: a session that read the household and then
  *     died is precisely the failure being tracked;
@@ -193,16 +194,21 @@ object SupportDispatchCompletionSpec
   def spec = suite("support dispatch→completion tracking (#2472)")(
     test("an agent reply CLOSES the dispatch: completed is metered and no sweep ever reports it") {
       for {
-        (hh, rig) <- seeded("closed")
-        before    <- counter(DispatchTracker.Outcome.Completed)
-        status    <- dispatchOne(rig, hh, "th_closed")
-        token     <- mintToken(hh, "th_closed")
-        replied   <- agentPost(rig, "/api/support/agent/reply", """{"markdown":"here you go"}""", Some(token))
-        after     <- counter(DispatchTracker.Outcome.Completed)
+        (hh, rig)  <- seeded("closed")
+        before     <- counter(DispatchTracker.Outcome.Completed)
+        status     <- dispatchOne(rig, hh, "th_closed")
+        token      <- mintToken(hh, "th_closed")
+        replied    <- agentPost(
+          rig,
+          "/api/support/agent/reply",
+          """{"markdown":"here you go"}""",
+          Some(token),
+        )
+        after      <- counter(DispatchTracker.Outcome.Completed)
         deadBefore <- counter(DispatchTracker.Outcome.NoCallback)
-        now       <- at(PastDead)
-        _         <- rig.tracker.sweep(now)
-        deadAfter <- counter(DispatchTracker.Outcome.NoCallback)
+        now        <- at(PastDead)
+        _          <- rig.tracker.sweep(now)
+        deadAfter  <- counter(DispatchTracker.Outcome.NoCallback)
       } yield assertTrue(
         status == Status.Ok,
         replied == Status.Ok,
@@ -212,76 +218,81 @@ object SupportDispatchCompletionSpec
     },
     test("a dispatch nobody calls back is WARNed past SlowAfter — and exactly once") {
       {
-          for {
-            (hh, rig) <- seeded("slow")
-            before    <- counter(DispatchTracker.Outcome.CallbackSlow)
-            _         <- dispatchOne(rig, hh, "th_slow")
-            now       <- at(PastSlow)
-            _         <- rig.tracker.sweep(now)
-            once      <- counter(DispatchTracker.Outcome.CallbackSlow)
-            // A second sweep, still inside DeadAfter: the entry survives (a suspended run can still
-            // answer) but must NOT re-report.
-            _         <- rig.tracker.sweep(now.plusSeconds(120))
-            twice     <- counter(DispatchTracker.Outcome.CallbackSlow)
-            logs      <- ZTestLogger.logOutput
-          } yield {
-            val warns = logs.filter(_.logLevel == LogLevel.Warning).map(_.message())
-            assertTrue(
-              once == before + 1,
-              twice == once,
-              warns.exists(m =>
-                m.contains("support dispatch still unanswered") && m.contains("thread=th_slow"),
-              ),
-              logs.forall(e => !e.message().contains(SecretMsg)),
-            )
-          }
+        for {
+          (hh, rig) <- seeded("slow")
+          before    <- counter(DispatchTracker.Outcome.CallbackSlow)
+          _         <- dispatchOne(rig, hh, "th_slow")
+          now       <- at(PastSlow)
+          _         <- rig.tracker.sweep(now)
+          once      <- counter(DispatchTracker.Outcome.CallbackSlow)
+          // A second sweep, still inside DeadAfter: the entry survives (a suspended run can still
+          // answer) but must NOT re-report.
+          _         <- rig.tracker.sweep(now.plusSeconds(120))
+          twice     <- counter(DispatchTracker.Outcome.CallbackSlow)
+          logs      <- ZTestLogger.logOutput
+        } yield {
+          val warns = logs.filter(_.logLevel == LogLevel.Warning).map(_.message())
+          assertTrue(
+            once == before + 1,
+            twice == once,
+            warns.exists(m =>
+              m.contains("support dispatch still unanswered") && m.contains("thread=th_slow"),
+            ),
+            logs.forall(e => !e.message().contains(SecretMsg)),
+          )
+        }
       }.provideSomeLayer[
         TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task],
       ](ZTestLogger.default)
     },
     test("past DeadAfter it is an attributable ERROR + no_callback, emitted exactly once") {
       {
-          for {
-            (hh, rig) <- seeded("dead")
-            before    <- counter(DispatchTracker.Outcome.NoCallback)
-            _         <- dispatchOne(rig, hh, "th_dead")
-            now       <- at(PastDead)
-            _         <- rig.tracker.sweep(now)
-            once      <- counter(DispatchTracker.Outcome.NoCallback)
-            // The entry is dropped, so a later sweep reports nothing more.
-            _         <- rig.tracker.sweep(now.plusSeconds(600))
-            twice     <- counter(DispatchTracker.Outcome.NoCallback)
-            logs      <- ZTestLogger.logOutput
-          } yield {
-            val errors = logs.filter(_.logLevel == LogLevel.Error).map(_.message())
-            assertTrue(
-              once == before + 1,
-              twice == once,
-              errors.exists(m =>
-                m.contains("support dispatch NEVER CALLED BACK") &&
-                  m.contains("thread=th_dead") &&
-                  m.contains(s"household=${hh.value}") &&
-                  m.contains(s"transport=$Transport"),
-              ),
-              logs.forall(e => !e.message().contains(SecretMsg)),
-            )
-          }
+        for {
+          (hh, rig) <- seeded("dead")
+          before    <- counter(DispatchTracker.Outcome.NoCallback)
+          _         <- dispatchOne(rig, hh, "th_dead")
+          now       <- at(PastDead)
+          _         <- rig.tracker.sweep(now)
+          once      <- counter(DispatchTracker.Outcome.NoCallback)
+          // The entry is dropped, so a later sweep reports nothing more.
+          _         <- rig.tracker.sweep(now.plusSeconds(600))
+          twice     <- counter(DispatchTracker.Outcome.NoCallback)
+          logs      <- ZTestLogger.logOutput
+        } yield {
+          val errors = logs.filter(_.logLevel == LogLevel.Error).map(_.message())
+          assertTrue(
+            once == before + 1,
+            twice == once,
+            errors.exists(m =>
+              m.contains("support dispatch NEVER CALLED BACK") &&
+                m.contains("thread=th_dead") &&
+                m.contains(s"household=${hh.value}") &&
+                m.contains(s"transport=$Transport"),
+            ),
+            logs.forall(e => !e.message().contains(SecretMsg)),
+          )
+        }
       }.provideSomeLayer[
         TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task],
       ](ZTestLogger.default)
     },
     test("escalate closes a dispatch (it is a terminal agent action)") {
       for {
-        (hh, rig) <- seeded("esc")
-        _         <- dispatchOne(rig, hh, "th_esc")
-        token     <- mintToken(hh, "th_esc")
-        before    <- counter(DispatchTracker.Outcome.Completed)
-        status    <- agentPost(rig, "/api/support/agent/escalate", """{"note":"needs a human"}""", Some(token))
-        after     <- counter(DispatchTracker.Outcome.Completed)
+        (hh, rig)  <- seeded("esc")
+        _          <- dispatchOne(rig, hh, "th_esc")
+        token      <- mintToken(hh, "th_esc")
+        before     <- counter(DispatchTracker.Outcome.Completed)
+        status     <- agentPost(
+          rig,
+          "/api/support/agent/escalate",
+          """{"note":"needs a human"}""",
+          Some(token),
+        )
+        after      <- counter(DispatchTracker.Outcome.Completed)
         deadBefore <- counter(DispatchTracker.Outcome.NoCallback)
-        now       <- at(PastDead)
-        _         <- rig.tracker.sweep(now)
-        deadAfter <- counter(DispatchTracker.Outcome.NoCallback)
+        now        <- at(PastDead)
+        _          <- rig.tracker.sweep(now)
+        deadAfter  <- counter(DispatchTracker.Outcome.NoCallback)
       } yield assertTrue(
         status == Status.Ok,
         after == before + 1,
@@ -298,16 +309,18 @@ object SupportDispatchCompletionSpec
         after     <- counter(DispatchTracker.Outcome.Completed)
       } yield assertTrue(status == Status.Ok, after == before + 1)
     },
-    test("a household READ does NOT close a dispatch — a session that read and then died is the bug") {
+    test(
+      "a household READ does NOT close a dispatch — a session that read and then died is the bug",
+    ) {
       for {
-        (hh, rig)  <- seeded("read")
-        _          <- dispatchOne(rig, hh, "th_read")
-        token      <- mintToken(hh, "th_read", dataAccess = true)
-        _          <- agentGetHousehold(rig, token)
-        before     <- counter(DispatchTracker.Outcome.NoCallback)
-        now        <- at(PastDead)
-        _          <- rig.tracker.sweep(now)
-        after      <- counter(DispatchTracker.Outcome.NoCallback)
+        (hh, rig) <- seeded("read")
+        _         <- dispatchOne(rig, hh, "th_read")
+        token     <- mintToken(hh, "th_read", dataAccess = true)
+        _         <- agentGetHousehold(rig, token)
+        before    <- counter(DispatchTracker.Outcome.NoCallback)
+        now       <- at(PastDead)
+        _         <- rig.tracker.sweep(now)
+        after     <- counter(DispatchTracker.Outcome.NoCallback)
       } yield assertTrue(after == before + 1)
     },
     test("a callback REJECTED at the token check closes nothing — the report still fires") {

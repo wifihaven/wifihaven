@@ -132,7 +132,7 @@ object EscalationSpec
       emailRef    <- Ref.make(List.empty[EmailSender.Sent])
       plainRec    <- PlainClient.recorder
       dispRec     <- CloudAgentDispatcher.recorder
-      tracker   <- DispatchTracker.make
+      tracker     <- DispatchTracker.make
       notifier  = new Notifier.EmailNotifier(
         hsRepo,
         sender.getOrElse(EmailSender.recording(emailRef)),
