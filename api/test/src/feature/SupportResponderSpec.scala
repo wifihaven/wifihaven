@@ -307,6 +307,35 @@ object SupportResponderSpec
       s""""customer":{"id":"c_new","externalId":null$emailJson}}}}"""
   }
 
+  // #2471 — OUR OWN outbound EMAIL reply, as Plain actually delivers it: `thread.email_sent`, the
+  // email-channel twin of `thread.chat_sent`. This is the shape that fired on staging (2026-07-26)
+  // once the responder started answering cold email, and it is the one the loop guard had never been
+  // exercised against: the reply that reaches the customer must NEVER come back round as a new
+  // inbound. It carries a FULL body (`email.textContent`) and — unlike a cold inbound — a RESOLVABLE
+  // `customer.externalId`, so the event type / actor are the only things standing between it and a
+  // dispatch. `actorType` is overridable so a spec can prove the two guard layers are INDEPENDENT.
+  //
+  // Mirrors Plain's real envelope (core-api.uk.plain.com/webhooks/schema/latest.json) — do NOT
+  // "simplify" it: the hand-invented shape the pre-#2403 fixtures used matched the buggy parser and
+  // is precisely why #2403 shipped broken.
+  private def emailSentPayload(
+      tenant: Option[Long],
+      threadId: String,
+      text: String,
+      actorType: String = "user",
+      // Overridable ONLY so a test can prove the fixture is otherwise dispatch-worthy — flipping
+      // this to `thread.email_received` (with a customer actor) must DISPATCH, which is what makes
+      // the negative assertions on the `_sent` shape evidence of the guard rather than of an inert
+      // fixture. A red-check caught exactly that vacuity while writing these.
+      eventType: String = "thread.email_sent",
+  ): String = {
+    val extId = tenant.map(t => s""""$t"""").getOrElse("null")
+    s"""{"workspaceId":"w_1","id":"pEv_email_sent","payload":{"eventType":"$eventType",""" +
+      s""""email":{"subject":"Re: Can i add another router?","textContent":${text.toJson},""" +
+      s""""createdBy":{"actorType":"$actorType"}},""" +
+      s""""thread":{"id":"$threadId","customer":{"id":"c_1","externalId":$extId}}}}"""
+  }
+
   // Plain signs the RAW body with HMAC-SHA256 hex — same primitive as the chat-auth hash (#2199).
   private def sign(body: String): String = SupportService.hmacSha256Hex(WebhookSecret, body)
 
@@ -496,6 +525,108 @@ object SupportResponderSpec
         status     <- postWebhook(routes, body, Some(sign(body)))
         dispatches <- stubs.dispatch.dispatches.get
       } yield assertTrue(status == Status.Ok, dispatches.isEmpty)
+    },
+    test("#2471 loop guard: our own EMAIL reply (thread.email_sent) is NEVER re-dispatched") {
+      // The staging regression this pins (2026-07-26, #2471). The chat-channel loop guard had a
+      // test; the EMAIL channel did not, and once the responder began answering cold email the
+      // reply that actually reached the customer came back as `thread.email_sent` — a fully
+      // resolvable, fully bodied event. Only the event-type/actor guard stops it becoming an
+      // infinite reply loop, so pin it on the same footing as the chat case: a household that
+      // resolves, a body that would otherwise dispatch, and NOTHING allowed to happen.
+      for {
+        _               <- cleanDb
+        hhRepo          <- ZIO.service[HouseholdRepo]
+        billRepo        <- ZIO.service[HouseholdBillingRepo]
+        hh              <- hhRepo.create("Family EmailLoop", "family-email-loop")
+        _               <- billRepo.create(hh, "beta", founding = true)
+        (routes, stubs) <- makeRoutes(liveCfg)
+        body = emailSentPayload(
+          Some(hh.value),
+          "th_email_loop",
+          "Yes — your plan covers one router. Reply here if you need a hand.",
+        )
+        // Both seams: the ROUTE (Plain must always get its 200 so it stops retrying) and the
+        // responder (the `support_ai_draft_total{outcome}` label — the only thing that can tell a
+        // deliberate skip from a silent swallow, since the status is 200 either way).
+        status     <- postWebhook(routes, body, Some(sign(body)))
+        outcome    <- stubs.responder.handleWebhook(body, Some(sign(body)))
+        dispatches <- stubs.dispatch.dispatches.get
+        threads    <- stubs.plain.threads.get
+        // POSITIVE CONTROL — the same household, thread and body, differing ONLY in that this is a
+        // genuine customer inbound. It DISPATCHES, which is what makes the assertions above
+        // evidence of the loop guard rather than of an inert fixture. Without this, the test still
+        // passes when the guard is removed (a red-check proved exactly that).
+        control = emailSentPayload(
+          Some(hh.value),
+          "th_email_loop_control",
+          "Yes — your plan covers one router. Reply here if you need a hand.",
+          actorType = "customer",
+          eventType = "thread.email_received",
+        )
+        oControl        <- stubs.responder.handleWebhook(control, Some(sign(control)))
+        afterDispatches <- stubs.dispatch.dispatches.get
+      } yield assertTrue(
+        status == Status.Ok,
+        // No AI call and no write back into the thread — the two ways a loop could restart.
+        dispatches.isEmpty,
+        threads.isEmpty,
+        outcome == SupportResponder.WebhookOutcome.SkippedNotInbound,
+        SupportResponder.WebhookOutcome.label(outcome) == "skipped_not_inbound",
+      ) && assertTrue(
+        oControl == SupportResponder.WebhookOutcome.Dispatched,
+        afterDispatches.size == 1,
+        afterDispatches.head._1.threadId == "th_email_loop_control",
+      )
+    },
+    test("#2471 loop guard: the two layers are INDEPENDENT — either one alone stops the loop") {
+      // The guard is deliberately two checks (`PlainWebhook.InboundCustomerEventTypes` and
+      // `actorType == "customer"`). If either silently became load-bearing on its own, the other
+      // could rot unnoticed until a workspace subscribed to a new event type. So drive each half
+      // with the OTHER half satisfied:
+      //   - an outbound `thread.email_sent` that CLAIMS `actorType=customer` (actor guard passes,
+      //     event-type guard must still refuse);
+      //   - an inbound `thread.chat_received` authored by a non-customer actor (event-type guard
+      //     passes, actor guard must still refuse).
+      for {
+        _               <- cleanDb
+        hhRepo          <- ZIO.service[HouseholdRepo]
+        billRepo        <- ZIO.service[HouseholdBillingRepo]
+        hh              <- hhRepo.create("Family LoopLayers", "family-loop-layers")
+        _               <- billRepo.create(hh, "beta", founding = true)
+        (routes, stubs) <- makeRoutes(liveCfg)
+        sentAsCustomer    = emailSentPayload(
+          Some(hh.value),
+          "th_layer_event",
+          "an outbound reply mislabeled as customer-authored",
+          actorType = "customer",
+        )
+        receivedFromAgent = payload(
+          Some(hh.value),
+          "th_layer_actor",
+          "a teammate note that is not a customer message",
+          eventType = "thread.chat_received",
+          actorType = "user",
+        )
+        oEvent <- stubs.responder.handleWebhook(sentAsCustomer, Some(sign(sentAsCustomer)))
+        oActor <- stubs.responder.handleWebhook(receivedFromAgent, Some(sign(receivedFromAgent)))
+        dispatches <- stubs.dispatch.dispatches.get
+      } yield assertTrue(
+        oEvent == SupportResponder.WebhookOutcome.SkippedNotInbound,
+        oActor == SupportResponder.WebhookOutcome.SkippedNotInbound,
+        dispatches.isEmpty,
+      )
+    },
+    test("#2471: the inbound allowlist admits NO outbound (_sent) event type, by construction") {
+      // A structural pin on the allowlist itself, so the guard cannot be widened by accident. The
+      // regression class is "a new Plain event type gets added to the set because it looked
+      // inbound" — every event the assistant AUTHORS is named `*_sent`, and none may ever be here.
+      assertTrue(
+        !PlainWebhook.InboundCustomerEventTypes.exists(_.endsWith("_sent")),
+        !PlainWebhook.InboundCustomerEventTypes.contains("thread.email_sent"),
+        !PlainWebhook.InboundCustomerEventTypes.contains("thread.chat_sent"),
+        PlainWebhook.InboundCustomerEventTypes ==
+          Set("thread.thread_created", "thread.chat_received", "thread.email_received"),
+      )
     },
     test("#2403 loop guard: a non-customer actor on an inbound event is skipped") {
       for {

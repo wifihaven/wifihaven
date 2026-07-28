@@ -199,6 +199,144 @@ object PressResponderSpec
         dispatches.isEmpty,
       )
     },
+    test("a rejected inbound leaves NO trace: no press_messages row, no dispatch, no email") {
+      // `/api/press/inbound` is PUBLIC and unauthenticated — the HMAC IS the authentication, so the
+      // rejection must be total, not merely "we didn't answer it". An unsigned POST that still
+      // wrote an inbound row would let anonymous callers append to the operator-visible
+      // correspondence log (#2296) and would seed a `pressMessageId` an escalation later re-reads.
+      // The EMPTY / whitespace-only header is its own branch (`.map(_.trim).filter(_.nonEmpty)` in
+      // PressInbound) and is exercised separately: a header present-but-blank must land on
+      // MissingSignature, never fall through as "no header supplied, carry on".
+      for {
+        _                  <- cleanDb
+        pressLog           <- ZIO.service[PressMessageRepo]
+        (routes, stubs, _) <- makeRoutes(liveCfg)
+        body = payload("reporter@example.com", "Requesting comment for a story")
+        sUnsigned  <- postInbound(routes, body, None)
+        sForged    <- postInbound(routes, body, Some("deadbeef" * 8))
+        sEmpty     <- postInbound(routes, body, Some(""))
+        sBlank     <- postInbound(routes, body, Some("   "))
+        // A signature over a DIFFERENT body — the right shape, the wrong bytes.
+        sOtherBody <- postInbound(routes, body, Some(sign(payload("x@example.com", "other"))))
+        rows       <- pressLog.listRecent(50)
+        dispatches <- stubs.dispatch.dispatches.get
+        emails     <- stubs.emails.get
+      } yield assertTrue(
+        sUnsigned == Status.BadRequest,
+        sForged == Status.BadRequest,
+        sEmpty == Status.BadRequest,
+        sBlank == Status.BadRequest,
+        sOtherBody == Status.BadRequest,
+      ) &&
+        assertTrue(rows.isEmpty, dispatches.isEmpty, emails.isEmpty)
+    },
+    test("recipient lock: a reply body naming another recipient CANNOT redirect the email") {
+      // The structural half of the injection story. The existing pin proves a hostile MESSAGE
+      // cannot redirect the reply; this proves the REQUEST cannot either — the decoder reads only
+      // `markdown`, and every destination-shaped field a compromised agent might add is inert.
+      // Structural, not prompt-based: the address comes from the verified token, and the request
+      // body has no path to it at all.
+      for {
+        _                      <- cleanDb
+        (routes, stubs, clock) <- makeRoutes(liveCfg)
+        token                  <- mintToken(clock, "reporter@example.com", subject = "Story")
+        hostile = """{"markdown":"Happy to share our public overview.",""" +
+          """"to":"attacker@evil.example","cc":["leak@evil.example"],""" +
+          """"bcc":"quiet@evil.example","replyTo":"attacker@evil.example",""" +
+          """"from":"WifiHaven <ceo@wifihaven.net>","peerEmail":"attacker@evil.example",""" +
+          """"recipient":"attacker@evil.example","subject":"Confidential"}"""
+        (status, _) <- agentReply(routes, hostile, Some(token))
+        emails      <- stubs.emails.get
+      } yield assertTrue(status == Status.Ok, emails.size == 1) && {
+        val sent = emails.head
+        assertTrue(
+          // Destination, subject and identity are ALL server-derived — token, token, config.
+          sent.to == "reporter@example.com",
+          sent.subject == "Re: Story",
+          sent.from.contains(liveCfg.fromAddress),
+          sent.replyTo.contains(liveCfg.replyToAddress),
+          // Not a single attacker-supplied address reached the envelope or the body.
+          !sent.to.contains("evil.example"),
+          !sent.htmlBody.contains("evil.example"),
+          !sent.subject.contains("Confidential"),
+          sent.htmlBody.contains("public overview"),
+        )
+      }
+    },
+    test("press has NO household/data surface: data-shaped agent paths 404 under a VALID token") {
+      // The trust-model pin (#2203). Press is public and untrusted, so — unlike support — the agent
+      // can do exactly one thing: email the sender back. Absence is asserted with a VALID token in
+      // hand, so a 404 means the route does not exist rather than the caller being unauthenticated.
+      // The control is the last case: `reply` WITHOUT a token 401s on the same live router, which
+      // is what makes the 404s above evidence of absence rather than of a dark install.
+      val dataPaths = List(
+        "/api/press/agent/household",
+        "/api/press/agent/households",
+        "/api/press/agent/data",
+        "/api/press/agent/customer",
+        "/api/press/agent/customers",
+        "/api/press/agent/messages",
+        "/api/press/agent/devices",
+        "/api/press/agent/issue",
+        "/api/press/agent/request-consent",
+      )
+      for {
+        _                  <- cleanDb
+        (routes, _, clock) <- makeRoutes(liveCfg)
+        token              <- mintToken(clock, "reporter@example.com")
+        gets               <- ZIO.foreach(dataPaths) { p =>
+          val req = Request
+            .get(URL.decode(p).toOption.get)
+            .addHeader(Header.Authorization.Bearer(token))
+          routes.runZIO(req).map(r => (p, r.status))
+        }
+        posts              <- ZIO.foreach(dataPaths) { p =>
+          val req = Request
+            .post(URL.decode(p).toOption.get, Body.fromString("""{"x":1}"""))
+            .addHeader(Header.Authorization.Bearer(token))
+          routes.runZIO(req).map(r => (p, r.status))
+        }
+        (sReplyNoToken, _) <- agentReply(routes, """{"markdown":"x"}""", None)
+      } yield assertTrue(
+        gets.forall(_._2 == Status.NotFound),
+        posts.forall(_._2 == Status.NotFound),
+        // Control: a route that DOES exist answers 401, not 404 — so the 404s above are absence.
+        sReplyNoToken == Status.Unauthorized,
+      )
+    },
+    test("a PressToken cannot EXPRESS a household or a data scope, even server-side") {
+      // The claim "press carries no data scope" has to hold against a future mistake, not just
+      // against today's call sites — so pin the token GRAMMAR rather than its current callers.
+      // The payload is a fixed 5-field pipe record (replyTo|subject|pressMessageId|exp|messageId);
+      // a 6th field — a householdId, a dataAccess flag — is Malformed on decode EVEN WHEN signed
+      // with the real secret. Adding a scope to press therefore cannot happen by accident: it
+      // takes a deliberate arity change in PressToken, exactly where this test fails.
+      for {
+        _     <- cleanDb
+        clock <- ZIO.service[Clock]
+        now   <- clock.instant
+        token <- mintToken(clock, "reporter@example.com", subject = "Story")
+        parts    = token.split("\\.", 3)
+        raw      = new String(
+          java.util.Base64.getUrlDecoder.decode(parts(1)),
+          java.nio.charset.StandardCharsets.UTF_8,
+        )
+        fields   = raw.split("\\|", -1)
+        // Forge a 6-field payload carrying a household id, signed with the REAL secret — the
+        // strongest attacker (or the sloppiest future refactor) this grammar can face.
+        forged   = tokenFromPayload(s"$raw|1")
+        verified = PressToken.verify(forged, now, TokenSecret)
+      } yield assertTrue(
+        // The grammar is exactly the reply-target record — there is no scope field to set.
+        fields.length == 5,
+        // A correctly-SIGNED widened token is still refused: the arity is the guard, not the MAC.
+        verified == Left(PressToken.Err.Malformed),
+        // …while the unwidened token verifies, so the rejection above is the arity, not the setup.
+        PressToken
+          .verify(token, now, TokenSecret)
+          .exists(c => c.replyTo == "reporter@example.com" && c.pressMessageId == 0L),
+      )
+    },
     test(
       "a signed press message dispatches an agent with NO household gate: delimited data + token",
     ) {
