@@ -125,6 +125,11 @@ object HttpRoutes {
       // human interrupt, so a looping or prompt-injected agent must not be able to turn our alert
       // mailbox into a firehose; 3/hour still lets a genuine back-and-forth re-escalate.
       escalateThreadLimiter <- RateLimiterLive.make(maxAttempts = 3, windowSeconds = 60 * 60)
+      // #2472: the dispatch→completion tracker. Taken from the environment (not built here) because
+      // Main forks its sweep fiber against the SAME instance the responder records into — a second
+      // instance would sweep an empty map and report nothing, which is exactly the silence this
+      // change closes.
+      dispatchTracker       <- ZIO.service[wifihaven.api.support.DispatchTracker]
       supportResponder = wifihaven.api.support.SupportResponder(
         cfg.support,
         householdRepo,
@@ -150,6 +155,7 @@ object HttpRoutes {
         // use, so an escalation reaches a human without inventing a transport.
         notifier,
         escalateThreadLimiter,
+        dispatchTracker,
       )
       // #2203: the PRESS responder — the public inbound webhook (from the Cloudflare Email Worker)
       // → rate-cap → dispatch pipeline, plus the press agent's reply-target-bound EMAIL callback.

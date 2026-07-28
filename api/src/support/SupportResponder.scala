@@ -116,6 +116,12 @@ final case class SupportResponder(
     // #2437: bounds how often ONE thread can page the operator. An agent stuck in a loop (or a
     // prompt-injected one) must not be able to turn our own alert mailbox into a firehose.
     escalateThreadLimiter: RateLimiter,
+    // #2472: the dispatch→completion pairing. A dispatch the transport ACCEPTED is recorded here and
+    // closed by the first terminal agent callback on the same thread; a periodic sweep reports the
+    // ones nobody ever closed. Without it a cloud session that accepted the trigger and then died
+    // was indistinguishable from one that answered — every log line and metric said success while
+    // the customer got nothing.
+    dispatchTracker: DispatchTracker,
     // #2460: HOW the post-grant resume is run — the one thing about it that differs between
     // production and a spec. Production forks it as a DAEMON fiber so the customer's consent POST
     // returns at once: the resume's two legs (the Plain timeline read at
@@ -350,6 +356,16 @@ final case class SupportResponder(
           history = history,
         ),
       )
+      // #2472: pair the dispatch with the callback that must follow it. ONLY an ACCEPTED dispatch is
+      // tracked — a `Disabled` / `Error` / `ConfigError` outcome never started a cloud session, so
+      // nothing is owed and the existing dispatcher-level series already reports it. The transport is
+      // the SAME pure function of config the dispatcher was built from (`transportFor`), so the label
+      // cannot drift from the one `support_dispatch_total{transport}` already carries.
+      _       <- ZIO
+        .foreachDiscard(CloudAgentDispatcher.transportLabel(cfg))(
+          dispatchTracker.dispatched(threadId, hh, _, now),
+        )
+        .when(outcome == DispatchOutcome.Dispatched)
     } yield outcome
 
   /**
@@ -1035,7 +1051,18 @@ final case class SupportResponder(
           case Some(token) =>
             ConsentToken.verify(token, now, cfg.agentTokenSecretTrimmed) match {
               case Left(err)     => denyLoudly(action, AgentTokenRejection.reasonFor(err))
-              case Right(claims) => f(claims, now)
+              case Right(claims) =>
+                // #2472: the ONE place every token-authenticated agent callback passes through, so
+                // the dispatch→completion pairing has exactly one closing site. Terminal actions
+                // only (DispatchTracker.TerminalActions) — a household read or an issue filing
+                // proves the session is alive but leaves the customer with nothing, which is the
+                // very failure being tracked. A REJECTED callback never reaches here, so a forged
+                // token cannot close someone else's dispatch.
+                ZIO
+                  .when(DispatchTracker.TerminalActions.contains(action))(
+                    dispatchTracker.calledBack(claims.threadId, action, now),
+                  )
+                  .unit *> f(claims, now)
             }
         }
       }

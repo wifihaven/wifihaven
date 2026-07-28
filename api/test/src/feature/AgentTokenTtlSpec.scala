@@ -114,6 +114,7 @@ object AgentTokenTtlSpec
       plainRec           <- PlainClient.recorder
       ghRec              <- GithubIssueClient.recorder
       dispRec            <- CloudAgentDispatcher.recorder
+      tracker            <- DispatchTracker.make
       responder = SupportResponder(
         supportCfg,
         hhRepo,
@@ -135,6 +136,7 @@ object AgentTokenTtlSpec
         "https://app.example.test",
         Notifier.logOnly,
         RateLimiter.allowAll,
+        tracker,
       )
     } yield SupportRig(SupportAgentRoutes.routes(responder), plainRec, testClock)
 

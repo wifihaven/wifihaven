@@ -132,6 +132,7 @@ object EscalationSpec
       emailRef    <- Ref.make(List.empty[EmailSender.Sent])
       plainRec    <- PlainClient.recorder
       dispRec     <- CloudAgentDispatcher.recorder
+      tracker   <- DispatchTracker.make
       notifier  = new Notifier.EmailNotifier(
         hsRepo,
         sender.getOrElse(EmailSender.recording(emailRef)),
@@ -158,6 +159,7 @@ object EscalationSpec
         "https://app.example.test",
         notifier,
         escalateThreadLimiter,
+        tracker,
       )
     } yield SupportHarness(
       SupportAgentRoutes.routes(responder),
