@@ -22,6 +22,37 @@ import java.time.Instant
 // repo. `(household, thread)` is the whole key and is supplied by the caller from already-verified
 // state, so a household-A grant can never widen a household-B token.
 
+/**
+ * #2460 / #2453 — what a consent-grant attempt DID. Every case is decided inside the one
+ * transaction that writes, so nothing here can be re-derived by a caller from a separate read.
+ */
+enum GrantOutcome {
+
+  /** The pair moved from no-live-grant to live. #2460's resume key — the ONLY case that resumes. */
+  case Transitioned
+
+  /**
+   * A grant was already live. Either a fresh link re-confirming it, or (since #2453) the SAME link
+   * presented again while its grant still stands — a page reload. Idempotent for the customer, and
+   * it does not extend the window.
+   */
+  case AlreadyLive
+
+  /**
+   * #2453 — the link's nonce was already consumed AND there is no live grant now: the customer
+   * withdrew, or the grant lapsed. This is the replay a captured link would otherwise win. Refused,
+   * writes nothing.
+   */
+  case LinkSpent
+
+  /**
+   * #2453 — the link was minted BEFORE the record's `revoked_at`. An unredeemed link that was
+   * outstanding when the customer withdrew cannot silently undo the withdrawal. Refused, writes
+   * nothing (beyond spending the nonce, which is the point).
+   */
+  case LinkStale
+}
+
 trait SupportConsentRepo {
 
   /**
@@ -30,20 +61,33 @@ trait SupportConsentRepo {
    * refreshes the window and CLEARS `revoked_at` rather than accumulating history rows.
    * `grantedByUserId` is the audit trail (which admin granted).
    *
-   * Returns TRUE iff this call TRANSITIONED the pair from no-live-grant to live — i.e. there was no
-   * row, or the row was revoked/expired. A re-confirmation of a grant that was already live returns
-   * false. #2460 keys the consent RESUME (the server re-dispatching the customer's question) off
-   * that transition, so it must be decided by the same statement that writes: a separate
-   * read-then-write would let two concurrent Allow clicks both observe "not live" and both
-   * re-dispatch, double-answering the customer.
+   * The result reports what the call DID ([[GrantOutcome]]), decided by the same transaction that
+   * writes. #2460 keys the consent RESUME (the server re-dispatching the customer's question) off
+   * [[GrantOutcome.Transitioned]], so it cannot be a separate read-then-write: that would let two
+   * concurrent Allow clicks both observe "not live" and both re-dispatch, double-answering the
+   * customer.
+   *
+   * #2453 — the LINK is single-use, and cannot outlive a withdrawal. `nonce` is the link's, and
+   * redemption consumes it in `support_consent_link_use` (V85, PK on `nonce`, so consumption is
+   * decided by the INSERT itself). `linkIssuedAt` is when the link was minted. Two refusals follow,
+   * and both write no grant:
+   *   - nonce already consumed and no live grant now ⇒ [[GrantOutcome.LinkSpent]] — the replay
+   *     shape. A consumed nonce whose grant IS still live is the benign reload:
+   *     [[GrantOutcome.AlreadyLive]], no write, so a replay cannot even EXTEND the window.
+   *   - `linkIssuedAt` before the record's `revoked_at` ⇒ [[GrantOutcome.LinkStale]].
+   *
+   * Only the ALLOW path calls this. [[revoke]] deliberately consumes nothing and is gated on
+   * nothing: a withdrawal must never be blockable by a spent link.
    */
   def grant(
       household: HouseholdId,
       threadId: String,
+      nonce: String,
+      linkIssuedAt: Instant,
       grantedByUserId: Option[UserId],
       now: Instant,
       expiresAt: Instant,
-  ): Task[Boolean]
+  ): Task[GrantOutcome]
 
   /**
    * Withdraw consent ahead of expiry (the customer's "stop allowing" action). Stamps `revoked_at`
@@ -66,31 +110,56 @@ class SupportConsentRepoLive(xa: Transactor[Task]) extends SupportConsentRepo {
   def grant(
       household: HouseholdId,
       threadId: String,
+      nonce: String,
+      linkIssuedAt: Instant,
       grantedByUserId: Option[UserId],
       now: Instant,
       expiresAt: Instant,
-  ): Task[Boolean] =
-    // ONE transaction decides both the write and whether it was a TRANSITION (#2460). The prior
-    // state is read `FOR UPDATE`, so the row lock is held across the upsert: a second grant for the
-    // same pair blocks until this commits and then observes the LIVE row, reporting `false`. (Two
-    // simultaneous FIRST grants — no row to lock yet — can still both report `true`; they carry the
-    // same question, and the dispatch caps bound the cost.) Deliberately two statements rather than
-    // a CTE: a read CTE alongside a data-modifying one does not reliably observe the pre-write
-    // state, which is the whole signal here.
+  ): Task[GrantOutcome] =
+    // ONE transaction decides the link check, the write, and whether it was a TRANSITION (#2460).
+    // The prior state is read `FOR UPDATE`, so the row lock is held across the upsert: a second
+    // grant for the same pair blocks until this commits and then observes the LIVE row. (Two
+    // simultaneous FIRST grants — no row to lock yet — can still both report a transition; they
+    // carry the same question, and the dispatch caps bound the cost. Two simultaneous redemptions
+    // of the SAME link cannot, since #2453: the nonce PK serializes them.) Deliberately separate
+    // statements rather than a CTE: a read CTE alongside a data-modifying one does not reliably
+    // observe the pre-write state, which is the whole signal here.
     (for {
-      prev <- sql"""SELECT (revoked_at IS NULL AND expires_at > $now)
-                      FROM support_thread_consent
-                     WHERE household_id = $household AND thread_id = $threadId
-                     FOR UPDATE""".query[Boolean].option
-      _    <- sql"""INSERT INTO support_thread_consent
-                     (household_id, thread_id, granted_by_user_id, granted_at, expires_at, revoked_at)
-                   VALUES ($household, $threadId, $grantedByUserId, $now, $expiresAt, NULL)
-                   ON CONFLICT (household_id, thread_id) DO UPDATE
-                     SET granted_by_user_id = EXCLUDED.granted_by_user_id,
-                         granted_at         = EXCLUDED.granted_at,
-                         expires_at         = EXCLUDED.expires_at,
-                         revoked_at         = NULL""".update.run
-    } yield !prev.getOrElse(false)).transact(xa)
+      prev <- sql"""SELECT (revoked_at IS NULL AND expires_at > $now), revoked_at
+                       FROM support_thread_consent
+                      WHERE household_id = $household AND thread_id = $threadId
+                      FOR UPDATE""".query[(Boolean, Option[Instant])].option
+      live    = prev.exists(_._1)
+      revoked = prev.flatMap(_._2)
+      // #2453: SPEND the link. `DO NOTHING` on the nonce PK means `rows == 0` IS "already used" —
+      // the uniqueness constraint decides it, not a read we could race.
+      spent <- sql"""INSERT INTO support_consent_link_use
+                      (nonce, household_id, thread_id, consumed_at, link_expires_at)
+                    VALUES ($nonce, $household, $threadId, $now, $expiresAt)
+                    ON CONFLICT (nonce) DO NOTHING""".update.run.map(_ == 0)
+      out   <-
+        if spent then
+          // A re-presented link: benign while its own grant still stands (a page reload), a REPLAY
+          // once the customer withdrew or it lapsed. Either way it writes nothing, so it can
+          // neither restore access nor extend the window.
+          doobie.free.connection.pure(
+            if live then GrantOutcome.AlreadyLive else GrantOutcome.LinkSpent,
+          )
+        else if revoked.exists(_.isAfter(linkIssuedAt)) then
+          // A link that was outstanding when the customer withdrew. The nonce is spent above (it is
+          // dead either way); the grant is not written.
+          doobie.free.connection.pure(GrantOutcome.LinkStale)
+        else
+          sql"""INSERT INTO support_thread_consent
+                 (household_id, thread_id, granted_by_user_id, granted_at, expires_at, revoked_at)
+               VALUES ($household, $threadId, $grantedByUserId, $now, $expiresAt, NULL)
+               ON CONFLICT (household_id, thread_id) DO UPDATE
+                 SET granted_by_user_id = EXCLUDED.granted_by_user_id,
+                     granted_at         = EXCLUDED.granted_at,
+                     expires_at         = EXCLUDED.expires_at,
+                     revoked_at         = NULL""".update.run
+            .map(_ => if live then GrantOutcome.AlreadyLive else GrantOutcome.Transitioned)
+    } yield out).transact(xa)
 
   def revoke(household: HouseholdId, threadId: String, now: Instant): Task[Boolean] =
     sql"""UPDATE support_thread_consent SET revoked_at = $now

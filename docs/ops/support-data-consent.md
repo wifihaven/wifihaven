@@ -146,6 +146,35 @@ change raises its priority.
   (household + thread, never the token) and metered on
   `support_consent_total{outcome}`. A withdrawal of a grant that was not live
   meters as `revoke_noop`, so the panel counts real withdrawals.
+- **The consent link never re-enters the agent's own context (#2453).** The prompt
+  is posted through the same machine-user write path as every AI reply, so since
+  #2430/#2441 it comes back on the timeline as an `ai_assistant` turn — and the
+  anti-phishing guarantee on `request-consent` ("the agent supplies no text here,
+  so a prompt-injected agent cannot craft a phishing message under our
+  attribution") only holds if the agent never *sees* the link: otherwise it can
+  re-post the real, valid URL wrapped in a pretext of its own.
+  `CloudAgentDispatcher.renderHistory` therefore strips consent links out of the
+  rendered transcript, for **every** role — a customer quoting the prompt back is
+  the obvious way around an AI-turn-only rule. The redaction is narrow on purpose:
+  ordinary URLs in history are left alone, because the agent needs to read the
+  links customers actually send. `SupportPrivacy.scrubForIssue` is the opposite
+  direction and blanket-redacts *all* URLs, so no capability link can reach a
+  public GitHub issue.
+- **A consent link is single-use, and cannot outlive a withdrawal (#2453).** See
+  the `support_consent_link_use` schema below. A replayed or pre-withdrawal link
+  is refused (`link_spent` / `link_stale`) and writes nothing; re-clicking Allow
+  while the grant is still live stays an idempotent no-op that neither resumes the
+  conversation nor extends the window.
+- **The consented read and public-issue filing do not compose (#2454).** An agent
+  session whose token carries `dataAccess=true` is refused
+  `POST /api/support/agent/issues` outright (403,
+  `support_consent_total{outcome="issue_refused_data_session"}`). The scrubber
+  could never be the control here: the read returns a household NAME and PROFILE
+  names, which by product design are typically children's given names — ordinary
+  words that match no PII pattern and never will. The kickoff prompt tells the
+  agent, and points it at escalation instead. Nothing legitimate is lost: an agent
+  that needed account data to understand a problem can describe the symptom
+  without republishing the account.
 
 ## Schema
 

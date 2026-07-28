@@ -10,15 +10,19 @@ import zio.test.*
  * autonomous public-issue filing" (#2200 / #2241), and it is applied at the `GithubIssueClient`
  * trait boundary so every filing path is covered. Two things it did not cover:
  *
- *   1. **#2453 — URLs.** A capability URL that reaches agent context (the #2419 consent link, which
- *      since #2430/#2441 re-enters the agent's own prompt as thread history) passed straight through
- *      into the PUBLIC `wifihaven/wifihaven` repo. Redacting every absolute URL is deliberately
- *      blunt: an issue filed by the support agent is a SYMPTOM report, and no legitimate one needs
- *      to republish a link the agent read out of a customer's thread.
- *   2. **#2454 — the redaction PRIMITIVE for consent links**, shared with
- *      `CloudAgentDispatcher.renderHistory`. History must NOT be blanket-URL-scrubbed (a customer
- *      legitimately pastes links, and the agent needs to read them), so the consent-link pattern is
- *      its own narrow rule with its own placeholder.
+ *   - **URLs.** A capability URL that reaches agent context (the #2419 consent link, which since
+ *     #2430/#2441 re-enters the agent's own prompt as thread history) passed straight through into
+ *     the PUBLIC `wifihaven/wifihaven` repo. Redacting every absolute URL is deliberately blunt: an
+ *     issue filed by the support agent is a SYMPTOM report, and no legitimate one needs to
+ *     republish a link the agent read out of a customer's thread.
+ *   - **The redaction PRIMITIVE for consent links**, shared with
+ *     `CloudAgentDispatcher.renderHistory`. History must NOT be blanket-URL-scrubbed (a customer
+ *     legitimately pastes links, and the agent needs to read them), so the consent-link pattern is
+ *     its own narrow rule with its own placeholder.
+ *
+ * #2454's own fix is structural and lives in `SupportResponder.agentFileIssue` (a `dataAccess=true`
+ * session cannot file at all), pinned in feature/SupportConsentSpec — no regex here could cover the
+ * household + profile names that read returns.
  *
  * Scope guard: the `LongDigits` over-reach (it eats ISO dates) is #2458's, not this spec's — the
  * cases below deliberately do not pin date behaviour either way.

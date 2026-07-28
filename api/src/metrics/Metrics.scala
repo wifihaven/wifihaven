@@ -971,8 +971,19 @@ object AppMetrics {
   //   browser disconnects — a process shutdown can still interrupt an in-flight resume, so a lone
   //   unpaired `granted` around a deploy is that, not a dead-ended customer. A sustained gap means
   //   the loop is NOT closing.
+  //   link_spent | link_stale   — #2453, a well-signed, unexpired consent LINK refused because it
+  //   cannot legitimately grant: `link_spent` is a single-use link presented again once its grant
+  //   was withdrawn or lapsed (the REPLAY shape — a link captured out of the thread, which since
+  //   #2430/#2441 includes the agent's own prompt context), `link_stale` is a link minted BEFORE the
+  //   customer's withdrawal. Both write nothing;
+  //   issue_refused_data_session   — #2454, an agent session holding the consented-read scope tried
+  //   to file a public GitHub issue. Refused structurally: the household + profile names the read
+  //   returns are ordinary words no scrubber can catch, so the two capabilities never compose.
+  //   Expect zero once the kickoff tells the agent (a non-zero rate means the prompt and the
+  //   enforcement disagree, or something is trying).
   // `household_mismatch` is the security-relevant one (a consent link redeemed by another
-  // household's session, which writes nothing) — it should be flat zero in normal operation.
+  // household's session, which writes nothing) — it should be flat zero in normal operation, as
+  // should `link_spent` (a replay) and `issue_refused_data_session`.
   def supportConsent(outcome: String): UIO[Unit]       =
     MetricGuard.counter("support_consent_total", Map("outcome" -> outcome))
   // #2430 — the per-dispatch Plain thread-history read (the responder's conversation context).

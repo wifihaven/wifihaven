@@ -4,6 +4,7 @@ import wifihaven.api.SupportConfig
 import wifihaven.api.auth.{JwtClaims, RateLimiter}
 import wifihaven.api.db.{
   DeviceRepo,
+  GrantOutcome,
   Household,
   HouseholdBillingRepo,
   HouseholdRepo,
@@ -516,6 +517,16 @@ final case class SupportResponder(
    * On success it answers the created [[FiledIssue]] (#2461) — the number + public URL the agent
    * may quote to the customer; every failure stays the bounded [[AgentActionResult]] the route maps
    * to a status.
+   *
+   * #2454 — a session whose token carries `dataAccess=true` is REFUSED outright, before the rate
+   * limiters and before the client. The scrubber alone could never be the control here: the
+   * consented read returns the household NAME and the PROFILE names, which by product design are
+   * typically children's given names — ordinary words that match no PII pattern and never will. So
+   * the two capabilities are refused as a PAIR rather than the payload chased with regexes. Nothing
+   * legitimate is lost: an agent that needed account data to understand a problem can describe the
+   * symptom without republishing the account, and #2437 escalation reaches a human either way. This
+   * is a property of the SESSION's scope, not of the body — a body-shaped check would be exactly
+   * the regex-shaped guarantee this replaces.
    */
   def agentFileIssue(
       bearer: Option[String],
@@ -523,26 +534,32 @@ final case class SupportResponder(
       body: String,
   ): UIO[Either[AgentActionResult, FiledIssue]] =
     withClaimsE("issue", bearer) { (claims, _) =>
+      // #2454: the consented-read scope and public-issue filing do not compose. Checked FIRST so a
+      // refused session spends neither rate-limit budget nor a GitHub call.
+      if claims.dataAccess then
+        AppMetrics.supportConsent("issue_refused_data_session") *>
+          doneE("issue", AgentActionResult.DataSession)
       // Same short-circuit as dispatch: a thread-capped caller must not drain the global budget.
-      issueThreadLimiter.tryAcquire(s"thread:${claims.threadId}").flatMap { threadOk =>
-        if !threadOk then doneE("issue", AgentActionResult.RateLimited)
-        else
-          issueGlobalLimiter.tryAcquire("global").flatMap { globalOk =>
-            if !globalOk then doneE("issue", AgentActionResult.RateLimited)
-            else
-              github.fileIssue(IssueFileRequest(title, body, claims.threadId)).flatMap {
-                // #2461: the created issue's identity rides back out so the agent can offer the
-                // customer a link. The metric label stays the bounded `ok` — never the number.
-                case IssueOutcome.Filed(ref) =>
-                  // Same `done` metering choke point as every other branch — only the RESULT
-                  // differs, so there is still exactly one place the label is derived.
-                  done("issue", issueFiledOutcome(ref))
-                    .as(Right(FiledIssue(ref.map(_.number), ref.map(_.url))))
-                case IssueOutcome.Disabled   => doneE("issue", AgentActionResult.Disabled)
-                case IssueOutcome.Error      => doneE("issue", AgentActionResult.Error)
-              }
-          }
-      }
+      else
+        issueThreadLimiter.tryAcquire(s"thread:${claims.threadId}").flatMap { threadOk =>
+          if !threadOk then doneE("issue", AgentActionResult.RateLimited)
+          else
+            issueGlobalLimiter.tryAcquire("global").flatMap { globalOk =>
+              if !globalOk then doneE("issue", AgentActionResult.RateLimited)
+              else
+                github.fileIssue(IssueFileRequest(title, body, claims.threadId)).flatMap {
+                  // #2461: the created issue's identity rides back out so the agent can offer the
+                  // customer a link. The metric label stays the bounded `ok` — never the number.
+                  case IssueOutcome.Filed(ref) =>
+                    // Same `done` metering choke point as every other branch — only the RESULT
+                    // differs, so there is still exactly one place the label is derived.
+                    done("issue", issueFiledOutcome(ref))
+                      .as(Right(FiledIssue(ref.map(_.number), ref.map(_.url))))
+                  case IssueOutcome.Disabled   => doneE("issue", AgentActionResult.Disabled)
+                  case IssueOutcome.Error      => doneE("issue", AgentActionResult.Error)
+                }
+            }
+        }
     }
 
   /**
@@ -696,6 +713,15 @@ final case class SupportResponder(
    * [[ConsentGrant]] link. It is deliberately not the agent's own words: the agent supplies no text
    * here, so a prompt-injected agent cannot craft a phishing message under our attribution.
    *
+   * #2453 — that guarantee needs a second half, because the prompt is posted through the SAME
+   * machine-user write path as every AI reply and therefore comes back on the timeline as an
+   * `ai_assistant` turn. Closing the wording channel is worthless if the agent can read the LIVE
+   * link back out of its own thread history and re-post it wrapped in a pretext of its own
+   * choosing. So [[CloudAgentDispatcher.renderHistory]] strips consent links out of the rendered
+   * transcript (via [[SupportPrivacy.redactConsentLinks]], on every role), and the link itself is
+   * single-use and cannot outlive a withdrawal (see [[wifihaven.api.db.SupportConsentRepo.grant]]).
+   * Do not "simplify" either half away: together they are what makes the sentence above true.
+   *
    * This REQUESTS consent; it does not grant it. There is no path from this endpoint to a
    * `support_thread_consent` row — only [[recordConsent]], authenticated by the CUSTOMER's session
    * JWT, writes one. A thread that already has a live grant is a no-op Ok (nothing to ask), so a
@@ -733,6 +759,9 @@ final case class SupportResponder(
       now = now,
       ttl = SupportResponder.ConsentLinkTtl,
       secret = cfg.agentTokenSecretTrimmed,
+      // #2453: a fresh nonce per link — redemption consumes it, so a captured link cannot be
+      // replayed to re-grant access the customer has since withdrawn.
+      nonce = ConsentGrant.newNonce(),
     )
     val write = PlainThreadWrite(
       threadId = claims.threadId,
@@ -796,24 +825,48 @@ final case class SupportResponder(
       // Audit pointer: WHICH admin granted. Best-effort — a DB blip on the lookup must not lose
       // the customer's consent, so the grant is still recorded (with a null actor).
       user  <- userRepo.findByUsername(claims.hh, claims.sub).catchAll(_ => ZIO.none)
-      // #2460: `grant` reports whether it TRANSITIONED the pair from no-live-grant to live, decided
-      // by the same transaction that writes (a separate read-then-write would let a second Allow on
-      // an already-live grant resume again and double-answer). A failed write transitions nothing.
+      // #2460: `grant` reports what it DID, decided by the same transaction that writes (a separate
+      // read-then-write would let a second Allow on an already-live grant resume again and
+      // double-answer). #2453 folds the link's single-use check into the same transaction, so a
+      // replayed or pre-revocation link is refused there rather than by a check we could race.
+      // A failed write transitions nothing.
       write <- consentRepo
-        .grant(claims.hh, g.threadId, user.map(_.id), now, now.plus(SupportResponder.ConsentTtl))
+        .grant(
+          claims.hh,
+          g.threadId,
+          g.nonce,
+          g.issuedAt,
+          user.map(_.id),
+          now,
+          now.plus(SupportResponder.ConsentTtl),
+        )
         .foldZIO(
           e =>
             ZIO.logWarning(s"support: consent grant failed: ${e.getMessage}") *>
               AppMetrics
                 .supportConsent("error")
                 .as(GrantWrite(ConsentResult.Error, transitioned = false)),
-          transitioned =>
-            ZIO.logInfo(
-              s"support: data-access consent GRANTED household=${claims.hh.value} " +
-                s"thread=${g.threadId} by=${claims.sub} ttlHours=${SupportResponder.ConsentTtl.toHours}",
-            ) *> AppMetrics
-              .supportConsent("granted")
-              .as(GrantWrite(ConsentResult.Granted, transitioned)),
+          {
+            // #2453 — the two refusals. Both are security-relevant: a link is being presented that
+            // cannot legitimately grant, which on the `link_spent` side is the replay-after-
+            // withdrawal shape the single-use nonce exists to stop. Loud + metered, writes nothing.
+            case out @ (GrantOutcome.LinkSpent | GrantOutcome.LinkStale) =>
+              val reason =
+                if out == GrantOutcome.LinkSpent then "link_spent" else "link_stale"
+              ZIO.logWarning(
+                s"support: consent link REFUSED ($reason) household=${claims.hh.value} " +
+                  s"thread=${g.threadId} by=${claims.sub}",
+              ) *> AppMetrics
+                .supportConsent(reason)
+                .as(GrantWrite(ConsentResult.LinkSpent, transitioned = false))
+            case out                                                     =>
+              ZIO.logInfo(
+                s"support: data-access consent GRANTED household=${claims.hh.value} " +
+                  s"thread=${g.threadId} by=${claims.sub} ttlHours=${SupportResponder.ConsentTtl.toHours}",
+              ) *> AppMetrics
+                .supportConsent("granted")
+                .as(GrantWrite(ConsentResult.Granted, out == GrantOutcome.Transitioned))
+          },
         )
       // The grant row is COMMITTED before the resume, so the token the resume mints is guaranteed to
       // carry the scope the customer just granted. Re-confirming a still-live grant resumes nothing
@@ -1249,6 +1302,16 @@ object SupportResponder {
     case Invalid
     // The link belongs to another household than the authenticated session. Writes nothing.
     case Mismatch
+
+    /**
+     * #2453 — the link is well-signed and unexpired, but cannot grant: its nonce is already spent
+     * and the grant is no longer live (the replay-after-withdrawal shape), or it was minted before
+     * the customer's withdrawal. ONE customer-facing case for both — the reply says only "ask the
+     * assistant for a new link", so a caller probing with captured links learns nothing about which
+     * rule bit. The `support_consent_total{outcome}` label keeps them apart for the operator
+     * (`link_spent` / `link_stale`). Writes no grant.
+     */
+    case LinkSpent
     case Disabled
     case Error
   }
@@ -1378,6 +1441,14 @@ object SupportResponder {
     case OkNoLink
     case Denied
     case NoConsent
+
+    /**
+     * #2454 — the action is refused because THIS SESSION holds the consented-read scope. Only issue
+     * filing produces it: a session that can read the household must not also publish into the
+     * public repo. Distinct from [[NoConsent]] (which is the opposite complaint — too little scope)
+     * and given its own metric label so an operator can see the pair being attempted.
+     */
+    case DataSession
     case RateLimited
     case Disabled
     case Error
@@ -1388,6 +1459,7 @@ object SupportResponder {
       case OkNoLink    => "ok_no_link"
       case Denied      => "denied"
       case NoConsent   => "denied"
+      case DataSession => "denied_data_session"
       case RateLimited => "rate_limited"
       case Disabled    => "disabled"
       case Error       => "error"
@@ -1395,8 +1467,8 @@ object SupportResponder {
 
     /** The cases that mean "the action succeeded" — the ONE place success is defined. */
     private def isSuccess(r: AgentActionResult): Boolean = r match {
-      case Ok | OkNoLink                                       => true
-      case Denied | NoConsent | RateLimited | Disabled | Error => false
+      case Ok | OkNoLink                                                     => true
+      case Denied | NoConsent | DataSession | RateLimited | Disabled | Error => false
     }
 
     /**

@@ -382,6 +382,8 @@ object SupportResponderSpec
         _               <- consentRepo.grant(
           hh,
           "th_ui_1",
+          "n_ui_1",
+          seedNow,
           None,
           seedNow,
           seedNow.plus(SupportResponder.ConsentTtl),
@@ -437,6 +439,8 @@ object SupportResponderSpec
         _               <- consentRepo.grant(
           hh,
           "th_ccc_1",
+          "n_ccc_1",
+          seedNow,
           None,
           seedNow,
           seedNow.plus(SupportResponder.ConsentTtl),
@@ -925,6 +929,8 @@ object SupportResponderSpec
         _           <- consentRepo.grant(
           hhA,
           "th_a",
+          "n_a",
+          nowA,
           None,
           nowA,
           nowA.plus(SupportResponder.ConsentTtl),

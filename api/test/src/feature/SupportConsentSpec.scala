@@ -744,15 +744,15 @@ object SupportConsentSpec
         // Two links are outstanding at t0; the customer redeems the first.
         granted <- repo.grant(hh, "th_s", "n_used", now, None, now, exp)
         revokeT = now.plusSeconds(60)
-        _       <- repo.revoke(hh, "th_s", revokeT)
+        _         <- repo.revoke(hh, "th_s", revokeT)
         // (a) replay of the SPENT link — the nonce is consumed and there is no live grant.
-        replay  <- repo.grant(hh, "th_s", "n_used", now, None, revokeT.plusSeconds(1), exp)
+        replay    <- repo.grant(hh, "th_s", "n_used", now, None, revokeT.plusSeconds(1), exp)
         // (b) the never-redeemed sibling link, minted BEFORE the withdrawal.
-        stale   <- repo.grant(hh, "th_s", "n_unused", now, None, revokeT.plusSeconds(2), exp)
+        stale     <- repo.grant(hh, "th_s", "n_unused", now, None, revokeT.plusSeconds(2), exp)
         // Neither wrote anything: consent is still withdrawn.
-        live    <- repo.isGranted(hh, "th_s", revokeT.plusSeconds(3))
+        live      <- repo.isGranted(hh, "th_s", revokeT.plusSeconds(3))
         // A link minted AFTER the withdrawal is the customer saying yes again — that must work.
-        fresh   <- repo.grant(
+        fresh     <- repo.grant(
           hh,
           "th_s",
           "n_fresh",
@@ -928,10 +928,11 @@ object SupportConsentSpec
       // crypto edge case).
       for {
         now <- ZIO.serviceWithZIO[Clock](_.instant)
-        hh    = HouseholdId(7L)
-        agent = ConsentToken
+        hh          = HouseholdId(7L)
+        agent       = ConsentToken
           .mint(hh, "th_swap", true, now, java.time.Duration.ofMinutes(30), TokenSecret)
-        link  = ConsentGrant.mint(hh, "th_swap", now, java.time.Duration.ofHours(1), TokenSecret)
+        link        = ConsentGrant
+          .mint(hh, "th_swap", now, java.time.Duration.ofHours(1), TokenSecret, "n_swap")
         agentAsLink = ConsentGrant.verify(agent.replaceFirst("^v1\\.", "g1."), now, TokenSecret)
         linkAsAgent = ConsentToken.verify(link.replaceFirst("^g1\\.", "v1."), now, TokenSecret)
       } yield assertTrue(

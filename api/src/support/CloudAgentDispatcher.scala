@@ -212,7 +212,10 @@ object CloudAgentDispatcher {
     // authenticated action records the grant, which the NEXT dispatch's token reflects.
     val consent  =
       if req.dataConsent then
-        s"The customer consented to household data access: GET $agentApiBase/api/support/agent/household with the token."
+        s"The customer consented to household data access: GET $agentApiBase/api/support/agent/household with the token. " +
+          "BECAUSE this session can read their account, it CANNOT file a GitHub issue (#2454) — " +
+          "that endpoint will refuse this token, by design, so their household and profile names " +
+          "cannot reach a public repo. If you find a real product bug, escalate instead."
       else
         "The customer has NOT (yet) granted household data access — the household endpoint will refuse this token. " +
           "If answering needs their account details, do NOT just say you lack permission: offer to look it up, " +
@@ -299,7 +302,18 @@ object CloudAgentDispatcher {
     // 1. per-turn: flatten to safe text, truncate an oversized turn (rather than dropping it, which
     //    would silently lose a turn), drop anything that ends up empty.
     val turns   = history.flatMap { m =>
-      val raw  = m.text.trim
+      // #2453: strip #2419 consent links BEFORE anything else. The consent prompt is posted through
+      // the same machine-user write path as every AI reply, so it comes back on the timeline as an
+      // `ai_assistant` turn and would otherwise put the LIVE capability URL into the agent's own
+      // context — which is exactly what `agentRequestConsent`'s anti-phishing guarantee assumes
+      // cannot happen. Applied to EVERY role, not just the AI's: a customer quoting the prompt back
+      // is the obvious way around an ai_assistant-only rule. Redacting first (rather than after the
+      // cap) means the cap measures the redacted text and can never leave a half-link behind.
+      //
+      // This is on the RENDER, not on the timeline parse: `PlainClient.roleOf` falls back to
+      // `text.contains(AiReplyAttribution)` on the RAW entry to label an unknown-actor turn, and
+      // that signal is the attribution line, not the link — so it is untouched either way.
+      val raw  = SupportPrivacy.redactConsentLinks(m.text.trim)
       // Same cap-and-say-so primitive the subject line uses — one definition of "truncated for the
       // prompt", so the two can't drift on the marker or the predicate (#2481 review).
       val safe = neutralizeTags(ManagedAgents.capMarked(raw, MaxMessageChars))
