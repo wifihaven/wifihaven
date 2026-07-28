@@ -579,6 +579,23 @@ object MetricGuard {
     // the webhook never fails — so this series is the ONLY way a permanently context-less responder
     // is visible. Bounded, never per-thread / per-household.
     "support_thread_history_total"                  -> Set("outcome"),
+    // #2452 — the BOOT-time audit of the Plain machine-user key's own permission array (Plain's
+    // `myPermissions` query). `support_permission_probe_total{outcome}`, one sample per boot:
+    //   ok          — every required permission granted.
+    //   missing     — a PROVISIONING GAP: required permissions absent. Also logged at ERROR naming
+    //                 ALL of them plus the exact updateApiKey mutation.
+    //   broken      — Plain REJECTED the credential (401/403: revoked / rotated / wrong key) or its
+    //                 probe shape drifted. Every Plain call is failing, not just the probe.
+    //   unreachable — transport / timeout / 5xx: we could not ask. Says NOTHING about the grants.
+    //   skipped     — the Plain write client is unconfigured; nothing to audit.
+    // `missing` and `broken` are the never-self-healing signals and are BOTH logged at ERROR;
+    // `unreachable` is the transient one and is a warning. The line between them is the HTTP
+    // status, drawn by the very predicate `support_dispatch_total{reason}` uses
+    // (`CloudAgentObservability.isPermanentClientStatus`, #2416), so an outage never reads as a
+    // misconfiguration or vice versa. Without this series the features these permissions gate (#2430 thread history,
+    // #2240 tenant entitlement) are fail-open, hence INERT and invisible. Bounded enum, never a
+    // per-permission / per-workspace label.
+    "support_permission_probe_total"                -> Set("outcome"),
     // #2203 — the Claude PRESS/PR responder (dark until keys set). `press_ai_draft_total{outcome}`
     // counts each inbound PRESS Plain webhook by a bounded enum (dispatched | skipped | rate_limited
     // | invalid_signature | malformed | disabled | error); `press_agent_action_total{op,outcome}`
@@ -964,6 +981,14 @@ object AppMetrics {
   // case of a thread with no readable entries at all, not the common first-message case.
   def supportThreadHistory(outcome: String): UIO[Unit] =
     MetricGuard.counter("support_thread_history_total", Map("outcome" -> outcome))
+
+  // #2452 — the boot-time Plain API-key permission audit (PlainPermissionAudit). ONE sample per
+  // boot: ok | missing | broken | unreachable | skipped. `missing` (required permissions absent)
+  // and `broken` (the key itself rejected, or Plain's probe shape drifted) are the PROVISIONING
+  // GAPS that no redeploy fixes — both silently disable the fail-open features gated on them, both
+  // log at ERROR, and both should be flat zero. `unreachable` is the transient bucket.
+  def supportPermissionProbe(outcome: String): UIO[Unit] =
+    MetricGuard.counter("support_permission_probe_total", Map("outcome" -> outcome))
 
   // ── #2203: Claude press/PR responder (dark until keys set) ───────────────────
   // Emitted from PressResponder. `pressAiDraft` counts each inbound PRESS Plain webhook by outcome

@@ -10,6 +10,7 @@ import wifihaven.api.notify.Notifier
 import wifihaven.api.observability.LokiDropMetrics
 import wifihaven.api.policy.*
 import wifihaven.api.routes.*
+import wifihaven.api.support.{PlainClient, PlainPermissionAudit}
 import wifihaven.api.usage.PartitionMaintenanceJob
 import wifihaven.api.usage.RetentionSweepJob
 import wifihaven.api.usage.RollupJobs
@@ -47,6 +48,17 @@ object Main extends ZIOAppDefault {
         // is visible in boot logs — "disabled because nobody set the key" vs "disabled by choice"
         // is diagnosable from a single boot. Also inspectable live at loopback GET /api/debug/config.
         _         <- StartupFeatureReport.log(cfg)
+        // #2452 (no-dark-by-default): audit the Plain machine-user API key's own permission array
+        // against what THIS deployment's enabled features need, reporting EVERY gap at once. It is
+        // the one prerequisite that is not local config — the permission array is Plain-WORKSPACE
+        // state — so `AppConfig.validateRequired` cannot see it, and until this existed a gap was
+        // discoverable only at first write, per call, as a fail-open ERROR that named the wrong
+        // permission. FORKED: a live third-party call must never delay the port bind, and boot must
+        // never die on Plain being down (see `PlainPermissionAudit` for why this is
+        // loud-and-alertable rather than a boot crash).
+        _         <- ZIO
+          .serviceWithZIO[PlainClient](PlainPermissionAudit.run(cfg.support, _))
+          .forkScoped
         _         <- ZIO
           .logWarning(
             "WIFIHAVEN_DEBUG=1 set — /api/debug/* endpoints are MOUNTED (loopback only). " +

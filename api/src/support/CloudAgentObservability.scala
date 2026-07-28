@@ -91,11 +91,19 @@ object CloudAgentObservability {
    * text.
    */
   def classify(e: Throwable): FailureKind = e match {
-    case h: CloudAgentHttpError
-        if h.status >= 400 && h.status < 500 && !TransientClientStatuses.contains(h.status) =>
-      FailureKind.Permanent
-    case _ => FailureKind.Transient
+    case h: CloudAgentHttpError if isPermanentClientStatus(h.status) => FailureKind.Permanent
+    case _                                                           => FailureKind.Transient
   }
+
+  /**
+   * The status half of [[classify]], exposed so other boundaries that talk to a third-party HTTP
+   * API can draw the SAME permanent-vs-transient line instead of re-deriving it
+   * (docs/process/single-source-of-truth.md). #2452's Plain API-key permission probe is the second
+   * caller: there too a 4xx means a credential / resource the operator must fix, and a 5xx / 408 /
+   * 429 means wait. The `TransientClientStatuses` carve-out above applies identically.
+   */
+  def isPermanentClientStatus(status: Int): Boolean =
+    status >= 400 && status < 500 && !TransientClientStatuses.contains(status)
 
   /** The `reason` label for a classified failure. */
   def reasonFor(kind: FailureKind): String = kind match {

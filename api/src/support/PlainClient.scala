@@ -68,6 +68,40 @@ trait PlainClient {
    * "waiting on a human" is a filter instead of a full read of every thread. Never fails.
    */
   def markThread(req: PlainThreadMark): UIO[PlainOutcome]
+
+  /**
+   * #2452 — read the permission array of the API key we are authenticating WITH. The one
+   * prerequisite of this integration that lives in Plain-workspace state rather than local config,
+   * so it cannot be checked by `AppConfig.validateRequired`; [[PlainPermissionAudit]] runs this at
+   * boot and reports every gap. Never fails, and never reports a false gap: a transient outage
+   * yields [[PlainPermissionRead.Unreachable]] and a rejected credential
+   * [[PlainPermissionRead.Broken]] — three distinct answers, not one.
+   */
+  def grantedPermissions: UIO[PlainPermissionRead]
+}
+
+/**
+ * #2452 — the outcome of reading the machine-user key's own permission array. Three failure shapes,
+ * split because they need three different operator actions and conflating them is exactly how this
+ * class of defect stays invisible:
+ *
+ *   - [[Granted]] — Plain answered with the key's array (which may still be missing entries).
+ *   - [[Broken]] — PERMANENT. Plain rejected the credential itself (401/403 — a revoked, rotated,
+ *     or wrong key) or its own probe shape drifted. Never self-heals; the whole integration is
+ *     down, not just the audit. This is the "broken credential ⇒ we should be broken too" case in
+ *     docs/process/no-dark-by-default.md, so it is reported LOUD, not as an outage.
+ *   - [[Unreachable]] — TRANSIENT. Transport error, timeout, 5xx. Says nothing about the grants.
+ *
+ * The `Broken`/`Unreachable` line is the SAME permanent-vs-transient line #2416 draws at the
+ * cloud-agent boundary, and it is drawn by literally the same predicate —
+ * `CloudAgentObservability.isPermanentClientStatus` — so the two boundaries cannot drift
+ * (docs/process/single-source-of-truth.md).
+ */
+enum PlainPermissionRead {
+  case Granted(permissions: Set[String])
+  case Broken(detail: String)
+  case Unreachable(detail: String)
+  case NotConfigured
 }
 
 /**
@@ -263,6 +297,36 @@ object PlainClient {
     else Reason.FieldWrite
   }
 
+  // ── #2452: name the permission Plain ACTUALLY named ────────────────────────
+  // Plain reports a denial as `Insufficient permissions, missing "timeline:read".` The quoted token
+  // is Plain's OWN permission identifier — not customer data — so it is safe to log even though the
+  // response body stays redacted (`redactBody`), and it is the only thing that tells an operator
+  // what to grant.
+  //
+  // The match is deliberately narrow: `missing "<word>:<word>"`, i.e. a permission-SHAPED token
+  // only. A looser "text after `missing`" would lift arbitrary response prose — which on the
+  // thread-timeline path can be customer conversation text — straight past the redaction into Loki.
+  // Anything that does not match yields None, and the caller falls back to a generic hint rather
+  // than a confidently wrong permission name (the #2452 sub-defect: the old hardcoded `thread:read`
+  // was the operator's ONLY signal, and it was wrong).
+  private val MissingPermissionPattern = """missing\s+"([A-Za-z]+:[A-Za-z]+)"""".r
+
+  private[api] def missingPermissionName(detail: String): Option[String] =
+    MissingPermissionPattern.findFirstMatchIn(detail).map(_.group(1))
+
+  /** The operator-facing "what to grant" hint for a permission denial. Never guesses. */
+  private[api] def permissionGapHint(detail: String): String =
+    missingPermissionName(detail) match {
+      case Some(perm) =>
+        s"the Plain machine-user API key lacks the `$perm` permission; grant it with the " +
+          "`updateApiKey` mutation in docs/ops/plain-setup.md §5.3 (permissions are REPLACED in " +
+          "full — send the complete set from §5.1)"
+      case None       =>
+        "the Plain machine-user API key lacks a required permission (Plain did not name it in a " +
+          "form we can quote); re-run the `updateApiKey` mutation with the full set from " +
+          "docs/ops/plain-setup.md §5.1"
+    }
+
   // #2410: entitlement-write failures are LOUD — `logError`, not `logWarning` (the no-dark-by-default
   // bar), carrying the attributed `reason`. permission/schema are a provisioning gap discovered at
   // FIRST WRITE (the prerequisite is Plain-workspace state, not local config, so it can't be checked
@@ -391,6 +455,8 @@ object PlainClient {
       AppMetrics.supportThreadHistory("disabled").as(Nil)
     def markThread(req: PlainThreadMark): UIO[PlainOutcome]                        =
       ZIO.succeed(PlainOutcome.Disabled)
+    def grantedPermissions: UIO[PlainPermissionRead]                               =
+      ZIO.succeed(PlainPermissionRead.NotConfigured)
   }
 
   /** Public no-op instance for specs that don't drive Plain. */
@@ -583,6 +649,15 @@ object PlainClient {
   // Strip the `(body: …)` tail `sendForBody` appends to a failure detail. On the thread-timeline
   // path that tail is CUSTOMER CONVERSATION TEXT (a GraphQL partial failure is an HTTP 200 whose
   // `data` still carries the timeline), and it must not reach the logs / Loki.
+  // #2452 — recover the HTTP status from a `sendForBody` failure detail. This reads OUR OWN
+  // framing (`sendForBody` authors the exact prefix `HTTP <status> ` for every non-2xx), not
+  // Plain's prose, so it is a structural read rather than a guess at someone else's wording — the
+  // distinction that makes it safe to route a permanent-vs-transient decision through it.
+  private val HttpStatusPrefix = """^HTTP (\d{3})\b""".r
+
+  private[api] def statusOf(detail: String): Option[Int] =
+    HttpStatusPrefix.findFirstMatchIn(detail).map(_.group(1).toInt)
+
   private[api] def redactBody(detail: String): String =
     detail.indexOf(" (body:") match {
       case -1 => detail
@@ -1162,10 +1237,14 @@ object PlainClient {
               val safe   = redactBody(failure.detail)
               val log    = reason match {
                 case Reason.Permission =>
+                  // #2452: name the permission Plain ACTUALLY named. This path previously
+                  // hardcoded `thread:read` for ANY 403 — and the real cause on staging was
+                  // `timeline:read` (a SEPARATE permission gating `thread { timelineEntries }`).
+                  // Because the body is redacted, that wrong string was the operator's only
+                  // signal, and granting exactly what it asked for did not fix anything.
                   ZIO.logError(
                     s"plain threadTimeline failed [reason=$reason]: $safe — PROVISIONING GAP: " +
-                      "the Plain machine-user API key lacks the thread:read permission; grant it " +
-                      "(docs/ops/plain-setup.md §5.1) so the support responder can see the " +
+                      s"${permissionGapHint(safe)} — so the support responder cannot see the " +
                       "conversation so far",
                   )
                 case Reason.Schema     =>
@@ -1185,6 +1264,89 @@ object PlainClient {
                 })
                 .as(Nil)
           }
+    // ── #2452: the key's own permission array ──────────────────────────────────
+    // Plain's `myPermissions` — "Returns the full list of permission strings granted to the
+    // currently authenticated user or machine user in this workspace" (verified against Plain's
+    // published schema, https://core-api.uk.plain.com/graphql/v1/schema.graphql; `Permissions
+    // { permissions: [String!]! }`). It carries no `permission:read` requirement of its own — the
+    // sibling `permissions` query, which enumerates the workspace's whole vocabulary, is the one
+    // that does — so the probe cannot itself be the thing that is denied.
+    //
+    // Reads NOTHING about customers, threads, or conversations: the response is a list of our own
+    // grant strings.
+    private val MyPermissionsQuery: String                                         =
+      """query myPermissions { myPermissions { permissions } }"""
+
+    // Bounded exactly like `threadHistory`'s read (and for the same reason): the JDK client's own
+    // ConnectTimeout + RequestTimeout can hold a borrowed blocking thread for 30s against a
+    // black-holed Plain. The audit is pure observability, so it must give up quickly.
+    //
+    // Deliberately BELOW `RequestTimeout` (20s) so a hung Plain resolves to `unreachable` rather
+    // than hanging the fiber; the cost is that a genuinely slow-but-healthy Plain also reads as
+    // `unreachable`, which is the harmless direction (unverified, not misreported). Slightly
+    // longer than `HistoryTimeout` because nothing waits on this one — it is a forked boot task,
+    // not a webhook's latency budget.
+    private val ProbeTimeout: Duration = 10.seconds
+
+    def grantedPermissions: UIO[PlainPermissionRead] =
+      sendForBody(MyPermissionsQuery, Json.Obj(), Expect("myPermissions", None)).disconnect
+        .timeoutTo(Left(PlainFailure("timed out", None)): Either[PlainFailure, String])(identity)(
+          ProbeTimeout,
+        )
+        .map {
+          case Right(body)   =>
+            navigate(
+              Json.decoder.decodeJson(body).getOrElse(Json.Null),
+              List("data", "myPermissions", "permissions"),
+            ) match {
+              case Some(Json.Arr(items)) =>
+                PlainPermissionRead.Granted(items.collect { case Json.Str(p) => p }.toSet)
+              // A 200 whose payload has no permissions array is Plain-schema DRIFT, not a grant gap
+              // and not an outage — reporting it as `Granted(empty)` would tell an operator to
+              // grant everything, and as `Unreachable` would tell them to wait for a self-heal that
+              // never comes. It is permanent, so it is Broken.
+              case _                     =>
+                PlainPermissionRead.Broken(
+                  "myPermissions response carried no permissions array — Plain's probe shape drifted",
+                )
+            }
+          // The split that matters, and it is drawn on the HTTP STATUS, not on message text.
+          //
+          // A 4xx means the KEY ITSELF is rejected — revoked, rotated out from under us, or simply
+          // wrong — or that we are asking for something that does not exist. `myPermissions` needs
+          // no permission of its own, so a 403 here can never be an under-grant. Either way it is a
+          // PERMANENT misconfiguration in which every Plain call is failing, not an outage to wait
+          // out (no-dark-by-default: a broken credential means the integration is broken and we
+          // should be too). 5xx / timeout / transport is the transient half.
+          //
+          // That line is EXACTLY `CloudAgentObservability.isPermanentClientStatus` — the same
+          // predicate #2416 uses at the cloud-agent boundary, including its 408/429 carve-out —
+          // called, not re-derived. Deliberately NOT `classifyFieldFailure`: that one matches
+          // substrings, so it would file a 400/404/422 as transient and could be fooled by an
+          // upstream HTML error page containing the word "forbidden".
+          // `PlainFailure.body` (#2435) is deliberately ignored here: this probe reads only our own
+          // grant strings, so there is no `error.code` to branch on, and the raw body is exactly
+          // what must not reach the logs.
+          case Left(failure) =>
+            val safe = redactBody(failure.detail)
+            statusOf(safe) match {
+              case Some(status) =>
+                if CloudAgentObservability.isPermanentClientStatus(status) then
+                  PlainPermissionRead.Broken(safe)
+                else PlainPermissionRead.Unreachable(safe)
+              // No status ⇒ the failure is not an HTTP one. Transport errors and timeouts are
+              // transient; EVERYTHING else here is a payload-shape problem on a 200 — an absent or
+              // null `myPermissions`, an unparseable body, a GraphQL error on this fixed query —
+              // i.e. Plain-side DRIFT, which is permanent. The default is deliberately the LOUD
+              // side: a false `broken` cries wolf, a false `unreachable` hides the failure, and
+              // hiding is the entire bug #2452 exists to close.
+              case None         =>
+                if safe == "timed out" || safe.startsWith("transport error") then
+                  PlainPermissionRead.Unreachable(safe)
+                else PlainPermissionRead.Broken(safe)
+            }
+        }
+
     // ── #2437: thread marking (escalation label) ────────────────────────────────
     // Plain's `addLabels(input: AddLabelsInput!)` with `{ threadId, labelTypeIds }` (verified against
     // https://www.plain.com/docs — "You can add multiple labels to a thread with a call to
@@ -1192,7 +1354,7 @@ object PlainClient {
     // The selection is deliberately ONLY `error { message }`: every Plain mutation payload carries
     // that, so we assume nothing further about the output shape (selecting a field Plain doesn't have
     // would fail the whole mutation). Hence `resultKey = None`.
-    private val AddLabelsMutation: String                                          =
+    private val AddLabelsMutation: String =
       """mutation addLabels($input: AddLabelsInput!) {
         |  addLabels(input: $input) { error { message } }
         |}""".stripMargin
@@ -1337,6 +1499,12 @@ object PlainClient {
       }
     def markThread(req: PlainThreadMark): UIO[PlainOutcome]                        =
       rec.marks.update(_ :+ req).as(PlainOutcome.Ok)
+
+    // #2452: the recorder models a FULLY GRANTED key — specs that drive the support stack are not
+    // about provisioning, and the audit's gap behaviour is pinned directly in
+    // `PlainPermissionAuditSpec` against a stubbed Plain endpoint.
+    def grantedPermissions: UIO[PlainPermissionRead] =
+      ZIO.succeed(PlainPermissionRead.Granted(PlainPermissionAudit.AllPermissions))
   }
 
   def recorder: UIO[Recorder] =
