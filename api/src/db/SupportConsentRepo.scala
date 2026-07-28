@@ -69,8 +69,10 @@ trait SupportConsentRepo {
    *
    * #2453 — the LINK is single-use, and cannot outlive a withdrawal. `nonce` is the link's, and
    * redemption consumes it in `support_consent_link_use` (V85, PK on `nonce`, so consumption is
-   * decided by the INSERT itself). `linkIssuedAt` is when the link was minted. Two refusals follow,
-   * and both write no grant:
+   * decided by the INSERT itself). `linkIssuedAt` / `linkExpiresAt` are the LINK's own mint and
+   * expiry instants (from the signed token) — NOT the grant window, which starts at redemption: V85
+   * defines `link_expires_at` as "when the spent link would have lapsed anyway", which is only true
+   * of the link's own `exp`. Two refusals follow, and both write no grant:
    *   - nonce already consumed and no live grant now ⇒ [[GrantOutcome.LinkSpent]] — the replay
    *     shape. A consumed nonce whose grant IS still live is the benign reload:
    *     [[GrantOutcome.AlreadyLive]], no write, so a replay cannot even EXTEND the window.
@@ -84,6 +86,7 @@ trait SupportConsentRepo {
       threadId: String,
       nonce: String,
       linkIssuedAt: Instant,
+      linkExpiresAt: Instant,
       grantedByUserId: Option[UserId],
       now: Instant,
       expiresAt: Instant,
@@ -112,6 +115,7 @@ class SupportConsentRepoLive(xa: Transactor[Task]) extends SupportConsentRepo {
       threadId: String,
       nonce: String,
       linkIssuedAt: Instant,
+      linkExpiresAt: Instant,
       grantedByUserId: Option[UserId],
       now: Instant,
       expiresAt: Instant,
@@ -135,16 +139,29 @@ class SupportConsentRepoLive(xa: Transactor[Task]) extends SupportConsentRepo {
       // the uniqueness constraint decides it, not a read we could race.
       spent <- sql"""INSERT INTO support_consent_link_use
                       (nonce, household_id, thread_id, consumed_at, link_expires_at)
-                    VALUES ($nonce, $household, $threadId, $now, $expiresAt)
+                    VALUES ($nonce, $household, $threadId, $now, $linkExpiresAt)
                     ON CONFLICT (nonce) DO NOTHING""".update.run.map(_ == 0)
       out   <-
         if spent then
           // A re-presented link: benign while its own grant still stands (a page reload), a REPLAY
           // once the customer withdrew or it lapsed. Either way it writes nothing, so it can
           // neither restore access nor extend the window.
-          doobie.free.connection.pure(
-            if live then GrantOutcome.AlreadyLive else GrantOutcome.LinkSpent,
-          )
+          //
+          // Re-read liveness rather than reusing `live` from above (review run 1). On a FIRST-ever
+          // grant there is no row for the `FOR UPDATE` to lock, so two genuinely concurrent
+          // redemptions of one link both read `live = false`; the loser then blocks on the nonce PK,
+          // wakes to `spent = true`, and with the stale `live` would report LinkSpent — 400-ing a
+          // customer whose consent had in fact just succeeded, and firing the expect-zero
+          // `link_spent` security panel on a double-click. By this point the nonce INSERT has
+          // already serialized behind the winner's COMMIT, so this read sees the committed grant.
+          sql"""SELECT (revoked_at IS NULL AND expires_at > $now)
+                  FROM support_thread_consent
+                 WHERE household_id = $household AND thread_id = $threadId"""
+            .query[Boolean]
+            .option
+            .map(l =>
+              if l.getOrElse(false) then GrantOutcome.AlreadyLive else GrantOutcome.LinkSpent,
+            )
         else if revoked.exists(_.isAfter(linkIssuedAt)) then
           // A link that was outstanding when the customer withdrew. The nonce is spent above (it is
           // dead either way); the grant is not written.

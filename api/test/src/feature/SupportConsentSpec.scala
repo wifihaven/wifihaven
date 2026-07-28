@@ -712,15 +712,15 @@ object SupportConsentSpec
         hh     <- hhRepo.create("Family W", "family-w")
         now    <- ZIO.serviceWithZIO[Clock](_.instant)
         exp = now.plus(SupportResponder.ConsentTtl)
-        first  <- repo.grant(hh, "th_w", "n_first", now, None, now, exp)
+        first  <- repo.grant(hh, "th_w", "n_first", now, exp, None, now, exp)
         // The SAME link re-presented (a page reload) is not a transition — and, since #2453, not a
         // second write either: the nonce is already spent, so this is a pure read-back.
-        second <- repo.grant(hh, "th_w", "n_first", now, None, now, exp)
+        second <- repo.grant(hh, "th_w", "n_first", now, exp, None, now, exp)
         // …but a grant that follows a WITHDRAWAL is a real transition again: the customer said yes
         // a second time, so the conversation gets picked back up. It needs a FRESH link minted
         // AFTER the withdrawal (#2453) — the old one can no longer undo it.
         _      <- repo.revoke(hh, "th_w", now)
-        third  <- repo.grant(hh, "th_w", "n_third", now.plusSeconds(60), None, now, exp)
+        third  <- repo.grant(hh, "th_w", "n_third", now.plusSeconds(60), exp, None, now, exp)
       } yield assertTrue(
         first == GrantOutcome.Transitioned,
         second == GrantOutcome.AlreadyLive,
@@ -742,13 +742,13 @@ object SupportConsentSpec
         now    <- ZIO.serviceWithZIO[Clock](_.instant)
         exp = now.plus(SupportResponder.ConsentTtl)
         // Two links are outstanding at t0; the customer redeems the first.
-        granted <- repo.grant(hh, "th_s", "n_used", now, None, now, exp)
+        granted <- repo.grant(hh, "th_s", "n_used", now, exp, None, now, exp)
         revokeT = now.plusSeconds(60)
         _         <- repo.revoke(hh, "th_s", revokeT)
         // (a) replay of the SPENT link — the nonce is consumed and there is no live grant.
-        replay    <- repo.grant(hh, "th_s", "n_used", now, None, revokeT.plusSeconds(1), exp)
+        replay    <- repo.grant(hh, "th_s", "n_used", now, exp, None, revokeT.plusSeconds(1), exp)
         // (b) the never-redeemed sibling link, minted BEFORE the withdrawal.
-        stale     <- repo.grant(hh, "th_s", "n_unused", now, None, revokeT.plusSeconds(2), exp)
+        stale     <- repo.grant(hh, "th_s", "n_unused", now, exp, None, revokeT.plusSeconds(2), exp)
         // Neither wrote anything: consent is still withdrawn.
         live      <- repo.isGranted(hh, "th_s", revokeT.plusSeconds(3))
         // A link minted AFTER the withdrawal is the customer saying yes again — that must work.
@@ -757,6 +757,7 @@ object SupportConsentSpec
           "th_s",
           "n_fresh",
           revokeT.plusSeconds(10),
+          exp,
           None,
           revokeT.plusSeconds(10),
           exp,

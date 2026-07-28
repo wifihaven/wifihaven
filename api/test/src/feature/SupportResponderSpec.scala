@@ -384,6 +384,7 @@ object SupportResponderSpec
           "th_ui_1",
           "n_ui_1",
           seedNow,
+          seedNow.plus(SupportResponder.ConsentLinkTtl),
           None,
           seedNow,
           seedNow.plus(SupportResponder.ConsentTtl),
@@ -441,6 +442,7 @@ object SupportResponderSpec
           "th_ccc_1",
           "n_ccc_1",
           seedNow,
+          seedNow.plus(SupportResponder.ConsentLinkTtl),
           None,
           seedNow,
           seedNow.plus(SupportResponder.ConsentTtl),
@@ -931,6 +933,7 @@ object SupportResponderSpec
           "th_a",
           "n_a",
           nowA,
+          nowA.plus(SupportResponder.ConsentLinkTtl),
           None,
           nowA,
           nowA.plus(SupportResponder.ConsentTtl),
@@ -1068,7 +1071,14 @@ object SupportResponderSpec
         hh              <- hhRepo.create("Family I", "fam-i")
         issueLimiter    <- RateLimiterLive.make(maxAttempts = 2, windowSeconds = 3600)
         (routes, stubs) <- makeRoutes(liveCfg, issueThreadLimiter = issueLimiter)
-        token           <- mintToken(hh, "th_iss", dataAccess = true)
+        // #2454: `dataAccess = false`. This test is about the PII scrub and the rate limit, and it
+        // only ever carried a data-scoped token incidentally — that COMBINATION is now refused
+        // outright (a session that can read the household cannot publish into the public repo), so
+        // a data-scoped token would 403 before reaching either behaviour under test. NO assertion
+        // below is relaxed: every scrub and rate-limit pin is unchanged and still runs. The refusal
+        // itself is pinned positively in feature/SupportConsentSpec ("#2454: a data-access session
+        // cannot file a public GitHub issue"), so no coverage leaves the suite.
+        token           <- mintToken(hh, "th_iss", dataAccess = false)
         leakyBody =
           """Customer reports blocking fails. Contact them at parent@example.com, device
             |aa:bb:cc:dd:ee:ff at 192.168.10.42, account 123456789.""".stripMargin

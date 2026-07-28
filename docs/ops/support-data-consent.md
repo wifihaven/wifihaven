@@ -153,9 +153,14 @@ change raises its priority.
   so a prompt-injected agent cannot craft a phishing message under our
   attribution") only holds if the agent never *sees* the link: otherwise it can
   re-post the real, valid URL wrapped in a pretext of its own.
-  `CloudAgentDispatcher.renderHistory` therefore strips consent links out of the
-  rendered transcript, for **every** role — a customer quoting the prompt back is
-  the obvious way around an AI-turn-only rule. The redaction is narrow on purpose:
+  `CloudAgentDispatcher` therefore strips consent links out of **every route by
+  which customer- or thread-sourced text reaches the kickoff** — the rendered
+  history turns (every role, since a customer quoting the prompt back is the
+  obvious way around an AI-turn-only rule), the current `customerMessage`, and
+  the email `subject`. The current message is not merely another route but the
+  *first* one: a quoted link arrives there on the very dispatch that carries it
+  and only ages into history on the next, and #2460's resume lifts the customer's
+  last timeline turn straight into `customerMessage`. The redaction is narrow on purpose:
   ordinary URLs in history are left alone, because the agent needs to read the
   links customers actually send. `SupportPrivacy.scrubForIssue` is the opposite
   direction and blanket-redacts *all* URLs, so no capability link can reach a
@@ -204,7 +209,7 @@ link that leaked into agent context (or was captured any other way) could be
 replayed to RE-GRANT access after the customer withdrew it (`grant` UPSERTs
 `revoked_at = NULL`). Consuming the nonce on redemption spends the link.
 
-Two rules the source side (stacked follow-up PR) holds on top of the table:
+Two rules the source side holds on top of the table:
 
 - **Only ALLOW consumes.** Withdrawal must never be blockable, so the revoke path
   neither consumes a nonce nor is gated on one — a customer whose link is already

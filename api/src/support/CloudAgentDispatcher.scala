@@ -181,7 +181,13 @@ object CloudAgentDispatcher {
     // Neutralize delimiter breakout (review finding on #2261): a message containing the literal
     // closing tag would otherwise escape the data frame. Square-bracket both tag forms so the
     // customer text can never open or close a <customer_message> frame itself.
-    val safeMsg  = neutralizeTags(req.customerMessage)
+    // #2453: …and strip consent links FIRST, for the same reason `renderHistory` does — see
+    // [[redactConsent]]. The current message is not merely another route into the prompt, it is the
+    // FIRST one: a customer who quotes the prompt back arrives here on the very dispatch that
+    // carries the live link and only ages into history on the next one, and #2460's resume lifts
+    // the customer's last timeline turn straight into `customerMessage`, bypassing the render-time
+    // redaction that same turn gets as history.
+    val safeMsg  = neutralizeTags(redactConsent(req.customerMessage))
     // #2481: the email subject, when there is one. It is customer-controlled to exactly the same
     // degree as the body, so it goes through the SHARED untrusted-single-line renderer
     // ([[ManagedAgents.safeLine]]: flatten CR/LF — a subject is one line by definition, and
@@ -193,7 +199,10 @@ object CloudAgentDispatcher {
     // `…[truncated]` (ManagedAgents.capMarked, the same primitive the history renderer uses), so the
     // agent never reads a cut subject as the whole subject.
     val subject  = req.subject
-      .map(s => ManagedAgents.safeLine(s, MaxSubjectChars))
+      // #2453: a subject is customer-controlled text reaching the prompt, so it gets the same
+      // redaction as the body and the history — before `safeLine`'s cap, so the cap can never
+      // leave a half-link.
+      .map(s => ManagedAgents.safeLine(redactConsent(s), MaxSubjectChars))
       .filter(_.nonEmpty)
       .map(s => s"Subject: $s\n\n")
       .getOrElse("")
@@ -302,18 +311,8 @@ object CloudAgentDispatcher {
     // 1. per-turn: flatten to safe text, truncate an oversized turn (rather than dropping it, which
     //    would silently lose a turn), drop anything that ends up empty.
     val turns   = history.flatMap { m =>
-      // #2453: strip #2419 consent links BEFORE anything else. The consent prompt is posted through
-      // the same machine-user write path as every AI reply, so it comes back on the timeline as an
-      // `ai_assistant` turn and would otherwise put the LIVE capability URL into the agent's own
-      // context — which is exactly what `agentRequestConsent`'s anti-phishing guarantee assumes
-      // cannot happen. Applied to EVERY role, not just the AI's: a customer quoting the prompt back
-      // is the obvious way around an ai_assistant-only rule. Redacting first (rather than after the
-      // cap) means the cap measures the redacted text and can never leave a half-link behind.
-      //
-      // This is on the RENDER, not on the timeline parse: `PlainClient.roleOf` falls back to
-      // `text.contains(AiReplyAttribution)` on the RAW entry to label an unknown-actor turn, and
-      // that signal is the attribution line, not the link — so it is untouched either way.
-      val raw  = SupportPrivacy.redactConsentLinks(m.text.trim)
+      // #2453 — see [[redactConsent]]. Applied to EVERY role, not just the AI's.
+      val raw  = redactConsent(m.text.trim)
       // Same cap-and-say-so primitive the subject line uses — one definition of "truncated for the
       // prompt", so the two can't drift on the marker or the predicate (#2481 review).
       val safe = neutralizeTags(ManagedAgents.capMarked(raw, MaxMessageChars))
@@ -358,6 +357,31 @@ object CloudAgentDispatcher {
 
   /** Square-bracket every kickoff frame tag so untrusted text can't frame-escape. */
   private def neutralizeTags(s: String): String = ManagedAgents.neutralizeTags(s)
+
+  /**
+   * #2453 — strip #2419 consent links out of text on its way into the kickoff.
+   *
+   * The consent prompt is posted through the same machine-user write path as every AI reply, so it
+   * lands on the timeline and would otherwise put the LIVE capability URL into the agent's own
+   * context — exactly what `SupportResponder.agentRequestConsent`'s anti-phishing guarantee assumes
+   * cannot happen (a prompt-injected agent could re-post the real, valid link under our
+   * attribution).
+   *
+   * Applied at EVERY route by which customer- or thread-sourced text reaches the prompt — the
+   * history turns, the current `customerMessage`, and the email `subject` — because the guarantee
+   * is about what the agent can READ, not about which frame the text arrived in. A single helper,
+   * called from each site, rather than three inlined calls: the property is "no route leaks a
+   * link", and a new route that forgets to call it is the failure mode (the first cut of this fix
+   * covered only history, caught in review).
+   *
+   * Always runs BEFORE the per-site cap (`capMarked` / `safeLine`), so the cap measures redacted
+   * text and can never leave half a link behind.
+   *
+   * This is on the RENDER, not on the timeline parse: `PlainClient.roleOf` falls back to
+   * `text.contains(AiReplyAttribution)` on the RAW entry to label an unknown-actor turn, and that
+   * signal is the attribution line, not the link — so it is untouched either way.
+   */
+  private def redactConsent(s: String): String = SupportPrivacy.redactConsentLinks(s)
 
   /**
    * Fail-open + observability envelope shared by every live transport, delegating to the shared

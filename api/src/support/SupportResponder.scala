@@ -836,6 +836,10 @@ final case class SupportResponder(
           g.threadId,
           g.nonce,
           g.issuedAt,
+          // The LINK's own expiry, not the grant's: V85 defines `link_expires_at` as when the spent
+          // link would have lapsed anyway. The grant window below starts at REDEMPTION instead, so
+          // the two coincide only when a link is redeemed the instant it is minted.
+          g.expiresAt,
           user.map(_.id),
           now,
           now.plus(SupportResponder.ConsentTtl),

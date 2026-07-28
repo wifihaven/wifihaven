@@ -249,6 +249,34 @@ object SupportThreadHistorySpec extends ZIOSpecDefault {
       )
       assertTrue(!k.contains("g1."), k.contains("this link is broken:"))
     },
+    test("a consent link in the CURRENT customer message is stripped too (review run 1)") {
+      // The history frame is not the only route into the prompt, and it is not even the FIRST one:
+      // a customer who quotes the prompt back arrives as `customerMessage` on the very dispatch
+      // that carries the live link, and only ages into history on the NEXT one. #2460's resume
+      // makes that deterministic rather than incidental — it lifts the customer's last timeline
+      // turn straight into `customerMessage`, bypassing the render-time redaction that same turn
+      // would have got as history.
+      val k = kickoff(
+        dispatch("what is this? https://app.wifihaven.net/support/consent?g=g1.aGVsbG8.deadbeef"),
+      )
+      assertTrue(
+        !k.contains("g1."),
+        !k.contains("/support/consent"),
+        k.contains(SupportPrivacy.ConsentLinkPlaceholder),
+        k.contains("what is this?"),
+      )
+    },
+    test("a consent link in the email SUBJECT is stripped too (review run 1)") {
+      val d = dispatch("see subject").copy(
+        subject = Some("Re: /support/consent?g=g1.abc.def broken"),
+      )
+      val k = kickoff(d)
+      assertTrue(!k.contains("g1."), k.contains("Subject:"), k.contains("broken"))
+    },
+    test("an ordinary URL in the current customer message is NOT stripped") {
+      val k = kickoff(dispatch("my router page https://192.168.1.1/status is down"))
+      assertTrue(k.contains("https://192.168.1.1/status"))
+    },
     test("an ordinary URL in history is NOT stripped") {
       // History is deliberately not blanket-URL-scrubbed (that is scrubForIssue's job on the way
       // OUT to a public repo): the agent needs to read the links a customer actually sends.

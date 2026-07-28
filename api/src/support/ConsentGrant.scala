@@ -67,9 +67,11 @@ object ConsentGrant {
   )
 
   /**
-   * A fresh link nonce — 128 bits of [[java.security.SecureRandom]], url-safe base64 (so it carries
-   * no `|` and needs no escaping in the payload). Same recipe as the enrollment / password-reset
-   * tokens elsewhere in the API.
+   * A fresh link nonce — [[java.security.SecureRandom]], url-safe base64 (so it carries no `|` and
+   * needs no escaping in the payload). Same CONSTRUCTION as the enrollment / password-reset tokens,
+   * but 128 bits where those use 256: this is a uniqueness token INSIDE a signed payload, not a
+   * bearer secret — the HMAC is the authenticator, and guessing a nonce grants nothing. 128 bits is
+   * far past collision relevance for a human-scale table.
    */
   def newNonce(): String = {
     val bytes = new Array[Byte](16)
