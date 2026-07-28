@@ -164,11 +164,13 @@ Two footguns, both of which produce confusing 401s:
 #### curl — Loki `query_range`
 
 ```bash
-# Load the token without echoing it (see the memory file above).
+# Load the token without echoing it (see the memory file above). Run this once
+# per shell; the logcli and Prometheus recipes below reuse $GRAFANA_READ_TOKEN.
 GRAFANA_READ_TOKEN=$(awk '/^glc_/{print; exit}' \
   ~/.claude/projects/*wifihaven*/memory/grafana_loki_read_token.md)
-# Guard: an empty token 401s identically to the wrong-user-id footgun above.
-[ -n "$GRAFANA_READ_TOKEN" ] || { echo "no glc_ token in the memory file" >&2; exit 1; }
+# Guard: an empty token 401s identically to the wrong-user-id footgun above, so
+# check rather than letting curl produce the ambiguous failure.
+[ -n "$GRAFANA_READ_TOKEN" ] || echo "no glc_ token in the memory file" >&2
 
 curl -sG -u "1631926:$GRAFANA_READ_TOKEN" \
   "https://logs-prod-021.grafana.net/loki/api/v1/query_range" \
@@ -183,6 +185,8 @@ curl -sG -u "1631926:$GRAFANA_READ_TOKEN" \
 
 #### logcli
 
+Needs `$GRAFANA_READ_TOKEN` loaded as in the `curl` block above.
+
 ```bash
 export LOKI_ADDR="https://logs-prod-021.grafana.net"   # query host, NOT the /push URL
 export LOKI_USERNAME="1631926"
@@ -194,6 +198,8 @@ logcli query '{service="wifihaven-api", env="production", level="ERROR"}' --sinc
 not `LOKI_BEARER_TOKEN`.
 
 #### curl — Prometheus (same token, `metrics:read`)
+
+Needs `$GRAFANA_READ_TOKEN` loaded as in the Loki `curl` block above.
 
 ```bash
 curl -sG -u "3272502:$GRAFANA_READ_TOKEN" \
