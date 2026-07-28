@@ -72,6 +72,7 @@ object SupportConsentSpec
       plain: PlainClient.Recorder,
       dispatch: CloudAgentDispatcher.Recorder,
       consentRepo: SupportConsentRepo,
+      github: GithubIssueClient.Recorder,
   )
 
   private def makeHarness(
@@ -101,6 +102,9 @@ object SupportConsentSpec
       clock       <- ZIO.service[Clock]
       plainRec    <- PlainClient.recorder
       dispRec     <- CloudAgentDispatcher.recorder
+      // #2454: a RECORDING issue client (not the no-op) so the suite can assert both that a
+      // data-access session files nothing and that a scope-less one still files normally.
+      ghRec       <- Ref.make(List.empty[IssueFileRequest]).map(GithubIssueClient.Recorder.apply)
       // Built with the PRODUCTION defaults, then narrowed: `productionResume = false` swaps in the
       // inline runner so the assertions observe the resume deterministically — no wall-clock waits
       // on a background fiber, per docs/process/testing.md. The seam changes only WHERE it runs.
@@ -113,7 +117,7 @@ object SupportConsentSpec
         profRepo,
         consentRepo,
         gated(PlainClient.recording(plainRec), historyGate),
-        GithubIssueClient.noop,
+        GithubIssueClient.recording(ghRec),
         signalling(CloudAgentDispatcher.recording(dispRec), dispatchDone),
         clock,
         RateLimiter.allowAll,
@@ -137,6 +141,7 @@ object SupportConsentSpec
       plainRec,
       dispRec,
       consentRepo,
+      ghRec,
     )
 
   // ── fixtures ────────────────────────────────────────────────────────────────
@@ -211,6 +216,24 @@ object SupportConsentSpec
     val req  = token.fold(base)(t => base.addHeader(Header.Authorization.Bearer(t)))
     h.agentRoutes.runZIO(req).map(_.status)
   }
+
+  /** #2454: POST an issue-filing request under `token`. */
+  private def agentPostIssue(
+      h: Harness,
+      token: String,
+      title: String,
+      body: String,
+  ): Task[Status] =
+    h.agentRoutes
+      .runZIO(
+        Request
+          .post(
+            URL.decode("/api/support/agent/issues").toOption.get,
+            Body.fromString(s"""{"title":${title.toJson},"body":${body.toJson}}"""),
+          )
+          .addHeader(Header.Authorization.Bearer(token)),
+      )
+      .map(_.status)
 
   private def agentGetHousehold(h: Harness, token: String): Task[(Status, String)] =
     h.agentRoutes
@@ -689,13 +712,132 @@ object SupportConsentSpec
         hh     <- hhRepo.create("Family W", "family-w")
         now    <- ZIO.serviceWithZIO[Clock](_.instant)
         exp = now.plus(SupportResponder.ConsentTtl)
-        first  <- repo.grant(hh, "th_w", None, now, exp)
-        second <- repo.grant(hh, "th_w", None, now, exp)
+        first  <- repo.grant(hh, "th_w", "n_first", now, None, now, exp)
+        // The SAME link re-presented (a page reload) is not a transition — and, since #2453, not a
+        // second write either: the nonce is already spent, so this is a pure read-back.
+        second <- repo.grant(hh, "th_w", "n_first", now, None, now, exp)
         // …but a grant that follows a WITHDRAWAL is a real transition again: the customer said yes
-        // a second time, so the conversation gets picked back up.
+        // a second time, so the conversation gets picked back up. It needs a FRESH link minted
+        // AFTER the withdrawal (#2453) — the old one can no longer undo it.
         _      <- repo.revoke(hh, "th_w", now)
-        third  <- repo.grant(hh, "th_w", None, now, exp)
-      } yield assertTrue(first, !second, third)
+        third  <- repo.grant(hh, "th_w", "n_third", now.plusSeconds(60), None, now, exp)
+      } yield assertTrue(
+        first == GrantOutcome.Transitioned,
+        second == GrantOutcome.AlreadyLive,
+        third == GrantOutcome.Transitioned,
+      )
+    },
+    // ── #2453: the consent LINK is single-use, and cannot undo a withdrawal ───
+    test("#2453: a spent link cannot re-grant after a withdrawal, and neither can an older one") {
+      // Pinned at the repo so the property survives any refactor of the responder. Two distinct
+      // replay shapes, both of which used to silently restore `dataAccess` for another 24h because
+      // `grant` UPSERTed `revoked_at = NULL` and nothing consumed the link:
+      //   (a) the link the customer ALREADY redeemed, captured and replayed after they withdrew;
+      //   (b) a DIFFERENT link that was minted before the withdrawal and never redeemed.
+      for {
+        _      <- cleanDb
+        hhRepo <- ZIO.service[HouseholdRepo]
+        repo   <- ZIO.service[SupportConsentRepo]
+        hh     <- hhRepo.create("Family S", "family-s")
+        now    <- ZIO.serviceWithZIO[Clock](_.instant)
+        exp = now.plus(SupportResponder.ConsentTtl)
+        // Two links are outstanding at t0; the customer redeems the first.
+        granted <- repo.grant(hh, "th_s", "n_used", now, None, now, exp)
+        revokeT = now.plusSeconds(60)
+        _       <- repo.revoke(hh, "th_s", revokeT)
+        // (a) replay of the SPENT link — the nonce is consumed and there is no live grant.
+        replay  <- repo.grant(hh, "th_s", "n_used", now, None, revokeT.plusSeconds(1), exp)
+        // (b) the never-redeemed sibling link, minted BEFORE the withdrawal.
+        stale   <- repo.grant(hh, "th_s", "n_unused", now, None, revokeT.plusSeconds(2), exp)
+        // Neither wrote anything: consent is still withdrawn.
+        live    <- repo.isGranted(hh, "th_s", revokeT.plusSeconds(3))
+        // A link minted AFTER the withdrawal is the customer saying yes again — that must work.
+        fresh   <- repo.grant(
+          hh,
+          "th_s",
+          "n_fresh",
+          revokeT.plusSeconds(10),
+          None,
+          revokeT.plusSeconds(10),
+          exp,
+        )
+        liveAgain <- repo.isGranted(hh, "th_s", revokeT.plusSeconds(11))
+      } yield assertTrue(
+        granted == GrantOutcome.Transitioned,
+        replay == GrantOutcome.LinkSpent,
+        stale == GrantOutcome.LinkStale,
+        !live,
+        fresh == GrantOutcome.Transitioned,
+        liveAgain,
+      )
+    },
+    test("#2453: replaying the consent link after a withdrawal is refused end to end") {
+      for {
+        _        <- cleanDb
+        hhRepo   <- ZIO.service[HouseholdRepo]
+        userRepo <- ZIO.service[UserRepo]
+        h        <- makeHarness()
+        hh       <- hhRepo.create("Family Z", "family-z")
+        jwtTok   <- seedAdmin(h, userRepo, hh, "family-z", "admin_z", "pwpwpwpw11")
+        agent    <- mintAgentToken(hh, "th_z", dataAccess = false)
+        _        <- agentPost(h, "/api/support/agent/request-consent", Some(agent))
+        grant    <- grantTokenFromThread(h).someOrFail(new RuntimeException("no consent link"))
+        allowed  <- postConsent(h, Some(jwtTok), grant)
+        // The customer changes their mind. Withdrawal must NOT be blockable by the spent link.
+        revoked  <- postConsent(h, Some(jwtTok), grant, allow = false)
+        // …and clicking the same link again cannot walk them back into consenting.
+        replay   <- postConsent(h, Some(jwtTok), grant)
+        now      <- ZIO.serviceWithZIO[Clock](_.instant)
+        live     <- h.consentRepo.isGranted(hh, "th_z", now)
+        onNext   <- dispatchAndToken(h, hh, "th_z", "and now?")
+      } yield assertTrue(
+        allowed == Status.Ok,
+        revoked == Status.Ok,
+        replay == Status.BadRequest,
+        !live,
+        onNext.exists(!_.dataConsent),
+      )
+    },
+    // ── #2454: consented read and public-issue filing must not compose ───────
+    test("#2454: a data-access session cannot file a public GitHub issue") {
+      // The consented read returns the household NAME and the PROFILE names — typically children's
+      // given names — none of which match any `scrubForIssue` pattern. Rather than chase the
+      // payload with regexes, the two capabilities are refused as a pair: a session that can read
+      // the account cannot publish into the public repo. It escalates or describes the symptom.
+      for {
+        _      <- cleanDb
+        hhRepo <- ZIO.service[HouseholdRepo]
+        h      <- makeHarness()
+        hh     <- hhRepo.create("Family D", "family-d")
+        token  <- mintAgentToken(hh, "th_d", dataAccess = true)
+        status <- agentPostIssue(h, token, "bug", "Household Family D, profiles Octavius and Prima")
+        filed  <- h.github.issues.get
+      } yield assertTrue(status == Status.Forbidden, filed.isEmpty)
+    },
+    test("#2454: a session WITHOUT data access files normally, scrubbed of URLs (#2453)") {
+      for {
+        _      <- cleanDb
+        hhRepo <- ZIO.service[HouseholdRepo]
+        h      <- makeHarness()
+        hh     <- hhRepo.create("Family C", "family-c")
+        token  <- mintAgentToken(hh, "th_c", dataAccess = false)
+        status <- agentPostIssue(
+          h,
+          token,
+          "block page 404s",
+          s"customer clicked $AppBaseUrl/support/consent?g=g1.abc.def and got a 404",
+        )
+        filed  <- h.github.issues.get
+      } yield assertTrue(
+        status == Status.Ok,
+        filed.size == 1,
+        // The scrub happens at the GithubIssueClient trait boundary, so the recorder holds exactly
+        // what would have left the process — a capability URL never reaches the PUBLIC repo.
+        !filed.head.body.contains("g1."),
+        !filed.head.body.contains("/support/consent"),
+        filed.head.body.contains("[redacted-url]"),
+        filed.head.body.contains("and got a 404"),
+      )
     },
     test(
       "resume with unreadable history: the grant still lands and a server-authored nudge posts",
