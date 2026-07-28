@@ -88,8 +88,8 @@ Plain receives email via a Postmark inbound address it shows you under
    confirm link from there. (You can't click it in a normal mailbox because the mailbox
    *is* Plain.)
 3. **Back in Plain** (Settings → Email → Receiving emails): tick **"Inbound email
-   forwarding is set up"** → **Save and continue**, then complete **Sending emails** and
-   **Enable email**.
+   forwarding is set up"** → **Save and continue**. Inbound now works — but the workspace
+   still **cannot send**. Finish §3.1 below or every reply is dropped.
 
 > **DNS caveat — keep exactly one apex SPF record.** The apex already has
 > `v=spf1 -all` (`infra/cloudflare/main.tf` `cloudflare_record.spf`). SPF is a *sending*
@@ -97,6 +97,91 @@ Plain receives email via a Postmark inbound address it shows you under
 > need the apex SPF. If Cloudflare offers to add an SPF/TXT to the apex, **skip it** — a
 > second apex `v=spf1` TXT is an SPF permerror. Only take the MX records. This is handled
 > in the #2198 Terraform; don't add SPF by hand in the dashboard.
+
+### 3.1 Email SENDING — a required go-live gate, per workspace
+
+> **This is a hard gate, and skipping it fails silently.** Inbound intake, the
+> registered/unregistered decision, and the #2307 static reject can all be perfectly
+> correct while **every** outbound message is dropped by Plain with:
+>
+> ```
+> Emails are not enabled for this workspace. Enable them in your workspace
+> email settings to send emails.
+> ```
+>
+> That is exactly what happened on **staging** ([#2471](https://github.com/wifihaven/wifihaven/issues/2471),
+> found 2026-07-26 during [#2335](https://github.com/wifihaven/wifihaven/issues/2335)
+> validation): the DNS had shipped months earlier, but nobody completed the Plain-side
+> steps, so no customer ever received a reply. Do this **once per workspace** — staging
+> and prod are separate Plain workspaces and enabling one does nothing for the other.
+
+**The DNS is already in the repo — you do not add records by hand.**
+`infra/cloudflare/main.tf` carries both sending domains
+([#2247](https://github.com/wifihaven/wifihaven/issues/2247)); each is a Postmark-issued
+per-domain DKIM selector plus a custom Return-Path, so DKIM `d=` strict-aligns with the
+`From` domain under our `adkim=s` DMARC:
+
+| Workspace | From address | DKIM TXT (`cloudflare_record`) | Return-Path CNAME |
+|---|---|---|---|
+| prod | `support@wifihaven.net` | `plain_dkim_prod` — `20260716020234pm._domainkey` | `plain_bounces_prod` — `plain-bounces` → `pm.mtasv.net` |
+| staging | `support@staging.wifihaven.net` | `plain_dkim_staging` — `20260716163303pm._domainkey.staging` | `plain_bounces_staging` — `plain-bounces.staging` → `pm.mtasv.net` |
+
+Confirm they resolve before touching the dashboard — Plain checks them live:
+
+```sh
+dig +short TXT   20260716163303pm._domainkey.staging.wifihaven.net   # expect k=rsa; p=…
+dig +short CNAME plain-bounces.staging.wifihaven.net                 # expect pm.mtasv.net.
+```
+
+Then, in the Plain workspace for that environment:
+
+1. **Settings → Channels → Email** (the sidebar path in the Plain UI as of 2026-07-26; §3
+   above and Plain's own docs call the same screen "Settings → Email"), section
+   **3. Sending emails**. It lists the same TXT
+   and CNAME. **Diff them against what `dig` returned** — if the selector Plain shows
+   differs from the one in `main.tf`, Plain reissued it and the Terraform needs updating
+   *first*; do not paste a record into the Cloudflare dashboard
+   (`docs/process/declarative-config.md`).
+2. Click **Verify DNS and continue**. On success the button collapses to a plain
+   **Verify DNS** re-check.
+3. Section **4. Enable email** then appears. It must read **"Email is currently
+   enabled."** with a red **Disable email** button next to it. If instead it offers an
+   *Enable* button, click it — §3 verifying is not by itself sufficient.
+
+**Verify it actually sends — do not trust the toggle.** From an address that is **not** a
+registered household admin (a personal Gmail is ideal — a registered address takes the AI
+dispatch path instead), email the environment's support address, then check the API log:
+
+```sh
+# Service/owner ids as of 2026-07-26 — they are not carried anywhere in the repo, so if these
+# 404, look them up in the Render dashboard rather than trusting this line.
+OWNER=tea-d8543pmk1jcs73aqoja0
+SERVICE=srv-d8549fgjo89c73buvkf0   # wifihaven-api-staging
+
+# The Render logs API `text=` filter is the practical way to find these among router noise.
+curl -sG -H "Authorization: Bearer $RENDER_API_TOKEN" \
+  --data-urlencode "ownerId=$OWNER" --data-urlencode "resource=$SERVICE" \
+  --data-urlencode "text=webhook outcome" https://api.render.com/v1/logs
+```
+
+Three things together mean it worked:
+
+- `outcome=email_unregistered_rejected` — the reject was decided **and delivered**. If you
+  see `outcome=email_reject_send_failed` instead, the send was refused and you are not
+  done (that outcome exists *because* of #2471; before it, a refused send reported the
+  success label).
+- **No** `WARN … plain replyToThread failed` line, and no `ERROR … plain reject send FAILED`.
+  Search for `PlainClient` and expect nothing.
+- If you instead see `outcome=disabled`, the cause is one of **our** flags, not Plain's, and
+  §3.1 cannot fix either. Two producers: `WIFIHAVEN_SUPPORT_RESPONDER_ENABLED=false` (the whole
+  responder is dark — the likelier one on a fresh environment) or
+  `WIFIHAVEN_SUPPORT_WRITE_ENABLED=false` (the responder runs but its Plain write half is off, so
+  the reject is decided and never sent). Check both for that service in `render.yaml`.
+- A `eventType=thread.email_sent` webhook on the same thread — Plain only emits that when
+  a message actually leaves. This is the strongest signal; prefer it over the absence of
+  an error.
+
+The rejection message should also land in the sending mailbox.
 
 ---
 
@@ -585,6 +670,9 @@ these:
    and `externalId` set — that's the household-gating mapping working.
 3. Send a test email to `support@wifihaven.net` and a test chat → both land in the Plain
    inbox. (Auto-drafted replies are #2200, separate.)
+   > **Landing in the inbox proves only INBOUND.** It says nothing about whether Plain can
+   > send — that half is §3.1, and it is the one that was missed (#2471). Do §3.1's
+   > unregistered-sender check for this environment before calling the channel done.
 4. **Fire one real escalation and confirm the label lands (#2437).** Do this on staging
    *before* the prod flip — the `addLabels` mutation shape and the `label:create` grant are
    only exercised for real here, and a wrong field name or a missing permission otherwise
@@ -606,7 +694,9 @@ these:
    [#2449](https://github.com/wifihaven/wifihaven/issues/2449), which is what turns it into
    verified handling instead of a guess.
 
-Once staging looks right, repeat §1–§6 against the live workspace + `wifihaven-api-prod`.
+Once staging looks right, repeat §1–§6 against the live workspace + `wifihaven-api-prod`
+— **including §3.1**, which is per-workspace: enabling sending on staging does nothing for
+prod, and a prod workspace that cannot send drops every reply to a real customer.
 
 ---
 

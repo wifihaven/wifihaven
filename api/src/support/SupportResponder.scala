@@ -369,7 +369,42 @@ final case class SupportResponder(
           threadId = event.threadId,
           markdown = UnregisteredRejectTemplate,
         )
-        plain.writeThread(write).as(WebhookOutcome.EmailUnregisteredRejected)
+        // #2471: the send outcome IS the outcome. Discarding it here reported a reject Plain had
+        // refused as a completed one — and `support_ai_draft_total{outcome}` is built on this
+        // label, so the dashboard showed a healthy reject path while zero rejects were delivered.
+        // Per docs/process/no-dark-by-default.md a config-recoverable failure must FAIL LOUD; a
+        // metric alone makes it visible but does not make it acceptable, which is why the refusal
+        // branch below logs at ERROR with the fix named rather than only metering.
+        plain.writeThread(write).flatMap {
+          case PlainOutcome.Ok       =>
+            ZIO.succeed(WebhookOutcome.EmailUnregisteredRejected)
+          // `Disabled` is NOT a failure: the write half is switched off by the EXPLICIT named flag
+          // `wifihaven.support.plain.writeEnabled` (`PlainClient.layer`), which is reported at
+          // startup — a deliberate off-state, exactly what `WebhookOutcome.Disabled` means. It is
+          // reachable on its own: `PlainConfig.validate` requires `plain.apiKey` when
+          // `writeEnabled=true`, and `SupportConfig.missingRequiredKeys` requires it when
+          // `responderEnabled=true`, but NOTHING requires `writeEnabled` itself, so
+          // `responderEnabled=true` + `writeEnabled=false` boots. Routing it here would light the
+          // "Plain REFUSED to send" tile and send an operator to Plain's email settings over our
+          // own flag.
+          case PlainOutcome.Disabled => ZIO.succeed(WebhookOutcome.Disabled)
+          // A genuine refusal: Plain accepted the call and would not send. Config-recoverable and
+          // permanent, so it FAILS LOUD with the fix named inline
+          // (docs/process/no-dark-by-default.md — a metric makes it visible but does not make it
+          // acceptable), matching how `PlainClient.addLabels` treats the sibling provisioning gap.
+          // The generic `post` path only logs this at WARNING, which is right for best-effort
+          // context writes but not for the reject, which IS the customer-facing action.
+          case PlainOutcome.Error    =>
+            ZIO
+              .logError(
+                "plain reject send FAILED — PROVISIONING GAP: the unregistered-sender reject was " +
+                  "never delivered. Check that the Plain workspace has email SENDING enabled " +
+                  "(Settings → Channels → Email §3 \"Sending emails\" verified and §4 \"Enable " +
+                  "email\" on) — see docs/ops/plain-setup.md §3.1; the preceding " +
+                  "`plain replyToThread failed` line carries Plain's own message",
+              )
+              .as(WebhookOutcome.EmailRejectSendFailed)
+        }
       }
     }
 
@@ -428,8 +463,11 @@ final case class SupportResponder(
    * One INFO line per webhook delivery: the bounded [[WebhookOutcome]] label plus, when a parsed
    * event is available, the Plain `threadId` and `eventType` — both bounded, non-PII (the mint log
    * already establishes `thread=<id>` as loggable). Pre-parse outcomes (InvalidSignature /
-   * Malformed / Disabled) carry no event, so both correlation fields log as `-`. NEVER the message
-   * text, customer email, or any customer content (UNTRUSTED PII — see the class comment).
+   * Malformed, and `Disabled` when it comes from the responder-dark short-circuit) carry no event,
+   * so both correlation fields log as `-`. `Disabled` is NOT always pre-parse: since #2471 a dark
+   * Plain write half also resolves to it from `staticReject`, which runs post-parse, so a
+   * `disabled` line CAN carry a populated `thread=` / `eventType=`. NEVER the message text,
+   * customer email, or any customer content (UNTRUSTED PII — see the class comment).
    */
   private def logWebhookOutcome(o: WebhookOutcome, event: Option[PlainNewMessageEvent]): UIO[Unit] =
     ZIO.logInfo(
@@ -1223,8 +1261,21 @@ object SupportResponder {
     // #2307: a NEW inbound email whose From matched a registered household admin → dispatched
     // (authenticated), kept distinct from the UI-origin `Dispatched` for cost/attribution.
     case EmailRegisteredDispatched
-    // #2307: a NEW inbound email from an UNREGISTERED address → the fixed static reject (no AI).
+    // #2307: a NEW inbound email from an UNREGISTERED address → the fixed static reject (no AI),
+    // and Plain ACCEPTED the send. Success-shaped: the customer got the reject.
     case EmailUnregisteredRejected
+
+    /**
+     * #2471 — the reject was decided correctly and Plain REFUSED to send it, so the customer got
+     * NOTHING. Terminal and distinct from [[EmailUnregisteredRejected]] on purpose: the two used to
+     * share that success label, which let a workspace with email sending disabled look like a
+     * healthy reject path on the Grafana support panel while every reject was dropped (the live
+     * staging failure, 2026-07-26). Expect a flat zero; the refusal also logs at ERROR.
+     *
+     * A REFUSAL only — an explicitly-disabled write half (`plain.writeEnabled=false`) is
+     * [[Disabled]], not this, so a deliberate off-state never reads as a provisioning gap.
+     */
+    case EmailRejectSendFailed
     case SkippedUnauthenticated
     // #2403 loop guard: a non-inbound / non-customer event (our own `thread.chat_sent` reply, a
     // non-customer actor, or a bodyless identified metadata event) — deliberately never dispatched.
@@ -1232,6 +1283,16 @@ object SupportResponder {
     case RateLimited
     case InvalidSignature
     case Malformed
+
+    /**
+     * An EXPLICIT named flag is off, so nothing was attempted. TWO deliberate CAUSES:
+     * `responderEnabled=false` (the whole responder is dark) and `plain.writeEnabled=false` (the
+     * responder runs but the Plain write half is dark, so a static reject is decided and not sent).
+     * Not a list of code sites — the first cause reaches this from `handleWebhook`'s short-circuit
+     * AND, defensively, from the dispatcher's own `Disabled` outcome, which
+     * `CloudAgentDispatcher.transportFor` gates on that same flag. Never a failure — a REFUSED send
+     * is [[EmailRejectSendFailed]].
+     */
     case Disabled
 
     /** A TRANSIENT cloud-agent dispatch failure (transport / timeout / 5xx) — may self-heal. */
@@ -1250,6 +1311,9 @@ object SupportResponder {
       case Dispatched                => "dispatched"
       case EmailRegisteredDispatched => "email_registered_dispatched"
       case EmailUnregisteredRejected => "email_unregistered_rejected"
+      // #2471: a SEPARATE series, deliberately not folded into the reject or the generic error
+      // bucket — an undelivered reject is its own failure and should read as zero on the panel.
+      case EmailRejectSendFailed     => "email_reject_send_failed"
       case SkippedUnauthenticated    => "skipped_unauthenticated"
       case SkippedNotInbound         => "skipped_not_inbound"
       case RateLimited               => "rate_limited"
@@ -1276,9 +1340,16 @@ object SupportResponder {
     def reason(o: WebhookOutcome): String = o match {
       case ConfigError => CloudAgentObservability.Reason.Config
       case Error       => CloudAgentObservability.Reason.Transient
+      // #2471: `EmailRejectSendFailed` is `none` on PURPOSE, not by omission. `reason` attributes a
+      // CLOUD-AGENT dispatch failure, and `PlainClient` collapses every send failure — non-2xx,
+      // GraphQL error, transport — into a single `PlainOutcome.Error` with no cause attached. There
+      // is nothing to attribute here, and splitting it config/transient would be a guess: the live
+      // failure ("Emails are not enabled for this workspace") is permanent config, but a Plain 5xx
+      // is transient, and the two are indistinguishable at this seam. The outcome label carries the
+      // signal. Attribution needs a cause on `PlainOutcome` first — a separate change.
       case Dispatched | EmailRegisteredDispatched | EmailUnregisteredRejected |
-          SkippedUnauthenticated | SkippedNotInbound | RateLimited | InvalidSignature | Malformed |
-          Disabled =>
+          EmailRejectSendFailed | SkippedUnauthenticated | SkippedNotInbound | RateLimited |
+          InvalidSignature | Malformed | Disabled =>
         CloudAgentObservability.Reason.None
     }
   }

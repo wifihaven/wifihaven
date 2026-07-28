@@ -518,8 +518,11 @@ object MetricGuard {
     // #2200 — the Claude support responder (dark until keys set). `support_ai_draft_total{outcome}`
     // (the #2200-specified series name, kept though v1 sends replies rather than drafts)
     // counts each inbound Plain webhook by a bounded enum (dispatched | email_registered_dispatched
-    // | email_unregistered_rejected | skipped_unauthenticated | rate_limited | invalid_signature |
-    // malformed | disabled | error) — `dispatched` is a UI-origin thread, `email_registered_dispatched`
+    // | email_unregistered_rejected | email_reject_send_failed | skipped_unauthenticated |
+    // skipped_not_inbound | rate_limited | invalid_signature | malformed | disabled | error) —
+    // `email_reject_send_failed` (#2471) is that same static reject DECIDED but REFUSED by Plain, so
+    // the customer got nothing (expect a flat zero); `skipped_not_inbound` is the #2403 loop guard.
+    // `dispatched` is a UI-origin thread, `email_registered_dispatched`
     // a #2307 registered-admin-email new thread admitted to the AI, `email_unregistered_rejected` a
     // #2307 unregistered new email that got the fixed static reject (NO AI/token burn),
     // `skipped_unauthenticated` a continuation with no resolvable tenant, `rate_limited` the
@@ -900,10 +903,14 @@ object AppMetrics {
     )
 
   // ── #2200: Claude support responder (dark until keys set) ─────────────────────
-  // Emitted from SupportResponder. `supportAiDraft` counts each inbound Plain webhook by outcome
-  // (dispatched | skipped_unauthenticated | rate_limited | invalid_signature | malformed |
-  // disabled | error); `supportAgentAction` counts each token-authenticated agent callback by
-  // (op, outcome). Both bounded enums — never a per-household / per-thread label.
+  // Emitted from SupportResponder. `supportAiDraft` counts each inbound Plain webhook by outcome;
+  // `supportAgentAction` counts each token-authenticated agent callback by (op, outcome). Both
+  // bounded enums — never a per-household / per-thread label.
+  //
+  // The `outcome` VOCABULARY is deliberately NOT restated here — a hand-copied list of it drifted
+  // silently through several changes. `SupportResponder.WebhookOutcome.label` is the single
+  // authority (an exhaustive match, so a new case cannot be forgotten); the per-value SEMANTICS are
+  // annotated once on `MetricGuard.Allowed`'s entry for this series, above.
   // #2416 — `reason` attributes a dispatch failure: config (permanent 4xx at the Anthropic boundary)
   // | transient (transport / 5xx) | none. Bounded by SupportResponder.WebhookOutcome.reason.
 

@@ -432,10 +432,13 @@ object PlainClient {
   private[support] val HistoryTimeout: Duration = 8.seconds
 
   /**
-   * Config-gated layer. When [[SupportConfig.writeEnabled]] is false (no Plain API key — the
-   * self-hosted default and any deployment that hasn't set the key) this yields the no-op
-   * [[Disabled]] client whose every call returns [[PlainOutcome.Disabled]] without touching the
-   * network — so the write half ships dark. When enabled it yields the live GraphQL client.
+   * Config-gated layer, keyed on the EXPLICIT named flag `plain.writeEnabled` — NOT on secret
+   * presence (#2471: conflating the two sent an operator hunting a Plain provisioning gap over our
+   * own off-switch; see docs/process/no-dark-by-default.md on named flags vs derived-from-absence).
+   * When [[SupportConfig.writeEnabled]] is false (the self-hosted default and any deployment that
+   * hasn't set the key) this yields the no-op [[Disabled]] client whose every call returns
+   * [[PlainOutcome.Disabled]] without touching the network — so the write half ships dark. When
+   * enabled it yields the live GraphQL client.
    */
   val layer: ZLayer[SupportConfig, Nothing, PlainClient] =
     ZLayer.fromFunction { (cfg: SupportConfig) =>
@@ -1484,13 +1487,31 @@ object PlainClient {
       // #2437: thread MARKS (escalation labels), so a spec can assert an escalated thread is labelled
       // and — the load-bearing half — that an AI-resolved one is NOT.
       marks: Ref[List[PlainThreadMark]],
+      /**
+       * #2471 — what [[writeThread]] reports. ONE tri-state rather than a flag per failure mode, so
+       * "refused AND disabled" is unrepresentable instead of resolving by an undocumented
+       * precedence:
+       *   - [[PlainOutcome.Ok]] (default) — the send landed.
+       *   - [[PlainOutcome.Error]] — the workspace ACCEPTED the call and REFUSED the send ("Emails
+       *     are not enabled for this workspace", the permanent provisioning gap), so a spec can pin
+       *     that a caller propagates the failure instead of discarding it.
+       *   - [[PlainOutcome.Disabled]] — the write half is EXPLICITLY off
+       *     (`plain.writeEnabled=false`, what `PlainClient.layer` yields as its `Disabled` client):
+       *     a deliberate off-state, not a refusal.
+       *
+       * Unlike the real `Disabled` client this still RECORDS the attempt in `threads` — that is the
+       * point, so a spec can prove the call site actually RAN rather than matching some earlier
+       * short-circuit that returns the same outcome. Models the WRITE half only: `upsertCustomer` /
+       * `markThread` are unaffected and keep reporting `Ok`.
+       */
+      writeOutcome: Ref[PlainOutcome],
   )
 
   def recording(rec: Recorder): PlainClient = new PlainClient {
     def upsertCustomer(req: PlainCustomerUpsert): UIO[PlainOutcome] =
       rec.customers.update(_ :+ req).as(PlainOutcome.Ok)
     def writeThread(req: PlainThreadWrite): UIO[PlainOutcome]       =
-      rec.threads.update(_ :+ req).as(PlainOutcome.Ok)
+      rec.threads.update(_ :+ req) *> rec.writeOutcome.get
 
     def threadHistory(threadId: String, limit: Int): UIO[List[PlainThreadMessage]] =
       rec.historyReads.update(_ :+ threadId) *> rec.historyFails.get.flatMap {
@@ -1515,5 +1536,6 @@ object PlainClient {
       r <- Ref.make(List.empty[String])
       f <- Ref.make(false)
       m <- Ref.make(List.empty[PlainThreadMark])
-    } yield Recorder(c, t, h, r, f, m)
+      w <- Ref.make[PlainOutcome](PlainOutcome.Ok)
+    } yield Recorder(c, t, h, r, f, m, w)
 }
