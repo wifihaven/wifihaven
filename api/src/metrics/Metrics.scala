@@ -547,17 +547,20 @@ object MetricGuard {
     // there means the label id / `label:create` permission is misprovisioned). Both bounded, never
     // per-household. #2461 added `ok_no_link`, emitted for `op=issue` ONLY: a SUCCESS (the GitHub
     // issue exists) whose create response we could not read a link back from, so the agent has no
-    // link to offer. #2462: on `op=household_read`, `outcome=error` means exactly one thing — the
-    // consented account read did not complete (a repo query threw) — since no other producer can
-    // mint it for that op. It used to be unmintable: every read was individually caught and the
-    // synthesized empty summary metered `ok`, so a Postgres outage and a brand-new household were
-    // the same sample AND the same customer-facing answer. Expect a flat zero. Any "how many issues did we file" query must therefore match BOTH success
+    // link to offer. Any "how many issues did we file" query must therefore match BOTH success
     // values (`outcome=~"ok|ok_no_link"`, as the volume panel does); SupportResponder's
     // `AgentActionResult.SuccessLabels` is the authority for that matcher and
     // SupportMetricsContractSpec pins the panel against it. NOTE the outcome vocabulary has more
     // than one minter: the `withClaims`-gated ops label via `AgentActionResult`, while
     // `escalate_mark` labels via `PlainClient.PlainOutcome` (ok | disabled | error). They coincide
     // today — reconcile both before deriving a success query for an op other than `issue`.
+    // #2462: on `op=household_read`, `outcome=error` means exactly ONE thing — the consented
+    // account read did not COMPLETE (a repo query threw) — because no other producer can mint it
+    // for that op. It used to be unmintable: each of the four reads was individually caught and the
+    // synthesized empty summary metered `ok`, so a Postgres outage and a brand-new household were
+    // the same sample AND the same customer-facing answer. Expect a flat zero. A household that
+    // GENUINELY has nothing still meters `ok` — the distinction is failure-vs-empty, not
+    // zero-vs-nonzero.
     // #2416 added the bounded `reason` dimension so `outcome=error` is attributed to WHY the cloud
     // agent could not be dispatched: config (a 4xx at the Anthropic boundary — revoked key, wrong
     // agent-or-routine id, stale anthropic-beta header; PERMANENT, never self-heals, also logged at

@@ -66,6 +66,17 @@ object SupportAgentRoutes {
                 ZIO.fail(ApiError.BadRequest("invalid signature"))
               // Everything else is a 200 so Plain stops retrying — a skipped continuation, a #2307
               // static reject, a dark install, or a downstream hiccup is not the webhook's error.
+              //
+              // #2462 `OriginLookupFailed` is the one outcome where that reasoning does NOT hold on
+              // its face: an unreadable database IS our error, and a 5xx would let Plain redeliver
+              // once Postgres recovers, so the customer eventually gets answered instead of
+              // silently dropped. We still answer 200, deliberately: the failure mode this guards
+              // against is a SUSTAINED outage, where every delivery fails and a 5xx turns Plain's
+              // retries into a storm against a database already on the floor — and then, on
+              // recovery, into a burst of duplicate dispatches. Dropping one delivery loudly
+              // (ERROR log + `origin_lookup_failed`, panel id 26, expect a flat zero) is the
+              // cheaper failure; the customer's next message dispatches normally. Revisit only with
+              // a bounded per-delivery retry budget, not by flipping this to a 5xx.
               case _                               => ZIO.succeed(Response.ok)
             }
           } yield resp

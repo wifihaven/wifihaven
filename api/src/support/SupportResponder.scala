@@ -479,6 +479,11 @@ final case class SupportResponder(
       subject: Option[String] = None,
   ): UIO[DispatchOutcome] =
     for {
+      // TODO(#2520): this swallow is the #2462 bug's surviving sibling — a DB blip hands the agent
+      // `plan = None` on EVERY dispatch, with no log and no metric, indistinguishable from a
+      // household that genuinely has no billing row. Deliberately out of scope for #2462 (which
+      // named only `agentHousehold` and the two origin resolvers); unlike those, this one must not
+      // fail the dispatch — a customer message still has to get answered when we cannot read a plan.
       billing <- billingRepo.findByHousehold(hh).catchAll(_ => ZIO.none)
       token = ConsentToken.mint(
         household = hh,

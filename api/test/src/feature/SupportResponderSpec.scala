@@ -1931,6 +1931,13 @@ object SupportResponderSpec
     // reads THREW must not be able to produce that same answer. The reads are broken at the
     // DATABASE (a table dropped out from under the real repo), not by a repo mock — the repos stay
     // the production ones on embedded Postgres (docs/process/testing.md).
+    //
+    // ORDERING CONTRACT: these three MUTILATE the schema (`DROP TABLE … CASCADE`). They are safe
+    // only because (a) the suite is `TestAspect.sequential`, (b) every test in it opens with
+    // `cleanDb`, which drops and re-clones the per-spec database from the migrated template, and
+    // (c) they sit LAST. Keep them last, and keep opening every new test with `cleanDb` — a test
+    // appended after these without one would run against a schema missing `devices` / `households`
+    // / `users` and fail for reasons having nothing to do with what it asserts.
     test("#2462: a household read whose DB query FAILS is refused, never answered with zeros") {
       (for {
         _                     <- cleanDb

@@ -38,6 +38,10 @@ object SupportMetricsContractSpec extends ZIOSpecDefault {
   /** #2460 — the panel that must count every resume outcome where the customer got nothing back. */
   private val DeadEndPanelTitlePrefix = "Consent grants that dead-ended"
 
+  /** #2462 — the two "expect 0" panels for a read that FAILED rather than returning empty. */
+  private val ReadFailedPanelTitlePrefix   = "Consented household reads that FAILED"
+  private val OriginFailedPanelTitlePrefix = "Webhook origins we could NOT look up"
+
   /**
    * #2458 — the panel that must count every scan failure the duplicate check cannot recover from.
    */
@@ -113,6 +117,39 @@ object SupportMetricsContractSpec extends ZIOSpecDefault {
         volumePanelExprs.map(e => e -> (AgentActionResult.SuccessLabels -- labelsIn(e)))
       assertTrue(shortfalls.forall(_._2.isEmpty)) &&
       assertTrue(shortfalls.nonEmpty)
+    },
+    test("#2462: the two failure panels select label values the enums can actually MINT") {
+      // Third instance of the same drift class, and the nastiest shape of it: both panels are
+      // "expect 0" stats. A panel selecting a label value nothing can ever emit reads as a
+      // permanent, reassuring zero — indistinguishable from "this failure never happens" — which is
+      // strictly worse than having no panel at all. So assert the selected value against the enum
+      // that mints it, not against a hand-written string.
+      //
+      // These close the last unpinned link in each chain. The rest is already type-enforced:
+      // `meter` emits `WebhookOutcome.label(o)` and `done`/`doneE` emit
+      // `AgentActionResult.label(r)` — one derivation each — and SupportResponderSpec pins the
+      // OUTCOME VALUE those labels are derived from at the route boundary.
+      val hhExprs     = panelExprs(_.startsWith(ReadFailedPanelTitlePrefix))
+      val originExprs = panelExprs(_.startsWith(OriginFailedPanelTitlePrefix))
+      assertTrue(
+        hhExprs.nonEmpty,
+        hhExprs.forall(_.contains("support_agent_action_total")),
+        hhExprs.forall(_.contains("op=\"household_read\"")),
+        // The refusal path returns AgentActionResult.Error; this is the label it mints.
+        hhExprs.forall(
+          _.contains(s"outcome=\"${AgentActionResult.label(AgentActionResult.Error)}\""),
+        ),
+      ) &&
+      assertTrue(
+        originExprs.nonEmpty,
+        originExprs.forall(_.contains("support_ai_draft_total")),
+        originExprs.forall(
+          _.contains(
+            s"outcome=\"${SupportResponder.WebhookOutcome
+                .label(SupportResponder.WebhookOutcome.OriginLookupFailed)}\"",
+          ),
+        ),
+      )
     },
     test("success is exactly ok + ok_no_link + ok_duplicate, derived from the enum") {
       // Guards the derivation itself: a new case must be classified deliberately, not default into
