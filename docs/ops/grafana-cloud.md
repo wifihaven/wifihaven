@@ -211,9 +211,18 @@ curl -sG -u "3272502:$GRAFANA_READ_TOKEN" \
 
 Cloud access policies gate the **data backends** (Loki / Mimir / Tempo /
 Pyroscope) only — there is no dashboard scope, so the Path B token cannot see a
-dashboard, and the Path C token below cannot query logs. Neither substitutes for
-the other, and the 403 you get from using the wrong one does not tell you which
-mistake you made.
+dashboard, and the 401/403 you get from reaching for the wrong credential does
+not tell you which mistake you made.
+
+The asymmetry is **not** symmetric, so be precise about it: the Path C token
+below cannot authenticate against the Path B *backend* hosts (`logs-prod-021…`,
+`prometheus-prod-67…`), which take basic-auth access-policy credentials — but a
+Viewer **can** query those same datasources *through the stack*, via
+`POST /api/ds/query` (Grafana's Viewer role carries `datasources:query`).
+Verified 2026-07-28: a `POST /api/ds/query` against the `grafanacloud-logs`
+datasource with this token returns `status: 200` and real log frames. So Path C
+is a superset for reading and Path B remains the right tool for scripting —
+`logcli` and `query_range` speak to the backends directly.
 
 Reading `https://wifihaven.grafana.net/api/...` needs a Grafana **service
 account** token (`glsa_…`), managed under **Administration → Users and access →
@@ -245,15 +254,17 @@ the stack:
 
 | Live object | In-repo source of truth | Applied by |
 |---|---|---|
-| Dashboards | [`deploy/grafana/dashboards/`](../../deploy/grafana/dashboards/) | `infra/grafana/main.tf` (one `grafana_dashboard` per JSON, `overwrite = true`) |
+| Dashboards | [`deploy/grafana/dashboards/`](../../deploy/grafana/dashboards/) | `infra/grafana/main.tf` — one `grafana_dashboard` per name in `local.dashboards`, `overwrite = true`. **That list is hardcoded, not a directory glob**: a new JSON must be added to it or it is silently never applied, and no CI check pins the two together. |
 | Alert rules | [`infra/grafana/alerting-rules-critical.tf`](../../infra/grafana/alerting-rules-critical.tf), [`alerting-rules-warning.tf`](../../infra/grafana/alerting-rules-warning.tf) | the `grafana_rule_group` resources therein |
+| Alert *routing* | [`alerting.tf`](../../infra/grafana/alerting.tf) (contact points + notification policy), [`alerting-rules.tf`](../../infra/grafana/alerting-rules.tf) (the folder both groups attach to) | — the `/api/v1/provisioning/alert-rules` call above returns rules, not routing |
 
 Use this API to see what the stack is **actually serving** — i.e. to detect
 drift — not as the primary source.
 
 Drift is worth taking seriously here: `.github/workflows/master-grafana.yml`
 runs `terraform apply` on push to `main` but is **path-filtered** to
-`deploy/grafana/**` / `infra/grafana/**`, so an out-of-band edit is *not*
+`deploy/grafana/**`, `infra/grafana/**`, and the workflow file itself, so an
+out-of-band edit is *not*
 reconciled on the next unrelated push — it persists until someone happens to
 touch one of those files.
 
@@ -265,9 +276,10 @@ edit dashboards out-of-band lets live state diverge from the repo silently.
 | Credential | Type | Can | Cannot |
 |---|---|---|---|
 | Path B access policy (`wifihaven-read`) | Cloud access policy | query Loki + Prometheus | see dashboards |
-| Path C service account (`wifihaven-dashboard-read`) | Service account, Viewer | read dashboards + alert rules | query logs; write anything |
+| Path C service account (`wifihaven-dashboard-read`) | Service account, Viewer | read dashboards + alert rules; also query datasources via `/api/ds/query` | authenticate to the Loki/Prometheus backend hosts directly; write anything |
 | `GRAFANA_AUTH` (CD secret) | Service-account token, dashboard **write** scope — see [`infra/grafana/variables.tf`](../../infra/grafana/variables.tf) | apply Terraform | — (this is the only one that can edit dashboards; CI-only, not for ad-hoc use) |
 
-Separately, `GRAFANA_CLOUD_ANNOTATION_TOKEN` is a distinct credential scoped to
+Separately, `GRAFANA_CLOUD_ANNOTATION_TOKEN` (introduced under *Grafana Cloud
+stack* at the top of this file) is a distinct credential scoped to
 `annotations:write`, used by `.github/actions/grafana-annotation` to POST deploy
 annotations. Do not reach for it here.

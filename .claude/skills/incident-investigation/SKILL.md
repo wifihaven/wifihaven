@@ -89,13 +89,13 @@ from Step 1 — if they disagree, trust the log and re-classify.
 ships every deployed log line to Loki, indexed and LogQL-queryable across
 staging + prod. Full label set, copy-pasteable queries, and the read credential
 live in [`docs/ops/grafana-cloud.md`](../../../docs/ops/grafana-cloud.md)
-(§ *Querying logs from Loki* `{#querying-logs}`) — that doc is the source of
+(§ *Querying Grafana Cloud* `{#querying-logs}`) — that doc is the source of
 truth for the label set; do not re-derive it here.
 
 - **Primary: Loki, from the CLI.** Query `logcli` / the `query_range` HTTP API
   — the read credential is **provisioned**, so you can grep, diff, and quote
   log lines directly instead of routing the investigation through a browser.
-  See grafana-cloud.md § *Querying logs from Loki* → **Path B** for the
+  See grafana-cloud.md § *Querying Grafana Cloud* → **Path B** for the
   credential and the exact invocations; don't restate the hosts or user ids
   here. Query the failing route around the onset window. Stream labels are
   `service="wifihaven-api"`, `env="staging"|"production"`, `level`; `route` /
