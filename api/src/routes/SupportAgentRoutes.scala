@@ -72,14 +72,18 @@ object SupportAgentRoutes {
       Method.POST / "api" / "support" / "agent" / "reply" ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            body   <- capped(req)
-            post   <- ZIO
+            body <- capped(req)
+            post <- ZIO
               .fromEither(body.fromJson[ReplyPost])
               .mapError(ApiError.DecodeFailure.apply)
-            _      <- ZIO
-              .fail(ApiError.BadRequest("empty reply"))
-              .when(post.markdown.trim.isEmpty)
-            result <- responder.agentReply(bearerToken(req), post.markdown)
+            // #2456: guard on what will ACTUALLY be posted. `agentReply` drops the agent's
+            // redundant leading copies of the server-owned attribution line, so a body that is
+            // nothing BUT that line reduces to nothing — and would otherwise pass this check and
+            // send the customer a bare header with no answer, reported back to the agent as Ok.
+            // Same shared primitive the responder uses, so the two cannot disagree on "empty".
+            reply = SupportResponder.stripLeadingAttribution(post.markdown)
+            _      <- ZIO.fail(ApiError.BadRequest("empty reply")).when(reply.trim.isEmpty)
+            result <- responder.agentReply(bearerToken(req), reply)
             resp   <- toResponse(result)
           } yield resp
           handle.mapError(ErrorMapper.errorToResponse)

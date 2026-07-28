@@ -498,7 +498,10 @@ final case class SupportResponder(
         // customer-visible send via Plain's replyToThread), NOT a new createThread. The thread
         // binding comes from the verified token — the request body carries only the reply text.
         threadId = claims.threadId,
-        markdown = s"$AiReplyAttribution\n\n$markdown",
+        // #2456: strip the agent's own leading copy first — the server owns this line, and the
+        // agent intermittently copies it out of the thread history it now sees (#2441), which
+        // showed the customer the header twice.
+        markdown = s"$AiReplyAttribution\n\n${stripLeadingAttribution(markdown)}",
       )
       plain.writeThread(write).flatMap {
         case PlainOutcome.Ok       => done("reply", AgentActionResult.Ok)
@@ -1098,6 +1101,36 @@ object SupportResponder {
    */
   val AiReplyAttribution: String =
     "🤖 *WifiHaven support assistant — reply \"talk to a human\" any time and a teammate will follow up.*"
+
+  /**
+   * #2456 — drop any LEADING copies of [[AiReplyAttribution]] from agent-authored markdown. The
+   * server is the single owner of that line; a copy at the head of the agent's own text is always
+   * redundant, and left in place the customer sees the header twice.
+   *
+   * Why the agent emits it at all: since #2441 the kickoff carries prior AI turns back as history,
+   * and those stored turns begin with the line, so the agent intermittently reproduces the shape it
+   * sees (measured ~1 in 2 history-carrying replies; it does NOT compound). Because that is
+   * non-deterministic model formatting rather than an instruction being followed —
+   * `deploy/support-agent/agent.yaml` never asks for the line — the fix has to be structural here
+   * rather than a prompt rule, which would re-open on any prompt edit or model change.
+   *
+   * LEADING only: the line is a header, so a mid-body occurrence is the agent QUOTING an earlier
+   * turn back to the customer, which is legitimate content and stays.
+   *
+   * EXACT match only, deliberately. The constant carries an emoji, markdown emphasis, an em dash
+   * and typographic quotes, and a near-miss reproduction (no 🤖, `-` for `—`, straight quotes) is
+   * NOT stripped — "exactly once" is a guarantee about VERBATIM copies, which is what the observed
+   * duplication is. A fuzzy match would risk eating customer- or agent-authored text that merely
+   * resembles the line, the worse failure.
+   */
+  private[api] def stripLeadingAttribution(markdown: String): String = {
+    @annotation.tailrec
+    def go(s: String): String = {
+      val t = s.stripLeading()
+      if t.startsWith(AiReplyAttribution) then go(t.drop(AiReplyAttribution.length)) else t
+    }
+    go(markdown)
+  }
 
   /**
    * #2437 — what the support escalation notice puts in the "message" slot. Unlike press (where the

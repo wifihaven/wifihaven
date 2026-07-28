@@ -997,6 +997,46 @@ object SupportResponderSpec
           SupportResponder.AiReplyAttribution.toLowerCase.contains("human"),
         )
     },
+    test("#2456: an agent reply that already carries the attribution line yields exactly ONE") {
+      // Since #2441 the agent can see its own prior replies in thread history, attribution line
+      // and all, and intermittently copies that line to the top of its own markdown. The server is
+      // the SINGLE owner of the line, so it strips any leading copies before prepending its own —
+      // structural, so it cannot re-open on a prompt edit or a model change. (Non-deterministic
+      // model output: this pins the server-side strip directly, it does not try to reproduce the
+      // duplication.)
+      val attribution = SupportResponder.AiReplyAttribution
+      for {
+        _               <- cleanDb
+        hhRepo          <- ZIO.service[HouseholdRepo]
+        hh              <- hhRepo.create("Family Dup", "fam-dup")
+        (routes, stubs) <- makeRoutes(liveCfg)
+        token           <- mintToken(hh, "th_dup", dataAccess = false)
+        body = Map("markdown" -> s"$attribution\n\nHere is how to allow the school site...").toJson
+        (status, _) <- agentPost(routes, "/api/support/agent/reply", body, Some(token))
+        threads     <- stubs.plain.threads.get
+      } yield assertTrue(status == Status.Ok, threads.size == 1) &&
+        assertTrue(
+          threads.head.markdown.startsWith(attribution),
+          threads.head.markdown
+            .split(java.util.regex.Pattern.quote(attribution), -1)
+            .length - 1 == 1,
+          threads.head.markdown.contains("allow the school site"),
+        )
+    },
+    test("#2456: a reply that is NOTHING BUT the attribution line is rejected, not sent") {
+      // The empty-reply guard runs on the STRIPPED body, so this shape can't slip past it and send
+      // the customer a bare header with no answer while reporting Ok back to the agent.
+      for {
+        _               <- cleanDb
+        hhRepo          <- ZIO.service[HouseholdRepo]
+        hh              <- hhRepo.create("Family Bare", "fam-bare")
+        (routes, stubs) <- makeRoutes(liveCfg)
+        token           <- mintToken(hh, "th_bare", dataAccess = false)
+        body = Map("markdown" -> s"\n${SupportResponder.AiReplyAttribution}\n ").toJson
+        (status, _) <- agentPost(routes, "/api/support/agent/reply", body, Some(token))
+        threads     <- stubs.plain.threads.get
+      } yield assertTrue(status == Status.BadRequest, threads.isEmpty)
+    },
     test(
       "#2408: agentReply posts INTO the token-bound thread via replyToThread (full stack, live Plain at HTTP boundary)",
     ) {
