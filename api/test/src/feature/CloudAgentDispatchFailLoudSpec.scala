@@ -154,6 +154,7 @@ object CloudAgentDispatchFailLoudSpec
       profRepo    <- ZIO.service[ProfileRepo]
       consentRepo <- ZIO.service[SupportConsentRepo]
       clock       <- ZIO.service[Clock]
+      tracker     <- DispatchTracker.make(DispatchTracker.deadAfterFor(cfg))
       dispatcher = CloudAgentDispatcher.transportFor(cfg) match {
         case CloudAgentDispatcher.Transport.ClaudeCodeCloud =>
           new CloudAgentDispatcher.ClaudeCodeCloudLive(cfg)
@@ -182,6 +183,7 @@ object CloudAgentDispatchFailLoudSpec
       // it from depending on the notification transport.
       Notifier.logOnly,
       RateLimiter.allowAll,
+      tracker,
     )
 
   // A UI-originated customer chat on an identified thread (the household resolves), so the responder

@@ -150,6 +150,7 @@ object SupportResponderSpec
       plainRec    <- PlainClient.recorder
       ghRec       <- GithubIssueClient.recorder
       dispRec     <- CloudAgentDispatcher.recorder
+      tracker     <- DispatchTracker.make(DispatchTracker.deadAfterFor(cfg))
       responder = SupportResponder(
         cfg,
         hhRepo,
@@ -173,6 +174,7 @@ object SupportResponderSpec
         // from depending on the notification transport.
         Notifier.logOnly,
         RateLimiter.allowAll,
+        tracker,
       )
     } yield (SupportAgentRoutes.routes(responder), Stubs(plainRec, ghRec, dispRec, responder))
 
@@ -220,6 +222,7 @@ object SupportResponderSpec
       profRepo    <- ZIO.service[ProfileRepo]
       clock       <- ZIO.service[Clock]
       consentRepo <- ZIO.service[SupportConsentRepo]
+      tracker     <- DispatchTracker.make(DispatchTracker.deadAfterFor(cfg))
       liveCfg   = cfg.copy(plain = cfg.plain.copy(writeEnabled = true, apiBase = apiBase))
       responder = SupportResponder(
         liveCfg,
@@ -244,6 +247,7 @@ object SupportResponderSpec
         // from depending on the notification transport.
         Notifier.logOnly,
         RateLimiter.allowAll,
+        tracker,
       )
     } yield SupportAgentRoutes.routes(responder)
 

@@ -941,6 +941,15 @@ object AppMetrics {
   // present) ∈ managed-agents | claude-code-cloud. The `disabled` no-op selects no transport, so it
   // passes None and the metric carries only `outcome` (a subset of the allowed keys). Never a
   // per-household / per-thread label.
+  //
+  // #2472 widens `outcome` with the COMPLETION half of the pair, emitted from `DispatchTracker`
+  // (values single-sourced on `DispatchTracker.Outcome`): `completed` (a terminal agent callback
+  // arrived for a tracked dispatch), `callback_slow` (nothing after `DispatchTracker.SlowAfter` — a
+  // usage-limit-suspended run legitimately reaches this, so it is the WARN tier and is expected to
+  // be occasionally non-zero), and `no_callback` (nothing after `DispatchTracker.DeadAfter` — the
+  // cloud session accepted the trigger and died, so the customer got NO answer; should be flat
+  // zero). They ride THIS series rather than a new one precisely so `dispatched` can be read
+  // against `completed`: before #2472 a dispatched-then-dead session counted only as a success.
   def supportDispatch(outcome: String, transport: Option[String]): UIO[Unit] =
     MetricGuard.counter(
       "support_dispatch_total",

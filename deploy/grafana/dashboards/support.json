@@ -301,7 +301,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "Cloud-agent dispatch outcomes (#2438)",
-      "description": "sum by (outcome, transport) (rate(support_dispatch_total{env=\"$env\"}[5m])) — the dispatcher-level cloud-trigger outcome, measured at the transport boundary (CloudAgentObservability): dispatched (the Managed Agents session / Claude Code Cloud routine trigger returned 2xx) / error (the trigger returned non-2xx or the call threw — the cloud agent NEVER started) / disabled (the responder is dark, #2265; carries no transport). transport ∈ managed-agents (API-credit billed) | claude-code-cloud (subscription billed). This is the series the #2408 go-live gap needed: the webhook panel's 'dispatched' outcome only means a session was ATTEMPTED — a silent non-2xx trigger failure shows up as 'error' HERE and nowhere else. ALERT on any sustained 'error' rate while the responder is enabled (each is a support reply that never went out). Emitted for BOTH audiences from one shared envelope; the press twin is press_dispatch_total on the Press dashboard. #2416: when outcome=error, the 'Support dispatch failures by reason' panel below splits that bucket into config (a permanent 4xx misconfiguration — a dead responder needing a human fix, alert W6) vs transient (a 5xx/transport blip).",
+      "description": "sum by (outcome, transport) (rate(support_dispatch_total{env=\"$env\"}[5m])) — the dispatcher-level cloud-trigger outcome, measured at the transport boundary (CloudAgentObservability): dispatched (the Managed Agents session / Claude Code Cloud routine trigger returned 2xx) / error (the trigger returned non-2xx or the call threw — the cloud agent NEVER started) / disabled (the responder is dark, #2265; carries no transport). transport ∈ managed-agents (API-credit billed) | claude-code-cloud (subscription billed). This is the series the #2408 go-live gap needed: the webhook panel's 'dispatched' outcome only means a session was ATTEMPTED — a silent non-2xx trigger failure shows up as 'error' HERE and nowhere else. ALERT on any sustained 'error' rate while the responder is enabled (each is a support reply that never went out). Emitted for BOTH audiences from one shared envelope; the press twin is press_dispatch_total on the Press dashboard. #2416: when outcome=error, the 'Support dispatch failures by reason' panel below splits that bucket into config (a permanent 4xx misconfiguration — a dead responder needing a human fix, alert W6) vs transient (a 5xx/transport blip). #2472: this series ALSO carries the COMPLETION half of the pair — completed (a terminal agent callback arrived for a dispatch we recorded), callback_slow (nothing after 10 min; a usage-limit-suspended claude-code-cloud run legitimately reaches this, so an occasional sample is normal), no_callback (nothing by the agent-token TTL — the session accepted the trigger and DIED, and the customer got no answer). Read 'dispatched' against 'completed': before #2472 a dispatched-then-dead session counted only as a success.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
       "id": 12,
@@ -593,6 +593,40 @@
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "expr": "sum(increase(support_ai_draft_total{env=\"$env\",outcome=\"email_reject_send_failed\"}[24h]))",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Dispatched sessions that NEVER called back (24h) — expect 0 (#2472)",
+      "description": "sum(increase(support_dispatch_total{env=\"$env\",outcome=\"no_callback\"}[24h])) — a cloud-agent session that ACCEPTED the trigger and then died: no /api/support/agent/reply, /escalate, or /request-consent call ever arrived within the agent-token TTL (DispatchTracker.deadAfterFor = support.agentTokenTtlMinutes, 24h by default). The TTL is the threshold because it is the first instant at which silence is unambiguous: BEFORE it a claude-code-cloud run suspended on subscription usage limits can still resume and answer — possibly the next morning (#2473 / AgentTokenTtl) — and AFTER it that resumed run's callback 401s, so the answer can never reach the customer. Every sample is a customer who wrote to support and got NOTHING back. Observed live on staging 2026-07-26 (#2335 validation, test #6a): the dispatch half logged and metered a clean success, the reply half simply never happened — total to the customer, invisible to us. NOTHING RETRIES: auto-retry was deliberately declined (a second billed session plus a duplicate-reply risk the #2403 loop guard cannot suppress), so a non-zero value is an ACTION for a human — read the thread in Plain and reply by hand. That is safe at THIS threshold and only at this threshold: a late agent reply can no longer land, so hand-replying cannot produce a duplicate. Correlate with the API log line `support dispatch NEVER CALLED BACK`, which names the thread, household, and transport.",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 96 },
+      "id": 25,
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "short", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "background", "graphMode": "none", "textMode": "auto" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(increase(support_dispatch_total{env=\"$env\",outcome=\"no_callback\"}[24h]))",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Dispatches still unanswered after 10 min (24h) (#2472)",
+      "description": "sum(increase(support_dispatch_total{env=\"$env\",outcome=\"callback_slow\"}[24h])) — a dispatch with no terminal agent callback after DispatchTracker.SlowAfter (10 min), against healthy replies observed landing in 30–110s. This is the WARN tier, NOT an error: a claude-code-cloud routine run can be suspended on subscription usage limits and resumed hours later (#2473 / AgentTokenTtl), and those runs do answer, sometimes the next morning — so occasional samples are expected, each dispatch is counted here at most once, and a thread on this panel must NOT be hand-replied blind (wait for the no_callback panel, which is past the point a late reply can land). What matters is the SHAPE: a sustained rate, or one that tracks the no_callback panel, means sessions are stalling rather than pausing. Log line: `support dispatch still unanswered`.",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 96 },
+      "id": 26,
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "short", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 3 }] } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "background", "graphMode": "none", "textMode": "auto" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(increase(support_dispatch_total{env=\"$env\",outcome=\"callback_slow\"}[24h]))",
           "refId": "A"
         }
       ]
