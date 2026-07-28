@@ -455,8 +455,9 @@ object Main extends ZIOAppDefault {
       // #2200 (support intake C): the Claude responder's external transports — the cloud-agent
       // dispatcher (Managed Agents session per authenticated-origin inbound message — UI-originated
       // or a #2307 registered-admin email) and the GitHub issue-filing client (fine-grained
-      // Issues-ONLY bot token; read+write since #2458's duplicate check LISTS). #2265: each runs iff its
-      // EXPLICIT enable flag is true (validated loudly at boot); off is logged + health-visible.
+      // Issues-ONLY bot token; read+write since #2458's duplicate check LISTS).
+      // #2265: each runs iff its EXPLICIT enable flag is true (validated loudly at boot); off is
+      // logged + health-visible.
       wifihaven.api.support.CloudAgentDispatcher.layer >+>
       wifihaven.api.support.GithubIssueClient.layer >+>
       // #2472: the dispatch→completion tracker, shared by the responder (which records an accepted
