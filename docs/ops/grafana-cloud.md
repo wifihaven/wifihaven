@@ -43,7 +43,7 @@ JVM pushes directly.
   mirroring the `GRAFANA_CLOUD_PROM_*` pattern. `WIFIHAVEN_ENV` (`staging` /
   `production`) supplies the `env` label. Never committed.
 
-## Querying logs from Loki (debugging / incidents) {#querying-logs}
+## Querying Grafana Cloud — logs, metrics, dashboards {#querying-logs}
 
 **Prefer Loki over `render logs`** for any log lookup. The API ships every
 deployed log line to Grafana Cloud Loki (above), where it is indexed and
@@ -207,12 +207,67 @@ curl -sG -u "3272502:$GRAFANA_READ_TOKEN" \
   --data-urlencode 'query=up'
 ```
 
-#### Not covered — dashboards
+### Path C — reading dashboards + alert rules (a different credential)
 
 Cloud access policies gate the **data backends** (Loki / Mimir / Tempo /
-Pyroscope) only; there is no dashboard scope. Reading dashboard JSON from
-`https://wifihaven.grafana.net/api/dashboards/...` needs a separate Grafana
-**service account** token (Administration → Users and access → Service
-accounts). Not provisioned as of 2026-07-27. Note the in-repo dashboards under
-[`deploy/grafana/dashboards/`](../../deploy/grafana/dashboards/) are the source
-of truth anyway — read those rather than the live API.
+Pyroscope) only — there is no dashboard scope, so the Path B token cannot see a
+dashboard, and the Path C token below cannot query logs. Neither substitutes for
+the other, and the 403 you get from using the wrong one does not tell you which
+mistake you made.
+
+Reading `https://wifihaven.grafana.net/api/...` needs a Grafana **service
+account** token (`glsa_…`), managed under **Administration → Users and access →
+Service accounts**. Provisioned 2026-07-28 as `wifihaven-dashboard-read` at the
+**Viewer** role — verified read-only: dashboard reads report `canSave:false,
+canEdit:false, canDelete:false`, and a write returns `403 Permissions needed:
+any of dashboards:create, dashboards:write`. As with Path B the token value is
+**not in this repo**; it lives in the operator's local Claude memory at
+`~/.claude/projects/*wifihaven*/memory/grafana_service_account_token.md`, and a
+non-operator must provision their own.
+
+```bash
+GRAFANA_SA_TOKEN=$(awk '/^glsa_/{print; exit}' \
+  ~/.claude/projects/*wifihaven*/memory/grafana_service_account_token.md)
+# Guard: an empty token sends "Bearer " and 401s indistinguishably from an
+# expired one — same ambiguity the Path B guard exists to prevent.
+[ -n "$GRAFANA_SA_TOKEN" ] || echo "no glsa_ token in the memory file" >&2
+
+B=https://wifihaven.grafana.net
+curl -s -H "Authorization: Bearer $GRAFANA_SA_TOKEN" "$B/api/search?type=dash-db&limit=100"
+curl -s -H "Authorization: Bearer $GRAFANA_SA_TOKEN" "$B/api/dashboards/uid/<uid>"
+curl -s -H "Authorization: Bearer $GRAFANA_SA_TOKEN" "$B/api/v1/provisioning/alert-rules"
+```
+
+#### Read the repo, not the API, for what things *should* be
+
+Both dashboards and alert rules are Terraform-managed and flow **one way** into
+the stack:
+
+| Live object | In-repo source of truth | Applied by |
+|---|---|---|
+| Dashboards | [`deploy/grafana/dashboards/`](../../deploy/grafana/dashboards/) | `infra/grafana/main.tf` (one `grafana_dashboard` per JSON, `overwrite = true`) |
+| Alert rules | [`infra/grafana/alerting-rules-critical.tf`](../../infra/grafana/alerting-rules-critical.tf), [`alerting-rules-warning.tf`](../../infra/grafana/alerting-rules-warning.tf) | the `grafana_rule_group` resources therein |
+
+Use this API to see what the stack is **actually serving** — i.e. to detect
+drift — not as the primary source.
+
+Drift is worth taking seriously here: `.github/workflows/master-grafana.yml`
+runs `terraform apply` on push to `main` but is **path-filtered** to
+`deploy/grafana/**` / `infra/grafana/**`, so an out-of-band edit is *not*
+reconciled on the next unrelated push — it persists until someone happens to
+touch one of those files.
+
+That is why `wifihaven-dashboard-read` must stay at **Viewer**: a token that can
+edit dashboards out-of-band lets live state diverge from the repo silently.
+
+#### Three Grafana credentials, easily confused
+
+| Credential | Type | Can | Cannot |
+|---|---|---|---|
+| Path B access policy (`wifihaven-read`) | Cloud access policy | query Loki + Prometheus | see dashboards |
+| Path C service account (`wifihaven-dashboard-read`) | Service account, Viewer | read dashboards + alert rules | query logs; write anything |
+| `GRAFANA_AUTH` (CD secret) | Service-account token, dashboard **write** scope — see [`infra/grafana/variables.tf`](../../infra/grafana/variables.tf) | apply Terraform | — (this is the only one that can edit dashboards; CI-only, not for ad-hoc use) |
+
+Separately, `GRAFANA_CLOUD_ANNOTATION_TOKEN` is a distinct credential scoped to
+`annotations:write`, used by `.github/actions/grafana-annotation` to POST deploy
+annotations. Do not reach for it here.
