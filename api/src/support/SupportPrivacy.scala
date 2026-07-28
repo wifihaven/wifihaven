@@ -53,6 +53,11 @@ object SupportPrivacy {
    * constituent WORDS from a stop-list instead would also strip `mac` / `email` / `number` out of
    * titles that never carried PII, which in this product ("Cannot change MAC address") is throwing
    * away exactly the words that distinguish one report from another (#2458 review, round 2).
+   *
+   * The fold is over an UNORDERED set, so removal order is arbitrary — which is only safe while no
+   * placeholder is a substring of another (adding `[redacted]` alongside `[redacted-ip]` would make
+   * the result order-dependent). `GithubIssueDedupSpec` pins that invariant rather than leaving it
+   * to whoever adds the next redaction rule.
    */
   def stripPlaceholders(text: String): String =
     Placeholders.foldLeft(text)((s, p) => s.replace(p, " "))

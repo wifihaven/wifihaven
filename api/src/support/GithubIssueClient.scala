@@ -274,8 +274,11 @@ object GithubIssueClient {
      *
      * EQUALITY, not containment: a transient cause counted here would make an expect-0 panel cry
      * wolf on ordinary timeouts, which is how such a panel stops being read.
+     *
+     * `lazy` because it reads the enum's synthetic `values` from inside the enum's own explicitly
+     * declared companion — an eager val there depends on Scala 3 initialisation order.
      */
-    val NeverSelfHealing: Set[String] = values.filter(isPermanent).map(_.label).toSet
+    lazy val NeverSelfHealing: Set[String] = values.filter(isPermanent).map(_.label).toSet
   }
 
   /** An already-open `support-agent` issue — the candidate set a new filing is matched against. */
@@ -411,6 +414,16 @@ object GithubIssueClient {
    * overlap, and making two titles whose only surviving words are placeholders match EXACTLY (a
    * second customer's genuine report dropped, pointed at an unrelated issue). Deleting the literal
    * closes that without touching `mac` / `email` / `number` where the AGENT actually wrote them.
+   *
+   * Two residuals, both deliberate and both fail-OPEN (they cost a duplicate, never a lost report):
+   *   - deleting the span erases the DIFFERENCE between redaction kinds, so two titles that differ
+   *     only inside it ("Cannot change [redacted-mac] address" vs "… [redacted-email] address")
+   *     reduce to the same tokens and the second is treated as a duplicate. It only bites when a
+   *     TITLE carried PII, which the agent is instructed not to write; substituting a per-kind
+   *     opaque token would separate them, at the cost of putting a synthetic shared token back into
+   *     every title of that kind. Not worth the trade at this volume — revisit if it is ever seen.
+   *   - a title that was mostly PII can fall below [[MinTopicTokens]] once stripped, which disables
+   *     dedup for it entirely and files a second issue. That is the safe direction.
    */
   def titleTokens(title: String): Set[String] =
     SupportPrivacy

@@ -100,6 +100,18 @@ object GithubIssueDedupSpec extends ZIOSpecDefault {
         !GithubIssueClient.titleTokens("device aa:bb:cc:dd:ee:ff").contains("redacted"),
       )
     },
+    test("no placeholder is a substring of another — the strip is order-independent") {
+      // `stripPlaceholders` folds String.replace over an UNORDERED set, so this is the invariant
+      // that makes the result deterministic. Adding `[redacted]` beside `[redacted-ip]` would break
+      // it silently; fail here instead.
+      val ps       = SupportPrivacy.Placeholders.toList
+      val nested   = for {
+        a <- ps
+        b <- ps if a != b && a.contains(b)
+      } yield s"$a contains $b"
+      val distinct = ps.sizeIs > 1
+      assertTrue(distinct, nested.isEmpty)
+    },
     test("every SupportPrivacy placeholder is stripped, whatever the list grows to") {
       // Read from SupportPrivacy.Placeholders rather than a literal, so adding a redaction rule
       // there without teaching the matcher about it fails HERE.
