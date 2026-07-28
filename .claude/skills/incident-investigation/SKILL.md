@@ -87,13 +87,17 @@ from Step 1 — if they disagree, trust the log and re-classify.
 
 **Query Grafana Cloud Loki first — it is the primary log source.** The API
 ships every deployed log line to Loki, indexed and LogQL-queryable across
-staging + prod. Full label set + copy-pasteable queries + the CLI-token caveat
+staging + prod. Full label set, copy-pasteable queries, and the read credential
 live in [`docs/ops/grafana-cloud.md`](../../../docs/ops/grafana-cloud.md)
 (§ *Querying logs from Loki* `{#querying-logs}`) — that doc is the source of
 truth for the label set; do not re-derive it here.
 
-- **Primary: Loki.** Open **`wifihaven.grafana.net` → Explore → Loki** and
-  query the failing route around the onset window. Stream labels are
+- **Primary: Loki, from the CLI.** Query `logcli` / the `query_range` HTTP API
+  — the read credential is **provisioned**, so you can grep, diff, and quote
+  log lines directly instead of routing the investigation through a browser.
+  See grafana-cloud.md § *Querying logs from Loki* → **Path B** for the
+  credential and the exact invocations; don't restate the hosts or user ids
+  here. Query the failing route around the onset window. Stream labels are
   `service="wifihaven-api"`, `env="staging"|"production"`, `level`; `route` /
   `status` / `mac` / etc. ride **structured metadata** (`| key="value"` after
   the selector). E.g. errors on the alarming route:
@@ -102,10 +106,9 @@ truth for the label set; do not re-derive it here.
   {service="wifihaven-api", env="production", level="ERROR"} | route=`/api/router/usage`
   ```
 
-  A scriptable `logcli` / `query_range` HTTP path is **provisioned** — prefer
-  it when you want to grep, diff, or quote log lines. See grafana-cloud.md
-  § *Querying logs from Loki* → **Path B** for the credential and the exact
-  invocations; don't restate the hosts or user ids here.
+  The **Explore UI** (`wifihaven.grafana.net` → Explore → Loki, Path A) runs
+  the same LogQL and needs no credential — reach for it when a human is
+  poking around interactively rather than capturing output.
 - **Fallback: Render.** Only if Loki itself is unavailable, tail the Render
   service logs. The Render root key is out-of-band **in memory** — load it into
   a shell var, **never echo, print, or commit it**, and mask it in any captured

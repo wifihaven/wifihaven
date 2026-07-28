@@ -168,7 +168,7 @@ Two footguns, both of which produce confusing 401s:
 GRAFANA_READ_TOKEN=$(awk '/^glc_/{print; exit}' \
   ~/.claude/projects/*wifihaven*/memory/grafana_loki_read_token.md)
 # Guard: an empty token 401s identically to the wrong-user-id footgun above.
-[ -n "$GRAFANA_READ_TOKEN" ] || echo "no glc_ token found in the memory file" >&2
+[ -n "$GRAFANA_READ_TOKEN" ] || { echo "no glc_ token in the memory file" >&2; exit 1; }
 
 curl -sG -u "1631926:$GRAFANA_READ_TOKEN" \
   "https://logs-prod-021.grafana.net/loki/api/v1/query_range" \
