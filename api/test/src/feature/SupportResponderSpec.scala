@@ -582,6 +582,58 @@ object SupportResponderSpec
         )
       }
     },
+    test("#2505: an email-only registered admin is MAPPED onto their household in Plain") {
+      // #2435's reconcile was reachable only from the SPA identity path, so a household whose admin
+      // emails support without ever loading the dashboard kept `externalId: null` forever — the
+      // Plain inbox showed no tenant (no plan/entitlement context for the human triaging, defeating
+      // #2240) and every later message had to fall through the narrower `resolveAdminHousehold`
+      // key. The email-intake gate already holds both halves of the mapping the moment it resolves
+      // a sender, so it stamps it — same `PlainClient.upsertCustomer` call, same metric.
+      for {
+        _               <- cleanDb
+        hhRepo          <- ZIO.service[HouseholdRepo]
+        billRepo        <- ZIO.service[HouseholdBillingRepo]
+        userRepo        <- ZIO.service[UserRepo]
+        hh              <- hhRepo.create("Family M", "family-m")
+        _               <- billRepo.create(hh, "beta", founding = true)
+        _               <- userRepo.create(
+          "parent",
+          "hash",
+          "admin",
+          householdId = hh,
+          email = Some("parent@family-m.example"),
+        )
+        (routes, stubs) <- makeRoutes(liveCfg)
+        body       = emailPayload(Some("parent@family-m.example"), "th_map", "my router is offline")
+        status    <- postWebhook(routes, body, Some(sign(body)))
+        customers <- stubs.plain.customers.get
+      } yield assertTrue(
+        status == Status.Ok,
+        customers.size == 1,
+        // The mapping Plain keys on: externalId = tenantIdentifier = the household id.
+        customers.head.externalId == hh.value.toString,
+        customers.head.tenantIdentifier == hh.value.toString,
+        customers.head.email == "parent@family-m.example",
+        customers.head.fullName == "Family M",
+        // Bounded account context ONLY — the same attribute set the identity path carries.
+        customers.head.attributes == Map(
+          "plan"          -> "beta",
+          "founding"      -> "true",
+          "householdName" -> "Family M",
+        ),
+      )
+    },
+    test("#2505: an UNREGISTERED sender is never mapped — the reconcile rides the resolved admin") {
+      for {
+        _               <- cleanDb
+        hhRepo          <- ZIO.service[HouseholdRepo]
+        _               <- hhRepo.create("Family U", "family-u")
+        (routes, stubs) <- makeRoutes(liveCfg)
+        body       = emailPayload(Some("stranger@nowhere.example"), "th_cold", "hello?")
+        status    <- postWebhook(routes, body, Some(sign(body)))
+        customers <- stubs.plain.customers.get
+      } yield assertTrue(status == Status.Ok, customers.isEmpty)
+    },
     test("#2481: an email whose QUESTION is the subject reaches the agent end-to-end") {
       // The reported bug: the operator emailed support with the question in the SUBJECT and only a
       // signature block in the body, and the responder answered "your message came through without
