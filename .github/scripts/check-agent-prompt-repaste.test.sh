@@ -13,7 +13,14 @@ SCRIPT="$(cd "$(dirname "$0")" && pwd)/check-agent-prompt-repaste.sh"
 [[ -x "${SCRIPT}" ]] || chmod +x "${SCRIPT}"
 
 tmp=""
-cleanup() { [[ -n "${tmp}" ]] && rm -rf "${tmp}"; return 0; }
+# Per-run capture files — a fixed /tmp path would race a concurrent run on the
+# same host (this suite is auto-discovered by CI's shell-tests job).
+outdir="$(mktemp -d)"
+cleanup() {
+  [[ -n "${tmp}" ]] && rm -rf "${tmp}"
+  rm -rf "${outdir}"
+  return 0
+}
 trap cleanup EXIT
 
 # A minimal agent.yaml with the same shape as the real ones: comments, scalar
@@ -46,6 +53,9 @@ setup() {
   echo "unrelated" > README.md
   git add . && git commit -q -m base
   BASE="$(git rev-parse HEAD)"
+  # Whatever `git init` called the first branch (main/master) — the stale-branch
+  # cases below advance it the way `origin/main` advances under a real PR.
+  BASE_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
   git checkout -q -b feature
 }
 
@@ -56,10 +66,10 @@ run_case() {
   setup
   "$@"
   set +e
-  "${SCRIPT}" "${BASE}" >/tmp/apr.out 2>/tmp/apr.err
+  "${SCRIPT}" "${BASE}" >"${outdir}/apr.out" 2>"${outdir}/apr.err"
   local rc=$?
   set -e
-  local out; out="$(cat /tmp/apr.out /tmp/apr.err)"
+  local out; out="$(cat "${outdir}/apr.out" "${outdir}/apr.err")"
   rm -rf "${tmp}"; tmp=""
   local ok=1
   [[ "${want}" == "pass" && ${rc} -ne 0 ]] && ok=0
@@ -126,6 +136,34 @@ EOF
   git add . && git commit -q -m nomarker
 }
 
+# ── Stale branch: BASE has advanced on the same file ───────────────────
+# The three-dot / merge-base pins. Two-dot semantics (comparing against the base
+# TIP) breaks both ways here, so these are the regression cases for that.
+
+case_base_advanced_only() {
+  # The branch touches no prompt; the BASE tip moved one. Two-dot would warn.
+  echo "feature-only" >> README.md
+  git add . && git commit -q -m unrelated-feature
+  git checkout -q "${BASE_BRANCH}"
+  write_yaml deploy/press-agent/agent.yaml "press-2026-03-03.1" "Someone else's press change."
+  git add . && git commit -q -m base-press-change
+  BASE="$(git rev-parse HEAD)"
+  git checkout -q feature
+}
+
+case_base_advanced_and_branch_forgot_bump() {
+  # The branch changes the prompt WITHOUT bumping; the BASE tip separately bumped
+  # to a newer marker. Two-dot compares base=v3 vs head=v1, sees "different", and
+  # lets the un-bumped change through — the false negative that matters.
+  write_yaml deploy/support-agent/agent.yaml "support-2026-01-01.1" "Feature-branch wording."
+  git add . && git commit -q -m feature-nobump
+  git checkout -q "${BASE_BRANCH}"
+  write_yaml deploy/support-agent/agent.yaml "support-2026-03-03.1" "Someone else's change."
+  git add . && git commit -q -m base-bump
+  BASE="$(git rev-parse HEAD)"
+  git checkout -q feature
+}
+
 run_case "agent.yaml untouched"                      pass "no routine prompt change" case_untouched
 run_case "change outside the system: block"          pass "no routine prompt change" case_outside_system_block
 run_case "prompt changed + version bumped"           pass "re-paste"                 case_prompt_and_version_bumped
@@ -133,5 +171,7 @@ run_case "both channels changed + bumped"            pass "press-agent"         
 run_case "prompt changed, version NOT bumped (FAIL)" fail "PROMPT_VERSION"           case_prompt_changed_version_stale
 run_case "press prompt changed, not bumped (FAIL)"   fail "PROMPT_VERSION"           case_press_changed_version_stale
 run_case "PROMPT_VERSION marker deleted (FAIL)"      fail "PROMPT_VERSION"           case_marker_deleted
+run_case "base advanced, branch touched no prompt"   pass "no routine prompt change" case_base_advanced_only
+run_case "stale branch forgot the bump (FAIL)"       fail "PROMPT_VERSION"           case_base_advanced_and_branch_forgot_bump
 
 echo "All agent-prompt-repaste tests passed."

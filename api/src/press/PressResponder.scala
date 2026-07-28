@@ -13,6 +13,7 @@ import wifihaven.api.notify.{
   Notifier,
 }
 import wifihaven.api.observability.AgentTokenRejection
+import wifihaven.api.support.AgentPromptVersion
 import wifihaven.shared.Clock
 import zio.*
 
@@ -182,7 +183,13 @@ final case class PressResponder(
    * + subject come FROM the verified token, so a hijacked agent cannot aim the reply at another
    * address; the request body carries only the reply text.
    */
-  def agentReply(bearer: Option[String], markdown: String): UIO[AgentActionResult] =
+  def agentReply(
+      bearer: Option[String],
+      markdown: String,
+      // #2469: the live agent's echo of the `PROMPT_VERSION:` marker in its own system prompt.
+      // Optional — an agent predating the marker reports nothing and is recorded `unknown`.
+      promptVersion: Option[String] = None,
+  ): UIO[AgentActionResult] =
     if !cfg.agentEndpointsEnabled then
       AppMetrics.pressAgentAction("reply", "disabled").as(AgentActionResult.Disabled)
     else
@@ -216,10 +223,18 @@ final case class PressResponder(
                 // a different question: it is what has to go quiet before #2459 deletes the
                 // tolerant pre-#2451 payload arm. The Message-ID itself is not logged — it is
                 // attacker-controlled sender content.
-                ZIO.logInfo(
-                  s"press: sending reply to ${claims.replyTo} " +
-                    s"(threaded=${inReplyTo.isDefined}, legacyToken=${claims.legacyPayload})",
-                ) *>
+                // #2469: recorded HERE, not in the route, because here we are PAST the token check
+                // — the caller provably is the dispatched agent. The route is public (the token is
+                // verified inside this method), so a route-level observe would let any anonymous
+                // POST forge `state="current"` and mask a genuinely stale routine. Ahead of the
+                // send, so every AUTHENTICATED outcome records, including a disabled or failed
+                // email. Alert-only: it can never cost a journalist their answer.
+                AgentPromptVersion
+                  .observe(AgentPromptVersion.Channel.Press, promptVersion) *>
+                  ZIO.logInfo(
+                    s"press: sending reply to ${claims.replyTo} " +
+                      s"(threaded=${inReplyTo.isDefined}, legacyToken=${claims.legacyPayload})",
+                  ) *>
                   email
                     .sendAs(
                       from = cfg.fromAddressTrimmed,

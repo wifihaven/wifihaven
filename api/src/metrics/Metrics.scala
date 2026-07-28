@@ -122,6 +122,12 @@ object MetricGuard {
       // result — is already a known key.)
       "channel",
       "kind",
+      // #2469 — the live cloud-agent's prompt-version verdict for
+      // `agent_prompt_version_total`. A fixed 3-value enum (current | stale |
+      // unknown — `AgentPromptVersion.State`), bounded by the code; the reported
+      // version STRING is deliberately NOT a label (it is agent-supplied and
+      // therefore unbounded — it goes to the log line only).
+      "state",
     )
 
   /**
@@ -632,6 +638,14 @@ object MetricGuard {
     // per-thread / per-sender label. This is the ONLY signal that a dispatched agent's answer was
     // thrown away at the door; before #2473 it hid inside `…_agent_action_total{outcome="denied"}`.
     "agent_token_rejected_total"                    -> Set("channel", "op", "reason"),
+    // #2469 — the shared cloud-agent PROMPT-DRIFT series, support AND press on one name (same
+    // failure mode, same fix — one panel/alert covers both). `channel` (support | press) × `state`
+    // (current | stale | unknown), both code-bounded enums from
+    // [[wifihaven.api.support.AgentPromptVersion]]. One sample per reply callback: `current` proves
+    // the live routine matches this build, `stale`/`unknown` is a routine nobody re-pasted after a
+    // prompt merge — the silent behavioural regression #2419/#2425 and #2430/#2441 both shipped.
+    // The reported version string is NOT a label (agent-supplied ⇒ unbounded); it rides the log.
+    "agent_prompt_version_total"                    -> Set("channel", "state"),
     // #2438 — the press dispatcher-level dispatch outcome, the press twin of
     // `support_dispatch_total` (same shared CloudAgentObservability envelope, separate series so the
     // public-press audience graphs + alerts independently). Same bounded {outcome,transport} space.
@@ -956,6 +970,17 @@ object AppMetrics {
     MetricGuard.counter(
       "agent_token_rejected_total",
       Map("channel" -> channel, "op" -> op, "reason" -> reason),
+    )
+
+  // #2469 — one sample per cloud-agent reply callback, recording whether the LIVE agent's prompt
+  // matches this build. `channel` ∈ support | press; `state` ∈ current | stale | unknown — both
+  // bounded enums from AgentPromptVersion, emitted only from its `observe`. `stale`/`unknown` means
+  // a Claude Code Cloud routine (whose prompt is web-UI-only) was never re-pasted after a prompt
+  // merge and is answering customers from an old prompt while reporting a green run.
+  def agentPromptVersion(channel: String, state: String): UIO[Unit] =
+    MetricGuard.counter(
+      "agent_prompt_version_total",
+      Map("channel" -> channel, "state" -> state),
     )
 
   // #2438 — the dispatcher-level dispatch outcome, emitted from the shared CloudAgentObservability

@@ -673,6 +673,42 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Live routine prompt version (#2469)",
+      "description": "sum by (state) (rate(agent_prompt_version_total{env=\"$env\",channel=\"support\"}[5m])) — what the LIVE cloud agent reports as its OWN prompt version on each reply callback, compared against the version compiled from deploy/support-agent/agent.yaml. current = the running agent matches this build. stale = it is answering customers from an OLDER prompt: the Claude Code Cloud routine prompt is web-UI-only, so a merged prompt change stays inert until an operator re-pastes it at claude.ai/code/routines — and until they do, the routine reports a GREEN run while behaving from the old prompt (#2419/#2425 consent and #2430/#2441 thread history both shipped that way). unknown = the agent reported no version at all, most likely a routine still on a pre-#2469 prompt. Alert-only: a mismatch never fails a webhook or drops a reply.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 112 },
+      "id": 29,
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "reqps", "min": 0, "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1, "stacking": { "mode": "normal", "group": "A" } } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (state) (rate(agent_prompt_version_total{env=\"$env\",channel=\"support\"}[5m]))",
+          "legendFormat": "{{state}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Support replies from a DRIFTED routine (24h) — expect 0 (#2469)",
+      "description": "sum(increase(agent_prompt_version_total{env=\"$env\",channel=\"support\",state=~\"stale|unknown\"}[24h])) — each one is a customer answered by a routine whose prompt does not match this build. This is the #2469 failure made visible: a stale routine told customers \"reply here confirming you're OK with me accessing your account\", which grants nothing, while every run reported green. The fix is manual and takes a minute: re-paste the system: block from deploy/support-agent/agent.yaml into the support routine at claude.ai/code/routines, preserving the <routine-fire-payload> opt-in (deploy/support-agent/README.md, 'post-merge re-paste'). Expect a burst right after any PR that changed that prompt merges — that is the detector working, not a bug.",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 112 },
+      "id": 30,
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "short", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "area", "textMode": "auto" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(increase(agent_prompt_version_total{env=\"$env\",channel=\"support\",state=~\"stale|unknown\"}[24h]))",
+          "legendFormat": "drifted (24h)",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",

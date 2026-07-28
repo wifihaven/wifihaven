@@ -49,6 +49,7 @@ jobs:
       workflows: ${{ steps.filter.outputs.workflows || steps.force.outputs.all }}
       grafana-tf: ${{ steps.filter.outputs.grafana-tf || steps.force.outputs.all }}
       cloudflare-tf: ${{ steps.filter.outputs.cloudflare-tf || steps.force.outputs.all }}
+      agent-prompts: ${{ steps.filter.outputs.agent-prompts || steps.force.outputs.all }}
     steps:
       - name: Force full matrix for CD / manual triggers
         id: force
@@ -185,6 +186,14 @@ jobs:
             workflows:
               - '.github/workflows/**'
               - '.github/actionlint.yaml'
+            # #2469: the cloud-agent prompts. Their Claude Code Cloud ROUTINE copy
+            # is web-UI-only, so a merge does NOT update the running agent — this
+            # filter feeds the re-paste reminder + PROMPT_VERSION bump guard below.
+            agent-prompts:
+              - '.github/workflows/ci.yml'
+              - '.github/scripts/check-agent-prompt-repaste.sh'
+              - 'deploy/support-agent/agent.yaml'
+              - 'deploy/press-agent/agent.yaml'
 
   # ── Scala: format, compile, test ─────────────────────────────────────────
   # The dominant test-time cost used to be the per-test Flyway re-run
@@ -440,6 +449,42 @@ jobs:
 
       - name: Reject new hardcoded usage-period literals
         run: bash .github/scripts/check-usage-period-hardcode.sh "${{ steps.base.outputs.sha }}"
+
+  # ── Cloud-agent prompts: re-paste reminder + PROMPT_VERSION bump ─────────
+  # The Claude Code Cloud ROUTINE copy of deploy/{support,press}-agent/agent.yaml
+  # is WEB-UI-ONLY: merging does not update the running agent, and a stale
+  # routine reports a green run while behaving from an old prompt (#2419/#2425,
+  # #2430/#2441). This job warns that a re-paste is due after merge, and FAILS a
+  # system:-block change that forgot to bump PROMPT_VERSION — the marker the live
+  # agent echoes back, without which the drift detector is blind. See #2469.
+  agent-prompt-repaste:
+    name: Agent Prompt Re-paste Check
+    needs: changes
+    if: |
+      needs.changes.outputs.agent-prompts == 'true'
+      && (github.event_name == 'pull_request' || github.event_name == 'merge_group')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      # Check out the REAL PR head (not the synthetic merge ref) so the
+      # three-dot `BASE...HEAD` diff resolves the true merge-base — same
+      # rationale as the migration jobs above.
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Resolve base SHA
+        id: base
+        run: |
+          case "${{ github.event_name }}" in
+            pull_request) echo "sha=${{ github.event.pull_request.base.sha }}" >> "$GITHUB_OUTPUT" ;;
+            merge_group)  echo "sha=${{ github.event.merge_group.base_sha }}"  >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Remind about the web-UI-only routine prompt re-paste
+        run: bash .github/scripts/check-agent-prompt-repaste.sh "${{ steps.base.outputs.sha }}"
 
   # ── Shell test discovery ─────────────────────────────────────────────────
   # Auto-discovers and runs every *.test.sh in the repo. Add a new test by
@@ -836,6 +881,7 @@ jobs:
       - migrations-immutable
       - migration-isolation
       - usage-period-hardcode
+      - agent-prompt-repaste
       - shell-tests
       - lua-tests
       - contract-tests

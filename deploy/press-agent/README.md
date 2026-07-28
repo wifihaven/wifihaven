@@ -109,6 +109,33 @@ names the active dispatcher in its `detail`, so the billed path is observable; t
 emitted to the startup log. Routine CRUD is web-UI-only today; only `/fire` is API-driven, so step
 1's prompt and step 3's network policy are manual per environment.
 
+### Post-merge re-paste — the checklist step (#2469)
+
+Because routine CRUD is web-UI-only, merging a PR that edits this file's `system:` block does NOT
+update the running routine: it keeps answering journalists from the OLD prompt while **reporting a
+green run**. The support agent has been bitten by exactly this twice (#2419/#2425, #2430/#2441).
+
+**Whenever a PR that changed this file's `system:` block merges, before calling the change live:**
+
+1. Open the **press** routine at <https://claude.ai/code/routines> for EACH environment running this
+   transport (staging and prod each have their own routine).
+2. Paste the new `system:` block from [`agent.yaml`](agent.yaml) verbatim, preserving the
+   `<routine-fire-payload>` opt-in (step 1 above) — without it the routine sends no reply at all.
+3. Confirm it took: the next real reply should record
+   `agent_prompt_version_total{channel="press",state="current"}`. `state="stale"` / `"unknown"`
+   means the routine in front of you is still the old one.
+
+Both a nudge and a detector back this up:
+
+- **CI reminds you.** `.github/scripts/check-agent-prompt-repaste.sh` warns on any PR that changes a
+  `system:` block, and FAILS the PR if it did not bump the `PROMPT_VERSION:` marker.
+- **The API detects it.** The prompt carries `PROMPT_VERSION: press-<date>.<serial>`; the agent
+  echoes it on `POST /api/press/agent/reply` as the dedicated `promptVersion` field, and the API
+  compares it against `AgentPromptVersion.Channel.Press.expected`, logging loudly and emitting
+  `agent_prompt_version_total{channel,state}` (panel: *Press* dashboard, "Live routine prompt
+  version"). Alert-only by construction — a mismatch never fails an inbound webhook or drops a
+  reply.
+
 ## Escalation — the operator mailbox means "a human must act" (#2437, #2480)
 
 Exactly ONE operator email comes out of this pipeline, through the #578 Resend transport to
