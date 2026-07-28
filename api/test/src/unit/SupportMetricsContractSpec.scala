@@ -1,5 +1,6 @@
 package wifihaven.api.unit
 
+import wifihaven.api.support.GithubIssueClient
 import wifihaven.api.support.SupportResponder
 import wifihaven.api.support.SupportResponder.AgentActionResult
 import zio.Chunk
@@ -36,6 +37,11 @@ object SupportMetricsContractSpec extends ZIOSpecDefault {
 
   /** #2460 — the panel that must count every resume outcome where the customer got nothing back. */
   private val DeadEndPanelTitlePrefix = "Consent grants that dead-ended"
+
+  /**
+   * #2458 — the panel that must count every scan failure the duplicate check cannot recover from.
+   */
+  private val BlindDedupPanelTitlePrefix = "Duplicate check PERMANENTLY blind"
 
   /**
    * Mill's cwd at test time is not the repo root, so walk up to find the checked-in dashboard — but
@@ -140,6 +146,29 @@ object SupportMetricsContractSpec extends ZIOSpecDefault {
         exprs.nonEmpty,
         exprs.forall(_.contains("support_consent_total")),
         exprs.forall(labelsIn(_) == SupportResponder.ResumeOutcome.DeadEnd),
+      )
+    },
+    test("#2458: the blind-dedup panel counts EXACTLY the never-self-healing scan reasons") {
+      // Same drift class, third series. The expect-0 panel selects a SUBSET of
+      // `support_issue_dedup_total{reason}` by string. A new never-self-healing cause added to
+      // `DedupReason` without widening the panel would drop out of the ONE place a permanently
+      // blind duplicate check is visible — and because the check is fail-open, everything else
+      // (the filing, the volume panel) still reads healthy, so nothing else would surface it.
+      //
+      // EQUALITY, not containment: a TRANSIENT reason counted here would make an expect-0 panel
+      // fire on ordinary GitHub timeouts, which is how such a panel stops being read.
+      val matcher                             = "reason=~\"([^\"]+)\"".r
+      def labelsIn(expr: String): Set[String] =
+        matcher.findAllMatchIn(expr).flatMap(_.group(1).split('|')).toSet
+
+      val exprs = panelExprs(_.startsWith(BlindDedupPanelTitlePrefix))
+      assertTrue(
+        exprs.nonEmpty,
+        exprs.forall(_.contains("support_issue_dedup_total")),
+        exprs.forall(_.contains("outcome=\"scan_error\"")),
+        exprs.forall(labelsIn(_) == GithubIssueClient.DedupReason.NeverSelfHealing),
+        // Guards the derivation itself — a new reason must be classified deliberately.
+        GithubIssueClient.DedupReason.NeverSelfHealing == Set("permission", "schema"),
       )
     },
   )

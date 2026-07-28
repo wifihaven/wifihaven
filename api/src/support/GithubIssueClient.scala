@@ -243,15 +243,39 @@ object GithubIssueClient {
     /** Transport, timeout, 5xx, or any other non-2xx. May self-heal. */
     case Transient
 
-    /** Carried on every non-error sample so no series is missing the label. */
-    case None
+    /**
+     * Carried on every non-error sample so no series is missing the label. Named `NotApplicable`,
+     * not `None`, so it can never be misread as `scala.None` in a file whose neighbouring
+     * signatures are `UIO[Option[OpenIssue]]`.
+     */
+    case NotApplicable
 
     def label: String = this match {
-      case Permission => "permission"
-      case Schema     => "schema"
-      case Transient  => "transient"
-      case None       => "none"
+      case Permission    => "permission"
+      case Schema        => "schema"
+      case Transient     => "transient"
+      case NotApplicable => "none"
     }
+  }
+  object DedupReason {
+
+    /** True for the causes that will NOT resolve on their own. The ONE place that line is drawn. */
+    private def isPermanent(r: DedupReason): Boolean = r match {
+      case Permission | Schema       => true
+      case Transient | NotApplicable => false
+    }
+
+    /**
+     * The `reason` values the expect-0 "permanently blind" panel must match, DERIVED from the enum
+     * rather than hand-listed in the dashboard JSON. `SupportMetricsContractSpec` pins the panel's
+     * `reason=~` alternation against this, so a new never-self-healing cause added here fails that
+     * test instead of silently dropping out of the one panel that makes a blind dedup visible — the
+     * exact drift the #2460 dead-end panel pin exists to catch (#2458 review, round 2).
+     *
+     * EQUALITY, not containment: a transient cause counted here would make an expect-0 panel cry
+     * wolf on ordinary timeouts, which is how such a panel stops being read.
+     */
+    val NeverSelfHealing: Set[String] = values.filter(isPermanent).map(_.label).toSet
   }
 
   /** An already-open `support-agent` issue — the candidate set a new filing is matched against. */
@@ -314,7 +338,10 @@ object GithubIssueClient {
     }
 
   /**
-   * [[parseOpenIssuesDetailed]] with the reason discarded — for callers that only need candidates.
+   * [[parseOpenIssuesDetailed]] with the reason discarded. No production caller — [[Live]] needs
+   * the distinction to meter `schema` — so today this serves specs that assert the candidate list
+   * without destructuring the ADT. Kept rather than inlined so a future caller that genuinely does
+   * not care reaches for this instead of writing a second `fromJson` of its own.
    */
   def parseOpenIssues(body: String): List[OpenIssue] =
     parseOpenIssuesDetailed(body) match {
@@ -327,17 +354,15 @@ object GithubIssueClient {
    * title shares two tokens with every other one and short titles drift over the threshold on
    * boilerplate alone.
    *
-   * It also has to include the SCRUBBER'S OWN placeholder words. Titles reach the matcher after
-   * [[sanitize]], so a title that carried PII arrives as e.g. `"… reported by [redacted-email]"`,
-   * and `redacted`/`email` would otherwise read as topic words shared by every PII-bearing title —
-   * inflating overlap on real pairs and, worse, making two titles whose only surviving words are
-   * placeholders match EXACTLY, so a second customer's genuinely different report is dropped and
-   * they are pointed at an unrelated issue (#2458 review). Those words are DERIVED from
-   * `SupportPrivacy.PlaceholderWords`, not hand-copied: a new redaction placeholder there must not
-   * silently become a topic word here.
+   * The SCRUBBER'S placeholders are handled separately, in [[titleTokens]], by deleting the whole
+   * literal before tokenising — NOT by listing `redacted` / `mac` / `email` / `number` here. Adding
+   * them to this list would strip those words out of titles that never carried PII, and in this
+   * product that throws away the very words that distinguish one report from another: "Cannot
+   * change MAC address" and "Cannot change email address" would reduce to the SAME token set and
+   * the second customer's report would be silently swallowed (#2458 review, round 2).
    */
   private val TitleStopWords: Set[String] =
-    SupportPrivacy.PlaceholderWords ++ Set(
+    Set(
       "feature",
       "request",
       "bug",
@@ -374,13 +399,23 @@ object GithubIssueClient {
     )
 
   /**
-   * Topic tokens of a title: lowercased, punctuation-split, stop-words and 1-2 character fragments
-   * dropped, and a naive plural fold so `holidays` and `holiday` (or `overrides` and `override`)
-   * are the same topic. Deliberately crude — it only has to tell "the same gap, phrased twice" from
-   * "a different gap", and the pair in #2458 differs by exactly this kind of wording.
+   * Topic tokens of a title: scrubber placeholders removed, then lowercased, punctuation-split,
+   * stop-words and 1-2 character fragments dropped, and a naive plural fold so `holidays` and
+   * `holiday` (or `overrides` and `override`) are the same topic. Deliberately crude — it only has
+   * to tell "the same gap, phrased twice" from "a different gap", and the pair in #2458 differs by
+   * exactly this kind of wording.
+   *
+   * The placeholder strip comes FIRST and is the whole literal: titles reach the matcher after
+   * [[sanitize]], so one that carried PII arrives as `"… reported by [redacted-email]"`, and
+   * `redacted`/`email` would otherwise be topic words shared by every PII-bearing title — inflating
+   * overlap, and making two titles whose only surviving words are placeholders match EXACTLY (a
+   * second customer's genuine report dropped, pointed at an unrelated issue). Deleting the literal
+   * closes that without touching `mac` / `email` / `number` where the AGENT actually wrote them.
    */
   def titleTokens(title: String): Set[String] =
-    title.toLowerCase
+    SupportPrivacy
+      .stripPlaceholders(title)
+      .toLowerCase
       .split("[^a-z0-9]+")
       .iterator
       .filter(_.length > 2)
@@ -541,7 +576,7 @@ object GithubIssueClient {
                 .tap(m =>
                   AppMetrics.supportIssueDedup(
                     if m.isDefined then DedupOutcome.Matched.label else DedupOutcome.NoMatch.label,
-                    DedupReason.None.label,
+                    DedupReason.NotApplicable.label,
                   ),
                 )
           }

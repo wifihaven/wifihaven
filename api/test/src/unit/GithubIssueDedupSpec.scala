@@ -100,13 +100,31 @@ object GithubIssueDedupSpec extends ZIOSpecDefault {
         !GithubIssueClient.titleTokens("device aa:bb:cc:dd:ee:ff").contains("redacted"),
       )
     },
-    test("placeholder stop-words are DERIVED from SupportPrivacy, not hand-copied") {
-      // A new redaction placeholder must not silently become a topic word.
+    test("every SupportPrivacy placeholder is stripped, whatever the list grows to") {
+      // Read from SupportPrivacy.Placeholders rather than a literal, so adding a redaction rule
+      // there without teaching the matcher about it fails HERE.
       assertTrue(
-        SupportPrivacy.PlaceholderWords.nonEmpty,
-        SupportPrivacy.PlaceholderWords.forall(w =>
-          w.length <= 2 || GithubIssueClient.titleTokens(s"alpha $w beta") == Set("alpha", "beta"),
+        SupportPrivacy.Placeholders.nonEmpty,
+        SupportPrivacy.Placeholders.forall(p =>
+          GithubIssueClient.titleTokens(s"alpha $p beta") == Set("alpha", "beta"),
         ),
+      )
+    },
+    test("stripping placeholders does NOT cost us the words the agent really wrote") {
+      // The narrow fix matters: dropping `mac` / `email` / `number` as stop-words instead would
+      // strip them from titles that never carried PII, and in this product those are the words
+      // that distinguish one report from another — "Cannot change MAC address" and "Cannot change
+      // email address" would reduce to the SAME token set and the second report would be swallowed
+      // (#2458 review, round 2).
+      val macTitle   = "Cannot change MAC address"
+      val emailTitle = "Cannot change email address"
+      assertTrue(
+        GithubIssueClient.titleTokens(macTitle).contains("mac"),
+        GithubIssueClient.titleTokens(emailTitle).contains("email"),
+        GithubIssueClient.titleTokens(macTitle) != GithubIssueClient.titleTokens(emailTitle),
+        GithubIssueClient.findDuplicate(emailTitle, List(open(2455, macTitle))).isEmpty,
+        // …and the same holds for the other domain-central placeholder words.
+        GithubIssueClient.titleTokens("Device number shown twice").contains("number"),
       )
     },
     test("parseOpenIssues reads GitHub's list body and drops anything outside the public repo") {

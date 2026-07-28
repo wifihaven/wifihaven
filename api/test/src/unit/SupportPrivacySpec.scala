@@ -69,6 +69,10 @@ object SupportPrivacySpec extends ZIOSpecDefault {
         "ref 1234-56-78 9012-34-56 on file", // month 56 / day 78 — not a date
         "ref 2026-13-01 2026-14-02 on file", // plausible shape, impossible month
         "ref 2026-01-32 2026-01-33 on file", // impossible day
+        // The canonical 4111111111111111 test card chunked 4-2-2. Every part is a range-valid
+        // month and day, so ONLY the year constraint stops the exemption swallowing it — it is the
+        // exemption that leaks, not the year (#2458 review, round 2).
+        "ref 4111-11-11 1111-11-11 on file",
       )
       assertTrue(
         cases.forall(c => SupportPrivacy.scrubForIssue(c).contains("[redacted-number]")),

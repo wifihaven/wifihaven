@@ -18,20 +18,44 @@ object SupportPrivacy {
   /** Cap the issue body so a runaway agent can't paste a whole household export into an issue. */
   val MaxIssueBodyChars: Int = 4000
 
+  // The replacement strings this scrubber substitutes for redacted PII. Named, and then USED by
+  // `scrubForIssue` below — not a parallel list beside it. A second copy would be exactly the
+  // "keep in sync by hand" smell, and the drift would be silent: [[GithubIssueClient]] strips these
+  // out of a SANITISED title before matching it for duplicates (#2458 review), so a new placeholder
+  // that the list missed would quietly re-open the false-match it exists to prevent.
+  val EmailPlaceholder: String     = "[redacted-email]"
+  val MacPlaceholder: String       = "[redacted-mac]"
+  val IpPlaceholder: String        = "[redacted-ip]"
+  val NumberPlaceholder: String    = "[redacted-number]"
+  val TruncatedPlaceholder: String = "[truncated]"
+
   /**
-   * The replacement strings this scrubber substitutes for redacted PII — the ONE place they are
-   * written. They matter beyond this object because a scrubbed string is what downstream code sees:
-   * [[GithubIssueClient]] compares SANITISED titles when looking for a duplicate, and these words
-   * would otherwise read as ordinary topic words shared by every PII-bearing title (#2458 review).
-   * Anything that tokenises scrubbed text must exclude them, and must do so by reading this list
-   * rather than hand-copying it.
+   * Every string [[scrubForIssue]] can inject. The ONE place downstream code should read to know
+   * what is scrubber output rather than customer/agent prose. Adding a redaction rule means adding
+   * its placeholder here, and the compiler will not remind you — but every consumer reads THIS, so
+   * there is one thing to update rather than N.
    */
   val Placeholders: Set[String] =
-    Set("[redacted-email]", "[redacted-mac]", "[redacted-ip]", "[redacted-number]", "[truncated]")
+    Set(
+      EmailPlaceholder,
+      MacPlaceholder,
+      IpPlaceholder,
+      NumberPlaceholder,
+      TruncatedPlaceholder,
+    )
 
-  /** The bare words inside [[Placeholders]] — what a `[^a-z0-9]+` tokeniser actually sees. */
-  val PlaceholderWords: Set[String] =
-    Placeholders.flatMap(_.toLowerCase.split("[^a-z0-9]+")).filter(_.nonEmpty)
+  /**
+   * Remove every [[Placeholders]] string from `text`, leaving a space behind.
+   *
+   * For consumers that TOKENISE scrubbed text: the placeholders must not survive as topic words
+   * (`redacted`, `email`, `mac`, …), because they are shared by every PII-bearing string and would
+   * make unrelated ones look alike. Removing the whole literal is the narrow fix — dropping the
+   * constituent WORDS from a stop-list instead would also strip `mac` / `email` / `number` out of
+   * titles that never carried PII, which in this product ("Cannot change MAC address") is throwing
+   * away exactly the words that distinguish one report from another (#2458 review, round 2).
+   */
+  def stripPlaceholders(text: String): String =
+    Placeholders.foldLeft(text)((s, p) => s.replace(p, " "))
 
   private val Email = "(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}".r
   private val Ipv4  = "\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b".r
@@ -67,9 +91,15 @@ object SupportPrivacy {
    * shape-only `\d{4}-\d{2}-\d{2}` would exempt `1234-56-78 9012-34-56`, i.e. a 16-digit account or
    * card number chunked 4-2-2, which WAS redacted before this PR. Contrived for an honest agent,
    * but this is a compensating control against untrusted content, so the narrow rule is the right
-   * one. Year is left unconstrained — a 4-digit year carries no PII on its own.
+   * one.
+   *
+   * The YEAR is constrained too, and it has to be: a 4-digit year carries no PII on its own, but it
+   * is the exemption that leaks, not the year. `4111-11-11 1111-11-11` — the canonical
+   * `4111111111111111` test card chunked 4-2-2 — is two range-valid dates once any year is allowed
+   * (#2458 review, round 2). `19|20` covers every date a support conversation can plausibly be
+   * about while making that composition impossible.
    */
-  private val IsoDate = "\\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\\d|3[01])".r
+  private val IsoDate = "(?:19|20)\\d{2}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\\d|3[01])".r
 
   /**
    * True when every whitespace-separated part of `run` is an ISO date — e.g. `2026-12-20
@@ -87,16 +117,17 @@ object SupportPrivacy {
    */
   def scrubForIssue(text: String): String = {
     var s = text
-    s = Email.replaceAllIn(s, "[redacted-email]")
-    s = Mac.replaceAllIn(s, "[redacted-mac]")
-    s = Ipv6.replaceAllIn(s, "[redacted-ip]")
-    s = Ipv4.replaceAllIn(s, "[redacted-ip]")
+    s = Email.replaceAllIn(s, EmailPlaceholder)
+    s = Mac.replaceAllIn(s, MacPlaceholder)
+    s = Ipv6.replaceAllIn(s, IpPlaceholder)
+    s = Ipv4.replaceAllIn(s, IpPlaceholder)
     s = LongDigits.replaceAllIn(
       s,
       m =>
         if allIsoDates(m.matched) then java.util.regex.Matcher.quoteReplacement(m.matched)
-        else "[redacted-number]",
+        else NumberPlaceholder,
     )
-    if s.length > MaxIssueBodyChars then s.take(MaxIssueBodyChars) + "\n\n[truncated]" else s
+    if s.length > MaxIssueBodyChars then s.take(MaxIssueBodyChars) + s"\n\n$TruncatedPlaceholder"
+    else s
   }
 }
