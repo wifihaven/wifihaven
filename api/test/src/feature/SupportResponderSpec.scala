@@ -1933,11 +1933,13 @@ object SupportResponderSpec
     // the production ones on embedded Postgres (docs/process/testing.md).
     //
     // ORDERING CONTRACT: these three MUTILATE the schema (`DROP TABLE … CASCADE`). They are safe
-    // only because (a) the suite is `TestAspect.sequential`, (b) every test in it opens with
-    // `cleanDb`, which drops and re-clones the per-spec database from the migrated template, and
-    // (c) they sit LAST. Keep them last, and keep opening every new test with `cleanDb` — a test
-    // appended after these without one would run against a schema missing `devices` / `households`
-    // / `users` and fail for reasons having nothing to do with what it asserts.
+    // only because (a) the suite is `TestAspect.sequential`, (b) every DB-touching test in it opens
+    // with `cleanDb`, which drops and re-clones the per-spec database from the migrated template,
+    // and (c) they sit LAST. Keep them last, and keep opening every new DB-touching test with
+    // `cleanDb` — one appended after these without it would run against a schema missing
+    // `devices` / `households` / `users` and fail for reasons having nothing to do with what it
+    // asserts. (The two pure-config `#2265` tests carry no `cleanDb` and need none: they assert on
+    // `SupportConfig.missingRequiredKeys` and never reach a repo.)
     test("#2462: a household read whose DB query FAILS is refused, never answered with zeros") {
       (for {
         _                     <- cleanDb

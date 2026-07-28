@@ -125,10 +125,18 @@ object SupportMetricsContractSpec extends ZIOSpecDefault {
       // strictly worse than having no panel at all. So assert the selected value against the enum
       // that mints it, not against a hand-written string.
       //
-      // These close the last unpinned link in each chain. The rest is already type-enforced:
-      // `meter` emits `WebhookOutcome.label(o)` and `done`/`doneE` emit
-      // `AgentActionResult.label(r)` — one derivation each — and SupportResponderSpec pins the
-      // OUTCOME VALUE those labels are derived from at the route boundary.
+      // Scope, stated honestly: this asserts the PANEL side only. Nothing here scrapes the
+      // registry, so neither counter's INCREMENT is pinned by a test. What carries that gap is
+      // type-enforcement, and it is not equally strong on the two chains:
+      //   - webhook: SupportResponderSpec asserts `WebhookOutcome.label(outcome)` directly, and
+      //     `meter` emits that exact expression — so the asserted string IS the emitted label.
+      //   - household_read: SupportResponderSpec asserts the route's 500, one step removed. It is
+      //     `doneE("household_read", Error)` that both produces the 500 and emits the sample via
+      //     the single `AgentActionResult.label` derivation, and it is the only producer of either
+      //     — so the 500 does imply the sample, by construction rather than by assertion.
+      // A real scrape assertion would close it outright; that needs `PrometheusPublisher` in this
+      // suite's environment (see CloudAgentDispatchFailLoudSpec's harness) and is worth doing if
+      // this class of drift ever actually bites.
       val hhExprs     = panelExprs(_.startsWith(ReadFailedPanelTitlePrefix))
       val originExprs = panelExprs(_.startsWith(OriginFailedPanelTitlePrefix))
       assertTrue(
