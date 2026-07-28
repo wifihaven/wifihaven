@@ -55,9 +55,10 @@ object SupportPrivacy {
    * away exactly the words that distinguish one report from another (#2458 review, round 2).
    *
    * The fold is over an UNORDERED set, so removal order is arbitrary — which is only safe while no
-   * placeholder is a substring of another (adding `[redacted]` alongside `[redacted-ip]` would make
-   * the result order-dependent). `GithubIssueDedupSpec` pins that invariant rather than leaving it
-   * to whoever adds the next redaction rule.
+   * placeholder is a substring of another. Every placeholder being bracket-DELIMITED is what makes
+   * that hold for free (`[redacted-ip]` does NOT contain `[redacted]` — the `]` terminates), so the
+   * invariant would only break on an unterminated entry like `"[redacted"`. Cheap enough to pin
+   * anyway rather than leave to whoever adds the next redaction rule; `GithubIssueDedupSpec` does.
    */
   def stripPlaceholders(text: String): String =
     Placeholders.foldLeft(text)((s, p) => s.replace(p, " "))

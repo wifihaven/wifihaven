@@ -102,15 +102,18 @@ object GithubIssueDedupSpec extends ZIOSpecDefault {
     },
     test("no placeholder is a substring of another — the strip is order-independent") {
       // `stripPlaceholders` folds String.replace over an UNORDERED set, so this is the invariant
-      // that makes the result deterministic. Adding `[redacted]` beside `[redacted-ip]` would break
-      // it silently; fail here instead.
-      val ps       = SupportPrivacy.Placeholders.toList
-      val nested   = for {
+      // that makes the result deterministic. It holds for free while every placeholder is
+      // bracket-DELIMITED; an unterminated entry like "[redacted" would break it silently.
+      val ps         = SupportPrivacy.Placeholders.toList
+      val nested     = for {
         a <- ps
         b <- ps if a != b && a.contains(b)
       } yield s"$a contains $b"
-      val distinct = ps.sizeIs > 1
-      assertTrue(distinct, nested.isEmpty)
+      // Guards against a VACUOUS pass — with 0 or 1 placeholders there is no pair to nest.
+      val nonVacuous = ps.sizeIs > 1
+      // `assert(…)(isEmpty)` rather than `assertTrue(nested.isEmpty)` so a failure prints the
+      // offending pair, which is the whole reason the message strings are built.
+      assertTrue(nonVacuous) && assert(nested)(Assertion.isEmpty)
     },
     test("every SupportPrivacy placeholder is stripped, whatever the list grows to") {
       // Read from SupportPrivacy.Placeholders rather than a literal, so adding a redaction rule
