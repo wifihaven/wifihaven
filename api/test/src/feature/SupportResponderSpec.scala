@@ -1117,11 +1117,29 @@ object SupportResponderSpec
         leakyBody =
           """Customer reports blocking fails. Contact them at parent@example.com, device
             |aa:bb:cc:dd:ee:ff at 192.168.10.42, account 123456789.""".stripMargin
-        issueJson =
-          s"""{"title":"Blocking fails for parent@example.com","body":${leakyBody.toJson}}"""
-        (s1, _) <- agentPost(routes, "/api/support/agent/issues", issueJson, Some(token))
-        (s2, _) <- agentPost(routes, "/api/support/agent/issues", issueJson, Some(token))
-        (s3, _) <- agentPost(routes, "/api/support/agent/issues", issueJson, Some(token))
+        // Three DISTINCT topics (#2458): identical titles now match the search-before-file dedup
+        // and never reach the rate limiter, which is the other half of what this test pins. The
+        // limiter still has to be the thing that stops the third one.
+        issueJson = (topic: String) =>
+          s"""{"title":"$topic — reported by parent@example.com","body":${leakyBody.toJson}}"""
+        (s1, _) <- agentPost(
+          routes,
+          "/api/support/agent/issues",
+          issueJson("Blocking silently fails on the iPad"),
+          Some(token),
+        )
+        (s2, _) <- agentPost(
+          routes,
+          "/api/support/agent/issues",
+          issueJson("Weekly rollup shows zero minutes"),
+          Some(token),
+        )
+        (s3, _) <- agentPost(
+          routes,
+          "/api/support/agent/issues",
+          issueJson("Pause switch does nothing"),
+          Some(token),
+        )
         issues  <- stubs.github.issues.get
       } yield assertTrue(s1 == Status.Ok, s2 == Status.Ok, s3 == Status.TooManyRequests) &&
         // The recorder stores exactly what would leave the process: no raw PII survives.
@@ -1198,7 +1216,8 @@ object SupportResponderSpec
       // Driven through the ROUTE, from two DIFFERENT threads, because cross-thread is the whole
       // bug: a per-thread mechanism would pass a single-thread test and still ship the defect.
       val first  = "Feature request: date-range / holiday-aware schedule overrides"
-      val second = "Feature request: calendar-aware / date-range schedule overrides (e.g. school holidays)"
+      val second =
+        "Feature request: calendar-aware / date-range schedule overrides (e.g. school holidays)"
       for {
         _               <- cleanDb
         hhRepo          <- ZIO.service[HouseholdRepo]
@@ -1206,13 +1225,13 @@ object SupportResponderSpec
         (routes, stubs) <- makeRoutes(liveCfg)
         tokenA          <- mintToken(hh, "th_dup_a", dataAccess = false)
         tokenB          <- mintToken(hh, "th_dup_b", dataAccess = false)
-        (s1, b1) <- agentPost(
+        (s1, b1)        <- agentPost(
           routes,
           "/api/support/agent/issues",
           s"""{"title":${first.toJson},"body":"customer asked about school holidays"}""",
           Some(tokenA),
         )
-        (s2, b2) <- agentPost(
+        (s2, b2)        <- agentPost(
           routes,
           "/api/support/agent/issues",
           s"""{"title":${second.toJson},"body":"second customer, same gap"}""",
@@ -1220,16 +1239,16 @@ object SupportResponderSpec
         )
         // An UNRELATED gap from a third ask must still get its own issue — a dedup that swallows
         // genuine new reports is a worse bug than the duplicate it prevents.
-        (s3, b3) <- agentPost(
+        (s3, b3)        <- agentPost(
           routes,
           "/api/support/agent/issues",
           """{"title":"Blocking silently fails on a device with iCloud Private Relay","body":"repro"}""",
           Some(tokenA),
         )
-        issues <- stubs.github.issues.get
-        filed1  = b1.fromJson[FiledIssueBody].toOption
-        filed2  = b2.fromJson[FiledIssueBody].toOption
-        filed3  = b3.fromJson[FiledIssueBody].toOption
+        issues          <- stubs.github.issues.get
+        filed1 = b1.fromJson[FiledIssueBody].toOption
+        filed2 = b2.fromJson[FiledIssueBody].toOption
+        filed3 = b3.fromJson[FiledIssueBody].toOption
       } yield assertTrue(s1 == Status.Ok, s2 == Status.Ok, s3 == Status.Ok) &&
         // Only TWO issues exist: the first request and the unrelated one. The duplicate never
         // reached GitHub.

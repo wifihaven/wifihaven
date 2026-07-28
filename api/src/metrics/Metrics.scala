@@ -551,6 +551,16 @@ object MetricGuard {
     // bounded, never per-thread / per-household.
     "support_ai_draft_total"                        -> Set("outcome", "reason"),
     "support_agent_action_total"                    -> Set("op", "outcome"),
+    // #2458 — the search-before-file duplicate check that runs on EVERY issue filing.
+    // `support_issue_dedup_total{outcome}`: matched (an already-open `support-agent` issue covers
+    // this topic, so nothing was created and the customer got that issue's link) | no_match (we
+    // looked and filed) | scan_error (the list-issues GET failed or was unreadable, so we FILED
+    // WITHOUT CHECKING — dedup is best-effort and must never block a filing). `scan_error` is the
+    // one that never self-heals on its own: a persistent rate is the bot token losing Issues:read,
+    // or GitHub's list shape drifting, and the symptom is duplicates coming back with nothing else
+    // to show for it. Each `scan_error` is also logged at WARN naming the cause. Bounded enum,
+    // never an issue number / title / per-thread label.
+    "support_issue_dedup_total"                     -> Set("outcome"),
     // #2438 — the dispatcher-level cloud-agent dispatch outcome, additive to (and disambiguating)
     // `support_ai_draft_total`. `support_dispatch_total{outcome,transport}` counts each dispatch
     // ATTEMPT at the transport boundary: outcome ∈ dispatched | error | disabled; transport ∈
@@ -922,6 +932,11 @@ object AppMetrics {
 
   def supportAgentAction(action: String, outcome: String): UIO[Unit] =
     MetricGuard.counter("support_agent_action_total", Map("op" -> action, "outcome" -> outcome))
+
+  // #2458 — the search-before-file duplicate check. Bounded by
+  // `GithubIssueClient.DedupOutcome.label`; never an issue number or title.
+  def supportIssueDedup(outcome: String): UIO[Unit] =
+    MetricGuard.counter("support_issue_dedup_total", Map("outcome" -> outcome))
 
   // #2473 — a cloud-agent callback REJECTED at the token check, for BOTH responders on ONE series
   // (emitted from the shared AgentTokenRejection envelope, never a bare Metric.*). Every sample is a

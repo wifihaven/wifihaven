@@ -552,13 +552,21 @@ final case class SupportResponder(
               github.fileIssue(IssueFileRequest(title, body, claims.threadId)).flatMap {
                 // #2461: the created issue's identity rides back out so the agent can offer the
                 // customer a link. The metric label stays the bounded `ok` — never the number.
-                case IssueOutcome.Filed(ref) =>
+                case IssueOutcome.Filed(ref)     =>
                   // Same `done` metering choke point as every other branch — only the RESULT
                   // differs, so there is still exactly one place the label is derived.
                   done(AgentAction.Issue, issueFiledOutcome(ref))
                     .as(Right(FiledIssue(ref.map(_.number), ref.map(_.url))))
-                case IssueOutcome.Disabled   => doneE(AgentAction.Issue, AgentActionResult.Disabled)
-                case IssueOutcome.Error      => doneE(AgentAction.Issue, AgentActionResult.Error)
+                // #2458: the topic was already tracked, so nothing was created. Carried on the SAME
+                // `number`/`url` fields #2461 added — the customer is pointed at the canonical
+                // issue, not told about a duplicate we declined to file — plus the `duplicate`
+                // marker so the agent's wording matches what happened.
+                case IssueOutcome.Duplicate(ref) =>
+                  done(AgentAction.Issue, AgentActionResult.OkDuplicate)
+                    .as(Right(FiledIssue(Some(ref.number), Some(ref.url), duplicate = Some(true))))
+                case IssueOutcome.Disabled       =>
+                  doneE(AgentAction.Issue, AgentActionResult.Disabled)
+                case IssueOutcome.Error          => doneE(AgentAction.Issue, AgentActionResult.Error)
               }
           }
       }
@@ -1437,6 +1445,15 @@ object SupportResponder {
   enum AgentActionResult   {
     case Ok
     case OkNoLink
+
+    /**
+     * #2458 — the agent asked to file, an already-open `support-agent` issue covered the topic, and
+     * we handed that issue back instead of creating a duplicate. A SUCCESS: the customer gets a
+     * real, canonical link. Distinct from `Ok` because the operator wants to see how much of the
+     * ask rate the dedup is absorbing — but it counts in [[SuccessLabels]], so the #2241 volume
+     * panel does not read the fix as a collapse in agent activity.
+     */
+    case OkDuplicate
     case Denied
     case NoConsent
     case RateLimited
@@ -1447,6 +1464,7 @@ object SupportResponder {
     def label(r: AgentActionResult): String = r match {
       case Ok          => "ok"
       case OkNoLink    => "ok_no_link"
+      case OkDuplicate => "ok_duplicate"
       case Denied      => "denied"
       case NoConsent   => "denied"
       case RateLimited => "rate_limited"
@@ -1456,7 +1474,7 @@ object SupportResponder {
 
     /** The cases that mean "the action succeeded" — the ONE place success is defined. */
     private def isSuccess(r: AgentActionResult): Boolean = r match {
-      case Ok | OkNoLink                                       => true
+      case Ok | OkNoLink | OkDuplicate                         => true
       case Denied | NoConsent | RateLimited | Disabled | Error => false
     }
 
@@ -1476,7 +1494,16 @@ object SupportResponder {
    * an issue that GitHub created but whose response we could not read back is still a success, and
    * the agent then simply has no link to offer rather than an invented one.
    */
-  final case class FiledIssue(number: Option[Int], url: Option[String], ok: Boolean = true)
+  final case class FiledIssue(
+      number: Option[Int],
+      url: Option[String],
+      ok: Boolean = true,
+      // #2458 — `Some(true)` iff the topic was ALREADY tracked, so `number`/`url` point at a
+      // pre-existing issue rather than one we just created. Optional (not a defaulted `Boolean`) so
+      // it is ABSENT on an ordinary filing: the agent's prompt contract is that a field it must not
+      // quote simply is not there, and the no-link body stays exactly `{"ok":true}`.
+      duplicate: Option[Boolean] = None,
+  )
   object FiledIssue {
     given JsonCodec[FiledIssue] = DeriveJsonCodec.gen[FiledIssue]
   }

@@ -27,7 +27,7 @@ object SupportPrivacySpec extends ZIOSpecDefault {
 
   def spec = suite("SupportPrivacy.scrubForIssue (#2458)")(
     test("ordinary calendar dates survive — the #2457 body reads as written") {
-      val body =
+      val body     =
         "Customer wants to suspend/loosen this window from 2026-12-20 to 2027-01-05 " +
           "(school holidays). Also mentioned 2026-07-26."
       val scrubbed = SupportPrivacy.scrubForIssue(body)

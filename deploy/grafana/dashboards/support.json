@@ -147,7 +147,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "Agent-filed issues (24h) — volume alert feed",
-      "description": "sum(increase(support_agent_action_total{env=\"$env\",op=\"issue\",outcome=~\"ok|ok_no_link\"}[24h])) — GitHub issues the support agent filed in the last 24h (the #2241 volume-alert feed). The per-thread (3/h) + global (10/h) rate limits cap the ceiling; a value near the cap means the agent is filing aggressively — review the support-agent label on GitHub. Counts BOTH success outcomes (#2461): `ok_no_link` is a real filed issue whose link we could not read back, so excluding it would under-report actual GitHub issues created.",
+      "description": "sum(increase(support_agent_action_total{env=\"$env\",op=\"issue\",outcome=~\"ok|ok_no_link|ok_duplicate\"}[24h])) — issue-filing ASKS the support agent completed in the last 24h (the #2241 volume-alert feed). The per-thread (3/h) + global (10/h) rate limits cap the ceiling; a value near the cap means the agent is filing aggressively — review the support-agent label on GitHub. Counts EVERY success outcome: `ok_no_link` (#2461) is a real filed issue whose link we could not read back, and `ok_duplicate` (#2458) is an ask absorbed by the search-before-file check — an already-open issue covered the topic, so nothing new was created. Excluding either would under-report what the agent is doing; note that with `ok_duplicate` included this is the ASK rate, so it is no longer identical to the count of issues actually created (subtract the `matched` series on the duplicate-check panel for that).",
       "type": "stat",
       "gridPos": { "h": 6, "w": 6, "x": 0, "y": 16 },
       "id": 6,
@@ -163,7 +163,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum(increase(support_agent_action_total{env=\"$env\",op=\"issue\",outcome=~\"ok|ok_no_link\"}[24h]))",
+          "expr": "sum(increase(support_agent_action_total{env=\"$env\",op=\"issue\",outcome=~\"ok|ok_no_link|ok_duplicate\"}[24h]))",
           "legendFormat": "issues (24h)",
           "refId": "A"
         }
@@ -627,6 +627,49 @@
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "expr": "sum(increase(support_dispatch_total{env=\"$env\",outcome=\"callback_slow\"}[24h]))",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Issue-filing duplicate check (#2458)",
+      "description": "sum by (outcome) (rate(support_issue_dedup_total{env=\"$env\"}[5m])) — the search-before-file check that runs on EVERY support-agent issue filing. matched = an already-open `support-agent` issue covered the topic, so nothing was created and the customer was pointed at that issue instead (the fix working, not a fault). no_match = we looked and filed. scan_error = we could NOT look (non-2xx, transport error, or an unreadable list body) and filed WITHOUT checking. A sustained scan_error rate never self-heals — it is the fine-grained bot token having lost Issues:read on wifihaven/wifihaven, or GitHub's list-issues shape drifting — and its only other symptom is duplicate issues quietly reappearing, which is exactly the #2458 defect. Each one is also logged at WARN naming the cause. The dedup is deliberately fail-open: a scan failure must never block a genuine report.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 104 },
+      "id": 27,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1 }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (outcome) (rate(support_issue_dedup_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{outcome}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Duplicate checks that could NOT run (24h) — expect 0 (#2458)",
+      "description": "sum(increase(support_issue_dedup_total{env=\"$env\",outcome=\"scan_error\"}[24h])) — issues filed WITHOUT a duplicate check because the open-issue scan failed. Because the dedup is fail-open, the filing still succeeds and the volume panel beside it still reads healthy, so this is the ONLY place a permanently-blind check is visible. Non-zero and sustained is a PROVISIONING GAP, almost always the fine-grained bot token losing Issues:read on wifihaven/wifihaven. Grep the API log for `github duplicate scan` for the HTTP status.",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 104 },
+      "id": 28,
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "short", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "background", "graphMode": "none", "textMode": "auto" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(increase(support_issue_dedup_total{env=\"$env\",outcome=\"scan_error\"}[24h]))",
           "refId": "A"
         }
       ]

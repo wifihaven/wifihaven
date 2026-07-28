@@ -169,6 +169,9 @@ object SupportAgentRoutes {
     // Only the issue-filing route can produce it, and that route answers the richer FiledIssue body
     // directly (its success never reaches here), so this case exists for exhaustivity.
     case AgentActionResult.OkNoLink    => ZIO.succeed(Response.json("""{"ok":true}"""))
+    // #2458: same shape — the duplicate-matched success also only arises on the issue-filing route,
+    // which answers its own FiledIssue body (carrying the pre-existing issue's number/url).
+    case AgentActionResult.OkDuplicate => ZIO.succeed(Response.json("""{"ok":true}"""))
     // Uniform denial: bad token, expired token, missing header — the caller learns nothing more.
     case AgentActionResult.Denied      => ZIO.fail(ApiError.Unauthorized("unauthorized"))
     case AgentActionResult.NoConsent   => ZIO.fail(ApiError.Forbidden("no data consent"))
