@@ -21,8 +21,10 @@ import zio.*
  *
  * Two properties this must never lose:
  *
- *   - **Non-fatal.** [[observe]] is a `UIO` with no error channel by construction, and callers run
- *     it beside the reply rather than in front of it. A drifted routine is an operator problem; it
+ *   - **Non-fatal.** [[observe]] is a `UIO` — there is no error channel to propagate into the reply
+ *     path, whatever the agent reports. (Callers sequence it just BEFORE the send, so an
+ *     authenticated callback records even when the send itself then fails; that ordering is about
+ *     coverage, and the `UIO` is what makes it safe.) A drifted routine is an operator problem; it
  *     must never fail an inbound webhook or cost a customer their answer.
  *   - **Instruction-zone only.** The version arrives on its own JSON field, sourced from the
  *     prompt. Untrusted text — the customer's message, the thread history, or a reply body the

@@ -189,11 +189,16 @@ jobs:
             # #2469: the cloud-agent prompts. Their Claude Code Cloud ROUTINE copy
             # is web-UI-only, so a merge does NOT update the running agent — this
             # filter feeds the re-paste reminder + PROMPT_VERSION bump guard below.
+            # GLOB, not an enumeration: the script itself iterates
+            # `deploy/*-agent/agent.yaml`, so listing the two known channels here
+            # would silently skip the gate for a future third cloud agent — the
+            # job would not run, and the umbrella `ci` job treats skipped as
+            # success. That is precisely the silently-inert-change failure this
+            # guard exists to catch, so the filter must match the script's glob.
             agent-prompts:
               - '.github/workflows/ci.yml'
               - '.github/scripts/check-agent-prompt-repaste.sh'
-              - 'deploy/support-agent/agent.yaml'
-              - 'deploy/press-agent/agent.yaml'
+              - 'deploy/*-agent/agent.yaml'
 
   # ── Scala: format, compile, test ─────────────────────────────────────────
   # The dominant test-time cost used to be the per-test Flyway re-run

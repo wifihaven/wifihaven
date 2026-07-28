@@ -92,6 +92,14 @@ object AgentPromptVersionSpec extends ZIOSpecDefault {
     }
   }
 
+  /**
+   * `agent_prompt_version_total` is a JVM-global counter that `SupportResponderSpec` /
+   * `PressResponderSpec` also write, so the assertions below read DELTAS around one call — never an
+   * absolute. Exact deltas are safe rather than lucky: mill runs each spec class in its own worker
+   * JVM (separate metric registries), and two classes sharing a worker run SEQUENTIALLY within it —
+   * so no other spec can emit between a before/after pair (docs/testing-parallelism.md, "Within a
+   * worker JVM specs run sequentially").
+   */
   private def count(channel: String, state: String): UIO[Double] =
     Metric
       .counter("agent_prompt_version_total")
