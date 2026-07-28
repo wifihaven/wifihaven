@@ -11,7 +11,7 @@ Internal-only detail stays out of the quotable text. Anything under
 
 ---
 
-## Can I add another router? {#router-cap}
+## Can I add another router?
 
 **Quotable answer.**
 
@@ -39,24 +39,24 @@ a timeline.
 - The limit is **per household**, read from the `households.router_cap` column
   at request time — never a global constant, so raising one household's cap is
   a pure data change:
-  [`api/src/db/EntitlementsRepo.scala:44`](../api/src/db/EntitlementsRepo.scala).
+  [`api/src/db/EntitlementsRepo.scala:44`](../api/src/db/EntitlementsRepo.scala#L44).
 - The current plan's value is the column default set in
-  [`api/resources/db/migration/V66__beta_requests_billing_entitlements.sql:98`](../api/resources/db/migration/V66__beta_requests_billing_entitlements.sql)
+  [`api/resources/db/migration/V66__beta_requests_billing_entitlements.sql:98`](../api/resources/db/migration/V66__beta_requests_billing_entitlements.sql#L98)
   and applied to every beta-approved household by
-  [`BetaService.DefaultRouterCap`](../api/src/beta/BetaService.scala).
+  [`BetaService.DefaultRouterCap`](../api/src/beta/BetaService.scala#L260).
   **This doc deliberately does not restate that number outside the quotable
   answer above** — read it from the migration if you need to confirm it, and
   check the specific household's column value before telling a customer their
   own limit (it can be higher; the operator household is flagged past the
   public cap by the same migration).
 - Enforcement lives in `POST /api/admin/routers`:
-  [`api/src/routes/RouterRoutes.scala:245`](../api/src/routes/RouterRoutes.scala)
+  [`api/src/routes/RouterRoutes.scala:247-249`](../api/src/routes/RouterRoutes.scala#L247-L249)
   counts the household's existing routers and fails with
   `ApiError.Forbidden("your plan includes N router(s)")` — mapped to HTTP 403 by
-  [`ErrorMapper.scala:31`](../api/src/routes/ErrorMapper.scala) and surfaced as
+  [`ErrorMapper.scala:31`](../api/src/routes/ErrorMapper.scala#L31) and surfaced as
   the inline error on the Routers page
-  ([`web/src/api/client.ts:223`](../web/src/api/client.ts),
-  [`web/src/pages/RoutersPage.tsx:68`](../web/src/pages/RoutersPage.tsx)).
+  ([`web/src/api/client.ts:223`](../web/src/api/client.ts#L223),
+  [`web/src/pages/RoutersPage.tsx:68`](../web/src/pages/RoutersPage.tsx#L68)).
   A created-but-not-yet-enrolled router still consumes a slot.
 - Multi-router is a **plan** boundary by design, not a technical ceiling:
   routers bind to a household rather than 1:1
