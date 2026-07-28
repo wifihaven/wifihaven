@@ -154,6 +154,12 @@ class SupportConsentRepoLive(xa: Transactor[Task]) extends SupportConsentRepo {
           // customer whose consent had in fact just succeeded, and firing the expect-zero
           // `link_spent` security panel on a double-click. By this point the nonce INSERT has
           // already serialized behind the winner's COMMIT, so this read sees the committed grant.
+          //
+          // This depends on READ COMMITTED, where each STATEMENT takes a fresh snapshot — which is
+          // Postgres's default and what we run (nothing in `api/src` sets a transaction isolation
+          // level). Under REPEATABLE READ the whole transaction would share one snapshot taken
+          // before the winner committed, and this re-read would still see no row. If an isolation
+          // level is ever set globally, revisit this branch.
           sql"""SELECT (revoked_at IS NULL AND expires_at > $now)
                   FROM support_thread_consent
                  WHERE household_id = $household AND thread_id = $threadId"""

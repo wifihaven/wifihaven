@@ -181,6 +181,26 @@ change raises its priority.
   that needed account data to understand a problem can describe the symptom
   without republishing the account.
 
+### Deploying #2453 — in-flight links die at the deploy
+
+The consent link's signed payload went from three fields to five (adding the
+nonce and the mint time). `ConsentGrant.verify` rejects the old three-field shape
+as `Malformed` rather than accepting a nonce-less link — deliberately, since
+tolerating one would leave the replay hole open for as long as any old link
+survives.
+
+**Operator impact, bounded and self-healing:** any consent link posted before the
+deploy and not yet redeemed stops working the moment it lands. The blast radius
+is one link TTL (24h) of threads that were mid-ask. The customer sees the SPA's
+existing copy — *"That permission link is no longer valid. Ask the assistant in
+your support conversation to send a new one."* — and the assistant mints a fresh
+one on the next message. No data is lost and no grant is affected: already-recorded
+grants live in `support_thread_consent` and are untouched by the token shape.
+
+Nothing to do before or after the deploy. Watch
+`support_consent_total{outcome="invalid"}` for a small one-off bump in the first
+24h; a *sustained* rise past that is a real problem, not this.
+
 ## Schema
 
 `support_thread_consent` (V84):

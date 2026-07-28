@@ -367,12 +367,18 @@ object CloudAgentDispatcher {
    * cannot happen (a prompt-injected agent could re-post the real, valid link under our
    * attribution).
    *
-   * Applied at EVERY route by which customer- or thread-sourced text reaches the prompt — the
-   * history turns, the current `customerMessage`, and the email `subject` — because the guarantee
-   * is about what the agent can READ, not about which frame the text arrived in. A single helper,
-   * called from each site, rather than three inlined calls: the property is "no route leaks a
-   * link", and a new route that forgets to call it is the failure mode (the first cut of this fix
-   * covered only history, caught in review).
+   * Applied at every route by which THREAD-SOURCED text reaches the prompt — the history turns, the
+   * current `customerMessage`, and the email `subject` — because the guarantee is about what the
+   * agent can READ, not about which frame the text arrived in. A single helper, called from each
+   * site, rather than three inlined calls: the property is "no route leaks a link", and a new route
+   * that forgets to call it is the failure mode (the first cut of this fix covered only history,
+   * caught in review).
+   *
+   * `householdName` is the one customer-controlled value deliberately NOT routed through here. It
+   * is typed once on the public beta-request form and is not editable afterwards (there is no
+   * `UPDATE households SET name` anywhere in `api/src`), so it is fixed before any consent link for
+   * that household can exist — it cannot carry one. If a household-rename path is ever added, this
+   * stops being true and the name must be redacted here too.
    *
    * Always runs BEFORE the per-site cap (`capMarked` / `safeLine`), so the cap measures redacted
    * text and can never leave half a link behind.
