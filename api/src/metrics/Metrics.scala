@@ -934,7 +934,19 @@ object AppMetrics {
   //   error   — the CUSTOMER-side action on POST /api/support/consent;
   //   read_withdrawn | read_no_scope   — #2476, the agent's household READ refused because no LIVE
   //   grant existed at read time. `read_withdrawn` is the security-interesting one: the token WAS
-  //   minted with data scope, and the customer withdrew before the agent used it.
+  //   minted with data scope, and the customer withdrew before the agent used it;
+  //   resumed | resume_no_message (no CUSTOMER turn was readable on the thread — an empty/failed
+  //   timeline read, or a recent history with none — so we cannot know what to re-ask and the
+  //   server-authored nudge posted instead) | resume_skipped (a re-confirmed LIVE grant — the
+  //   idempotency guard) |
+  //   resume_rate_limited | resume_disabled | resume_error (transient) | resume_config_error (a
+  //   permanent 4xx at the agent boundary — the #2416 split, kept out of the transient bucket)
+  //   — #2460, the SERVER finishing the turn on a grant so the customer does not have to find their
+  //   way back and re-ask. Every branch of the resume meters, and it runs on a daemon fiber (not the
+  //   request fiber), so a `granted` is followed by exactly ONE resume_* even if the customer's
+  //   browser disconnects — a process shutdown can still interrupt an in-flight resume, so a lone
+  //   unpaired `granted` around a deploy is that, not a dead-ended customer. A sustained gap means
+  //   the loop is NOT closing.
   // `household_mismatch` is the security-relevant one (a consent link redeemed by another
   // household's session, which writes nothing) — it should be flat zero in normal operation.
   def supportConsent(outcome: String): UIO[Unit]       =

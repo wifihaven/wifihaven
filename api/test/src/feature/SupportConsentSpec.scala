@@ -77,6 +77,19 @@ object SupportConsentSpec
   private def makeHarness(
       cfg: SupportConfig = liveCfg,
       consentThreadLimiter: RateLimiter = RateLimiter.allowAll,
+      // #2460: the resume-on-grant re-dispatch draws the SAME per-thread dispatch cap as an inbound
+      // message, so a spec can model the cap being exhausted.
+      dispatchThreadLimiter: RateLimiter = RateLimiter.allowAll,
+      // #2460: when set, the responder's timeline read blocks on this gate until the spec completes
+      // it — the only way to observe whether the consent POST WAITS on the resume.
+      historyGate: Option[Promise[Nothing, Unit]] = None,
+      // #2460: completed once the resume actually dispatches. A spec awaits it instead of sleeping,
+      // which both pins that the forked resume RAN and joins the fiber before the test ends (an
+      // escaped fiber would race the next test's DROP DATABASE).
+      dispatchDone: Option[Promise[Nothing, Unit]] = None,
+      // #2460: keep PRODUCTION's `runResume` (forkDaemon) instead of the inline one, so the
+      // non-blocking property the fix exists for is exercised rather than configured away.
+      productionResume: Boolean = false,
   ) =
     for {
       hhRepo      <- ZIO.service[HouseholdRepo]
@@ -88,7 +101,10 @@ object SupportConsentSpec
       clock       <- ZIO.service[Clock]
       plainRec    <- PlainClient.recorder
       dispRec     <- CloudAgentDispatcher.recorder
-      responder = SupportResponder(
+      // Built with the PRODUCTION defaults, then narrowed: `productionResume = false` swaps in the
+      // inline runner so the assertions observe the resume deterministically — no wall-clock waits
+      // on a background fiber, per docs/process/testing.md. The seam changes only WHERE it runs.
+      base      = SupportResponder(
         cfg,
         hhRepo,
         userRepo,
@@ -96,13 +112,13 @@ object SupportConsentSpec
         devRepo,
         profRepo,
         consentRepo,
-        PlainClient.recording(plainRec),
+        gated(PlainClient.recording(plainRec), historyGate),
         GithubIssueClient.noop,
-        CloudAgentDispatcher.recording(dispRec),
+        signalling(CloudAgentDispatcher.recording(dispRec), dispatchDone),
         clock,
         RateLimiter.allowAll,
         RateLimiter.allowAll,
-        RateLimiter.allowAll,
+        dispatchThreadLimiter,
         RateLimiter.allowAll,
         RateLimiter.allowAll,
         consentThreadLimiter,
@@ -112,6 +128,7 @@ object SupportConsentSpec
         Notifier.logOnly,
         RateLimiter.allowAll,
       )
+      responder = if productionResume then base else base.copy(runResume = identity)
       auth      = AuthServiceLive(userRepo, jwt, clock, hhRepo): AuthService
     } yield Harness(
       SupportAgentRoutes.routes(responder),
@@ -123,6 +140,43 @@ object SupportConsentSpec
     )
 
   // ── fixtures ────────────────────────────────────────────────────────────────
+
+  /**
+   * #2460: a Plain client whose TIMELINE READ parks until the gate is completed — everything else
+   * delegates. Lets a spec hold the resume mid-flight and assert on what the customer's request did
+   * meanwhile, with no wall-clock wait anywhere.
+   */
+  private def gated(inner: PlainClient, gate: Option[Promise[Nothing, Unit]]): PlainClient =
+    gate.fold(inner)(p =>
+      new PlainClient {
+        def upsertCustomer(req: PlainCustomerUpsert): UIO[PlainOutcome] = inner.upsertCustomer(req)
+        def writeThread(req: PlainThreadWrite): UIO[PlainOutcome]       = inner.writeThread(req)
+        def markThread(req: PlainThreadMark): UIO[PlainOutcome]         = inner.markThread(req)
+        def threadHistory(threadId: String, limit: Int): UIO[List[PlainThreadMessage]] =
+          p.await *> inner.threadHistory(threadId, limit)
+      },
+    )
+
+  /**
+   * #2460: a dispatcher that completes `done` after recording — the deterministic "the forked
+   * resume finished its work" signal a spec awaits instead of sleeping on a background fiber.
+   *
+   * Awaiting it is a SUFFICIENT join because the dispatch is the resume's last effect that touches
+   * the DB (`billingRepo.findByHousehold` runs before it, inside `dispatchAgentSession`; everything
+   * after is metric/mapping only). If a repo write is ever added AFTER the dispatch, this stops
+   * being a join and the released fiber can race the next test's `DROP DATABASE` — signal from the
+   * new last effect instead.
+   */
+  private def signalling(
+      inner: CloudAgentDispatcher,
+      done: Option[Promise[Nothing, Unit]],
+  ): CloudAgentDispatcher =
+    done.fold(inner)(p =>
+      new CloudAgentDispatcher {
+        def dispatch(req: AgentDispatch): UIO[DispatchOutcome] =
+          inner.dispatch(req).tap(_ => p.succeed(()))
+      },
+    )
 
   private def payload(tenant: Long, threadId: String, text: String): String =
     s"""{"workspaceId":"w_1","id":"pEv_chat","payload":{"eventType":"thread.chat_received",""" +
@@ -486,7 +540,240 @@ object SupportConsentSpec
         // customer already said yes, so the server must NOT post a second permission prompt.
         again    <- agentPost(h, "/api/support/agent/request-consent", Some(agent))
         writes   <- h.plain.threads.get
-      } yield assertTrue(again == Status.Ok, writes.size == 1)
+        // Count PROMPTS, not writes: #2460's grant-time nudge is a separate, server-authored write
+        // on this thread (the timeline read is empty here, so the resume falls back to it).
+        prompts = writes.count(_.markdown.contains(s"$AppBaseUrl/support/consent?g="))
+      } yield assertTrue(
+        again == Status.Ok,
+        prompts == 1,
+        // Total stays pinned too: the prompt plus exactly one grant-time nudge, nothing else.
+        writes.size == 2,
+      )
+    },
+    // ── #2460: the grant CLOSES THE LOOP (the customer does nothing more) ──────
+    test("granting consent RESUMES the conversation: the last customer question is re-dispatched") {
+      for {
+        _        <- cleanDb
+        hhRepo   <- ZIO.service[HouseholdRepo]
+        userRepo <- ZIO.service[UserRepo]
+        billRepo <- ZIO.service[HouseholdBillingRepo]
+        h        <- makeHarness()
+        hh       <- hhRepo.create("Family Q", "family-q")
+        _        <- billRepo.create(hh, "beta", founding = true)
+        jwtTok   <- seedAdmin(h, userRepo, hh, "family-q", "admin_q", "pwpwpwpw11")
+        agent    <- mintAgentToken(hh, "th_q", dataAccess = false)
+        _        <- agentPost(h, "/api/support/agent/request-consent", Some(agent))
+        grant    <- grantTokenFromThread(h).someOrFail(new RuntimeException("no consent link"))
+        // The thread SO FAR: the customer's unanswered question, then the server's consent prompt.
+        prompt   <- h.plain.threads.get.map(_.last.markdown)
+        _        <- h.plain.history.set(
+          List(
+            PlainThreadMessage(ThreadMessageRole.Customer, "how many devices do I have?"),
+            PlainThreadMessage(ThreadMessageRole.AiAssistant, prompt),
+          ),
+        )
+        before   <- h.dispatch.dispatches.get.map(_.size)
+        status   <- postConsent(h, Some(jwtTok), grant)
+        after    <- h.dispatch.dispatches.get.map(_.drop(before).map(_._1))
+        now      <- ZIO.serviceWithZIO[Clock](_.instant)
+        claims = after.headOption.flatMap(r =>
+          ConsentToken.verify(r.agentToken, now, TokenSecret).toOption,
+        )
+        writes <- h.plain.threads.get
+      } yield assertTrue(
+        status == Status.Ok,
+        // EXACTLY one resume — the customer's original question, answered with the scope they
+        // just granted, without them having to find their way back and re-ask.
+        after.size == 1,
+        after.head.threadId == "th_q",
+        after.head.dataConsent,
+        after.head.customerMessage == "how many devices do I have?",
+        claims.exists(c => c.householdId == hh && c.threadId == "th_q" && c.dataAccess),
+        // The resume carries the thread context, but NOT the consent prompt that sits after the
+        // question — the link is never fed back into the agent's context.
+        !after.head.history.exists(_.text.contains("/support/consent?g=")),
+        // Server-authored nudge is the FALLBACK only — a real re-dispatch posts nothing itself.
+        writes.size == 1,
+      )
+    },
+    test("the resume is idempotent per grant: re-confirming a LIVE consent re-dispatches nothing") {
+      for {
+        _        <- cleanDb
+        hhRepo   <- ZIO.service[HouseholdRepo]
+        userRepo <- ZIO.service[UserRepo]
+        h        <- makeHarness()
+        hh       <- hhRepo.create("Family P", "family-p")
+        jwtTok   <- seedAdmin(h, userRepo, hh, "family-p", "admin_p", "pwpwpwpw11")
+        agent    <- mintAgentToken(hh, "th_p", dataAccess = false)
+        _        <- agentPost(h, "/api/support/agent/request-consent", Some(agent))
+        grant    <- grantTokenFromThread(h).someOrFail(new RuntimeException("no consent link"))
+        _        <- h.plain.history.set(
+          List(PlainThreadMessage(ThreadMessageRole.Customer, "why is my iPad blocked?")),
+        )
+        first    <- postConsent(h, Some(jwtTok), grant)
+        once     <- h.dispatch.dispatches.get.map(_.size)
+        // The customer reloads the page / clicks Allow again: the grant is already live, so this
+        // must NOT queue a second agent session (or a second answer) for the same question.
+        second   <- postConsent(h, Some(jwtTok), grant)
+        twice    <- h.dispatch.dispatches.get.map(_.size)
+      } yield assertTrue(first == Status.Ok, second == Status.Ok, once == 1, twice == 1)
+    },
+    test(
+      "the consent POST does NOT wait on the resume — production runs it off the request fiber",
+    ) {
+      // The regression this pins: the resume's two legs are bounded only by their transport
+      // timeouts, which together exceed the SPA's own request timeout — so running it on the
+      // request fiber let a grant that SUCCEEDED abort client-side and render as "that permission
+      // link is no longer valid". Uses the PRODUCTION `runResume`; the gate holds the resume inside
+      // its first leg, so the POST returning at all proves it did not wait.
+      for {
+        _        <- cleanDb
+        hhRepo   <- ZIO.service[HouseholdRepo]
+        userRepo <- ZIO.service[UserRepo]
+        gate     <- Promise.make[Nothing, Unit]
+        done     <- Promise.make[Nothing, Unit]
+        h        <- makeHarness(
+          historyGate = Some(gate),
+          dispatchDone = Some(done),
+          productionResume = true,
+        )
+        hh       <- hhRepo.create("Family F", "family-f")
+        jwtTok   <- seedAdmin(h, userRepo, hh, "family-f", "admin_f", "pwpwpwpw11")
+        agent    <- mintAgentToken(hh, "th_f", dataAccess = false)
+        _        <- agentPost(h, "/api/support/agent/request-consent", Some(agent))
+        grant    <- grantTokenFromThread(h).someOrFail(new RuntimeException("no consent link"))
+        _        <- h.plain.history.set(
+          List(PlainThreadMessage(ThreadMessageRole.Customer, "why is my laptop blocked?")),
+        )
+        // The resume is parked in its FIRST leg for the whole of this call.
+        status   <- postConsent(h, Some(jwtTok), grant)
+        now      <- ZIO.serviceWithZIO[Clock](_.instant)
+        live     <- h.consentRepo.isGranted(hh, "th_f", now)
+        pending  <- h.dispatch.dispatches.get
+        // …and once released it still runs to completion. Awaiting the signal pins that half (a
+        // runner that dropped the resume would hang here, not pass) and joins the fiber before the
+        // next test's DROP DATABASE.
+        _        <- gate.succeed(())
+        _        <- done.await
+        resumed  <- h.dispatch.dispatches.get.map(_.map(_._1))
+      } yield assertTrue(
+        // The customer's grant is committed and acknowledged while the follow-up is still running…
+        status == Status.Ok,
+        live,
+        pending.isEmpty,
+        // …and the follow-up really happens — off the request fiber, not instead of it.
+        resumed.size == 1,
+        resumed.head.threadId == "th_f",
+        resumed.head.dataConsent,
+      )
+      // A regression in the runner (inline again, or dropped) parks or never signals; without this
+      // the suite would stall unattributed instead of failing named. The budget covers this test's
+      // whole body — including the `cleanDb` template clone — so it is set well above what the
+      // suite's other DB-cloning tests take, not tuned to the assertion; a KVM-host-contention
+      // slowdown (the #2394 class) must not turn it red on its own.
+    } @@ TestAspect.timeout(60.seconds),
+    test("the grant WRITE itself reports the transition, not a preceding read") {
+      // The #2460 idempotency key is decided by the transaction that WRITES: a separate
+      // read-then-write would let a second Allow on an already-live grant resume again and
+      // double-answer. Pinned at the repo, so the property survives any refactor of the responder.
+      // This pins the SEQUENTIAL semantics; the row lock that serializes a concurrent re-grant is
+      // not exercised here, and two simultaneous FIRST grants (no row to lock yet) can still both
+      // report a transition — see the note on SupportConsentRepo.grant.
+      for {
+        _      <- cleanDb
+        hhRepo <- ZIO.service[HouseholdRepo]
+        repo   <- ZIO.service[SupportConsentRepo]
+        hh     <- hhRepo.create("Family W", "family-w")
+        now    <- ZIO.serviceWithZIO[Clock](_.instant)
+        exp = now.plus(SupportResponder.ConsentTtl)
+        first  <- repo.grant(hh, "th_w", None, now, exp)
+        second <- repo.grant(hh, "th_w", None, now, exp)
+        // …but a grant that follows a WITHDRAWAL is a real transition again: the customer said yes
+        // a second time, so the conversation gets picked back up.
+        _      <- repo.revoke(hh, "th_w", now)
+        third  <- repo.grant(hh, "th_w", None, now, exp)
+      } yield assertTrue(first, !second, third)
+    },
+    test(
+      "resume with unreadable history: the grant still lands and a server-authored nudge posts",
+    ) {
+      for {
+        _        <- cleanDb
+        hhRepo   <- ZIO.service[HouseholdRepo]
+        userRepo <- ZIO.service[UserRepo]
+        h        <- makeHarness()
+        hh       <- hhRepo.create("Family H", "family-h")
+        jwtTok   <- seedAdmin(h, userRepo, hh, "family-h", "admin_h", "pwpwpwpw11")
+        agent    <- mintAgentToken(hh, "th_h", dataAccess = false)
+        _        <- agentPost(h, "/api/support/agent/request-consent", Some(agent))
+        grant    <- grantTokenFromThread(h).someOrFail(new RuntimeException("no consent link"))
+        // Plain's timeline read is fail-open (a missing `timeline:read` grant yields Nil, #2452) —
+        // we then cannot know what to re-ask, so the loop closes with a nudge instead of a crash.
+        _        <- h.plain.historyFails.set(true)
+        status   <- postConsent(h, Some(jwtTok), grant)
+        now      <- ZIO.serviceWithZIO[Clock](_.instant)
+        live     <- h.consentRepo.isGranted(hh, "th_h", now)
+        writes   <- h.plain.threads.get
+        redisp   <- h.dispatch.dispatches.get
+      } yield assertTrue(
+        status == Status.Ok,
+        live,
+        redisp.isEmpty,
+        writes.size == 2,
+        writes.last.threadId == "th_h",
+        // Server-authored, and it carries NO consent URL (#2453 — the link must not re-enter the
+        // thread context).
+        writes.last.markdown == SupportResponder.consentGrantedNudge,
+        !writes.last.markdown.contains("/support/consent?g="),
+      )
+    },
+    test(
+      "the resume draws the dispatch cap — but the fail-open nudge is not on it",
+    ) {
+      for {
+        _        <- cleanDb
+        hhRepo   <- ZIO.service[HouseholdRepo]
+        userRepo <- ZIO.service[UserRepo]
+        h        <- makeHarness(dispatchThreadLimiter = denyAll)
+        hh       <- hhRepo.create("Family M", "family-m")
+        jwtTok   <- seedAdmin(h, userRepo, hh, "family-m", "admin_m", "pwpwpwpw11")
+        agent    <- mintAgentToken(hh, "th_m", dataAccess = false)
+        _        <- agentPost(h, "/api/support/agent/request-consent", Some(agent))
+        grant    <- grantTokenFromThread(h).someOrFail(new RuntimeException("no consent link"))
+        _        <- h.plain.history.set(
+          List(PlainThreadMessage(ThreadMessageRole.Customer, "what plan am I on?")),
+        )
+        status   <- postConsent(h, Some(jwtTok), grant)
+        now      <- ZIO.serviceWithZIO[Clock](_.instant)
+        live     <- h.consentRepo.isGranted(hh, "th_m", now)
+        redisp   <- h.dispatch.dispatches.get
+        writes   <- h.plain.threads.get
+        // …but the FAIL-OPEN nudge is not on the caps: they wrap the re-dispatch branch only (they
+        // are a draw, not a check), so a capped thread whose timeline is unreadable still gets it.
+        capped   <- makeHarness(dispatchThreadLimiter = denyAll)
+        hh2      <- hhRepo.create("Family M2", "family-m2")
+        jwt2     <- seedAdmin(capped, userRepo, hh2, "family-m2", "admin_m2", "pwpwpwpw11")
+        agent2   <- mintAgentToken(hh2, "th_m2", dataAccess = false)
+        _        <- agentPost(capped, "/api/support/agent/request-consent", Some(agent2))
+        grant2   <- grantTokenFromThread(capped).someOrFail(new RuntimeException("no consent link"))
+        _        <- capped.plain.historyFails.set(true)
+        _        <- postConsent(capped, Some(jwt2), grant2)
+        writes2  <- capped.plain.threads.get
+        redisp2  <- capped.dispatch.dispatches.get
+      } yield assertTrue(
+        // The customer's grant is never lost to a cost cap — only the free follow-up is.
+        status == Status.Ok,
+        live,
+        redisp.isEmpty,
+        writes.size == 1,
+        // Prompt + nudge: the cheap fallback survives the cap…
+        writes2.size == 2,
+        writes2.last.markdown == SupportResponder.consentGrantedNudge,
+        // …and the nudge path starts no session of its own — which is what makes the write above
+        // mean "nudge", not "answer". (It never reaches the caps: they wrap the re-dispatch branch,
+        // and an unreadable timeline never gets there.)
+        redisp2.isEmpty,
+      )
     },
     test("re-labelling one token family as the other fails the SIGNATURE, not just the parse") {
       // The version tag is bound INTO the MAC, so `v1.<b64>.<sig>` rewritten to `g1.<b64>.<sig>`

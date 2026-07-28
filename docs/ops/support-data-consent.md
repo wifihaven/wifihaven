@@ -41,8 +41,38 @@ That is a dead end, not an answer.
    session JWT. The server verifies the grant token, requires the JWT's household
    to equal the token's household, and records the grant in
    `support_thread_consent` (V84).
-5. The customer's next message dispatches an agent session whose token is minted
-   with `dataAccess=true`, and the agent answers the question.
+5. The grant **closes the loop by itself** (#2460): the server reads the thread,
+   takes the customer's last message — the question that made the agent ask for
+   permission — and re-dispatches it immediately with a `dataAccess=true` token.
+   The customer does nothing else; they come back to an answer. Any later message
+   on the thread dispatches with the scope in the usual way while the grant lives.
+
+### Why the grant re-dispatches (#2460)
+
+Until #2460 the grant only wrote a row: consent was consumed by the NEXT inbound
+webhook. In practice the customer had already lost the conversation — the consent
+link navigates out of the page hosting the chat widget — so clicking Allow led to
+a terminal page and silence, the same dead end #2419 was created to fix. The
+server now finishes the turn.
+
+Bounds on the resume, all of which a review must preserve:
+
+| Property | Behaviour |
+| --- | --- |
+| Idempotency | Keyed on the no-live-grant → granted **transition**, reported by the same transaction that writes it (`SupportConsentRepo.grant` returns a Boolean: a `FOR UPDATE` read of the prior state, then the upsert). Re-confirming a live grant meters `resume_skipped` and dispatches nothing, so a page reload — or a second click once the row exists — cannot double-answer. **Residual:** two *simultaneous* FIRST grants have no row to lock yet and can both report a transition; they carry the same question, and the dispatch caps bound the cost. |
+| Cost | Draws `dispatchThreadLimiter` then `dispatchGlobalLimiter` through the shared `withDispatchCaps`, exactly like an inbound dispatch (`resume_rate_limited` when capped). The grant still lands — consent is never lost to a cost cap. The caps wrap the re-dispatch branch **only**: they are a draw, not a check, so the fixed-string nudge below never spends one (otherwise a `timeline:read` outage would drain the shared daily AI budget on threads that dispatch nothing). |
+| Loop guard | Untouched. The #2403/#2404 guard lives on the inbound webhook path; the agent's eventual reply still arrives as a `thread.chat_sent` that the guard drops. |
+| Unreadable thread | Fail-open. If Plain's timeline read yields nothing (a hiccup, or the #2452 `timeline:read` gap) we cannot know what to re-ask, so a FIXED server-authored nudge posts instead (`resume_no_message`). It is never agent-authored and carries no consent URL (#2453). |
+| Latency | The resume runs OFF the request fiber (`forkDaemon`), so the consent POST returns as soon as the grant commits. Its two legs are bounded only by their own transport timeouts (`PlainClient.HistoryTimeout`, then the dispatcher's `RequestTimeout`), which together exceed the SPA's request timeout — running it inline would let a *successful* grant abort client-side and be shown to the customer as a broken link. It is also deliberately not wrapped in a ZIO timeout: that would *interrupt* the dispatch and drop its metric sample rather than backgrounding it. The grant commits first, so nothing here can cost the customer's consent. |
+| One dispatch primitive | The resume does not fork the dispatch assembly — it calls the same `withDispatchCaps` + `dispatchAgentSession` the webhook path calls, so the caps ordering, the #2241 mint audit line, the token shape, and the #2416 config-vs-transient split cannot drift between the two paths. |
+
+**Known gap — the consent link still opens in the same tab.** We post the link as
+markdown (`textContent`/`markdownContent` on Plain's `replyToThread`); markdown
+has no link-target syntax and Plain documents no HTML passthrough, so the server
+cannot make the chat widget open it in a new tab. The resume above is what makes
+that survivable — the answer arrives whether or not the customer finds their way
+back — and the consent page's granted state now offers an explicit "Back to your
+conversation" action.
 
 ## Why design (a), server-mediated, and not (b), widget-side consent
 

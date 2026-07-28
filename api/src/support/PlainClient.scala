@@ -363,8 +363,9 @@ object PlainClient {
   // immediately instead of waiting on the uninterruptible blocking send — note the send itself is
   // not interruptible, so the borrowed blocking thread is released on the HTTP client's own
   // `RequestTimeout` (20s), not at 8s. What is bounded here is the webhook's latency, not the
-  // thread's.
-  private val HistoryTimeout: Duration = 8.seconds
+  // thread's. `private[support]` so callers that reason about this read's latency (the #2460 consent
+  // resume) can cite the value instead of re-stating "8s" in prose and letting the two drift.
+  private[support] val HistoryTimeout: Duration = 8.seconds
 
   /**
    * Config-gated layer. When [[SupportConfig.writeEnabled]] is false (no Plain API key — the

@@ -510,6 +510,32 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Consent grants that dead-ended (24h) — expect 0",
+      "description": "sum(increase(support_consent_total{env=\"$env\",outcome=~\"resume_rate_limited|resume_disabled|resume_error|resume_config_error\"}[24h])) — #2460: a customer granted data access and the server FAILED to close the loop for them. Every grant emits exactly one resume_* outcome. Benign ones: resumed (the customer's last question was re-dispatched under the new scope — the happy path), resume_no_message (no CUSTOMER turn was readable on the thread — an empty or failed timeline read, or a recent history carrying none — so the fixed server-authored nudge posted instead; check the thread-history panel for a thread:read/timeline:read gap), resume_skipped (a re-confirmed LIVE grant — the idempotency guard doing its job). The four counted HERE are the ones where the customer gets nothing back: resume_rate_limited (the thread hit its dispatch cap — the grant landed, the follow-up did not), resume_disabled (the dispatcher or Plain client is unconfigured), resume_error (a transient dispatch/write failure), and resume_config_error (a permanent 4xx at the agent boundary — the #2416 split; cross-check the dispatch-failures-by-reason panel). Sustained non-zero means customers are granting permission and still being left waiting — the exact symptom #2460 fixed.",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 40 },
+      "id": 21,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto", "colorMode": "background", "graphMode": "none", "justifyMode": "auto" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(increase(support_consent_total{env=\"$env\",outcome=~\"resume_rate_limited|resume_disabled|resume_error|resume_config_error\"}[24h]))",
+          "legendFormat": "dead-ended grants (24h)",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",

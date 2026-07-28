@@ -72,16 +72,37 @@ export function SupportConsentPage() {
           </>
         ) : state === 'granted' ? (
           <>
+            {/*
+              Deliberately does NOT promise an answer. The server tries to pick the question back
+              up on its own (#2460), but that resume can be rate-limited, disabled, or fail — and
+              this response is the same 'granted' in every one of those cases, so claiming "it's
+              already answering" would be a lie the page cannot check.
+            */}
             <p className="text-brand-text text-sm">
               Thanks — the support assistant can now see your account summary for that conversation.
-              It expires on its own, and you can withdraw it here at any time.
+              Head back to the chat: if it hasn't picked your question back up, just ask again. The
+              permission expires on its own, and you can withdraw it here at any time.
             </p>
-            <button
-              onClick={() => submit(false)}
-              className="mt-6 text-sm text-brand-accent hover:underline"
+            {/*
+              #2460: the granted state used to dead-end — "Withdraw this permission" was the only
+              control, so a customer who followed the consent link out of the page hosting the chat
+              widget had no route back to their conversation. The widget lives inside the
+              authenticated Layout, so the dashboard is where re-opening the chat is one click away.
+            */}
+            <Link
+              to="/dashboard"
+              className="inline-block mt-6 bg-brand-accent hover:bg-brand-accent-dark text-white font-semibold px-6 py-3 rounded-xl transition-colors"
             >
-              Withdraw this permission
-            </button>
+              Back to your conversation
+            </Link>
+            <div>
+              <button
+                onClick={() => submit(false)}
+                className="mt-4 text-sm text-brand-accent hover:underline"
+              >
+                Withdraw this permission
+              </button>
+            </div>
           </>
         ) : state === 'revoked' ? (
           <p className="text-brand-text text-sm">

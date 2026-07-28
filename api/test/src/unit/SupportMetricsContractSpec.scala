@@ -1,5 +1,6 @@
 package wifihaven.api.unit
 
+import wifihaven.api.support.SupportResponder
 import wifihaven.api.support.SupportResponder.AgentActionResult
 import zio.Chunk
 import zio.json.ast.Json
@@ -33,6 +34,9 @@ object SupportMetricsContractSpec extends ZIOSpecDefault {
   /** The panel whose count must include EVERY success label — the #2241 volume-alert feed. */
   private val VolumePanelTitlePrefix = "Agent-filed issues (24h)"
 
+  /** #2460 — the panel that must count every resume outcome where the customer got nothing back. */
+  private val DeadEndPanelTitlePrefix = "Consent grants that dead-ended"
+
   /**
    * Mill's cwd at test time is not the repo root, so walk up to find the checked-in dashboard — but
    * STOP at the first checkout root (`build.mill`). Worktrees live at
@@ -54,15 +58,15 @@ object SupportMetricsContractSpec extends ZIOSpecDefault {
   private def strField(obj: Json, name: String): Option[String] =
     obj.asObject.flatMap(_.get(name)).flatMap(_.asString)
 
-  /** Every `expr` on the volume panel. */
-  private lazy val volumePanelExprs: List[String] = {
+  /** Every `expr` on the panels whose title matches — checked per-expr, never unioned. */
+  private def panelExprs(titleMatches: String => Boolean): List[String] = {
     val panels = dashboard.toOption
       .flatMap(_.asObject)
       .flatMap(_.get("panels"))
       .flatMap(_.asArray)
       .getOrElse(Chunk.empty)
     panels.toList
-      .filter(p => strField(p, "title").exists(_.startsWith(VolumePanelTitlePrefix)))
+      .filter(p => strField(p, "title").exists(titleMatches))
       .flatMap { p =>
         p.asObject
           .flatMap(_.get("targets"))
@@ -72,6 +76,10 @@ object SupportMetricsContractSpec extends ZIOSpecDefault {
           .flatMap(t => strField(t, "expr"))
       }
   }
+
+  /** Every `expr` on the volume panel. */
+  private lazy val volumePanelExprs: List[String] =
+    panelExprs(_.startsWith(VolumePanelTitlePrefix))
 
   def spec = suite("support metrics ↔ dashboard contract (#2461)")(
     test("the volume panel exists and queries the series we actually emit") {
@@ -104,6 +112,30 @@ object SupportMetricsContractSpec extends ZIOSpecDefault {
       // Guards the derivation itself: a new case must be classified deliberately, not default into
       // (or out of) the success set by accident.
       assertTrue(AgentActionResult.SuccessLabels == Set("ok", "ok_no_link"))
+    },
+    test("#2460: the dead-end panel counts EXACTLY the resume outcomes that mean 'got nothing'") {
+      // Same drift class, second series: the "Consent grants that dead-ended" panel selects a
+      // SUBSET of `support_consent_total{outcome}` by string. A new resume_* failure outcome added
+      // without widening the panel would silently under-count customers who granted permission and
+      // were still left waiting — the exact #2460 symptom, invisible on the dashboard built to
+      // catch it.
+      //
+      // EQUALITY, not containment: an outcome in the panel but NOT in DeadEnd would count a benign
+      // case (resumed / resume_skipped / resume_no_message) as a dead end and make an "expect 0"
+      // panel cry wolf, which is how such a panel stops being read.
+      //
+      // DeadEnd is DERIVED from the enum, so a new resume outcome classified dead-end widens it
+      // automatically and fails HERE — the forgotten-to-list case the hand-written set allowed.
+      val matcher                             = "outcome=~\"([^\"]+)\"".r
+      def labelsIn(expr: String): Set[String] =
+        matcher.findAllMatchIn(expr).flatMap(_.group(1).split('|')).toSet
+
+      val exprs = panelExprs(_.startsWith(DeadEndPanelTitlePrefix))
+      assertTrue(
+        exprs.nonEmpty,
+        exprs.forall(_.contains("support_consent_total")),
+        exprs.forall(labelsIn(_) == SupportResponder.ResumeOutcome.DeadEnd),
+      )
     },
   )
 }

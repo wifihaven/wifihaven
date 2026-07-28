@@ -59,6 +59,19 @@ describe('SupportConsentPage — /support/consent (#2419)', () => {
     expect(await screen.findByText(/permission withdrawn/i)).toBeInTheDocument()
   })
 
+  it('offers a way back to the conversation after granting (#2460)', async () => {
+    consentMock.mockResolvedValue({ status: 'granted' })
+    const user = userEvent.setup()
+    renderPage()
+
+    await user.click(screen.getByRole('button', { name: /^allow$/i }))
+
+    // The granted state used to dead-end: "Withdraw this permission" was the only control, so a
+    // customer who followed the link out of the chat had no route back to it.
+    const back = await screen.findByRole('link', { name: /back to your conversation/i })
+    expect(back).toHaveAttribute('href', '/dashboard')
+  })
+
   it('surfaces a stale or wrong-account link without claiming success', async () => {
     consentMock.mockRejectedValue(new Error('400'))
     const user = userEvent.setup()
