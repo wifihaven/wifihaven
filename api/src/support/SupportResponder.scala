@@ -572,7 +572,7 @@ final case class SupportResponder(
                     .as(Right(FiledIssue(Some(ref.number), Some(ref.url), duplicate = Some(true))))
                 case IssueOutcome.Disabled       =>
                   doneE(AgentAction.Issue, AgentActionResult.Disabled)
-                case IssueOutcome.Error          => doneE(AgentAction.Issue, AgentActionResult.Error)
+                case IssueOutcome.Error => doneE(AgentAction.Issue, AgentActionResult.Error)
               }
           }
       }

@@ -501,11 +501,11 @@ object GithubIssueClient {
    * no `pull_requests`) is what makes no-PR structural. Any non-2xx / error on the POST is logged
    * and mapped to [[IssueOutcome.Error]]; the GET is fail-open (see [[findOpenDuplicate]]).
    *
-   * NOTE the GET needs Issues:**read**. A fine-grained token granted Issues at the write level also
-   * carries read, so the existing credential is expected to work unchanged — but that is an
-   * inference about GitHub's permission model, not something this code can assert, so the LIST call
-   * is metered with a `permission` reason and logged at ERROR if it is ever refused rather than
-   * assumed to succeed.
+   * NOTE the GET needs Issues:**read**. The support bot token carries Issues read+write — confirmed
+   * by the operator 2026-07-28, so the credential needed no change for #2458. The LIST call is
+   * still metered with a `permission` reason and logged at ERROR if it is ever refused: a grant
+   * confirmed once is not a grant that stays true through a rotation, and because the scan is
+   * fail-open a lost read would otherwise be invisible (filings keep succeeding).
    */
   final class Live(cfg: SupportConfig) extends GithubIssueClient {
     private val client = HttpClient.newBuilder().connectTimeout(ConnectTimeout).build()
