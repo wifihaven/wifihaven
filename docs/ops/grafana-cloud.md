@@ -103,28 +103,101 @@ Copy-pasteable LogQL:
 {service="wifihaven-api", env="production"} | mac="aa:bb:cc:dd:ee:ff"
 ```
 
-### Path B — CLI (`logcli`) / HTTP query API — needs a read token NOT yet provisioned
+### Path B — CLI (`logcli`) / HTTP query API — provisioned
 
-`logcli` / the `/loki/api/v1/query_range` HTTP API give scriptable, greppable
-access, but **the read credential does not exist yet.** The only Loki token in
-the repo/Render is `GRAFANA_CLOUD_LOKI_PASSWORD`, which is **logs-*push* scope**
-(see [`render.yaml`](../../render.yaml) `# PASSWORD is a Grafana Cloud API token
-with logs-push scope`) — it cannot read. Until a read token is provisioned, use
-**Path A**. To enable Path B (operator, one-time):
+`logcli` and the `/loki/api/v1/query_range` HTTP API give scriptable, greppable
+access to the same logs, without routing the investigation through a browser.
+**This path is provisioned and verified** (2026-07-27) — prefer it for anything
+you want to grep, diff, or paste into an incident writeup.
 
-1. In Grafana Cloud → **Access Policies**, create an access-policy token scoped
-   **`logs:read`** for the Loki instance (distinct from the push token).
-2. Find the Loki **query** host + numeric user id under **Connections → Loki →
-   Details** (the query base URL, e.g. `https://logs-prod-NNN.grafana.net`, and
-   the instance/user id).
-3. Export for `logcli`:
+> **The push token cannot read.** `GRAFANA_CLOUD_LOKI_PASSWORD` (used by the
+> API's logback appender) is **logs-*push* scope** — see [`render.yaml`](../../render.yaml)
+> `# PASSWORD is a Grafana Cloud API token with logs-push scope`. It will not
+> authenticate a query. The read credential below is a separate access policy.
 
-   ```bash
-   export LOKI_ADDR="https://logs-prod-NNN.grafana.net"   # query host, NOT the /push URL
-   export LOKI_USERNAME="<numeric Loki instance id>"
-   export LOKI_BEARER_TOKEN="<logs:read access-policy token>"
-   logcli query '{service="wifihaven-api", env="production", level="ERROR"}' --since=1h
-   ```
+#### The credential
 
-   Keep the token in memory only — never echo, print, or commit it (same
-   read-only / cred-masking discipline as prod `EXPLAIN`; see `AGENTS.md`).
+A read-only Grafana Cloud **access policy** named `wifihaven-read` (realm: the
+`wifihaven` stack, region `prod-us-west-0`) carries `logs:read`, `metrics:read`,
+`rules:read`, `alerts:read` — and deliberately **no `logs:write`**, so a leak of
+this token cannot be used to forge log lines into our stack. It is verified
+read-only: a push attempt returns `401 authentication error: invalid scope
+requested`.
+
+**The token value is not in this repo and must never be.** It lives in the
+operator's local Claude memory at
+`~/.claude/projects/-Users-sameer-workspace-wifihaven/memory/grafana_loki_read_token.md`,
+which also documents how to load it into a shell variable without echoing it.
+Never commit it, never paste it into a PR/issue/comment, and never inline it
+into a command that lands in a transcript.
+
+To manage or rotate it: `https://wifihaven.grafana.net` → **Administration →
+Users and access → Cloud access policies**. (It is in the *stack* UI, not the
+grafana.com org portal.) Do **not** reuse the pre-existing
+`stack-1674139-hl-read` policy — it bundles `logs:write`.
+
+#### Connection values (not secret)
+
+| Backend | Query host | Basic-auth user |
+|---|---|---|
+| Loki | `https://logs-prod-021.grafana.net` | `1631926` |
+| Prometheus | `https://prometheus-prod-67-prod-us-west-0.grafana.net/api/prom` | `3272502` |
+
+Two footguns, both of which produce confusing 401s:
+
+- The Loki **query** host is *not* the `/push` URL held in
+  `GRAFANA_CLOUD_LOKI_URL`.
+- **The user id differs per backend.** Loki is `1631926`, Prometheus is
+  `3272502`. Using Loki's id against Prometheus returns
+  `401 authentication error: invalid authentication credentials` — which looks
+  like a bad token but is a wrong username. Each id is on its own data source's
+  page under **Connections → Data sources → `grafanacloud-wifihaven-{logs,prom}`
+  → Authentication → Basic authentication → User**.
+
+#### curl — Loki `query_range`
+
+```bash
+# Load the token without echoing it (see the memory file above).
+GRAFANA_READ_TOKEN=$(awk '/^glc_/{print; exit}' \
+  ~/.claude/projects/-Users-sameer-workspace-wifihaven/memory/grafana_loki_read_token.md)
+
+curl -sG -u "1631926:$GRAFANA_READ_TOKEN" \
+  "https://logs-prod-021.grafana.net/loki/api/v1/query_range" \
+  --data-urlencode 'query={service="wifihaven-api", env="production", level="ERROR"}' \
+  --data-urlencode "start=$(($(date +%s)-3600))000000000" \
+  --data-urlencode 'limit=20'
+```
+
+`start` / `end` are **Unix nanoseconds**. The same LogQL from Path A applies —
+`service` / `env` / `level` inside the `{…}` selector, everything else
+(`route`, `op`, `status`, `mac`, …) as a `|` label-filter after it.
+
+#### logcli
+
+```bash
+export LOKI_ADDR="https://logs-prod-021.grafana.net"   # query host, NOT the /push URL
+export LOKI_USERNAME="1631926"
+export LOKI_PASSWORD="$GRAFANA_READ_TOKEN"
+logcli query '{service="wifihaven-api", env="production", level="ERROR"}' --since=1h
+```
+
+`logcli` uses `LOKI_USERNAME` + `LOKI_PASSWORD` (basic auth) for Grafana Cloud —
+not `LOKI_BEARER_TOKEN`.
+
+#### curl — Prometheus (same token, `metrics:read`)
+
+```bash
+curl -sG -u "3272502:$GRAFANA_READ_TOKEN" \
+  "https://prometheus-prod-67-prod-us-west-0.grafana.net/api/prom/api/v1/query" \
+  --data-urlencode 'query=up'
+```
+
+#### Not covered — dashboards
+
+Cloud access policies gate the **data backends** (Loki / Mimir / Tempo /
+Pyroscope) only; there is no dashboard scope. Reading dashboard JSON from
+`https://wifihaven.grafana.net/api/dashboards/...` needs a separate Grafana
+**service account** token (Administration → Users and access → Service
+accounts). Not provisioned as of 2026-07-27. Note the in-repo dashboards under
+[`deploy/grafana/dashboards/`](../../deploy/grafana/dashboards/) are the source
+of truth anyway — read those rather than the live API.
