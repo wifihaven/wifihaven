@@ -102,9 +102,10 @@ truth for the label set; do not re-derive it here.
   {service="wifihaven-api", env="production", level="ERROR"} | route=`/api/router/usage`
   ```
 
-  A scriptable `logcli`/HTTP path exists but currently needs a `logs:read`
-  token that is **not yet provisioned** (the only Loki token is push-scope) —
-  use the Explore UI until then (see the grafana-cloud.md caveat).
+  A scriptable `logcli` / `query_range` HTTP path is **provisioned** — prefer
+  it when you want to grep, diff, or quote log lines. See grafana-cloud.md
+  § *Querying logs from Loki* → **Path B** for the credential and the exact
+  invocations; don't restate the hosts or user ids here.
 - **Fallback: Render.** Only if Loki itself is unavailable, tail the Render
   service logs. The Render root key is out-of-band **in memory** — load it into
   a shell var, **never echo, print, or commit it**, and mask it in any captured

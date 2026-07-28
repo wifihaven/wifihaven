@@ -68,10 +68,11 @@ of truth, not this doc:
   lives here (not as a stream label) precisely so "show everything device X hit"
   stays queryable without a cardinality explosion.
 
-### Path A — Grafana Explore UI (works today, no extra creds)
+### Path A — Grafana Explore UI (no extra creds)
 
-This is the **currently-provisioned** path — the operator's normal
-wifihaven.grafana.net login already grants log read:
+Needs nothing beyond the operator's normal wifihaven.grafana.net login, which
+already grants log read. Best for exploratory poking; reach for **Path B**
+below when you want output you can grep, diff, or quote:
 
 1. Go to **`https://wifihaven.grafana.net`** → **Explore** (compass icon).
 2. Pick the **Loki** data source (top-left datasource dropdown).
@@ -111,9 +112,11 @@ access to the same logs, without routing the investigation through a browser.
 you want to grep, diff, or paste into an incident writeup.
 
 > **The push token cannot read.** `GRAFANA_CLOUD_LOKI_PASSWORD` (used by the
-> API's logback appender) is **logs-*push* scope** — see [`render.yaml`](../../render.yaml)
-> `# PASSWORD is a Grafana Cloud API token with logs-push scope`. It will not
-> authenticate a query. The read credential below is a separate access policy.
+> API's logback appender) is **logs-*push* scope** — see the comment above the
+> `GRAFANA_CLOUD_LOKI_*` block in [`render.yaml`](../../render.yaml), which
+> states that `PASSWORD` is a Grafana Cloud API token with logs-push scope. It
+> will not authenticate a query. The read credential below is a separate access
+> policy.
 
 #### The credential
 
@@ -126,10 +129,14 @@ requested`.
 
 **The token value is not in this repo and must never be.** It lives in the
 operator's local Claude memory at
-`~/.claude/projects/-Users-sameer-workspace-wifihaven/memory/grafana_loki_read_token.md`,
-which also documents how to load it into a shell variable without echoing it.
-Never commit it, never paste it into a PR/issue/comment, and never inline it
-into a command that lands in a transcript.
+`~/.claude/projects/*wifihaven*/memory/grafana_loki_read_token.md`, which also
+documents how to load it into a shell variable without echoing it. Never commit
+it, never paste it into a PR/issue/comment, and never inline it into a command
+that lands in a transcript.
+
+If you are not the operator, that file will not exist on your machine — provision
+your own access policy per the paragraph below rather than asking for a copy of
+this one.
 
 To manage or rotate it: `https://wifihaven.grafana.net` → **Administration →
 Users and access → Cloud access policies**. (It is in the *stack* UI, not the
@@ -159,7 +166,9 @@ Two footguns, both of which produce confusing 401s:
 ```bash
 # Load the token without echoing it (see the memory file above).
 GRAFANA_READ_TOKEN=$(awk '/^glc_/{print; exit}' \
-  ~/.claude/projects/-Users-sameer-workspace-wifihaven/memory/grafana_loki_read_token.md)
+  ~/.claude/projects/*wifihaven*/memory/grafana_loki_read_token.md)
+# Guard: an empty token 401s identically to the wrong-user-id footgun above.
+[ -n "$GRAFANA_READ_TOKEN" ] || echo "no glc_ token found in the memory file" >&2
 
 curl -sG -u "1631926:$GRAFANA_READ_TOKEN" \
   "https://logs-prod-021.grafana.net/loki/api/v1/query_range" \
