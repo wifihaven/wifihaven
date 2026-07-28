@@ -634,7 +634,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "Issue-filing duplicate check (#2458)",
-      "description": "sum by (outcome) (rate(support_issue_dedup_total{env=\"$env\"}[5m])) — the search-before-file check that runs on EVERY support-agent issue filing. matched = an already-open `support-agent` issue covered the topic, so nothing was created and the customer was pointed at that issue instead (the fix working, not a fault). no_match = we looked and filed. scan_error = we could NOT look (non-2xx, transport error, or an unreadable list body) and filed WITHOUT checking. A sustained scan_error rate never self-heals — it is the fine-grained bot token having lost Issues:read on wifihaven/wifihaven, or GitHub's list-issues shape drifting — and its only other symptom is duplicate issues quietly reappearing, which is exactly the #2458 defect. Each one is also logged at WARN naming the cause. The dedup is deliberately fail-open: a scan failure must never block a genuine report.",
+      "description": "sum by (outcome, reason) (rate(support_issue_dedup_total{env=\"$env\"}[5m])) — the search-before-file check that runs on EVERY support-agent issue filing. outcome: matched = an already-open `support-agent` issue covered the topic, so nothing was created and the customer was pointed at that issue instead (the fix working, not a fault); no_match = we looked and filed; scan_error = we could NOT look and filed WITHOUT checking. reason attributes a scan_error: permission (401/403/404 — the bot token cannot LIST issues on wifihaven/wifihaven) and schema (a 2xx body we could not decode — GitHub's list shape drifted) NEVER self-heal and are each logged at ERROR with the fix named; transient (transport, timeout, 5xx) may; none rides every non-error sample. The dedup is deliberately fail-open — a scan failure must never block a genuine report — which is exactly why the reason split matters: a permanently blind check still files successfully and reads healthy everywhere else, and its only other symptom is duplicate issues quietly reappearing (the #2458 defect). The expect-0 stat beside this counts permission+schema only.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 104 },
       "id": 27,
@@ -651,16 +651,16 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum by (outcome) (rate(support_issue_dedup_total{env=\"$env\"}[5m]))",
-          "legendFormat": "{{outcome}}",
+          "expr": "sum by (outcome, reason) (rate(support_issue_dedup_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{outcome}} / {{reason}}",
           "refId": "A"
         }
       ]
     },
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "title": "Duplicate checks that could NOT run (24h) — expect 0 (#2458)",
-      "description": "sum(increase(support_issue_dedup_total{env=\"$env\",outcome=\"scan_error\"}[24h])) — issues filed WITHOUT a duplicate check because the open-issue scan failed. Because the dedup is fail-open, the filing still succeeds and the volume panel beside it still reads healthy, so this is the ONLY place a permanently-blind check is visible. Non-zero and sustained is a PROVISIONING GAP, almost always the fine-grained bot token losing Issues:read on wifihaven/wifihaven. Grep the API log for `github duplicate scan` for the HTTP status.",
+      "title": "Duplicate check PERMANENTLY blind (24h) — expect 0 (#2458)",
+      "description": "sum(increase(support_issue_dedup_total{env=\"$env\",outcome=\"scan_error\",reason=~\"permission|schema\"}[24h])) — issues filed WITHOUT a duplicate check for a reason that NEVER self-heals: `permission` = the fine-grained bot token cannot LIST issues on wifihaven/wifihaven (grant it Issues:read), `schema` = GitHub's list-issues response shape drifted past GithubIssueClient.ListedIssue. Because the dedup is fail-open, the filing still succeeds and the volume panel beside it still reads healthy, so this is the ONLY place a permanently-blind check is visible — the other symptom is duplicate issues quietly returning. Deliberately EXCLUDES reason=transient (timeouts, 5xx), which is expected to be non-zero and self-healing; folding it in would make this panel cry wolf and stop being read. Both counted reasons are also logged at ERROR with the fix named — grep the API log for `github duplicate scan`.",
       "type": "stat",
       "gridPos": { "h": 8, "w": 6, "x": 12, "y": 104 },
       "id": 28,
@@ -669,7 +669,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum(increase(support_issue_dedup_total{env=\"$env\",outcome=\"scan_error\"}[24h]))",
+          "expr": "sum(increase(support_issue_dedup_total{env=\"$env\",outcome=\"scan_error\",reason=~\"permission|schema\"}[24h]))",
           "refId": "A"
         }
       ]

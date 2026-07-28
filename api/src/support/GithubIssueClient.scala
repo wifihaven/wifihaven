@@ -12,7 +12,8 @@ import java.time.Duration as JDuration
 /**
  * #2200 / #2241 — the CS-agent's GitHub issue-filing capability. Files issues DIRECTLY (operator
  * decision: NOT human-gated) under a dedicated bot identity, via a fine-grained token scoped to
- * **Issues: write ONLY** on `wifihaven/wifihaven` — **no `contents`, no `pull_requests`**. That
+ * **Issues ONLY** on `wifihaven/wifihaven` — **no `contents`, no `pull_requests`**. (#2458 added a
+ * LIST call for the duplicate check, so the token is read+write on Issues, not write-alone.) That
  * scoping makes "cannot create or merge PRs" STRUCTURAL (the token lacks the scope), not a policy
  * the model could be argued out of. Every issue is auto-labeled `support-agent` and rate-limited by
  * the caller (per-thread + global) with a volume metric for the operator alert.
@@ -104,7 +105,11 @@ object GithubIssueClient {
       ZIO.serviceWithZIO[SupportConfig] { cfg =>
         if cfg.issueFilingEnabled then
           ZIO
-            .logInfo("support-agent issue filing ENABLED (fine-grained Issues:write bot token)")
+            .logInfo(
+              "support-agent issue filing ENABLED (fine-grained Issues-scoped bot token; the " +
+                "#2458 duplicate check also LISTS issues, so it needs Issues:read — a refusal " +
+                "meters support_issue_dedup_total{outcome=scan_error,reason=permission})",
+            )
             .as(new Live(cfg): GithubIssueClient)
         else
           ZIO
@@ -206,16 +211,46 @@ object GithubIssueClient {
     /** We looked and found nothing — a real filing followed. */
     case NoMatch
 
-    /**
-     * We could NOT look (transport error, non-2xx, unreadable list) and filed unchecked. Never
-     * self-heals if it is the token losing `Issues:read` or GitHub's list shape drifting.
-     */
+    /** We could NOT look and filed unchecked. WHY is on [[DedupReason]], never folded in here. */
     case ScanError
 
     def label: String = this match {
       case Matched   => "matched"
       case NoMatch   => "no_match"
       case ScanError => "scan_error"
+    }
+  }
+
+  /**
+   * WHY a scan could not run — the `reason` dimension of `support_issue_dedup_total`.
+   *
+   * The scan is fail-open, so a permanently blind dedup files successfully and looks healthy
+   * everywhere else; this label is the operator's only discriminator, and folding a 403 in with a
+   * timeout would tell them to wait out a problem that never resolves. That is the same
+   * config-vs-transient boundary `support_dispatch_total{reason}` (#2416) and
+   * `support_thread_history_total` (#2430) draw, and this follows them rather than inventing a
+   * third vocabulary (#2458 review). [[Permission]] and [[Schema]] are also logged at ERROR with
+   * the fix named; [[Transient]] is a warning.
+   */
+  enum DedupReason {
+
+    /** 401 / 403 / 404: the bot token cannot list issues. A PROVISIONING GAP; never self-heals. */
+    case Permission
+
+    /** 2xx whose body we could not decode — GitHub's list shape drifted. Never self-heals. */
+    case Schema
+
+    /** Transport, timeout, 5xx, or any other non-2xx. May self-heal. */
+    case Transient
+
+    /** Carried on every non-error sample so no series is missing the label. */
+    case None
+
+    def label: String = this match {
+      case Permission => "permission"
+      case Schema     => "schema"
+      case Transient  => "transient"
+      case None       => "none"
     }
   }
 
@@ -239,28 +274,70 @@ object GithubIssueClient {
   val DuplicateScanPageSize: Int = 100
 
   /**
-   * Read the list-issues response into candidates. Same discipline as [[parseCreatedDetailed]]:
-   * anything unreadable yields no candidates (we file rather than guess), and every candidate must
-   * sit under [[PublicIssuePrefix]] — which also drops the pull requests GitHub's issues endpoint
-   * mixes in, since their `html_url` is `/pull/`, not `/issues/`.
+   * The outcome of reading a list-issues response. Mirrors [[CreatedParse]]: "we could not read the
+   * body" and "we read it and it held no usable candidates" are DIFFERENT facts, and the caller
+   * meters them differently, so the distinction rides out on the return instead of being
+   * reconstructed downstream (#2458 review — a `body != "[]"` reconstruction reports a readable
+   * list whose entries were all filtered as unreadable, which lands in an expect-0 alert).
+   */
+  enum ListParse {
+
+    /**
+     * @param open
+     *   candidates under [[PublicIssuePrefix]]; may be empty on a readable, genuinely empty list.
+     * @param decoded
+     *   how many entries the body held BEFORE filtering — the number to compare against
+     *   [[DuplicateScanPageSize]], since filtering can never make a full page look full.
+     */
+    case Parsed(open: List[OpenIssue], decoded: Int)
+
+    /** Not JSON, truncated, or not the array-of-issues shape we expect. */
+    case Unreadable
+  }
+
+  /**
+   * Read the list-issues response. Same discipline as [[parseCreatedDetailed]]: pure and total, and
+   * every candidate must sit under [[PublicIssuePrefix]] — which also drops the pull requests
+   * GitHub's issues endpoint mixes in, since their `html_url` is `/pull/`, not `/issues/`.
+   */
+  def parseOpenIssuesDetailed(body: String): ListParse =
+    body.fromJson[List[ListedIssue]] match {
+      case Left(_)  => ListParse.Unreadable
+      case Right(l) =>
+        ListParse.Parsed(
+          l.collect {
+            case i if i.htmlUrl.startsWith(PublicIssuePrefix) =>
+              OpenIssue(i.number, i.htmlUrl, i.title)
+          },
+          l.size,
+        )
+    }
+
+  /**
+   * [[parseOpenIssuesDetailed]] with the reason discarded — for callers that only need candidates.
    */
   def parseOpenIssues(body: String): List[OpenIssue] =
-    body.fromJson[List[ListedIssue]] match {
-      case Left(_)  => Nil
-      case Right(l) =>
-        l.collect {
-          case i if i.htmlUrl.startsWith(PublicIssuePrefix) =>
-            OpenIssue(i.number, i.htmlUrl, i.title)
-        }
+    parseOpenIssuesDetailed(body) match {
+      case ListParse.Parsed(open, _) => open
+      case ListParse.Unreadable      => Nil
     }
 
   /**
    * Words that carry no topic — dropped before comparison. Without this, every "Feature request:"
    * title shares two tokens with every other one and short titles drift over the threshold on
    * boilerplate alone.
+   *
+   * It also has to include the SCRUBBER'S OWN placeholder words. Titles reach the matcher after
+   * [[sanitize]], so a title that carried PII arrives as e.g. `"… reported by [redacted-email]"`,
+   * and `redacted`/`email` would otherwise read as topic words shared by every PII-bearing title —
+   * inflating overlap on real pairs and, worse, making two titles whose only surviving words are
+   * placeholders match EXACTLY, so a second customer's genuinely different report is dropped and
+   * they are pointed at an unrelated issue (#2458 review). Those words are DERIVED from
+   * `SupportPrivacy.PlaceholderWords`, not hand-copied: a new redaction placeholder there must not
+   * silently become a topic word here.
    */
   private val TitleStopWords: Set[String] =
-    Set(
+    SupportPrivacy.PlaceholderWords ++ Set(
       "feature",
       "request",
       "bug",
@@ -327,24 +404,36 @@ object GithubIssueClient {
   val DuplicateThreshold: Double = 0.6
 
   /**
-   * The already-open issue `title` duplicates, if any. Two ways to match, and both need the topic
-   * words to actually agree:
-   *   - identical token sets — the same request typed twice, however short;
-   *   - overlap at or above [[DuplicateThreshold]] AND at least two shared topic words, so a
-   *     one-word title cannot pull an unrelated one over the line on a single common noun.
+   * The fewest topic words a title must have before it can match ANYTHING. A one-word title carries
+   * too little to distinguish "the same request" from "another report that happens to share a
+   * noun", and the cost of the two failure directions is not symmetric: refusing to dedup a
+   * one-word title just files a second issue (the status quo), whereas matching it wrongly drops a
+   * real report and points the customer at something unrelated. So the floor applies to the
+   * identical-token-sets branch too, not only to the similarity one (#2458 review).
+   */
+  val MinTopicTokens: Int = 2
+
+  /**
+   * The already-open issue `title` duplicates, if any. Both titles need at least [[MinTopicTokens]]
+   * topic words, and then either:
+   *   - identical token sets — the same request typed twice; or
+   *   - overlap at or above [[DuplicateThreshold]] AND at least [[MinTopicTokens]] shared words, so
+   *     an unrelated title cannot be pulled over the line on a single common noun.
    *
    * Ties break on the LOWEST issue number: the oldest open issue is the canonical one, and the
    * choice must not depend on the order GitHub happened to return.
    */
   def findDuplicate(title: String, open: List[OpenIssue]): Option[OpenIssue] = {
     val tokens = titleTokens(title)
-    if tokens.isEmpty then None
+    if tokens.sizeIs < MinTopicTokens then None
     else
       open
         .filter { c =>
           val ct     = titleTokens(c.title)
           val shared = (tokens intersect ct).size
-          ct == tokens || (shared >= 2 && titleSimilarity(title, c.title) >= DuplicateThreshold)
+          ct.sizeIs >= MinTopicTokens &&
+          (ct == tokens ||
+            (shared >= MinTopicTokens && titleSimilarity(title, c.title) >= DuplicateThreshold))
         }
         .minByOption(_.number)
   }
@@ -357,10 +446,18 @@ object GithubIssueClient {
     }
 
   /**
-   * Live GitHub transport. One blocking HTTPS POST to the REST create-issue endpoint (same
-   * JDK-HttpClient shape as the other external clients — no new build dependency). The fine-grained
-   * bot token rides as `Authorization: Bearer`; the token's Issues:write-only scope is what makes
-   * no-PR structural. Any non-2xx / error is logged and mapped to [[IssueOutcome.Error]].
+   * Live GitHub transport. Two blocking HTTPS calls to the REST issues endpoint (same
+   * JDK-HttpClient shape as the other external clients — no new build dependency): a GET that lists
+   * the open `support-agent` issues for the #2458 duplicate check, then the POST that creates. The
+   * fine-grained bot token rides as `Authorization: Bearer`; its Issues-only scope (no `contents`,
+   * no `pull_requests`) is what makes no-PR structural. Any non-2xx / error on the POST is logged
+   * and mapped to [[IssueOutcome.Error]]; the GET is fail-open (see [[findOpenDuplicate]]).
+   *
+   * NOTE the GET needs Issues:**read**. A fine-grained token granted Issues at the write level also
+   * carries read, so the existing credential is expected to work unchanged — but that is an
+   * inference about GitHub's permission model, not something this code can assert, so the LIST call
+   * is metered with a `permission` reason and logged at ERROR if it is ever refused rather than
+   * assumed to succeed.
    */
   final class Live(cfg: SupportConfig) extends GithubIssueClient {
     private val client = HttpClient.newBuilder().connectTimeout(ConnectTimeout).build()
@@ -379,57 +476,81 @@ object GithubIssueClient {
         client.send(httpReq, HttpResponse.BodyHandlers.ofString())
       }
 
+    /** The ONE place a scan failure is metered — reason attribution can't drift across branches. */
+    private def scanFailed(reason: DedupReason): UIO[Option[OpenIssue]] =
+      AppMetrics
+        .supportIssueDedup(DedupOutcome.ScanError.label, reason.label)
+        .as(None)
+
     /**
      * #2458 — the already-open `support-agent` issue this filing duplicates, if any. FAIL-OPEN by
-     * construction: every failure answers `None` (meter `scan_error`, log the cause) so the filing
-     * still happens. Dedup is a quality improvement on top of filing; it must never become a new
-     * way for a genuine report to be lost.
+     * construction: every failure answers `None` (metered with its [[DedupReason]], logged with the
+     * cause) so the filing still happens. Dedup is a quality improvement on top of filing; it must
+     * never become a new way for a genuine report to be lost.
+     *
+     * Fail-open is what makes the reason label load-bearing rather than decorative: a permanently
+     * blind check still files successfully and reads healthy on every other panel, so `permission`
+     * / `schema` (never self-heal, logged at ERROR with the fix named) vs `transient` is the
+     * operator's only signal.
      */
     private def findOpenDuplicate(title: String): UIO[Option[OpenIssue]] =
       get(
         s"$ApiBase/repos/$Repo/issues?state=open&labels=$SupportLabel" +
           s"&per_page=$DuplicateScanPageSize",
       ).flatMap { resp =>
-        if resp.statusCode() / 100 != 2 then
-          ZIO
-            .logWarning(
-              s"github duplicate scan failed: HTTP ${resp.statusCode()} " +
-                s"(${resp.body().take(300)}) — filing WITHOUT a duplicate check; a persistent " +
-                "403/404 here means the bot token lost Issues:read on " + Repo,
-            )
-            .zipRight(AppMetrics.supportIssueDedup(DedupOutcome.ScanError.label))
-            .as(None)
-        else {
-          val open = parseOpenIssues(resp.body())
-          if open.isEmpty && resp.body().trim != "[]" then
+        val status = resp.statusCode()
+        if status / 100 != 2 then
+          // 401/403/404 is the bot token's grant, not an outage — the same permanent-vs-transient
+          // line the rest of the support subsystem draws, and the reason an ERROR is warranted.
+          if status == 401 || status == 403 || status == 404 then
             ZIO
-              .logWarning(
-                "github duplicate scan returned an unreadable list body — filing WITHOUT a " +
-                  "duplicate check",
+              .logError(
+                s"github duplicate scan REFUSED: HTTP $status (${resp.body().take(300)}) — " +
+                  s"PROVISIONING GAP: the support bot token cannot LIST issues on $Repo, so every " +
+                  "filing is duplicate-checked blind and duplicates will return. Grant the " +
+                  "fine-grained token Issues:read on that repo.",
               )
-              .zipRight(AppMetrics.supportIssueDedup(DedupOutcome.ScanError.label))
-              .as(None)
+              .zipRight(scanFailed(DedupReason.Permission))
           else
             ZIO
               .logWarning(
-                s"github duplicate scan filled its $DuplicateScanPageSize-issue page — older " +
-                  s"open `$SupportLabel` issues were NOT considered; prune the label",
+                s"github duplicate scan failed: HTTP $status (${resp.body().take(300)}) — filing " +
+                  "WITHOUT a duplicate check",
               )
-              .when(open.sizeIs >= DuplicateScanPageSize)
-              .zipRight(ZIO.succeed(findDuplicate(title, open)))
-              .tap(m =>
-                AppMetrics.supportIssueDedup(
-                  if m.isDefined then DedupOutcome.Matched.label else DedupOutcome.NoMatch.label,
-                ),
-              )
-        }
+              .zipRight(scanFailed(DedupReason.Transient))
+        else
+          parseOpenIssuesDetailed(resp.body()) match {
+            case ListParse.Unreadable            =>
+              ZIO
+                .logError(
+                  "github duplicate scan returned a 2xx we could not decode — GitHub's " +
+                    "list-issues shape drifted; filing WITHOUT a duplicate check until " +
+                    "GithubIssueClient.ListedIssue is updated",
+                )
+                .zipRight(scanFailed(DedupReason.Schema))
+            case ListParse.Parsed(open, decoded) =>
+              // `decoded` is the PRE-filter count: a full page containing one PR would otherwise
+              // never trip this, and silently dropping older issues is the failure it guards.
+              ZIO
+                .logWarning(
+                  s"github duplicate scan filled its $DuplicateScanPageSize-issue page — older " +
+                    s"open `$SupportLabel` issues were NOT considered; prune the label",
+                )
+                .when(decoded >= DuplicateScanPageSize)
+                .zipRight(ZIO.succeed(findDuplicate(title, open)))
+                .tap(m =>
+                  AppMetrics.supportIssueDedup(
+                    if m.isDefined then DedupOutcome.Matched.label else DedupOutcome.NoMatch.label,
+                    DedupReason.None.label,
+                  ),
+                )
+          }
       }.catchAll(e =>
         ZIO
           .logWarning(
             s"github duplicate scan errored: ${e.getMessage} — filing WITHOUT a duplicate check",
           )
-          .zipRight(AppMetrics.supportIssueDedup(DedupOutcome.ScanError.label))
-          .as(None),
+          .zipRight(scanFailed(DedupReason.Transient)),
       )
 
     def fileIssue(reqRaw: IssueFileRequest): UIO[IssueOutcome] = {

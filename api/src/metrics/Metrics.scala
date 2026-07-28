@@ -552,15 +552,19 @@ object MetricGuard {
     "support_ai_draft_total"                        -> Set("outcome", "reason"),
     "support_agent_action_total"                    -> Set("op", "outcome"),
     // #2458 — the search-before-file duplicate check that runs on EVERY issue filing.
-    // `support_issue_dedup_total{outcome}`: matched (an already-open `support-agent` issue covers
-    // this topic, so nothing was created and the customer got that issue's link) | no_match (we
-    // looked and filed) | scan_error (the list-issues GET failed or was unreadable, so we FILED
-    // WITHOUT CHECKING — dedup is best-effort and must never block a filing). `scan_error` is the
-    // one that never self-heals on its own: a persistent rate is the bot token losing Issues:read,
-    // or GitHub's list shape drifting, and the symptom is duplicates coming back with nothing else
-    // to show for it. Each `scan_error` is also logged at WARN naming the cause. Bounded enum,
-    // never an issue number / title / per-thread label.
-    "support_issue_dedup_total"                     -> Set("outcome"),
+    // `support_issue_dedup_total{outcome,reason}`. outcome ∈ matched (an already-open
+    // `support-agent` issue covers this topic, so nothing was created and the customer got that
+    // issue's link) | no_match (we looked and filed) | scan_error (we could NOT look, so we FILED
+    // WITHOUT CHECKING — the scan is fail-open and must never block a filing).
+    // `reason` attributes a scan_error on the same config-vs-transient line #2416 and #2430 draw,
+    // and it is load-bearing precisely BECAUSE the check is fail-open: a permanently blind dedup
+    // still files successfully and reads healthy on every other panel, so this label is the only
+    // signal. permission (401/403/404 — the bot token cannot LIST issues on the repo) | schema (a
+    // 2xx body we could not decode — GitHub's list shape drifted) | transient (transport, timeout,
+    // 5xx, other non-2xx) | none (every non-error sample, so no series is missing the label).
+    // permission and schema never self-heal and are each ALSO logged at ERROR with the fix named;
+    // transient is a warning. Bounded enums, never an issue number / title / per-thread label.
+    "support_issue_dedup_total"                     -> Set("outcome", "reason"),
     // #2438 — the dispatcher-level cloud-agent dispatch outcome, additive to (and disambiguating)
     // `support_ai_draft_total`. `support_dispatch_total{outcome,transport}` counts each dispatch
     // ATTEMPT at the transport boundary: outcome ∈ dispatched | error | disabled; transport ∈
@@ -934,9 +938,12 @@ object AppMetrics {
     MetricGuard.counter("support_agent_action_total", Map("op" -> action, "outcome" -> outcome))
 
   // #2458 — the search-before-file duplicate check. Bounded by
-  // `GithubIssueClient.DedupOutcome.label`; never an issue number or title.
-  def supportIssueDedup(outcome: String): UIO[Unit] =
-    MetricGuard.counter("support_issue_dedup_total", Map("outcome" -> outcome))
+  // `GithubIssueClient.DedupOutcome.label` / `.DedupReason.label`; never an issue number or title.
+  def supportIssueDedup(outcome: String, reason: String): UIO[Unit] =
+    MetricGuard.counter(
+      "support_issue_dedup_total",
+      Map("outcome" -> outcome, "reason" -> reason),
+    )
 
   // #2473 — a cloud-agent callback REJECTED at the token check, for BOTH responders on ONE series
   // (emitted from the shared AgentTokenRejection envelope, never a bare Metric.*). Every sample is a

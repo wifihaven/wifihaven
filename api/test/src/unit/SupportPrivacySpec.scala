@@ -61,6 +61,25 @@ object SupportPrivacySpec extends ZIOSpecDefault {
         !SupportPrivacy.scrubForIssue("call them on 555-123-4567").contains("555-123-4567"),
       )
     },
+    test("the date exemption is RANGE-checked, not shape-only — no 4-2-2 escape hatch") {
+      // #2458 review: a shape-only \d{4}-\d{2}-\d{2} would exempt a 16-digit account or card
+      // number chunked 4-2-2, which WAS redacted before the narrowing. This is a compensating
+      // control against untrusted content, so the exemption has to be the narrow rule.
+      val cases = List(
+        "ref 1234-56-78 9012-34-56 on file", // month 56 / day 78 — not a date
+        "ref 2026-13-01 2026-14-02 on file", // plausible shape, impossible month
+        "ref 2026-01-32 2026-01-33 on file", // impossible day
+      )
+      assertTrue(
+        cases.forall(c => SupportPrivacy.scrubForIssue(c).contains("[redacted-number]")),
+      ) &&
+      // …while a real date range still survives, so the tightening did not undo the fix.
+      assertTrue(
+        SupportPrivacy
+          .scrubForIssue("ref 2026-12-31 2027-01-01 on file")
+          .contains("2026-12-31 2027-01-01"),
+      )
+    },
     test("the other PII rules are untouched by the narrowing") {
       val s = SupportPrivacy.scrubForIssue(
         "parent@example.com on aa:bb:cc:dd:ee:ff at 192.168.10.42 / fe80::1",

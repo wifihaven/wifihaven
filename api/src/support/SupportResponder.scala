@@ -535,6 +535,12 @@ final case class SupportResponder(
    * On success it answers the created [[FiledIssue]] (#2461) — the number + public URL the agent
    * may quote to the customer; every failure stays the bounded [[AgentActionResult]] the route maps
    * to a status.
+   *
+   * Both limiters are consumed BEFORE the #2458 duplicate check runs, so an ask that ends up
+   * creating nothing still spends thread and global budget. That is deliberate: what the limiters
+   * bound is the COST an agent can impose — and a deduped ask still costs the GitHub list call —
+   * not the count of issues that reach the repo. Deferring them past the scan would let a looping
+   * agent hammer the GitHub API for free.
    */
   def agentFileIssue(
       bearer: Option[String],

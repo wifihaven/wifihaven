@@ -2,6 +2,7 @@ package wifihaven.api.unit
 
 import wifihaven.api.support.GithubIssueClient
 import wifihaven.api.support.GithubIssueClient.OpenIssue
+import wifihaven.api.support.SupportPrivacy
 import zio.test.*
 
 /**
@@ -73,9 +74,40 @@ object GithubIssueDedupSpec extends ZIOSpecDefault {
         GithubIssueClient.findDuplicate(issue2455, dupes.reverse).map(_.number) == Some(2455),
       )
     },
-    test("a title with no topic words at all never matches anything") {
-      // All stop-words / fragments — there is nothing to compare, so filing is the safe answer.
-      assertTrue(GithubIssueClient.findDuplicate("Bug report", List(open(2455, issue2455))).isEmpty)
+    test("a title with fewer than two topic words never matches anything") {
+      // Nothing to compare, so filing is the safe answer — the asymmetric-cost rule: refusing to
+      // dedup files a second issue, matching wrongly drops a real report.
+      assertTrue(
+        GithubIssueClient.findDuplicate("Bug report", List(open(2455, issue2455))).isEmpty,
+        GithubIssueClient.findDuplicate("Crash", List(open(2460, "Crash"))).isEmpty,
+      )
+    },
+    test("the scrubber's own [redacted-*] words are never topic words") {
+      // Titles reach the matcher AFTER SupportPrivacy.scrubForIssue, so a title that carried PII
+      // arrives as "… [redacted-email]". If those placeholder words counted as topic words, two
+      // unrelated reports whose only surviving words were placeholders would match EXACTLY — the
+      // second customer's genuine report silently dropped and pointed at something unrelated,
+      // which is worse than the duplicate this whole feature prevents (#2458 review).
+      val a = SupportPrivacy.scrubForIssue("Issue for alice@example.com")
+      val b = SupportPrivacy.scrubForIssue("Bug: bob@example.com")
+      assertTrue(
+        // Precondition: both really were scrubbed, so this is testing the real input shape.
+        a.contains("[redacted-email]"),
+        b.contains("[redacted-email]"),
+        GithubIssueClient.titleTokens(a).isEmpty,
+        GithubIssueClient.findDuplicate(b, List(open(2455, a))).isEmpty,
+        // And the placeholder does not inflate a real comparison either.
+        !GithubIssueClient.titleTokens("device aa:bb:cc:dd:ee:ff").contains("redacted"),
+      )
+    },
+    test("placeholder stop-words are DERIVED from SupportPrivacy, not hand-copied") {
+      // A new redaction placeholder must not silently become a topic word.
+      assertTrue(
+        SupportPrivacy.PlaceholderWords.nonEmpty,
+        SupportPrivacy.PlaceholderWords.forall(w =>
+          w.length <= 2 || GithubIssueClient.titleTokens(s"alpha $w beta") == Set("alpha", "beta"),
+        ),
+      )
     },
     test("parseOpenIssues reads GitHub's list body and drops anything outside the public repo") {
       val body   =
@@ -94,6 +126,23 @@ object GithubIssueDedupSpec extends ZIOSpecDefault {
         GithubIssueClient.parseOpenIssues("not json").isEmpty,
         GithubIssueClient.parseOpenIssues("").isEmpty,
         GithubIssueClient.parseOpenIssues("[]").isEmpty,
+      )
+    },
+    test("'unreadable' and 'readable but nothing usable' are DIFFERENT — they meter differently") {
+      // The caller meters an unreadable body as a never-self-healing `schema` scan_error into an
+      // expect-0 panel. Reconstructing that from `open.isEmpty` would report a perfectly good scan
+      // — e.g. a `support-agent` label applied to a PULL REQUEST, whose /pull/ url is filtered —
+      // as a schema drift (#2458 review). `decoded` is also the PRE-filter count, so a full page
+      // holding one PR still trips the page-full warning.
+      import GithubIssueClient.ListParse
+      val onlyAPr =
+        """[{"number":2456,"html_url":"https://github.com/wifihaven/wifihaven/pull/2456",
+          | "title":"a pull request"}]""".stripMargin
+      assertTrue(
+        GithubIssueClient.parseOpenIssuesDetailed("not json") == ListParse.Unreadable,
+        GithubIssueClient.parseOpenIssuesDetailed("") == ListParse.Unreadable,
+        GithubIssueClient.parseOpenIssuesDetailed("[]") == ListParse.Parsed(Nil, 0),
+        GithubIssueClient.parseOpenIssuesDetailed(onlyAPr) == ListParse.Parsed(Nil, 1),
       )
     },
   )

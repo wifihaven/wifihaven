@@ -18,6 +18,21 @@ object SupportPrivacy {
   /** Cap the issue body so a runaway agent can't paste a whole household export into an issue. */
   val MaxIssueBodyChars: Int = 4000
 
+  /**
+   * The replacement strings this scrubber substitutes for redacted PII — the ONE place they are
+   * written. They matter beyond this object because a scrubbed string is what downstream code sees:
+   * [[GithubIssueClient]] compares SANITISED titles when looking for a duplicate, and these words
+   * would otherwise read as ordinary topic words shared by every PII-bearing title (#2458 review).
+   * Anything that tokenises scrubbed text must exclude them, and must do so by reading this list
+   * rather than hand-copying it.
+   */
+  val Placeholders: Set[String] =
+    Set("[redacted-email]", "[redacted-mac]", "[redacted-ip]", "[redacted-number]", "[truncated]")
+
+  /** The bare words inside [[Placeholders]] — what a `[^a-z0-9]+` tokeniser actually sees. */
+  val PlaceholderWords: Set[String] =
+    Placeholders.flatMap(_.toLowerCase.split("[^a-z0-9]+")).filter(_.nonEmpty)
+
   private val Email = "(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}".r
   private val Ipv4  = "\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b".r
   // IPv6: 2+ hextet groups separated by colons (with optional :: compression). Kept conservative to
@@ -44,8 +59,17 @@ object SupportPrivacy {
    */
   private val LongDigits = "\\b\\d(?:[\\s-]?\\d){8,}\\b".r
 
-  /** An ISO calendar date, the shape that motivated the #2458 narrowing. */
-  private val IsoDate = "\\d{4}-\\d{2}-\\d{2}".r
+  /**
+   * An ISO calendar date, the shape that motivated the #2458 narrowing — with the month and day
+   * RANGE-CHECKED, not just shaped.
+   *
+   * The range check is what keeps this an exemption rather than an escape hatch (#2458 review): a
+   * shape-only `\d{4}-\d{2}-\d{2}` would exempt `1234-56-78 9012-34-56`, i.e. a 16-digit account or
+   * card number chunked 4-2-2, which WAS redacted before this PR. Contrived for an honest agent,
+   * but this is a compensating control against untrusted content, so the narrow rule is the right
+   * one. Year is left unconstrained — a 4-digit year carries no PII on its own.
+   */
+  private val IsoDate = "\\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\\d|3[01])".r
 
   /**
    * True when every whitespace-separated part of `run` is an ISO date — e.g. `2026-12-20
