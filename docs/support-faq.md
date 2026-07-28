@@ -39,7 +39,7 @@ a timeline.
 - The limit is **per household**, read from the `households.router_cap` column
   at request time — never a global constant, so raising one household's cap is
   a pure data change:
-  [`api/src/db/EntitlementsRepo.scala:44`](../api/src/db/EntitlementsRepo.scala#L44).
+  [`api/src/db/EntitlementsRepo.scala:44-51`](../api/src/db/EntitlementsRepo.scala#L44-L51).
 - The current plan's value is the column default set in
   [`api/resources/db/migration/V66__beta_requests_billing_entitlements.sql:98`](../api/resources/db/migration/V66__beta_requests_billing_entitlements.sql#L98)
   and applied to every beta-approved household by
@@ -50,7 +50,7 @@ a timeline.
   own limit (it can be higher; the operator household is flagged past the
   public cap by the same migration).
 - Enforcement lives in `POST /api/admin/routers`:
-  [`api/src/routes/RouterRoutes.scala:247-249`](../api/src/routes/RouterRoutes.scala#L247-L249)
+  [`api/src/routes/RouterRoutes.scala:245-249`](../api/src/routes/RouterRoutes.scala#L245-L249)
   counts the household's existing routers and fails with
   `ApiError.Forbidden("your plan includes N router(s)")` — mapped to HTTP 403 by
   [`ErrorMapper.scala:31`](../api/src/routes/ErrorMapper.scala#L31) and surfaced as

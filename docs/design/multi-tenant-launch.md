@@ -510,7 +510,7 @@ subscription's Price/Product, not from a global constant."*
   household runs multiple routers (pricing §1: multi-router ships
   internal-only at launch).
 - `POST /api/admin/routers`
-  ([`RouterRoutes.scala:215`](../../api/src/routes/RouterRoutes.scala))
+  ([`RouterRoutes.scala:216`](../../api/src/routes/RouterRoutes.scala#L216))
   counts the household's existing routers and rejects creation past the cap
   with a clear "your plan includes N router(s)" error. (Baseline before
   #2134: no cap enforcement existed at all — the 2026-07-08 survey found zero
@@ -519,7 +519,7 @@ subscription's Price/Product, not from a global constant."*
   plan's cap is, that multi-router is a plan limit rather than a technical one,
   and that raising it is a manual operator change today — is written for
   support to quote in
-  [`docs/support-faq.md`](../support-faq.md) (#2499).
+  [`docs/support-faq.md`](../support-faq.md#can-i-add-another-router) (#2499).
 - A small `Entitlements` accessor (household → caps) is the seam: the later
   multi-home tier becomes "add a second Price + raise the cap for households
   on it" (pricing §7), and the reserved future axes — retention length (the
