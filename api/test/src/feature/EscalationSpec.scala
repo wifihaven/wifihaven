@@ -260,7 +260,7 @@ object EscalationSpec
     emails.filter(_.to == OperatorAddress)
 
   def spec = suite("escalations reach a human (#2437)")(
-    // ── PRESS ────────────────────────────────────────────────────────────────
+    // ── STRUCTURAL (channel-agnostic) ────────────────────────────────────────
     test(
       "#2480: there is exactly ONE EscalationKind, so a per-inbound notice cannot be expressed",
     ) {
@@ -280,6 +280,7 @@ object EscalationSpec
         EscalationKind.label(EscalationKind.Escalated) == "escalated",
       )
     },
+    // ── PRESS ─────────────────────────────────────────────────────────────────────
     test("an accepted inbound press email does NOT email the operator (#2480)") {
       // #2480: routine press traffic is monitored at `/press` — the #2296 correspondence log
       // (`web/src/pages/PressPage.tsx` over `GET /api/press/messages`), not the operator's inbox.

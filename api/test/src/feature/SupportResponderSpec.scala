@@ -307,13 +307,17 @@ object SupportResponderSpec
       s""""customer":{"id":"c_new","externalId":null$emailJson}}}}"""
   }
 
-  // #2471 — OUR OWN outbound EMAIL reply, as Plain actually delivers it: `thread.email_sent`, the
-  // email-channel twin of `thread.chat_sent`. This is the shape that fired on staging (2026-07-26)
-  // once the responder started answering cold email, and it is the one the loop guard had never been
-  // exercised against: the reply that reaches the customer must NEVER come back round as a new
-  // inbound. It carries a FULL body (`email.textContent`) and — unlike a cold inbound — a RESOLVABLE
-  // `customer.externalId`, so the event type / actor are the only things standing between it and a
-  // dispatch. `actorType` is overridable so a spec can prove the two guard layers are INDEPENDENT.
+  // #2403/#2404 — OUR OWN outbound EMAIL reply, as Plain actually delivers it: `thread.email_sent`,
+  // the email-channel twin of `thread.chat_sent`. This is the shape that fired on staging
+  // (2026-07-26, 13:37:47) once the responder started answering cold email. The guard HELD there —
+  // the #2335 validation log records `thread.email_sent → skipped_not_inbound` — so what this pins
+  // is a COVERAGE GAP, not a regression: `thread.chat_sent` has had a test since #2403 and the email
+  // twin never did. (Deliberately NOT attributed to #2471, which is the unrelated "Plain workspace
+  // has email sending DISABLED" outcome-attribution bug, pinned separately further down this file.)
+  //
+  // It carries a FULL body (`email.textContent`) and — unlike a cold inbound — a RESOLVABLE
+  // `customer.externalId`, so the event type and the actor are the only things standing between it
+  // and a dispatch. Both are overridable so a spec can drive each guard layer in isolation.
   //
   // Mirrors Plain's real envelope (core-api.uk.plain.com/webhooks/schema/latest.json) — do NOT
   // "simplify" it: the hand-invented shape the pre-#2403 fixtures used matched the buggy parser and
@@ -323,10 +327,6 @@ object SupportResponderSpec
       threadId: String,
       text: String,
       actorType: String = "user",
-      // Overridable ONLY so a test can prove the fixture is otherwise dispatch-worthy — flipping
-      // this to `thread.email_received` (with a customer actor) must DISPATCH, which is what makes
-      // the negative assertions on the `_sent` shape evidence of the guard rather than of an inert
-      // fixture. A red-check caught exactly that vacuity while writing these.
       eventType: String = "thread.email_sent",
   ): String = {
     val extId = tenant.map(t => s""""$t"""").getOrElse("null")
@@ -526,13 +526,23 @@ object SupportResponderSpec
         dispatches <- stubs.dispatch.dispatches.get
       } yield assertTrue(status == Status.Ok, dispatches.isEmpty)
     },
-    test("#2471 loop guard: our own EMAIL reply (thread.email_sent) is NEVER re-dispatched") {
-      // The staging regression this pins (2026-07-26, #2471). The chat-channel loop guard had a
-      // test; the EMAIL channel did not, and once the responder began answering cold email the
-      // reply that actually reached the customer came back as `thread.email_sent` — a fully
-      // resolvable, fully bodied event. Only the event-type/actor guard stops it becoming an
-      // infinite reply loop, so pin it on the same footing as the chat case: a household that
-      // resolves, a body that would otherwise dispatch, and NOTHING allowed to happen.
+    test("#2403 loop guard (EMAIL channel): a thread.email_sent reply is NEVER re-dispatched") {
+      // The coverage gap this closes. `thread.chat_sent` has had a test since #2403; the EMAIL
+      // channel never did, and once the responder began answering cold email the reply that
+      // actually reached the customer came back as `thread.email_sent` — a fully resolvable, fully
+      // bodied event. The guard held on staging (#2335, 13:37:47 → `skipped_not_inbound`), so
+      // nothing regressed; it was simply untested. Pin it on the same footing as the chat case: a
+      // household that resolves, a body that would otherwise dispatch, NOTHING allowed to happen.
+      //
+      // TWO `_sent` variants are driven, because the guard is two independent checks and the
+      // realistic payload satisfies neither:
+      //   - `actorType = "user"` — the REAL staging shape (our reply is authored by us);
+      //   - `actorType = "customer"` — the same outbound event with the actor guard SATISFIED, so
+      //     the event-type allowlist is the sole thing refusing it.
+      // The second is what gives this test mutation-sensitivity: widening
+      // `PlainWebhook.InboundCustomerEventTypes` to admit `thread.email_sent` turns it red. Without
+      // it the test passes with the allowlist widened, guarded only by the actor check — a
+      // red-check caught exactly that while writing this.
       for {
         _               <- cleanDb
         hhRepo          <- ZIO.service[HouseholdRepo]
@@ -548,14 +558,23 @@ object SupportResponderSpec
         // Both seams: the ROUTE (Plain must always get its 200 so it stops retrying) and the
         // responder (the `support_ai_draft_total{outcome}` label — the only thing that can tell a
         // deliberate skip from a silent swallow, since the status is 200 either way).
-        status     <- postWebhook(routes, body, Some(sign(body)))
-        outcome    <- stubs.responder.handleWebhook(body, Some(sign(body)))
-        dispatches <- stubs.dispatch.dispatches.get
-        threads    <- stubs.plain.threads.get
-        // POSITIVE CONTROL — the same household, thread and body, differing ONLY in that this is a
-        // genuine customer inbound. It DISPATCHES, which is what makes the assertions above
-        // evidence of the loop guard rather than of an inert fixture. Without this, the test still
-        // passes when the guard is removed (a red-check proved exactly that).
+        status  <- postWebhook(routes, body, Some(sign(body)))
+        outcome <- stubs.responder.handleWebhook(body, Some(sign(body)))
+        // The SAME outbound event with the actor guard satisfied — the event-type allowlist is now
+        // the only thing refusing it, so this is the assertion that goes red if the allowlist is
+        // widened to admit `thread.email_sent`.
+        asCustomer = emailSentPayload(
+          Some(hh.value),
+          "th_email_loop_actor_ok",
+          "Yes — your plan covers one router. Reply here if you need a hand.",
+          actorType = "customer",
+        )
+        oAsCustomer <- stubs.responder.handleWebhook(asCustomer, Some(sign(asCustomer)))
+        dispatches  <- stubs.dispatch.dispatches.get
+        threads     <- stubs.plain.threads.get
+        // POSITIVE CONTROL — same household and body, but a genuine customer INBOUND
+        // (`thread.email_received`). It DISPATCHES, which is what makes the negative assertions
+        // above evidence of the loop guard rather than of an inert fixture.
         control = emailSentPayload(
           Some(hh.value),
           "th_email_loop_control",
@@ -572,13 +591,15 @@ object SupportResponderSpec
         threads.isEmpty,
         outcome == SupportResponder.WebhookOutcome.SkippedNotInbound,
         SupportResponder.WebhookOutcome.label(outcome) == "skipped_not_inbound",
+        // Mutation-sensitive: refused on the EVENT TYPE alone.
+        oAsCustomer == SupportResponder.WebhookOutcome.SkippedNotInbound,
       ) && assertTrue(
         oControl == SupportResponder.WebhookOutcome.Dispatched,
         afterDispatches.size == 1,
         afterDispatches.head._1.threadId == "th_email_loop_control",
       )
     },
-    test("#2471 loop guard: the two layers are INDEPENDENT — either one alone stops the loop") {
+    test("#2403 loop guard: the two layers are INDEPENDENT — either one alone stops the loop") {
       // The guard is deliberately two checks (`PlainWebhook.InboundCustomerEventTypes` and
       // `actorType == "customer"`). If either silently became load-bearing on its own, the other
       // could rot unnoticed until a workspace subscribed to a new event type. So drive each half
@@ -616,7 +637,7 @@ object SupportResponderSpec
         dispatches.isEmpty,
       )
     },
-    test("#2471: the inbound allowlist admits NO outbound (_sent) event type, by construction") {
+    test("#2403: the inbound allowlist admits NO outbound (_sent) event type, by construction") {
       // A structural pin on the allowlist itself, so the guard cannot be widened by accident. The
       // regression class is "a new Plain event type gets added to the set because it looked
       // inbound" — every event the assistant AUTHORS is named `*_sent`, and none may ever be here.

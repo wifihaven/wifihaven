@@ -206,12 +206,21 @@ object PressResponderSpec
       // correspondence log (#2296) and would seed a `pressMessageId` an escalation later re-reads.
       // The EMPTY / whitespace-only header is its own branch (`.map(_.trim).filter(_.nonEmpty)` in
       // PressInbound) and is exercised separately: a header present-but-blank must land on
-      // MissingSignature, never fall through as "no header supplied, carry on".
+      // MissingSignature, never fall through as "no header supplied, carry on". `headerSurvives`
+      // below first proves the transport actually DELIVERS a blank header rather than normalising
+      // it away — without that, the empty case would be byte-identical to the unsigned one and
+      // would pass for the wrong reason.
       for {
         _                  <- cleanDb
         pressLog           <- ZIO.service[PressMessageRepo]
         (routes, stubs, _) <- makeRoutes(liveCfg)
-        body = payload("reporter@example.com", "Requesting comment for a story")
+        body           = payload("reporter@example.com", "Requesting comment for a story")
+        headerSurvives = Request
+          .post(URL.decode("/api/press/inbound").toOption.get, Body.fromString(body))
+          .addHeader(PressInbound.SignatureHeader, "")
+          .headers
+          .get(PressInbound.SignatureHeader)
+          .contains("")
         sUnsigned  <- postInbound(routes, body, None)
         sForged    <- postInbound(routes, body, Some("deadbeef" * 8))
         sEmpty     <- postInbound(routes, body, Some(""))
@@ -222,6 +231,9 @@ object PressResponderSpec
         dispatches <- stubs.dispatch.dispatches.get
         emails     <- stubs.emails.get
       } yield assertTrue(
+        // The blank header really reaches the handler — so `sEmpty` exercises the
+        // present-but-blank branch, not the no-header-at-all one a second time.
+        headerSurvives,
         sUnsigned == Status.BadRequest,
         sForged == Status.BadRequest,
         sEmpty == Status.BadRequest,
@@ -263,13 +275,26 @@ object PressResponderSpec
         )
       }
     },
-    test("press has NO household/data surface: data-shaped agent paths 404 under a VALID token") {
+    test("press exposes EXACTLY three routes — there is no household/data surface to reach") {
       // The trust-model pin (#2203). Press is public and untrusted, so — unlike support — the agent
-      // can do exactly one thing: email the sender back. Absence is asserted with a VALID token in
-      // hand, so a 404 means the route does not exist rather than the caller being unauthenticated.
-      // The control is the last case: `reply` WITHOUT a token 401s on the same live router, which
-      // is what makes the 404s above evidence of absence rather than of a dark install.
-      val dataPaths = List(
+      // can do exactly one thing: email the sender back.
+      //
+      // The load-bearing assertion is STRUCTURAL: enumerate the router's actual route set and pin
+      // it to the three known routes. Probing a list of guessed data-shaped names cannot prove
+      // absence — any future route named something not on the guess list (say
+      // `/api/press/agent/read-household`) would 404 through such a pin untouched. Enumerating the
+      // set instead fails the moment a FOURTH route appears, whatever it is called, which is the
+      // invariant press actually depends on.
+      //
+      // The guessed-name probes below are kept as a readable second layer (they document what must
+      // never exist), and `reply`-without-token 401ing on the same live router is the control that
+      // makes a 404 evidence of ABSENCE rather than of a dark install.
+      val expectedRoutes = Set(
+        "POST /api/press/inbound",
+        "POST /api/press/agent/reply",
+        "POST /api/press/agent/escalate",
+      )
+      val dataPaths      = List(
         "/api/press/agent/household",
         "/api/press/agent/households",
         "/api/press/agent/data",
@@ -297,7 +322,13 @@ object PressResponderSpec
           routes.runZIO(req).map(r => (p, r.status))
         }
         (sReplyNoToken, _) <- agentReply(routes, """{"markdown":"x"}""", None)
+        actualRoutes = routes.routes
+          .map(r => s"${r.routePattern.method.render} ${r.routePattern.pathCodec.render(":", "")}")
+          .toSet
       } yield assertTrue(
+        // The invariant: a FOURTH route — under any name — fails here.
+        actualRoutes == expectedRoutes,
+      ) && assertTrue(
         gets.forall(_._2 == Status.NotFound),
         posts.forall(_._2 == Status.NotFound),
         // Control: a route that DOES exist answers 401, not 404 — so the 404s above are absence.
