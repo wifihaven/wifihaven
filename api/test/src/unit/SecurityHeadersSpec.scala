@@ -77,6 +77,20 @@ object SecurityHeadersSpec extends ZIOSpecDefault {
         .getOrElse("")
       assertTrue(imgSrc.contains("https://static-assets.plain.com"))
     },
+    // #2468: style-src allowed https://fonts.googleapis.com (the Google Fonts CSS) but there was no
+    // font-src at all, so the woff2 files — served from https://fonts.gstatic.com — fell back to
+    // default-src 'self' and were blocked. web/index.html loads Inter from Google Fonts, so the
+    // self-hosted SPA rendered in the system fallback font from #2082 until this pin. Scoped to the
+    // font-src directive: allowing the host under style-src does not let the browser fetch the file.
+    test("font-src allowlists the Google Fonts file host so Inter loads (#2468)") {
+      val fontSrc = SecurityHeaders.ContentSecurityPolicy
+        .split(';')
+        .map(_.trim)
+        .find(_.startsWith("font-src"))
+        .getOrElse("")
+      assertTrue(fontSrc.contains("'self'")) &&
+      assertTrue(fontSrc.contains("https://fonts.gstatic.com"))
+    },
     // Over-broadening guard: Plain documents no iframe, so we must NOT loosen frame-ancestors or add
     // a wildcard for Plain — the additions are exact hosts only.
     test("Plain additions do not introduce wildcards or loosen frame-ancestors (#2240)") {

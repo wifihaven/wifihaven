@@ -19,6 +19,13 @@ const csp = headers.split('\n').find((l) => l.trim().startsWith('Content-Securit
 // The img-src directive on its own, so an img-src pin can't be satisfied by the host appearing in
 // some other directive (script-src/connect-src).
 const imgSrc = csp.split(';').find((d) => d.trim().startsWith('img-src')) ?? ''
+// Same scoping rationale for the directives pinned by #2468: a font host allowed only under
+// style-src does not let the browser fetch the woff2 file. connect-src is extracted to pin the
+// analytics beacon host OUT of it — the auto-injected beacon reports same-origin, so it needs
+// script-src only; see the two beacon tests below for the sourcing.
+const fontSrc = csp.split(';').find((d) => d.trim().startsWith('font-src')) ?? ''
+const scriptSrc = csp.split(';').find((d) => d.trim().startsWith('script-src')) ?? ''
+const connectSrc = csp.split(';').find((d) => d.trim().startsWith('connect-src')) ?? ''
 
 describe('web/public/_headers CSP (Cloudflare Pages copy)', () => {
   it('sets a Content-Security-Policy line', () => {
@@ -27,6 +34,9 @@ describe('web/public/_headers CSP (Cloudflare Pages copy)', () => {
     // becomes vacuous.
     expect(csp).not.toBe('')
     expect(imgSrc).not.toBe('')
+    expect(fontSrc).not.toBe('')
+    expect(scriptSrc).not.toBe('')
+    expect(connectSrc).not.toBe('')
   })
 
   it("keeps default-src 'self' — the load-bearing anti-exfiltration directive", () => {
@@ -73,6 +83,37 @@ describe('web/public/_headers CSP (Cloudflare Pages copy)', () => {
   // wildcard, and frame-ancestors 'none' unchanged. Mixed targets on purpose: the positive is
   // asserted on the extracted directive (a comment must not be able to satisfy it), while the two
   // negatives are asserted on the whole file so a wildcard can't hide in a comment either.
+  // #2468: style-src allowed https://fonts.googleapis.com (the Google Fonts CSS) but there was no
+  // font-src at all, so the woff2 files — served from https://fonts.gstatic.com — fell back to
+  // default-src 'self' and were blocked. web/index.html loads Inter from Google Fonts, so the SPA
+  // rendered in the system fallback font in every environment from #2082 until this pin. Plain's
+  // documented widget CSP omits font-src too but its SDK pulls the same Google Fonts CSS, so the
+  // one gstatic host covers both.
+  it('allowlists the Google Fonts file host so Inter actually loads (#2468)', () => {
+    expect(fontSrc).toContain("'self'")
+    expect(fontSrc).toContain('https://fonts.gstatic.com')
+  })
+
+  // #2468: Cloudflare Pages injects https://static.cloudflareinsights.com/beacon.min.js and
+  // script-src blocked it, so Web Analytics was enabled but collecting nothing. This host is
+  // deliberately NOT in the API copy (api/src/SecurityHeaders.scala): the self-hosted deploy has no
+  // Cloudflare in front of it, so the beacon is never injected there.
+  it('allowlists the Cloudflare Web Analytics beacon script (#2468)', () => {
+    expect(scriptSrc).toContain('https://static.cloudflareinsights.com')
+  })
+
+  // #2468: the beacon host must NOT be in connect-src. Per Cloudflare's Web Analytics FAQ the
+  // report goes to `connect-src 'self'` under AUTOMATIC injection (proxied — which is what these
+  // Pages custom domains are, infra/cloudflare/main.tf) and only to cloudflareinsights.com under
+  // MANUAL embedding; the auto-injected beacon POSTs same-origin to /cdn-cgi/rum, already covered
+  // by 'self'. connect-src is load-bearing against JWT exfiltration, so widening it for a request
+  // the vendor documents will never be made is a real loosening — pinned negative so it does not
+  // creep back in on the "the beacon reports to its own host" assumption (which is wrong).
+  it('does not widen connect-src for the beacon — auto-injected reports are same-origin (#2468)', () => {
+    expect(connectSrc).not.toContain('cloudflareinsights.com')
+    expect(connectSrc).toContain("'self'")
+  })
+
   it('does not introduce wildcards or loosen frame-ancestors for Plain (#2240)', () => {
     expect(csp).toContain("frame-ancestors 'none'")
     expect(headers).not.toContain('*.plain.com')

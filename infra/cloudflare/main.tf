@@ -12,6 +12,22 @@
 #     flip at the registrar is a one-shot manual step).
 #   - The Cloudflare API token (operator creates in the dash; secret stored
 #     in GitHub repo + 1Password).
+#   - Web Analytics on the SPA Pages projects (wifihaven / wifihaven-staging).
+#     It is ON — observed on app-staging, where Pages injected the beacon
+#     (#2468); prod is assumed to match but was not checked. Dashboard state
+#     only: the cloudflare ~> 4.40 provider pinned below does expose
+#     web_analytics_tag / web_analytics_token, but only on
+#     cloudflare_pages_project's `build_config` — the Pages *build* process,
+#     which these Direct Upload projects (no `source` block; CI pushes built
+#     assets via wrangler) never run — and cloudflare_web_analytics_site is
+#     zone/host-scoped RUM (auto_install + zone_tag/host), a different
+#     mechanism from the Pages project toggle. Neither was tested with an
+#     apply. It is load-bearing on the SPA's CSP: with it on, Pages injects
+#     https://static.cloudflareinsights.com/beacon.min.js, which
+#     web/public/_headers must allowlist in script-src or
+#     the beacon is blocked and collects nothing (#2468 — it had been blocked
+#     since #2082). If Web Analytics is ever turned off, drop that host from
+#     the script-src allowlist and its pin in web/src/security-headers.test.ts.
 #
 # State: remote backend on HCP Terraform (the `cloud {}` block below), free
 # tier, with native state locking. The state holds resource IDs but no secrets
