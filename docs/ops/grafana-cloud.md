@@ -219,9 +219,10 @@ below cannot authenticate against the Path B *backend* hosts (`logs-prod-021…`
 `prometheus-prod-67…`), which take basic-auth access-policy credentials — but a
 Viewer **can** run LogQL *queries* against those same datasources *through the
 stack*, because Grafana's Viewer role carries `datasources:query`. Verified
-2026-07-28: a `POST /api/ds/query` against the `grafanacloud-logs` datasource
+2026-07-28: a `POST /api/ds/query` against the datasource with uid
+`grafanacloud-logs` (display name `grafanacloud-wifihaven-logs`)
 with this token returns `status: 200` and real log frames (reproduce it with
-the recipe in Path C below).
+the recipe in the block below).
 
 That probe covers queries only — it says nothing about the label/series
 discovery endpoints (`/loki/api/v1/labels`, `/label/<name>/values`, `/series`)
@@ -296,6 +297,7 @@ edit dashboards out-of-band lets live state diverge from the repo silently.
 | `GRAFANA_AUTH` (CD secret) | Service-account token, dashboard **write** scope — see [`infra/grafana/variables.tf`](../../infra/grafana/variables.tf) | apply Terraform | — (this is the only one that can edit dashboards; CI-only, not for ad-hoc use) |
 
 Separately, `GRAFANA_CLOUD_ANNOTATION_TOKEN` (introduced under
-[*Grafana Cloud stack*](#grafana-cloud-stack) at the top of this file) is a distinct credential scoped to
+[*Grafana Cloud stack*](#grafana-cloud-stack-1) at the top of this file) is a
+distinct credential scoped to
 `annotations:write`, used by `.github/actions/grafana-annotation` to POST deploy
 annotations. Do not reach for it here.
