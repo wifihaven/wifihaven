@@ -207,12 +207,44 @@ curl -sG -u "3272502:$GRAFANA_READ_TOKEN" \
   --data-urlencode 'query=up'
 ```
 
-#### Not covered — dashboards
+### Path C — reading dashboards + alert rules (a different credential)
 
 Cloud access policies gate the **data backends** (Loki / Mimir / Tempo /
-Pyroscope) only; there is no dashboard scope. Reading dashboard JSON from
-`https://wifihaven.grafana.net/api/dashboards/...` needs a separate Grafana
-**service account** token (Administration → Users and access → Service
-accounts). Not provisioned as of 2026-07-27. Note the in-repo dashboards under
-[`deploy/grafana/dashboards/`](../../deploy/grafana/dashboards/) are the source
-of truth anyway — read those rather than the live API.
+Pyroscope) only — there is no dashboard scope, so the Path B token cannot see a
+dashboard. Reading `https://wifihaven.grafana.net/api/...` needs a Grafana
+**service account** token (`glsa_…`), which is a separate credential type
+managed under **Administration → Users and access → Service accounts**.
+
+Provisioned 2026-07-28 as service account `wifihaven-dashboard-read` with the
+**Viewer** role — verified read-only: dashboard reads return `canSave:false,
+canEdit:false, canDelete:false`, and a write returns `403 Permissions needed:
+any of dashboards:create, dashboards:write`. As with Path B the token value is
+**not in this repo**; it lives in the operator's local Claude memory at
+`~/.claude/projects/*wifihaven*/memory/grafana_service_account_token.md`. A
+non-operator must provision their own.
+
+**Keep that account at Viewer.** Dashboards flow one way —
+[`deploy/grafana/dashboards/`](../../deploy/grafana/dashboards/) → Terraform →
+the stack. A token that can edit dashboards out-of-band lets live state silently
+diverge from the repo.
+
+```bash
+GRAFANA_SA_TOKEN=$(awk '/^glsa_/{print; exit}' \
+  ~/.claude/projects/*wifihaven*/memory/grafana_service_account_token.md)
+
+# List dashboards; fetch one by uid; read alert rules
+curl -s -H "Authorization: Bearer $GRAFANA_SA_TOKEN" \
+  "https://wifihaven.grafana.net/api/search?type=dash-db&limit=100"
+curl -s -H "Authorization: Bearer $GRAFANA_SA_TOKEN" \
+  "https://wifihaven.grafana.net/api/dashboards/uid/<uid>"
+curl -s -H "Authorization: Bearer $GRAFANA_SA_TOKEN" \
+  "https://wifihaven.grafana.net/api/v1/provisioning/alert-rules"
+```
+
+Note this token is **not** the one behind the `GRAFANA_CLOUD_ANNOTATION_TOKEN`
+repo secret, which is a different service account scoped to `annotations:write`
+for CI deploy annotations.
+
+**Prefer the in-repo dashboards.** `deploy/grafana/dashboards/` is the source of
+truth for what a panel *should* be. Use this API to see what the stack is
+*actually* serving — i.e. to detect drift — not as the primary source.
