@@ -127,8 +127,12 @@ object SupportResponderSpec
       // #2505: how many effects the responder handed to the `runDetached` seam. Production forks
       // those (`forkDaemon`) so neither the agent session nor the webhook ack waits on Plain; this
       // suite runs them INLINE so its pins don't race the fork — which on its own would make the
-      // routing invisible (a bare call would look identical). Counting the hand-offs pins the
-      // DETACHMENT itself, deterministically and with no wall-clock wait (the #2042 flake class).
+      // ROUTING invisible (a bare call would look identical). So this counts the hand-off, and that
+      // is precisely what it pins: that the mapping goes THROUGH the seam. What the seam MEANS in
+      // production (`forkDaemon`, i.e. the caller does not wait) is single-sourced at its default
+      // and pinned once, end to end, by SupportConsentSpec's promise-gated `productionResume` case
+      // — deliberately not re-pinned here, where it would need a wall-clock wait on a background
+      // fiber (the #2042 flake class).
       detachedRuns: Ref[Int],
   )
 
@@ -186,8 +190,8 @@ object SupportResponderSpec
         // Production forks the mapping write so the webhook fiber never waits on Plain; a spec that
         // asserts the write happened must not race that fork, and inline is deterministic where a
         // wall-clock wait on a background fiber would be the #2042 flake class. The counter is what
-        // keeps the DETACHMENT itself asserted — inline execution alone would make a bare,
-        // un-detached call look identical. The seam changes only WHERE an effect runs, so nothing
+        // keeps the ROUTING asserted — inline execution alone would make a bare, un-detached call
+        // look identical (see `Stubs.detachedRuns`). The seam changes only WHERE an effect runs, so nothing
         // here is weakened: the consent resume, the only other caller, rides a route this suite
         // never wires (`SupportConsentRoutes`) and is pinned in BOTH modes by SupportConsentSpec.
         runDetached = eff => detachedRef.update(_ + 1) *> eff,
@@ -267,8 +271,10 @@ object SupportResponderSpec
         Notifier.logOnly,
         RateLimiter.allowAll,
         tracker,
-        // #2505: same inline seam as `makeRoutes`. This builder drives the LIVE Plain client, so a
-        // forked follow-up here would be a real HTTP call racing the capture server's teardown.
+        // #2505: same inline seam as `makeRoutes`. Defensive today — this builder's cases drive the
+        // agent reply route only, so no `runDetached` call site is reachable from it. It matters the
+        // moment one is: this builder wires the LIVE Plain client, where a forked follow-up would
+        // become a real HTTP call racing the capture server's teardown.
         runDetached = identity,
       )
     } yield SupportAgentRoutes.routes(responder)
