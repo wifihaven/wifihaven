@@ -263,8 +263,9 @@ final case class SupportResponder(
                 // Registered, but no thread to bind or a bodyless new-thread event — the answerable
                 // message rides the following body event (chat_received/email_received).
                 ZIO.succeed(WebhookOutcome.SkippedUnauthenticated)
-            // #2505: the mapping is stamped AFTER the dispatch decision, so a slow Plain write never
-            // sits between the customer's message and the agent session.
+            // #2505: the mapping is stamped AFTER the dispatch decision, so a slow Plain write
+            // never sits between the customer's message and the agent session — and it is bounded,
+            // so it cannot hold the webhook ack open either (see [[mapCustomerToHousehold]]).
             outcome <* mapCustomerToHousehold(hh, household, email)
           case None                  =>
             // Unregistered: reject a NEW thread once; skip continuations (no re-reject backscatter).
@@ -287,18 +288,29 @@ final case class SupportResponder(
    * the same payload the identity path writes — [[PlainCustomerUpsert.forHousehold]] is the one
    * builder, so the two producers cannot drift.
    *
-   * Best-effort and off the critical path, but NOT silent (docs/process/no-dark-by-default.md): the
-   * write is idempotent, `PlainClient.upsertCustomer` never fails, and it meters
-   * `support_customer_upsert_total{outcome,reason}` itself — the SAME series and reason vocabulary
-   * #2435 settled on, so a broken mapping is attributable on the existing panel regardless of which
-   * producer attempted it. Metering here as well would double-count and could only carry the
-   * outcome, never the Plain-side reason.
+   * Best-effort and NOT on the critical path, but also NOT silent
+   * (docs/process/no-dark-by-default.md):
+   *   - it runs AFTER the dispatch decision, so nothing the customer waits on is behind it;
+   *   - it is BOUNDED by [[PlainClient.CustomerMappingTimeout]] with `disconnect`, so a slow Plain
+   *     cannot hold the webhook fiber open past our ack budget and provoke a redelivery — the send
+   *     itself runs on to completion in the background, which is what keeps its attribution intact;
+   *   - it is idempotent and `PlainClient.upsertCustomer` never fails, so it cannot break the
+   *     dispatch or the reply however it goes;
+   *   - and it meters `support_customer_upsert_total{outcome,reason}` from inside `PlainClient` —
+   *     the SAME series and reason vocabulary #2435 settled on, so a broken mapping is attributable
+   *     on the existing panel regardless of which producer attempted it. Metering here as well
+   *     would double-count and could only carry the outcome, never the Plain-side reason. A write
+   *     we stopped WAITING for is the one outcome that bucket cannot carry (it lands late, under
+   *     the same labels), so the abandonment itself is logged.
    *
    * A degraded billing read is warned and degraded to "no plan attributes" rather than skipping the
    * write: the externalId mapping — the load-bearing half — is worth stamping even when the
-   * entitlement context is momentarily unreadable, and the next call repairs the attributes. The
-   * household name is always present here (it came from a resolved row), so the tenant the
-   * membership join targets is always written.
+   * entitlement context is momentarily unreadable, and the next call repairs the attributes.
+   *
+   * NOTE (#2512): the Plain customer is keyed on the HOUSEHOLD id while `role = 'admin'` is not
+   * unique per household, so a second admin emailing support rewrites the household's one customer
+   * onto their address — usually into Plain's workspace-wide email uniqueness, i.e. a non-self-
+   * healing `email_collision`. Pre-existing (the identity path has the same shape); tracked there.
    */
   private def mapCustomerToHousehold(
       hh: HouseholdId,
@@ -326,7 +338,18 @@ final case class SupportResponder(
               founding = billing.map(_.founding),
             ),
           )
-          .unit
+          .disconnect
+          .timeout(PlainClient.CustomerMappingTimeout)
+          .flatMap {
+            case Some(_) => ZIO.unit
+            case None    =>
+              ZIO.logWarning(
+                s"support: Plain customer mapping for household ${hh.value} exceeded " +
+                  s"${PlainClient.CustomerMappingTimeout.toSeconds}s and was left to finish in the " +
+                  "background so the webhook could ack; its outcome still lands on " +
+                  "support_customer_upsert_total",
+              )
+          }
       }
 
   /**
