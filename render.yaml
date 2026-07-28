@@ -248,7 +248,8 @@ services:
       # flipped true at go-live (#2335), AFTER the claude-code-cloud routine secrets below were set —
       # config precedes code; with a flag true and any required key missing the API refuses to boot,
       # bulk-listing the gaps. ISSUE_FILING flipped true on STAGING at #2427; GITHUB_BOT_TOKEN
-      # (fine-grained, Issues:write ONLY, the structural no-PR scope, #2241) MUST be set on the
+      # (fine-grained, Issues ONLY — read+write, since #2458's duplicate check LISTS open issues;
+      # the structural no-PR scope is the absence of contents/pull_requests, #2241) MUST be set on the
       # service FIRST — with the flag true and the token unset the API REFUSES TO BOOT
       # (Config.missingRequiredKeys). Prod stays false until staging is validated AND prod's own
       # bot token is set. NEVER commit values.
@@ -569,8 +570,9 @@ services:
       # #2200: the Claude support responder on PROD (live Plain + prod Managed Agent). #2265: NO
       # dark-by-default — same explicit-flag pattern as staging (flip via PR at go-live, after the
       # secrets are set; a true flag with missing keys refuses to boot, bulk-listing the gaps).
-      # GITHUB_BOT_TOKEN is the fine-grained Issues:write-only support-bot credential (structural
-      # no-PR, #2241). NEVER commit values.
+      # GITHUB_BOT_TOKEN is the fine-grained Issues-ONLY support-bot credential — read+write, since
+      # #2458's duplicate check LISTS open issues (structural no-PR is the absence of
+      # contents/pull_requests, #2241). NEVER commit values.
       - key: WIFIHAVEN_SUPPORT_RESPONDER_ENABLED
         value: "false"
       - key: WIFIHAVEN_SUPPORT_ISSUE_FILING_ENABLED
