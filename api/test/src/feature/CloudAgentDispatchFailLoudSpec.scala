@@ -154,7 +154,7 @@ object CloudAgentDispatchFailLoudSpec
       profRepo    <- ZIO.service[ProfileRepo]
       consentRepo <- ZIO.service[SupportConsentRepo]
       clock       <- ZIO.service[Clock]
-      tracker     <- DispatchTracker.make
+      tracker     <- DispatchTracker.make(DispatchTracker.deadAfterFor(cfg))
       dispatcher = CloudAgentDispatcher.transportFor(cfg) match {
         case CloudAgentDispatcher.Transport.ClaudeCodeCloud =>
           new CloudAgentDispatcher.ClaudeCodeCloudLive(cfg)

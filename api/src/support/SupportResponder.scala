@@ -508,7 +508,7 @@ final case class SupportResponder(
    * reply at another thread or household.
    */
   def agentReply(bearer: Option[String], markdown: String): UIO[AgentActionResult] =
-    withClaims("reply", bearer) { claims =>
+    withClaims(AgentAction.Reply, bearer) { claims =>
       val write = PlainThreadWrite(
         // #2408: the reply posts INTO the customer's existing thread (`claims.threadId`, the
         // customer-visible send via Plain's replyToThread), NOT a new createThread. The thread
@@ -517,9 +517,9 @@ final case class SupportResponder(
         markdown = s"$AiReplyAttribution\n\n$markdown",
       )
       plain.writeThread(write).flatMap {
-        case PlainOutcome.Ok       => done("reply", AgentActionResult.Ok)
-        case PlainOutcome.Disabled => done("reply", AgentActionResult.Disabled)
-        case PlainOutcome.Error    => done("reply", AgentActionResult.Error)
+        case PlainOutcome.Ok       => done(AgentAction.Reply, AgentActionResult.Ok)
+        case PlainOutcome.Disabled => done(AgentAction.Reply, AgentActionResult.Disabled)
+        case PlainOutcome.Error    => done(AgentAction.Reply, AgentActionResult.Error)
       }
     }
 
@@ -538,13 +538,13 @@ final case class SupportResponder(
       title: String,
       body: String,
   ): UIO[Either[AgentActionResult, FiledIssue]] =
-    withClaimsE("issue", bearer) { (claims, _) =>
+    withClaimsE(AgentAction.Issue, bearer) { (claims, _) =>
       // Same short-circuit as dispatch: a thread-capped caller must not drain the global budget.
       issueThreadLimiter.tryAcquire(s"thread:${claims.threadId}").flatMap { threadOk =>
-        if !threadOk then doneE("issue", AgentActionResult.RateLimited)
+        if !threadOk then doneE(AgentAction.Issue, AgentActionResult.RateLimited)
         else
           issueGlobalLimiter.tryAcquire("global").flatMap { globalOk =>
-            if !globalOk then doneE("issue", AgentActionResult.RateLimited)
+            if !globalOk then doneE(AgentAction.Issue, AgentActionResult.RateLimited)
             else
               github.fileIssue(IssueFileRequest(title, body, claims.threadId)).flatMap {
                 // #2461: the created issue's identity rides back out so the agent can offer the
@@ -552,10 +552,10 @@ final case class SupportResponder(
                 case IssueOutcome.Filed(ref) =>
                   // Same `done` metering choke point as every other branch — only the RESULT
                   // differs, so there is still exactly one place the label is derived.
-                  done("issue", issueFiledOutcome(ref))
+                  done(AgentAction.Issue, issueFiledOutcome(ref))
                     .as(Right(FiledIssue(ref.map(_.number), ref.map(_.url))))
-                case IssueOutcome.Disabled   => doneE("issue", AgentActionResult.Disabled)
-                case IssueOutcome.Error      => doneE("issue", AgentActionResult.Error)
+                case IssueOutcome.Disabled   => doneE(AgentAction.Issue, AgentActionResult.Disabled)
+                case IssueOutcome.Error      => doneE(AgentAction.Issue, AgentActionResult.Error)
               }
           }
       }
@@ -584,7 +584,7 @@ final case class SupportResponder(
    * is still required, so this only ever narrows access.
    */
   def agentHousehold(bearer: Option[String]): UIO[Either[AgentActionResult, HouseholdSummary]] =
-    withClaimsE("household_read", bearer) { (claims, now) =>
+    withClaimsE(AgentAction.HouseholdRead, bearer) { (claims, now) =>
       // The token scope is free to check and refuses the COMMON case (most threads never grant), so
       // it short-circuits ahead of the grant lookup — the DB round trip is only spent on a token
       // that actually claims data access.
@@ -606,7 +606,7 @@ final case class SupportResponder(
       AppMetrics
         .supportConsent(if claims.dataAccess then "read_withdrawn" else "read_no_scope") *>
         AppMetrics
-          .supportAgentAction("household_read", "denied")
+          .supportAgentAction(AgentAction.HouseholdRead, "denied")
           .as(Left(AgentActionResult.NoConsent))
     else {
       val hh = claims.householdId
@@ -619,7 +619,7 @@ final case class SupportResponder(
         _         <- ZIO.logInfo(
           s"support: agent household read household=${hh.value} thread=${claims.threadId}",
         )
-        _         <- AppMetrics.supportAgentAction("household_read", "ok")
+        _         <- AppMetrics.supportAgentAction(AgentAction.HouseholdRead, "ok")
       } yield Right(
         HouseholdSummary(
           name = household.map(_.name).getOrElse(""),
@@ -659,9 +659,9 @@ final case class SupportResponder(
    * making the agent retry would only re-page the operator.
    */
   def agentEscalate(bearer: Option[String], note: Option[String]): UIO[AgentActionResult] =
-    withClaims("escalate", bearer) { claims =>
+    withClaims(AgentAction.Escalate, bearer) { claims =>
       escalateThreadLimiter.tryAcquire(s"escalate:${claims.threadId}").flatMap { ok =>
-        if !ok then done("escalate", AgentActionResult.RateLimited)
+        if !ok then done(AgentAction.Escalate, AgentActionResult.RateLimited)
         else escalate(claims, note)
       }
     }
@@ -699,7 +699,7 @@ final case class SupportResponder(
           reference = claims.threadId,
         ),
       )
-      r         <- done("escalate", AgentActionResult.Ok)
+      r         <- done(AgentAction.Escalate, AgentActionResult.Ok)
     } yield r
   }
 
@@ -722,18 +722,18 @@ final case class SupportResponder(
     // The OTHER callback that needs the current time: takes the verified `now` from the token check
     // rather than reading the clock again, so the grant check, the link's expiry, and the token
     // verification all sit on one instant.
-    withClaimsAt("consent_request", bearer) { (claims, now) =>
+    withClaimsAt(AgentAction.ConsentRequest, bearer) { (claims, now) =>
       consentGranted(claims.householdId, claims.threadId, now)
         .flatMap {
           case true  =>
             // Already consented — no prompt, no spam. The next dispatch already carries the scope.
             AppMetrics.supportConsent("request_already_granted") *>
-              done("consent_request", AgentActionResult.Ok)
+              done(AgentAction.ConsentRequest, AgentActionResult.Ok)
           case false =>
             consentThreadLimiter.tryAcquire(s"consent:${claims.threadId}").flatMap { ok =>
               if !ok then
                 AppMetrics.supportConsent("request_rate_limited") *>
-                  done("consent_request", AgentActionResult.RateLimited)
+                  done(AgentAction.ConsentRequest, AgentActionResult.RateLimited)
               else postConsentPrompt(claims, now)
             }
         }
@@ -760,13 +760,14 @@ final case class SupportResponder(
     ) *>
       plain.writeThread(write).flatMap {
         case PlainOutcome.Ok       =>
-          AppMetrics.supportConsent("requested") *> done("consent_request", AgentActionResult.Ok)
+          AppMetrics
+            .supportConsent("requested") *> done(AgentAction.ConsentRequest, AgentActionResult.Ok)
         case PlainOutcome.Disabled =>
           AppMetrics.supportConsent("request_disabled") *>
-            done("consent_request", AgentActionResult.Disabled)
+            done(AgentAction.ConsentRequest, AgentActionResult.Disabled)
         case PlainOutcome.Error    =>
           AppMetrics.supportConsent("request_error") *>
-            done("consent_request", AgentActionResult.Error)
+            done(AgentAction.ConsentRequest, AgentActionResult.Error)
       }
   }
 
@@ -1059,7 +1060,7 @@ final case class SupportResponder(
                 // very failure being tracked. A REJECTED callback never reaches here, so a forged
                 // token cannot close someone else's dispatch.
                 ZIO
-                  .when(DispatchTracker.TerminalActions.contains(action))(
+                  .when(AgentAction.Terminal.contains(action))(
                     dispatchTracker.calledBack(claims.threadId, action, now),
                   )
                   .unit *> f(claims, now)

@@ -114,7 +114,7 @@ object AgentTokenTtlSpec
       plainRec           <- PlainClient.recorder
       ghRec              <- GithubIssueClient.recorder
       dispRec            <- CloudAgentDispatcher.recorder
-      tracker            <- DispatchTracker.make
+      tracker            <- DispatchTracker.make(DispatchTracker.deadAfterFor(supportCfg))
       responder = SupportResponder(
         supportCfg,
         hhRepo,

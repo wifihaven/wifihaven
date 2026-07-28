@@ -92,7 +92,7 @@ object SupportDispatchCompletionSpec
       clock       <- ZIO.service[Clock]
       plainRec    <- PlainClient.recorder
       dispRec     <- CloudAgentDispatcher.recorder
-      tracker     <- DispatchTracker.make
+      tracker     <- DispatchTracker.make(DispatchTracker.deadAfterFor(liveCfg))
       responder = SupportResponder(
         liveCfg,
         hhRepo,
@@ -189,7 +189,11 @@ object SupportDispatchCompletionSpec
     ZIO.serviceWithZIO[Clock](_.instant).map(_.plus(d))
 
   private val PastSlow = DispatchTracker.SlowAfter.plusMinutes(1)
-  private val PastDead = DispatchTracker.DeadAfter.plusMinutes(1)
+
+  // The ERROR tier is the CONFIGURED agent-token TTL (#2472 review): past it a resumed session's
+  // callback would 401, so the dispatch is unconditionally dead. Read from the same config the rig
+  // builds the tracker from — never a literal, which would drift the moment the TTL is retuned.
+  private val PastDead = DispatchTracker.deadAfterFor(liveCfg).plusMinutes(1)
 
   def spec = suite("support dispatch→completion tracking (#2472)")(
     test("an agent reply CLOSES the dispatch: completed is metered and no sweep ever reports it") {
@@ -316,12 +320,17 @@ object SupportDispatchCompletionSpec
         (hh, rig) <- seeded("read")
         _         <- dispatchOne(rig, hh, "th_read")
         token     <- mintToken(hh, "th_read", dataAccess = true)
-        _         <- agentGetHousehold(rig, token)
+        // The status is ASSERTED, not discarded: the pin is "the read reached the token check and
+        // still did not close", so a request that 404'd or was rejected outright would satisfy the
+        // no_callback assertion vacuously. Forbidden (not Ok) because no consent row is seeded —
+        // #2476 re-reads the grant at read time, and that refusal happens AFTER withClaimsE, which
+        // is exactly where a TERMINAL action would have closed the dispatch.
+        read      <- agentGetHousehold(rig, token)
         before    <- counter(DispatchTracker.Outcome.NoCallback)
         now       <- at(PastDead)
         _         <- rig.tracker.sweep(now)
         after     <- counter(DispatchTracker.Outcome.NoCallback)
-      } yield assertTrue(after == before + 1)
+      } yield assertTrue(read == Status.Forbidden, after == before + 1)
     },
     test("a callback REJECTED at the token check closes nothing — the report still fires") {
       for {

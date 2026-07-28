@@ -1,5 +1,6 @@
 package wifihaven.api.support
 
+import wifihaven.api.SupportConfig
 import wifihaven.api.metrics.AppMetrics
 import wifihaven.shared.Clock
 import wifihaven.shared.types.HouseholdId
@@ -42,9 +43,10 @@ import java.time.{Duration, Instant}
  * everything dispatched after it.
  *
  * MEMORY IS BOUNDED BY CONSTRUCTION, not by an eviction policy: dispatch is globally capped at
- * 50/day (`HttpRoutes` `dispatchGlobalLimiter`) and every entry is removed at [[DeadAfter]] (6h) at
- * the latest, so the live map cannot exceed the day's dispatch budget — tens of entries, each a
- * threadId + three small fields.
+ * 50/day (`HttpRoutes` `dispatchGlobalLimiter`) and every entry is removed at
+ * [[DispatchTracker.deadAfterFor]] (the agent-token TTL, 24h by default) at the latest, so the live
+ * map cannot exceed the day's dispatch budget — tens of entries, each a threadId + three small
+ * fields.
  *
  * PII FIREWALL (the #2438 discipline): the only things logged are the Plain threadId, the household
  * id, the bounded transport label, and an age in seconds. Never the customer message, the reply,
@@ -52,7 +54,14 @@ import java.time.{Duration, Instant}
  * `{outcome, transport}` pair — never a thread id, household id, or email
  * (docs/process/instrumentation.md §4).
  */
-final class DispatchTracker private (pending: Ref[Map[String, DispatchTracker.Pending]]) {
+final class DispatchTracker private (
+    pending: Ref[Map[String, DispatchTracker.Pending]],
+    /**
+     * The ERROR threshold — the configured agent-token TTL, NOT a literal of its own. See
+     * [[DispatchTracker.deadAfterFor]] for why the TTL is the right (and only sourced) bound.
+     */
+    val deadAfter: Duration,
+) {
   import DispatchTracker.*
 
   /**
@@ -82,8 +91,8 @@ final class DispatchTracker private (pending: Ref[Map[String, DispatchTracker.Pe
 
   /**
    * Close the outstanding dispatch for `threadId`, if any: the agent came back. Called for TERMINAL
-   * actions only ([[TerminalActions]]) — a household READ or an issue filing proves the session is
-   * alive but produces nothing the customer sees, so it must not mark the turn served.
+   * actions only ([[AgentAction.Terminal]]) — a household READ or an issue filing proves the
+   * session is alive but produces nothing the customer sees, so it must not mark the turn served.
    *
    * This measures "did the session come back", NOT "did the reply land": it fires at token-verify
    * time, before the Plain write. A reply the agent posted and Plain then refused is already loud
@@ -92,7 +101,7 @@ final class DispatchTracker private (pending: Ref[Map[String, DispatchTracker.Pe
    *
    * An UNTRACKED thread is a no-op, not a warning: a second callback on the same thread (reply
    * after escalate is the instructed #2437 sequence), a dispatch outstanding across a restart, or a
-   * callback arriving after the [[DeadAfter]] entry was already reported all land here
+   * callback arriving after the [[deadAfter]] entry was already reported all land here
    * legitimately.
    */
   def calledBack(threadId: String, action: String, now: Instant): UIO[Unit] =
@@ -108,46 +117,59 @@ final class DispatchTracker private (pending: Ref[Map[String, DispatchTracker.Pe
     }
 
   /**
-   * Report the dispatches nobody closed, in two tiers (see [[SlowAfter]] / [[DeadAfter]] for why
+   * Report the dispatches nobody closed, in two tiers (see [[SlowAfter]] / [[deadAfter]] for why
    * one threshold cannot serve both):
    *
    *   - past [[SlowAfter]]: a WARN + `support_dispatch_total{outcome="callback_slow"}`, ONCE per
    *     dispatch (the entry stays — a suspended run legitimately resumes and answers);
-   *   - past [[DeadAfter]]: an attributable ERROR + `{outcome="no_callback"}`, and the entry is
+   *   - past [[deadAfter]]: an attributable ERROR + `{outcome="no_callback"}`, and the entry is
    *     dropped so it is reported exactly once.
+   *
+   * The classification AND the state write happen in ONE atomic `modify`, with the reporting done
+   * afterwards on the values it returned. A read-then-write pair would lose a dispatch recorded in
+   * the gap: [[dispatched]] is itself atomic, so a fresh entry for a thread whose OLD entry the
+   * sweep had already classified would be deleted by a `-- dead.keys` (leaving that session
+   * untracked — the very silence this exists to close) or stamped `slowReported` (permanently
+   * suppressing its WARN). The window was small and dispatch is capped at 50/day, but the class is
+   * removable for free, so it is removed.
    */
   def sweep(now: Instant): UIO[Unit] =
-    pending.get.flatMap { m =>
-      val dead = m.filter { case (_, p) => !ageBelow(p, now, DeadAfter) }
-      val slow = m.filter { case (t, p) =>
-        !dead.contains(t) && !p.slowReported && !ageBelow(p, now, SlowAfter)
+    pending
+      .modify { m =>
+        val dead = m.filter { case (_, p) => !ageBelow(p, now, deadAfter) }
+        val slow = m.filter { case (t, p) =>
+          !dead.contains(t) && !p.slowReported && !ageBelow(p, now, SlowAfter)
+        }
+        val next = (m -- dead.keys).map { case (t, p) =>
+          t -> (if slow.contains(t) then p.copy(slowReported = true) else p)
+        }
+        ((dead, slow), next)
       }
-      ZIO.foreachDiscard(dead) { case (threadId, p) =>
-        AppMetrics.supportDispatch(Outcome.NoCallback, Some(p.transport)) *>
-          ZIO.logError(
-            s"support dispatch NEVER CALLED BACK thread=$threadId household=${p.household.value} " +
-              s"transport=${p.transport} afterSeconds=${ageSeconds(p, now)} — the cloud session " +
-              "accepted the trigger and no /api/support/agent/{reply,escalate,request-consent} " +
-              "call ever arrived, so THIS CUSTOMER GOT NO ANSWER. Read the thread in Plain and " +
-              "reply by hand; nothing retries automatically (#2472)",
-          )
-      } *>
-        ZIO.foreachDiscard(slow) { case (threadId, p) =>
-          AppMetrics.supportDispatch(Outcome.CallbackSlow, Some(p.transport)) *>
-            ZIO.logWarning(
-              s"support dispatch still unanswered thread=$threadId household=${p.household.value} " +
-                s"transport=${p.transport} afterSeconds=${ageSeconds(p, now)} — healthy replies " +
-                s"land in 30-110s. A ${CloudAgentObservability.ClaudeCodeCloud} run suspended on " +
-                "subscription usage limits resumes and answers later (#2473), so this is not yet " +
-                "an error; a sustained rate is",
+      .flatMap { case (dead, slow) =>
+        ZIO.foreachDiscard(dead) { case (threadId, p) =>
+          AppMetrics.supportDispatch(Outcome.NoCallback, Some(p.transport)) *>
+            ZIO.logError(
+              s"support dispatch NEVER CALLED BACK thread=$threadId household=${p.household.value} " +
+                s"transport=${p.transport} afterSeconds=${ageSeconds(p, now)} — the cloud session " +
+                "accepted the trigger and no /api/support/agent/{reply,escalate,request-consent} " +
+                "call ever arrived within the agent-token TTL, so it can no longer answer even if " +
+                "it resumes (its token is expired — it would 401, #2473) and THIS CUSTOMER GOT NO " +
+                "ANSWER. Read the thread in Plain and reply by hand; nothing retries automatically " +
+                "(#2472)",
             )
         } *>
-        pending.update { m0 =>
-          (m0 -- dead.keys).map { case (t, p) =>
-            t -> (if slow.contains(t) then p.copy(slowReported = true) else p)
+          ZIO.foreachDiscard(slow) { case (threadId, p) =>
+            AppMetrics.supportDispatch(Outcome.CallbackSlow, Some(p.transport)) *>
+              ZIO.logWarning(
+                s"support dispatch still unanswered thread=$threadId " +
+                  s"household=${p.household.value} transport=${p.transport} " +
+                  s"afterSeconds=${ageSeconds(p, now)} — healthy replies land in 30-110s. A " +
+                  s"${CloudAgentObservability.ClaudeCodeCloud} run suspended on subscription usage " +
+                  "limits resumes and answers later — possibly the next morning (#2473) — so this " +
+                  "is NOT yet an error and must not be hand-replied blind; a sustained rate is",
+              )
           }
-        }
-    }
+      }
 
   /**
    * The background sweep fiber. One tick per [[SweepInterval]]; the interval only bounds how late a
@@ -183,27 +205,17 @@ object DispatchTracker {
     /** Past [[SlowAfter]] with no terminal callback — may still answer. */
     val CallbackSlow: String = "callback_slow"
 
-    /** Past [[DeadAfter]] with no terminal callback — the customer got nothing. */
+    /** Past [[deadAfterFor]] with no terminal callback — the customer got nothing. */
     val NoCallback: String = "no_callback"
   }
 
   /**
-   * The agent callbacks that CLOSE a dispatch: the ones that put something in front of the customer
-   * or in front of a human. `reply` answers them; `escalate` (#2437) hands the thread to the
-   * operator; `consent_request` (#2419) makes the server post a permission prompt into the thread.
-   *
-   * Deliberately EXCLUDES `household_read` and `issue`: both prove the session is alive, neither
-   * produces anything the customer sees — a session that read the household and then died is
-   * exactly the failure this tracker exists to catch. The strings are the `action` labels
-   * `SupportResponder`'s callbacks already pass to `withClaimsE`, so they cannot drift from the
-   * `support_agent_action_total{op}` vocabulary.
-   */
-  val TerminalActions: Set[String] = Set("reply", "escalate", "consent_request")
-
-  /**
-   * WARN tier. Observed HEALTHY replies during #2335/#2472 validation landed in 30–110s, so 10
-   * minutes is ~5.5× the slowest healthy round trip — comfortably past normal variance while still
-   * being minutes, not hours, after the customer sent their message.
+   * WARN tier. Observed HEALTHY replies during the #2335 go-live validation on staging (2026-07-26)
+   * landed in 30–110s — the sample is written down and caveated at
+   * https://github.com/wifihaven/wifihaven/issues/2472#issuecomment-5108763608, since a threshold
+   * must not rest on a number that exists nowhere citable. 10 minutes is ~5.5× the slowest of those
+   * — comfortably past normal variance while still being minutes, not hours, after the customer
+   * sent their message.
    *
    * This tier is a WARN and not an ERROR because a legitimate, documented pause reaches it: a
    * `claude-code-cloud` routine run can be SUSPENDED on subscription usage limits and resumed later
@@ -215,16 +227,30 @@ object DispatchTracker {
   val SlowAfter: Duration = Duration.ofMinutes(10)
 
   /**
-   * ERROR tier. Sized against the SAME #2473 evidence that sets the token TTL: a resumed run was
-   * observed answering 2.5h after mint, and `AgentTokenTtl` records that "anything under ~6h
-   * reproduces" the expiry failure — i.e. 6h is the repo's already-established upper bound on a
-   * legitimate suspend-and-resume round trip. Past it, no known transport behaviour explains the
-   * silence, so the dispatch is dead and the customer has been waiting hours: ERROR.
+   * ERROR tier — the configured agent-token TTL (`support.agentTokenTtlMinutes`, default 24h via
+   * `AgentTokenTtl.DefaultMinutes`), read from config rather than re-hardcoded here.
    *
-   * It also sits well inside the 24h token TTL, so a session that DOES come back after being
-   * reported can still post its reply — being reported dead never makes the answer un-deliverable.
+   * WHY THE TTL AND NOT A CHOSEN DURATION. The TTL is the one instant at which "no callback yet"
+   * stops being ambiguous. Before it, silence is genuinely undecidable: `AgentTokenTtl`
+   * (api/src/Config.scala) records that a `claude-code-cloud` run can be suspended on subscription
+   * usage limits and that "a pause that starts in the evening resumes the next morning" — an
+   * OVERNIGHT gap is documented, expected behaviour, and the run does answer. AFTER the TTL the
+   * session's token is expired, so a resumed run's callback 401s and is silently lost (that IS
+   * #2473) — the answer can no longer reach the customer no matter what the cloud does. So this is
+   * the earliest point at which the ERROR is unconditionally true.
+   *
+   * It also makes the ERROR's instruction safe. The log tells the operator to reply by hand; if the
+   * threshold sat BELOW the TTL, a run that resumed afterwards would post its own reply into the
+   * same thread and the customer would get two — precisely the duplicate-reply cost this change
+   * cites when declining auto-retry. Past the TTL that race is impossible by construction.
+   *
+   * An earlier draft used a literal 6h, reading `AgentTokenTtl`'s "anything under ~6h reproduces
+   * that" as an upper bound on legitimate latency. It is the opposite — a LOWER bound on the TTL (a
+   * 6h TTL still 401s the resumed run) — and the same paragraph names a >6h legitimate round trip.
+   * The intermediate hours are covered by the [[SlowAfter]] WARN tier, which is what a
+   * minutes-to-hours "still nothing" signal should be.
    */
-  val DeadAfter: Duration = Duration.ofHours(6)
+  def deadAfterFor(cfg: SupportConfig): Duration = cfg.agentTokenTtl
 
   /** How often [[loop]] sweeps. */
   val SweepInterval: Duration = 60.seconds
@@ -238,8 +264,9 @@ object DispatchTracker {
   private def ageBelow(p: Pending, now: Instant, limit: Duration): Boolean =
     Duration.between(p.dispatchedAt, now).compareTo(limit) < 0
 
-  def make: UIO[DispatchTracker] =
-    Ref.make(Map.empty[String, Pending]).map(new DispatchTracker(_))
+  def make(deadAfter: Duration): UIO[DispatchTracker] =
+    Ref.make(Map.empty[String, Pending]).map(new DispatchTracker(_, deadAfter))
 
-  val layer: ULayer[DispatchTracker] = ZLayer.fromZIO(make)
+  val layer: ZLayer[SupportConfig, Nothing, DispatchTracker] =
+    ZLayer.fromZIO(ZIO.serviceWithZIO[SupportConfig](cfg => make(deadAfterFor(cfg))))
 }

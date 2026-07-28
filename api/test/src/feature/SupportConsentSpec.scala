@@ -104,7 +104,7 @@ object SupportConsentSpec
       // #2472: a real tracker — this suite drives dispatch + agent callbacks, so it must have
       // somewhere to record the pairing. Its sweep is never run here; SupportDispatchCompletionSpec
       // owns those assertions.
-      tracker     <- DispatchTracker.make
+      tracker     <- DispatchTracker.make(DispatchTracker.deadAfterFor(cfg))
       // Built with the PRODUCTION defaults, then narrowed: `productionResume = false` swaps in the
       // inline runner so the assertions observe the resume deterministically — no wall-clock waits
       // on a background fiber, per docs/process/testing.md. The seam changes only WHERE it runs.
