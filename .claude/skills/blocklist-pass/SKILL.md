@@ -203,6 +203,72 @@ that edit in the same PR.** If a step above is now wrong, fix the step too.
 
 ## Learnings log (newest first)
 
+- **2026-07-28** (#2503) — **Before trusting a "genuine ad company" name
+  match, check whether a PRIOR pass already added and then reverted that
+  exact apex.** `xlgmedia.com` (XLMedia) read as a clean ad-network add this
+  run — until re-reading #2348's evidence doc showed it was added and then
+  explicitly reverted there: XLMedia's business is substantially
+  gambling-affiliate **content** publishing, not dedicated ad serving, so the
+  apex is content-collateral (same class as `target-video.com`). A
+  membership check against the CURRENT curated list isn't enough to catch
+  this — the apex genuinely isn't in `ads.yml` right now (it was removed),
+  so it silently looks like an open gap. **Grep the category's evidence/*.md
+  history for the candidate apex, not just the current .yml, before
+  re-adding anything that reads as a "obviously legit ad company" match.**
+- **2026-07-28** (#2503) — **A vendor whose core product is anti-adblock /
+  adblock-revenue-recovery (e.g. Admiral / `getadmiral.com`) belongs in the
+  ads category, not a dual-use skip — its function is literally to defeat
+  the user's ad-blocking, i.e. the opposite of our enforcement goal.**
+  Different from consent-management/CX tools (OneTrust, Glance, Viafoura)
+  which are genuinely dual-use and unrelated to ad delivery. `merequartz.com`
+  (an obscured domain independently confirmed to serve Admiral's popup
+  scripts) is the same class — obfuscated naming + confirmed
+  anti-adblock/ad-enabling function → add, same reasoning as the
+  `acobt.tech`/Bigo-Ads precedent (#2348) but for a different function
+  (revenue recovery vs. ad delivery itself).
+- **2026-07-28** (#2503) — **External corroboration (the apex or a subdomain
+  already appearing in the StevenBlack `ads-extended` feed) can clear the
+  "no confirmed company name" bar that a prior pass held a self-descriptive
+  name out on.** #2348 held out `inhousedsp.com` for lack of a confirmed
+  specific company despite the maximally self-descriptive name ("in-house
+  DSP"). This run found `content.inhousedsp.com` already present in
+  `ads-extended` — a second, independently-curated source treating it as
+  ad/tracking infra. Combined with the self-descriptive name, that's enough
+  to add even without a named company behind it. Use this as a tie-breaker
+  for other still-held-out obscure/numeric domains in future passes.
+- **2026-07-28** (#2503) — **Session-recording / heatmap / behavioral
+  analytics tools (Hotjar, Mouseflow, Inspectlet) are curated under `ads`,
+  not skipped as dual-use — but comment/community-engagement platforms
+  (Disqus, Viafoura) and co-browsing/CX tools (Glance) are skipped.** The
+  line: tools whose primary purpose is tracking *for* advertising/monetization
+  purposes go in ads; tools whose primary purpose is a legitimate on-site
+  product feature (comments, screen-share support) stay out even though they
+  also collect behavioral data.
+- **2026-07-28** (#2503) — **A `bet`/`casino`/`gambl` substring match is
+  frequently a false positive for an unrelated ad-tech or SSP company name
+  (`betweendigital.com` = Between Digital, a Moscow SSP; `betrad.com` remains
+  ambiguous, possibly a Betradar/Sportradar-adjacent B2B data domain, not a
+  consumer gambling site) — verify ownership before filing under `gambling`,
+  same discipline as the `ai`/`copilot` substring trap below.
+- **2026-07-28** (#2503) — **A substring match on a category keyword inside
+  an unrelated product name is a recurring false-positive source — always
+  verify identity, never file on the substring alone.** This run:
+  `copilot.money`/`copilotmoney.app` (personal-finance app, matched `copilot`
+  under the `ai` sweep — not an AI chatbot), `steamboat.com`/
+  `steamboatpilot.com` (a Colorado newspaper, matched `steam` under the
+  `games` sweep — not Steam gaming platform), `snapkit.com` (Snap Inc's OWN
+  developer SDK, embedded by unrelated third-party apps for "Login with
+  Snapchat" — dual-use, not itself a social network to block).
+  `redditmedia.com` was the one genuine social-media gap this pass — Reddit's
+  own media CDN, a sibling apex to the already-curated `redd.it`/
+  `redditstatic.com`, same "bare apex vs. companion CDN domain" pattern as
+  the `gemini.google` addition in #2348.
+- **2026-07-28** (#2503) — **adult and gambling can both go a full pass with
+  ZERO traffic-observed apexes for the category at all** (not just zero
+  gaps — zero hits on any keyword sweep, and even the previously-curated
+  `acebet.cc` didn't appear in this week's window). Don't force an add to
+  avoid an empty section; an empty category section is a valid, expected
+  outcome for categories with low weekly incidence.
 - **2026-07-21** (#2348) — **When websearch tooling is available (unlike a
   prior flaky run), re-verify the PREVIOUS pass's "held out — unverified"
   list before scanning for new candidates — it's free signal the last run

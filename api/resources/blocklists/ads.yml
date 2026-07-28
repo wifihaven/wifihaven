@@ -378,3 +378,18 @@ hosts:
   - sparteo.com
   - rixengine.com
   - adtarget.biz
+  # traffic-driven additions (#2503): observed but unblocked ads infra
+  - adsco.re
+  - adsmovil.com
+  - tru-bid.com
+  - adscale.de
+  - oms.live
+  - cxense.com
+  - inhousedsp.com
+  - dataseat.com
+  - feathr.co
+  - freedomadnetwork.com
+  - admanmedia.com
+  - merequartz.com
+  - getadmiral.com
+  - inspectlet.com
