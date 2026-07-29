@@ -7,11 +7,23 @@ package wifihaven.api.support
  * in a public repo. So the issue-filing tool MUST NOT embed raw household-data-query output or
  * obvious PII in an issue body — it files the SYMPTOM / summary only.
  *
- * [[scrubForIssue]] is the structural guardrail: it redacts obvious PII (emails, IPv4/IPv6
+ * [[scrubForIssue]] is the structural guardrail: it redacts obvious PII (URLs, emails, IPv4/IPv6
  * addresses, MAC addresses, long digit runs — phone / account numbers) and caps the body length,
  * regardless of what the agent tried to put there. It is applied at the [[GithubIssueClient]] trait
  * boundary so EVERY path that files an issue is scrubbed — the guarantee doesn't depend on any
- * caller remembering to sanitise. Pure so it is unit-pinnable (the PII-scrub feature test).
+ * caller remembering to sanitise. Pure so it is unit-pinnable (`SupportPrivacySpec`).
+ *
+ * #2454 — what this scrubber CANNOT do, and what covers the gap. The consented read returns a
+ * household NAME and PROFILE names (by product design, typically children's given names). Those are
+ * ordinary words: they match no pattern here and never will, so a regex scrubber can't be the
+ * control for that payload. The actual control is structural and lives in
+ * [[SupportResponder.agentFileIssue]] — a session whose token carries `dataAccess=true` is REFUSED
+ * issue filing outright, so the read and the public publish never compose in one session. This
+ * scrubber remains the second layer, for what a scope-less session can still put in a body.
+ *
+ * #2453 — [[redactConsentLinks]] is the OTHER direction: it strips the consent capability URL out
+ * of text flowing INTO the agent's own prompt. Kept here, next to the issue scrubber, so the two
+ * redaction rules and their deliberately different breadth sit in one file.
  */
 object SupportPrivacy {
 
@@ -29,11 +41,26 @@ object SupportPrivacy {
   val NumberPlaceholder: String    = "[redacted-number]"
   val TruncatedPlaceholder: String = "[truncated]"
 
+  /** #2453 — what a redacted absolute URL becomes on the way OUT to a public issue. */
+  val UrlPlaceholder: String = "[redacted-url]"
+
+  /**
+   * #2453 — what a redacted consent link renders as in the agent's thread transcript. A visible
+   * placeholder, not a silent deletion: the agent must be able to tell that a link WAS there (so it
+   * doesn't re-ask for consent that is already pending) without being able to read it.
+   */
+  val ConsentLinkPlaceholder: String = "[consent link omitted]"
+
   /**
    * Every string [[scrubForIssue]] can inject. The ONE place downstream code should read to know
    * what is scrubber output rather than customer/agent prose. Adding a redaction rule means adding
    * its placeholder here, and the compiler will not remind you — but every consumer reads THIS, so
    * there is one thing to update rather than N.
+   *
+   * #2453's two entries are the first additions since #2458 built this: [[scrubForIssue]] can
+   * inject BOTH (the `Url` rule, and [[redactConsentLinks]] for the scheme-less consent path the
+   * URL rule cannot see), so both belong here or issue-dedup would treat them as topic words.
+   * `SupportPrivacySpec` pins that membership, and the bracket-delimited invariant below with it.
    */
   val Placeholders: Set[String] =
     Set(
@@ -42,6 +69,8 @@ object SupportPrivacy {
       IpPlaceholder,
       NumberPlaceholder,
       TruncatedPlaceholder,
+      UrlPlaceholder,
+      ConsentLinkPlaceholder,
     )
 
   /**
@@ -63,6 +92,38 @@ object SupportPrivacy {
   def stripPlaceholders(text: String): String =
     Placeholders.foldLeft(text)((s, p) => s.replace(p, " "))
 
+  // #2453 — the #2419 consent capability link, `<appBaseUrl>/support/consent?g=<signed grant>`. The
+  // origin is deliberately not pinned (it is per-deployment config) and the scheme is optional, so
+  // a bare `/support/consent?g=…` path matches too. The character class stops at the delimiters a
+  // URL is wrapped in — whitespace, `)`, `]`, `>`, quotes — so a markdown link redacts to
+  // `[Allow me](<placeholder>)` with the surrounding syntax intact.
+  private val ConsentLink =
+    "(?i)(?:https?://[^\\s)\\]>\"']*)?/support/consent\\?g=[^\\s)\\]>\"']*".r
+
+  /**
+   * #2453 — strip #2419 consent links out of `text`.
+   *
+   * The consent prompt is posted into the customer's Plain thread through the SAME machine-user
+   * write path as every AI reply, so since #2430/#2441 it comes back on the timeline and re-enters
+   * the agent's own kickoff as `ai_assistant` history. That defeats the documented anti-phishing
+   * guarantee on [[SupportResponder.agentRequestConsent]] — "the agent supplies no text here, so a
+   * prompt-injected agent cannot craft a phishing message under our attribution" — because a
+   * prompt-injected agent can re-post the REAL, VALID URL wrapped in a pretext of its own. The
+   * premise holds only if the agent never SEES the link.
+   *
+   * Deliberately NARROW, and deliberately not [[scrubForIssue]]: thread history must not be
+   * blanket-URL-scrubbed, because a customer legitimately pastes links the agent needs to read.
+   * Only the capability URL goes.
+   */
+  def redactConsentLinks(text: String): String =
+    ConsentLink.replaceAllIn(text, java.util.regex.Matcher.quoteReplacement(ConsentLinkPlaceholder))
+
+  // #2453 — any absolute http(s) URL. On the way OUT to a PUBLIC repo the bar is the opposite of
+  // the history bar above: an issue filed by the support agent is a SYMPTOM report, and no
+  // legitimate one needs to republish a link the agent read out of a customer's thread — while a
+  // capability URL that survives (the consent link is the known case) is a live credential in a
+  // public issue. So every URL goes, not just the consent shape.
+  private val Url   = "(?i)\\bhttps?://[^\\s)\\]>\"']+".r
   private val Email = "(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}".r
   private val Ipv4  = "\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b".r
   // IPv6: 2+ hextet groups separated by colons (with optional :: compression). Kept conservative to
@@ -118,11 +179,18 @@ object SupportPrivacy {
   }
 
   /**
-   * Redact obvious PII from `text` and cap its length. Order matters: MAC/IPv6 before the generic
-   * digit run so a MAC/address isn't half-eaten by the digit rule.
+   * Redact obvious PII from `text` and cap its length. Order matters: URLs first (so an address or
+   * digit run INSIDE a URL isn't half-eaten, leaving a mangled but still-readable link), then
+   * MAC/IPv6 before the generic digit run so a MAC/address isn't half-eaten by the digit rule.
    */
   def scrubForIssue(text: String): String = {
     var s = text
+    // #2453: absolute URLs FIRST, then the scheme-less consent-path form the URL rule cannot see.
+    // Before the PII rules on purpose: a digit run or IP inside a URL is then removed WITH the URL
+    // rather than half-eaten, which also keeps #2458's ISO-date exemption from having to reason
+    // about dates embedded in query strings.
+    s = Url.replaceAllIn(s, UrlPlaceholder)
+    s = redactConsentLinks(s)
     s = Email.replaceAllIn(s, EmailPlaceholder)
     s = Mac.replaceAllIn(s, MacPlaceholder)
     s = Ipv6.replaceAllIn(s, IpPlaceholder)

@@ -66,19 +66,28 @@ object SupportConsentRoutes {
               .when(post.grant.trim.isEmpty)
             result <- responder.recordConsent(claims, post.grant, post.allow)
             resp   <- result match {
-              case ConsentResult.Granted  =>
+              case ConsentResult.Granted   =>
                 ZIO.succeed(Response.json(ConsentResponse("granted").toJson))
-              case ConsentResult.Revoked  =>
+              case ConsentResult.Revoked   =>
                 ZIO.succeed(Response.json(ConsentResponse("revoked").toJson))
               // Bad / tampered / expired link — actionable for the customer (ask for a new one).
-              case ConsentResult.Invalid  =>
+              case ConsentResult.Invalid   =>
                 ZIO.fail(ApiError.BadRequest("consent link is invalid or expired"))
+              // #2453: a single-use link presented again after its grant ended, or one minted
+              // before the customer withdrew. Same actionable shape, and deliberately the same
+              // amount of detail for both — the metric, not the response, tells the two apart.
+              case ConsentResult.LinkSpent =>
+                ZIO.fail(
+                  ApiError.BadRequest(
+                    "this consent link has already been used — ask the assistant for a new one",
+                  ),
+                )
               // The link belongs to another household. Nothing was written.
-              case ConsentResult.Mismatch =>
+              case ConsentResult.Mismatch  =>
                 ZIO.fail(ApiError.Forbidden("consent link is not for this account"))
               // Dark install: the responder — and so this endpoint — doesn't exist to a caller.
-              case ConsentResult.Disabled => ZIO.fail(ApiError.NotFound("not found"))
-              case ConsentResult.Error    => ZIO.fail(ApiError.Internal("could not record consent"))
+              case ConsentResult.Disabled  => ZIO.fail(ApiError.NotFound("not found"))
+              case ConsentResult.Error => ZIO.fail(ApiError.Internal("could not record consent"))
             }
           } yield resp
           handle.mapError(ErrorMapper.errorToResponse)

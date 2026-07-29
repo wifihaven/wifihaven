@@ -120,7 +120,9 @@ object SupportAgentRoutes {
       // agent supplies no text and names no thread — the server posts its OWN fixed prompt into
       // the token-bound thread. Requesting consent is not having it: this route cannot create a
       // consent record (only the customer's JWT-authenticated POST /api/support/consent can), so
-      // a hijacked agent cannot widen its own data scope.
+      // a hijacked agent cannot widen its own data scope. #2453: the posted link is also stripped
+      // out of the thread history the agent is later shown, and is single-use — so the agent can
+      // neither author the prompt nor re-post the real link under our attribution.
       Method.POST / "api" / "support" / "agent" / "request-consent" ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
@@ -182,6 +184,17 @@ object SupportAgentRoutes {
     // Uniform denial: bad token, expired token, missing header — the caller learns nothing more.
     case AgentActionResult.Denied      => ZIO.fail(ApiError.Unauthorized("unauthorized"))
     case AgentActionResult.NoConsent   => ZIO.fail(ApiError.Forbidden("no data consent"))
+    // #2454: this session holds the consented-read scope, so it cannot file into the PUBLIC repo.
+    // Unlike the token denials this one IS explained — the caller is our own agent, and the message
+    // tells it what to do instead (describe the symptom, or escalate) rather than leaving it to
+    // retry a call that can never succeed for this session.
+    case AgentActionResult.DataSession =>
+      ZIO.fail(
+        ApiError.Forbidden(
+          "issue filing is unavailable in a data-access session — describe the symptom " +
+            "without account data in a later session, or escalate to a human",
+        ),
+      )
     case AgentActionResult.RateLimited => ZIO.fail(ApiError.RateLimited("rate limited"))
     // Dark install: the endpoints don't exist as far as a caller can tell.
     case AgentActionResult.Disabled    => ZIO.fail(ApiError.NotFound("not found"))

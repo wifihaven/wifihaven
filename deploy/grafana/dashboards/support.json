@@ -12,7 +12,7 @@
       }
     ]
   },
-  "description": "WifiHaven Plain support integration (#2199 + #2200, epic #2197): server-signed widget-identity outcomes, household→Plain customer-upsert outcomes, the #2200 Claude responder's webhook outcomes (support_ai_draft_total{outcome,reason} from SupportResponder — dispatched / email_registered_dispatched / email_unregistered_rejected / email_reject_send_failed / skipped_unauthenticated / skipped_not_inbound / rate_limited / invalid_signature / malformed / disabled / error), and the cloud agent's callback actions (support_agent_action_total{op,outcome} — reply / issue / household_read). All labels are bounded enums (never per-email / per-household / per-thread). The responder runs iff the explicit support.responderEnabled flag is set (#2265 — no dark-by-default; a true flag with missing config refuses to boot); disabled installs count outcomes as disabled and dispatch nothing — as does a LIVE responder whose Plain write half is off (plain.writeEnabled=false), which decides a static reject and never sends it (#2471), so outcome=disabled does not by itself mean the responder is dark. See issues #2206, #2200, #2241, #2265. #2419 adds the data-access consent lifecycle (support_consent_total{outcome} — the agent's REQUEST vs the customer's grant/revoke, plus the household-mismatch guard): consent is recorded server-side from the customer's own authenticated action, so the agent can ask but can never self-grant. #2438 adds support_dispatch_total{outcome,transport} — the dispatcher-level cloud-trigger outcome (dispatched / error / disabled) at the transport boundary, isolating a silent non-2xx trigger failure the conflated draft metric can't surface. #2505 makes the email-intake gate a second producer of support_customer_upsert_total, so a customer who only ever emails support is mapped onto their household instead of keeping a null externalId forever. #2435 adds the `reason` label to support_customer_upsert_total (panel 18): the household→Plain customer mapping can be permanently blocked by Plain's workspace-wide customer-email uniqueness, so `reason` separates a self-healed collision (reconciled) from a BROKEN, non-self-healing mapping (email_collision / permission / schema / tenant_missing) and from a transient miss (error). #2437 adds operator_escalation_total{channel=\"support\",kind,outcome} — the operator-notification funnel behind an escalation — plus the support_agent_action_total ops escalate (the agent's structural handoff) and escalate_mark (the SERVER's Plain addLabels write that makes the handoff visible in the inbox).",
+  "description": "WifiHaven Plain support integration (#2199 + #2200, epic #2197): server-signed widget-identity outcomes, household→Plain customer-upsert outcomes, the #2200 Claude responder's webhook outcomes (support_ai_draft_total{outcome,reason} from SupportResponder — dispatched / email_registered_dispatched / email_unregistered_rejected / email_reject_send_failed / skipped_unauthenticated / skipped_not_inbound / rate_limited / invalid_signature / malformed / disabled / error), and the cloud agent's callback actions (support_agent_action_total{op,outcome} — reply / issue / household_read). All labels are bounded enums (never per-email / per-household / per-thread). The responder runs iff the explicit support.responderEnabled flag is set (#2265 — no dark-by-default; a true flag with missing config refuses to boot); disabled installs count outcomes as disabled and dispatch nothing — as does a LIVE responder whose Plain write half is off (plain.writeEnabled=false), which decides a static reject and never sends it (#2471), so outcome=disabled does not by itself mean the responder is dark. See issues #2206, #2200, #2241, #2265. #2419 adds the data-access consent lifecycle (support_consent_total{outcome} — the agent's REQUEST vs the customer's grant/revoke, plus the household-mismatch guard): consent is recorded server-side from the customer's own authenticated action, so the agent can ask but can never self-grant. #2438 adds support_dispatch_total{outcome,transport} — the dispatcher-level cloud-trigger outcome (dispatched / error / disabled) at the transport boundary, isolating a silent non-2xx trigger failure the conflated draft metric can't surface. #2505 makes the email-intake gate a second producer of support_customer_upsert_total, so a customer who only ever emails support is mapped onto their household instead of keeping a null externalId forever. #2435 adds the `reason` label to support_customer_upsert_total (panel 18): the household→Plain customer mapping can be permanently blocked by Plain's workspace-wide customer-email uniqueness, so `reason` separates a self-healed collision (reconciled) from a BROKEN, non-self-healing mapping (email_collision / permission / schema / tenant_missing) and from a transient miss (error). #2437 adds operator_escalation_total{channel=\"support\",kind,outcome} — the operator-notification funnel behind an escalation — plus the support_agent_action_total ops escalate (the agent's structural handoff) and escalate_mark (the SERVER's Plain addLabels write that makes the handoff visible in the inbox). #2453 makes the consent link single-use (a nonce consumed on redemption, V85) and strips it out of every route into the agent's own kickoff, adding the link_spent / link_stale refusal outcomes; #2454 refuses public-issue filing from a session holding the consented-read scope (support_consent_total{outcome=\"issue_refused_data_session\"}, and support_agent_action_total{op=\"issue\",outcome=\"denied_data_session\"}).",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -249,7 +249,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "Data-access consent lifecycle (#2419)",
-      "description": "sum by (outcome) (rate(support_consent_total{env=\"$env\"}[5m])) — the in-conversation data-access consent flow. AGENT side: requested (the agent asked, so the SERVER posted its consent prompt into the thread), request_already_granted, request_rate_limited (per-thread cap), request_disabled / request_error (the Plain write). CUSTOMER side, on POST /api/support/consent: granted, revoked (withdrawn ahead of expiry), revoke_noop (a withdrawal of a grant that was not live — idempotent for the customer, but not a real withdrawal), invalid / expired (a bad or stale consent link), household_mismatch. Bounded enum — never a per-household / per-thread label. Emitted by SupportResponder. Healthy flow: `requested` followed by `granted`; sustained `requested` with no `granted` means customers are not completing the link (check the SPA /support/consent page and that they are signed in). #2476 adds two AGENT-side read outcomes: read_no_scope (a token minted without data scope — the common case) and read_withdrawn (a token that WAS minted with data scope, presented after the customer withdrew: the household read re-reads the grant on every call, so a withdrawal bites on the very next read rather than at token expiry). A rising read_withdrawn means grants are being pulled mid-conversation.",
+      "description": "sum by (outcome) (rate(support_consent_total{env=\"$env\"}[5m])) — the in-conversation data-access consent flow. AGENT side: requested (the agent asked, so the SERVER posted its consent prompt into the thread), request_already_granted, request_rate_limited (per-thread cap), request_disabled / request_error (the Plain write). CUSTOMER side, on POST /api/support/consent: granted, revoked (withdrawn ahead of expiry), revoke_noop (a withdrawal of a grant that was not live — idempotent for the customer, but not a real withdrawal), invalid / expired (a bad or stale consent link), household_mismatch. Bounded enum — never a per-household / per-thread label. Emitted by SupportResponder. Healthy flow: `requested` followed by `granted`; sustained `requested` with no `granted` means customers are not completing the link (check the SPA /support/consent page and that they are signed in). #2476 adds two AGENT-side read outcomes: read_no_scope (a token minted without data scope — the common case) and read_withdrawn (a token that WAS minted with data scope, presented after the customer withdrew: the household read re-reads the grant on every call, so a withdrawal bites on the very next read rather than at token expiry). A rising read_withdrawn means grants are being pulled mid-conversation. #2453/#2454 add three refusal outcomes, all of which write nothing and should read flat zero: link_spent (a single-use consent link re-presented after its grant was withdrawn or lapsed — the replay shape), link_stale (a link minted BEFORE the withdrawal it would otherwise undo), and issue_refused_data_session (a consented-read session refused public-issue filing, because household and profile names are ordinary words no scrubber can catch).",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 32 },
       "id": 10,
@@ -706,6 +706,58 @@
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "expr": "sum(increase(agent_prompt_version_total{env=\"$env\",channel=\"support\",state=~\"stale|unknown\"}[24h]))",
           "legendFormat": "drifted (24h)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Consent links REPLAYED after withdrawal (24h) — expect 0 (#2453)",
+      "description": "sum(increase(support_consent_total{env=\"$env\",outcome=~\"link_spent|link_stale\"}[24h])) — #2453: a well-signed, unexpired consent link presented when it cannot legitimately grant. `link_spent` is a SINGLE-USE link re-presented once its grant was withdrawn or lapsed — the replay shape, and the security-interesting one: the consent prompt is posted through the machine-user write path, so since #2430/#2441 the live link re-enters the agent's own prompt as thread history and could be captured there. `link_stale` is a link minted BEFORE the customer's withdrawal, which must not silently undo it. Neither writes a grant, so a non-zero value is an attempt, not a breach — but it means links are being re-presented and deserves a look at the threads involved. A customer double-clicking Allow does NOT land here, sequentially or concurrently: while the grant is still live a re-presented link is an idempotent no-op counted as `granted` (the repo re-reads liveness after the nonce INSERT serializes, so the loser of a concurrent first redemption still sees the committed grant).",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 120 },
+      "id": 31,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto", "colorMode": "background", "graphMode": "none", "justifyMode": "auto" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(increase(support_consent_total{env=\"$env\",outcome=~\"link_spent|link_stale\"}[24h]))",
+          "legendFormat": "refused links (24h)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Issue filing refused in a data-access session (24h) — expect 0 (#2454)",
+      "description": "sum(increase(support_consent_total{env=\"$env\",outcome=\"issue_refused_data_session\"}[24h])) — #2454: an agent session whose token carries the consented-read scope tried to file a PUBLIC GitHub issue. The two capabilities are refused as a pair, structurally, because the consented read returns the household name and the profile names (by product design, typically children's given names) — ordinary words that match no SupportPrivacy.scrubForIssue pattern and never will. Nothing is published when this fires, and the refusal happens before the rate limiters and before the #2458 duplicate scan. Expect a flat zero: the kickoff prompt tells the agent the endpoint will refuse this token, so a non-zero rate means the prompt and the enforcement disagree — or that something is trying. Cross-check support_agent_action_total{op=\"issue\",outcome=\"denied_data_session\"} on the agent-callback panel.",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 120 },
+      "id": 32,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto", "colorMode": "background", "graphMode": "none", "justifyMode": "auto" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(increase(support_consent_total{env=\"$env\",outcome=\"issue_refused_data_session\"}[24h]))",
+          "legendFormat": "refused filings (24h)",
           "refId": "A"
         }
       ]

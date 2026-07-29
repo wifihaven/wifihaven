@@ -4,6 +4,7 @@ import wifihaven.api.support.{
   AgentDispatch,
   CloudAgentDispatcher,
   PlainThreadMessage,
+  SupportPrivacy,
   SupportResponder,
   ThreadMessageRole,
 }
@@ -247,6 +248,70 @@ object SupportThreadHistorySpec extends ZIOSpecDefault {
         k.contains(SupportResponder.AiReplyAttribution),
         k.contains("No, that isn't what happened."),
       )
+    },
+    // ── 5. #2453: a consent link never re-enters the agent's own context ──────
+    test("a consent link in an earlier AI turn is stripped out of the rendered history") {
+      // The #2419 consent prompt is posted through the SAME machine-user write path as every AI
+      // reply, so it comes back on the timeline as an `ai_assistant` turn. The anti-phishing
+      // guarantee ("the agent supplies no text here, so a prompt-injected agent cannot craft a
+      // phishing message under our attribution") only holds if the agent never SEES the live link:
+      // otherwise it can re-post the real, valid URL wrapped in its own pretext.
+      val prompt =
+        "To answer that I need to look at your account.\n\n" +
+          "**[Allow me to read your account summary]" +
+          "(https://app.wifihaven.net/support/consent?g=g1.aGVsbG8.deadbeef)**\n\n" +
+          "You'll be asked to confirm in your WifiHaven dashboard."
+      val k      = kickoff(dispatch("any update?", List(assistant(prompt))))
+      assertTrue(
+        !k.contains("g1."),
+        !k.contains("/support/consent"),
+        k.contains(SupportPrivacy.ConsentLinkPlaceholder),
+        // the rest of the turn still reads as a turn — we redact the capability, not the record.
+        k.contains("To answer that I need to look at your account."),
+        k.contains("**[Allow me to read your account summary]("),
+      )
+    },
+    test("a consent link a CUSTOMER quotes back is stripped too") {
+      // Direction doesn't matter: the agent must not read a live consent URL from any turn, and a
+      // customer quoting the prompt back is the obvious way around an ai_assistant-only rule.
+      val k = kickoff(
+        dispatch("hi", List(customer("this link is broken: /support/consent?g=g1.abc.def"))),
+      )
+      assertTrue(!k.contains("g1."), k.contains("this link is broken:"))
+    },
+    test("a consent link in the CURRENT customer message is stripped too (review run 1)") {
+      // The history frame is not the only route into the prompt, and it is not even the FIRST one:
+      // a customer who quotes the prompt back arrives as `customerMessage` on the very dispatch
+      // that carries the live link, and only ages into history on the NEXT one. #2460's resume
+      // makes that deterministic rather than incidental — it lifts the customer's last timeline
+      // turn straight into `customerMessage`, bypassing the render-time redaction that same turn
+      // would have got as history.
+      val k = kickoff(
+        dispatch("what is this? https://app.wifihaven.net/support/consent?g=g1.aGVsbG8.deadbeef"),
+      )
+      assertTrue(
+        !k.contains("g1."),
+        !k.contains("/support/consent"),
+        k.contains(SupportPrivacy.ConsentLinkPlaceholder),
+        k.contains("what is this?"),
+      )
+    },
+    test("a consent link in the email SUBJECT is stripped too (review run 1)") {
+      val d = dispatch("see subject").copy(
+        subject = Some("Re: /support/consent?g=g1.abc.def broken"),
+      )
+      val k = kickoff(d)
+      assertTrue(!k.contains("g1."), k.contains("Subject:"), k.contains("broken"))
+    },
+    test("an ordinary URL in the current customer message is NOT stripped") {
+      val k = kickoff(dispatch("my router page https://192.168.1.1/status is down"))
+      assertTrue(k.contains("https://192.168.1.1/status"))
+    },
+    test("an ordinary URL in history is NOT stripped") {
+      // History is deliberately not blanket-URL-scrubbed (that is scrubForIssue's job on the way
+      // OUT to a public repo): the agent needs to read the links a customer actually sends.
+      val k = kickoff(dispatch("hi", List(customer("my router page https://192.168.1.1/status"))))
+      assertTrue(k.contains("https://192.168.1.1/status"))
     },
     test("the kickoff tells the agent the transcript is untrusted data, not instructions") {
       val k = kickoff(dispatch("hi", List(customer("earlier"))))

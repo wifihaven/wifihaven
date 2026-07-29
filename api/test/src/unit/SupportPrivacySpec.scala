@@ -22,10 +22,32 @@ import zio.test.*
  * data in an issue at all), not the only one.
  *
  * A pure function, so a unit spec is the right level (docs/process/testing.md).
+ *
+ * #2453 adds the OTHER two gaps in the same scrubber, pinned in the second group below:
+ *
+ *   - **URLs reached a public issue.** A capability URL that gets into agent context — the #2419
+ *     consent link, which since #2430/#2441 re-enters the agent's own prompt as thread history —
+ *     passed straight through into the PUBLIC `wifihaven/wifihaven` repo. Redacting every absolute
+ *     URL is deliberately blunt: an issue filed by the support agent is a SYMPTOM report, and no
+ *     legitimate one needs to republish a link the agent read out of a customer's thread.
+ *   - **The narrow consent-link primitive**, shared with `CloudAgentDispatcher`'s kickoff render.
+ *     Thread history must NOT be blanket-URL-scrubbed (a customer legitimately pastes links the
+ *     agent needs to read), so the consent-link pattern is its own rule with its own placeholder.
+ *
+ * The two rules compose with #2458's narrowing rather than reopening it: URL redaction runs FIRST,
+ * so a digit run inside a URL is removed with the URL instead of being half-eaten, and the ISO-date
+ * exemption is untouched (the date tests above still run, unchanged).
+ *
+ * #2454's own fix is structural and lives in `SupportResponder.agentFileIssue` (a `dataAccess=true`
+ * session cannot file at all), pinned in feature/SupportConsentSpec — no regex here could cover the
+ * household + profile names that read returns.
  */
 object SupportPrivacySpec extends ZIOSpecDefault {
 
-  def spec = suite("SupportPrivacy.scrubForIssue (#2458)")(
+  private val Link =
+    "https://app.wifihaven.net/support/consent?g=g1.aGVsbG8.deadbeefcafe"
+
+  def spec = suite("SupportPrivacy.scrubForIssue (#2458 / #2453)")(
     test("ordinary calendar dates survive — the #2457 body reads as written") {
       val body     =
         "Customer wants to suspend/loosen this window from 2026-12-20 to 2027-01-05 " +
@@ -95,6 +117,96 @@ object SupportPrivacySpec extends ZIOSpecDefault {
         !s.contains("parent@example.com"),
         !s.contains("192.168.10.42"),
       )
+    },
+
+    // ── #2453: URLs never reach a public issue ────────────────────────────────
+    test("scrubForIssue redacts a consent capability URL out of an issue body") {
+      val body = s"The customer clicked $Link and it 404'd."
+      val out  = SupportPrivacy.scrubForIssue(body)
+      assertTrue(
+        !out.contains("g1."),
+        !out.contains("/support/consent"),
+        out.contains(SupportPrivacy.UrlPlaceholder),
+        // the surrounding prose — the actual symptom — survives.
+        out.contains("The customer clicked"),
+        out.contains("and it 404'd."),
+      )
+    },
+    test("scrubForIssue redacts a URL inside markdown link syntax without eating the sentence") {
+      val out = SupportPrivacy.scrubForIssue(s"see [the link]($Link) please")
+      assertTrue(
+        out.contains("[the link]"),
+        !out.contains("app.wifihaven.net"),
+        out.contains("please"),
+      )
+    },
+    test("scrubForIssue redacts ordinary http/https URLs too, not just consent links") {
+      val out = SupportPrivacy.scrubForIssue(
+        "logs at https://wifihaven.grafana.net/d/abc and http://192.168.1.1/cgi-bin/x",
+      )
+      assertTrue(
+        !out.contains("grafana.net"),
+        !out.contains("cgi-bin"),
+        out.contains(SupportPrivacy.UrlPlaceholder),
+      )
+    },
+    test("#2453 does not reopen #2458: a date next to a URL still survives") {
+      // The two rules have to compose. URL redaction runs first, so it must not drag the
+      // neighbouring date into its match, and the ISO-date exemption must still fire.
+      val out = SupportPrivacy.scrubForIssue("see https://example.test/x on 2026-12-20 please")
+      assertTrue(
+        out.contains("2026-12-20"),
+        out.contains(SupportPrivacy.UrlPlaceholder),
+        !out.contains("[redacted-number]"),
+      )
+    },
+    test("the body cap still applies after URL redaction") {
+      val out = SupportPrivacy.scrubForIssue("x" * (SupportPrivacy.MaxIssueBodyChars + 500))
+      assertTrue(out.endsWith(SupportPrivacy.TruncatedPlaceholder))
+    },
+    test("every placeholder scrubForIssue can inject is registered in Placeholders (#2458)") {
+      // #2458 built `Placeholders` as the ONE list downstream dedup reads to tell scrubber output
+      // from prose, and its own docstring warns the compiler will not remind you to extend it. The
+      // two #2453 placeholders are the first additions since — pin the contract rather than trust
+      // the comment, and pin the bracket-delimited invariant `stripPlaceholders` relies on.
+      assertTrue(
+        SupportPrivacy.Placeholders.contains(SupportPrivacy.UrlPlaceholder),
+        SupportPrivacy.Placeholders.contains(SupportPrivacy.ConsentLinkPlaceholder),
+        SupportPrivacy.Placeholders.forall(p => p.startsWith("[") && p.endsWith("]")),
+        // no placeholder is a substring of another, which is what makes the unordered fold in
+        // stripPlaceholders order-independent.
+        SupportPrivacy.Placeholders.forall(a =>
+          SupportPrivacy.Placeholders.forall(b => a == b || !a.contains(b)),
+        ),
+      )
+    },
+
+    // ── #2453: the narrow consent-link primitive used on thread history ───────
+    test("redactConsentLinks replaces the link with the placeholder") {
+      val out = SupportPrivacy.redactConsentLinks(s"click here: $Link now")
+      assertTrue(
+        out.contains(SupportPrivacy.ConsentLinkPlaceholder),
+        !out.contains("g1."),
+        !out.contains("/support/consent"),
+        out.contains("click here:"),
+        out.contains("now"),
+      )
+    },
+    test("redactConsentLinks stops at the closing paren of a markdown link") {
+      val out = SupportPrivacy.redactConsentLinks(s"**[Allow me]($Link)** and then some")
+      assertTrue(
+        out.contains("**[Allow me]("),
+        out.contains(")** and then some"),
+        !out.contains("g1."),
+      )
+    },
+    test("redactConsentLinks matches a scheme-less consent path too") {
+      val out = SupportPrivacy.redactConsentLinks("go to /support/consent?g=g1.abc.def today")
+      assertTrue(!out.contains("g1."), out.contains("today"))
+    },
+    test("redactConsentLinks leaves ordinary URLs alone — history is not blanket-scrubbed") {
+      val text = "my router page is at https://192.168.1.1/status and it hangs"
+      assertTrue(SupportPrivacy.redactConsentLinks(text) == text)
     },
   )
 }
