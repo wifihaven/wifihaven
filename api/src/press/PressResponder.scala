@@ -1,9 +1,9 @@
 package wifihaven.api.press
 
 import wifihaven.api.PressConfig
+import wifihaven.api.agent.AgentCredential
 import wifihaven.api.auth.RateLimiter
 import wifihaven.api.db.PressMessageRepo
-import wifihaven.api.agent.AgentCredential
 import wifihaven.api.metrics.AppMetrics
 import wifihaven.api.notify.{
   EmailOutcome,

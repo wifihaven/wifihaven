@@ -1,63 +1,91 @@
 package wifihaven.api.agent
 
 import wifihaven.api.metrics.AppMetrics
+import wifihaven.api.press.PressToken
+import wifihaven.api.support.{ConsentGrant, ConsentToken}
 import zio.*
 
 import scala.util.matching.Regex
 
 /**
- * #2508 — the structural guard against a cloud agent leaking its OWN bearer credential into the
- * text it sends out.
+ * #2508 — strip a cloud agent's OWN bearer credential out of the text it authors, before that text
+ * leaves the process, and say so loudly when it happens.
  *
  * WHY it exists. A dispatched support (#2200) or press (#2203) agent holds one credential — the
- * signed session token — for the life of its run, and its reply text is the ONE thing it fully
- * authors. Every other guarantee in both trust models holds structurally rather than by prompt: the
- * reply destination and the household come from the SIGNED token, issue bodies are PII-scrubbed at
- * the [[wifihaven.api.support.GithubIssueClient]] boundary. Credential disclosure was the one leg
- * still resting on the prompt. The #2335 / #2336 hand validations reported "zero token-shaped
- * strings" in the outbound rows, which is a real observation about model behaviour under one attack
- * — not a control. This is the control.
+ * signed session token — for the life of its run, and the reply text is the one thing it fully
+ * authors. Nothing scrubbed it: a hijacked or confused agent could quote its token into a
+ * customer-visible Plain thread, an untrusted journalist's inbox, the public `/press`
+ * correspondence log, or a public GitHub issue. The #2335 / #2336 hand validations reported "zero
+ * token-shaped strings" in the outbound rows, which is a real observation about model behaviour
+ * under one attack — not a control.
  *
- * WHERE THE SEAM SITS, and why not at the transport. The obvious mirror of `scrubForIssue` would be
- * to redact inside [[wifihaven.api.notify.EmailSender]] / [[wifihaven.api.support.PlainClient]].
- * That is the wrong invariant:
+ * WHAT THIS IS, HONESTLY. It is a filter plus a detection signal, NOT a structural guarantee, and
+ * it is deliberately weaker than the other legs of both trust models. The reply destination coming
+ * from the SIGNED token cannot be defeated by the agent at all; a pattern match over agent-authored
+ * text can be — split the token across a newline, base64 it, describe it in words. So the durable
+ * value here is twofold: the accident and the naive attack are stopped, and any attempt at all
+ * becomes an ERROR log plus a sample on a metric whose expected value is zero. Do not read this
+ * file as closing the exfiltration path; read it as making the easy version fail and the attempt
+ * visible.
  *
- *   - `EmailSender` is the SHARED #578 transport. It legitimately carries server-minted secrets —
- *     the password-reset link (`PasswordResetService`) and the beta invite token — so a
- *     transport-level "never email a credential" rule is simply false, and any rule narrow enough
- *     to be true there would have to know which caller it was serving. What IS true is narrower and
- *     specific: *agent-authored* text must never carry the agent's credential.
- *   - So the seam is the agent-facing callback surface itself — the same boundary that verifies the
- *     token. Every path by which agent-authored bytes leave this process goes through one of the
- *     handful of `agent*` methods on [[wifihaven.api.support.SupportResponder]] /
- *     [[wifihaven.api.press.PressResponder]], and each redacts as its FIRST act, so the redacted
- *     text is the only text the rest of the method can reach (the reply body, the `/press`
- *     correspondence-log row, the GitHub issue, and the operator escalation note all share it).
+ * WHERE THE SEAM SITS, and why not at a transport. The obvious mirror of `scrubForIssue` (which
+ * sits inside [[wifihaven.api.support.GithubIssueClient]] so no caller can forget it) would be to
+ * scrub inside [[wifihaven.api.notify.EmailSender]] / [[wifihaven.api.support.PlainClient]]. Two
+ * concrete reasons it is here instead:
  *
- * BOTH channels get the credential rules; they deliberately do NOT share
- * [[wifihaven.api.support.SupportPrivacy.scrubForIssue]]'s PII rules. A support reply legitimately
- * quotes household data back to the household that consented to the read (#2419) — that is the
- * whole point of the consent flow, and scrubbing it would break the product. A press reply must
- * never contain household data at all, but it has no path to any: the press token carries no
- * household and there is no data endpoint on the press side, so the absence is already structural
- * and a PII scrub there would only mangle a journalist's own quoted numbers.
+ *   - **A transport boundary does not cover the sinks.** Agent-authored text reaches outside
+ *     parties through paths that never touch either transport: the `/press` correspondence-log row
+ *     is written through [[wifihaven.api.db.PressMessageRepo]] (a public pull surface at `/press`),
+ *     and an escalation note is folded into a rendered notice body by
+ *     [[wifihaven.api.notify.Notifier]] before any transport sees it. Scrubbing at
+ *     `EmailSender`/`PlainClient` would leave both uncovered; scrubbing where the agent's text
+ *     ENTERS covers every downstream use by construction, because the safe copy is the only copy
+ *     the rest of the method can reach.
+ *   - **Attribution.** The point of firing loudly is knowing WHICH channel and WHICH callback an
+ *     agent tried it on. A transport sees a string and a recipient; it cannot label the sample
+ *     `channel`/`op`, and re-deriving that inside the transport is exactly the kind of
+ *     back-inference this repo rejects elsewhere.
  *
- * PRECISION OVER BREADTH. The grammars below are specific enough that ordinary prose survives
- * byte-identical: a UUID, a `v1.2.3` version string, a base64-ish word, or the word "Bearer" used
- * in a sentence are all left alone (pinned in `ReplyRedactionSpec`). A redactor that mangled real
- * answers would be worse than none — support would route around it.
+ * (What is NOT a reason: "the shared `EmailSender` legitimately carries secrets." It does carry the
+ * password-reset link and the beta invite token, but neither matches the grammars below, so a
+ * transport-level scrub with THESE rules would not have touched them.)
+ *
+ * BOTH channels get the credential rules; neither gets
+ * [[wifihaven.api.support.SupportPrivacy.scrubForIssue]]'s PII rules, for opposite reasons. A
+ * support reply legitimately quotes household data back to the household that consented to the read
+ * (#2419) — that is the whole point of the consent flow, and scrubbing it would break the product.
+ * A press reply must never contain household data at all, but it has no path to any: the press
+ * token carries no household and there is no data endpoint on the press side, so the absence is
+ * already structural and a PII scrub there would only mangle a journalist's own quoted numbers.
+ *
+ * PRECISION OVER BREADTH. A redactor that mangled real answers would be worse than none — support
+ * would route around it. So both rules are narrow, and `ReplyRedactionSpec` pins the false-positive
+ * side as hard as the true-positive side: a UUID, a `v1.2.3` version string, base64-ish words,
+ * `Bearer authentication-based access control`, and a `YOUR_API_KEY_HERE` placeholder all survive
+ * byte-identical.
  */
 object AgentCredential {
 
   /**
-   * The version prefix BOTH agent-token grammars mint with. Single-sourced HERE and referenced by
-   * [[wifihaven.api.support.ConsentToken]] and [[wifihaven.api.press.PressToken]], so the minting
-   * code and this redactor cannot drift apart; `ReplyRedactionSpec` additionally feeds REAL minted
-   * tokens through [[scrub]], so a grammar change that this file did not follow fails there.
+   * Every signed-token version prefix this subsystem mints, DERIVED from the minting objects rather
+   * than re-typed here — so a scheme that bumps its own prefix is followed automatically, and a NEW
+   * scheme is a compile-visible one-line addition instead of a silent gap. (`g1` consent grants are
+   * included because the agent can read a consent link out of the thread history it now sees,
+   * #2441, and can file a public issue.)
+   *
+   * The prefix is the only part of the grammar a constant can single-source; the rest — separators,
+   * base64url payload, hex signature — is re-expressed as a pattern below and CANNOT be kept in
+   * step that way. The real anti-drift guard is `ReplyRedactionSpec`, which feeds tokens from the
+   * actual `mint` calls through [[scrub]]: change the signature algorithm or the separator and that
+   * suite fails, rather than the redactor silently disarming.
    */
-  val Version: String = "v1"
+  val Versions: Set[String] = Set(ConsentToken.Version, PressToken.Version, ConsentGrant.Version)
 
-  /** Hex characters in the HMAC-SHA256 signature both grammars append. */
+  /**
+   * Hex characters in the HMAC-SHA256 signature every one of those schemes appends — 32 bytes, so
+   * 64 hex chars. This is what keeps the pattern off ordinary text: no version string, UUID, or
+   * dotted prose reaches a 64-hex tail.
+   */
   val SignatureHexChars: Int = 64
 
   /**
@@ -78,8 +106,8 @@ object AgentCredential {
   object Reason {
 
     /**
-     * One of our own agent-token grammars — `v1.<b64url>.<64 hex>`. The severe case: the agent
-     * quoted the exact credential that authenticates it to us.
+     * One of our own signed-token grammars. The severe case: the agent quoted a credential this
+     * system minted — for the agent tokens, the very one that authenticates it to us.
      */
     val AgentToken: String = "agent_token"
 
@@ -90,25 +118,36 @@ object AgentCredential {
     val Bearer: String = "bearer"
   }
 
-  /**
-   * BOTH agent-token grammars: `v1.<base64url payload>.<64 lowercase hex>` — the exact shape
-   * `ConsentToken.mint` and `PressToken.mint` emit. The 64-hex tail is what keeps this off ordinary
-   * text: a version string, a UUID, or dotted prose cannot reach it.
-   */
-  private val AgentToken: Regex =
-    raw"\b${Regex.quote(Version)}\.[A-Za-z0-9_-]{8,}\.[0-9a-f]{$SignatureHexChars}\b".r
-
-  /** Shortest bearer value we will treat as a credential rather than as a word. */
+  /** Shortest bearer value we will treat as a credential rather than as a word — see below. */
   private val MinBearerValueChars: Int = 16
 
   /**
-   * A generic bearer credential. Deliberately narrow so prose survives: the value must be at least
-   * [[MinBearerValueChars]] characters of credential alphabet AND contain a non-letter (a digit or
-   * one of `. _ ~ + / = -`). "Bearer authentication over HTTPS" therefore does not match — the word
-   * is too short and is all letters — while `Bearer sk-ant-oat01-9f3a…` does.
+   * `<ver>.<base64url payload>.<64 lowercase hex>` — the exact shape `ConsentToken.mint`,
+   * `PressToken.mint` and `ConsentGrant.mint` emit, with the version alternation derived from
+   * [[Versions]].
+   */
+  private val AgentToken: Regex = {
+    val vers = Versions.toList.sorted.map(Regex.quote).mkString("|")
+    raw"\b(?:$vers)\.[A-Za-z0-9_-]+\.[0-9a-f]{$SignatureHexChars}\b".r
+  }
+
+  /**
+   * A generic bearer credential, deliberately narrow so prose survives. The value must satisfy BOTH
+   * of two independent filters, because either alone over-matches English:
+   *
+   *   - at least [[MinBearerValueChars]] characters of credential alphabet — a floor chosen to sit
+   *     above ordinary words while staying below every credential shape we issue or consume (the
+   *     shortest of those is a 32-hex digest); and
+   *   - at least one DIGIT. This is what keeps hyphenated / dotted / underscored prose out: `Bearer
+   *     authentication-based`, `bearer credentials.Rotate` and a `YOUR_API_KEY_HERE` placeholder
+   *     are all long enough, and all survive because none carries a digit. Real credentials —
+   *     base64url payloads, hex digests, `sk-ant-oat01-…` keys — effectively always do; one that
+   *     did not would still be caught by the token rule above if we minted it.
+   *
+   * Both halves are pinned from both directions in `ReplyRedactionSpec`.
    */
   private val BearerValue: Regex =
-    raw"(?i)\bBearer\s+(?=[A-Za-z0-9._~+/=-]{$MinBearerValueChars,})(?=[A-Za-z]*[0-9._~+/=-])[A-Za-z0-9._~+/=-]+".r
+    raw"(?i)\bBearer\s+(?=[A-Za-z0-9._~+/=-]{$MinBearerValueChars,})(?=[A-Za-z._~+/=-]*[0-9])[A-Za-z0-9._~+/=-]+".r
 
   /** The result of a scrub: the safe text, plus which rules fired (empty ⇒ nothing was changed). */
   final case class Scrubbed(text: String, reasons: List[String]) {
@@ -135,11 +174,14 @@ object AgentCredential {
    * Scrub `text` and, when anything fired, say so LOUDLY: one ERROR log plus
    * `agent_reply_redacted_total{channel,op,reason}`.
    *
-   * ERROR is the right level and cannot be used to flood the operator's log: every caller sits
-   * BEHIND token verification, so only a caller holding a token we minted can reach it — and a run
-   * that quotes its own credential back at us is either hijacked or badly confused. Either way an
-   * operator wants to know. The line carries only the bounded channel / op / reason labels: the
-   * credential itself is never logged, or the alert would become the leak.
+   * ERROR because a run that quotes a credential back at us is either hijacked or badly confused,
+   * and an operator wants to read that thread. It is not reachable by the anonymous internet —
+   * every caller sits behind token verification — but note that is NOT a rate limit: the reply
+   * callback in particular has no limiter, so one compromised session could repeat the attempt. The
+   * counter is therefore the durable signal (a step change in its rate is legible however many
+   * lines were written); the log line is the pointer to go look. Either way it carries only the
+   * bounded channel / op / reason labels — the credential is never logged, or the alert would
+   * become the leak.
    */
   def redact(channel: String, op: String, text: String): UIO[String] = {
     val s = scrub(text)
@@ -147,8 +189,8 @@ object AgentCredential {
       .when(s.fired) {
         ZIO.logError(
           s"$channel: agent $op text carried a CREDENTIAL and was redacted before send " +
-            s"(reasons=${s.reasons.mkString(",")}) — a hijacked or confused agent quoted its own " +
-            s"session token; see #2508",
+            s"(reasons=${s.reasons.mkString(",")}) — a hijacked or confused agent quoted a token " +
+            s"this system minted; see #2508",
         ) *> ZIO.foreachDiscard(s.reasons)(AppMetrics.agentReplyRedacted(channel, op, _))
       }
       .as(s.text)

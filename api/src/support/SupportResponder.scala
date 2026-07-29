@@ -731,8 +731,9 @@ final case class SupportResponder(
 
   /**
    * #2508 — scrub an agent-authored issue title + body of credentials. Both fields go through the
-   * SAME call, so the `rule` labels and the ERROR log are emitted once per field that actually
-   * carried one.
+   * SAME call, so the `reason` labels and the ERROR log are emitted once per field that actually
+   * carried one. The TITLE matters as much as the body: it is what shows in the public issue list
+   * and in every notification GitHub sends.
    */
   private def redactIssueText(title: String, body: String): UIO[(String, String)] =
     for {

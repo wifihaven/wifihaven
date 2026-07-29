@@ -1,6 +1,6 @@
 package wifihaven.api.feature
 
-import wifihaven.api.{PlainConfig, PressConfig, SupportConfig}
+import wifihaven.api.{EmailConfig, PlainConfig, PressConfig, SupportConfig}
 import wifihaven.api.auth.RateLimiter
 import wifihaven.api.db.*
 import wifihaven.api.notify.{EmailSender, Notifier}
@@ -43,11 +43,18 @@ import zio.test.*
  *   - a PRESS reply quoting the agent's own live token reaches the journalist without it — and the
  *     `/press` correspondence log does not record it either;
  *   - a bare `Bearer …` credential is redacted on BOTH channels;
- *   - a support ISSUE body (the PUBLIC GitHub surface) is redacted too;
- *   - a redaction is LOUD — `agent_reply_redacted_total{channel,op,reason}` plus an ERROR log that
- *     does NOT itself quote the credential;
- *   - FALSE POSITIVES: an ordinary reply carrying a UUID, a `v1.2.3` version string, ordinary
- *     base64-ish words and the word "Bearer" in prose survives byte-identical.
+ *   - a support issue TITLE and BODY (the PUBLIC GitHub surface) are redacted too;
+ *   - an escalation NOTE on both channels reaches the operator without the credential — the sink a
+ *     transport-level scrub would have missed, since the note is rendered into a notice body before
+ *     any `EmailSender` sees it;
+ *   - a `g1.` consent-grant link the agent can read out of thread history (#2441) is covered by the
+ *     same rule, because it can be filed into a public issue;
+ *   - a redaction is LOUD on BOTH channels — `agent_reply_redacted_total{channel,op,reason}`, with
+ *     the two rules metering DISTINCT `reason` labels, plus an ERROR log that does NOT itself quote
+ *     the credential;
+ *   - FALSE POSITIVES: an ordinary reply carrying a UUID, a `v1.2.3` version string, base64-ish
+ *     words, `Bearer authentication-based access control` and a `YOUR_API_KEY_HERE` placeholder
+ *     survives byte-identical.
  */
 object ReplyRedactionSpec
     extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task]] {
@@ -64,6 +71,22 @@ object ReplyRedactionSpec
 
   /** What a redacted credential is replaced with — the marker the assertions look for. */
   private val Marker = "[redacted-credential]"
+
+  /**
+   * #2437: the operator mailbox an escalation notice is addressed to. The rigs below wire the REAL
+   * `Notifier.EmailNotifier` over a recording `EmailSender`, so the escalation-note assertions read
+   * the body a live send would carry — the note passes through the notice renderer, which is
+   * exactly the sink a transport-level scrub would have missed.
+   */
+  private val OperatorAddress = "operator@wifihaven.test"
+
+  private val emailCfg = EmailConfig(
+    enabled = true,
+    resendApiKey = "re_test",
+    fromAddress = "alerts@wifihaven.test",
+    operatorAddress = OperatorAddress,
+    appBaseUrl = "https://app.example.test",
+  )
 
   private val supportCfg = SupportConfig(
     responderEnabled = true,
@@ -99,6 +122,7 @@ object ReplyRedactionSpec
       routes: Routes[Any, Response],
       plain: PlainClient.Recorder,
       github: GithubIssueClient.Recorder,
+      emails: Ref[List[EmailSender.Sent]],
       clock: Clock,
   )
 
@@ -109,11 +133,13 @@ object ReplyRedactionSpec
       billRepo    <- ZIO.service[HouseholdBillingRepo]
       devRepo     <- ZIO.service[DeviceRepo]
       profRepo    <- ZIO.service[ProfileRepo]
+      hsRepo      <- ZIO.service[HouseholdSettingsRepo]
       consentRepo <- ZIO.service[SupportConsentRepo]
       clock       <- ZIO.service[Clock]
       plainRec    <- PlainClient.recorder
       ghRec       <- GithubIssueClient.recorder
       dispRec     <- CloudAgentDispatcher.recorder
+      emailRef    <- Ref.make(List.empty[EmailSender.Sent])
       tracker     <- DispatchTracker.make(DispatchTracker.deadAfterFor(supportCfg))
       responder = SupportResponder(
         supportCfg,
@@ -134,11 +160,11 @@ object ReplyRedactionSpec
         RateLimiter.allowAll,
         RateLimiter.allowAll,
         "https://app.example.test",
-        Notifier.logOnly,
+        new Notifier.EmailNotifier(hsRepo, EmailSender.recording(emailRef), emailCfg),
         RateLimiter.allowAll,
         tracker,
       )
-    } yield SupportRig(SupportAgentRoutes.routes(responder), plainRec, ghRec, clock)
+    } yield SupportRig(SupportAgentRoutes.routes(responder), plainRec, ghRec, emailRef, clock)
 
   private final case class PressRig(
       routes: Routes[Any, Response],
@@ -147,21 +173,23 @@ object ReplyRedactionSpec
       clock: Clock,
   )
 
-  private def pressRig: ZIO[PressMessageRepo & Clock, Nothing, PressRig] =
+  private def pressRig: ZIO[PressMessageRepo & HouseholdSettingsRepo & Clock, Nothing, PressRig] =
     for {
       pressLog <- ZIO.service[PressMessageRepo]
+      hsRepo   <- ZIO.service[HouseholdSettingsRepo]
       clock    <- ZIO.service[Clock]
       emailRef <- Ref.make(List.empty[EmailSender.Sent])
       dispRec  <- PressAgentDispatcher.recorder
+      transport = EmailSender.recording(emailRef)
       responder = PressResponder(
         pressCfg,
-        EmailSender.recording(emailRef),
+        transport,
         PressAgentDispatcher.recording(dispRec),
         pressLog,
         clock,
         RateLimiter.allowAll,
         RateLimiter.allowAll,
-        Notifier.logOnly,
+        new Notifier.EmailNotifier(hsRepo, transport, emailCfg),
         RateLimiter.allowAll,
       )
     } yield PressRig(PressAgentRoutes.routes(responder), emailRef, pressLog, clock)
@@ -212,6 +240,10 @@ object ReplyRedactionSpec
 
   private def pressReply(rig: PressRig, token: String, markdown: String): Task[Status] =
     post(rig.routes, "/api/press/agent/reply", s"""{"markdown":${markdown.toJson}}""", token)
+
+  /** The operator-addressed escalation notices out of a recording sender's log. */
+  private def toOperator(emails: List[EmailSender.Sent]): List[EmailSender.Sent] =
+    emails.filter(_.to == OperatorAddress)
 
   private def redactions(channel: String, op: String, reason: String): UIO[Double] =
     Metric
@@ -268,6 +300,9 @@ object ReplyRedactionSpec
         emails.head.htmlBody.contains(Marker),
         // #2296: the correspondence log is a PULL SURFACE at /press — the credential must not be
         // recorded there either.
+        // Non-vacuous: the row EXISTS and carries the marker, so this cannot silently pass on an
+        // empty list if the recording path ever stops writing.
+        logged.exists(_.body.contains(Marker)),
         logged.forall(m => !m.body.contains(token)),
       )
     },
@@ -303,16 +338,19 @@ object ReplyRedactionSpec
     },
 
     // ── The PUBLIC GitHub surface gets the same treatment ─────────────────────
-    test("SUPPORT: an issue body quoting the agent's own token is filed WITHOUT it") {
+    test("SUPPORT: an issue TITLE and BODY quoting the agent's own token are filed WITHOUT it") {
       for {
         _     <- cleanDb
         rig   <- supportRig
         token <- mintSupport(rig.clock, "th_issue")
-        body = s"Blocking fails. Session credential for repro: $token"
+        // The TITLE is the most public field of the most public surface — it shows in the issue
+        // list and in every notification GitHub sends — so it is scrubbed and pinned separately.
+        title = s"Blocking fails (session $token)"
+        body  = s"Blocking fails. Session credential for repro: $token"
         status <- post(
           rig.routes,
           "/api/support/agent/issues",
-          s"""{"title":"Blocking fails","body":${body.toJson}}""",
+          s"""{"title":${title.toJson},"body":${body.toJson}}""",
           token,
         )
         issues <- rig.github.issues.get
@@ -321,10 +359,121 @@ object ReplyRedactionSpec
         issues.size == 1,
         !issues.head.body.contains(token),
         issues.head.body.contains(Marker),
+        !issues.head.title.contains(token),
+        issues.head.title.contains(Marker),
+      )
+    },
+
+    // ── The escalation note — agent-authored text that reaches the OPERATOR ───
+    // The sink a transport-level scrub would have missed: the note is folded into a rendered
+    // notice body by Notifier before any EmailSender sees it.
+    test(
+      "SUPPORT: an escalation note quoting the agent's own token reaches the operator WITHOUT it",
+    ) {
+      for {
+        _     <- cleanDb
+        rig   <- supportRig
+        token <- mintSupport(rig.clock, "th_esc")
+        note = s"Handing over. My session credential is $token if you need it."
+        status <- post(
+          rig.routes,
+          "/api/support/agent/escalate",
+          s"""{"note":${note.toJson}}""",
+          token,
+        )
+        emails <- rig.emails.get
+      } yield {
+        val notices = toOperator(emails)
+        assertTrue(
+          status == Status.Ok,
+          notices.size == 1,
+          !notices.head.htmlBody.contains(token),
+          notices.head.htmlBody.contains(Marker),
+        )
+      }
+    },
+    test(
+      "PRESS: an escalation note quoting the agent's own token reaches the operator WITHOUT it",
+    ) {
+      for {
+        _     <- cleanDb
+        rig   <- pressRig
+        token <- mintPress(rig.clock, "reporter@example.com")
+        note = s"Needs a human. Session credential: $token"
+        status <- post(
+          rig.routes,
+          "/api/press/agent/escalate",
+          s"""{"note":${note.toJson}}""",
+          token,
+        )
+        emails <- rig.emails.get
+      } yield {
+        val notices = toOperator(emails)
+        assertTrue(
+          status == Status.Ok,
+          notices.size == 1,
+          !notices.head.htmlBody.contains(token),
+          notices.head.htmlBody.contains(Marker),
+        )
+      }
+    },
+
+    // ── The consent-grant token the agent can read out of thread history ──────
+    test("SUPPORT: a `g1.` consent-grant link quoted into a reply is redacted too") {
+      for {
+        _      <- cleanDb
+        rig    <- supportRig
+        token  <- mintSupport(rig.clock, "th_grant")
+        // #2441: the agent sees prior thread messages, which include any consent link WE posted.
+        grant  <- rig.clock.instant.map(
+          ConsentGrant.mint(
+            HouseholdId(1L),
+            "th_grant",
+            _,
+            java.time.Duration.ofMinutes(30),
+            SupportTokenSecret,
+          ),
+        )
+        status <- supportReply(rig, token, s"Here is your consent link again: $grant")
+        writes <- rig.plain.threads.get
+      } yield assertTrue(
+        status == Status.Ok,
+        writes.size == 1,
+        !writes.head.markdown.contains(grant),
+        writes.head.markdown.contains(Marker),
       )
     },
 
     // ── A redaction is LOUD ───────────────────────────────────────────────────
+    test("PRESS: a redaction meters the shared series on the press channel and logs an ERROR") {
+      (for {
+        _      <- cleanDb
+        rig    <- pressRig
+        token  <- mintPress(rig.clock, "reporter@example.com")
+        before <- redactions("press", "reply", "agent_token")
+        status <- pressReply(rig, token, s"credential: $token")
+        after  <- redactions("press", "reply", "agent_token")
+        logs   <- ZTestLogger.logOutput
+      } yield {
+        val errors = logs.filter(_.logLevel == LogLevel.Error).map(_.message())
+        assertTrue(
+          status == Status.Ok,
+          after == before + 1,
+          errors.exists(m => m.contains("redacted") && m.contains("press")),
+          logs.forall(e => !e.message().contains(token)),
+        )
+      }).provideSome[Env](ZTestLogger.default)
+    },
+    test("the bearer rule meters its OWN reason label, distinct from the token rule") {
+      for {
+        _      <- cleanDb
+        rig    <- supportRig
+        token  <- mintSupport(rig.clock, "th_bearer_metric")
+        before <- redactions("support", "reply", "bearer")
+        status <- supportReply(rig, token, s"see `$BareBearer`")
+        after  <- redactions("support", "reply", "bearer")
+      } yield assertTrue(status == Status.Ok, after == before + 1)
+    },
     test("a redaction meters agent_reply_redacted_total and logs an ERROR that omits the token") {
       (for {
         _      <- cleanDb
@@ -348,10 +497,15 @@ object ReplyRedactionSpec
 
     // ── FALSE POSITIVES: ordinary prose must survive byte-identical ───────────
     test("SUPPORT: an ordinary reply with a UUID, a version string and prose is untouched") {
+      // Every one of these was a real over-match candidate: the hyphenated compound and the
+      // `WORD_WORD` placeholder both clear the 16-char floor and survive only because neither
+      // carries a digit; `credentials.Rotate` is the missing-space-after-a-period case.
       val ordinary =
         """Your device 550e8400-e29b-41d4-a716-446655440000 is on firmware v1.2.3, and the
-          |agent build is v1.4.0-rc2. The API uses Bearer authentication over HTTPS; the
-          |config value is base64 encoded (for example aGVsbG8gd29ybGQ) — nothing secret.""".stripMargin
+          |agent build is v1.4.0-rc2. We use Bearer authentication-based access control; set
+          |`Authorization: Bearer YOUR_API_KEY_HERE`. Rotate bearer credentials.Rotate them
+          |quarterly. The config value is base64 encoded (for example aGVsbG8gd29ybGQ) —
+          |nothing secret.""".stripMargin
       for {
         _      <- cleanDb
         rig    <- supportRig
