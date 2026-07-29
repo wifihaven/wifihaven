@@ -129,10 +129,8 @@ object SupportIdentitySpec
           "pwpwpwpw11",
         )
         _        <- seedAdmin(auth, userRepo, hhB, "admin_b", "b@example.com", "pwpwpwpw22")
-        // A beta entitlement for household B only, so the mapping carries a plan attribute for B
-        // and none for A — `SupportService.identity` reads billing as an Option
-        // (`findByHousehold`, SupportService.scala:65), so A's missing row is a legitimate state,
-        // not a hole in the fixture.
+        // Mark household B as FOUNDING, so the two households' entitlement attributes differ: A
+        // keeps the beta/non-founding row every household is seeded with (#2355), B is founding.
         _        <- billRepo.create(hhB, "beta", founding = true)
         rec      <- PlainClient.recorder
         svc    = SupportService(widgetCfg, userRepo, hhRepo, billRepo, PlainClient.recording(rec))
@@ -158,6 +156,11 @@ object SupportIdentitySpec
         assertTrue(idA.email.contains("a@example.com")) &&
         assertTrue(idA.tenantIdentifier.contains(hhA.value.toString)) &&
         assertTrue(idA.emailHash.contains(expectedHashA)) &&
+        // A's entitlement is the one `HouseholdSeed.insertHousehold` seeds with every household
+        // (#2355: households + billing + global-sentinel as a unit, Repos.scala:1358) — beta, NOT
+        // founding. Asserted so A's attributes are pinned to A's own row rather than left to
+        // coincide with B's.
+        assertTrue(idA.plan.contains("beta"), idA.founding.contains(false)) &&
         // B's identity is B's household + B's email hash, and its entitlement attribute reflects B's
         // billing status (beta / founding).
         assertTrue(idB.configured) &&
