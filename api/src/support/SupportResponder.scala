@@ -45,7 +45,9 @@ import java.time.Instant
  *   - **Registered-admin email**: a NEW inbound email (no resolvable tenant) whose From address
  *     matches a registered household ADMIN (`users.email`, globally unique, V67). We resolve THAT
  *     admin's household and dispatch bound to it, exactly as if UI-originated (the #2241 token
- *     binds to the sender's household).
+ *     binds to the sender's household). Resolving that admin ALSO stamps the household→Plain
+ *     customer mapping (#2505, [[mapCustomerToHousehold]]) — otherwise a customer who only ever
+ *     emails is never mapped, because #2435's reconcile runs on the SPA identity path alone.
  *
  * A NEW thread from an UNREGISTERED address gets a FIXED static reject via the outbound Plain reply
  * — no Claude call, no dispatch, no token, no persisted support thread — so a flood of cold email
@@ -122,26 +124,43 @@ final case class SupportResponder(
     // was indistinguishable from one that answered — every log line and metric said success while
     // the customer got nothing.
     dispatchTracker: DispatchTracker,
-    // #2460: HOW the post-grant resume is run — the one thing about it that differs between
-    // production and a spec. Production forks it as a DAEMON fiber so the customer's consent POST
-    // returns at once: the resume's two legs (the Plain timeline read at
-    // `PlainClient.HistoryTimeout`, then the cloud-agent dispatch at the transport's
-    // `RequestTimeout`) together exceed the SPA's own `REQUEST_TIMEOUT_MS` (web/src/api/client.ts),
-    // so running it on the request fiber would let a SUCCESSFUL grant abort client-side and be
-    // reported to the customer as a broken link. A daemon fiber also survives a client disconnect,
-    // so every branch still meters its `resume_*`. Specs pass `identity` to run it inline — the seam
-    // controls only WHERE the effect runs, never what it does.
+    // HOW a best-effort FOLLOW-UP is run — the one thing about those that differs between production
+    // and a spec. Production forks each as a DAEMON fiber so the request/webhook fiber returns at
+    // once; specs pass `identity` to run it inline. The seam controls only WHERE the effect runs,
+    // never what it does, and it must be `forkDaemon` (not `timeout`/`disconnect`): a fork lets the
+    // follow-up RUN ON to completion, so every branch still meters its own outcome and no multi-write
+    // chain can be abandoned half-done.
+    //
+    // Two callers, both one-shot follow-ups whose latency the caller must not pay:
+    //   - #2460, the post-grant consent resume. Its two legs (the Plain timeline read at
+    //     `PlainClient.HistoryTimeout`, then the cloud-agent dispatch at the transport's
+    //     `RequestTimeout`) together exceed the SPA's own `REQUEST_TIMEOUT_MS`
+    //     (web/src/api/client.ts), so on the request fiber a SUCCESSFUL grant could abort
+    //     client-side and be reported to the customer as a broken link.
+    //   - #2505, the household→Plain customer mapping written from the webhook path
+    //     ([[mapCustomerToHousehold]]). `upsertCustomer` chains the tenant write, the tenant fields,
+    //     the customer upsert and — on an email collision — the two-leg reconcile, each bounded only
+    //     by the HTTP client's `RequestTimeout`; awaited, that could push our webhook ack past
+    //     Plain's delivery timeout and earn a redelivery.
     //
     // `forkDaemon`, NOT the `forkScoped` that #1247 moved the Main.scala background loops to: those
-    // are app-lifetime loops that must be interrupted before the Hikari pool closes, whereas this is
-    // a one-shot follow-up with no Scope in reach at the route layer. The accepted cost is a
-    // deploy-time window (bounded by the two transport timeouts) in which an in-flight resume can be
-    // interrupted or see a closing pool — the grant is already committed, so the customer keeps
-    // their consent and at worst re-asks; it is one dropped or `resume_error`-labelled sample.
+    // are app-lifetime loops that must be interrupted before the Hikari pool closes, whereas these
+    // are one-shot follow-ups with no Scope in reach at the route layer. The accepted cost is a
+    // deploy-time window (bounded by the transport timeouts) in which an in-flight follow-up can be
+    // interrupted or see a closing pool. Both callers survive it: the consent grant is already
+    // committed, so the customer keeps their consent and at worst re-asks; the mapping is idempotent
+    // and re-attempted on that household's next message. Either way it is one dropped sample.
+    //
+    // Deliberately UNCAPPED and un-deduped: one fork per triggering event, so a new inbound email
+    // stamps the mapping about twice — on the bodyless `thread.thread_created` and again on the
+    // `email_received` that carries the body (and the earlier of the two is the better moment, not
+    // waste). That is fine at the rate it fires: forks track inbound CUSTOMER email, both callers
+    // are idempotent, and every leg is bounded by the transport's own `RequestTimeout`. A cap here
+    // would buy nothing the origin gate and the dispatch limiters do not already buy.
     //
     // This is the ONLY parameter with a default, so it must stay LAST — every construction site
     // (HttpRoutes, the specs) passes the ones above positionally.
-    runResume: UIO[Unit] => UIO[Unit] = _.forkDaemon.unit,
+    runDetached: UIO[Unit] => UIO[Unit] = _.forkDaemon.unit,
 ) {
   import SupportResponder.*
 
@@ -253,18 +272,96 @@ final case class SupportResponder(
       case None        => ZIO.succeed(WebhookOutcome.SkippedUnauthenticated) // no From to gate on
       case Some(email) =>
         resolveAdminHousehold(email).flatMap {
-          case Some((hh, household)) if event.threadId.nonEmpty && event.messageText.nonEmpty =>
-            rateLimitedDispatch(event, hh, household, WebhookOutcome.EmailRegisteredDispatched)
-          case Some(_)                                                                        =>
-            // Registered, but no thread to bind or a bodyless new-thread event — the answerable
-            // message rides the following body event (chat_received/email_received).
-            ZIO.succeed(WebhookOutcome.SkippedUnauthenticated)
-          case None                                                                           =>
+          case Some((hh, household)) =>
+            val outcome =
+              if event.threadId.nonEmpty && event.messageText.nonEmpty then
+                rateLimitedDispatch(event, hh, household, WebhookOutcome.EmailRegisteredDispatched)
+              else
+                // Registered, but no thread to bind or a bodyless new-thread event — the answerable
+                // message rides the following body event (chat_received/email_received).
+                ZIO.succeed(WebhookOutcome.SkippedUnauthenticated)
+            // #2505: the mapping runs DETACHED (`forkDaemon` in production), so neither the agent
+            // session nor the webhook ack waits on a slow Plain (see [[mapCustomerToHousehold]]).
+            outcome <* runDetached(mapCustomerToHousehold(hh, household, email))
+          case None                  =>
             // Unregistered: reject a NEW thread once; skip continuations (no re-reject backscatter).
             if event.isNewThread then staticReject(event)
             else ZIO.succeed(WebhookOutcome.SkippedUnauthenticated)
         }
     }
+
+  /**
+   * #2505 — stamp the household→Plain-customer mapping from the EMAIL path.
+   *
+   * #2435's reconcile fires from [[SupportService.identity]], i.e. only when an admin loads the
+   * SPA. A household whose admin emails support and never opens the dashboard was therefore never
+   * mapped: its Plain customer kept `externalId: null`, so the operator triaging the thread saw no
+   * tenant and no plan/entitlement context (the whole point of #2240), and every later message fell
+   * through to [[resolveAdminHousehold]] — a strictly narrower key (exact, case-sensitive
+   * `users.email` AND `role == Admin`), which treats a non-admin member or an
+   * aliased/differently-cased admin address as unregistered. Nothing retried it. The gate has just
+   * proven this sender IS a household admin and holds both halves the mapping needs, so it writes
+   * the same payload the identity path writes — [[PlainCustomerUpsert.forHousehold]] is the one
+   * builder, so the two producers cannot drift.
+   *
+   * Best-effort and NOT on the critical path, but also NOT silent
+   * (docs/process/no-dark-by-default.md):
+   *   - it is decided AFTER the dispatch, so nothing the customer waits on is behind it, and it is
+   *     handed to [[runDetached]] (`forkDaemon` in production) so the webhook fiber does not wait
+   *     on it either. `upsertCustomer` is a CHAIN of Plain writes — tenant, tenant fields,
+   *     customer, and on an email collision the two-leg reconcile — each bounded only by the HTTP
+   *     client's `RequestTimeout`, so awaiting it could push our ack past Plain's delivery timeout
+   *     and earn a redelivery. A `timeout` would be the wrong instrument for the same reason a fork
+   *     is the right one: interrupting mid-chain can leave the reconcile's `externalId` patch
+   *     written with its tenant join missing — a state no later attempt repairs, because the
+   *     primary path carries `tenantIdentifiers` on `onCreate` only (#2253) — and would drop the
+   *     sample that says so;
+   *   - it is idempotent and `PlainClient.upsertCustomer` never fails, so it cannot break the
+   *     dispatch or the reply however it goes;
+   *   - and it meters `support_customer_upsert_total{outcome,reason}` from inside `PlainClient` —
+   *     the SAME series and reason vocabulary #2435 settled on, so a broken mapping is attributable
+   *     on the existing panel regardless of which producer attempted it. Metering here as well
+   *     would double-count and could only carry the outcome, never the Plain-side reason. Running
+   *     on a forked fiber is what keeps that attribution: the chain completes and meters even
+   *     though nobody is waiting for it.
+   *
+   * A degraded billing read is warned and degraded to "no plan attributes" rather than skipping the
+   * write: the externalId mapping — the load-bearing half — is worth stamping even when the
+   * entitlement context is momentarily unreadable, and the next call repairs the attributes.
+   *
+   * NOTE (#2512): the Plain customer is keyed on the HOUSEHOLD id while `role = 'admin'` is not
+   * unique per household, so a second admin emailing support rewrites the household's one customer
+   * onto their address — usually into Plain's workspace-wide email uniqueness, i.e. a non-self-
+   * healing `email_collision`. Pre-existing (the identity path has the same shape); tracked there.
+   */
+  private def mapCustomerToHousehold(
+      hh: HouseholdId,
+      household: Household,
+      email: String,
+  ): UIO[Unit] =
+    billingRepo
+      .findByHousehold(hh)
+      .catchAll(e =>
+        ZIO
+          .logWarning(
+            s"support: could not read billing for household ${hh.value} while mapping its Plain " +
+              s"customer; mapping without plan attributes: ${e.getMessage}",
+          )
+          .as(None),
+      )
+      .flatMap { billing =>
+        plain
+          .upsertCustomer(
+            PlainCustomerUpsert.forHousehold(
+              householdId = hh,
+              email = email,
+              householdName = household.name,
+              plan = billing.map(_.status),
+              founding = billing.map(_.founding),
+            ),
+          )
+          .unit
+      }
 
   /**
    * Resolve a sender From address to the household of the ADMIN who owns it. Match is exact
@@ -853,7 +950,7 @@ final case class SupportResponder(
       // carry the scope the customer just granted. Re-confirming a still-live grant resumes nothing
       // (the idempotency guard) — the answer to that question is already on its way.
       _     <- ZIO.when(write.result == ConsentResult.Granted) {
-        if write.transitioned then runResume(resumeAfterGrant(claims.hh, g, now))
+        if write.transitioned then runDetached(resumeAfterGrant(claims.hh, g, now))
         else meterResume(ResumeOutcome.Skipped)
       }
     } yield write.result
@@ -886,7 +983,7 @@ final case class SupportResponder(
    *   - it does NOT trip the #2403/#2404 loop guard: that guard lives on the inbound webhook path
    *     and drops our own outbound writes, which is untouched here. The agent's eventual reply
    *     still arrives as a `thread.chat_sent` the guard drops, so the loop terminates;
-   *   - it runs OFF the request fiber (`runResume`, `forkDaemon` in production). Both legs are
+   *   - it runs OFF the request fiber (`runDetached`, `forkDaemon` in production). Both legs are
    *     bounded only by their own transport timeouts — the timeline read at
    *     [[PlainClient.HistoryTimeout]], the dispatch at the transport's `RequestTimeout`
    *     (`ManagedAgents` / `ClaudeCodeRoutines`) — which together exceed the SPA's own request

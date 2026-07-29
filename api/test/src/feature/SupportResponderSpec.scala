@@ -131,6 +131,16 @@ object SupportResponderSpec
       // deliberately answers 200 for both a DELIVERED and an UNDELIVERED reject (Plain must not
       // retry-storm), so the status cannot tell the two apart; the outcome is the only signal.
       responder: SupportResponder,
+      // #2505: how many effects the responder handed to the `runDetached` seam. Production forks
+      // those (`forkDaemon`) so neither the agent session nor the webhook ack waits on Plain; this
+      // suite runs them INLINE so its pins don't race the fork — which on its own would make the
+      // ROUTING invisible (a bare call would look identical). So this counts the hand-off, and that
+      // is precisely what it pins: that the mapping goes THROUGH the seam. What the seam MEANS in
+      // production (`forkDaemon`, i.e. the caller does not wait) is single-sourced at its default
+      // and pinned once, end to end, by SupportConsentSpec's promise-gated `productionResume` case
+      // — deliberately not re-pinned here, where it would need a wall-clock wait on a background
+      // fiber (the #2042 flake class).
+      detachedRuns: Ref[Int],
   )
 
   private def makeRoutes(
@@ -158,6 +168,7 @@ object SupportResponderSpec
       ghRec       <- GithubIssueClient.recorder
       dispRec     <- CloudAgentDispatcher.recorder
       tracker     <- DispatchTracker.make(DispatchTracker.deadAfterFor(cfg))
+      detachedRef <- Ref.make(0)
       responder = SupportResponder(
         cfg,
         hhRepo,
@@ -182,8 +193,21 @@ object SupportResponderSpec
         Notifier.logOnly,
         RateLimiter.allowAll,
         tracker,
+        // #2505: COUNT the hand-off, then run it INLINE — the same seam SupportConsentSpec uses.
+        // Production forks the mapping write so the webhook fiber never waits on Plain; a spec that
+        // asserts the write happened must not race that fork, and inline is deterministic where a
+        // wall-clock wait on a background fiber would be the #2042 flake class. The counter is what
+        // keeps the ROUTING asserted — inline execution alone would make a bare, un-detached call
+        // look identical (see `Stubs.detachedRuns`). The seam changes only WHERE an effect runs, so
+        // nothing here is weakened: the consent resume, the only other caller, rides a route this
+        // suite never wires (`SupportConsentRoutes`) and is pinned in BOTH modes by
+        // SupportConsentSpec.
+        runDetached = eff => detachedRef.update(_ + 1) *> eff,
       )
-    } yield (SupportAgentRoutes.routes(responder), Stubs(plainRec, ghRec, dispRec, responder))
+    } yield (
+      SupportAgentRoutes.routes(responder),
+      Stubs(plainRec, ghRec, dispRec, responder, detachedRef),
+    )
 
   // #2408: the reply path's acceptance requires the Plain client faked at the HTTP BOUNDARY only
   // (not the recorder), so a full-stack test can assert the LIVE client emits `replyToThread` against
@@ -255,6 +279,11 @@ object SupportResponderSpec
         Notifier.logOnly,
         RateLimiter.allowAll,
         tracker,
+        // #2505: same inline seam as `makeRoutes`. Defensive today — this builder's cases drive the
+        // agent reply route only, so no `runDetached` call site is reachable from it. It matters the
+        // moment one is: this builder wires the LIVE Plain client, where a forked follow-up would
+        // become a real HTTP call racing the capture server's teardown.
+        runDetached = identity,
       )
     } yield SupportAgentRoutes.routes(responder)
 
@@ -588,6 +617,64 @@ object SupportResponderSpec
           kickoff.contains(req.agentToken),
         )
       }
+    },
+    test("#2505: an email-only registered admin is MAPPED onto their household in Plain") {
+      // #2435's reconcile was reachable only from the SPA identity path, so a household whose admin
+      // emails support without ever loading the dashboard kept `externalId: null` forever — the
+      // Plain inbox showed no tenant (no plan/entitlement context for the human triaging, defeating
+      // #2240) and every later message had to fall through the narrower `resolveAdminHousehold`
+      // key. The email-intake gate already holds both halves of the mapping the moment it resolves
+      // a sender, so it stamps it — same `PlainClient.upsertCustomer` call, same metric.
+      for {
+        _               <- cleanDb
+        hhRepo          <- ZIO.service[HouseholdRepo]
+        billRepo        <- ZIO.service[HouseholdBillingRepo]
+        userRepo        <- ZIO.service[UserRepo]
+        hh              <- hhRepo.create("Family M", "family-m")
+        _               <- billRepo.create(hh, "beta", founding = true)
+        _               <- userRepo.create(
+          "parent",
+          "hash",
+          "admin",
+          householdId = hh,
+          email = Some("parent@family-m.example"),
+        )
+        (routes, stubs) <- makeRoutes(liveCfg)
+        body = emailPayload(Some("parent@family-m.example"), "th_map", "my router is offline")
+        status    <- postWebhook(routes, body, Some(sign(body)))
+        customers <- stubs.plain.customers.get
+        detached  <- stubs.detachedRuns.get
+      } yield assertTrue(
+        status == Status.Ok,
+        customers.size == 1,
+        // The write is DETACHED — handed to the seam production forks — so a slow Plain can hold
+        // open neither the agent session nor the webhook ack. A bare call would still land the
+        // upsert under this suite's inline seam, so this is the assertion that pins the routing.
+        detached == 1,
+        // The mapping Plain keys on: externalId = tenantIdentifier = the household id.
+        customers.head.externalId == hh.value.toString,
+        customers.head.tenantIdentifier == hh.value.toString,
+        customers.head.email == "parent@family-m.example",
+        customers.head.fullName == "Family M",
+        // Bounded account context ONLY — the same attribute set the identity path carries.
+        customers.head.attributes == Map(
+          "plan"          -> "beta",
+          "founding"      -> "true",
+          "householdName" -> "Family M",
+        ),
+      )
+    },
+    test("#2505: an UNREGISTERED sender is never mapped — the reconcile rides the resolved admin") {
+      for {
+        _               <- cleanDb
+        hhRepo          <- ZIO.service[HouseholdRepo]
+        _               <- hhRepo.create("Family U", "family-u")
+        (routes, stubs) <- makeRoutes(liveCfg)
+        body = emailPayload(Some("stranger@nowhere.example"), "th_cold", "hello?")
+        status    <- postWebhook(routes, body, Some(sign(body)))
+        customers <- stubs.plain.customers.get
+        detached  <- stubs.detachedRuns.get
+      } yield assertTrue(status == Status.Ok, customers.isEmpty, detached == 0)
     },
     test("#2481: an email whose QUESTION is the subject reaches the agent end-to-end") {
       // The reported bug: the operator emailed support with the question in the SUBJECT and only a

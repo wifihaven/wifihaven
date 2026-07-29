@@ -69,14 +69,21 @@ final case class SupportService(
             tenant   = claims.hh.value.toString
             // Lazy household→customer upsert (best-effort). Awaited but fail-open: PlainClient never
             // fails and no-ops when the write API is unconfigured, so this can't break the response.
-            _ <- upsertCustomer(
-              externalId = tenant,
-              tenantIdentifier = tenant,
-              email = email,
-              fullName = fullName,
-              plan = billing.map(_.status),
-              founding = billing.map(_.founding),
-            )
+            _ <- plain
+              .upsertCustomer(
+                PlainCustomerUpsert.forHousehold(
+                  householdId = claims.hh,
+                  email = email,
+                  householdName = fullName,
+                  plan = billing.map(_.status),
+                  founding = billing.map(_.founding),
+                ),
+              )
+              // #2435: `support_customer_upsert_total` is metered INSIDE PlainClient, where the
+              // failure REASON is known (reconciled / email_collision / permission / schema). One
+              // producer, one series — metering here too would double-count and could only ever
+              // carry the outcome.
+              .unit
             _ <- AppMetrics.supportIdentity("issued")
           } yield SupportIdentityResponse(
             configured = true,
@@ -100,35 +107,6 @@ final case class SupportService(
         ZIO.logWarning(s"support: could not resolve email for $username: ${e.getMessage}").as(None),
       )
 
-  private def upsertCustomer(
-      externalId: String,
-      tenantIdentifier: String,
-      email: String,
-      fullName: String,
-      plan: Option[String],
-      founding: Option[Boolean],
-  ): UIO[Unit] = {
-    // Bounded account context only (plan / entitlement / household name) — NEVER per-device or
-    // per-domain data. `plan` is the billing status (beta / active / lapsed, #2135).
-    val attributes = Map.newBuilder[String, String]
-    plan.foreach(p => attributes += ("plan" -> p))
-    founding.foreach(f => attributes += ("founding" -> f.toString))
-    if fullName.nonEmpty then attributes += ("householdName" -> fullName)
-    plain
-      .upsertCustomer(
-        PlainCustomerUpsert(
-          externalId = externalId,
-          tenantIdentifier = tenantIdentifier,
-          email = email,
-          fullName = fullName,
-          attributes = attributes.result(),
-        ),
-      )
-      // #2435: `support_customer_upsert_total` is metered INSIDE PlainClient, where the failure
-      // REASON is known (reconciled / email_collision / permission / schema). One producer, one
-      // series — metering here too would double-count and could only ever carry the outcome.
-      .unit
-  }
 }
 
 object SupportService {
