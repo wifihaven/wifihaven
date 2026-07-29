@@ -33,10 +33,10 @@ import zio.test.*
  *
  * Full stack on embedded Postgres — real repos, no mocks (docs/process/testing.md); only the
  * external transports (Plain, GitHub, Resend, the cloud dispatchers) are recorders, and the Clock
- * is injected. The tokens the tests try to leak are LIVE — minted by the real
- * [[ConsentToken.mint]] / [[PressToken.mint]] at the injected clock's instant — so the redactor is
- * matched against what the minting code actually produces today, and a change to either grammar
- * that the redactor did not follow fails HERE.
+ * is injected. The tokens the tests try to leak are LIVE — minted by the real [[ConsentToken.mint]]
+ * / [[PressToken.mint]] at the injected clock's instant — so the redactor is matched against what
+ * the minting code actually produces today, and a change to either grammar that the redactor did
+ * not follow fails HERE.
  *
  * The load-bearing pins:
  *   - a SUPPORT reply quoting the agent's own live token reaches Plain without it;
@@ -44,7 +44,7 @@ import zio.test.*
  *     `/press` correspondence log does not record it either;
  *   - a bare `Bearer …` credential is redacted on BOTH channels;
  *   - a support ISSUE body (the PUBLIC GitHub surface) is redacted too;
- *   - a redaction is LOUD — `agent_reply_redacted_total{channel,op,rule}` plus an ERROR log that
+ *   - a redaction is LOUD — `agent_reply_redacted_total{channel,op,reason}` plus an ERROR log that
  *     does NOT itself quote the credential;
  *   - FALSE POSITIVES: an ordinary reply carrying a UUID, a `v1.2.3` version string, ordinary
  *     base64-ish words and the word "Bearer" in prose survives byte-identical.
@@ -213,12 +213,12 @@ object ReplyRedactionSpec
   private def pressReply(rig: PressRig, token: String, markdown: String): Task[Status] =
     post(rig.routes, "/api/press/agent/reply", s"""{"markdown":${markdown.toJson}}""", token)
 
-  private def redactions(channel: String, op: String, rule: String): UIO[Double] =
+  private def redactions(channel: String, op: String, reason: String): UIO[Double] =
     Metric
       .counter("agent_reply_redacted_total")
       .tagged("channel", channel)
       .tagged("op", op)
-      .tagged("rule", rule)
+      .tagged("reason", reason)
       .value
       .map(_.count)
 
@@ -305,10 +305,10 @@ object ReplyRedactionSpec
     // ── The PUBLIC GitHub surface gets the same treatment ─────────────────────
     test("SUPPORT: an issue body quoting the agent's own token is filed WITHOUT it") {
       for {
-        _      <- cleanDb
-        rig    <- supportRig
-        token  <- mintSupport(rig.clock, "th_issue")
-        body    = s"Blocking fails. Session credential for repro: $token"
+        _     <- cleanDb
+        rig   <- supportRig
+        token <- mintSupport(rig.clock, "th_issue")
+        body = s"Blocking fails. Session credential for repro: $token"
         status <- post(
           rig.routes,
           "/api/support/agent/issues",

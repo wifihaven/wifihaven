@@ -1,5 +1,7 @@
 package wifihaven.api.press
 
+import wifihaven.api.agent.AgentCredential
+
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 import java.nio.charset.StandardCharsets
@@ -66,7 +68,9 @@ import java.util.Base64
  */
 object PressToken {
 
-  private val Version: String = "v1"
+  // #2508: single-sourced with the redactor that has to recognise what this mints — change the
+  // grammar in ONE place and both the minting and the outbound credential scrub move together.
+  private val Version: String = AgentCredential.Version
 
   sealed trait Err
   object Err {

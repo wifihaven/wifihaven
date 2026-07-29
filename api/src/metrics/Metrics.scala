@@ -646,6 +646,14 @@ object MetricGuard {
     // prompt merge — the silent behavioural regression #2419/#2425 and #2430/#2441 both shipped.
     // The reported version string is NOT a label (agent-supplied ⇒ unbounded); it rides the log.
     "agent_prompt_version_total"                    -> Set("channel", "state"),
+    // #2508 — the shared cloud-agent CREDENTIAL-REDACTION series, support AND press on one name
+    // (one control, one panel, one alert). `channel` (support | press) × `op` (the callback name) ×
+    // `reason` (agent_token | bearer — WHICH grammar matched) — every dimension a code-bounded enum
+    // from AgentCredential, never the redacted text, the thread, or the sender. `reason` REUSES the
+    // existing vocabulary key rather than adding a `rule` one (the #1210 KnownLabelKeys stays
+    // small), matching the sibling `agent_token_rejected_total`. Expected flat ZERO: a sample means
+    // an agent put a credential in text we were about to send to a customer or a journalist.
+    "agent_reply_redacted_total"                    -> Set("channel", "op", "reason"),
     // #2438 — the press dispatcher-level dispatch outcome, the press twin of
     // `support_dispatch_total` (same shared CloudAgentObservability envelope, separate series so the
     // public-press audience graphs + alerts independently). Same bounded {outcome,transport} space.
@@ -981,6 +989,18 @@ object AppMetrics {
     MetricGuard.counter(
       "agent_prompt_version_total",
       Map("channel" -> channel, "state" -> state),
+  // #2508 — agent-authored text carried a CREDENTIAL and was redacted before it left the process,
+  // for BOTH responders on ONE series (emitted from the shared AgentCredential envelope, never a
+  // bare Metric.*). Every sample is an agent that tried to put its own bearer token — or another
+  // credential out of its environment — into a customer-visible Plain reply, a journalist's email,
+  // the public /press correspondence log, or a public GitHub issue. `channel` ∈ support | press;
+  // `op` is the callback name (reply | issue | escalate); `reason` ∈ agent_token | bearer (WHICH
+  // grammar matched) — all bounded by AgentCredential, never the text, the thread, or the sender.
+  // Expected FLAT ZERO.
+  def agentReplyRedacted(channel: String, op: String, reason: String): UIO[Unit] =
+    MetricGuard.counter(
+      "agent_reply_redacted_total",
+      Map("channel" -> channel, "op" -> op, "reason" -> reason),
     )
 
   // #2438 — the dispatcher-level dispatch outcome, emitted from the shared CloudAgentObservability

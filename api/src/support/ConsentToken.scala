@@ -1,5 +1,6 @@
 package wifihaven.api.support
 
+import wifihaven.api.agent.AgentCredential
 import wifihaven.shared.types.HouseholdId
 
 import javax.crypto.Mac
@@ -70,7 +71,9 @@ import java.util.Base64
  */
 object ConsentToken {
 
-  private val Version: String = "v1"
+  // #2508: single-sourced with the redactor that has to recognise what this mints — change the
+  // grammar in ONE place and both the minting and the outbound credential scrub move together.
+  private val Version: String = AgentCredential.Version
 
   sealed trait Err
   object Err {

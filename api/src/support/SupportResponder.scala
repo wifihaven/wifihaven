@@ -1,6 +1,7 @@
 package wifihaven.api.support
 
 import wifihaven.api.SupportConfig
+import wifihaven.api.agent.AgentCredential
 import wifihaven.api.auth.{JwtClaims, RateLimiter}
 import wifihaven.api.db.{
   DeviceRepo,
@@ -604,6 +605,10 @@ final case class SupportResponder(
    * operator monitors every thread in the Plain inbox). The thread and household come FROM the
    * verified token — the request body carries only the reply text, so a hijacked agent cannot aim a
    * reply at another thread or household.
+   *
+   * #2508: the reply text is the ONE thing the agent fully authors, so it is credential-scrubbed
+   * HERE — before anything can read it — rather than at the [[PlainClient]] transport. See
+   * [[AgentCredential]] for why the seam is the callback surface and not the transport.
    */
   def agentReply(
       bearer: Option[String],
@@ -619,23 +624,27 @@ final case class SupportResponder(
       // and mask a genuinely stale routine. Ahead of the send, so every AUTHENTICATED outcome
       // records — including a `Disabled` (write half dark) or failed write, which is exactly the
       // case we most want on the dashboard. Alert-only: it can never cost the customer their answer.
-      AgentPromptVersion.observe(AgentPromptVersion.Channel.Support, promptVersion) *> {
-        val write = PlainThreadWrite(
-          // #2408: the reply posts INTO the customer's existing thread (`claims.threadId`, the
-          // customer-visible send via Plain's replyToThread), NOT a new createThread. The thread
-          // binding comes from the verified token — the request body carries only the reply text.
-          threadId = claims.threadId,
-          // #2456: strip the agent's own leading copy first — the server owns this line, and the
-          // agent intermittently copies it out of the thread history it now sees (#2441), which
-          // showed the customer the header twice.
-          markdown = s"$AiReplyAttribution\n\n${stripLeadingAttribution(markdown)}",
-        )
-        plain.writeThread(write).flatMap {
-          case PlainOutcome.Ok       => done(AgentAction.Reply, AgentActionResult.Ok)
-          case PlainOutcome.Disabled => done(AgentAction.Reply, AgentActionResult.Disabled)
-          case PlainOutcome.Error    => done(AgentAction.Reply, AgentActionResult.Error)
-        }
-      }
+      AgentPromptVersion.observe(AgentPromptVersion.Channel.Support, promptVersion) *>
+        AgentCredential
+          .redact(AgentCredential.Channel.Support, AgentAction.Reply, markdown)
+          .flatMap { safeMarkdown =>
+            val write = PlainThreadWrite(
+              // #2408: the reply posts INTO the customer's existing thread (`claims.threadId`, the
+              // customer-visible send via Plain's replyToThread), NOT a new createThread. The
+              // thread binding comes from the verified token — the request body carries only the
+              // reply text.
+              threadId = claims.threadId,
+              // #2456: strip the agent's own leading copy first — the server owns this line, and
+              // the agent intermittently copies it out of the thread history it now sees (#2441),
+              // which showed the customer the header twice.
+              markdown = s"$AiReplyAttribution\n\n${stripLeadingAttribution(safeMarkdown)}",
+            )
+            plain.writeThread(write).flatMap {
+              case PlainOutcome.Ok       => done(AgentAction.Reply, AgentActionResult.Ok)
+              case PlainOutcome.Disabled => done(AgentAction.Reply, AgentActionResult.Disabled)
+              case PlainOutcome.Error    => done(AgentAction.Reply, AgentActionResult.Error)
+            }
+          }
     }
 
   /**
@@ -643,6 +652,11 @@ final case class SupportResponder(
    * volume metric feeds the operator alert), auto-labeled `support-agent` and PII-scrubbed inside
    * [[GithubIssueClient]] — the #2241 compensating control: the body that leaves this process never
    * embeds raw household-data output.
+   *
+   * #2508 adds the credential scrub on top of that PII scrub — different rule sets, different
+   * reasons. `scrubForIssue` protects the CUSTOMER's data from a public repo;
+   * [[AgentCredential.redact]] protects OUR credential from the same repo, and applies on every
+   * agent-authored surface (an issue is the most public of them).
    *
    * On success it answers the created [[FiledIssue]] (#2461) — the number + public URL the agent
    * may quote to the customer; every failure stays the bounded [[AgentActionResult]] the route maps
@@ -684,30 +698,47 @@ final case class SupportResponder(
             issueGlobalLimiter.tryAcquire("global").flatMap { globalOk =>
               if !globalOk then doneE(AgentAction.Issue, AgentActionResult.RateLimited)
               else
-                github.fileIssue(IssueFileRequest(title, body, claims.threadId)).flatMap {
-                  // #2461: the created issue's identity rides back out so the agent can offer the
-                  // customer a link. The metric label stays the bounded `ok` — never the number.
-                  case IssueOutcome.Filed(ref)     =>
-                    // Same `done` metering choke point as every other branch — only the RESULT
-                    // differs, so there is still exactly one place the label is derived.
-                    done(AgentAction.Issue, issueFiledOutcome(ref))
-                      .as(Right(FiledIssue(ref.map(_.number), ref.map(_.url))))
-                  // #2458: the topic was already tracked, so nothing was created. Carried on the
-                  // SAME `number`/`url` fields #2461 added — the customer is pointed at the
-                  // canonical issue, not told about a duplicate we declined to file — plus the
-                  // `duplicate` marker so the agent's wording matches what happened.
-                  case IssueOutcome.Duplicate(ref) =>
-                    done(AgentAction.Issue, AgentActionResult.OkDuplicate)
-                      .as(
-                        Right(FiledIssue(Some(ref.number), Some(ref.url), duplicate = Some(true))),
-                      )
-                  case IssueOutcome.Disabled       =>
-                    doneE(AgentAction.Issue, AgentActionResult.Disabled)
-                  case IssueOutcome.Error => doneE(AgentAction.Issue, AgentActionResult.Error)
+                // #2508: title AND body — the agent authors both, and both go public.
+                redactIssueText(title, body).flatMap { (safeTitle, safeBody) =>
+                  github.fileIssue(IssueFileRequest(safeTitle, safeBody, claims.threadId)).flatMap {
+                    // #2461: the created issue's identity rides back out so the agent can offer the
+                    // customer a link. The metric label stays the bounded `ok` — never the number.
+                    case IssueOutcome.Filed(ref)     =>
+                      // Same `done` metering choke point as every other branch — only the RESULT
+                      // differs, so there is still exactly one place the label is derived.
+                      done(AgentAction.Issue, issueFiledOutcome(ref))
+                        .as(Right(FiledIssue(ref.map(_.number), ref.map(_.url))))
+                    // #2458: the topic was already tracked, so nothing was created. Carried on the
+                    // SAME `number`/`url` fields #2461 added — the customer is pointed at the
+                    // canonical issue, not told about a duplicate we declined to file — plus the
+                    // `duplicate` marker so the agent's wording matches what happened.
+                    case IssueOutcome.Duplicate(ref) =>
+                      done(AgentAction.Issue, AgentActionResult.OkDuplicate)
+                        .as(
+                          Right(
+                            FiledIssue(Some(ref.number), Some(ref.url), duplicate = Some(true)),
+                          ),
+                        )
+                    case IssueOutcome.Disabled       =>
+                      doneE(AgentAction.Issue, AgentActionResult.Disabled)
+                    case IssueOutcome.Error          =>
+                      doneE(AgentAction.Issue, AgentActionResult.Error)
+                  }
                 }
             }
         }
     }
+
+  /**
+   * #2508 — scrub an agent-authored issue title + body of credentials. Both fields go through the
+   * SAME call, so the `rule` labels and the ERROR log are emitted once per field that actually
+   * carried one.
+   */
+  private def redactIssueText(title: String, body: String): UIO[(String, String)] =
+    for {
+      t <- AgentCredential.redact(AgentCredential.Channel.Support, AgentAction.Issue, title)
+      b <- AgentCredential.redact(AgentCredential.Channel.Support, AgentAction.Issue, body)
+    } yield (t, b)
 
   /**
    * The consented household read (#2241): a bounded summary of the ONE household the token is bound
@@ -820,6 +851,13 @@ final case class SupportResponder(
   ): UIO[AgentActionResult] = {
     val hh = claims.householdId
     for {
+      // #2508: the note is agent-authored and lands in the operator's mailbox — a credential in it
+      // would leave the process too, so it is scrubbed on the same terms as a reply.
+      safeNote  <- AgentCredential.redactOpt(
+        AgentCredential.Channel.Support,
+        AgentAction.Escalate,
+        note,
+      )
       // Audit trail (#2241 discipline) — household + thread, never the agent's prose.
       _         <- ZIO.logInfo(
         s"support: agent ESCALATED household=${hh.value} thread=${claims.threadId}",
@@ -843,7 +881,7 @@ final case class SupportResponder(
           sender = household.map(_.name).getOrElse(s"household ${hh.value}"),
           subject = s"Plain thread ${claims.threadId}",
           body = SupportResponder.EscalationBodyHint,
-          agentNote = note.map(_.trim).filter(_.nonEmpty),
+          agentNote = safeNote.map(_.trim).filter(_.nonEmpty),
           reference = claims.threadId,
         ),
       )
