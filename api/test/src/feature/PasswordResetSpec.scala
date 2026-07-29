@@ -76,11 +76,16 @@ object PasswordResetSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
       svc: PasswordResetService,
   )
 
-  // Create the household-1 admin `parent` with a known email + password.
+  // Create the household-1 second parent `parent` with a known email + password.
+  //
+  // Role is `adult`, not `admin`: household 1's ONE admin is the V1-seeded `admin` user, and
+  // #2512 makes one-admin-per-household a schema invariant. Nothing in the reset flow reads the
+  // role — it resolves the account by `users.email` — so an adult is both sufficient here and the
+  // realistic case (the second parent forgetting their password).
   private def seedParent(env: Env): Task[Unit] =
     for {
       hash <- env.auth.hashPassword(OrigPassword)
-      _    <- env.ur.create("parent", hash, "admin", HouseholdId.Default, Some(ParentEmail))
+      _    <- env.ur.create("parent", hash, "adult", HouseholdId.Default, Some(ParentEmail))
     } yield ()
 
   private def advance(clock: Clock, d: java.time.Duration): UIO[Unit] =

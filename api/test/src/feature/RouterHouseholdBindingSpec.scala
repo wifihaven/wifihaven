@@ -66,15 +66,16 @@ object RouterHouseholdBindingSpec
   ): ZIO[doobie.Transactor[Task], Throwable, Unit] =
     for {
       h  <- auth.hashPassword("pw")
-      _  <- ur.create(username, h, "admin")
-      id <- ur.findByUsername(HouseholdId.Default, username).map(_.get.id)
+      // Stamp `hh` on the INSERT rather than creating into HouseholdId.Default and moving the row
+      // afterwards: the create-then-UPDATE shape put a transient SECOND admin in household 1
+      // (which already has the V1-seeded `admin`), the state #2512's one-admin-per-household
+      // invariant forbids. `UserRepo.create` has taken the household explicitly since #2130 — the
+      // production paths already pass it, so this only aligns the test with them.
+      _  <- ur.create(username, h, "admin", hh)
+      id <- ur.findByUsername(hh, username).map(_.get.id)
       // UserRepo.create forces must_change_password (#599); clear it so this
       // seeded admin can exercise the admin route without a 403.
       _  <- ur.clearMustChangePassword(id)
-      _  <- ZIO.serviceWithZIO[doobie.Transactor[Task]] { xa =>
-        val hhVal = hh.value
-        sql"UPDATE users SET household_id=$hhVal WHERE username=$username".update.run.transact(xa)
-      }
     } yield ()
 
   private def createRouter(
