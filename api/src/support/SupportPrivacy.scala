@@ -1,5 +1,7 @@
 package wifihaven.api.support
 
+import wifihaven.api.agent.AgentCredential
+
 /**
  * #2200 / #2241 — the COMPENSATING CONTROL for the flagged combined risk (consented full-household
  * read + autonomous public-issue-filing). A hijacked agent could read the consenting household's
@@ -71,6 +73,14 @@ object SupportPrivacy {
       TruncatedPlaceholder,
       UrlPlaceholder,
       ConsentLinkPlaceholder,
+      // #2508: NOT injected by `scrubForIssue` — the credential redactor runs earlier, at the
+      // agent-facing callback (`SupportResponder.agentReply` / `agentFileIssue`) — but by the time
+      // a title reaches the #2458 dedup tokeniser its marker is just as present as these, and just
+      // as shared between unrelated reports. Registering it here is what keeps a credential-only
+      // title FAIL-OPEN: without it the marker tokenises to {redacted, credential}, exactly
+      // `MinTopicTokens`, so two unrelated credential-bearing titles match each other and the
+      // second customer's report is dropped against an unrelated issue.
+      AgentCredential.Marker,
     )
 
   /**

@@ -1,5 +1,6 @@
 package wifihaven.api.unit
 
+import wifihaven.api.agent.AgentCredential
 import wifihaven.api.support.GithubIssueClient
 import wifihaven.api.support.GithubIssueClient.OpenIssue
 import wifihaven.api.support.SupportPrivacy
@@ -98,6 +99,27 @@ object GithubIssueDedupSpec extends ZIOSpecDefault {
         GithubIssueClient.findDuplicate(b, List(open(2455, a))).isEmpty,
         // And the placeholder does not inflate a real comparison either.
         !GithubIssueClient.titleTokens("device aa:bb:cc:dd:ee:ff").contains("redacted"),
+      )
+    },
+    test("#2508: a CREDENTIAL-redacted title stays fail-open, it does not match another one") {
+      // The two features meet here. #2508 scrubs the agent's own credential out of an issue title
+      // BEFORE this matcher sees it, so the title arriving here can be nothing but the marker plus
+      // a word or two. If the marker counted as topic words it would tokenise to
+      // {redacted, credential} — exactly MinTopicTokens — and two unrelated credential-bearing
+      // titles would match EXACTLY, dropping the second customer's genuine report against an
+      // unrelated issue. Registering the marker in SupportPrivacy.Placeholders is what keeps this
+      // in the SAFE direction (dedup disabled, a second issue filed).
+      val a = AgentCredential.scrub("Bug: v1.YWJjZGVm." + ("a1" * 32)).text
+      val b = AgentCredential.scrub("Broken: v1.enp4Y3Y." + ("b2" * 32)).text
+      assertTrue(
+        // Precondition: both really were redacted, so this tests the real input shape.
+        a.contains(AgentCredential.Marker),
+        b.contains(AgentCredential.Marker),
+        // The marker contributes NO topic words, so neither title clears MinTopicTokens…
+        !GithubIssueClient.titleTokens(a).contains("redacted"),
+        !GithubIssueClient.titleTokens(a).contains("credential"),
+        // …and the second report is therefore filed rather than swallowed.
+        GithubIssueClient.findDuplicate(b, List(open(2455, a))).isEmpty,
       )
     },
     test("no placeholder is a substring of another — the strip is order-independent") {
