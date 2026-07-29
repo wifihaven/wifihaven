@@ -159,6 +159,31 @@ change raises its priority.
 | `granted_at` / `expires_at` / `revoked_at` | the grant window |
 | `UNIQUE (household_id, thread_id)` | one record per thread; a re-grant UPSERTs |
 
+`support_consent_link_use` (V85, #2453) — the SINGLE-USE ledger for consent
+links:
+
+| Column | Notes |
+| --- | --- |
+| `nonce` | PRIMARY KEY — the random nonce minted into the link's `g1.…` token. The uniqueness constraint IS the single-use enforcement: a second redemption is a unique violation, not a read-then-write race |
+| `household_id` / `thread_id` | audit trail + cascade only; the decision keys on `nonce` alone |
+| `consumed_at` | when the link was redeemed (injected Clock) |
+| `link_expires_at` | the `exp` the spent link carried — when it would have lapsed anyway |
+
+Why it exists: the consent link is a stateless signed capability, and since
+#2430/#2441 the thread transcript re-enters the support agent's own prompt — so a
+link that leaked into agent context (or was captured any other way) could be
+replayed to RE-GRANT access after the customer withdrew it (`grant` UPSERTs
+`revoked_at = NULL`). Consuming the nonce on redemption spends the link.
+
+Two rules the source side (stacked follow-up PR) holds on top of the table:
+
+- **Only ALLOW consumes.** Withdrawal must never be blockable, so the revoke path
+  neither consumes a nonce nor is gated on one — a customer whose link is already
+  spent can still revoke.
+- **A link minted BEFORE a revocation cannot undo it.** The link carries its mint
+  time; a grant whose link predates the row's `revoked_at` is refused. That reads
+  V84's existing `revoked_at`, so it needs no column here.
+
 ## Deploying the MAC change (one-time, #2419)
 
 The signature now covers `"<version>.<payload>"` rather than the payload alone,
