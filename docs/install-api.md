@@ -378,9 +378,19 @@ curl -s -X POST -H 'content-type: application/json' \
 # → {"token":"…","user":{…}}
 ```
 
-To create additional admin or parent users, use the admin UI
-(**Users → Add user**) or `POST /api/users` with the bearer token from the
-login response.
+To create the household's other users — the second parent (`adult`) and the
+kids (`child`) — use the admin UI (**Users → Add user**) or `POST /api/users`
+with the bearer token from the login response.
+
+> **A household has exactly one admin.** The account you just created is it.
+> A partial unique index (`V86__one_admin_per_household.sql`, `users`
+> `(household_id) WHERE role = 'admin'`,
+> [#2512](https://github.com/wifihaven/wifihaven/issues/2512)) rejects a second
+> one, so add the other parent as an `adult`, not a second `admin`. The admin
+> owns the account (users, billing, router enrollment, the household
+> kill-switch); `adult` is the role for day-to-day parenting — profiles,
+> schedules, blocklists, apps, and settings
+> ([#2522](https://github.com/wifihaven/wifihaven/issues/2522)).
 
 ---
 
