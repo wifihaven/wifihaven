@@ -504,7 +504,9 @@ object ReplyRedactionSpec
         """Your device 550e8400-e29b-41d4-a716-446655440000 is on firmware v1.2.3, and the
           |agent build is v1.4.0-rc2. We use Bearer authentication-based access control; set
           |`Authorization: Bearer YOUR_API_KEY_HERE`. Rotate bearer credentials.Rotate them
-          |quarterly. The config value is base64 encoded (for example aGVsbG8gd29ybGQ) —
+          |quarterly. Short ids like `Bearer token1234` are below the length floor, so they
+          |survive on their own — that is the half of the rule the digit check does NOT
+          |cover. The config value is base64 encoded (for example aGVsbG8gd29ybGQ) —
           |nothing secret.""".stripMargin
       for {
         _      <- cleanDb

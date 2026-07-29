@@ -79,7 +79,8 @@ object AgentCredential {
    * actual `mint` calls through [[scrub]]: change the signature algorithm or the separator and that
    * suite fails, rather than the redactor silently disarming.
    */
-  val Versions: Set[String] = Set(ConsentToken.Version, PressToken.Version, ConsentGrant.Version)
+  lazy val Versions: Set[String] =
+    Set(ConsentToken.Version, PressToken.Version, ConsentGrant.Version)
 
   /**
    * Hex characters in the HMAC-SHA256 signature every one of those schemes appends — 32 bytes, so
@@ -126,7 +127,9 @@ object AgentCredential {
    * `PressToken.mint` and `ConsentGrant.mint` emit, with the version alternation derived from
    * [[Versions]].
    */
-  private val AgentToken: Regex = {
+  // `lazy` so this cannot depend on declaration order relative to `Versions` — a reorder would
+  // otherwise read a null and silently disarm the rule at object init.
+  private lazy val AgentToken: Regex = {
     val vers = Versions.toList.sorted.map(Regex.quote).mkString("|")
     raw"\b(?:$vers)\.[A-Za-z0-9_-]+\.[0-9a-f]{$SignatureHexChars}\b".r
   }
@@ -140,11 +143,19 @@ object AgentCredential {
    *     shortest of those is a 32-hex digest); and
    *   - at least one DIGIT. This is what keeps hyphenated / dotted / underscored prose out: `Bearer
    *     authentication-based`, `bearer credentials.Rotate` and a `YOUR_API_KEY_HERE` placeholder
-   *     are all long enough, and all survive because none carries a digit. Real credentials —
-   *     base64url payloads, hex digests, `sk-ant-oat01-…` keys — effectively always do; one that
-   *     did not would still be caught by the token rule above if we minted it.
+   *     are all long enough, and all survive because none carries a digit.
    *
-   * Both halves are pinned from both directions in `ReplyRedactionSpec`.
+   * Both halves are pinned from both directions in `ReplyRedactionSpec` — the floor on its own by a
+   * SHORT digit-bearing word after `Bearer` that must survive, which the digit rule alone would not
+   * give.
+   *
+   * KNOWN GAP, stated rather than waved away: the digit requirement buys the false-positive fix at
+   * the cost of a false-negative class. An all-letter credential (`Bearer aBcDeF…`, no digit)
+   * passes straight through. That is a deliberate trade — a redactor that mangles real support
+   * answers gets routed around, and this rule is a best-effort filter over adversary-authored text
+   * either way (see the honesty note at the top of this file). Our OWN minted tokens are
+   * unaffected: they always carry a version prefix and a hex signature, so the token rule catches
+   * them whatever the bearer rule does.
    */
   private val BearerValue: Regex =
     raw"(?i)\bBearer\s+(?=[A-Za-z0-9._~+/=-]{$MinBearerValueChars,})(?=[A-Za-z._~+/=-]*[0-9])[A-Za-z0-9._~+/=-]+".r
