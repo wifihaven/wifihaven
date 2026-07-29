@@ -502,8 +502,10 @@ case class FlipConfig(
 //                             an operator test (staging).
 //   - `responderEnabled` / `issueFilingEnabled`  EXPLICIT #2265 enable flags (no dark-by-default);
 //                             a true flag makes its config chain required at boot.
-//   - `githubSupportBotToken` fine-grained GitHub token for the support bot — Issues:write ONLY on
-//                             wifihaven/wifihaven (no contents / no pull_requests ⇒ no-PR is
+//   - `githubSupportBotToken` fine-grained GitHub token for the support bot — Issues ONLY on
+//                             wifihaven/wifihaven, read+write (read is needed by #2458's
+//                             search-before-file duplicate check, which LISTS open issues; no
+//                             contents / no pull_requests ⇒ no-PR is
 //                             structural, #2241). SECRET. Required when issueFilingEnabled=true.
 //                             (repo + REST base are constants in GithubIssueClient, not config.)
 //

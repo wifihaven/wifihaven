@@ -3,7 +3,7 @@ package wifihaven.api.feature
 import wifihaven.api.{EmailConfig, PlainConfig, PressConfig, SupportConfig}
 import wifihaven.api.auth.{RateLimiter, RateLimiterLive}
 import wifihaven.api.db.*
-import wifihaven.api.notify.{EmailOutcome, EmailSender, Notifier}
+import wifihaven.api.notify.{EmailOutcome, EmailSender, EscalationKind, Notifier}
 import wifihaven.api.press.*
 import wifihaven.api.routes.{PressAgentRoutes, SupportAgentRoutes}
 import wifihaven.api.support.*
@@ -132,6 +132,7 @@ object EscalationSpec
       emailRef    <- Ref.make(List.empty[EmailSender.Sent])
       plainRec    <- PlainClient.recorder
       dispRec     <- CloudAgentDispatcher.recorder
+      tracker     <- DispatchTracker.make(DispatchTracker.deadAfterFor(cfg))
       notifier  = new Notifier.EmailNotifier(
         hsRepo,
         sender.getOrElse(EmailSender.recording(emailRef)),
@@ -158,6 +159,7 @@ object EscalationSpec
         "https://app.example.test",
         notifier,
         escalateThreadLimiter,
+        tracker,
       )
     } yield SupportHarness(
       SupportAgentRoutes.routes(responder),
@@ -260,6 +262,26 @@ object EscalationSpec
     emails.filter(_.to == OperatorAddress)
 
   def spec = suite("escalations reach a human (#2437)")(
+    // ── STRUCTURAL (channel-agnostic) ────────────────────────────────────────
+    test(
+      "#2480: there is exactly ONE EscalationKind, so a per-inbound notice cannot be expressed",
+    ) {
+      // The behavioural pin below ("an accepted inbound does NOT email the operator") is a
+      // statement about the current call sites; this is the STRUCTURAL half #2484 actually shipped.
+      // #2446 mailed the operator on every inbound press message on the premise that press had no
+      // SPA view — `PressPage.tsx` at `/press` had existed since #2296. The fix was to collapse the
+      // enum so the FYI notice has no case to ride on: re-adding a second kind is the moment the
+      // regression becomes possible again, and it should fail HERE first, at the type.
+      //
+      // `kind` is also a live `operator_escalation_total` label that shipped Grafana panels SELECT
+      // on (`kind="escalated"` in press.json / support.json), so the label VALUE is pinned too — a
+      // rename would silently empty those panels.
+      assertTrue(
+        EscalationKind.values.length == 1,
+        EscalationKind.values.head == EscalationKind.Escalated,
+        EscalationKind.label(EscalationKind.Escalated) == "escalated",
+      )
+    },
     // ── PRESS ────────────────────────────────────────────────────────────────
     test("an accepted inbound press email does NOT email the operator (#2480)") {
       // #2480: routine press traffic is monitored at `/press` — the #2296 correspondence log

@@ -5,6 +5,7 @@ import wifihaven.api.support.{
   CloudAgentDispatcher,
   PlainThreadMessage,
   SupportPrivacy,
+  SupportResponder,
   ThreadMessageRole,
 }
 import zio.test.*
@@ -217,6 +218,35 @@ object SupportThreadHistorySpec extends ZIOSpecDefault {
         !k.contains("\noldest-A\n"),
         !k.contains("\noldest-B\n"),
         k.contains("[earlier messages omitted]"),
+      )
+    },
+    test("#2456: a prior AI turn is rendered WITHOUT the server-owned attribution line") {
+      // The attribution line is prepended server-side onto every AI reply, so it is part of the
+      // stored Plain turn — and feeding it back made the agent intermittently copy it to the top of
+      // its own markdown, doubling the customer-visible header. It carries no conversational
+      // content, so history renders the turn without it. (The server-side strip in
+      // `SupportResponder.agentReply` is the load-bearing fix; this keeps the agent from seeing the
+      // pattern at all.)
+      val k = kickoff(
+        dispatch(
+          "latest",
+          List(assistant(s"${SupportResponder.AiReplyAttribution}\n\nSet a Bedtime schedule.")),
+        ),
+      )
+      assertTrue(
+        !k.contains(SupportResponder.AiReplyAttribution),
+        k.contains("Set a Bedtime schedule."),
+      )
+    },
+    test("#2456: a CUSTOMER turn keeps a quoted attribution line — the strip is AI-turns only") {
+      // An email reply quotes our attribution line back at us (the case `PlainClient.roleOf` is
+      // built around). Stripping there would eat the head of the customer's own text, and a
+      // quote-only turn would empty out and vanish from the transcript at the nonEmpty filter.
+      val quoted = s"${SupportResponder.AiReplyAttribution}\n\nNo, that isn't what happened."
+      val k      = kickoff(dispatch("latest", List(customer(quoted))))
+      assertTrue(
+        k.contains(SupportResponder.AiReplyAttribution),
+        k.contains("No, that isn't what happened."),
       )
     },
     // ── 5. #2453: a consent link never re-enters the agent's own context ──────

@@ -46,7 +46,9 @@ import java.time.Instant
  *   - **Registered-admin email**: a NEW inbound email (no resolvable tenant) whose From address
  *     matches a registered household ADMIN (`users.email`, globally unique, V67). We resolve THAT
  *     admin's household and dispatch bound to it, exactly as if UI-originated (the #2241 token
- *     binds to the sender's household).
+ *     binds to the sender's household). Resolving that admin ALSO stamps the household→Plain
+ *     customer mapping (#2505, [[mapCustomerToHousehold]]) — otherwise a customer who only ever
+ *     emails is never mapped, because #2435's reconcile runs on the SPA identity path alone.
  *
  * A NEW thread from an UNREGISTERED address gets a FIXED static reject via the outbound Plain reply
  * — no Claude call, no dispatch, no token, no persisted support thread — so a flood of cold email
@@ -117,26 +119,49 @@ final case class SupportResponder(
     // #2437: bounds how often ONE thread can page the operator. An agent stuck in a loop (or a
     // prompt-injected one) must not be able to turn our own alert mailbox into a firehose.
     escalateThreadLimiter: RateLimiter,
-    // #2460: HOW the post-grant resume is run — the one thing about it that differs between
-    // production and a spec. Production forks it as a DAEMON fiber so the customer's consent POST
-    // returns at once: the resume's two legs (the Plain timeline read at
-    // `PlainClient.HistoryTimeout`, then the cloud-agent dispatch at the transport's
-    // `RequestTimeout`) together exceed the SPA's own `REQUEST_TIMEOUT_MS` (web/src/api/client.ts),
-    // so running it on the request fiber would let a SUCCESSFUL grant abort client-side and be
-    // reported to the customer as a broken link. A daemon fiber also survives a client disconnect,
-    // so every branch still meters its `resume_*`. Specs pass `identity` to run it inline — the seam
-    // controls only WHERE the effect runs, never what it does.
+    // #2472: the dispatch→completion pairing. A dispatch the transport ACCEPTED is recorded here and
+    // closed by the first terminal agent callback on the same thread; a periodic sweep reports the
+    // ones nobody ever closed. Without it a cloud session that accepted the trigger and then died
+    // was indistinguishable from one that answered — every log line and metric said success while
+    // the customer got nothing.
+    dispatchTracker: DispatchTracker,
+    // HOW a best-effort FOLLOW-UP is run — the one thing about those that differs between production
+    // and a spec. Production forks each as a DAEMON fiber so the request/webhook fiber returns at
+    // once; specs pass `identity` to run it inline. The seam controls only WHERE the effect runs,
+    // never what it does, and it must be `forkDaemon` (not `timeout`/`disconnect`): a fork lets the
+    // follow-up RUN ON to completion, so every branch still meters its own outcome and no multi-write
+    // chain can be abandoned half-done.
+    //
+    // Two callers, both one-shot follow-ups whose latency the caller must not pay:
+    //   - #2460, the post-grant consent resume. Its two legs (the Plain timeline read at
+    //     `PlainClient.HistoryTimeout`, then the cloud-agent dispatch at the transport's
+    //     `RequestTimeout`) together exceed the SPA's own `REQUEST_TIMEOUT_MS`
+    //     (web/src/api/client.ts), so on the request fiber a SUCCESSFUL grant could abort
+    //     client-side and be reported to the customer as a broken link.
+    //   - #2505, the household→Plain customer mapping written from the webhook path
+    //     ([[mapCustomerToHousehold]]). `upsertCustomer` chains the tenant write, the tenant fields,
+    //     the customer upsert and — on an email collision — the two-leg reconcile, each bounded only
+    //     by the HTTP client's `RequestTimeout`; awaited, that could push our webhook ack past
+    //     Plain's delivery timeout and earn a redelivery.
     //
     // `forkDaemon`, NOT the `forkScoped` that #1247 moved the Main.scala background loops to: those
-    // are app-lifetime loops that must be interrupted before the Hikari pool closes, whereas this is
-    // a one-shot follow-up with no Scope in reach at the route layer. The accepted cost is a
-    // deploy-time window (bounded by the two transport timeouts) in which an in-flight resume can be
-    // interrupted or see a closing pool — the grant is already committed, so the customer keeps
-    // their consent and at worst re-asks; it is one dropped or `resume_error`-labelled sample.
+    // are app-lifetime loops that must be interrupted before the Hikari pool closes, whereas these
+    // are one-shot follow-ups with no Scope in reach at the route layer. The accepted cost is a
+    // deploy-time window (bounded by the transport timeouts) in which an in-flight follow-up can be
+    // interrupted or see a closing pool. Both callers survive it: the consent grant is already
+    // committed, so the customer keeps their consent and at worst re-asks; the mapping is idempotent
+    // and re-attempted on that household's next message. Either way it is one dropped sample.
+    //
+    // Deliberately UNCAPPED and un-deduped: one fork per triggering event, so a new inbound email
+    // stamps the mapping about twice — on the bodyless `thread.thread_created` and again on the
+    // `email_received` that carries the body (and the earlier of the two is the better moment, not
+    // waste). That is fine at the rate it fires: forks track inbound CUSTOMER email, both callers
+    // are idempotent, and every leg is bounded by the transport's own `RequestTimeout`. A cap here
+    // would buy nothing the origin gate and the dispatch limiters do not already buy.
     //
     // This is the ONLY parameter with a default, so it must stay LAST — every construction site
     // (HttpRoutes, the specs) passes the ones above positionally.
-    runResume: UIO[Unit] => UIO[Unit] = _.forkDaemon.unit,
+    runDetached: UIO[Unit] => UIO[Unit] = _.forkDaemon.unit,
 ) {
   import SupportResponder.*
 
@@ -248,18 +273,96 @@ final case class SupportResponder(
       case None        => ZIO.succeed(WebhookOutcome.SkippedUnauthenticated) // no From to gate on
       case Some(email) =>
         resolveAdminHousehold(email).flatMap {
-          case Some((hh, household)) if event.threadId.nonEmpty && event.messageText.nonEmpty =>
-            rateLimitedDispatch(event, hh, household, WebhookOutcome.EmailRegisteredDispatched)
-          case Some(_)                                                                        =>
-            // Registered, but no thread to bind or a bodyless new-thread event — the answerable
-            // message rides the following body event (chat_received/email_received).
-            ZIO.succeed(WebhookOutcome.SkippedUnauthenticated)
-          case None                                                                           =>
+          case Some((hh, household)) =>
+            val outcome =
+              if event.threadId.nonEmpty && event.messageText.nonEmpty then
+                rateLimitedDispatch(event, hh, household, WebhookOutcome.EmailRegisteredDispatched)
+              else
+                // Registered, but no thread to bind or a bodyless new-thread event — the answerable
+                // message rides the following body event (chat_received/email_received).
+                ZIO.succeed(WebhookOutcome.SkippedUnauthenticated)
+            // #2505: the mapping runs DETACHED (`forkDaemon` in production), so neither the agent
+            // session nor the webhook ack waits on a slow Plain (see [[mapCustomerToHousehold]]).
+            outcome <* runDetached(mapCustomerToHousehold(hh, household, email))
+          case None                  =>
             // Unregistered: reject a NEW thread once; skip continuations (no re-reject backscatter).
             if event.isNewThread then staticReject(event)
             else ZIO.succeed(WebhookOutcome.SkippedUnauthenticated)
         }
     }
+
+  /**
+   * #2505 — stamp the household→Plain-customer mapping from the EMAIL path.
+   *
+   * #2435's reconcile fires from [[SupportService.identity]], i.e. only when an admin loads the
+   * SPA. A household whose admin emails support and never opens the dashboard was therefore never
+   * mapped: its Plain customer kept `externalId: null`, so the operator triaging the thread saw no
+   * tenant and no plan/entitlement context (the whole point of #2240), and every later message fell
+   * through to [[resolveAdminHousehold]] — a strictly narrower key (exact, case-sensitive
+   * `users.email` AND `role == Admin`), which treats a non-admin member or an
+   * aliased/differently-cased admin address as unregistered. Nothing retried it. The gate has just
+   * proven this sender IS a household admin and holds both halves the mapping needs, so it writes
+   * the same payload the identity path writes — [[PlainCustomerUpsert.forHousehold]] is the one
+   * builder, so the two producers cannot drift.
+   *
+   * Best-effort and NOT on the critical path, but also NOT silent
+   * (docs/process/no-dark-by-default.md):
+   *   - it is decided AFTER the dispatch, so nothing the customer waits on is behind it, and it is
+   *     handed to [[runDetached]] (`forkDaemon` in production) so the webhook fiber does not wait
+   *     on it either. `upsertCustomer` is a CHAIN of Plain writes — tenant, tenant fields,
+   *     customer, and on an email collision the two-leg reconcile — each bounded only by the HTTP
+   *     client's `RequestTimeout`, so awaiting it could push our ack past Plain's delivery timeout
+   *     and earn a redelivery. A `timeout` would be the wrong instrument for the same reason a fork
+   *     is the right one: interrupting mid-chain can leave the reconcile's `externalId` patch
+   *     written with its tenant join missing — a state no later attempt repairs, because the
+   *     primary path carries `tenantIdentifiers` on `onCreate` only (#2253) — and would drop the
+   *     sample that says so;
+   *   - it is idempotent and `PlainClient.upsertCustomer` never fails, so it cannot break the
+   *     dispatch or the reply however it goes;
+   *   - and it meters `support_customer_upsert_total{outcome,reason}` from inside `PlainClient` —
+   *     the SAME series and reason vocabulary #2435 settled on, so a broken mapping is attributable
+   *     on the existing panel regardless of which producer attempted it. Metering here as well
+   *     would double-count and could only carry the outcome, never the Plain-side reason. Running
+   *     on a forked fiber is what keeps that attribution: the chain completes and meters even
+   *     though nobody is waiting for it.
+   *
+   * A degraded billing read is warned and degraded to "no plan attributes" rather than skipping the
+   * write: the externalId mapping — the load-bearing half — is worth stamping even when the
+   * entitlement context is momentarily unreadable, and the next call repairs the attributes.
+   *
+   * NOTE (#2512): the Plain customer is keyed on the HOUSEHOLD id while `role = 'admin'` is not
+   * unique per household, so a second admin emailing support rewrites the household's one customer
+   * onto their address — usually into Plain's workspace-wide email uniqueness, i.e. a non-self-
+   * healing `email_collision`. Pre-existing (the identity path has the same shape); tracked there.
+   */
+  private def mapCustomerToHousehold(
+      hh: HouseholdId,
+      household: Household,
+      email: String,
+  ): UIO[Unit] =
+    billingRepo
+      .findByHousehold(hh)
+      .catchAll(e =>
+        ZIO
+          .logWarning(
+            s"support: could not read billing for household ${hh.value} while mapping its Plain " +
+              s"customer; mapping without plan attributes: ${e.getMessage}",
+          )
+          .as(None),
+      )
+      .flatMap { billing =>
+        plain
+          .upsertCustomer(
+            PlainCustomerUpsert.forHousehold(
+              householdId = hh,
+              email = email,
+              householdName = household.name,
+              plan = billing.map(_.status),
+              founding = billing.map(_.founding),
+            ),
+          )
+          .unit
+      }
 
   /**
    * Resolve a sender From address to the household of the ADMIN who owns it. Match is exact
@@ -351,6 +454,16 @@ final case class SupportResponder(
           history = history,
         ),
       )
+      // #2472: pair the dispatch with the callback that must follow it. ONLY an ACCEPTED dispatch is
+      // tracked — a `Disabled` / `Error` / `ConfigError` outcome never started a cloud session, so
+      // nothing is owed and the existing dispatcher-level series already reports it. The transport is
+      // the SAME pure function of config the dispatcher was built from (`transportFor`), so the label
+      // cannot drift from the one `support_dispatch_total{transport}` already carries.
+      _       <- ZIO
+        .foreachDiscard(CloudAgentDispatcher.transportLabel(cfg))(
+          dispatchTracker.dispatched(threadId, hh, _, now),
+        )
+        .when(outcome == DispatchOutcome.Dispatched)
     } yield outcome
 
   /**
@@ -493,18 +606,21 @@ final case class SupportResponder(
    * reply at another thread or household.
    */
   def agentReply(bearer: Option[String], markdown: String): UIO[AgentActionResult] =
-    withClaims("reply", bearer) { claims =>
+    withClaims(AgentAction.Reply, bearer) { claims =>
       val write = PlainThreadWrite(
         // #2408: the reply posts INTO the customer's existing thread (`claims.threadId`, the
         // customer-visible send via Plain's replyToThread), NOT a new createThread. The thread
         // binding comes from the verified token — the request body carries only the reply text.
         threadId = claims.threadId,
-        markdown = s"$AiReplyAttribution\n\n$markdown",
+        // #2456: strip the agent's own leading copy first — the server owns this line, and the
+        // agent intermittently copies it out of the thread history it now sees (#2441), which
+        // showed the customer the header twice.
+        markdown = s"$AiReplyAttribution\n\n${stripLeadingAttribution(markdown)}",
       )
       plain.writeThread(write).flatMap {
-        case PlainOutcome.Ok       => done("reply", AgentActionResult.Ok)
-        case PlainOutcome.Disabled => done("reply", AgentActionResult.Disabled)
-        case PlainOutcome.Error    => done("reply", AgentActionResult.Error)
+        case PlainOutcome.Ok       => done(AgentAction.Reply, AgentActionResult.Ok)
+        case PlainOutcome.Disabled => done(AgentAction.Reply, AgentActionResult.Disabled)
+        case PlainOutcome.Error    => done(AgentAction.Reply, AgentActionResult.Error)
       }
     }
 
@@ -517,6 +633,12 @@ final case class SupportResponder(
    * On success it answers the created [[FiledIssue]] (#2461) — the number + public URL the agent
    * may quote to the customer; every failure stays the bounded [[AgentActionResult]] the route maps
    * to a status.
+   *
+   * Both limiters are consumed BEFORE the #2458 duplicate check runs, so an ask that ends up
+   * creating nothing still spends thread and global budget. That is deliberate: what the limiters
+   * bound is the COST an agent can impose — and a deduped ask still costs the GitHub list call —
+   * not the count of issues that reach the repo. Deferring them past the scan would let a looping
+   * agent hammer the GitHub API for free.
    *
    * #2454 — a session whose token carries `dataAccess=true` is REFUSED outright, before the rate
    * limiters and before the client. The scrubber alone could never be the control here: the
@@ -533,30 +655,41 @@ final case class SupportResponder(
       title: String,
       body: String,
   ): UIO[Either[AgentActionResult, FiledIssue]] =
-    withClaimsE("issue", bearer) { (claims, _) =>
+    withClaimsE(AgentAction.Issue, bearer) { (claims, _) =>
       // #2454: the consented-read scope and public-issue filing do not compose. Checked FIRST so a
-      // refused session spends neither rate-limit budget nor a GitHub call.
+      // refused session spends neither rate-limit budget nor a GitHub call — including the #2458
+      // duplicate-scan list call, which the limiters otherwise deliberately charge for.
       if claims.dataAccess then
         AppMetrics.supportConsent("issue_refused_data_session") *>
-          doneE("issue", AgentActionResult.DataSession)
+          doneE(AgentAction.Issue, AgentActionResult.DataSession)
       // Same short-circuit as dispatch: a thread-capped caller must not drain the global budget.
       else
         issueThreadLimiter.tryAcquire(s"thread:${claims.threadId}").flatMap { threadOk =>
-          if !threadOk then doneE("issue", AgentActionResult.RateLimited)
+          if !threadOk then doneE(AgentAction.Issue, AgentActionResult.RateLimited)
           else
             issueGlobalLimiter.tryAcquire("global").flatMap { globalOk =>
-              if !globalOk then doneE("issue", AgentActionResult.RateLimited)
+              if !globalOk then doneE(AgentAction.Issue, AgentActionResult.RateLimited)
               else
                 github.fileIssue(IssueFileRequest(title, body, claims.threadId)).flatMap {
                   // #2461: the created issue's identity rides back out so the agent can offer the
                   // customer a link. The metric label stays the bounded `ok` — never the number.
-                  case IssueOutcome.Filed(ref) =>
+                  case IssueOutcome.Filed(ref)     =>
                     // Same `done` metering choke point as every other branch — only the RESULT
                     // differs, so there is still exactly one place the label is derived.
-                    done("issue", issueFiledOutcome(ref))
+                    done(AgentAction.Issue, issueFiledOutcome(ref))
                       .as(Right(FiledIssue(ref.map(_.number), ref.map(_.url))))
-                  case IssueOutcome.Disabled   => doneE("issue", AgentActionResult.Disabled)
-                  case IssueOutcome.Error      => doneE("issue", AgentActionResult.Error)
+                  // #2458: the topic was already tracked, so nothing was created. Carried on the
+                  // SAME `number`/`url` fields #2461 added — the customer is pointed at the
+                  // canonical issue, not told about a duplicate we declined to file — plus the
+                  // `duplicate` marker so the agent's wording matches what happened.
+                  case IssueOutcome.Duplicate(ref) =>
+                    done(AgentAction.Issue, AgentActionResult.OkDuplicate)
+                      .as(
+                        Right(FiledIssue(Some(ref.number), Some(ref.url), duplicate = Some(true))),
+                      )
+                  case IssueOutcome.Disabled       =>
+                    doneE(AgentAction.Issue, AgentActionResult.Disabled)
+                  case IssueOutcome.Error => doneE(AgentAction.Issue, AgentActionResult.Error)
                 }
             }
         }
@@ -585,7 +718,7 @@ final case class SupportResponder(
    * is still required, so this only ever narrows access.
    */
   def agentHousehold(bearer: Option[String]): UIO[Either[AgentActionResult, HouseholdSummary]] =
-    withClaimsE("household_read", bearer) { (claims, now) =>
+    withClaimsE(AgentAction.HouseholdRead, bearer) { (claims, now) =>
       // The token scope is free to check and refuses the COMMON case (most threads never grant), so
       // it short-circuits ahead of the grant lookup — the DB round trip is only spent on a token
       // that actually claims data access.
@@ -607,7 +740,7 @@ final case class SupportResponder(
       AppMetrics
         .supportConsent(if claims.dataAccess then "read_withdrawn" else "read_no_scope") *>
         AppMetrics
-          .supportAgentAction("household_read", "denied")
+          .supportAgentAction(AgentAction.HouseholdRead, "denied")
           .as(Left(AgentActionResult.NoConsent))
     else {
       val hh = claims.householdId
@@ -620,7 +753,7 @@ final case class SupportResponder(
         _         <- ZIO.logInfo(
           s"support: agent household read household=${hh.value} thread=${claims.threadId}",
         )
-        _         <- AppMetrics.supportAgentAction("household_read", "ok")
+        _         <- AppMetrics.supportAgentAction(AgentAction.HouseholdRead, "ok")
       } yield Right(
         HouseholdSummary(
           name = household.map(_.name).getOrElse(""),
@@ -660,9 +793,9 @@ final case class SupportResponder(
    * making the agent retry would only re-page the operator.
    */
   def agentEscalate(bearer: Option[String], note: Option[String]): UIO[AgentActionResult] =
-    withClaims("escalate", bearer) { claims =>
+    withClaims(AgentAction.Escalate, bearer) { claims =>
       escalateThreadLimiter.tryAcquire(s"escalate:${claims.threadId}").flatMap { ok =>
-        if !ok then done("escalate", AgentActionResult.RateLimited)
+        if !ok then done(AgentAction.Escalate, AgentActionResult.RateLimited)
         else escalate(claims, note)
       }
     }
@@ -700,7 +833,7 @@ final case class SupportResponder(
           reference = claims.threadId,
         ),
       )
-      r         <- done("escalate", AgentActionResult.Ok)
+      r         <- done(AgentAction.Escalate, AgentActionResult.Ok)
     } yield r
   }
 
@@ -732,18 +865,18 @@ final case class SupportResponder(
     // The OTHER callback that needs the current time: takes the verified `now` from the token check
     // rather than reading the clock again, so the grant check, the link's expiry, and the token
     // verification all sit on one instant.
-    withClaimsAt("consent_request", bearer) { (claims, now) =>
+    withClaimsAt(AgentAction.ConsentRequest, bearer) { (claims, now) =>
       consentGranted(claims.householdId, claims.threadId, now)
         .flatMap {
           case true  =>
             // Already consented — no prompt, no spam. The next dispatch already carries the scope.
             AppMetrics.supportConsent("request_already_granted") *>
-              done("consent_request", AgentActionResult.Ok)
+              done(AgentAction.ConsentRequest, AgentActionResult.Ok)
           case false =>
             consentThreadLimiter.tryAcquire(s"consent:${claims.threadId}").flatMap { ok =>
               if !ok then
                 AppMetrics.supportConsent("request_rate_limited") *>
-                  done("consent_request", AgentActionResult.RateLimited)
+                  done(AgentAction.ConsentRequest, AgentActionResult.RateLimited)
               else postConsentPrompt(claims, now)
             }
         }
@@ -773,13 +906,14 @@ final case class SupportResponder(
     ) *>
       plain.writeThread(write).flatMap {
         case PlainOutcome.Ok       =>
-          AppMetrics.supportConsent("requested") *> done("consent_request", AgentActionResult.Ok)
+          AppMetrics
+            .supportConsent("requested") *> done(AgentAction.ConsentRequest, AgentActionResult.Ok)
         case PlainOutcome.Disabled =>
           AppMetrics.supportConsent("request_disabled") *>
-            done("consent_request", AgentActionResult.Disabled)
+            done(AgentAction.ConsentRequest, AgentActionResult.Disabled)
         case PlainOutcome.Error    =>
           AppMetrics.supportConsent("request_error") *>
-            done("consent_request", AgentActionResult.Error)
+            done(AgentAction.ConsentRequest, AgentActionResult.Error)
       }
   }
 
@@ -876,7 +1010,7 @@ final case class SupportResponder(
       // carry the scope the customer just granted. Re-confirming a still-live grant resumes nothing
       // (the idempotency guard) — the answer to that question is already on its way.
       _     <- ZIO.when(write.result == ConsentResult.Granted) {
-        if write.transitioned then runResume(resumeAfterGrant(claims.hh, g, now))
+        if write.transitioned then runDetached(resumeAfterGrant(claims.hh, g, now))
         else meterResume(ResumeOutcome.Skipped)
       }
     } yield write.result
@@ -909,7 +1043,7 @@ final case class SupportResponder(
    *   - it does NOT trip the #2403/#2404 loop guard: that guard lives on the inbound webhook path
    *     and drops our own outbound writes, which is untouched here. The agent's eventual reply
    *     still arrives as a `thread.chat_sent` the guard drops, so the loop terminates;
-   *   - it runs OFF the request fiber (`runResume`, `forkDaemon` in production). Both legs are
+   *   - it runs OFF the request fiber (`runDetached`, `forkDaemon` in production). Both legs are
    *     bounded only by their own transport timeouts — the timeline read at
    *     [[PlainClient.HistoryTimeout]], the dispatch at the transport's `RequestTimeout`
    *     (`ManagedAgents` / `ClaudeCodeRoutines`) — which together exceed the SPA's own request
@@ -1092,7 +1226,18 @@ final case class SupportResponder(
           case Some(token) =>
             ConsentToken.verify(token, now, cfg.agentTokenSecretTrimmed) match {
               case Left(err)     => denyLoudly(action, AgentTokenRejection.reasonFor(err))
-              case Right(claims) => f(claims, now)
+              case Right(claims) =>
+                // #2472: the ONE place every token-authenticated agent callback passes through, so
+                // the dispatch→completion pairing has exactly one closing site. Terminal actions
+                // only (DispatchTracker.TerminalActions) — a household read or an issue filing
+                // proves the session is alive but leaves the customer with nothing, which is the
+                // very failure being tracked. A REJECTED callback never reaches here, so a forged
+                // token cannot close someone else's dispatch.
+                ZIO
+                  .when(AgentAction.Terminal.contains(action))(
+                    dispatchTracker.calledBack(claims.threadId, action, now),
+                  )
+                  .unit *> f(claims, now)
             }
         }
       }
@@ -1155,6 +1300,36 @@ object SupportResponder {
    */
   val AiReplyAttribution: String =
     "🤖 *WifiHaven support assistant — reply \"talk to a human\" any time and a teammate will follow up.*"
+
+  /**
+   * #2456 — drop any LEADING copies of [[AiReplyAttribution]] from agent-authored markdown. The
+   * server is the single owner of that line; a copy at the head of the agent's own text is always
+   * redundant, and left in place the customer sees the header twice.
+   *
+   * Why the agent emits it at all: since #2441 the kickoff carries prior AI turns back as history,
+   * and those stored turns begin with the line, so the agent intermittently reproduces the shape it
+   * sees (measured ~1 in 2 history-carrying replies; it does NOT compound). Because that is
+   * non-deterministic model formatting rather than an instruction being followed —
+   * `deploy/support-agent/agent.yaml` never asks for the line — the fix has to be structural here
+   * rather than a prompt rule, which would re-open on any prompt edit or model change.
+   *
+   * LEADING only: the line is a header, so a mid-body occurrence is the agent QUOTING an earlier
+   * turn back to the customer, which is legitimate content and stays.
+   *
+   * EXACT match only, deliberately. The constant carries an emoji, markdown emphasis, an em dash
+   * and typographic quotes, and a near-miss reproduction (no 🤖, `-` for `—`, straight quotes) is
+   * NOT stripped — "exactly once" is a guarantee about VERBATIM copies, which is what the observed
+   * duplication is. A fuzzy match would risk eating customer- or agent-authored text that merely
+   * resembles the line, the worse failure.
+   */
+  private[api] def stripLeadingAttribution(markdown: String): String = {
+    @annotation.tailrec
+    def go(s: String): String = {
+      val t = s.stripLeading()
+      if t.startsWith(AiReplyAttribution) then go(t.drop(AiReplyAttribution.length)) else t
+    }
+    go(markdown)
+  }
 
   /**
    * #2437 — what the support escalation notice puts in the "message" slot. Unlike press (where the
@@ -1443,6 +1618,15 @@ object SupportResponder {
   enum AgentActionResult   {
     case Ok
     case OkNoLink
+
+    /**
+     * #2458 — the agent asked to file, an already-open `support-agent` issue covered the topic, and
+     * we handed that issue back instead of creating a duplicate. A SUCCESS: the customer gets a
+     * real, canonical link. Distinct from `Ok` because the operator wants to see how much of the
+     * ask rate the dedup is absorbing — but it counts in [[SuccessLabels]], so the #2241 volume
+     * panel does not read the fix as a collapse in agent activity.
+     */
+    case OkDuplicate
     case Denied
     case NoConsent
 
@@ -1461,6 +1645,7 @@ object SupportResponder {
     def label(r: AgentActionResult): String = r match {
       case Ok          => "ok"
       case OkNoLink    => "ok_no_link"
+      case OkDuplicate => "ok_duplicate"
       case Denied      => "denied"
       case NoConsent   => "denied"
       case DataSession => "denied_data_session"
@@ -1471,7 +1656,7 @@ object SupportResponder {
 
     /** The cases that mean "the action succeeded" — the ONE place success is defined. */
     private def isSuccess(r: AgentActionResult): Boolean = r match {
-      case Ok | OkNoLink                                                     => true
+      case Ok | OkNoLink | OkDuplicate                                       => true
       case Denied | NoConsent | DataSession | RateLimited | Disabled | Error => false
     }
 
@@ -1491,7 +1676,16 @@ object SupportResponder {
    * an issue that GitHub created but whose response we could not read back is still a success, and
    * the agent then simply has no link to offer rather than an invented one.
    */
-  final case class FiledIssue(number: Option[Int], url: Option[String], ok: Boolean = true)
+  final case class FiledIssue(
+      number: Option[Int],
+      url: Option[String],
+      ok: Boolean = true,
+      // #2458 — `Some(true)` iff the topic was ALREADY tracked, so `number`/`url` point at a
+      // pre-existing issue rather than one we just created. Optional (not a defaulted `Boolean`) so
+      // it is ABSENT on an ordinary filing: the agent's prompt contract is that a field it must not
+      // quote simply is not there, and the no-link body stays exactly `{"ok":true}`.
+      duplicate: Option[Boolean] = None,
+  )
   object FiledIssue {
     given JsonCodec[FiledIssue] = DeriveJsonCodec.gen[FiledIssue]
   }

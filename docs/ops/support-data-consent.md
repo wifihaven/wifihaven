@@ -229,6 +229,7 @@ link that leaked into agent context (or was captured any other way) could be
 replayed to RE-GRANT access after the customer withdrew it (`grant` UPSERTs
 `revoked_at = NULL`). Consuming the nonce on redemption spends the link.
 
+Two rules the source side (stacked follow-up PR) holds on top of the table:
 Two rules the source side holds on top of the table:
 
 - **Only ALLOW consumes.** Withdrawal must never be blockable, so the revoke path

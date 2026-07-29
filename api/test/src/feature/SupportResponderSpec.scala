@@ -110,7 +110,14 @@ object SupportResponderSpec
   // #2461: the issue-filing route's response shape, decoded from the wire so the pin asserts what
   // the agent actually receives (number/url optional — a 2xx GitHub body we could not parse must
   // still be a success, just without a link).
-  private final case class FiledIssueBody(ok: Boolean, number: Option[Int], url: Option[String])
+  private final case class FiledIssueBody(
+      ok: Boolean,
+      number: Option[Int],
+      url: Option[String],
+      // #2458 — present (and `true`) ONLY when we matched an already-open issue instead of creating
+      // one. Absent on a real filing, so the "no link" contract body stays exactly `{"ok":true}`.
+      duplicate: Option[Boolean] = None,
+  )
   private object FiledIssueBody {
     given JsonCodec[FiledIssueBody] = DeriveJsonCodec.gen[FiledIssueBody]
   }
@@ -124,6 +131,16 @@ object SupportResponderSpec
       // deliberately answers 200 for both a DELIVERED and an UNDELIVERED reject (Plain must not
       // retry-storm), so the status cannot tell the two apart; the outcome is the only signal.
       responder: SupportResponder,
+      // #2505: how many effects the responder handed to the `runDetached` seam. Production forks
+      // those (`forkDaemon`) so neither the agent session nor the webhook ack waits on Plain; this
+      // suite runs them INLINE so its pins don't race the fork — which on its own would make the
+      // ROUTING invisible (a bare call would look identical). So this counts the hand-off, and that
+      // is precisely what it pins: that the mapping goes THROUGH the seam. What the seam MEANS in
+      // production (`forkDaemon`, i.e. the caller does not wait) is single-sourced at its default
+      // and pinned once, end to end, by SupportConsentSpec's promise-gated `productionResume` case
+      // — deliberately not re-pinned here, where it would need a wall-clock wait on a background
+      // fiber (the #2042 flake class).
+      detachedRuns: Ref[Int],
   )
 
   private def makeRoutes(
@@ -150,6 +167,8 @@ object SupportResponderSpec
       plainRec    <- PlainClient.recorder
       ghRec       <- GithubIssueClient.recorder
       dispRec     <- CloudAgentDispatcher.recorder
+      tracker     <- DispatchTracker.make(DispatchTracker.deadAfterFor(cfg))
+      detachedRef <- Ref.make(0)
       responder = SupportResponder(
         cfg,
         hhRepo,
@@ -173,8 +192,22 @@ object SupportResponderSpec
         // from depending on the notification transport.
         Notifier.logOnly,
         RateLimiter.allowAll,
+        tracker,
+        // #2505: COUNT the hand-off, then run it INLINE — the same seam SupportConsentSpec uses.
+        // Production forks the mapping write so the webhook fiber never waits on Plain; a spec that
+        // asserts the write happened must not race that fork, and inline is deterministic where a
+        // wall-clock wait on a background fiber would be the #2042 flake class. The counter is what
+        // keeps the ROUTING asserted — inline execution alone would make a bare, un-detached call
+        // look identical (see `Stubs.detachedRuns`). The seam changes only WHERE an effect runs, so
+        // nothing here is weakened: the consent resume, the only other caller, rides a route this
+        // suite never wires (`SupportConsentRoutes`) and is pinned in BOTH modes by
+        // SupportConsentSpec.
+        runDetached = eff => detachedRef.update(_ + 1) *> eff,
       )
-    } yield (SupportAgentRoutes.routes(responder), Stubs(plainRec, ghRec, dispRec, responder))
+    } yield (
+      SupportAgentRoutes.routes(responder),
+      Stubs(plainRec, ghRec, dispRec, responder, detachedRef),
+    )
 
   // #2408: the reply path's acceptance requires the Plain client faked at the HTTP BOUNDARY only
   // (not the recorder), so a full-stack test can assert the LIVE client emits `replyToThread` against
@@ -220,6 +253,7 @@ object SupportResponderSpec
       profRepo    <- ZIO.service[ProfileRepo]
       clock       <- ZIO.service[Clock]
       consentRepo <- ZIO.service[SupportConsentRepo]
+      tracker     <- DispatchTracker.make(DispatchTracker.deadAfterFor(cfg))
       liveCfg   = cfg.copy(plain = cfg.plain.copy(writeEnabled = true, apiBase = apiBase))
       responder = SupportResponder(
         liveCfg,
@@ -244,6 +278,12 @@ object SupportResponderSpec
         // from depending on the notification transport.
         Notifier.logOnly,
         RateLimiter.allowAll,
+        tracker,
+        // #2505: same inline seam as `makeRoutes`. Defensive today — this builder's cases drive the
+        // agent reply route only, so no `runDetached` call site is reachable from it. It matters the
+        // moment one is: this builder wires the LIVE Plain client, where a forked follow-up would
+        // become a real HTTP call racing the capture server's teardown.
+        runDetached = identity,
       )
     } yield SupportAgentRoutes.routes(responder)
 
@@ -305,6 +345,35 @@ object SupportResponderSpec
     s"""{"workspaceId":"w_1","id":"pEv_new","payload":{"eventType":"thread.thread_created",""" +
       s""""thread":{"id":"$threadId","createdBy":{"actorType":"customer"},""" +
       s""""customer":{"id":"c_new","externalId":null$emailJson}}}}"""
+  }
+
+  // #2403/#2404 — OUR OWN outbound EMAIL reply, as Plain actually delivers it: `thread.email_sent`,
+  // the email-channel twin of `thread.chat_sent`. This is the shape that fired on staging
+  // (2026-07-26, 13:37:47) once the responder started answering cold email. The guard HELD there —
+  // the #2335 validation log records `thread.email_sent → skipped_not_inbound` — so what this pins
+  // is a COVERAGE GAP, not a regression: `thread.chat_sent` has had a test since #2403 and the email
+  // twin never did. (Deliberately NOT attributed to #2471, which is the unrelated "Plain workspace
+  // has email sending DISABLED" outcome-attribution bug, pinned separately further down this file.)
+  //
+  // It carries a FULL body (`email.textContent`) and — unlike a cold inbound — a RESOLVABLE
+  // `customer.externalId`, so the event type and the actor are the only things standing between it
+  // and a dispatch. Both are overridable so a spec can drive each guard layer in isolation.
+  //
+  // Mirrors Plain's real envelope (core-api.uk.plain.com/webhooks/schema/latest.json) — do NOT
+  // "simplify" it: the hand-invented shape the pre-#2403 fixtures used matched the buggy parser and
+  // is precisely why #2403 shipped broken.
+  private def emailSentPayload(
+      tenant: Option[Long],
+      threadId: String,
+      text: String,
+      actorType: String = "user",
+      eventType: String = "thread.email_sent",
+  ): String = {
+    val extId = tenant.map(t => s""""$t"""").getOrElse("null")
+    s"""{"workspaceId":"w_1","id":"pEv_email_sent","payload":{"eventType":"$eventType",""" +
+      s""""email":{"subject":"Re: Can i add another router?","textContent":${text.toJson},""" +
+      s""""createdBy":{"actorType":"$actorType"}},""" +
+      s""""thread":{"id":"$threadId","customer":{"id":"c_1","externalId":$extId}}}}"""
   }
 
   // Plain signs the RAW body with HMAC-SHA256 hex — same primitive as the chat-auth hash (#2199).
@@ -503,6 +572,129 @@ object SupportResponderSpec
         dispatches <- stubs.dispatch.dispatches.get
       } yield assertTrue(status == Status.Ok, dispatches.isEmpty)
     },
+    test("#2403 loop guard (EMAIL channel): a thread.email_sent reply is NEVER re-dispatched") {
+      // The coverage gap this closes. `thread.chat_sent` has had a test since #2403; the EMAIL
+      // channel never did, and once the responder began answering cold email the reply that
+      // actually reached the customer came back as `thread.email_sent` — a fully resolvable, fully
+      // bodied event. The guard held on staging (#2335, 13:37:47 → `skipped_not_inbound`), so
+      // nothing regressed; it was simply untested. Pin it on the same footing as the chat case: a
+      // household that resolves, a body that would otherwise dispatch, NOTHING allowed to happen.
+      //
+      // TWO `_sent` variants are driven, because the guard is two independent checks and the
+      // realistic payload satisfies neither:
+      //   - `actorType = "user"` — the REAL staging shape (our reply is authored by us);
+      //   - `actorType = "customer"` — the same outbound event with the actor guard SATISFIED, so
+      //     the event-type allowlist is the sole thing refusing it.
+      // The second is what gives this test mutation-sensitivity: widening
+      // `PlainWebhook.InboundCustomerEventTypes` to admit `thread.email_sent` turns it red. Without
+      // it the test passes with the allowlist widened, guarded only by the actor check — a
+      // red-check caught exactly that while writing this.
+      for {
+        _               <- cleanDb
+        hhRepo          <- ZIO.service[HouseholdRepo]
+        billRepo        <- ZIO.service[HouseholdBillingRepo]
+        hh              <- hhRepo.create("Family EmailLoop", "family-email-loop")
+        _               <- billRepo.create(hh, "beta", founding = true)
+        (routes, stubs) <- makeRoutes(liveCfg)
+        body = emailSentPayload(
+          Some(hh.value),
+          "th_email_loop",
+          "Yes — your plan covers one router. Reply here if you need a hand.",
+        )
+        // Both seams: the ROUTE (Plain must always get its 200 so it stops retrying) and the
+        // responder (the `support_ai_draft_total{outcome}` label — the only thing that can tell a
+        // deliberate skip from a silent swallow, since the status is 200 either way).
+        status  <- postWebhook(routes, body, Some(sign(body)))
+        outcome <- stubs.responder.handleWebhook(body, Some(sign(body)))
+        // The SAME outbound event with the actor guard satisfied — the event-type allowlist is now
+        // the only thing refusing it, so this is the assertion that goes red if the allowlist is
+        // widened to admit `thread.email_sent`.
+        asCustomer = emailSentPayload(
+          Some(hh.value),
+          "th_email_loop_actor_ok",
+          "Yes — your plan covers one router. Reply here if you need a hand.",
+          actorType = "customer",
+        )
+        oAsCustomer <- stubs.responder.handleWebhook(asCustomer, Some(sign(asCustomer)))
+        dispatches  <- stubs.dispatch.dispatches.get
+        threads     <- stubs.plain.threads.get
+        // POSITIVE CONTROL — same household and body, but a genuine customer INBOUND
+        // (`thread.email_received`). It DISPATCHES, which is what makes the negative assertions
+        // above evidence of the loop guard rather than of an inert fixture.
+        control = emailSentPayload(
+          Some(hh.value),
+          "th_email_loop_control",
+          "Yes — your plan covers one router. Reply here if you need a hand.",
+          actorType = "customer",
+          eventType = "thread.email_received",
+        )
+        oControl        <- stubs.responder.handleWebhook(control, Some(sign(control)))
+        afterDispatches <- stubs.dispatch.dispatches.get
+      } yield assertTrue(
+        status == Status.Ok,
+        // No AI call and no write back into the thread — the two ways a loop could restart.
+        dispatches.isEmpty,
+        threads.isEmpty,
+        outcome == SupportResponder.WebhookOutcome.SkippedNotInbound,
+        SupportResponder.WebhookOutcome.label(outcome) == "skipped_not_inbound",
+        // Mutation-sensitive: refused on the EVENT TYPE alone.
+        oAsCustomer == SupportResponder.WebhookOutcome.SkippedNotInbound,
+      ) && assertTrue(
+        oControl == SupportResponder.WebhookOutcome.Dispatched,
+        afterDispatches.size == 1,
+        afterDispatches.head._1.threadId == "th_email_loop_control",
+      )
+    },
+    test("#2403 loop guard: the two layers are INDEPENDENT — either one alone stops the loop") {
+      // The guard is deliberately two checks (`PlainWebhook.InboundCustomerEventTypes` and
+      // `actorType == "customer"`). If either silently became load-bearing on its own, the other
+      // could rot unnoticed until a workspace subscribed to a new event type. So drive each half
+      // with the OTHER half satisfied:
+      //   - an outbound `thread.email_sent` that CLAIMS `actorType=customer` (actor guard passes,
+      //     event-type guard must still refuse);
+      //   - an inbound `thread.chat_received` authored by a non-customer actor (event-type guard
+      //     passes, actor guard must still refuse).
+      for {
+        _               <- cleanDb
+        hhRepo          <- ZIO.service[HouseholdRepo]
+        billRepo        <- ZIO.service[HouseholdBillingRepo]
+        hh              <- hhRepo.create("Family LoopLayers", "family-loop-layers")
+        _               <- billRepo.create(hh, "beta", founding = true)
+        (routes, stubs) <- makeRoutes(liveCfg)
+        sentAsCustomer    = emailSentPayload(
+          Some(hh.value),
+          "th_layer_event",
+          "an outbound reply mislabeled as customer-authored",
+          actorType = "customer",
+        )
+        receivedFromAgent = payload(
+          Some(hh.value),
+          "th_layer_actor",
+          "a teammate note that is not a customer message",
+          eventType = "thread.chat_received",
+          actorType = "user",
+        )
+        oEvent <- stubs.responder.handleWebhook(sentAsCustomer, Some(sign(sentAsCustomer)))
+        oActor <- stubs.responder.handleWebhook(receivedFromAgent, Some(sign(receivedFromAgent)))
+        dispatches <- stubs.dispatch.dispatches.get
+      } yield assertTrue(
+        oEvent == SupportResponder.WebhookOutcome.SkippedNotInbound,
+        oActor == SupportResponder.WebhookOutcome.SkippedNotInbound,
+        dispatches.isEmpty,
+      )
+    },
+    test("#2403: the inbound allowlist admits NO outbound (_sent) event type, by construction") {
+      // A structural pin on the allowlist itself, so the guard cannot be widened by accident. The
+      // regression class is "a new Plain event type gets added to the set because it looked
+      // inbound" — every event the assistant AUTHORS is named `*_sent`, and none may ever be here.
+      assertTrue(
+        !PlainWebhook.InboundCustomerEventTypes.exists(_.endsWith("_sent")),
+        !PlainWebhook.InboundCustomerEventTypes.contains("thread.email_sent"),
+        !PlainWebhook.InboundCustomerEventTypes.contains("thread.chat_sent"),
+        PlainWebhook.InboundCustomerEventTypes ==
+          Set("thread.thread_created", "thread.chat_received", "thread.email_received"),
+      )
+    },
     test("#2403 loop guard: a non-customer actor on an inbound event is skipped") {
       for {
         _               <- cleanDb
@@ -583,6 +775,64 @@ object SupportResponderSpec
           kickoff.contains(req.agentToken),
         )
       }
+    },
+    test("#2505: an email-only registered admin is MAPPED onto their household in Plain") {
+      // #2435's reconcile was reachable only from the SPA identity path, so a household whose admin
+      // emails support without ever loading the dashboard kept `externalId: null` forever — the
+      // Plain inbox showed no tenant (no plan/entitlement context for the human triaging, defeating
+      // #2240) and every later message had to fall through the narrower `resolveAdminHousehold`
+      // key. The email-intake gate already holds both halves of the mapping the moment it resolves
+      // a sender, so it stamps it — same `PlainClient.upsertCustomer` call, same metric.
+      for {
+        _               <- cleanDb
+        hhRepo          <- ZIO.service[HouseholdRepo]
+        billRepo        <- ZIO.service[HouseholdBillingRepo]
+        userRepo        <- ZIO.service[UserRepo]
+        hh              <- hhRepo.create("Family M", "family-m")
+        _               <- billRepo.create(hh, "beta", founding = true)
+        _               <- userRepo.create(
+          "parent",
+          "hash",
+          "admin",
+          householdId = hh,
+          email = Some("parent@family-m.example"),
+        )
+        (routes, stubs) <- makeRoutes(liveCfg)
+        body = emailPayload(Some("parent@family-m.example"), "th_map", "my router is offline")
+        status    <- postWebhook(routes, body, Some(sign(body)))
+        customers <- stubs.plain.customers.get
+        detached  <- stubs.detachedRuns.get
+      } yield assertTrue(
+        status == Status.Ok,
+        customers.size == 1,
+        // The write is DETACHED — handed to the seam production forks — so a slow Plain can hold
+        // open neither the agent session nor the webhook ack. A bare call would still land the
+        // upsert under this suite's inline seam, so this is the assertion that pins the routing.
+        detached == 1,
+        // The mapping Plain keys on: externalId = tenantIdentifier = the household id.
+        customers.head.externalId == hh.value.toString,
+        customers.head.tenantIdentifier == hh.value.toString,
+        customers.head.email == "parent@family-m.example",
+        customers.head.fullName == "Family M",
+        // Bounded account context ONLY — the same attribute set the identity path carries.
+        customers.head.attributes == Map(
+          "plan"          -> "beta",
+          "founding"      -> "true",
+          "householdName" -> "Family M",
+        ),
+      )
+    },
+    test("#2505: an UNREGISTERED sender is never mapped — the reconcile rides the resolved admin") {
+      for {
+        _               <- cleanDb
+        hhRepo          <- ZIO.service[HouseholdRepo]
+        _               <- hhRepo.create("Family U", "family-u")
+        (routes, stubs) <- makeRoutes(liveCfg)
+        body = emailPayload(Some("stranger@nowhere.example"), "th_cold", "hello?")
+        status    <- postWebhook(routes, body, Some(sign(body)))
+        customers <- stubs.plain.customers.get
+        detached  <- stubs.detachedRuns.get
+      } yield assertTrue(status == Status.Ok, customers.isEmpty, detached == 0)
     },
     test("#2481: an email whose QUESTION is the subject reaches the agent end-to-end") {
       // The reported bug: the operator emailed support with the question in the SUBJECT and only a
@@ -1006,6 +1256,46 @@ object SupportResponderSpec
           SupportResponder.AiReplyAttribution.toLowerCase.contains("human"),
         )
     },
+    test("#2456: an agent reply that already carries the attribution line yields exactly ONE") {
+      // Since #2441 the agent can see its own prior replies in thread history, attribution line
+      // and all, and intermittently copies that line to the top of its own markdown. The server is
+      // the SINGLE owner of the line, so it strips any leading copies before prepending its own —
+      // structural, so it cannot re-open on a prompt edit or a model change. (Non-deterministic
+      // model output: this pins the server-side strip directly, it does not try to reproduce the
+      // duplication.)
+      val attribution = SupportResponder.AiReplyAttribution
+      for {
+        _               <- cleanDb
+        hhRepo          <- ZIO.service[HouseholdRepo]
+        hh              <- hhRepo.create("Family Dup", "fam-dup")
+        (routes, stubs) <- makeRoutes(liveCfg)
+        token           <- mintToken(hh, "th_dup", dataAccess = false)
+        body = Map("markdown" -> s"$attribution\n\nHere is how to allow the school site...").toJson
+        (status, _) <- agentPost(routes, "/api/support/agent/reply", body, Some(token))
+        threads     <- stubs.plain.threads.get
+      } yield assertTrue(status == Status.Ok, threads.size == 1) &&
+        assertTrue(
+          threads.head.markdown.startsWith(attribution),
+          threads.head.markdown
+            .split(java.util.regex.Pattern.quote(attribution), -1)
+            .length - 1 == 1,
+          threads.head.markdown.contains("allow the school site"),
+        )
+    },
+    test("#2456: a reply that is NOTHING BUT the attribution line is rejected, not sent") {
+      // The empty-reply guard runs on the STRIPPED body, so this shape can't slip past it and send
+      // the customer a bare header with no answer while reporting Ok back to the agent.
+      for {
+        _               <- cleanDb
+        hhRepo          <- ZIO.service[HouseholdRepo]
+        hh              <- hhRepo.create("Family Bare", "fam-bare")
+        (routes, stubs) <- makeRoutes(liveCfg)
+        token           <- mintToken(hh, "th_bare", dataAccess = false)
+        body = Map("markdown" -> s"\n${SupportResponder.AiReplyAttribution}\n ").toJson
+        (status, _) <- agentPost(routes, "/api/support/agent/reply", body, Some(token))
+        threads     <- stubs.plain.threads.get
+      } yield assertTrue(status == Status.BadRequest, threads.isEmpty)
+    },
     test(
       "#2408: agentReply posts INTO the token-bound thread via replyToThread (full stack, live Plain at HTTP boundary)",
     ) {
@@ -1082,11 +1372,29 @@ object SupportResponderSpec
         leakyBody =
           """Customer reports blocking fails. Contact them at parent@example.com, device
             |aa:bb:cc:dd:ee:ff at 192.168.10.42, account 123456789.""".stripMargin
-        issueJson =
-          s"""{"title":"Blocking fails for parent@example.com","body":${leakyBody.toJson}}"""
-        (s1, _) <- agentPost(routes, "/api/support/agent/issues", issueJson, Some(token))
-        (s2, _) <- agentPost(routes, "/api/support/agent/issues", issueJson, Some(token))
-        (s3, _) <- agentPost(routes, "/api/support/agent/issues", issueJson, Some(token))
+        // Three DISTINCT topics (#2458): identical titles now match the search-before-file dedup
+        // and never reach the rate limiter, which is the other half of what this test pins. The
+        // limiter still has to be the thing that stops the third one.
+        issueJson = (topic: String) =>
+          s"""{"title":"$topic — reported by parent@example.com","body":${leakyBody.toJson}}"""
+        (s1, _) <- agentPost(
+          routes,
+          "/api/support/agent/issues",
+          issueJson("Blocking silently fails on the iPad"),
+          Some(token),
+        )
+        (s2, _) <- agentPost(
+          routes,
+          "/api/support/agent/issues",
+          issueJson("Weekly rollup shows zero minutes"),
+          Some(token),
+        )
+        (s3, _) <- agentPost(
+          routes,
+          "/api/support/agent/issues",
+          issueJson("Pause switch does nothing"),
+          Some(token),
+        )
         issues  <- stubs.github.issues.get
       } yield assertTrue(s1 == Status.Ok, s2 == Status.Ok, s3 == Status.TooManyRequests) &&
         // The recorder stores exactly what would leave the process: no raw PII survives.
@@ -1153,6 +1461,66 @@ object SupportResponderSpec
         // "issue #null". Pinned on the exact body: a null would decode to the same None, and an
         // equality pin also catches a stray extra field the prompt does not know about.
         assertTrue(filed.map(_.ok).contains(true), body.trim == """{"ok":true}""")
+    },
+    test("#2458: a near-identical title matches the OPEN issue instead of filing a duplicate") {
+      // The two REAL issues the agent filed on its first live day, verbatim (#2455 / #2457): same
+      // request, two threads, 84 seconds apart, two public issues. Nothing checked whether the
+      // topic was already tracked — `issueThreadLimiter` is keyed by thread so it cannot see across
+      // threads at all, and the global limiter bounds volume, not redundancy.
+      //
+      // Driven through the ROUTE, from two DIFFERENT threads, because cross-thread is the whole
+      // bug: a per-thread mechanism would pass a single-thread test and still ship the defect.
+      val first  = "Feature request: date-range / holiday-aware schedule overrides"
+      val second =
+        "Feature request: calendar-aware / date-range schedule overrides (e.g. school holidays)"
+      for {
+        _               <- cleanDb
+        hhRepo          <- ZIO.service[HouseholdRepo]
+        hh              <- hhRepo.create("Family D", "fam-d")
+        (routes, stubs) <- makeRoutes(liveCfg)
+        tokenA          <- mintToken(hh, "th_dup_a", dataAccess = false)
+        tokenB          <- mintToken(hh, "th_dup_b", dataAccess = false)
+        (s1, b1)        <- agentPost(
+          routes,
+          "/api/support/agent/issues",
+          s"""{"title":${first.toJson},"body":"customer asked about school holidays"}""",
+          Some(tokenA),
+        )
+        (s2, b2)        <- agentPost(
+          routes,
+          "/api/support/agent/issues",
+          s"""{"title":${second.toJson},"body":"second customer, same gap"}""",
+          Some(tokenB),
+        )
+        // An UNRELATED gap from a third ask must still get its own issue — a dedup that swallows
+        // genuine new reports is a worse bug than the duplicate it prevents.
+        (s3, b3)        <- agentPost(
+          routes,
+          "/api/support/agent/issues",
+          """{"title":"Blocking silently fails on a device with iCloud Private Relay","body":"repro"}""",
+          Some(tokenA),
+        )
+        issues          <- stubs.github.issues.get
+        filed1 = b1.fromJson[FiledIssueBody].toOption
+        filed2 = b2.fromJson[FiledIssueBody].toOption
+        filed3 = b3.fromJson[FiledIssueBody].toOption
+      } yield assertTrue(s1 == Status.Ok, s2 == Status.Ok, s3 == Status.Ok) &&
+        // Only TWO issues exist: the first request and the unrelated one. The duplicate never
+        // reached GitHub.
+        assertTrue(issues.size == 2, issues.map(_.title).contains(first)) &&
+        assertTrue(!issues.map(_.title).exists(_.startsWith("Feature request: calendar-aware"))) &&
+        // The customer on the SECOND thread is pointed at the FIRST issue — the same `number`/`url`
+        // fields #2461 added, not a second parallel return path. `duplicate` is what tells the
+        // agent to say "already tracked as …" rather than "I've filed it".
+        assertTrue(
+          filed1.flatMap(_.number).contains(GithubIssueClient.RecorderFirstIssueNumber),
+          filed1.flatMap(_.duplicate).isEmpty,
+          filed2.flatMap(_.number) == filed1.flatMap(_.number),
+          filed2.flatMap(_.url) == filed1.flatMap(_.url),
+          filed2.flatMap(_.duplicate).contains(true),
+          filed3.flatMap(_.number).contains(GithubIssueClient.RecorderFirstIssueNumber + 1),
+          filed3.flatMap(_.duplicate).isEmpty,
+        )
     },
     test("injection pin: an exfiltration order in the message changes nothing structurally") {
       for {

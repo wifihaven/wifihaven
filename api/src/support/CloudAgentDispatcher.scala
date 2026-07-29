@@ -110,6 +110,20 @@ object CloudAgentDispatcher {
     case ClaudeCodeCloud
   }
 
+  /**
+   * #2472 — the bounded metric/log LABEL for the selected transport, or `None` when the responder
+   * is off (no transport was selected, so there is nothing to label). Derived from [[transportFor]]
+   * and the [[CloudAgentObservability]] constants rather than re-spelling the strings, so a caller
+   * that needs the label outside the dispatch envelope (the dispatch→completion tracker, which
+   * learns the transport at record time and reports it at sweep time) cannot drift from the label
+   * `support_dispatch_total{transport}` already carries.
+   */
+  def transportLabel(cfg: SupportConfig): Option[String] = transportFor(cfg) match {
+    case Transport.Disabled        => None
+    case Transport.ManagedAgents   => Some(CloudAgentObservability.ManagedAgents)
+    case Transport.ClaudeCodeCloud => Some(CloudAgentObservability.ClaudeCodeCloud)
+  }
+
   def transportFor(cfg: SupportConfig): Transport =
     if !cfg.responderEnabled then Transport.Disabled
     else
@@ -311,8 +325,33 @@ object CloudAgentDispatcher {
     // 1. per-turn: flatten to safe text, truncate an oversized turn (rather than dropping it, which
     //    would silently lose a turn), drop anything that ends up empty.
     val turns   = history.flatMap { m =>
-      // #2453 — see [[redactConsent]]. Applied to EVERY role, not just the AI's.
-      val raw  = redactConsent(m.text.trim)
+      // #2456: our own AI turns are STORED with the server-owned attribution header, and feeding
+      // that back is what taught the agent to reproduce it at the top of its own reply. The line
+      // carries no conversational content, so it never belongs in the transcript.
+      //
+      // AI turns ONLY. A CUSTOMER turn can also begin with the line — an email reply quotes it back
+      // to us, the case `PlainClient.roleOf` is built around — and stripping there would silently
+      // eat the head of the customer's own text, or empty a quote-only turn entirely and drop it at
+      // the `safe.nonEmpty` filter below. `HumanTeammate` text is likewise human-authored, never
+      // server-owned, so it is left alone too.
+      //
+      // The guarantee this gate gives is EXACTLY as strong as the role, no stronger: for Plain's
+      // three known actor types the role is authoritative (it came from the actor, upstream of this
+      // rendering), but `roleOf` also has an UNKNOWN-actor fallback that infers `AiAssistant` from
+      // the presence of this very line. A turn labelled that way is by construction one that
+      // contains it, so if such a turn were really a customer quoting us, this still strips it. We
+      // accept that: it is the same bet `roleOf` already makes deliberately, it needs an actor type
+      // Plain does not document today, and the blast radius is prompt fidelity — never the
+      // customer-visible reply.
+      //
+      // #2453 — see [[redactConsent]]. Composed OUTSIDE the #2456 strip and applied to EVERY role,
+      // not just the AI's: the two are independent (one drops a server-owned header, the other a
+      // capability URL) and a consent link can appear in a turn of any role.
+      val raw  = redactConsent(
+        (if m.role == ThreadMessageRole.AiAssistant then
+           SupportResponder.stripLeadingAttribution(m.text)
+         else m.text).trim,
+      )
       // Same cap-and-say-so primitive the subject line uses — one definition of "truncated for the
       // prompt", so the two can't drift on the marker or the predicate (#2481 review).
       val safe = neutralizeTags(ManagedAgents.capMarked(raw, MaxMessageChars))

@@ -59,6 +59,17 @@ object Main extends ZIOAppDefault {
         _         <- ZIO
           .serviceWithZIO[PlainClient](PlainPermissionAudit.run(cfg.support, _))
           .forkScoped
+        // #2472: the dispatch→completion sweep. Reports every dispatch the cloud agent accepted and
+        // never called back on — before this, such a session was indistinguishable from one that
+        // answered (docs/process/no-dark-by-default.md). Forked only when the responder is ENABLED:
+        // a dark responder dispatches nothing, so there is nothing to sweep. forkScoped (like the
+        // rollup loops, #1247) so it is interrupted on shutdown; it touches no DB, only its own Ref.
+        _         <- ZIO
+          .serviceWithZIO[wifihaven.api.support.DispatchTracker](t =>
+            ZIO.serviceWithZIO[wifihaven.shared.Clock](t.loop),
+          )
+          .forkScoped
+          .when(cfg.support.responderEnabled)
         _         <- ZIO
           .logWarning(
             "WIFIHAVEN_DEBUG=1 set — /api/debug/* endpoints are MOUNTED (loopback only). " +
@@ -444,10 +455,16 @@ object Main extends ZIOAppDefault {
       // #2200 (support intake C): the Claude responder's external transports — the cloud-agent
       // dispatcher (Managed Agents session per authenticated-origin inbound message — UI-originated
       // or a #2307 registered-admin email) and the GitHub issue-filing client (fine-grained
-      // Issues:write-only bot token). #2265: each runs iff its
-      // EXPLICIT enable flag is true (validated loudly at boot); off is logged + health-visible.
+      // Issues-ONLY bot token; read+write since #2458's duplicate check LISTS).
+      // #2265: each runs iff its EXPLICIT enable flag is true (validated loudly at boot); off is
+      // logged + health-visible.
       wifihaven.api.support.CloudAgentDispatcher.layer >+>
       wifihaven.api.support.GithubIssueClient.layer >+>
+      // #2472: the dispatch→completion tracker, shared by the responder (which records an accepted
+      // dispatch and closes it on the agent's terminal callback) and the sweep fiber forked in `run`
+      // (which reports the dispatches nobody ever closed). A LAYER precisely so both hold the SAME
+      // instance — a second one would sweep an empty map and stay silent.
+      wifihaven.api.support.DispatchTracker.layer >+>
       // #2203 (press intake C): the public press/PR responder's cloud-agent dispatcher (a SEPARATE
       // Managed Agent persona per inbound press message). Reuses the shared ManagedAgents transport;
       // runs iff press.responderEnabled (#2265), else the logged no-op. The press reply is emailed

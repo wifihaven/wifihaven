@@ -551,6 +551,20 @@ object MetricGuard {
     // bounded, never per-thread / per-household.
     "support_ai_draft_total"                        -> Set("outcome", "reason"),
     "support_agent_action_total"                    -> Set("op", "outcome"),
+    // #2458 — the search-before-file duplicate check that runs on EVERY issue filing.
+    // `support_issue_dedup_total{outcome,reason}`. outcome ∈ matched (an already-open
+    // `support-agent` issue covers this topic, so nothing was created and the customer got that
+    // issue's link) | no_match (we looked and filed) | scan_error (we could NOT look, so we FILED
+    // WITHOUT CHECKING — the scan is fail-open and must never block a filing).
+    // `reason` attributes a scan_error on the same config-vs-transient line #2416 and #2430 draw,
+    // and it is load-bearing precisely BECAUSE the check is fail-open: a permanently blind dedup
+    // still files successfully and reads healthy on every other panel, so this label is the only
+    // signal. permission (401/403/404 — the bot token cannot LIST issues on the repo) | schema (a
+    // 2xx body we could not decode — GitHub's list shape drifted) | transient (transport, timeout,
+    // 5xx, other non-2xx) | none (every non-error sample, so no series is missing the label).
+    // permission and schema never self-heal and are each ALSO logged at ERROR with the fix named;
+    // transient is a warning. Bounded enums, never an issue number / title / per-thread label.
+    "support_issue_dedup_total"                     -> Set("outcome", "reason"),
     // #2438 — the dispatcher-level cloud-agent dispatch outcome, additive to (and disambiguating)
     // `support_ai_draft_total`. `support_dispatch_total{outcome,transport}` counts each dispatch
     // ATTEMPT at the transport boundary: outcome ∈ dispatched | error | disabled; transport ∈
@@ -923,6 +937,14 @@ object AppMetrics {
   def supportAgentAction(action: String, outcome: String): UIO[Unit] =
     MetricGuard.counter("support_agent_action_total", Map("op" -> action, "outcome" -> outcome))
 
+  // #2458 — the search-before-file duplicate check. Bounded by
+  // `GithubIssueClient.DedupOutcome.label` / `.DedupReason.label`; never an issue number or title.
+  def supportIssueDedup(outcome: String, reason: String): UIO[Unit] =
+    MetricGuard.counter(
+      "support_issue_dedup_total",
+      Map("outcome" -> outcome, "reason" -> reason),
+    )
+
   // #2473 — a cloud-agent callback REJECTED at the token check, for BOTH responders on ONE series
   // (emitted from the shared AgentTokenRejection envelope, never a bare Metric.*). Every sample is a
   // customer/journalist answer that did NOT get delivered. `channel` ∈ support | press;
@@ -941,6 +963,15 @@ object AppMetrics {
   // present) ∈ managed-agents | claude-code-cloud. The `disabled` no-op selects no transport, so it
   // passes None and the metric carries only `outcome` (a subset of the allowed keys). Never a
   // per-household / per-thread label.
+  //
+  // #2472 widens `outcome` with the COMPLETION half of the pair, emitted from `DispatchTracker`
+  // (values single-sourced on `DispatchTracker.Outcome`): `completed` (a terminal agent callback
+  // arrived for a tracked dispatch), `callback_slow` (nothing after `DispatchTracker.SlowAfter` — a
+  // usage-limit-suspended run legitimately reaches this, so it is the WARN tier and is expected to
+  // be occasionally non-zero), and `no_callback` (nothing after `DispatchTracker.DeadAfter` — the
+  // cloud session accepted the trigger and died, so the customer got NO answer; should be flat
+  // zero). They ride THIS series rather than a new one precisely so `dispatched` can be read
+  // against `completed`: before #2472 a dispatched-then-dead session counted only as a success.
   def supportDispatch(outcome: String, transport: Option[String]): UIO[Unit] =
     MetricGuard.counter(
       "support_dispatch_total",

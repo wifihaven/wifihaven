@@ -2,6 +2,7 @@ package wifihaven.api.support
 
 import wifihaven.api.SupportConfig
 import wifihaven.api.metrics.AppMetrics
+import wifihaven.shared.types.HouseholdId
 import zio.*
 import zio.json.*
 import zio.json.ast.Json
@@ -140,6 +141,45 @@ final case class PlainCustomerUpsert(
     fullName: String,
     attributes: Map[String, String],
 )
+
+object PlainCustomerUpsert {
+
+  /**
+   * Build the mapping payload for ONE household admin — the single place the household→Plain
+   * customer shape is decided (#2505). Two call sites reach it, and they must agree byte-for-byte
+   * or the same household would map differently depending on which one ran first:
+   *   - [[wifihaven.api.support.SupportService.identity]] — the SPA/widget path (#2199);
+   *   - [[wifihaven.api.support.SupportResponder]]'s email-intake gate (#2307), for the customer
+   *     who only ever emails and would otherwise never be mapped at all.
+   *
+   * `externalId == tenantIdentifier == householdId` is the mapping Plain keys on: `externalId` is
+   * what the inbound webhook reads back off `thread.customer` to resolve the origin household, and
+   * the tenant is what carries the entitlement fields the operator sees in the inbox (#2240).
+   *
+   * `attributes` is BOUNDED account context only (billing status + founding flag + household name)
+   * — never per-device, per-domain, or per-profile data.
+   */
+  def forHousehold(
+      householdId: HouseholdId,
+      email: String,
+      householdName: String,
+      plan: Option[String],
+      founding: Option[Boolean],
+  ): PlainCustomerUpsert = {
+    val attributes = Map.newBuilder[String, String]
+    plan.foreach(p => attributes += ("plan" -> p))
+    founding.foreach(f => attributes += ("founding" -> f.toString))
+    if householdName.nonEmpty then attributes += ("householdName" -> householdName)
+    val tenant     = householdId.value.toString
+    PlainCustomerUpsert(
+      externalId = tenant,
+      tenantIdentifier = tenant,
+      email = email,
+      fullName = householdName,
+      attributes = attributes.result(),
+    )
+  }
+}
 
 /**
  * A reply-into-thread write (#2200 seam). `threadId` is the customer's existing Plain thread the
