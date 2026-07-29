@@ -108,6 +108,12 @@ systematic unreadable-body regression is not silent. The agent
 offers the link **only when the customer asked** for something to be filed — an unrequested
 "I filed #2455" reads as noise and implies a fix commitment we have not made.
 
+The response also carries `"duplicate":true` (#2458) when the search-before-file check matched an
+already-open `support-agent` issue: nothing was created, and `number`/`url` point at that EXISTING
+issue so the customer still gets a canonical link. The agent is instructed to say "already tracked
+as #N" rather than "I've filed it". It meters as `outcome="ok_duplicate"` — a success, counted
+alongside `ok`/`ok_no_link` on the volume panel.
+
 ### 1. The token (operator; cannot be automated)
 
 Create a **dedicated machine account** (e.g. `wifihaven-support-bot`), invite it to the repo, and
@@ -146,16 +152,22 @@ the responder is flipped there too; sequence the two together.
 ### 3. Verify after enabling
 
 - Startup log flips from `support-agent issue filing DISABLED (support.issueFilingEnabled=false)` to
-  `support-agent issue filing ENABLED (fine-grained Issues:write bot token)`
-  (`api/src/support/GithubIssueClient.scala`). The startup feature report emits a second line for the
-  same flag — `wifihaven.support.issueFilingEnabled=true — support-agent files GitHub issues (bot
-  token)` (`api/src/StartupFeatureReport.scala`, `support-issue-filing`) — so grep for either.
+  `support-agent issue filing ENABLED` (`api/src/support/GithubIssueClient.scala`). **Grep that
+  prefix, not the whole line** — the parenthetical after it describes the token scope and has
+  already changed once (#2458). The startup feature report emits a second line for the same flag —
+  `wifihaven.support.issueFilingEnabled=true — support-agent files GitHub issues (bot token)`
+  (`api/src/StartupFeatureReport.scala`, `support-issue-filing`) — so grep for either.
 - Drive one support message that should escalate; confirm a new `support-agent`-labeled issue appears
   in `wifihaven/wifihaven` and that "Agent-filed issues (24h)" increments on the Grafana support
-  dashboard (`deploy/grafana/dashboards/support.json`). That panel counts BOTH success outcomes,
-  `outcome=~"ok|ok_no_link"` — if it is rising on `ok_no_link` alone, filing works but the link does
-  not, which points at the repo having been renamed/transferred away from `GithubIssueClient.Repo`
-  (the log line names that cause explicitly).
+  dashboard (`deploy/grafana/dashboards/support.json`). That panel counts EVERY success outcome,
+  `outcome=~"ok|ok_no_link|ok_duplicate"`, so it is the rate of filing ASKS, not of issues created.
+  Read a lopsided rise, not just the total:
+  - rising on `ok_no_link` alone — filing works but the link does not, which points at the repo
+    having been renamed/transferred away from `GithubIssueClient.Repo` (the log line names that
+    cause explicitly);
+  - rising on `ok_duplicate` alone (#2458) — the search-before-file check is matching EVERYTHING and
+    nothing is reaching GitHub. Usually a matcher tuned too loose; cross-check the `matched` series
+    on "Issue-filing duplicate check" over the same window.
 
 ### 4. Rotation
 

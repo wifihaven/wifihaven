@@ -244,8 +244,9 @@ wifihaven {
   #   # Which deployment this API is ("staging" | "prod"; rides in the agent kickoff so a session
   #   # knows whether it serves a real customer or an operator test). Empty on self-hosted.
   #   # deploymentEnv       = ""
-  #   # Fine-grained GitHub token for the support bot — Issues:write ONLY on wifihaven/wifihaven
-  #   # (no contents / no pull_requests ⇒ no-PR is structural, #2241). Required when
+  #   # Fine-grained GitHub token for the support bot — Issues ONLY on wifihaven/wifihaven, at the
+  #   # read+write level (read is needed by #2458's duplicate check, which LISTS open issues before
+  #   # filing; no contents / no pull_requests ⇒ no-PR is structural, #2241). Required when
   #   # issueFilingEnabled = true. SECRET. (The target repo + REST base are constants, not config.)
   #   githubSupportBotToken = ""
   #   # #2429: the customer-facing support inbox this deployment publishes in the SPA — the API

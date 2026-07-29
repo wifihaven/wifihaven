@@ -102,9 +102,10 @@ set -euo pipefail
 # access model). DARK unless the WHOLE responder chain is set: WEBHOOK_SECRET (above) + the
 # Anthropic session-create triple (API key + pre-provisioned agent id + environment id, see
 # deploy/support-agent/) + the AGENT_TOKEN_SECRET (HMAC for the per-session thread-/household-bound
-# token — generate ≥32 random chars). GITHUB token is the fine-grained Issues:write-only support-bot
-# credential (issue filing dark without it). AGENT_API_BASE is the public URL the cloud agent calls
-# back to.
+# token — generate ≥32 random chars). GITHUB token is the fine-grained Issues-ONLY support-bot
+# credential — read+write, since #2458's duplicate check LISTS open issues before filing (issue
+# filing dark without it; no-PR stays structural via the absence of contents/pull_requests).
+# AGENT_API_BASE is the public URL the cloud agent calls back to.
 # #2265: EXPLICIT enable flags — no dark-by-default. false (the default) = feature deliberately
 # off, logged at boot + visible on /api/health. true REQUIRES the full config chain: boot fails
 # loudly listing every missing key. Flip via render.yaml PR at go-live, AFTER the secrets are set

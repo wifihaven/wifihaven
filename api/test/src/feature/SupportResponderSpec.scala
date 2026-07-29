@@ -110,7 +110,14 @@ object SupportResponderSpec
   // #2461: the issue-filing route's response shape, decoded from the wire so the pin asserts what
   // the agent actually receives (number/url optional — a 2xx GitHub body we could not parse must
   // still be a success, just without a link).
-  private final case class FiledIssueBody(ok: Boolean, number: Option[Int], url: Option[String])
+  private final case class FiledIssueBody(
+      ok: Boolean,
+      number: Option[Int],
+      url: Option[String],
+      // #2458 — present (and `true`) ONLY when we matched an already-open issue instead of creating
+      // one. Absent on a real filing, so the "no link" contract body stays exactly `{"ok":true}`.
+      duplicate: Option[Boolean] = None,
+  )
   private object FiledIssueBody {
     given JsonCodec[FiledIssueBody] = DeriveJsonCodec.gen[FiledIssueBody]
   }
@@ -1110,11 +1117,29 @@ object SupportResponderSpec
         leakyBody =
           """Customer reports blocking fails. Contact them at parent@example.com, device
             |aa:bb:cc:dd:ee:ff at 192.168.10.42, account 123456789.""".stripMargin
-        issueJson =
-          s"""{"title":"Blocking fails for parent@example.com","body":${leakyBody.toJson}}"""
-        (s1, _) <- agentPost(routes, "/api/support/agent/issues", issueJson, Some(token))
-        (s2, _) <- agentPost(routes, "/api/support/agent/issues", issueJson, Some(token))
-        (s3, _) <- agentPost(routes, "/api/support/agent/issues", issueJson, Some(token))
+        // Three DISTINCT topics (#2458): identical titles now match the search-before-file dedup
+        // and never reach the rate limiter, which is the other half of what this test pins. The
+        // limiter still has to be the thing that stops the third one.
+        issueJson = (topic: String) =>
+          s"""{"title":"$topic — reported by parent@example.com","body":${leakyBody.toJson}}"""
+        (s1, _) <- agentPost(
+          routes,
+          "/api/support/agent/issues",
+          issueJson("Blocking silently fails on the iPad"),
+          Some(token),
+        )
+        (s2, _) <- agentPost(
+          routes,
+          "/api/support/agent/issues",
+          issueJson("Weekly rollup shows zero minutes"),
+          Some(token),
+        )
+        (s3, _) <- agentPost(
+          routes,
+          "/api/support/agent/issues",
+          issueJson("Pause switch does nothing"),
+          Some(token),
+        )
         issues  <- stubs.github.issues.get
       } yield assertTrue(s1 == Status.Ok, s2 == Status.Ok, s3 == Status.TooManyRequests) &&
         // The recorder stores exactly what would leave the process: no raw PII survives.
@@ -1181,6 +1206,66 @@ object SupportResponderSpec
         // "issue #null". Pinned on the exact body: a null would decode to the same None, and an
         // equality pin also catches a stray extra field the prompt does not know about.
         assertTrue(filed.map(_.ok).contains(true), body.trim == """{"ok":true}""")
+    },
+    test("#2458: a near-identical title matches the OPEN issue instead of filing a duplicate") {
+      // The two REAL issues the agent filed on its first live day, verbatim (#2455 / #2457): same
+      // request, two threads, 84 seconds apart, two public issues. Nothing checked whether the
+      // topic was already tracked — `issueThreadLimiter` is keyed by thread so it cannot see across
+      // threads at all, and the global limiter bounds volume, not redundancy.
+      //
+      // Driven through the ROUTE, from two DIFFERENT threads, because cross-thread is the whole
+      // bug: a per-thread mechanism would pass a single-thread test and still ship the defect.
+      val first  = "Feature request: date-range / holiday-aware schedule overrides"
+      val second =
+        "Feature request: calendar-aware / date-range schedule overrides (e.g. school holidays)"
+      for {
+        _               <- cleanDb
+        hhRepo          <- ZIO.service[HouseholdRepo]
+        hh              <- hhRepo.create("Family D", "fam-d")
+        (routes, stubs) <- makeRoutes(liveCfg)
+        tokenA          <- mintToken(hh, "th_dup_a", dataAccess = false)
+        tokenB          <- mintToken(hh, "th_dup_b", dataAccess = false)
+        (s1, b1)        <- agentPost(
+          routes,
+          "/api/support/agent/issues",
+          s"""{"title":${first.toJson},"body":"customer asked about school holidays"}""",
+          Some(tokenA),
+        )
+        (s2, b2)        <- agentPost(
+          routes,
+          "/api/support/agent/issues",
+          s"""{"title":${second.toJson},"body":"second customer, same gap"}""",
+          Some(tokenB),
+        )
+        // An UNRELATED gap from a third ask must still get its own issue — a dedup that swallows
+        // genuine new reports is a worse bug than the duplicate it prevents.
+        (s3, b3)        <- agentPost(
+          routes,
+          "/api/support/agent/issues",
+          """{"title":"Blocking silently fails on a device with iCloud Private Relay","body":"repro"}""",
+          Some(tokenA),
+        )
+        issues          <- stubs.github.issues.get
+        filed1 = b1.fromJson[FiledIssueBody].toOption
+        filed2 = b2.fromJson[FiledIssueBody].toOption
+        filed3 = b3.fromJson[FiledIssueBody].toOption
+      } yield assertTrue(s1 == Status.Ok, s2 == Status.Ok, s3 == Status.Ok) &&
+        // Only TWO issues exist: the first request and the unrelated one. The duplicate never
+        // reached GitHub.
+        assertTrue(issues.size == 2, issues.map(_.title).contains(first)) &&
+        assertTrue(!issues.map(_.title).exists(_.startsWith("Feature request: calendar-aware"))) &&
+        // The customer on the SECOND thread is pointed at the FIRST issue — the same `number`/`url`
+        // fields #2461 added, not a second parallel return path. `duplicate` is what tells the
+        // agent to say "already tracked as …" rather than "I've filed it".
+        assertTrue(
+          filed1.flatMap(_.number).contains(GithubIssueClient.RecorderFirstIssueNumber),
+          filed1.flatMap(_.duplicate).isEmpty,
+          filed2.flatMap(_.number) == filed1.flatMap(_.number),
+          filed2.flatMap(_.url) == filed1.flatMap(_.url),
+          filed2.flatMap(_.duplicate).contains(true),
+          filed3.flatMap(_.number).contains(GithubIssueClient.RecorderFirstIssueNumber + 1),
+          filed3.flatMap(_.duplicate).isEmpty,
+        )
     },
     test("injection pin: an exfiltration order in the message changes nothing structurally") {
       for {
