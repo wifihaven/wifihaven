@@ -74,7 +74,7 @@ object SupportAgentRoutes {
               // against is a SUSTAINED outage, where every delivery fails and a 5xx turns Plain's
               // retries into a storm against a database already on the floor — and then, on
               // recovery, into a burst of duplicate dispatches. Dropping one delivery loudly
-              // (ERROR log + `origin_lookup_failed`, panel id 26, expect a flat zero) is the
+              // (ERROR log + the `origin_lookup_failed` panel, expect a flat zero) is the
               // cheaper failure; the customer's next message dispatches normally. Revisit only with
               // a bounded per-delivery retry budget, not by flipping this to a 5xx.
               case _                               => ZIO.succeed(Response.ok)

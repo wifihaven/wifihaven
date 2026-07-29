@@ -321,8 +321,8 @@ final case class SupportResponder(
           // #2462: we could not READ the registry, so we have not established this sender is
           // unregistered — say nothing rather than reject a customer on a failed lookup. No #2505
           // mapping either: there is no household to map them to.
-          case OriginLookup.Failed                  => ZIO.succeed(WebhookOutcome.OriginLookupFailed)
-          case OriginLookup.NoMatch                 =>
+          case OriginLookup.Failed  => ZIO.succeed(WebhookOutcome.OriginLookupFailed)
+          case OriginLookup.NoMatch =>
             // Unregistered: reject a NEW thread once; skip continuations (no re-reject backscatter).
             if event.isNewThread then staticReject(event)
             else ZIO.succeed(WebhookOutcome.SkippedUnauthenticated)
@@ -877,7 +877,10 @@ final case class SupportResponder(
           ) *>
             // `error` on THIS op means exactly one thing — the account read did not complete —
             // because no other producer of `support_agent_action_total{op=household_read}` can
-            // mint it. The route maps it to a 5xx, so the agent knows it has no data and can say so.
+            // mint it. The route maps it to a 5xx, so the agent is TOLD it has no data rather than
+            // handed a plausible-looking empty one. What it then SAYS to the customer currently
+            // rests on the prompt's general "never claim account data you did not read from the
+            // endpoint" rule — `agent.yaml` has no 5xx-specific instruction yet (#2524).
             doneE(AgentAction.HouseholdRead, AgentActionResult.Error),
         summary =>
           // Audit every consented read (#2241) — household + thread, never the data.
