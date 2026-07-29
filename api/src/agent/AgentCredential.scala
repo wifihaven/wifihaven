@@ -61,8 +61,9 @@ import scala.util.matching.Regex
  * PRECISION OVER BREADTH. A redactor that mangled real answers would be worse than none — support
  * would route around it. So both rules are narrow, and `ReplyRedactionSpec` pins the false-positive
  * side as hard as the true-positive side: a UUID, a `v1.2.3` version string, base64-ish words,
- * `Bearer authentication-based access control`, and a `YOUR_API_KEY_HERE` placeholder all survive
- * byte-identical.
+ * `Bearer authentication-based access control`, a `YOUR_API_KEY_HERE` placeholder, and a short
+ * digit-bearing id (`Bearer token1234` — the one case the LENGTH floor, not the digit check, has to
+ * save) all survive byte-identical.
  */
 object AgentCredential {
 

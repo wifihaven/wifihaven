@@ -53,8 +53,9 @@ import zio.test.*
  *     the two rules metering DISTINCT `reason` labels, plus an ERROR log that does NOT itself quote
  *     the credential;
  *   - FALSE POSITIVES: an ordinary reply carrying a UUID, a `v1.2.3` version string, base64-ish
- *     words, `Bearer authentication-based access control` and a `YOUR_API_KEY_HERE` placeholder
- *     survives byte-identical.
+ *     words, `Bearer authentication-based access control`, a `YOUR_API_KEY_HERE` placeholder and a
+ *     short digit-bearing id (`Bearer token1234` — the case that pins the LENGTH floor, which the
+ *     digit check cannot save) survives byte-identical.
  */
 object ReplyRedactionSpec
     extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task]] {
