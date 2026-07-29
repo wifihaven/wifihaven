@@ -604,22 +604,36 @@ final case class SupportResponder(
    * verified token — the request body carries only the reply text, so a hijacked agent cannot aim a
    * reply at another thread or household.
    */
-  def agentReply(bearer: Option[String], markdown: String): UIO[AgentActionResult] =
+  def agentReply(
+      bearer: Option[String],
+      markdown: String,
+      // #2469: the live agent's echo of the `PROMPT_VERSION:` marker in its own system prompt.
+      // Optional — an agent predating the marker reports nothing and is recorded `unknown`.
+      promptVersion: Option[String] = None,
+  ): UIO[AgentActionResult] =
     withClaims(AgentAction.Reply, bearer) { claims =>
-      val write = PlainThreadWrite(
-        // #2408: the reply posts INTO the customer's existing thread (`claims.threadId`, the
-        // customer-visible send via Plain's replyToThread), NOT a new createThread. The thread
-        // binding comes from the verified token — the request body carries only the reply text.
-        threadId = claims.threadId,
-        // #2456: strip the agent's own leading copy first — the server owns this line, and the
-        // agent intermittently copies it out of the thread history it now sees (#2441), which
-        // showed the customer the header twice.
-        markdown = s"$AiReplyAttribution\n\n${stripLeadingAttribution(markdown)}",
-      )
-      plain.writeThread(write).flatMap {
-        case PlainOutcome.Ok       => done(AgentAction.Reply, AgentActionResult.Ok)
-        case PlainOutcome.Disabled => done(AgentAction.Reply, AgentActionResult.Disabled)
-        case PlainOutcome.Error    => done(AgentAction.Reply, AgentActionResult.Error)
+      // #2469: recorded HERE, not in the route, because here we are PAST the token check — the
+      // caller provably is the dispatched agent. The route is public (the token is verified inside
+      // `withClaims`), so a route-level observe would let any anonymous POST forge `state="current"`
+      // and mask a genuinely stale routine. Ahead of the send, so every AUTHENTICATED outcome
+      // records — including a `Disabled` (write half dark) or failed write, which is exactly the
+      // case we most want on the dashboard. Alert-only: it can never cost the customer their answer.
+      AgentPromptVersion.observe(AgentPromptVersion.Channel.Support, promptVersion) *> {
+        val write = PlainThreadWrite(
+          // #2408: the reply posts INTO the customer's existing thread (`claims.threadId`, the
+          // customer-visible send via Plain's replyToThread), NOT a new createThread. The thread
+          // binding comes from the verified token — the request body carries only the reply text.
+          threadId = claims.threadId,
+          // #2456: strip the agent's own leading copy first — the server owns this line, and the
+          // agent intermittently copies it out of the thread history it now sees (#2441), which
+          // showed the customer the header twice.
+          markdown = s"$AiReplyAttribution\n\n${stripLeadingAttribution(markdown)}",
+        )
+        plain.writeThread(write).flatMap {
+          case PlainOutcome.Ok       => done(AgentAction.Reply, AgentActionResult.Ok)
+          case PlainOutcome.Disabled => done(AgentAction.Reply, AgentActionResult.Disabled)
+          case PlainOutcome.Error    => done(AgentAction.Reply, AgentActionResult.Error)
+        }
       }
     }
 

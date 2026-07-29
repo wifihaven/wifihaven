@@ -37,7 +37,11 @@ object SupportAgentRoutes {
   /** Cap agent-endpoint bodies — a reply or issue never legitimately approaches this. */
   val MaxAgentBodyBytes: Long = 64 * 1024
 
-  private final case class ReplyPost(markdown: String)
+  // #2469: `promptVersion` is the live agent's echo of the `PROMPT_VERSION:` marker in its own
+  // system prompt — a DEDICATED field, never scraped out of `markdown`, so untrusted customer text
+  // cannot spoof it. Optional on the wire: an older routine (or the Managed Agents path before a
+  // re-apply) omits it and is recorded `unknown` rather than rejected.
+  private final case class ReplyPost(markdown: String, promptVersion: Option[String] = None)
   private object ReplyPost { given JsonCodec[ReplyPost] = DeriveJsonCodec.gen[ReplyPost] }
 
   private final case class IssuePost(title: String, body: String)
@@ -83,7 +87,10 @@ object SupportAgentRoutes {
             // Same shared primitive the responder uses, so the two cannot disagree on "empty".
             reply = SupportResponder.stripLeadingAttribution(post.markdown)
             _      <- ZIO.fail(ApiError.BadRequest("empty reply")).when(reply.trim.isEmpty)
-            result <- responder.agentReply(bearerToken(req), reply)
+            // #2469: `promptVersion` is passed THROUGH — the drift signal is recorded inside
+            // `agentReply`, past the token check. This route is public, so recording it here would
+            // let any anonymous POST forge `state="current"` and mask a genuinely stale routine.
+            result <- responder.agentReply(bearerToken(req), reply, post.promptVersion)
             resp   <- toResponse(result)
           } yield resp
           handle.mapError(ErrorMapper.errorToResponse)

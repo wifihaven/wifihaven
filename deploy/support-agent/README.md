@@ -239,6 +239,34 @@ emitted to the startup log. Routine CRUD is web-UI-only today; only `/fire` is A
 > changes (most recently: the #2437 "escalate before promising human follow-up" instructions, and
 > the #2419 "ask for data-access consent instead of dead-ending" ones).
 
+### Post-merge re-paste — the checklist step (#2469)
+
+A stale routine is invisible without this: it **reports a green run while answering from the old
+prompt**. That has bitten twice — #2419/#2425 (consent) and #2430/#2441 (thread history) both merged
+un-re-pasted, so the agent kept telling customers "reply here confirming you're OK with me accessing
+your account", which grants nothing.
+
+**Whenever a PR that changed this file's `system:` block merges, before calling the change live:**
+
+1. Open the **support** routine at <https://claude.ai/code/routines> for EACH environment that runs
+   this transport (staging and prod each have their own routine).
+2. Paste the new `system:` block from [`agent.yaml`](agent.yaml) verbatim, preserving the
+   `<routine-fire-payload>` opt-in (step 1 above) — it is what makes the routine act at all.
+3. Confirm the fix took: after the next real message, the callback should record
+   `agent_prompt_version_total{channel="support",state="current"}`. Anything landing on
+   `state="stale"` or `state="unknown"` means the routine you are looking at is still the old one.
+
+You do not have to remember this unprompted:
+
+- **CI reminds you.** `.github/scripts/check-agent-prompt-repaste.sh` warns on any PR whose diff
+  changes a `system:` block, and FAILS the PR if the change did not bump the `PROMPT_VERSION:`
+  marker (an un-bumped marker would make the detector below report a stale routine as current).
+- **The API detects it.** The prompt carries `PROMPT_VERSION: <channel>-<date>.<serial>`; the agent
+  echoes it on `POST /api/support/agent/reply` as the dedicated `promptVersion` field, and the API
+  compares it against `AgentPromptVersion.Channel.Support.expected`, logging loudly and emitting
+  `agent_prompt_version_total{channel,state}` (panel: *Support* dashboard, "Live routine prompt
+  version"). The check is strictly alert-only — a mismatch never fails a webhook or drops a reply.
+
 ## Escalation — the handoff that reaches a human (#2437)
 
 "A human teammate will follow up" used to notify nobody. It now takes a call: when the agent hands
