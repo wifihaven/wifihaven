@@ -497,6 +497,10 @@ object ReplyRedactionSpec
 
     // ── FALSE POSITIVES: ordinary prose must survive byte-identical ───────────
     test("SUPPORT: an ordinary reply with a UUID, a version string and prose is untouched") {
+      // DO NOT TRIM THIS STRING. Each clause pins a different half of the bearer rule, and
+      // `Bearer token1234` is the ONLY input that pins the length floor — it is short and DOES
+      // carry a digit, so the digit check cannot save it. Drop that clause and
+      // `MinBearerValueChars` becomes deletable with the suite still green.
       // Every one of these was a real over-match candidate: the hyphenated compound and the
       // `WORD_WORD` placeholder both clear the 16-char floor and survive only because neither
       // carries a digit; `credentials.Rotate` is the missing-space-after-a-period case.

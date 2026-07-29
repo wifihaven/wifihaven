@@ -157,7 +157,10 @@ object AgentCredential {
    * unaffected: they always carry a version prefix and a hex signature, so the token rule catches
    * them whatever the bearer rule does.
    */
-  private val BearerValue: Regex =
+  // `lazy` for the same reason as the token pattern above — and here the silent failure is
+  // worse in kind: a forward reference to an Int yields 0, i.e. `{0,}`, a floor that is gone
+  // rather than a crash.
+  private lazy val BearerValue: Regex =
     raw"(?i)\bBearer\s+(?=[A-Za-z0-9._~+/=-]{$MinBearerValueChars,})(?=[A-Za-z._~+/=-]*[0-9])[A-Za-z0-9._~+/=-]+".r
 
   /** The result of a scrub: the safe text, plus which rules fired (empty ⇒ nothing was changed). */
