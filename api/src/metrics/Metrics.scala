@@ -989,6 +989,8 @@ object AppMetrics {
     MetricGuard.counter(
       "agent_prompt_version_total",
       Map("channel" -> channel, "state" -> state),
+    )
+
   // #2508 — agent-authored text carried a CREDENTIAL and was redacted before it left the process,
   // for BOTH responders on ONE series (emitted from the shared AgentCredential envelope, never a
   // bare Metric.*). Every sample is an agent that tried to put its own bearer token — or another

@@ -433,6 +433,8 @@ object ReplyRedactionSpec
             _,
             java.time.Duration.ofMinutes(30),
             SupportTokenSecret,
+            // #2453: a fresh single-use nonce, minted the same way the server does.
+            ConsentGrant.newNonce(),
           ),
         )
         status <- supportReply(rig, token, s"Here is your consent link again: $grant")
