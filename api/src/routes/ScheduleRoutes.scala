@@ -91,7 +91,7 @@ object ScheduleRoutes {
       Method.POST / "api" / "schedules"                ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims <- requireAdmin(req, auth)
+            claims <- requireWriter(req, auth)
             body   <- req.body.asString.orElseFail(ApiError.BadRequest(""))
             cr     <- ZIO
               .fromEither(body.fromJson[CreateNamedScheduleRequest])
@@ -101,7 +101,7 @@ object ScheduleRoutes {
             windows <- ZIO.fromEither(validateWindows(cr.windows)).mapError(ApiError.BadRequest(_))
             taken   <- scheduleRepo.findByName(name).mapError(ApiError.Db(_))
             _       <- ZIO.fail(nameTaken(name)).when(taken.isDefined)
-            // #2126: stamp the creating admin's household (from their JWT) so a freshly-created,
+            // #2126: stamp the creating user's household (from their JWT) so a freshly-created,
             // still-unattached schedule is scoped to its author's tenant — and thus visible only to
             // them via `listAllForHousehold` (#2130 stamp-on-create precedent).
             id      <- scheduleRepo
@@ -123,7 +123,7 @@ object ScheduleRoutes {
         handler { (id: Long, req: Request) =>
           val sid                                  = NamedScheduleId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims <- requireAdmin(req, auth)
+            claims <- requireWriter(req, auth)
             // #2126: reject a cross-household target with 404 before any read/write.
             _      <- requireScheduleInHousehold(claims, sid, scheduleRepo)
             body   <- req.body.asString.orElseFail(ApiError.BadRequest(""))
@@ -157,7 +157,7 @@ object ScheduleRoutes {
         handler { (id: Long, req: Request) =>
           val sid                                  = NamedScheduleId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims <- requireAdmin(req, auth)
+            claims <- requireWriter(req, auth)
             // #2126: reject a cross-household delete with 404 (never mutate another tenant's row).
             _      <- requireScheduleInHousehold(claims, sid, scheduleRepo)
             _      <- scheduleRepo.delete(sid).mapError(ApiError.Db(_))

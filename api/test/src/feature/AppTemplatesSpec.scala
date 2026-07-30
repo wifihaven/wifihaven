@@ -698,14 +698,17 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         assertTrue(sum2.preserved.size == templates.size) &&
         assertTrue(all.size == templates.size)
     },
-    test("POST /api/apps/seed-from-templates rejects non-admin (#1024)") {
+    // #2522: the seeder moved from `requireAdmin` to `requireWriter` — an adult does the parenting,
+    // and re-seeding the starter app set is parenting. A CHILD is still refused, which is what this
+    // pin now guards; the adult's positive half lives in AdultEditBoundarySpec.
+    test("POST /api/apps/seed-from-templates rejects a child (#1024, #2522)") {
       for {
         _         <- cleanDb
         userRepo  <- ZIO.service[UserRepo]
         upRepo    <- ZIO.service[UserProfileRepo]
         auth      <- makeAuth
-        _         <- createUser(userRepo, upRepo, auth, "mom", "adult")
-        token     <- auth.login("mom", "pass").map(_.token.value)
+        _         <- createUser(userRepo, upRepo, auth, "kiddo", "child")
+        token     <- auth.login("kiddo", "pass").map(_.token.value)
         templates <- AppTemplates.loadAll()
         rs        <- makeRoutes(templates.map(t => t.slug -> t).toMap)
         resp      <- rs.runZIO(
@@ -731,14 +734,15 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         }
       } yield assertTrue(missing.isEmpty)
     },
-    test("POST /reset-to-template rejects non-admin (writer)") {
+    // #2522: same flip as above — adult-or-admin, so the refusal pin moves to `child`.
+    test("POST /reset-to-template rejects a child (#2522)") {
       for {
         _         <- cleanDb
         userRepo  <- ZIO.service[UserRepo]
         upRepo    <- ZIO.service[UserProfileRepo]
         auth      <- makeAuth
-        _         <- createUser(userRepo, upRepo, auth, "mom", "adult")
-        token     <- auth.login("mom", "pass").map(_.token.value)
+        _         <- createUser(userRepo, upRepo, auth, "kiddo", "child")
+        token     <- auth.login("kiddo", "pass").map(_.token.value)
         appRepo   <- ZIO.service[AppRepo]
         templates <- AppTemplates.loadAll()
         _         <- AppTemplates.seed(appRepo, templates)

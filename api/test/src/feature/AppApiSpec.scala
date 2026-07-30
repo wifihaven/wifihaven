@@ -346,15 +346,17 @@ object AppApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         rows <- appRepo.listAssignmentsForApp(id)
       } yield assertTrue(resp.status == Status.Ok) && assertTrue(rows.isEmpty)
     },
-    test("non-admin (adult) cannot DELETE apps (admin-only)") {
+    // #2522: `DELETE /api/apps/{id}` is stray-row maintenance, now adult-or-admin. A child is still
+    // refused; the adult's positive half lives in AdultEditBoundarySpec.
+    test("a child cannot DELETE apps (#2522)") {
       for {
         _        <- cleanDb
         userRepo <- ZIO.service[UserRepo]
         upRepo   <- ZIO.service[UserProfileRepo]
         appRepo  <- ZIO.service[AppRepo]
         auth     <- makeAuth
-        _        <- createUser(userRepo, upRepo, auth, "mom", "adult", Nil)
-        token    <- auth.login("mom", "pass").map(_.token.value)
+        _        <- createUser(userRepo, upRepo, auth, "kiddo", "child", Nil)
+        token    <- auth.login("kiddo", "pass").map(_.token.value)
         rs       <- makeRoutes
         id       <- appRepo.create("X", "x", None, None)
         resp     <- rs.runZIO(

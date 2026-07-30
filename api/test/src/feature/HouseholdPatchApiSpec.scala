@@ -386,16 +386,18 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         after <- repo.get
       } yield assertTrue(resp.status == Status.Ok) && assertTrue(after.notifyEmail.isEmpty)
     },
-    test("403 when non-admin (adult) tries to PATCH") {
+    // #2522: household settings are parenting, so PATCH is adult-or-admin now. A child is still
+    // refused; the adult's positive half lives in AdultEditBoundarySpec.
+    test("403 when a child tries to PATCH (#2522)") {
       for {
         _        <- setupHousehold
         userRepo <- ZIO.service[UserRepo]
         repo     <- ZIO.service[HouseholdSettingsRepo]
         auth     <- makeAuth
         hash     <- auth.hashPassword("pass")
-        id       <- userRepo.create("mom", hash, "adult")
+        id       <- userRepo.create("kiddo", hash, "child")
         _        <- userRepo.clearMustChangePassword(id)
-        token    <- auth.login("mom", "pass").map(_.token.value)
+        token    <- auth.login("kiddo", "pass").map(_.token.value)
         routes = HouseholdSettingsRoutes.routes(auth, repo)
         resp <- patch(routes, token, """{"dailyResetTime":"05:00:00"}""")
       } yield assertTrue(resp.status == Status.Forbidden)
