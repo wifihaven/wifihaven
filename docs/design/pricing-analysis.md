@@ -138,10 +138,16 @@ than fought:
 - **What the cloud tier actually sells** (real convenience deltas, not gated
   features): nothing to run or upgrade, managed Postgres + retention, access
   from anywhere without exposing a home server, hosted dashboards/alerting,
-  multi-admin households, and (later) multi-location. This is exactly the
+  multi-account households, and (later) multi-location. This is exactly the
   Nabu Casa bundle, and Nabu Casa charges $6.50 for it. WifiHaven's bundle is
   bigger (the whole control plane + history, vs. a relay), which supports
   sitting above Nabu Casa at $10.
+  > Corrected 2026-07-28: this originally read "multi-**admin** households".
+  > A household now has exactly one `admin`
+  > ([#2512](https://github.com/wifihaven/wifihaven/issues/2512), enforced by
+  > `V86`); the capability being sold is several *logins* per household —
+  > second parent as `adult`, kids as `child` — not several admins. The
+  > pricing conclusion is unaffected.
 
 ---
 

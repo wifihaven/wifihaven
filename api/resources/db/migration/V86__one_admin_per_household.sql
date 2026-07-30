@@ -1,0 +1,98 @@
+-- V86__one_admin_per_household.sql
+-- #2512: a household has exactly ONE admin — enforced in the schema.
+--
+-- ── Why ─────────────────────────────────────────────────────────────────────
+-- The Plain support customer is keyed on `identifier: { externalId }` = the
+-- household id (`api/src/support/PlainClient.scala`, `upsertCustomerVars`), i.e.
+-- ONE Plain customer per household, carrying ONE email address. `users.role`
+-- has been unconstrained in cardinality since V1 (`CHECK (role IN
+-- ('admin','adult','child'))` constrains the VALUE, not how many rows may hold
+-- it), and V65 added `users.household_id` without narrowing that. So a
+-- household could hold several admins, each with their own address, and the
+-- household's single Plain customer carried whichever admin's address was
+-- written last — a rewrite Plain's workspace-wide customer-email uniqueness
+-- then rejects, landing permanently on the non-self-healing `email_collision`
+-- bucket of `support_customer_upsert_total{reason}` (#2435, #2505).
+--
+-- The operator decision (2026-07-28, on #2512) resolves this by removing the
+-- premise rather than remodelling the Plain mapping: with exactly one admin per
+-- household, "one Plain customer per household" is not an aliasing hazard, it
+-- is simply correct, and the externalId-keyed customer can never be rewritten
+-- onto a second admin's address. The paired permissions change (#2522) makes
+-- that livable by giving `adult` write access to everything except account
+-- management, billing, hardware, and the household kill-switch.
+--
+-- ── What this index means ───────────────────────────────────────────────────
+-- It is the BACKSTOP that makes #2512's premise structurally true: no code
+-- path, migration, backfill, or manual INSERT can produce a second admin in a
+-- household. It is deliberately NOT the user-facing error surface — a raw
+-- unique-violation would surface as a 500. The readable 4xx comes from the API
+-- guard on `POST /api/users` / `PATCH /api/users/{id}` in the follow-up source
+-- PR (#2512 step 2). Schema and route are complementary, not redundant: the
+-- route explains, the index guarantees.
+--
+-- ── Why PARTIAL ─────────────────────────────────────────────────────────────
+-- `WHERE role = 'admin'` is load-bearing. `adult` and `child` are many-per-
+-- household by design (both parents, every kid), so a plain
+-- `UNIQUE (household_id, role)` — or any non-partial unique on household_id —
+-- would forbid the normal case. Only the `admin` slot is singular. NULLs are
+-- not a factor: `users.role` is NOT NULL (V1) and `household_id` is NOT NULL
+-- (V65).
+--
+-- ── Pre-flight audit ────────────────────────────────────────────────────────
+-- A unique index cannot be created over data that already violates it, so both
+-- live databases were audited read-only before this migration was written
+-- (2026-07-28):
+--
+--   SELECT household_id, count(*) FROM users
+--    WHERE role = 'admin' GROUP BY household_id HAVING count(*) > 1;
+--
+--   prod    — 6 users, 1 household, 1 admin  → 0 rows (clean)
+--   staging — 3 users, 3 households, 1 admin each → 0 rows (clean)
+--
+-- No demotions were needed. Had any household held two admins, the extras'
+-- disposition would have been an operator decision, not something this
+-- migration silently performs.
+--
+-- ── Prod data volume ────────────────────────────────────────────────────────
+-- Per docs/process/migrations.md#migrations-prod-data-volume: `users` is a
+-- small, BOUNDED table — one row per person in a household (6 rows on prod,
+-- 3 on staging), not an unbounded-growth event table like `traffic_reports` /
+-- `connection_events`. A plain `CREATE UNIQUE INDEX` scans it in milliseconds,
+-- so the brief ACCESS EXCLUSIVE lock is a non-event on the Flyway startup
+-- critical path and `CONCURRENTLY` is unnecessary. `CONCURRENTLY` is also not
+-- an option here: it cannot run inside a transaction block, and Flyway wraps
+-- each migration in one.
+--
+-- ── Scope, and the window before the route guard ────────────────────────────
+-- SCHEMA-ONLY PR (docs/process/migrations.md#migrations-back-compat): SQL +
+-- docs only, no source/tests/CI/fixtures. The unconditional (#2098) feature
+-- suite applying this over the seeded schema on embedded Postgres is the
+-- clean-apply / back-compat gate. That gate REQUIRES the test-only PR #2526 to
+-- merge first: four feature specs seeded a second admin into household 1 (which
+-- already owns the V1-seeded `admin`), and a schema-only PR cannot carry the
+-- fixture fix. If this migration is reading as applied, #2526 preceded it.
+--
+-- image-(N-1) DOES still expose a create-a-second-admin path: `POST /api/users`
+-- and `PATCH /api/users/{id}` accept `role = "admin"` unconditionally
+-- (api/src/routes/Routes.scala), and the SPA's Users page offers `admin` in its
+-- role dropdown (`ROLES`, web/src/pages/UsersPage.tsx:18). Between this and the
+-- #2512 step-2 route guard, that path returns a 500 (raw unique violation)
+-- instead of a readable 4xx. That is the deliberate ordering: it FAILS rather
+-- than silently creating the state the Plain mapping cannot represent. The
+-- window closes with the #2512 step-2 source PR, and only an operator who
+-- explicitly picks the `admin` role can enter it — nothing in the product
+-- creates an admin on its own.
+--
+-- One stale comment rides along until step 2: the `NOTE (#2512)` in
+-- `api/src/support/SupportResponder.scala` says `role = 'admin'` is not unique
+-- per household. It is, once this applies; step 2 owns removing it (a schema-
+-- only PR cannot touch source).
+
+CREATE UNIQUE INDEX uq_users_household_single_admin
+  ON users (household_id)
+  WHERE role = 'admin';
+
+COMMENT ON INDEX uq_users_household_single_admin IS
+  'One admin per household (#2512). Partial: adult/child are many-per-household. '
+  'Backstop for the API guard on POST /api/users and PATCH /api/users/{id}.';
