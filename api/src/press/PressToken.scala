@@ -66,7 +66,13 @@ import java.util.Base64
  */
 object PressToken {
 
-  private val Version: String = "v1"
+  /**
+   * The version prefix this scheme mints with. PUBLIC because
+   * [[wifihaven.api.agent.AgentCredential]] derives its outbound redaction pattern from it rather
+   * than re-typing the literal (#2508) — this stays this scheme's OWN constant, so bumping it here
+   * cannot silently re-version a sibling token scheme.
+   */
+  val Version: String = "v1"
 
   sealed trait Err
   object Err {

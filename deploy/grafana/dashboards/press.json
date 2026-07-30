@@ -438,6 +438,24 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Agent CREDENTIAL redactions (24h) — expect 0 (#2508)",
+      "description": "sum by (op, reason) (increase(agent_reply_redacted_total{env=\"$env\",channel=\"press\"}[24h])) — each sample is a press agent that put a credential into text we were about to EMAIL to an untrusted, public journalist (or record on the public /press correspondence log). The AgentCredential redactor removed it before send, so nothing left the process; the sample means the agent TRIED — the higher-severity half of #2508, because the recipient sits outside every trust boundary. reason=agent_token means it quoted its own press session token; reason=bearer, any other credential-shaped value. Each is also logged at ERROR (the log never quotes the credential).",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 54 },
+      "id": 19,
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "short", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "area", "textMode": "auto" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (op, reason) (increase(agent_reply_redacted_total{env=\"$env\",channel=\"press\"}[24h]))",
+          "legendFormat": "{{op}} / {{reason}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",

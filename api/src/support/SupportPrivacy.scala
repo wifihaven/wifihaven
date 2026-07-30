@@ -1,5 +1,7 @@
 package wifihaven.api.support
 
+import wifihaven.api.agent.AgentCredential
+
 /**
  * #2200 / #2241 — the COMPENSATING CONTROL for the flagged combined risk (consented full-household
  * read + autonomous public-issue-filing). A hijacked agent could read the consenting household's
@@ -52,12 +54,15 @@ object SupportPrivacy {
   val ConsentLinkPlaceholder: String = "[consent link omitted]"
 
   /**
-   * Every string [[scrubForIssue]] can inject. The ONE place downstream code should read to know
-   * what is scrubber output rather than customer/agent prose. Adding a redaction rule means adding
-   * its placeholder here, and the compiler will not remind you — but every consumer reads THIS, so
-   * there is one thing to update rather than N.
+   * Every string a REDACTOR can inject into text that then reaches a consumer of this module —
+   * [[scrubForIssue]]'s own placeholders plus, since #2508,
+   * [[wifihaven.api.agent.AgentCredential]]'s credential marker (injected earlier, at the
+   * agent-facing callback, but just as present by the time a title is tokenised). The ONE place
+   * downstream code should read to know what is redactor output rather than customer/agent prose.
+   * Adding a redaction rule anywhere means adding its placeholder here, and the compiler will not
+   * remind you — but every consumer reads THIS, so there is one thing to update rather than N.
    *
-   * #2453's two entries are the first additions since #2458 built this: [[scrubForIssue]] can
+   * #2453's two entries were the first additions since #2458 built this: [[scrubForIssue]] can
    * inject BOTH (the `Url` rule, and [[redactConsentLinks]] for the scheme-less consent path the
    * URL rule cannot see), so both belong here or issue-dedup would treat them as topic words.
    * `SupportPrivacySpec` pins that membership, and the bracket-delimited invariant below with it.
@@ -71,6 +76,14 @@ object SupportPrivacy {
       TruncatedPlaceholder,
       UrlPlaceholder,
       ConsentLinkPlaceholder,
+      // #2508: NOT injected by `scrubForIssue` — the credential redactor runs earlier, at the
+      // agent-facing callback (`SupportResponder.agentReply` / `agentFileIssue`) — but by the time
+      // a title reaches the #2458 dedup tokeniser its marker is just as present as these, and just
+      // as shared between unrelated reports. Registering it here is what keeps a credential-only
+      // title FAIL-OPEN: without it the marker tokenises to {redacted, credential}, exactly
+      // `MinTopicTokens`, so two unrelated credential-bearing titles match each other and the
+      // second customer's report is dropped against an unrelated issue.
+      AgentCredential.Marker,
     )
 
   /**

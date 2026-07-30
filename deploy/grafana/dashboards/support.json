@@ -761,6 +761,24 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Agent CREDENTIAL redactions (24h) — expect 0 (#2508)",
+      "description": "sum by (op, reason) (increase(agent_reply_redacted_total{env=\"$env\",channel=\"support\"}[24h])) — each sample is a support agent that put a credential into text we were about to send — a customer-visible Plain reply, an operator escalation note, or a PUBLIC GitHub issue. The AgentCredential redactor removed it before send, so nothing leaked; the sample means the agent TRIED. reason=agent_token is the severe case — it quoted a session token this system minted, which is what a successful prompt-injection exfiltration looks like. reason=bearer is any other credential-shaped Bearer value pasted out of its environment. Each is also logged at ERROR (the log never quotes the credential). Non-zero warrants reading the thread in Plain.",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 120 },
+      "id": 33,
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "short", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "area", "textMode": "auto" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (op, reason) (increase(agent_reply_redacted_total{env=\"$env\",channel=\"support\"}[24h]))",
+          "legendFormat": "{{op}} / {{reason}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",
