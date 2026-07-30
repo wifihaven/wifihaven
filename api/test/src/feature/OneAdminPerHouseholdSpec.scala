@@ -215,7 +215,6 @@ object OneAdminPerHouseholdSpec
     test("the guard is HOUSEHOLD-scoped — another household's admin does not block this one") {
       for {
         _    <- cleanDb
-        _    <- ZIO.service[UserRepo]
         auth <- makeAuth
         ur   <- ZIO.service[UserRepo]
         hash <- auth.hashPassword("pass")
@@ -225,6 +224,84 @@ object OneAdminPerHouseholdSpec
         id   <- ur.create("y-admin", hash, "admin", hhY)
         got  <- ur.findById(id)
       } yield assertTrue(got.map(_.role) == Some(UserRole.Admin))
+    },
+    test("the LOSER of the race still gets the 409 — a real V86 violation is classified, not 503") {
+      // The route's pre-check is a check-then-write, so a concurrent promotion can reach the INSERT
+      // with the slot already taken. That path is unreachable deterministically through the route
+      // (you cannot schedule the interleaving), so it is pinned at its seam instead: provoke a REAL
+      // unique violation from Postgres by going around the pre-check via the repo, and assert the
+      // classifier maps it to the same 409 rather than the generic `ApiError.Db` → 503.
+      //
+      // This is the load-bearing assumption of the whole race argument. Without it, if the
+      // constraint name ever stopped appearing on the exception (a rename, a driver change), the
+      // code would silently degrade back to "retry a state that can never succeed" and the rest of
+      // this suite would stay green.
+      for {
+        _     <- cleanDb
+        auth  <- makeAuth
+        ur    <- ZIO.service[UserRepo]
+        hash  <- auth.hashPassword("pass")
+        hhX   <- seedHouseholdWithAdmin("House X", "house-x", "alpha", hash)
+        err   <- ur.create("second-admin", hash, "admin", hhX).flip
+        // An UNRELATED violation must keep its 503 — the classifier is specific to V86's index,
+        // not to unique violations in general. V65's UNIQUE(household_id, username) supplies one.
+        other <- ur.create("alpha", hash, "adult", hhX).flip
+      } yield assertTrue(AuthRoutes.singleAdminViolation(err)) &&
+        assertTrue(
+          ErrorMapper.errorToResponse(AuthRoutes.dbOrAdminExists(err)).status == Status.Conflict,
+        ) &&
+        assertTrue(!AuthRoutes.singleAdminViolation(other)) &&
+        assertTrue(
+          ErrorMapper
+            .errorToResponse(AuthRoutes.dbOrAdminExists(other))
+            .status == Status.ServiceUnavailable,
+        )
+    },
+    test("PATCH cannot reach across households — an hh-B admin gets 404, not hh-A's admin slot") {
+      // The #2512 guard keys on the TARGET's household, so without a caller-owns-target check an
+      // hh-B admin could promote an hh-A user into hh-A's free admin slot and the guard would wave
+      // it through (the slot IS free). 404 rather than 403: a cross-household id must not be
+      // distinguishable from a nonexistent one.
+      for {
+        _                  <- cleanDb
+        (routes, auth, ur) <- routesFor
+        hashA              <- auth.hashPassword("passA")
+        hashB              <- auth.hashPassword("passB")
+        hhA                <- freshHousehold("House A", "house-a")
+        victim             <- ur.create("victim", hashA, "adult", hhA)
+        _                  <- seedHouseholdWithAdmin("House B", "house-b", "bravo", hashB)
+        tokenB             <- auth.login("house-b/bravo", "passB").map(_.token.value)
+        resp               <- patchRole(routes, tokenB, victim, "admin")
+        after              <- ur.findById(victim)
+      } yield assertTrue(resp.status == Status.NotFound) &&
+        assertTrue(after.map(_.role) == Some(UserRole.Adult))
+    },
+    test("DELETE cannot reach across households either — and an unknown id is indistinguishable") {
+      // The same unscoped-`findById` shape as PATCH. Left open it is the sharpest form of #2529: an
+      // hh-B admin deleting hh-A's only admin locks hh-A out unrecoverably. Both the cross-household
+      // id and a nonexistent one answer 404, so neither confirms the other's existence.
+      for {
+        _                  <- cleanDb
+        (routes, auth, ur) <- routesFor
+        hashA              <- auth.hashPassword("passA")
+        hashB              <- auth.hashPassword("passB")
+        hhA                <- freshHousehold("House A", "house-a")
+        victim             <- ur.create("victim", hashA, "adult", hhA)
+        _                  <- seedHouseholdWithAdmin("House B", "house-b", "bravo", hashB)
+        tokenB             <- auth.login("house-b/bravo", "passB").map(_.token.value)
+        del = (id: Long) =>
+          routes.runZIO(
+            Request
+              .delete(URL.decode(s"/api/users/$id").toOption.get)
+              .addHeader(Header.Authorization.Bearer(tokenB)),
+          )
+        cross  <- del(victim.value)
+        absent <- del(999999L)
+        after  <- ur.findById(victim)
+      } yield assertTrue(cross.status == Status.NotFound) &&
+        assertTrue(absent.status == Status.NotFound) &&
+        // The victim survives — the cross-household delete was refused, not merely reported.
+        assertTrue(after.isDefined)
     },
   ) @@ TestAspect.sequential
 }

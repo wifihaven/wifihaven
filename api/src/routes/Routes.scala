@@ -10,6 +10,8 @@ import zio.{Clock as _, *}
 import zio.http.*
 import zio.json.*
 
+import org.postgresql.util.PSQLException
+
 import java.time.{LocalDate, LocalTime, ZoneId}
 
 import zio.json.ast.Json
@@ -47,14 +49,48 @@ object AuthRoutes {
    * never succeed. So a violation of THIS index is re-mapped to the same 409 the pre-check
    * produces, and every other DB failure keeps its 503.
    *
-   * Matching is on the constraint name via [[ErrorMapper.dbCauseChain]], which walks both the
-   * `getCause` and the JDBC `getNextException` chains with cycle deduping — the #2053 lesson that
-   * the PSQL detail is often reachable only through `getNextException`.
+   * Classification is STRUCTURAL, matching the repo's existing SQLState idiom
+   * (`QueryTimeout.scala:57` on `57014`, `Database.scala:132` on the `08*` connection class) rather
+   * than a substring of the rendered message: SQLState `23505` AND
+   * `ServerErrorMessage.getConstraint` naming this exact index. `getMessage` text is
+   * `lc_messages`-dependent and would also false-positive on any unrelated error that merely
+   * mentions the constraint name. Both chains are walked — `getCause` and the JDBC
+   * `getNextException`, with cycle deduping — because of the #2053 lesson that the PSQL detail is
+   * often reachable only through `getNextException`.
+   *
+   * Public rather than private so `OneAdminPerHouseholdSpec` can pin it against a REAL violation
+   * raised by Postgres: this predicate is the load-bearing assumption of the whole race argument
+   * above, and if it ever stopped matching, the code would silently degrade back to the 503 lie
+   * with the suite still green.
    */
-  private def singleAdminViolation(t: Throwable): Boolean =
-    ErrorMapper.dbCauseChain(t).contains("uq_users_household_single_admin")
+  def singleAdminViolation(t: Throwable): Boolean = {
+    // PostgreSQL SQLState 23505 = unique_violation.
+    val UniqueViolation             = "23505"
+    val Constraint                  = "uq_users_household_single_admin" // V86
+    val seen                        = scala.collection.mutable.HashSet.empty[Throwable]
+    def walk(x: Throwable): Boolean =
+      x != null && seen.add(x) && {
+        val here = x match {
+          case p: PSQLException =>
+            p.getSQLState == UniqueViolation &&
+            Option(p.getServerErrorMessage)
+              .flatMap(m => Option(m.getConstraint))
+              .contains(Constraint)
+          case _                => false
+        }
+        val next = x match {
+          case s: java.sql.SQLException => walk(s.getNextException)
+          case _                        => false
+        }
+        here || walk(x.getCause) || next
+      }
+    walk(t)
+  }
 
-  private def dbOrAdminExists(t: Throwable): ApiError =
+  /**
+   * #2512: the one-admin violation becomes the readable 409; every other DB failure keeps its 503.
+   */
+  def dbOrAdminExists(t: Throwable): ApiError =
     if singleAdminViolation(t) then adminExists else ApiError.Db(t)
 
   /**
@@ -233,10 +269,21 @@ object AuthRoutes {
         },
       Method.DELETE / "api" / "users" / long("id")           ->
         handler { (id: Long, req: Request) =>
-          val handle: ZIO[Any, ApiError, Response] =
-            requireAdmin(req, auth) *>
-              userRepo.delete(UserId(id)).mapError(ApiError.Db(_)) *>
-              ZIO.succeed(Response.ok)
+          val uid                                  = UserId(id)
+          val handle: ZIO[Any, ApiError, Response] = for {
+            claims <- requireAdmin(req, auth)
+            // Same #2108-class scoping as PATCH below: `delete` is keyed on the GLOBAL id, so
+            // without this an hh-B admin can delete an hh-A user — including hh-A's only admin,
+            // which #2529 shows is unrecoverable. 404 on a cross-household id (no enumeration).
+            target <- userRepo
+              .findById(uid)
+              .mapError(ApiError.Db(_))
+              .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("User not found")))
+            _      <- ZIO
+              .fail(ApiError.NotFound("User not found"))
+              .when(target.householdId != claims.hh)
+            _      <- userRepo.delete(uid).mapError(ApiError.Db(_))
+          } yield Response.ok
           handle.mapError(ErrorMapper.errorToResponse)
         },
       // #997: field-scoped partial update. Body is a subset of the User read
@@ -247,11 +294,19 @@ object AuthRoutes {
         handler { (id: Long, req: Request) =>
           val uid                                  = UserId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
-            _      <- requireAdmin(req, auth)
+            claims <- requireAdmin(req, auth)
             target <- userRepo
               .findById(uid)
               .mapError(ApiError.Db(_))
               .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("User not found")))
+            // #2108 class (#2257 / #2282 / #2386): `findById` is a GLOBAL lookup, so without this an
+            // hh-B admin can patch an hh-A user — including promoting them into hh-A's free admin
+            // slot, which the #2512 guard below would wave through because the slot IS free.
+            // Rejected as 404, not 403: a cross-household id must not be distinguishable from a
+            // nonexistent one (no enumeration), matching `ProfileRepo.householdOf`'s guards.
+            _      <- ZIO
+              .fail(ApiError.NotFound("User not found"))
+              .when(target.householdId != claims.hh)
             body   <- req.body.asString.orElseFail(ApiError.BadRequest(""))
             obj    <- ZIO.fromEither(FieldPatch.parseObj(body)).mapError(ApiError.BadRequest(_))
             usernamePatch <- ZIO

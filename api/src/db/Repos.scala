@@ -249,6 +249,8 @@ trait UserRepo {
    * #2512: the household's ONE admin, or `None` if the slot is free. `.option` is exact by
    * construction — V86's partial unique index `uq_users_household_single_admin ON users
    * (household_id) WHERE role = 'admin'` makes a second matching row unrepresentable.
+   * (Index-BACKED, not index-ONLY: the projection is the full `userCols`, none of which the index
+   * covers, so the plan is an index scan plus a heap fetch.)
    *
    * This is the READ half of the one-admin invariant; the index is the write-side backstop. It
    * exists so `POST /api/users` / `PATCH /api/users/{id}` can refuse a second admin with a readable
@@ -1355,9 +1357,14 @@ class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
       .map(toUser)
       .to[List]
       .transact(xa)
-  // #2512: index-only probe for the household's single admin. Served directly by V86's partial
-  // unique index uq_users_household_single_admin (household_id) WHERE role='admin', which is also
-  // what makes `.option` exact rather than a "first row wins" read.
+  // #2512: probe for the household's single admin, backed by V86's partial unique index
+  // uq_users_household_single_admin (household_id) WHERE role='admin' — which is also what makes
+  // `.option` exact rather than a "first row wins" read.
+  // `role='admin'` is a LITERAL, not a bind parameter, deliberately: Postgres proves a partial
+  // index's predicate at PLAN time, and a parameter it cannot see the value of leaves the predicate
+  // unproven, so the partial index is not usable for the scan. It is the same string
+  // `UserRole.asString(UserRole.Admin)` produces (shared/src/Models.scala) and the same one V1's
+  // `CHECK (role IN ('admin','adult','child'))` and V86's predicate spell out.
   def findAdminForHousehold(household: HouseholdId)            =
     DbMetrics.timed("user.findAdminForHousehold")(
       (fr"SELECT " ++ userCols ++ fr" FROM users WHERE" ++ SqlFragments.householdEq(
