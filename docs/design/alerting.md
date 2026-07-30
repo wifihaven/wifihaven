@@ -355,7 +355,8 @@ stated alongside.
   it, so the customer got nothing. The likely cause is a workspace with email
   sending switched off — Settings → Channels → Email, section 3 "Sending emails"
   left unverified or section 4 "Enable email" never clicked
-  ([`docs/ops/plain-setup.md` §3.1](../ops/plain-setup.md)) — which stays broken
+  ([`docs/ops/plain-setup.md` §3.1](../ops/plain-setup.md#31-email-sending--a-required-go-live-gate-per-workspace))
+  — which stays broken
   until a human finishes provisioning. A deliberate off-state is **not** this:
   `plain.writeEnabled=false` labels `disabled`, so our own flag cannot light the
   rule. Deliberately does **not** constrain `reason`: `WebhookOutcome.reason`
@@ -365,6 +366,16 @@ stated alongside.
   [#2485](https://github.com/wifihaven/wifihaven/pull/2485) added an expect-0
   dashboard tile, but a tile is only seen by whoever opens it. Also inert in prod
   until #2335 flips `WIFIHAVEN_SUPPORT_RESPONDER_ENABLED`.
+- **Known half-coverage — the dropped AI reply.** The same Plain refusal also
+  drops the reply to a *registered* customer, which is the higher-value half (a
+  reject goes to a non-customer; a dropped reply goes to a paying household that
+  wrote in). That half meters on a **different** series,
+  `support_agent_action_total{op="reply",outcome="error"}`, which W8 does not
+  cover and which has no rule. Deferred rather than folded in: that series
+  carries no `reason` label, so a send refusal is indistinguishable there from
+  any other reply-path error, and alerting the whole `outcome="error"` bucket at
+  `> 0` needs a threshold tuned first (the #2443 problem). Tracked in
+  [#2539](https://github.com/wifihaven/wifihaven/issues/2539).
 - Not covered here: the sibling expect-0 tile "Escalated threads NOT marked in
   Plain" ([#2437](https://github.com/wifihaven/wifihaven/issues/2437)) is a
   different series with a different remediation, and stays panel-only for now.
@@ -407,7 +418,8 @@ Filed under the **Alerting & Paging** epic, one per coherent chunk:
 4. **[#1404](https://github.com/wifihaven/wifihaven/issues/1404) — First
    warning rule set** ([§7.2](#72-warning--notify-look-today)): W1–W4
    (+ W5 disabled, bound to its readiness issue). Extended by
-   [#2416](https://github.com/wifihaven/wifihaven/issues/2416) with W6–W7.
+   [#2416](https://github.com/wifihaven/wifihaven/issues/2416) with W6–W7, and
+   by [#2488](https://github.com/wifihaven/wifihaven/issues/2488) with W8.
 5. **[#1405](https://github.com/wifihaven/wifihaven/issues/1405) —
    Deploy-failure signal** ([§8](#8-gaps--metrics-not-yet-emitted)): extend
    `deploy-webhook` to emit `render_deploy_total{lifecycle}` (or adopt native

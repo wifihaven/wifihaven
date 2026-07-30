@@ -126,6 +126,10 @@ locals {
     # `PlainOutcome.Error`), so pinning a second selector here would add nothing and break silently if
     # attribution is added later. Expect a flat zero — #2488's whole point is that the dashboard tile
     # #2485 added is only seen by someone looking at it. Same gt=0 / for=15m shape as W6/W7.
+    # HALF-COVERAGE, deliberately: the same refusal also drops the AI reply to a REGISTERED customer,
+    # which meters on a different series (`support_agent_action_total{op="reply",outcome="error"}`)
+    # with no `reason` label to narrow on — so alerting it needs a tuned threshold first (#2443's
+    # problem). Tracked in #2539, not silently unnoticed.
     w8 = {
       title    = "W8 Plain REFUSED to send a support reject"
       expr     = "sum(rate(support_ai_draft_total{env=\"prod\",outcome=\"email_reject_send_failed\"}[15m]))"
