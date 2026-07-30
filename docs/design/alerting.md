@@ -343,6 +343,32 @@ stated alongside.
   alerted independently and the remediation differs. Also inert in prod until
   #2337 flips `WIFIHAVEN_PRESS_RESPONDER_ENABLED`.
 
+**W8. Plain REFUSED to send a support reject**
+([#2488](https://github.com/wifihaven/wifihaven/issues/2488))
+- Query: `sum(rate(support_ai_draft_total{env="prod",outcome="email_reject_send_failed"}[15m]))`
+- Fire when `> 0` **for 15m**.
+- Rationale: the same never-self-heals class as W6, one seam earlier — the
+  **Plain** boundary rather than the Anthropic one.
+  `outcome="email_reject_send_failed"`
+  ([#2471](https://github.com/wifihaven/wifihaven/issues/2471)) is emitted only
+  when Plain *accepted* the unregistered-sender reject write and refused to send
+  it, so the customer got nothing. The likely cause is a workspace with email
+  sending switched off — Settings → Channels → Email, section 3 "Sending emails"
+  left unverified or section 4 "Enable email" never clicked
+  ([`docs/ops/plain-setup.md` §3.1](../ops/plain-setup.md)) — which stays broken
+  until a human finishes provisioning. A deliberate off-state is **not** this:
+  `plain.writeEnabled=false` labels `disabled`, so our own flag cannot light the
+  rule. Deliberately does **not** constrain `reason`: `WebhookOutcome.reason`
+  returns `none` for this outcome on purpose (`PlainClient` collapses every send
+  failure into one causeless `PlainOutcome.Error`), so a second selector would
+  add nothing and break silently if attribution is added later.
+  [#2485](https://github.com/wifihaven/wifihaven/pull/2485) added an expect-0
+  dashboard tile, but a tile is only seen by whoever opens it. Also inert in prod
+  until #2335 flips `WIFIHAVEN_SUPPORT_RESPONDER_ENABLED`.
+- Not covered here: the sibling expect-0 tile "Escalated threads NOT marked in
+  Plain" ([#2437](https://github.com/wifihaven/wifihaven/issues/2437)) is a
+  different series with a different remediation, and stays panel-only for now.
+
 ## 8. Gaps — metrics not yet emitted
 
 These are alerts worth having whose metric does not (reliably) exist yet. They

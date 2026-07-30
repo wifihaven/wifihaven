@@ -104,10 +104,11 @@ too:
   group needs a concrete, non-empty folder, so this one is managed in-repo
   (idempotent now that the HCP backend owns its state).
 - **Warning rule group** ([`alerting-rules-warning.tf`](alerting-rules-warning.tf),
-  #1405, #2416) — W1–W7 (§7.2). W5 ships **disabled** (`is_paused`) because its
-  series is router-pushed and not yet trustworthy in prod (§8, #1382). W6–W7 ship
-  enabled but are INERT in prod until the support/press responder flags flip there
-  (#2335 / #2337) — they arm themselves with the feature, no second flip.
+  #1405, #2416, #2488) — W1–W8 (§7.2). W5 ships **disabled** (`is_paused`)
+  because its series is router-pushed and not yet trustworthy in prod (§8,
+  #1382). W6–W8 ship enabled but are INERT in prod until the support/press
+  responder flags flip there (#2335 / #2337) — they arm themselves with the
+  feature, no second flip.
 - **Critical rule group** ([`alerting-rules-critical.tf`](alerting-rules-critical.tf),
   #1404) — C1–C7 (§7.1).
 
