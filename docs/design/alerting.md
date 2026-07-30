@@ -355,9 +355,9 @@ stated alongside.
   it, so the customer got nothing. The likely cause is a workspace with email
   sending switched off — Settings → Channels → Email, section 3 "Sending emails"
   left unverified or section 4 "Enable email" never clicked
-  ([`docs/ops/plain-setup.md` §3.1](../ops/plain-setup.md#31-email-sending--a-required-go-live-gate-per-workspace))
-  — which stays broken
-  until a human finishes provisioning. A deliberate off-state is **not** this:
+  ([`docs/ops/plain-setup.md` §3.1](../ops/plain-setup.md#31-email-sending--a-required-go-live-gate-per-workspace)),
+  which stays broken until a human finishes provisioning.
+  A deliberate off-state is **not** this:
   `plain.writeEnabled=false` labels `disabled`, so our own flag cannot light the
   rule. Deliberately does **not** constrain `reason`: `WebhookOutcome.reason`
   returns `none` for this outcome on purpose (`PlainClient` collapses every send
@@ -368,13 +368,16 @@ stated alongside.
   until #2335 flips `WIFIHAVEN_SUPPORT_RESPONDER_ENABLED`.
 - **Known half-coverage — the dropped AI reply.** The same Plain refusal also
   drops the reply to a *registered* customer, which is the higher-value half (a
-  reject goes to a non-customer; a dropped reply goes to a paying household that
-  wrote in). That half meters on a **different** series,
+  reject goes to a non-customer; a dropped reply goes to an onboarded household
+  that wrote in). That half meters on a **different** series,
   `support_agent_action_total{op="reply",outcome="error"}`, which W8 does not
   cover and which has no rule. Deferred rather than folded in: that series
   carries no `reason` label, so a send refusal is indistinguishable there from
   any other reply-path error, and alerting the whole `outcome="error"` bucket at
-  `> 0` needs a threshold tuned first (the #2443 problem). Tracked in
+  `> 0` needs a threshold tuned first — the same problem *class* as
+  [#2443](https://github.com/wifihaven/wifihaven/issues/2443) (a noisy bucket
+  needs a tuned threshold, not `> 0`), though that issue is about the
+  `reason="transient"` bucket on the draft series, not this one. Tracked in
   [#2539](https://github.com/wifihaven/wifihaven/issues/2539).
 - Not covered here: the sibling expect-0 tile "Escalated threads NOT marked in
   Plain" ([#2437](https://github.com/wifihaven/wifihaven/issues/2437)) is a
