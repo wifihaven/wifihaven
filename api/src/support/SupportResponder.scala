@@ -330,10 +330,12 @@ final case class SupportResponder(
    * write: the externalId mapping — the load-bearing half — is worth stamping even when the
    * entitlement context is momentarily unreadable, and the next call repairs the attributes.
    *
-   * NOTE (#2512): the Plain customer is keyed on the HOUSEHOLD id while `role = 'admin'` is not
-   * unique per household, so a second admin emailing support rewrites the household's one customer
-   * onto their address — usually into Plain's workspace-wide email uniqueness, i.e. a non-self-
-   * healing `email_collision`. Pre-existing (the identity path has the same shape); tracked there.
+   * Keying the Plain customer on the HOUSEHOLD id is SOUND, not an aliasing hazard: #2512 made "a
+   * household has exactly one admin" structurally true (V86's partial unique index
+   * `uq_users_household_single_admin`, plus the 409 guard on `POST /api/users` and `PATCH
+   * /api/users/{id}`), so there is no second admin whose address could rewrite the household's one
+   * externalId-keyed customer into Plain's workspace-wide email uniqueness — the non-self-healing
+   * `email_collision` bucket that motivated #2512.
    */
   private def mapCustomerToHousehold(
       hh: HouseholdId,

@@ -23,6 +23,59 @@ import zio.json.ast.Json
 // `{status,db}` 503 auth-failure bodies are preserved verbatim (the latter via
 // [[ApiError.Wrapped]] of `ErrorMapper.dbUnavailable`, since the label is a static string).
 object AuthRoutes {
+
+  /**
+   * #2512: 409 + `{"error":"admin_exists"}` — a household already has its one admin, so creating a
+   * second (or promoting into the slot) can never succeed. Shaped like `ScheduleRoutes`' 409
+   * `name_taken` body (structured JSON the SPA can branch on, not a generic 400) and wrapped so the
+   * boundary logs/meters it without re-deriving.
+   *
+   * Deliberately a 409, not a 400: the request is well-formed, the HOUSEHOLD STATE forbids it — and
+   * it becomes valid again the moment the incumbent admin is demoted.
+   */
+  private val adminExists: ApiError =
+    ApiError.Wrapped(Response.json("""{"error":"admin_exists"}""").status(Status.Conflict))
+
+  /**
+   * #2512: the route guard below is a check-then-write, so it is inherently racy against V86's
+   * `uq_users_household_single_admin` — two concurrent promotions can both read an empty slot. That
+   * race is ACCEPTED, not eliminated (an advisory lock would buy a vanishingly rare correctness
+   * detail at the cost of a lock on every user write): the index is what GUARANTEES the invariant,
+   * the route is what EXPLAINS it. The only thing the race must not do is change the answer the
+   * loser gets — without this, the loser's unique violation lands on the generic `ApiError.Db` path
+   * and comes back as a 503 + `Retry-After: 30`, telling the operator to retry a state that can
+   * never succeed. So a violation of THIS index is re-mapped to the same 409 the pre-check
+   * produces, and every other DB failure keeps its 503.
+   *
+   * Matching is on the constraint name via [[ErrorMapper.dbCauseChain]], which walks both the
+   * `getCause` and the JDBC `getNextException` chains with cycle deduping — the #2053 lesson that
+   * the PSQL detail is often reachable only through `getNextException`.
+   */
+  private def singleAdminViolation(t: Throwable): Boolean =
+    ErrorMapper.dbCauseChain(t).contains("uq_users_household_single_admin")
+
+  private def dbOrAdminExists(t: Throwable): ApiError =
+    if singleAdminViolation(t) then adminExists else ApiError.Db(t)
+
+  /**
+   * #2512: refuse when `household` already holds an admin OTHER than `selfId`. `selfId` is
+   * `Some(id)` on the PATCH path so re-setting the incumbent admin's role to `admin` stays a no-op
+   * (the SPA saves the whole form, unchanged fields included) rather than colliding with itself,
+   * and `None` on create, where nothing can be excluded.
+   */
+  private def requireAdminSlotFree(
+      userRepo: UserRepo,
+      household: HouseholdId,
+      selfId: Option[UserId],
+  ): ZIO[Any, ApiError, Unit] =
+    userRepo
+      .findAdminForHousehold(household)
+      .mapError(ApiError.Db(_))
+      .flatMap(incumbent =>
+        ZIO.fail(adminExists).when(incumbent.exists(u => !selfId.contains(u.id))),
+      )
+      .unit
+
   def routes(
       auth: AuthService,
       userRepo: UserRepo,
@@ -131,12 +184,19 @@ object AuthRoutes {
                 ),
               )
               .when(!AuthService.isPasswordStrongEnough(cur.password))
+            // #2512: a household has exactly ONE admin. Checked against the household the row is
+            // about to land in (`claims.hh`, below), ahead of the bcrypt hash so the refusal costs
+            // nothing.
+            _      <- requireAdminSlotFree(userRepo, claims.hh, selfId = None)
+              .when(cur.role == UserRole.Admin)
             hash   <- auth.hashPassword(cur.password)
             // #2130: the new user lands in the CREATING admin's household, not
             // V65's DEFAULT 1 — a hh-B admin must never plant rows in hh-A.
             id     <- userRepo
               .create(cur.username, hash, UserRole.asString(cur.role), claims.hh)
-              .mapError(ApiError.Db(_))
+              // #2512: the pre-check above is racy against V86; a violation that slips through
+              // still gets the 409, never a "retry later" 503.
+              .mapError(dbOrAdminExists)
             _      <- userProfileRepo
               .setProfilesForUser(id, cur.profileIds)
               .mapError(ApiError.Db(_))
@@ -187,13 +247,13 @@ object AuthRoutes {
         handler { (id: Long, req: Request) =>
           val uid                                  = UserId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
-            _    <- requireAdmin(req, auth)
-            _    <- userRepo
+            _      <- requireAdmin(req, auth)
+            target <- userRepo
               .findById(uid)
               .mapError(ApiError.Db(_))
               .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("User not found")))
-            body <- req.body.asString.orElseFail(ApiError.BadRequest(""))
-            obj  <- ZIO.fromEither(FieldPatch.parseObj(body)).mapError(ApiError.BadRequest(_))
+            body   <- req.body.asString.orElseFail(ApiError.BadRequest(""))
+            obj    <- ZIO.fromEither(FieldPatch.parseObj(body)).mapError(ApiError.BadRequest(_))
             usernamePatch <- ZIO
               .fromEither(FieldPatch.from[String](obj, "username"))
               .mapError(ApiError.BadRequest(_))
@@ -221,9 +281,14 @@ object AuthRoutes {
             }
             _             <- rolePatch match {
               case FieldPatch.Set(r) =>
-                userRepo
-                  .updateRole(uid, UserRole.asString(r))
-                  .mapError(ApiError.Db(_))
+                // #2512: scoped to the TARGET's household (`target.householdId`), which is the
+                // household V86's index is keyed on — not the caller's. `selfId = Some(uid)` keeps
+                // re-setting the incumbent admin to `admin` a no-op instead of a self-collision.
+                requireAdminSlotFree(userRepo, target.householdId, selfId = Some(uid))
+                  .when(r == UserRole.Admin) *>
+                  userRepo
+                    .updateRole(uid, UserRole.asString(r))
+                    .mapError(dbOrAdminExists)
               case _                 => ZIO.unit
             }
             _             <- profilesPatch match {

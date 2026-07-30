@@ -244,6 +244,21 @@ trait UserRepo {
    * (design §2 gap 4). Index-backed by V65's idx_users_household.
    */
   def listAllForHousehold(household: HouseholdId): Task[List[DbUser]]
+
+  /**
+   * #2512: the household's ONE admin, or `None` if the slot is free. `.option` is exact by
+   * construction — V86's partial unique index `uq_users_household_single_admin ON users
+   * (household_id) WHERE role = 'admin'` makes a second matching row unrepresentable.
+   *
+   * This is the READ half of the one-admin invariant; the index is the write-side backstop. It
+   * exists so `POST /api/users` / `PATCH /api/users/{id}` can refuse a second admin with a readable
+   * 409 instead of letting the unique violation surface as `ApiError.Db` → 503 "retry later" (a lie
+   * — retrying a permanently-occupied slot never succeeds). Deliberately not `listAllForHousehold`
+   * + filter: the predicate belongs next to the index that guarantees it, and the query is
+   * index-only.
+   */
+  def findAdminForHousehold(household: HouseholdId): Task[Option[DbUser]]
+
   def delete(id: UserId): Task[Unit]
 }
 
@@ -1340,6 +1355,19 @@ class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
       .map(toUser)
       .to[List]
       .transact(xa)
+  // #2512: index-only probe for the household's single admin. Served directly by V86's partial
+  // unique index uq_users_household_single_admin (household_id) WHERE role='admin', which is also
+  // what makes `.option` exact rather than a "first row wins" read.
+  def findAdminForHousehold(household: HouseholdId)            =
+    DbMetrics.timed("user.findAdminForHousehold")(
+      (fr"SELECT " ++ userCols ++ fr" FROM users WHERE" ++ SqlFragments.householdEq(
+        household,
+      ) ++ fr"AND role='admin'")
+        .query[UserRow]
+        .map(toUser)
+        .option
+        .transact(xa),
+    )
   def delete(id: UserId) = sql"DELETE FROM users WHERE id=$id".update.run.transact(xa).unit
 }
 
