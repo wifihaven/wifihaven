@@ -22,8 +22,8 @@ import zio.json.*
  *
  * #1798: app *definition* mutators (create / update / replace-hosts / PATCH) were removed — app
  * definitions are authored only via the built-in `AppTemplates` (seed/reconcile/reset routes
- * below). `DELETE /api/apps/:id` stays as an admin-only cleanup path but is no longer surfaced in
- * the SPA.
+ * below). `DELETE /api/apps/:id` stays as a cleanup path but is no longer surfaced in the SPA
+ * (#2522: adult-or-admin, like the other two maintenance routes here).
  */
 object AppRoutes {
 

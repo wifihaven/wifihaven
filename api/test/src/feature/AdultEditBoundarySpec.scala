@@ -5,6 +5,7 @@ import wifihaven.api.auth.*
 import wifihaven.api.billing.*
 import wifihaven.api.db.*
 import wifihaven.api.db.TypeMeta.given
+import wifihaven.api.policy.{PolicyService, PolicyServiceLive}
 import wifihaven.api.routes.*
 import wifihaven.shared.*
 import wifihaven.shared.types.*
@@ -256,6 +257,28 @@ object AdultEditBoundarySpec
       en   <- ZIO.service[EntitlementsRepo]
       auth <- makeAuth
     } yield AdminRouterRoutes.routes(auth, rr, ur, en)
+
+  private def adminDebugRoutes =
+    for {
+      pr     <- ZIO.service[ProfileRepo]
+      hsr    <- ZIO.service[HouseholdSettingsRepo]
+      tlr    <- ZIO.service[TimeLimitRepo]
+      atlr   <- ZIO.service[AppTimeLimitRepo]
+      dr     <- ZIO.service[DeviceRepo]
+      blr    <- ZIO.service[BlocklistRepo]
+      trRepo <- ZIO.service[TrafficReportRepo]
+      er     <- ZIO.service[TimeExtensionRepo]
+      ar     <- ZIO.service[AppRepo]
+      clock  <- ZIO.service[Clock]
+      auth   <- makeAuth
+      ps = PolicyServiceLive(pr, hsr, tlr, atlr, dr, blr, trRepo, er, ar, clock): PolicyService
+    } yield AdminDebugRoutes.routes(auth, ps)
+
+  private def rollupAdminRoutes =
+    for {
+      repo <- ZIO.service[RollupRepo]
+      auth <- makeAuth
+    } yield RollupAdminRoutes.routes(auth, repo)
 
   private def enforcementRoutes =
     for {
@@ -532,6 +555,7 @@ object AdultEditBoundarySpec
       for {
         _        <- cleanDb
         fx       <- fixture
+        hbr      <- ZIO.service[HouseholdBillingRepo]
         rts      <- billingRoutes
         get      <- statusOf(rts, Method.GET, "/api/billing", fx.adult)
         checkout <- statusOf(rts, Method.POST, "/api/billing/checkout", fx.adult, Some("{}"))
@@ -539,10 +563,14 @@ object AdultEditBoundarySpec
         // The admin is NOT refused — proving the 403s above come from the role gate and not from
         // some unrelated failure in the billing wiring.
         adminGet <- statusOf(rts, Method.GET, "/api/billing", fx.admin)
+        // Refused, not merely reported: `checkout` is the one verb here that mutates (it stamps the
+        // Stripe customer id on the household's billing row), so pin that the row is untouched.
+        row      <- hbr.findByHousehold(fx.hh)
       } yield assertTrue(get == Status.Forbidden) &&
         assertTrue(checkout == Status.Forbidden) &&
         assertTrue(portal == Status.Forbidden) &&
-        assertTrue(adminGet == Status.Ok)
+        assertTrue(adminGet == Status.Ok) &&
+        assertTrue(row.flatMap(_.stripeCustomerId).isEmpty)
     },
     test("hardware: an adult cannot mint or revoke a router enrollment") {
       for {
@@ -583,14 +611,26 @@ object AdultEditBoundarySpec
         after <- hsr.enforcementDisabled(fx.hh)
       } yield assertTrue(resp == Status.Forbidden) && assertTrue(!after)
     },
-    test("/api/admin/*: an adult cannot run the template reconciler") {
+    test("the /api/admin prefix: an adult reaches NONE of its three surfaces") {
+      // Every route under `/api/admin` that a household user could address, not a representative
+      // one — the whole point of this half is that an overshoot anywhere is caught. (The fourth,
+      // `/api/admin/routers`, has its own case above.)
       for {
-        _    <- cleanDb
-        fx   <- fixture
-        rts  <- appRoutes
-        resp <- statusOf(rts, Method.POST, "/api/admin/apps/reconcile-templates", fx.adult)
-        ok   <- statusOf(rts, Method.POST, "/api/admin/apps/reconcile-templates", fx.admin)
-      } yield assertTrue(resp == Status.Forbidden) && assertTrue(ok == Status.Ok)
+        _         <- cleanDb
+        fx        <- fixture
+        apps      <- appRoutes
+        snap      <- adminDebugRoutes
+        rollup    <- rollupAdminRoutes
+        reconcile <- statusOf(apps, Method.POST, "/api/admin/apps/reconcile-templates", fx.adult)
+        snapshot  <- statusOf(snap, Method.GET, "/api/admin/snapshot", fx.adult)
+        status    <- statusOf(rollup, Method.GET, "/api/admin/rollup-status", fx.adult)
+        // Each paired with the admin's success, so a 403 caused by broken wiring rather than by the
+        // role gate cannot masquerade as coverage.
+        okA       <- statusOf(apps, Method.POST, "/api/admin/apps/reconcile-templates", fx.admin)
+        okS       <- statusOf(snap, Method.GET, "/api/admin/snapshot", fx.admin)
+        okR       <- statusOf(rollup, Method.GET, "/api/admin/rollup-status", fx.admin)
+      } yield assertTrue(List(reconcile, snapshot, status) == List.fill(3)(Status.Forbidden)) &&
+        assertTrue(List(okA, okS, okR) == List.fill(3)(Status.Ok))
     },
   )
 
