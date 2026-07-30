@@ -113,25 +113,30 @@ object SupportIdentitySpec
         hhRepo   <- ZIO.service[HouseholdRepo]
         billRepo <- ZIO.service[HouseholdBillingRepo]
         auth     <- makeAuth
-        // Household A = default (id 1); household B provisioned fresh.
+        // Households A and B are both provisioned fresh. A used to be the default household (id 1),
+        // but that household already owns the V1-seeded `admin`, and #2512 makes one admin per
+        // household a schema invariant — so an email-bearing admin for A needs a household of its
+        // own. Nothing in this test depends on A being household 1; what it pins is that two
+        // DISTINCT households never collide on tenant identifier or email hash.
+        hhA      <- hhRepo.create("Family A", "family-a")
         hhB      <- hhRepo.create("Family B", "family-b")
         _        <- seedAdmin(
           auth,
           userRepo,
-          HouseholdId.Default,
+          hhA,
           "admin_a",
           "a@example.com",
           "pwpwpwpw11",
         )
         _        <- seedAdmin(auth, userRepo, hhB, "admin_b", "b@example.com", "pwpwpwpw22")
-        // A beta entitlement for household B (fresh — the default household already has a seeded
-        // billing row) so the mapping carries a plan attribute for B.
+        // Mark household B as FOUNDING, so the two households' entitlement attributes differ: A
+        // keeps the beta/non-founding row every household is seeded with (#2355), B is founding.
         _        <- billRepo.create(hhB, "beta", founding = true)
         rec      <- PlainClient.recorder
         svc    = SupportService(widgetCfg, userRepo, hhRepo, billRepo, PlainClient.recording(rec))
         routes = SupportRoutes.routes(auth, svc)
-        // A logs in via bare username (default household); B via slug/username.
-        tokenA      <- login(auth, "admin_a", "pwpwpwpw11")
+        // Both live outside the default household now, so both log in via slug/username (#2164).
+        tokenA      <- login(auth, "family-a/admin_a", "pwpwpwpw11")
         tokenB      <- login(auth, "family-b/admin_b", "pwpwpwpw22")
         (sA, bodyA) <- getIdentity(routes, Some(tokenA))
         (sB, bodyB) <- getIdentity(routes, Some(tokenB))
@@ -149,8 +154,13 @@ object SupportIdentitySpec
         assertTrue(idA.configured) &&
         assertTrue(idA.appId.contains(AppId)) &&
         assertTrue(idA.email.contains("a@example.com")) &&
-        assertTrue(idA.tenantIdentifier.contains(HouseholdId.Default.value.toString)) &&
+        assertTrue(idA.tenantIdentifier.contains(hhA.value.toString)) &&
         assertTrue(idA.emailHash.contains(expectedHashA)) &&
+        // A's entitlement is the one `HouseholdSeed.insertHousehold` seeds with every household
+        // (#2355: households + billing + global-sentinel as a unit, Repos.scala:1358) — beta, NOT
+        // founding. Asserted so A's attributes are pinned to A's own row rather than left to
+        // coincide with B's.
+        assertTrue(idA.plan.contains("beta"), idA.founding.contains(false)) &&
         // B's identity is B's household + B's email hash, and its entitlement attribute reflects B's
         // billing status (beta / founding).
         assertTrue(idB.configured) &&
@@ -164,7 +174,7 @@ object SupportIdentitySpec
         // The lazy customer upsert carried the CALLER'S OWN household as tenantIdentifier for each.
         assertTrue(
           customers.exists(c =>
-            c.tenantIdentifier == HouseholdId.Default.value.toString && c.email == "a@example.com",
+            c.tenantIdentifier == hhA.value.toString && c.email == "a@example.com",
           ),
         ) &&
         assertTrue(
@@ -215,10 +225,12 @@ object SupportIdentitySpec
         hhRepo   <- ZIO.service[HouseholdRepo]
         billRepo <- ZIO.service[HouseholdBillingRepo]
         auth     <- makeAuth
+        // Own household (#2512: household 1's one admin is the V1-seeded `admin`).
+        hhC      <- hhRepo.create("Family C", "family-c")
         _        <- seedAdmin(
           auth,
           userRepo,
-          HouseholdId.Default,
+          hhC,
           "admin_c",
           "c@example.com",
           "pwpwpwpw33",
@@ -227,7 +239,7 @@ object SupportIdentitySpec
         // darkCfg: no app id / identity secret ⇒ widget dark; no api key ⇒ write dark.
         svc    = SupportService(darkCfg, userRepo, hhRepo, billRepo, PlainClient.recording(rec))
         routes = SupportRoutes.routes(auth, svc)
-        token     <- login(auth, "admin_c", "pwpwpwpw33")
+        token     <- login(auth, "family-c/admin_c", "pwpwpwpw33")
         (s, body) <- getIdentity(routes, Some(token))
         id        <- parse(body)
         customers <- rec.customers.get
@@ -252,10 +264,12 @@ object SupportIdentitySpec
         hhRepo   <- ZIO.service[HouseholdRepo]
         billRepo <- ZIO.service[HouseholdBillingRepo]
         auth     <- makeAuth
+        // Own household (#2512: household 1's one admin is the V1-seeded `admin`).
+        hhD      <- hhRepo.create("Family D", "family-d")
         _        <- seedAdmin(
           auth,
           userRepo,
-          HouseholdId.Default,
+          hhD,
           "admin_d",
           "d@example.com",
           "pwpwpwpw44",
@@ -263,7 +277,7 @@ object SupportIdentitySpec
         rec      <- PlainClient.recorder
         svc = SupportService(noSupportCfg, userRepo, hhRepo, billRepo, PlainClient.recording(rec))
         routes = SupportRoutes.routes(auth, svc)
-        token     <- login(auth, "admin_d", "pwpwpwpw44")
+        token     <- login(auth, "family-d/admin_d", "pwpwpwpw44")
         (s, body) <- getIdentity(routes, Some(token))
         id        <- parse(body)
       } yield assertTrue(s == Status.Ok, !id.configured, id.supportEmail.isEmpty)
