@@ -552,10 +552,15 @@ object AdultEditBoundarySpec
         assertTrue(after.find(_.username == "kiddo").map(_.role) == Some(UserRole.Child))
     },
     test("billing: an adult cannot read billing state or reach Stripe") {
+      // Unlike the other four classes this one has no "the write did not land" half, because none of
+      // the three verbs writes: `startCheckout` and `openPortal` only READ `stripeCustomerId`
+      // (`BillingService.scala:75`) — the sole writer is `provisionCustomer` on the provisioning
+      // path (`:47`), which no route here reaches. A DB assertion would therefore hold with the
+      // guard deleted, which is worse than none. The admin-succeeds pin below carries the weight
+      // instead: it proves the 403s come from the role gate rather than from broken wiring.
       for {
         _        <- cleanDb
         fx       <- fixture
-        hbr      <- ZIO.service[HouseholdBillingRepo]
         rts      <- billingRoutes
         get      <- statusOf(rts, Method.GET, "/api/billing", fx.adult)
         checkout <- statusOf(rts, Method.POST, "/api/billing/checkout", fx.adult, Some("{}"))
@@ -563,14 +568,10 @@ object AdultEditBoundarySpec
         // The admin is NOT refused — proving the 403s above come from the role gate and not from
         // some unrelated failure in the billing wiring.
         adminGet <- statusOf(rts, Method.GET, "/api/billing", fx.admin)
-        // Refused, not merely reported: `checkout` is the one verb here that mutates (it stamps the
-        // Stripe customer id on the household's billing row), so pin that the row is untouched.
-        row      <- hbr.findByHousehold(fx.hh)
       } yield assertTrue(get == Status.Forbidden) &&
         assertTrue(checkout == Status.Forbidden) &&
         assertTrue(portal == Status.Forbidden) &&
-        assertTrue(adminGet == Status.Ok) &&
-        assertTrue(row.flatMap(_.stripeCustomerId).isEmpty)
+        assertTrue(adminGet == Status.Ok)
     },
     test("hardware: an adult cannot mint or revoke a router enrollment") {
       for {
@@ -611,10 +612,11 @@ object AdultEditBoundarySpec
         after <- hsr.enforcementDisabled(fx.hh)
       } yield assertTrue(resp == Status.Forbidden) && assertTrue(!after)
     },
-    test("the /api/admin prefix: an adult reaches NONE of its three surfaces") {
-      // Every route under `/api/admin` that a household user could address, not a representative
-      // one — the whole point of this half is that an overshoot anywhere is caught. (The fourth,
-      // `/api/admin/routers`, has its own case above.)
+    test("the /api/admin prefix: an adult reaches none of its three non-router surfaces") {
+      // Every route under `/api/admin` this case is responsible for, not a representative one — the
+      // whole point of this half is that an overshoot anywhere is caught. The rest of the prefix is
+      // covered elsewhere: `/api/admin/routers` has its own case above, and the operator-only
+      // free-forever grant sits behind the narrower `requireOperator` (unchanged by #2522).
       for {
         _         <- cleanDb
         fx        <- fixture
