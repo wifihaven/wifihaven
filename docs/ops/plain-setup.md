@@ -116,8 +116,9 @@ Plain receives email via a Postmark inbound address it shows you under
 > and prod are separate Plain workspaces and enabling one does nothing for the other.
 >
 > **Status: both workspaces are DONE** — staging 2026-07-27, prod 2026-07-29, each verified
-> by an end-to-end send (see the two tests below). Keep this section for a NEW workspace,
-> and re-read it if outbound support mail ever goes quiet.
+> by an end-to-end send (see the two tests below) — for prod that means PLAIN can send; our
+> own send path there is verified when its responder is enabled. Keep this section for a NEW
+> workspace, and re-read it if outbound support mail ever goes quiet.
 
 **The DNS is already in the repo — you do not add records by hand.**
 `infra/cloudflare/main.tf` carries both sending domains
@@ -151,24 +152,31 @@ Then, in the Plain workspace for that environment:
 3. Section **4. Enable email** then appears. It must read **"Email is currently
    enabled."** with a red **Disable email** button next to it.
 
-> **§4 does not always flip itself — check it, per workspace.** Both behaviours are
+> **Plain's "Enable email" step does not always flip itself — check it, per workspace.** Both behaviours are
 > confirmed on our own workspaces: **staging** auto-enabled the moment §3 verified, while
 > **prod** verified DNS and left email **disabled** with an *Enable* button still to click
 > (2026-07-29). So "Verify DNS succeeded" is NOT the finish line, and what one workspace
-> did tells you nothing about the other. Read §4's live text before moving on.
+> did tells you nothing about the other. Read that section's live text before moving on.
 
 **Verify it actually sends — do not trust the toggle.** Which test to run depends on
 whether the AI responder is ON in this environment, because the static reject lives
 *inside* the responder:
 
 ```sh
-# Check first — this decides which test below is meaningful.
-grep -A2 WIFIHAVEN_SUPPORT_RESPONDER_ENABLED render.yaml
+# Check first — this decides which test below is meaningful. Run from the repo root.
+# Prints the flag PER SERVICE: a bare grep can't tell the two blocks apart.
+awk '/^    name: /{svc=$2} /WIFIHAVEN_SUPPORT_RESPONDER_ENABLED/{getline; print svc": "$2}' render.yaml
+# wifihaven-api-staging: "true"
+# wifihaven-api-prod: "false"
 ```
 
-### If the responder is OFF (`responderEnabled=false`) — test Plain directly
+This command — not the labels below — is authoritative. The labels record which
+environment was in which state on 2026-07-29 and will go stale the moment prod's
+responder is flipped on.
 
-**This is prod's situation today.** No reject is ever attempted, so the responder test
+#### If the responder is OFF (`responderEnabled=false`) — test Plain directly
+
+**Prod, as of 2026-07-29.** No reject is ever attempted, so the responder test
 below proves nothing and its absence of log lines is NOT evidence of anything. Exercise
 Plain's sending with a human reply, our code entirely out of the path:
 
@@ -181,11 +189,19 @@ Do not go looking for `outcome=` lines here: with the responder dark you will se
 `outcome=disabled` at best, and if the workspace has no webhook configured for this
 environment, **nothing at all**. Neither says anything about sending. (Prod was verified
 exactly this way on 2026-07-29 — the reply landed; the prod API logged no support lines
-whatsoever, which was expected, not a failure.)
+whatsoever. That silence was expected — but it is not nothing: it tells you prod's Plain
+webhook is not wired to the API yet (a §7 / #2240 item), since a configured webhook against
+a dark responder would still log `outcome=disabled`.)
 
-### If the responder is ON (`responderEnabled=true`) — test the reject path
+> **This branch verifies PLAIN's sending, not OURS.** It deliberately keeps our code out of
+> the path, so it says nothing about the API's own send path or about whether the prod
+> machine-user key carries the grants those writes need (§5.1/§5.3). When this environment's
+> responder is switched on, **re-run the ON-branch test below against it** — do not treat the
+> status note above as covering it.
 
-**This is staging's situation.** From an address that is **not** a registered household
+#### If the responder is ON (`responderEnabled=true`) — test the reject path
+
+**Staging, as of 2026-07-29.** From an address that is **not** a registered household
 admin (a personal Gmail is ideal — a registered address takes the AI dispatch path
 instead), email the environment's support address, then check the API log:
 
@@ -708,8 +724,10 @@ these:
 3. Send a test email to `support@wifihaven.net` and a test chat → both land in the Plain
    inbox. (Auto-drafted replies are #2200, separate.)
    > **Landing in the inbox proves only INBOUND.** It says nothing about whether Plain can
-   > send — that half is §3.1, and it is the one that was missed (#2471). Do §3.1's
-   > unregistered-sender check for this environment before calling the channel done.
+   > send — that half is §3.1, and it is the one that was missed (#2471). Do §3.1's send
+   > verification for this environment — **whichever of its two branches applies** — before
+   > calling the channel done. The unregistered-sender check is only the responder-ON branch;
+   > with the responder dark it proves nothing.
 4. **Fire one real escalation and confirm the label lands (#2437).** Do this on staging
    *before* the prod flip — the `addLabels` mutation shape and the `label:create` grant are
    only exercised for real here, and a wrong field name or a missing permission otherwise
