@@ -561,12 +561,11 @@ services:
       # #2437: the Plain LABEL TYPE id (`lt_…`) the server applies when the support agent escalates,
       # so the operator can filter the inbox for "waiting on a human". NOT a secret — workspace state
       # (Settings → Labels, docs/ops/plain-setup.md §5.4), so it is committed rather than dashboard-set,
-      # the same as staging above. Left UNSET here because the label does not exist in the LIVE Plain
-      # workspace yet and its id differs from staging's; prod's RESPONDER_ENABLED is still "false", so
-      # nothing requires it. Create the label in the live workspace and commit its id in the SAME PR
-      # that flips prod's responder on — with the flag true and this unset, the API refuses to boot.
+      # the same as staging above. This is the LIVE workspace's `Needs human` label, created 2026-07-29
+      # and committed here as the boot gate requires (with RESPONDER_ENABLED=true and this unset the
+      # API refuses to boot) — a DIFFERENT id from staging's, as expected for a different workspace.
       - key: WIFIHAVEN_SUPPORT_PLAIN_ESCALATION_LABEL_TYPE_ID
-        sync: false
+        value: lt_01KYTM9YRBKHYWBF6TG3ZRPN1Y
       # #2200: the Claude support responder on PROD (live Plain + prod Managed Agent). #2265: NO
       # dark-by-default — same explicit-flag pattern as staging (flip via PR at go-live, after the
       # secrets are set; a true flag with missing keys refuses to boot, bulk-listing the gaps).
@@ -574,7 +573,7 @@ services:
       # #2458's duplicate check LISTS open issues (structural no-PR is the absence of
       # contents/pull_requests, #2241). NEVER commit values.
       - key: WIFIHAVEN_SUPPORT_RESPONDER_ENABLED
-        value: "false"
+        value: "true"
       - key: WIFIHAVEN_SUPPORT_ISSUE_FILING_ENABLED
         value: "false"
       # #2300: cloud-agent transport — "managed-agents" (Anthropic Managed Agents, API-credit billed)
@@ -582,7 +581,7 @@ services:
       # billed — the credit-free path). Only the selected transport's config chain is required at
       # boot; an unknown value fails boot. Flip via PR alongside the routine secrets below.
       - key: WIFIHAVEN_SUPPORT_DISPATCHER
-        value: managed-agents
+        value: claude-code-cloud
       - key: WIFIHAVEN_SUPPORT_ANTHROPIC_API_KEY
         sync: false
       - key: WIFIHAVEN_SUPPORT_CLAUDE_AGENT_ID
@@ -623,13 +622,13 @@ services:
       # is shared with the Worker. #2265: NO dark-by-default — flip RESPONDER_ENABLED to true via PR at
       # go-live, AFTER the secrets AND email are set. NEVER commit values.
       - key: WIFIHAVEN_PRESS_RESPONDER_ENABLED
-        value: "false"
+        value: "true"
       # #2327: press cloud-agent transport — "managed-agents" (Anthropic Managed Agents, API-credit
       # billed) or "claude-code-cloud" (a Claude Code Cloud routine fired per message, Claude-
       # subscription billed — the credit-free path). Only the selected transport's config chain is
       # required at boot; an unknown value fails boot. Flip via PR alongside the routine secrets below.
       - key: WIFIHAVEN_PRESS_DISPATCHER
-        value: managed-agents
+        value: claude-code-cloud
       - key: WIFIHAVEN_PRESS_WEBHOOK_SECRET
         sync: false
       - key: WIFIHAVEN_PRESS_ANTHROPIC_API_KEY
