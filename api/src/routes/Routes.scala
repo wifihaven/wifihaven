@@ -78,6 +78,11 @@ object AuthRoutes {
               .contains(Constraint)
           case _                => false
         }
+        // `next` is evaluated EAGERLY on purpose — do not "fix" it into a lazy short-circuit. The
+        // two chains can converge on the same node, and `seen` lets whichever traversal arrives
+        // first claim it. Walking the getNextException subtree unconditionally means its verdict is
+        // already in the disjunction below, so a node the cause-walk later finds deduped cannot
+        // lose a match that the next-walk found.
         val next = x match {
           case s: java.sql.SQLException => walk(s.getNextException)
           case _                        => false
@@ -92,6 +97,32 @@ object AuthRoutes {
    */
   def dbOrAdminExists(t: Throwable): ApiError =
     if singleAdminViolation(t) then adminExists else ApiError.Db(t)
+
+  /**
+   * The target user of a per-id user route, having PROVEN the caller's household owns it — the ONE
+   * place that check lives. Every route keyed on a global `users.id` calls this instead of
+   * hand-rolling `findById` + a household comparison.
+   *
+   * `users.id` is globally unique, so `findById` / `delete` / `setProfilesForUser` are all
+   * reachable across tenants by id alone; this is the #2108 class that shipped as #2257 / #2282 /
+   * #2386. It is collapsed rather than repeated per handler because three hand-copied tenancy
+   * checks are three chances to add a fourth route without one — the #1531/#1539 duplicated-logic
+   * failure mode.
+   *
+   * 404, not 403, on a foreign household: a cross-household id must be indistinguishable from a
+   * nonexistent one, or comparing statuses becomes an enumeration oracle. Matches the
+   * `ProfileRepo.householdOf` guards.
+   */
+  private def ownUser(
+      userRepo: UserRepo,
+      uid: UserId,
+      hh: HouseholdId,
+  ): ZIO[Any, ApiError, DbUser] =
+    userRepo
+      .findById(uid)
+      .mapError(ApiError.Db(_))
+      .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("User not found")))
+      .filterOrFail(_.householdId == hh)(ApiError.NotFound("User not found"))
 
   /**
    * #2512: refuse when `household` already holds an admin OTHER than `selfId`. `selfId` is
@@ -256,12 +287,15 @@ object AuthRoutes {
       Method.PUT / "api" / "users" / long("id") / "profiles" ->
         handler { (id: Long, req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _    <- requireAdmin(req, auth)
-            body <- req.body.asString.orElseFail(ApiError.BadRequest(""))
-            r    <- ZIO
+            claims <- requireAdmin(req, auth)
+            // Profile assignment decides whose policy this user sees and edits, so it is as much a
+            // tenancy boundary as PATCH/DELETE below — same `ownUser` guard, no local copy.
+            _      <- ownUser(userRepo, UserId(id), claims.hh)
+            body   <- req.body.asString.orElseFail(ApiError.BadRequest(""))
+            r      <- ZIO
               .fromEither(body.fromJson[SetUserProfilesRequest])
               .mapError(ApiError.DecodeFailure(_))
-            _    <- userProfileRepo
+            _      <- userProfileRepo
               .setProfilesForUser(UserId(id), r.profileIds)
               .mapError(ApiError.Db(_))
           } yield Response.ok
@@ -272,16 +306,9 @@ object AuthRoutes {
           val uid                                  = UserId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
             claims <- requireAdmin(req, auth)
-            // Same #2108-class scoping as PATCH below: `delete` is keyed on the GLOBAL id, so
-            // without this an hh-B admin can delete an hh-A user — including hh-A's only admin,
-            // which #2529 shows is unrecoverable. 404 on a cross-household id (no enumeration).
-            target <- userRepo
-              .findById(uid)
-              .mapError(ApiError.Db(_))
-              .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("User not found")))
-            _      <- ZIO
-              .fail(ApiError.NotFound("User not found"))
-              .when(target.householdId != claims.hh)
+            // Unscoped, an hh-B admin could delete hh-A's only admin — which #2529 shows is
+            // unrecoverable.
+            _      <- ownUser(userRepo, uid, claims.hh)
             _      <- userRepo.delete(uid).mapError(ApiError.Db(_))
           } yield Response.ok
           handle.mapError(ErrorMapper.errorToResponse)
@@ -295,18 +322,9 @@ object AuthRoutes {
           val uid                                  = UserId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
             claims <- requireAdmin(req, auth)
-            target <- userRepo
-              .findById(uid)
-              .mapError(ApiError.Db(_))
-              .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("User not found")))
-            // #2108 class (#2257 / #2282 / #2386): `findById` is a GLOBAL lookup, so without this an
-            // hh-B admin can patch an hh-A user — including promoting them into hh-A's free admin
-            // slot, which the #2512 guard below would wave through because the slot IS free.
-            // Rejected as 404, not 403: a cross-household id must not be distinguishable from a
-            // nonexistent one (no enumeration), matching `ProfileRepo.householdOf`'s guards.
-            _      <- ZIO
-              .fail(ApiError.NotFound("User not found"))
-              .when(target.householdId != claims.hh)
+            // Unscoped, an hh-B admin could promote an hh-A user into hh-A's FREE admin slot and the
+            // #2512 guard below would wave it through — the slot genuinely is free.
+            target <- ownUser(userRepo, uid, claims.hh)
             body   <- req.body.asString.orElseFail(ApiError.BadRequest(""))
             obj    <- ZIO.fromEither(FieldPatch.parseObj(body)).mapError(ApiError.BadRequest(_))
             usernamePatch <- ZIO

@@ -303,5 +303,51 @@ object OneAdminPerHouseholdSpec
         // The victim survives — the cross-household delete was refused, not merely reported.
         assertTrue(after.isDefined)
     },
+    test("PUT /api/users/{id}/profiles cannot reach across households either") {
+      // The third route keyed on a global users.id, and the one most easily forgotten: profile
+      // assignment decides whose policy a user sees and edits. All three now share `ownUser`.
+      for {
+        _                  <- cleanDb
+        (routes, auth, ur) <- routesFor
+        upRepo             <- ZIO.service[UserProfileRepo]
+        pRepo              <- ZIO.service[ProfileRepo]
+        hashA              <- auth.hashPassword("passA")
+        hashB              <- auth.hashPassword("passB")
+        hhA                <- freshHousehold("House A", "house-a")
+        victim             <- ur.create("victim", hashA, "adult", hhA)
+        _                  <- seedHouseholdWithAdmin("House B", "house-b", "bravo", hashB)
+        tokenB             <- auth.login("house-b/bravo", "passB").map(_.token.value)
+        pid                <- pRepo.create("B Kids", Nil)
+        resp               <- routes.runZIO(
+          Request
+            .put(
+              URL.decode(s"/api/users/${victim.value}/profiles").toOption.get,
+              Body.fromString(SetUserProfilesRequest(List(pid)).toJson),
+            )
+            .addHeader(Header.Authorization.Bearer(tokenB))
+            .addHeader(Header.ContentType(MediaType.application.json)),
+        )
+        after              <- upRepo.listProfilesForUser(victim)
+      } yield assertTrue(resp.status == Status.NotFound) &&
+        // No hh-B profile was bound onto the hh-A user.
+        assertTrue(after.isEmpty)
+    },
+    test("the same 409 classification covers the UPDATE path, not just the INSERT") {
+      // `dbOrAdminExists` is wired to BOTH `create` and `updateRole`. The race pin above provokes
+      // the violation through the INSERT; this one provokes it through the UPDATE against the same
+      // index, so the UPDATE half is proven rather than inferred.
+      for {
+        _    <- cleanDb
+        auth <- makeAuth
+        ur   <- ZIO.service[UserRepo]
+        hash <- auth.hashPassword("pass")
+        hhX  <- seedHouseholdWithAdmin("House X", "house-x", "alpha", hash)
+        bob  <- ur.create("bob", hash, "adult", hhX)
+        err  <- ur.updateRole(bob, "admin").flip
+      } yield assertTrue(AuthRoutes.singleAdminViolation(err)) &&
+        assertTrue(
+          ErrorMapper.errorToResponse(AuthRoutes.dbOrAdminExists(err)).status == Status.Conflict,
+        )
+    },
   ) @@ TestAspect.sequential
 }

@@ -1361,8 +1361,10 @@ class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
   // uq_users_household_single_admin (household_id) WHERE role='admin' — which is also what makes
   // `.option` exact rather than a "first row wins" read.
   // `role='admin'` is a LITERAL, not a bind parameter, deliberately: Postgres proves a partial
-  // index's predicate at PLAN time, and a parameter it cannot see the value of leaves the predicate
-  // unproven, so the partial index is not usable for the scan. It is the same string
+  // index's predicate at PLAN time, so under a GENERIC plan — where the parameter's value is not
+  // visible — the predicate goes unproven and the partial index is unusable for the scan. A custom
+  // plan substitutes the actual value and CAN match it, so the literal is a conservative choice
+  // rather than a correctness requirement. It is the same string
   // `UserRole.asString(UserRole.Admin)` produces (shared/src/Models.scala) and the same one V1's
   // `CHECK (role IN ('admin','adult','child'))` and V86's predicate spell out.
   def findAdminForHousehold(household: HouseholdId)            =
