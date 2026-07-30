@@ -553,11 +553,13 @@ object AdultEditBoundarySpec
     },
     test("billing: an adult cannot read billing state or reach Stripe") {
       // Unlike the other four classes this one has no "the write did not land" half, because none of
-      // the three verbs writes: `startCheckout` and `openPortal` only READ `stripeCustomerId`
-      // (`BillingService.scala:75`) — the sole writer is `provisionCustomer` on the provisioning
-      // path (`:47`), which no route here reaches. A DB assertion would therefore hold with the
-      // guard deleted, which is worse than none. The admin-succeeds pin below carries the weight
-      // instead: it proves the 403s come from the role gate rather than from broken wiring.
+      // the three verbs writes. `GET /api/billing` is a pure read; `startCheckout`
+      // (`BillingService.scala:77`) and `startPortal` (`:113`) only READ `stripeCustomerId`. The
+      // sole writer of that column anywhere in `api/src` is `provisionCustomer` (`:47`), whose only
+      // caller is the beta-approval path (`BetaService.scala:170`) — no route under test reaches it.
+      // A DB assertion here would therefore hold with the role guard deleted, which is worse than
+      // none. The admin-succeeds pin below carries the weight instead: it proves the 403s come from
+      // the role gate rather than from broken wiring.
       for {
         _        <- cleanDb
         fx       <- fixture

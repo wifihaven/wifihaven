@@ -1323,8 +1323,8 @@ object TimeRoutes {
       // ambient hosts with distinct-day counts over the trailing learning window.
       // Operators inspect this before flipping `ambientGateEnabled` on, mirroring
       // the heartbeat-explain tune-before-enable workflow below. #2522: adult-or-admin, like the
-      // other tuning surfaces — a child is refused by `requireWriter`, which admits neither the
-      // child role nor, separately, any per-profile scoping (this list is household-wide).
+      // other tuning surfaces; `requireWriter` still refuses a child. There is no per-profile
+      // variant to fall back to — the list is household-wide background telemetry.
       Method.GET / "api" / "presence" / "ambient-hosts"                 ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] =
