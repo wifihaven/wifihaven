@@ -103,12 +103,12 @@ object AppRoutes {
       // #1798: app *definition* mutators (create, update name/icon, replace
       // hosts, PATCH) were retired — app definitions are authored only via the
       // built-in `AppTemplates` in code (seeded/reconciled below). `DELETE
-      // /api/apps/:id` is kept as an admin-only path (stray-row cleanup) but is
-      // no longer surfaced in the SPA.
+      // /api/apps/:id` is kept as a maintenance path (stray-row cleanup) but is
+      // no longer surfaced in the SPA. #2522: adult-or-admin.
       Method.DELETE / "api" / "apps" / long("id")                                ->
         handler { (id: Long, req: Request) =>
           val handle: ZIO[Any, ApiError, Response] =
-            requireAdmin(req, auth) *>
+            requireWriter(req, auth) *>
               appRepo.delete(AppId(id)).mapError(ApiError.Db(_)) *>
               ZIO.succeed(Response.ok)
           handle.mapError(ErrorMapper.errorToResponse)
@@ -173,7 +173,7 @@ object AppRoutes {
           } yield Response.json(summary.toJson)
           handle.mapError(ErrorMapper.errorToResponse)
         },
-      // #1024: admin-triggered re-run of the startup app-template seeder. Same idempotent
+      // #1024: operator-triggered re-run of the startup app-template seeder (#2522: adult-or-admin). Same idempotent
       // semantics as the boot pass (existing rows' host divergence preserved — post-#1798 that
       // divergence comes from reconcile unions / legacy data, no longer operator host edits) —
       // exposed as a route so the operator can backfill without a redeploy when prod is missing
@@ -181,7 +181,7 @@ object AppRoutes {
       Method.POST / "api" / "apps" / "seed-from-templates"                       ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _       <- requireAdmin(req, auth)
+            _       <- requireWriter(req, auth)
             summary <- AppTemplates
               .seed(appRepo, templates.values.toList)
               .mapError(e =>
@@ -198,7 +198,7 @@ object AppRoutes {
         handler { (id: Long, req: Request) =>
           val aid                                  = AppId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
-            _    <- requireAdmin(req, auth)
+            _    <- requireWriter(req, auth)
             app  <- appRepo
               .findById(aid)
               .mapError(ApiError.Db(_))

@@ -261,7 +261,7 @@ object AuthRoutes {
       Method.PUT / "api" / "users" / long("id") / "profiles" ->
         handler { (id: Long, req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims <- requireAdmin(req, auth)
+            claims <- requireWriter(req, auth)
             // Profile assignment decides whose policy this user sees and edits, so it is as much a
             // tenancy boundary as PATCH/DELETE below — same `ownUser` guard, no local copy.
             _      <- ownUser(userRepo, UserId(id), claims.hh)
@@ -413,13 +413,14 @@ object ProfileRoutes {
       // RoleAccessSpec invariant from #1771), so this is the SPA's one window into it for editing
       // its app-policy assignments / categories / defaultDeny via the per-profile editor preset to
       // the sentinel's id. Route literal MUST come before the `/profiles/long("id")` matcher so
-      // "global" doesn't get path-parsed into a Long. Admin-only because only admins author policy.
+      // "global" doesn't get path-parsed into a Long. #2522: adult-or-admin — authoring policy is
+      // parenting, and the global layer is where a household's baseline lives.
       Method.GET / "api" / "profiles" / "global"                 ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims  <- requireAdmin(req, auth)
-            // #2108: the sentinel is per-household (the global-policy layer is per-household). An
-            // admin reads only their own household's sentinel.
+            claims  <- requireWriter(req, auth)
+            // #2108: the sentinel is per-household (the global-policy layer is per-household). A
+            // caller reads only their own household's sentinel.
             p       <- profileRepo
               .getGlobalForHousehold(claims.hh)
               .mapError(ApiError.Db(_))
@@ -495,12 +496,12 @@ object ProfileRoutes {
       Method.POST / "api" / "profiles"                           ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims <- requireAdmin(req, auth)
+            claims <- requireWriter(req, auth)
             body   <- req.body.asString.orElseFail(ApiError.BadRequest(""))
             upr    <- ZIO
               .fromEither(body.fromJson[UpsertProfileRequest])
               .mapError(ApiError.DecodeFailure(_))
-            // #2130: the new profile lands in the CREATING admin's household,
+            // #2130: the new profile lands in the CREATING user's household,
             // not V65's DEFAULT 1.
             id     <- profileRepo
               .create(upr.name, upr.blockedCategories, claims.hh)
@@ -606,7 +607,7 @@ object ProfileRoutes {
         handler { (id: Long, req: Request) =>
           val pid                                  = ProfileId(id)
           val handle: ZIO[Any, ApiError, Response] =
-            requireAdmin(req, auth) *>
+            requireWriter(req, auth) *>
               // #1771: the global sentinel is a wire-shape fixture, not an authored profile —
               // never deletable. The partial unique index would let admin recreate it via SQL,
               // but the snapshot would briefly miss the household-wide allow/block lists.
@@ -785,8 +786,8 @@ object ProfileRoutes {
         handler { (id: Long, req: Request) =>
           val pid                                  = ProfileId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims <- requireAdmin(req, auth)
-            // #2108: the profile must be in the admin's household, and users are enumerated scoped.
+            claims <- requireWriter(req, auth)
+            // #2108: the profile must be in the caller's household, and users are enumerated scoped.
             _      <- requireProfileInHousehold(claims, pid, profileRepo)
             uids   <- userProfileRepo
               .listUsersForProfile(pid)
@@ -803,8 +804,8 @@ object ProfileRoutes {
         handler { (id: Long, req: Request) =>
           val pid                                  = ProfileId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
-            claims <- requireAdmin(req, auth)
-            // #2108: an admin can only link users to a profile IN THEIR HOUSEHOLD.
+            claims <- requireWriter(req, auth)
+            // #2108: a caller can only link users to a profile IN THEIR HOUSEHOLD.
             _      <- requireProfileInHousehold(claims, pid, profileRepo)
             body   <- req.body.asString.orElseFail(ApiError.BadRequest(""))
             r      <- ZIO
@@ -1327,7 +1328,7 @@ object TimeRoutes {
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] =
             for {
-              claims   <- requireAdmin(req, auth)
+              claims   <- requireWriter(req, auth)
               settings <- hsRepo.getForHousehold(claims.hh).mapError(ApiError.Db(_))
               now      <- clock.instant
               today = wifihaven.api.policy.PolicyService.householdLocalDate(now, settings)
@@ -2032,7 +2033,7 @@ object LogRoutes {
           val handle: ZIO[Any, ApiError, Response] =
             // #2282: scope the stat-card counts to the caller's household — the counts leaked across
             // tenants when read globally (a brand-new household saw the whole install's EVENTS/BLOCKED).
-            requireAdmin(req, auth).flatMap { claims =>
+            requireWriter(req, auth).flatMap { claims =>
               connRepo
                 .stats(claims.hh)
                 .map(s => Response.json(s.toJson))
@@ -2060,20 +2061,20 @@ object BlocklistRoutes {
       Method.GET / "api" / "blocklists"                                 ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] =
-            requireAdmin(req, auth) *>
+            requireWriter(req, auth) *>
               blRepo.summaries
                 .map(rs => Response.json(rs.toJson))
                 .mapError(ApiError.Db(_))
           handle.mapError(ErrorMapper.errorToResponse)
         },
       // #958: paginated host list for the "View hosts" disclosure on the
-      // SPA page. Returns a JSON object `{ id, hosts: [...] }`. Admin-
-      // only; routers use the unrelated GET /api/blocklists/<id> route
-      // (RouterRoutes) which returns the plain-text list with ETag.
+      // SPA page. Returns a JSON object `{ id, hosts: [...] }`. #2522:
+      // adult-or-admin; routers use the unrelated GET /api/blocklists/<id>
+      // route (RouterRoutes) which returns the plain-text list with ETag.
       Method.GET / "api" / "blocklists" / string("id") / "hosts"        ->
         handler { (id: String, req: Request) =>
           val handle: ZIO[Any, ApiError, Response] =
-            requireAdmin(req, auth) *>
+            requireWriter(req, auth) *>
               ZIO
                 .fromEither(BlocklistId.parse(id))
                 .mapError(ApiError.BadRequest(_))
@@ -2094,7 +2095,7 @@ object BlocklistRoutes {
       Method.POST / "api" / "blocklists" / string("category") / "clear" ->
         handler { (cat: String, req: Request) =>
           val handle: ZIO[Any, ApiError, Response] =
-            requireAdmin(req, auth) *>
+            requireWriter(req, auth) *>
               blRepo.clearCategory(BlocklistId.unsafe(cat)).mapError(ApiError.Db(_)) *>
               ZIO.succeed(Response.ok)
           handle.mapError(ErrorMapper.errorToResponse)
@@ -2105,7 +2106,7 @@ object BlocklistRoutes {
       Method.POST / "api" / "blocklists" / string("id") / "refresh"     ->
         handler { (id: String, req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _   <- requireAdmin(req, auth)
+            _   <- requireWriter(req, auth)
             bid <- ZIO.fromEither(BlocklistId.parse(id)).mapError(ApiError.BadRequest(_))
             b   <- ZIO
               .fromOption(bundled.get(bid))
@@ -2160,7 +2161,7 @@ object HouseholdSettingsRoutes {
       Method.PUT / "api" / "household" / "settings"   ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _    <- requireAdmin(req, auth)
+            _    <- requireWriter(req, auth)
             body <- req.body.asString.orElseFail(ApiError.BadRequest(""))
             upd  <- ZIO
               .fromEither(body.fromJson[UpdateHouseholdSettingsRequest])
@@ -2199,7 +2200,7 @@ object HouseholdSettingsRoutes {
       Method.PATCH / "api" / "household" / "settings" ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _         <- requireAdmin(req, auth)
+            _         <- requireWriter(req, auth)
             existing  <- repo.get.mapError(ApiError.Db(_))
             body      <- req.body.asString.orElseFail(ApiError.BadRequest(""))
             obj       <- ZIO.fromEither(FieldPatch.parseObj(body)).mapError(ApiError.BadRequest(_))
@@ -2462,6 +2463,18 @@ def requireAuth(req: Request, auth: AuthService): IO[ApiError, JwtClaims] =
         },
     )
 
+/**
+ * #2522: the ACCOUNT gate. Post-#2512 a household has exactly one admin, and this guard is now
+ * deliberately narrow — it protects only what the account owner owns: account lifecycle
+ * (`/api/users`), billing, router enrollment (`/api/admin/routers`), the #2382 whole-household
+ * enforcement kill-switch, and the `/api/admin` operator surfaces. Everything that is *parenting* —
+ * profiles, schedules, blocklists, apps, household settings — uses [[requireWriter]] instead.
+ *
+ * Adding a new route? Ask which of the two it is: "who exists / who pays / what hardware / the
+ * off-switch" is `requireAdmin`; editing policy is `requireWriter`. Reaching for `requireAdmin`
+ * because a surface *feels* administrative is how the second parent became read-only in the first
+ * place.
+ */
 def requireAdmin(req: Request, auth: AuthService): IO[ApiError, JwtClaims] =
   // requireAuth already enforces must_change_password; then we check role.
   requireAuth(req, auth).flatMap { claims =>
@@ -2469,6 +2482,11 @@ def requireAdmin(req: Request, auth: AuthService): IO[ApiError, JwtClaims] =
     else ZIO.fail(ApiError.Forbidden("Admin required"))
   }
 
+/**
+ * #2522: the EDITING gate — admin or adult. The counterpart to [[requireAdmin]] above: both parents
+ * do the parenting, so every policy-authoring route lands here. `child` is still refused, exactly
+ * as it was under `requireAdmin`.
+ */
 def requireWriter(req: Request, auth: AuthService): IO[ApiError, JwtClaims] =
   // requireAuth already enforces must_change_password; then we check role.
   requireAuth(req, auth).flatMap { claims =>

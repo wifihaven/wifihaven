@@ -213,7 +213,9 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         resp <- routes.runZIO(req)
       } yield assertTrue(resp.status == Status.Forbidden)
     },
-    test("adult cannot create new profiles (admin only)") {
+    // #2522: profile creation moved to `requireWriter` — an adult IS the editing role. The refusal
+    // pin moves down to `child`; the adult's positive half lives in AdultEditBoundarySpec.
+    test("child cannot create new profiles (#2522)") {
       for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
@@ -221,8 +223,8 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         userRepo    <- ZIO.service[UserRepo]
         upRepo      <- ZIO.service[UserProfileRepo]
         auth        <- makeAuth
-        _           <- createUser(userRepo, upRepo, auth, "mom", "adult", Nil)
-        token       <- auth.login("mom", "pass").map(_.token.value)
+        _           <- createUser(userRepo, upRepo, auth, "kiddo", "child", Nil)
+        token       <- auth.login("kiddo", "pass").map(_.token.value)
         routes = ProfileRoutes.routes(
           auth,
           profileRepo,
