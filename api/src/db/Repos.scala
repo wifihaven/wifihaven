@@ -244,6 +244,23 @@ trait UserRepo {
    * (design §2 gap 4). Index-backed by V65's idx_users_household.
    */
   def listAllForHousehold(household: HouseholdId): Task[List[DbUser]]
+
+  /**
+   * #2512: the household's ONE admin, or `None` if the slot is free. `.option` is exact by
+   * construction — V86's partial unique index `uq_users_household_single_admin ON users
+   * (household_id) WHERE role = 'admin'` makes a second matching row unrepresentable.
+   * (Index-BACKED, not index-ONLY: the projection is the full `userCols`, none of which the index
+   * covers, so the plan is an index scan plus a heap fetch.)
+   *
+   * This is the READ half of the one-admin invariant; the index is the write-side backstop. It
+   * exists so `POST /api/users` / `PATCH /api/users/{id}` can refuse a second admin with a readable
+   * 409 instead of letting the unique violation surface as `ApiError.Db` → 503 "retry later" (a lie
+   * — retrying a permanently-occupied slot never succeeds). Deliberately not `listAllForHousehold`
+   * + filter: the predicate belongs next to the index that guarantees it, and the query is
+   * index-only.
+   */
+  def findAdminForHousehold(household: HouseholdId): Task[Option[DbUser]]
+
   def delete(id: UserId): Task[Unit]
 }
 
@@ -1340,6 +1357,26 @@ class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
       .map(toUser)
       .to[List]
       .transact(xa)
+  // #2512: probe for the household's single admin, backed by V86's partial unique index
+  // uq_users_household_single_admin (household_id) WHERE role='admin' — which is also what makes
+  // `.option` exact rather than a "first row wins" read.
+  // `role='admin'` is a LITERAL, not a bind parameter, deliberately: Postgres proves a partial
+  // index's predicate at PLAN time, so under a GENERIC plan — where the parameter's value is not
+  // visible — the predicate goes unproven and the partial index is unusable for the scan. A custom
+  // plan substitutes the actual value and CAN match it, so the literal is a conservative choice
+  // rather than a correctness requirement. It is the same string
+  // `UserRole.asString(UserRole.Admin)` produces (shared/src/Models.scala) and the same one V1's
+  // `CHECK (role IN ('admin','adult','child'))` and V86's predicate spell out.
+  def findAdminForHousehold(household: HouseholdId)            =
+    DbMetrics.timed("user.findAdminForHousehold")(
+      (fr"SELECT " ++ userCols ++ fr" FROM users WHERE" ++ SqlFragments.householdEq(
+        household,
+      ) ++ fr"AND role='admin'")
+        .query[UserRow]
+        .map(toUser)
+        .option
+        .transact(xa),
+    )
   def delete(id: UserId) = sql"DELETE FROM users WHERE id=$id".update.run.transact(xa).unit
 }
 

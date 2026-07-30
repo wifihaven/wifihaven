@@ -10,6 +10,8 @@ import zio.{Clock as _, *}
 import zio.http.*
 import zio.json.*
 
+import org.postgresql.util.PSQLException
+
 import java.time.{LocalDate, LocalTime, ZoneId}
 
 import zio.json.ast.Json
@@ -23,6 +25,98 @@ import zio.json.ast.Json
 // `{status,db}` 503 auth-failure bodies are preserved verbatim (the latter via
 // [[ApiError.Wrapped]] of `ErrorMapper.dbUnavailable`, since the label is a static string).
 object AuthRoutes {
+
+  /**
+   * #2512: 409 + `{"error":"admin_exists"}` — a household already has its one admin, so creating a
+   * second (or promoting into the slot) can never succeed. Shaped like `ScheduleRoutes`' 409
+   * `name_taken` body (structured JSON the SPA can branch on, not a generic 400) and wrapped so the
+   * boundary logs/meters it without re-deriving.
+   *
+   * Deliberately a 409, not a 400: the request is well-formed, the HOUSEHOLD STATE forbids it — and
+   * it becomes valid again the moment the incumbent admin is demoted.
+   */
+  private val adminExists: ApiError =
+    ApiError.Wrapped(Response.json("""{"error":"admin_exists"}""").status(Status.Conflict))
+
+  /**
+   * #2512: the route guard below is a check-then-write, so it is inherently racy against V86's
+   * `uq_users_household_single_admin` — two concurrent promotions can both read an empty slot. That
+   * race is ACCEPTED, not eliminated (an advisory lock would buy a vanishingly rare correctness
+   * detail at the cost of a lock on every user write): the index is what GUARANTEES the invariant,
+   * the route is what EXPLAINS it. The only thing the race must not do is change the answer the
+   * loser gets — without this, the loser's unique violation lands on the generic `ApiError.Db` path
+   * and comes back as a 503 + `Retry-After: 30`, telling the operator to retry a state that can
+   * never succeed. So a violation of THIS index is re-mapped to the same 409 the pre-check
+   * produces, and every other DB failure keeps its 503.
+   *
+   * Classification is STRUCTURAL, matching the repo's existing SQLState idiom
+   * (`QueryTimeout.scala:57` on `57014`, `Database.scala:132` on the `08*` connection class) rather
+   * than a substring of the rendered message: SQLState `23505` AND
+   * `ServerErrorMessage.getConstraint` naming this exact index. `getMessage` text is
+   * `lc_messages`-dependent and would also false-positive on any unrelated error that merely
+   * mentions the constraint name. Both chains are walked — `getCause` and the JDBC
+   * `getNextException`, with cycle deduping — because of the #2053 lesson that the PSQL detail is
+   * often reachable only through `getNextException`.
+   *
+   * Public rather than private so `OneAdminPerHouseholdSpec` can pin it against a REAL violation
+   * raised by Postgres: this predicate is the load-bearing assumption of the whole race argument
+   * above, and if it ever stopped matching, the code would silently degrade back to the 503 lie
+   * with the suite still green.
+   */
+  def singleAdminViolation(t: Throwable): Boolean = {
+    // PostgreSQL SQLState 23505 = unique_violation.
+    val UniqueViolation             = "23505"
+    val Constraint                  = "uq_users_household_single_admin" // V86
+    val seen                        = scala.collection.mutable.HashSet.empty[Throwable]
+    def walk(x: Throwable): Boolean =
+      x != null && seen.add(x) && {
+        val here = x match {
+          case p: PSQLException =>
+            p.getSQLState == UniqueViolation &&
+            Option(p.getServerErrorMessage)
+              .flatMap(m => Option(m.getConstraint))
+              .contains(Constraint)
+          case _                => false
+        }
+        // `next` is evaluated EAGERLY on purpose — do not "fix" it into a lazy short-circuit. The
+        // two chains can converge on the same node, and `seen` lets whichever traversal arrives
+        // first claim it. Walking the getNextException subtree unconditionally means its verdict is
+        // already in the disjunction below, so a node the cause-walk later finds deduped cannot
+        // lose a match that the next-walk found.
+        val next = x match {
+          case s: java.sql.SQLException => walk(s.getNextException)
+          case _                        => false
+        }
+        here || walk(x.getCause) || next
+      }
+    walk(t)
+  }
+
+  /**
+   * #2512: the one-admin violation becomes the readable 409; every other DB failure keeps its 503.
+   */
+  def dbOrAdminExists(t: Throwable): ApiError =
+    if singleAdminViolation(t) then adminExists else ApiError.Db(t)
+
+  /**
+   * #2512: refuse when `household` already holds an admin OTHER than `selfId`. `selfId` is
+   * `Some(id)` on the PATCH path so re-setting the incumbent admin's role to `admin` stays a no-op
+   * (the SPA saves the whole form, unchanged fields included) rather than colliding with itself,
+   * and `None` on create, where nothing can be excluded.
+   */
+  private def requireAdminSlotFree(
+      userRepo: UserRepo,
+      household: HouseholdId,
+      selfId: Option[UserId],
+  ): ZIO[Any, ApiError, Unit] =
+    userRepo
+      .findAdminForHousehold(household)
+      .mapError(ApiError.Db(_))
+      .flatMap(incumbent =>
+        ZIO.fail(adminExists).when(incumbent.exists(u => !selfId.contains(u.id))),
+      )
+      .unit
+
   def routes(
       auth: AuthService,
       userRepo: UserRepo,
@@ -131,12 +225,19 @@ object AuthRoutes {
                 ),
               )
               .when(!AuthService.isPasswordStrongEnough(cur.password))
+            // #2512: a household has exactly ONE admin. Checked against the household the row is
+            // about to land in (`claims.hh`, below), ahead of the bcrypt hash so the refusal costs
+            // nothing.
+            _      <- requireAdminSlotFree(userRepo, claims.hh, selfId = None)
+              .when(cur.role == UserRole.Admin)
             hash   <- auth.hashPassword(cur.password)
             // #2130: the new user lands in the CREATING admin's household, not
             // V65's DEFAULT 1 — a hh-B admin must never plant rows in hh-A.
             id     <- userRepo
               .create(cur.username, hash, UserRole.asString(cur.role), claims.hh)
-              .mapError(ApiError.Db(_))
+              // #2512: the pre-check above is racy against V86; a violation that slips through
+              // still gets the 409, never a "retry later" 503.
+              .mapError(dbOrAdminExists)
             _      <- userProfileRepo
               .setProfilesForUser(id, cur.profileIds)
               .mapError(ApiError.Db(_))
@@ -160,12 +261,15 @@ object AuthRoutes {
       Method.PUT / "api" / "users" / long("id") / "profiles" ->
         handler { (id: Long, req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _    <- requireAdmin(req, auth)
-            body <- req.body.asString.orElseFail(ApiError.BadRequest(""))
-            r    <- ZIO
+            claims <- requireAdmin(req, auth)
+            // Profile assignment decides whose policy this user sees and edits, so it is as much a
+            // tenancy boundary as PATCH/DELETE below — same `ownUser` guard, no local copy.
+            _      <- ownUser(userRepo, UserId(id), claims.hh)
+            body   <- req.body.asString.orElseFail(ApiError.BadRequest(""))
+            r      <- ZIO
               .fromEither(body.fromJson[SetUserProfilesRequest])
               .mapError(ApiError.DecodeFailure(_))
-            _    <- userProfileRepo
+            _      <- userProfileRepo
               .setProfilesForUser(UserId(id), r.profileIds)
               .mapError(ApiError.Db(_))
           } yield Response.ok
@@ -173,10 +277,14 @@ object AuthRoutes {
         },
       Method.DELETE / "api" / "users" / long("id")           ->
         handler { (id: Long, req: Request) =>
-          val handle: ZIO[Any, ApiError, Response] =
-            requireAdmin(req, auth) *>
-              userRepo.delete(UserId(id)).mapError(ApiError.Db(_)) *>
-              ZIO.succeed(Response.ok)
+          val uid                                  = UserId(id)
+          val handle: ZIO[Any, ApiError, Response] = for {
+            claims <- requireAdmin(req, auth)
+            // Unscoped, an hh-B admin could delete hh-A's only admin — which #2529 shows is
+            // unrecoverable.
+            _      <- ownUser(userRepo, uid, claims.hh)
+            _      <- userRepo.delete(uid).mapError(ApiError.Db(_))
+          } yield Response.ok
           handle.mapError(ErrorMapper.errorToResponse)
         },
       // #997: field-scoped partial update. Body is a subset of the User read
@@ -187,13 +295,12 @@ object AuthRoutes {
         handler { (id: Long, req: Request) =>
           val uid                                  = UserId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
-            _    <- requireAdmin(req, auth)
-            _    <- userRepo
-              .findById(uid)
-              .mapError(ApiError.Db(_))
-              .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("User not found")))
-            body <- req.body.asString.orElseFail(ApiError.BadRequest(""))
-            obj  <- ZIO.fromEither(FieldPatch.parseObj(body)).mapError(ApiError.BadRequest(_))
+            claims <- requireAdmin(req, auth)
+            // Unscoped, an hh-B admin could promote an hh-A user into hh-A's FREE admin slot and the
+            // #2512 guard below would wave it through — the slot genuinely is free.
+            target <- ownUser(userRepo, uid, claims.hh)
+            body   <- req.body.asString.orElseFail(ApiError.BadRequest(""))
+            obj    <- ZIO.fromEither(FieldPatch.parseObj(body)).mapError(ApiError.BadRequest(_))
             usernamePatch <- ZIO
               .fromEither(FieldPatch.from[String](obj, "username"))
               .mapError(ApiError.BadRequest(_))
@@ -221,9 +328,14 @@ object AuthRoutes {
             }
             _             <- rolePatch match {
               case FieldPatch.Set(r) =>
-                userRepo
-                  .updateRole(uid, UserRole.asString(r))
-                  .mapError(ApiError.Db(_))
+                // #2512: scoped to the TARGET's household (`target.householdId`), which is the
+                // household V86's index is keyed on — not the caller's. `selfId = Some(uid)` keeps
+                // re-setting the incumbent admin to `admin` a no-op instead of a self-collision.
+                requireAdminSlotFree(userRepo, target.householdId, selfId = Some(uid))
+                  .when(r == UserRole.Admin) *>
+                  userRepo
+                    .updateRole(uid, UserRole.asString(r))
+                    .mapError(dbOrAdminExists)
               case _                 => ZIO.unit
             }
             _             <- profilesPatch match {
@@ -698,6 +810,14 @@ object ProfileRoutes {
             r      <- ZIO
               .fromEither(body.fromJson[SetProfileUsersRequest])
               .mapError(ApiError.DecodeFailure(_))
+            // The scoped PROFILE above is only half of it: `userIds` are GLOBAL and arrive in the
+            // BODY, and this writes the same `user_profiles` table as `PUT /api/users/{id}/profiles`
+            // from the other side. Without this, the `ownUser` guard on that route is simply undone
+            // here — an hh-B admin picks one of their own profiles (passing the check above) and
+            // names an hh-A user in the body. Worse, the GET counterpart above filters reads to
+            // `listAllForHousehold`, so the cross-tenant link lands INVISIBLY (the #1539
+            // scoped-read / unscoped-write trap).
+            _      <- ZIO.foreachDiscard(r.userIds)(ownUser(userRepo, _, claims.hh))
             _      <- userProfileRepo
               .setUsersForProfile(pid, r.userIds)
               .mapError(ApiError.Db(_))
@@ -2428,6 +2548,33 @@ def requireProfileInHousehold(
     case Some(hh) if hh == claims.hh => ZIO.succeed(())
     case _                           => ZIO.fail(ApiError.NotFound("Profile not found"))
   }
+
+/**
+ * The user-facing twin of [[requireProfileInHousehold]]: the target user, having PROVEN `hh` owns
+ * it. The ONE place that check lives — every route reaching a `users.id` calls this instead of
+ * hand-rolling `findById` + a household comparison.
+ *
+ * `users.id` is globally unique, so `findById` / `delete` / `setProfilesForUser` /
+ * `setUsersForProfile` are all reachable across tenants by id alone; this is the #2108 class that
+ * shipped as #2257 / #2282 / #2386. The id arrives BOTH as a path param (`PUT|PATCH|DELETE
+ * /api/users/{id}…`) and inside a request BODY (`PUT /api/profiles/{id}/users`, whose `userIds`
+ * write the same `user_profiles` table from the other side) — scoping only the path-param routes
+ * leaves the body route to undo them, so it is deliberately top-level rather than private to one
+ * route object.
+ *
+ * 404, not 403, on a foreign household: a cross-household id must be indistinguishable from a
+ * nonexistent one, or comparing statuses becomes an enumeration oracle.
+ */
+def ownUser(
+    userRepo: UserRepo,
+    uid: UserId,
+    hh: HouseholdId,
+): IO[ApiError, DbUser] =
+  userRepo
+    .findById(uid)
+    .mapError(ApiError.Db(_))
+    .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("User not found")))
+    .filterOrFail(_.householdId == hh)(ApiError.NotFound("User not found"))
 
 /**
  * #2126 (multi-tenant, epic #2085/#622): the tenancy choke point for the per-id named-schedule
