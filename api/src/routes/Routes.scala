@@ -99,32 +99,6 @@ object AuthRoutes {
     if singleAdminViolation(t) then adminExists else ApiError.Db(t)
 
   /**
-   * The target user of a per-id user route, having PROVEN the caller's household owns it — the ONE
-   * place that check lives. Every route keyed on a global `users.id` calls this instead of
-   * hand-rolling `findById` + a household comparison.
-   *
-   * `users.id` is globally unique, so `findById` / `delete` / `setProfilesForUser` are all
-   * reachable across tenants by id alone; this is the #2108 class that shipped as #2257 / #2282 /
-   * #2386. It is collapsed rather than repeated per handler because three hand-copied tenancy
-   * checks are three chances to add a fourth route without one — the #1531/#1539 duplicated-logic
-   * failure mode.
-   *
-   * 404, not 403, on a foreign household: a cross-household id must be indistinguishable from a
-   * nonexistent one, or comparing statuses becomes an enumeration oracle. Matches the
-   * `ProfileRepo.householdOf` guards.
-   */
-  private def ownUser(
-      userRepo: UserRepo,
-      uid: UserId,
-      hh: HouseholdId,
-  ): ZIO[Any, ApiError, DbUser] =
-    userRepo
-      .findById(uid)
-      .mapError(ApiError.Db(_))
-      .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("User not found")))
-      .filterOrFail(_.householdId == hh)(ApiError.NotFound("User not found"))
-
-  /**
    * #2512: refuse when `household` already holds an admin OTHER than `selfId`. `selfId` is
    * `Some(id)` on the PATCH path so re-setting the incumbent admin's role to `admin` stays a no-op
    * (the SPA saves the whole form, unchanged fields included) rather than colliding with itself,
@@ -836,6 +810,14 @@ object ProfileRoutes {
             r      <- ZIO
               .fromEither(body.fromJson[SetProfileUsersRequest])
               .mapError(ApiError.DecodeFailure(_))
+            // The scoped PROFILE above is only half of it: `userIds` are GLOBAL and arrive in the
+            // BODY, and this writes the same `user_profiles` table as `PUT /api/users/{id}/profiles`
+            // from the other side. Without this, the `ownUser` guard on that route is simply undone
+            // here — an hh-B admin picks one of their own profiles (passing the check above) and
+            // names an hh-A user in the body. Worse, the GET counterpart above filters reads to
+            // `listAllForHousehold`, so the cross-tenant link lands INVISIBLY (the #1539
+            // scoped-read / unscoped-write trap).
+            _      <- ZIO.foreachDiscard(r.userIds)(ownUser(userRepo, _, claims.hh))
             _      <- userProfileRepo
               .setUsersForProfile(pid, r.userIds)
               .mapError(ApiError.Db(_))
@@ -2566,6 +2548,33 @@ def requireProfileInHousehold(
     case Some(hh) if hh == claims.hh => ZIO.succeed(())
     case _                           => ZIO.fail(ApiError.NotFound("Profile not found"))
   }
+
+/**
+ * The user-facing twin of [[requireProfileInHousehold]]: the target user, having PROVEN `hh` owns
+ * it. The ONE place that check lives — every route reaching a `users.id` calls this instead of
+ * hand-rolling `findById` + a household comparison.
+ *
+ * `users.id` is globally unique, so `findById` / `delete` / `setProfilesForUser` /
+ * `setUsersForProfile` are all reachable across tenants by id alone; this is the #2108 class that
+ * shipped as #2257 / #2282 / #2386. The id arrives BOTH as a path param (`PUT|PATCH|DELETE
+ * /api/users/{id}…`) and inside a request BODY (`PUT /api/profiles/{id}/users`, whose `userIds`
+ * write the same `user_profiles` table from the other side) — scoping only the path-param routes
+ * leaves the body route to undo them, so it is deliberately top-level rather than private to one
+ * route object.
+ *
+ * 404, not 403, on a foreign household: a cross-household id must be indistinguishable from a
+ * nonexistent one, or comparing statuses becomes an enumeration oracle.
+ */
+def ownUser(
+    userRepo: UserRepo,
+    uid: UserId,
+    hh: HouseholdId,
+): IO[ApiError, DbUser] =
+  userRepo
+    .findById(uid)
+    .mapError(ApiError.Db(_))
+    .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("User not found")))
+    .filterOrFail(_.householdId == hh)(ApiError.NotFound("User not found"))
 
 /**
  * #2126 (multi-tenant, epic #2085/#622): the tenancy choke point for the per-id named-schedule

@@ -317,7 +317,10 @@ object OneAdminPerHouseholdSpec
         victim             <- ur.create("victim", hashA, "adult", hhA)
         _                  <- seedHouseholdWithAdmin("House B", "house-b", "bravo", hashB)
         tokenB             <- auth.login("house-b/bravo", "passB").map(_.token.value)
-        pid                <- pRepo.create("B Kids", Nil)
+        // The profile's own household is irrelevant here — what is under test is that the hh-A USER
+        // cannot be reached. (Nothing validates which household a `profileIds` entry belongs to
+        // either; that is the object-side hole, tracked as #2531.)
+        pid                <- pRepo.create("Some Profile", Nil)
         resp               <- routes.runZIO(
           Request
             .put(
@@ -329,8 +332,42 @@ object OneAdminPerHouseholdSpec
         )
         after              <- upRepo.listProfilesForUser(victim)
       } yield assertTrue(resp.status == Status.NotFound) &&
-        // No hh-B profile was bound onto the hh-A user.
+        // Nothing was bound onto the hh-A user — refused, not merely reported.
         assertTrue(after.isEmpty)
+    },
+    test("PUT /api/profiles/{id}/users — the INVERSE write cannot reach across households either") {
+      // The two directions of the same `user_profiles` write. Guarding only the user-keyed route
+      // leaves this one to undo it: an hh-B admin picks one of their OWN profiles (so the profile
+      // check passes) and names an hh-A user in the BODY. The scoped GET counterpart would then
+      // hide the resulting link, so it lands invisibly.
+      for {
+        _                  <- cleanDb
+        (routes, auth, ur) <- routesFor
+        upRepo             <- ZIO.service[UserProfileRepo]
+        pRepo              <- ZIO.service[ProfileRepo]
+        tlRepo             <- ZIO.service[TimeLimitRepo]
+        hashA              <- auth.hashPassword("passA")
+        hashB              <- auth.hashPassword("passB")
+        hhA                <- freshHousehold("House A", "house-a")
+        victim             <- ur.create("victim", hashA, "adult", hhA)
+        hhB                <- seedHouseholdWithAdmin("House B", "house-b", "bravo", hashB)
+        tokenB             <- auth.login("house-b/bravo", "passB").map(_.token.value)
+        // A profile hh-B genuinely owns, so `requireProfileInHousehold` passes and the ONLY thing
+        // standing between the caller and the hh-A user is the body-side `ownUser` guard.
+        bPid               <- pRepo.create("B Kids", Nil, hhB)
+        pRoutes = ProfileRoutes.routes(auth, pRepo, tlRepo, upRepo, ur)
+        resp   <- pRoutes.runZIO(
+          Request
+            .put(
+              URL.decode(s"/api/profiles/${bPid.value}/users").toOption.get,
+              Body.fromString(SetProfileUsersRequest(List(victim)).toJson),
+            )
+            .addHeader(Header.Authorization.Bearer(tokenB))
+            .addHeader(Header.ContentType(MediaType.application.json)),
+        )
+        linked <- upRepo.listUsersForProfile(bPid)
+      } yield assertTrue(resp.status == Status.NotFound) &&
+        assertTrue(linked.isEmpty)
     },
     test("the same 409 classification covers the UPDATE path, not just the INSERT") {
       // `dbOrAdminExists` is wired to BOTH `create` and `updateRole`. The race pin above provokes
