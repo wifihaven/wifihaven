@@ -303,8 +303,8 @@ services:
       # the reply is EMAILED back to the sender via Resend (the WIFIHAVEN_EMAIL_* config above must be
       # set too). A SEPARATE Managed Agent persona from support; press being public, NO household data
       # path. WEBHOOK_SECRET is shared with the Worker. #2265: NO dark-by-default — RESPONDER_ENABLED
-      # is an explicit flag (flip to true via PR at go-live, AFTER the secrets below AND email are set);
-      # with it true and any required key missing the API refuses to boot. NEVER commit values.
+      # is an explicit flag, flipped true at go-live once the secrets below AND email were set; with
+      # it true and any required key missing the API refuses to boot. NEVER commit values.
       - key: WIFIHAVEN_PRESS_RESPONDER_ENABLED
         value: "true"
       # #2327: press cloud-agent transport — "managed-agents" (Anthropic Managed Agents, API-credit

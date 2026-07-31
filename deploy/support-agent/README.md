@@ -145,9 +145,10 @@ posture: a required secret's absence is a bug, never a silent disable. So, **per
 2. *Then* flip that service's `WIFIHAVEN_SUPPORT_ISSUE_FILING_ENABLED` to `"true"` via a
    `render.yaml` PR.
 
-**Staging first, prod after** — validate on staging (below) before flipping prod. Note prod's
-`WIFIHAVEN_SUPPORT_RESPONDER_ENABLED` is still `"false"`, so prod issue filing has no producer until
-the responder is flipped there too; sequence the two together.
+**Staging first, prod after** — validate on staging (below) before flipping prod. Prod's
+`WIFIHAVEN_SUPPORT_RESPONDER_ENABLED` has been `"true"` since #2537, but prod issue filing still has
+no producer: prod's Plain workspace posts no webhook to the prod API (#2543), so nothing reaches the
+responder for issue filing to act on. The blocker is that wiring, not the responder flag.
 
 ### 3. Verify after enabling
 
