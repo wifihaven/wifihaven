@@ -89,7 +89,7 @@ function renderPage(initialEntries: string[] = ['/profiles']) {
   ))
 }
 
-let mockAuth = { isAdmin: true }
+let mockAuth = { isAdmin: true, isWriter: true }
 
 const kidsProfile: ProfileDetail = {
   profile: {
@@ -157,7 +157,7 @@ const carolUser: User = { id: 12, username: 'carol', role: 'admin', profileIds: 
 
 beforeEach(() => {
   vi.resetAllMocks()
-  mockAuth = { isAdmin: true }
+  mockAuth = { isAdmin: true, isWriter: true }
   ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([kidsProfile, adultsProfile])
   // #1773 — default to "global not seeded" so existing tests don't see an extra
   // card unless they explicitly opt in by overriding this mock.
@@ -781,7 +781,7 @@ describe('ProfilesPage — inline time-limit subsection (#975)', () => {
   })
 
   it('non-admins see read-only subsection — no editable inputs', async () => {
-    mockAuth = { isAdmin: false }
+    mockAuth = { isAdmin: false, isWriter: false }
     const user = userEvent.setup()
     renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
@@ -867,7 +867,7 @@ describe('ProfilesPage — inline schedules subsection (#1494 named-schedule pic
   })
 
   it('non-admins see read-only schedules — no picker, no attach/remove', async () => {
-    mockAuth = { isAdmin: false }
+    mockAuth = { isAdmin: false, isWriter: false }
     ;(api.schedules.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([bedtime])
     const user = userEvent.setup()
     renderPage()
@@ -886,7 +886,7 @@ describe('ProfilesPage — inline schedules subsection (#1494 named-schedule pic
 
 describe('ProfilesPage — role gating', () => {
   it('hides admin-only buttons for non-admins', async () => {
-    mockAuth = { isAdmin: false }
+    mockAuth = { isAdmin: false, isWriter: false }
     renderPage()
     await screen.findByText('Kids')
     expect(screen.queryByRole('button', { name: /\+ New Profile/ })).not.toBeInTheDocument()
@@ -936,7 +936,7 @@ describe('ProfilesPage — linked users section', () => {
   })
 
   it('hides the linked-users section entirely for non-admins', async () => {
-    mockAuth = { isAdmin: false }
+    mockAuth = { isAdmin: false, isWriter: false }
     renderPage()
     await screen.findByText('Kids')
     expect(screen.queryByTestId('profile-users-1')).not.toBeInTheDocument()
@@ -1465,7 +1465,7 @@ describe('ProfilesPage — apps subsection (#976)', () => {
   })
 
   it('subsection hidden for non-admins', async () => {
-    mockAuth = { isAdmin: false }
+    mockAuth = { isAdmin: false, isWriter: false }
     const user = userEvent.setup()
     renderPage()
     await screen.findByTestId('profile-card-1')
@@ -1572,7 +1572,7 @@ describe('ProfilesPage — #973 inline devices subsection', () => {
   })
 
   it('hides the editable subsection for non-admins (read-only listing instead)', async () => {
-    mockAuth = { isAdmin: false }
+    mockAuth = { isAdmin: false, isWriter: false }
     const user = userEvent.setup()
     renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
@@ -1875,7 +1875,7 @@ describe('ProfilesPage — inline blocked-categories editor (#1473)', () => {
   })
 
   it('non-admins see read-only chips, not the editable checklist', async () => {
-    mockAuth = { isAdmin: false }
+    mockAuth = { isAdmin: false, isWriter: false }
     const user = userEvent.setup()
     renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
@@ -2051,11 +2051,70 @@ describe('ProfilesPage — global sentinel profile (#1773)', () => {
   })
 
   it('non-admins do not fetch the global profile', async () => {
-    mockAuth = { isAdmin: false }
+    mockAuth = { isAdmin: false, isWriter: false }
     renderPage()
     await screen.findByTestId('profile-card-1')
     // useGlobalProfile is gated on isAdmin — the network call never fires.
     expect(api.profiles.getGlobal).not.toHaveBeenCalled()
     expect(screen.queryByTestId('profile-card-999')).not.toBeInTheDocument()
+  })
+})
+
+// #2522 — profiles are the core parenting surface: every route behind this page
+// (POST/PATCH/DELETE /api/profiles, PUT /api/profiles/{id}/schedules, the app-policy and
+// device routes) is `requireWriter` post-#2534, so an adult must get the full editor.
+//
+// The ONE exception is the per-profile Users subsection. Its WRITE
+// (PUT /api/profiles/{id}/users) is `requireWriter`, but the picker can only be populated from
+// `GET /api/users`, which #2522 deliberately keeps `requireAdmin` (account lifecycle). So the
+// subsection stays admin-only in the SPA rather than render a picker that silently shows an
+// empty household to an adult. Tracked as a follow-up on #2522.
+describe('ProfilesPage — adult capability (#2522)', () => {
+  const adult = { isAdmin: false, isWriter: true }
+
+  it('gives an adult the "+ New Profile" affordance', async () => {
+    mockAuth = adult
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    expect(screen.getByRole('button', { name: /New Profile/ })).toBeInTheDocument()
+  })
+
+  it('gives an adult the inline editing subsections on an expanded card', async () => {
+    mockAuth = adult
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    const card = screen.getByTestId('profile-card-1')
+    // the editable categories editor, not the read-only chips fallback
+    expect(await within(card).findByTestId('profile-category-toggle-1-social')).toBeInTheDocument()
+  })
+
+  it('does NOT show an adult the Users subsection — its picker needs admin-only GET /api/users', async () => {
+    mockAuth = adult
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    expect(screen.queryByTestId('profile-users-1')).not.toBeInTheDocument()
+    expect(api.users.list).not.toHaveBeenCalled()
+  })
+
+  it('still shows the Users subsection to an admin', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    expect(await screen.findByTestId('profile-users-1')).toBeInTheDocument()
+  })
+
+  it('keeps a child read-only', async () => {
+    mockAuth = { isAdmin: false, isWriter: false }
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    expect(screen.queryByRole('button', { name: /New Profile/ })).not.toBeInTheDocument()
+    expect(screen.queryByTestId('profile-category-toggle-1-social')).not.toBeInTheDocument()
   })
 })

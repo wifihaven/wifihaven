@@ -44,7 +44,7 @@ function renderPage(initialEntries: string[] = ['/devices']) {
   ))
 }
 
-let mockAuth = { isAdmin: true }
+let mockAuth = { isAdmin: true, isWriter: true }
 
 const ipad: Device = {
   id: 1, mac: 'aa:bb:cc:dd:ee:01', name: "Kid's iPad",
@@ -68,7 +68,7 @@ const adultsProfile: ProfileDetail = {
 
 beforeEach(() => {
   vi.resetAllMocks()
-  mockAuth = { isAdmin: true }
+  mockAuth = { isAdmin: true, isWriter: true }
   ;(api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([ipad, laptop])
   ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([kidsProfile, adultsProfile])
   ;(api.profiles.create as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 7 })
@@ -415,7 +415,7 @@ describe('DevicesPage — highlight from ?mac= (#298)', () => {
 
 describe('DevicesPage — role gating', () => {
   it('hides admin-only buttons for non-admins', async () => {
-    mockAuth = { isAdmin: false }
+    mockAuth = { isAdmin: false, isWriter: false }
     renderPage()
     await screen.findByText("Kid's iPad")
     expect(screen.queryByRole('button', { name: /\+ Add Device/ })).not.toBeInTheDocument()
@@ -468,7 +468,7 @@ describe('DevicesPage — new-device alerts banner (#711)', () => {
   })
 
   it('non-admins see the banner but no Dismiss button', async () => {
-    mockAuth = { isAdmin: false }
+    mockAuth = { isAdmin: false, isWriter: false }
     ;(api.alerts.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([alert])
     renderPage()
     const banner = await screen.findByTestId('new-device-alerts-banner')
@@ -584,5 +584,26 @@ describe('DevicesPage — new-device alerts banner (#711)', () => {
     expect(screen.queryByTestId('enable-notifications-btn')).not.toBeInTheDocument()
     // @ts-expect-error cleanup
     delete window.Notification
+  })
+})
+
+// #2522 — every device route (PUT /api/devices, PATCH/DELETE /api/devices/{mac}) and both
+// alert actions (POST /api/alerts/{id}/approve|deny) are `requireWriter`, so an adult gets the
+// full device-editing surface. A child keeps the read-only view.
+describe('DevicesPage — adult capability (#2522)', () => {
+  it('gives an adult the device-editing affordances', async () => {
+    mockAuth = { isAdmin: false, isWriter: true }
+    renderPage()
+    await screen.findByText("Kid's iPad")
+    expect(screen.getByRole('button', { name: /Add Device/ })).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: 'Edit' }).length).toBeGreaterThan(0)
+  })
+
+  it('keeps a child out of the device-editing affordances', async () => {
+    mockAuth = { isAdmin: false, isWriter: false }
+    renderPage()
+    await screen.findByText("Kid's iPad")
+    expect(screen.queryByRole('button', { name: /Add Device/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument()
   })
 })

@@ -11,8 +11,9 @@ let mockAuth: {
   username: string
   role: 'admin' | 'adult' | 'child' | null
   isAdmin: boolean
+  isWriter: boolean
   logout: () => void
-} = { username: 'alice', role: 'admin', isAdmin: true, logout: logoutMock }
+} = { username: 'alice', role: 'admin', isAdmin: true, isWriter: true, logout: logoutMock }
 
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom')
@@ -38,7 +39,7 @@ import { Layout } from './Layout'
 beforeEach(() => {
   navigateMock.mockReset()
   logoutMock.mockReset()
-  mockAuth = { username: 'alice', role: 'admin', isAdmin: true, logout: logoutMock }
+  mockAuth = { username: 'alice', role: 'admin', isAdmin: true, isWriter: true, logout: logoutMock }
   mockMe = undefined
   mockIdentity = undefined
 })
@@ -71,7 +72,7 @@ describe('Layout — primary nav', () => {
   })
 
   it('renders the three primary items inline for non-admins', () => {
-    mockAuth = { username: 'bob', role: 'child', isAdmin: false, logout: logoutMock }
+    mockAuth = { username: 'bob', role: 'child', isAdmin: false, isWriter: false, logout: logoutMock }
     renderLayout()
     for (const label of ['Dashboard', 'Devices', 'Profiles']) {
       expect(screen.getAllByRole('link', { name: new RegExp(label) }).length).toBeGreaterThan(0)
@@ -100,7 +101,7 @@ describe('Layout — Settings dropdown', () => {
   })
 
   it('shows only Usage in the dropdown for non-admins', async () => {
-    mockAuth = { username: 'bob', role: 'child', isAdmin: false, logout: logoutMock }
+    mockAuth = { username: 'bob', role: 'child', isAdmin: false, isWriter: false, logout: logoutMock }
     const user = userEvent.setup()
     renderLayout()
     await user.click(screen.getByRole('button', { name: /Advanced/ }))
@@ -139,7 +140,7 @@ describe('Layout — mobile bottom nav', () => {
     expect(bottomNav!.querySelectorAll('a').length).toBe(3)
     unmount()
 
-    mockAuth = { username: 'bob', role: 'child', isAdmin: false, logout: logoutMock }
+    mockAuth = { username: 'bob', role: 'child', isAdmin: false, isWriter: false, logout: logoutMock }
     const { container: c2 } = renderLayout()
     const bottomNav2 = c2.querySelector('nav.md\\:hidden')
     expect(bottomNav2!.querySelectorAll('a').length).toBe(3)
@@ -223,7 +224,7 @@ describe('Layout — support affordance (#2429)', () => {
 
   it('shows nothing for non-admins even when the identity payload is present', () => {
     mockIdentity = identified
-    mockAuth = { username: 'bob', role: 'child', isAdmin: false, logout: logoutMock }
+    mockAuth = { username: 'bob', role: 'child', isAdmin: false, isWriter: false, logout: logoutMock }
     renderLayout()
     expect(screen.queryByText(/for support/)).not.toBeInTheDocument()
     expect(
@@ -235,5 +236,45 @@ describe('Layout — support affordance (#2429)', () => {
     mockIdentity = { ...darkWidget, supportEmail: null }
     renderLayout()
     expect(screen.queryByText(/for support/)).not.toBeInTheDocument()
+  })
+})
+
+// #2522 — the nav is the first place the capability split is visible. An adult must SEE every
+// policy-editing surface (Apps / Blocklists / Schedules / Settings) and must NOT see any
+// account-management one (Users / Routers / Billing) — those routes still answer 403.
+describe('Layout — Settings dropdown, adult capability (#2522)', () => {
+  const adult = { username: 'dana', role: 'adult' as const, isAdmin: false, isWriter: true, logout: logoutMock }
+
+  async function openMenu() {
+    const user = userEvent.setup()
+    renderLayout()
+    await user.click(screen.getByRole('button', { name: /Advanced/ }))
+    return screen.getByRole('menu')
+  }
+
+  it('shows the policy-editing items to an adult', async () => {
+    mockAuth = adult
+    const menu = await openMenu()
+    expect(within(menu).getByRole('menuitem', { name: /Apps/ })).toBeInTheDocument()
+    expect(within(menu).getByRole('menuitem', { name: /Blocklists/ })).toBeInTheDocument()
+    expect(within(menu).getByRole('menuitem', { name: /Schedules/ })).toBeInTheDocument()
+    expect(within(menu).getByRole('menuitem', { name: /Settings/ })).toBeInTheDocument()
+  })
+
+  it('hides every account-management item from an adult', async () => {
+    mockAuth = adult
+    const menu = await openMenu()
+    expect(within(menu).queryByRole('menuitem', { name: /Users/ })).not.toBeInTheDocument()
+    expect(within(menu).queryByRole('menuitem', { name: /Routers/ })).not.toBeInTheDocument()
+    expect(within(menu).queryByRole('menuitem', { name: /Billing/ })).not.toBeInTheDocument()
+  })
+
+  it('still hides the policy-editing items from a child', async () => {
+    mockAuth = { username: 'bob', role: 'child', isAdmin: false, isWriter: false, logout: logoutMock }
+    const menu = await openMenu()
+    expect(within(menu).queryByRole('menuitem', { name: /Apps/ })).not.toBeInTheDocument()
+    expect(within(menu).queryByRole('menuitem', { name: /Blocklists/ })).not.toBeInTheDocument()
+    expect(within(menu).queryByRole('menuitem', { name: /Schedules/ })).not.toBeInTheDocument()
+    expect(within(menu).queryByRole('menuitem', { name: /Settings/ })).not.toBeInTheDocument()
   })
 })

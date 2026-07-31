@@ -33,7 +33,7 @@ describe('useAuth — initial state', () => {
     expect(result.current.role).toBe('admin')
     expect(result.current.isAuthenticated).toBe(true)
     expect(result.current.isAdmin).toBe(true)
-    expect(result.current.isAdult).toBe(true)
+    expect(result.current.isWriter).toBe(true)
     expect(result.current.isChild).toBe(false)
   })
 
@@ -49,21 +49,40 @@ describe('useAuth — initial state', () => {
   })
 })
 
-describe('useAuth — derived role flags', () => {
-  it('adult is isAdult but not isAdmin', () => {
-    localStorage.setItem('role', 'adult')
+// #2522 — the two capabilities the SPA must keep apart. `isAdmin` answers "may this session
+// administer the ACCOUNT?" (who exists, who pays, what hardware is enrolled, the kill-switch);
+// `isWriter` answers "may this session EDIT POLICY?" (profiles, schedules, blocklists, apps,
+// household settings). They mirror `requireAdmin` / `requireWriter` in api/src/routes/Routes.scala
+// one-for-one, so an affordance gated on the wrong one either 403s or leaks.
+describe('useAuth — capability flags (#2522)', () => {
+  it('admin holds BOTH capabilities', () => {
+    localStorage.setItem('role', 'admin')
     const { result } = renderHook(() => useAuth(), { wrapper })
-    expect(result.current.isAdmin).toBe(false)
-    expect(result.current.isAdult).toBe(true)
+    expect(result.current.isAdmin).toBe(true)
+    expect(result.current.isWriter).toBe(true)
     expect(result.current.isChild).toBe(false)
   })
 
-  it('child is isChild only', () => {
+  it('adult may edit policy but may NOT administer the account', () => {
+    localStorage.setItem('role', 'adult')
+    const { result } = renderHook(() => useAuth(), { wrapper })
+    expect(result.current.isAdmin).toBe(false)
+    expect(result.current.isWriter).toBe(true)
+    expect(result.current.isChild).toBe(false)
+  })
+
+  it('child holds neither capability', () => {
     localStorage.setItem('role', 'child')
     const { result } = renderHook(() => useAuth(), { wrapper })
     expect(result.current.isAdmin).toBe(false)
-    expect(result.current.isAdult).toBe(false)
+    expect(result.current.isWriter).toBe(false)
     expect(result.current.isChild).toBe(true)
+  })
+
+  it('an unauthenticated session holds neither capability', () => {
+    const { result } = renderHook(() => useAuth(), { wrapper })
+    expect(result.current.isAdmin).toBe(false)
+    expect(result.current.isWriter).toBe(false)
   })
 })
 

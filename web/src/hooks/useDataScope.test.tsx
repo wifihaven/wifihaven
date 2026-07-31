@@ -43,7 +43,7 @@ describe('useDataScope (#2069)', () => {
   it('adult: treated as unscoped (server serves adults unscoped)', async () => {
     loginAs('adult')
     const { result } = renderHook(() => useDataScope(), { wrapper })
-    expect(result.current.isAdult).toBe(true)
+    expect(result.current.isWriter).toBe(true)
     expect(result.current.isChild).toBe(false)
     expect(result.current.childProfileIds).toBeNull()
     await new Promise(r => setTimeout(r, 0))
@@ -62,6 +62,16 @@ describe('useDataScope (#2069)', () => {
     await waitFor(() => expect(result.current.childProfileIds).toEqual([7, 3]))
     expect(result.current.scopeLoading).toBe(false)
     expect(meSpy).toHaveBeenCalledTimes(1)
+  })
+
+  // #2522: the scope hook exposes the same two capabilities `useAuth` derives, under the same
+  // names, so a caller never has to guess which question it is asking.
+  it('#2522: a child holds neither capability; an adult holds only the editing one', async () => {
+    loginAs('child')
+    meSpy.mockResolvedValue({ username: 'octavius', role: 'child', profileIds: [] })
+    const { result } = renderHook(() => useDataScope(), { wrapper })
+    expect(result.current.isAdmin).toBe(false)
+    expect(result.current.isWriter).toBe(false)
   })
 
   it('child with no linked profile: resolves to an empty scope (needs-linking)', async () => {
