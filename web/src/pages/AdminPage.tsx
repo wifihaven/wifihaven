@@ -9,9 +9,10 @@ import { SaveStatusBadge } from '@/components/SaveStatusBadge'
 
 export function AdminPage() {
   // #2522: every card below patches `/api/household/settings` (`requireWriter`), so an adult
-  // reaches this page. The escape hatch is the exception — `PUT /api/household/enforcement` is
-  // still `requireAdmin`, so it is mounted only for an admin. Rendering it for an adult would be
-  // an affordance that 403s, and its own on-mount GET is admin-only too.
+  // reaches this page. The escape hatch is the split one: its READ
+  // (`GET /api/household/enforcement`) is `requireAuth` — deliberately, so every role can tell
+  // that blocking is off — while the WRITE (`PUT`) is still `requireAdmin`. So the card renders
+  // for any writer and hands only an admin the toggle.
   const { isAdmin } = useAuth()
   const [hs, setHs] = useState<HouseholdSettings | null>(null)
   const [loading, setLoading] = useState(true)
@@ -38,7 +39,7 @@ export function AdminPage() {
         <p className="text-sm text-brand-text-muted mt-1">Settings that apply to the whole household.</p>
       </div>
 
-      {isAdmin && <DisableEnforcementCard />}
+      <DisableEnforcementCard canToggle={isAdmin} />
       {hs && <DailyResetCard value={hs} reload={reload} />}
       {hs && <HeartbeatFilterCard value={hs} reload={reload} />}
       {hs && <NotifyEmailCard value={hs} reload={reload} />}
@@ -54,7 +55,7 @@ export function AdminPage() {
 // on-router escape hatch (#2381) — but because it is server-driven it does NOT work if the API/
 // server is unreachable; the copy points the user at the on-router toggle for an outage. Its own
 // query (not household settings) since it is backed by the households table, not household_settings.
-function DisableEnforcementCard() {
+function DisableEnforcementCard({ canToggle }: { canToggle: boolean }) {
   const [status, setStatus] = useState<EnforcementStatus | null>(null)
   const [disabled, setDisabled] = useState(false)
 
@@ -85,12 +86,14 @@ function DisableEnforcementCard() {
     >
       <div className="flex items-center justify-between gap-3">
         <h2 className="font-bold text-brand-ink">Turn off all blocking (escape hatch)</h2>
-        <SaveStatusBadge
-          testId="disable-enforcement-save-status"
-          status={save.status}
-          error={save.error}
-          onRetry={save.retry}
-        />
+        {canToggle && (
+          <SaveStatusBadge
+            testId="disable-enforcement-save-status"
+            status={save.status}
+            error={save.error}
+            onRetry={save.retry}
+          />
+        )}
       </div>
 
       <p className="text-xs text-brand-text">
@@ -105,11 +108,13 @@ function DisableEnforcementCard() {
         (the &ldquo;Disable enforcement&rdquo; toggle in your router&rsquo;s LuCI admin, or the
         <code className="mx-1">wifihaven-disable</code> command over SSH).
       </p>
+      {/* #1098: never conclude a state from an unloaded query — "not disabled" and "still
+          loading" are different answers, and the second must not be painted as the first. */}
       {status === null ? (
         <p className="text-sm text-brand-text-muted" data-testid="disable-enforcement-loading">
           Loading&hellip;
         </p>
-      ) : (
+      ) : canToggle ? (
         <label className="flex items-center gap-2 text-sm text-brand-ink">
           <input
             type="checkbox"
@@ -120,6 +125,17 @@ function DisableEnforcementCard() {
           />
           Disable all blocking for this household
         </label>
+      ) : (
+        /*
+          #2522 — an adult may not flip the hatch, but must be able to SEE that it is flipped:
+          "nothing is being blocked" is the single most confusing state to debug without being
+          told, and the read is `requireAuth` precisely so every role can be told.
+        */
+        <p className="text-sm text-brand-ink" data-testid="disable-enforcement-status">
+          {disabled
+            ? 'All blocking is currently OFF for this household. Only the account admin can turn it back on.'
+            : 'Blocking is on. Only the account admin can turn it off.'}
+        </p>
       )}
     </div>
   )

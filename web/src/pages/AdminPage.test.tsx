@@ -338,19 +338,30 @@ describe('AdminPage — capability split (#2522)', () => {
     expect(screen.getByTestId('household-reset-tz-select')).toBeInTheDocument()
   })
 
-  it('hides the disable-enforcement escape hatch from an adult', async () => {
+  it('denies an adult the escape-hatch TOGGLE (PUT is requireAdmin)', async () => {
     mockAuth = { isAdmin: false, isWriter: true }
     render(<AdminPage />)
-    await screen.findByTestId('household-reset-time')
-    expect(screen.queryByTestId('disable-enforcement-card')).not.toBeInTheDocument()
+    await screen.findByTestId('disable-enforcement-status')
     expect(screen.queryByTestId('disable-enforcement-toggle')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('disable-enforcement-save-status')).not.toBeInTheDocument()
   })
 
-  it('does not even query the admin-only enforcement endpoint for an adult', async () => {
+  // The READ is `requireAuth` on purpose: "nothing is being blocked right now" is the most
+  // confusing state to debug unaided, so an adult is TOLD even though they cannot change it.
+  it('still tells an adult when all blocking is off', async () => {
+    mockAuth = { isAdmin: false, isWriter: true }
+    vi.mocked(api.household.getEnforcement).mockResolvedValue({ enforcementDisabled: true })
+    render(<AdminPage />)
+    const line = await screen.findByTestId('disable-enforcement-status')
+    expect(line.textContent).toMatch(/All blocking is currently OFF/i)
+  })
+
+  it('never writes the hatch on an adult session', async () => {
     mockAuth = { isAdmin: false, isWriter: true }
     render(<AdminPage />)
-    await screen.findByTestId('household-reset-time')
-    expect(api.household.getEnforcement).not.toHaveBeenCalled()
+    await screen.findByTestId('disable-enforcement-status')
+    await new Promise(r => setTimeout(r, 800))
+    expect(api.household.setEnforcement).not.toHaveBeenCalled()
   })
 
   it('still shows the escape hatch to an admin', async () => {

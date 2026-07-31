@@ -66,7 +66,7 @@ describe('useDataScope (#2069)', () => {
 
   // #2522: the scope hook exposes the same two capabilities `useAuth` derives, under the same
   // names, so a caller never has to guess which question it is asking.
-  it('#2522: a child holds neither capability; an adult holds only the editing one', async () => {
+  it('#2522: a child holds neither capability', async () => {
     loginAs('child')
     meSpy.mockResolvedValue({ username: 'octavius', role: 'child', profileIds: [] })
     const { result } = renderHook(() => useDataScope(), { wrapper })

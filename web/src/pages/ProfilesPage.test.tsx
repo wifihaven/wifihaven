@@ -2050,11 +2050,12 @@ describe('ProfilesPage — global sentinel profile (#1773)', () => {
     )
   })
 
-  it('non-admins do not fetch the global profile', async () => {
+  it('a child does not fetch the global profile', async () => {
     mockAuth = { isAdmin: false, isWriter: false }
     renderPage()
     await screen.findByTestId('profile-card-1')
-    // useGlobalProfile is gated on isAdmin — the network call never fires.
+    // #2522: `GET /api/profiles/global` is `requireWriter`, so the hook is gated on isWriter —
+    // for a child the network call never fires.
     expect(api.profiles.getGlobal).not.toHaveBeenCalled()
     expect(screen.queryByTestId('profile-card-999')).not.toBeInTheDocument()
   })
@@ -2068,7 +2069,7 @@ describe('ProfilesPage — global sentinel profile (#1773)', () => {
 // (PUT /api/profiles/{id}/users) is `requireWriter`, but the picker can only be populated from
 // `GET /api/users`, which #2522 deliberately keeps `requireAdmin` (account lifecycle). So the
 // subsection stays admin-only in the SPA rather than render a picker that silently shows an
-// empty household to an adult. Tracked as a follow-up on #2522.
+// empty household to an adult. Tracked in #2545.
 describe('ProfilesPage — adult capability (#2522)', () => {
   const adult = { isAdmin: false, isWriter: true }
 

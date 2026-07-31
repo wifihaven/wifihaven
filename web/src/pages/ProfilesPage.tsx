@@ -120,7 +120,8 @@ export function ProfilesPage() {
   // limits, schedules. The lone exception is the per-profile Users picker: its write
   // (PUT /api/profiles/{id}/users) is `requireWriter`, but populating the picker needs
   // GET /api/users, which #2522 deliberately keeps `requireAdmin` (account lifecycle) — so that
-  // one subsection stays gated on `isAdmin` rather than showing an adult an empty household.
+  // one subsection stays gated on `isAdmin` rather than showing an adult an empty household
+  // (TODO(#2545) — the API grants the write; only the picker's READ is missing).
   const { isAdmin, isWriter } = useAuth()
   const invalidators = useInvalidators()
   const profilesQuery = useProfiles()
@@ -897,8 +898,8 @@ function ProfileShellRow({
           {isWriter && !isGlobal && (
             <DevicesSubsection pd={pd} assigned={devices} allDevices={allDevices} />
           )}
-          {/* #1473 — blocked categories are edited inline here (admins),
-              replacing the read-only chips. Toggling a category autosaves
+          {/* #1473 — blocked categories are edited inline here (#2522: any writer — admin or
+              adult), replacing the read-only chips. Toggling a category autosaves
               blockedCategories via the same full-profile PUT the Blocklists
               matrix uses. Non-admins keep the read-only chips below. */}
           {isWriter ? (
@@ -943,7 +944,7 @@ function ProfileShellRow({
               Time-limits expander into its own top-level disclosure. */}
           {!isGlobal && <ScheduleSubsection pd={pd} isWriter={isWriter} />}
 
-          {/* #973: read-only Devices listing for non-admins. Admins get the
+          {/* #973: read-only Devices listing for non-writers (#2522: a child). Writers get the
               editable DevicesSubsection above; keeping a second copy here for
               them would be redundant. */}
           {!isWriter && !isGlobal && (
@@ -970,7 +971,9 @@ function ProfileShellRow({
               parenting and its write (PUT /api/profiles/{id}/users) is `requireWriter`, but the
               picker can only be populated from GET /api/users, which stays `requireAdmin`. Showing
               it to an adult would render an empty "No users in this household yet." — a false
-              statement — so it stays admin-only until the read has a writer-visible source. */}
+              statement — so it stays admin-only until the read has a writer-visible source.
+              TODO(#2545): give the picker a writer-visible household-roster read and drop this
+              gate to `isWriter`, so an adult can use the capability the API already grants. */}
           {isAdmin && !isGlobal && (
             <div data-testid={`profile-users-${pd.profile.id}`}>
               <p className="text-xs text-brand-text-muted uppercase tracking-wider mb-2">Users</p>
@@ -1063,8 +1066,8 @@ function timeFormsEqual(a: TimeFormState, b: TimeFormState): boolean {
 // #1473 — inline blocked-categories editor. Fetches the blocklist catalog
 // (the same `GET /api/blocklists` the Blocklists matrix page uses) and renders
 // a checklist; toggling a category writes blockedCategories via the
-// full-profile PUT. Admin-only — the catalog endpoint requires admin, and this
-// is the editing surface (non-admins fall back to the read-only chips).
+// full-profile PUT. Writer-only (#2522) — `GET /api/blocklists` is `requireWriter`, and this
+// is the editing surface (a child falls back to the read-only chips).
 function CategoriesSubsection({
   pd, onProfileChanged,
 }: {
