@@ -251,8 +251,8 @@ services:
       # (fine-grained, Issues ONLY — read+write, since #2458's duplicate check LISTS open issues;
       # the structural no-PR scope is the absence of contents/pull_requests, #2241) MUST be set on the
       # service FIRST — with the flag true and the token unset the API REFUSES TO BOOT
-      # (Config.missingRequiredKeys). Prod stays false until staging is validated AND prod's own
-      # bot token is set. NEVER commit values.
+      # (Config.missingRequiredKeys). Prod was flipped true for the #2527 go-live validation run,
+      # after prod's own bot token was set. NEVER commit values.
       - key: WIFIHAVEN_SUPPORT_RESPONDER_ENABLED
         value: "true"
       - key: WIFIHAVEN_SUPPORT_ISSUE_FILING_ENABLED
