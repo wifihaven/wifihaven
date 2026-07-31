@@ -251,8 +251,8 @@ services:
       # (fine-grained, Issues ONLY — read+write, since #2458's duplicate check LISTS open issues;
       # the structural no-PR scope is the absence of contents/pull_requests, #2241) MUST be set on the
       # service FIRST — with the flag true and the token unset the API REFUSES TO BOOT
-      # (Config.missingRequiredKeys). Prod stays false until staging is validated AND prod's own
-      # bot token is set. NEVER commit values.
+      # (Config.missingRequiredKeys). Prod was flipped true for the #2527 go-live validation run,
+      # after prod's own bot token was set. NEVER commit values.
       - key: WIFIHAVEN_SUPPORT_RESPONDER_ENABLED
         value: "true"
       - key: WIFIHAVEN_SUPPORT_ISSUE_FILING_ENABLED
@@ -569,15 +569,22 @@ services:
       # #2200: the Claude support responder on PROD (live Plain + prod Managed Agent). #2265: NO
       # dark-by-default — same explicit-flag pattern as staging; flipped true by #2537 at go-live
       # once the secrets were set (a true flag with missing keys refuses to boot, bulk-listing the
-      # gaps). NOTE the flag alone does not make support REACHABLE here: prod's Plain workspace
-      # still posts no webhook to this API (#2543), so the responder is on but never invoked.
+      # gaps). The prod Plain workspace webhook IS wired as of 2026-07-31 (#2543) — confirmed from
+      # Loki, not inferred: signature-valid Plain events with real thread ids reached this API at
+      # 00:29Z and parsed into typed outcomes (skipped_unauthenticated / email_unregistered_rejected
+      # / skipped_not_inbound on th_01KYTS6RFFD086M6TXHJSSC9CR). An unwired webhook logs nothing at
+      # all; a dark responder would log outcome=disabled.
       # GITHUB_BOT_TOKEN is the fine-grained Issues-ONLY support-bot credential — read+write, since
       # #2458's duplicate check LISTS open issues (structural no-PR is the absence of
       # contents/pull_requests, #2241). NEVER commit values.
       - key: WIFIHAVEN_SUPPORT_RESPONDER_ENABLED
         value: "true"
+      # #2427 flipped this true on STAGING. Flipped true on PROD for the #2527 go-live validation
+      # run, so §B's "searches before filing, and refuses to file from a data-access session"
+      # (#2454/#2458) is testable in prod rather than staging-only evidence. GITHUB_BOT_TOKEN must
+      # already be set on the service — a true flag with the token unset refuses boot (#2266).
       - key: WIFIHAVEN_SUPPORT_ISSUE_FILING_ENABLED
-        value: "false"
+        value: "true"
       # #2300: cloud-agent transport — "managed-agents" (Anthropic Managed Agents, API-credit billed)
       # or "claude-code-cloud" (a Claude Code Cloud routine fired per message, Claude-subscription
       # billed — the credit-free path). Only the selected transport's config chain is required at
