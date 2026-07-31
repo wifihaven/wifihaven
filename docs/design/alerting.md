@@ -328,11 +328,13 @@ stated alongside.
   this counter and the ERROR log line are the only signals that customers are
   getting no AI reply. Warning, not critical: support degrades, enforcement does
   not.
-- **Inert in prod until go-live.** The support responder is flag-off in prod
-  (`WIFIHAVEN_SUPPORT_RESPONDER_ENABLED: "false"`, `render.yaml`) and live on
-  staging only, so the rule cannot fire until #2335 flips it. Ships **enabled**
-  rather than `is_paused` (contrast W5): there is nothing about the rule itself to
-  fix, so arming with the feature flag avoids a second flip to forget.
+- **Live in prod since the #2335 go-live.** Shipped **enabled** rather than
+  `is_paused` (contrast W5) precisely so it would arm with the feature flag and
+  not need a second flip to remember — there was nothing about the rule itself to
+  fix. That worked: [#2537](https://github.com/wifihaven/wifihaven/pull/2537) set
+  `WIFIHAVEN_SUPPORT_RESPONDER_ENABLED: "true"` on `wifihaven-api-prod`
+  (`render.yaml`) and the rule armed with no change here. A firing W6 is a real
+  prod page now, not a latent rule.
 
 **W7. Press responder permanently dead (config)**
 ([#2416](https://github.com/wifihaven/wifihaven/issues/2416))
@@ -340,8 +342,8 @@ stated alongside.
 - Fire when `> 0` **for 15m**.
 - Rationale: identical failure model to W6, on the press credentials/ids. Kept a
   **separate rule on a separate series** because the two audiences are graphed and
-  alerted independently and the remediation differs. Also inert in prod until
-  #2337 flips `WIFIHAVEN_PRESS_RESPONDER_ENABLED`.
+  alerted independently and the remediation differs. Also live in prod since
+  #2537 set `WIFIHAVEN_PRESS_RESPONDER_ENABLED: "true"` at the #2337 go-live.
 
 **W8. Plain REFUSED to send a support reject**
 ([#2488](https://github.com/wifihaven/wifihaven/issues/2488))
@@ -364,8 +366,9 @@ stated alongside.
   failure into one causeless `PlainOutcome.Error`), so a second selector would
   add nothing and break silently if attribution is added later.
   [#2485](https://github.com/wifihaven/wifihaven/pull/2485) added an expect-0
-  dashboard tile, but a tile is only seen by whoever opens it. Also inert in prod
-  until #2335 flips `WIFIHAVEN_SUPPORT_RESPONDER_ENABLED`.
+  dashboard tile, but a tile is only seen by whoever opens it. Also live in prod
+  since #2537 set `WIFIHAVEN_SUPPORT_RESPONDER_ENABLED: "true"` at the #2335
+  go-live — W8 armed the same day it merged.
 - **Known half-coverage — the dropped AI reply.** The same Plain refusal also
   drops the reply to a *registered* customer, which is the higher-value half (a
   reject goes to a non-customer; a dropped reply goes to an onboarded household
