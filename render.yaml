@@ -303,8 +303,8 @@ services:
       # the reply is EMAILED back to the sender via Resend (the WIFIHAVEN_EMAIL_* config above must be
       # set too). A SEPARATE Managed Agent persona from support; press being public, NO household data
       # path. WEBHOOK_SECRET is shared with the Worker. #2265: NO dark-by-default — RESPONDER_ENABLED
-      # is an explicit flag (flip to true via PR at go-live, AFTER the secrets below AND email are set);
-      # with it true and any required key missing the API refuses to boot. NEVER commit values.
+      # is an explicit flag, flipped true at go-live once the secrets below AND email were set; with
+      # it true and any required key missing the API refuses to boot. NEVER commit values.
       - key: WIFIHAVEN_PRESS_RESPONDER_ENABLED
         value: "true"
       # #2327: press cloud-agent transport — "managed-agents" (Anthropic Managed Agents, API-credit
@@ -567,8 +567,10 @@ services:
       - key: WIFIHAVEN_SUPPORT_PLAIN_ESCALATION_LABEL_TYPE_ID
         value: lt_01KYTM9YRBKHYWBF6TG3ZRPN1Y
       # #2200: the Claude support responder on PROD (live Plain + prod Managed Agent). #2265: NO
-      # dark-by-default — same explicit-flag pattern as staging (flip via PR at go-live, after the
-      # secrets are set; a true flag with missing keys refuses to boot, bulk-listing the gaps).
+      # dark-by-default — same explicit-flag pattern as staging; flipped true by #2537 at go-live
+      # once the secrets were set (a true flag with missing keys refuses to boot, bulk-listing the
+      # gaps). NOTE the flag alone does not make support REACHABLE here: prod's Plain workspace
+      # still posts no webhook to this API (#2543), so the responder is on but never invoked.
       # GITHUB_BOT_TOKEN is the fine-grained Issues-ONLY support-bot credential — read+write, since
       # #2458's duplicate check LISTS open issues (structural no-PR is the absence of
       # contents/pull_requests, #2241). NEVER commit values.
@@ -619,8 +621,9 @@ services:
       # Press email arrives via Cloudflare Email Routing → an Email Worker → /api/press/inbound; the
       # reply is EMAILED back to the sender via Resend (WIFIHAVEN_EMAIL_* must be set). A SEPARATE
       # Managed Agent persona from support; press is public so NO household data path. WEBHOOK_SECRET
-      # is shared with the Worker. #2265: NO dark-by-default — flip RESPONDER_ENABLED to true via PR at
-      # go-live, AFTER the secrets AND email are set. NEVER commit values.
+      # is shared with the Worker. #2265: NO dark-by-default — RESPONDER_ENABLED was flipped true by
+      # #2537 at go-live, AFTER the secrets AND email were set. Unlike support above, press IS
+      # reachable here: the Email Worker already posts to this API. NEVER commit values.
       - key: WIFIHAVEN_PRESS_RESPONDER_ENABLED
         value: "true"
       # #2327: press cloud-agent transport — "managed-agents" (Anthropic Managed Agents, API-credit

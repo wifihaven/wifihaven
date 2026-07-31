@@ -8,15 +8,23 @@
 # trustworthy in prod (§8 + #1382). It is authored now so it activates with a
 # one-line flip once the fleet rolls forward.
 #
-# W6–W8 (#2416, #2488) are a third case, distinct from both: their series and
-# labels exist and are emitted, but the FEATURE behind them is switched off in
-# prod (`WIFIHAVEN_{SUPPORT,PRESS}_RESPONDER_ENABLED: "false"` on
-# wifihaven-api-prod, render.yaml) — it is live on staging only. So they are
-# INERT in prod today and cannot fire until the prod go-live flips those flags
-# (#2335 support / #2337 press). They ship UNPAUSED deliberately (unlike W5):
-# there is nothing about the rules themselves to fix, so activating with the
-# feature flag — no second flip to forget — is the safer default. Read them as
-# coverage that arms itself at go-live, NOT as live prod coverage today.
+# W6–W8 (#2416, #2488) were a third case while the responders were dark: their
+# series and labels existed and were emitted, but the FEATURE behind them was
+# flag-off in prod, so they shipped UNPAUSED as coverage that would arm ITSELF
+# rather than needing a second flip to remember (unlike W5, which is genuinely
+# paused). #2537 flipped `WIFIHAVEN_{SUPPORT,PRESS}_RESPONDER_ENABLED` to "true"
+# on wifihaven-api-prod (render.yaml) and all three armed with no rule change —
+# the design worked. But the flag is necessary, NOT sufficient, and the two
+# halves are at different stages; do not read "flag on" as "exercisable":
+#   - W7 (press) is LIVE. The Cloudflare Email Worker already posts to the prod
+#     API, so a prod press dispatch failure pages today.
+#   - W6/W8 (support) are ARMED BUT NOT YET EXERCISABLE. Both series are produced
+#     only downstream of an inbound Plain webhook, and prod's Plain workspace is
+#     not wired to the prod API yet (#2543 — the 2026-07-29 verification logged
+#     NO support lines at all, where a configured webhook against a dark
+#     responder would still have logged outcome=disabled).
+#     They begin covering the moment that webhook is configured, again with no
+#     rule change — which is the point of shipping them unpaused.
 #
 # All eight carry severity=warning + env=prod labels, which the notification
 # policy in alerting.tf routes to the wifihaven-warning (email) contact point.
@@ -81,9 +89,9 @@ locals {
       paused  = true
       summary = "Blocklist fetches are failing on the router (category enforcement degrades). DISABLED until the router-pushed counter is trustworthy in prod (#1382)."
     }
-    # W6/W7 (#2416) — a cloud-agent responder that is PERMANENTLY dead. INERT IN PROD
-    # TODAY: both responders are flag-off in prod and live on staging only, so these
-    # cannot fire until go-live flips them (#2335 / #2337) — see the header note.
+    # W6/W7 (#2416) — a cloud-agent responder that is PERMANENTLY dead. Both flags are on
+    # in prod since #2537, but only W7 (press) is exercisable today; W6 (support) waits on
+    # the prod Plain webhook (#2543) — see the header note.
     # `reason="config"` is only ever emitted for a non-self-healing 4xx at the Anthropic
     # boundary (a revoked key, a wrong agent-or-routine id, a stale anthropic-beta
     # header), none of which recover without a human — so unlike the transient bucket,

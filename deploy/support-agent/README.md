@@ -40,7 +40,7 @@ at create time, so an update never disturbs in-flight support sessions.
 
 | Env var | Value |
 |---|---|
-| `WIFIHAVEN_SUPPORT_RESPONDER_ENABLED` | `true` on staging (#2335), `false` on prod — flip to `true` via PR at go-live, after everything below is set for that environment (#2265) |
+| `WIFIHAVEN_SUPPORT_RESPONDER_ENABLED` | `true` on staging (#2335) and on prod — flipped for prod by #2537 at go-live, after everything below was set for that environment (#2265). Note the flag alone does not make the responder reachable in prod: the prod Plain webhook is still unwired (#2543) |
 | `WIFIHAVEN_SUPPORT_ISSUE_FILING_ENABLED` | `true` on staging (#2427), `false` on prod — flip with (or after) the responder once that environment's bot token is set. See [GitHub issue filing](#issue-filing) below |
 | `WIFIHAVEN_SUPPORT_DISPATCHER` | `managed-agents` (default) in render.yaml, or `claude-code-cloud` (#2300 — subscription-billed routine; see below). Only the selected transport's keys are required at boot; an unknown value refuses boot |
 | `WIFIHAVEN_SUPPORT_PLAIN_WEBHOOK_SECRET` | Plain workspace webhook signing secret (Plain → Settings → Webhooks; point the webhook at `POST https://<api-host>/api/support/webhook`). Subscribe to the **inbound customer** events only: `thread.thread_created`, `thread.chat_received`, `thread.email_received`. The API additionally loop-guards on the event type + `actorType`, so subscribing to more (e.g. `thread.chat_sent`, our own outbound reply) is safe but unnecessary — those are skipped, never re-dispatched (#2403) |
@@ -145,9 +145,10 @@ posture: a required secret's absence is a bug, never a silent disable. So, **per
 2. *Then* flip that service's `WIFIHAVEN_SUPPORT_ISSUE_FILING_ENABLED` to `"true"` via a
    `render.yaml` PR.
 
-**Staging first, prod after** — validate on staging (below) before flipping prod. Note prod's
-`WIFIHAVEN_SUPPORT_RESPONDER_ENABLED` is still `"false"`, so prod issue filing has no producer until
-the responder is flipped there too; sequence the two together.
+**Staging first, prod after** — validate on staging (below) before flipping prod. Prod's
+`WIFIHAVEN_SUPPORT_RESPONDER_ENABLED` has been `"true"` since #2537, but prod issue filing still has
+no producer: prod's Plain workspace posts no webhook to the prod API (#2543), so nothing reaches the
+responder for issue filing to act on. The blocker is that wiring, not the responder flag.
 
 ### 3. Verify after enabling
 
