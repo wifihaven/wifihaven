@@ -115,15 +115,22 @@ const CHIP_CLASS: Record<PauseChip, string> = {
 }
 
 export function ProfilesPage() {
-  const { isAdmin } = useAuth()
+  // #2522 — two capabilities, not one. Almost every surface on this page is PARENTING
+  // (`requireWriter`): create/delete a profile, default-deny, categories, apps, devices, time
+  // limits, schedules. The lone exception is the per-profile Users picker: its write
+  // (PUT /api/profiles/{id}/users) is `requireWriter`, but populating the picker needs
+  // GET /api/users, which #2522 deliberately keeps `requireAdmin` (account lifecycle) — so that
+  // one subsection stays gated on `isAdmin` rather than showing an adult an empty household
+  // (TODO(#2545) — the API grants the write; only the picker's READ is missing).
+  const { isAdmin, isWriter } = useAuth()
   const invalidators = useInvalidators()
   const profilesQuery = useProfiles()
-  // #1773: the sentinel sits outside `/api/profiles` (#1771 hides it). Admins
+  // #1773: the sentinel sits outside `/api/profiles` (#1771 hides it). Writers
   // pull it via `/api/profiles/global` and we prepend it so the operator can
   // edit its app-policy assignments / categories / defaultDeny through the
-  // same per-profile shell. Non-admins skip the fetch (the route requires
-  // admin and the page already gates most editing on `isAdmin`).
-  const globalProfileQuery = useGlobalProfile({ enabled: isAdmin })
+  // same per-profile shell. #2522: the route is `requireWriter`, so a child skips
+  // the fetch (and the page already gates every editing surface on `isWriter`).
+  const globalProfileQuery = useGlobalProfile({ enabled: isWriter })
   const devicesQuery  = useDevices()
   // #1974 (SPA-ws S6a): subscribe the live `timeStatus` push (patches the summary cache off the
   // pushed body), and pause the summary's adaptive ladder while that push is streaming (§3.3 — the
@@ -395,7 +402,7 @@ export function ProfilesPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold text-brand-ink">Profiles</h1>
-        {isAdmin && creatingName === null && (
+        {isWriter && creatingName === null && (
           <button
             onClick={startNew}
             className="bg-brand-accent hover:bg-brand-accent-dark text-white text-sm font-semibold px-4 py-2 rounded-xl transition-colors"
@@ -408,7 +415,7 @@ export function ProfilesPage() {
       {/* #978 — inline name-only new-profile form. Replaces the old
           ProfileEditor modal; everything else is filled in via the inline
           subsections on the new profile's expanded card. */}
-      {isAdmin && creatingName !== null && (
+      {isWriter && creatingName !== null && (
         <div
           data-testid="profile-create-form"
           className="bg-white rounded-2xl border border-brand-accent/30 p-4 space-y-3"
@@ -474,6 +481,7 @@ export function ProfilesPage() {
             users={usersByProfile.get(pd.profile.id) ?? []}
             apps={apps}
             allUsers={allUsers}
+            isWriter={isWriter}
             isAdmin={isAdmin}
             expanded={expanded.has(pd.profile.id)}
             highlight={highlightId === pd.profile.id}
@@ -561,7 +569,7 @@ export function ProfilesPage() {
 // Expanded body holds the inline subsections (#973-#977) that replaced the
 // old per-profile modal, plus the read-only devices listing.
 function ProfileShellRow({
-  pd, summary, summaryLoading, devices, allDevices, users, apps, allUsers, isAdmin, expanded, highlight,
+  pd, summary, summaryLoading, devices, allDevices, users, apps, allUsers, isWriter, isAdmin, expanded, highlight,
   onToggle, onDelete, onTogglePause, onGrantTime,
   onAppsChanged, onProfileChanged, updateProfile,
   onToggleUserLink, pendingUserLinks, userLinkError,
@@ -574,6 +582,7 @@ function ProfileShellRow({
   users: User[]
   apps: AppDetail[]
   allUsers: User[]
+  isWriter: boolean
   isAdmin: boolean
   expanded: boolean
   highlight: boolean
@@ -675,7 +684,7 @@ function ProfileShellRow({
         >
           <span className={`inline-block transition-transform ${expanded ? 'rotate-90' : ''}`}>▸</span>
         </button>
-        {expanded && isAdmin && !isGlobal ? (
+        {expanded && isWriter && !isGlobal ? (
           <div className="flex-1 min-w-0 flex items-center gap-2">
             <input
               type="text"
@@ -762,7 +771,7 @@ function ProfileShellRow({
             </span>
           )}
 
-          {isAdmin && hasLimit && !isGlobal && (
+          {isWriter && hasLimit && !isGlobal && (
             <button
               type="button"
               onClick={onGrantTime}
@@ -778,7 +787,7 @@ function ProfileShellRow({
               one-shot actions; making the operator expand the card first was
               busywork. Icon-only Pause (chip already says Paused/Active);
               Delete is muted + far right so it's hard to mis-click. */}
-          {isAdmin && !isGlobal && (
+          {isWriter && !isGlobal && (
             <div className="relative" ref={pausePickerRef}>
               <button
                 type="button"
@@ -835,7 +844,7 @@ function ProfileShellRow({
               )}
             </div>
           )}
-          {isAdmin && !isGlobal && (
+          {isWriter && !isGlobal && (
             <button
               type="button"
               onClick={onDelete}
@@ -872,7 +881,7 @@ function ProfileShellRow({
               hoisted to the top of the expanded view: default-deny is the
               profile's most fundamental posture, so it reads first, before
               devices / categories / apps. */}
-          {isAdmin && (
+          {isWriter && (
             <DefaultDenySubsection
               pd={pd}
               onProfileChanged={onProfileChanged}
@@ -886,14 +895,14 @@ function ProfileShellRow({
               subsection now; failureMode (#385) is the one orphan, tracked
               separately. The "+ New Profile" name-only form (top of page)
               replaces the modal's create flow. */}
-          {isAdmin && !isGlobal && (
+          {isWriter && !isGlobal && (
             <DevicesSubsection pd={pd} assigned={devices} allDevices={allDevices} />
           )}
-          {/* #1473 — blocked categories are edited inline here (admins),
-              replacing the read-only chips. Toggling a category autosaves
+          {/* #1473 — blocked categories are edited inline here (#2522: any writer — admin or
+              adult), replacing the read-only chips. Toggling a category autosaves
               blockedCategories via the same full-profile PUT the Blocklists
               matrix uses. Non-admins keep the read-only chips below. */}
-          {isAdmin ? (
+          {isWriter ? (
             <CategoriesSubsection
               pd={pd}
               onProfileChanged={onProfileChanged}
@@ -914,7 +923,7 @@ function ProfileShellRow({
           {/* #976: apps subsection — inline app-policy editor. Post-#764 the
               legacy extraAllowed/extraBlocked textareas are gone; this owns
               the per-host policy surface end-to-end. */}
-          {isAdmin && (
+          {isWriter && (
             <AppsRulesSubsection
               pd={pd}
               apps={apps}
@@ -929,16 +938,16 @@ function ProfileShellRow({
               Schedules split into their own sibling subsection (#1474).
               #1773: daily limits and schedules don't apply household-wide; the
               API rejects writes against the sentinel for both. */}
-          {!isGlobal && <TimeSubsection pd={pd} isAdmin={isAdmin} />}
+          {!isGlobal && <TimeSubsection pd={pd} isWriter={isWriter} />}
 
           {/* #1474 — schedules subsection (bedtime/windows), split out of the
               Time-limits expander into its own top-level disclosure. */}
-          {!isGlobal && <ScheduleSubsection pd={pd} isAdmin={isAdmin} />}
+          {!isGlobal && <ScheduleSubsection pd={pd} isWriter={isWriter} />}
 
-          {/* #973: read-only Devices listing for non-admins. Admins get the
+          {/* #973: read-only Devices listing for non-writers (#2522: a child). Writers get the
               editable DevicesSubsection above; keeping a second copy here for
               them would be redundant. */}
-          {!isAdmin && !isGlobal && (
+          {!isWriter && !isGlobal && (
             <div data-testid={`profile-devices-${pd.profile.id}`}>
               <p className="text-xs text-brand-text-muted uppercase tracking-wider mb-2">Devices</p>
               {devices.length === 0
@@ -958,6 +967,13 @@ function ProfileShellRow({
             </div>
           )}
 
+          {/* #2522 — the ONE admin-gated surface on this page. Linking a user to a profile is
+              parenting and its write (PUT /api/profiles/{id}/users) is `requireWriter`, but the
+              picker can only be populated from GET /api/users, which stays `requireAdmin`. Showing
+              it to an adult would render an empty "No users in this household yet." — a false
+              statement — so it stays admin-only until the read has a writer-visible source.
+              TODO(#2545): give the picker a writer-visible household-roster read and drop this
+              gate to `isWriter`, so an adult can use the capability the API already grants. */}
           {isAdmin && !isGlobal && (
             <div data-testid={`profile-users-${pd.profile.id}`}>
               <p className="text-xs text-brand-text-muted uppercase tracking-wider mb-2">Users</p>
@@ -1050,8 +1066,8 @@ function timeFormsEqual(a: TimeFormState, b: TimeFormState): boolean {
 // #1473 — inline blocked-categories editor. Fetches the blocklist catalog
 // (the same `GET /api/blocklists` the Blocklists matrix page uses) and renders
 // a checklist; toggling a category writes blockedCategories via the
-// full-profile PUT. Admin-only — the catalog endpoint requires admin, and this
-// is the editing surface (non-admins fall back to the read-only chips).
+// full-profile PUT. Writer-only (#2522) — `GET /api/blocklists` is `requireWriter`, and this
+// is the editing surface (a child falls back to the read-only chips).
 function CategoriesSubsection({
   pd, onProfileChanged,
 }: {
@@ -1211,10 +1227,10 @@ function DefaultDenySubsection({
 }
 
 function TimeSubsection({
-  pd, isAdmin,
+  pd, isWriter,
 }: {
   pd: ProfileDetail
-  isAdmin: boolean
+  isWriter: boolean
 }) {
   const invalidators = useInvalidators()
   const [expanded, setExpanded] = useState(false)
@@ -1354,7 +1370,7 @@ function TimeSubsection({
             </label>
             <input type="number" min={0}
               value={form.timeLimit}
-              disabled={!isAdmin}
+              disabled={!isWriter}
               data-testid={`profile-time-limit-${pd.profile.id}`}
               onChange={e => update({ timeLimit: e.target.value })}
               placeholder="Leave blank for unlimited"
@@ -1372,7 +1388,7 @@ function TimeSubsection({
                   type="radio"
                   name={`overlap-${pd.profile.id}`}
                   data-testid={`profile-time-overlap-sum-${pd.profile.id}`}
-                  disabled={!isAdmin}
+                  disabled={!isWriter}
                   checked={form.crossDeviceOverlapMode === 'sum'}
                   onChange={() => update({ crossDeviceOverlapMode: 'sum' })}
                   className="mt-1 w-4 h-4 accent-brand-accent"
@@ -1390,7 +1406,7 @@ function TimeSubsection({
                   type="radio"
                   name={`overlap-${pd.profile.id}`}
                   data-testid={`profile-time-overlap-dedup-${pd.profile.id}`}
-                  disabled={!isAdmin}
+                  disabled={!isWriter}
                   checked={form.crossDeviceOverlapMode === 'dedup'}
                   onChange={() => update({ crossDeviceOverlapMode: 'dedup' })}
                   className="mt-1 w-4 h-4 accent-brand-accent"
@@ -1426,10 +1442,10 @@ function TimeSubsection({
 // reference many; add/remove autosaves the full id set (replace semantics),
 // mirroring the per-app schedule-rule editor (#1380).
 function ScheduleSubsection({
-  pd, isAdmin,
+  pd, isWriter,
 }: {
   pd: ProfileDetail
-  isAdmin: boolean
+  isWriter: boolean
 }) {
   const invalidators = useInvalidators()
   const { data: namedSchedules = [] } = useNamedSchedules()
@@ -1552,7 +1568,7 @@ function ScheduleSubsection({
                 <span className="flex-1 text-sm text-brand-ink">
                   {scheduleNameById.get(id) ?? `Schedule ${id}`}
                 </span>
-                {isAdmin && (
+                {isWriter && (
                   <button type="button"
                     data-testid={`profile-schedule-attached-${pd.profile.id}-${id}-remove`}
                     aria-label={`Remove ${scheduleNameById.get(id) ?? 'schedule'}`}
@@ -1562,7 +1578,7 @@ function ScheduleSubsection({
               </div>
             ))}
 
-            {isAdmin && (
+            {isWriter && (
               <div className="space-y-2 pt-1">
                 <SchedulePicker
                   value={pickId}

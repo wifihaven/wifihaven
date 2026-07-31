@@ -980,3 +980,49 @@ describe('DashboardPage child role (#2069)', () => {
     expect(screen.queryByText('Blocking activity (24h)')).not.toBeInTheDocument()
   })
 })
+
+// #2522 — the dashboard mixes the two capabilities on one page. `/api/stats` moved to
+// `requireWriter`, so an adult now gets the stats-backed KPI tiles; the first-run onboarding
+// banner reads `GET /api/admin/routers`, which is still `requireAdmin`, so an adult must not
+// mount it (it would fire a fetch the server refuses and stick in an error state).
+describe('DashboardPage — capability split (#2522)', () => {
+  function renderAs(role: 'admin' | 'adult' | 'child') {
+    localStorage.setItem('token', 't')
+    localStorage.setItem('username', role)
+    localStorage.setItem('role', role)
+    return render(withQuery(
+      <AuthProvider>
+        <MemoryRouter><DashboardPage /></MemoryRouter>
+      </AuthProvider>,
+    ))
+  }
+
+  beforeEach(() => {
+    // No router enrolled → the onboarding banner WOULD render, for a caller allowed to ask.
+    vi.mocked(api.routers.list).mockResolvedValue([])
+  })
+
+  it('serves the stats-backed KPI tiles to an adult (/api/stats is requireWriter)', async () => {
+    renderAs('adult')
+    expect(await screen.findByText('78')).toBeInTheDocument()
+    expect(api.logs.stats).toHaveBeenCalled()
+  })
+
+  it('hides the first-run router banner from an adult, and never asks for the router list', async () => {
+    renderAs('adult')
+    await screen.findByTestId('kpi-strip')
+    expect(screen.queryByTestId('first-run-hint')).not.toBeInTheDocument()
+    expect(api.routers.list).not.toHaveBeenCalled()
+  })
+
+  it('still shows the first-run router banner to an admin', async () => {
+    renderAs('admin')
+    expect(await screen.findByTestId('first-run-hint')).toBeInTheDocument()
+  })
+
+  it('still keeps /api/stats away from a child', async () => {
+    renderAs('child')
+    await screen.findByTestId('kpi-strip')
+    expect(api.logs.stats).not.toHaveBeenCalled()
+  })
+})

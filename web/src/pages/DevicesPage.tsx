@@ -36,7 +36,9 @@ function useHighlightFromQuery(devices: Device[]) {
 // ── Devices page ───────────────────────────────────────────────────────────
 
 export function DevicesPage() {
-  const { isAdmin } = useAuth()
+  // #2522: PUT /api/devices, PATCH/DELETE /api/devices/{mac} and both alert actions are
+  // `requireWriter` — devices are parenting, not account management.
+  const { isWriter } = useAuth()
   const devicesQuery  = useDevices()
   const profilesQuery = useProfiles()
   const householdQuery = useHouseholdSettings()
@@ -122,11 +124,11 @@ export function DevicesPage() {
 
   return (
     <div className="space-y-6">
-      <NewDeviceAlertsBanner isAdmin={isAdmin} />
+      <NewDeviceAlertsBanner canEdit={isWriter} />
 
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold text-brand-ink">Devices</h1>
-        {isAdmin && (
+        {isWriter && (
           <button
             onClick={() => openCreate('')}
             className="bg-brand-accent hover:bg-brand-accent-dark text-white text-sm font-semibold px-4 py-2 rounded-xl transition-colors"
@@ -151,7 +153,7 @@ export function DevicesPage() {
                       {d.profileName ?? 'No profile'}
                     </span>
                   </div>
-                  {isAdmin && (
+                  {isWriter && (
                     <div className="flex gap-2 shrink-0">
                       <button
                         onClick={() => setEditingMac(m => (m === d.mac ? null : d.mac))}
@@ -165,7 +167,7 @@ export function DevicesPage() {
                     </div>
                   )}
                 </div>
-                {isAdmin && editingMac === d.mac && (
+                {isWriter && editingMac === d.mac && (
                   <DeviceRowEditor device={d} profiles={profiles} onClose={() => setEditingMac(null)} />
                 )}
               </div>
@@ -213,7 +215,7 @@ export function DevicesPage() {
                     {unmanagedPolicy?.policy === 'allow' ? 'No profile' : 'Unmanaged'}
                   </span>
                 </div>
-                {isAdmin && (
+                {isWriter && (
                   <button
                     onClick={() => openCreate(d.mac)}
                     data-testid={`unmanaged-enroll-${d.mac}`}
@@ -385,12 +387,13 @@ function DeviceRowEditor({
 // ── New-device alerts banner (#711, now backed by unified /api/alerts) ─────
 //
 // Shown above the device list whenever pending new-device alerts exist.
-// Admins can approve each one inline (formerly "dismiss" — the unified
+// #2522: writers (admin or adult) can approve each one inline — both alert actions are
+// `requireWriter`. (Formerly "dismiss" — the unified
 // alert model uses approve/deny across all kinds; new_device approval has
 // no side effect). The banner refetches on a 30 s interval (see useAlerts)
 // so a freshly-connected device shows up without a manual reload.
 
-function NewDeviceAlertsBanner({ isAdmin }: { isAdmin: boolean }) {
+function NewDeviceAlertsBanner({ canEdit }: { canEdit: boolean }) {
   const alertsQuery  = useAlerts()
   const profilesQuery = useProfiles()
   const invalidators = useInvalidators()
@@ -437,7 +440,7 @@ function NewDeviceAlertsBanner({ isAdmin }: { isAdmin: boolean }) {
             data-testid={`new-device-alert-${a.mac}`}
             className="flex items-center gap-3 text-sm bg-white/60 rounded-lg px-3 py-2"
           >
-            {isAdmin ? (
+            {canEdit ? (
               <button
                 type="button"
                 onClick={() => setEditing(a)}
@@ -455,7 +458,7 @@ function NewDeviceAlertsBanner({ isAdmin }: { isAdmin: boolean }) {
                 <p className="text-xs text-brand-text-muted">first seen {new Date(a.createdAt).toLocaleString()}</p>
               </div>
             )}
-            {isAdmin && (
+            {canEdit && (
               <button
                 onClick={() => approveMutation.mutate(a.id)}
                 disabled={approveMutation.isPending}

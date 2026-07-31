@@ -4,7 +4,7 @@ import { api, isCurrentPasswordIncorrect } from '@/api/client'
 import { useAuth } from '@/hooks/useAuth'
 
 export function AccountPage() {
-  const { username, isAdmin, mustChangePassword, logout } = useAuth()
+  const { username, role, mustChangePassword, logout } = useAuth()
   const navigate = useNavigate()
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword]         = useState('')
@@ -76,7 +76,9 @@ export function AccountPage() {
           </div>
           <div className="flex justify-between">
             <dt className="text-brand-text-muted">Role</dt>
-            <dd className="text-brand-ink font-mono">{isAdmin ? 'admin' : 'readonly'}</dd>
+            {/* #2522: "readonly" was a two-role fiction. Post-#2534 an adult edits nearly
+                everything, so show the role the session actually holds. */}
+            <dd className="text-brand-ink font-mono">{role ?? 'unknown'}</dd>
           </div>
         </dl>
       </section>

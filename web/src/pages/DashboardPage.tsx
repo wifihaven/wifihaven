@@ -35,16 +35,16 @@ export function DashboardPage() {
   // anti-pattern) — until it resolves. `stats === null` is the loading state.
   const [stats, setStats] = useState<DashboardStats | null>(null)
 
-  // #2069 — role scoping. `/api/stats` is admin-only, so a non-admin must not
-  // call it (the prod 403 storm); the stats-backed panels are admin-only too.
+  // #2069 — role scoping. #2522: `/api/stats` moved to `requireWriter`, so an adult gets the
+  // stats-backed panels too; a child still must not call it (the prod 403 storm).
   // The live surfaces below (NOW, Recently Blocked via `/api/dashboard/*`) are
   // already role-filtered server-side, so every role sees them.
   const scope = useDataScope()
 
   useEffect(() => {
-    if (!scope.isAdmin) return
+    if (!scope.isWriter) return
     api.logs.stats().then(setStats).catch(() => { /* keep skeleton on error */ })
-  }, [scope.isAdmin])
+  }, [scope.isWriter])
 
   // #2056 (§8.5) — ONE `trafficUsage{groupBy:profile, bucket}` subscription drives the whole
   // page: the selected window (`bucket`) is page-level state that governs BOTH the Bandwidth
@@ -71,6 +71,8 @@ export function DashboardPage() {
         <DashboardWindowSelector bandwidth={bandwidth} />
       </div>
 
+      {/* #2522: FirstRunHint reads `GET /api/admin/routers`, which is still `requireAdmin` —
+          so it stays on the ACCOUNT capability even though the rest of the page is writer-wide. */}
       {scope.isAdmin && <FirstRunHint />}
 
       <NewDevicesHint />
@@ -79,7 +81,7 @@ export function DashboardPage() {
 
       <RecentlyBlockedSection />
 
-      <KpiStrip stats={stats} bandwidth={bandwidth} showStats={scope.isAdmin} />
+      <KpiStrip stats={stats} bandwidth={bandwidth} showStats={scope.isWriter} />
 
       <NowSection bandwidth={bandwidth} />
     </div>

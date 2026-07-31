@@ -44,9 +44,24 @@ function RequirePwChanged({ children }: { children: React.ReactNode }) {
   return mustChangePassword ? <Navigate to={ACCOUNT_PATH} replace /> : <>{children}</>
 }
 
-function RequireAdmin({ children }: { children: React.ReactNode }) {
+/**
+ * #2522 — the ACCOUNT gate. Mirrors `requireAdmin` (api/src/routes/Routes.scala): who exists,
+ * who pays, what hardware is enrolled, and the #2382 off-switch. Exported so App.test.tsx
+ * exercises the real gate rather than a copy that could drift from it.
+ */
+export function RequireAdmin({ children }: { children: React.ReactNode }) {
   const { isAdmin } = useAuth()
   return isAdmin ? <>{children}</> : <Navigate to="/dashboard" replace />
+}
+
+/**
+ * #2522 — the POLICY-EDITING gate: admin OR adult. Mirrors `requireWriter`. Every page whose
+ * whole surface is parenting (apps, blocklists, schedules, household settings) sits behind this
+ * one; a child is refused exactly as it was under `RequireAdmin`.
+ */
+export function RequireWriter({ children }: { children: React.ReactNode }) {
+  const { isWriter } = useAuth()
+  return isWriter ? <>{children}</> : <Navigate to="/dashboard" replace />
 }
 
 // #2133 (design §3.2): the operator beta-request queue is gated on the `isOperator`
@@ -93,16 +108,19 @@ function AppRoutes() {
         <Route path="logs"      element={<Navigate to="/usage/events" replace />} />
         <Route path="usage"          element={<RequirePwChanged><TrafficUsagePage /></RequirePwChanged>} />
         <Route path="usage/events"   element={<RequirePwChanged><LogsPage /></RequirePwChanged>} />
-        <Route path="apps"        element={<RequirePwChanged><RequireAdmin><AppsPage /></RequireAdmin></RequirePwChanged>} />
-        <Route path="blocklists"  element={<RequirePwChanged><RequireAdmin><BlocklistsPage /></RequireAdmin></RequirePwChanged>} />
-        <Route path="schedules"   element={<RequirePwChanged><RequireAdmin><SchedulesPage /></RequireAdmin></RequirePwChanged>} />
+        <Route path="apps"        element={<RequirePwChanged><RequireWriter><AppsPage /></RequireWriter></RequirePwChanged>} />
+        <Route path="blocklists"  element={<RequirePwChanged><RequireWriter><BlocklistsPage /></RequireWriter></RequirePwChanged>} />
+        <Route path="schedules"   element={<RequirePwChanged><RequireWriter><SchedulesPage /></RequireWriter></RequirePwChanged>} />
         <Route path="users"     element={<RequirePwChanged><RequireAdmin><UsersPage /></RequireAdmin></RequirePwChanged>} />
         <Route path="routers"   element={<RequirePwChanged><RequireAdmin><RoutersPage /></RequireAdmin></RequirePwChanged>} />
         {/* #2234: post-registration router-install guide (hardware + install command),
             the natural next step from the first-run onboarding banner; links to /routers. */}
         <Route path="router-setup" element={<RequirePwChanged><RequireAdmin><RouterInstallPage /></RequireAdmin></RequirePwChanged>} />
         <Route path="billing"   element={<RequirePwChanged><RequireAdmin><BillingPage /></RequireAdmin></RequirePwChanged>} />
-        <Route path="admin"     element={<RequirePwChanged><RequireAdmin><AdminPage /></RequireAdmin></RequirePwChanged>} />
+        {/* #2522: household settings are parenting (PATCH /api/household/settings is
+            `requireWriter`), so an adult reaches this page; the one ACCOUNT control on it — the
+            #2382 enforcement kill-switch — is gated on `isAdmin` inside the page itself. */}
+        <Route path="admin"     element={<RequirePwChanged><RequireWriter><AdminPage /></RequireWriter></RequirePwChanged>} />
         {/* #2133: operator-only beta-request review queue (gated on the isOperator API signal). */}
         <Route path="beta-requests" element={<RequirePwChanged><RequireOperator><BetaRequestsPage /></RequireOperator></RequirePwChanged>} />
         {/* #2296: operator-only press correspondence log (same isOperator gate; API 404s others). */}

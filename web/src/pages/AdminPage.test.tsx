@@ -15,6 +15,15 @@ vi.mock('@/api/client', () => ({
   },
 }))
 
+// #2522: the page is reachable by any WRITER (admin or adult) because every card on it patches
+// `/api/household/settings` (requireWriter). The one exception — the #2382 kill-switch — is
+// `requireAdmin`, so its card is gated separately. Default the mock to an admin so the pre-#2522
+// suite below is unchanged.
+let mockAuth = { isAdmin: true, isWriter: true }
+vi.mock('@/hooks/useAuth', () => ({
+  useAuth: () => mockAuth,
+}))
+
 import { api } from '@/api/client'
 import type { HeartbeatFilter, HouseholdSettings, UnmanagedMacPolicy } from '@/types/api'
 import { AdminPage } from './AdminPage'
@@ -29,6 +38,7 @@ const DEFAULT_UMM: UnmanagedMacPolicy = { policy: 'allow', blockPage: true }
 
 beforeEach(() => {
   vi.resetAllMocks()
+  mockAuth = { isAdmin: true, isWriter: true }
   // Server-of-record: simulates the live API. `patch` deep-merges into this
   // and `get` reads from it, so tests exercise the real round-trip the
   // autosave UI does (PATCH a single field, then re-GET to reconcile).
@@ -314,5 +324,52 @@ describe('AdminPage — disable-enforcement escape hatch (#2382)', () => {
     // Well past the 500ms debounce: no save should have been scheduled from the load.
     await new Promise(r => setTimeout(r, 800))
     expect(api.household.setEnforcement).not.toHaveBeenCalled()
+  })
+})
+
+// #2522 — the kill-switch is the one ACCOUNT control on an otherwise policy-editing page. An adult
+// gets the settings cards and does NOT get the escape hatch (PUT /api/household/enforcement is
+// still `requireAdmin`, so rendering it would be an affordance that 403s).
+describe('AdminPage — capability split (#2522)', () => {
+  it('shows the household settings cards to an adult', async () => {
+    mockAuth = { isAdmin: false, isWriter: true }
+    render(<AdminPage />)
+    expect(await screen.findByTestId('household-reset-time')).toBeInTheDocument()
+    expect(screen.getByTestId('household-reset-tz-select')).toBeInTheDocument()
+  })
+
+  it('denies an adult the escape-hatch TOGGLE (PUT is requireAdmin)', async () => {
+    mockAuth = { isAdmin: false, isWriter: true }
+    render(<AdminPage />)
+    await screen.findByTestId('disable-enforcement-status')
+    expect(screen.queryByTestId('disable-enforcement-toggle')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('disable-enforcement-save-status')).not.toBeInTheDocument()
+  })
+
+  // The READ is `requireAuth` on purpose: "nothing is being blocked right now" is the most
+  // confusing state to debug unaided, so an adult is TOLD even though they cannot change it.
+  it('still tells an adult when all blocking is off', async () => {
+    mockAuth = { isAdmin: false, isWriter: true }
+    vi.mocked(api.household.getEnforcement).mockResolvedValue({ enforcementDisabled: true })
+    render(<AdminPage />)
+    const line = await screen.findByTestId('disable-enforcement-status')
+    expect(line.textContent).toMatch(/All blocking is currently OFF/i)
+  })
+
+  it('never writes the hatch on an adult session', async () => {
+    mockAuth = { isAdmin: false, isWriter: true }
+    render(<AdminPage />)
+    await screen.findByTestId('disable-enforcement-status')
+    await new Promise(r => setTimeout(r, 800))
+    expect(api.household.setEnforcement).not.toHaveBeenCalled()
+  })
+
+  // Positive control for the two negatives above. It asserts the TOGGLE, not the card: post-fix
+  // the card renders for an adult too, so asserting the card would pass either way.
+  it('still hands an admin the escape-hatch toggle, not just the status line', async () => {
+    render(<AdminPage />)
+    expect(await screen.findByTestId('disable-enforcement-toggle')).toBeInTheDocument()
+    expect(screen.getByTestId('disable-enforcement-save-status')).toBeInTheDocument()
+    expect(screen.queryByTestId('disable-enforcement-status')).not.toBeInTheDocument()
   })
 })

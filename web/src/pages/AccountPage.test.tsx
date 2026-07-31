@@ -24,11 +24,13 @@ import { AccountPage } from './AccountPage'
 
 let mockAuth: {
   username: string
+  role: 'admin' | 'adult' | 'child' | null
   isAdmin: boolean
   mustChangePassword: boolean
   logout: () => void
 } = {
   username: 'alice',
+  role: 'admin',
   isAdmin: true,
   mustChangePassword: false,
   logout: vi.fn(),
@@ -38,6 +40,7 @@ beforeEach(() => {
   vi.resetAllMocks()
   mockAuth = {
     username: 'alice',
+    role: 'admin',
     isAdmin: true,
     mustChangePassword: false,
     logout: vi.fn(),
@@ -67,16 +70,26 @@ describe('AccountPage — role display', () => {
     expect(screen.getByText('admin')).toBeInTheDocument()
   })
 
-  it('shows readonly role for non-admin user', () => {
-    mockAuth = { username: 'bob', isAdmin: false, mustChangePassword: false, logout: vi.fn() }
+  // #2522: "readonly" was a two-role fiction — post-#2534 an adult can edit almost everything,
+  // so labelling them read-only is now flatly wrong. Show the role the session actually has.
+  it('shows the actual role for an adult — never "readonly"', () => {
+    mockAuth = { username: 'dana', role: 'adult', isAdmin: false, mustChangePassword: false, logout: vi.fn() }
     renderPage()
-    expect(screen.getByText('readonly')).toBeInTheDocument()
+    expect(screen.getByText('adult')).toBeInTheDocument()
+    expect(screen.queryByText('readonly')).not.toBeInTheDocument()
+  })
+
+  it('shows the actual role for a child', () => {
+    mockAuth = { username: 'bob', role: 'child', isAdmin: false, mustChangePassword: false, logout: vi.fn() }
+    renderPage()
+    expect(screen.getByText('child')).toBeInTheDocument()
+    expect(screen.queryByText('readonly')).not.toBeInTheDocument()
   })
 })
 
 describe('AccountPage — must-change-password banner', () => {
   it('shows the banner when mustChangePassword is true', () => {
-    mockAuth = { username: 'alice', isAdmin: true, mustChangePassword: true, logout: vi.fn() }
+    mockAuth = { username: 'alice', role: 'admin', isAdmin: true, mustChangePassword: true, logout: vi.fn() }
     renderPage()
     expect(screen.getByText(/Password change required/i)).toBeInTheDocument()
   })
@@ -90,7 +103,7 @@ describe('AccountPage — must-change-password banner', () => {
   // signs the user out (which also clears the must-change flag) and sends them back to /login.
   it('signs the user out after a successful forced change', async () => {
     const logout = vi.fn()
-    mockAuth = { username: 'alice', isAdmin: true, mustChangePassword: true, logout }
+    mockAuth = { username: 'alice', role: 'admin', isAdmin: true, mustChangePassword: true, logout }
     const user = userEvent.setup()
     renderPage()
     await fillFields(user, 'oldpass12', 'newpass34', 'newpass34')
