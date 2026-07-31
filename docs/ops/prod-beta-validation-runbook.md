@@ -6,7 +6,7 @@ could be verified without hardware or a human mailbox was run ahead of time and
 reported on the PR that added this file; what remains is here, in order, in one
 sitting.
 
-**Read the preconditions block first.** Two of them are known-open as of
+**Read the preconditions block first.** Two of them were still unsettled as of
 2026-07-31 and will make later steps fail in ways that look like product bugs.
 
 Every step gives: the command or URL, what to look for on the device, and the
@@ -40,7 +40,7 @@ Two label footguns, both real:
 - Loki's env label is **`production`**; Prometheus's is **`prod`**. Same
   deployment, different string.
 - `route` / `op` / `status` / `mac` are **structured metadata**, so they go after
-  the selector as `| route=\`…\``, never inside `{…}`.
+  the selector as ``| route=`…` ``, never inside `{…}`.
 
 Prometheus (same token, different user id — `3272502`, not Loki's `1631926`):
 
@@ -57,18 +57,19 @@ pq(){ curl -sG -u "3272502:$GRAFANA_READ_TOKEN" \
 | 0.1 | Plain prod machine-user key carries all 14 required permissions | **CONFIRMED** — `plain api-key permissions OK — all 14 required permissions granted (16 total on the key)` at boot |
 | 0.2 | Prod support + press responders enabled, dispatcher `claude-code-cloud`, routine id + token set | **CONFIRMED** — the boot gate refuses to start without them and the API is up |
 | 0.3 | Prod support widget vars set | **CONFIRMED** — `support-widget: ENABLED — appId + identitySecret required & set` |
-| 0.4 | Plain **prod** tenant field schemas (`plan`, `founding`) registered | **OPEN — do 0.4 below** |
-| 0.5 | `WIFIHAVEN_SUPPORT_GITHUB_BOT_TOKEN` set on prod | **OPEN — do 0.5 below** |
+| 0.4 | Plain **prod** tenant field schemas (`plan`, `founding`) registered | **UNVERIFIED — do 0.4 below** |
+| 0.5 | `WIFIHAVEN_SUPPORT_GITHUB_BOT_TOKEN` set on prod | **UNVERIFIABLE — decide at 0.5 below** |
 | 0.6 | #2469 drift detector reports both prod routines CURRENT | **Structurally deferred — lands at step 5.2 / 6.2** |
 
 ### 0.4 — register the prod tenant field schemas
 
-API-only; there is no UI. Nothing in prod has ever exercised the tenant-write
-path (`support_tenant_upsert_total` has no prod series at all), so the schemas'
-presence is unverified either way. Run
-[`plain-setup.md` §5.4](plain-setup.md)'s `upsertTenantFieldSchema` mutation in
-the **prod** workspace's API playground — verbatim, including `isVisible` and
-`order`, which the mutation is rejected without:
+API-only; there is no UI. Nothing in prod had ever exercised the tenant-write
+path as of 2026-07-31 (`support_tenant_upsert_total` had no prod series at all),
+so the schemas' presence is unverified either way. Run
+[`plain-setup.md` §7.3 "Entitlement fields"](plain-setup.md#entitlement-fields)'s
+`upsertTenantFieldSchema` mutation in the **prod** workspace's API playground —
+verbatim, including `isVisible` and `order`, which the mutation is rejected
+without:
 
 ```graphql
 mutation {
@@ -181,17 +182,38 @@ logcli query '{service="wifihaven-api", env="production"} |~ "(?i)(household|log
    > resolves and is never the enforcement plane; the resolved IP is exactly what
    > nftables drops (AGENTS.md Truth #1).
 
-   On the device: flush DNS
-   (`sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder`), then use
+   **Two preconditions first**, both of which otherwise manufacture a false
+   "enforcement is broken" finding — read
+   [`enforcement-expectations.md`](../enforcement-expectations.md) before this
+   step:
+
+   - **Wait for the block to propagate.** The snapshot reaches the router on its
+     next poll (`policy_poll_interval`, default **5 s**; **2 s** on the WebSocket
+     push path via `ws.apply_interval`) — and even then the block set is still
+     **empty** until the device does a fresh lookup, because members are added
+     lazily by dnsmasq's `nftset=` callback at resolve time.
+   - **Turn off the device-side bypasses.** iCloud Private Relay, browser
+     Secure DNS/DoH, and any VPN route around the router entirely and defeat
+     host filtering by design. Private Relay is what cost #1891/#1909 a whole
+     debugging session.
+
+   Then on the device: flush DNS
+   (`sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder`), and use
    **HTTP** — a blocked `http://` request is DNAT'd to the local block page, so
    the block is visible. HTTPS gives a cert warning or a failed handshake, which
    is also the block working but shows no page.
 
-   On the router, the authoritative check:
+   On the router, the authoritative check. **Do not type the hostname into the
+   set name**: the set is `eb_<host>` with `.` and `:` rewritten to `_`
+   (`render.lua` `sanitize`), so `youtube.com` is `eb_youtube_com`, and a literal
+   `eb_youtube.com` returns `No such file or directory` — which reads exactly
+   like "no block set exists". List them instead, and check the `eb6_` sibling
+   too, or a device answering on AAAA looks unblocked:
 
    ```sh
-   nft list ruleset | grep -A5 wh_drop     # the forward-drop rules
-   nft list set inet wifihaven eb_<host>   # the resolved IPs for the blocked host
+   nft list ruleset | grep -A5 wh_drop            # the forward-drop rules
+   nft list table inet wifihaven | grep -E 'set (eb|eb6)_'   # the real set names
+   nft list set inet wifihaven eb_youtube_com     # then the resolved IPs, by real name
    ```
 
    Server-side confirmation of the drop event and of the block page:
@@ -221,8 +243,9 @@ logcli query '{service="wifihaven-api", env="production"} |~ "(?i)(household|log
 
 ## Step 4 — support conversation via the WIDGET
 
-Prod has never dispatched a support agent session — `support_dispatch_total` has
-no prod series at all. This step is the first one ever.
+As of 2026-07-31 prod had never dispatched a support agent session —
+`support_dispatch_total` had no prod series at all. This step is the first one
+ever.
 
 1. In the SPA as the **new household's admin**, open the support widget and ask
    a **general** question that needs no account data (e.g. "does WifiHaven block
@@ -240,8 +263,8 @@ no prod series at all. This step is the first one ever.
    pq 'increase(support_widget_identity_total{env="prod"}[15m])'
    ```
 
-   `support_widget_identity_total{env="prod"}` has recorded **only `no_email`**
-   (5/5 calls) — i.e. every prod caller so far had no email on their user row, so
+   `support_widget_identity_total{env="prod"}` had recorded **only `no_email`**
+   (5/5 calls, as of 2026-07-31) — i.e. every prod caller so far had no email on their user row, so
    `SupportService.identity` returned the dark response and the widget has never
    issued an identity hash in prod. Household 1's operator account is
    username-only; the beta-gate admin created at step 2 has an email, so this
@@ -314,7 +337,7 @@ no prod series at all. This step is the first one ever.
    - **(a) off:** ask the agent to file something; expect a refusal and
      `support_agent_action_total{op="issue",outcome="disabled"}`.
    - **(b) on:** verify it searches before filing (#2458 dedup), that the body is
-     scrubbed (#2453 URL scrub), and that a **data-access** session refuses to
+     scrubbed (#2241 `scrubForIssue`), and that a **data-access** session refuses to
      file at all (#2454).
 
    ```bash
@@ -347,8 +370,9 @@ no prod series at all. This step is the first one ever.
 
 ## Step 6 — press round-trip
 
-Prod has never received a press email — `press_message_recorded_total` and
-`press_dispatch_total` have no prod series at all.
+As of 2026-07-31 prod had never received a press email —
+`press_message_recorded_total` and `press_dispatch_total` had no prod series at
+all.
 
 > Do **not** contact a real publication. That is
 > [#2233](https://github.com/wifihaven/wifihaven/issues/2233) and it unblocks
