@@ -1,5 +1,5 @@
-# Warning (notify, look-today) alert rules — W1–W7
-# (W1–W5: #1405, parent #1381. W6–W7: #2416.) Implements
+# Warning (notify, look-today) alert rules — W1–W8
+# (W1–W5: #1405, parent #1381. W6–W7: #2416. W8: #2488.) Implements
 # docs/design/alerting.md §7.2.
 #
 # Every expression is grounded in a series emitted today (§2 "alert only on
@@ -8,9 +8,9 @@
 # trustworthy in prod (§8 + #1382). It is authored now so it activates with a
 # one-line flip once the fleet rolls forward.
 #
-# W6–W7 (#2416) are a third case, distinct from both: their series and labels
-# exist and are emitted, but the FEATURE behind them is switched off in prod
-# (`WIFIHAVEN_{SUPPORT,PRESS}_RESPONDER_ENABLED: "false"` on
+# W6–W8 (#2416, #2488) are a third case, distinct from both: their series and
+# labels exist and are emitted, but the FEATURE behind them is switched off in
+# prod (`WIFIHAVEN_{SUPPORT,PRESS}_RESPONDER_ENABLED: "false"` on
 # wifihaven-api-prod, render.yaml) — it is live on staging only. So they are
 # INERT in prod today and cannot fire until the prod go-live flips those flags
 # (#2335 support / #2337 press). They ship UNPAUSED deliberately (unlike W5):
@@ -18,7 +18,7 @@
 # feature flag — no second flip to forget — is the safer default. Read them as
 # coverage that arms itself at go-live, NOT as live prod coverage today.
 #
-# All seven carry severity=warning + env=prod labels, which the notification
+# All eight carry severity=warning + env=prod labels, which the notification
 # policy in alerting.tf routes to the wifihaven-warning (email) contact point.
 # None of these are ratio queries, so unlike the critical set (§7.1) they need
 # no zero-traffic guard — a counter that never increments is simply absent
@@ -30,7 +30,7 @@
 # and the rate/increase window come straight from §7.2.
 
 locals {
-  # Keyed w1..w7 (stable resource addressing). `window_s` bounds the data fetch
+  # Keyed w1..w8 (stable resource addressing). `window_s` bounds the data fetch
   # and must cover the rate/increase window in `expr`. `paused` ships W5 off.
   warning_rules = {
     w1 = {
@@ -112,6 +112,33 @@ locals {
       for      = "15m"
       paused   = false
       summary  = "Press cloud-agent dispatch is failing with a 4xx at the Anthropic boundary (same causes as W6, press credentials/ids). Journalists get no reply until a human fixes the config; the inbound webhook still returns 200 (fail-open by design), so this counter is the only signal. The API logs each occurrence at ERROR with the fix named inline."
+    }
+    # W8 (#2488) — the same never-self-heals class as W6, one seam earlier: not the Anthropic
+    # boundary but the PLAIN one. `outcome="email_reject_send_failed"` is emitted only when Plain
+    # ACCEPTED the reject write and refused to send it
+    # (SupportResponder.scala `PlainOutcome.Error` on the unregistered-sender reject →
+    # `WebhookOutcome.EmailRejectSendFailed`, whose label is `email_reject_send_failed`) — the
+    # 2026-07-26 staging failure, where a workspace with email sending switched off dropped every
+    # reject while the panel read healthy under the old shared success label. A deliberate off-state
+    # is NOT this: `plain.writeEnabled=false` labels `disabled`, so our own flag can never light this
+    # rule. Deliberately does NOT constrain `reason`: `WebhookOutcome.reason` returns `none` for this
+    # outcome on purpose (PlainClient collapses every send failure into one causeless
+    # `PlainOutcome.Error`), so pinning a second selector here would add nothing and break silently if
+    # attribution is added later. Expect a flat zero — #2488's whole point is that the dashboard tile
+    # #2485 added is only seen by someone looking at it. Same gt=0 / for=15m shape as W6/W7.
+    # HALF-COVERAGE, deliberately: the same refusal also drops the AI reply to a REGISTERED customer,
+    # which meters on a different series (`support_agent_action_total{op="reply",outcome="error"}`)
+    # with no `reason` label to narrow on — so alerting it needs a tuned threshold first, the same
+    # problem CLASS as #2443 (which is about the draft series' transient bucket, not this series).
+    # Tracked in #2539, not silently unnoticed.
+    w8 = {
+      title    = "W8 Plain REFUSED to send a support reject"
+      expr     = "sum(rate(support_ai_draft_total{env=\"prod\",outcome=\"email_reject_send_failed\"}[15m]))"
+      window_s = 900
+      gt       = 0
+      for      = "15m"
+      paused   = false
+      summary  = "Plain is REFUSING to send — the unregistered-sender reject was decided correctly and never delivered, so the customer got nothing. LIKELY FIX: the Plain workspace has email sending switched off — Settings → Channels → Email, section 3 \"Sending emails\" left unverified or section 4 \"Enable email\" never clicked. See docs/ops/plain-setup.md §3.1. This NEVER self-heals: every reject (and every AI reply) is dropped until a human completes that provisioning. The API logs each occurrence at ERROR with the same fix named inline, and the preceding `plain replyToThread failed` line carries Plain's own message."
     }
   }
 }
