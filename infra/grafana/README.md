@@ -107,9 +107,12 @@ too:
   #1405, #2416, #2488) — W1–W8 (§7.2). W5 ships **disabled** (`is_paused`)
   because its series is router-pushed and not yet trustworthy in prod (§8,
   #1382). W6–W8 shipped enabled while the support/press responders were still
-  flag-off in prod, so they armed themselves when #2537 flipped those flags at
-  the #2335 / #2337 go-live — no second flip to forget. They are live prod
-  coverage now.
+  flag-off in prod, so they armed themselves when #2537 flipped those flags — no
+  second flip to forget. The flag is necessary but not sufficient, and the two
+  halves differ: **W7 (press) is live and exercisable** (the Email Worker already
+  posts to the prod API), while **W6/W8 (support) are armed but not yet
+  exercisable** — their series need an inbound Plain webhook, and prod's is
+  unwired (#2240).
 - **Critical rule group** ([`alerting-rules-critical.tf`](alerting-rules-critical.tf),
   #1404) — C1–C7 (§7.1).
 

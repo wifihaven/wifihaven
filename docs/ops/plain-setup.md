@@ -167,12 +167,12 @@ whether the AI responder is ON in this environment, because the static reject li
 # Prints the flag PER SERVICE: a bare grep can't tell the two blocks apart.
 awk '/^    name: /{svc=$2} /WIFIHAVEN_SUPPORT_RESPONDER_ENABLED/{getline; print svc": "$2}' render.yaml
 # wifihaven-api-staging: "true"
-# wifihaven-api-prod: "false"
+# wifihaven-api-prod: "true"     # "false" until #2537 flipped it at go-live
 ```
 
 This command — not the labels below — is authoritative. The labels record which
-environment was in which state on 2026-07-29 and will go stale the moment prod's
-responder is flipped on.
+environment was in which state on 2026-07-29; prod's responder has since been
+flipped on (#2537), so read them as history, not as current state.
 
 #### If the responder is OFF (`responderEnabled=false`) — test Plain directly
 

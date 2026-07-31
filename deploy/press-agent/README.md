@@ -45,7 +45,7 @@ Also provision the **Email Worker** — see [`../press-worker/README.md`](../pre
 
 | Env var | Value |
 |---|---|
-| `WIFIHAVEN_PRESS_RESPONDER_ENABLED` | `false` in render.yaml — flip to `true` via PR at go-live, after everything below (and email) is set (#2265) |
+| `WIFIHAVEN_PRESS_RESPONDER_ENABLED` | `true` on staging and prod — flipped for prod by #2537 at go-live, after everything below (and email) was set (#2265) |
 | `WIFIHAVEN_PRESS_DISPATCHER` | `managed-agents` (default) in render.yaml, or `claude-code-cloud` (#2327 — subscription-billed routine; see below). Only the selected transport's keys are required at boot; an unknown value refuses boot |
 | `WIFIHAVEN_PRESS_WEBHOOK_SECRET` | the shared HMAC secret — the SAME value set on the Email Worker (`wrangler secret put PRESS_WEBHOOK_SECRET`) |
 | `WIFIHAVEN_PRESS_ANTHROPIC_API_KEY` | (dispatcher=managed-agents) Anthropic API key (session creation only) |
@@ -156,11 +156,11 @@ A silently FAILED dispatch — the other half of the original justification — 
 concern, not a notification one. #2416 made dispatch failures fail-loud and attributed: a permanent
 4xx at the agent boundary lands as `press_ai_draft_total{outcome="error",reason="config"}` plus an
 ERROR log naming the fix. **Know the gap:** the only armed alert is **W7**
-(`infra/grafana/alerting-rules-warning.tf`), whose expression is scoped `env="prod"` — and press is
-enabled in **staging only** (`render.yaml`: `WIFIHAVEN_PRESS_RESPONDER_ENABLED` `true` for staging,
-`false` for prod). So nothing pages in the environment where press runs today; that widening, and
-sustained-transient coverage, are tracked in #2443 (OPEN). Neither is a reason to mail the operator
-about every success.
+(`infra/grafana/alerting-rules-warning.tf`), whose expression is scoped `env="prod"` — and since
+#2537 set `WIFIHAVEN_PRESS_RESPONDER_ENABLED` to `true` for prod (`render.yaml`), it does page on
+the environment press runs in. The remaining gap is the **bucket**, not the environment: W7 fires
+only on `reason=config`, so a sustained *transient* rate still pages nobody — tracked in #2443
+(OPEN). Not a reason to mail the operator about every success.
 
 Escalation is **structural** — only that endpoint call registers one, so a journalist who writes "a
 team member will follow up" in their own email has escalated nothing. Capped at 3/sender/hour.

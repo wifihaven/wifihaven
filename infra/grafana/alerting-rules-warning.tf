@@ -10,13 +10,21 @@
 #
 # W6–W8 (#2416, #2488) were a third case while the responders were dark: their
 # series and labels existed and were emitted, but the FEATURE behind them was
-# flag-off in prod, so they shipped UNPAUSED as coverage that would arm ITSELF at
-# go-live rather than needing a second flip to remember (unlike W5, which is
-# genuinely paused). That design worked as intended — #2537 flipped
-# `WIFIHAVEN_{SUPPORT,PRESS}_RESPONDER_ENABLED` to "true" on wifihaven-api-prod
-# (render.yaml) at the #2335 / #2337 go-live, and all three armed with no rule
-# change. They are LIVE PROD COVERAGE NOW, not latent — a firing W6/W7/W8 is a
-# real prod page, not a staging artifact.
+# flag-off in prod, so they shipped UNPAUSED as coverage that would arm ITSELF
+# rather than needing a second flip to remember (unlike W5, which is genuinely
+# paused). #2537 flipped `WIFIHAVEN_{SUPPORT,PRESS}_RESPONDER_ENABLED` to "true"
+# on wifihaven-api-prod (render.yaml) and all three armed with no rule change —
+# the design worked. But the flag is necessary, NOT sufficient, and the two
+# halves are at different stages; do not read "flag on" as "exercisable":
+#   - W7 (press) is LIVE. The Cloudflare Email Worker already posts to the prod
+#     API, so a prod press dispatch failure pages today.
+#   - W6/W8 (support) are ARMED BUT NOT YET EXERCISABLE. Both series are produced
+#     only downstream of an inbound Plain webhook, and prod's Plain workspace is
+#     not wired to the prod API yet (#2240; docs/ops/plain-setup.md §7 — the
+#     2026-07-29 verification logged NO support lines at all, where a configured
+#     webhook against a dark responder would still have logged outcome=disabled).
+#     They begin covering the moment that webhook is configured, again with no
+#     rule change — which is the point of shipping them unpaused.
 #
 # All eight carry severity=warning + env=prod labels, which the notification
 # policy in alerting.tf routes to the wifihaven-warning (email) contact point.
@@ -81,9 +89,9 @@ locals {
       paused  = true
       summary = "Blocklist fetches are failing on the router (category enforcement degrades). DISABLED until the router-pushed counter is trustworthy in prod (#1382)."
     }
-    # W6/W7 (#2416) — a cloud-agent responder that is PERMANENTLY dead. LIVE IN PROD
-    # since #2537 flipped both responder flags true at the #2335 / #2337 go-live — see
-    # the header note.
+    # W6/W7 (#2416) — a cloud-agent responder that is PERMANENTLY dead. Both flags are on
+    # in prod since #2537, but only W7 (press) is exercisable today; W6 (support) waits on
+    # the prod Plain webhook (#2240) — see the header note.
     # `reason="config"` is only ever emitted for a non-self-healing 4xx at the Anthropic
     # boundary (a revoked key, a wrong agent-or-routine id, a stale anthropic-beta
     # header), none of which recover without a human — so unlike the transient bucket,

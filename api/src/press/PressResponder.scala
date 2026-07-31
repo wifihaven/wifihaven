@@ -118,11 +118,12 @@ final case class PressResponder(
    * failures fail-loud and attributed, and a permanent 4xx surfaces as `outcome=error,
    * reason=config` on `press_ai_draft_total` (the `WebhookOutcome.ConfigError` mapping below) plus
    * an ERROR log naming the fix. **Coverage today is partial and worth knowing:** the only armed
-   * alert is W7 (`infra/grafana/alerting-rules-warning.tf`), which is scoped `env="prod"` — and
-   * press is enabled in STAGING only (`render.yaml`: `WIFIHAVEN_PRESS_RESPONDER_ENABLED` is `true`
-   * for staging, `false` for prod), so nothing pages in the environment where press currently runs.
-   * Sustained-transient alerting is tracked in #2443. Widening that coverage belongs in those
-   * issues; mailing the operator about every SUCCESS on the chance one failed does not.
+   * alert is W7 (`infra/grafana/alerting-rules-warning.tf`), scoped `env="prod"` — and since #2537
+   * set `WIFIHAVEN_PRESS_RESPONDER_ENABLED` to `true` for prod (`render.yaml`) that alert does now
+   * page on the environment press runs in. The remaining gap is the BUCKET, not the environment: W7
+   * fires only on `reason=config`, so a sustained TRANSIENT rate still pages nobody (#2443).
+   * Widening that coverage belongs in those issues; mailing the operator about every SUCCESS on the
+   * chance one failed does not.
    *
    * The operator mailbox now means exactly one thing: a human must act — see [[escalate]].
    */
