@@ -336,11 +336,11 @@ stated alongside.
   (`render.yaml`) and the rule armed with no change here. But the flag is
   necessary, not sufficient: `support_ai_draft_total` is produced only downstream
   of an inbound Plain webhook, and prod's Plain workspace is **not wired to the
-  prod API yet** ([#2240](https://github.com/wifihaven/wifihaven/issues/2240);
-  `docs/ops/plain-setup.md` §7 — the 2026-07-29 verification logged no support
-  lines at all, where a configured webhook against a dark responder would still
-  have logged `outcome=disabled`). W6 starts covering the moment that webhook is
-  configured, again with no rule change.
+  prod API yet** ([#2543](https://github.com/wifihaven/wifihaven/issues/2543) —
+  the 2026-07-29 verification logged no support lines at all, where a configured
+  webhook against a dark responder would still have logged `outcome=disabled`).
+  W6 starts covering the moment that webhook is configured, again with no rule
+  change.
 
 **W7. Press responder permanently dead (config)**
 ([#2416](https://github.com/wifihaven/wifihaven/issues/2416))
@@ -379,7 +379,8 @@ stated alongside.
   within the hour of merging — [#2537](https://github.com/wifihaven/wifihaven/pull/2537)
   set `WIFIHAVEN_SUPPORT_RESPONDER_ENABLED: "true"` immediately before W8 landed,
   with no rule change needed — but **not yet exercisable**, for the same reason as
-  W6: prod's Plain webhook is unwired (#2240).
+  W6: prod's Plain webhook is unwired
+  ([#2543](https://github.com/wifihaven/wifihaven/issues/2543)).
 - **Known half-coverage — the dropped AI reply.** The same Plain refusal also
   drops the reply to a *registered* customer, which is the higher-value half (a
   reject goes to a non-customer; a dropped reply goes to an onboarded household

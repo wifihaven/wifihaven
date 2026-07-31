@@ -122,7 +122,7 @@ final case class PressResponder(
    * set `WIFIHAVEN_PRESS_RESPONDER_ENABLED` to `true` for prod (`render.yaml`) that alert does now
    * page on the environment press runs in. The remaining gap is the BUCKET, not the environment: W7
    * fires only on `reason=config`, so a sustained TRANSIENT rate still pages nobody (#2443).
-   * Widening that coverage belongs in those issues; mailing the operator about every SUCCESS on the
+   * Widening that coverage belongs in that issue; mailing the operator about every SUCCESS on the
    * chance one failed does not.
    *
    * The operator mailbox now means exactly one thing: a human must act — see [[escalate]].

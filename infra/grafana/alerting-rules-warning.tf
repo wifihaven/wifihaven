@@ -20,9 +20,9 @@
 #     API, so a prod press dispatch failure pages today.
 #   - W6/W8 (support) are ARMED BUT NOT YET EXERCISABLE. Both series are produced
 #     only downstream of an inbound Plain webhook, and prod's Plain workspace is
-#     not wired to the prod API yet (#2240; docs/ops/plain-setup.md §7 — the
-#     2026-07-29 verification logged NO support lines at all, where a configured
-#     webhook against a dark responder would still have logged outcome=disabled).
+#     not wired to the prod API yet (#2543 — the 2026-07-29 verification logged
+#     NO support lines at all, where a configured webhook against a dark
+#     responder would still have logged outcome=disabled).
 #     They begin covering the moment that webhook is configured, again with no
 #     rule change — which is the point of shipping them unpaused.
 #
@@ -91,7 +91,7 @@ locals {
     }
     # W6/W7 (#2416) — a cloud-agent responder that is PERMANENTLY dead. Both flags are on
     # in prod since #2537, but only W7 (press) is exercisable today; W6 (support) waits on
-    # the prod Plain webhook (#2240) — see the header note.
+    # the prod Plain webhook (#2543) — see the header note.
     # `reason="config"` is only ever emitted for a non-self-healing 4xx at the Anthropic
     # boundary (a revoked key, a wrong agent-or-routine id, a stale anthropic-beta
     # header), none of which recover without a human — so unlike the transient bucket,

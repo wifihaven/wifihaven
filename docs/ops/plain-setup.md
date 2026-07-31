@@ -176,7 +176,10 @@ flipped on (#2537), so read them as history, not as current state.
 
 #### If the responder is OFF (`responderEnabled=false`) — test Plain directly
 
-**Prod, as of 2026-07-29.** No reject is ever attempted, so the responder test
+**No environment is in this state today** — prod was, as of 2026-07-29, until #2537
+flipped its responder on; staging has been on since #2335. Kept because it is the
+right test whenever a NEW environment is stood up dark. No reject is ever attempted,
+so the responder test
 below proves nothing and its absence of log lines is NOT evidence of anything. Exercise
 Plain's sending with a human reply, our code entirely out of the path:
 
@@ -190,7 +193,8 @@ Do not go looking for `outcome=` lines here: with the responder dark you will se
 environment, **nothing at all**. Neither says anything about sending. (Prod was verified
 exactly this way on 2026-07-29 — the reply landed; the prod API logged no support lines
 whatsoever. That silence was expected — but it is not nothing: it tells you prod's Plain
-webhook is not wired to the API yet (a §7 / #2240 item), since a configured webhook against
+webhook is not wired to the API yet (#2543 — NOT a §7 / #2240 item; §7's three items are
+CSP, widget identity fields, and entitlement tenant fields), since a configured webhook against
 a dark responder would still log `outcome=disabled`.)
 
 > **This branch verifies PLAIN's sending, not OURS.** It deliberately keeps our code out of
@@ -201,7 +205,8 @@ a dark responder would still log `outcome=disabled`.)
 
 #### If the responder is ON (`responderEnabled=true`) — test the reject path
 
-**Staging, as of 2026-07-29.** From an address that is **not** a registered household
+**Staging since #2335; prod since #2537** — though prod cannot reach this path until
+its Plain webhook is wired (#2543). From an address that is **not** a registered household
 admin (a personal Gmail is ideal — a registered address takes the AI dispatch path
 instead), email the environment's support address, then check the API log:
 

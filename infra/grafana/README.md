@@ -112,7 +112,7 @@ too:
   halves differ: **W7 (press) is live and exercisable** (the Email Worker already
   posts to the prod API), while **W6/W8 (support) are armed but not yet
   exercisable** — their series need an inbound Plain webhook, and prod's is
-  unwired (#2240).
+  unwired (#2543).
 - **Critical rule group** ([`alerting-rules-critical.tf`](alerting-rules-critical.tf),
   #1404) — C1–C7 (§7.1).
 
