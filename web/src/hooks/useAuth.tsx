@@ -26,8 +26,19 @@ interface AuthContextValue extends AuthState {
     password: string,
   ) => Promise<{ mustChangePassword: boolean }>
   logout: () => void
+  /**
+   * #2522 — the ACCOUNT capability. Mirrors `requireAdmin` (api/src/routes/Routes.scala):
+   * who exists (`/api/users`), who pays (`/api/billing`), what hardware is enrolled
+   * (`/api/admin/routers`), and the #2382 whole-household off-switch.
+   */
   isAdmin: boolean
-  isAdult: boolean      // admin or adult — can edit linked profiles
+  /**
+   * #2522 — the POLICY-EDITING capability: admin OR adult. Mirrors `requireWriter`
+   * (api/src/routes/Routes.scala): profiles, devices, schedules, blocklists, apps, household
+   * settings. Post-#2512 a household has exactly ONE admin, so this is what keeps the second
+   * parent from being read-only. Gate every parenting affordance on this, NOT on `isAdmin`.
+   */
+  isWriter: boolean
   isChild: boolean
   isAuthenticated: boolean
 }
@@ -85,7 +96,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   const isAdmin = state.role === 'admin'
-  const isAdult = state.role === 'admin' || state.role === 'adult'
+  const isWriter = state.role === 'admin' || state.role === 'adult'
   const isChild = state.role === 'child'
 
   return (
@@ -94,7 +105,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       login,
       logout,
       isAdmin,
-      isAdult,
+      isWriter,
       isChild,
       isAuthenticated: !!state.token,
     }}>

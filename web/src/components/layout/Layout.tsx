@@ -12,7 +12,11 @@ interface NavItem {
   to: string
   label: string
   icon: string
+  // #2522 — ACCOUNT surfaces (`requireAdmin`): users, routers, billing. An adult never sees these.
   adminOnly?: boolean
+  // #2522 — POLICY-EDITING surfaces (`requireWriter`): apps, blocklists, schedules, settings.
+  // Visible to admin AND adult; still hidden from a child.
+  writerOnly?: boolean
   // #2133: operator-only (household-1 admin) — driven by the isOperator API signal,
   // NOT hardcoded. Shown only when `useMe().data?.isOperator` is true.
   operatorOnly?: boolean
@@ -40,26 +44,28 @@ const settingsNav: NavItem[] = [
       { to: '/usage/events', label: 'Connection Events', icon: '≡' },
     ],
   },
-  { to: '/apps',       label: 'Apps',       icon: '◳', adminOnly: true },
-  { to: '/blocklists', label: 'Blocklists', icon: '⊘', adminOnly: true },
-  { to: '/schedules',  label: 'Schedules',  icon: '◷', adminOnly: true },
+  { to: '/apps',       label: 'Apps',       icon: '◳', writerOnly: true },
+  { to: '/blocklists', label: 'Blocklists', icon: '⊘', writerOnly: true },
+  { to: '/schedules',  label: 'Schedules',  icon: '◷', writerOnly: true },
   { to: '/users',   label: 'Users',   icon: '◐', adminOnly: true },
   { to: '/routers', label: 'Routers', icon: '⬢', adminOnly: true },
   { to: '/billing', label: 'Billing', icon: '⊞', adminOnly: true },
   { to: '/beta-requests', label: 'Beta Requests', icon: '✦', operatorOnly: true },
   { to: '/press',   label: 'Press',   icon: '✉', operatorOnly: true },
-  { to: '/admin',   label: 'Settings', icon: '⚙', adminOnly: true },
+  { to: '/admin',   label: 'Settings', icon: '⚙', writerOnly: true },
 ]
 
 export function Layout() {
-  const { username, role, logout, isAdmin } = useAuth()
+  const { username, role, logout, isAdmin, isWriter } = useAuth()
   // #2133: the operator gate is an API signal (household-1 admin), not derivable from
   // the JWT role alone. `useMe` is cached (staleTime: Infinity) so this is one fetch
   // per session; while it's in flight isOperator is falsy and the item stays hidden.
   const { data: me } = useMe()
   const isOperator = me?.isOperator ?? false
   const visibleSettings = settingsNav.filter(item =>
-    (!item.adminOnly || isAdmin) && (!item.operatorOnly || isOperator),
+    (!item.adminOnly || isAdmin) &&
+    (!item.writerOnly || isWriter) &&
+    (!item.operatorOnly || isOperator),
   )
   const visibleDrawer = [...primaryNav, ...visibleSettings.flatMap(item =>
     item.children ? [item, ...item.children] : [item],

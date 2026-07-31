@@ -4,7 +4,7 @@
 //
 // The API's own role rules (see `UsageRoutes`, `Routes`) are the contract this
 // mirrors client-side:
-//   - `/api/stats`                    → admin only
+//   - `/api/stats`                    → admin OR adult (#2522: was admin-only)
 //   - `/api/connection-events/series` → admin OR adult (aggregate view)
 //   - `/api/usage/traffic` unscoped   → admin OR adult; a child MUST pass its
 //                                       own `profileId`/`mac` or the server 403s
@@ -16,10 +16,13 @@ import { useAuthOptional } from '@/hooks/useAuth'
 import { useMe } from '@/api/queries'
 
 export interface DataScope {
-  /** admin — may call `/api/stats` and every unscoped/aggregate view. */
+  /** #2522 — the ACCOUNT capability (`requireAdmin`): billing, users, router enrollment. */
   isAdmin: boolean
-  /** admin OR adult — may call the aggregate `/connection-events/series` and unscoped `/api/usage/traffic`. */
-  isAdult: boolean
+  /**
+   * #2522 — the POLICY-EDITING capability, admin OR adult (`requireWriter`): may call
+   * `/api/stats`, the aggregate `/connection-events/series`, and unscoped `/api/usage/traffic`.
+   */
+  isWriter: boolean
   /** child — must scope every data request to `childProfileIds`. */
   isChild: boolean
   /**
@@ -41,7 +44,7 @@ export function useDataScope(): DataScope {
   // enforces authorization regardless, so this default is never a security gap.
   const auth = useAuthOptional()
   const isAdmin = auth?.isAdmin ?? true
-  const isAdult = auth?.isAdult ?? true
+  const isWriter = auth?.isWriter ?? true
   const isChild = auth?.isChild ?? false
   const isAuthenticated = auth?.isAuthenticated ?? false
   // Only children need their linked-profile list; admins/adults are served
@@ -50,7 +53,7 @@ export function useDataScope(): DataScope {
   const childProfileIds = !isChild ? null : me.data?.profileIds
   return {
     isAdmin,
-    isAdult,
+    isWriter,
     isChild,
     childProfileIds,
     scopeLoading: isChild && childProfileIds === undefined,

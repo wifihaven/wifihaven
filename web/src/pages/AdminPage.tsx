@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '@/api/client'
+import { useAuth } from '@/hooks/useAuth'
 import type { EnforcementStatus, HouseholdSettings, UnmanagedMacPolicy } from '@/types/api'
 import { TimezonePicker } from '@/components/TimezonePicker'
 import { PageLoader } from './DashboardPage'
@@ -7,6 +8,11 @@ import { useDebouncedSave, mergeSaveStatus } from '@/hooks/useDebouncedSave'
 import { SaveStatusBadge } from '@/components/SaveStatusBadge'
 
 export function AdminPage() {
+  // #2522: every card below patches `/api/household/settings` (`requireWriter`), so an adult
+  // reaches this page. The escape hatch is the exception — `PUT /api/household/enforcement` is
+  // still `requireAdmin`, so it is mounted only for an admin. Rendering it for an adult would be
+  // an affordance that 403s, and its own on-mount GET is admin-only too.
+  const { isAdmin } = useAuth()
   const [hs, setHs] = useState<HouseholdSettings | null>(null)
   const [loading, setLoading] = useState(true)
 
@@ -32,7 +38,7 @@ export function AdminPage() {
         <p className="text-sm text-brand-text-muted mt-1">Settings that apply to the whole household.</p>
       </div>
 
-      <DisableEnforcementCard />
+      {isAdmin && <DisableEnforcementCard />}
       {hs && <DailyResetCard value={hs} reload={reload} />}
       {hs && <HeartbeatFilterCard value={hs} reload={reload} />}
       {hs && <NotifyEmailCard value={hs} reload={reload} />}

@@ -195,9 +195,9 @@ export function useProfiles(opts?: QueryOpts<ProfileDetail[]>) {
 // #1773 — the household-global sentinel profile (#1771). Hidden from
 // `GET /api/profiles`, fetched via `/api/profiles/global` so the SPA can edit
 // it through the same per-profile editor preset to its id. Server route is
-// admin-only; callers MUST gate the hook with `enabled: isAdmin` to avoid
-// firing a fetch the server will refuse — non-admins would otherwise see the
-// query stuck in an error state.
+// #2522: `requireWriter` (admin or adult); callers MUST gate the hook with `enabled: isWriter`
+// to avoid firing a fetch the server will refuse — a child would otherwise see the query stuck
+// in an error state.
 export function useGlobalProfile(opts?: QueryOpts<ProfileDetail>) {
   return useQuery({
     queryKey: ['profiles', 'global'] as const,
