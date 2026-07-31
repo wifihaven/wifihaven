@@ -188,10 +188,12 @@ logcli query '{service="wifihaven-api", env="production"} |~ "(?i)(household|log
    step:
 
    - **Wait for the block to propagate.** The snapshot reaches the router on its
-     next poll (`policy_poll_interval`, default **5 s**; **2 s** on the WebSocket
-     push path via `ws.apply_interval`) — and even then the block set is still
-     **empty** until the device does a fresh lookup, because members are added
-     lazily by dnsmasq's `nftset=` callback at resolve time.
+     next poll — `policy_poll_interval`, default **5 s**
+     (`openwrt/files/etc/config/wifihaven`). That is the number that applies
+     here: the WebSocket push path ships `enabled '0'` and prod was rolled back
+     to polling (#1023/#2153), so assume the poll. Even then the block set is
+     still **empty** until the device does a fresh lookup, because members are
+     added lazily by dnsmasq's `nftset=` callback at resolve time.
    - **Turn off the device-side bypasses.** iCloud Private Relay, browser
      Secure DNS/DoH, and any VPN route around the router entirely and defeat
      host filtering by design. Private Relay is what cost #1891/#1909 a whole
@@ -213,7 +215,7 @@ logcli query '{service="wifihaven-api", env="production"} |~ "(?i)(household|log
    ```sh
    nft list ruleset | grep -A5 wh_drop            # the forward-drop rules
    nft list table inet wifihaven | grep -E 'set (eb|eb6)_'   # the real set names
-   nft list set inet wifihaven eb_youtube_com     # then the resolved IPs, by real name
+   nft list set inet wifihaven <name-from-the-line-above>   # then its resolved IPs
    ```
 
    Server-side confirmation of the drop event and of the block page:
@@ -264,7 +266,8 @@ ever.
    ```
 
    `support_widget_identity_total{env="prod"}` had recorded **only `no_email`**
-   (5/5 calls, as of 2026-07-31) — i.e. every prod caller so far had no email on their user row, so
+   (5/5 calls, as of 2026-07-31) — i.e. every prod caller so far had no email on
+   their user row, so
    `SupportService.identity` returned the dark response and the widget has never
    issued an identity hash in prod. Household 1's operator account is
    username-only; the beta-gate admin created at step 2 has an email, so this
