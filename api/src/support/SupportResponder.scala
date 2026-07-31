@@ -208,13 +208,17 @@ final case class SupportResponder(
     if !isActionableInbound(event) then ZIO.succeed(WebhookOutcome.SkippedNotInbound)
     else
       resolveTenantHousehold(event).flatMap {
-        case Some((hh, household)) if event.messageText.nonEmpty =>
+        case OriginLookup.Resolved(hh, household) if event.messageText.nonEmpty =>
           rateLimitedDispatch(event, hh, household, WebhookOutcome.Dispatched)
-        case Some(_)                                             =>
+        case OriginLookup.Resolved(_, _)                                        =>
           // Identified, but a bodyless metadata event (e.g. thread_created) — nothing to answer;
           // the real message rides the following chat_received/email_received.
           ZIO.succeed(WebhookOutcome.SkippedNotInbound)
-        case None                                                =>
+        // #2462: the lookup FAILED — we do not know whether this tenant resolves. Falling through
+        // to the email gate would let a DB blip re-decide an identified thread as cold.
+        case OriginLookup.Failed                                                =>
+          ZIO.succeed(WebhookOutcome.OriginLookupFailed)
+        case OriginLookup.NoMatch                                               =>
           // No provable UI origin. An inbound email is gated on the sender being a registered admin.
           event.customerEmail match {
             case Some(_) => emailIntakeGate(event)
@@ -236,16 +240,45 @@ final case class SupportResponder(
   /**
    * Resolve the UI-origin tenant to a household. The tenant must parse AND resolve to an existing
    * row (presence of the attribute alone is not enough) and there must be a thread to bind to.
+   *
+   * #2462: a read that THREW is [[OriginLookup.Failed]], never `NoMatch` — see
+   * [[originLookupFailed]].
    */
-  private def resolveTenantHousehold(
-      event: PlainNewMessageEvent,
-  ): UIO[Option[(HouseholdId, Household)]] =
+  private def resolveTenantHousehold(event: PlainNewMessageEvent): UIO[OriginLookup] =
     event.tenantIdentifier.flatMap(_.toLongOption) match {
       case Some(raw) if event.threadId.nonEmpty =>
         val hh = HouseholdId(raw)
-        householdRepo.findById(hh).catchAll(_ => ZIO.none).map(_.map(hh -> _))
-      case _                                    => ZIO.none
+        householdRepo
+          .findById(hh)
+          .foldZIO(
+            originLookupFailed("tenant_household", _),
+            {
+              case Some(household) => ZIO.succeed(OriginLookup.Resolved(hh, household))
+              case None            => ZIO.succeed(OriginLookup.NoMatch)
+            },
+          )
+      case _                                    => ZIO.succeed(OriginLookup.NoMatch)
     }
+
+  /**
+   * #2462 — a DB failure during origin resolution is LOUD and TERMINAL for this delivery, never
+   * collapsed into "no such origin".
+   *
+   * The two are opposite facts: `NoMatch` asserts we looked and this sender has no registered
+   * origin, which on a NEW email thread makes us tell them so ([[staticReject]] — the #2307 "you're
+   * not a registered customer" message). Reading a failed lookup as `NoMatch` therefore sends a
+   * real, paying, registered admin that reject because `users` was briefly unreadable — and meters
+   * it as a routine reject, so nothing anywhere records that it was wrong. `Failed` resolves to
+   * [[WebhookOutcome.OriginLookupFailed]] instead: nothing is said to the customer, nothing is
+   * dispatched, and the outcome is separately visible on `support_ai_draft_total{outcome}`.
+   */
+  private def originLookupFailed(stage: String, e: Throwable): UIO[OriginLookup] =
+    ZIO
+      .logError(
+        s"support: origin lookup FAILED at $stage — refusing to treat an unreadable database as " +
+          s"an unregistered sender: ${e.getMessage}",
+      )
+      .as(OriginLookup.Failed)
 
   /**
    * #2307 email-intake gate: an inbound email with no resolvable tenant. Resolve the From address
@@ -274,7 +307,7 @@ final case class SupportResponder(
       case None        => ZIO.succeed(WebhookOutcome.SkippedUnauthenticated) // no From to gate on
       case Some(email) =>
         resolveAdminHousehold(email).flatMap {
-          case Some((hh, household)) =>
+          case OriginLookup.Resolved(hh, household) =>
             val outcome =
               if event.threadId.nonEmpty && event.messageText.nonEmpty then
                 rateLimitedDispatch(event, hh, household, WebhookOutcome.EmailRegisteredDispatched)
@@ -285,7 +318,11 @@ final case class SupportResponder(
             // #2505: the mapping runs DETACHED (`forkDaemon` in production), so neither the agent
             // session nor the webhook ack waits on a slow Plain (see [[mapCustomerToHousehold]]).
             outcome <* runDetached(mapCustomerToHousehold(hh, household, email))
-          case None                  =>
+          // #2462: we could not READ the registry, so we have not established this sender is
+          // unregistered — say nothing rather than reject a customer on a failed lookup. No #2505
+          // mapping either: there is no household to map them to.
+          case OriginLookup.Failed  => ZIO.succeed(WebhookOutcome.OriginLookupFailed)
+          case OriginLookup.NoMatch =>
             // Unregistered: reject a NEW thread once; skip continuations (no re-reject backscatter).
             if event.isNewThread then staticReject(event)
             else ZIO.succeed(WebhookOutcome.SkippedUnauthenticated)
@@ -372,15 +409,26 @@ final case class SupportResponder(
    * (aligned with the case-sensitive `uq_users_email` constraint used by email login). A non-admin
    * registered email is NOT admitted (the gate is admins only, #2307).
    */
-  private def resolveAdminHousehold(email: String): UIO[Option[(HouseholdId, Household)]] =
-    userRepo.findByEmail(email).catchAll(_ => ZIO.none).flatMap {
-      case Some(user) if user.role == UserRole.Admin =>
-        householdRepo
-          .findById(user.householdId)
-          .catchAll(_ => ZIO.none)
-          .map(_.map(user.householdId -> _))
-      case _                                         => ZIO.none
-    }
+  private def resolveAdminHousehold(email: String): UIO[OriginLookup] =
+    userRepo
+      .findByEmail(email)
+      .foldZIO(
+        originLookupFailed("admin_email", _),
+        {
+          case Some(user) if user.role == UserRole.Admin =>
+            householdRepo
+              .findById(user.householdId)
+              .foldZIO(
+                originLookupFailed("admin_household", _),
+                {
+                  case Some(household) =>
+                    ZIO.succeed(OriginLookup.Resolved(user.householdId, household))
+                  case None            => ZIO.succeed(OriginLookup.NoMatch)
+                },
+              )
+          case _                                         => ZIO.succeed(OriginLookup.NoMatch)
+        },
+      )
 
   /**
    * The dispatch cost caps — the ONE place they are drawn (#2261 short-circuit: the global bucket
@@ -431,6 +479,11 @@ final case class SupportResponder(
       subject: Option[String] = None,
   ): UIO[DispatchOutcome] =
     for {
+      // TODO(#2520): this swallow is the #2462 bug's surviving sibling — a DB blip hands the agent
+      // `plan = None` on EVERY dispatch, with no log and no metric, indistinguishable from a
+      // household that genuinely has no billing row. Deliberately out of scope for #2462 (which
+      // named only `agentHousehold` and the two origin resolvers); unlike those, this one must not
+      // fail the dispatch — a customer message still has to get answered when we cannot read a plan.
       billing <- billingRepo.findByHousehold(hh).catchAll(_ => ZIO.none)
       token = ConsentToken.mint(
         household = hh,
@@ -792,25 +845,48 @@ final case class SupportResponder(
           .as(Left(AgentActionResult.NoConsent))
     else {
       val hh = claims.householdId
-      for {
-        household <- householdRepo.findById(hh).catchAll(_ => ZIO.none)
-        billing   <- billingRepo.findByHousehold(hh).catchAll(_ => ZIO.none)
-        devices   <- deviceRepo.listAllForHousehold(hh).catchAll(_ => ZIO.succeed(Nil))
-        profiles  <- profileRepo.listAllForHousehold(hh).catchAll(_ => ZIO.succeed(Nil))
-        // Audit every consented read (#2241) — household + thread, never the data.
-        _         <- ZIO.logInfo(
-          s"support: agent household read household=${hh.value} thread=${claims.threadId}",
-        )
-        _         <- AppMetrics.supportAgentAction(AgentAction.HouseholdRead, "ok")
-      } yield Right(
-        HouseholdSummary(
-          name = household.map(_.name).getOrElse(""),
-          plan = billing.map(_.status),
-          founding = billing.map(_.founding),
-          deviceCount = devices.size,
-          profileCount = profiles.size,
-          profiles = profiles.map(p => ProfileSummary(p.name, p.paused)),
-        ),
+      // #2462: the four reads FAIL the request rather than degrading to a plausible value. They
+      // used to be individually `catchAll`-ed to none/Nil, which made a total Postgres outage and a
+      // brand-new empty household byte-identical to the agent — `name=""`, `deviceCount=0`,
+      // `profileCount=0` — and metered BOTH `ok`. The agent then stated those zeros to the customer
+      // as account fact and reasoned onward from them ("no devices have been paired yet, so make
+      // sure the router finished enrollment"), which is confidently wrong troubleshooting for a
+      // household that actually has twelve devices. No-dark-by-default: a failed read is an error,
+      // not a value.
+      //
+      // The distinction is FAILURE-vs-EMPTY, not zero-vs-nonzero. A household that genuinely has
+      // nothing still succeeds here with real zeros — that answer is TRUE and the agent should give
+      // it. Only a read that threw is refused.
+      (for {
+        household <- householdRepo.findById(hh)
+        billing   <- billingRepo.findByHousehold(hh)
+        devices   <- deviceRepo.listAllForHousehold(hh)
+        profiles  <- profileRepo.listAllForHousehold(hh)
+      } yield HouseholdSummary(
+        name = household.map(_.name).getOrElse(""),
+        plan = billing.map(_.status),
+        founding = billing.map(_.founding),
+        deviceCount = devices.size,
+        profileCount = profiles.size,
+        profiles = profiles.map(p => ProfileSummary(p.name, p.paused)),
+      )).foldZIO(
+        e =>
+          ZIO.logError(
+            s"support: agent household read FAILED household=${hh.value} " +
+              s"thread=${claims.threadId}: ${e.getMessage}",
+          ) *>
+            // `error` on THIS op means exactly one thing — the account read did not complete —
+            // because no other producer of `support_agent_action_total{op=household_read}` can
+            // mint it. The route maps it to a 5xx, so the agent is TOLD it has no data rather than
+            // handed a plausible-looking empty one. What it then SAYS to the customer currently
+            // rests on the prompt's general "never claim account data you did not read from the
+            // endpoint" rule — `agent.yaml` has no 5xx-specific instruction yet (#2524).
+            doneE(AgentAction.HouseholdRead, AgentActionResult.Error),
+        summary =>
+          // Audit every consented read (#2241) — household + thread, never the data.
+          ZIO.logInfo(
+            s"support: agent household read household=${hh.value} thread=${claims.threadId}",
+          ) *> AppMetrics.supportAgentAction(AgentAction.HouseholdRead, "ok").as(Right(summary)),
       )
     }
 
@@ -1574,6 +1650,17 @@ object SupportResponder {
      */
     case EmailRejectSendFailed
     case SkippedUnauthenticated
+
+    /**
+     * #2462 — origin resolution could not be COMPLETED: a `households` / `users` read threw, so we
+     * never established whether this sender has a registered origin. Terminal for the delivery
+     * (nothing dispatched, nothing said to the customer) and deliberately distinct from
+     * [[SkippedUnauthenticated]] / [[EmailUnregisteredRejected]], which both ASSERT the sender has
+     * no origin — an assertion a failed lookup does not support. Reading a DB blip as "not a
+     * customer" is what sent a registered admin the #2307 static reject, metered as routine. Expect
+     * a flat zero; the failure also logs at ERROR with the failing stage named.
+     */
+    case OriginLookupFailed
     // #2403 loop guard: a non-inbound / non-customer event (our own `thread.chat_sent` reply, a
     // non-customer actor, or a bodyless identified metadata event) — deliberately never dispatched.
     case SkippedNotInbound
@@ -1612,6 +1699,9 @@ object SupportResponder {
       // bucket — an undelivered reject is its own failure and should read as zero on the panel.
       case EmailRejectSendFailed     => "email_reject_send_failed"
       case SkippedUnauthenticated    => "skipped_unauthenticated"
+      // #2462: a SEPARATE series, never folded into the skip or the reject — an origin we could not
+      // READ is not an origin we established does not exist.
+      case OriginLookupFailed        => "origin_lookup_failed"
       case SkippedNotInbound         => "skipped_not_inbound"
       case RateLimited               => "rate_limited"
       case InvalidSignature          => "invalid_signature"
@@ -1644,11 +1734,29 @@ object SupportResponder {
       // failure ("Emails are not enabled for this workspace") is permanent config, but a Plain 5xx
       // is transient, and the two are indistinguishable at this seam. The outcome label carries the
       // signal. Attribution needs a cause on `PlainOutcome` first — a separate change.
+      // #2462: `OriginLookupFailed` is `none` for the same reason as `EmailRejectSendFailed` —
+      // `reason` attributes a CLOUD-AGENT dispatch failure, and this one never reached a dispatch.
       case Dispatched | EmailRegisteredDispatched | EmailUnregisteredRejected |
-          EmailRejectSendFailed | SkippedUnauthenticated | SkippedNotInbound | RateLimited |
-          InvalidSignature | Malformed | Disabled =>
+          EmailRejectSendFailed | SkippedUnauthenticated | OriginLookupFailed | SkippedNotInbound |
+          RateLimited | InvalidSignature | Malformed | Disabled =>
         CloudAgentObservability.Reason.None
     }
+  }
+
+  /**
+   * #2462 — the three-state result of resolving a webhook delivery's ORIGIN to a household. Exists
+   * to make the failure case unrepresentable-as-a-non-match: the previous `Option` shape had no
+   * room for "the lookup threw", so both resolvers collapsed a DB error into `None` and every
+   * downstream branch read that as a proven-unidentified sender.
+   *
+   *   - `Resolved` — this delivery belongs to that household;
+   *   - `NoMatch` — we looked, and there is no such origin (the only state that may reject);
+   *   - `Failed` — we could not look. Terminal, loud, and says nothing to the customer.
+   */
+  enum OriginLookup {
+    case Resolved(householdId: HouseholdId, household: Household)
+    case NoMatch
+    case Failed
   }
 
   /**

@@ -14,6 +14,8 @@ import wifihaven.testinfra.*
 import com.sun.net.httpserver.{HttpExchange, HttpServer}
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 import doobie.*
+import doobie.implicits.*
+import zio.interop.catz.*
 import zio.{Clock as _, *}
 import zio.http.*
 import zio.json.*
@@ -1921,6 +1923,120 @@ object SupportResponderSpec
           kickoff.contains(s"<customer_message>\n$msg\n</customer_message>"),
         )
       }
+    },
+
+    // ── #2462: a FAILED read is loud and refused — never a synthesized account ───
+    // The whole point of this group is the distinction FAILURE-vs-EMPTY, not zero-vs-nonzero: a
+    // household that genuinely has nothing still answers 200 with zeros, and a household whose
+    // reads THREW must not be able to produce that same answer. The reads are broken at the
+    // DATABASE (a table dropped out from under the real repo), not by a repo mock — the repos stay
+    // the production ones on embedded Postgres (docs/process/testing.md).
+    //
+    // ORDERING CONTRACT: these three MUTILATE the schema (`DROP TABLE … CASCADE`). They are safe
+    // only because (a) the suite is `TestAspect.sequential`, (b) every DB-touching test in it opens
+    // with `cleanDb`, which drops and re-clones the per-spec database from the migrated template,
+    // and (c) they sit LAST. Keep them last, and keep opening every new DB-touching test with
+    // `cleanDb` — one appended after these without it would run against a schema missing
+    // `devices` / `households` / `users` and fail for reasons having nothing to do with what it
+    // asserts. (The two pure-config `#2265` tests carry no `cleanDb` and need none: they assert on
+    // `SupportConfig.missingRequiredKeys` and never reach a repo.)
+    test("#2462: a household read whose DB query FAILS is refused, never answered with zeros") {
+      (for {
+        _                     <- cleanDb
+        hhRepo                <- ZIO.service[HouseholdRepo]
+        billRepo              <- ZIO.service[HouseholdBillingRepo]
+        hh                    <- hhRepo.create("Family Z", "fam-z")
+        _                     <- billRepo.create(hh, "active", founding = false)
+        consentRepo           <- ZIO.service[SupportConsentRepo]
+        clock                 <- ZIO.service[Clock]
+        now                   <- clock.instant
+        _                     <- consentRepo.grant(
+          hh,
+          "th_z",
+          "n_z",
+          now,
+          now.plus(SupportResponder.ConsentLinkTtl),
+          None,
+          now,
+          now.plus(SupportResponder.ConsentTtl),
+        )
+        (routes, _)           <- makeRoutes(liveCfg)
+        token                 <- mintToken(hh, "th_z", dataAccess = true)
+        // Baseline: with the schema intact this household is GENUINELY empty — no devices — and
+        // that stays a 200 carrying real zeros. Emptiness is not an error.
+        (sEmpty, bodyEmpty)   <- agentGetHousehold(routes, Some(token))
+        emptySummary          <- ZIO
+          .fromEither(bodyEmpty.fromJson[HouseholdSummary])
+          .mapError(new RuntimeException(_))
+        // Now break ONE of the four reads the way a real outage would, and re-issue the SAME
+        // request with the SAME token. Before #2462 this answered 200 with an identical-looking
+        // empty summary, which the agent then narrated to the customer as account fact.
+        xa                    <- ZIO.service[Transactor[Task]]
+        _                     <- sql"DROP TABLE devices CASCADE".update.run.transact(xa)
+        (sBroken, bodyBroken) <- agentGetHousehold(routes, Some(token))
+        logs                  <- ZTestLogger.logOutput
+      } yield assertTrue(
+        sEmpty == Status.Ok,
+        emptySummary.name == "Family Z",
+        emptySummary.deviceCount == 0,
+        // The failure is REFUSED — the agent learns it has no data instead of inventing some.
+        sBroken == Status.InternalServerError,
+        !bodyBroken.contains("deviceCount"),
+        // ...and it is LOUD: an operator can see the read failed (no-dark-by-default).
+        logs.exists(e =>
+          e.logLevel == LogLevel.Error && e.message().contains("agent household read FAILED"),
+        ),
+      )).provideSome[TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task]](
+        ZTestLogger.default,
+      )
+    },
+    test("#2462: a DB failure resolving the UI-origin tenant is loud, not a silent skip") {
+      (for {
+        _               <- cleanDb
+        hhRepo          <- ZIO.service[HouseholdRepo]
+        hh              <- hhRepo.create("Family Y", "fam-y")
+        (routes, stubs) <- makeRoutes(liveCfg)
+        xa              <- ZIO.service[Transactor[Task]]
+        _               <- sql"DROP TABLE households CASCADE".update.run.transact(xa)
+        body = payload(Some(hh.value), "th_y", "help me")
+        outcome    <- stubs.responder.handleWebhook(body, Some(sign(body)))
+        dispatches <- stubs.dispatch.dispatches.get
+        threads    <- stubs.plain.threads.get
+        logs       <- ZTestLogger.logOutput
+      } yield assertTrue(
+        // A failed lookup is its OWN outcome — not `skipped_unauthenticated`, which claims we
+        // proved the sender had no identifiable origin.
+        SupportResponder.WebhookOutcome.label(outcome) == "origin_lookup_failed",
+        dispatches.isEmpty,
+        threads.isEmpty,
+        logs.exists(e =>
+          e.logLevel == LogLevel.Error && e.message().contains("origin lookup FAILED"),
+        ),
+      )).provideSome[TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task]](
+        ZTestLogger.default,
+      )
+    },
+    test("#2462: a DB failure resolving the sender's admin household never sends a #2307 reject") {
+      // The worst of the three: a registered, paying admin gets told "you're not a registered
+      // customer" because `users` was briefly unreadable. The reject must not be sent on the
+      // strength of a lookup that FAILED — only on one that genuinely found no admin.
+      (for {
+        _               <- cleanDb
+        (routes, stubs) <- makeRoutes(liveCfg)
+        xa              <- ZIO.service[Transactor[Task]]
+        _               <- sql"DROP TABLE users CASCADE".update.run.transact(xa)
+        body = threadCreatedPayload(Some("admin@example.test"), "th_x")
+        outcome    <- stubs.responder.handleWebhook(body, Some(sign(body)))
+        threads    <- stubs.plain.threads.get
+        dispatches <- stubs.dispatch.dispatches.get
+      } yield assertTrue(
+        SupportResponder.WebhookOutcome.label(outcome) == "origin_lookup_failed",
+        // Nothing was said to the customer — no static reject, no AI reply.
+        threads.isEmpty,
+        dispatches.isEmpty,
+      )).provideSome[TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task]](
+        ZTestLogger.default,
+      )
     },
   ) @@ TestAspect.sequential
 }

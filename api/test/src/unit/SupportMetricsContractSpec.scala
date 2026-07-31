@@ -38,6 +38,10 @@ object SupportMetricsContractSpec extends ZIOSpecDefault {
   /** #2460 — the panel that must count every resume outcome where the customer got nothing back. */
   private val DeadEndPanelTitlePrefix = "Consent grants that dead-ended"
 
+  /** #2462 — the two "expect 0" panels for a read that FAILED rather than returning empty. */
+  private val ReadFailedPanelTitlePrefix   = "Consented household reads that FAILED"
+  private val OriginFailedPanelTitlePrefix = "Webhook origins we could NOT look up"
+
   /**
    * #2458 — the panel that must count every scan failure the duplicate check cannot recover from.
    */
@@ -113,6 +117,47 @@ object SupportMetricsContractSpec extends ZIOSpecDefault {
         volumePanelExprs.map(e => e -> (AgentActionResult.SuccessLabels -- labelsIn(e)))
       assertTrue(shortfalls.forall(_._2.isEmpty)) &&
       assertTrue(shortfalls.nonEmpty)
+    },
+    test("#2462: the two failure panels select label values the enums can actually MINT") {
+      // Third instance of the same drift class, and the nastiest shape of it: both panels are
+      // "expect 0" stats. A panel selecting a label value nothing can ever emit reads as a
+      // permanent, reassuring zero — indistinguishable from "this failure never happens" — which is
+      // strictly worse than having no panel at all. So assert the selected value against the enum
+      // that mints it, not against a hand-written string.
+      //
+      // Scope, stated honestly: this asserts the PANEL side only. Nothing here scrapes the
+      // registry, so neither counter's INCREMENT is pinned by a test. What carries that gap is
+      // type-enforcement, and it is not equally strong on the two chains:
+      //   - webhook: SupportResponderSpec asserts `WebhookOutcome.label(outcome)` directly, and
+      //     `meter` emits that exact expression — so the asserted string IS the emitted label.
+      //   - household_read: SupportResponderSpec asserts the route's 500, one step removed. It is
+      //     `doneE("household_read", Error)` that both produces the 500 and emits the sample via
+      //     the single `AgentActionResult.label` derivation, and it is the only producer of either
+      //     — so the 500 does imply the sample, by construction rather than by assertion.
+      // A real scrape assertion would close it outright; that needs `PrometheusPublisher` in this
+      // suite's environment (see CloudAgentDispatchFailLoudSpec's harness) and is worth doing if
+      // this class of drift ever actually bites.
+      val hhExprs     = panelExprs(_.startsWith(ReadFailedPanelTitlePrefix))
+      val originExprs = panelExprs(_.startsWith(OriginFailedPanelTitlePrefix))
+      assertTrue(
+        hhExprs.nonEmpty,
+        hhExprs.forall(_.contains("support_agent_action_total")),
+        hhExprs.forall(_.contains("op=\"household_read\"")),
+        // The refusal path returns AgentActionResult.Error; this is the label it mints.
+        hhExprs.forall(
+          _.contains(s"outcome=\"${AgentActionResult.label(AgentActionResult.Error)}\""),
+        ),
+      ) &&
+      assertTrue(
+        originExprs.nonEmpty,
+        originExprs.forall(_.contains("support_ai_draft_total")),
+        originExprs.forall(
+          _.contains(
+            s"outcome=\"${SupportResponder.WebhookOutcome
+                .label(SupportResponder.WebhookOutcome.OriginLookupFailed)}\"",
+          ),
+        ),
+      )
     },
     test("success is exactly ok + ok_no_link + ok_duplicate, derived from the enum") {
       // Guards the derivation itself: a new case must be classified deliberately, not default into
