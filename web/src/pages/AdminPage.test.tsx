@@ -364,8 +364,12 @@ describe('AdminPage — capability split (#2522)', () => {
     expect(api.household.setEnforcement).not.toHaveBeenCalled()
   })
 
-  it('still shows the escape hatch to an admin', async () => {
+  // Positive control for the two negatives above. It asserts the TOGGLE, not the card: post-fix
+  // the card renders for an adult too, so asserting the card would pass either way.
+  it('still hands an admin the escape-hatch toggle, not just the status line', async () => {
     render(<AdminPage />)
-    expect(await screen.findByTestId('disable-enforcement-card')).toBeInTheDocument()
+    expect(await screen.findByTestId('disable-enforcement-toggle')).toBeInTheDocument()
+    expect(screen.getByTestId('disable-enforcement-save-status')).toBeInTheDocument()
+    expect(screen.queryByTestId('disable-enforcement-status')).not.toBeInTheDocument()
   })
 })
