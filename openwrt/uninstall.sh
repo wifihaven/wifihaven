@@ -28,6 +28,10 @@ set -eu
 err()  { printf 'error: %s\n' "$*" >&2; exit 1; }
 info() { printf '==> %s\n' "$*"; }
 
+# Package-owned path we must never delete ourselves (#2554) — we only scrub the
+# secret out of it and let apk del / opkg remove take the file.
+WIFIHAVEN_CONFIG=/etc/config/wifihaven
+
 usage() {
   sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
 }
@@ -200,20 +204,59 @@ fi
 # /etc/config/wifihaven, so every subsequent `uci` call against it fails with a
 # bare "uci: Entry not found". Removal of the file is apk del / opkg remove's
 # job, not ours.
-if uci -q show wifihaven >/dev/null 2>&1; then
+#
+# `uci delete wifihaven` (a PACKAGE-only pointer) is not a complete uci lookup
+# and does not delete anything, so the scrub enumerates the sections and deletes
+# each one. If anything still leaves a live router_token behind, truncate the
+# file in place as a fail-safe: truncation removes the secret while KEEPING the
+# path, so the package database stays in sync (unlike the `rm` this replaces).
+scrub_wifihaven_config() {
+  uci -q show wifihaven >/dev/null 2>&1 || return 1
   info "Wiping wifihaven UCI config..."
-  # `uci -q delete wifihaven` clears the in-memory tree; commit to disk.
-  while uci -q delete wifihaven >/dev/null 2>&1; do :; done
+  for _sec in $(uci show wifihaven 2>/dev/null \
+                  | sed -n 's/^wifihaven\.\([^.=]*\)[.=].*/\1/p' | sort -u); do
+    uci -q delete "wifihaven.$_sec" >/dev/null 2>&1 || true
+  done
   uci commit wifihaven 2>/dev/null || true
-  note "cleared wifihaven UCI state (router_token wiped)"
-fi
 
-# Cached policy snapshot (#309). Lives outside the package's tracked files
-# (the agent writes it at runtime), so the package manager won't remove it.
-if [ -d /etc/wifihaven ]; then
-  rm -rf /etc/wifihaven
-  note "removed /etc/wifihaven (cached policy snapshot)"
+  # Verify the secret is actually gone — never report a wipe we didn't do.
+  _tok=$(uci -q get wifihaven.@wifihaven[0].router_token 2>/dev/null || true)
+  if [ -n "$_tok" ] \
+     || grep -Eq "^[[:space:]]*option[[:space:]]+router_token[[:space:]]+'..*'" \
+          "$WIFIHAVEN_CONFIG" 2>/dev/null; then
+    : >"$WIFIHAVEN_CONFIG"
+    note "truncated $WIFIHAVEN_CONFIG (router_token survived the UCI scrub)"
+  else
+    note "cleared wifihaven UCI state (router_token wiped)"
+  fi
+}
+scrub_wifihaven_config || true
+
+# Runtime artifacts under /etc/wifihaven: the cached policy snapshot (#309),
+# the fetched blocklist cache, and the self-signed block-page cert/key. The
+# agent writes these at runtime, so the package manager won't remove them.
+#
+# #2554: /etc/wifihaven is NOT wholly ours to delete. The release builders
+# (build-ipk.sh:78 / build-apk.sh) stage openwrt/files/ wholesale, so
+# /etc/wifihaven/keys/release.pub — the update-signature verification key
+# (#2078, read by wifihaven-update:44) — is a PACKAGE file. `rm -rf
+# /etc/wifihaven` deleted it behind apk's back, which is the same file-database
+# desync this issue is about, and the symptom is silent: wifihaven-update fails
+# closed on a missing key, so the router just stops auto-updating. Remove only
+# the runtime artifacts, then rmdir the directory if the package manager has
+# already taken everything else out of it.
+wifihaven_dir_pruned=0
+for p in /etc/wifihaven/policy.json /etc/wifihaven/blocklists \
+         /etc/wifihaven/block_page.crt /etc/wifihaven/block_page.key; do
+  if [ -e "$p" ]; then
+    rm -rf "$p"
+    wifihaven_dir_pruned=1
+  fi
+done
+if [ "$wifihaven_dir_pruned" -eq 1 ]; then
+  note "removed /etc/wifihaven runtime artifacts (policy snapshot, blocklist cache, block-page cert)"
 fi
+rmdir /etc/wifihaven 2>/dev/null || true
 
 # 5. Purge mode: also kill manual-workaround leftovers from older e2e
 # shakeouts (pre-#202, when modules were dropped under these paths by hand).

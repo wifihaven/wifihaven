@@ -341,6 +341,9 @@ ensure_wifihaven_config() {
   for _wh_new in "$WIFIHAVEN_CONFIG.apk-new" "$WIFIHAVEN_CONFIG.opkg-new"; do
     [ -f "$_wh_new" ] || continue
     info "Adopting $_wh_new as $WIFIHAVEN_CONFIG (#2554)"
+    # Only reachable when the current file has no wifihaven section at all, but
+    # keep a copy of whatever was there rather than silently overwriting it.
+    [ -s "$WIFIHAVEN_CONFIG" ] && cp "$WIFIHAVEN_CONFIG" "$WIFIHAVEN_CONFIG.bak-2554"
     mv "$_wh_new" "$WIFIHAVEN_CONFIG"
     break
   done
@@ -358,7 +361,8 @@ ensure_wifihaven_config() {
   # duplicate their contents here, run the package's own (idempotent)
   # uci-defaults stub if it is still pending — that is the single source of
   # truth for the `settings` escape-hatch section. Leaving the file in place is
-  # fine: /etc/init.d/done re-runs and removes it at the next boot.
+  # fine — it is idempotent, and the first-boot uci-defaults pass runs and
+  # removes it at the next boot.
   if [ -f "$WIFIHAVEN_UCI_DEFAULTS/96-wifihaven-settings" ]; then
     sh "$WIFIHAVEN_UCI_DEFAULTS/96-wifihaven-settings" >/dev/null 2>&1 || true
   fi
@@ -473,23 +477,25 @@ post_install_self_check() {
     without it the kernel silently drops the DNAT'd traffic that carries
     blocked clients to the block page."
 
+  # Match the SAME anchored, per-line form setup-uhttpd-block-page.sh and
+  # uninstall.sh use to identify the block-page section, so all three agree on
+  # what "the listener is present" means. An unanchored substring match would
+  # be satisfied by the stock `uhttpd.main.listen_http='0.0.0.0:80'` line plus
+  # an unrelated 8081 elsewhere in the output.
   _sc_uhttpd=$(uci show uhttpd 2>/dev/null || true)
-  case "$_sc_uhttpd" in
-    *"listen_http="*"127.0.0.1:8081"*) : ;;
-    *) _sc_fail="$_sc_fail
+  printf '%s\n' "$_sc_uhttpd" \
+    | grep -Eq "^uhttpd\.[^.]+\.listen_http=.*'127\.0\.0\.1:8081'" || _sc_fail="$_sc_fail
   - no uhttpd block-page listener on 127.0.0.1:8081 — blocked HTTP traffic is
-    DNAT'd there and would hit a closed port." ;;
-  esac
-  case "$_sc_uhttpd" in
-    *"listen_https="*"127.0.0.1:8443"*) : ;;
-    *) _sc_fail="$_sc_fail
+    DNAT'd there and would hit a closed port."
+  printf '%s\n' "$_sc_uhttpd" \
+    | grep -Eq "^uhttpd\.[^.]+\.listen_https=.*'127\.0\.0\.1:8443'" || _sc_fail="$_sc_fail
   - no uhttpd block-page TLS listener on 127.0.0.1:8443 — blocked HTTPS
-    traffic would fail with a connection reset instead of the block page." ;;
-  esac
+    traffic would fail with a connection reset instead of the block page."
 
   # uci-defaults must be either consumed (its effect is visible) or pending
-  # (still on disk, so /etc/init.d/done runs it at the next boot). Neither
-  # means it ran, was deleted, and its effect was later clobbered.
+  # (still on disk, so the first-boot uci-defaults pass runs it at the next
+  # boot). Neither means it ran, was deleted, and its effect was later
+  # clobbered.
   if [ ! -f "$WIFIHAVEN_UCI_DEFAULTS/96-wifihaven-settings" ] \
      && [ -z "$(uci -q get wifihaven.settings.enforcement_disabled || true)" ]; then
     printf 'warning: the wifihaven.settings section is absent and %s/96-wifihaven-settings is gone (#2554).\n' \
@@ -501,7 +507,11 @@ post_install_self_check() {
   [ -z "$_sc_fail" ] || err "post-install self-check failed:$_sc_fail
 
 This install is half-applied. See
-https://github.com/wifihaven/wifihaven/issues/2554 for the recovery steps."
+https://github.com/wifihaven/wifihaven/issues/2554 for the recovery steps.
+NOTE: enrollment already succeeded, so the one-time enrollment token you
+entered has been CONSUMED — the router is registered (router_id is in
+$WIFIHAVEN_CONFIG) and the agent was not started. Fix the item(s) above and
+re-run the installer with a FRESH enrollment token."
 }
 post_install_self_check
 
