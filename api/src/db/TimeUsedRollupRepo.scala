@@ -34,13 +34,6 @@ trait TimeUsedRollupRepo {
 
   /** Cached rows keyed by profile for `date`. Missing profiles signal a cache miss. */
   def getDayMap(date: LocalDate): Task[Map[ProfileId, RolledDay]]
-
-  /**
-   * Drop every cached row. Called from `HouseholdSettingsRepoLive.update` so any change to the
-   * heartbeat filter or the daily-reset boundary forces the next rollup tick to refill from first
-   * principles. The table is bounded (one row per profile per active date), so the DELETE is cheap.
-   */
-  def deleteAll: Task[Unit]
 }
 
 /**
@@ -53,7 +46,6 @@ object NoopTimeUsedRollupRepo extends TimeUsedRollupRepo {
     ZIO.succeed(0)
   def getDayForProfile(profileId: ProfileId, date: LocalDate): Task[Option[RolledDay]] = ZIO.none
   def getDayMap(date: LocalDate): Task[Map[ProfileId, RolledDay]] = ZIO.succeed(Map.empty)
-  def deleteAll: Task[Unit]                                       = ZIO.unit
 }
 
 class TimeUsedRollupRepoLive(xa: Transactor[Task]) extends TimeUsedRollupRepo {
@@ -98,7 +90,4 @@ class TimeUsedRollupRepoLive(xa: Transactor[Task]) extends TimeUsedRollupRepo {
       .to[List]
       .transact(xa)
       .map(_.toMap)
-
-  def deleteAll: Task[Unit] =
-    sql"DELETE FROM time_used_daily".update.run.transact(xa).unit
 }

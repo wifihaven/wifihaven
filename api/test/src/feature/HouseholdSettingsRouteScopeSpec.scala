@@ -202,8 +202,34 @@ object HouseholdSettingsRouteScopeSpec
         st == Status.Ok,
         // the full-replace write landed on THIS household's row…
         after.dailyResetTz.getId == "America/Denver",
-        // …and not on household #1's
-        one.dailyResetTz.getId != "America/Denver",
+        // …and household #1 still holds exactly what it held before the PUT. Pinned as equality
+        // against the pre-write value rather than `!= "America/Denver"` — the latter would also
+        // pass if the PUT had silently written nothing at all.
+        one.dailyResetTz == cur.dailyResetTz,
+      )
+    },
+    test("update fails loud for a household that owns no settings row") {
+      // #2533 / no-dark-by-default: a write that matches 0 rows is a provisioning bug, not a
+      // silent success. `rawHousehold` mints a households row WITHOUT the settings row that
+      // `HouseholdRepo.create` would have seeded — the same shape `HouseholdSettingsIsolationSpec`
+      // uses to pin the read-side fail-loud. Without this the route would 200 on a write that
+      // landed nowhere, which is the exact failure mode #2533 was.
+      for {
+        _    <- cleanDb
+        hs   <- ZIO.service[HouseholdSettingsRepo]
+        xa   <- ZIO.service[Transactor[Task]]
+        hid  <-
+          sql"INSERT INTO households(name, slug, router_cap) VALUES('no-settings','no-settings',1) RETURNING id"
+            .query[HouseholdId]
+            .unique
+            .transact(xa)
+        base <- hs.getForHousehold(HouseholdId.Default)
+        res  <- hs.update(hid, base.copy(blockEncryptedDns = true)).either
+        // …and the failed write did NOT fall through onto household #1's row.
+        one  <- hs.getForHousehold(HouseholdId.Default)
+      } yield assertTrue(
+        res.isLeft,
+        !one.blockEncryptedDns,
       )
     },
   ) @@ TestAspect.sequential

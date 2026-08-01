@@ -222,7 +222,7 @@ inventory (trait declarations in [`Repos.scala`](../../api/src/db/Repos.scala)):
 | `ProfileRepo.listAll` | [`:111`](../../api/src/db/Repos.scala) | profile list, snapshot, time-status |
 | `ProfileRepo.listAllIncludingGlobal` | [`:114`](../../api/src/db/Repos.scala) | snapshot builder ([`PolicyService.scala:316`](../../api/src/policy/PolicyService.scala)) |
 | `NamedScheduleRepo.listAll` | [`:148`](../../api/src/db/Repos.scala) | schedule admin |
-| `HouseholdSettingsRepo.get` (single row) | [`:206`](../../api/src/db/Repos.scala) | snapshot, time math — must key by household |
+| ~~`HouseholdSettingsRepo.get` (single row)~~ | — | **CLOSED (#2533).** `get` and the unscoped `update(s)` are deleted; `getForHousehold(household)` / `update(household, s)` are the only accessors. The two surviving `HouseholdId.Default` reads are explicit and `TODO(#2553)`-linked (the all-tenant rollup batches). |
 | `TimeLimitRepo.listAll` | [`:217`](../../api/src/db/Repos.scala) | time-status ([`Routes.scala:904`](../../api/src/routes/Routes.scala)) |
 | `AppTimeLimitRepo.listAll` | [`:236`](../../api/src/db/Repos.scala) | time-status ([`Routes.scala:905`](../../api/src/routes/Routes.scala)) |
 | `DeviceRepo.listAll` | [`:240`](../../api/src/db/Repos.scala) | devices list, snapshot, decision lookup |

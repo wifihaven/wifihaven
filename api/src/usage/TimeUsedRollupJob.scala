@@ -34,10 +34,14 @@ import java.time.{Duration, Instant}
  * from #809 for usage graphs) cover them. The hot path is `/api/time/status/summary` rendering the
  * per-profile screen-time figures (#1099); past-day reads are cold.
  *
- * Invalidation is wholesale via `TimeUsedRollupRepo.deleteAll` (called from
- * `HouseholdSettingsRepoLive.update` — covers the heartbeat filter, daily reset time, tz, and the
- * #1464 presence session-stitch knob `presence_continuation_seconds`). The next tick refills with
- * the new semantics.
+ * Invalidation is wholesale, and lives inline in `HouseholdSettingsRepoLive.update` — a `DELETE
+ * FROM time_used_daily` + `DELETE FROM app_used_daily` in the same transaction as the settings
+ * UPDATE. It covers the heartbeat filter, daily reset time, tz, the #1464 presence session-stitch
+ * knob `presence_continuation_seconds`, and the #2077 ambient-gate knobs; the next tick refills
+ * with the new semantics. #2533: `update` is now per-household but the invalidation stays wholesale
+ * on purpose — this job still derives EVERY household's rollup from household #1's settings (see
+ * the `TODO(#2553)` in `doTick`), so a household-#1 write must keep evicting every household's
+ * rows. Narrowing it is part of #2553, not separable from it.
  *
  * Multi-instance note: only one fiber should be writing each row at a time, but UPSERT keyed on
  * `(profile_id, date)` with a monotonically-advancing `rolled_through` makes redundant writes
