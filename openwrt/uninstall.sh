@@ -91,7 +91,8 @@ This will:
   - stop and disable the wifihaven service
   - remove the wifihaven package via $PKG_MGR
   - delete the uhttpd block-page listener on 127.0.0.1:8081 and [::1]:8081
-  - wipe /etc/config/wifihaven (router_token will be lost)
+  - clear the wifihaven UCI config (router_token will be lost); the
+    package manager owns /etc/config/wifihaven and removes the file itself
 EOF
   if [ "$PURGE" -eq 1 ]; then
     cat >"$TTY" <<EOF
@@ -171,29 +172,40 @@ if [ -n "${uhttpd_section:-}" ]; then
   note "removed uhttpd listener on 127.0.0.1:8081 + [::1]:8081 (#411)"
 fi
 
-# 3a. #303: revert the route_localnet sysctl. The package removal takes the
-# /etc/sysctl.d/99-wifihaven.conf file, but the running kernel still has the
-# value set until reboot — reset it explicitly so we don't leave LAN clients
-# able to route to 127.0.0.0/8 after uninstall.
-if [ -f /etc/sysctl.d/99-wifihaven.conf ] || [ "$(sysctl -n net.ipv4.conf.br-lan.route_localnet 2>/dev/null)" = "1" ]; then
-  rm -f /etc/sysctl.d/99-wifihaven.conf
+# 3a. #303: revert the route_localnet sysctl. The package removal (step 2) owns
+# /etc/sysctl.d/99-wifihaven.conf and takes the FILE; all we do here is reset
+# the value in the RUNNING kernel, which package removal cannot touch — without
+# this, LAN clients stay able to route to 127.0.0.0/8 until the next reboot.
+#
+# #2554: we used to `rm -f` that file ourselves. It is package-OWNED (`apk info
+# -L wifihaven` lists it), so deleting it out from under apk desynchronises
+# apk's file database and the file does NOT come back on the next install — not
+# even as a .apk-new. The loss is invisible at runtime because
+# setup-uhttpd-block-page.sh sets route_localnet live, so it only bites after a
+# reboot, as "the block page is broken" days later. Never remove it here; let
+# apk del / opkg remove own it.
+if [ "$(sysctl -n net.ipv4.conf.br-lan.route_localnet 2>/dev/null)" = "1" ]; then
   sysctl -w net.ipv4.conf.br-lan.route_localnet=0 >/dev/null 2>&1 || true
   note "reset net.ipv4.conf.br-lan.route_localnet=0"
 fi
 
-# 4. Wipe wifihaven UCI. apk/opkg removal should have taken /etc/config/wifihaven
-# (the package owns it), but be defensive: scrub UCI state and the file if it
-# survived.
+# 4. Scrub wifihaven UCI state. apk/opkg removal should have taken
+# /etc/config/wifihaven (the package owns it), but a locally-modified conffile
+# can survive removal — and that file holds the router bearer token. Clearing
+# the UCI tree and committing rewrites the file empty, so the secret is gone.
+#
+# #2554: do NOT `rm` the file afterwards. It is package-OWNED, and deleting it
+# behind apk's back desynchronises apk's file database: the next install writes
+# the shipped config to /etc/config/wifihaven.apk-new instead of
+# /etc/config/wifihaven, so every subsequent `uci` call against it fails with a
+# bare "uci: Entry not found". Removal of the file is apk del / opkg remove's
+# job, not ours.
 if uci -q show wifihaven >/dev/null 2>&1; then
   info "Wiping wifihaven UCI config..."
   # `uci -q delete wifihaven` clears the in-memory tree; commit to disk.
   while uci -q delete wifihaven >/dev/null 2>&1; do :; done
   uci commit wifihaven 2>/dev/null || true
-  note "cleared wifihaven UCI state"
-fi
-if [ -e /etc/config/wifihaven ]; then
-  rm -f /etc/config/wifihaven
-  note "removed /etc/config/wifihaven"
+  note "cleared wifihaven UCI state (router_token wiped)"
 fi
 
 # Cached policy snapshot (#309). Lives outside the package's tracked files

@@ -165,6 +165,16 @@ Pass `--purge` to additionally remove `/usr/lib/wifihaven` and
 shakeouts). The script is idempotent — re-running on an already-clean
 router exits 0.
 
+The uninstaller deliberately leaves **package-owned** files to `apk del` /
+`opkg remove` — notably `/etc/config/wifihaven` and
+`/etc/sysctl.d/99-wifihaven.conf`. Deleting them by hand desynchronises the
+package manager's file database: the next install parks the config at
+`/etc/config/wifihaven.apk-new` and never restores the sysctl file, which
+leaves the block page working until the router reboots and silently failing
+after ([#2554](https://github.com/wifihaven/wifihaven/issues/2554)). If you
+land in that state, re-run `install.sh` — it detects and repairs both, and its
+post-install self-check fails loudly if it cannot.
+
 ## 3. Verify
 
 ```sh

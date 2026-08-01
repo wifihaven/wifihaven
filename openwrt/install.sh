@@ -44,6 +44,13 @@ RELEASES_API="https://api.github.com/repos/wifihaven/wifihaven/releases/tags/ope
 err() { printf 'error: %s\n' "$*" >&2; exit 1; }
 info() { printf '==> %s\n' "$*"; }
 
+# Package-owned paths this script has to be able to repair (#2554). Kept as
+# variables so the recovery functions below can be exercised against a fake
+# root by openwrt/test/install_reinstall_cycle_spec.sh.
+WIFIHAVEN_CONFIG=/etc/config/wifihaven
+WIFIHAVEN_SYSCTL=/etc/sysctl.d/99-wifihaven.conf
+WIFIHAVEN_UCI_DEFAULTS=/etc/uci-defaults
+
 # Read from the controlling terminal so this works under `curl | sh`,
 # where stdin is the script body.
 TTY=/dev/tty
@@ -283,6 +290,94 @@ else
   fi
 fi
 
+# --- #2554 recovery: repair a package install that came back half-applied ---
+#
+# A pre-#2554 uninstall `rm`'d two files the package OWNS
+# (/etc/config/wifihaven and /etc/sysctl.d/99-wifihaven.conf), which
+# desynchronises the apk/opkg file database. On the install that follows,
+# apk writes the shipped config to /etc/config/wifihaven.apk-new (opkg:
+# .opkg-new) instead of the real path, and does not restore the sysctl file at
+# ALL — not even as a .apk-new. Both failures are silent: the first surfaces
+# only as a bare `uci: Entry not found` from the very next uci call, the second
+# not until the router reboots. Repair both before touching uci, then verify.
+
+# Restore the route_localnet sysctl file if the package didn't put it back.
+#
+# This setting is what makes the block page reachable: render.lua DNATs blocked
+# HTTP/80 traffic to 127.0.0.1:8081, and the kernel refuses to route a packet
+# destined for 127.0.0.0/8 that arrived on a non-loopback interface unless
+# route_localnet is set on that interface. Checking the LIVE value here would
+# be exactly the wrong test — setup-uhttpd-block-page.sh sets it at runtime, so
+# it reads healthy even when the file is gone. Only the FILE survives a reboot.
+#
+# install.sh is fetched standalone over the network and cannot read the
+# package's own copy of this file, so the setting is duplicated here. The two
+# copies are pinned equal by openwrt/test/install_reinstall_cycle_spec.sh
+# (docs/process/single-source-of-truth.md — ACCEPT + TEST-PIN).
+restore_wifihaven_sysctl() {
+  [ -f "$WIFIHAVEN_SYSCTL" ] && return 0
+  info "Restoring $WIFIHAVEN_SYSCTL (missing — see #2554); without it the block page dies on the next reboot"
+  mkdir -p "$(dirname "$WIFIHAVEN_SYSCTL")"
+  cat >"$WIFIHAVEN_SYSCTL" <<'SYSCTL_EOF'
+# wifihaven — allow DNAT from LAN clients to 127.0.0.1:8081 (block page).
+#
+# Restored by openwrt/install.sh (#2554) because the package did not put it
+# back. Canonical copy: openwrt/files/etc/sysctl.d/99-wifihaven.conf; the two
+# are pinned equal by openwrt/test/install_reinstall_cycle_spec.sh.
+#
+# Scoped to br-lan only (the LAN bridge); we never want to route external
+# loopback traffic in from WAN.
+net.ipv4.conf.br-lan.route_localnet = 1
+SYSCTL_EOF
+  sysctl -p "$WIFIHAVEN_SYSCTL" >/dev/null 2>&1 || true
+}
+
+# Make sure the `config wifihaven` anchor section the uci calls below address
+# actually exists. Returns nonzero if it could not be recovered.
+ensure_wifihaven_config() {
+  uci -q show wifihaven.@wifihaven[0] >/dev/null 2>&1 && return 0
+
+  # Adopt the config the package manager parked beside the real path.
+  for _wh_new in "$WIFIHAVEN_CONFIG.apk-new" "$WIFIHAVEN_CONFIG.opkg-new"; do
+    [ -f "$_wh_new" ] || continue
+    info "Adopting $_wh_new as $WIFIHAVEN_CONFIG (#2554)"
+    mv "$_wh_new" "$WIFIHAVEN_CONFIG"
+    break
+  done
+  uci -q show wifihaven.@wifihaven[0] >/dev/null 2>&1 && return 0
+
+  # Nothing to adopt — synthesise the anchor section. The named form matches
+  # the section the package ships (`config wifihaven 'wifihaven'`), and
+  # `@wifihaven[0]` resolves to it.
+  info "Creating the wifihaven UCI anchor section in $WIFIHAVEN_CONFIG (#2554)"
+  [ -f "$WIFIHAVEN_CONFIG" ] || : >"$WIFIHAVEN_CONFIG"
+  uci set wifihaven.wifihaven=wifihaven
+  uci commit wifihaven
+
+  # A synthesised file has none of the other shipped sections. Rather than
+  # duplicate their contents here, run the package's own (idempotent)
+  # uci-defaults stub if it is still pending — that is the single source of
+  # truth for the `settings` escape-hatch section. Leaving the file in place is
+  # fine: /etc/init.d/done re-runs and removes it at the next boot.
+  if [ -f "$WIFIHAVEN_UCI_DEFAULTS/96-wifihaven-settings" ]; then
+    sh "$WIFIHAVEN_UCI_DEFAULTS/96-wifihaven-settings" >/dev/null 2>&1 || true
+  fi
+
+  uci -q show wifihaven.@wifihaven[0] >/dev/null 2>&1
+}
+
+restore_wifihaven_sysctl
+ensure_wifihaven_config || err "the wifihaven UCI config section is missing and could not be recovered.
+The package did not leave a usable $WIFIHAVEN_CONFIG (and no .apk-new/.opkg-new
+copy was found beside it) — this is the #2554 failure mode, caused by an older
+uninstall.sh deleting package-owned files behind apk's back. Recover with:
+
+  $PKG_MGR $PKG_INSTALL --force-overwrite $pkg_path   # add --allow-untrusted on apk
+  ls -l $WIFIHAVEN_CONFIG*                            # expect the real path, not .apk-new
+
+then re-run this installer. Do NOT ignore this: without the section the router
+cannot be enrolled."
+
 # Write base UCI config before enrolling so a re-run after a failed enroll
 # does not have to re-enter these.
 uci set wifihaven.@wifihaven[0].api_url="$API_URL"
@@ -348,6 +443,67 @@ fi
 # drift — see openwrt/files/usr/lib/wifihaven/setup-uhttpd-block-page.sh.
 info "Configuring uhttpd block-page listener..."
 sh /usr/lib/wifihaven/setup-uhttpd-block-page.sh
+
+# #2554 post-install self-check. Every item below is individually SILENT when
+# it's wrong — the install looks like it succeeded and the breakage surfaces
+# hours or days later somewhere else. Assert them here, while the operator is
+# still at the keyboard, and name the specific thing that's missing rather than
+# leaving them with a three-word uci error.
+#
+# Fatal vs. warning: the first three are load-bearing (no anchor section => the
+# router cannot be enrolled or configured; no sysctl FILE => the block page
+# stops working at the next reboot; no uhttpd listener => the block-page DNAT
+# has nowhere to land), so they abort. The `settings` escape-hatch section is
+# belt-and-suspenders — the agent fails safe when the key is absent
+# (missing => enforcement ON) and wifihaven-disable/-enable self-create it — so
+# it warns loudly instead of stranding an otherwise-good install.
+post_install_self_check() {
+  _sc_fail=""
+
+  uci -q show wifihaven.@wifihaven[0] >/dev/null 2>&1 || _sc_fail="$_sc_fail
+  - the wifihaven UCI anchor section is missing from $WIFIHAVEN_CONFIG
+    (check for a leftover $WIFIHAVEN_CONFIG.apk-new / .opkg-new beside it)"
+
+  # Assert the FILE, not the live sysctl value: setup-uhttpd-block-page.sh sets
+  # the value at runtime, so `sysctl -n net.ipv4.conf.br-lan.route_localnet`
+  # reads 1 even when the file is gone. Only the file survives a reboot.
+  [ -f "$WIFIHAVEN_SYSCTL" ] || _sc_fail="$_sc_fail
+  - $WIFIHAVEN_SYSCTL is missing on disk. The live route_localnet value may
+    still read 1 (set at runtime), but it will NOT survive a reboot, and
+    without it the kernel silently drops the DNAT'd traffic that carries
+    blocked clients to the block page."
+
+  _sc_uhttpd=$(uci show uhttpd 2>/dev/null || true)
+  case "$_sc_uhttpd" in
+    *"listen_http="*"127.0.0.1:8081"*) : ;;
+    *) _sc_fail="$_sc_fail
+  - no uhttpd block-page listener on 127.0.0.1:8081 — blocked HTTP traffic is
+    DNAT'd there and would hit a closed port." ;;
+  esac
+  case "$_sc_uhttpd" in
+    *"listen_https="*"127.0.0.1:8443"*) : ;;
+    *) _sc_fail="$_sc_fail
+  - no uhttpd block-page TLS listener on 127.0.0.1:8443 — blocked HTTPS
+    traffic would fail with a connection reset instead of the block page." ;;
+  esac
+
+  # uci-defaults must be either consumed (its effect is visible) or pending
+  # (still on disk, so /etc/init.d/done runs it at the next boot). Neither
+  # means it ran, was deleted, and its effect was later clobbered.
+  if [ ! -f "$WIFIHAVEN_UCI_DEFAULTS/96-wifihaven-settings" ] \
+     && [ -z "$(uci -q get wifihaven.settings.enforcement_disabled || true)" ]; then
+    printf 'warning: the wifihaven.settings section is absent and %s/96-wifihaven-settings is gone (#2554).\n' \
+      "$WIFIHAVEN_UCI_DEFAULTS" >&2
+    printf 'warning: enforcement still defaults to ON; restore the LuCI toggle with:\n' >&2
+    printf 'warning:   uci set wifihaven.settings=settings; uci set wifihaven.settings.enforcement_disabled=0; uci commit wifihaven\n' >&2
+  fi
+
+  [ -z "$_sc_fail" ] || err "post-install self-check failed:$_sc_fail
+
+This install is half-applied. See
+https://github.com/wifihaven/wifihaven/issues/2554 for the recovery steps."
+}
+post_install_self_check
 
 # Enable and start.
 info "Enabling and starting the wifihaven agent..."
