@@ -187,13 +187,19 @@ object HouseholdSettingsRouteScopeSpec
     },
     test("PUT is observed by getForHousehold — the read enforcement uses") {
       for {
-        _   <- cleanDb
-        hs  <- ZIO.service[HouseholdSettingsRepo]
-        rts <- settingsRoutes
-        a   <- tenant("House Put", "house-put")
+        _         <- cleanDb
+        hs        <- ZIO.service[HouseholdSettingsRepo]
+        rts       <- settingsRoutes
+        a         <- tenant("House Put", "house-put")
         // `HouseholdSettings` and `UpdateHouseholdSettingsRequest` share field names, so the
         // model's own JSON is a valid PUT body — no hand-built fixture to drift from the model.
-        cur <- hs.getForHousehold(a.hh)
+        cur       <- hs.getForHousehold(a.hh)
+        // Household #1's OWN pre-write value. Captured rather than compared against `cur` — the two
+        // rows reach their default through independent seed paths (`ensureDefault` for #1,
+        // `HouseholdSeed.insertHousehold`'s column defaults for a fresh household), so equality
+        // between them is a coincidence, not an invariant, and would silently stop being a real pin
+        // if either default moved.
+        oneBefore <- hs.getForHousehold(HouseholdId.Default)
         body = cur.copy(dailyResetTz = ZoneId.of("America/Denver")).toJson
         st    <- send(rts, Method.PUT, a.token, Some(body)).map(_.status)
         after <- hs.getForHousehold(a.hh)
@@ -202,10 +208,10 @@ object HouseholdSettingsRouteScopeSpec
         st == Status.Ok,
         // the full-replace write landed on THIS household's row…
         after.dailyResetTz.getId == "America/Denver",
-        // …and household #1 still holds exactly what it held before the PUT. Pinned as equality
-        // against the pre-write value rather than `!= "America/Denver"` — the latter would also
-        // pass if the PUT had silently written nothing at all.
-        one.dailyResetTz == cur.dailyResetTz,
+        // …and household #1 still holds exactly what IT held before the PUT. Equality against the
+        // pre-write value rather than `!= "America/Denver"` — the latter would also pass if the PUT
+        // had silently written nothing at all.
+        one.dailyResetTz == oneBefore.dailyResetTz,
       )
     },
     test("update fails loud for a household that owns no settings row") {
