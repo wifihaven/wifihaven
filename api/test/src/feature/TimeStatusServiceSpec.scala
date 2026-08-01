@@ -149,12 +149,12 @@ object TimeStatusServiceSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
       resetAt: LocalTime = LocalTime.of(0, 0),
   ): Task[HouseholdSettings] =
     for {
-      cur <- hsr.get
+      cur <- hsr.getForHousehold(HouseholdId.Default)
       upd = cur.copy(
         dailyResetTz = java.time.ZoneId.of(tz),
         dailyResetTime = resetAt,
       )
-      _ <- hsr.update(upd)
+      _ <- hsr.update(HouseholdId.Default, upd)
     } yield upd
 
   def spec = suite("TimeStatusService (#1104)")(

@@ -53,8 +53,8 @@ object HouseholdSettingsIsolationSpec
         hr   <- ZIO.service[HouseholdRepo]
         hs   <- ZIO.service[HouseholdSettingsRepo]
         // Give household #1 a distinctive, non-default value.
-        base <- hs.get
-        _    <- hs.update(base.copy(blockEncryptedDns = true))
+        base <- hs.getForHousehold(HouseholdId.Default)
+        _    <- hs.update(HouseholdId.Default, base.copy(blockEncryptedDns = true))
         // Provision a fresh household through the ONE creation primitive.
         hh   <- hr.create("Beta Fam", "beta-fam", 1)
         mine <- hs.getForHousehold(hh)

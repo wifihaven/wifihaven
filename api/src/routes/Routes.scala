@@ -2155,24 +2155,29 @@ object HouseholdSettingsRoutes {
       Method.GET / "api" / "household" / "settings"   ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _ <- requireAuth(req, auth)
-            s <- repo.get.mapError(ApiError.Db(_))
+            // #2533: the CALLER's household, never `id=1`. Before this, every household read (and
+            // wrote) household #1's row while `PolicyService` read its own via `getForHousehold` —
+            // so the SPA and enforcement silently diverged for every non-default household.
+            claims <- requireAuth(req, auth)
+            s      <- repo.getForHousehold(claims.hh).mapError(ApiError.Db(_))
           } yield Response.json(s.toJson)
           handle.mapError(ErrorMapper.errorToResponse)
         },
       Method.PUT / "api" / "household" / "settings"   ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _    <- requireWriter(req, auth)
-            body <- req.body.asString.orElseFail(ApiError.BadRequest(""))
-            upd  <- ZIO
+            claims <- requireWriter(req, auth)
+            body   <- req.body.asString.orElseFail(ApiError.BadRequest(""))
+            upd    <- ZIO
               .fromEither(body.fromJson[UpdateHouseholdSettingsRequest])
               .mapError(ApiError.DecodeFailure(_))
-            _    <- ZIO
+            _      <- ZIO
               .fromEither(validateUnmanagedMacPolicy(upd.unmanagedMacPolicy))
               .mapError(ApiError.BadRequest(_))
-            _    <- repo
+            // #2533: full replace of THIS household's row.
+            _      <- repo
               .update(
+                claims.hh,
                 HouseholdSettings(
                   upd.dailyResetTime,
                   upd.dailyResetTz,
@@ -2190,7 +2195,7 @@ object HouseholdSettingsRoutes {
                 ),
               )
               .mapError(ApiError.Db(_))
-            _    <- invalidateSnapshot
+            _      <- invalidateSnapshot
           } yield Response.ok
           handle.mapError(ErrorMapper.errorToResponse)
         },
@@ -2202,8 +2207,9 @@ object HouseholdSettingsRoutes {
       Method.PATCH / "api" / "household" / "settings" ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _         <- requireWriter(req, auth)
-            existing  <- repo.get.mapError(ApiError.Db(_))
+            claims    <- requireWriter(req, auth)
+            // #2533: read-modify-write, both halves scoped to the caller's household.
+            existing  <- repo.getForHousehold(claims.hh).mapError(ApiError.Db(_))
             body      <- req.body.asString.orElseFail(ApiError.BadRequest(""))
             obj       <- ZIO.fromEither(FieldPatch.parseObj(body)).mapError(ApiError.BadRequest(_))
             timePatch <- ZIO
@@ -2288,7 +2294,7 @@ object HouseholdSettingsRoutes {
                 case FieldPatch.Absent  => existing.notifyEmail
               },
             )
-            _            <- repo.update(merged).mapError(ApiError.Db(_))
+            _            <- repo.update(claims.hh, merged).mapError(ApiError.Db(_))
             _            <- invalidateSnapshot
           } yield Response.ok
           handle.mapError(ErrorMapper.errorToResponse)

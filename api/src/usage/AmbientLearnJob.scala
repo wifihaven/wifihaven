@@ -107,7 +107,14 @@ object AmbientLearnJob {
       hs: HouseholdSettingsRepo,
       now: Instant,
   ): Task[Int] = for {
-    settings <- hs.get
+    // TODO(#2553): all-tenant batch with NO caller household, so the settings read is the ONE
+    // deliberate `HouseholdId.Default` left after #2533 deleted the unscoped `get` — named and
+    // commented, not an unlabelled default. It is behaviour-preserving but WRONG: this one row's
+    // daily-reset tz and heartbeat/ambient knobs are then applied to every household the loop
+    // below iterates. Fixing it means moving `settings` (and the day key derived from it) inside
+    // the per-household loop and upserting per household — a real change to the screen-time write
+    // path, so it gets its own PR and tests (#2553).
+    settings <- hs.getForHousehold(wifihaven.shared.types.HouseholdId.Default)
     today     = PolicyService.householdLocalDate(now, settings)
     yesterday = today.minusDays(1L)
     // #2257: this is a genuinely all-tenant batch — enumerate households explicitly and union each

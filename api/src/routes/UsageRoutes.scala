@@ -165,7 +165,7 @@ object UsageRoutes {
             _        <- ZIO
               .fail(ApiError.BadRequest("from must be <= to"))
               .when(from.isAfter(to))
-            settings <- hsRepo.get.mapError(ApiError.Db(_))
+            settings <- hsRepo.getForHousehold(claims.hh).mapError(ApiError.Db(_))
             resp     <- buildUsageByApp(
               pid,
               from,
@@ -196,7 +196,7 @@ object UsageRoutes {
           val handle: ZIO[Any, ApiError, Response] = for {
             claims   <- requireAuth(req, auth)
             _        <- requireProfileReadAccess(claims, pid, userProfileRepo, profileRepo)
-            settings <- hsRepo.get.mapError(ApiError.Db(_))
+            settings <- hsRepo.getForHousehold(claims.hh).mapError(ApiError.Db(_))
             now      <- clock.instant
             todayLocal = wifihaven.api.policy.PolicyService.householdLocalDate(now, settings)
             toStr      = req.url.queryParam("to").getOrElse(todayLocal.toString)
@@ -284,7 +284,7 @@ object UsageRoutes {
             appLookup <-
               if (groupByApp) loadAppLookup(appRepo)
               else ZIO.succeed(UsageSeries.AppAxis.empty)
-            settings  <- hsRepo.get.mapError(ApiError.Db(_))
+            settings  <- hsRepo.getForHousehold(claims.hh).mapError(ApiError.Db(_))
             resp      <- (macOpt, profileIdOpt) match {
               case (Some(mac), _) =>
                 buildForDevice(
@@ -352,7 +352,7 @@ object UsageRoutes {
             appLookup <-
               if (groupByApp) loadAppLookup(appRepo)
               else ZIO.succeed(UsageSeries.AppAxis.empty)
-            settings  <- hsRepo.get.mapError(ApiError.Db(_))
+            settings  <- hsRepo.getForHousehold(claims.hh).mapError(ApiError.Db(_))
             resp      <- buildBatch(
               pids,
               date,

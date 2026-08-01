@@ -34,10 +34,14 @@ import java.time.{Duration, Instant}
  * from #809 for usage graphs) cover them. The hot path is `/api/time/status/summary` rendering the
  * per-profile screen-time figures (#1099); past-day reads are cold.
  *
- * Invalidation is wholesale via `TimeUsedRollupRepo.deleteAll` (called from
- * `HouseholdSettingsRepoLive.update` — covers the heartbeat filter, daily reset time, tz, and the
- * #1464 presence session-stitch knob `presence_continuation_seconds`). The next tick refills with
- * the new semantics.
+ * Invalidation is wholesale, and lives inline in `HouseholdSettingsRepoLive.update` — a `DELETE
+ * FROM time_used_daily` + `DELETE FROM app_used_daily` in the same transaction as the settings
+ * UPDATE. It covers the heartbeat filter, daily reset time, tz, the #1464 presence session-stitch
+ * knob `presence_continuation_seconds`, and the #2077 ambient-gate knobs; the next tick refills
+ * with the new semantics. #2533: `update` is now per-household but the invalidation stays wholesale
+ * on purpose — this job still derives EVERY household's rollup from household #1's settings (see
+ * the `TODO(#2553)` in `doTick`), so a household-#1 write must keep evicting every household's
+ * rows. Narrowing it is part of #2553, not separable from it.
  *
  * Multi-instance note: only one fiber should be writing each row at a time, but UPSERT keyed on
  * `(profile_id, date)` with a monotonically-advancing `rolled_through` makes redundant writes
@@ -175,7 +179,14 @@ object TimeUsedRollupJob {
       now: Instant,
       ambientRepo: AmbientHostsRepo,
   ): Task[Int] = for {
-    settings <- hs.get
+    // TODO(#2553): all-tenant batch with NO caller household, so the settings read is the ONE
+    // deliberate `HouseholdId.Default` left after #2533 deleted the unscoped `get` — named and
+    // commented, not an unlabelled default. It is behaviour-preserving but WRONG: this one row's
+    // daily-reset tz and heartbeat/ambient knobs are then applied to every household the loop
+    // below iterates. Fixing it means moving `settings` (and the day key derived from it) inside
+    // the per-household loop and upserting per household — a real change to the screen-time write
+    // path, so it gets its own PR and tests (#2553).
+    settings <- hs.getForHousehold(wifihaven.shared.types.HouseholdId.Default)
     today = PolicyService.householdLocalDate(now, settings)
     ambient    <- ambientRepo.gateFor(settings, today)
     // #2257: all-tenant rollup batch — enumerate households explicitly and union each one's scoped

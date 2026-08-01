@@ -497,8 +497,9 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
           Some(IpAddress.unsafe("10.0.0.99")),
           java.time.Instant.now(),
         )
-        existing <- hsr.get
+        existing <- hsr.getForHousehold(HouseholdId.Default)
         _        <- hsr.update(
+          HouseholdId.Default,
           existing.copy(unmanagedMacPolicy = UnmanagedMacPolicy(policy = "block", blockPage = true)),
         )
         ps       <- makePolicyService

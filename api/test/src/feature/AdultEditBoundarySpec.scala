@@ -476,13 +476,7 @@ object AdultEditBoundarySpec
           fx.adult,
           Some("""{"blockEncryptedDns":true}"""),
         )
-        // NOT `getForHousehold(fx.hh)` — `HouseholdSettingsRoutes` calls the UNSCOPED `repo.get` /
-        // `repo.update`, both hardcoded to `id=1`, so every household's settings edit lands on
-        // household 1's row. That is a pre-existing tenancy hole, filed as #2533 and deliberately
-        // untouched here (#2522 changes the ROLE on this route, not its scoping). Asserting the row
-        // the route actually writes keeps this test honest about today's behaviour; when #2533
-        // lands it flips to `getForHousehold(fx.hh)` and this comment goes away.
-        after   <- hsr.get
+        after   <- hsr.getForHousehold(fx.hh)
         kid     <- statusOf(
           rts,
           Method.PATCH,

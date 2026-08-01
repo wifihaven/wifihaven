@@ -510,17 +510,30 @@ object NoopNamedScheduleRepo extends NamedScheduleRepo {
 }
 
 trait HouseholdSettingsRepo {
-  def get: Task[HouseholdSettings]
 
   /**
-   * #2107 (multi-tenant, epic #622): household-scoped [[get]] — the settings row for `household`
-   * (`WHERE household_id = ?`). Used by `PolicyService.snapshot(household)` / `decide(household,
-   * …)` so a router reads only its own household's settings (daily-reset tz, unmanaged-MAC policy,
-   * block-encrypted-DNS). For the single backfill household (`HouseholdId.Default`) this returns
-   * the same single row `get` reads today.
+   * #2107 (multi-tenant, epic #622): the settings row for `household` (`WHERE household_id = ?`).
+   * Used by `PolicyService.snapshot(household)` / `decide(household, …)` so a router reads only its
+   * own household's settings (daily-reset tz, unmanaged-MAC policy, block-encrypted-DNS), and since
+   * #2533 by `HouseholdSettingsRoutes` too.
+   *
+   * #2533: this is the ONLY read. The unscoped `get` (hardcoded `WHERE id=1`) was deleted, not
+   * deprecated — while it existed, `HouseholdSettingsRoutes` read and wrote household #1's row for
+   * every caller, so enforcement (which already read here) and the SPA silently diverged for every
+   * non-default household. A parallel unscoped path is exactly how that regresses; per AGENTS.md
+   * §single-source-of-truth the fix is COLLAPSE. A call site that genuinely wants the operator
+   * household passes `HouseholdId.Default` explicitly and says why.
    */
   def getForHousehold(household: HouseholdId): Task[HouseholdSettings]
-  def update(s: HouseholdSettings): Task[Unit]
+
+  /**
+   * #2533: the write twin of [[getForHousehold]] — replaces `household`'s OWN settings row (`WHERE
+   * household_id = ?`). Replaces the unscoped `update(s)`, which wrote `WHERE id=1` regardless of
+   * the caller. Fails if `household` owns no row (a provisioning bug — every household gets one
+   * from [[HouseholdSeed.insertHousehold]] / [[HouseholdSeed.backfillMissingSettings]]), rather
+   * than silently writing nothing.
+   */
+  def update(household: HouseholdId, s: HouseholdSettings): Task[Unit]
 
   /**
    * #2382: the server-level per-household "disable enforcement" escape hatch, read straight off the
@@ -1621,13 +1634,11 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
   import zio.json.*
   import wifihaven.shared.UnmanagedMacPolicy
 
-  // #2107: shared SELECT + decoder for both the legacy single-row `get` and the household-scoped
-  // `getForHousehold`, differing only in the WHERE clause — so the two cannot drift on which columns
-  // they read or how they map (AGENTS.md §single-source-of-truth).
-  // #2107: shared SELECT + decoder for both the legacy single-row `get` and the household-scoped
-  // `getForHousehold`, differing only in the WHERE clause — so the two cannot drift on which columns
-  // they read or how they map (AGENTS.md §single-source-of-truth). Returns Option so the scoped
-  // read can distinguish "no row for this household yet" (see `getForHousehold`).
+  // #2107: the one SELECT + decoder behind `getForHousehold`, parameterized on its WHERE clause so
+  // the column list and mapping live in a single place (AGENTS.md §single-source-of-truth). Returns
+  // Option so the caller can distinguish "no row for this household yet" (see `getForHousehold`).
+  // #2533: the second caller — the unscoped `get`'s `WHERE id=1` — is gone; the parameterization
+  // stays because the WHERE fragment is still built by `SqlFragments.householdEq`.
   private def selectSettings(where: Fragment): Task[Option[HouseholdSettings]] =
     // #1525: `heartbeat_host_patterns` is no longer read — host-identity suppression lives in
     // the canonical `shared.types.InfraHosts` code constant. The column is dropped in a
@@ -1696,18 +1707,6 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
       }
       .transact(xa)
 
-  // The single install has one household_settings row (id=1, household_id=1). This legacy accessor
-  // keys on the PK; the row is always present (`ensureDefault` seeds it), so a missing row is a hard
-  // error rather than a silent default.
-  def get: Task[HouseholdSettings] =
-    DbMetrics.timed("householdSettings.get")(
-      selectSettings(fr"id=1").flatMap(
-        ZIO
-          .fromOption(_)
-          .orElseFail(new RuntimeException("household_settings row (id=1) missing")),
-      ),
-    )
-
   // #2107/#2386: household-scoped settings read for the router snapshot/decide paths. Every household
   // owns its OWN settings row — seeded atomically at creation ([[HouseholdSeed.insertHousehold]]) and
   // backfilled for pre-existing households at boot ([[backfillMissingSettings]]). A missing row is
@@ -1750,7 +1749,7 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
         .transact(xa),
     )
 
-  def update(s: HouseholdSettings): Task[Unit] = {
+  def update(household: HouseholdId, s: HouseholdSettings): Task[Unit] = {
     val ummJson       = s.unmanagedMacPolicy.toJson
     // #1160 / #1464: invalidate the time-used rollup atomically with the
     // settings update. Any change to the daily-reset boundary (tz / reset hour),
@@ -1771,7 +1770,7 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
       // invalidation is already wholesale (these fields share one aggregation
       // path) and an admin toggling it is rare, so refilling the cache from
       // first principles is harmless and keeps the update path single.
-      sql"""UPDATE household_settings
+      (fr"""UPDATE household_settings
               SET daily_reset_time=${s.dailyResetTime},
                   daily_reset_tz=${s.dailyResetTz},
                   heartbeat_filter_enabled=${s.heartbeatFilter.enabled},
@@ -1785,13 +1784,36 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
                   ambient_learning_window_days=${s.ambientLearningWindowDays},
                   notify_email=${s.notifyEmail},
                   updated_at=NOW()
-            WHERE id=1""".update.run
+            WHERE """ ++ SqlFragments.householdEq(household)).update.run
+    // #2533: the invalidation stays WHOLESALE (every household's rows), deliberately, even though
+    // the UPDATE above is now household-scoped. Narrowing it to this household's profiles looks
+    // obviously right and is currently WRONG, because `TimeUsedRollupJob.doTick` still computes
+    // EVERY household's rollup from household #1's settings (the `TODO(#2553)` there). So while
+    // #2553 is open, household N's cached rows are a function of household #1's reset tz and
+    // heartbeat filter — and a household-#1 save must keep evicting them. Scoping this belongs in
+    // #2553, atomically with severing that coupling; doing it here would open a stale-screen-time
+    // window for every other tenant. `time_used_daily` / `app_used_daily` carry no household_id of
+    // their own (V43 / V53) — they key on profile_id, which does (V65) — so the scoped form is
+    // `profile_id IN (SELECT id FROM profiles WHERE household_id=?)` when #2553 lands.
     val invalidate    = sql"DELETE FROM time_used_daily".update.run
     // #1516: the per-app rollup (`app_used_daily`) is gated by the SAME active-minute definition
     // (heartbeat filter, daily-reset boundary, presence session-stitch knob), so invalidate it
     // atomically too — the next tick refills both from first principles.
     val invalidateApp = sql"DELETE FROM app_used_daily".update.run
-    (upd *> invalidate *> invalidateApp).transact(xa).unit
+    // A settings write for a household that owns no row is a provisioning bug, not a silent no-op:
+    // every household gets its row from `HouseholdSeed.insertHousehold` / `backfillMissingSettings`
+    // (#2386), so 0 rows updated means the caller's household is unprovisioned. Fail loud rather
+    // than return success on a write that landed nowhere (AGENTS.md §no-dark-by-default).
+    (upd.flatMap {
+      case 0 =>
+        doobie.free.connection.raiseError[Int](
+          new RuntimeException(
+            s"household_settings row missing for household ${household.value} " +
+              "(every household must own its settings row; see #2386)",
+          ),
+        )
+      case n => doobie.free.connection.pure(n)
+    } *> invalidate *> invalidateApp).transact(xa).unit
   }
 
   def ensureDefault(defaultZone: ZoneId): Task[Unit] =

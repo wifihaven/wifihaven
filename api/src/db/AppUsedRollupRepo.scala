@@ -58,15 +58,6 @@ trait AppUsedRollupRepo {
       from: LocalDate,
       to: LocalDate,
   ): Task[List[(LocalDate, AppId, Long)]]
-
-  /**
-   * Drop every cached row. Called from `HouseholdSettingsRepoLive.update` alongside the
-   * `time_used_daily` invalidation so any change to the heartbeat filter, the daily-reset boundary,
-   * or the presence session-stitch knob forces the next rollup tick to refill from first
-   * principles. The table is bounded (one row per profile × app × active date), so the DELETE is
-   * cheap.
-   */
-  def deleteAll: Task[Unit]
 }
 
 /**
@@ -91,8 +82,6 @@ object NoopAppUsedRollupRepo extends AppUsedRollupRepo {
       to: LocalDate,
   ): Task[List[(LocalDate, AppId, Long)]] =
     ZIO.succeed(Nil)
-  def deleteAll: Task[Unit]                                                                   =
-    ZIO.unit
 }
 
 class AppUsedRollupRepoLive(xa: Transactor[Task]) extends AppUsedRollupRepo {
@@ -147,7 +136,4 @@ class AppUsedRollupRepoLive(xa: Transactor[Task]) extends AppUsedRollupRepo {
       .query[(LocalDate, AppId, Long)]
       .to[List]
       .transact(xa)
-
-  def deleteAll: Task[Unit] =
-    sql"DELETE FROM app_used_daily".update.run.transact(xa).unit
 }

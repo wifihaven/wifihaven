@@ -150,9 +150,9 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
       ruRepo      <- ZIO.service[TimeUsedRollupRepo]
       aruRepo     <- ZIO.service[AppUsedRollupRepo]
       // Pin the household reset tz to UTC so `now`'s local date is `today`.
-      cur         <- hsr.get
+      cur         <- hsr.getForHousehold(HouseholdId.Default)
       settings = cur.copy(dailyResetTz = ZoneOffset.UTC)
-      _        <- hsr.update(settings)
+      _        <- hsr.update(HouseholdId.Default, settings)
       kidsId   <- TestLayers.seedKidsProfile(profileRepo)
       _        <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
       routerId <- seedRouter
@@ -784,7 +784,7 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
               mkRow("khanacademy.org", 4),
             ),
           )
-          settings <- hsRepo.get
+          settings <- hsRepo.getForHousehold(HouseholdId.Default)
           rows     <- trafficRepo.listPresenceRows(
             HouseholdId.Default,
             List(MacAddress.unsafe(testMac)),

@@ -113,9 +113,9 @@ object TimeUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
 
   private def setTz(hsr: HouseholdSettingsRepo, tz: String): Task[HouseholdSettings] =
     for {
-      cur <- hsr.get
+      cur <- hsr.getForHousehold(HouseholdId.Default)
       upd = cur.copy(dailyResetTz = java.time.ZoneId.of(tz))
-      _ <- hsr.update(upd)
+      _ <- hsr.update(HouseholdId.Default, upd)
     } yield upd
 
   def spec = suite("TimeUsedRollupSpec (#1160)")(
@@ -248,8 +248,9 @@ object TimeUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         today = LocalDate.of(2025, 1, 6)
         _   <- ru.upsertDay(kid, today, RolledDay(50L * 60L, Instant.parse("2025-01-06T09:00:00Z")))
         pre <- ru.getDayMap(today)
-        cur <- hsr.get
+        cur <- hsr.getForHousehold(HouseholdId.Default)
         _   <- hsr.update(
+          HouseholdId.Default,
           cur.copy(heartbeatFilter = HeartbeatFilter(enabled = true, 1000, List("ntp.org"))),
         )
         post <- ru.getDayMap(today)
@@ -283,8 +284,8 @@ object TimeUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         now = LocalDateTime.of(2025, 1, 6, 12, 0).toInstant(ZoneOffset.UTC)
         _           <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, stl, trr, hsr, now)
         before      <- ru.getDayForProfile(kid, today)
-        cur         <- hsr.get
-        _           <- hsr.update(cur.copy(presenceContinuationSeconds = 900))
+        cur         <- hsr.getForHousehold(HouseholdId.Default)
+        _           <- hsr.update(HouseholdId.Default, cur.copy(presenceContinuationSeconds = 900))
         invalidated <- ru.getDayForProfile(kid, today)
         _           <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, stl, trr, hsr, now)
         after       <- ru.getDayForProfile(kid, today)
