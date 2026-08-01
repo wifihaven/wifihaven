@@ -33,9 +33,9 @@ object PolicySnapshotConsolidationSpec extends ZIOSpec[TestDatabase.AllRepos & E
 
   private def settingsTz(hsr: HouseholdSettingsRepo, tz: String): Task[HouseholdSettings] =
     for {
-      cur <- hsr.get
+      cur <- hsr.getForHousehold(HouseholdId.Default)
       upd = cur.copy(dailyResetTz = java.time.ZoneId.of(tz), dailyResetTime = LocalTime.of(0, 0))
-      _ <- hsr.update(upd)
+      _ <- hsr.update(HouseholdId.Default, upd)
     } yield upd
 
   private def seedRouterRow: ZIO[RouterRepo, Throwable, RouterId] =

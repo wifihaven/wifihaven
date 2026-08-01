@@ -52,8 +52,8 @@ object NotifyEmailSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres 
   private def setNotifyEmail(address: Option[String]) =
     for {
       hsRepo <- ZIO.service[HouseholdSettingsRepo]
-      s      <- hsRepo.get
-      _      <- hsRepo.update(s.copy(notifyEmail = address))
+      s      <- hsRepo.getForHousehold(HouseholdId.Default)
+      _      <- hsRepo.update(HouseholdId.Default, s.copy(notifyEmail = address))
     } yield ()
 
   // Create an access-request alert row and read it back (so householdId is populated by the join).

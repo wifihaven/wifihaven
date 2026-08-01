@@ -5,6 +5,7 @@ import wifihaven.api.auth.*
 import wifihaven.api.db.*
 import wifihaven.api.routes.*
 import wifihaven.shared.*
+import wifihaven.shared.types.*
 import wifihaven.shared.Clock.TestClock
 import wifihaven.testinfra.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
@@ -47,7 +48,7 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
     for {
       _    <- cleanDb
       repo <- ZIO.service[HouseholdSettingsRepo]
-      _    <- repo.update(Seed)
+      _    <- repo.update(HouseholdId.Default, Seed)
     } yield ()
 
   private def routesAndToken =
@@ -80,7 +81,7 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         (routes, tk) <- routesAndToken
         resp         <- patch(routes, tk, """{"dailyResetTime":"03:30:00"}""")
         repo         <- ZIO.service[HouseholdSettingsRepo]
-        after        <- repo.get
+        after        <- repo.getForHousehold(HouseholdId.Default)
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(after.dailyResetTime == LocalTime.of(3, 30)) &&
         assertTrue(after.dailyResetTz == Seed.dailyResetTz) &&
@@ -92,7 +93,7 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         (routes, tk) <- routesAndToken
         resp         <- patch(routes, tk, """{"heartbeatFilter":{"enabled":true}}""")
         repo         <- ZIO.service[HouseholdSettingsRepo]
-        after        <- repo.get
+        after        <- repo.getForHousehold(HouseholdId.Default)
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(after.heartbeatFilter.enabled) &&
         assertTrue(after.heartbeatFilter.bytesThreshold == 1024) &&
@@ -114,7 +115,7 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
           """{"heartbeatFilter":{"heartbeatHostPatterns":["legacy.example.com"]}}""",
         )
         repo         <- ZIO.service[HouseholdSettingsRepo]
-        after        <- repo.get
+        after        <- repo.getForHousehold(HouseholdId.Default)
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(after.heartbeatFilter.heartbeatHostPatterns == Nil)
     },
@@ -129,14 +130,14 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         (routes, tk)  <- routesAndToken
         _             <- patch(routes, tk, """{"heartbeatFilter":{"bytesThreshold":2048}}""")
         repo          <- ZIO.service[HouseholdSettingsRepo]
-        afterOmitted  <- repo.get
+        afterOmitted  <- repo.getForHousehold(HouseholdId.Default)
         _             <- setupHousehold
         _             <- patch(
           routes,
           tk,
           """{"heartbeatFilter":{"bytesThreshold":2048,"heartbeatHostPatterns":["x.example.com"]}}""",
         )
-        afterIncluded <- repo.get
+        afterIncluded <- repo.getForHousehold(HouseholdId.Default)
       } yield assertTrue(afterOmitted == afterIncluded)
     },
     test("absent fields preserve existing values") {
@@ -145,7 +146,7 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         (routes, tk) <- routesAndToken
         resp         <- patch(routes, tk, "{}")
         repo         <- ZIO.service[HouseholdSettingsRepo]
-        after        <- repo.get
+        after        <- repo.getForHousehold(HouseholdId.Default)
       } yield assertTrue(resp.status == Status.Ok) && assertTrue(after == Seed)
     },
     test("multi-field patch (top-level + nested) applied together") {
@@ -156,7 +157,7 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
           """{"dailyResetTz":"America/New_York","heartbeatFilter":{"bytesThreshold":4096,"heartbeatHostPatterns":["bar.com"]}}"""
         resp  <- patch(routes, tk, body)
         repo  <- ZIO.service[HouseholdSettingsRepo]
-        after <- repo.get
+        after <- repo.getForHousehold(HouseholdId.Default)
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(after.dailyResetTz == ZoneId.of("America/New_York")) &&
         assertTrue(after.heartbeatFilter.enabled == false) && // preserved
@@ -183,7 +184,7 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         _     <- cleanDb
         repo  <- ZIO.service[HouseholdSettingsRepo]
         _     <- repo.ensureDefault(ZoneId.of("UTC"))
-        after <- repo.get
+        after <- repo.getForHousehold(HouseholdId.Default)
       } yield assertTrue(after.unmanagedMacPolicy == UnmanagedMacPolicy.Default) &&
         assertTrue(after.unmanagedMacPolicy.policy == "allow") &&
         assertTrue(after.unmanagedMacPolicy.blockPage)
@@ -194,7 +195,7 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         (routes, tk) <- routesAndToken
         resp         <- patch(routes, tk, """{"unmanagedMacPolicy":{"blockPage":false}}""")
         repo         <- ZIO.service[HouseholdSettingsRepo]
-        after        <- repo.get
+        after        <- repo.getForHousehold(HouseholdId.Default)
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(after.unmanagedMacPolicy.policy == "allow") &&
         assertTrue(!after.unmanagedMacPolicy.blockPage)
@@ -205,7 +206,7 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         (routes, tk) <- routesAndToken
         resp         <- patch(routes, tk, """{"unmanagedMacPolicy":{"policy":"block"}}""")
         repo         <- ZIO.service[HouseholdSettingsRepo]
-        after        <- repo.get
+        after        <- repo.getForHousehold(HouseholdId.Default)
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(after.unmanagedMacPolicy.policy == "block") &&
         assertTrue(after.unmanagedMacPolicy.blockPage)
@@ -230,7 +231,7 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         (routes, tk) <- routesAndToken
         resp         <- patch(routes, tk, """{"ambientGateEnabled":true}""")
         repo         <- ZIO.service[HouseholdSettingsRepo]
-        after        <- repo.get
+        after        <- repo.getForHousehold(HouseholdId.Default)
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(after.ambientGateEnabled) &&
         // the three thresholds are not patchable; they keep their stored values.
@@ -245,7 +246,7 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         _            <- patch(routes, tk, """{"ambientGateEnabled":true}""")
         resp         <- patch(routes, tk, """{"dailyResetTime":"01:30"}""")
         repo         <- ZIO.service[HouseholdSettingsRepo]
-        after        <- repo.get
+        after        <- repo.getForHousehold(HouseholdId.Default)
       } yield assertTrue(resp.status == Status.Ok) && assertTrue(after.ambientGateEnabled)
     },
     test("#2077 null ambientGateEnabled returns 400") {
@@ -260,7 +261,7 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         _     <- cleanDb
         repo  <- ZIO.service[HouseholdSettingsRepo]
         _     <- repo.ensureDefault(ZoneId.of("UTC"))
-        after <- repo.get
+        after <- repo.getForHousehold(HouseholdId.Default)
       } yield assertTrue(!after.blockEncryptedDns)
     },
     test("#1912 PATCH {blockEncryptedDns:true} round-trips and preserves other fields") {
@@ -269,7 +270,7 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         (routes, tk) <- routesAndToken
         resp         <- patch(routes, tk, """{"blockEncryptedDns":true}""")
         repo         <- ZIO.service[HouseholdSettingsRepo]
-        after        <- repo.get
+        after        <- repo.getForHousehold(HouseholdId.Default)
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(after.blockEncryptedDns) &&
         // a single-field PATCH leaves everything else untouched.
@@ -283,7 +284,7 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         _            <- patch(routes, tk, """{"blockEncryptedDns":true}""")
         resp         <- patch(routes, tk, """{"blockEncryptedDns":false}""")
         repo         <- ZIO.service[HouseholdSettingsRepo]
-        after        <- repo.get
+        after        <- repo.getForHousehold(HouseholdId.Default)
       } yield assertTrue(resp.status == Status.Ok) && assertTrue(!after.blockEncryptedDns)
     },
     test("#1912 PATCH that omits blockEncryptedDns preserves the stored value") {
@@ -293,7 +294,7 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         _            <- patch(routes, tk, """{"blockEncryptedDns":true}""")
         _            <- patch(routes, tk, """{"dailyResetTime":"04:00:00"}""")
         repo         <- ZIO.service[HouseholdSettingsRepo]
-        after        <- repo.get
+        after        <- repo.getForHousehold(HouseholdId.Default)
       } yield assertTrue(after.blockEncryptedDns) &&
         assertTrue(after.dailyResetTime == LocalTime.of(4, 0))
     },
@@ -305,7 +306,7 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
           """{"dailyResetTime":"00:00:00","dailyResetTz":"America/Los_Angeles","heartbeatFilter":{"enabled":false,"bytesThreshold":1024,"heartbeatHostPatterns":[]},"unmanagedMacPolicy":{"policy":"allow","blockPage":true},"blockEncryptedDns":true}"""
         resp  <- put(routes, tk, body)
         repo  <- ZIO.service[HouseholdSettingsRepo]
-        after <- repo.get
+        after <- repo.getForHousehold(HouseholdId.Default)
       } yield assertTrue(resp.status == Status.Ok) && assertTrue(after.blockEncryptedDns)
     },
     test("#1912 PUT that omits blockEncryptedDns decodes to the default (false)") {
@@ -317,7 +318,7 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
           """{"dailyResetTime":"00:00:00","dailyResetTz":"America/Los_Angeles","heartbeatFilter":{"enabled":false,"bytesThreshold":1024,"heartbeatHostPatterns":[]},"unmanagedMacPolicy":{"policy":"allow","blockPage":true}}"""
         resp  <- put(routes, tk, body)
         repo  <- ZIO.service[HouseholdSettingsRepo]
-        after <- repo.get
+        after <- repo.getForHousehold(HouseholdId.Default)
       } yield assertTrue(resp.status == Status.Ok) && assertTrue(!after.blockEncryptedDns)
     },
     test("#578 PATCH {notifyEmail:\"…\"} round-trips and preserves other fields") {
@@ -326,7 +327,7 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         (routes, tk) <- routesAndToken
         resp         <- patch(routes, tk, """{"notifyEmail":"parent@example.com"}""")
         repo         <- ZIO.service[HouseholdSettingsRepo]
-        after        <- repo.get
+        after        <- repo.getForHousehold(HouseholdId.Default)
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(after.notifyEmail.contains("parent@example.com")) &&
         assertTrue(after.dailyResetTime == Seed.dailyResetTime)
@@ -338,7 +339,7 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         _            <- patch(routes, tk, """{"notifyEmail":"parent@example.com"}""")
         resp         <- patch(routes, tk, """{"notifyEmail":null}""")
         repo         <- ZIO.service[HouseholdSettingsRepo]
-        after        <- repo.get
+        after        <- repo.getForHousehold(HouseholdId.Default)
       } yield assertTrue(resp.status == Status.Ok) && assertTrue(after.notifyEmail.isEmpty)
     },
     test("#578 PATCH {notifyEmail:\"\"} (blank) normalizes to cleared") {
@@ -348,7 +349,7 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         _            <- patch(routes, tk, """{"notifyEmail":"parent@example.com"}""")
         resp         <- patch(routes, tk, """{"notifyEmail":"   "}""")
         repo         <- ZIO.service[HouseholdSettingsRepo]
-        after        <- repo.get
+        after        <- repo.getForHousehold(HouseholdId.Default)
       } yield assertTrue(resp.status == Status.Ok) && assertTrue(after.notifyEmail.isEmpty)
     },
     test("#578 PATCH that omits notifyEmail preserves the stored value") {
@@ -358,7 +359,7 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         _            <- patch(routes, tk, """{"notifyEmail":"parent@example.com"}""")
         _            <- patch(routes, tk, """{"dailyResetTime":"04:00:00"}""")
         repo         <- ZIO.service[HouseholdSettingsRepo]
-        after        <- repo.get
+        after        <- repo.getForHousehold(HouseholdId.Default)
       } yield assertTrue(after.notifyEmail.contains("parent@example.com")) &&
         assertTrue(after.dailyResetTime == LocalTime.of(4, 0))
     },
@@ -370,7 +371,7 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
           """{"dailyResetTime":"00:00:00","dailyResetTz":"America/Los_Angeles","heartbeatFilter":{"enabled":false,"bytesThreshold":1024,"heartbeatHostPatterns":[]},"unmanagedMacPolicy":{"policy":"allow","blockPage":true},"notifyEmail":"parent@example.com"}"""
         resp  <- put(routes, tk, body)
         repo  <- ZIO.service[HouseholdSettingsRepo]
-        after <- repo.get
+        after <- repo.getForHousehold(HouseholdId.Default)
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(after.notifyEmail.contains("parent@example.com"))
     },
@@ -383,7 +384,7 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
           """{"dailyResetTime":"00:00:00","dailyResetTz":"America/Los_Angeles","heartbeatFilter":{"enabled":false,"bytesThreshold":1024,"heartbeatHostPatterns":[]},"unmanagedMacPolicy":{"policy":"allow","blockPage":true}}"""
         resp  <- put(routes, tk, body)
         repo  <- ZIO.service[HouseholdSettingsRepo]
-        after <- repo.get
+        after <- repo.getForHousehold(HouseholdId.Default)
       } yield assertTrue(resp.status == Status.Ok) && assertTrue(after.notifyEmail.isEmpty)
     },
     // #2522: household settings are parenting, so PATCH is adult-or-admin now. A child is still

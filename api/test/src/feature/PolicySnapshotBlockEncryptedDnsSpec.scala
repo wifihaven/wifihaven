@@ -3,6 +3,7 @@ package wifihaven.api.feature
 import wifihaven.api.db.*
 import wifihaven.api.policy.*
 import wifihaven.shared.*
+import wifihaven.shared.types.*
 import wifihaven.shared.Clock.TestClock
 import wifihaven.testinfra.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
@@ -43,8 +44,8 @@ object PolicySnapshotBlockEncryptedDnsSpec
   private def setBlockEncryptedDns(v: Boolean) =
     for {
       hsr      <- ZIO.service[HouseholdSettingsRepo]
-      existing <- hsr.get
-      _        <- hsr.update(existing.copy(blockEncryptedDns = v))
+      existing <- hsr.getForHousehold(HouseholdId.Default)
+      _        <- hsr.update(HouseholdId.Default, existing.copy(blockEncryptedDns = v))
     } yield ()
 
   def spec = suite("PolicySnapshot — blockEncryptedDns (#1912)")(

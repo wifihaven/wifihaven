@@ -115,8 +115,8 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
   private def setBlockEncryptedDns(v: Boolean) =
     for {
       hsr      <- ZIO.service[HouseholdSettingsRepo]
-      existing <- hsr.get
-      _        <- hsr.update(existing.copy(blockEncryptedDns = v))
+      existing <- hsr.getForHousehold(HouseholdId.Default)
+      _        <- hsr.update(HouseholdId.Default, existing.copy(blockEncryptedDns = v))
     } yield ()
 
   def spec = suite("PolicySnapshot — computed-snapshot cache + push-on-change (#1849)")(

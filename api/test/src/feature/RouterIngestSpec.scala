@@ -1548,6 +1548,7 @@ object RouterIngestSpec
         _        <- seedKnownDevice(dRepo, pRepo)
         (id, tk) <- seedRouter(rRepo)
         _        <- hsr.update(
+          HouseholdId.Default,
           HouseholdSettings(
             java.time.LocalTime.of(0, 0),
             java.time.ZoneId.of("America/Los_Angeles"),

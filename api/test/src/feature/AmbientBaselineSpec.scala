@@ -109,9 +109,9 @@ object AmbientBaselineSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         pr  <- ZIO.service[ProfileRepo]
         dr  <- ZIO.service[DeviceRepo]
         ahr <- ZIO.service[AmbientHostsRepo]
-        s0  <- hsr.get
-        _   <- hsr.update(s0.copy(dailyResetTz = ZoneOffset.UTC))
-        s   <- hsr.get
+        s0  <- hsr.getForHousehold(HouseholdId.Default)
+        _   <- hsr.update(HouseholdId.Default, s0.copy(dailyResetTz = ZoneOffset.UTC))
+        s   <- hsr.getForHousehold(HouseholdId.Default)
         kid <- TestLayers.seedKidsProfile(pr)
         _   <- TestLayers.seedDevice(dr, kidMac, "kid-ipad", kid)
         rid <- seedRouterRow
@@ -153,8 +153,8 @@ object AmbientBaselineSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         aru <- ZIO.service[AppUsedRollupRepo]
         atl <- ZIO.service[AppTimeLimitRepo]
         trr <- ZIO.service[TrafficReportRepo]
-        s0  <- hsr.get
-        _   <- hsr.update(s0.copy(dailyResetTz = ZoneOffset.UTC))
+        s0  <- hsr.getForHousehold(HouseholdId.Default)
+        _   <- hsr.update(HouseholdId.Default, s0.copy(dailyResetTz = ZoneOffset.UTC))
         kid <- TestLayers.seedKidsProfile(pr)
         _   <- TestLayers.seedDevice(dr, kidMac, "kid-ipad", kid)
         rid <- seedRouterRow
@@ -171,13 +171,15 @@ object AmbientBaselineSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         now = LocalDateTime.of(today, java.time.LocalTime.of(20, 0)).toInstant(ZoneOffset.UTC)
         // Ungated rollup first (gate off).
         _        <- ZIO.serviceWithZIO[HouseholdSettingsRepo](r =>
-          r.get.flatMap(s => r.update(s.copy(ambientGateEnabled = false))),
+          r.getForHousehold(HouseholdId.Default)
+            .flatMap(s => r.update(HouseholdId.Default, s.copy(ambientGateEnabled = false))),
         )
         _        <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, atl, trr, hsr, now, ahr)
         offRolls <- ru.getDayMap(today)
         // Gated rollup.
         _        <- ZIO.serviceWithZIO[HouseholdSettingsRepo](r =>
-          r.get.flatMap(s => r.update(s.copy(ambientGateEnabled = true))),
+          r.getForHousehold(HouseholdId.Default)
+            .flatMap(s => r.update(HouseholdId.Default, s.copy(ambientGateEnabled = true))),
         )
         _        <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, atl, trr, hsr, now, ahr)
         onRolls  <- ru.getDayMap(today)
@@ -196,8 +198,9 @@ object AmbientBaselineSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
       for {
         _   <- cleanDb
         hsr <- ZIO.service[HouseholdSettingsRepo]
-        s0  <- hsr.get
+        s0  <- hsr.getForHousehold(HouseholdId.Default)
         _   <- hsr.update(
+          HouseholdId.Default,
           s0.copy(
             ambientGateEnabled = true,
             ambientIsolationMaxHosts = 3,
@@ -205,7 +208,7 @@ object AmbientBaselineSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
             ambientLearningWindowDays = 21,
           ),
         )
-        s1  <- hsr.get
+        s1  <- hsr.getForHousehold(HouseholdId.Default)
       } yield assertTrue(
         !s0.ambientGateEnabled,
         s0.ambientIsolationMaxHosts == 2,
@@ -228,8 +231,8 @@ object AmbientBaselineSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         aru <- ZIO.service[AppUsedRollupRepo]
         atl <- ZIO.service[AppTimeLimitRepo]
         trr <- ZIO.service[TrafficReportRepo]
-        s0  <- hsr.get
-        _   <- hsr.update(s0.copy(dailyResetTz = ZoneOffset.UTC))
+        s0  <- hsr.getForHousehold(HouseholdId.Default)
+        _   <- hsr.update(HouseholdId.Default, s0.copy(dailyResetTz = ZoneOffset.UTC))
         kid <- TestLayers.seedKidsProfile(pr)
         _   <- TestLayers.seedDevice(dr, kidMac, "kid-ipad", kid)
         rid <- seedRouterRow

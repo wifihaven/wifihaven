@@ -118,9 +118,9 @@ object AppUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
 
   private def setTz(hsr: HouseholdSettingsRepo, tz: String): Task[HouseholdSettings] =
     for {
-      cur <- hsr.get
+      cur <- hsr.getForHousehold(HouseholdId.Default)
       upd = cur.copy(dailyResetTz = java.time.ZoneId.of(tz))
-      _ <- hsr.update(upd)
+      _ <- hsr.update(HouseholdId.Default, upd)
     } yield upd
 
   def spec = suite("AppUsedRollupSpec (#1516)")(

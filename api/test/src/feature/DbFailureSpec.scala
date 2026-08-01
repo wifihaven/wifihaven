@@ -195,9 +195,8 @@ object DbFailureSpec extends ZIOSpecDefault {
   }
 
   private def brokenHouseholdSettingsRepo: HouseholdSettingsRepo = new HouseholdSettingsRepo {
-    def get                                                        = throwing
     def getForHousehold(household: HouseholdId)                    = throwing
-    def update(s: HouseholdSettings)                               = throwing
+    def update(hh: HouseholdId, s: HouseholdSettings)              = throwing
     def enforcementDisabled(household: HouseholdId)                = throwing
     def setEnforcementDisabled(household: HouseholdId, d: Boolean) = throwing
     def ensureDefault(z: java.time.ZoneId)                         = throwing

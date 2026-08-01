@@ -151,7 +151,7 @@ object AppDispositionCollapseSpec extends ZIOSpec[TestDatabase.AllRepos & Embedd
         )
         rid      <- seedRouterRow
         _        <- seedTraffic(rid, kidMac, "khanacademy.org", 20)
-        settings <- hsr.get
+        settings <- hsr.getForHousehold(HouseholdId.Default)
         tss      <- buildTss
         stOpt    <- tss.todaysState(HouseholdId.Default, nowInstant, settings, pid)
         state = stOpt.get
@@ -176,7 +176,7 @@ object AppDispositionCollapseSpec extends ZIOSpec[TestDatabase.AllRepos & Embedd
         )
         rid      <- seedRouterRow
         _        <- seedTraffic(rid, kidMac, "khanacademy.org", 20)
-        settings <- hsr.get
+        settings <- hsr.getForHousehold(HouseholdId.Default)
         tss      <- buildTss
         stOpt    <- tss.todaysState(HouseholdId.Default, nowInstant, settings, pid)
         state = stOpt.get
@@ -226,7 +226,7 @@ object AppDispositionCollapseSpec extends ZIOSpec[TestDatabase.AllRepos & Embedd
         )
         rid      <- seedRouterRow
         _        <- seedTraffic(rid, kidMac, "khanacademy.org", 120)
-        settings <- hsr.get
+        settings <- hsr.getForHousehold(HouseholdId.Default)
         tss      <- buildTss
         stOpt    <- tss.todaysState(HouseholdId.Default, nowInstant, settings, pid)
         state = stOpt.get
@@ -257,7 +257,7 @@ object AppDispositionCollapseSpec extends ZIOSpec[TestDatabase.AllRepos & Embedd
         )
         rid      <- seedRouterRow
         _        <- seedTraffic(rid, kidMac, "youtube.com", 65)
-        settings <- hsr.get
+        settings <- hsr.getForHousehold(HouseholdId.Default)
         tss      <- buildTss
         stOpt    <- tss.todaysState(HouseholdId.Default, nowInstant, settings, pid)
         state = stOpt.get

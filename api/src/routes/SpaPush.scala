@@ -528,10 +528,7 @@ object SpaPush {
       ZIO
         .when(recipients.nonEmpty) {
           for {
-            now      <- clock.instant
-            settings <- deps.hsRepo.get
-            date = PolicyService.householdLocalDate(now, settings)
-            ambient <- deps.ambientRepo.gateFor(settings, date)
+            now <- clock.instant
             // #2257: build + deliver PER HOUSEHOLD — a household-B admin subscribed to `timeStatus`
             // must never receive household A's `ProfileTimeStatus[]` (the sibling of the #2120 `now`
             // leak). Group recipients by household, scope EVERY read (profiles/devices/presence AND
@@ -540,6 +537,14 @@ object SpaPush {
             byHousehold = recipients.groupBy(_.household)
             _ <- ZIO.foreachDiscard(byHousehold.toList) { case (household, hhRecipients) =>
               for {
+                // #2533: the settings (daily-reset tz → `date`, heartbeat filter + ambient gate →
+                // the engaged-minute definition) are per-household, so they are read INSIDE the
+                // per-household loop. They used to be read once via the unscoped `get`, which meant
+                // household #1's reset tz and filter were applied to every other household's push —
+                // the same divergence the route had.
+                settings <- deps.hsRepo.getForHousehold(household)
+                date = PolicyService.householdLocalDate(now, settings)
+                ambient  <- deps.ambientRepo.gateFor(settings, date)
                 states   <- deps.timeStatusService.dayStateAll(household, now, date, settings)
                 profiles <- profileRepo.listAllForHousehold(household)
                 devices  <- deviceRepo.listAllForHousehold(household)
@@ -641,12 +646,15 @@ object SpaPush {
       ZIO
         .when(recipients.nonEmpty) {
           for {
-            now      <- clock.instant
-            settings <- deps.hsRepo.get
-            today       = PolicyService.householdLocalDate(now, settings)
+            now <- clock.instant
             byHousehold = recipients.groupBy(_.household)
             _ <- ZIO.foreachDiscard(byHousehold.toList) { case (household, hhRecipients) =>
               for {
+                // #2533: per-household settings (the daily-reset tz that fixes `today`, and the
+                // heartbeat/ambient knobs `buildUsageByApp` gates engaged minutes with) are read
+                // INSIDE the loop. The unscoped `get` applied household #1's to everyone.
+                settings <- deps.hsRepo.getForHousehold(household)
+                today = PolicyService.householdLocalDate(now, settings)
                 // The profile-id set for THIS household — the gate that keeps a subscribed pid from
                 // another household from ever being served (#2257).
                 hhProfileIds  <- profileRepo.listAllForHousehold(household).map(_.map(_.id).toSet)

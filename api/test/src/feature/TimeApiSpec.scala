@@ -1595,6 +1595,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           )
           // Flip the filter on with the production defaults so the explain output reflects them.
           _               <- hsRepoSvc.update(
+            HouseholdId.Default,
             HouseholdSettings(
               java.time.LocalTime.of(0, 0),
               java.time.ZoneId.of("UTC"),
@@ -2347,7 +2348,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           userProfileRepo <- ZIO.service[UserProfileRepo]
           hsRepo          <- ZIO.service[HouseholdSettingsRepo]
           clock           <- ZIO.service[Clock]
-          settings        <- hsRepo.get
+          settings        <- hsRepo.getForHousehold(HouseholdId.Default)
           now             <- clock.instant
           tss    = new wifihaven.api.policy.TimeStatusServiceLive(
             profileRepo,
@@ -2417,7 +2418,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           userProfileRepo <- ZIO.service[UserProfileRepo]
           hsRepo          <- ZIO.service[HouseholdSettingsRepo]
           clock           <- ZIO.service[Clock]
-          settings        <- hsRepo.get
+          settings        <- hsRepo.getForHousehold(HouseholdId.Default)
           now             <- clock.instant
           tss    = new wifihaven.api.policy.TimeStatusServiceLive(
             profileRepo,
@@ -2472,7 +2473,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           clock           <- ZIO.service[Clock]
           auth            <- makeAuth
           token           <- auth.login("admin", "changeme").map(_.token.value)
-          settings        <- hsRepo.get
+          settings        <- hsRepo.getForHousehold(HouseholdId.Default)
           now             <- clock.instant
           today = wifihaven.api.policy.PolicyService.householdLocalDate(now, settings)
           // valid.apple.com isolated on 3 days (ambient at the default threshold);
