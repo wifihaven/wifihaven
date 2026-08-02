@@ -102,7 +102,7 @@ object RouterWsSpec
       port: Int,
       bearer: Option[String],
       send: WebSocketChannel => ZIO[Any, Throwable, Unit],
-      probe: ZIO[Any, Throwable, B],
+      probe: ZIO[Client, Throwable, B],
       until: String => Boolean = _ => true,
   ): ZIO[Client, Throwable, (String, Chunk[String], B)] =
     for {
@@ -133,6 +133,19 @@ object RouterWsSpec
         } yield (t, all, b)
       }
     } yield result
+
+  /**
+   * Poll the registry's live channel count until it settles on `target` (register/deregister are
+   * driven by the server-side ws fiber, so they race the client's view of the connection). Returns
+   * `-1` on timeout so a stuck count fails the assertion loudly instead of hanging to the suite
+   * timeout.
+   */
+  private def awaitActiveCount(reg: RouterWsRegistry, target: Int): UIO[Int] =
+    reg.activeCount
+      .repeat(zio.Schedule.spaced(50.millis) && zio.Schedule.recurUntil[Int](_ == target))
+      .map(_._2)
+      .timeout(15.seconds)
+      .map(_.getOrElse(-1))
 
   def spec = suite("Router websocket /api/router/ws")(
     test("rejects the upgrade with 401 when the bearer token is missing or invalid") {
@@ -291,6 +304,44 @@ object RouterWsSpec
       assertTrue(policyFrame.contains("\"op\":\"policy\"")) &&
         assertTrue(policyFrame.contains("\"etag\"")) &&
         assertTrue(policyFrame.contains(knownMac))).provideSome[
+        TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task],
+      ](Server.defaultWithPort(0), Client.default)
+    },
+    test("#2561: a second connection for the same router supersedes the first (registry holds 1)") {
+      // The prod leak: a router whose socket went half-open reconnects, the server still holds the
+      // dead channel, and `router_ws_connections_active` reads 2 for one router — permanently, since
+      // the stale channel's teardown never fires. Here both sockets are real and concurrently open
+      // against the real endpoint; the registry must still report exactly ONE channel for the router,
+      // and zero once the live one closes.
+      (for {
+        _             <- cleanDb
+        rRepo         <- ZIO.service[RouterRepo]
+        pRepo         <- ZIO.service[ProfileRepo]
+        dRepo         <- ZIO.service[DeviceRepo]
+        _             <- seedKnownDevice(dRepo, pRepo)
+        (id, tk)      <- seedRouter(rRepo)
+        (routes, reg) <- buildWsRoutes
+        port          <- Server.install(routes)
+        // Nest the two connections so BOTH are open at the same time when we sample the registry —
+        // the first is still in scope while the second connects, exactly the overlap that leaked.
+        counts        <- connectAndCapture(
+          port,
+          Some(tk),
+          _ => ZIO.unit,
+          connectAndCapture(
+            port,
+            Some(tk),
+            _ => ZIO.unit,
+            // Sampled with both sockets open. Poll: the server-side register for the second
+            // connection races the client-side handshake completing.
+            awaitActiveCount(reg, 1),
+            until = _.contains("\"op\":\"policy\""),
+          ).map(_._3),
+          until = _.contains("\"op\":\"policy\""),
+        ).map(_._3)
+        // Both scopes closed: every channel has torn down, so the gauge source is back to zero.
+        afterTeardown <- awaitActiveCount(reg, 0)
+      } yield assertTrue(counts == 1) && assertTrue(afterTeardown == 0)).provideSome[
         TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task],
       ](Server.defaultWithPort(0), Client.default)
     },

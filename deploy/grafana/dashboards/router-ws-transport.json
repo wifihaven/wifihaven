@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "WifiHaven websocket router transport (#1846, epic #1023): server-side health for the persistent /api/router/ws endpoint. Panels target only the series the API actually emits today — router_ws_connections_active (RouterWsRegistry) and router_ws_frames_total{op,direction,result} (RouterWsRoutes demux). The REST transport stays the fallback; until the agent ws client (#1848) ships these read 0/flat. Push-on-change health (router_ws_policy_push_total) lands with #1849. Per-ws-message-process latency (router_ws_message_duration_seconds, #2168) is the ws analog of http_request_duration_seconds — it must land before the #1023 prod cutover / #1850 poll removal so slow-op regressions on the socket stay visible. Labels are bounded enums only per the §4 cardinality firewall. datasource/env are templated for per-environment view.",
+  "description": "WifiHaven websocket router transport (#1846, epic #1023): server-side health for the persistent /api/router/ws endpoint. Panels target only the series the API actually emits today — router_ws_connections_active (RouterWsRegistry) and router_ws_frames_total{op,direction,result} (RouterWsRoutes demux). The REST transport stays the fallback; until the agent ws client (#1848) ships these read 0/flat. Push-on-change health (router_ws_policy_push_total) lands with #1849. Per-ws-message-process latency (router_ws_message_duration_seconds, #2168) is the ws analog of http_request_duration_seconds — it must land before the #1023 prod cutover / #1850 poll removal so slow-op regressions on the socket stay visible. router_ws_connections_superseded_total (#2561) counts half-open sockets evicted on reconnect — the residual signal behind the connections gauge. Labels are bounded enums only per the §4 cardinality firewall. datasource/env are templated for per-environment view.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -28,7 +28,7 @@
         "uid": "${datasource}"
       },
       "title": "Websocket connections active (#1846)",
-      "description": "router_ws_connections_active — live count of open /api/router/ws channels, refreshed on every register/deregister so it ages out cleanly on disconnect. The single \"how many routers are on the ws transport right now?\" signal; 0 while REST ingest flows means no agent has migrated yet (the Lua ws client is #1848).",
+      "description": "router_ws_connections_active — live count of open /api/router/ws channels, recomputed from the registry on every register/deregister so it is a pure function of registry state. #2561: a re-connect for a router that is already present now supersedes (evicts + shuts down) the stale channel, so the gauge is bounded by the number of connected ROUTERS and can no longer drift upward when a socket goes half-open without a close handshake — it read 2 with one router connected before that fix. Pair with \"WS stale-connection supersedes\" for the half-open rate this now absorbs. The single \"how many routers are on the ws transport right now?\" signal.",
       "type": "timeseries",
       "gridPos": {
         "h": 8,
@@ -944,6 +944,63 @@
           "expr": "sum by (result) (rate(spa_ws_reassembly_total{env=\"$env\"}[5m]))",
           "legendFormat": "spa {{result}}",
           "refId": "B"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "title": "WS stale-connection supersedes (#2561)",
+      "description": "rate of router_ws_connections_superseded_total — a router re-connected while the server still held a channel for it, i.e. the previous socket went half-open and its teardown never ran. The registry now evicts + shuts that stale channel down, which is what keeps router_ws_connections_active honest (it read 2 with one router connected before #2561). This counter is the residual signal: it should be low and bursty (a router rebooting / NAT rebind), and a sustained rate means sockets are dying without a close handshake — the routers are churning between ws and the poll fallback even though the connections gauge looks healthy. Unlabelled (a router id would be a fleet-sized dimension).",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 64
+      },
+      "id": 16,
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "cps",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "rate(router_ws_connections_superseded_total{env=\"$env\"}[5m])",
+          "legendFormat": "superseded",
+          "refId": "A"
         }
       ]
     }

@@ -16,15 +16,28 @@ import zio.json.*
  *
  * Single-process, in-memory (`Ref[Map[RouterId, Set[WebSocketChannel]]]`). This is the right shape
  * for the single-household model; multi-tenant pub/sub fan-out across instances is explicitly out
- * of scope (#1023, design §6.1). A router may hold more than one channel transiently (a reconnect
- * whose old socket has not yet been deregistered), hence a `Set` per id.
+ * of scope (#1023, design §6.1).
+ *
+ * **At most one live channel per router (#2561).** A router runs one agent holding one socket, so a
+ * second `register` for an id that is already present means the OLD socket is dead and the server
+ * simply has not noticed — a half-open TCP connection whose `receiveAll` never completes, so the
+ * teardown `ensuring` in [[RouterWsRoutes]] never runs and its entry would never be dropped. That
+ * is exactly what leaked the gauge to 2 with one router connected: two consecutive `router ws:
+ * connected` for the same id with no `disconnected` between them. So a re-connect SUPERSEDES: the
+ * stale channels are evicted and shut down, which both bounds the registry and unwedges the dead
+ * socket's fiber. The per-id `Set` is retained because eviction is still channel-identity-scoped —
+ * a superseded socket's late `deregister` must not remove its replacement.
  *
  * Every mutation refreshes the `router_ws_connections_active` gauge to the live total channel
- * count, so the gauge ages out cleanly on disconnect (§7).
+ * count, so the gauge is a pure function of registry state and ages out cleanly on disconnect (§7).
  */
 trait RouterWsRegistry {
 
-  /** Record a freshly-upgraded channel for `id`. Refreshes the active-connections gauge. */
+  /**
+   * Record a freshly-upgraded channel for `id`, superseding any channel already held for that
+   * router (#2561 — a reconnect means the old socket is dead; it is evicted and shut down).
+   * Refreshes the active-connections gauge.
+   */
   def register(id: RouterId, channel: WebSocketChannel): UIO[Unit]
 
   /** Drop a closed/closing channel for `id`. Refreshes the active-connections gauge. */
@@ -77,10 +90,28 @@ final class RouterWsRegistryLive(
   private def publishActive(m: Map[RouterId, Set[WebSocketChannel]]): UIO[Unit] =
     AppMetrics.setWsConnectionsActive(m.valuesIterator.map(_.size).sum)
 
+  // #2561: a re-connect for a router that is already present REPLACES its channel set rather than
+  // adding alongside it. The superseded channels are shut down (best-effort — a half-open socket may
+  // never respond) so their server-side fiber unwinds and the `ensuring` teardown in RouterWsRoutes
+  // runs; that late deregister is channel-identity-scoped, so it cannot remove the replacement.
   def register(id: RouterId, channel: WebSocketChannel): UIO[Unit] =
     state
-      .updateAndGet(m => m.updated(id, m.getOrElse(id, Set.empty) + channel))
-      .flatMap(publishActive)
+      .modify { m =>
+        val superseded = m.getOrElse(id, Set.empty) - channel
+        val next       = m.updated(id, Set(channel))
+        ((superseded, next), next)
+      }
+      .flatMap { case (superseded, next) =>
+        publishActive(next) *>
+          ZIO.foreachDiscard(superseded) { stale =>
+            AppMetrics.recordWsConnectionSuperseded *>
+              ZIO.logWarning(
+                s"router ws: superseded a stale channel on reconnect router=$id " +
+                  "(previous socket never tore down)",
+              ) *>
+              stale.shutdown
+          }
+      }
 
   def deregister(id: RouterId, channel: WebSocketChannel): UIO[Unit] =
     state

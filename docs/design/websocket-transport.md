@@ -634,7 +634,8 @@ Grafana panel per the dashboard rule — sub-issue tasks include the panel):
 
 | Metric | Type | Labels (bounded) | Meaning |
 | --- | --- | --- | --- |
-| `router_ws_connections_active` | gauge | — | currently-open channels |
+| `router_ws_connections_active` | gauge | — | currently-open channels. Recomputed from the registry map on every mutation (never separately incremented), and bounded to at most one channel per router since #2561 — a re-connect for an already-present router supersedes the stale channel |
+| `router_ws_connections_superseded_total` | counter | — | #2561: a reconnect arrived while the server still held a channel for that router (the previous socket went half-open, so its teardown never ran). The stale channel is evicted + shut down; this counter keeps the underlying half-open rate visible rather than silently absorbed by the fix |
 | `router_connected` | gauge | `router_id` (fleet-bounded) | 1/0 link-up per router (§5.5) — emitted only for currently-connected routers and **aged out on deregister** so the `router_id` series doesn't accumulate stale values (impl: sub-issue A) |
 | `router_ws_frames_total` | counter | `op`, `dir` (`in`/`out`), `result` (`ok`/`reject`/`unknown_op`) | frame throughput + the unknown-op forward-compat counter |
 | ~~`router_ws_handshake_total`~~ | — | — | **NOT BUILT** — handshake won't-do (§2 status, #1847) |
