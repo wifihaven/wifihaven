@@ -1,12 +1,10 @@
 package wifihaven.api.feature
 
-import wifihaven.api.MetricsConfig
-import wifihaven.api.metrics.MetricsRuntime
-import wifihaven.api.routes.{MetricsRoutes, RouterWsRegistry}
+import wifihaven.api.routes.RouterWsRegistry
 import wifihaven.shared.types.RouterId
 import zio.*
 import zio.http.*
-import zio.metrics.connectors.prometheus.PrometheusPublisher
+import zio.metrics.Metric
 import zio.test.*
 
 import java.util.UUID
@@ -23,11 +21,17 @@ import java.util.UUID
  * present SUPERSEDES the old channel (evict + shut down) rather than accumulating alongside it.
  *
  * This spec is the regression pin: connect the same router id twice with no intervening clean
- * disconnect, tear down only the live one, and assert the scraped gauge is back to 0.
+ * disconnect, tear down only the live one, and assert the gauge is back to 0.
+ *
+ * The gauge is read back straight off the ZIO metric registry (`Metric.gauge(name).value`), the
+ * same key `MetricGuard.gauge` writes with an empty label set. That read is SYNCHRONOUS — there is
+ * no Prometheus publisher, no snapshot listener, and therefore no background fiber to wait on, so
+ * this spec needs no wall-clock polling (`docs/process/testing.md` — never wait on wall-clock time
+ * for async work; #2042).
  */
-object RouterWsConnectionsGaugeSpec extends ZIOSpec[PrometheusPublisher] {
+object RouterWsConnectionsGaugeSpec extends ZIOSpec[Any] {
 
-  override val bootstrap = MetricsRuntime.prometheus(100.millis)
+  override val bootstrap: ZLayer[Any, Nothing, Any] = ZLayer.empty
 
   private val routerId = RouterId(UUID.fromString("3498967e-3842-41d2-960f-b521c7809cf4"))
 
@@ -36,7 +40,9 @@ object RouterWsConnectionsGaugeSpec extends ZIOSpec[PrometheusPublisher] {
    * and calls `shutdown` on a superseded one, so nothing here needs real transport behaviour — the
    * `shutdown` flag is what proves the stale channel was actively torn down rather than merely
    * forgotten. Distinct instances compare by reference, which is exactly how the registry's
-   * per-channel `Set` distinguishes an old socket from its replacement.
+   * per-channel `Set` distinguishes an old socket from its replacement. (A network socket is
+   * external I/O — the one thing `docs/process/testing.md` does allow a test to stand in for; the
+   * end-to-end path over a REAL client and server is pinned in [[RouterWsSpec]].)
    */
   private final class StubChannel(val shutdownCalled: Ref[Boolean]) extends WebSocketChannel {
     def awaitShutdown(implicit trace: Trace): UIO[Unit]                                 = ZIO.unit
@@ -46,40 +52,21 @@ object RouterWsConnectionsGaugeSpec extends ZIOSpec[PrometheusPublisher] {
     ): ZIO[Env, Err, Unit] = ZIO.never
     def send(in: WebSocketChannelEvent)(implicit trace: Trace): Task[Unit]              = ZIO.unit
     def sendAll(in: Iterable[WebSocketChannelEvent])(implicit trace: Trace): Task[Unit] = ZIO.unit
-    def shutdown(implicit trace: Trace): UIO[Unit] = shutdownCalled.set(true)
+    def shutdown(implicit trace: Trace): UIO[Unit]                                      =
+      shutdownCalled.set(true)
   }
 
   private def stubChannel: UIO[StubChannel] = Ref.make(false).map(new StubChannel(_))
 
-  private def scrape: ZIO[PrometheusPublisher, Nothing, String] =
-    for {
-      pub <- ZIO.service[PrometheusPublisher]
-      routes = MetricsRoutes.routes(MetricsConfig(enabled = true), pub)
-      resp <- routes(Request.get("/metrics")).merge
-      body <- resp.body.asString.orDie
-    } yield body
-
   /**
-   * Parse the unlabelled `router_ws_connections_active` gauge out of the exposition. The
-   * zio-metrics prometheus line is `name value [timestamp]`, so the value is the SECOND token, not
-   * the last (that's the scrape timestamp).
+   * The live `router_ws_connections_active` value, read off the same unlabelled key it is set on.
    */
-  private def gaugeValue(body: String): Option[Double] =
-    body.linesIterator
-      .filterNot(_.startsWith("#"))
-      .map(_.trim.split("\\s+"))
-      .collectFirst {
-        case parts if parts.length >= 2 && parts(0) == "router_ws_connections_active" =>
-          parts(1).toDoubleOption.getOrElse(Double.NaN)
-      }
+  private def connectionsActive: UIO[Double] =
+    Metric.gauge("router_ws_connections_active").value.map(_.value)
 
-  /** The publisher's snapshot listener is async, so poll until the gauge settles on `target`. */
-  private def awaitGauge(target: Double): ZIO[PrometheusPublisher, Nothing, Double] =
-    scrape
-      .map(gaugeValue(_).getOrElse(Double.NaN))
-      .repeat(Schedule.spaced(50.millis) && Schedule.recurUntil[Double](_ == target))
-      .map(_._2)
-      .timeoutTo(Double.NaN)(identity)(10.seconds)
+  /** The cumulative `router_ws_connections_superseded_total` count (asserted as a delta). */
+  private def supersededTotal: UIO[Double] =
+    Metric.counter("router_ws_connections_superseded_total").value.map(_.count)
 
   def spec = suite("router_ws_connections_active gauge (#2561)")(
     test("a reconnect for an already-connected router supersedes the stale channel") {
@@ -87,21 +74,25 @@ object RouterWsConnectionsGaugeSpec extends ZIOSpec[PrometheusPublisher] {
         reg            <- RouterWsRegistry.make
         stale          <- stubChannel
         live           <- stubChannel
+        supersededPre  <- supersededTotal
         // The prod sequence: `connected`, then `connected` again for the SAME router with no
         // `disconnected` between (the first socket went half-open; its teardown never ran).
         _              <- reg.register(routerId, stale)
         _              <- reg.register(routerId, live)
         afterSecond    <- reg.activeCount
-        gaugeWhileUp   <- awaitGauge(1.0)
+        gaugeWhileUp   <- connectionsActive
         staleClosed    <- stale.shutdownCalled.get
+        supersededPost <- supersededTotal
         // Only the live socket ever tears down cleanly — the stale one never will.
         _              <- reg.deregister(routerId, live)
         afterTeardown  <- reg.activeCount
-        gaugeAfter     <- awaitGauge(0.0)
+        gaugeAfter     <- connectionsActive
         stillConnected <- reg.isConnected(routerId)
       } yield assertTrue(afterSecond == 1) &&
         assertTrue(gaugeWhileUp == 1.0) &&
         assertTrue(staleClosed) &&
+        // The eviction is metered, so the half-open rate the fix absorbs stays observable.
+        assertTrue(supersededPost - supersededPre == 1.0) &&
         assertTrue(afterTeardown == 0) &&
         assertTrue(gaugeAfter == 0.0) &&
         assertTrue(!stillConnected)
@@ -125,5 +116,5 @@ object RouterWsConnectionsGaugeSpec extends ZIOSpec[PrometheusPublisher] {
         // A different router's connect must NOT shut this one's channel down.
         assertTrue(!aClosed)
     },
-  ) @@ TestAspect.withLiveClock @@ TestAspect.sequential @@ TestAspect.timeout(60.seconds)
+  ) @@ TestAspect.sequential
 }
