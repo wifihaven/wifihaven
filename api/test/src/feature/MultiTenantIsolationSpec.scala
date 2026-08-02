@@ -759,6 +759,63 @@ object MultiTenantIsolationSpec
       } yield assertTrue(resp.status == Status.NotFound || resp.status == Status.Forbidden) &&
         assertTrue(nameB == "B-Kids")
     },
+    // #2565: the missing DELETE sibling of the pin above. `requireNotGlobalProfile` is a SHAPE
+    // guard (is this the global sentinel?), not a tenancy guard, and `ProfileRepo.delete` is an
+    // unscoped `DELETE FROM profiles WHERE id=?` — so without `requireProfileAccess` a hh-A adult
+    // could destroy hh-B's profile (and cascade its devices' profile_id, time_limits,
+    // app_policy_assignments, profile_schedule_rules) by guessing a globally-unique small integer.
+    test("pin 2 (#2565) — hh-A admin cannot DELETE hh-B's profile (404, row still present)") {
+      for {
+        _      <- cleanDb
+        two    <- TestLayers.seedTwoHouseholds(macA, macB)
+        pr     <- ZIO.service[ProfileRepo]
+        tlr    <- ZIO.service[TimeLimitRepo]
+        up     <- ZIO.service[UserProfileRepo]
+        ur     <- ZIO.service[UserRepo]
+        nsr    <- ZIO.service[NamedScheduleRepo]
+        xa     <- ZIO.service[Transactor[Task]]
+        auth   <- makeAuth
+        tokenA <- login(auth, two.adminA, two.password)
+        routes = ProfileRoutes.routes(auth, pr, tlr, up, ur, nsr)
+        resp     <- routes.runZIO(
+          Request
+            .delete(URL.decode(s"/api/profiles/${two.profileB.value}").toOption.get)
+            .addHeader(Header.Authorization.Bearer(tokenA)),
+        )
+        // The row itself — not just the status — is the assertion that matters: the delete is
+        // unrecoverable, so a 404 with the row already gone would still be the bug.
+        survived <- sql"SELECT name FROM profiles WHERE id=${two.profileB}"
+          .query[String]
+          .option
+          .transact(xa)
+      } yield assertTrue(resp.status == Status.NotFound || resp.status == Status.Forbidden) &&
+        assertTrue(survived == Some("B-Kids"))
+    },
+    // Happy-path guard for the pin above: scoping the DELETE must not break a same-household one.
+    test("pin 2 (#2565) — hh-A admin CAN delete hh-A's own profile (happy path preserved)") {
+      for {
+        _      <- cleanDb
+        two    <- TestLayers.seedTwoHouseholds(macA, macB)
+        pr     <- ZIO.service[ProfileRepo]
+        tlr    <- ZIO.service[TimeLimitRepo]
+        up     <- ZIO.service[UserProfileRepo]
+        ur     <- ZIO.service[UserRepo]
+        nsr    <- ZIO.service[NamedScheduleRepo]
+        xa     <- ZIO.service[Transactor[Task]]
+        auth   <- makeAuth
+        tokenA <- login(auth, two.adminA, two.password)
+        routes = ProfileRoutes.routes(auth, pr, tlr, up, ur, nsr)
+        resp  <- routes.runZIO(
+          Request
+            .delete(URL.decode(s"/api/profiles/${two.profileA.value}").toOption.get)
+            .addHeader(Header.Authorization.Bearer(tokenA)),
+        )
+        goneA <- sql"SELECT name FROM profiles WHERE id=${two.profileA}"
+          .query[String]
+          .option
+          .transact(xa)
+      } yield assertTrue(resp.status == Status.Ok) && assertTrue(goneA.isEmpty)
+    },
     test("pin 2 — hh-A admin cannot write hh-B's device by MAC (404, row untouched)") {
       for {
         _      <- cleanDb
