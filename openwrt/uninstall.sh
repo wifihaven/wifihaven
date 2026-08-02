@@ -229,16 +229,25 @@ fi
 TOKEN_SURVIVORS=""
 FAILED_PATHS=""
 
-config_has_router_token() {
-  [ -f "$WIFIHAVEN_CONFIG" ] || return 1
-  [ -n "$(uci -q get wifihaven.@wifihaven[0].router_token 2>/dev/null || true)" ] && return 0
+# Single source of truth for "does this file hold a live router_token?", used
+# for the config itself AND for install.sh's displaced-config backup — so the
+# uninstaller never asserts a credential is present without having looked.
+file_has_router_token() {
+  [ -f "$1" ] || return 1
   # Match every spelling uci accepts — bare, single- and double-quoted key, and
   # any value whose first character is not whitespace or a quote (so `''`, `""`
   # and a bare `option router_token` correctly read as "no token"). A narrower
   # pattern would miss the token in a hand-edited config and report a wipe that
   # did not happen.
   grep -Eq "^[[:space:]]*option[[:space:]]+['\"]?router_token['\"]?[[:space:]]+['\"]?[^[:space:]'\"]" \
-    "$WIFIHAVEN_CONFIG" 2>/dev/null
+    "$1" 2>/dev/null
+}
+
+config_has_router_token() {
+  # The live UCI tree can hold the token even when the on-disk text does not
+  # (uncommitted state), so check both for the config we own.
+  [ -n "$(uci -q get wifihaven.@wifihaven[0].router_token 2>/dev/null || true)" ] && return 0
+  file_has_router_token "$WIFIHAVEN_CONFIG"
 }
 
 scrub_wifihaven_config() {
@@ -327,10 +336,11 @@ prune_runtime_artifacts() {
     if [ -e "$_p" ]; then
       FAILED_PATHS="$FAILED_PATHS $_p"
       note "FAILED to remove $_p"
-      # The install-time backup can carry a router_token, so its survival is a
-      # credential failure, not just a leftover file.
-      [ "$_p" = "$WIFIHAVEN_CONFIG_BACKUP" ] \
-        && TOKEN_SURVIVORS="$TOKEN_SURVIVORS $WIFIHAVEN_CONFIG_BACKUP"
+      # The install-time backup CAN carry a router_token — look, don't assume.
+      # Escalating a token-free leftover to a credential failure is the same
+      # unsourced-claim bug in the other direction.
+      file_has_router_token "$_p" \
+        && TOKEN_SURVIVORS="$TOKEN_SURVIVORS $_p"
     else
       _removed="$_removed $_p"
     fi
@@ -371,7 +381,8 @@ printf '\nRe-run install.sh on this router for a fresh enrollment.\n'
 # because they would empty a clean file and stop looking.
 if [ -n "$TOKEN_SURVIVORS" ]; then
   err "the router bearer token could NOT be removed from:$TOKEN_SURVIVORS
-Delete or empty those files by hand before decommissioning or re-homing this router."
+Delete or empty those files by hand before decommissioning or re-homing this router.
+Everything that could not be removed:$FAILED_PATHS"
 elif [ -n "$FAILED_PATHS" ]; then
   err "could not remove:$FAILED_PATHS
 These are wifihaven runtime state (not package files) — remove them by hand. No

@@ -161,7 +161,8 @@ for _bk_f in "$INSTALL" "$UNINSTALL"; do
     || check "SSOT: $_bk_label sets WIFIHAVEN_CONFIG_BACKUP=$CONFIG_BACKUP_PATH" \
              "the two scripts disagree on the backup path — uninstall.sh's prune would miss install.sh's file"
 done
-sed -n '/^prune_runtime_artifacts()/,/^}/p' "$UNINSTALL" | grep -q '"\$WIFIHAVEN_CONFIG_BACKUP"' \
+sed -n '/^prune_runtime_artifacts()/,/^}/p' "$UNINSTALL" | sed -n '/for _p in /,/; do$/p' \
+  | grep -v '^[[:space:]]*#' | grep -q '"\$WIFIHAVEN_CONFIG_BACKUP"' \
   && check "SSOT: uninstall.sh's prune list includes the config backup" ok \
   || check "SSOT: uninstall.sh's prune list includes the config backup" \
            "prune_runtime_artifacts no longer names \$WIFIHAVEN_CONFIG_BACKUP"
@@ -226,6 +227,11 @@ _sysctl_drift=$(cat "$TMP/sysctl-drift")
 # the shell/awk escaping and require the same anchored matcher in each — an
 # unanchored variant in any one of them would be satisfied by the stock
 # `uhttpd.main.listen_http='0.0.0.0:80'` plus an unrelated 8081 elsewhere.
+# Scope: this pin catches the realistic drift — someone copying the existing
+# `listen_http=…8081` matcher into a fourth place and loosening the anchor. A
+# matcher built from a different shape entirely (e.g. comparing `uci get
+# uhttpd.<sec>.listen_http` against a literal) carries no `listen_http=` and is
+# out of its reach; that is a limit of a textual pin, not an oversight.
 UHTTPD_MATCHER_CORE="^uhttpd.[^.]+.listen_http=.*'127.0.0.1:8081'"
 normalized_matcher() {
   # Comment-stripped, so prose mentioning listen_http can never satisfy the pin
@@ -233,7 +239,7 @@ normalized_matcher() {
   # first — a second, looser matcher added later must fail the pin too. Lines
   # that WRITE the listener (`uci add_list …listen_http=…`) are not matchers, so
   # the candidate set is restricted to lines that search (grep/awk).
-  grep -v '^[[:space:]]*#' "$1" | grep "listen_http=" | grep "8081" | grep -Ev 'uci[[:space:]]+(set|add_list|del_list|get)' \
+  grep -v '^[[:space:]]*#' "$1" | grep "listen_http=" | grep "8081" | grep -Ev 'uci[[:space:]]+(set|add_list|del_list)' \
     | tr -d '\\ '
 }
 for _m_f in "$ROOT/files/usr/lib/wifihaven/setup-uhttpd-block-page.sh" "$UNINSTALL" "$INSTALL"; do
@@ -499,11 +505,12 @@ uci() {
 }
 PRELUDE
   printf 'TOKEN_SURVIVORS=""\nFAILED_PATHS=""\n'
+  sed -n '/^file_has_router_token()/,/^}/p' "$UNINSTALL"
   sed -n '/^config_has_router_token()/,/^}/p' "$UNINSTALL"
   sed -n '/^scrub_wifihaven_config()/,/^}/p' "$UNINSTALL"
   sed -n '/^prune_runtime_artifacts()/,/^}/p' "$UNINSTALL"
   cat <<'GUARD'
-for _fn in config_has_router_token scrub_wifihaven_config prune_runtime_artifacts; do
+for _fn in file_has_router_token config_has_router_token scrub_wifihaven_config prune_runtime_artifacts; do
   command -v "$_fn" >/dev/null 2>&1 \
     || { printf 'EXTRACTION-FAILED: %s not extracted from uninstall.sh\n' "$_fn" >&2; exit 99; }
 done
@@ -715,10 +722,8 @@ else
   _mixed_bad=""
   [ -e "$FR/etc/wifihaven/policy.json" ] && _mixed_bad="policy.json survived;"
   grep -q TOKENVAL "$FR/tmp/wifihaven-config.bak-2554" 2>/dev/null || _mixed_bad="$_mixed_bad backup unexpectedly removed;"
-  case "$out" in
-    *"FAILED to remove"*"wifihaven-config.bak-2554"*) : ;;
-    *) _mixed_bad="$_mixed_bad the surviving backup was not reported;" ;;
-  esac
+  printf '%s\n' "$out" | grep -q 'FAILED to remove .*wifihaven-config\.bak-2554' \
+    || _mixed_bad="$_mixed_bad the surviving backup was not reported;"
   # Whatever the wording, a success note must not enumerate something that
   # survived — a fixed "(… config backup)" string is exactly that failure.
   _mixed_note=$(printf '%s\n' "$out" | grep 'removed wifihaven runtime artifacts' || true)
@@ -730,6 +735,29 @@ else
     && check "#2554 a mixed-outcome prune does not claim the survivors were removed" ok \
     || check "#2554 a mixed-outcome prune does not claim the survivors were removed" \
              "$_mixed_bad ($out)"
+fi
+
+# A surviving backup that holds NO token must not be escalated to a bearer-token
+# failure — asserting a credential is present without looking is the same
+# unsourced-claim bug in the other direction.
+if [ "$(id -u)" -eq 0 ]; then
+  skip "#2554 a token-free surviving backup is not called a bearer-token failure" \
+       "running as root: a read-only parent directory does not stop rm"
+else
+  FR="$TMP/prune-readonly-notoken"
+  rm -rf "$FR"; mkdir -p "$FR/etc/wifihaven" "$FR/tmp"
+  printf "config wifihaven 'wifihaven'\n\toption api_url 'https://api.example'\n" \
+    > "$FR/tmp/wifihaven-config.bak-2554"
+  chmod 555 "$FR/tmp"
+  out=$(run_uninstall_sim "" \
+        "prune_runtime_artifacts || true; printf 'TOKEN_SURVIVORS=[%s]\\n' \"\$TOKEN_SURVIVORS\"" \
+        || printf 'SIM-EXITED')
+  chmod 755 "$FR/tmp"
+  case "$out" in
+    *"TOKEN_SURVIVORS=[]"*) check "#2554 a token-free surviving backup is not called a bearer-token failure" ok ;;
+    *) check "#2554 a token-free surviving backup is not called a bearer-token failure" \
+             "a backup with no router_token was reported as a surviving credential: $out" ;;
+  esac
 fi
 
 # The terminal error must name what actually failed. Pointing the operator at a
