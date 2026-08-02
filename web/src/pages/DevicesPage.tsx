@@ -8,7 +8,7 @@ import { useEscapeClose } from '@/hooks/useEscapeClose'
 import { useNotificationPermission } from '@/hooks/useNotifyOnNewAlerts'
 import { useDebouncedSave, mergeSaveStatus } from '@/hooks/useDebouncedSave'
 import { EmptyState } from '@/components/EmptyState'
-import { InlineProfileCreator } from '@/components/InlineProfileCreator'
+import { InlineProfileCreator, NEW_PROFILE_VALUE } from '@/components/InlineProfileCreator'
 import { SaveStatusBadge } from '@/components/SaveStatusBadge'
 import type { Alert, Device, PatchDeviceRequest, ProfileDetail } from '@/types/api'
 import { PageLoader } from './DashboardPage'
@@ -214,9 +214,9 @@ export function DevicesPage() {
               <label className="block text-xs font-semibold text-brand-text-muted uppercase tracking-wider mb-2">Profile</label>
               {profiles.length > 0 && (
                 <select
-                  value={creatingProfile ? '__new__' : form.profileId}
+                  value={creatingProfile ? NEW_PROFILE_VALUE : form.profileId}
                   onChange={e => {
-                    if (e.target.value === '__new__') {
+                    if (e.target.value === NEW_PROFILE_VALUE) {
                       setCreatingProfile(true)
                     } else {
                       setCreatingProfile(false)
@@ -225,7 +225,7 @@ export function DevicesPage() {
                   }}
                   className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-3 text-brand-ink">
                   {profiles.map(p => <option key={p.profile.id} value={p.profile.id}>{p.profile.name}</option>)}
-                  <option value="__new__">+ New profile…</option>
+                  <option value={NEW_PROFILE_VALUE}>+ New profile…</option>
                 </select>
               )}
               {creatingProfile && (
@@ -264,9 +264,9 @@ function DeviceRowEditor({
   const invalidators = useInvalidators()
   const [name, setName] = useState(device.name)
   const [profileId, setProfileId] = useState<number | null>(device.profileId)
-  // #2560 — the row's own "+ New profile…" branch. Without it a household with
-  // no usable profile could not assign a device from the row at all and had to
-  // leave the page for /profiles and come back.
+  // #2560 — the row's own "+ New profile…" branch. Without it the row could
+  // only assign a profile that already existed, so putting a device on a NEW
+  // profile meant leaving /devices for /profiles and coming back.
   const [creatingProfile, setCreatingProfile] = useState(false)
   useEffect(() => { setName(device.name) }, [device.name])
   useEffect(() => { setProfileId(device.profileId) }, [device.profileId])
@@ -311,26 +311,31 @@ function DeviceRowEditor({
       <div className="min-w-[10rem]">
         <label className="block text-xs font-semibold text-brand-text-muted uppercase tracking-wider mb-1">Profile</label>
         <select
-          value={creatingProfile ? '__new__' : profileId ?? ''}
+          value={creatingProfile ? NEW_PROFILE_VALUE : profileId ?? ''}
           onChange={e => {
-            if (e.target.value === '__new__') {
+            if (e.target.value === NEW_PROFILE_VALUE) {
               setCreatingProfile(true)
             } else {
               setCreatingProfile(false)
               setProfileId(e.target.value === '' ? null : Number(e.target.value))
             }
           }}
+          // Frozen while the creator is open: the row autosaves, so a pick made
+          // between "Create profile" and the response would be silently
+          // overwritten by the created profile when it lands. Cancel is the way
+          // back out.
+          disabled={creatingProfile}
           data-testid={`device-profile-select-${device.mac}`}
-          className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-2.5 text-brand-ink"
+          className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-2.5 text-brand-ink disabled:opacity-60"
         >
           {/* #2366 — explicit null option so an unassigned device's displayed
               selection matches state (no phantom first-profile), assigning is a
               genuine onChange → autosave, and a profile can be removed. */}
           <option value="">No profile</option>
           {profiles.map(p => <option key={p.profile.id} value={p.profile.id}>{p.profile.name}</option>)}
-          {/* #2560 — always offered, so a household with no usable profile can
-              still assign this device without leaving the page. */}
-          <option value="__new__">+ New profile…</option>
+          {/* #2560 — assigning this device to a NEW profile without leaving
+              /devices for /profiles and coming back. */}
+          <option value={NEW_PROFILE_VALUE}>+ New profile…</option>
         </select>
       </div>
       <div className="flex items-center gap-3 pb-2.5">
@@ -343,7 +348,10 @@ function DeviceRowEditor({
         <button
           type="button"
           onClick={onClose}
-          className="text-xs text-brand-text hover:text-brand-ink bg-brand-alt px-3 py-1.5 rounded-lg transition-colors"
+          // Closing mid-create would leave the profile created but never
+          // assigned, with nothing on screen saying so.
+          disabled={creatingProfile}
+          className="text-xs text-brand-text hover:text-brand-ink bg-brand-alt px-3 py-1.5 rounded-lg transition-colors disabled:opacity-60"
         >Done</button>
       </div>
       {creatingProfile && (

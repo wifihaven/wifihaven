@@ -4,13 +4,23 @@ import { api } from '@/api/client'
 import { newProfileDefaults } from '@/api/profileDefaults'
 import { useInvalidators } from '@/api/queries'
 
-// #2367 / #2560 — the one implementation of "create a profile without leaving
-// the page you're on". Both device-assignment surfaces mount it: the Add-Device
-// modal and the per-row inline editor on /devices (`DevicesPage`). #2367 shipped
-// this for the modal only and the row editor grew no equivalent, which left a
-// zero-profile household unable to assign a device from the row at all — so it
-// lives here rather than being copied a second time
-// (`docs/process/single-source-of-truth.md`).
+// The `<select>` value that means "I want a new profile", as opposed to any
+// real profile id or `''` (no profile). Exported because the option that
+// carries it and the onChange branch that interprets it live in the caller —
+// a hand-copied literal in either place would silently stop opening the
+// creator (`docs/process/single-source-of-truth.md`).
+export const NEW_PROFILE_VALUE = '__new__'
+
+// #2367 / #2560 — the shared implementation of "create a profile without
+// leaving the device you're assigning". Both device-assignment surfaces on
+// /devices mount it: the Add-Device modal and the per-row inline editor
+// (`DevicesPage`). #2367 shipped it for the modal only; the row editor grew no
+// equivalent, so assigning a device to a *new* profile from the row meant
+// leaving the page for /profiles and coming back. It lives here rather than
+// being copied a second time.
+//
+// Not in scope: /profiles' own new-profile row (`ProfilesPage`), which creates
+// a profile as an end in itself rather than to assign it to something.
 //
 // Creation reuses the same endpoint and the same safe-by-default payload the
 // Profiles page uses (#978 via `newProfileDefaults`), so an inline-created
@@ -20,7 +30,11 @@ export function InlineProfileCreator({
 }: {
   /** Namespaces this instance's data-testids, e.g. `add-device` → `add-device-create-profile`. */
   testIdPrefix: string
-  /** False on a zero-profile household — swaps the copy and drops Cancel (there is nothing to go back to). */
+  /**
+   * False only on a zero-profile household, which the Add-Device modal opens
+   * straight into: swaps the copy and drops Cancel, because there is no
+   * previous selection to go back to.
+   */
   hasProfiles: boolean
   onCreated: (profileId: number) => void
   onCancel: () => void
@@ -32,11 +46,13 @@ export function InlineProfileCreator({
   const createMutation = useMutation({
     mutationFn: (profileName: string) => api.profiles.create(newProfileDefaults(profileName)),
     onSuccess: async (created) => {
-      setName('')
       setError(null)
       // Refresh the profile list before handing the id back so the caller's
       // <select> already carries the new option when it re-renders selected.
+      // The name field is left alone until then — clearing it here blanks the
+      // input while the button still reads "Creating…".
       await invalidators.profileMutated()
+      setName('')
       onCreated(created.id)
     },
     // #2560 — without this a server rejection left the button silently inert:
