@@ -819,6 +819,29 @@ case class LoginResponse(
 ) derives JsonCodec
 case class ChangePasswordRequest(currentPassword: String, newPassword: String) derives JsonCodec
 
+// ── Admin-initiated password set (#2576, epic #622) ─────────────────────────
+// The recovery path for the users #2308's emailed reset structurally cannot serve: a child (who
+// generally has no email address) and an admin-created adult with none on file. The household admin
+// — physically present and the account owner — sets the credential in band via
+// `POST /api/users/{id}/password`.
+
+/**
+ * `POST /api/users/{id}/password` body. The target is the PATH id, validated server-side against
+ * the caller's own household (`claims.hh`) — deliberately NOT a field here: a household or username
+ * in the body would be a client-supplied tenancy key, which is the #2533/#2386 defect class and, on
+ * a credential write, a cross-household account-takeover primitive. `newPassword` is subject to the
+ * same #2084 policy as every other password path.
+ */
+case class SetUserPasswordRequest(newPassword: String) derives JsonCodec
+
+/**
+ * Response to a successful admin-initiated set. `mustChangePassword` is always `true` and says what
+ * the admin needs to hear: the credential they just chose is a HANDOFF — the target is forced to
+ * replace it at next login (#2492/#586), so it does not persist as a secret the admin knows. The
+ * plaintext is never echoed back, here or anywhere else.
+ */
+case class SetUserPasswordResponse(mustChangePassword: Boolean = true) derives JsonCodec
+
 // ── Forgot / reset password (#2308, epic #622) ──────────────────────────────
 // The self-service recovery path for a household admin who forgot their password (beta admins log in
 // by email; a lockout otherwise has no recovery). Two unauthenticated, rate-limited endpoints:

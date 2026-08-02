@@ -10,7 +10,7 @@ import type {
   ConnectionEventSeriesPage, QueryLogPage,
   PatchUserRequest,
   NamedSchedule, NamedScheduleRequest,
-  RouterSummary, SetUserProfilesRequest, TimeExtension,
+  RouterSummary, SetUserPasswordRequest, SetUserPasswordResponse, SetUserProfilesRequest, TimeExtension,
   TrafficUsageBucket, TrafficUsageGroupBy, TrafficUsageResponse, UsageConfig,
   PatchDeviceRequest, PatchProfileRequest,
   UpsertAppAssignmentRequest, UpsertDeviceRequest, UpsertProfileRequest, GrantExtensionRequest,
@@ -321,6 +321,15 @@ export const api = {
       req<void>('PATCH', `/users/${id}`, data),
     setProfiles: (id: number, profileIds: number[]) =>
       req<void>('PUT', `/users/${id}/profiles`, { profileIds } as SetUserProfilesRequest),
+    // #2576: the admin sets a household member's password in band (a child, or an adult with no
+    // email on file, has no way to use #2308's emailed reset). The target is the PATH id — there is
+    // deliberately no household or username in the body, because the server derives the tenancy key
+    // from the caller's JWT and would ignore ours anyway. Server-side this is `requireAdmin`, so an
+    // adult calling it gets a 403; gate the affordance on `isAdmin`, never `isWriter`.
+    setPassword: (id: number, newPassword: string) =>
+      req<SetUserPasswordResponse>('POST', `/users/${id}/password`, {
+        newPassword,
+      } as SetUserPasswordRequest),
     delete: (id: number) => req<void>('DELETE', `/users/${id}`),
   },
 

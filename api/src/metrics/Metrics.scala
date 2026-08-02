@@ -469,6 +469,13 @@ object MetricGuard {
     // both bounded, never a per-email / per-household value. Without this entry the firewall would
     // reject the name as unknown_name and the series would never emit (the #808 lesson).
     "wifihaven_beta_pipeline_total"                 -> Set("stage", "outcome"),
+    // #2576 — admin-initiated password set for a household member. `outcome` is a small fixed enum
+    // (ok | forbidden | not_found | invalid_target | weak_password | bad_request | error — see
+    // AppMetrics.adminPasswordSet). Deliberately NO actor / target / household label: this is a
+    // credential-write path, so per-user labels would be both unbounded and a privacy leak into the
+    // metric registry. An operator watches the RATE and the refusal mix; who reset whom lives in the
+    // audit log line, not here.
+    "wifihaven_admin_password_set_total"            -> Set("outcome"),
     // #2135 — Stripe billing. `wifihaven_billing_webhook_total{outcome}` counts every processed
     // webhook by the bounded outcome enum (active | lapsed | ignored | unmatched |
     // invalid_signature | not_configured — see WebhookOutcome); never a per-customer / per-household
@@ -799,6 +806,24 @@ object AppMetrics {
 
   def recordAuthFailure(reason: String): UIO[Unit] =
     MetricGuard.counter("auth_failures_total", Map("reason" -> reason))
+
+  /**
+   * #2576 — one sample per attempt at `POST /api/users/{id}/password` (the admin's in-band password
+   * handoff to a locked-out adult or child). `outcome` is the bounded enum below; there is
+   * deliberately no actor / target / household label on a credential path.
+   *
+   *   - `ok` — the credential was set and the forced-change flag re-armed.
+   *   - `forbidden` — an adult or child tried it. NOT noise: this is the #2522 boundary being
+   *     exercised, and a sustained rate means either a confused SPA or someone probing it.
+   *   - `not_found` — the target id is nonexistent OR belongs to another household. The two are
+   *     intentionally the same outcome, for the same reason they are the same HTTP response: a
+   *     split here would rebuild the enumeration oracle inside the metric.
+   *   - `invalid_target` — the target is an admin (out of scope, #2512).
+   *   - `weak_password` / `bad_request` — rejected before any write.
+   *   - `error` — the write itself failed (DB).
+   */
+  def adminPasswordSet(outcome: String): UIO[Unit] =
+    MetricGuard.counter("wifihaven_admin_password_set_total", Map("outcome" -> outcome))
 
   // #1069 — a named-schedule create / update / delete landed. `op` is a fixed enum.
   def scheduleMutation(op: String): UIO[Unit] =

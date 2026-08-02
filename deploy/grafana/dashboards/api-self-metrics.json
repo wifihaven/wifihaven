@@ -819,6 +819,63 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "title": "Admin-initiated password sets (#2576)",
+      "description": "Rate of POST /api/users/{id}/password — the household admin setting a member's password in band, the recovery path for a child or emailless adult that #2308's emailed reset structurally cannot serve. outcome: ok | forbidden (an adult or child tried it — the #2522 account-vs-editing boundary being exercised; a sustained rate means a confused SPA or someone probing) | not_found (nonexistent OR another household's user — deliberately the same outcome, since splitting them would rebuild the enumeration oracle the shared 404 closes) | invalid_target (an admin target, out of scope per #2512) | weak_password | bad_request | unauthenticated | error (the DB write failed). No actor / target / household label: this is a credential path, so who reset whom lives in the audit log line, not the metric registry.",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 64
+      },
+      "id": 34,
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "showPoints": "never",
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (outcome) (rate(wifihaven_admin_password_set_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{outcome}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",

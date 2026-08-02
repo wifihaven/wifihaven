@@ -86,7 +86,11 @@ describe('UsersPage — admin sets a member password (#2576)', () => {
     await user.type(await screen.findByTestId('set-password-input'), 'short')
     await user.click(screen.getByTestId('set-password-submit'))
 
-    expect(await screen.findByText(/at least 12 characters/i)).toBeInTheDocument()
+    // Asserted on the error slot specifically — the modal also carries a standing "At least 12
+    // characters." policy hint, so matching on the copy alone would pass without any refusal.
+    expect(await screen.findByTestId('set-password-error')).toHaveTextContent(
+      /at least 12 characters/i,
+    )
     expect(api.users.setPassword).not.toHaveBeenCalled()
   })
 

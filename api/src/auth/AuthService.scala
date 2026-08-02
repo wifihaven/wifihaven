@@ -102,6 +102,28 @@ trait AuthService {
    * drift between the two. Fails only on a DB error; the caller maps it to its own error channel.
    */
   def setPassword(userId: UserId, newPlaintext: String): Task[Unit]
+
+  /**
+   * #2576: [[setPassword]] plus re-arming `must_change_password`, for a password chosen by SOMEONE
+   * ELSE — today only the household admin setting a locked-out adult's or child's credential (`POST
+   * /api/users/{id}/password`).
+   *
+   * The credential write itself still goes through [[setPassword]]: hashing, storage and the
+   * token_version bump stay single-sourced (#2308), so there is no second hashing path to drift.
+   * The one difference is the flag. `setPassword` CLEARS `must_change_password` because both of its
+   * original callers are the user changing their own password; here the chooser is not the owner,
+   * so the password is a HANDOFF and the owner must replace it at next login (#586/#2492). The
+   * ordering — set, then re-arm — matters: the other way round, `setPassword` would clear the flag
+   * we just wrote.
+   *
+   * Deliberately NOT a `mustChange` boolean parameter on `setPassword`: a defaulted flag on the
+   * credential-write SSOT is exactly what a future caller gets backwards silently. A distinct,
+   * named method makes the handoff semantics visible at the call site.
+   *
+   * Authorization and household scoping are the ROUTE's job, not this method's — it takes a
+   * `UserId` the caller has already proven belongs to their own household (`ownUser`).
+   */
+  def setPasswordAsHandoff(userId: UserId, newPlaintext: String): Task[Unit]
   def hashPassword(password: String): UIO[String]
 }
 
@@ -361,6 +383,11 @@ class AuthServiceLive(
       // #2080: invalidate every previously-issued JWT for this user.
       _    <- userRepo.bumpTokenVersion(userId)
     } yield ()
+
+  def setPasswordAsHandoff(userId: UserId, newPlaintext: String): Task[Unit] =
+    // Order is load-bearing: setPassword's last act on the flag is to CLEAR it, so the re-arm has
+    // to follow. See the trait doc.
+    setPassword(userId, newPlaintext) *> userRepo.setMustChangePassword(userId)
 
   def hashPassword(password: String): UIO[String] =
     ZIO.succeed(BCrypt.withDefaults().hashToString(AuthService.BcryptCost, password.toCharArray))

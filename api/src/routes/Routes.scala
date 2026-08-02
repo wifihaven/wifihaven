@@ -3,6 +3,7 @@ package wifihaven.api.routes
 import wifihaven.api.auth.*
 import wifihaven.api.cache.TimeStatusCache
 import wifihaven.api.db.*
+import wifihaven.api.metrics.AppMetrics
 import wifihaven.api.observability.LogContext
 import wifihaven.shared.*
 import wifihaven.shared.types.*
@@ -124,7 +125,7 @@ object AuthRoutes {
       loginRateLimiter: RateLimiter,
   ): Routes[Any, Response] =
     Routes(
-      Method.POST / "api" / "auth" / "login"                 ->
+      Method.POST / "api" / "auth" / "login"                  ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
             // #2079: per-source-IP rate limit ahead of any DB/bcrypt work — online
@@ -154,7 +155,7 @@ object AuthRoutes {
           } yield Response.json(resp.toJson)
           handle.mapError(ErrorMapper.errorToResponse)
         },
-      Method.POST / "api" / "auth" / "change-password"       ->
+      Method.POST / "api" / "auth" / "change-password"        ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
             // Skip the must_change_password guard: this is the one route that
@@ -188,7 +189,7 @@ object AuthRoutes {
           } yield Response.json(ChangePasswordResponse(mustChangePassword = false).toJson)
           handle.mapError(ErrorMapper.errorToResponse)
         },
-      Method.GET / "api" / "me"                              ->
+      Method.GET / "api" / "me"                               ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
             claims <- requireAuth(req, auth)
@@ -209,7 +210,7 @@ object AuthRoutes {
           )
           handle.mapError(ErrorMapper.errorToResponse)
         },
-      Method.POST / "api" / "users"                          ->
+      Method.POST / "api" / "users"                           ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
             claims <- requireAdmin(req, auth)
@@ -244,7 +245,7 @@ object AuthRoutes {
           } yield Response.json(s"""{"id":$id}""")
           handle.mapError(ErrorMapper.errorToResponse)
         },
-      Method.GET / "api" / "users"                           ->
+      Method.GET / "api" / "users"                            ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
             claims   <- requireAdmin(req, auth)
@@ -258,7 +259,7 @@ object AuthRoutes {
           } yield Response.json(summaries.toJson)
           handle.mapError(ErrorMapper.errorToResponse)
         },
-      Method.PUT / "api" / "users" / long("id") / "profiles" ->
+      Method.PUT / "api" / "users" / long("id") / "profiles"  ->
         handler { (id: Long, req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
             claims <- requireWriter(req, auth)
@@ -275,7 +276,7 @@ object AuthRoutes {
           } yield Response.ok
           handle.mapError(ErrorMapper.errorToResponse)
         },
-      Method.DELETE / "api" / "users" / long("id")           ->
+      Method.DELETE / "api" / "users" / long("id")            ->
         handler { (id: Long, req: Request) =>
           val uid                                  = UserId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
@@ -287,11 +288,87 @@ object AuthRoutes {
           } yield Response.ok
           handle.mapError(ErrorMapper.errorToResponse)
         },
+      // #2576: the household admin sets another member's password IN BAND. #2308's emailed reset is
+      // the self-service path, and it structurally cannot serve a child (generally no email address)
+      // or an admin-created adult with none on file — for those users a lockout is permanent today.
+      // The admin is physically present with them, so an emailed link is the wrong shape anyway.
+      //
+      // Three gates, in order, each load-bearing:
+      //   1. `requireAdmin` — the ACCOUNT gate (#2522), NOT `requireWriter`. An adult authors policy
+      //      but must never be able to seize a household member's account, so an adult is refused
+      //      here exactly as a child is. This is the easiest thing in the whole feature to get
+      //      backwards, and `AdminSetUserPasswordSpec` pins it.
+      //   2. `ownUser` — the target must belong to the CALLER'S household, derived from the signed
+      //      `claims.hh` and never from the request (the body carries no tenancy key at all). A
+      //      cross-household set would be a full account takeover of another family; `ownUser`
+      //      answers 404 for foreign and nonexistent alike so the pair is not an enumeration oracle.
+      //   3. the target's role — admin-to-admin is out of scope (#2512: one admin per household, so
+      //      the only in-household admin IS the caller; they rotate their own password via
+      //      change-password or the #2308 reset).
+      Method.POST / "api" / "users" / long("id") / "password" ->
+        handler { (id: Long, req: Request) =>
+          val uid                                                           = UserId(id)
+          // Every terminal outcome is metered at the site that produces it rather than inferred
+          // from the mapped HTTP status downstream: three distinct refusals all answer 400, and
+          // collapsing them would hide which one an operator is actually seeing.
+          def refuse(outcome: String, err: ApiError): IO[ApiError, Nothing] =
+            AppMetrics.adminPasswordSet(outcome) *> ZIO.fail(err)
+
+          val handle: ZIO[Any, ApiError, Response] = for {
+            claims <- requireAdmin(req, auth).tapError {
+              case _: ApiError.Forbidden    => AppMetrics.adminPasswordSet("forbidden")
+              case _: ApiError.Unauthorized => AppMetrics.adminPasswordSet("unauthenticated")
+              case _                        => ZIO.unit
+            }
+            target <- ownUser(userRepo, uid, claims.hh).tapError {
+              case _: ApiError.NotFound => AppMetrics.adminPasswordSet("not_found")
+              case _                    => AppMetrics.adminPasswordSet("error")
+            }
+            _      <- refuse(
+              "invalid_target",
+              ApiError.BadRequest(
+                "cannot set an admin's password; the account owner changes their own",
+              ),
+            ).when(target.role == UserRole.Admin)
+            body   <- req.body.asString
+              .orElseFail(ApiError.BadRequest(""))
+              .tapError(_ => AppMetrics.adminPasswordSet("bad_request"))
+            spr    <- ZIO
+              .fromEither(body.fromJson[SetUserPasswordRequest])
+              .mapError(ApiError.DecodeFailure(_))
+              .tapError(_ => AppMetrics.adminPasswordSet("bad_request"))
+            // #2084: the same minimum every other password path enforces — an admin-chosen handoff
+            // credential is still a real credential until the target replaces it.
+            _      <- refuse(
+              "weak_password",
+              ApiError.BadRequest(
+                s"password must be at least ${AuthService.MinPasswordLength} characters",
+              ),
+            ).when(!AuthService.isPasswordStrongEnough(spr.newPassword))
+            // #2308 SSOT: the hash + store + token_version bump all happen inside `setPassword`;
+            // `AsHandoff` only adds the must_change_password re-arm (#586/#2492) so the admin's
+            // choice is a one-time handoff, not a lasting shared secret.
+            _      <- auth
+              .setPasswordAsHandoff(uid, spr.newPassword)
+              .mapError(ApiError.Db(_))
+              .tapError(_ => AppMetrics.adminPasswordSet("error"))
+            // The audit record the target deserves: their credential was changed by someone else.
+            // Actor, target and role only — the plaintext is never logged, here or anywhere.
+            _      <- AppMetrics.adminPasswordSet("ok") *>
+              LogContext.annotate(LogContext.User, claims.sub) {
+                ZIO.logInfo(
+                  s"admin password set: actor=${claims.sub} target=${target.username} " +
+                    s"targetRole=${UserRole.asString(target.role)} targetId=${uid.value}",
+                )
+              }
+          } yield Response.json(SetUserPasswordResponse().toJson)
+          handle.mapError(ErrorMapper.errorToResponse)
+        },
       // #997: field-scoped partial update. Body is a subset of the User read
       // shape — `username`, `role`, `profileIds` (replace-set, matches the
       // existing PUT /profiles semantics). Password changes stay on the
       // dedicated change-password endpoint.
-      Method.PATCH / "api" / "users" / long("id")            ->
+      Method.PATCH / "api" / "users" / long("id")             ->
         handler { (id: Long, req: Request) =>
           val uid                                  = UserId(id)
           val handle: ZIO[Any, ApiError, Response] = for {

@@ -233,6 +233,17 @@ trait UserRepo {
   def updateUsername(id: UserId, u: String): Task[Unit]
   def updateRole(id: UserId, r: String): Task[Unit]
   def clearMustChangePassword(id: UserId): Task[Unit]
+
+  /**
+   * #2576: the inverse of [[clearMustChangePassword]] — re-arm the forced first-login change
+   * (#586/#2492) on an EXISTING row. `create` already inserts with the flag set, but the
+   * admin-initiated password set writes an existing user, and `AuthService.setPassword` (the #2308
+   * rotation SSOT) deliberately CLEARS the flag, because both of its original callers are the user
+   * changing their OWN password. Re-arming it is what makes the admin's chosen password a handoff
+   * credential rather than a lasting shared secret. The only caller is
+   * `AuthService.setPasswordAsHandoff`, which sequences the two so the pairing can't drift.
+   */
+  def setMustChangePassword(id: UserId): Task[Unit]
   // #2080: invalidates every previously-issued JWT for this user (verify()
   // rejects any token stamped with an older tokenVersion).
   def bumpTokenVersion(id: UserId): Task[Unit]
@@ -1352,6 +1363,9 @@ class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
     sql"UPDATE users SET role=$r WHERE id=$id".update.run.transact(xa).unit
   def clearMustChangePassword(id: UserId)                      =
     sql"UPDATE users SET must_change_password=false WHERE id=$id".update.run.transact(xa).unit
+  // #2576: primary-key point update, same plan as clearMustChangePassword above.
+  def setMustChangePassword(id: UserId)                        =
+    sql"UPDATE users SET must_change_password=true WHERE id=$id".update.run.transact(xa).unit
   def bumpTokenVersion(id: UserId)                             =
     sql"UPDATE users SET token_version=token_version+1 WHERE id=$id".update.run.transact(xa).unit
   def listAll                                                  =
