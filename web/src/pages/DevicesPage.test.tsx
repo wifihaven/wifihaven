@@ -179,6 +179,14 @@ describe('DevicesPage — add device with inline profile creation (#2367)', () =
 
     // Choosing the sentinel reveals the creator without leaving the flow.
     await user.selectOptions(screen.getByRole('combobox'), '__new__')
+    // The with-profiles copy, not the first-profile copy.
+    const creator = await screen.findByTestId('add-device-new-profile')
+    expect(
+      within(creator).getByText('Name the new profile — it will be assigned to this device.'),
+    ).toBeInTheDocument()
+    expect(
+      within(creator).queryByText('Create your first profile to assign this device.'),
+    ).not.toBeInTheDocument()
     const nameInput = await screen.findByTestId('add-device-new-profile-name')
     await user.type(nameInput, 'First Kid')
     await user.click(screen.getByTestId('add-device-create-profile'))
@@ -216,6 +224,267 @@ describe('DevicesPage — add device with inline profile creation (#2367)', () =
 
     expect(await screen.findByTestId('add-device-new-profile-error')).toBeInTheDocument()
     expect(api.profiles.create).not.toHaveBeenCalled()
+  })
+
+  // #2560 — the empty-household copy is a real, reachable state (openCreate puts
+  // a zero-profile household straight into the creator), not dead code. Pinned so
+  // a future refactor can't quietly orphan it again.
+  it('zero-profile household: the "create your first profile" copy is shown', async () => {
+    (api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('No devices yet.')
+    await user.click(screen.getByRole('button', { name: /\+ Add Device/ }))
+
+    expect(
+      await screen.findByText('Create your first profile to assign this device.'),
+    ).toBeInTheDocument()
+  })
+
+  // The creator's name input autofocuses when the operator PICKED it (the
+  // select they used may have been disabled on the way, dropping focus to
+  // <body>) — but not when the dialog auto-opens into it on an empty household,
+  // where stealing focus would jump them past the MAC field they must fill.
+  it('does not steal focus from the MAC field when the dialog auto-opens the creator', async () => {
+    (api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('No devices yet.')
+    await user.click(screen.getByRole('button', { name: /\+ Add Device/ }))
+
+    const nameInput = await screen.findByTestId('add-device-new-profile-name')
+    expect(nameInput).not.toHaveFocus()
+  })
+
+  it('focuses the name input when the operator picks "+ New profile…"', async () => {
+    (api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([kidsProfile, adultsProfile])
+
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('No devices yet.')
+    await user.click(screen.getByRole('button', { name: /\+ Add Device/ }))
+    await user.selectOptions(screen.getByTestId('add-device-profile-select'), '__new__')
+
+    expect(await screen.findByTestId('add-device-new-profile-name')).toHaveFocus()
+  })
+
+  // The same guard the row editor gets: closing or re-picking mid-request would
+  // leave the profile created server-side and never assigned, silently. The
+  // modal owns these controls, so the creator mirrors its pending state out.
+  it('freezes the modal select and Cancel while a create is in flight', async () => {
+    (api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([kidsProfile, adultsProfile])
+    let release: (v: { id: number }) => void = () => {}
+    ;(api.profiles.create as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
+      new Promise<{ id: number }>(res => { release = res }),
+    )
+
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('No devices yet.')
+    await user.click(screen.getByRole('button', { name: /\+ Add Device/ }))
+    await user.selectOptions(screen.getByTestId('add-device-profile-select'), '__new__')
+    await user.type(screen.getByTestId('add-device-new-profile-name'), 'Teens')
+
+    expect(screen.getByTestId('add-device-profile-select')).toBeEnabled()
+    expect(screen.getByTestId('add-device-cancel')).toBeEnabled()
+
+    await user.click(screen.getByTestId('add-device-create-profile'))
+
+    await waitFor(() => expect(screen.getByTestId('add-device-cancel')).toBeDisabled())
+    expect(screen.getByTestId('add-device-profile-select')).toBeDisabled()
+    expect(screen.getByTestId('add-device-create-profile')).toBeDisabled()
+
+    release({ id: 7 })
+    await waitFor(() => expect(screen.getByTestId('add-device-cancel')).toBeEnabled())
+  })
+
+  // #2560 — the operator on the new prod household reported "it won't let me
+  // create a profile" with nothing on screen explaining why. `createProfile`
+  // awaited `mutateAsync` with no catch and no mutation `onError`, so a server
+  // rejection produced an unhandled promise and a silently inert button: the
+  // `-new-profile-error` slot only ever carried the blank-name validation.
+  it('a failing createProfile surfaces the server error inline', async () => {
+    (api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.profiles.create as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('profile limit reached'),
+    )
+
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('No devices yet.')
+    await user.click(screen.getByRole('button', { name: /\+ Add Device/ }))
+
+    await user.type(await screen.findByTestId('add-device-new-profile-name'), 'First Kid')
+    await user.click(screen.getByTestId('add-device-create-profile'))
+
+    expect(await screen.findByTestId('add-device-new-profile-error')).toHaveTextContent(
+      'profile limit reached',
+    )
+    // The failure path must also release the caller's freeze. A wedged
+    // `createPending` would disable Cancel while Save is already disabled by
+    // `creatingProfile`, leaving no way out of the dialog.
+    expect(screen.getByTestId('add-device-cancel')).toBeEnabled()
+    expect(screen.getByTestId('add-device-create-profile')).toBeEnabled()
+  })
+
+  // Escape closes the modal exactly like Cancel, so it has to honour the same
+  // in-flight guard instead of routing around it.
+  it('Escape does not close the modal while a create is in flight', async () => {
+    (api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([kidsProfile, adultsProfile])
+    let release: (v: { id: number }) => void = () => {}
+    ;(api.profiles.create as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
+      new Promise<{ id: number }>(res => { release = res }),
+    )
+
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('No devices yet.')
+    await user.click(screen.getByRole('button', { name: /\+ Add Device/ }))
+    await user.selectOptions(screen.getByTestId('add-device-profile-select'), '__new__')
+    await user.type(screen.getByTestId('add-device-new-profile-name'), 'Teens')
+
+    // Escape works before the create starts.
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByTestId('add-device-cancel')).not.toBeInTheDocument())
+
+    await user.click(screen.getByRole('button', { name: /\+ Add Device/ }))
+    await user.selectOptions(screen.getByTestId('add-device-profile-select'), '__new__')
+    await user.type(screen.getByTestId('add-device-new-profile-name'), 'Teens')
+    await user.click(screen.getByTestId('add-device-create-profile'))
+    await waitFor(() => expect(screen.getByTestId('add-device-cancel')).toBeDisabled())
+
+    await user.keyboard('{Escape}')
+    expect(screen.getByTestId('add-device-cancel')).toBeInTheDocument()
+
+    release({ id: 7 })
+    await waitFor(() => expect(screen.getByTestId('add-device-cancel')).toBeEnabled())
+  })
+})
+
+// #2560 — the row editor's <select> offered only "No profile" plus the
+// profiles that already existed, so putting a device on a NEW profile meant
+// leaving /devices for /profiles and coming back. The creator is now the same
+// component the Add-Device modal mounts (single-source-of-truth).
+//
+// Note on the zero-profile household: it cannot reach this surface at all.
+// `devices.profile_id` is `REFERENCES profiles(id) ON DELETE SET NULL`
+// (api/resources/db/migration/V1__init.sql:57), so deleting the last profile
+// nulls every device's assignment and drops them into the Unmanaged section,
+// whose only affordance is Enroll → the Add-Device modal. These tests therefore
+// pin the reachable case — a household that has profiles and wants another.
+describe('DevicesPage — row editor inline profile creation (#2560)', () => {
+  const newProfile: ProfileDetail = {
+    profile: { id: 7, name: 'Teens', blockedCategories: [], paused: false, failureMode: 'last-known-good', crossDeviceOverlapMode: 'sum', pauseMode: 'soft', defaultDeny: false },
+    timeLimit: null,
+  }
+
+  it('"+ New profile…" is offered alongside the existing profiles and assigns the created one', async () => {
+    (api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([ipad])
+    ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce([kidsProfile, adultsProfile])
+      .mockResolvedValue([kidsProfile, adultsProfile, newProfile])
+    ;(api.profiles.create as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 7 })
+
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    try {
+      renderPage()
+      const row = await screen.findByTestId(`device-row-${ipad.mac}`)
+      await user.click(within(row).getByRole('button', { name: /Edit/ }))
+      const editor = await screen.findByTestId(`device-editor-${ipad.mac}`)
+      const select = within(editor).getByTestId(`device-profile-select-${ipad.mac}`)
+
+      // The existing options are still there — this is additive, not a swap.
+      expect(within(editor).getByRole('option', { name: 'Kids' })).toBeInTheDocument()
+      expect(within(editor).getByRole('option', { name: 'No profile' })).toBeInTheDocument()
+      expect(within(editor).getByRole('option', { name: '+ New profile…' })).toBeInTheDocument()
+
+      await user.selectOptions(select, '__new__')
+      await user.type(
+        within(editor).getByTestId(`device-${ipad.mac}-new-profile-name`),
+        'Teens',
+      )
+      await user.click(within(editor).getByTestId(`device-${ipad.mac}-create-profile`))
+
+      await waitFor(() =>
+        expect(api.profiles.create).toHaveBeenCalledWith(
+          expect.objectContaining({ name: 'Teens' }),
+        )
+      )
+
+      // Assigned by the row's own debounced autosave — no second save path.
+      await vi.advanceTimersByTimeAsync(700)
+      await waitFor(() =>
+        expect(api.devices.patch).toHaveBeenCalledWith(ipad.mac, { profileId: 7 })
+      )
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // Scoped to the creator being OPEN, not just to a request being in flight:
+  // the row autosaves, so a pick made between "Create profile" and the response
+  // would be silently overwritten when the created profile lands, and "Done"
+  // would abandon the flow. Cancel is therefore the only exit, and must always
+  // be offered — see the zero-profiles case below.
+  it('freezes the profile select and Done while the creator is open', async () => {
+    (api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([ipad])
+    ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([kidsProfile, adultsProfile])
+
+    const user = userEvent.setup()
+    renderPage()
+    const row = await screen.findByTestId(`device-row-${ipad.mac}`)
+    await user.click(within(row).getByRole('button', { name: /Edit/ }))
+    const editor = await screen.findByTestId(`device-editor-${ipad.mac}`)
+
+    await user.selectOptions(
+      within(editor).getByTestId(`device-profile-select-${ipad.mac}`),
+      '__new__',
+    )
+
+    expect(within(editor).getByTestId(`device-profile-select-${ipad.mac}`)).toBeDisabled()
+    expect(within(editor).getByRole('button', { name: 'Done' })).toBeDisabled()
+    // Cancel is the way back out.
+    await user.click(within(editor).getByRole('button', { name: /^Cancel$/ }))
+    expect(within(editor).getByTestId(`device-profile-select-${ipad.mac}`)).toBeEnabled()
+    expect(api.devices.patch).not.toHaveBeenCalled()
+  })
+
+  it('a failing createProfile surfaces the server error inline in the row editor', async () => {
+    (api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([ipad])
+    ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([kidsProfile, adultsProfile])
+    ;(api.profiles.create as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('profile limit reached'),
+    )
+
+    const user = userEvent.setup()
+    renderPage()
+    const row = await screen.findByTestId(`device-row-${ipad.mac}`)
+    await user.click(within(row).getByRole('button', { name: /Edit/ }))
+    const editor = await screen.findByTestId(`device-editor-${ipad.mac}`)
+
+    await user.selectOptions(
+      within(editor).getByTestId(`device-profile-select-${ipad.mac}`),
+      '__new__',
+    )
+    await user.type(
+      within(editor).getByTestId(`device-${ipad.mac}-new-profile-name`),
+      'Teens',
+    )
+    await user.click(within(editor).getByTestId(`device-${ipad.mac}-create-profile`))
+
+    expect(
+      await within(editor).findByTestId(`device-${ipad.mac}-new-profile-error`),
+    ).toHaveTextContent('profile limit reached')
+    expect(api.devices.patch).not.toHaveBeenCalled()
   })
 })
 

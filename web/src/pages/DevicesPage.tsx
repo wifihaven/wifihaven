@@ -2,13 +2,13 @@ import { useEffect, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
-import { newProfileDefaults } from '@/api/profileDefaults'
 import { useAlerts, useDevices, useHouseholdSettings, useProfiles, useInvalidators } from '@/api/queries'
 import { useAuth } from '@/hooks/useAuth'
 import { useEscapeClose } from '@/hooks/useEscapeClose'
 import { useNotificationPermission } from '@/hooks/useNotifyOnNewAlerts'
 import { useDebouncedSave, mergeSaveStatus } from '@/hooks/useDebouncedSave'
 import { EmptyState } from '@/components/EmptyState'
+import { InlineProfileCreator, NEW_PROFILE_VALUE } from '@/components/InlineProfileCreator'
 import { SaveStatusBadge } from '@/components/SaveStatusBadge'
 import type { Alert, Device, PatchDeviceRequest, ProfileDetail } from '@/types/api'
 import { PageLoader } from './DashboardPage'
@@ -50,16 +50,21 @@ export function DevicesPage() {
   // Modal is create-only now (#1000): "Add Device" and "Enroll" unmanaged.
   // Editing a known device happens inline on its row, autosaved per field.
   const [editing,  setEditing]  = useState<Device | null>(null)
-  useEscapeClose(() => setEditing(null), editing !== null)
   const [form,     setForm]     = useState({ mac: '', name: '', profileId: 0 })
   const [editingMac, setEditingMac] = useState<string | null>(null)
   // #2367 — inline "+ New profile…" creation from within the Add-Device modal,
   // so a brand-new (zero-profile) household can onboard its first device without
   // bouncing to Profiles. When the household has no profiles, the creator is
-  // shown in place of the (otherwise empty/invalid) select.
+  // shown in place of the (otherwise empty/invalid) select. The creator itself
+  // is `InlineProfileCreator`, shared with the row editor (#2560).
   const [creatingProfile, setCreatingProfile] = useState(false)
-  const [newProfileName,  setNewProfileName]  = useState('')
-  const [newProfileError, setNewProfileError] = useState<string | null>(null)
+  // Mirrored from the creator so the modal freezes the controls IT owns while a
+  // create is in flight — cancelling mid-flight would create a profile and then
+  // discard it unassigned, with nothing on screen saying so.
+  const [createPending, setCreatePending] = useState(false)
+  // Escape is one of those controls: it closes the modal exactly like Cancel,
+  // so it has to honour the same guard rather than route around it.
+  useEscapeClose(() => setEditing(null), editing !== null && !createPending)
   const highlightMac = useHighlightFromQuery(devices)
 
   const upsertMutation = useMutation({
@@ -70,27 +75,6 @@ export function DevicesPage() {
       return invalidators.deviceMutated()
     },
   })
-
-  // Reuse the same create endpoint + safe-by-default shape ProfilesPage uses
-  // (#978 via newProfileDefaults), so an inline-created profile is identical to
-  // one made on /profiles.
-  const createProfileMutation = useMutation({
-    mutationFn: (name: string) => api.profiles.create(newProfileDefaults(name)),
-    onSuccess: async (created) => {
-      setForm(f => ({ ...f, profileId: created.id }))
-      setCreatingProfile(false)
-      setNewProfileName('')
-      setNewProfileError(null)
-      await invalidators.profileMutated()
-    },
-  })
-
-  async function createProfile() {
-    const trimmed = newProfileName.trim()
-    if (!trimmed) { setNewProfileError('Name is required'); return }
-    setNewProfileError(null)
-    await createProfileMutation.mutateAsync(trimmed)
-  }
 
   const deleteMutation = useMutation({
     mutationFn: (mac: string) => api.devices.delete(mac),
@@ -113,8 +97,6 @@ export function DevicesPage() {
     setEditing({} as Device)
     setForm({ mac, name: '', profileId: profiles[0]?.profile.id ?? 0 })
     setCreatingProfile(profiles.length === 0)
-    setNewProfileName('')
-    setNewProfileError(null)
   }
 
   if (loading) return <PageLoader />
@@ -238,58 +220,48 @@ export function DevicesPage() {
               <label className="block text-xs font-semibold text-brand-text-muted uppercase tracking-wider mb-2">Profile</label>
               {profiles.length > 0 && (
                 <select
-                  value={creatingProfile ? '__new__' : form.profileId}
+                  value={creatingProfile ? NEW_PROFILE_VALUE : form.profileId}
                   onChange={e => {
-                    if (e.target.value === '__new__') {
+                    if (e.target.value === NEW_PROFILE_VALUE) {
                       setCreatingProfile(true)
-                      setNewProfileError(null)
                     } else {
                       setCreatingProfile(false)
                       setForm(f => ({...f, profileId: Number(e.target.value)}))
                     }
                   }}
-                  className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-3 text-brand-ink">
+                  disabled={createPending}
+                  data-testid="add-device-profile-select"
+                  className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-3 text-brand-ink disabled:opacity-60">
                   {profiles.map(p => <option key={p.profile.id} value={p.profile.id}>{p.profile.name}</option>)}
-                  <option value="__new__">+ New profile…</option>
+                  <option value={NEW_PROFILE_VALUE}>+ New profile…</option>
                 </select>
               )}
               {creatingProfile && (
-                <div data-testid="add-device-new-profile" className="mt-2 space-y-2">
-                  {profiles.length === 0 && (
-                    <p className="text-xs text-brand-text-muted">Create your first profile to assign this device.</p>
-                  )}
-                  <input
-                    type="text"
-                    value={newProfileName}
-                    onChange={e => setNewProfileName(e.target.value)}
-                    data-testid="add-device-new-profile-name"
-                    placeholder="Profile name"
-                    className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-3 text-brand-ink placeholder-brand-text-muted focus:outline-none focus:border-brand-accent"
-                  />
-                  {newProfileError && (
-                    <p data-testid="add-device-new-profile-error" className="text-sm text-red-700">{newProfileError}</p>
-                  )}
-                  <div className="flex gap-2">
-                    <button
-                      type="button"
-                      onClick={createProfile}
-                      disabled={createProfileMutation.isPending}
-                      data-testid="add-device-create-profile"
-                      className="flex-1 py-2.5 rounded-xl bg-brand-accent text-white text-sm font-semibold disabled:opacity-60"
-                    >Create profile</button>
-                    {profiles.length > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => { setCreatingProfile(false); setNewProfileName(''); setNewProfileError(null) }}
-                        className="flex-1 py-2.5 rounded-xl bg-brand-alt text-brand-text text-sm font-medium"
-                      >Cancel</button>
-                    )}
-                  </div>
-                </div>
+                <InlineProfileCreator
+                  testIdPrefix="add-device"
+                  isFirstProfile={profiles.length === 0}
+                  // Nothing to go back to on a zero-profile household — the
+                  // select isn't rendered, so cancelling would leave no way to
+                  // pick a profile at all.
+                  canCancel={profiles.length > 0}
+                  // The dialog opens straight into the creator on a zero-profile
+                  // household, so focusing the name would jump the operator past
+                  // the MAC and Name fields they have to fill first. When they
+                  // instead picked "+ New profile…", focus belongs on the name.
+                  autoFocusName={profiles.length > 0}
+                  onPendingChange={setCreatePending}
+                  onCreated={id => {
+                    setForm(f => ({ ...f, profileId: id }))
+                    setCreatingProfile(false)
+                  }}
+                  onCancel={() => setCreatingProfile(false)}
+                />
               )}
             </div>
             <div className="flex gap-3 pt-2">
-              <button onClick={() => setEditing(null)} className="flex-1 py-3 rounded-xl bg-brand-alt text-brand-text font-medium">Cancel</button>
+              {/* Closing mid-create would create the profile and then discard
+                  it unassigned, with nothing on screen saying so. */}
+              <button onClick={() => setEditing(null)} disabled={createPending} data-testid="add-device-cancel" className="flex-1 py-3 rounded-xl bg-brand-alt text-brand-text font-medium disabled:opacity-60">Cancel</button>
               <button onClick={save} disabled={creatingProfile} className="flex-1 py-3 rounded-xl bg-brand-accent text-white font-semibold disabled:opacity-60">Save</button>
             </div>
           </div>
@@ -312,6 +284,10 @@ function DeviceRowEditor({
   const invalidators = useInvalidators()
   const [name, setName] = useState(device.name)
   const [profileId, setProfileId] = useState<number | null>(device.profileId)
+  // #2560 — the row's own "+ New profile…" branch. Without it the row could
+  // only assign a profile that already existed, so putting a device on a NEW
+  // profile meant leaving /devices for /profiles and coming back.
+  const [creatingProfile, setCreatingProfile] = useState(false)
   useEffect(() => { setName(device.name) }, [device.name])
   useEffect(() => { setProfileId(device.profileId) }, [device.profileId])
 
@@ -355,16 +331,31 @@ function DeviceRowEditor({
       <div className="min-w-[10rem]">
         <label className="block text-xs font-semibold text-brand-text-muted uppercase tracking-wider mb-1">Profile</label>
         <select
-          value={profileId ?? ''}
-          onChange={e => setProfileId(e.target.value === '' ? null : Number(e.target.value))}
+          value={creatingProfile ? NEW_PROFILE_VALUE : profileId ?? ''}
+          onChange={e => {
+            if (e.target.value === NEW_PROFILE_VALUE) {
+              setCreatingProfile(true)
+            } else {
+              setCreatingProfile(false)
+              setProfileId(e.target.value === '' ? null : Number(e.target.value))
+            }
+          }}
+          // Frozen for as long as the creator is open (not just while a request
+          // is in flight): the row autosaves, so a pick made between "Create
+          // profile" and the response would be silently overwritten when the
+          // created profile lands. Cancel is the way back out.
+          disabled={creatingProfile}
           data-testid={`device-profile-select-${device.mac}`}
-          className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-2.5 text-brand-ink"
+          className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-2.5 text-brand-ink disabled:opacity-60"
         >
           {/* #2366 — explicit null option so an unassigned device's displayed
               selection matches state (no phantom first-profile), assigning is a
               genuine onChange → autosave, and a profile can be removed. */}
           <option value="">No profile</option>
           {profiles.map(p => <option key={p.profile.id} value={p.profile.id}>{p.profile.name}</option>)}
+          {/* #2560 — assigning this device to a NEW profile without leaving
+              /devices for /profiles and coming back. */}
+          <option value={NEW_PROFILE_VALUE}>+ New profile…</option>
         </select>
       </div>
       <div className="flex items-center gap-3 pb-2.5">
@@ -377,9 +368,33 @@ function DeviceRowEditor({
         <button
           type="button"
           onClick={onClose}
-          className="text-xs text-brand-text hover:text-brand-ink bg-brand-alt px-3 py-1.5 rounded-lg transition-colors"
+          // Closing with the creator open would abandon it mid-flow, and
+          // closing mid-request would leave the profile created but never
+          // assigned, with nothing on screen saying so.
+          disabled={creatingProfile}
+          className="text-xs text-brand-text hover:text-brand-ink bg-brand-alt px-3 py-1.5 rounded-lg transition-colors disabled:opacity-60"
         >Done</button>
       </div>
+      {creatingProfile && (
+        <div className="basis-full">
+          <InlineProfileCreator
+            testIdPrefix={`device-${device.mac}`}
+            isFirstProfile={profiles.length === 0}
+            // Always cancellable, independently of whether any profile exists:
+            // this row freezes its select and Done while the creator is open,
+            // so Cancel is the only exit, and a caller that can be left with no
+            // exit at all is the worse failure. (`autoFocusName` defaults true,
+            // which is right here — the row is only ever reached by an explicit
+            // "+ New profile…" pick, never auto-opened.)
+            canCancel
+            // Assigning through the same state the <select> writes means the
+            // row's existing debounced PATCH {profileId} carries it — there is
+            // no second save path.
+            onCreated={id => { setProfileId(id); setCreatingProfile(false) }}
+            onCancel={() => setCreatingProfile(false)}
+          />
+        </div>
+      )}
     </div>
   )
 }

@@ -17,6 +17,11 @@ target/
 .bloop/
 
 # Node / React
+# Bare `node_modules/` as well as the web/ one: running a node tool from the
+# repo root (rather than from web/) creates a top-level node_modules that
+# `web/node_modules/` does not cover, and a broad `git add` will sweep its
+# cache blobs in.
+node_modules/
 web/node_modules/
 web/dist/
 web/.vite/
