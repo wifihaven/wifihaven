@@ -229,6 +229,23 @@ fi
 TOKEN_SURVIVORS=""
 FAILED_PATHS=""
 
+# The ONLY writer of either list, so `TOKEN_SURVIVORS` is a subset of
+# `FAILED_PATHS` structurally rather than by convention at each call site — the
+# terminal error relies on that (it prints the full list, then the
+# credential-bearing subset, and must never print a heading over nothing).
+#
+#   record_failure PATH [token]
+#
+# Pass `token` when the caller already KNOWS the path holds a live router_token
+# (the scrub has just re-checked the live uci tree); otherwise the file is
+# inspected — never assume a leftover is a credential, and never assume it isn't.
+record_failure() {
+  FAILED_PATHS="$FAILED_PATHS $1"
+  if [ "${2:-}" = token ] || file_has_router_token "$1"; then
+    TOKEN_SURVIVORS="$TOKEN_SURVIVORS $1"
+  fi
+}
+
 # Single source of truth for "does this file hold a live router_token?", used
 # for the config itself AND for install.sh's displaced-config backup — so the
 # uninstaller never asserts a credential is present without having looked.
@@ -283,12 +300,9 @@ scrub_wifihaven_config() {
     # overlay), before it could report the failure.
     cp /dev/null "$WIFIHAVEN_CONFIG" 2>/dev/null || true
     if config_has_router_token; then
-      # Both lists: the file is a thing we failed to clear (FAILED_PATHS) AND
-      # a surviving credential (TOKEN_SURVIVORS). Recording only the latter left
-      # the terminal error printing an empty "could not remove" enumeration in
-      # the read-only-/etc case, which is the likeliest one.
-      FAILED_PATHS="$FAILED_PATHS $WIFIHAVEN_CONFIG"
-      TOKEN_SURVIVORS="$TOKEN_SURVIVORS $WIFIHAVEN_CONFIG"
+      # `token`: config_has_router_token just confirmed it, including the live
+      # uci tree, which a file-only check would miss.
+      record_failure "$WIFIHAVEN_CONFIG" token
       note "FAILED to wipe router_token from $WIFIHAVEN_CONFIG"
     else
       note "truncated $WIFIHAVEN_CONFIG (router_token survived the UCI scrub)"
@@ -339,13 +353,11 @@ prune_runtime_artifacts() {
     # `rm` fail without stopping us — so a mixed outcome must not be summarised
     # as a clean sweep.
     if [ -e "$_p" ]; then
-      FAILED_PATHS="$FAILED_PATHS $_p"
+      # record_failure inspects the path: the install-time backup CAN carry a
+      # router_token, and escalating a token-free leftover to a credential
+      # failure is the same unsourced-claim bug in the other direction.
+      record_failure "$_p"
       note "FAILED to remove $_p"
-      # The install-time backup CAN carry a router_token — look, don't assume.
-      # Escalating a token-free leftover to a credential failure is the same
-      # unsourced-claim bug in the other direction.
-      file_has_router_token "$_p" \
-        && TOKEN_SURVIVORS="$TOKEN_SURVIVORS $_p"
     else
       _removed="$_removed $_p"
     fi
@@ -388,11 +400,11 @@ if [ -n "$TOKEN_SURVIVORS" ]; then
   # TOKEN_SURVIVORS is a subset of FAILED_PATHS, so print the full list once and
   # then call out the credential-bearing subset — never a heading with an empty
   # list under it.
-  err "could not remove:$FAILED_PATHS
+  err "could not clear:$FAILED_PATHS
 The router bearer token is STILL PRESENT in:$TOKEN_SURVIVORS
 Delete or empty those files by hand before decommissioning or re-homing this router."
 elif [ -n "$FAILED_PATHS" ]; then
-  err "could not remove:$FAILED_PATHS
+  err "could not clear:$FAILED_PATHS
 These are wifihaven runtime state (not package files) — remove them by hand. No
 router bearer token was left behind."
 fi

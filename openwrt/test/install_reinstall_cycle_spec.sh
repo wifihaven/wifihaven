@@ -506,11 +506,12 @@ uci() {
 PRELUDE
   printf 'TOKEN_SURVIVORS=""\nFAILED_PATHS=""\n'
   sed -n '/^file_has_router_token()/,/^}/p' "$UNINSTALL"
+  sed -n '/^record_failure()/,/^}/p' "$UNINSTALL"
   sed -n '/^config_has_router_token()/,/^}/p' "$UNINSTALL"
   sed -n '/^scrub_wifihaven_config()/,/^}/p' "$UNINSTALL"
   sed -n '/^prune_runtime_artifacts()/,/^}/p' "$UNINSTALL"
   cat <<'GUARD'
-for _fn in file_has_router_token config_has_router_token scrub_wifihaven_config prune_runtime_artifacts; do
+for _fn in file_has_router_token record_failure config_has_router_token scrub_wifihaven_config prune_runtime_artifacts; do
   command -v "$_fn" >/dev/null 2>&1 \
     || { printf 'EXTRACTION-FAILED: %s not extracted from uninstall.sh\n' "$_fn" >&2; exit 99; }
 done
@@ -784,22 +785,44 @@ fi
 # The terminal error must name what actually failed. Pointing the operator at a
 # clean /etc/config/wifihaven while the token sits in /tmp is worse than
 # silence — they would empty the wrong file and stop looking.
-# The err bodies are multi-line, so match anywhere in the terminal block rather
-# than on the `err "` line itself — what matters is that the operator is shown
-# the RUNTIME lists, never a hardcoded path.
+# The err bodies are multi-line, so the greps cannot be anchored to the `err "`
+# line — but they must NOT see the `if`/`elif` guards either: those name both
+# variables, so matching the whole block makes every check below a tautology
+# that an err body naming no runtime list at all would still satisfy. Reduce the
+# haystack to the MESSAGE TEXT: drop comments and the shell control lines.
 UNINSTALL_TAIL=$(sed -n '/^if \[ -n "\$TOKEN_SURVIVORS" \]/,$p' "$UNINSTALL")
-printf '%s' "$UNINSTALL_TAIL" | grep -q '\$TOKEN_SURVIVORS' \
+UNINSTALL_ERR_BODY=$(printf '%s\n' "$UNINSTALL_TAIL" \
+  | grep -v '^[[:space:]]*#' | grep -Ev '^[[:space:]]*(if|elif|else|fi)([[:space:]]|$)')
+printf '%s' "$UNINSTALL_ERR_BODY" | grep -q '\$TOKEN_SURVIVORS' \
   && check "#2554 the terminal error names the files that actually held a token" ok \
   || check "#2554 the terminal error names the files that actually held a token" \
            "the error message does not interpolate \$TOKEN_SURVIVORS — it would name a file that may be clean"
-printf '%s' "$UNINSTALL_TAIL" | grep -q '\$FAILED_PATHS' \
+printf '%s' "$UNINSTALL_ERR_BODY" | grep -q '\$FAILED_PATHS' \
   && check "#2554 a non-credential removal failure is reported separately" ok \
   || check "#2554 a non-credential removal failure is reported separately" \
            "a failed prune of non-secret state would be reported as a bearer-token failure"
-printf '%s' "$UNINSTALL_TAIL" | grep -Eq "^[[:space:]]*(err |[A-Za-z]).*/etc/config/wifihaven" \
+printf '%s' "$UNINSTALL_ERR_BODY" | grep -q '/etc/config/wifihaven' \
   && check "#2554 the terminal error hardcodes no path" \
            "the terminal error names /etc/config/wifihaven literally — it would point at a file that may be clean" \
   || check "#2554 the terminal error hardcodes no path" ok
+
+# The message depends on TOKEN_SURVIVORS being a SUBSET of FAILED_PATHS (it
+# prints the full list, then the credential-bearing subset). Enforce that
+# structurally, not per call site: exactly one function may append to either
+# list, so a third append site added later cannot reintroduce the empty-list
+# heading. (docs/process/single-source-of-truth.md — COLLAPSE.)
+_appenders=$(grep -v '^[[:space:]]*#' "$UNINSTALL" \
+  | grep -cE '(TOKEN_SURVIVORS|FAILED_PATHS)="\$(TOKEN_SURVIVORS|FAILED_PATHS) ' || true)
+[ "$_appenders" = 2 ] \
+  && check "#2554 exactly one writer appends to the failure/credential lists" ok \
+  || check "#2554 exactly one writer appends to the failure/credential lists" \
+           "found $_appenders append sites (expected the 2 inside record_failure) — the TOKEN_SURVIVORS ⊆ FAILED_PATHS invariant is back to per-site convention"
+sed -n '/^record_failure()/,/^}/p' "$UNINSTALL" \
+  | grep -cE '(TOKEN_SURVIVORS|FAILED_PATHS)="\$(TOKEN_SURVIVORS|FAILED_PATHS) ' \
+  | grep -q '^2$' \
+  && check "#2554 both appends live in record_failure()" ok \
+  || check "#2554 both appends live in record_failure()" \
+           "record_failure() does not hold both appends — the invariant is not structural"
 
 # A scrub that did not take must not be summarised as one that did. With uci
 # reachable but every delete failing and no token in the file, the file is left
