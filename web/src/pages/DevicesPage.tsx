@@ -50,7 +50,6 @@ export function DevicesPage() {
   // Modal is create-only now (#1000): "Add Device" and "Enroll" unmanaged.
   // Editing a known device happens inline on its row, autosaved per field.
   const [editing,  setEditing]  = useState<Device | null>(null)
-  useEscapeClose(() => setEditing(null), editing !== null)
   const [form,     setForm]     = useState({ mac: '', name: '', profileId: 0 })
   const [editingMac, setEditingMac] = useState<string | null>(null)
   // #2367 — inline "+ New profile…" creation from within the Add-Device modal,
@@ -63,6 +62,9 @@ export function DevicesPage() {
   // create is in flight — cancelling mid-flight would create a profile and then
   // discard it unassigned, with nothing on screen saying so.
   const [createPending, setCreatePending] = useState(false)
+  // Escape is one of those controls: it closes the modal exactly like Cancel,
+  // so it has to honour the same guard rather than route around it.
+  useEscapeClose(() => setEditing(null), editing !== null && !createPending)
   const highlightMac = useHighlightFromQuery(devices)
 
   const upsertMutation = useMutation({
@@ -242,6 +244,11 @@ export function DevicesPage() {
                   // select isn't rendered, so cancelling would leave no way to
                   // pick a profile at all.
                   canCancel={profiles.length > 0}
+                  // The dialog opens straight into the creator on a zero-profile
+                  // household, so focusing the name would jump the operator past
+                  // the MAC and Name fields they have to fill first. When they
+                  // instead picked "+ New profile…", focus belongs on the name.
+                  autoFocusName={profiles.length > 0}
                   onPendingChange={setCreatePending}
                   onCreated={id => {
                     setForm(f => ({ ...f, profileId: id }))
@@ -375,9 +382,10 @@ function DeviceRowEditor({
             isFirstProfile={profiles.length === 0}
             // Always cancellable, independently of whether any profile exists:
             // this row freezes its select and Done while the creator is open,
-            // so Cancel is the only exit. Tying the two together would strand
-            // the operator whenever the profiles query errors and `profiles`
-            // falls back to [].
+            // so Cancel is the only exit, and a caller that can be left with no
+            // exit at all is the worse failure. (`autoFocusName` defaults true,
+            // which is right here — the row is only ever reached by an explicit
+            // "+ New profile…" pick, never auto-opened.)
             canCancel
             // Assigning through the same state the <select> writes means the
             // row's existing debounced PATCH {profileId} carries it — there is

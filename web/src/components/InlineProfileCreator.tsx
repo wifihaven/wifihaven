@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { api } from '@/api/client'
 import { newProfileDefaults } from '@/api/profileDefaults'
@@ -26,12 +26,25 @@ export const NEW_PROFILE_VALUE = '__new__'
 // Profiles page uses (#978 via `newProfileDefaults`), so an inline-created
 // profile is indistinguishable from one made on /profiles.
 export function InlineProfileCreator({
-  testIdPrefix, isFirstProfile = false, canCancel, onCreated, onCancel, onPendingChange,
+  testIdPrefix, isFirstProfile = false, canCancel, autoFocusName = true,
+  onCreated, onCancel, onPendingChange,
 }: {
   /** Namespaces this instance's data-testids, e.g. `add-device` → `add-device-create-profile`. */
   testIdPrefix: string
-  /** True on a zero-profile household, which the Add-Device modal opens straight into. Copy only. */
+  /**
+   * True on a zero-profile household, which the Add-Device modal opens straight
+   * into. Selects the copy and nothing else — see `canCancel` / `autoFocusName`
+   * for why the other decisions get their own props.
+   */
   isFirstProfile?: boolean
+  /**
+   * Whether to focus the name input on mount. True when the operator reached
+   * the creator by picking "+ New profile…" (the select they used may have been
+   * disabled on the way, dropping focus to `<body>`); false when a container
+   * opened into the creator on its own and focus belongs to a field earlier in
+   * the form.
+   */
+  autoFocusName?: boolean
   /**
    * Whether to offer Cancel. Deliberately NOT derived from `isFirstProfile`:
    * callers that freeze their own controls while the creator is open rely on
@@ -80,12 +93,20 @@ export function InlineProfileCreator({
 
   // Mirrored out so callers freeze the controls they own for exactly the window
   // this component is busy, instead of each re-deriving it (#2560 review).
+  // Held in a ref so the unmount reset below can depend on [] — an effect that
+  // depends on the callback re-runs its cleanup on every identity change, so a
+  // caller passing an inline arrow would emit a spurious `false` each render.
+  const pendingCb = useRef(onPendingChange)
+  useEffect(() => { pendingCb.current = onPendingChange }, [onPendingChange])
+
   const pending = createMutation.isPending
-  useEffect(() => { onPendingChange?.(pending) }, [pending, onPendingChange])
+  useEffect(() => { pendingCb.current?.(pending) }, [pending])
   // A successful create unmounts this component (the caller leaves the creating
-  // branch) while `pending` is still true, so the sync effect above never gets
-  // to report the falling edge — without this the caller stays frozen forever.
-  useEffect(() => () => { onPendingChange?.(false) }, [onPendingChange])
+  // branch) while `pending` is still true, because `onCreated` runs inside
+  // `onSuccess`, before the mutation dispatches success. The sync effect above
+  // therefore never sees the falling edge — without this the caller would stay
+  // frozen forever.
+  useEffect(() => () => { pendingCb.current?.(false) }, [])
 
   return (
     <div data-testid={`${testIdPrefix}-new-profile`} className="mt-2 space-y-2">
@@ -100,12 +121,7 @@ export function InlineProfileCreator({
         onChange={e => setName(e.target.value)}
         data-testid={`${testIdPrefix}-new-profile-name`}
         placeholder="Profile name"
-        // The operator got here by picking "+ New profile…", and the caller may
-        // have disabled that <select> on the way, dropping focus to <body> —
-        // so land it here. NOT when `isFirstProfile`: there the creator is
-        // auto-opened with the dialog, and stealing focus would jump the
-        // operator past the MAC field they have to fill first.
-        autoFocus={!isFirstProfile}
+        autoFocus={autoFocusName}
         className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-3 text-brand-ink placeholder-brand-text-muted focus:outline-none focus:border-brand-accent"
       />
       {error && (

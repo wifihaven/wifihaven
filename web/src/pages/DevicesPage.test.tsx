@@ -327,6 +327,45 @@ describe('DevicesPage — add device with inline profile creation (#2367)', () =
     expect(await screen.findByTestId('add-device-new-profile-error')).toHaveTextContent(
       'profile limit reached',
     )
+    // The failure path must also release the caller's freeze. A wedged
+    // `createPending` would disable Cancel while Save is already disabled by
+    // `creatingProfile`, leaving no way out of the dialog.
+    expect(screen.getByTestId('add-device-cancel')).toBeEnabled()
+    expect(screen.getByTestId('add-device-create-profile')).toBeEnabled()
+  })
+
+  // Escape closes the modal exactly like Cancel, so it has to honour the same
+  // in-flight guard instead of routing around it.
+  it('Escape does not close the modal while a create is in flight', async () => {
+    (api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([kidsProfile, adultsProfile])
+    let release: (v: { id: number }) => void = () => {}
+    ;(api.profiles.create as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
+      new Promise<{ id: number }>(res => { release = res }),
+    )
+
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('No devices yet.')
+    await user.click(screen.getByRole('button', { name: /\+ Add Device/ }))
+    await user.selectOptions(screen.getByTestId('add-device-profile-select'), '__new__')
+    await user.type(screen.getByTestId('add-device-new-profile-name'), 'Teens')
+
+    // Escape works before the create starts.
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByTestId('add-device-cancel')).not.toBeInTheDocument())
+
+    await user.click(screen.getByRole('button', { name: /\+ Add Device/ }))
+    await user.selectOptions(screen.getByTestId('add-device-profile-select'), '__new__')
+    await user.type(screen.getByTestId('add-device-new-profile-name'), 'Teens')
+    await user.click(screen.getByTestId('add-device-create-profile'))
+    await waitFor(() => expect(screen.getByTestId('add-device-cancel')).toBeDisabled())
+
+    await user.keyboard('{Escape}')
+    expect(screen.getByTestId('add-device-cancel')).toBeInTheDocument()
+
+    release({ id: 7 })
+    await waitFor(() => expect(screen.getByTestId('add-device-cancel')).toBeEnabled())
   })
 })
 
