@@ -5,10 +5,18 @@
 -- SCHEMA-ONLY PR (docs/process/migrations.md#migrations-back-compat): migration
 -- + docs, nothing else. The existing feature suite is the back-compat gate —
 -- it applies this migration and then drives image-(N-1)'s `api/src` against it.
--- The source that adopts the new shape (household-scoped
--- `NamedScheduleRepo.findByName`, and stamping `block_events.router_id` at the
--- `POST /api/router/decision` call site) lands in the follow-up source PR,
--- together with its tests.
+--
+-- This is the MIDDLE of a three-PR sequence, because the two halves of #2572
+-- need opposite orderings and neither can be folded into this file:
+--   1. source — scope `NamedScheduleRepo.findByName` to a household. Must
+--      precede this migration: dropping the global name unique without it
+--      leaves a read that raises on multiple rows (see item 1 below).
+--   2. THIS migration.
+--   3. source — make `BlockEventInsert.routerId` required and stamp it at the
+--      `POST /api/router/decision` call site. Must follow this migration: it
+--      writes a column that has to exist first.
+-- Each PR is independently green; the tests for both source halves ship with
+-- their own PR.
 --
 -- ── 1. named_schedules.name: global UNIQUE → UNIQUE (household_id, name) ─────
 -- V50 created `name TEXT NOT NULL UNIQUE` when the product was single-household.
@@ -26,13 +34,30 @@
 -- Back-compat under this swap: the widened key is strictly WEAKER than the one
 -- it replaces (every pair unique under UNIQUE(name) is also unique under
 -- UNIQUE(household_id, name)), so no existing row can violate it and no
--- image-(N-1) write can start failing. Image-(N-1)'s `ScheduleRoutes` also
--- keeps its unscoped `findByName` name-taken pre-check, which still rejects a
--- cross-household duplicate at the source layer — so no duplicate name can
--- actually be created until the follow-up source PR scopes that check. That is
--- deliberate: `findByName` reads with Doobie `.option`, which fails on multiple
--- rows, so the read must be scoped in the same change that lets duplicates
--- exist. Dropping the constraint here alone is inert and safe.
+-- image-(N-1) write can start failing.
+--
+-- ORDERING — the scoped read ships BEFORE this drop, not after. `findByName`
+-- (`NamedScheduleRepoLive`) backs the name-taken 409 in `ScheduleRoutes` and
+-- reads with Doobie `.option`, which RAISES on multiple rows. Once two
+-- households can hold the same name, an unscoped `WHERE name=?` can match one
+-- row per household. A check-then-act pre-check is not a substitute for the
+-- constraint: two concurrent creates from different households could both pass
+-- it and both insert, after which every create/rename on that name 503s until
+-- a row is deleted by hand. So `findByName(name, household)` lands in its own
+-- source PR that MERGES FIRST, and this migration is the second step — the
+-- same expand/contract order V74/V75 used ("#2108's source is already
+-- deployed", V75 lines 39-44) when they dropped `devices_mac_key` and
+-- `time_usage_device_mac_host_date_key`.
+--
+-- Dropping a unique constraint requires auditing what depends on it. There is
+-- no `ON CONFLICT (name)` on `named_schedules` anywhere in the tree, and every
+-- FK into the table references `named_schedules(id)` (V50 lines 97 and 115,
+-- V51 line 60), never `(name)` — so nothing else breaks.
+--
+-- `named_schedules_name_key` is PostgreSQL's auto-generated name for V50's
+-- inline `UNIQUE`; confirmed against the live prod catalog
+-- (`SELECT conname FROM pg_constraint WHERE conrelid='named_schedules'::regclass`
+-- on wifihaven-pg-prod, 2026-08-02), not assumed from the naming convention.
 --
 -- ── 2. named_schedules.household_id: DROP DEFAULT ───────────────────────────
 -- V72 line 83 set `DEFAULT 1` as expand-window scaffolding so image-(N-1)
@@ -90,14 +115,29 @@
 --     A 30-day retention sweep (#2086) keeps it bounded regardless.
 --   * named_schedules — 2 rows;  households — 2 rows;  routers — 2 rows.
 -- So every statement here is trivially instant at real prod volume, far inside
--- the 15-minute Render port-scan window. Independently of the row count, the
--- nullable `ADD COLUMN` with no default is metadata-only in PG 11+ (no table
--- rewrite), which is what would keep it safe as block_events grows — but the
--- count above is the measured fact, not the inference.
+-- the 15-minute Render port-scan window.
+--
+-- Note the two statements have DIFFERENT growth behaviour, and only one of them
+-- is size-independent:
+--   * `ADD COLUMN router_id` — nullable with no default, so metadata-only in
+--     PG 11+ (no table rewrite). Safe at any table size.
+--   * `CREATE INDEX idx_block_events_router_ts` — a PLAIN index build, which
+--     scans the whole table under a lock that blocks writes, and whose runtime
+--     tracks table size. It is safe HERE only because the table is empty;
+--     it is not a claim that stays true as block_events grows. CONCURRENTLY,
+--     which would avoid the lock, is unavailable (see below).
+-- The 0-row count is the measured fact that makes the index build safe, not an
+-- inference from the ADD COLUMN's metadata-only property.
+--
+-- Also worth stating so a later reader does not have to reconcile "live write
+-- path" with "0 rows": nothing in the tree currently CALLS
+-- `POST /api/router/decision` — grepping the OpenWRT Lua and OPNsense agents
+-- for that path returns no hits. `RouterRoutes` writes a block event when the
+-- endpoint is hit; the endpoint just has no producer today. That, rather than
+-- the retention sweep, is the likely reason prod holds 0 rows.
 --
 -- No CREATE INDEX CONCURRENTLY is used anywhere here: Flyway wraps each
--- migration in a transaction and CONCURRENTLY cannot run inside one. The plain
--- index builds are on a 0-row and a 2-row table.
+-- migration in a transaction and CONCURRENTLY cannot run inside one.
 
 -- 1. Widen the schedule-name uniqueness to per-household.
 ALTER TABLE named_schedules DROP CONSTRAINT named_schedules_name_key;
