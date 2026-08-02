@@ -1824,5 +1824,80 @@ object MultiTenantIsolationSpec
       // other tenant's. Pre-fix `usedA` was 30 (10 + the leaked 20).
       assertTrue(usedA == Some(10), usedB == Some(20))
     },
+    // ── Pin (#2568): the NOW top-hosts read is household-scoped for a SHARED MAC ────────────────
+    // `TrafficReportRepo.listTrafficRollupRows` was the ONE `traffic_reports` read with no
+    // household predicate — its only scoping was the caller-supplied MAC list. Post-V74 the SAME
+    // MAC can be a device in two households, so household A's `GET /api/dashboard/now` rendered the
+    // hostnames household B's device visited (and B's active seconds) on A's device. This pin seeds
+    // ONE MAC behind BOTH routers, reports DISTINCT hosts under each, and asserts A's NOW body
+    // never mentions B's host and counts only A's seconds. RED pre-fix: `evil.example` appears in
+    // A's `topHosts` (and wins `nowActivity`, having more active seconds).
+    test("pin (#2568) — NOW top-hosts for a shared MAC show ONLY the caller's household traffic") {
+      // The suite clock is Mon 2025-01-06 14:00Z (TestClock.schoolDayAfternoon); this window is
+      // inside both the 5m active-device window and the 30m top-hosts window.
+      val date  = java.time.LocalDate.parse("2025-01-06")
+      val start = Instant.parse("2025-01-06T13:56:00Z")
+      for {
+        _      <- cleanDb
+        two    <- TestLayers.seedTwoHouseholds(macA, macB)
+        tr     <- ZIO.service[TrafficReportRepo]
+        cer    <- ZIO.service[ConnectionEventRepo]
+        dr     <- ZIO.service[DeviceRepo]
+        pr     <- ZIO.service[ProfileRepo]
+        up     <- ZIO.service[UserProfileRepo]
+        atlr   <- ZIO.service[AppTimeLimitRepo]
+        clk    <- ZIO.service[Clock]
+        // The SAME MAC is a device in BOTH households, each under that household's own profile.
+        _      <- dr.upsert(macM, "sharedA", Some(two.profileA), "192.168.1.20", two.hhA)
+        _      <- dr.upsert(macM, "sharedB", Some(two.profileB), "192.168.1.21", two.hhB)
+        // Distinct hosts for the shared MAC under each household's router. B's row carries MORE
+        // active seconds, so pre-fix it also won A's `nowActivity` top-host.
+        _      <- tr.insertBatch(
+          List(
+            TrafficReportInsert(
+              two.routerIdA,
+              macM,
+              None,
+              HostId.Fqdn(Hostname.unsafe("a-only.example")),
+              date,
+              start,
+              start.plusSeconds(120),
+              120,
+              40000L,
+              50000L,
+            ),
+            TrafficReportInsert(
+              two.routerIdB,
+              macM,
+              None,
+              HostId.Fqdn(Hostname.unsafe("evil.example")),
+              date,
+              start,
+              start.plusSeconds(120),
+              240,
+              60000L,
+              70000L,
+            ),
+          ),
+        )
+        auth   <- makeAuth
+        tokenA <- login(auth, two.adminA, two.password)
+        routes = DashboardNowRoutes.routes(auth, tr, cer, dr, pr, up, atlr, clk)
+        (sA, bodyA) <- getJson(routes, "/api/dashboard/now", tokenA)
+        nowA        <- ZIO
+          .fromEither(bodyA.fromJson[DashboardNow])
+          .mapError(new RuntimeException(_))
+        devA = nowA.profiles
+          .filter(_.id == two.profileA)
+          .flatMap(_.activeDevices)
+          .filter(_.mac == macM)
+      } yield assertTrue(sA == Status.Ok) &&
+        // Positive (sees-own-data): A's shared-MAC device is active and shows A's own host.
+        assertTrue(devA.flatMap(_.topHosts).map(_.host.value).contains("a-only.example")) &&
+        // Negative: B's host never surfaces anywhere in A's NOW body.
+        assertTrue(!bodyA.contains("evil.example")) &&
+        // Negative: A's active seconds are A's alone — 120, never 120 + B's leaked 240.
+        assertTrue(devA.flatMap(_.topHosts).map(_.activeSeconds).sum == 120L)
+    },
   ) @@ TestAspect.sequential
 }
