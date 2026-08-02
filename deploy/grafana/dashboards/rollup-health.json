@@ -158,7 +158,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "Households skipped inside a rollup tick",
-      "description": "rate(rollup_household_skipped_total[15m]) — households whose slice of an all-tenant rollup tick was skipped (#2553, AppMetrics.recordRollupHouseholdSkipped via HouseholdTickIsolation). Since #2553 both TimeUsedRollupJob and AmbientLearnJob read EACH household's own household_settings inside their per-household loop, so one unprovisioned tenant is skipped rather than failing the tick for every tenant. That means the run still records status=ok — this panel is the ONLY signal separating 'the batch ran' from 'the batch covered every tenant'. Expected flat zero. reason=settings_missing is a #2386-class provisioning bug (a household owning no settings row); reason=error is any other per-household failure. A sustained non-zero rate means that tenant's screen-time has stopped updating — the household id is in the accompanying ERROR log, deliberately not a label (§4 cardinality firewall).",
+      "description": "rate(wifihaven_rollup_household_skipped_total[15m]) — households whose slice of an all-tenant rollup tick was skipped (#2553, AppMetrics.recordRollupHouseholdSkipped via HouseholdTickIsolation). Since #2553 both TimeUsedRollupJob and AmbientLearnJob read EACH household's own household_settings inside their per-household loop, so one unprovisioned tenant is skipped rather than failing the tick for every tenant. That means the run still records status=ok — this panel is the ONLY signal separating 'the batch ran' from 'the batch covered every tenant'. Expected flat zero. reason=settings_read means the household's settings read failed - usually a missing settings row (#2386, a provisioning bug), but a DB blip during that read lands here too; reason=error is any other per-household failure. The label names where the tick gave up, not the cause: read the ERROR log for the actual exception. A sustained non-zero rate means that tenant's screen-time has stopped updating — the household id is in the accompanying ERROR log, deliberately not a label (§4 cardinality firewall).",
       "type": "timeseries",
       "gridPos": { "h": 9, "w": 24, "x": 0, "y": 18 },
       "id": 5,
@@ -178,7 +178,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "rate(rollup_household_skipped_total{env=\"$env\"}[15m])",
+          "expr": "rate(wifihaven_rollup_household_skipped_total{env=\"$env\"}[15m])",
           "legendFormat": "{{rollup_job}} / {{reason}}",
           "refId": "A"
         }

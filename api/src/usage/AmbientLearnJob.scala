@@ -130,50 +130,104 @@ object AmbientLearnJob {
     learned    <- ZIO.foreach(households)(hh =>
       learnHousehold(profileRepo, deviceRepo, appTimeLimitRepo, trafficRepo, hs, now, hh),
     )
-    days = learned.flatten
+    days    = learned.flatten
+    skipped = learned.count(_.isEmpty)
     // ── What the GLOBAL writes key on when households disagree about "yesterday" ──
     //
     // The ambient baseline is deliberately ONE global host set (`ambient_host_days` is keyed
-    // `(host, day)` with no household_id — design: idle-traffic-discrimination.md). Only the
-    // learning INPUTS and the day key are per-household, so the two global writes need an explicit
-    // rule rather than an arbitrary household's value:
+    // `(host, day)` with no household_id — docs/design/idle-traffic-discrimination.md). Only the
+    // learning INPUTS are per-household. The day key is NOT: it stays a single global sequence,
+    // [[globalLearnDay]] (the UTC day before `now`).
     //
-    //   upsertDay — keyed on EACH household's OWN `yesterday`, grouped and MERGED first. `upsertDay`
-    //     REPLACES the count for a (host, day), so two households that share a day key must be
-    //     summed into one call; calling it twice would silently discard the first household's
-    //     counts. Households whose local yesterday differs simply write different day rows, which
-    //     is the honest representation — a span really did happen on that household's day.
+    // Keying the write on each household's OWN local `yesterday` is the obvious-looking choice and
+    // is WRONG, because of how the day column is read. `ambientHosts` qualifies a host on
+    // `COUNT(DISTINCT day) >= ambientMinIsolatedDays` over the whole table (AmbientHostsRepo). The
+    // `day` column is therefore not a fact about when a span happened — it is the bucket that
+    // counts "how many separate days has this host shown up isolated". Per-household day keys make
+    // ONE tick write the SAME host under two different buckets whenever two households' local dates
+    // disagree, so a host shared between them (every Apple/Google background host is) accrues
+    // distinct days at up to twice the real rate and crosses the operator's threshold in half the
+    // configured time. It would then be ambient-gated — i.e. its spans stop counting as screen time
+    // — earlier than configured, silently under-counting. A global day sequence advances exactly
+    // once per calendar day no matter how many households exist, which is the semantics
+    // `ambientMinIsolatedDays` was calibrated against and what shipped before #2553.
     //
-    //   pruneBefore — the EARLIEST (most generous) cutoff across households, not the writer's own.
-    //     Retention on a shared table must be the UNION of every household's window: pruning at a
-    //     short-window household's cutoff would delete days a long-window household still reads.
-    //     Extra retained days cost nothing — each household's read (`ambientHosts(settings, today)`)
-    //     re-filters to its own window — and the table stays bounded by the LONGEST window. With no
-    //     households there is no basis for a cutoff, so nothing is pruned.
-    _       <- ZIO.foreachDiscard(days.groupBy(_.day)) { case (day, forDay) =>
-      ambientRepo.upsertDay(day, mergeCounts(forDay.map(_.counts)))
-    }
-    _       <- ZIO.foreachDiscard(
-      days.map(_.pruneCutoff).reduceOption((a, b) => if (a.isBefore(b)) a else b),
-    )(ambientRepo.pruneBefore)
-    // The gauge is unlabelled and the ambient SET is now per-household (same table, each
-    // household's own thresholds and window), so it reports the size of the UNION — "how many
+    // Each household still learns over ITS OWN local `yesterday`'s presence with ITS OWN knobs
+    // ([[learnHousehold]]) — that is the #2553 fix. Only the bucket the results land in is shared.
+    //
+    // Counts from all households merge into that one bucket, as they did pre-#2553: `upsertDay`
+    // REPLACES the count for a (host, day), so the merge must happen here or the last writer would
+    // silently discard everyone else's counts. NOTE: when a household is skipped
+    // ([[HouseholdTickIsolation]]) its contribution is absent from the rewritten row rather than
+    // preserved — one tenant's transient failure lowers a shared count. Bounded and self-healing:
+    // the qualifying read counts DISTINCT DAYS, not magnitudes, so only the `listWindow` explain
+    // surface shows it, and the next successful tick (6 h) restores it.
+    _       <- ZIO.when(days.nonEmpty)(
+      ambientRepo.upsertDay(globalLearnDay(now), mergeCounts(days.map(_.counts))),
+    )
+    // Retention on a shared table must be the UNION of every household's window: pruning at a
+    // short-window household's cutoff would delete days a long-window household still reads. So the
+    // cutoff is the EARLIEST across households — computed from the LONGEST `ambientLearningWindowDays`
+    // of the households whose settings we actually read.
+    //
+    // A tick with ANY skipped household does not prune at all. `days` excludes skipped households,
+    // so pruning on a partial set could delete rows inside the missing household's window —
+    // permanently, and precisely because of an unrelated tenant's transient failure. Skipping the
+    // prune is free (the table just carries one extra cycle of rows) and self-heals next tick,
+    // whereas a wrong prune is unrecoverable.
+    _       <- ZIO
+      .foreachDiscard(pruneCutoff(days))(ambientRepo.pruneBefore)
+      .unless(skipped > 0)
+    _       <- ZIO
+      .logWarning(
+        s"ambient_hosts prune skipped: $skipped household(s) were skipped this tick, so the " +
+          "retention window is not fully known (see rollup_household_skipped_total)",
+      )
+      .when(skipped > 0)
+    // The gauge is unlabelled and the ambient SET is per-household (one table, but each household
+    // applies its own thresholds and window to it), so it reports the size of the UNION — "how many
     // distinct hosts are ambient-gated for at least one household". A sum would double-count the
     // hosts every household shares; picking one household's value would reintroduce exactly the
-    // #2553 bug in the observability surface. Read AFTER the upsert/prune above so the gauge
-    // reflects this tick's writes, as it did pre-#2553.
-    ambient <- ZIO.foreach(days.map(_.household).distinct)(hh =>
-      currentAmbientHosts(ambientRepo, hs, now, hh),
-    )
+    // #2553 bug in the observability surface. Read AFTER the writes above so the gauge reflects this
+    // tick, as it did pre-#2553.
+    ambient <- ZIO.foreach(days)(d => currentAmbientHosts(ambientRepo, d))
     _       <- AppMetrics.setAmbientHosts(ambient.foldLeft(Set.empty[String])(_ ++ _).size)
   } yield days.flatMap(_.counts.keys).distinct.size
 
-  /** One household's learning result: its own day key, counts, and window cutoff. */
-  private final case class LearnedDay(
+  /**
+   * The single global bucket this tick's learning lands in: the UTC day before `now`. Deliberately
+   * NOT household-local — see the rationale in [[doTick]]. It advances once per calendar day, which
+   * is what the `COUNT(DISTINCT day) >= ambientMinIsolatedDays` read is calibrated against.
+   */
+  private[api] def globalLearnDay(now: Instant): LocalDate =
+    now.atZone(java.time.ZoneOffset.UTC).toLocalDate.minusDays(1L)
+
+  /**
+   * Prune boundary: the earliest cutoff any household's window implies. `None` when no household
+   * contributed (nothing to base it on).
+   *
+   * Each household's read is `ambientHosts(itsSettings, itsLocalToday)`, which keeps `day > today -
+   * windowDays` (strict) — so its own boundary is `today - windowDays + 1`, computed from ITS local
+   * today (which can differ from UTC by a day) and ITS window. The global cutoff is the earliest of
+   * those, so no household loses a day it still reads.
+   */
+  private[usage] def pruneCutoff(days: List[LearnedDay]): Option[LocalDate] =
+    days
+      .map(d =>
+        d.localToday.minusDays(d.settings.ambientLearningWindowDays.max(1).toLong).plusDays(1L),
+      )
+      .reduceOption((a, b) => if (a.isBefore(b)) a else b)
+
+  /**
+   * One household's learning result. Carries the household's resolved `settings` and `localToday`
+   * so the prune boundary and the gauge read don't re-read and re-derive what this pass already
+   * resolved (one settings read per household per tick, single-source).
+   */
+  private[usage] final case class LearnedDay(
       household: HouseholdId,
-      day: LocalDate,
+      localToday: LocalDate,
       counts: Map[String, Int],
-      pruneCutoff: LocalDate,
+      settings: wifihaven.shared.HouseholdSettings,
   )
 
   private def mergeCounts(all: List[Map[String, Int]]): Map[String, Int] =
@@ -199,7 +253,7 @@ object AmbientLearnJob {
       .isolate(
         JobName,
         hh,
-        HouseholdTickIsolation.ReasonSettingsMissing,
+        HouseholdTickIsolation.ReasonSettingsRead,
         Option.empty[
           wifihaven.shared.HouseholdSettings,
         ],
@@ -239,37 +293,24 @@ object AmbientLearnJob {
                     acc.updateWith(h.value)(prev => Some(prev.getOrElse(0) + c))
                   }
                 }
-                Some(
-                  LearnedDay(
-                    hh,
-                    yesterday,
-                    acc.toMap,
-                    // Prune exactly the days the window reads exclude: the reads keep
-                    // `day > today - windowDays` (strict), so everything at or before that boundary
-                    // is dead weight — delete `day < boundary + 1`.
-                    today
-                      .minusDays(settings.ambientLearningWindowDays.max(1).toLong)
-                      .plusDays(1L),
-                  ),
-                )
+                Some(LearnedDay(hh, today, acc.toMap, settings))
               }
             }
       }
 
-  /** This household's ambient set under its OWN thresholds/window, for the union gauge. */
+  /**
+   * This household's ambient set under its OWN thresholds/window, for the union gauge. Reuses the
+   * settings and local date [[learnHousehold]] already resolved rather than re-reading them, so the
+   * gauge cannot be computed from a different snapshot than the learning was.
+   */
   private def currentAmbientHosts(
       ambientRepo: AmbientHostsRepo,
-      hs: HouseholdSettingsRepo,
-      now: Instant,
-      hh: HouseholdId,
+      d: LearnedDay,
   ): Task[Set[String]] =
     HouseholdTickIsolation.isolate(
       JobName,
-      hh,
+      d.household,
       HouseholdTickIsolation.ReasonError,
       Set.empty[String],
-    )(
-      hs.getForHousehold(hh)
-        .flatMap(s => ambientRepo.ambientHosts(s, PolicyService.householdLocalDate(now, s))),
-    )
+    )(ambientRepo.ambientHosts(d.settings, d.localToday))
 }

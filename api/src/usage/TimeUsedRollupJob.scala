@@ -252,7 +252,7 @@ object TimeUsedRollupJob {
       .isolate(
         JobName,
         hh,
-        HouseholdTickIsolation.ReasonSettingsMissing,
+        HouseholdTickIsolation.ReasonSettingsRead,
         Option.empty[
           wifihaven.shared.HouseholdSettings,
         ],

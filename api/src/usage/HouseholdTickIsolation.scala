@@ -36,17 +36,32 @@ import zio.*
  */
 object HouseholdTickIsolation {
 
-  /** Bounded `reason` values for `rollup_household_skipped_total`. */
-  val ReasonSettingsMissing: String = "settings_missing"
-  val ReasonError: String           = "error"
+  /**
+   * Bounded `reason` values for `wifihaven_rollup_household_skipped_total`.
+   *
+   * These name WHERE the tick gave up, not why. `settings_read` is the household's
+   * `getForHousehold` — overwhelmingly a missing settings row (#2386, a provisioning bug), but a
+   * connection reset or statement timeout during that one read lands here too. Naming it
+   * `settings_missing` would have asserted a cause the label cannot actually distinguish and would
+   * send an operator hunting a provisioning bug during a database blip; the accompanying ERROR log
+   * carries the real exception.
+   */
+  val ReasonSettingsRead: String = "settings_read"
+  val ReasonError: String        = "error"
 
   /**
    * Run one household's slice of an all-tenant tick. On failure, log + meter and fall back to
    * `zero` so the remaining households still run; on a pool-closed failure, re-raise so the
    * caller's `runOnce` recognises the shutdown.
    *
-   * `reason` is the CAUSE attribution, chosen structurally by the call site (the settings read is
-   * wrapped separately from the rest of the body) rather than sniffed out of an exception message.
+   * `reason` is chosen structurally by the call site (the settings read is wrapped separately from
+   * the rest of the body) rather than sniffed out of an exception message — see the caveat on the
+   * constants above about what that does and does not tell you.
+   *
+   * Scope: this isolates typed failures (`catchAll`) only. A DEFECT — `ZIO.die`, e.g. an unexpected
+   * `NoSuchElementException` — still aborts the whole tick for every tenant. That is deliberate: a
+   * defect means a bug in our own logic rather than one tenant's bad state, and it should surface
+   * as a failed run rather than be quietly absorbed per household.
    */
   def isolate[A](job: String, household: HouseholdId, reason: String, zero: A)(
       body: Task[A],

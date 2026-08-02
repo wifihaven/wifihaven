@@ -1793,10 +1793,22 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
     // from household #1's settings, so household N's cached rows really were a function of household
     // #1's reset tz / heartbeat filter, and a #1 save had to evict them all. #2553 severed that
     // coupling (both all-tenant jobs now read each household's OWN settings inside their
-    // per-household loop), so a household's cached rows are a function of its own settings alone —
-    // and evicting every other tenant's rows would be pure churn: a full recompute of every profile
-    // in the install on any tenant's save. The two changes are not separable, which is why they land
-    // together.
+    // per-household loop), so evicting every other tenant's rows on any tenant's save would be a
+    // full recompute of every profile in the install. The two changes are not separable, which is
+    // why they land together.
+    //
+    // Precisely what this does NOT claim: a household's cached rows are not a pure function of its
+    // own settings row. The `ambient_host_days` baseline the rollup gates on is a single GLOBAL
+    // table with no household_id, and what a household LEARNS into it depends on its own
+    // `ambient_*` / heartbeat / presence-continuation knobs — so household A's knobs still reach
+    // household B's active-minute definition through that table, and B's rows are no longer evicted
+    // when A saves. The residual exposure is small and predates this change: the shared baseline
+    // only moves when `AmbientLearnJob` next runs (6 h), not at settings-write time, so the
+    // wholesale DELETE never invalidated this coupling at the right moment either — it only helped
+    // by coincidence, when some tenant happened to save afterwards. `time_used_daily`'s today row is
+    // rewritten by the rollup every 15 min regardless. Past-day `app_used_daily` rows are the one
+    // thing that can hold old ambient semantics indefinitely. Keying `ambient_host_days` by
+    // household is the durable fix — #2583.
     // `time_used_daily` / `app_used_daily` carry no household_id of their own (V43 / V53) — they key
     // on `profile_id`, which does (V65) — so the scope is a semijoin through `profiles`.
     val ownProfiles   =

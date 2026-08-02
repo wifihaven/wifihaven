@@ -2,7 +2,8 @@ package wifihaven.api.feature
 
 import wifihaven.api.db.*
 import wifihaven.api.db.TypeMeta.given
-import wifihaven.api.usage.{AmbientLearnJob, TimeUsedRollupJob}
+import wifihaven.api.metrics.MetricsRuntime
+import wifihaven.api.usage.{AmbientLearnJob, HouseholdTickIsolation, TimeUsedRollupJob}
 import wifihaven.shared.*
 import wifihaven.shared.types.*
 import wifihaven.testinfra.*
@@ -11,6 +12,7 @@ import doobie.implicits.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 import zio.interop.catz.*
 import zio.{Clock as _, *}
+import zio.metrics.connectors.prometheus.PrometheusPublisher
 import zio.test.*
 
 import java.time.{Instant, LocalDate, ZoneId}
@@ -179,6 +181,33 @@ object PerHouseholdRollupSettingsSpec
       n   <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, atl, trr, hsr, now, ahr)
     } yield n
 
+  // ── Prometheus scrape helpers (same shape as MetricsExportSpec) ──────────────
+  private val PollInterval = 100.millis
+
+  /**
+   * Fire exactly ONE scrape of the publisher fiber, waiting until it has re-parked on the TestClock
+   * before advancing (#2042 — a bare `adjust` can slip past a mid-flight fiber under load).
+   */
+  private val tickPublisher: UIO[Unit] =
+    zio.test.TestClock.sleeps.repeatUntil(_.nonEmpty) *> zio.test.TestClock.adjust(PollInterval)
+
+  /**
+   * Current value of `wifihaven_rollup_household_skipped_total{rollup_job=time_used_daily,
+   * reason=settings_read}` in the latest exposition, or 0.0 when the series is absent. Label order
+   * in the exposition is not guaranteed, so match on fragments rather than a fixed rendering.
+   */
+  private def skipCount: ZIO[PrometheusPublisher, Nothing, Double] =
+    ZIO.serviceWithZIO[PrometheusPublisher](_.get).map { body =>
+      body.linesIterator
+        .filter(_.startsWith("wifihaven_rollup_household_skipped_total"))
+        .filter(l =>
+          l.contains(s"""rollup_job="${TimeUsedRollupJob.JobName}"""") &&
+            l.contains(s"""reason="${HouseholdTickIsolation.ReasonSettingsRead}""""),
+        )
+        .flatMap(_.split(" ").lift(1).flatMap(_.toDoubleOption))
+        .sum
+    }
+
   private def learnTick(now: Instant): ZIO[
     AmbientHostsRepo & ProfileRepo & DeviceRepo & AppTimeLimitRepo & TrafficReportRepo &
       HouseholdSettingsRepo,
@@ -344,12 +373,80 @@ object PerHouseholdRollupSettingsSpec
         // `listWindow` over a generous window so the read itself never hides a write.
         settings <- hsr.getForHousehold(a.hh)
         window   <- ahr.listWindow(settings.copy(ambientLearningWindowDays = 3650), DateA)
+        globalDay = AmbientLearnJob.globalLearnDay(Now)
       } yield assertTrue(
-        // household A's host was learned under household A's yesterday…
-        window.exists(r => r.host == "amb-a.example.com" && r.lastIsolatedDay == yA),
-        // …and household B's under household B's, which is a DIFFERENT day.
-        window.exists(r => r.host == "amb-b.example.com" && r.lastIsolatedDay == yB),
+        // Each household's presence was selected on ITS OWN local yesterday — A's rows are stamped
+        // Jan 6 and B's Jan 4, and a tick that read one global `yesterday` finds neither.
         yA != yB,
+        window.exists(_.host == "amb-a.example.com"),
+        window.exists(_.host == "amb-b.example.com"),
+        // …but both land in the SINGLE global day bucket, not each household's own local day.
+        // `ambientHosts` qualifies on COUNT(DISTINCT day), so per-household day keys would let one
+        // tick advance a shared host's day count twice and cross `ambientMinIsolatedDays` in half
+        // the configured time (see the rationale in AmbientLearnJob.doTick).
+        window.forall(_.lastIsolatedDay == globalDay),
+        globalDay != yA,
+        globalDay != yB,
+        // Both households' counts survive in that one bucket: `upsertDay` REPLACES per (host, day),
+        // so a tick that called it once per household would silently discard all but the last.
+        window.count(r => r.host.startsWith("amb-")) == 4,
+      )
+    },
+    // ── The prune boundary must respect the LONGEST window, not the writer's own ──
+    test("prune keeps days inside the longest household window, and skips entirely on a skip") {
+      for {
+        _       <- cleanDb
+        xa      <- ZIO.service[Transactor[Task]]
+        pr      <- ZIO.service[ProfileRepo]
+        ahr     <- ZIO.service[AmbientHostsRepo]
+        hsr     <- ZIO.service[HouseholdSettingsRepo]
+        one     <- hsr.getForHousehold(HouseholdId.Default)
+        _       <- hsr.update(HouseholdId.Default, one.copy(dailyResetTz = ZoneId.of("UTC")))
+        // Same tz; the ONLY difference is the learning window: 3 days vs 30.
+        shortHh <- tenant(
+          "Short",
+          "short-win",
+          macA,
+          ZoneId.of("UTC"),
+          _.copy(ambientLearningWindowDays = 3),
+        )
+        longHh  <- tenant(
+          "Long",
+          "long-win",
+          macB,
+          ZoneId.of("UTC"),
+          _.copy(ambientLearningWindowDays = 30),
+        )
+        globalDay = AmbientLearnJob.globalLearnDay(Now)
+        // A day that is dead to the 3-day window but alive to the 30-day one.
+        midDay    = globalDay.minusDays(10)
+        ancient   = globalDay.minusDays(90)
+        _ <- ahr.upsertDay(midDay, Map("mid.example.com" -> 1))
+        _ <- ahr.upsertDay(ancient, Map("ancient.example.com" -> 1))
+        _ <- learnTick(Now)
+        wide = one.copy(ambientLearningWindowDays = 3650)
+        after     <- ahr.listWindow(wide, globalDay)
+        // Now add a household that owns no settings row, so the tick records a skip. The retention
+        // window is then not fully known, and pruning on the surviving subset could delete rows
+        // inside the missing household's window — permanently.
+        broken    <-
+          sql"INSERT INTO households(name, slug, router_cap) VALUES('no-window','no-window',1) RETURNING id"
+            .query[HouseholdId]
+            .unique
+            .transact(xa)
+        _         <- pr.create("Broken-Kids", Nil, broken)
+        _         <- ahr.upsertDay(globalDay.minusDays(200), Map("older.example.com" -> 1))
+        _         <- learnTick(Now)
+        afterSkip <- ahr.listWindow(wide, globalDay)
+      } yield assertTrue(
+        // the 30-day household still reads `mid`, so the prune must not have taken the SHORT
+        // household's cutoff (which would have deleted it)
+        after.exists(_.host == "mid.example.com"),
+        // …but a day outside every window is still collected, so pruning does happen
+        !after.exists(_.host == "ancient.example.com"),
+        // a tick with a skipped household does not prune at all
+        afterSkip.exists(_.host == "older.example.com"),
+        afterSkip.exists(_.host == "mid.example.com"),
       )
     },
     // ── The invalidation this change is allowed to narrow (ordering per #2553) ──
@@ -422,6 +519,51 @@ object PerHouseholdRollupSettingsSpec
         // another tenant's settings).
         skipped.isEmpty,
       )
+    },
+    // ── The skip must be LOUD — the counter is the only signal it happened ───────
+    test("skipping a household increments wifihaven_rollup_household_skipped_total") {
+      // The no-dark-by-default argument for skipping rather than failing the tick rests entirely on
+      // the skip being observable: the run still records status=ok, so this counter (and its
+      // rollup-health panel) is the ONLY thing separating "the batch ran" from "the batch covered
+      // every tenant". Deleting the `recordRollupHouseholdSkipped` call passes every other pin in
+      // this spec, which is exactly the #2546 shape — a passive detector whose absence reads as
+      // health. So assert the emission directly, and assert it does NOT fire on the healthy path
+      // (a wired-open counter is just as useless).
+      (for {
+        _  <- cleanDb
+        xa <- ZIO.service[Transactor[Task]]
+        pr <- ZIO.service[ProfileRepo]
+        a  <- tenant("Loud", "loud", macA, ZoneId.of("UTC"))
+        day    = LocalDate.of(2026, 1, 6)
+        tickAt = Instant.parse("2026-01-06T12:00:00Z")
+        _ <- seedTraffic(a.router, macA, AppHost, day, Instant.parse("2026-01-06T09:00:00Z"), 15)
+        // Baseline: the registry is process-global and other specs may have touched this series, so
+        // every assertion below is on the DELTA across scrapes, never an absolute value.
+        _ <- tickPublisher
+        before       <- skipCount
+        // Phase 1 — every household healthy. The counter must not move.
+        _            <- rollupTick(tickAt)
+        _            <- tickPublisher
+        afterHealthy <- skipCount
+        // Phase 2 — add a household owning no settings row, then tick again.
+        broken       <-
+          sql"INSERT INTO households(name, slug, router_cap) VALUES('loud-broken','loud-broken',1) RETURNING id"
+            .query[HouseholdId]
+            .unique
+            .transact(xa)
+        _            <- pr.create("Loud-Broken-Kids", Nil, broken)
+        _            <- rollupTick(tickAt)
+        _            <- tickPublisher
+        afterBroken  <- skipCount
+      } yield assertTrue(
+        // healthy tick emits nothing
+        afterHealthy == before,
+        // the skipped household increments it exactly once, under this job and reason
+        afterBroken == afterHealthy + 1.0,
+      ))
+        .provideSome[TestDatabase.AllRepos & EmbeddedPostgres & Transactor[Task]](
+          MetricsRuntime.prometheus(PollInterval),
+        )
     },
   ) @@ TestAspect.sequential
 }
