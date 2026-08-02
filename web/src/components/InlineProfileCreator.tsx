@@ -96,6 +96,13 @@ export function InlineProfileCreator({
   // Held in a ref so the unmount reset below can depend on [] — an effect that
   // depends on the callback re-runs its cleanup on every identity change, so a
   // caller passing an inline arrow would emit a spurious `false` each render.
+  //
+  // ORDERING INVARIANT: this sync effect must stay ABOVE the pending effect
+  // below. React fires a fiber's passive effects in declaration order, so on a
+  // commit where both the callback identity and `pending` change, the ref is
+  // already current when the pending effect reads it. Moving it below would
+  // reintroduce a one-commit stale-callback window. Pinned by the
+  // identity-churn test in InlineProfileCreator.test.tsx.
   const pendingCb = useRef(onPendingChange)
   useEffect(() => { pendingCb.current = onPendingChange }, [onPendingChange])
 

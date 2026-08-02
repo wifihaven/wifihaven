@@ -1,0 +1,82 @@
+import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { useState } from 'react'
+import { render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { withQuery } from '@/test/queryWrapper'
+
+vi.mock('@/api/client', () => ({
+  api: { profiles: { list: vi.fn(), create: vi.fn() } },
+}))
+
+import { api } from '@/api/client'
+import { InlineProfileCreator } from './InlineProfileCreator'
+
+beforeEach(() => {
+  vi.resetAllMocks()
+  ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+})
+
+// #2560 — `onPendingChange` is how a caller freezes the controls IT owns (the
+// Add-Device modal's select and Cancel) for exactly the window a create is in
+// flight. The callback is held in a ref so the unmount reset can depend on [];
+// an effect depending on the callback re-runs its cleanup on every identity
+// change, so a caller passing an inline arrow would emit a spurious `false` on
+// every render. Both current callers happen to pass a stable value, so without
+// this test the ref could be reverted to the simpler form unnoticed.
+describe('InlineProfileCreator — onPendingChange (#2560)', () => {
+  function Host({ onPendingChange }: { onPendingChange: (p: boolean) => void }) {
+    const [, force] = useState(0)
+    return (
+      <div>
+        <button onClick={() => force(n => n + 1)}>rerender</button>
+        <InlineProfileCreator
+          testIdPrefix="t"
+          canCancel
+          // A BRAND-NEW function identity on every render — the case the ref exists for.
+          onPendingChange={p => onPendingChange(p)}
+          onCreated={() => {}}
+          onCancel={() => {}}
+        />
+      </div>
+    )
+  }
+
+  it('does not emit spurious pending changes when the callback identity churns', async () => {
+    const calls: boolean[] = []
+    const user = userEvent.setup()
+    render(withQuery(<Host onPendingChange={p => calls.push(p)} />))
+
+    // Mount reports the initial (not-pending) state once.
+    await waitFor(() => expect(calls.length).toBeGreaterThan(0))
+    const afterMount = calls.length
+
+    await user.click(screen.getByRole('button', { name: 'rerender' }))
+    await user.click(screen.getByRole('button', { name: 'rerender' }))
+    await user.click(screen.getByRole('button', { name: 'rerender' }))
+
+    // Re-rendering with a fresh callback each time must emit nothing: `pending`
+    // never changed. With the effect keyed on the callback it emitted a
+    // cleanup-`false` plus a sync-`false` per render instead.
+    expect(calls.length).toBe(afterMount)
+  })
+
+  it('reports the rising and falling edge exactly once across a create', async () => {
+    let release: (v: { id: number }) => void = () => {}
+    ;(api.profiles.create as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
+      new Promise<{ id: number }>(res => { release = res }),
+    )
+    const calls: boolean[] = []
+    const user = userEvent.setup()
+    render(withQuery(<Host onPendingChange={p => calls.push(p)} />))
+    await waitFor(() => expect(calls.length).toBeGreaterThan(0))
+    calls.length = 0
+
+    await user.type(screen.getByTestId('t-new-profile-name'), 'Teens')
+    await user.click(screen.getByTestId('t-create-profile'))
+    await waitFor(() => expect(calls).toContain(true))
+
+    release({ id: 7 })
+    await waitFor(() => expect(calls[calls.length - 1]).toBe(false))
+    expect(calls).toEqual([true, false])
+  })
+})
