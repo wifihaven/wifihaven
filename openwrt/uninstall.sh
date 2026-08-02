@@ -221,7 +221,13 @@ fi
 # uci also fails on a malformed / hand-edited config, and that is exactly a
 # state where the token is still sitting in the file. The file-level check is
 # what actually guarantees the wipe; the uci scrub is best-effort on top.
-SCRUB_FAILED=0
+# Two distinct failure records, because they need two distinct messages:
+#   TOKEN_SURVIVORS — paths that still hold a router_token. A credential is
+#                     still on the box; the operator must be told WHICH file.
+#   FAILED_PATHS    — anything we could not remove. Non-secret, but the summary
+#                     must not claim we removed it.
+TOKEN_SURVIVORS=""
+FAILED_PATHS=""
 
 config_has_router_token() {
   [ -f "$WIFIHAVEN_CONFIG" ] || return 1
@@ -268,7 +274,7 @@ scrub_wifihaven_config() {
     # overlay), before it could report the failure.
     cp /dev/null "$WIFIHAVEN_CONFIG" 2>/dev/null || true
     if config_has_router_token; then
-      SCRUB_FAILED=1
+      TOKEN_SURVIVORS="$TOKEN_SURVIVORS $WIFIHAVEN_CONFIG"
       note "FAILED to wipe router_token from $WIFIHAVEN_CONFIG"
     else
       note "truncated $WIFIHAVEN_CONFIG (router_token survived the UCI scrub)"
@@ -306,27 +312,31 @@ scrub_wifihaven_config || true
 # next reboot, but a router decommissioned or re-homed WITHOUT a reboot would
 # still be carrying the credential, so erase it here.
 prune_runtime_artifacts() {
-  _pruned=0
+  _removed=""
   for _p in "$WIFIHAVEN_RUNTIME_DIR/policy.json" "$WIFIHAVEN_RUNTIME_DIR/policy.json.tmp" \
             "$WIFIHAVEN_RUNTIME_DIR/blocklists" \
             "$WIFIHAVEN_RUNTIME_DIR/block_page.crt" "$WIFIHAVEN_RUNTIME_DIR/block_page.key" \
             "$WIFIHAVEN_CONFIG_BACKUP"; do
     [ -e "$_p" ] || continue
     rm -rf "$_p"
-    # Count the removal only if it actually happened: `set -e` is suspended
-    # inside this function (it is called `|| true`), and a read-only overlay
-    # makes `rm` fail without stopping us. $WIFIHAVEN_CONFIG_BACKUP can carry a
-    # router_token, so a survivor gets the same loud treatment as a surviving
-    # token in the config — never a summary claiming a removal we did not do.
+    # Record the removal only if it actually happened, and report the paths we
+    # really removed rather than a fixed enumeration: `set -e` is suspended
+    # inside this function (it runs `|| true`), and a read-only overlay makes
+    # `rm` fail without stopping us — so a mixed outcome must not be summarised
+    # as a clean sweep.
     if [ -e "$_p" ]; then
-      SCRUB_FAILED=1
+      FAILED_PATHS="$FAILED_PATHS $_p"
       note "FAILED to remove $_p"
+      # The install-time backup can carry a router_token, so its survival is a
+      # credential failure, not just a leftover file.
+      [ "$_p" = "$WIFIHAVEN_CONFIG_BACKUP" ] \
+        && TOKEN_SURVIVORS="$TOKEN_SURVIVORS $WIFIHAVEN_CONFIG_BACKUP"
     else
-      _pruned=1
+      _removed="$_removed $_p"
     fi
   done
-  [ "$_pruned" -eq 1 ] || return 1
-  note "removed wifihaven runtime artifacts (policy snapshot, blocklist cache, block-page cert, config backup)"
+  [ -n "$_removed" ] || return 1
+  note "removed wifihaven runtime artifacts:$_removed"
 }
 prune_runtime_artifacts || true
 # Only succeeds once the package manager has taken everything else (notably
@@ -356,7 +366,14 @@ printf '\nRe-run install.sh on this router for a fresh enrollment.\n'
 
 # The bearer-token wipe is a security property, not best-effort: if it did not
 # take, say so loudly and exit nonzero rather than letting an operator believe
-# a decommissioned router carries no credential.
-if [ "$SCRUB_FAILED" -eq 1 ]; then
-  err "the router bearer token could NOT be removed from $WIFIHAVEN_CONFIG. Delete or empty that file by hand before decommissioning or re-homing this router."
+# a decommissioned router carries no credential. Name the files that ACTUALLY
+# failed — pointing the operator at the wrong path is worse than saying nothing,
+# because they would empty a clean file and stop looking.
+if [ -n "$TOKEN_SURVIVORS" ]; then
+  err "the router bearer token could NOT be removed from:$TOKEN_SURVIVORS
+Delete or empty those files by hand before decommissioning or re-homing this router."
+elif [ -n "$FAILED_PATHS" ]; then
+  err "could not remove:$FAILED_PATHS
+These are wifihaven runtime state (not package files) — remove them by hand. No
+router bearer token was left behind."
 fi

@@ -161,7 +161,7 @@ for _bk_f in "$INSTALL" "$UNINSTALL"; do
     || check "SSOT: $_bk_label sets WIFIHAVEN_CONFIG_BACKUP=$CONFIG_BACKUP_PATH" \
              "the two scripts disagree on the backup path — uninstall.sh's prune would miss install.sh's file"
 done
-grep -q '"\$WIFIHAVEN_CONFIG_BACKUP"' "$UNINSTALL" \
+sed -n '/^prune_runtime_artifacts()/,/^}/p' "$UNINSTALL" | grep -q '"\$WIFIHAVEN_CONFIG_BACKUP"' \
   && check "SSOT: uninstall.sh's prune list includes the config backup" ok \
   || check "SSOT: uninstall.sh's prune list includes the config backup" \
            "prune_runtime_artifacts no longer names \$WIFIHAVEN_CONFIG_BACKUP"
@@ -233,7 +233,7 @@ normalized_matcher() {
   # first — a second, looser matcher added later must fail the pin too. Lines
   # that WRITE the listener (`uci add_list …listen_http=…`) are not matchers, so
   # the candidate set is restricted to lines that search (grep/awk).
-  grep -v '^[[:space:]]*#' "$1" | grep -E '(grep|awk|sed|case)' | grep "listen_http=" | grep "8081" \
+  grep -v '^[[:space:]]*#' "$1" | grep "listen_http=" | grep "8081" | grep -Ev 'uci[[:space:]]+(set|add_list|del_list|get)' \
     | tr -d '\\ '
 }
 for _m_f in "$ROOT/files/usr/lib/wifihaven/setup-uhttpd-block-page.sh" "$UNINSTALL" "$INSTALL"; do
@@ -498,7 +498,7 @@ uci() {
   esac
 }
 PRELUDE
-  printf 'SCRUB_FAILED=0\n'
+  printf 'TOKEN_SURVIVORS=""\nFAILED_PATHS=""\n'
   sed -n '/^config_has_router_token()/,/^}/p' "$UNINSTALL"
   sed -n '/^scrub_wifihaven_config()/,/^}/p' "$UNINSTALL"
   sed -n '/^prune_runtime_artifacts()/,/^}/p' "$UNINSTALL"
@@ -697,6 +697,53 @@ else
              "expected an explicit failure note: $out" ;;
   esac
 fi
+
+# MIXED outcome: some entries removable, the token-bearing backup not. A single
+# "did anything get removed?" flag would print a fixed enumeration here and
+# claim the backup was erased.
+if [ "$(id -u)" -eq 0 ]; then
+  skip "#2554 a mixed-outcome prune does not claim the survivors were removed" \
+       "running as root: a read-only parent directory does not stop rm"
+else
+  FR="$TMP/prune-mixed"
+  rm -rf "$FR"; mkdir -p "$FR/etc/wifihaven" "$FR/tmp"
+  printf 'snapshot\n' > "$FR/etc/wifihaven/policy.json"
+  printf "option router_token 'TOKENVAL'\n" > "$FR/tmp/wifihaven-config.bak-2554"
+  chmod 555 "$FR/tmp"
+  out=$(run_uninstall_sim "" "prune_runtime_artifacts || true" || printf 'SIM-EXITED')
+  chmod 755 "$FR/tmp"
+  _mixed_bad=""
+  [ -e "$FR/etc/wifihaven/policy.json" ] && _mixed_bad="policy.json survived;"
+  grep -q TOKENVAL "$FR/tmp/wifihaven-config.bak-2554" 2>/dev/null || _mixed_bad="$_mixed_bad backup unexpectedly removed;"
+  case "$out" in
+    *"FAILED to remove"*"wifihaven-config.bak-2554"*) : ;;
+    *) _mixed_bad="$_mixed_bad the surviving backup was not reported;" ;;
+  esac
+  # Whatever the wording, a success note must not enumerate something that
+  # survived — a fixed "(… config backup)" string is exactly that failure.
+  _mixed_note=$(printf '%s\n' "$out" | grep 'removed wifihaven runtime artifacts' || true)
+  case "$_mixed_note" in
+    *"config backup"*|*"wifihaven-config.bak-2554"*)
+      _mixed_bad="$_mixed_bad the summary claims the surviving backup was removed;" ;;
+  esac
+  [ -z "$_mixed_bad" ] \
+    && check "#2554 a mixed-outcome prune does not claim the survivors were removed" ok \
+    || check "#2554 a mixed-outcome prune does not claim the survivors were removed" \
+             "$_mixed_bad ($out)"
+fi
+
+# The terminal error must name what actually failed. Pointing the operator at a
+# clean /etc/config/wifihaven while the token sits in /tmp is worse than
+# silence — they would empty the wrong file and stop looking.
+UNINSTALL_TAIL=$(sed -n '/^if \[ -n "\$TOKEN_SURVIVORS" \]/,$p' "$UNINSTALL")
+printf '%s' "$UNINSTALL_TAIL" | grep -Eq '^[[:space:]]*err ".*\$TOKEN_SURVIVORS' \
+  && check "#2554 the terminal error names the files that actually held a token" ok \
+  || check "#2554 the terminal error names the files that actually held a token" \
+           "the error message does not interpolate \$TOKEN_SURVIVORS — it would name a file that may be clean"
+printf '%s' "$UNINSTALL_TAIL" | grep -Eq '^[[:space:]]*err ".*\$FAILED_PATHS' \
+  && check "#2554 a non-credential removal failure is reported separately" ok \
+  || check "#2554 a non-credential removal failure is reported separately" \
+           "a failed prune of non-secret state would be reported as a bearer-token failure"
 
 # A scrub that did not take must not be summarised as one that did. With uci
 # reachable but every delete failing and no token in the file, the file is left
