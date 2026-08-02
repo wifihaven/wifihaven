@@ -2,13 +2,13 @@ import { useEffect, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
-import { newProfileDefaults } from '@/api/profileDefaults'
 import { useAlerts, useDevices, useHouseholdSettings, useProfiles, useInvalidators } from '@/api/queries'
 import { useAuth } from '@/hooks/useAuth'
 import { useEscapeClose } from '@/hooks/useEscapeClose'
 import { useNotificationPermission } from '@/hooks/useNotifyOnNewAlerts'
 import { useDebouncedSave, mergeSaveStatus } from '@/hooks/useDebouncedSave'
 import { EmptyState } from '@/components/EmptyState'
+import { InlineProfileCreator } from '@/components/InlineProfileCreator'
 import { SaveStatusBadge } from '@/components/SaveStatusBadge'
 import type { Alert, Device, PatchDeviceRequest, ProfileDetail } from '@/types/api'
 import { PageLoader } from './DashboardPage'
@@ -56,10 +56,9 @@ export function DevicesPage() {
   // #2367 — inline "+ New profile…" creation from within the Add-Device modal,
   // so a brand-new (zero-profile) household can onboard its first device without
   // bouncing to Profiles. When the household has no profiles, the creator is
-  // shown in place of the (otherwise empty/invalid) select.
+  // shown in place of the (otherwise empty/invalid) select. The creator itself
+  // is `InlineProfileCreator`, shared with the row editor (#2560).
   const [creatingProfile, setCreatingProfile] = useState(false)
-  const [newProfileName,  setNewProfileName]  = useState('')
-  const [newProfileError, setNewProfileError] = useState<string | null>(null)
   const highlightMac = useHighlightFromQuery(devices)
 
   const upsertMutation = useMutation({
@@ -70,27 +69,6 @@ export function DevicesPage() {
       return invalidators.deviceMutated()
     },
   })
-
-  // Reuse the same create endpoint + safe-by-default shape ProfilesPage uses
-  // (#978 via newProfileDefaults), so an inline-created profile is identical to
-  // one made on /profiles.
-  const createProfileMutation = useMutation({
-    mutationFn: (name: string) => api.profiles.create(newProfileDefaults(name)),
-    onSuccess: async (created) => {
-      setForm(f => ({ ...f, profileId: created.id }))
-      setCreatingProfile(false)
-      setNewProfileName('')
-      setNewProfileError(null)
-      await invalidators.profileMutated()
-    },
-  })
-
-  async function createProfile() {
-    const trimmed = newProfileName.trim()
-    if (!trimmed) { setNewProfileError('Name is required'); return }
-    setNewProfileError(null)
-    await createProfileMutation.mutateAsync(trimmed)
-  }
 
   const deleteMutation = useMutation({
     mutationFn: (mac: string) => api.devices.delete(mac),
@@ -113,8 +91,6 @@ export function DevicesPage() {
     setEditing({} as Device)
     setForm({ mac, name: '', profileId: profiles[0]?.profile.id ?? 0 })
     setCreatingProfile(profiles.length === 0)
-    setNewProfileName('')
-    setNewProfileError(null)
   }
 
   if (loading) return <PageLoader />
@@ -242,7 +218,6 @@ export function DevicesPage() {
                   onChange={e => {
                     if (e.target.value === '__new__') {
                       setCreatingProfile(true)
-                      setNewProfileError(null)
                     } else {
                       setCreatingProfile(false)
                       setForm(f => ({...f, profileId: Number(e.target.value)}))
@@ -254,38 +229,15 @@ export function DevicesPage() {
                 </select>
               )}
               {creatingProfile && (
-                <div data-testid="add-device-new-profile" className="mt-2 space-y-2">
-                  {profiles.length === 0 && (
-                    <p className="text-xs text-brand-text-muted">Create your first profile to assign this device.</p>
-                  )}
-                  <input
-                    type="text"
-                    value={newProfileName}
-                    onChange={e => setNewProfileName(e.target.value)}
-                    data-testid="add-device-new-profile-name"
-                    placeholder="Profile name"
-                    className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-3 text-brand-ink placeholder-brand-text-muted focus:outline-none focus:border-brand-accent"
-                  />
-                  {newProfileError && (
-                    <p data-testid="add-device-new-profile-error" className="text-sm text-red-700">{newProfileError}</p>
-                  )}
-                  <div className="flex gap-2">
-                    <button
-                      type="button"
-                      onClick={createProfile}
-                      disabled={createProfileMutation.isPending}
-                      data-testid="add-device-create-profile"
-                      className="flex-1 py-2.5 rounded-xl bg-brand-accent text-white text-sm font-semibold disabled:opacity-60"
-                    >Create profile</button>
-                    {profiles.length > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => { setCreatingProfile(false); setNewProfileName(''); setNewProfileError(null) }}
-                        className="flex-1 py-2.5 rounded-xl bg-brand-alt text-brand-text text-sm font-medium"
-                      >Cancel</button>
-                    )}
-                  </div>
-                </div>
+                <InlineProfileCreator
+                  testIdPrefix="add-device"
+                  hasProfiles={profiles.length > 0}
+                  onCreated={id => {
+                    setForm(f => ({ ...f, profileId: id }))
+                    setCreatingProfile(false)
+                  }}
+                  onCancel={() => setCreatingProfile(false)}
+                />
               )}
             </div>
             <div className="flex gap-3 pt-2">
@@ -312,6 +264,10 @@ function DeviceRowEditor({
   const invalidators = useInvalidators()
   const [name, setName] = useState(device.name)
   const [profileId, setProfileId] = useState<number | null>(device.profileId)
+  // #2560 — the row's own "+ New profile…" branch. Without it a household with
+  // no usable profile could not assign a device from the row at all and had to
+  // leave the page for /profiles and come back.
+  const [creatingProfile, setCreatingProfile] = useState(false)
   useEffect(() => { setName(device.name) }, [device.name])
   useEffect(() => { setProfileId(device.profileId) }, [device.profileId])
 
@@ -355,8 +311,15 @@ function DeviceRowEditor({
       <div className="min-w-[10rem]">
         <label className="block text-xs font-semibold text-brand-text-muted uppercase tracking-wider mb-1">Profile</label>
         <select
-          value={profileId ?? ''}
-          onChange={e => setProfileId(e.target.value === '' ? null : Number(e.target.value))}
+          value={creatingProfile ? '__new__' : profileId ?? ''}
+          onChange={e => {
+            if (e.target.value === '__new__') {
+              setCreatingProfile(true)
+            } else {
+              setCreatingProfile(false)
+              setProfileId(e.target.value === '' ? null : Number(e.target.value))
+            }
+          }}
           data-testid={`device-profile-select-${device.mac}`}
           className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-2.5 text-brand-ink"
         >
@@ -365,6 +328,9 @@ function DeviceRowEditor({
               genuine onChange → autosave, and a profile can be removed. */}
           <option value="">No profile</option>
           {profiles.map(p => <option key={p.profile.id} value={p.profile.id}>{p.profile.name}</option>)}
+          {/* #2560 — always offered, so a household with no usable profile can
+              still assign this device without leaving the page. */}
+          <option value="__new__">+ New profile…</option>
         </select>
       </div>
       <div className="flex items-center gap-3 pb-2.5">
@@ -380,6 +346,19 @@ function DeviceRowEditor({
           className="text-xs text-brand-text hover:text-brand-ink bg-brand-alt px-3 py-1.5 rounded-lg transition-colors"
         >Done</button>
       </div>
+      {creatingProfile && (
+        <div className="basis-full">
+          <InlineProfileCreator
+            testIdPrefix={`device-${device.mac}`}
+            hasProfiles={profiles.length > 0}
+            // Assigning through the same state the <select> writes means the
+            // row's existing debounced PATCH {profileId} carries it — there is
+            // no second save path.
+            onCreated={id => { setProfileId(id); setCreatingProfile(false) }}
+            onCancel={() => setCreatingProfile(false)}
+          />
+        </div>
+      )}
     </div>
   )
 }
