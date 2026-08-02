@@ -150,8 +150,8 @@ object MultiTenantRouteCensusSpec extends ZIOSpecDefault {
       "block-page intake; household derived in-SQL from the device row — arbitrary for a shared MAC (#2322), " +
         "and the debounce read is unscoped (#2566)",
     ),
-    "POST /api/alerts/{}/approve" -> Scoped,
-    "POST /api/alerts/{}/deny"    -> Scoped,
+    "POST /api/alerts/{}/approve" -> ScopedTracked(2564),
+    "POST /api/alerts/{}/deny"    -> ScopedTracked(2564),
 
     // ── AppRoutes ──────────────────────────────────────────────────────────────────────────────
     "GET /api/apps"       -> InstallWide("template-authored app catalog, #1798"),
@@ -300,7 +300,7 @@ object MultiTenantRouteCensusSpec extends ZIOSpecDefault {
     "GET /api/profiles/{}"           -> Scoped,
     "PUT /api/profiles/{}"           -> Scoped,
     "PATCH /api/profiles/{}"         -> Scoped,
-    "DELETE /api/profiles/{}"        -> Scoped,
+    "DELETE /api/profiles/{}"        -> ScopedTracked(2565),
     "PUT /api/profiles/{}/schedules" -> Scoped,
     "GET /api/profiles/{}/users"     -> Scoped,
     "PUT /api/profiles/{}/users"     -> Scoped,
