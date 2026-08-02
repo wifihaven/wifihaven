@@ -101,8 +101,16 @@ export function InlineProfileCreator({
   // below. React fires a fiber's passive effects in declaration order, so on a
   // commit where both the callback identity and `pending` change, the ref is
   // already current when the pending effect reads it. Moving it below would
-  // reintroduce a one-commit stale-callback window. Pinned by the
-  // identity-churn test in InlineProfileCreator.test.tsx.
+  // reintroduce a one-commit stale-callback window.
+  //
+  // NOT covered by a test, deliberately. Triggering the window needs a single
+  // commit in which the parent mints a new callback AND `pending` flips — but
+  // `pending` is driven by this component's own mutation, so the child
+  // re-renders alone and the parent contributes no new identity at that commit.
+  // Neither caller can reach it (both pass a stable value anyway: the modal a
+  // setState setter, the row nothing). A test for it would have to be contrived
+  // enough to pin the contrivance rather than the invariant, so this comment is
+  // the guard — reorder these two effects and nothing will go red.
   const pendingCb = useRef(onPendingChange)
   useEffect(() => { pendingCb.current = onPendingChange }, [onPendingChange])
 

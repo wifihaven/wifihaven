@@ -46,9 +46,12 @@ describe('InlineProfileCreator — onPendingChange (#2560)', () => {
     const user = userEvent.setup()
     render(withQuery(<Host onPendingChange={p => calls.push(p)} />))
 
-    // Mount reports the initial (not-pending) state once.
-    await waitFor(() => expect(calls.length).toBeGreaterThan(0))
-    const afterMount = calls.length
+    // Mount reports the initial state once, and reports it as NOT pending —
+    // asserting the value, not just the count, so a regression that froze the
+    // caller's controls the moment the creator opened would fail here. Waiting
+    // on the exact array also avoids latching a baseline mid-mount if the mount
+    // phase ever emits more than one call (e.g. under StrictMode).
+    await waitFor(() => expect(calls).toEqual([false]))
 
     await user.click(screen.getByRole('button', { name: 'rerender' }))
     await user.click(screen.getByRole('button', { name: 'rerender' }))
@@ -57,7 +60,7 @@ describe('InlineProfileCreator — onPendingChange (#2560)', () => {
     // Re-rendering with a fresh callback each time must emit nothing: `pending`
     // never changed. With the effect keyed on the callback it emitted a
     // cleanup-`false` plus a sync-`false` per render instead.
-    expect(calls.length).toBe(afterMount)
+    expect(calls).toEqual([false])
   })
 
   it('reports the rising and falling edge exactly once across a create', async () => {
@@ -68,15 +71,15 @@ describe('InlineProfileCreator — onPendingChange (#2560)', () => {
     const calls: boolean[] = []
     const user = userEvent.setup()
     render(withQuery(<Host onPendingChange={p => calls.push(p)} />))
-    await waitFor(() => expect(calls.length).toBeGreaterThan(0))
-    calls.length = 0
+    await waitFor(() => expect(calls).toEqual([false]))
 
     await user.type(screen.getByTestId('t-new-profile-name'), 'Teens')
     await user.click(screen.getByTestId('t-create-profile'))
     await waitFor(() => expect(calls).toContain(true))
 
     release({ id: 7 })
-    await waitFor(() => expect(calls[calls.length - 1]).toBe(false))
-    expect(calls).toEqual([true, false])
+    // The mount edge is kept in the expectation rather than cleared, so a
+    // missing or wrongly-valued mount report shows up here too.
+    await waitFor(() => expect(calls).toEqual([false, true, false]))
   })
 })
