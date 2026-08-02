@@ -2134,5 +2134,58 @@ object MultiTenantIsolationSpec
         assertTrue(pausedB) &&
         assertTrue(statusA == "pending")
     },
+    // ── Pin (#2532): `UserProfileRepo` reads are household-scoped ────────────────────────────────
+    // `listProfilesForUsername` keyed on `users.username` alone, which V65 made unique only PER
+    // household (`UNIQUE(household_id, username)`; V68 dropped the global unique) — so the query
+    // read "profiles for ANY user with this name, ANYWHERE". Not a live leak (every consumer
+    // filters an already-scoped list, and `requireProfileInHousehold` runs first), but a wrong
+    // query on an authorization path, whose safety rested on all five consumers independently
+    // remembering to scope. Same pass drops the unfiltered `listAllMappings` table read. The
+    // colliding username is not hypothetical: `BetaService.FirstAdminUsername = "admin"` gives
+    // every beta-provisioned household a user literally named `admin`.
+    test("pin (#2532) — a colliding username in another household contributes no profiles") {
+      for {
+        _        <- cleanDb
+        two      <- TestLayers.seedTwoHouseholds(macA, macB)
+        up       <- ZIO.service[UserProfileRepo]
+        ur       <- ZIO.service[UserRepo]
+        xa       <- ZIO.service[Transactor[Task]]
+        auth     <- makeAuth
+        // Household A's seeded `admin`, linked to household A's profile.
+        adminA   <- ur
+          .findByUsername(two.hhA, two.adminA)
+          .someOrFail(new RuntimeException(s"no ${two.adminA} in household A"))
+        _        <- up.setProfilesForUser(adminA.id, List(two.profileA))
+        // Household B gets a user with the SAME username, linked to household B's profile. Role
+        // `child`, not `admin`: V86 (#2512) allows exactly one admin per household and `adminB`
+        // already holds household B's slot. Password hash copied from `adminB` — no AuthService
+        // dependency, mirroring TestDatabase.seedTwoHouseholds.
+        _        <-
+          sql"""INSERT INTO users(username, password_hash, role, must_change_password, household_id)
+                SELECT ${two.adminA}, password_hash, 'child', false, ${two.hhB}
+                  FROM users WHERE username=${two.adminB} AND household_id=${two.hhB}""".update.run
+            .transact(xa)
+        collider <- ur
+          .findByUsername(two.hhB, two.adminA)
+          .someOrFail(new RuntimeException(s"no ${two.adminA} in household B"))
+        _        <- up.setProfilesForUser(collider.id, List(two.profileB))
+        // RED pre-fix: the unpredicated `WHERE us.username=$u` unions BOTH users' rows, so each
+        // household's lookup returned {profileA, profileB}.
+        pidsA    <- up.listProfilesForUsername(two.hhA, two.adminA)
+        pidsB    <- up.listProfilesForUsername(two.hhB, two.adminA)
+        // …and GET /api/users shows household A only its own users AND only their mappings. The
+        // handler already keys the mapping against the scoped `users` list, so this half is a
+        // contract pin on the now-scoped read rather than a pre-fix failure.
+        tokenA   <- login(auth, two.adminA, two.password)
+        routes = AuthRoutes.routes(auth, ur, up, RateLimiter.allowAll)
+        (sA, bodyA) <- getJson(routes, "/api/users", tokenA)
+        summaries   <- ZIO
+          .fromEither(bodyA.fromJson[List[UserSummary]])
+          .mapError(new RuntimeException(_))
+      } yield assertTrue(pidsA == List(two.profileA), pidsB == List(two.profileB)) &&
+        assertTrue(sA == Status.Ok) &&
+        assertTrue(summaries.map(_.id) == List(adminA.id)) &&
+        assertTrue(summaries.flatMap(_.profileIds) == List(two.profileA))
+    },
   ) @@ TestAspect.sequential
 }
