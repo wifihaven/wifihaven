@@ -618,10 +618,14 @@ export const api = {
   },
 
   // ── Blocklists ─────────────────────────────────────────────────────────
+  // #2535/#2567 — the two READS stay household-user surfaces (the bundled catalog is public data
+  // and BlocklistsPage / the ProfilesPage category matrix / the AppsPage overlap warning all need
+  // it). The `clearCategory` wrapper was removed: `POST /blocklists/:cat/clear` mutates the
+  // install-wide catalog and is now `requireOperator`, so no household user can call it — it had
+  // no caller in the SPA anyway.
   blocklists: {
     list: () => req<BlocklistSummary[]>('GET', '/blocklists'),
     hosts: (id: string) => req<BlocklistHosts>('GET', `/blocklists/${id}/hosts`),
-    clearCategory: (cat: string) => req<void>('POST', `/blocklists/${cat}/clear`, {}),
   },
 
   // ── Apps (#762/#765) ───────────────────────────────────────────────────

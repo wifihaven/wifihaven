@@ -22,8 +22,16 @@ import zio.json.*
  *
  * #1798: app *definition* mutators (create / update / replace-hosts / PATCH) were removed — app
  * definitions are authored only via the built-in `AppTemplates` (seed/reconcile/reset routes
- * below). `DELETE /api/apps/:id` stays as a cleanup path but is no longer surfaced in the SPA
- * (#2522: adult-or-admin, like the other two maintenance routes here).
+ * below). `DELETE /api/apps/:id` stays as a cleanup path but is no longer surfaced in the SPA.
+ *
+ * #2535/#2567: the four catalog *maintenance* verbs here — `DELETE /api/apps/:id`,
+ * `seed-from-templates`, `reset-to-template`, and `admin/apps/reconcile-templates` — are behind
+ * `requireOperator`, not `requireWriter`/`requireAdmin`. `apps` / `app_hosts` are a SINGLE
+ * install-wide catalog with no `household_id`, so any of these run by a household-B principal
+ * rewrites state every other household's enforcement reads. They are operator maintenance verbs,
+ * not household-user surfaces — none is reachable from the SPA. The per-profile assignment routes
+ * (`PUT|DELETE /api/apps/:id/policy/:profileId`) are unaffected: `app_policy_assignments` IS
+ * per-profile, and they already compose `requireWriter` + `requireProfileAccess`.
  */
 object AppRoutes {
 
@@ -104,11 +112,13 @@ object AppRoutes {
       // hosts, PATCH) were retired — app definitions are authored only via the
       // built-in `AppTemplates` in code (seeded/reconciled below). `DELETE
       // /api/apps/:id` is kept as a maintenance path (stray-row cleanup) but is
-      // no longer surfaced in the SPA. #2522: adult-or-admin.
+      // no longer surfaced in the SPA. #2535/#2567: operator-only — `apps` is a single
+      // install-wide catalog with no `household_id`, so deleting a row cascades every household's
+      // `app_policy_assignments` and rollup rows for that app.
       Method.DELETE / "api" / "apps" / long("id")                                ->
         handler { (id: Long, req: Request) =>
           val handle: ZIO[Any, ApiError, Response] =
-            requireWriter(req, auth) *>
+            requireOperator(req, auth) *>
               appRepo.delete(AppId(id)).mapError(ApiError.Db(_)) *>
               ZIO.succeed(Response.ok)
           handle.mapError(ErrorMapper.errorToResponse)
@@ -157,10 +167,15 @@ object AppRoutes {
       // #1777: admin-triggered reconciliation pass that collapses `<slug>-template`-suffixed app
       // rows onto their canonical `<slug>` form, reattaching FK refs and unioning host-sets.
       // Idempotent — operator can re-run; subsequent passes are no-ops once the DB is clean.
+      // #2567: the most destructive of the family, and the reason it is `requireOperator` rather
+      // than `requireAdmin` — `mergeAppInto` DELETEs an `apps` row and repoints
+      // `app_policy_assignments`, `traffic_hourly_apps`, `traffic_daily_apps` and `app_used_daily`
+      // across EVERY household, so a household-B admin could collapse two app rows household A had
+      // configured separately, silently merging two distinct policies.
       Method.POST / "api" / "admin" / "apps" / "reconcile-templates"             ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _       <- requireAdmin(req, auth)
+            _       <- requireOperator(req, auth)
             summary <- AppReconciler
               .reconcileTemplates(appRepo, templates.values.toList)
               .mapError(e =>
@@ -173,15 +188,15 @@ object AppRoutes {
           } yield Response.json(summary.toJson)
           handle.mapError(ErrorMapper.errorToResponse)
         },
-      // #1024: operator-triggered re-run of the startup app-template seeder (#2522: adult-or-admin). Same idempotent
+      // #1024: operator-triggered re-run of the startup app-template seeder. Same idempotent
       // semantics as the boot pass (existing rows' host divergence preserved — post-#1798 that
       // divergence comes from reconcile unions / legacy data, no longer operator host edits) —
       // exposed as a route so the operator can backfill without a redeploy when prod is missing
-      // the starter set.
+      // the starter set. #2567: writes the install-wide `apps` + `app_hosts`, so operator-only.
       Method.POST / "api" / "apps" / "seed-from-templates"                       ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _       <- requireWriter(req, auth)
+            _       <- requireOperator(req, auth)
             summary <- AppTemplates
               .seed(appRepo, templates.values.toList)
               .mapError(e =>
@@ -194,11 +209,14 @@ object AppRoutes {
           } yield Response.json(summary.toJson)
           handle.mapError(ErrorMapper.errorToResponse)
         },
+      // #2567: `setHosts` replaces the install-wide app's host-set wholesale, so every household
+      // with a TimeLimited/Blocked assignment against this app silently gets a different host-set
+      // enforced. Operator-only.
       Method.POST / "api" / "apps" / long("id") / "reset-to-template"            ->
         handler { (id: Long, req: Request) =>
           val aid                                  = AppId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
-            _    <- requireWriter(req, auth)
+            _    <- requireOperator(req, auth)
             app  <- appRepo
               .findById(aid)
               .mapError(ApiError.Db(_))
