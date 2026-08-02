@@ -34,6 +34,9 @@ beforeEach(() => {
   vi.resetAllMocks()
   mocked(api.users.list).mockResolvedValue([adminUser, adultUser, childUser])
   mocked(api.profiles.list).mockResolvedValue(noProfiles)
+  // Shaped like SetUserPasswordResponse for realism only — no assertion below reads it. The
+  // confirmation copy is unconditional, because a 2xx is only reachable via the server's
+  // handoff-only write path; it is not derived from this field.
   mocked(api.users.setPassword).mockResolvedValue({ mustChangePassword: true })
 })
 

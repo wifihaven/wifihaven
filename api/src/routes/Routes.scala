@@ -326,9 +326,14 @@ object AuthRoutes {
               // Response), not a `Forbidden`, so without its own arm it exits silently. Reachable:
               // an admin who is themselves mid-forced-change tries to help a locked-out child — a
               // real refusal, and precisely the kind the panel exists to surface. Matched on the
-              // TYPE rather than caught by elimination: `requireAdmin` can only fail these three
-              // ways today, but a fourth added later would otherwise be silently relabelled
+              // carrier type rather than swept up by a bare `case _`, so a NEW failure channel on
+              // `requireAdmin` lands in `error` instead of being silently relabelled
               // `password_change_required` in the panel an operator reads during an incident.
+              // `Wrapped` is the GENERIC pre-formed-Response carrier though, not a
+              // password-change-required type, so this arm is exact only because `requireAuth` is
+              // the sole producer on this path and wraps nothing else — teaching it to wrap, say, a
+              // DB failure would still mis-bucket. The durable fix is a dedicated `ApiError` case,
+              // which is a wider change than this route should make on its own.
               case _: ApiError.Wrapped      =>
                 AppMetrics.adminPasswordSet(Outcome.PasswordChangeRequired)
               case _                        => AppMetrics.adminPasswordSet(Outcome.Error)
