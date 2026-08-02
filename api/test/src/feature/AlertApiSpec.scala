@@ -81,6 +81,7 @@ object AlertApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
       extRepo   <- ZIO.service[TimeExtensionRepo]
       appRepo   <- ZIO.service[AppRepo]
       hsRepo    <- ZIO.service[HouseholdSettingsRepo]
+      upRepo    <- ZIO.service[UserProfileRepo]
       auth      <- makeAuth
       clock     <- ZIO.service[Clock]
       _         <- hsRepo.ensureDefault(java.time.ZoneId.of("UTC"))
@@ -94,6 +95,7 @@ object AlertApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         extRepo,
         appRepo,
         hsRepo,
+        upRepo,
         noopNotifier,
         clock,
         RateLimiter.allowAll,

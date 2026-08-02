@@ -2740,6 +2740,29 @@ def requireScheduleInHousehold(
     case _                           => ZIO.fail(ApiError.NotFound("Schedule not found"))
   }
 
+/**
+ * #2564 (multi-tenant, epic #2085/#622): the tenancy choke point for the per-id alert decide routes
+ * (`POST /api/alerts/{id}/approve|deny`). Rejects (404 — never leak existence across the tenant
+ * boundary) any target alert whose household ≠ the caller's `claims.hh`. Mirrors
+ * [[requireProfileInHousehold]] / [[requireScheduleInHousehold]]; the list read is scoped at the
+ * repo (`listForHousehold`, #2283).
+ *
+ * Composed FIRST in both handlers, before the row is loaded: `AlertRepo.findById` is unscoped, so
+ * without this a writer in ANY household could read another household's alert body (MAC, device
+ * name, requested host, the kid's free-text note) by id — and approving an `Unpause` request would
+ * unpause that household's profile, a direct enforcement bypass. Alert ids are a dense sequence, so
+ * 404-not-403 matters: a foreign id must be indistinguishable from a nonexistent one.
+ */
+def requireAlertInHousehold(
+    claims: JwtClaims,
+    alertId: AlertId,
+    alertRepo: AlertRepo,
+): IO[ApiError, Unit] =
+  alertRepo.householdOf(alertId).mapError(ApiError.Db(_)).flatMap {
+    case Some(hh) if hh == claims.hh => ZIO.succeed(())
+    case _                           => ZIO.fail(ApiError.NotFound("Alert not found"))
+  }
+
 /** Allow read access if admin or adult (full visibility); child must be linked to the profile. */
 def requireProfileReadAccess(
     claims: JwtClaims,

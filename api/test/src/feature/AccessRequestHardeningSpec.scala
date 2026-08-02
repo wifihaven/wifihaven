@@ -58,6 +58,7 @@ object AccessRequestHardeningSpec
       extRepo   <- ZIO.service[TimeExtensionRepo]
       appRepo   <- ZIO.service[AppRepo]
       hsRepo    <- ZIO.service[HouseholdSettingsRepo]
+      upRepo    <- ZIO.service[UserProfileRepo]
       ur        <- ZIO.service[UserRepo]
       clock     <- ZIO.service[Clock]
       auth = AuthServiceLive(ur, jwtCfg, clock)
@@ -72,6 +73,7 @@ object AccessRequestHardeningSpec
       extRepo,
       appRepo,
       hsRepo,
+      upRepo,
       noopNotifier,
       clock,
       rateLimiter,

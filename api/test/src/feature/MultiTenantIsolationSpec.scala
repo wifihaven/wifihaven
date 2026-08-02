@@ -200,6 +200,7 @@ object MultiTenantIsolationSpec
       er  <- ZIO.service[TimeExtensionRepo]
       apr <- ZIO.service[AppRepo]
       hsr <- ZIO.service[HouseholdSettingsRepo]
+      up  <- ZIO.service[UserProfileRepo]
       clk <- ZIO.service[Clock]
     } yield AlertRoutes.routes(
       auth,
@@ -209,6 +210,7 @@ object MultiTenantIsolationSpec
       er,
       apr,
       hsr,
+      up,
       noopNotifier,
       clk,
       RateLimiter.allowAll,
@@ -378,31 +380,14 @@ object MultiTenantIsolationSpec
     },
     test("pin 1 — GET /api/alerts returns ONLY the caller's household alerts") {
       for {
-        _      <- cleanDb
-        two    <- TestLayers.seedTwoHouseholds(macA, macB)
-        ar     <- ZIO.service[AlertRepo]
-        dr     <- ZIO.service[DeviceRepo]
-        pr     <- ZIO.service[ProfileRepo]
-        er     <- ZIO.service[TimeExtensionRepo]
-        apr    <- ZIO.service[AppRepo]
-        hsr    <- ZIO.service[HouseholdSettingsRepo]
-        clk    <- ZIO.service[Clock]
-        _      <- ar.raiseNewDevice(macA, Instant.parse("2026-05-07T14:00:00Z"), two.hhA)
-        _      <- ar.raiseNewDevice(macB, Instant.parse("2026-05-07T14:00:00Z"), two.hhB)
-        auth   <- makeAuth
-        tokenA <- login(auth, two.adminA, two.password)
-        routes = AlertRoutes.routes(
-          auth,
-          ar,
-          dr,
-          pr,
-          er,
-          apr,
-          hsr,
-          noopNotifier,
-          clk,
-          RateLimiter.allowAll,
-        )
+        _           <- cleanDb
+        two         <- TestLayers.seedTwoHouseholds(macA, macB)
+        ar          <- ZIO.service[AlertRepo]
+        _           <- ar.raiseNewDevice(macA, Instant.parse("2026-05-07T14:00:00Z"), two.hhA)
+        _           <- ar.raiseNewDevice(macB, Instant.parse("2026-05-07T14:00:00Z"), two.hhB)
+        auth        <- makeAuth
+        tokenA      <- login(auth, two.adminA, two.password)
+        routes      <- makeAlertRoutes(auth)
         (sA, bodyA) <- getJson(routes, "/api/alerts?all=true", tokenA)
       } yield assertTrue(sA == Status.Ok) &&
         assertTrue(bodyA.contains(macA.value), !bodyA.contains(macB.value))
@@ -446,11 +431,7 @@ object MultiTenantIsolationSpec
         tr  <- ZIO.service[TrafficReportRepo]
         tu  <- ZIO.service[TimeUsageRepo]
         cer <- ZIO.service[ConnectionEventRepo]
-        pr  <- ZIO.service[ProfileRepo]
-        er  <- ZIO.service[TimeExtensionRepo]
-        apr <- ZIO.service[AppRepo]
         hsr <- ZIO.service[HouseholdSettingsRepo]
-        clk <- ZIO.service[Clock]
         xa  <- ZIO.service[Transactor[Task]]
         ingest = RouterIngestRoutes.routes(RouterAuthLive(rr), rr, tr, tu, dr, cer, ar, hsr)
         // Household A's router, then household B's router, each DISCOVER the same MAC first-seen.
@@ -464,18 +445,7 @@ object MultiTenantIsolationSpec
         auth     <- makeAuth
         tokenA   <- login(auth, two.adminA, two.password)
         tokenB   <- login(auth, two.adminB, two.password, slug = Some(two.slugB))
-        alertRoutes = AlertRoutes.routes(
-          auth,
-          ar,
-          dr,
-          pr,
-          er,
-          apr,
-          hsr,
-          noopNotifier,
-          clk,
-          RateLimiter.allowAll,
-        )
+        alertRoutes <- makeAlertRoutes(auth)
         (sA, bodyA) <- getJson(alertRoutes, "/api/alerts?all=true", tokenA)
         (sB, bodyB) <- getJson(alertRoutes, "/api/alerts?all=true", tokenB)
         alertsA     <- ZIO.fromEither(bodyA.fromJson[List[Alert]]).mapError(new RuntimeException(_))

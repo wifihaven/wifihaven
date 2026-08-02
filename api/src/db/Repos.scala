@@ -815,6 +815,17 @@ trait AlertRepo {
 
   def findById(id: AlertId): Task[Option[Alert]]
 
+  /**
+   * #2564: the household that owns `id`, for the per-id route guards. `findById` above is
+   * deliberately unscoped (it is also the post-decide re-read), so `POST /api/alerts/{id}/approve`
+   * and `/deny` gate on this instead — see `requireAlertInHousehold`.
+   *
+   * Reads the alert's OWN `household_id` (V78/V79, NOT NULL), never the joined device's: post-V74 a
+   * MAC can exist in two households, so the device join is ambiguous, and an orphaned alert (device
+   * deleted) still has an authoritative tenancy key. `None` means no such row.
+   */
+  def householdOf(id: AlertId): Task[Option[HouseholdId]]
+
   /** Pending-only when `includeAll=false`. Ordered newest first. */
   def list(includeAll: Boolean): Task[List[Alert]]
 
@@ -2337,6 +2348,16 @@ class AlertRepoLive(xa: Transactor[Task]) extends AlertRepo {
       .map(toAlert)
       .option
       .transact(xa)
+
+  // #2564: the household that owns `id`, for the per-id route guards. Index-backed by the primary
+  // key. `a.household_id` is the alert's own tenancy key (V78/V79, NOT NULL) — no device join.
+  def householdOf(id: AlertId): Task[Option[HouseholdId]] =
+    DbMetrics.timed("alert.householdOf")(
+      sql"SELECT household_id FROM alerts WHERE id = ${id.value}"
+        .query[HouseholdId]
+        .option
+        .transact(xa),
+    )
 
   def list(includeAll: Boolean): Task[List[Alert]] = {
     val filter = if includeAll then fr"" else fr"WHERE a.status = 'pending'"
