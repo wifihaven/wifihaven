@@ -18,7 +18,7 @@ import wifihaven.api.presence.AmbientGate
 import wifihaven.api.metrics.AppMetrics
 import wifihaven.api.policy.{PolicyService, TimeStatusService}
 import wifihaven.shared.Clock
-import wifihaven.shared.types.{AppId, ProfileId}
+import wifihaven.shared.types.{AppId, HouseholdId, ProfileId}
 import zio.*
 
 import java.time.{Duration, Instant}
@@ -34,14 +34,13 @@ import java.time.{Duration, Instant}
  * from #809 for usage graphs) cover them. The hot path is `/api/time/status/summary` rendering the
  * per-profile screen-time figures (#1099); past-day reads are cold.
  *
- * Invalidation is wholesale, and lives inline in `HouseholdSettingsRepoLive.update` — a `DELETE
- * FROM time_used_daily` + `DELETE FROM app_used_daily` in the same transaction as the settings
- * UPDATE. It covers the heartbeat filter, daily reset time, tz, the #1464 presence session-stitch
- * knob `presence_continuation_seconds`, and the #2077 ambient-gate knobs; the next tick refills
- * with the new semantics. #2533: `update` is now per-household but the invalidation stays wholesale
- * on purpose — this job still derives EVERY household's rollup from household #1's settings (see
- * the `TODO(#2553)` in `doTick`), so a household-#1 write must keep evicting every household's
- * rows. Narrowing it is part of #2553, not separable from it.
+ * Invalidation lives inline in `HouseholdSettingsRepoLive.update` — a `DELETE FROM time_used_daily`
+ * + `DELETE FROM app_used_daily` in the same transaction as the settings UPDATE. It covers the
+ * heartbeat filter, daily reset time, tz, the #1464 presence session-stitch knob
+ * `presence_continuation_seconds`, and the #2077 ambient-gate knobs; the next tick refills with the
+ * new semantics. #2553: the DELETEs are scoped to the WRITING household's profiles, which is
+ * correct precisely because this job now derives each household's rollup from that household's own
+ * settings — one tenant's save can no longer change what another tenant's cached rows mean.
  *
  * Multi-instance note: only one fiber should be writing each row at a time, but UPSERT keyed on
  * `(profile_id, date)` with a monotonically-advancing `rolled_through` makes redundant writes
@@ -50,6 +49,12 @@ import java.time.{Duration, Instant}
  * is run multi-instance.
  */
 object TimeUsedRollupJob {
+
+  /**
+   * The `rollup_job` label / `rollup_runs.job` name for this job. Single-sourced so the run record
+   * and the #2553 per-household skip counter can never name it two different ways.
+   */
+  val JobName: String = "time_used_daily"
 
   /**
    * Refresh cadence. The read path's tail aggregation (`TimeStatusServiceLive`, buckets with
@@ -142,7 +147,7 @@ object TimeUsedRollupJob {
       _        <- result match {
         case Right(n)                                  =>
           ZIO.logInfo(s"rollup time_used_daily tick ok rows=$n") *>
-            runs.recordRun("time_used_daily", started, finished, "ok", None, n).ignore
+            runs.recordRun(JobName, started, finished, "ok", None, n).ignore
         case Left(e) if RollupShutdown.isPoolClosed(e) =>
           // #1247: pool closed out from under a mid-flight tick during shutdown.
           // Benign — don't log ERROR or record a bogus error run.
@@ -151,7 +156,7 @@ object TimeUsedRollupJob {
           ZIO.logErrorCause("rollup time_used_daily tick failed", Cause.fail(e)) *>
             runs
               .recordRun(
-                "time_used_daily",
+                JobName,
                 started,
                 finished,
                 "error",
@@ -179,54 +184,103 @@ object TimeUsedRollupJob {
       now: Instant,
       ambientRepo: AmbientHostsRepo,
   ): Task[Int] = for {
-    // TODO(#2553): all-tenant batch with NO caller household, so the settings read is the ONE
-    // deliberate `HouseholdId.Default` left after #2533 deleted the unscoped `get` — named and
-    // commented, not an unlabelled default. It is behaviour-preserving but WRONG: this one row's
-    // daily-reset tz and heartbeat/ambient knobs are then applied to every household the loop
-    // below iterates. Fixing it means moving `settings` (and the day key derived from it) inside
-    // the per-household loop and upserting per household — a real change to the screen-time write
-    // path, so it gets its own PR and tests (#2553).
-    settings <- hs.getForHousehold(wifihaven.shared.types.HouseholdId.Default)
-    today = PolicyService.householdLocalDate(now, settings)
-    ambient    <- ambientRepo.gateFor(settings, today)
     // #2257: all-tenant rollup batch — enumerate households explicitly and union each one's scoped
     // read (no cross-tenant `listAll` a request path could also reach).
-    // #2313: the presence read is now PER-HOUSEHOLD (`traffic_reports` is router_id-keyed, and the
-    // same MAC can exist in >1 household post-V74), and `computeRolls` runs per household over only
-    // that household's profiles/devices/scoped presence. The per-household roll maps are then unioned
-    // — profile ids and (profile, app) keys are unique per household — so a shared MAC's minutes can
-    // never leak across tenants into the rollup the enforcement read consumes. Behaviour is identical
-    // for distinct MACs (each profile's macSet was already disjoint under the old global read).
+    // #2313: the presence read is PER-HOUSEHOLD (`traffic_reports` is router_id-keyed, and the same
+    // MAC can exist in >1 household post-V74), and `computeRolls` runs per household over only that
+    // household's profiles/devices/scoped presence — so a shared MAC's minutes can never leak across
+    // tenants into the rollup the enforcement read consumes.
+    // #2553: the SETTINGS are per-household too. `settings` fixes the day key (`today`), selects the
+    // presence rows for that day, and supplies the heartbeat / session-stitch / ambient knobs that
+    // define an active minute — so reading it once per tick applied household #1's timezone and
+    // filters to every tenant. Because `today` is now per household, the rolls can no longer be
+    // unioned into ONE `upsertBatch`: each household upserts under its OWN local date, inside the
+    // loop.
     households <- profileRepo.distinctHouseholds
-    perHh      <- ZIO.foreach(households) { hh =>
-      for {
-        profiles <- profileRepo.listAllForHousehold(hh)
-        devices  <- deviceRepo.listAllForHousehold(hh)
-        atlsP    <- ZIO.foreach(profiles)(p => appTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
-        presence <- trafficRepo.listPresenceRows(hh, devices.map(_.mac), today)
-      } yield computeRolls(profiles, devices, atlsP.toMap, presence, settings, now, ambient)
-    }
-    rolls = perHh.foldLeft(
-      (
-        Map.empty[ProfileId, RolledDay],
-        Map.empty[(ProfileId, AppId), RolledAppDay],
-        0,
-        0,
+    perHh      <- ZIO.foreach(households)(hh =>
+      rollHousehold(
+        rollup,
+        appRollup,
+        profileRepo,
+        deviceRepo,
+        appTimeLimitRepo,
+        trafficRepo,
+        hs,
+        now,
+        ambientRepo,
+        hh,
       ),
-    ) { case ((accP, accA, accDropped, accAmb), (p, a, dropped, amb)) =>
-      (accP ++ p, accA ++ a, accDropped + dropped, accAmb + amb)
+    )
+    totals = perHh.foldLeft((0, 0, 0)) { case ((accN, accDropped, accAmb), (n, dropped, amb)) =>
+      (accN + n, accDropped + dropped, accAmb + amb)
     }
     // #1676: each tick emits the count of per-(mac, app) sessions silently
     // dropped by the #1666 anchor-row guard so an operator can rate-alert on
-    // threshold drift. Summed across profiles since the metric is unlabelled.
-    _          <- AppMetrics.recordAppSessionsDropped(rolls._3)
+    // threshold drift. Summed across profiles — AND, since #2553, across
+    // households — since the metric is unlabelled (a per-household label would
+    // breach the cardinality firewall).
+    _ <- AppMetrics.recordAppSessionsDropped(totals._2)
     // #2077: same cadence for the ambient anchor gate's dropped-span watchdog —
     // a sustained rise with flat screen-time means the learner is eating real
     // sessions; a flat zero with returning phantom means it is too lax.
-    _          <- AppMetrics.recordAmbientSpansDropped(rolls._4)
-    n          <- rollup.upsertBatch(today, rolls._1)
-    _          <- appRollup.upsertBatch(today, rolls._2)
-  } yield n
+    _ <- AppMetrics.recordAmbientSpansDropped(totals._3)
+  } yield totals._1
+
+  /**
+   * One household's slice: its own settings → its own day key → its own gated rolls → its own
+   * upserts. Returns `(rows upserted, app-sessions dropped, ambient spans dropped)` so the caller
+   * can emit the two unlabelled watchdog counters as single cross-household sums.
+   *
+   * Failures are isolated per household ([[HouseholdTickIsolation]]) rather than aborting the whole
+   * tick: `getForHousehold` fails loud for an unprovisioned household (#2386), and one such tenant
+   * must not stop screen-time accounting for every other tenant. A skip is logged at ERROR and
+   * metered with an attributable reason — never silently dropped.
+   */
+  private def rollHousehold(
+      rollup: TimeUsedRollupRepo,
+      appRollup: AppUsedRollupRepo,
+      profileRepo: ProfileRepo,
+      deviceRepo: DeviceRepo,
+      appTimeLimitRepo: AppTimeLimitRepo,
+      trafficRepo: TrafficReportRepo,
+      hs: HouseholdSettingsRepo,
+      now: Instant,
+      ambientRepo: AmbientHostsRepo,
+      hh: HouseholdId,
+  ): Task[(Int, Int, Int)] =
+    HouseholdTickIsolation
+      .isolate(
+        JobName,
+        hh,
+        HouseholdTickIsolation.ReasonSettingsMissing,
+        Option.empty[
+          wifihaven.shared.HouseholdSettings,
+        ],
+      )(hs.getForHousehold(hh).map(Some(_)))
+      .flatMap {
+        case None           => ZIO.succeed((0, 0, 0))
+        case Some(settings) =>
+          HouseholdTickIsolation.isolate(
+            JobName,
+            hh,
+            HouseholdTickIsolation.ReasonError,
+            (0, 0, 0),
+          ) {
+            val today = PolicyService.householdLocalDate(now, settings)
+            for {
+              ambient  <- ambientRepo.gateFor(settings, today)
+              profiles <- profileRepo.listAllForHousehold(hh)
+              devices  <- deviceRepo.listAllForHousehold(hh)
+              atlsP    <- ZIO.foreach(profiles)(p =>
+                appTimeLimitRepo.listForProfile(p.id).map(p.id -> _),
+              )
+              presence <- trafficRepo.listPresenceRows(hh, devices.map(_.mac), today)
+              rolls = computeRolls(profiles, devices, atlsP.toMap, presence, settings, now, ambient)
+              n <- rollup.upsertBatch(today, rolls._1)
+              _ <- appRollup.upsertBatch(today, rolls._2)
+            } yield (n, rolls._3, rolls._4)
+          }
+      }
 
   // Pure: collapse one presence batch into both the per-profile total roll (`time_used_daily`) and
   // the per-(profile, app) engaged roll (`app_used_daily`), stamped with the same `now` watermark so

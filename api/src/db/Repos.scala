@@ -1757,9 +1757,12 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
     // (`presence_continuation_seconds`) changes the active-minute definition for
     // every cached day; deleting the cache forces the next rollup tick to refill
     // from first principles. #2077: the ambient-gate knobs (`ambient_*`) gate the
-    // same aggregation, so they ride the same wholesale invalidation. The DELETE is wholesale because all of these fields
-    // gate the same aggregation — fine-grained invalidation would only add risk
-    // of missing a code path that mutates one of them.
+    // same aggregation, so they ride the same invalidation. It is unconditional
+    // in the FIELD and DAY dimensions — every one of these fields gates the same
+    // aggregation, so a per-field or per-day invalidation would only add the risk
+    // of missing a code path that mutates one of them. It is NOT unconditional in
+    // the HOUSEHOLD dimension: since #2553 it is scoped to the writing
+    // household's own profiles (see the DELETEs below).
     // #1525: `heartbeat_host_patterns` is no longer written — the column has a NOT NULL DEFAULT
     // from V24 so existing rows keep their seed value until the follow-up migration drops it
     // entirely; nothing in the API reads it anymore (see `Presence.isHeartbeat` →
@@ -1767,9 +1770,9 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
     val upd =
       // #1912: `block_encrypted_dns` does NOT gate the active-minute definition,
       // so it doesn't strictly need the rollup invalidation below — but the
-      // invalidation is already wholesale (these fields share one aggregation
-      // path) and an admin toggling it is rare, so refilling the cache from
-      // first principles is harmless and keeps the update path single.
+      // invalidation already covers every field (they share one aggregation
+      // path) and an admin toggling it is rare, so refilling this household's
+      // cache from first principles is harmless and keeps the update path single.
       (fr"""UPDATE household_settings
               SET daily_reset_time=${s.dailyResetTime},
                   daily_reset_tz=${s.dailyResetTz},
@@ -1785,21 +1788,25 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
                   notify_email=${s.notifyEmail},
                   updated_at=NOW()
             WHERE """ ++ SqlFragments.householdEq(household)).update.run
-    // #2533: the invalidation stays WHOLESALE (every household's rows), deliberately, even though
-    // the UPDATE above is now household-scoped. Narrowing it to this household's profiles looks
-    // obviously right and is currently WRONG, because `TimeUsedRollupJob.doTick` still computes
-    // EVERY household's rollup from household #1's settings (the `TODO(#2553)` there). So while
-    // #2553 is open, household N's cached rows are a function of household #1's reset tz and
-    // heartbeat filter — and a household-#1 save must keep evicting them. Scoping this belongs in
-    // #2553, atomically with severing that coupling; doing it here would open a stale-screen-time
-    // window for every other tenant. `time_used_daily` / `app_used_daily` carry no household_id of
-    // their own (V43 / V53) — they key on profile_id, which does (V65) — so the scoped form is
-    // `profile_id IN (SELECT id FROM profiles WHERE household_id=?)` when #2553 lands.
-    val invalidate    = sql"DELETE FROM time_used_daily".update.run
+    // #2553: the invalidation is SCOPED to the writing household's profiles. #2533 deliberately
+    // left it wholesale — at that point `TimeUsedRollupJob.doTick` derived EVERY household's rollup
+    // from household #1's settings, so household N's cached rows really were a function of household
+    // #1's reset tz / heartbeat filter, and a #1 save had to evict them all. #2553 severed that
+    // coupling (both all-tenant jobs now read each household's OWN settings inside their
+    // per-household loop), so a household's cached rows are a function of its own settings alone —
+    // and evicting every other tenant's rows would be pure churn: a full recompute of every profile
+    // in the install on any tenant's save. The two changes are not separable, which is why they land
+    // together.
+    // `time_used_daily` / `app_used_daily` carry no household_id of their own (V43 / V53) — they key
+    // on `profile_id`, which does (V65) — so the scope is a semijoin through `profiles`.
+    val ownProfiles   =
+      fr"profile_id IN (SELECT id FROM profiles WHERE" ++
+        SqlFragments.householdEq(household) ++ fr")"
+    val invalidate    = (fr"DELETE FROM time_used_daily WHERE" ++ ownProfiles).update.run
     // #1516: the per-app rollup (`app_used_daily`) is gated by the SAME active-minute definition
     // (heartbeat filter, daily-reset boundary, presence session-stitch knob), so invalidate it
     // atomically too — the next tick refills both from first principles.
-    val invalidateApp = sql"DELETE FROM app_used_daily".update.run
+    val invalidateApp = (fr"DELETE FROM app_used_daily WHERE" ++ ownProfiles).update.run
     // A settings write for a household that owns no row is a provisioning bug, not a silent no-op:
     // every household gets its row from `HouseholdSeed.insertHousehold` / `backfillMissingSettings`
     // (#2386), so 0 rows updated means the caller's household is unprovisioned. Fail loud rather
