@@ -31,6 +31,12 @@ info() { printf '==> %s\n' "$*"; }
 # Package-owned path we must never delete ourselves (#2554) — we only scrub the
 # secret out of it and let apk del / opkg remove take the file.
 WIFIHAVEN_CONFIG=/etc/config/wifihaven
+# Runtime state the agent writes (NOT package-owned) plus install.sh's
+# displaced-config backup — see prune_runtime_artifacts below. The backup path
+# is pinned equal to install.sh's by
+# openwrt/test/install_reinstall_cycle_spec.sh.
+WIFIHAVEN_RUNTIME_DIR=/etc/wifihaven
+WIFIHAVEN_CONFIG_BACKUP=/tmp/wifihaven-config.bak-2554
 
 usage() {
   sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
@@ -234,8 +240,12 @@ scrub_wifihaven_config() {
   # would break the "nothing to do — router is already clean" path below.
   [ -s "$WIFIHAVEN_CONFIG" ] || return 1
 
+  # `uci show <package>` exits 0 for a config file that exists but holds no
+  # sections — which is exactly what a SUCCESSFUL scrub leaves behind, since
+  # #2554 requires keeping the (package-owned) file. So the presence of state is
+  # "show printed at least one line", never "show exited 0".
   _had_state=0
-  if uci -q show wifihaven >/dev/null 2>&1; then
+  if uci show wifihaven 2>/dev/null | grep -q .; then
     _had_state=1
     info "Wiping wifihaven UCI config..."
     # Unquoted expansion is intentional (one section name per word); `set -f`
@@ -267,8 +277,8 @@ scrub_wifihaven_config() {
     # There was no token, but say what actually happened: if sections survived
     # the deletes (a broken uci), the file is unchanged and claiming a clear
     # would be the same lying-summary bug in a lower-stakes spot.
-    if uci -q show wifihaven >/dev/null 2>&1; then
-      note "wifihaven UCI state could NOT be cleared (no router_token was present)"
+    if uci show wifihaven 2>/dev/null | grep -q .; then
+      note "wifihaven UCI state could NOT be cleared (no router_token found in it)"
     else
       note "cleared wifihaven UCI state (router_token wiped)"
     fi
@@ -290,24 +300,29 @@ scrub_wifihaven_config || true
 # closed on a missing key, so the router just stops auto-updating. Remove only
 # the runtime artifacts, then rmdir the directory if the package manager has
 # already taken everything else out of it.
-wifihaven_dir_pruned=0
-# /tmp/wifihaven-config.bak-2554 is install.sh's copy of a displaced config
-# (see its ensure_wifihaven_config) and can carry a router_token. tmpfs clears
-# it at the next reboot, but a router decommissioned or re-homed WITHOUT a
-# reboot would still be carrying the credential, so erase it here.
-for p in /etc/wifihaven/policy.json /etc/wifihaven/policy.json.tmp \
-         /etc/wifihaven/blocklists \
-         /etc/wifihaven/block_page.crt /etc/wifihaven/block_page.key \
-         /tmp/wifihaven-config.bak-2554; do
-  if [ -e "$p" ]; then
-    rm -rf "$p"
-    wifihaven_dir_pruned=1
-  fi
-done
-if [ "$wifihaven_dir_pruned" -eq 1 ]; then
+#
+# $WIFIHAVEN_CONFIG_BACKUP is install.sh's copy of a displaced config (see its
+# ensure_wifihaven_config) and can carry a router_token. tmpfs clears it at the
+# next reboot, but a router decommissioned or re-homed WITHOUT a reboot would
+# still be carrying the credential, so erase it here.
+prune_runtime_artifacts() {
+  _pruned=0
+  for p in "$WIFIHAVEN_RUNTIME_DIR/policy.json" "$WIFIHAVEN_RUNTIME_DIR/policy.json.tmp" \
+           "$WIFIHAVEN_RUNTIME_DIR/blocklists" \
+           "$WIFIHAVEN_RUNTIME_DIR/block_page.crt" "$WIFIHAVEN_RUNTIME_DIR/block_page.key" \
+           "$WIFIHAVEN_CONFIG_BACKUP"; do
+    if [ -e "$p" ]; then
+      rm -rf "$p"
+      _pruned=1
+    fi
+  done
+  [ "$_pruned" -eq 1 ] || return 1
   note "removed wifihaven runtime artifacts (policy snapshot, blocklist cache, block-page cert, config backup)"
-fi
-rmdir /etc/wifihaven 2>/dev/null || true
+}
+prune_runtime_artifacts || true
+# Only succeeds once the package manager has taken everything else (notably
+# keys/release.pub) out of the directory.
+rmdir "$WIFIHAVEN_RUNTIME_DIR" 2>/dev/null || true
 
 # 5. Purge mode: also kill manual-workaround leftovers from older e2e
 # shakeouts (pre-#202, when modules were dropped under these paths by hand).

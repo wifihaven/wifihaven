@@ -72,7 +72,7 @@ else
   # neither dash nor a standalone ash). Fall back so the rest of the suite still
   # runs, but say so loudly and SKIP — never PASS — the scenarios that can only
   # be judged under a strict shell. CI runs on ubuntu-latest, which has dash.
-  SIM_SH=sh
+  SIM_SH=$(command -v sh)
   SIM_SH_STRICT=0
   printf '  NOTE: no dash/ash found — simulations run under %s; strict-shell scenarios will be SKIPPED.\n' \
     "$(command -v sh)"
@@ -152,14 +152,14 @@ done
 # — a rename on one side would otherwise silently stop the uninstaller erasing
 # a credential.
 CONFIG_BACKUP_PATH=/tmp/wifihaven-config.bak-2554
-grep -qF "$CONFIG_BACKUP_PATH" "$INSTALL" \
+grep -v '^[[:space:]]*#' "$INSTALL" | grep -qF "$CONFIG_BACKUP_PATH" \
   && check "SSOT: install.sh writes the config backup to $CONFIG_BACKUP_PATH" ok \
   || check "SSOT: install.sh writes the config backup to $CONFIG_BACKUP_PATH" \
            "install.sh no longer names $CONFIG_BACKUP_PATH — uninstall.sh's prune would miss it"
-sed -n '/^for p in /,/; do$/p' "$UNINSTALL" | grep -qF "$CONFIG_BACKUP_PATH" \
+grep -v '^[[:space:]]*#' "$UNINSTALL" | grep -Eq "^WIFIHAVEN_CONFIG_BACKUP=$CONFIG_BACKUP_PATH\$" \
   && check "SSOT: uninstall.sh prunes $CONFIG_BACKUP_PATH" ok \
   || check "SSOT: uninstall.sh prunes $CONFIG_BACKUP_PATH" \
-           "the runtime-artifact prune list does not include the install-time config backup"
+           "uninstall.sh's WIFIHAVEN_CONFIG_BACKUP no longer matches install.sh's backup path"
 
 # #303's actual intent — reverting the LIVE kernel value so LAN clients can't
 # route to 127.0.0.0/8 after uninstall — must survive; only the `rm` goes.
@@ -460,11 +460,14 @@ uci() {
   _cmd=${1:-}; _arg=${2:-}
   case "$_cmd" in
     show)
+      # Real uci: exit 0 (with NO output) when the file exists but holds no
+      # sections; exit 1 only when the file is missing. A `| grep .` here would
+      # invert that and hide a caller that keys off the exit status.
       [ -f "$WIFIHAVEN_CONFIG" ] || return 1
       awk -v q="'" '
         /^config /{ t=$2; n=$3; gsub(q,"",n); sec=n; printf "wifihaven.%s=%s\n", sec, t; next }
         /^[[:space:]]*option /{ if (sec != "") printf "wifihaven.%s.%s=%s\n", sec, $2, $3 }
-      ' "$WIFIHAVEN_CONFIG" | grep . ;;
+      ' "$WIFIHAVEN_CONFIG" ;;
     delete)
       case "$_arg" in
         wifihaven) return 1 ;;                       # package-only pointer: no-op
@@ -493,8 +496,9 @@ PRELUDE
   printf 'SCRUB_FAILED=0\n'
   sed -n '/^config_has_router_token()/,/^}/p' "$UNINSTALL"
   sed -n '/^scrub_wifihaven_config()/,/^}/p' "$UNINSTALL"
+  sed -n '/^prune_runtime_artifacts()/,/^}/p' "$UNINSTALL"
   cat <<'GUARD'
-for _fn in config_has_router_token scrub_wifihaven_config; do
+for _fn in config_has_router_token scrub_wifihaven_config prune_runtime_artifacts; do
   command -v "$_fn" >/dev/null 2>&1 \
     || { printf 'EXTRACTION-FAILED: %s not extracted from uninstall.sh\n' "$_fn" >&2; exit 99; }
 done
@@ -516,12 +520,14 @@ EOF
 }
 
 run_uninstall_sim() {
-  # $1 = extra env assignments
+  # $1 = extra env assignments, $2 = body (defaults to the scrub)
   "$SIM_SH" -c "
     WIFIHAVEN_CONFIG='$FR/etc/config/wifihaven'
+    WIFIHAVEN_RUNTIME_DIR='$FR/etc/wifihaven'
+    WIFIHAVEN_CONFIG_BACKUP='$FR/tmp/wifihaven-config.bak-2554'
     $1
     $(uninstall_sim_prelude)
-    scrub_wifihaven_config || true
+    ${2:-scrub_wifihaven_config || true}
   " 2>&1
 }
 
@@ -539,6 +545,16 @@ if grep -q "$TOKEN" "$FR/etc/config/wifihaven" 2>/dev/null; then
 else
   check "#2554 uninstall.sh scrub erases router_token" ok
 fi
+
+# The happy path must SAY it succeeded. `uci show <package>` exits 0 for a file
+# that exists but holds no sections — exactly what a successful scrub leaves —
+# so a caller that keys off the exit status reports a failure on success. The
+# stub above models that faithfully; this assertion pins the message.
+case "$out" in
+  *"cleared wifihaven UCI state"*) check "#2554 a successful scrub reports success" ok ;;
+  *) check "#2554 a successful scrub reports success" \
+           "the scrub worked but did not report it as cleared: $out" ;;
+esac
 
 case "$out" in
   *EXTRACTION-FAILED*) check "#2554 uninstall.sh scrub keeps the package-owned path in place" \
@@ -624,6 +640,35 @@ for _spelling in "option 'router_token' 'TOKENVAL'" \
     esac
   fi
 done
+
+# The prune must actually erase the runtime artifacts AND the token-bearing
+# install-time backup, and must leave the package-owned signing key alone.
+FR="$TMP/prune"
+rm -rf "$FR"; mkdir -p "$FR/etc/wifihaven/keys" "$FR/etc/wifihaven/blocklists" "$FR/tmp" "$FR/etc/config"
+printf 'snapshot\n'  > "$FR/etc/wifihaven/policy.json"
+printf 'partial\n'   > "$FR/etc/wifihaven/policy.json.tmp"
+printf 'cert\n'      > "$FR/etc/wifihaven/block_page.crt"
+printf 'key\n'       > "$FR/etc/wifihaven/block_page.key"
+printf 'cached\n'    > "$FR/etc/wifihaven/blocklists/ads.txt"
+printf 'PUBKEY\n'    > "$FR/etc/wifihaven/keys/release.pub"
+printf "config wifihaven 'wifihaven'\n\toption router_token 'TOKENVAL'\n" \
+  > "$FR/tmp/wifihaven-config.bak-2554"
+out=$(run_uninstall_sim "" "prune_runtime_artifacts || true" || printf 'SIM-EXITED')
+_leftovers=""
+for _p in etc/wifihaven/policy.json etc/wifihaven/policy.json.tmp etc/wifihaven/blocklists \
+          etc/wifihaven/block_page.crt etc/wifihaven/block_page.key \
+          tmp/wifihaven-config.bak-2554; do
+  [ -e "$FR/$_p" ] && _leftovers="$_leftovers $_p"
+done
+[ -z "$_leftovers" ] \
+  && check "#2554 the prune erases every runtime artifact incl. the token-bearing backup" ok \
+  || check "#2554 the prune erases every runtime artifact incl. the token-bearing backup" \
+           "still present:$_leftovers ($out)"
+
+[ -f "$FR/etc/wifihaven/keys/release.pub" ] \
+  && check "#2554 the prune leaves the package-owned keys/release.pub alone" ok \
+  || check "#2554 the prune leaves the package-owned keys/release.pub alone" \
+           "the update-signature key was deleted — wifihaven-update fails closed without it"
 
 # A scrub that did not take must not be summarised as one that did. With uci
 # reachable but every delete failing and no token in the file, the file is left
