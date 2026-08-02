@@ -38,6 +38,11 @@ INSTALL="$ROOT/install.sh"
 UNINSTALL="$ROOT/uninstall.sh"
 PKG_SYSCTL="$ROOT/files/etc/sysctl.d/99-wifihaven.conf"
 
+SKIP=0
+skip() {
+  printf "  SKIP: %s — %s\n" "$1" "$2"; SKIP=$((SKIP + 1))
+}
+
 check() {
   if [ "$2" = "ok" ]; then
     printf "  PASS: %s\n" "$1"; PASS=$((PASS + 1))
@@ -59,7 +64,19 @@ trap 'rm -rf "$TMP"' EXIT
 # `exec`, …) terminates ash/dash outright and is not catchable with `2>/dev/null
 # || true`, while bash merely warns. Simulating under bash would hide exactly
 # that class of bug.
-SIM_SH=$(command -v dash 2>/dev/null || command -v ash 2>/dev/null || printf 'sh')
+SIM_SH=$(command -v dash 2>/dev/null || command -v ash 2>/dev/null || printf '')
+if [ -n "$SIM_SH" ]; then
+  SIM_SH_STRICT=1
+else
+  # No strict shell available (bash is /bin/sh on macOS, RHEL/Fedora ship
+  # neither dash nor a standalone ash). Fall back so the rest of the suite still
+  # runs, but say so loudly and SKIP — never PASS — the scenarios that can only
+  # be judged under a strict shell. CI runs on ubuntu-latest, which has dash.
+  SIM_SH=sh
+  SIM_SH_STRICT=0
+  printf '  NOTE: no dash/ash found — simulations run under %s; strict-shell scenarios will be SKIPPED.\n' \
+    "$(command -v sh)"
+fi
 
 # ---------------------------------------------------------------------------
 # 1. uninstall.sh must not delete package-owned files.
@@ -113,6 +130,36 @@ if grep -Eq 'uci[[:space:]].*delete[[:space:]]+"?wifihaven"?([[:space:]]|>|;|$)'
 else
   check "#2554 uninstall.sh does not rely on the no-op 'uci delete <package>' form" ok
 fi
+
+# A redirection error on a POSIX *special* built-in (`:`, `.`, `exec`, …)
+# terminates ash/dash outright and is NOT catchable with `2>/dev/null || true`.
+# Both scripts truncate/create the package-owned config, and both must do it
+# with something ordinary (`cp /dev/null`, `touch`, `true >`) so the failure
+# surfaces as a report instead of killing the uninstaller mid-teardown.
+for _sb_f in "$UNINSTALL" "$INSTALL"; do
+  _sb_label=$(basename "$_sb_f")
+  if grep -v '^[[:space:]]*#' "$_sb_f" | grep -Eq '(^|[[:space:];&|])(:|\.|exec|eval|export|readonly|set|shift|times|trap|unset)[[:space:]]+>' ; then
+    check "#2554 $_sb_label does not redirect onto a POSIX special built-in" \
+          "a redirection error there kills ash/dash uncatchably — use cp /dev/null / touch / true >"
+  else
+    check "#2554 $_sb_label does not redirect onto a POSIX special built-in" ok
+  fi
+done
+
+# The install-time config backup is a token-bearing path named by BOTH scripts:
+# install.sh writes it, uninstall.sh erases it. Nothing can share a constant
+# between two standalone scripts, so pin the literal in both (ACCEPT + TEST-PIN)
+# — a rename on one side would otherwise silently stop the uninstaller erasing
+# a credential.
+CONFIG_BACKUP_PATH=/tmp/wifihaven-config.bak-2554
+grep -qF "$CONFIG_BACKUP_PATH" "$INSTALL" \
+  && check "SSOT: install.sh writes the config backup to $CONFIG_BACKUP_PATH" ok \
+  || check "SSOT: install.sh writes the config backup to $CONFIG_BACKUP_PATH" \
+           "install.sh no longer names $CONFIG_BACKUP_PATH — uninstall.sh's prune would miss it"
+sed -n '/^for p in /,/; do$/p' "$UNINSTALL" | grep -qF "$CONFIG_BACKUP_PATH" \
+  && check "SSOT: uninstall.sh prunes $CONFIG_BACKUP_PATH" ok \
+  || check "SSOT: uninstall.sh prunes $CONFIG_BACKUP_PATH" \
+           "the runtime-artifact prune list does not include the install-time config backup"
 
 # #303's actual intent — reverting the LIVE kernel value so LAN clients can't
 # route to 127.0.0.0/8 after uninstall — must survive; only the `rm` goes.
@@ -177,15 +224,23 @@ _sysctl_drift=$(cat "$TMP/sysctl-drift")
 UHTTPD_MATCHER_CORE="^uhttpd.[^.]+.listen_http=.*'127.0.0.1:8081'"
 normalized_matcher() {
   # Comment-stripped, so prose mentioning listen_http can never satisfy the pin
-  # while the code drifts.
-  grep -v '^[[:space:]]*#' "$1" | grep "listen_http=" | grep "8081" | head -n1 | tr -d '\\ '
+  # while the code drifts. EVERY searching line is normalised, not just the
+  # first — a second, looser matcher added later must fail the pin too. Lines
+  # that WRITE the listener (`uci add_list …listen_http=…`) are not matchers, so
+  # the candidate set is restricted to lines that search (grep/awk).
+  grep -v '^[[:space:]]*#' "$1" | grep -E '(grep|awk)' | grep "listen_http=" | grep "8081" \
+    | tr -d '\\ '
 }
 for _m_f in "$ROOT/files/usr/lib/wifihaven/setup-uhttpd-block-page.sh" "$UNINSTALL" "$INSTALL"; do
   _m_label=$(basename "$_m_f")
-  printf '%s' "$(normalized_matcher "$_m_f")" | grep -qF "$UHTTPD_MATCHER_CORE" \
-    && check "SSOT: $_m_label uses the anchored block-page listener matcher" ok \
-    || check "SSOT: $_m_label uses the anchored block-page listener matcher" \
-             "expected a matcher normalising to '$UHTTPD_MATCHER_CORE', got '$(normalized_matcher "$_m_f")'"
+  _m_lines=$(normalized_matcher "$_m_f")
+  _m_bad=$(printf '%s\n' "$_m_lines" | grep -vF "$UHTTPD_MATCHER_CORE" || true)
+  if [ -n "$_m_lines" ] && [ -z "$_m_bad" ]; then
+    check "SSOT: $_m_label uses the anchored block-page listener matcher" ok
+  else
+    check "SSOT: $_m_label uses the anchored block-page listener matcher" \
+          "every listen_http/8081 line must normalise to '$UHTTPD_MATCHER_CORE'; offending: '${_m_bad:-<none found>}'"
+  fi
 done
 
 # ---------------------------------------------------------------------------
@@ -524,33 +579,85 @@ esac
 # The truncation must not take the shell down with it — `: >file` would, since
 # `:` is a POSIX special built-in whose redirection errors are not catchable —
 # and the operator must be told the credential is still on disk.
-new_enrolled_config wipe-unwritable
-chmod 444 "$FR/etc/config/wifihaven"
-out=$(run_uninstall_sim "SIM_UCI_DELETE_BROKEN=1" || printf 'SIM-EXITED')
-chmod 644 "$FR/etc/config/wifihaven"
-case "$out" in
-  *EXTRACTION-FAILED*) check "#2554 an unwritable config is reported, not fatal" "the scrub never ran: $out" ;;
-  *"FAILED to wipe router_token"*) check "#2554 an unwritable config is reported, not fatal" ok ;;
-  *) check "#2554 an unwritable config is reported, not fatal" \
-           "the scrub neither wiped nor reported (a special-built-in redirection error kills ash/dash here): $out" ;;
-esac
+if [ "$SIM_SH_STRICT" -ne 1 ]; then
+  skip "#2554 an unwritable config is reported, not fatal" \
+       "needs dash/ash — bash does not exhibit the special-built-in exit this asserts"
+elif [ "$(id -u)" -eq 0 ]; then
+  # root ignores the mode bits, so the write succeeds and there is nothing to
+  # assert. This matters: the openwrt/rootfs container — the most faithful place
+  # to run this spec — runs as root.
+  skip "#2554 an unwritable config is reported, not fatal" \
+       "running as root: chmod 444 does not make the file unwritable"
+else
+  new_enrolled_config wipe-unwritable
+  chmod 444 "$FR/etc/config/wifihaven"
+  out=$(run_uninstall_sim "SIM_UCI_DELETE_BROKEN=1" || printf 'SIM-EXITED')
+  chmod 644 "$FR/etc/config/wifihaven"
+  case "$out" in
+    *EXTRACTION-FAILED*) check "#2554 an unwritable config is reported, not fatal" "the scrub never ran: $out" ;;
+    *"FAILED to wipe router_token"*) check "#2554 an unwritable config is reported, not fatal" ok ;;
+    *) check "#2554 an unwritable config is reported, not fatal" \
+             "the scrub neither wiped nor reported — a redirection error on a POSIX special built-in (\`: >file\`) kills ash/dash here, uncatchably: $out" ;;
+  esac
+fi
 
 # The token check must recognise every spelling uci accepts, not just the one
 # the agent happens to write — a hand-edited config is exactly the state the
 # file-level fail-safe exists for.
+_spelling_n=0
 for _spelling in "option 'router_token' 'TOKENVAL'" \
                  "option router_token TOKENVAL" \
                  "option router_token \"TOKENVAL\""; do
-  new_enrolled_config "wipe-spelling"
+  _spelling_n=$((_spelling_n + 1))
+  FR="$TMP/wipe-spelling-$_spelling_n"
+  rm -rf "$FR"; mkdir -p "$FR/etc/config"
   printf "config wifihaven 'wifihaven'\n\t%s\n" "$_spelling" > "$FR/etc/config/wifihaven"
   out=$(run_uninstall_sim "SIM_UCI_DELETE_BROKEN=1" || printf 'SIM-EXITED')
   if grep -q TOKENVAL "$FR/etc/config/wifihaven" 2>/dev/null; then
     check "#2554 token check recognises: $_spelling" \
           "the token survived and the scrub reported success: $out"
   else
-    check "#2554 token check recognises: $_spelling" ok
+    case "$out" in
+      *"router_token survived"*) check "#2554 token check recognises: $_spelling" ok ;;
+      *) check "#2554 token check recognises: $_spelling" \
+               "token gone but the truncation was never reported: $out" ;;
+    esac
   fi
 done
 
-printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"
+# A scrub that did not take must not be summarised as one that did. With uci
+# reachable but every delete failing and no token in the file, the file is left
+# byte-for-byte unchanged — saying "cleared … router_token wiped" there is the
+# same lying-summary pattern in a lower-stakes spot.
+FR="$TMP/scrub-noop-no-token"
+rm -rf "$FR"; mkdir -p "$FR/etc/config"
+printf "config settings 'settings'\n\toption enforcement_disabled '0'\n" > "$FR/etc/config/wifihaven"
+out=$(run_uninstall_sim "SIM_UCI_DELETE_BROKEN=1" || printf 'SIM-EXITED')
+case "$out" in
+  *"cleared wifihaven UCI state"*)
+    check "#2554 a scrub that did not take is not reported as cleared" \
+          "the summary claims a clear that never happened: $out" ;;
+  *"could NOT be cleared"*) check "#2554 a scrub that did not take is not reported as cleared" ok ;;
+  *) check "#2554 a scrub that did not take is not reported as cleared" \
+           "expected an explicit could-not-clear note: $out" ;;
+esac
+
+# An EMPTY token must NOT read as present — otherwise a clean config gets
+# pointlessly truncated and reported as a survival.
+FR="$TMP/wipe-empty-token"
+rm -rf "$FR"; mkdir -p "$FR/etc/config"
+printf "config wifihaven 'wifihaven'\n\toption router_token ''\n" > "$FR/etc/config/wifihaven"
+out=$(run_uninstall_sim "SIM_UCI_DELETE_BROKEN=1" || printf 'SIM-EXITED')
+case "$out" in
+  *"router_token survived"*|*"FAILED to wipe"*)
+    check "#2554 an empty router_token does not read as a live token" \
+          "an empty token triggered the truncation fail-safe: $out" ;;
+  *) check "#2554 an empty router_token does not read as a live token" ok ;;
+esac
+
+if [ "$SKIP" -gt 0 ]; then
+  printf "\n%d passed, %d failed, %d skipped\n" "$PASS" "$FAIL" "$SKIP"
+else
+  printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"
+fi
 [ "$FAIL" -eq 0 ]

@@ -221,8 +221,10 @@ config_has_router_token() {
   [ -f "$WIFIHAVEN_CONFIG" ] || return 1
   [ -n "$(uci -q get wifihaven.@wifihaven[0].router_token 2>/dev/null || true)" ] && return 0
   # Match every spelling uci accepts — bare, single- and double-quoted key, and
-  # any non-empty value in any quoting. A narrower pattern would miss the token
-  # in a hand-edited config and report a wipe that did not happen.
+  # any value whose first character is not whitespace or a quote (so `''`, `""`
+  # and a bare `option router_token` correctly read as "no token"). A narrower
+  # pattern would miss the token in a hand-edited config and report a wipe that
+  # did not happen.
   grep -Eq "^[[:space:]]*option[[:space:]]+['\"]?router_token['\"]?[[:space:]]+['\"]?[^[:space:]'\"]" \
     "$WIFIHAVEN_CONFIG" 2>/dev/null
 }
@@ -262,7 +264,14 @@ scrub_wifihaven_config() {
       note "truncated $WIFIHAVEN_CONFIG (router_token survived the UCI scrub)"
     fi
   elif [ "$_had_state" -eq 1 ]; then
-    note "cleared wifihaven UCI state (router_token wiped)"
+    # There was no token, but say what actually happened: if sections survived
+    # the deletes (a broken uci), the file is unchanged and claiming a clear
+    # would be the same lying-summary bug in a lower-stakes spot.
+    if uci -q show wifihaven >/dev/null 2>&1; then
+      note "wifihaven UCI state could NOT be cleared (no router_token was present)"
+    else
+      note "cleared wifihaven UCI state (router_token wiped)"
+    fi
   fi
 }
 

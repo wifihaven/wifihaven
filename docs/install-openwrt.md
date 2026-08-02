@@ -182,7 +182,10 @@ keeping the package-owned path). If even that fails it says so and exits
 nonzero — do not treat such a router as decommissioned until the file is empty.
 `/etc/wifihaven` is pruned of runtime artifacts only (policy snapshot, blocklist
 cache, block-page cert/key); `keys/release.pub` ships with the package and is
-left to `apk del` / `opkg remove`.
+left to `apk del` / `opkg remove`. The same prune also erases
+`/tmp/wifihaven-config.bak-2554` — the copy `install.sh` keeps if it has to
+displace an unusable config — since that copy can carry a token and tmpfs would
+otherwise hold it until the next reboot.
 
 ## 3. Verify
 
