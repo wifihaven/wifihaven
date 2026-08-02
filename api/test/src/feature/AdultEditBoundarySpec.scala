@@ -417,9 +417,11 @@ object AdultEditBoundarySpec
     test("the /api/blocklists READ routes admit an adult; the two mutators are operator-only") {
       // #2535/#2567 narrowed `clear` and `refresh` from `requireWriter` to `requireOperator`: they
       // mutate the install-wide `blocklist_domains` catalog, which carries no household dimension.
-      // This suite's household is NOT household 1, so its admin is refused alongside its adult —
-      // the point is that the refusal is about tenancy, not role. The READS stay adult-admissible
-      // (bundled public data on live SPA surfaces). Full pin: `CatalogOperatorGateSpec`.
+      // The adult's 403 is now just the role half of `requireOperator` (it wraps `requireAdmin`);
+      // the load-bearing assertion is `asAdmin` — this suite's household is NOT household 1, so
+      // its ADMIN is refused too, which is the tenancy half and cannot come from a role check. The
+      // READS stay adult-admissible (bundled public data on live SPA surfaces). The paired
+      // operator-succeeds side lives in `CatalogOperatorGateSpec`.
       for {
         _       <- cleanDb
         fx      <- fixture
@@ -440,8 +442,9 @@ object AdultEditBoundarySpec
     test("the three /api/apps maintenance routes are operator-only, not adult-or-admin") {
       // #2567: `DELETE /api/apps/:id`, `seed-from-templates` and `reset-to-template` all write the
       // install-wide `apps` / `app_hosts` catalog, so they moved to `requireOperator`. As above,
-      // this suite's admin is refused too because its household is not household 1 — and the app
-      // row survives the refused DELETE, which is the property that actually matters.
+      // `asAdmin` is the load-bearing half — this suite's admin clears the role check and is still
+      // refused, because its household is not household 1. And the app row SURVIVES the refused
+      // DELETE, which is the property that actually matters.
       for {
         _        <- cleanDb
         fx       <- fixture

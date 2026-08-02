@@ -29,6 +29,10 @@ log = logging.getLogger(__name__)
 
 
 WH_API_URL = os.environ.get("WH_API_URL")  # e.g. https://api-staging.wifihaven.net
+# #2535/#2567: this identity must be the OPERATOR — the admin of household 1
+# (`HouseholdId.Default`). The default `admin` is, by V1's seed + V65's backfill. The suite calls
+# `POST /api/apps/seed-from-templates`, which mutates the install-wide `apps` catalog and is now
+# `requireOperator`; pointing this at a per-run / beta household's admin would 403 the fixture.
 WH_ADMIN_USER = os.environ.get("WH_ADMIN_USER", "admin")
 WH_ADMIN_PASS = os.environ.get("WH_ADMIN_PASS")
 WH_RUN_ID = os.environ.get("WH_RUN_ID", "local")

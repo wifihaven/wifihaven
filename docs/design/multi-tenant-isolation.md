@@ -109,6 +109,10 @@ The MAC-keyed screen-time tables are the one subtlety — see [§3.4](#34-the-ma
 - **App templates** (`api/resources/app_templates/`). Template-authored,
   shared, read-only from the tenant's perspective (per
   `memory/feedback_apps_template_authored_only.md`).
+- **Edge/config globals** (CORS, allowed hosts, WS origin gate) —
+  per-*deployment*, not per-household, until custom domains land (a non-goal,
+  [§9](#9-non-goals--phasing)); the surfaces are enumerated in
+  [`custom-domain-edge-config.md`](custom-domain-edge-config.md).
 
 > **Staying global is a statement about the DATA, not about the GATE**
 > (#2535/#2567). The `apps` / `app_hosts` / `blocklist_domains` catalogs are
@@ -128,10 +132,6 @@ The MAC-keyed screen-time tables are the one subtlety — see [§3.4](#34-the-ma
 > `GET /api/blocklists/:id/hosts`) deliberately **stays** `requireWriter`: bundled
 > public data with no confidentiality dimension, on live SPA surfaces. Pinned in
 > `api/test/src/feature/CatalogOperatorGateSpec.scala`.
-- **Edge/config globals** (CORS, allowed hosts, WS origin gate) —
-  per-*deployment*, not per-household, until custom domains land (a non-goal,
-  [§9](#9-non-goals--phasing)); the surfaces are enumerated in
-  [`custom-domain-edge-config.md`](custom-domain-edge-config.md).
 
 ---
 
