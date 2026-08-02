@@ -242,6 +242,28 @@ object AdminSetUserPasswordSpec
         after  <- rowOf(xa, h.adultId)
       } yield assertTrue(res.status == Status.Forbidden, verifies(after._1, OldPassword))
     },
+    test("an admin who is themselves mid-forced-change is REFUSED, and writes nothing") {
+      // #586: `requireAuth` refuses every route but change-password while the CALLER's own
+      // must_change_password is set. Worth pinning here rather than assuming the shared gate covers
+      // it, because the failure is silent in the wrong direction: an admin still holding a
+      // seeded/handoff credential must not be able to hand it on to a child before replacing it.
+      for {
+        _      <- cleanDb
+        xa     <- ZIO.service[Transactor[Task]]
+        routes <- authRoutes
+        h      <- makeHouse("house-m", "House M")
+        _      <- sql"UPDATE users SET must_change_password=true WHERE id=${h.adminId}".update.run
+          .transact(xa)
+        res    <- setPassword(routes, h.childId.value, h.adminTok)
+        body   <- res.body.asString
+        after  <- rowOf(xa, h.childId)
+      } yield assertTrue(
+        res.status == Status.Forbidden,
+        body.contains("password_change_required"),
+        verifies(after._1, OldPassword),
+        !after._2,
+      )
+    },
     test("an unauthenticated request is REFUSED (401)") {
       for {
         _      <- cleanDb

@@ -108,17 +108,16 @@ trait AuthService {
    * ELSE — today only the household admin setting a locked-out adult's or child's credential (`POST
    * /api/users/{id}/password`).
    *
-   * The credential write itself still goes through [[setPassword]]: hashing, storage and the
-   * token_version bump stay single-sourced (#2308), so there is no second hashing path to drift.
-   * The one difference is the flag. `setPassword` CLEARS `must_change_password` because both of its
-   * original callers are the user changing their own password; here the chooser is not the owner,
-   * so the password is a HANDOFF and the owner must replace it at next login (#586/#2492). The
-   * ordering — set, then re-arm — matters: the other way round, `setPassword` would clear the flag
-   * we just wrote.
+   * This and [[setPassword]] are the same private rotation with one bit flipped, so hashing,
+   * storage and the token_version bump stay single-sourced (#2308) — there is no second credential
+   * path to drift. The bit is `must_change_password`: [[setPassword]] clears it because its callers
+   * are the user changing their own password, whereas here the chooser is NOT the owner, so the
+   * password is a HANDOFF and the owner must replace it at next login (#586/#2492). All three
+   * columns are written in one statement, so a failure can't leave the credential rotated with the
+   * flag down — which would silently make the admin's password permanent.
    *
-   * Deliberately NOT a `mustChange` boolean parameter on `setPassword`: a defaulted flag on the
-   * credential-write SSOT is exactly what a future caller gets backwards silently. A distinct,
-   * named method makes the handoff semantics visible at the call site.
+   * Deliberately two named methods rather than a `mustChange` parameter on [[setPassword]]: a
+   * boolean on the credential-write SSOT is exactly what a future caller gets backwards silently.
    *
    * Authorization and household scoping are the ROUTE's job, not this method's — it takes a
    * `UserId` the caller has already proven belongs to their own household (`ownUser`).
@@ -374,20 +373,21 @@ class AuthServiceLive(
       _     <- setPassword(user.id, next).mapError(e => AuthError.Unexpected(e.getMessage))
     } yield ()
 
+  /**
+   * The one place a password is hashed and written. Both public entry points below are this, and
+   * differ ONLY in what `must_change_password` ends up as; `applyPasswordRotation` writes the hash,
+   * the flag and the #2080 token_version bump in a single statement, so no caller can land a
+   * half-rotated row (#2576).
+   */
+  private def rotate(userId: UserId, newPlaintext: String, mustChange: Boolean): Task[Unit] =
+    hashPassword(newPlaintext).flatMap(userRepo.applyPasswordRotation(userId, _, mustChange))
+
+  // Clears must_change_password (#586): the chooser is the owner, so there is nothing to hand off.
   def setPassword(userId: UserId, newPlaintext: String): Task[Unit] =
-    for {
-      hash <- hashPassword(newPlaintext)
-      _    <- userRepo.updatePassword(userId, hash)
-      // Clear must_change_password flag on rotation (#586).
-      _    <- userRepo.clearMustChangePassword(userId)
-      // #2080: invalidate every previously-issued JWT for this user.
-      _    <- userRepo.bumpTokenVersion(userId)
-    } yield ()
+    rotate(userId, newPlaintext, mustChange = false)
 
   def setPasswordAsHandoff(userId: UserId, newPlaintext: String): Task[Unit] =
-    // Order is load-bearing: setPassword's last act on the flag is to CLEAR it, so the re-arm has
-    // to follow. See the trait doc.
-    setPassword(userId, newPlaintext) *> userRepo.setMustChangePassword(userId)
+    rotate(userId, newPlaintext, mustChange = true)
 
   def hashPassword(password: String): UIO[String] =
     ZIO.succeed(BCrypt.withDefaults().hashToString(AuthService.BcryptCost, password.toCharArray))

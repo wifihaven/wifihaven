@@ -308,53 +308,62 @@ object AuthRoutes {
       Method.POST / "api" / "users" / long("id") / "password" ->
         handler { (id: Long, req: Request) =>
           val uid                                                           = UserId(id)
+          val O                                                             =
+            AppMetrics.AdminPasswordSetOutcome
           // Every terminal outcome is metered at the site that produces it rather than inferred
-          // from the mapped HTTP status downstream: three distinct refusals all answer 400, and
-          // collapsing them would hide which one an operator is actually seeing.
+          // from the mapped HTTP status downstream: four distinct refusals all answer 400, and
+          // collapsing them would hide which one an operator is actually seeing. Exactly one sample
+          // per request — every exit below meters, including the gate refusals.
           def refuse(outcome: String, err: ApiError): IO[ApiError, Nothing] =
             AppMetrics.adminPasswordSet(outcome) *> ZIO.fail(err)
 
           val handle: ZIO[Any, ApiError, Response] = for {
             claims <- requireAdmin(req, auth).tapError {
-              case _: ApiError.Forbidden    => AppMetrics.adminPasswordSet("forbidden")
-              case _: ApiError.Unauthorized => AppMetrics.adminPasswordSet("unauthenticated")
-              case _                        => ZIO.unit
+              case _: ApiError.Forbidden    => AppMetrics.adminPasswordSet(O.Forbidden)
+              case _: ApiError.Unauthorized => AppMetrics.adminPasswordSet(O.Unauthenticated)
+              // The remaining case requireAuth can produce here is the #586
+              // `password_change_required` 403, which is an `ApiError.Wrapped` (a pre-formed
+              // Response) rather than a `Forbidden` — so it needs its own arm or it exits silently.
+              // Reachable: an admin who is themselves mid-forced-change tries to help a locked-out
+              // child. It is a real refusal, and precisely the kind the panel exists to surface.
+              case _                        =>
+                AppMetrics.adminPasswordSet(O.PasswordChangeRequired)
             }
             target <- ownUser(userRepo, uid, claims.hh).tapError {
-              case _: ApiError.NotFound => AppMetrics.adminPasswordSet("not_found")
-              case _                    => AppMetrics.adminPasswordSet("error")
+              case _: ApiError.NotFound => AppMetrics.adminPasswordSet(O.NotFound)
+              case _                    => AppMetrics.adminPasswordSet(O.Error)
             }
             _      <- refuse(
-              "invalid_target",
+              O.InvalidTarget,
               ApiError.BadRequest(
                 "cannot set an admin's password; the account owner changes their own",
               ),
             ).when(target.role == UserRole.Admin)
             body   <- req.body.asString
               .orElseFail(ApiError.BadRequest(""))
-              .tapError(_ => AppMetrics.adminPasswordSet("bad_request"))
+              .tapError(_ => AppMetrics.adminPasswordSet(O.BadRequest))
             spr    <- ZIO
               .fromEither(body.fromJson[SetUserPasswordRequest])
               .mapError(ApiError.DecodeFailure(_))
-              .tapError(_ => AppMetrics.adminPasswordSet("bad_request"))
+              .tapError(_ => AppMetrics.adminPasswordSet(O.BadRequest))
             // #2084: the same minimum every other password path enforces — an admin-chosen handoff
             // credential is still a real credential until the target replaces it.
             _      <- refuse(
-              "weak_password",
+              O.WeakPassword,
               ApiError.BadRequest(
                 s"password must be at least ${AuthService.MinPasswordLength} characters",
               ),
             ).when(!AuthService.isPasswordStrongEnough(spr.newPassword))
-            // #2308 SSOT: the hash + store + token_version bump all happen inside `setPassword`;
-            // `AsHandoff` only adds the must_change_password re-arm (#586/#2492) so the admin's
-            // choice is a one-time handoff, not a lasting shared secret.
+            // #2308 SSOT: hash + store + token_version bump + the must_change_password arm, all in
+            // the one rotation `setPassword` also uses, differing only in that flag — so the admin's
+            // choice is a one-time handoff (#586/#2492), not a lasting shared secret.
             _      <- auth
               .setPasswordAsHandoff(uid, spr.newPassword)
               .mapError(ApiError.Db(_))
-              .tapError(_ => AppMetrics.adminPasswordSet("error"))
+              .tapError(_ => AppMetrics.adminPasswordSet(O.Error))
             // The audit record the target deserves: their credential was changed by someone else.
             // Actor, target and role only — the plaintext is never logged, here or anywhere.
-            _      <- AppMetrics.adminPasswordSet("ok") *>
+            _      <- AppMetrics.adminPasswordSet(O.Ok) *>
               LogContext.annotate(LogContext.User, claims.sub) {
                 ZIO.logInfo(
                   s"admin password set: actor=${claims.sub} target=${target.username} " +

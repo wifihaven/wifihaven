@@ -301,6 +301,11 @@ object MultiTenantRouteCensusSpec extends ZIOSpecDefault {
     "PATCH /api/users/{}"            -> Scoped,
     "DELETE /api/users/{}"           -> Scoped,
     "PUT /api/users/{}/profiles"     -> Scoped,
+    // #2576 — the admin's in-band password set for a household member. The highest-value target in
+    // this census's threat model: unscoped it would be a cross-household ACCOUNT TAKEOVER, not a
+    // data leak. Composes `ownUser`, so Layer 2 verifies the choke point rather than taking this
+    // verdict on trust.
+    "POST /api/users/{}/password"    -> Scoped,
 
     // ── Routes.scala: profiles ─────────────────────────────────────────────────────────────────
     "GET /api/profiles"              -> Scoped,

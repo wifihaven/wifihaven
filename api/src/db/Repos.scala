@@ -229,24 +229,28 @@ trait UserRepo {
       householdId: HouseholdId = HouseholdId.Default,
       email: Option[String] = None,
   ): Task[UserId]
-  def updatePassword(id: UserId, h: String): Task[Unit]
+
+  /**
+   * The WHOLE of a password rotation, in ONE statement: store the new hash, set
+   * `must_change_password` to `mustChange`, and bump `token_version` (#2080 — this is what makes a
+   * password change actually invalidate every previously-issued JWT).
+   *
+   * Atomic on purpose (#2576). These were three separate `.transact` calls until the
+   * admin-initiated set (which needs `mustChange = true`) made the failure mode load-bearing: a
+   * blip between the writes leaves the credential already rotated with the flag in the WRONG state,
+   * while the caller sees a 5xx and reasonably assumes nothing happened. For the handoff path that
+   * means the admin-chosen password silently becomes permanent — the one property the feature
+   * exists to prevent. One `UPDATE` makes the partial state unrepresentable rather than merely
+   * unlikely.
+   *
+   * `mustChange` is a raw boolean only because this is the storage layer; callers never see it.
+   * `AuthService` exposes the two cases as separately-named methods (`setPassword` /
+   * `setPasswordAsHandoff`) precisely so nobody passes it backwards.
+   */
+  def applyPasswordRotation(id: UserId, hash: String, mustChange: Boolean): Task[Unit]
   def updateUsername(id: UserId, u: String): Task[Unit]
   def updateRole(id: UserId, r: String): Task[Unit]
   def clearMustChangePassword(id: UserId): Task[Unit]
-
-  /**
-   * #2576: the inverse of [[clearMustChangePassword]] — re-arm the forced first-login change
-   * (#586/#2492) on an EXISTING row. `create` already inserts with the flag set, but the
-   * admin-initiated password set writes an existing user, and `AuthService.setPassword` (the #2308
-   * rotation SSOT) deliberately CLEARS the flag, because both of its original callers are the user
-   * changing their OWN password. Re-arming it is what makes the admin's chosen password a handoff
-   * credential rather than a lasting shared secret. The only caller is
-   * `AuthService.setPasswordAsHandoff`, which sequences the two so the pairing can't drift.
-   */
-  def setMustChangePassword(id: UserId): Task[Unit]
-  // #2080: invalidates every previously-issued JWT for this user (verify()
-  // rejects any token stamped with an older tokenVersion).
-  def bumpTokenVersion(id: UserId): Task[Unit]
   def listAll: Task[List[DbUser]]
 
   /**
@@ -1310,7 +1314,7 @@ class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
     case (id, un, ph, role, ca, mcp, tv, hh) => DbUser(id, un, ph, role, ca, mcp, tv, hh)
   }
 
-  def findByUsername(householdId: HouseholdId, u: String)      =
+  def findByUsername(householdId: HouseholdId, u: String)                  =
     DbMetrics.timed("user.findByUsername")(
       // #2140: keyed on the V65 UNIQUE(household_id, username) — never a bare-username lookup.
       (fr"SELECT " ++ userCols ++ fr" FROM users WHERE household_id=$householdId AND username=$u")
@@ -1319,7 +1323,7 @@ class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
         .option
         .transact(xa),
     )
-  def findByEmail(email: String)                               =
+  def findByEmail(email: String)                                           =
     DbMetrics.timed("user.findByEmail")(
       // #2164: exact match on the globally-unique `users.email` (V67). `.option` is safe — the
       // uq_users_email constraint guarantees at most one row.
@@ -1329,7 +1333,7 @@ class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
         .option
         .transact(xa),
     )
-  def emailForUser(householdId: HouseholdId, username: String) =
+  def emailForUser(householdId: HouseholdId, username: String)             =
     DbMetrics.timed("user.emailForUser")(
       // #2199: household-scoped username → email. Keyed on the V65 UNIQUE(household_id, username);
       // the inner Option is the nullable `users.email` column (V67), so a row with a NULL email
@@ -1340,7 +1344,7 @@ class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
         .map(_.flatten)
         .transact(xa),
     )
-  def findById(id: UserId)                                     =
+  def findById(id: UserId)                                                 =
     (fr"SELECT " ++ userCols ++ fr" FROM users WHERE id=$id")
       .query[UserRow]
       .map(toUser)
@@ -1355,20 +1359,21 @@ class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
       .query[UserId]
       .unique
       .transact(xa)
-  def updatePassword(id: UserId, h: String)                    =
-    sql"UPDATE users SET password_hash=$h WHERE id=$id".update.run.transact(xa).unit
-  def updateUsername(id: UserId, u: String)                    =
+  // #2576: one primary-key point update, so a rotation can never be half-applied. Same plan as the
+  // single-column updates below — an index scan on `users_pkey`, three columns written instead of
+  // one.
+  def applyPasswordRotation(id: UserId, hash: String, mustChange: Boolean) =
+    sql"""UPDATE users
+          SET password_hash=$hash, must_change_password=$mustChange,
+              token_version=token_version+1
+          WHERE id=$id""".update.run.transact(xa).unit
+  def updateUsername(id: UserId, u: String)                                =
     sql"UPDATE users SET username=$u WHERE id=$id".update.run.transact(xa).unit
-  def updateRole(id: UserId, r: String)                        =
+  def updateRole(id: UserId, r: String)                                    =
     sql"UPDATE users SET role=$r WHERE id=$id".update.run.transact(xa).unit
-  def clearMustChangePassword(id: UserId)                      =
+  def clearMustChangePassword(id: UserId)                                  =
     sql"UPDATE users SET must_change_password=false WHERE id=$id".update.run.transact(xa).unit
-  // #2576: primary-key point update, same plan as clearMustChangePassword above.
-  def setMustChangePassword(id: UserId)                        =
-    sql"UPDATE users SET must_change_password=true WHERE id=$id".update.run.transact(xa).unit
-  def bumpTokenVersion(id: UserId)                             =
-    sql"UPDATE users SET token_version=token_version+1 WHERE id=$id".update.run.transact(xa).unit
-  def listAll                                                  =
+  def listAll                                                              =
     (fr"SELECT " ++ userCols ++ fr" FROM users ORDER BY id")
       .query[UserRow]
       .map(toUser)
@@ -1376,7 +1381,7 @@ class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
       .transact(xa)
   // #2108: same projection as listAll, AND-scoped to one household. Index-backed by
   // V65's idx_users_household.
-  def listAllForHousehold(household: HouseholdId)              =
+  def listAllForHousehold(household: HouseholdId)                          =
     (fr"SELECT " ++ userCols ++ fr" FROM users WHERE" ++ SqlFragments.householdEq(
       household,
     ) ++ fr"ORDER BY id")
@@ -1394,7 +1399,7 @@ class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
   // rather than a correctness requirement. It is the same string
   // `UserRole.asString(UserRole.Admin)` produces (shared/src/Models.scala) and the same one V1's
   // `CHECK (role IN ('admin','adult','child'))` and V86's predicate spell out.
-  def findAdminForHousehold(household: HouseholdId)            =
+  def findAdminForHousehold(household: HouseholdId)                        =
     DbMetrics.timed("user.findAdminForHousehold")(
       (fr"SELECT " ++ userCols ++ fr" FROM users WHERE" ++ SqlFragments.householdEq(
         household,

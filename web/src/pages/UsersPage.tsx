@@ -267,7 +267,7 @@ function SetPasswordModal({ user, onClose }: { user: User; onClose: () => void }
   const [password, setPassword] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [done, setDone] = useState(false)
+  const [done, setDone] = useState<{ mustChange: boolean } | null>(null)
 
   async function submit() {
     if (password.length < MIN_PASSWORD_LENGTH) {
@@ -277,11 +277,14 @@ function SetPasswordModal({ user, onClose }: { user: User; onClose: () => void }
     setSaving(true)
     setError(null)
     try {
-      await api.users.setPassword(user.id, password)
+      const res = await api.users.setPassword(user.id, password)
       // Clear the plaintext from component state the moment the server has it — there is no reason
       // for it to sit in the React tree behind the confirmation.
       setPassword('')
-      setDone(true)
+      // Read the handoff state off the RESPONSE rather than assuming it. The server owns whether it
+      // armed the forced change, and telling the admin "they'll be asked to change it" when the
+      // server didn't arm it would be the display-vs-source split the #1539 lesson is about.
+      setDone({ mustChange: res.mustChangePassword })
     } catch (e) {
       // Surface the server's refusal verbatim rather than claiming success (#1191 discipline).
       setError(e instanceof Error ? e.message : 'Failed to set password')
@@ -296,8 +299,9 @@ function SetPasswordModal({ user, onClose }: { user: User; onClose: () => void }
         <>
           <p data-testid="set-password-done" className="text-sm text-brand-text">
             Password set for <span className="font-medium text-brand-ink">{user.username}</span>.
-            Give it to them now — they'll be asked to change it at the next login, and this one
-            stops working then.
+            {done.mustChange
+              ? " Give it to them now — they'll be asked to change it at the next login, and this one stops working then."
+              : ' Give it to them now. It will keep working until they change it themselves.'}
           </p>
           <div className="flex pt-2">
             <button
@@ -325,6 +329,11 @@ function SetPasswordModal({ user, onClose }: { user: User; onClose: () => void }
             <input
               type="password"
               autoFocus
+              // The page is authenticated as the ADMIN, so an unhinted password field invites the
+              // browser to autofill the admin's OWN saved password here (which they could then
+              // hand to the child), and on submit to offer overwriting that saved entry with the
+              // member's. `new-password` tells the manager this is neither.
+              autoComplete="new-password"
               data-testid="set-password-input"
               value={password}
               onChange={e => setPassword(e.target.value)}

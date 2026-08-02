@@ -34,7 +34,7 @@ beforeEach(() => {
   vi.resetAllMocks()
   mocked(api.users.list).mockResolvedValue([adminUser, adultUser, childUser])
   mocked(api.profiles.list).mockResolvedValue(noProfiles)
-  mocked(api.users.setPassword).mockResolvedValue(undefined)
+  mocked(api.users.setPassword).mockResolvedValue({ mustChangePassword: true })
 })
 
 /**
@@ -74,7 +74,26 @@ describe('UsersPage — admin sets a member password (#2576)', () => {
       expect(api.users.setPassword).toHaveBeenCalledWith(12, 'handoff-password-456'),
     )
     // The admin is told the credential is a handoff, not a permanent shared secret.
-    expect(await screen.findByText(/change it .*next .*log/i)).toBeInTheDocument()
+    expect(await screen.findByTestId('set-password-done')).toHaveTextContent(
+      /change it at the next login/i,
+    )
+  })
+
+  it('takes the handoff claim from the SERVER response, not from an assumption', async () => {
+    // The server owns whether it armed the forced change. If it says it did not, promising the
+    // admin "they'll be asked to change it" would be a display-vs-enforcement split (#1539).
+    const user = userEvent.setup()
+    mocked(api.users.setPassword).mockResolvedValue({ mustChangePassword: false })
+    render(<UsersPage />)
+    await screen.findByText('alice')
+
+    await user.click(screen.getByTestId('set-password-12'))
+    await user.type(await screen.findByTestId('set-password-input'), 'handoff-password-456')
+    await user.click(screen.getByTestId('set-password-submit'))
+
+    const done = await screen.findByTestId('set-password-done')
+    expect(done).not.toHaveTextContent(/change it at the next login/i)
+    expect(done).toHaveTextContent(/until they change it themselves/i)
   })
 
   it('refuses to submit a password below the server minimum without calling the API', async () => {
