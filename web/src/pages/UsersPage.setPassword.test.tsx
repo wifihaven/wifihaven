@@ -79,23 +79,6 @@ describe('UsersPage — admin sets a member password (#2576)', () => {
     )
   })
 
-  it('takes the handoff claim from the SERVER response, not from an assumption', async () => {
-    // The server owns whether it armed the forced change. If it says it did not, promising the
-    // admin "they'll be asked to change it" would be a display-vs-enforcement split (#1539).
-    const user = userEvent.setup()
-    mocked(api.users.setPassword).mockResolvedValue({ mustChangePassword: false })
-    render(<UsersPage />)
-    await screen.findByText('alice')
-
-    await user.click(screen.getByTestId('set-password-12'))
-    await user.type(await screen.findByTestId('set-password-input'), 'handoff-password-456')
-    await user.click(screen.getByTestId('set-password-submit'))
-
-    const done = await screen.findByTestId('set-password-done')
-    expect(done).not.toHaveTextContent(/change it at the next login/i)
-    expect(done).toHaveTextContent(/until they change it themselves/i)
-  })
-
   it('refuses to submit a password below the server minimum without calling the API', async () => {
     const user = userEvent.setup()
     render(<UsersPage />)

@@ -1359,9 +1359,9 @@ class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
       .query[UserId]
       .unique
       .transact(xa)
-  // #2576: one primary-key point update, so a rotation can never be half-applied. Same plan as the
-  // single-column updates below — an index scan on `users_pkey`, three columns written instead of
-  // one.
+  // #2576: one primary-key point update, so a rotation can never be half-applied. Same access
+  // pattern as the single-column updates below — keyed on `id`, three columns written instead of
+  // one. No new predicate, so no new index requirement.
   def applyPasswordRotation(id: UserId, hash: String, mustChange: Boolean) =
     sql"""UPDATE users
           SET password_hash=$hash, must_change_password=$mustChange,

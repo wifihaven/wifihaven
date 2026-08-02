@@ -308,48 +308,52 @@ object AuthRoutes {
       Method.POST / "api" / "users" / long("id") / "password" ->
         handler { (id: Long, req: Request) =>
           val uid                                                           = UserId(id)
-          val O                                                             =
+          val Outcome                                                       =
             AppMetrics.AdminPasswordSetOutcome
           // Every terminal outcome is metered at the site that produces it rather than inferred
           // from the mapped HTTP status downstream: four distinct refusals all answer 400, and
-          // collapsing them would hide which one an operator is actually seeing. Exactly one sample
-          // per request — every exit below meters, including the gate refusals.
+          // collapsing them would hide which one an operator is actually seeing. One sample per
+          // TYPED exit — every failure channel below meters, including the gate refusals. A defect
+          // (an unexpected throw) is not a typed failure and escapes as an unmetered 500.
           def refuse(outcome: String, err: ApiError): IO[ApiError, Nothing] =
             AppMetrics.adminPasswordSet(outcome) *> ZIO.fail(err)
 
           val handle: ZIO[Any, ApiError, Response] = for {
             claims <- requireAdmin(req, auth).tapError {
-              case _: ApiError.Forbidden    => AppMetrics.adminPasswordSet(O.Forbidden)
-              case _: ApiError.Unauthorized => AppMetrics.adminPasswordSet(O.Unauthenticated)
-              // The remaining case requireAuth can produce here is the #586
-              // `password_change_required` 403, which is an `ApiError.Wrapped` (a pre-formed
-              // Response) rather than a `Forbidden` — so it needs its own arm or it exits silently.
-              // Reachable: an admin who is themselves mid-forced-change tries to help a locked-out
-              // child. It is a real refusal, and precisely the kind the panel exists to surface.
-              case _                        =>
-                AppMetrics.adminPasswordSet(O.PasswordChangeRequired)
+              case _: ApiError.Forbidden    => AppMetrics.adminPasswordSet(Outcome.Forbidden)
+              case _: ApiError.Unauthorized => AppMetrics.adminPasswordSet(Outcome.Unauthenticated)
+              // The #586 `password_change_required` 403 is an `ApiError.Wrapped` (a pre-formed
+              // Response), not a `Forbidden`, so without its own arm it exits silently. Reachable:
+              // an admin who is themselves mid-forced-change tries to help a locked-out child — a
+              // real refusal, and precisely the kind the panel exists to surface. Matched on the
+              // TYPE rather than caught by elimination: `requireAdmin` can only fail these three
+              // ways today, but a fourth added later would otherwise be silently relabelled
+              // `password_change_required` in the panel an operator reads during an incident.
+              case _: ApiError.Wrapped      =>
+                AppMetrics.adminPasswordSet(Outcome.PasswordChangeRequired)
+              case _                        => AppMetrics.adminPasswordSet(Outcome.Error)
             }
             target <- ownUser(userRepo, uid, claims.hh).tapError {
-              case _: ApiError.NotFound => AppMetrics.adminPasswordSet(O.NotFound)
-              case _                    => AppMetrics.adminPasswordSet(O.Error)
+              case _: ApiError.NotFound => AppMetrics.adminPasswordSet(Outcome.NotFound)
+              case _                    => AppMetrics.adminPasswordSet(Outcome.Error)
             }
             _      <- refuse(
-              O.InvalidTarget,
+              Outcome.InvalidTarget,
               ApiError.BadRequest(
                 "cannot set an admin's password; the account owner changes their own",
               ),
             ).when(target.role == UserRole.Admin)
             body   <- req.body.asString
               .orElseFail(ApiError.BadRequest(""))
-              .tapError(_ => AppMetrics.adminPasswordSet(O.BadRequest))
+              .tapError(_ => AppMetrics.adminPasswordSet(Outcome.BadRequest))
             spr    <- ZIO
               .fromEither(body.fromJson[SetUserPasswordRequest])
               .mapError(ApiError.DecodeFailure(_))
-              .tapError(_ => AppMetrics.adminPasswordSet(O.BadRequest))
+              .tapError(_ => AppMetrics.adminPasswordSet(Outcome.BadRequest))
             // #2084: the same minimum every other password path enforces — an admin-chosen handoff
             // credential is still a real credential until the target replaces it.
             _      <- refuse(
-              O.WeakPassword,
+              Outcome.WeakPassword,
               ApiError.BadRequest(
                 s"password must be at least ${AuthService.MinPasswordLength} characters",
               ),
@@ -360,10 +364,10 @@ object AuthRoutes {
             _      <- auth
               .setPasswordAsHandoff(uid, spr.newPassword)
               .mapError(ApiError.Db(_))
-              .tapError(_ => AppMetrics.adminPasswordSet(O.Error))
+              .tapError(_ => AppMetrics.adminPasswordSet(Outcome.Error))
             // The audit record the target deserves: their credential was changed by someone else.
             // Actor, target and role only — the plaintext is never logged, here or anywhere.
-            _      <- AppMetrics.adminPasswordSet(O.Ok) *>
+            _      <- AppMetrics.adminPasswordSet(Outcome.Ok) *>
               LogContext.annotate(LogContext.User, claims.sub) {
                 ZIO.logInfo(
                   s"admin password set: actor=${claims.sub} target=${target.username} " +
