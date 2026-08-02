@@ -150,7 +150,9 @@ object AmbientLearnJob {
     // configured time. It would then be ambient-gated — i.e. its spans stop counting as screen time
     // — earlier than configured, silently under-counting. A global day sequence advances exactly
     // once per calendar day no matter how many households exist, which is the semantics
-    // `ambientMinIsolatedDays` was calibrated against and what shipped before #2553.
+    // `ambientMinIsolatedDays` was calibrated against. (Pre-#2553 the single bucket was household
+    // #1's LOCAL yesterday, not UTC — same once-per-calendar-day property, different offset. The
+    // cutover can therefore shift the bucket by at most a day once.)
     //
     // Each household still learns over ITS OWN local `yesterday`'s presence with ITS OWN knobs
     // ([[learnHousehold]]) — that is the #2553 fix. Only the bucket the results land in is shared.

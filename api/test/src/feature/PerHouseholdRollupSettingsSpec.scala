@@ -369,6 +369,22 @@ object PerHouseholdRollupSettingsSpec
           yB,
           Instant.parse("2026-01-04T05:00:00Z"),
         )
+        // A host BOTH households learn, on their own different local days — the only shape that
+        // exposes whether the per-household counts were merged before the single upsert.
+        _        <- seedBucket(
+          a.router,
+          macA,
+          "amb-shared.example.com",
+          yA,
+          Instant.parse("2026-01-06T08:00:00Z"),
+        )
+        _        <- seedBucket(
+          b.router,
+          macB,
+          "amb-shared.example.com",
+          yB,
+          Instant.parse("2026-01-04T08:00:00Z"),
+        )
         _        <- learnTick(Now)
         // `listWindow` over a generous window so the read itself never hides a write.
         settings <- hsr.getForHousehold(a.hh)
@@ -387,9 +403,29 @@ object PerHouseholdRollupSettingsSpec
         window.forall(_.lastIsolatedDay == globalDay),
         globalDay != yA,
         globalDay != yB,
-        // Both households' counts survive in that one bucket: `upsertDay` REPLACES per (host, day),
-        // so a tick that called it once per household would silently discard all but the last.
-        window.count(r => r.host.startsWith("amb-")) == 4,
+        window.count(r => r.host.startsWith("amb-")) == 5,
+        // Both households' counts survive in that one bucket. This needs a SHARED host to be a real
+        // pin: `upsertDay` conflicts on (host, day) PER HOST, so with disjoint hosts a tick that
+        // called it once per household would still leave every row present. Only a host BOTH
+        // households learned exposes the replace — dropping `mergeCounts` leaves it at 1.
+        window.exists(r => r.host == "amb-shared.example.com" && r.isolatedSpanCount == 2),
+      )
+    },
+    // ── The global bucket is a real date, not just whatever the code computes ────
+    test("globalLearnDay is the UTC day before now, independent of any household") {
+      // Both ambient pins above compare against `globalLearnDay(Now)` — i.e. they call the function
+      // under test to build their own expectation, so a change to it (an off-by-N, or keying on a
+      // zone) would move expectation and actual together and stay green. Pin the value itself.
+      assertTrue(
+        AmbientLearnJob.globalLearnDay(Now) == LocalDate.of(2026, 1, 5),
+        // …and that it is nobody's local yesterday here: A's is Jan 6, B's is Jan 4.
+        AmbientLearnJob.globalLearnDay(Now) != DateA.minusDays(1),
+        AmbientLearnJob.globalLearnDay(Now) != DateB.minusDays(1),
+        // 23:30 UTC and 00:30 UTC straddle the boundary in the UTC zone, not a household's.
+        AmbientLearnJob.globalLearnDay(Instant.parse("2026-01-06T23:30:00Z")) ==
+          LocalDate.of(2026, 1, 5),
+        AmbientLearnJob.globalLearnDay(Instant.parse("2026-01-07T00:30:00Z")) ==
+          LocalDate.of(2026, 1, 6),
       )
     },
     // ── The prune boundary must respect the LONGEST window, not the writer's own ──

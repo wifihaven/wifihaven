@@ -420,7 +420,7 @@ object MetricGuard {
     "wifihaven_rollup_rows_upserted"    -> Set("rollup_job"),
     // #2553 — per-household skips inside the all-tenant rollup batches. `rollup_job` is the same
     // hand-named set as above (time_used_daily | ambient_hosts); `reason` is a fixed 2-value enum
-    // (settings_missing | error — HouseholdTickIsolation.Reason*). Bounded by the code, NOT by
+    // (settings_read | error — HouseholdTickIsolation.Reason*). Bounded by the code, NOT by
     // household growth — the household id is deliberately NOT a label (it would grow with tenants,
     // §4 cardinality firewall); the ERROR log carries it for attribution.
     "wifihaven_rollup_household_skipped_total"      -> Set("rollup_job", "reason"),
@@ -1482,10 +1482,10 @@ object AppMetrics {
    * #2553 — one household's slice of an all-tenant rollup tick was skipped
    * ([[wifihaven.api.usage.HouseholdTickIsolation]]). Any non-zero rate means a tenant has stopped
    * being rolled up while the tick itself keeps reporting `ok`, so this is the ONLY signal that
-   * separates "the batch ran" from "the batch covered everyone". `reason` distinguishes an
-   * unprovisioned settings row (`settings_missing` — a #2386-class provisioning bug) from any other
-   * per-household failure (`error`). The household id is in the accompanying ERROR log, never a
-   * label (§4 cardinality firewall).
+   * separates "the batch ran" from "the batch covered everyone". `reason` distinguishes an failed
+   * settings read (`settings_read` — usually an unprovisioned row, a #2386-class provisioning bug)
+   * from any other per-household failure (`error`). The household id is in the accompanying ERROR
+   * log, never a label (§4 cardinality firewall).
    */
   def recordRollupHouseholdSkipped(job: String, reason: String): UIO[Unit] =
     MetricGuard.counter(
