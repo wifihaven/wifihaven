@@ -822,6 +822,19 @@ export interface SetUserProfilesRequest {
   profileIds: number[]
 }
 
+// #2576: admin-initiated password set for a household member. Mirrors
+// `SetUserPasswordRequest` / `SetUserPasswordResponse` in shared/src/Models.scala.
+export interface SetUserPasswordRequest {
+  newPassword: string
+}
+
+// Always true: the password the admin just chose is a HANDOFF — the server re-arms
+// `must_change_password`, so the member is forced to replace it at next login and the admin's
+// choice never becomes a lasting shared secret. The plaintext is never echoed back.
+export interface SetUserPasswordResponse {
+  mustChangePassword: boolean
+}
+
 // ── Request types ──────────────────────────────────────────────────────────
 
 export interface ScheduleRequest {

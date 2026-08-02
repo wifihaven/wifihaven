@@ -469,6 +469,13 @@ object MetricGuard {
     // both bounded, never a per-email / per-household value. Without this entry the firewall would
     // reject the name as unknown_name and the series would never emit (the #808 lesson).
     "wifihaven_beta_pipeline_total"                 -> Set("stage", "outcome"),
+    // #2576 — admin-initiated password set for a household member. `outcome` is a small fixed enum,
+    // enumerated once as values in AppMetrics.AdminPasswordSetOutcome (not re-listed here — that
+    // duplication is what drifts). Deliberately NO actor / target / household label: this is a
+    // credential-write path, so per-user labels would be both unbounded and a privacy leak into the
+    // metric registry. An operator watches the RATE and the refusal mix; who reset whom lives in the
+    // audit log line, not here.
+    "wifihaven_admin_password_set_total"            -> Set("outcome"),
     // #2135 — Stripe billing. `wifihaven_billing_webhook_total{outcome}` counts every processed
     // webhook by the bounded outcome enum (active | lapsed | ignored | unmatched |
     // invalid_signature | not_configured — see WebhookOutcome); never a per-customer / per-household
@@ -799,6 +806,58 @@ object AppMetrics {
 
   def recordAuthFailure(reason: String): UIO[Unit] =
     MetricGuard.counter("auth_failures_total", Map("reason" -> reason))
+
+  /**
+   * #2576 — the `outcome` label vocabulary for [[adminPasswordSet]], as VALUES rather than prose.
+   * The route emits only these constants, so the enum is defined once here instead of being
+   * re-listed in the metric's own doc, the `MetricGuard.Allowed` comment and the dashboard
+   * description — three copies of one enum that had already disagreed on arrival (they omitted
+   * `unauthenticated`, which the route emits). One authoritative source, per dimension 9.
+   */
+  object AdminPasswordSetOutcome {
+
+    /** The credential was written and the forced-change flag armed. */
+    val Ok = "ok"
+
+    /**
+     * An adult or child called it. NOT noise: this is the #2522 account-vs-editing boundary being
+     * exercised, and a sustained rate means a confused SPA or someone probing.
+     */
+    val Forbidden = "forbidden"
+
+    /** No bearer token, or an expired / revoked / malformed one. */
+    val Unauthenticated = "unauthenticated"
+
+    /** The CALLER is themselves under `must_change_password`, so `requireAuth` refused them. */
+    val PasswordChangeRequired = "password_change_required"
+
+    /**
+     * The target id is nonexistent OR belongs to another household. Deliberately ONE outcome, for
+     * the same reason both answer the same 404: splitting them would rebuild inside the metric the
+     * enumeration oracle the shared response closes.
+     */
+    val NotFound = "not_found"
+
+    /** The target is an admin — out of scope per #2512. */
+    val InvalidTarget = "invalid_target"
+
+    /** Below the #2084 minimum; refused before any write. */
+    val WeakPassword = "weak_password"
+
+    /** Unreadable or undecodable body; refused before any write. */
+    val BadRequest = "bad_request"
+
+    /** The lookup or the write itself failed (DB). */
+    val Error = "error"
+  }
+
+  /**
+   * #2576 — one sample per attempt at `POST /api/users/{id}/password` (the admin's in-band password
+   * handoff to a locked-out adult or child). `outcome` is [[AdminPasswordSetOutcome]]; there is
+   * deliberately no actor / target / household label on a credential path.
+   */
+  def adminPasswordSet(outcome: String): UIO[Unit] =
+    MetricGuard.counter("wifihaven_admin_password_set_total", Map("outcome" -> outcome))
 
   // #1069 — a named-schedule create / update / delete landed. `op` is a fixed enum.
   def scheduleMutation(op: String): UIO[Unit] =

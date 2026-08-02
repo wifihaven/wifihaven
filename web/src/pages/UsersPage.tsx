@@ -6,6 +6,10 @@ import { useEscapeClose } from '@/hooks/useEscapeClose'
 import { useDebouncedSave, mergeSaveStatus } from '@/hooks/useDebouncedSave'
 import { EmptyState } from '@/components/EmptyState'
 import { SaveStatusBadge } from '@/components/SaveStatusBadge'
+// The server is the source of truth for the password policy (#2084's
+// AuthService.MinPasswordLength); this mirror only spares the admin a round-trip, and a drift just
+// means the server refuses first. Shared with the other password surfaces rather than re-typed.
+import { MIN_PASSWORD_LENGTH } from '@/pages/WelcomePage'
 
 // Set-equality for the profileIds replace-set — order from toggling is
 // irrelevant, so the autosave hook should treat [1,2] and [2,1] as equal.
@@ -39,6 +43,9 @@ export function UsersPage() {
   const [editingId, setEditingId] = useState<number | null>(null)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // #2576: which member the admin is setting a password for. A separate piece of state from
+  // `editingId` because it is a modal with an explicit submit, not part of the autosaved row editor.
+  const [pwTarget, setPwTarget] = useState<User | null>(null)
 
   const profileNameById = useMemo(() => {
     const m = new Map<number, string>()
@@ -159,6 +166,17 @@ export function UsersPage() {
                       aria-expanded={editingId === u.id}
                       className="text-xs text-brand-text hover:text-brand-ink bg-brand-alt px-3 py-1.5 rounded-lg transition-colors"
                     >{editingId === u.id ? 'Done' : 'Edit'}</button>
+                    {/* #2576: the in-band recovery path for a member who is locked out and has no
+                        email to receive a reset link. Not offered for the admin — post-#2512 the
+                        household's one admin is the viewer themself, and they rotate their own
+                        password on /account (or via the #2308 emailed reset). */}
+                    {u.role !== 'admin' && (
+                      <button
+                        data-testid={`set-password-${u.id}`}
+                        onClick={() => setPwTarget(u)}
+                        className="text-xs text-brand-text hover:text-brand-ink bg-brand-alt px-3 py-1.5 rounded-lg transition-colors"
+                      >Set password</button>
+                    )}
                     <button
                       onClick={() => del(u)}
                       className="text-xs text-red-700 hover:text-red-700 bg-red-500/10 px-3 py-1.5 rounded-lg transition-colors"
@@ -225,7 +243,122 @@ export function UsersPage() {
         </Modal>
       )}
 
+      {pwTarget && (
+        <SetPasswordModal user={pwTarget} onClose={() => setPwTarget(null)} />
+      )}
+
     </div>
+  )
+}
+
+/**
+ * #2576 — the admin hands a locked-out member a new password.
+ *
+ * Explicitly NOT autosaved, unlike every other field on this page. Autosave is the house default
+ * for policy edits because they are cheap and reversible; a credential write is neither. Debounced,
+ * it would fire a real password change on every typing pause, each one revoking the member's
+ * sessions (#2080) and leaving whatever half-typed prefix was in the box as their password.
+ *
+ * The success copy is the honest description of what happened: the password the admin just chose is
+ * a handoff, not a shared secret — the server re-armed `must_change_password`, so the member is
+ * bounced to /account at next login and picks their own.
+ */
+function SetPasswordModal({ user, onClose }: { user: User; onClose: () => void }) {
+  const [password, setPassword] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [done, setDone] = useState(false)
+
+  async function submit() {
+    if (password.length < MIN_PASSWORD_LENGTH) {
+      setError(`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`)
+      return
+    }
+    setSaving(true)
+    setError(null)
+    try {
+      await api.users.setPassword(user.id, password)
+      // Clear the plaintext from component state the moment the server has it — there is no reason
+      // for it to sit in the React tree behind the confirmation.
+      setPassword('')
+      // The confirmation states the handoff unconditionally, and that is not an assumption: the
+      // route can only reach a 2xx via `setPasswordAsHandoff`, a distinct named method that cannot
+      // produce anything but `must_change_password = true`. The invariant is type-enforced at that
+      // seam, which is stronger than reading it back — echoing the constant over the wire and
+      // branching on it would look like a derived fact while being the same assumption one hop
+      // further out, and would leave a UI branch the server can never trigger.
+      setDone(true)
+    } catch (e) {
+      // Surface the server's refusal verbatim rather than claiming success (#1191 discipline).
+      setError(e instanceof Error ? e.message : 'Failed to set password')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal title={`Set password for ${user.username}`} onClose={onClose}>
+      {done ? (
+        <>
+          <p data-testid="set-password-done" className="text-sm text-brand-text">
+            Password set for <span className="font-medium text-brand-ink">{user.username}</span>.
+            Give it to them now — they'll be asked to change it at the next login, and this one
+            stops working then.
+          </p>
+          <div className="flex pt-2">
+            <button
+              onClick={onClose}
+              className="flex-1 py-3 rounded-xl bg-brand-accent text-white font-semibold"
+            >Done</button>
+          </div>
+        </>
+      ) : (
+        <>
+          {error && (
+            <div
+              data-testid="set-password-error"
+              className="bg-red-500/10 border border-red-500/30 text-red-700 text-sm rounded-xl px-4 py-2"
+            >
+              {error}
+            </div>
+          )}
+          <p className="text-sm text-brand-text-muted">
+            For a member who is locked out and has no email address to receive a reset link. They
+            will have to choose their own password the next time they sign in.
+          </p>
+          <div>
+            <label className="block text-xs font-semibold text-brand-text-muted uppercase tracking-wider mb-2">New password</label>
+            <input
+              type="password"
+              autoFocus
+              // The page is authenticated as the ADMIN, so an unhinted password field invites the
+              // browser to autofill the admin's OWN saved password here (which they could then
+              // hand to the child), and on submit to offer overwriting that saved entry with the
+              // member's. `new-password` tells the manager this is neither.
+              autoComplete="new-password"
+              data-testid="set-password-input"
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+              className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-3 text-brand-ink focus:outline-none focus:border-brand-accent"
+            />
+            <p className="text-xs text-brand-text-muted mt-2">
+              At least {MIN_PASSWORD_LENGTH} characters.
+            </p>
+          </div>
+          <div className="flex gap-3 pt-2">
+            <button onClick={onClose} disabled={saving}
+              className="flex-1 py-3 rounded-xl bg-brand-alt text-brand-text font-medium disabled:opacity-50">
+              Cancel
+            </button>
+            <button onClick={submit} disabled={saving}
+              data-testid="set-password-submit"
+              className="flex-1 py-3 rounded-xl bg-brand-accent text-white font-semibold disabled:opacity-50">
+              {saving ? 'Setting…' : 'Set password'}
+            </button>
+          </div>
+        </>
+      )}
+    </Modal>
   )
 }
 
