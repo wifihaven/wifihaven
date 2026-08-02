@@ -49,9 +49,11 @@ import scala.jdk.CollectionConverters.*
  * RIGHT id, but it covers 100% of routes in every route file with zero per-route wiring, and it
  * cannot rot the way a hand-maintained behavioural suite does. The behavioural half already exists
  * and stays where it is — [[MultiTenantIsolationSpec]] pins the real cross-household HTTP responses
- * for the representative surfaces. `test 4` here asserts the scan is non-vacuous (it really does
- * see the checkers on the 28 routes that have them), so a regex that silently stopped matching
- * fails loudly instead of turning the whole guard into a no-op.
+ * for the representative surfaces. Tests 2, 4 and 6 jointly keep it from going VACUOUSLY green —
+ * the characteristic failure of a static guard, where the scan stops matching, reports zero
+ * offenders, and that reads as "all clear". Test 4 pins that the scan still sees the checkers it
+ * should AND that no `Checkers` string has gone stale; test 2 checks every declaration rather than
+ * the deduped head; test 6 requires every exemption to state a real reason.
  */
 object MultiTenantRouteCensusSpec extends ZIOSpecDefault {
 
@@ -124,6 +126,13 @@ object MultiTenantRouteCensusSpec extends ZIOSpecDefault {
    *
    * `claims.hh` alone is NOT here, on purpose — see the class doc.
    */
+  /**
+   * Floor for an exemption's `reason` (test 6). Arbitrary by construction — it is a lint threshold
+   * on prose, not a derived bound: long enough that "" / "n/a" / "shared" cannot pass, short enough
+   * never to argue with a genuine one-clause reason.
+   */
+  private val MinReasonChars = 10
+
   private val Checkers: Set[String] = Set(
     "requireProfileInHousehold",
     "requireProfileAccess",
@@ -580,7 +589,7 @@ object MultiTenantRouteCensusSpec extends ZIOSpecDefault {
       // something — a reviewer can then judge it in the diff.
       val blank = Census.toList
         .flatMap { case (k, t) => reasonOf(t).map(k -> _) }
-        .filter { case (_, r) => r.trim.length < 10 }
+        .filter { case (_, r) => r.trim.length < MinReasonChars }
         .map(_._1)
         .sorted
       assert(blank)(
