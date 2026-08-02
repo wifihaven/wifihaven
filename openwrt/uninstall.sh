@@ -28,6 +28,16 @@ set -eu
 err()  { printf 'error: %s\n' "$*" >&2; exit 1; }
 info() { printf '==> %s\n' "$*"; }
 
+# Package-owned path we must never delete ourselves (#2554) — we only scrub the
+# secret out of it and let apk del / opkg remove take the file.
+WIFIHAVEN_CONFIG=/etc/config/wifihaven
+# Runtime state the agent writes (NOT package-owned) plus install.sh's
+# displaced-config backup — see prune_runtime_artifacts below. The backup path
+# is pinned equal to install.sh's by
+# openwrt/test/install_reinstall_cycle_spec.sh.
+WIFIHAVEN_RUNTIME_DIR=/etc/wifihaven
+WIFIHAVEN_CONFIG_BACKUP=/tmp/wifihaven-config.bak-2554
+
 usage() {
   sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
 }
@@ -91,7 +101,8 @@ This will:
   - stop and disable the wifihaven service
   - remove the wifihaven package via $PKG_MGR
   - delete the uhttpd block-page listener on 127.0.0.1:8081 and [::1]:8081
-  - wipe /etc/config/wifihaven (router_token will be lost)
+  - clear the wifihaven UCI config (router_token will be lost); the
+    package manager owns /etc/config/wifihaven and removes the file itself
 EOF
   if [ "$PURGE" -eq 1 ]; then
     cat >"$TTY" <<EOF
@@ -171,37 +182,200 @@ if [ -n "${uhttpd_section:-}" ]; then
   note "removed uhttpd listener on 127.0.0.1:8081 + [::1]:8081 (#411)"
 fi
 
-# 3a. #303: revert the route_localnet sysctl. The package removal takes the
-# /etc/sysctl.d/99-wifihaven.conf file, but the running kernel still has the
-# value set until reboot — reset it explicitly so we don't leave LAN clients
-# able to route to 127.0.0.0/8 after uninstall.
-if [ -f /etc/sysctl.d/99-wifihaven.conf ] || [ "$(sysctl -n net.ipv4.conf.br-lan.route_localnet 2>/dev/null)" = "1" ]; then
-  rm -f /etc/sysctl.d/99-wifihaven.conf
+# 3a. #303: revert the route_localnet sysctl. The package removal (step 2) owns
+# /etc/sysctl.d/99-wifihaven.conf and takes the FILE; all we do here is reset
+# the value in the RUNNING kernel, which package removal cannot touch — without
+# this, LAN clients stay able to route to 127.0.0.0/8 until the next reboot.
+#
+# #2554: we used to `rm -f` that file ourselves. It is package-OWNED (`apk info
+# -L wifihaven` lists it), so deleting it out from under apk desynchronises
+# apk's file database and the file does NOT come back on the next install — not
+# even as a .apk-new. The loss is invisible at runtime because
+# setup-uhttpd-block-page.sh sets route_localnet live, so it only bites after a
+# reboot, as "the block page is broken" days later. Never remove it here; let
+# apk del / opkg remove own it.
+if [ "$(sysctl -n net.ipv4.conf.br-lan.route_localnet 2>/dev/null)" = "1" ]; then
   sysctl -w net.ipv4.conf.br-lan.route_localnet=0 >/dev/null 2>&1 || true
   note "reset net.ipv4.conf.br-lan.route_localnet=0"
 fi
 
-# 4. Wipe wifihaven UCI. apk/opkg removal should have taken /etc/config/wifihaven
-# (the package owns it), but be defensive: scrub UCI state and the file if it
-# survived.
-if uci -q show wifihaven >/dev/null 2>&1; then
-  info "Wiping wifihaven UCI config..."
-  # `uci -q delete wifihaven` clears the in-memory tree; commit to disk.
-  while uci -q delete wifihaven >/dev/null 2>&1; do :; done
-  uci commit wifihaven 2>/dev/null || true
-  note "cleared wifihaven UCI state"
-fi
-if [ -e /etc/config/wifihaven ]; then
-  rm -f /etc/config/wifihaven
-  note "removed /etc/config/wifihaven"
-fi
+# 4. Scrub wifihaven UCI state. apk/opkg removal should have taken
+# /etc/config/wifihaven (the package owns it), but a locally-modified conffile
+# can survive removal — and that file holds the router bearer token. Clearing
+# the UCI tree and committing rewrites the file empty, so the secret is gone.
+#
+# #2554: do NOT `rm` the file afterwards. It is package-OWNED, and deleting it
+# behind apk's back desynchronises apk's file database: the next install writes
+# the shipped config to /etc/config/wifihaven.apk-new instead of
+# /etc/config/wifihaven, so every subsequent `uci` call against it fails with a
+# bare "uci: Entry not found". Removal of the file is apk del / opkg remove's
+# job, not ours.
+#
+# `uci delete wifihaven` (a PACKAGE-only pointer) is not a complete uci lookup
+# and does not delete anything, so the scrub enumerates the sections and deletes
+# each one. If anything still leaves a live router_token behind, truncate the
+# file in place as a fail-safe: truncation removes the secret while KEEPING the
+# path, so the package database stays in sync (unlike the `rm` this replaces).
+#
+# The verify+truncate step is deliberately NOT gated on `uci show` succeeding:
+# uci also fails on a malformed / hand-edited config, and that is exactly a
+# state where the token is still sitting in the file. The file-level check is
+# what actually guarantees the wipe; the uci scrub is best-effort on top.
+# Two distinct failure records, because they need two distinct messages:
+#   TOKEN_SURVIVORS — paths that still hold a router_token. A credential is
+#                     still on the box; the operator must be told WHICH file.
+#   FAILED_PATHS    — anything we could not remove. Non-secret, but the summary
+#                     must not claim we removed it.
+TOKEN_SURVIVORS=""
+FAILED_PATHS=""
 
-# Cached policy snapshot (#309). Lives outside the package's tracked files
-# (the agent writes it at runtime), so the package manager won't remove it.
-if [ -d /etc/wifihaven ]; then
-  rm -rf /etc/wifihaven
-  note "removed /etc/wifihaven (cached policy snapshot)"
-fi
+# The ONLY writer of either list, so `TOKEN_SURVIVORS` is a subset of
+# `FAILED_PATHS` structurally rather than by convention at each call site — the
+# terminal error relies on that (it prints the full list, then the
+# credential-bearing subset, and must never print a heading over nothing).
+#
+#   record_failure PATH [token]
+#
+# Pass `token` when the caller already KNOWS the path holds a live router_token
+# (the scrub has just re-checked the live uci tree); otherwise the file is
+# inspected — never assume a leftover is a credential, and never assume it isn't.
+record_failure() {
+  # Fail closed on an unrecognised flag: silently falling through to the file
+  # check would under-report a token that only exists in the uncommitted uci
+  # tree — the very case the flag exists for.
+  case "${2:-}" in
+    ""|token) : ;;
+    *) err "record_failure: unknown flag '$2' (expected 'token' or nothing)" ;;
+  esac
+  FAILED_PATHS="$FAILED_PATHS $1"
+  if [ "${2:-}" = token ] || file_has_router_token "$1"; then
+    TOKEN_SURVIVORS="$TOKEN_SURVIVORS $1"
+  fi
+}
+
+# Single source of truth for "does this file hold a live router_token?", used
+# for the config itself AND for install.sh's displaced-config backup — so the
+# uninstaller never asserts a credential is present without having looked.
+file_has_router_token() {
+  [ -f "$1" ] || return 1
+  # Match every spelling uci accepts — bare, single- and double-quoted key, and
+  # any value whose first character is not whitespace or a quote (so `''`, `""`
+  # and a bare `option router_token` correctly read as "no token"). A narrower
+  # pattern would miss the token in a hand-edited config and report a wipe that
+  # did not happen.
+  grep -Eq "^[[:space:]]*option[[:space:]]+['\"]?router_token['\"]?[[:space:]]+['\"]?[^[:space:]'\"]" \
+    "$1" 2>/dev/null
+}
+
+config_has_router_token() {
+  # The live UCI tree can hold the token even when the on-disk text does not
+  # (uncommitted state), so check both for the config we own.
+  [ -n "$(uci -q get wifihaven.@wifihaven[0].router_token 2>/dev/null || true)" ] && return 0
+  file_has_router_token "$WIFIHAVEN_CONFIG"
+}
+
+scrub_wifihaven_config() {
+  # -s, not -f: an already-empty file is nothing to do, and claiming otherwise
+  # would break the "nothing to do — router is already clean" path below.
+  [ -s "$WIFIHAVEN_CONFIG" ] || return 1
+
+  # `uci show <package>` exits 0 for a config file that exists but holds no
+  # sections — which is exactly what a SUCCESSFUL scrub leaves behind, since
+  # #2554 requires keeping the (package-owned) file. So the presence of state is
+  # "show printed at least one line", never "show exited 0".
+  _had_state=0
+  if uci show wifihaven 2>/dev/null | grep -q .; then
+    _had_state=1
+    info "Wiping wifihaven UCI config..."
+    # Unquoted expansion is intentional (one section name per word); `set -f`
+    # stops a name like `@wifihaven[0]` being treated as a glob.
+    set -f
+    for _sec in $(uci show wifihaven 2>/dev/null \
+                    | sed -n 's/^wifihaven\.\([^.=]*\)[.=].*/\1/p' | sort -u); do
+      uci -q delete "wifihaven.$_sec" >/dev/null 2>&1 || true
+    done
+    set +f
+    uci commit wifihaven 2>/dev/null || true
+  fi
+
+  # Verify the secret is actually gone — never report a wipe we didn't do.
+  if config_has_router_token; then
+    # `cp /dev/null`, not `: >file`: `:` is a POSIX SPECIAL built-in, so a
+    # redirection error on it terminates a non-interactive ash/dash outright —
+    # neither `2>/dev/null` nor `|| true` catches it. That would kill the
+    # uninstaller on exactly the case this branch exists for (a read-only /etc
+    # overlay), before it could report the failure.
+    cp /dev/null "$WIFIHAVEN_CONFIG" 2>/dev/null || true
+    if config_has_router_token; then
+      # `token`: config_has_router_token just confirmed it, including the live
+      # uci tree, which a file-only check would miss.
+      record_failure "$WIFIHAVEN_CONFIG" token
+      note "FAILED to wipe router_token from $WIFIHAVEN_CONFIG"
+    else
+      note "truncated $WIFIHAVEN_CONFIG (router_token survived the UCI scrub)"
+    fi
+  elif [ "$_had_state" -eq 1 ]; then
+    # There was no token, but say what actually happened: if sections survived
+    # the deletes (a broken uci), the file is unchanged and claiming a clear
+    # would be the same lying-summary bug in a lower-stakes spot.
+    if uci show wifihaven 2>/dev/null | grep -q .; then
+      note "wifihaven UCI state could NOT be cleared (no router_token found in it)"
+    else
+      note "cleared wifihaven UCI state (router_token wiped)"
+    fi
+  fi
+}
+
+scrub_wifihaven_config || true
+
+# Runtime artifacts under /etc/wifihaven: the cached policy snapshot (#309),
+# the fetched blocklist cache, and the self-signed block-page cert/key. The
+# agent writes these at runtime, so the package manager won't remove them.
+#
+# #2554: /etc/wifihaven is NOT wholly ours to delete. The release builders
+# (build-ipk.sh:78 / build-apk.sh) stage openwrt/files/ wholesale, so
+# /etc/wifihaven/keys/release.pub — the update-signature verification key
+# (#2078, read by wifihaven-update:44) — is a PACKAGE file. `rm -rf
+# /etc/wifihaven` deleted it behind apk's back, which is the same file-database
+# desync this issue is about, and the symptom is silent: wifihaven-update fails
+# closed on a missing key, so the router just stops auto-updating. Remove only
+# the runtime artifacts, then rmdir the directory if the package manager has
+# already taken everything else out of it.
+#
+# $WIFIHAVEN_CONFIG_BACKUP is install.sh's copy of a displaced config (see its
+# ensure_wifihaven_config) and can carry a router_token. tmpfs clears it at the
+# next reboot, but a router decommissioned or re-homed WITHOUT a reboot would
+# still be carrying the credential, so erase it here.
+prune_runtime_artifacts() {
+  _removed=""
+  for _p in "$WIFIHAVEN_RUNTIME_DIR/policy.json" "$WIFIHAVEN_RUNTIME_DIR/policy.json.tmp" \
+            "$WIFIHAVEN_RUNTIME_DIR/blocklists" \
+            "$WIFIHAVEN_RUNTIME_DIR/block_page.crt" "$WIFIHAVEN_RUNTIME_DIR/block_page.key" \
+            "$WIFIHAVEN_CONFIG_BACKUP"; do
+    [ -e "$_p" ] || continue
+    rm -rf "$_p"
+    # Record the removal only if it actually happened, and report the paths we
+    # really removed rather than a fixed enumeration: `set -e` is suspended
+    # inside this function (it runs `|| true`), and a read-only overlay makes
+    # `rm` fail without stopping us — so a mixed outcome must not be summarised
+    # as a clean sweep.
+    if [ -e "$_p" ]; then
+      # record_failure inspects the path: the install-time backup CAN carry a
+      # router_token, and escalating a token-free leftover to a credential
+      # failure is the same unsourced-claim bug in the other direction.
+      record_failure "$_p"
+      note "FAILED to remove $_p"
+    else
+      _removed="$_removed $_p"
+    fi
+  done
+  [ -n "$_removed" ] || return 1
+  note "removed wifihaven runtime artifacts:$_removed"
+}
+prune_runtime_artifacts || true
+# Only succeeds once the package manager has taken everything else (notably
+# keys/release.pub) out of the directory.
+rmdir "$WIFIHAVEN_RUNTIME_DIR" 2>/dev/null || true
 
 # 5. Purge mode: also kill manual-workaround leftovers from older e2e
 # shakeouts (pre-#202, when modules were dropped under these paths by hand).
@@ -223,3 +397,21 @@ fi
 printf '\nDone. Summary of actions:\n'
 printf '%b' "$SUMMARY"
 printf '\nRe-run install.sh on this router for a fresh enrollment.\n'
+
+# The bearer-token wipe is a security property, not best-effort: if it did not
+# take, say so loudly and exit nonzero rather than letting an operator believe
+# a decommissioned router carries no credential. Name the files that ACTUALLY
+# failed — pointing the operator at the wrong path is worse than saying nothing,
+# because they would empty a clean file and stop looking.
+if [ -n "$TOKEN_SURVIVORS" ]; then
+  # TOKEN_SURVIVORS is a subset of FAILED_PATHS, so print the full list once and
+  # then call out the credential-bearing subset — never a heading with an empty
+  # list under it.
+  err "could not clear:$FAILED_PATHS
+The router bearer token is STILL PRESENT in:$TOKEN_SURVIVORS
+Delete or empty those files by hand before decommissioning or re-homing this router."
+elif [ -n "$FAILED_PATHS" ]; then
+  err "could not clear:$FAILED_PATHS
+These are wifihaven runtime state (not package files) — remove them by hand. No
+router bearer token was left behind."
+fi
