@@ -787,6 +787,71 @@ do
   if f then f:write(block_page_url); f:close() end
 end
 
+-- #2566/#2569/#2322: the second half of the block-page IPC — this router's
+-- household token. The redirect the handler emits carries only ?mac=&host=, so
+-- the unauthenticated /api/blocked and /api/access-requests endpoints have no
+-- household in scope and fall back to household 1: they disclose that
+-- household's profile name and screen-time to any caller, and render the wrong
+-- answer for every other household. This token is what tells them which
+-- household is asking.
+--
+-- Fetched from GET /api/router/block-page-token with the router bearer token,
+-- then written to a tmpfs file the uhttpd handler reads per request. Retried on
+-- the policy tick until it lands, so a router that boots against an API that is
+-- briefly down (or predates the endpoint) self-heals rather than staying stuck
+-- without one. Bounded: one short line, truncate-rewritten — never appended to.
+--
+-- Deliberately a GLOBAL rather than a local: on_tick calls it, and a local
+-- would cost that closure one more upvalue against Lua 5.1's hard 60-upvalue
+-- load limit (#1930) — a limit the dev-host Lua 5.4 does not enforce, so
+-- overrunning it fails only on the router.
+--
+-- The token is re-fetched periodically, NOT latched on first success. Latching
+-- would leave the fleet permanently stamping a dead token after an API
+-- jwt.secret rotation: every mint is an HMAC under that secret, so a rotation
+-- invalidates every token in the field at once, the API would take the
+-- `invalid` branch, and every block page would silently revert to household 1
+-- (i.e. #2569 reinstated) until each router's agent process was individually
+-- restarted. Re-fetching on a slow cadence makes that self-heal within one
+-- interval with no operator action.
+local BLOCK_PAGE_TOKEN_PATH = paths.block_page_token
+-- Refresh cadence, in POLICY TICKS rather than seconds, so it rides the poll
+-- loop the agent already runs and needs no second timer. At the default
+-- policy_int of 60s (etc/config/wifihaven `policy_interval`) 60 ticks is ~1h —
+-- slow enough to be free (one conditional GET per hour per router), fast enough
+-- that a secret rotation is invisible to families within the hour.
+local BLOCK_PAGE_TOKEN_REFRESH_TICKS = 60
+local block_page_token_ticks         = 0
+local block_page_token_ok            = false
+
+function wh_refresh_block_page_token()
+  if block_page_token_ok then
+    -- Already published; count down to the next periodic refresh.
+    block_page_token_ticks = block_page_token_ticks + 1
+    if block_page_token_ticks < BLOCK_PAGE_TOKEN_REFRESH_TICKS then return end
+    block_page_token_ticks = 0
+  end
+  local tok, why = block_page.fetch_token(api_url, router_token, http_get, log)
+  if not tok then
+    -- Keep the existing (possibly still-valid) token on disk rather than
+    -- deleting it: a transient API outage must not strip a working token and
+    -- push the household onto the fallback path.
+    log.debug("block-page token: not available yet (%s)", tostring(why))
+    return
+  end
+  local f = io.open(BLOCK_PAGE_TOKEN_PATH, "w")
+  if not f then
+    log.warn("block-page token: cannot write %s", BLOCK_PAGE_TOKEN_PATH)
+    return
+  end
+  f:write(tok)
+  f:close()
+  if not block_page_token_ok then
+    log.info("block-page token: fetched and published to %s", BLOCK_PAGE_TOKEN_PATH)
+  end
+  block_page_token_ok = true
+end
+
 -- ── Shared apply pipeline (#1945) ─────────────────────────────────────────────
 -- apply_and_publish(snap, reason) → applied:bool
 -- The single "push this snapshot onto the enforcement plane" sequence, factored
@@ -950,6 +1015,12 @@ do
     log.info("startup: no cached policy snapshot on flash (fresh install or first boot)")
   end
 end
+
+-- #2566/#2569/#2322: publish the block-page household token before the first
+-- policy apply, so a client redirected to the block page immediately after boot
+-- already gets a household-scoped answer. Retried on the policy tick if the API
+-- isn't reachable yet.
+wh_refresh_block_page_token()
 
 do
   log.debug("startup: initial policy fetch")
@@ -1209,6 +1280,11 @@ conntrack.watch({
     -- Policy timer
     if (mono - ts.last_policy_run) >= policy_int then
       ts.last_policy_run = mono
+      -- #2566/#2569/#2322: no-op once the block-page household token has landed;
+      -- retries here until it does (API down at boot, or an API that predates the
+      -- endpoint and later gets upgraded). Called through the global so on_tick
+      -- does not gain an upvalue (#1930).
+      wh_refresh_block_page_token()
       if ws_link_healthy() then
         -- #2037: ws is the live policy transport — skip the HTTP poll (dormant).
         -- Advancing ts.last_policy_run above keeps the cadence anchor moving so

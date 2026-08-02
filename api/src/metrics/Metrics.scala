@@ -438,6 +438,13 @@ object MetricGuard {
     // from EmailOutcome.label (sent / failed / skipped_disabled) + Notifier.OutcomeSkipped*
     // (skipped_no_recipient / skipped_no_household); never a per-recipient / per-household label.
     "notify_email_total"                            -> Set("outcome"),
+    // #2566/#2569/#2322 — how the unauthenticated block-page endpoints resolved a household.
+    // `outcome` is a fixed 5-value enum (token / absent / invalid / unknown_router / error —
+    // BlockPageHousehold.resolve); bounded by the code, never a per-household / per-router label.
+    // This is what makes the default-household FALLBACK observable instead of silent: a fleet
+    // stuck on `absent` means agents aren't stamping the token, and `invalid` at any volume is
+    // either a secret rotation or someone probing.
+    "block_page_household_total"                    -> Set("outcome"),
     // #2190 — beta invite-email send funnel. `outcome` is the bounded transport enum from
     // EmailOutcome.label (sent / failed / skipped_disabled); never a per-recipient label.
     "beta_invite_email_total"                       -> Set("outcome"),
@@ -886,6 +893,12 @@ object AppMetrics {
   //   skipped_no_household               — alert's MAC has no device/household to resolve
   def notifyEmail(outcome: String): UIO[Unit] =
     MetricGuard.counter("notify_email_total", Map("outcome" -> outcome))
+
+  // #2566/#2569/#2322 — one sample per unauthenticated block-page request (GET /api/blocked and
+  // POST /api/access-requests), recording HOW the household was resolved. `outcome` ∈
+  // {token, absent, invalid, unknown_router, error} — see BlockPageHousehold.resolve.
+  def blockPageHousehold(outcome: String): UIO[Unit] =
+    MetricGuard.counter("block_page_household_total", Map("outcome" -> outcome))
 
   // ── #2132: beta request → provisioning pipeline outcomes ─────────────────────
   // One counter for every terminal event in the beta pipeline (design §3), so the

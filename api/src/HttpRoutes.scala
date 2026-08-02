@@ -70,7 +70,11 @@ object HttpRoutes {
       timeCache      <- ZIO.service[TimeStatusCache]
       xa             <- ZIO.service[Transactor[Task]]
       promPublisher  <- ZIO.service[PrometheusPublisher]
-      routerAuth = new RouterAuthLive(routerRepo)
+      routerAuth         = new RouterAuthLive(routerRepo)
+      // #2566/#2569/#2322: the block page's household derivation, shared by GET /api/blocked and
+      // POST /api/access-requests (they are two halves of one page and must agree). Signed with the
+      // API's existing JWT secret, domain-separated by BlockPageToken — no new secret to provision.
+      blockPageHousehold = new BlockPageHouseholdLive(cfg.jwt.secret, routerRepo)
       routerMetrics         <- RouterMetricsService.make
       // #2079: per-source-IP rate limit on the unauthenticated login route — 10
       // attempts / 15 min. #2081: per-source-IP rate limit on the unauthenticated
@@ -78,6 +82,10 @@ object HttpRoutes {
       // existing per-(mac,host) debounce (which a varying host bypasses).
       loginRateLimiter      <- RateLimiterLive.make(maxAttempts = 10, windowSeconds = 15 * 60)
       accessReqRateLimiter  <- RateLimiterLive.make(maxAttempts = 20, windowSeconds = 5 * 60)
+      // #2569: the same treatment for GET /api/blocked, which was unauthenticated AND unlimited —
+      // a per-MAC oracle for the resolving household's profile name and screen-time. Looser than
+      // the intake (a kid's page can legitimately re-poll, and a household shares one source IP).
+      blockedRateLimiter    <- RateLimiterLive.make(maxAttempts = 60, windowSeconds = 5 * 60)
       // #2132: per-source-IP rate limit on the unauthenticated beta-intake route — 5 / hour, a
       // slow cadence (a genuine prospect requests once), on top of the idempotent-email dedup.
       betaReqRateLimiter    <- RateLimiterLive.make(maxAttempts = 5, windowSeconds = 60 * 60)
@@ -322,6 +330,8 @@ object HttpRoutes {
           blCache,
           blFetcher2,
           bundledBlocklists,
+          blockPageHousehold,
+          blockedRateLimiter,
         )
 
       val routerAndAdminRoutes: Routes[Any, Response] =
@@ -355,6 +365,7 @@ object HttpRoutes {
           usageRepo,
           trafficRepo,
           timeCache,
+          blockPageHousehold,
         )
 
       val spaRoutes: Routes[Any, Response] =
@@ -565,6 +576,10 @@ object HttpRoutes {
       blCache: BlocklistCache,
       blFetcher2: BlocklistFetcher,
       bundledBlocklists: Map[wifihaven.shared.types.BlocklistId, BundledBlocklist],
+      // #2569: shared block-page household derivation + the new per-source-IP limiter on
+      // GET /api/blocked. Threaded in (not re-resolved) so the limiter state is shared.
+      blockPageHousehold: BlockPageHousehold,
+      blockedRateLimiter: RateLimiter,
   ): Routes[Any, Response] =
     TimeRoutes.routes(
       auth,
@@ -624,6 +639,8 @@ object HttpRoutes {
         timeStatus,
         hsRepo,
         clock,
+        blockPageHousehold,
+        blockedRateLimiter,
       )
 
   private def buildRouterAndAdminRoutes(
@@ -656,8 +673,10 @@ object HttpRoutes {
       usageRepo: TimeUsageRepo,
       trafficRepo: TrafficReportRepo,
       timeCache: TimeStatusCache,
+      // #2566/#2322: shared block-page household derivation for POST /api/access-requests.
+      blockPageHousehold: BlockPageHousehold,
   ): Routes[Any, Response] =
-    RouterRoutes.routes(routerRepo, policy, routerAuth, blockEvRepo) ++
+    RouterRoutes.routes(routerRepo, policy, routerAuth, blockEvRepo, cfg.jwt.secret) ++
       AdminRouterRoutes.routes(auth, routerRepo, userRepo, entitlements) ++
       RollupAdminRoutes.routes(auth, rollupRepo2) ++
       RouterIngestRoutes.routes(routerAuth, routerIngest) ++
@@ -688,6 +707,7 @@ object HttpRoutes {
         notifier,
         clock,
         accessReqRateLimiter,
+        blockPageHousehold,
       ) ++
       AppRoutes.routes(auth, appRepo, profileRepo, upRepo, blRepo, templates) ++
       AdminDebugRoutes.routes(auth, policy) ++

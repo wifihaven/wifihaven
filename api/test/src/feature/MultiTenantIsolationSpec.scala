@@ -227,6 +227,7 @@ object MultiTenantIsolationSpec
       noopNotifier,
       clk,
       RateLimiter.allowAll,
+      BlockPageHousehold.defaultOnly,
     )
 
   private def makePolicyService =
@@ -1044,7 +1045,13 @@ object MultiTenantIsolationSpec
         ber <- ZIO.service[BlockEventRepo]
         rr  <- ZIO.service[RouterRepo]
         ps  <- makePolicyService
-        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
+        routes = RouterRoutes.routes(
+          rr,
+          ps,
+          RouterAuthLive(rr),
+          ber,
+          TestLayers.TestBlockPageSecret,
+        )
         (_, bodyA) <- getJson(routes, "/api/router/policy", two.tokenA)
         snapA <- ZIO.fromEither(bodyA.fromJson[PolicySnapshot]).mapError(new RuntimeException(_))
       } yield assertTrue(snapA.devices.contains(macA), !snapA.devices.contains(macB)) &&
@@ -1177,7 +1184,13 @@ object MultiTenantIsolationSpec
         _   <-
           sql"INSERT INTO devices(mac,name,profile_id,household_id) VALUES ($macM,'sharedB',${two.profileB},${two.hhB})".update.run
             .transact(xa)
-        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
+        routes = RouterRoutes.routes(
+          rr,
+          ps,
+          RouterAuthLive(rr),
+          ber,
+          TestLayers.TestBlockPageSecret,
+        )
         (_, bodyA) <- getJson(routes, "/api/router/policy", two.tokenA)
         (_, bodyB) <- getJson(routes, "/api/router/policy", two.tokenB)
         snapA <- ZIO.fromEither(bodyA.fromJson[PolicySnapshot]).mapError(new RuntimeException(_))
@@ -1384,7 +1397,13 @@ object MultiTenantIsolationSpec
         ber <- ZIO.service[BlockEventRepo]
         rr  <- ZIO.service[RouterRepo]
         ps  <- makePolicyService
-        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
+        routes = RouterRoutes.routes(
+          rr,
+          ps,
+          RouterAuthLive(rr),
+          ber,
+          TestLayers.TestBlockPageSecret,
+        )
         (sA, bodyA) <- getJson(routes, "/api/blocklists/kidsafe", two.tokenA)
         (sB, bodyB) <- getJson(routes, "/api/blocklists/kidsafe", two.tokenB)
       } yield assertTrue(sA == Status.Ok, sB == Status.Ok) &&

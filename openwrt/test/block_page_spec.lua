@@ -104,6 +104,85 @@ describe("block_page.build_dest_url (#679/#1617: no reason= param)", function()
   end)
 end)
 
+-- #2566/#2569/#2322: the block-page token is what tells the unauthenticated
+-- /api/blocked + /api/access-requests endpoints WHICH HOUSEHOLD is asking.
+describe("block_page.build_dest_url bpt (#2566/#2569/#2322)", function()
+  it("appends the block-page token when the agent has one", function()
+    local u = bp.build_dest_url(
+      "https://app.wifihaven.net", "youtube.com", "aa:bb:cc:11:22:33", "tok-123")
+    assert.truthy(u:find("bpt=tok-123", 1, true))
+  end)
+
+  it("url-encodes the token rather than splicing it raw", function()
+    local u = bp.build_dest_url(
+      "https://app.wifihaven.net", "youtube.com", "aa:bb:cc:11:22:33", "a+b/c=d&e")
+    assert.is_nil(u:find("a+b/c=d&e", 1, true))
+    assert.truthy(u:find("bpt=a%2Bb%2Fc%3Dd%26e", 1, true))
+  end)
+
+  -- The API↔agent wire is additive both ways: an agent with no token yet (API
+  -- too old to serve one, or the first fetch hasn't landed) must still emit a
+  -- working redirect, and it must not emit an empty bpt= the API would then
+  -- have to treat as "invalid" rather than "absent".
+  it("omits bpt entirely when the token is nil or empty", function()
+    local none  = bp.build_dest_url("https://app.wifihaven.net", "x.com", "aa:bb:cc:11:22:33")
+    local empty = bp.build_dest_url("https://app.wifihaven.net", "x.com", "aa:bb:cc:11:22:33", "")
+    assert.is_nil(none:find("bpt", 1, true))
+    assert.is_nil(empty:find("bpt", 1, true))
+    assert.truthy(none:find("mac=", 1, true))
+  end)
+
+  it("carries the token through render_html's redirect document", function()
+    local html = bp.render_html(
+      "https://app.wifihaven.net", "youtube.com", "aa:bb:cc:11:22:33", "tok-123")
+    assert.truthy(html:find("bpt=tok-123", 1, true))
+  end)
+end)
+
+describe("block_page.fetch_token (#2566/#2569/#2322)", function()
+  local function get_returning(status, body)
+    local seen = {}
+    return seen, function(url, headers)
+      seen.url, seen.headers = url, headers
+      return status, body, {}
+    end
+  end
+
+  it("returns the token and authenticates as the router", function()
+    local seen, get = get_returning(200, '{"token":"rid.sig"}')
+    local tok, err = bp.fetch_token("http://api.example.com", "rt_secret", get)
+    assert.equals("rid.sig", tok)
+    assert.is_nil(err)
+    assert.equals("http://api.example.com/api/router/block-page-token", seen.url)
+    assert.equals("Bearer rt_secret", seen.headers["Authorization"])
+  end)
+
+  -- An API that predates the endpoint 404s. That is a supported state, not an
+  -- error: the agent keeps running and simply omits bpt from the redirect.
+  it("reports a non-200 as no-token rather than raising", function()
+    local _, get = get_returning(404, "not found")
+    local tok, err = bp.fetch_token("http://api.example.com", "rt_secret", get)
+    assert.is_nil(tok)
+    assert.equals("status_404", err)
+  end)
+
+  it("rejects a 200 whose body has no usable token", function()
+    for _, body in ipairs({ "not json", "{}", '{"token":""}' }) do
+      local _, get = get_returning(200, body)
+      local tok = bp.fetch_token("http://api.example.com", "rt_secret", get)
+      assert.is_nil(tok)
+    end
+  end)
+
+  it("does not call out at all when api_url is unset", function()
+    local called = false
+    local tok, err = bp.fetch_token("", "rt_secret", function() called = true end)
+    assert.is_nil(tok)
+    assert.equals("no_api_url", err)
+    assert.is_false(called)
+  end)
+end)
+
 describe("block_page.render_html (#679/#1617: no reason= param)", function()
   it("emits a redirect document containing the dest URL when api_url is set", function()
     local html = bp.render_html(

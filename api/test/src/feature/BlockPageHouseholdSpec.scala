@@ -42,7 +42,9 @@ object BlockPageHouseholdSpec
 
   private val cleanDb = TestDatabase.cleanAndMigrate
 
-  private val jwtCfg = JwtConfig(secret = "test-secret-at-least-32-chars!!x", expiryHours = 1)
+  // One literal, not two: the JWT secret and the block-page HMAC secret ARE the same value in
+  // production (BlockPageToken domain-separates it), so the spec must not let them drift apart.
+  private val jwtCfg = JwtConfig(secret = TestLayers.TestBlockPageSecret, expiryHours = 1)
 
   private val macA = MacAddress.unsafe("aa:bb:cc:00:00:0a")
   private val macB = MacAddress.unsafe("aa:bb:cc:00:00:0b")
@@ -111,9 +113,9 @@ object BlockPageHouseholdSpec
       rr  <- ZIO.service[RouterRepo]
       ber <- ZIO.service[BlockEventRepo]
       ps  <- makePolicy
-    } yield RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
+    } yield RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber, TestLayers.TestBlockPageSecret)
 
-  private def makeBlockedRoutes =
+  private def makeBlockedRoutes(limiter: RateLimiter = RateLimiter.allowAll) =
     for {
       ps  <- makePolicy
       dr  <- ZIO.service[DeviceRepo]
@@ -121,8 +123,19 @@ object BlockPageHouseholdSpec
       blr <- ZIO.service[BlocklistRepo]
       tss <- makeTimeStatus
       hsr <- ZIO.service[HouseholdSettingsRepo]
+      hhr <- ZIO.service[RouterRepo]
       clk <- ZIO.service[Clock]
-    } yield BlockedRoutes.routes(ps, dr, pr, blr, tss, hsr, clk)
+    } yield BlockedRoutes.routes(
+      ps,
+      dr,
+      pr,
+      blr,
+      tss,
+      hsr,
+      clk,
+      BlockPageHouseholdLive(TestLayers.TestBlockPageSecret, hhr),
+      limiter,
+    )
 
   private def makeAlertRoutes =
     for {
@@ -133,6 +146,7 @@ object BlockPageHouseholdSpec
       appRepo   <- ZIO.service[AppRepo]
       hsRepo    <- ZIO.service[HouseholdSettingsRepo]
       ur        <- ZIO.service[UserRepo]
+      rr        <- ZIO.service[RouterRepo]
       clk       <- ZIO.service[Clock]
     } yield AlertRoutes.routes(
       AuthServiceLive(ur, jwtCfg, clk),
@@ -145,6 +159,7 @@ object BlockPageHouseholdSpec
       noopNotifier,
       clk,
       RateLimiter.allowAll,
+      BlockPageHouseholdLive(TestLayers.TestBlockPageSecret, rr),
     )
 
   // ── helpers ────────────────────────────────────────────────────────────────
@@ -172,10 +187,15 @@ object BlockPageHouseholdSpec
       routes: Routes[Any, Response],
       mac: MacAddress,
       bpt: Option[String],
+      ip: String = "203.0.113.9",
   ): Task[BlockedInfoResponse] = {
     val qs = s"mac=${mac.value}&host=${host.value}" + bpt.fold("")(t => s"&bpt=$t")
     for {
-      resp <- routes.runZIO(Request.get(URL.decode(s"/api/blocked?$qs").toOption.get))
+      resp <- routes.runZIO(
+        Request
+          .get(URL.decode(s"/api/blocked?$qs").toOption.get)
+          .addHeader("X-Forwarded-For", ip),
+      )
       body <- resp.body.asString
       r    <- ZIO.fromEither(body.fromJson[BlockedInfoResponse]).mapError(new RuntimeException(_))
     } yield r
@@ -215,7 +235,7 @@ object BlockPageHouseholdSpec
   /** Seed the two-household fixture and put `macM` in BOTH households. */
   private def seedShared =
     for {
-      two <- TestDatabase.seedTwoHouseholds(macA, macB)
+      two <- TestLayers.seedTwoHouseholds(macA, macB)
       dr  <- ZIO.service[DeviceRepo]
       xa  <- ZIO.service[Transactor[Task]]
       _   <- dr.upsert(macM, "sharedA", Some(two.profileA), "192.168.1.20", two.hhA)
@@ -246,7 +266,7 @@ object BlockPageHouseholdSpec
         _     <- cleanDb
         two   <- seedShared
         rr    <- makeRouterRoutes
-        br    <- makeBlockedRoutes
+        br    <- makeBlockedRoutes()
         bptB  <- mintBpt(rr, two.tokenB)
         bptA  <- mintBpt(rr, two.tokenA)
         // profileB is paused (seedTwoHouseholds); profileA is not. The shared MAC therefore has a
@@ -265,7 +285,7 @@ object BlockPageHouseholdSpec
         // Only household B's profile has a daily cap, so a leaked household-1 read shows no cap.
         _    <- tlr.upsert(two.profileB, 45)
         rr   <- makeRouterRoutes
-        br   <- makeBlockedRoutes
+        br   <- makeBlockedRoutes()
         bptB <- mintBpt(rr, two.tokenB)
         info <- getBlocked(br, macM, Some(bptB))
       } yield assertTrue(info.dailyLimitMinutes.contains(45))
@@ -301,6 +321,49 @@ object BlockPageHouseholdSpec
         assertTrue(rows.map(_._1).toSet == Set(two.hhA, two.hhB)) &&
         // …and hh-B's free text never reached the unauthenticated caller.
         assertTrue(!body.contains("B-secret-note"))
+    },
+    // #2569: an unlimited unauthenticated per-MAC endpoint is a MAC-enumeration oracle. This is the
+    // same per-source-IP limiter POST /api/access-requests has had since #2081.
+    test("GET /api/blocked refuses the N+1th request from one source IP") {
+      for {
+        _       <- cleanDb
+        two     <- seedShared
+        limiter <- RateLimiterLive.make(maxAttempts = 2, windowSeconds = 300)
+        rr      <- makeRouterRoutes
+        br      <- makeBlockedRoutes(limiter)
+        bptB    <- mintBpt(rr, two.tokenB)
+        first   <- getBlocked(br, macM, Some(bptB))
+        second  <- getBlocked(br, macM, Some(bptB))
+        third   <- getBlocked(br, macM, Some(bptB))
+        // A different source IP keeps its own budget, so a limited page doesn't take out the house.
+        other   <- getBlocked(br, macM, Some(bptB), ip = "203.0.113.77")
+      } yield assertTrue(first.blocked) &&
+        assertTrue(second.blocked) &&
+        // Over the limit we answer with the neutral not-blocked body rather than a 429 — the caller
+        // is a kid's browser, and a hard error would just look like the page is broken.
+        assertTrue(!third.blocked) &&
+        assertTrue(third.profileName.isEmpty) &&
+        assertTrue(other.blocked)
+    },
+    // The router↔API wire is additive and the two deploy independently, so an agent that predates
+    // the token must keep working — the endpoint falls back to the default household exactly as it
+    // did before, rather than erroring. Same for a forged token.
+    test("a missing or unverifiable bpt falls back to the default household, never errors") {
+      for {
+        _       <- cleanDb
+        two     <- seedShared
+        br      <- makeBlockedRoutes()
+        // macM exists in household 1 too (profileA, not paused), so the fallback answers about it.
+        none    <- getBlocked(br, macM, None)
+        forged  <- getBlocked(br, macM, Some("00000000-0000-0000-0000-000000000000.bm9wZQ"))
+        garbage <- getBlocked(br, macM, Some("not-a-token"))
+      } yield assertTrue(!none.blocked) &&
+        assertTrue(!forged.blocked) &&
+        assertTrue(!garbage.blocked) &&
+        // …and specifically NOT household B's paused answer, which is what a forged token must not
+        // be able to reach.
+        assertTrue(forged.reasonClass.isEmpty) &&
+        assertTrue(two.hhB != HouseholdId.Default)
     },
     test("the unauthenticated intake response carries no deviceName / profileName / note") {
       for {

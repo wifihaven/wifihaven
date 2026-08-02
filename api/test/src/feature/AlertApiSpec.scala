@@ -99,6 +99,7 @@ object AlertApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         noopNotifier,
         clock,
         RateLimiter.allowAll,
+        BlockPageHousehold.defaultOnly,
       )
     } yield Env(routes, auth, alertRepo, pRepo, extRepo, appRepo, kidsPid)
 

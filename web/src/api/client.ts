@@ -4,7 +4,7 @@ import { ACCOUNT_PATH } from '@/routes'
 import type {
   AcceptInviteRequest, AcceptInviteResponse, ApproveBetaResponse, BetaRequestAck, BetaRequestStatus, BetaRequestSummary, CreateBetaRequest,
   ForgotPasswordAck, ForgotPasswordRequest, ResetPasswordRequest, ResetPasswordResponse,
-  Alert, AppDetail, ApproveAlertRequest, BlockedInfoResponse, BlocklistHosts, BlocklistSummary, CreateRouterRequest, CreateRouterResponse, CreateUserRequest,
+  AccessRequestReceipt, Alert, AppDetail, ApproveAlertRequest, BlockedInfoResponse, BlocklistHosts, BlocklistSummary, CreateRouterRequest, CreateRouterResponse, CreateUserRequest,
   DashboardNow, DashboardStats, Device,
   CreateAccessRequest, DeviceTimeStatus, DeviceTimeStatusWeek, EnforcementStatus, HouseholdSettings, LoginResponse, MeResponse, ProfileAppWeeklyUsage, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek, ProfileUsageByApp,
   ConnectionEventSeriesPage, QueryLogPage,
@@ -419,8 +419,11 @@ export const api = {
     // POST /api/access-requests is the one public, unauthenticated endpoint
     // in this surface — the block page calls it with (mac, host, kind). It
     // creates an access_request-kinded alert server-side.
+    // #2566: the response is an AccessRequestReceipt, not the stored Alert — the full row carries
+    // deviceName / profileName / the child's note, which have no business coming back over an
+    // unauthenticated response. The block page only needs the acknowledgement.
     createAccessRequest: (data: CreateAccessRequest) =>
-      req<Alert>('POST', '/access-requests', data, true),
+      req<AccessRequestReceipt>('POST', '/access-requests', data, true),
   },
 
   // ── Time ───────────────────────────────────────────────────────────────
@@ -644,8 +647,13 @@ export const api = {
   // #959: kid-side block-page lookup. Unauthenticated — hit from a blocked
   // device after the router DNATs to the SPA's /blocked route.
   blocked: {
-    info: (mac: string, host: string) => {
+    // #2569: `bpt` is the router-bound block-page token the redirect carried. It is what tells
+    // the endpoint WHICH household is asking — without it the answer comes from household 1,
+    // which is both a disclosure and the wrong answer for every other household. Optional: a
+    // router running an agent that predates the token omits it from the redirect.
+    info: (mac: string, host: string, bpt?: string) => {
       const qs = new URLSearchParams({ mac, host })
+      if (bpt) qs.set('bpt', bpt)
       return req<BlockedInfoResponse>('GET', `/blocked?${qs}`, undefined, true)
     },
   },

@@ -102,7 +102,13 @@ object PolicyHouseholdScopeSpec
         ber <- ZIO.service[BlockEventRepo]
         rr  <- ZIO.service[RouterRepo]
         ps  <- makePolicyService
-        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
+        routes = RouterRoutes.routes(
+          rr,
+          ps,
+          RouterAuthLive(rr),
+          ber,
+          TestLayers.TestBlockPageSecret,
+        )
         snapA <- getPolicy(routes, two.tokenA)
         snapB <- getPolicy(routes, two.tokenB)
       } yield
@@ -125,7 +131,13 @@ object PolicyHouseholdScopeSpec
         ber <- ZIO.service[BlockEventRepo]
         rr  <- ZIO.service[RouterRepo]
         ps  <- makePolicyService
-        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
+        routes = RouterRoutes.routes(
+          rr,
+          ps,
+          RouterAuthLive(rr),
+          ber,
+          TestLayers.TestBlockPageSecret,
+        )
         // Household A asks about household B's MAC: scoped lookup does NOT find it → allow-all.
         aOnB <- decide(routes, two.tokenA, macB, "example.com")
         // Household B asks about its own MAC: resolves profileB (paused) → block.
@@ -146,7 +158,13 @@ object PolicyHouseholdScopeSpec
         ber <- ZIO.service[BlockEventRepo]
         rr  <- ZIO.service[RouterRepo]
         ps  <- makePolicyService
-        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
+        routes = RouterRoutes.routes(
+          rr,
+          ps,
+          RouterAuthLive(rr),
+          ber,
+          TestLayers.TestBlockPageSecret,
+        )
         (statusA, bodyA) <- blocklistBody(routes, two.tokenA, "kidsafe")
         (statusB, bodyB) <- blocklistBody(routes, two.tokenB, "kidsafe")
       } yield assertTrue(statusA == Status.Ok) &&

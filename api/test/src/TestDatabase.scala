@@ -204,6 +204,13 @@ object TestDatabase {
 object TestLayers {
   import wifihaven.shared.Clock
 
+  /**
+   * #2566/#2569/#2322: HMAC secret for block-page tokens in specs. In production this is the API's
+   * own `jwt.secret` (`BlockPageToken` domain-separates it); specs pass a fixed value so a token
+   * minted through `GET /api/router/block-page-token` verifies on the way back in.
+   */
+  val TestBlockPageSecret: String = "test-secret-at-least-32-chars!!x"
+
   def withClock(dt: java.time.LocalDateTime): ULayer[Clock] =
     Clock.TestClock.make(dt)
 

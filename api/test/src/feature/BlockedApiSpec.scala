@@ -131,7 +131,17 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         (ps, clk) = psClk
         tss <- makeTimeStatus
         hsr <- ZIO.service[HouseholdSettingsRepo]
-        routes = BlockedRoutes.routes(ps, dr, pr, blr, tss, hsr, clk)
+        routes = BlockedRoutes.routes(
+          ps,
+          dr,
+          pr,
+          blr,
+          tss,
+          hsr,
+          clk,
+          BlockPageHousehold.defaultOnly,
+          RateLimiter.allowAll,
+        )
         info <- callBlocked(routes, "ff:ff:ff:ff:ff:ff", "example.com")
       } yield assertTrue(!info.blocked) &&
         assertTrue(info.reasonClass.isEmpty) &&
@@ -150,7 +160,17 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         (ps, clk) = psClk
         tss <- makeTimeStatus
         hsr <- ZIO.service[HouseholdSettingsRepo]
-        routes = BlockedRoutes.routes(ps, dr, pr, blr, tss, hsr, clk)
+        routes = BlockedRoutes.routes(
+          ps,
+          dr,
+          pr,
+          blr,
+          tss,
+          hsr,
+          clk,
+          BlockPageHousehold.defaultOnly,
+          RateLimiter.allowAll,
+        )
         info <- callBlocked(routes, "aa:bb:cc:11:22:33", "example.com")
       } yield assertTrue(info.blocked) &&
         assertTrue(info.reasonClass.contains("paused")) &&
@@ -169,7 +189,17 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         (ps, clk) = psClk
         tss <- makeTimeStatus
         hsr <- ZIO.service[HouseholdSettingsRepo]
-        routes = BlockedRoutes.routes(ps, dr, pr, blr, tss, hsr, clk)
+        routes = BlockedRoutes.routes(
+          ps,
+          dr,
+          pr,
+          blr,
+          tss,
+          hsr,
+          clk,
+          BlockPageHousehold.defaultOnly,
+          RateLimiter.allowAll,
+        )
         info <- callBlocked(routes, "aa:bb:cc:11:22:33", "example.com")
       } yield assertTrue(info.blocked) &&
         assertTrue(info.reasonClass.contains("schedule")) &&
@@ -185,7 +215,17 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         (ps, clk) = psClk
         tss <- makeTimeStatus
         hsr <- ZIO.service[HouseholdSettingsRepo]
-        routes = BlockedRoutes.routes(ps, dr, pr, blr, tss, hsr, clk)
+        routes = BlockedRoutes.routes(
+          ps,
+          dr,
+          pr,
+          blr,
+          tss,
+          hsr,
+          clk,
+          BlockPageHousehold.defaultOnly,
+          RateLimiter.allowAll,
+        )
         info <- callBlocked(routes, "not-a-mac", "example.com")
       } yield assertTrue(!info.blocked)
     },
@@ -201,7 +241,17 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         (ps, clk) = psClk
         tss <- makeTimeStatus
         hsr <- ZIO.service[HouseholdSettingsRepo]
-        routes = BlockedRoutes.routes(ps, dr, pr, blr, tss, hsr, clk)
+        routes = BlockedRoutes.routes(
+          ps,
+          dr,
+          pr,
+          blr,
+          tss,
+          hsr,
+          clk,
+          BlockPageHousehold.defaultOnly,
+          RateLimiter.allowAll,
+        )
         info <- callBlocked(routes, "aa:bb:cc:11:22:55", "example.com")
       } yield assertTrue(!info.blocked)
     },
@@ -239,7 +289,17 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         tss <- makeTimeStatus
         hsr <- ZIO.service[HouseholdSettingsRepo]
         clk <- ZIO.service[Clock]
-        routes = BlockedRoutes.routes(stubPolicy, dr, pr, blr, tss, hsr, clk)
+        routes = BlockedRoutes.routes(
+          stubPolicy,
+          dr,
+          pr,
+          blr,
+          tss,
+          hsr,
+          clk,
+          BlockPageHousehold.defaultOnly,
+          RateLimiter.allowAll,
+        )
         info <- callBlocked(routes, "aa:bb:cc:11:22:99", "weird.example.com")
       } yield assertTrue(info.blocked) &&
         assertTrue(!info.reasonClass.contains("extra_blocked")) &&
@@ -301,7 +361,17 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         hsr     <- ZIO.service[HouseholdSettingsRepo]
         clk     <- ZIO.service[Clock]
         results <- ZIO.foreach(cases) { case (wire, expected) =>
-          val routes = BlockedRoutes.routes(stub(wire), dr, pr, blr, tss, hsr, clk)
+          val routes = BlockedRoutes.routes(
+            stub(wire),
+            dr,
+            pr,
+            blr,
+            tss,
+            hsr,
+            clk,
+            BlockPageHousehold.defaultOnly,
+            RateLimiter.allowAll,
+          )
           callBlocked(routes, "aa:bb:cc:dd:ee:ff", "example.com").map { info =>
             assertTrue(info.blocked) && assertTrue(info.reasonClass.contains(expected))
           }
@@ -330,7 +400,17 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         (ps, clk) = psClk
         tss <- makeTimeStatus
         hsr <- ZIO.service[HouseholdSettingsRepo]
-        routes = BlockedRoutes.routes(ps, dr, pr, blr, tss, hsr, clk)
+        routes = BlockedRoutes.routes(
+          ps,
+          dr,
+          pr,
+          blr,
+          tss,
+          hsr,
+          clk,
+          BlockPageHousehold.defaultOnly,
+          RateLimiter.allowAll,
+        )
         info <- callBlocked(routes, "aa:bb:cc:11:22:44", "example.com")
       } yield assertTrue(info.blocked) &&
         assertTrue(info.reasonClass.contains("schedule")) &&
@@ -349,7 +429,17 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         (ps, clk) = psClk
         tss <- makeTimeStatus
         hsr <- ZIO.service[HouseholdSettingsRepo]
-        routes = BlockedRoutes.routes(ps, dr, pr, blr, tss, hsr, clk)
+        routes = BlockedRoutes.routes(
+          ps,
+          dr,
+          pr,
+          blr,
+          tss,
+          hsr,
+          clk,
+          BlockPageHousehold.defaultOnly,
+          RateLimiter.allowAll,
+        )
         info <- callBlocked(routes, "ff:ff:ff:ff:ff:ff", "example.com")
       } yield assertTrue(!info.blocked) &&
         assertTrue(info.usedMinutes.isEmpty) &&

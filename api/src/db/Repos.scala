@@ -724,6 +724,24 @@ trait DeviceRepo {
   def findByMacInHousehold(mac: MacAddress, household: HouseholdId): Task[Option[Device]]
 
   /**
+   * #2566/#2322: the household that owns `mac`, lowest id first when several do — the ONLY
+   * cross-tenant read on devices, and deliberately so.
+   *
+   * This is the pre-#2322 `createAccessRequest` COALESCE subquery, lifted out of that INSERT and
+   * named. It exists solely as the FALLBACK for the unauthenticated block-page intake when the
+   * redirect carried no verifiable `bpt` (a pre-token agent). Without it that path would resolve to
+   * household 1, find no device, and reject a request it used to file correctly — which is a
+   * regression for every household except #1, exactly during the API-ahead-of-agent window.
+   *
+   * It is `ORDER BY household_id LIMIT 1`, so for a MAC shared across households it is arbitrary —
+   * which is what #2322 is about. That ambiguity is ACCEPTED here and nowhere else: it is strictly
+   * what the code already did, it applies only when we have no better answer, and it disappears
+   * per-router as agents start stamping the token. Do NOT reach for this from any authenticated
+   * path; those have a household in scope already.
+   */
+  def findOwningHousehold(mac: MacAddress): Task[Option[HouseholdId]]
+
+  /**
    * #2108: `household` keys the row constructively. The user-facing device write passes the
    * caller's `claims.hh`; ingest passes the router's household. `ON CONFLICT (household_id, mac)`
    * (V65's uq_devices_household_mac) so a first-seen MAC lands in the writer's household and the
@@ -837,7 +855,15 @@ trait AlertRepo {
    * #960: create an access-request alert. `profileId` is denormalised at insert time so the row
    * survives a later device→profile reassignment.
    */
+  /**
+   * #2322: `household` is passed by the caller — derived from the router-bound block-page token on
+   * the redirect — rather than inferred in-SQL from the device row. The old `COALESCE((SELECT …
+   * ORDER BY d.household_id LIMIT 1), 1)` was deterministic but arbitrary once a MAC exists in more
+   * than one household (V74/V75): it could file a child's request against someone else's household,
+   * where their admin sees it and the real one doesn't.
+   */
   def createAccessRequest(
+      household: HouseholdId,
       mac: MacAddress,
       profileId: Option[ProfileId],
       host: Hostname,
@@ -849,8 +875,14 @@ trait AlertRepo {
   /**
    * Debounce probe for access-request creates: most recent pending access_request row for `(mac,
    * host)` since `since`, if any.
+   *
+   * #2566: scoped to `household` (V79's NOT NULL `alerts.household_id`, the same key
+   * [[listForHousehold]] reads). Unscoped, this both cross-coupled households — A's pending row
+   * suppressed B's genuine request for the same MAC — and returned A's row, note and all, to the
+   * unauthenticated caller that hit the debounce.
    */
   def findRecentAccessRequest(
+      household: HouseholdId,
       mac: MacAddress,
       host: Hostname,
       since: Instant,
@@ -2127,6 +2159,18 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
   // #2108: same projection as findByMac, AND-scoped to one household. The user-facing device routes
   // resolve through this so an hh-A admin gets a clean 404 for an hh-B MAC. Index-backed by V65's
   // uq_devices_household_mac leading column.
+  // #2566/#2322: the pre-#2322 `createAccessRequest` COALESCE subquery, lifted out of the INSERT
+  // and named. Index-backed by V65's uq_devices_household_mac (mac is the trailing column, so this
+  // is the one device read that does not lead with household — see the trait doc for why that is
+  // deliberate and confined to the block-page fallback).
+  def findOwningHousehold(mac: MacAddress) =
+    DbMetrics.timed("device.findOwningHousehold")(
+      sql"SELECT household_id FROM devices WHERE mac = $mac ORDER BY household_id LIMIT 1"
+        .query[HouseholdId]
+        .option
+        .transact(xa),
+    )
+
   def findByMacInHousehold(mac: MacAddress, household: HouseholdId) =
     DbMetrics.timed("device.findByMacInHousehold")(
       (fr"SELECT d.id,d.mac,d.name,d.profile_id,p.name,d.last_seen_ip,d.last_seen_at::TEXT FROM devices d LEFT JOIN profiles p ON p.id=d.profile_id WHERE d.mac=$mac AND" ++
@@ -2342,6 +2386,7 @@ class AlertRepoLive(xa: Transactor[Task]) extends AlertRepo {
     )
 
   def createAccessRequest(
+      household: HouseholdId,
       mac: MacAddress,
       profileId: Option[ProfileId],
       host: Hostname,
@@ -2350,23 +2395,14 @@ class AlertRepoLive(xa: Transactor[Task]) extends AlertRepo {
       createdAt: Instant,
   ): Task[AlertId] = {
     val rkStr = AccessRequestKind.asString(requestKind)
-    // #2283: stamp the alert's tenancy key (V78) from its OWN device row so the household-scoped
-    // read (`listForHousehold` on `a.household_id`) attributes it to the same household the pre-#2283
-    // transitive device join did — no read regression. This is the public, unauthenticated block-page
-    // path (no JWT/router household in scope), so the household is derived from the device rather than
-    // passed by the caller. A MAC with no device row (or, defensively, one shared across households
-    // under V74) falls back to the LOWEST matching household, else `HouseholdId.Default` — matching
-    // today's global `findByMac`. Deriving the household authoritatively for the block-page path
-    // (so a shared MAC attributes to the requesting router's household, not the lowest id) is the
-    // follow-up TODO(#2322).
+    // #2283 stamped the alert's tenancy key (V78) by deriving it in-SQL from the device row, because
+    // this unauthenticated block-page path had no household in scope. #2322 gives it one: the caller
+    // resolves the router-bound block-page token and passes the household in, so a MAC that exists
+    // in two households (V74/V75) attributes to the router the request actually came through rather
+    // than to whichever household sorts first.
     sql"""INSERT INTO alerts (kind, status, mac, household_id, profile_id, host, request_kind, note, created_at)
-          SELECT 'access_request', 'pending', $mac,
-                 COALESCE(
-                   (SELECT d.household_id FROM devices d WHERE d.mac = $mac
-                     ORDER BY d.household_id LIMIT 1),
-                   ${HouseholdId.Default}
-                 ),
-                 $profileId, $host, $rkStr, $note, $createdAt
+          VALUES ('access_request', 'pending', $mac, $household,
+                  $profileId, $host, $rkStr, $note, $createdAt)
           RETURNING id"""
       .query[AlertId]
       .unique
@@ -2374,11 +2410,14 @@ class AlertRepoLive(xa: Transactor[Task]) extends AlertRepo {
   }
 
   def findRecentAccessRequest(
+      household: HouseholdId,
       mac: MacAddress,
       host: Hostname,
       since: Instant,
   ): Task[Option[Alert]] =
+    // #2566: `a.household_id` (V79, NOT NULL) — the same tenancy key `listForHousehold` reads.
     (baseSelect ++ fr"""WHERE a.kind = 'access_request'
+                           AND a.household_id = $household
                            AND a.mac = $mac
                            AND a.host = $host
                            AND a.created_at >= $since

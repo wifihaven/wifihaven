@@ -204,6 +204,19 @@ export interface CreateAccessRequest {
   host: string
   kind: AccessRequestKind
   note?: string
+  // #2566/#2322: the router-bound block-page token relayed from the redirect. The only thing on
+  // this unauthenticated request that identifies the household — `mac` cannot, since the same MAC
+  // may exist in several households. Optional: absent on a pre-token agent's redirect.
+  bpt?: string
+}
+
+/** #2566: the narrow shape POST /api/access-requests returns to its unauthenticated caller —
+ *  an acknowledgement, not the stored alert row (which carries deviceName / profileName / note). */
+export interface AccessRequestReceipt {
+  id: number
+  status: AlertStatus
+  kind: AccessRequestKind
+  host: string
 }
 
 /** Admin POST body for /approve. `minutes` is consumed by extension grants;

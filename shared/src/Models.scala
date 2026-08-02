@@ -625,7 +625,37 @@ case class CreateAccessRequest(
     host: Hostname,
     kind: AccessRequestKind,
     note: Option[String] = None,
+    // #2566/#2322: the block-page token the router put on the redirect URL, relayed by the SPA.
+    // It is the ONLY thing on this unauthenticated request that says which household is asking —
+    // `mac` cannot, since the same MAC may exist in several households (V74/V75). Optional so an
+    // agent that predates the token keeps working (the API↔agent wire is additive); absent, the
+    // intake falls back to the default household exactly as it did before.
+    bpt: Option[String] = None,
 ) derives JsonCodec
+
+/**
+ * #2566: what `POST /api/access-requests` returns to its UNAUTHENTICATED caller, on both the create
+ * (201) and the debounce-hit (200) paths.
+ *
+ * Deliberately narrower than [[Alert]]: the block page renders the reason and the minutes, and
+ * needs nothing here but an acknowledgement, whereas the full row carries `deviceName`,
+ * `profileName` and the child's free-text `note` — household data with no business crossing back
+ * over an unauthenticated response. Both paths return the SAME shape so the debounce hit cannot
+ * disclose more than the create it stood in for.
+ */
+case class AccessRequestReceipt(
+    id: AlertId,
+    status: AlertStatus,
+    kind: AccessRequestKind,
+    host: Hostname,
+) derives JsonCodec
+
+/**
+ * #2566/#2569/#2322: response of `GET /api/router/block-page-token` — the opaque, router-bound
+ * token the agent stamps onto its block-page redirect so the unauthenticated block-page endpoints
+ * can resolve the household. Router-authenticated, like every other `/api/router/` endpoint.
+ */
+case class BlockPageTokenResponse(token: String) derives JsonCodec
 
 /**
  * Admin POST body for /api/alerts/{id}/approve. `minutes` is read by extension grants; the field is

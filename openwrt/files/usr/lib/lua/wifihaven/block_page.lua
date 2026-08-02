@@ -60,17 +60,58 @@ function M.resolve_base(block_page_url, api_url)
   return api_url
 end
 
--- Build the destination URL on the block-page host. Only host and mac are
--- carried — the SPA's React BlockedPage derives the canonical reason
--- server-side from GET /api/blocked (PolicyService.decide), so the router no
--- longer needs to pass it through the URL (#679 / #1617). `base_url` is the
+-- Build the destination URL on the block-page host. host and mac say WHICH
+-- device asked for WHAT — the SPA's React BlockedPage derives the canonical
+-- reason server-side from GET /api/blocked (PolicyService.decide), so the router
+-- does not pass a reason through the URL (#679 / #1617). `base_url` is the
 -- resolved block-page host (see resolve_base), not necessarily the API URL.
 -- (#1174)
-function M.build_dest_url(base_url, host, mac)
+--
+-- #2566/#2569/#2322: `bpt` is the opaque, API-signed, router-bound block-page
+-- token (paths.block_page_token). It says WHICH HOUSEHOLD is asking — without it
+-- the unauthenticated block-page endpoints have no household in scope and fall
+-- back to household 1, which discloses that household's profile name and
+-- screen-time to anyone and renders the wrong answer for every other household.
+-- Omitted when the agent has not fetched one yet (e.g. an API that predates the
+-- endpoint); the API keeps working without it, so this stays wire-additive.
+function M.build_dest_url(base_url, host, mac, bpt)
   if not base_url or base_url == "" then return nil end
-  return base_url .. "/blocked"
+  local url = base_url .. "/blocked"
       .. "?host=" .. url_encode(host)
       .. "&mac="  .. url_encode(mac or "")
+  if bpt and bpt ~= "" then
+    url = url .. "&bpt=" .. url_encode(bpt)
+  end
+  return url
+end
+
+-- Fetch this router's block-page token from the API (#2566/#2569/#2322).
+--
+-- GET /api/router/block-page-token, authenticated with the same router bearer
+-- token every other /api/router/* call uses. Returns the token string, or nil
+-- plus a short reason. A 404 means the API predates the endpoint — the caller
+-- must treat that as "no token" and carry on (the API↔agent wire is additive;
+-- neither side may hard-require the other's version).
+--
+-- The token is NOT a credential for the household's data: it authorizes exactly
+-- the two unauthenticated block-page reads that any client on this LAN can
+-- already make, and it is scoped to the router that minted it.
+function M.fetch_token(api_url, router_token, http_get_fn, log)
+  if not api_url or api_url == "" then return nil, "no_api_url" end
+  local url = api_url .. "/api/router/block-page-token"
+  local status, body = http_get_fn(url, { ["Authorization"] = "Bearer " .. router_token })
+  if status ~= 200 then
+    return nil, "status_" .. tostring(status)
+  end
+  local ok, parsed = pcall(function()
+    return require("luci.jsonc").parse(body)
+  end)
+  if not ok or type(parsed) ~= "table" or type(parsed.token) ~= "string"
+     or parsed.token == "" then
+    if log then log.warn("block_page.fetch_token: unparseable response") end
+    return nil, "bad_body"
+  end
+  return parsed.token, nil
 end
 
 -- Render the HTML body for the block page. If base_url is set, returns a tiny
@@ -79,8 +120,8 @@ end
 -- API-side: the SPA reads GET /api/blocked and renders the canonical message
 -- there (#679 / #1617). `base_url` is the resolved block-page host (see
 -- resolve_base), not necessarily the API URL.
-function M.render_html(base_url, host, mac)
-  local dest = M.build_dest_url(base_url, host, mac)
+function M.render_html(base_url, host, mac, bpt)
+  local dest = M.build_dest_url(base_url, host, mac, bpt)
   local copy = "This site is blocked."
   local site_line = (host and host ~= "")
     and ("Site: " .. html_escape(host)) or ""

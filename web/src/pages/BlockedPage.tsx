@@ -52,6 +52,12 @@ export function BlockedPage() {
   const [params] = useSearchParams()
   const host = params.get('host') ?? ''
   const mac  = params.get('mac') ?? ''
+  // #2566/#2569/#2322: the router-bound block-page token the agent stamped onto the redirect.
+  // Relayed verbatim to both API calls below — it is what lets them resolve THIS household
+  // instead of falling back to household 1's policy, profile name and screen-time. Absent on a
+  // redirect from an agent that predates the token, and on a hand-typed /blocked URL; the API
+  // handles that case, so there is nothing to branch on here.
+  const bpt  = params.get('bpt') ?? undefined
 
   const [info, setInfo] = useState<BlockedInfoResponse | null>(null)
   const [error, setError] = useState<boolean>(false)
@@ -60,11 +66,11 @@ export function BlockedPage() {
     if (!mac || !host) return
     let cancelled = false
     api.blocked
-      .info(mac, host)
+      .info(mac, host, bpt)
       .then(r => { if (!cancelled) setInfo(r) })
       .catch(() => { if (!cancelled) setError(true) })
     return () => { cancelled = true }
-  }, [mac, host])
+  }, [mac, host, bpt])
 
   const body =
     info != null   ? copyFor(info)
@@ -87,7 +93,7 @@ export function BlockedPage() {
         </div>
         {info && <UsageToday info={info} />}
         {mac && host
-          ? <AskParent mac={mac} host={host} info={info} />
+          ? <AskParent mac={mac} host={host} bpt={bpt} info={info} />
           : <p className="text-brand-text-muted text-sm">Ask a parent to adjust your settings.</p>
         }
       </div>
@@ -156,10 +162,14 @@ function kindLabel(k: AccessRequestKind): string {
 function AskParent({
   mac,
   host,
+  bpt,
   info,
 }: {
   mac: string
   host: string
+  // #2566/#2322: relayed onto the POST so the request is filed against the household whose router
+  // served this page, not against whichever household happens to hold this MAC first.
+  bpt?: string
   info: BlockedInfoResponse | null
 }) {
   const kinds = offeredKindsFor(info)
@@ -188,6 +198,7 @@ function AskParent({
         host,
         kind,
         note: note.trim() ? note.trim() : undefined,
+        bpt,
       })
       setSent(true)
     } catch (e) {
