@@ -114,7 +114,7 @@ fi
 # A blanket `rm -rf /etc/wifihaven` takes it out from under apk, and the symptom
 # is silent: wifihaven-update fails closed on a missing key and the router just
 # stops auto-updating.
-if grep -Eq '(^|[[:space:];&|])(rm|unlink|shred)[[:space:]].*/etc/wifihaven(/keys)?/?([[:space:]]|>|;|$)' "$UNINSTALL_CODE"; then
+if deletes_path "$UNINSTALL_CODE" '/etc/wifihaven(/keys)?/?([[:space:]]|"|>|;|$)|\$\{?WIFIHAVEN_RUNTIME_DIR'; then
   check "#2554 uninstall.sh does not rm -rf all of /etc/wifihaven (keys/release.pub is package-owned)" \
         "uninstall.sh removes the whole /etc/wifihaven tree, taking keys/release.pub with it"
 else
@@ -138,7 +138,7 @@ fi
 # surfaces as a report instead of killing the uninstaller mid-teardown.
 for _sb_f in "$UNINSTALL" "$INSTALL"; do
   _sb_label=$(basename "$_sb_f")
-  if grep -v '^[[:space:]]*#' "$_sb_f" | grep -Eq '(^|[[:space:];&|])(:|\.|exec|eval|export|readonly|set|shift|times|trap|unset)[[:space:]]+>' ; then
+  if grep -v '^[[:space:]]*#' "$_sb_f" | grep -Eq '(^|[[:space:];&|])(:|\.|exec|eval|export|readonly|set|shift|times|trap|unset)[[:space:]]*>' ; then
     check "#2554 $_sb_label does not redirect onto a POSIX special built-in" \
           "a redirection error there kills ash/dash uncatchably — use cp /dev/null / touch / true >"
   else
@@ -152,14 +152,19 @@ done
 # — a rename on one side would otherwise silently stop the uninstaller erasing
 # a credential.
 CONFIG_BACKUP_PATH=/tmp/wifihaven-config.bak-2554
-grep -v '^[[:space:]]*#' "$INSTALL" | grep -qF "$CONFIG_BACKUP_PATH" \
-  && check "SSOT: install.sh writes the config backup to $CONFIG_BACKUP_PATH" ok \
-  || check "SSOT: install.sh writes the config backup to $CONFIG_BACKUP_PATH" \
-           "install.sh no longer names $CONFIG_BACKUP_PATH — uninstall.sh's prune would miss it"
-grep -v '^[[:space:]]*#' "$UNINSTALL" | grep -Eq "^WIFIHAVEN_CONFIG_BACKUP=$CONFIG_BACKUP_PATH\$" \
-  && check "SSOT: uninstall.sh prunes $CONFIG_BACKUP_PATH" ok \
-  || check "SSOT: uninstall.sh prunes $CONFIG_BACKUP_PATH" \
-           "uninstall.sh's WIFIHAVEN_CONFIG_BACKUP no longer matches install.sh's backup path"
+# Pin the ASSIGNMENT, not a free-text mention: a trailing comment carrying the
+# old path would satisfy a `grep -qF` while the code drifted.
+for _bk_f in "$INSTALL" "$UNINSTALL"; do
+  _bk_label=$(basename "$_bk_f")
+  grep -Eq "^WIFIHAVEN_CONFIG_BACKUP=$CONFIG_BACKUP_PATH\$" "$_bk_f" \
+    && check "SSOT: $_bk_label sets WIFIHAVEN_CONFIG_BACKUP=$CONFIG_BACKUP_PATH" ok \
+    || check "SSOT: $_bk_label sets WIFIHAVEN_CONFIG_BACKUP=$CONFIG_BACKUP_PATH" \
+             "the two scripts disagree on the backup path — uninstall.sh's prune would miss install.sh's file"
+done
+grep -q '"\$WIFIHAVEN_CONFIG_BACKUP"' "$UNINSTALL" \
+  && check "SSOT: uninstall.sh's prune list includes the config backup" ok \
+  || check "SSOT: uninstall.sh's prune list includes the config backup" \
+           "prune_runtime_artifacts no longer names \$WIFIHAVEN_CONFIG_BACKUP"
 
 # #303's actual intent — reverting the LIVE kernel value so LAN clients can't
 # route to 127.0.0.0/8 after uninstall — must survive; only the `rm` goes.
@@ -228,7 +233,7 @@ normalized_matcher() {
   # first — a second, looser matcher added later must fail the pin too. Lines
   # that WRITE the listener (`uci add_list …listen_http=…`) are not matchers, so
   # the candidate set is restricted to lines that search (grep/awk).
-  grep -v '^[[:space:]]*#' "$1" | grep -E '(grep|awk)' | grep "listen_http=" | grep "8081" \
+  grep -v '^[[:space:]]*#' "$1" | grep -E '(grep|awk|sed|case)' | grep "listen_http=" | grep "8081" \
     | tr -d '\\ '
 }
 for _m_f in "$ROOT/files/usr/lib/wifihaven/setup-uhttpd-block-page.sh" "$UNINSTALL" "$INSTALL"; do
@@ -669,6 +674,29 @@ done
   && check "#2554 the prune leaves the package-owned keys/release.pub alone" ok \
   || check "#2554 the prune leaves the package-owned keys/release.pub alone" \
            "the update-signature key was deleted — wifihaven-update fails closed without it"
+
+# A prune that could NOT remove the token-bearing backup must say so, not claim
+# it removed it: `set -e` is suspended inside the function (it runs `|| true`),
+# so a failing rm on a read-only parent would otherwise pass silently.
+if [ "$(id -u)" -eq 0 ]; then
+  skip "#2554 a prune that cannot remove the config backup reports FAILED" \
+       "running as root: a read-only parent directory does not stop rm"
+else
+  FR="$TMP/prune-readonly"
+  rm -rf "$FR"; mkdir -p "$FR/etc/wifihaven" "$FR/tmp"
+  printf "option router_token 'TOKENVAL'\n" > "$FR/tmp/wifihaven-config.bak-2554"
+  chmod 555 "$FR/tmp"
+  out=$(run_uninstall_sim "" "prune_runtime_artifacts || true" || printf 'SIM-EXITED')
+  chmod 755 "$FR/tmp"
+  case "$out" in
+    *"FAILED to remove"*) check "#2554 a prune that cannot remove the config backup reports FAILED" ok ;;
+    *"removed wifihaven runtime artifacts"*)
+      check "#2554 a prune that cannot remove the config backup reports FAILED" \
+            "claimed a removal that did not happen — the token-bearing backup is still there: $out" ;;
+    *) check "#2554 a prune that cannot remove the config backup reports FAILED" \
+             "expected an explicit failure note: $out" ;;
+  esac
+fi
 
 # A scrub that did not take must not be summarised as one that did. With uci
 # reachable but every delete failing and no token in the file, the file is left

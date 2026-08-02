@@ -307,12 +307,21 @@ scrub_wifihaven_config || true
 # still be carrying the credential, so erase it here.
 prune_runtime_artifacts() {
   _pruned=0
-  for p in "$WIFIHAVEN_RUNTIME_DIR/policy.json" "$WIFIHAVEN_RUNTIME_DIR/policy.json.tmp" \
-           "$WIFIHAVEN_RUNTIME_DIR/blocklists" \
-           "$WIFIHAVEN_RUNTIME_DIR/block_page.crt" "$WIFIHAVEN_RUNTIME_DIR/block_page.key" \
-           "$WIFIHAVEN_CONFIG_BACKUP"; do
-    if [ -e "$p" ]; then
-      rm -rf "$p"
+  for _p in "$WIFIHAVEN_RUNTIME_DIR/policy.json" "$WIFIHAVEN_RUNTIME_DIR/policy.json.tmp" \
+            "$WIFIHAVEN_RUNTIME_DIR/blocklists" \
+            "$WIFIHAVEN_RUNTIME_DIR/block_page.crt" "$WIFIHAVEN_RUNTIME_DIR/block_page.key" \
+            "$WIFIHAVEN_CONFIG_BACKUP"; do
+    [ -e "$_p" ] || continue
+    rm -rf "$_p"
+    # Count the removal only if it actually happened: `set -e` is suspended
+    # inside this function (it is called `|| true`), and a read-only overlay
+    # makes `rm` fail without stopping us. $WIFIHAVEN_CONFIG_BACKUP can carry a
+    # router_token, so a survivor gets the same loud treatment as a surviving
+    # token in the config — never a summary claiming a removal we did not do.
+    if [ -e "$_p" ]; then
+      SCRUB_FAILED=1
+      note "FAILED to remove $_p"
+    else
       _pruned=1
     fi
   done

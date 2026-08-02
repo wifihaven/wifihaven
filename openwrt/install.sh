@@ -50,6 +50,10 @@ info() { printf '==> %s\n' "$*"; }
 WIFIHAVEN_CONFIG=/etc/config/wifihaven
 WIFIHAVEN_SYSCTL=/etc/sysctl.d/99-wifihaven.conf
 WIFIHAVEN_UCI_DEFAULTS=/etc/uci-defaults
+# Where a displaced config is parked if we have to adopt a .apk-new over it.
+# It can carry a router_token, so uninstall.sh erases it too — the two spellings
+# are pinned equal by openwrt/test/install_reinstall_cycle_spec.sh.
+WIFIHAVEN_CONFIG_BACKUP=/tmp/wifihaven-config.bak-2554
 
 # Read from the controlling terminal so this works under `curl | sh`,
 # where stdin is the script body.
@@ -344,10 +348,11 @@ ensure_wifihaven_config() {
     # Only reachable when the current file has no wifihaven section at all, but
     # keep a copy of whatever was there rather than silently overwriting it.
     # Park it under /tmp, NOT beside the config: the displaced file may still
-    # carry a router_token, and uninstall.sh only scrubs /etc/config/wifihaven
-    # itself — a permanent sibling would be a credential the uninstaller never
-    # erases. /tmp is tmpfs, so it also disappears at the next reboot.
-    [ -s "$WIFIHAVEN_CONFIG" ] && cp "$WIFIHAVEN_CONFIG" /tmp/wifihaven-config.bak-2554
+    # carry a router_token, and uninstall.sh's scrub only covers
+    # /etc/config/wifihaven itself — a permanent sibling would be a credential
+    # the uninstaller never erases. uninstall.sh prunes this exact path, and
+    # /tmp is tmpfs so it also disappears at the next reboot.
+    [ -s "$WIFIHAVEN_CONFIG" ] && cp "$WIFIHAVEN_CONFIG" "$WIFIHAVEN_CONFIG_BACKUP"
     mv "$_wh_new" "$WIFIHAVEN_CONFIG"
     break
   done
