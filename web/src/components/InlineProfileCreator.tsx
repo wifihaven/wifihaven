@@ -106,7 +106,9 @@ export function InlineProfileCreator({
   // NOT covered by a test, deliberately. Triggering the window needs a single
   // commit in which the parent mints a new callback AND `pending` flips — but
   // `pending` is driven by this component's own mutation, so the child
-  // re-renders alone and the parent contributes no new identity at that commit.
+  // re-renders alone and the parent has no reason to re-render at that commit
+  // (batching makes that a strong tendency rather than a guarantee — the
+  // stable-callback point below is the one that actually closes the window).
   // Neither caller can reach it (both pass a stable value anyway: the modal a
   // setState setter, the row nothing). A test for it would have to be contrived
   // enough to pin the contrivance rather than the invariant, so this comment is
