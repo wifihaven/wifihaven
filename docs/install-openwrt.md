@@ -175,6 +175,15 @@ after ([#2554](https://github.com/wifihaven/wifihaven/issues/2554)). If you
 land in that state, re-run `install.sh` — it detects and repairs both, and its
 post-install self-check fails loudly if it cannot.
 
+The router bearer token is still wiped: the uninstaller deletes every section
+in the wifihaven UCI config, then verifies the token is actually gone and
+truncates the file in place if it is not (truncation removes the secret while
+keeping the package-owned path). If even that fails it says so and exits
+nonzero — do not treat such a router as decommissioned until the file is empty.
+`/etc/wifihaven` is pruned of runtime artifacts only (policy snapshot, blocklist
+cache, block-page cert/key); `keys/release.pub` ships with the package and is
+left to `apk del` / `opkg remove`.
+
 ## 3. Verify
 
 ```sh

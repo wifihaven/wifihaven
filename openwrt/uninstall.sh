@@ -210,22 +210,47 @@ fi
 # each one. If anything still leaves a live router_token behind, truncate the
 # file in place as a fail-safe: truncation removes the secret while KEEPING the
 # path, so the package database stays in sync (unlike the `rm` this replaces).
+#
+# The verify+truncate step is deliberately NOT gated on `uci show` succeeding:
+# uci also fails on a malformed / hand-edited config, and that is exactly a
+# state where the token is still sitting in the file. The file-level check is
+# what actually guarantees the wipe; the uci scrub is best-effort on top.
+SCRUB_FAILED=0
+
+config_has_router_token() {
+  [ -f "$WIFIHAVEN_CONFIG" ] || return 1
+  [ -n "$(uci -q get wifihaven.@wifihaven[0].router_token 2>/dev/null || true)" ] && return 0
+  grep -Eq "^[[:space:]]*option[[:space:]]+router_token[[:space:]]+'..*'" \
+    "$WIFIHAVEN_CONFIG" 2>/dev/null
+}
+
 scrub_wifihaven_config() {
-  uci -q show wifihaven >/dev/null 2>&1 || return 1
+  # -s, not -f: an already-empty file is nothing to do, and claiming otherwise
+  # would break the "nothing to do — router is already clean" path below.
+  [ -s "$WIFIHAVEN_CONFIG" ] || return 1
   info "Wiping wifihaven UCI config..."
-  for _sec in $(uci show wifihaven 2>/dev/null \
-                  | sed -n 's/^wifihaven\.\([^.=]*\)[.=].*/\1/p' | sort -u); do
-    uci -q delete "wifihaven.$_sec" >/dev/null 2>&1 || true
-  done
-  uci commit wifihaven 2>/dev/null || true
+
+  if uci -q show wifihaven >/dev/null 2>&1; then
+    # Unquoted expansion is intentional (one section name per word); `set -f`
+    # stops a name like `@wifihaven[0]` being treated as a glob.
+    set -f
+    for _sec in $(uci show wifihaven 2>/dev/null \
+                    | sed -n 's/^wifihaven\.\([^.=]*\)[.=].*/\1/p' | sort -u); do
+      uci -q delete "wifihaven.$_sec" >/dev/null 2>&1 || true
+    done
+    set +f
+    uci commit wifihaven 2>/dev/null || true
+  fi
 
   # Verify the secret is actually gone — never report a wipe we didn't do.
-  _tok=$(uci -q get wifihaven.@wifihaven[0].router_token 2>/dev/null || true)
-  if [ -n "$_tok" ] \
-     || grep -Eq "^[[:space:]]*option[[:space:]]+router_token[[:space:]]+'..*'" \
-          "$WIFIHAVEN_CONFIG" 2>/dev/null; then
-    : >"$WIFIHAVEN_CONFIG"
-    note "truncated $WIFIHAVEN_CONFIG (router_token survived the UCI scrub)"
+  if config_has_router_token; then
+    : >"$WIFIHAVEN_CONFIG" 2>/dev/null || true
+    if config_has_router_token; then
+      SCRUB_FAILED=1
+      note "FAILED to wipe router_token from $WIFIHAVEN_CONFIG"
+    else
+      note "truncated $WIFIHAVEN_CONFIG (router_token survived the UCI scrub)"
+    fi
   else
     note "cleared wifihaven UCI state (router_token wiped)"
   fi
@@ -246,7 +271,8 @@ scrub_wifihaven_config || true
 # the runtime artifacts, then rmdir the directory if the package manager has
 # already taken everything else out of it.
 wifihaven_dir_pruned=0
-for p in /etc/wifihaven/policy.json /etc/wifihaven/blocklists \
+for p in /etc/wifihaven/policy.json /etc/wifihaven/policy.json.tmp \
+         /etc/wifihaven/blocklists \
          /etc/wifihaven/block_page.crt /etc/wifihaven/block_page.key; do
   if [ -e "$p" ]; then
     rm -rf "$p"
@@ -278,3 +304,10 @@ fi
 printf '\nDone. Summary of actions:\n'
 printf '%b' "$SUMMARY"
 printf '\nRe-run install.sh on this router for a fresh enrollment.\n'
+
+# The bearer-token wipe is a security property, not best-effort: if it did not
+# take, say so loudly and exit nonzero rather than letting an operator believe
+# a decommissioned router carries no credential.
+if [ "$SCRUB_FAILED" -eq 1 ]; then
+  err "the router bearer token could NOT be removed from $WIFIHAVEN_CONFIG. Delete or empty that file by hand before decommissioning or re-homing this router."
+fi

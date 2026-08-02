@@ -343,7 +343,11 @@ ensure_wifihaven_config() {
     info "Adopting $_wh_new as $WIFIHAVEN_CONFIG (#2554)"
     # Only reachable when the current file has no wifihaven section at all, but
     # keep a copy of whatever was there rather than silently overwriting it.
-    [ -s "$WIFIHAVEN_CONFIG" ] && cp "$WIFIHAVEN_CONFIG" "$WIFIHAVEN_CONFIG.bak-2554"
+    # Park it under /tmp, NOT beside the config: the displaced file may still
+    # carry a router_token, and uninstall.sh only scrubs /etc/config/wifihaven
+    # itself — a permanent sibling would be a credential the uninstaller never
+    # erases. /tmp is tmpfs, so it also disappears at the next reboot.
+    [ -s "$WIFIHAVEN_CONFIG" ] && cp "$WIFIHAVEN_CONFIG" /tmp/wifihaven-config.bak-2554
     mv "$_wh_new" "$WIFIHAVEN_CONFIG"
     break
   done
@@ -361,8 +365,9 @@ ensure_wifihaven_config() {
   # duplicate their contents here, run the package's own (idempotent)
   # uci-defaults stub if it is still pending — that is the single source of
   # truth for the `settings` escape-hatch section. Leaving the file in place is
-  # fine — it is idempotent, and the first-boot uci-defaults pass runs and
-  # removes it at the next boot.
+  # fine — it is idempotent, and OpenWrt's uci-defaults pass
+  # (`/etc/init.d/boot` -> `uci_apply_defaults`) runs whatever is still in
+  # /etc/uci-defaults/ on the next boot and deletes each script that exits 0.
   if [ -f "$WIFIHAVEN_UCI_DEFAULTS/96-wifihaven-settings" ]; then
     sh "$WIFIHAVEN_UCI_DEFAULTS/96-wifihaven-settings" >/dev/null 2>&1 || true
   fi
@@ -493,8 +498,8 @@ post_install_self_check() {
     traffic would fail with a connection reset instead of the block page."
 
   # uci-defaults must be either consumed (its effect is visible) or pending
-  # (still on disk, so the first-boot uci-defaults pass runs it at the next
-  # boot). Neither means it ran, was deleted, and its effect was later
+  # (still on disk, so `/etc/init.d/boot`'s uci_apply_defaults runs it on the
+  # next boot). Neither means it ran, was deleted, and its effect was later
   # clobbered.
   if [ ! -f "$WIFIHAVEN_UCI_DEFAULTS/96-wifihaven-settings" ] \
      && [ -z "$(uci -q get wifihaven.settings.enforcement_disabled || true)" ]; then

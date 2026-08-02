@@ -60,19 +60,24 @@ trap 'rm -rf "$TMP"' EXIT
 # Match any delete-flavoured command naming the path, in either literal or
 # variable spelling, so the guard isn't defeated by `rm -f "$WIFIHAVEN_CONFIG"`,
 # a trailing glob, or `find … -delete`.
+# Guards run against the CODE only — a comment mentioning `rm /etc/config/...`
+# (this file and uninstall.sh both explain why the rm is gone) must not trip them.
+UNINSTALL_CODE="$TMP/uninstall.code.sh"
+grep -v '^[[:space:]]*#' "$UNINSTALL" > "$UNINSTALL_CODE"
+
 deletes_path() {
   # deletes_path FILE REGEX-FOR-PATH
-  grep -Eq "(rm|unlink|shred)[[:space:]].*($2)|(find[[:space:]].*($2).*-delete)" "$1"
+  grep -Eq "(^|[[:space:];&|])(rm|unlink|shred)[[:space:]].*($2)|(find[[:space:]].*($2).*-delete)" "$1"
 }
 
-if deletes_path "$UNINSTALL" '/etc/config/wifihaven|\$\{?WIFIHAVEN_CONFIG'; then
+if deletes_path "$UNINSTALL_CODE" '/etc/config/wifihaven|\$\{?WIFIHAVEN_CONFIG'; then
   check "#2554 uninstall.sh does not rm /etc/config/wifihaven (package-owned)" \
         "uninstall.sh still rm's /etc/config/wifihaven — desyncs the apk/opkg file db"
 else
   check "#2554 uninstall.sh does not rm /etc/config/wifihaven (package-owned)" ok
 fi
 
-if deletes_path "$UNINSTALL" '/etc/sysctl\.d/99-wifihaven\.conf|\$\{?WIFIHAVEN_SYSCTL'; then
+if deletes_path "$UNINSTALL_CODE" '/etc/sysctl\.d/99-wifihaven\.conf|\$\{?WIFIHAVEN_SYSCTL'; then
   check "#2554 uninstall.sh does not rm /etc/sysctl.d/99-wifihaven.conf (package-owned)" \
         "uninstall.sh still rm's the route_localnet sysctl file — it never comes back on reinstall"
 else
@@ -84,7 +89,7 @@ fi
 # A blanket `rm -rf /etc/wifihaven` takes it out from under apk, and the symptom
 # is silent: wifihaven-update fails closed on a missing key and the router just
 # stops auto-updating.
-if grep -Eq '(rm|unlink|shred)[[:space:]].*/etc/wifihaven(/keys)?[[:space:]]*$' "$UNINSTALL"; then
+if grep -Eq '(^|[[:space:];&|])(rm|unlink|shred)[[:space:]].*/etc/wifihaven(/keys)?/?([[:space:]]|>|;|$)' "$UNINSTALL_CODE"; then
   check "#2554 uninstall.sh does not rm -rf all of /etc/wifihaven (keys/release.pub is package-owned)" \
         "uninstall.sh removes the whole /etc/wifihaven tree, taking keys/release.pub with it"
 else
@@ -94,7 +99,7 @@ fi
 # The uninstaller's advertised job is to wipe the router bearer token. `uci
 # delete <package>` is not a complete uci lookup and deletes nothing, so the
 # scrub must enumerate sections — and must verify rather than assume.
-if grep -Eq 'uci[[:space:]].*delete[[:space:]]+"?wifihaven"?([[:space:]]|>|;|$)' "$UNINSTALL"; then
+if grep -Eq 'uci[[:space:]].*delete[[:space:]]+"?wifihaven"?([[:space:]]|>|;|$)' "$UNINSTALL_CODE"; then
   check "#2554 uninstall.sh does not rely on the no-op 'uci delete <package>' form" \
         "uninstall.sh still loops on 'uci delete wifihaven' — a package-only pointer deletes nothing"
 else
@@ -143,7 +148,6 @@ PKG_SYSCTL_LINE=$(printf '%s\n' "$PKG_SYSCTL_DIRECTIVES" | head -n1)
   || check "SSOT: package sysctl file carries the route_localnet setting" \
            "could not read any directive from $PKG_SYSCTL"
 
-_sysctl_drift=""
 printf '%s\n' "$PKG_SYSCTL_DIRECTIVES" | while IFS= read -r _d; do
   [ -n "$_d" ] || continue
   grep -qF "$_d" "$INSTALL" || printf '%s\n' "$_d"
@@ -153,6 +157,26 @@ _sysctl_drift=$(cat "$TMP/sysctl-drift")
   && check "SSOT: install.sh restore path carries every packaged sysctl directive verbatim" ok \
   || check "SSOT: install.sh restore path carries every packaged sysctl directive verbatim" \
            "install.sh is missing: $_sysctl_drift — the restored file would drift from the packaged one"
+
+# SSOT test-pin: "is the block-page listener present?" is answered in THREE
+# standalone scripts — the shared uhttpd helper (which configures it), the
+# uninstaller (which removes it), and install.sh's self-check (which asserts
+# it). All three are fetched/run standalone, so COLLAPSE isn't available;
+# ACCEPT + TEST-PIN is (docs/process/single-source-of-truth.md). Normalise away
+# the shell/awk escaping and require the same anchored matcher in each — an
+# unanchored variant in any one of them would be satisfied by the stock
+# `uhttpd.main.listen_http='0.0.0.0:80'` plus an unrelated 8081 elsewhere.
+UHTTPD_MATCHER_CORE="^uhttpd.[^.]+.listen_http=.*'127.0.0.1:8081'"
+normalized_matcher() {
+  grep "listen_http=" "$1" | grep "8081" | head -n1 | tr -d '\\ '
+}
+for f in "$ROOT/files/usr/lib/wifihaven/setup-uhttpd-block-page.sh" "$UNINSTALL" "$INSTALL"; do
+  label=$(basename "$f")
+  printf '%s' "$(normalized_matcher "$f")" | grep -qF "$UHTTPD_MATCHER_CORE" \
+    && check "SSOT: $label uses the anchored block-page listener matcher" ok \
+    || check "SSOT: $label uses the anchored block-page listener matcher" \
+             "expected a matcher normalising to '$UHTTPD_MATCHER_CORE', got '$(normalized_matcher "$f")'"
+done
 
 # ---------------------------------------------------------------------------
 # 3. Functional simulation. Extract the recovery functions from install.sh and
@@ -372,8 +396,8 @@ uci() {
   case "$_cmd" in
     show)
       [ -f "$WIFIHAVEN_CONFIG" ] || return 1
-      awk '
-        /^config /{ t=$2; n=$3; gsub(/\047/,"",n); sec=n; printf "wifihaven.%s=%s\n", sec, t; next }
+      awk -v q="'" '
+        /^config /{ t=$2; n=$3; gsub(q,"",n); sec=n; printf "wifihaven.%s=%s\n", sec, t; next }
         /^[[:space:]]*option /{ if (sec != "") printf "wifihaven.%s.%s=%s\n", sec, $2, $3 }
       ' "$WIFIHAVEN_CONFIG" | grep . ;;
     delete)
@@ -382,8 +406,8 @@ uci() {
         wifihaven.*)
           [ "${SIM_UCI_DELETE_BROKEN:-0}" = "1" ] && return 1
           _sec=${_arg#wifihaven.}
-          awk -v sec="$_sec" '
-            /^config /{ n=$3; gsub(/\047/,"",n); skip = (n == sec); if (skip) next }
+          awk -v sec="$_sec" -v q="'" '
+            /^config /{ n=$3; gsub(q,"",n); skip = (n == sec); if (skip) next }
             { if (!skip) print }
           ' "$WIFIHAVEN_CONFIG" > "$WIFIHAVEN_CONFIG.tmp"
           mv "$WIFIHAVEN_CONFIG.tmp" "$WIFIHAVEN_CONFIG" ;;
@@ -401,10 +425,14 @@ uci() {
   esac
 }
 PRELUDE
+  printf 'SCRUB_FAILED=0\n'
+  sed -n '/^config_has_router_token()/,/^}/p' "$UNINSTALL"
   sed -n '/^scrub_wifihaven_config()/,/^}/p' "$UNINSTALL"
   cat <<'GUARD'
-command -v scrub_wifihaven_config >/dev/null 2>&1 \
-  || { printf 'EXTRACTION-FAILED: scrub_wifihaven_config not extracted\n' >&2; exit 99; }
+for _fn in config_has_router_token scrub_wifihaven_config; do
+  command -v "$_fn" >/dev/null 2>&1 \
+    || { printf 'EXTRACTION-FAILED: %s not extracted from uninstall.sh\n' "$_fn" >&2; exit 99; }
+done
 GUARD
 }
 
@@ -447,10 +475,14 @@ else
   check "#2554 uninstall.sh scrub erases router_token" ok
 fi
 
-[ -f "$FR/etc/config/wifihaven" ] \
-  && check "#2554 uninstall.sh scrub keeps the package-owned path in place" ok \
-  || check "#2554 uninstall.sh scrub keeps the package-owned path in place" \
-           "the config file was removed — that is the apk file-db desync this issue is about"
+case "$out" in
+  *EXTRACTION-FAILED*) check "#2554 uninstall.sh scrub keeps the package-owned path in place" \
+                             "the scrub never ran: $out" ;;
+  *) [ -f "$FR/etc/config/wifihaven" ] \
+       && check "#2554 uninstall.sh scrub keeps the package-owned path in place" ok \
+       || check "#2554 uninstall.sh scrub keeps the package-owned path in place" \
+                "the config file was removed — that is the apk file-db desync this issue is about" ;;
+esac
 
 # --- Scenario I: the fail-safe when the section deletes don't take --------
 new_enrolled_config wipe-failsafe
@@ -462,10 +494,14 @@ else
   check "#2554 uninstall.sh truncates the config when the UCI scrub doesn't take" ok
 fi
 
-[ -f "$FR/etc/config/wifihaven" ] \
-  && check "#2554 the fail-safe truncates rather than removes the file" ok \
-  || check "#2554 the fail-safe truncates rather than removes the file" \
-           "the file was unlinked — truncation is required so the package db stays in sync"
+case "$out" in
+  *EXTRACTION-FAILED*) check "#2554 the fail-safe truncates rather than removes the file" \
+                             "the scrub never ran: $out" ;;
+  *) [ -f "$FR/etc/config/wifihaven" ] \
+       && check "#2554 the fail-safe truncates rather than removes the file" ok \
+       || check "#2554 the fail-safe truncates rather than removes the file" \
+                "the file was unlinked — truncation is required so the package db stays in sync" ;;
+esac
 
 case "$out" in
   *"router_token survived"*) check "#2554 the fail-safe reports what it actually did" ok ;;
