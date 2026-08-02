@@ -57,11 +57,14 @@ surface those waves did not have in their frame:
 
 ---
 
-## 1. Schema inventory — all 40 live tables
+## 1. Schema inventory — all 41 live tables
 
-45 tables have ever been created; 7 were dropped (`device_alerts`, `global_allow`,
-`global_blocklists`, `global_blocks`, `query_logs`, `schedules`, `site_time_limits`), leaving 40.
-Only 14 carry a `household_id` column. The rest are either transitively scoped through a FK or
+48 tables have ever been created; 7 were dropped (`device_alerts`, `global_allow`,
+`global_blocklists`, `global_blocks`, `query_logs`, `schedules`, `site_time_limits`), leaving **41**
+live. The three subsections below hold **14 + 18 + 9 = 41** — every live table is accounted for, and
+the arithmetic is stated so a reader can check it without re-deriving the set. (Counts traced to
+`api/resources/db/migration/*.sql`: `CREATE TABLE` distinct names = 48, `DROP TABLE` distinct names
+= 7.) Only 14 carry a `household_id` column. The rest are either transitively scoped through a FK or
 genuinely install-wide — the audit's job was to prove which, per table, rather than assume.
 
 ### 1.1 Directly household-scoped (14)
@@ -89,7 +92,7 @@ is the dark-by-default shape #2265/#2266 banned: a missing scope silently resolv
 instead of failing loudly. Both #2386 (settings read fell back to `id=1`) and #2533 (SPA wrote
 household 1's row) were this mechanism.
 
-### 1.2 Transitively scoped through a FK (17)
+### 1.2 Transitively scoped through a FK (18)
 
 Design §0.1 permits scoping through a join rather than a denormalized column. Each of these was
 checked to confirm the join actually exists and that live reads compose it.
@@ -314,7 +317,7 @@ Asked to confirm whether each one's scope is complete or wider than described:
 ## 7. The structural guard
 
 [`api/test/src/feature/MultiTenantRouteCensusSpec.scala`](../../api/test/src/feature/MultiTenantRouteCensusSpec.scala)
-— five tests, CI-enforced via the existing `mill __.test`.
+— six tests, CI-enforced via the existing `mill __.test`.
 
 **Layer 1 — the census.** Every route in `api/src/routes` must appear in a `Census` map with an
 explicit `Tenancy` verdict (`Scoped`, `InstallWide(why)`, `Operator(why)`, `RouterToken(why)`,
@@ -340,15 +343,29 @@ encoding is a large refactor. This is a source scan: it cannot prove the checker
 would have caught both F1 and F2 on the day they were written. The behavioural half already exists
 and stays where it is — `MultiTenantIsolationSpec` pins the real cross-household HTTP responses.
 
-**Non-vacuity.** Test 4 asserts the scan actually *sees* checkers on the 28 routes that have them,
-and pins four specific guard names. A regex that silently stopped matching would otherwise turn the
-whole guard into a green no-op — the failure mode that makes static guards worthless.
+**Non-vacuity.** A static guard's characteristic failure is going *vacuously* green — the scan
+stops matching, reports zero offenders, and that reads as "all clear". Three tests close that off:
+
+- **Test 4** asserts the scan really does see checkers on the 28 of 38 entity-parameterized routes
+  that have them, **and** that every one of the nine `Checkers` strings still occurs somewhere in
+  `api/src/routes`. `Checkers` mirrors function names by string, so a rename — or a reflow of the
+  whitespace-sensitive `householdId == claims.hh`, which has exactly one occurrence — would
+  otherwise silently blind the invariant to every route that used it.
+- **Test 2** iterates *every* route declaration, not the deduped one-per-key set. Duplicate keys
+  exist (125 declarations dedupe to 123), and checking only the deduped head would let an unguarded
+  declaration hide behind a guarded one in a file that sorts earlier.
+- **Test 6** requires every non-`Scoped` verdict to carry a substantive `reason`. Those verdicts are
+  wholly exempt from the invariant, so the reason is the entire audit trail for the exemption — an
+  empty or placeholder one would let a future author silence a real finding with
+  `InstallWide("shared")` and keep CI green.
 
 **The tracked-broken allowlist.** F1's and F2's routes are declared `ScopedTracked(2564)` /
 `ScopedTracked(2565)` — the audit does not fix findings (each gets its own chip), so the guard would
 be red on arrival. Test 3 pins that every tracked entry names a real issue **and** that it is still
-genuinely unguarded: land the fix and forget to delete the entry, and CI tells you to. The set may
-only shrink. A new unguarded route cannot be waved through without filing an issue for it first.
+genuinely unguarded: land the fix and forget to delete the entry, and CI tells you to. The bound is
+shrink-only (`size <= 3`) rather than non-empty, so the last fix — the one that empties the list —
+does not read as a red build. A new unguarded route cannot be waved through without filing an issue
+for it first.
 
 **Red → green** is visible in this PR's history: commit 1 declares all three routes plain `Scoped`
 and test 2 fails naming them; commit 2 moves them to the allowlist.

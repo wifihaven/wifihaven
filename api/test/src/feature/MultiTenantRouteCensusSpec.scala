@@ -224,8 +224,8 @@ object MultiTenantRouteCensusSpec extends ZIOSpecDefault {
     ),
 
     // ── HealthRoutes / VersionRoutes / MetricsRoutes / OpenApi / Static ─────────────────────────
-    "GET /api/health"  -> NoTenancy("liveness"),
-    "GET /api/version" -> NoTenancy("build info"),
+    "GET /api/health"  -> NoTenancy("liveness probe; returns no rows at all"),
+    "GET /api/version" -> NoTenancy("build info; returns no rows at all"),
     "GET /metrics" -> NoTenancy("Prometheus scrape; bounded label enums, no per-household series"),
     "GET /api/openapi.json" -> NoTenancy("static spec"),
     "GET /api/docs"         -> NoTenancy("static docs page"),
@@ -456,6 +456,24 @@ object MultiTenantRouteCensusSpec extends ZIOSpecDefault {
   private[feature] def scannedByKey: Map[String, ScannedRoute] =
     scan.groupBy(_.key).view.mapValues(_.head).toMap
 
+  /** Raw text of every route file — used to prove no [[Checkers]] string has gone stale. */
+  private[feature] def routesSource: List[String] = routeFiles.map(Files.readString)
+
+  /**
+   * The `reason` a non-`Scoped` verdict carries, if it carries one. Those verdicts are wholly
+   * exempt from the choke-point invariant, so the reason is the only thing standing between a
+   * deliberate exemption and a silenced finding — test 6 requires it to say something.
+   */
+  private[feature] def reasonOf(t: Tenancy): Option[String] = t match {
+    case Tenancy.InstallWide(r)     => Some(r)
+    case Tenancy.Operator(r)        => Some(r)
+    case Tenancy.RouterToken(r)     => Some(r)
+    case Tenancy.AgentToken(r)      => Some(r)
+    case Tenancy.Unauthenticated(r) => Some(r)
+    case Tenancy.NoTenancy(r)       => Some(r)
+    case _                          => None
+  }
+
   // ── the tests ────────────────────────────────────────────────────────────────────────────────
 
   def spec = suite("Multi-tenant route census — the structural isolation guard (#2563)")(
@@ -477,7 +495,12 @@ object MultiTenantRouteCensusSpec extends ZIOSpecDefault {
       // The invariant. `Scoped` + entity param ⇒ the handler must prove the row belongs to the
       // caller's household. `ScopedTracked` entries are the audit's known-broken set and are
       // exempt until their fix chip lands (test 3 pins that they are still tracked).
-      val offenders = scannedByKey.values.toList
+      // Iterate `scan` (EVERY declaration), not `scannedByKey.values` (one per key). Duplicate
+      // route keys exist — `OpenApiRoutes` declares its pair in two `Routes` objects, so 125
+      // declarations dedupe to 123 — and `_.head` keeps the first in file-name order. Checking
+      // only the deduped head would let an unguarded declaration hide behind a guarded one in a
+      // file that sorts earlier, which is precisely the gap this invariant exists to close.
+      val offenders = scan
         .filter(_.entityParam)
         .filter(r => Census.get(r.key).contains(Tenancy.Scoped))
         .filter(_.checkers.isEmpty)
@@ -496,9 +519,12 @@ object MultiTenantRouteCensusSpec extends ZIOSpecDefault {
       "3 — the tracked-broken allowlist is explicit, non-empty, and every entry names an issue",
     ) {
       val tracked = Census.collect { case (k, Tenancy.ScopedTracked(n)) => k -> n }
-      // Non-empty: if this ever hits zero, the audit's findings are all fixed — delete the
-      // ScopedTracked case and this test with them, rather than leaving a dead escape hatch.
-      assertTrue(tracked.nonEmpty) &&
+      // SHRINK-ONLY. The audit opened this allowlist with three entries (#2564 ×2, #2565); it may
+      // never grow past that without a deliberate edit here. Deliberately NOT `nonEmpty`: that
+      // would turn the LAST security fix — the one that empties the list — into a red build, which
+      // reads as "your fix broke CI" rather than "you are done". When it does reach zero, delete
+      // the `ScopedTracked` case and this test rather than leaving a dead escape hatch.
+      assertTrue(tracked.size <= 3) &&
       // Every tracked entry must name a plausible issue number, not 0 / a placeholder.
       assert(tracked.values.filter(_ <= 0).toList)(
         Assertion.isEmpty ?? "ScopedTracked entries must name a real tracking issue",
@@ -519,17 +545,23 @@ object MultiTenantRouteCensusSpec extends ZIOSpecDefault {
       // pass with zero offenders because it saw zero checkers anywhere. Pin the opposite.
       val entityRoutes = scannedByKey.values.filter(_.entityParam).toList
       val guarded      = entityRoutes.filter(_.checkers.nonEmpty)
+      // Actuals at the time of the audit: 38 entity-parameterized routes, 28 of them guarded.
+      // Floors, not equalities, so adding a guarded route does not fail the build.
       assertTrue(
         entityRoutes.size > 30,
         guarded.size >= 25,
       ) &&
-      // And pin three specific, known-good compositions by name, so a rename of any ONE guard is
-      // caught even if the aggregate count still clears the floor.
-      assertTrue(
-        scannedByKey("PUT /api/profiles/{}").checkers.contains("requireProfileAccess"),
-        scannedByKey("DELETE /api/schedules/{}").checkers.contains("requireScheduleInHousehold"),
-        scannedByKey("DELETE /api/users/{}").checkers.contains("ownUser"),
-        scannedByKey("PATCH /api/devices/{}").checkers.contains("findByMacInHousehold"),
+      // EVERY `Checkers` string must occur somewhere in the routes source. `Checkers` mirrors
+      // function names defined in `Routes.scala` by string, so a rename (or a scalafmt reflow of
+      // the whitespace-sensitive `householdId == claims.hh`, which has exactly one occurrence)
+      // would otherwise make test 2 VACUOUSLY green — it would report zero offenders because it
+      // saw zero checkers, which reads as "all clear". This turns any such rename into a loud,
+      // specific failure naming the dead string, and supersedes pinning a hand-picked subset.
+      assert(Checkers.toList.sorted.filterNot(c => routesSource.exists(_.contains(c))))(
+        Assertion.isEmpty ?? (
+          "these Checkers strings match nothing in api/src/routes — a guard was renamed or " +
+            "reformatted, and test 2 is now blind to every route that used it. Update Checkers."
+        ),
       )
     },
     test("5 — a bare claims.hh is NOT accepted as a tenancy checker") {
@@ -539,6 +571,24 @@ object MultiTenantRouteCensusSpec extends ZIOSpecDefault {
       assertTrue(!Checkers.contains("claims.hh")) &&
       assertTrue(scannedByKey("POST /api/alerts/{}/approve").handler.contains("claims.hh")) &&
       assertTrue(scannedByKey("POST /api/alerts/{}/approve").checkers.isEmpty)
+    },
+    test("6 — every exemption from the choke-point invariant states a real reason") {
+      // `InstallWide` / `Operator` / `RouterToken` / `AgentToken` / `Unauthenticated` / `NoTenancy`
+      // are entirely exempt from test 2. That is correct by design, but it makes them the escape
+      // hatch: a future author can silence a genuine finding by declaring `InstallWide("")` and CI
+      // stays green. The reason is the whole audit trail for that decision, so it has to say
+      // something — a reviewer can then judge it in the diff.
+      val blank = Census.toList
+        .flatMap { case (k, t) => reasonOf(t).map(k -> _) }
+        .filter { case (_, r) => r.trim.length < 10 }
+        .map(_._1)
+        .sorted
+      assert(blank)(
+        Assertion.isEmpty ?? (
+          "these routes take an exemption from the tenancy invariant with an empty or " +
+            "placeholder reason — say why the route has no household dimension, or make it Scoped"
+        ),
+      )
     },
   )
 }
