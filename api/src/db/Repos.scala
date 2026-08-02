@@ -1056,8 +1056,17 @@ trait TrafficReportRepo {
    * `usage_report_interval` — ~60s, configurable; not a fixed 5-min bucket): returned ordered by
    * (router_id, mac, hostname, date, period_start). Filters are AND-composed. `macs = Some(Nil)`
    * returns an empty list (no devices match).
+   *
+   * #2568 (multi-tenant, epic #622): `household` AND-composes the router-scope predicate, like
+   * every sibling `traffic_reports` read (#2313). The MAC list alone is NOT sufficient scoping —
+   * post-V74 (#2277) the same MAC can be a device in two households, and an unscoped read returned
+   * the other tenant's rows for it (`GET /api/dashboard/now` rendered household B's hostnames on
+   * household A's device).
    */
-  def listTrafficRollupRows(f: TrafficRollupFilter): Task[List[TrafficRollupRow]]
+  def listTrafficRollupRows(
+      household: HouseholdId,
+      f: TrafficRollupFilter,
+  ): Task[List[TrafficRollupRow]]
 
   /**
    * Minimal projection used by presence-based minute accounting (see
@@ -3150,7 +3159,7 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
   }
 
   // TODO(#730): remove this read-side join once usage records carry dest_ip.
-  def listTrafficRollupRows(f: TrafficRollupFilter) = {
+  def listTrafficRollupRows(household: HouseholdId, f: TrafficRollupFilter) = {
     type Row = (RouterId, MacAddress, HostId, LocalDate, Instant, Instant, Int, Long, Long)
     val base    =
       fr"""SELECT tr.router_id, tr.mac,
@@ -3173,7 +3182,11 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
     val byHost  = f.host.fold(fr"")(h => fr"AND tr.host_value ILIKE ${s"%$h%"}")
     val bySince = f.since.fold(fr"")(s => fr"AND tr.period_end > $s")
     val byUntil = f.until.fold(fr"")(u => fr"AND tr.period_start < $u")
-    val sql_    = base ++ byMacs ++ byHost ++ bySince ++ byUntil ++
+    // #2568: the tenancy predicate — the MAC list is NOT scoping. Same fragment (and therefore the
+    // same `idx_routers_household` / `idx_traffic_reports_router` access path) as the six sibling
+    // `traffic_reports` reads scoped by #2313.
+    val byHh    = SqlFragments.householdRouterScope(household, "tr.router_id")
+    val sql_    = base ++ byHh ++ byMacs ++ byHost ++ bySince ++ byUntil ++
       fr"ORDER BY tr.router_id, tr.mac, tr.host_type, tr.host_value, tr.date, tr.period_start"
     sql_
       .query[Row]

@@ -71,7 +71,7 @@ object DashboardNowRoutes {
               trafficRepo,
               connRepo,
               appTimeLimitRepo,
-              Some(claims.hh),
+              claims.hh,
             )
               .mapError(ApiError.Db(_))
           } yield Response.json(response.toJson)
@@ -102,19 +102,24 @@ object DashboardNowRoutes {
       connRepo: ConnectionEventRepo,
       appTimeLimitRepo: AppTimeLimitRepo,
       // #2251 (multi-tenant, epic #622): the caller's household, threaded so the online-now read
-      // (`lastSeenByMacSince`) and the app-limit read are household-scoped. `None` (default) keeps
-      // the pre-multi-tenant unscoped behaviour for the single-household call sites / tests; for the
-      // single backfill household the scoped reads return the same rows. The device/profile lists
-      // passed in are ALREADY household-scoped by the caller — this only scopes the reads done here.
-      household: Option[HouseholdId] = None,
+      // (`lastSeenByMacSince`), the top-hosts read and the app-limit read are household-scoped. The
+      // device/profile lists passed in are ALREADY household-scoped by the caller — this only
+      // scopes the reads done here.
+      //
+      // #2568: REQUIRED, not `Option[HouseholdId] = None`. The optional form left the unscoped
+      // reads spellable, and the top-hosts read (`listTrafficRollupRows`) had no household
+      // predicate at all — for a MAC shared across households (representable since V74 / #2277)
+      // household A's NOW body carried household B's hostnames and active seconds.
+      household: HouseholdId,
   ): Task[DashboardNow] = {
     val visibleMacs = devices.map(_.mac)
     val since       = now.minus(TopHostsWindow)
     val connSince   = now.minus(RecentActivityWindow)
     for {
-      lastSeenF  <- connRepo.lastSeenByMacSince(connSince, household).fork
+      lastSeenF  <- connRepo.lastSeenByMacSince(connSince, Some(household)).fork
       rowsF      <- trafficRepo
         .listTrafficRollupRows(
+          household,
           TrafficRollupFilter(
             macs = Some(visibleMacs),
             host = None,
@@ -123,9 +128,7 @@ object DashboardNowRoutes {
           ),
         )
         .fork
-      appLimitsF <- household
-        .fold(appTimeLimitRepo.listAll)(appTimeLimitRepo.listAllForHousehold)
-        .fork
+      appLimitsF <- appTimeLimitRepo.listAllForHousehold(household).fork
       lastSeen   <- lastSeenF.join
       rows       <- rowsF.join
       appLimits  <- appLimitsF.join

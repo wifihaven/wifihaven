@@ -287,7 +287,7 @@ object SpaPush {
                   trafficRepo,
                   connRepo,
                   appTimeLimitRepo,
-                  Some(household),
+                  household,
                 )
                 payload = body.toJsonAST.getOrElse(Json.Obj())
                 _ <- ZIO.foreachDiscard(hhRecipients)(r =>
