@@ -59,6 +59,10 @@ export function DevicesPage() {
   // shown in place of the (otherwise empty/invalid) select. The creator itself
   // is `InlineProfileCreator`, shared with the row editor (#2560).
   const [creatingProfile, setCreatingProfile] = useState(false)
+  // Mirrored from the creator so the modal freezes the controls IT owns while a
+  // create is in flight — cancelling mid-flight would create a profile and then
+  // discard it unassigned, with nothing on screen saying so.
+  const [createPending, setCreatePending] = useState(false)
   const highlightMac = useHighlightFromQuery(devices)
 
   const upsertMutation = useMutation({
@@ -223,7 +227,9 @@ export function DevicesPage() {
                       setForm(f => ({...f, profileId: Number(e.target.value)}))
                     }
                   }}
-                  className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-3 text-brand-ink">
+                  disabled={createPending}
+                  data-testid="add-device-profile-select"
+                  className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-3 text-brand-ink disabled:opacity-60">
                   {profiles.map(p => <option key={p.profile.id} value={p.profile.id}>{p.profile.name}</option>)}
                   <option value={NEW_PROFILE_VALUE}>+ New profile…</option>
                 </select>
@@ -231,7 +237,12 @@ export function DevicesPage() {
               {creatingProfile && (
                 <InlineProfileCreator
                   testIdPrefix="add-device"
-                  hasProfiles={profiles.length > 0}
+                  isFirstProfile={profiles.length === 0}
+                  // Nothing to go back to on a zero-profile household — the
+                  // select isn't rendered, so cancelling would leave no way to
+                  // pick a profile at all.
+                  canCancel={profiles.length > 0}
+                  onPendingChange={setCreatePending}
                   onCreated={id => {
                     setForm(f => ({ ...f, profileId: id }))
                     setCreatingProfile(false)
@@ -241,7 +252,9 @@ export function DevicesPage() {
               )}
             </div>
             <div className="flex gap-3 pt-2">
-              <button onClick={() => setEditing(null)} className="flex-1 py-3 rounded-xl bg-brand-alt text-brand-text font-medium">Cancel</button>
+              {/* Closing mid-create would create the profile and then discard
+                  it unassigned, with nothing on screen saying so. */}
+              <button onClick={() => setEditing(null)} disabled={createPending} data-testid="add-device-cancel" className="flex-1 py-3 rounded-xl bg-brand-alt text-brand-text font-medium disabled:opacity-60">Cancel</button>
               <button onClick={save} disabled={creatingProfile} className="flex-1 py-3 rounded-xl bg-brand-accent text-white font-semibold disabled:opacity-60">Save</button>
             </div>
           </div>
@@ -320,10 +333,10 @@ function DeviceRowEditor({
               setProfileId(e.target.value === '' ? null : Number(e.target.value))
             }
           }}
-          // Frozen while the creator is open: the row autosaves, so a pick made
-          // between "Create profile" and the response would be silently
-          // overwritten by the created profile when it lands. Cancel is the way
-          // back out.
+          // Frozen for as long as the creator is open (not just while a request
+          // is in flight): the row autosaves, so a pick made between "Create
+          // profile" and the response would be silently overwritten when the
+          // created profile lands. Cancel is the way back out.
           disabled={creatingProfile}
           data-testid={`device-profile-select-${device.mac}`}
           className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-2.5 text-brand-ink disabled:opacity-60"
@@ -348,7 +361,8 @@ function DeviceRowEditor({
         <button
           type="button"
           onClick={onClose}
-          // Closing mid-create would leave the profile created but never
+          // Closing with the creator open would abandon it mid-flow, and
+          // closing mid-request would leave the profile created but never
           // assigned, with nothing on screen saying so.
           disabled={creatingProfile}
           className="text-xs text-brand-text hover:text-brand-ink bg-brand-alt px-3 py-1.5 rounded-lg transition-colors disabled:opacity-60"
@@ -358,7 +372,13 @@ function DeviceRowEditor({
         <div className="basis-full">
           <InlineProfileCreator
             testIdPrefix={`device-${device.mac}`}
-            hasProfiles={profiles.length > 0}
+            isFirstProfile={profiles.length === 0}
+            // Always cancellable, independently of whether any profile exists:
+            // this row freezes its select and Done while the creator is open,
+            // so Cancel is the only exit. Tying the two together would strand
+            // the operator whenever the profiles query errors and `profiles`
+            // falls back to [].
+            canCancel
             // Assigning through the same state the <select> writes means the
             // row's existing debounced PATCH {profileId} carries it — there is
             // no second save path.

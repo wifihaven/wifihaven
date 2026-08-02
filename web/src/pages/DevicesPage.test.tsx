@@ -180,11 +180,12 @@ describe('DevicesPage — add device with inline profile creation (#2367)', () =
     // Choosing the sentinel reveals the creator without leaving the flow.
     await user.selectOptions(screen.getByRole('combobox'), '__new__')
     // The with-profiles copy, not the first-profile copy.
+    const creator = await screen.findByTestId('add-device-new-profile')
     expect(
-      await screen.findByText('Name the new profile — it will be assigned to this device.'),
+      within(creator).getByText('Name the new profile — it will be assigned to this device.'),
     ).toBeInTheDocument()
     expect(
-      screen.queryByText('Create your first profile to assign this device.'),
+      within(creator).queryByText('Create your first profile to assign this device.'),
     ).not.toBeInTheDocument()
     const nameInput = await screen.findByTestId('add-device-new-profile-name')
     await user.type(nameInput, 'First Kid')
@@ -240,6 +241,37 @@ describe('DevicesPage — add device with inline profile creation (#2367)', () =
     expect(
       await screen.findByText('Create your first profile to assign this device.'),
     ).toBeInTheDocument()
+  })
+
+  // The same guard the row editor gets: closing or re-picking mid-request would
+  // leave the profile created server-side and never assigned, silently. The
+  // modal owns these controls, so the creator mirrors its pending state out.
+  it('freezes the modal select and Cancel while a create is in flight', async () => {
+    (api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([kidsProfile, adultsProfile])
+    let release: (v: { id: number }) => void = () => {}
+    ;(api.profiles.create as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
+      new Promise<{ id: number }>(res => { release = res }),
+    )
+
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('No devices yet.')
+    await user.click(screen.getByRole('button', { name: /\+ Add Device/ }))
+    await user.selectOptions(screen.getByTestId('add-device-profile-select'), '__new__')
+    await user.type(screen.getByTestId('add-device-new-profile-name'), 'Teens')
+
+    expect(screen.getByTestId('add-device-profile-select')).toBeEnabled()
+    expect(screen.getByTestId('add-device-cancel')).toBeEnabled()
+
+    await user.click(screen.getByTestId('add-device-create-profile'))
+
+    await waitFor(() => expect(screen.getByTestId('add-device-cancel')).toBeDisabled())
+    expect(screen.getByTestId('add-device-profile-select')).toBeDisabled()
+    expect(screen.getByTestId('add-device-create-profile')).toBeDisabled()
+
+    release({ id: 7 })
+    await waitFor(() => expect(screen.getByTestId('add-device-cancel')).toBeEnabled())
   })
 
   // #2560 — the operator on the new prod household reported "it won't let me
@@ -329,10 +361,12 @@ describe('DevicesPage — row editor inline profile creation (#2560)', () => {
     }
   })
 
-  // The row autosaves, so a pick made between "Create profile" and the response
-  // would be silently overwritten when the created profile lands. Likewise
-  // "Done" mid-flight would create a profile and never assign it.
-  it('freezes the profile select and Done while a create is in flight', async () => {
+  // Scoped to the creator being OPEN, not just to a request being in flight:
+  // the row autosaves, so a pick made between "Create profile" and the response
+  // would be silently overwritten when the created profile lands, and "Done"
+  // would abandon the flow. Cancel is therefore the only exit, and must always
+  // be offered — see the zero-profiles case below.
+  it('freezes the profile select and Done while the creator is open', async () => {
     (api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([ipad])
     ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([kidsProfile, adultsProfile])
 

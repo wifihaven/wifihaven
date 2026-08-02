@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { api } from '@/api/client'
 import { newProfileDefaults } from '@/api/profileDefaults'
@@ -26,18 +26,27 @@ export const NEW_PROFILE_VALUE = '__new__'
 // Profiles page uses (#978 via `newProfileDefaults`), so an inline-created
 // profile is indistinguishable from one made on /profiles.
 export function InlineProfileCreator({
-  testIdPrefix, hasProfiles, onCreated, onCancel,
+  testIdPrefix, isFirstProfile = false, canCancel, onCreated, onCancel, onPendingChange,
 }: {
   /** Namespaces this instance's data-testids, e.g. `add-device` → `add-device-create-profile`. */
   testIdPrefix: string
+  /** True on a zero-profile household, which the Add-Device modal opens straight into. Copy only. */
+  isFirstProfile?: boolean
   /**
-   * False only on a zero-profile household, which the Add-Device modal opens
-   * straight into: swaps the copy and drops Cancel, because there is no
-   * previous selection to go back to.
+   * Whether to offer Cancel. Deliberately NOT derived from `isFirstProfile`:
+   * callers that freeze their own controls while the creator is open rely on
+   * Cancel being the exit, and one boolean meaning both "which copy" and "is
+   * there a way out" is how a caller ends up with no exit at all.
    */
-  hasProfiles: boolean
+  canCancel: boolean
   onCreated: (profileId: number) => void
   onCancel: () => void
+  /**
+   * Notified while a create is in flight, so a caller that owns controls
+   * outside this component can freeze them for the same window. Without it
+   * each caller re-derives the guard and they drift.
+   */
+  onPendingChange?: (pending: boolean) => void
 }) {
   const invalidators = useInvalidators()
   const [name,  setName]  = useState('')
@@ -69,12 +78,21 @@ export function InlineProfileCreator({
     createMutation.mutate(trimmed)
   }
 
+  // Mirrored out so callers freeze the controls they own for exactly the window
+  // this component is busy, instead of each re-deriving it (#2560 review).
+  const pending = createMutation.isPending
+  useEffect(() => { onPendingChange?.(pending) }, [pending, onPendingChange])
+  // A successful create unmounts this component (the caller leaves the creating
+  // branch) while `pending` is still true, so the sync effect above never gets
+  // to report the falling edge — without this the caller stays frozen forever.
+  useEffect(() => () => { onPendingChange?.(false) }, [onPendingChange])
+
   return (
     <div data-testid={`${testIdPrefix}-new-profile`} className="mt-2 space-y-2">
       <p className="text-xs text-brand-text-muted">
-        {hasProfiles
-          ? 'Name the new profile — it will be assigned to this device.'
-          : 'Create your first profile to assign this device.'}
+        {isFirstProfile
+          ? 'Create your first profile to assign this device.'
+          : 'Name the new profile — it will be assigned to this device.'}
       </p>
       <input
         type="text"
@@ -82,6 +100,9 @@ export function InlineProfileCreator({
         onChange={e => setName(e.target.value)}
         data-testid={`${testIdPrefix}-new-profile-name`}
         placeholder="Profile name"
+        // A caller may disable the <select> the operator just used to get here,
+        // which drops focus to <body>; land it here instead.
+        autoFocus
         className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-3 text-brand-ink placeholder-brand-text-muted focus:outline-none focus:border-brand-accent"
       />
       {error && (
@@ -91,15 +112,17 @@ export function InlineProfileCreator({
         <button
           type="button"
           onClick={create}
-          disabled={createMutation.isPending}
+          disabled={pending}
           data-testid={`${testIdPrefix}-create-profile`}
           className="flex-1 py-2.5 rounded-xl bg-brand-accent text-white text-sm font-semibold disabled:opacity-60"
-        >{createMutation.isPending ? 'Creating…' : 'Create profile'}</button>
-        {hasProfiles && (
+        >{pending ? 'Creating…' : 'Create profile'}</button>
+        {canCancel && (
           <button
             type="button"
             onClick={onCancel}
-            className="flex-1 py-2.5 rounded-xl bg-brand-alt text-brand-text text-sm font-medium"
+            disabled={pending}
+            data-testid={`${testIdPrefix}-cancel-profile`}
+            className="flex-1 py-2.5 rounded-xl bg-brand-alt text-brand-text text-sm font-medium disabled:opacity-60"
           >Cancel</button>
         )}
       </div>
