@@ -217,6 +217,168 @@ describe('DevicesPage — add device with inline profile creation (#2367)', () =
     expect(await screen.findByTestId('add-device-new-profile-error')).toBeInTheDocument()
     expect(api.profiles.create).not.toHaveBeenCalled()
   })
+
+  // #2560 — the empty-household copy is a real, reachable state (openCreate puts
+  // a zero-profile household straight into the creator), not dead code. Pinned so
+  // a future refactor can't quietly orphan it again.
+  it('zero-profile household: the "create your first profile" copy is shown', async () => {
+    (api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('No devices yet.')
+    await user.click(screen.getByRole('button', { name: /\+ Add Device/ }))
+
+    expect(
+      await screen.findByText('Create your first profile to assign this device.'),
+    ).toBeInTheDocument()
+  })
+
+  // #2560 — the operator on the new prod household reported "it won't let me
+  // create a profile" with nothing on screen explaining why. `createProfile`
+  // awaited `mutateAsync` with no catch and no mutation `onError`, so a server
+  // rejection produced an unhandled promise and a silently inert button: the
+  // `-new-profile-error` slot only ever carried the blank-name validation.
+  it('a failing createProfile surfaces the server error inline', async () => {
+    (api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.profiles.create as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('profile limit reached'),
+    )
+
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('No devices yet.')
+    await user.click(screen.getByRole('button', { name: /\+ Add Device/ }))
+
+    await user.type(await screen.findByTestId('add-device-new-profile-name'), 'First Kid')
+    await user.click(screen.getByTestId('add-device-create-profile'))
+
+    expect(await screen.findByTestId('add-device-new-profile-error')).toHaveTextContent(
+      'profile limit reached',
+    )
+  })
+})
+
+// #2560 — the row editor's <select> offered only "No profile" + existing
+// profiles. A household with no usable profile therefore had no way to assign a
+// device from the row at all; the operator had to leave the page. The creator is
+// now the same component the Add-Device modal uses (single-source-of-truth).
+describe('DevicesPage — row editor inline profile creation (#2560)', () => {
+  const orphan: Device = {
+    id: 3, mac: 'aa:bb:cc:dd:ee:03', name: 'Old Tablet',
+    profileId: 999, profileName: null,
+    lastSeenIp: null, lastSeenAt: null,
+  }
+  const firstProfile: ProfileDetail = {
+    profile: { id: 7, name: 'First Kid', blockedCategories: [], paused: false, failureMode: 'last-known-good', crossDeviceOverlapMode: 'sum', pauseMode: 'soft', defaultDeny: false },
+    timeLimit: null,
+  }
+
+  it('zero-profile household: the row editor can create the first profile and assign it without leaving the page', async () => {
+    (api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([orphan])
+    ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([firstProfile])
+    ;(api.profiles.create as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 7 })
+
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    try {
+      renderPage()
+      const row = await screen.findByTestId(`device-row-${orphan.mac}`)
+      await user.click(within(row).getByRole('button', { name: /Edit/ }))
+      const editor = await screen.findByTestId(`device-editor-${orphan.mac}`)
+
+      // With no profiles the select must still offer a way forward.
+      const select = within(editor).getByTestId(`device-profile-select-${orphan.mac}`)
+      expect(within(editor).getByRole('option', { name: '+ New profile…' })).toBeInTheDocument()
+
+      await user.selectOptions(select, '__new__')
+      await user.type(
+        within(editor).getByTestId(`device-${orphan.mac}-new-profile-name`),
+        'First Kid',
+      )
+      await user.click(within(editor).getByTestId(`device-${orphan.mac}-create-profile`))
+
+      await waitFor(() =>
+        expect(api.profiles.create).toHaveBeenCalledWith(
+          expect.objectContaining({ name: 'First Kid' }),
+        )
+      )
+
+      // The created profile is assigned to the device by the row's autosave.
+      await vi.advanceTimersByTimeAsync(700)
+      await waitFor(() =>
+        expect(api.devices.patch).toHaveBeenCalledWith(orphan.mac, { profileId: 7 })
+      )
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('with existing profiles: "+ New profile…" is offered alongside them and assigns the created profile', async () => {
+    (api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([ipad])
+    ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce([kidsProfile, adultsProfile])
+      .mockResolvedValue([kidsProfile, adultsProfile, firstProfile])
+    ;(api.profiles.create as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 7 })
+
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    try {
+      renderPage()
+      const row = await screen.findByTestId(`device-row-${ipad.mac}`)
+      await user.click(within(row).getByRole('button', { name: /Edit/ }))
+      const editor = await screen.findByTestId(`device-editor-${ipad.mac}`)
+      const select = within(editor).getByTestId(`device-profile-select-${ipad.mac}`)
+
+      expect(within(editor).getByRole('option', { name: 'Kids' })).toBeInTheDocument()
+      await user.selectOptions(select, '__new__')
+      await user.type(
+        within(editor).getByTestId(`device-${ipad.mac}-new-profile-name`),
+        'First Kid',
+      )
+      await user.click(within(editor).getByTestId(`device-${ipad.mac}-create-profile`))
+
+      await vi.advanceTimersByTimeAsync(700)
+      await waitFor(() =>
+        expect(api.devices.patch).toHaveBeenCalledWith(ipad.mac, { profileId: 7 })
+      )
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a failing createProfile surfaces the server error inline in the row editor', async () => {
+    (api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([orphan])
+    ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.profiles.create as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('profile limit reached'),
+    )
+
+    const user = userEvent.setup()
+    renderPage()
+    const row = await screen.findByTestId(`device-row-${orphan.mac}`)
+    await user.click(within(row).getByRole('button', { name: /Edit/ }))
+    const editor = await screen.findByTestId(`device-editor-${orphan.mac}`)
+
+    await user.selectOptions(
+      within(editor).getByTestId(`device-profile-select-${orphan.mac}`),
+      '__new__',
+    )
+    await user.type(
+      within(editor).getByTestId(`device-${orphan.mac}-new-profile-name`),
+      'First Kid',
+    )
+    await user.click(within(editor).getByTestId(`device-${orphan.mac}-create-profile`))
+
+    expect(
+      await within(editor).findByTestId(`device-${orphan.mac}-new-profile-error`),
+    ).toHaveTextContent('profile limit reached')
+    expect(api.devices.patch).not.toHaveBeenCalled()
+  })
 })
 
 describe('DevicesPage — inline autosave edit (#1000)', () => {
