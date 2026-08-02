@@ -243,6 +243,36 @@ describe('DevicesPage — add device with inline profile creation (#2367)', () =
     ).toBeInTheDocument()
   })
 
+  // The creator's name input autofocuses when the operator PICKED it (the
+  // select they used may have been disabled on the way, dropping focus to
+  // <body>) — but not when the dialog auto-opens into it on an empty household,
+  // where stealing focus would jump them past the MAC field they must fill.
+  it('does not steal focus from the MAC field when the dialog auto-opens the creator', async () => {
+    (api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('No devices yet.')
+    await user.click(screen.getByRole('button', { name: /\+ Add Device/ }))
+
+    const nameInput = await screen.findByTestId('add-device-new-profile-name')
+    expect(nameInput).not.toHaveFocus()
+  })
+
+  it('focuses the name input when the operator picks "+ New profile…"', async () => {
+    (api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([kidsProfile, adultsProfile])
+
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('No devices yet.')
+    await user.click(screen.getByRole('button', { name: /\+ Add Device/ }))
+    await user.selectOptions(screen.getByTestId('add-device-profile-select'), '__new__')
+
+    expect(await screen.findByTestId('add-device-new-profile-name')).toHaveFocus()
+  })
+
   // The same guard the row editor gets: closing or re-picking mid-request would
   // leave the profile created server-side and never assigned, silently. The
   // modal owns these controls, so the creator mirrors its pending state out.

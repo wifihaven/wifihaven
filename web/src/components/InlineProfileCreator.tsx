@@ -100,9 +100,12 @@ export function InlineProfileCreator({
         onChange={e => setName(e.target.value)}
         data-testid={`${testIdPrefix}-new-profile-name`}
         placeholder="Profile name"
-        // A caller may disable the <select> the operator just used to get here,
-        // which drops focus to <body>; land it here instead.
-        autoFocus
+        // The operator got here by picking "+ New profile…", and the caller may
+        // have disabled that <select> on the way, dropping focus to <body> —
+        // so land it here. NOT when `isFirstProfile`: there the creator is
+        // auto-opened with the dialog, and stealing focus would jump the
+        // operator past the MAC field they have to fill first.
+        autoFocus={!isFirstProfile}
         className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-3 text-brand-ink placeholder-brand-text-muted focus:outline-none focus:border-brand-accent"
       />
       {error && (
