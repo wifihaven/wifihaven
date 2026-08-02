@@ -811,18 +811,23 @@ printf '%s' "$UNINSTALL_ERR_BODY" | grep -q '/etc/config/wifihaven' \
 # structurally, not per call site: exactly one function may append to either
 # list, so a third append site added later cannot reintroduce the empty-list
 # heading. (docs/process/single-source-of-truth.md — COLLAPSE.)
-_appenders=$(grep -v '^[[:space:]]*#' "$UNINSTALL" \
-  | grep -cE '(TOKEN_SURVIVORS|FAILED_PATHS)="\$(TOKEN_SURVIVORS|FAILED_PATHS) ' || true)
+# Match the self-append shape, not one exact spelling: `X="${X} …"` and a
+# missing separator are the same write, and failing on a no-op reformat would
+# make this assertion about formatting instead of the invariant. These two are
+# SUPPLEMENTARY — the load-bearing check is the behavioural case above, which
+# catches an append that slips past this pattern.
+APPEND_RE='(TOKEN_SURVIVORS|FAILED_PATHS)[[:space:]]*=[[:space:]]*"?\$\{?(TOKEN_SURVIVORS|FAILED_PATHS)\}?'
+count_appends() { grep -v '^[[:space:]]*#' | grep -cE "$APPEND_RE" || true; }
+_appenders=$(count_appends < "$UNINSTALL")
 [ "$_appenders" = 2 ] \
   && check "#2554 exactly one writer appends to the failure/credential lists" ok \
   || check "#2554 exactly one writer appends to the failure/credential lists" \
-           "found $_appenders append sites (expected the 2 inside record_failure) — the TOKEN_SURVIVORS ⊆ FAILED_PATHS invariant is back to per-site convention"
-sed -n '/^record_failure()/,/^}/p' "$UNINSTALL" \
-  | grep -cE '(TOKEN_SURVIVORS|FAILED_PATHS)="\$(TOKEN_SURVIVORS|FAILED_PATHS) ' \
-  | grep -q '^2$' \
+           "found $_appenders append sites (expected the 2 inside record_failure) — the TOKEN_SURVIVORS ⊆ FAILED_PATHS invariant may be back to per-site convention"
+_rf_appenders=$(sed -n '/^record_failure()/,/^}/p' "$UNINSTALL" | count_appends)
+[ "$_rf_appenders" = 2 ] \
   && check "#2554 both appends live in record_failure()" ok \
   || check "#2554 both appends live in record_failure()" \
-           "record_failure() does not hold both appends — the invariant is not structural"
+           "record_failure() holds $_rf_appenders of the 2 appends — the invariant is not structural"
 
 # A scrub that did not take must not be summarised as one that did. With uci
 # reachable but every delete failing and no token in the file, the file is left

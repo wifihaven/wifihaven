@@ -240,6 +240,13 @@ FAILED_PATHS=""
 # (the scrub has just re-checked the live uci tree); otherwise the file is
 # inspected — never assume a leftover is a credential, and never assume it isn't.
 record_failure() {
+  # Fail closed on an unrecognised flag: silently falling through to the file
+  # check would under-report a token that only exists in the uncommitted uci
+  # tree — the very case the flag exists for.
+  case "${2:-}" in
+    ""|token) : ;;
+    *) err "record_failure: unknown flag '$2' (expected 'token' or nothing)" ;;
+  esac
   FAILED_PATHS="$FAILED_PATHS $1"
   if [ "${2:-}" = token ] || file_has_router_token "$1"; then
     TOKEN_SURVIVORS="$TOKEN_SURVIVORS $1"
