@@ -357,7 +357,9 @@ ensure_wifihaven_config() {
   # the section the package ships (`config wifihaven 'wifihaven'`), and
   # `@wifihaven[0]` resolves to it.
   info "Creating the wifihaven UCI anchor section in $WIFIHAVEN_CONFIG (#2554)"
-  [ -f "$WIFIHAVEN_CONFIG" ] || : >"$WIFIHAVEN_CONFIG"
+  # `touch`, not `: >file`: a redirection failure on the `:` special built-in
+  # would kill this shell outright instead of surfacing through the err below.
+  [ -f "$WIFIHAVEN_CONFIG" ] || touch "$WIFIHAVEN_CONFIG"
   uci set wifihaven.wifihaven=wifihaven
   uci commit wifihaven
 

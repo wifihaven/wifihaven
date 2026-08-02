@@ -220,7 +220,10 @@ SCRUB_FAILED=0
 config_has_router_token() {
   [ -f "$WIFIHAVEN_CONFIG" ] || return 1
   [ -n "$(uci -q get wifihaven.@wifihaven[0].router_token 2>/dev/null || true)" ] && return 0
-  grep -Eq "^[[:space:]]*option[[:space:]]+router_token[[:space:]]+'..*'" \
+  # Match every spelling uci accepts — bare, single- and double-quoted key, and
+  # any non-empty value in any quoting. A narrower pattern would miss the token
+  # in a hand-edited config and report a wipe that did not happen.
+  grep -Eq "^[[:space:]]*option[[:space:]]+['\"]?router_token['\"]?[[:space:]]+['\"]?[^[:space:]'\"]" \
     "$WIFIHAVEN_CONFIG" 2>/dev/null
 }
 
@@ -228,9 +231,11 @@ scrub_wifihaven_config() {
   # -s, not -f: an already-empty file is nothing to do, and claiming otherwise
   # would break the "nothing to do — router is already clean" path below.
   [ -s "$WIFIHAVEN_CONFIG" ] || return 1
-  info "Wiping wifihaven UCI config..."
 
+  _had_state=0
   if uci -q show wifihaven >/dev/null 2>&1; then
+    _had_state=1
+    info "Wiping wifihaven UCI config..."
     # Unquoted expansion is intentional (one section name per word); `set -f`
     # stops a name like `@wifihaven[0]` being treated as a glob.
     set -f
@@ -244,17 +249,23 @@ scrub_wifihaven_config() {
 
   # Verify the secret is actually gone — never report a wipe we didn't do.
   if config_has_router_token; then
-    : >"$WIFIHAVEN_CONFIG" 2>/dev/null || true
+    # `cp /dev/null`, not `: >file`: `:` is a POSIX SPECIAL built-in, so a
+    # redirection error on it terminates a non-interactive ash/dash outright —
+    # neither `2>/dev/null` nor `|| true` catches it. That would kill the
+    # uninstaller on exactly the case this branch exists for (a read-only /etc
+    # overlay), before it could report the failure.
+    cp /dev/null "$WIFIHAVEN_CONFIG" 2>/dev/null || true
     if config_has_router_token; then
       SCRUB_FAILED=1
       note "FAILED to wipe router_token from $WIFIHAVEN_CONFIG"
     else
       note "truncated $WIFIHAVEN_CONFIG (router_token survived the UCI scrub)"
     fi
-  else
+  elif [ "$_had_state" -eq 1 ]; then
     note "cleared wifihaven UCI state (router_token wiped)"
   fi
 }
+
 scrub_wifihaven_config || true
 
 # Runtime artifacts under /etc/wifihaven: the cached policy snapshot (#309),
@@ -271,16 +282,21 @@ scrub_wifihaven_config || true
 # the runtime artifacts, then rmdir the directory if the package manager has
 # already taken everything else out of it.
 wifihaven_dir_pruned=0
+# /tmp/wifihaven-config.bak-2554 is install.sh's copy of a displaced config
+# (see its ensure_wifihaven_config) and can carry a router_token. tmpfs clears
+# it at the next reboot, but a router decommissioned or re-homed WITHOUT a
+# reboot would still be carrying the credential, so erase it here.
 for p in /etc/wifihaven/policy.json /etc/wifihaven/policy.json.tmp \
          /etc/wifihaven/blocklists \
-         /etc/wifihaven/block_page.crt /etc/wifihaven/block_page.key; do
+         /etc/wifihaven/block_page.crt /etc/wifihaven/block_page.key \
+         /tmp/wifihaven-config.bak-2554; do
   if [ -e "$p" ]; then
     rm -rf "$p"
     wifihaven_dir_pruned=1
   fi
 done
 if [ "$wifihaven_dir_pruned" -eq 1 ]; then
-  note "removed /etc/wifihaven runtime artifacts (policy snapshot, blocklist cache, block-page cert)"
+  note "removed wifihaven runtime artifacts (policy snapshot, blocklist cache, block-page cert, config backup)"
 fi
 rmdir /etc/wifihaven 2>/dev/null || true
 

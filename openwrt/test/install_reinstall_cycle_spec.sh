@@ -53,6 +53,14 @@ done
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
+# Run the simulations under the strictest POSIX shell available. The target is
+# BusyBox ash, and bash — which is /bin/sh on macOS — is lenient about things
+# ash is not: a redirection error on a POSIX *special* built-in (`:`, `.`,
+# `exec`, …) terminates ash/dash outright and is not catchable with `2>/dev/null
+# || true`, while bash merely warns. Simulating under bash would hide exactly
+# that class of bug.
+SIM_SH=$(command -v dash 2>/dev/null || command -v ash 2>/dev/null || printf 'sh')
+
 # ---------------------------------------------------------------------------
 # 1. uninstall.sh must not delete package-owned files.
 # ---------------------------------------------------------------------------
@@ -168,14 +176,16 @@ _sysctl_drift=$(cat "$TMP/sysctl-drift")
 # `uhttpd.main.listen_http='0.0.0.0:80'` plus an unrelated 8081 elsewhere.
 UHTTPD_MATCHER_CORE="^uhttpd.[^.]+.listen_http=.*'127.0.0.1:8081'"
 normalized_matcher() {
-  grep "listen_http=" "$1" | grep "8081" | head -n1 | tr -d '\\ '
+  # Comment-stripped, so prose mentioning listen_http can never satisfy the pin
+  # while the code drifts.
+  grep -v '^[[:space:]]*#' "$1" | grep "listen_http=" | grep "8081" | head -n1 | tr -d '\\ '
 }
-for f in "$ROOT/files/usr/lib/wifihaven/setup-uhttpd-block-page.sh" "$UNINSTALL" "$INSTALL"; do
-  label=$(basename "$f")
-  printf '%s' "$(normalized_matcher "$f")" | grep -qF "$UHTTPD_MATCHER_CORE" \
-    && check "SSOT: $label uses the anchored block-page listener matcher" ok \
-    || check "SSOT: $label uses the anchored block-page listener matcher" \
-             "expected a matcher normalising to '$UHTTPD_MATCHER_CORE', got '$(normalized_matcher "$f")'"
+for _m_f in "$ROOT/files/usr/lib/wifihaven/setup-uhttpd-block-page.sh" "$UNINSTALL" "$INSTALL"; do
+  _m_label=$(basename "$_m_f")
+  printf '%s' "$(normalized_matcher "$_m_f")" | grep -qF "$UHTTPD_MATCHER_CORE" \
+    && check "SSOT: $_m_label uses the anchored block-page listener matcher" ok \
+    || check "SSOT: $_m_label uses the anchored block-page listener matcher" \
+             "expected a matcher normalising to '$UHTTPD_MATCHER_CORE', got '$(normalized_matcher "$_m_f")'"
 done
 
 # ---------------------------------------------------------------------------
@@ -255,7 +265,7 @@ UHTTPD
 
 # Run shell code with the extracted functions in scope against fake root $FR.
 run_sim() {
-  sh -c "
+  "$SIM_SH" -c "
     WIFIHAVEN_CONFIG='$FR/etc/config/wifihaven'
     WIFIHAVEN_SYSCTL='$FR/etc/sysctl.d/99-wifihaven.conf'
     WIFIHAVEN_UCI_DEFAULTS='$FR/etc/uci-defaults'
@@ -452,7 +462,7 @@ EOF
 
 run_uninstall_sim() {
   # $1 = extra env assignments
-  sh -c "
+  "$SIM_SH" -c "
     WIFIHAVEN_CONFIG='$FR/etc/config/wifihaven'
     $1
     $(uninstall_sim_prelude)
@@ -508,6 +518,39 @@ case "$out" in
   *) check "#2554 the fail-safe reports what it actually did" \
            "no note about the truncation fail-safe: $out" ;;
 esac
+
+# --- Scenario J: an unwritable config must be REPORTED, not fatal ------------
+# A read-only /etc overlay is a routine OpenWrt state (full or corrupt flash).
+# The truncation must not take the shell down with it — `: >file` would, since
+# `:` is a POSIX special built-in whose redirection errors are not catchable —
+# and the operator must be told the credential is still on disk.
+new_enrolled_config wipe-unwritable
+chmod 444 "$FR/etc/config/wifihaven"
+out=$(run_uninstall_sim "SIM_UCI_DELETE_BROKEN=1" || printf 'SIM-EXITED')
+chmod 644 "$FR/etc/config/wifihaven"
+case "$out" in
+  *EXTRACTION-FAILED*) check "#2554 an unwritable config is reported, not fatal" "the scrub never ran: $out" ;;
+  *"FAILED to wipe router_token"*) check "#2554 an unwritable config is reported, not fatal" ok ;;
+  *) check "#2554 an unwritable config is reported, not fatal" \
+           "the scrub neither wiped nor reported (a special-built-in redirection error kills ash/dash here): $out" ;;
+esac
+
+# The token check must recognise every spelling uci accepts, not just the one
+# the agent happens to write — a hand-edited config is exactly the state the
+# file-level fail-safe exists for.
+for _spelling in "option 'router_token' 'TOKENVAL'" \
+                 "option router_token TOKENVAL" \
+                 "option router_token \"TOKENVAL\""; do
+  new_enrolled_config "wipe-spelling"
+  printf "config wifihaven 'wifihaven'\n\t%s\n" "$_spelling" > "$FR/etc/config/wifihaven"
+  out=$(run_uninstall_sim "SIM_UCI_DELETE_BROKEN=1" || printf 'SIM-EXITED')
+  if grep -q TOKENVAL "$FR/etc/config/wifihaven" 2>/dev/null; then
+    check "#2554 token check recognises: $_spelling" \
+          "the token survived and the scrub reported success: $out"
+  else
+    check "#2554 token check recognises: $_spelling" ok
+  fi
+done
 
 printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
