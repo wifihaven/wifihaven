@@ -60,6 +60,13 @@ object RouterWsConnectionsGaugeSpec extends ZIOSpec[Any] {
 
   /**
    * The live `router_ws_connections_active` value, read off the same unlabelled key it is set on.
+   *
+   * Asserted ABSOLUTELY, unlike [[supersededTotal]] below which is asserted as a delta. That is not
+   * an oversight: the ZIO metric registry is JVM-global, but a gauge is SET (`publishActive` writes
+   * the recomputed total), not accumulated, so a before/after difference would not survive another
+   * writer either — there is no delta formulation of a set-valued metric that is more robust than
+   * the absolute one. `PartitionMaintenanceJobSpec` reads `partition_weeks_ahead` the same way. The
+   * counter below is additive, so there a delta IS strictly better and is used.
    */
   private def connectionsActive: UIO[Double] =
     Metric.gauge("router_ws_connections_active").value.map(_.value)
