@@ -713,23 +713,30 @@ object SpaPush {
    * §4.4). Admin/adult see ALL profiles (`None` = no restriction); a child sees only the profiles
    * linked to its username (`UserProfileRepo.listProfilesForUsername`). Keyed by [[visibilityKey]]
    * so the per-child repo lookup runs once per distinct child, not once per connection.
+   *
+   * #2532: the key carries the recipient's HOUSEHOLD as well as its username, because a username is
+   * unique only per household (V65/V68) — two tenants' children can share a name, and keying on the
+   * name alone would both mis-share a cached set between them and widen the lookup itself.
    */
   private def resolveVisibleSets(
       recipients: List[SpaRecipient],
       userProfileRepo: UserProfileRepo,
-  ): Task[Map[(UserRole, Option[String]), Option[Set[ProfileId]]]] =
+  ): Task[Map[(UserRole, Option[String], HouseholdId), Option[Set[ProfileId]]]] =
     ZIO
       .foreach(recipients.map(visibilityKey).distinct) {
-        case key @ (UserRole.Admin | UserRole.Adult, _) =>
+        case key @ (UserRole.Admin | UserRole.Adult, _, _) =>
           ZIO.succeed(key -> Option.empty[Set[ProfileId]])
-        case key @ (UserRole.Child, username)           =>
+        case key @ (UserRole.Child, username, household)   =>
           username
-            .fold(ZIO.succeed(List.empty[ProfileId]))(userProfileRepo.listProfilesForUsername)
+            .fold(ZIO.succeed(List.empty[ProfileId]))(
+              userProfileRepo.listProfilesForUsername(household, _),
+            )
             .map(pids => key -> Some(pids.toSet))
       }
       .map(_.toMap)
 
-  private def visibilityKey(r: SpaRecipient): (UserRole, Option[String]) = (r.role, r.username)
+  private def visibilityKey(r: SpaRecipient): (UserRole, Option[String], HouseholdId) =
+    (r.role, r.username, r.household)
 
   /** Decode the `appUsage` subscription's `{profileId}` param (the expanded card). */
   private def decodeAppUsageProfileId(params: Json): Option[ProfileId] =

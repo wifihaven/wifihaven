@@ -37,6 +37,8 @@ import scala.jdk.CollectionConverters.*
  *   - Only the household-relevant list reads that HAVE a `…ForHousehold` sibling: `listAll`,
  *     `listAllIncludingGlobal`, `listAllMappings`. `appRepo.listAll` is EXEMPT — the app catalog is
  *     template-global by design (§0.2), not a tenant table — as is `listAllHostMappings`.
+ *     `listAllMappings` itself no longer exists on any repo (#2532 removed `UserProfileRepo`'s) —
+ *     the token is named here for the scan's own history, not because anything can still match it.
  */
 object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
 
@@ -81,26 +83,15 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
    * file name → the household-relevant unscoped read tokens it is KNOWN to contain today. Each is
    * tracked for scoping by #2126 (usage/analytics/push + named_schedules) or #2120 (ws push).
    */
-  private val Allowlist: Map[String, Set[String]] = Map(
-    // #2126 — SPA dashboard "now" view: the app-limit read WAS `appTimeLimitRepo.listAll`, reached
-    // when `DashboardNowRoutes.computeNow` still took an optional household. #2568 made that
-    // household required, so the read is `listAllForHousehold` and `AppTimeLimitRepo.listAll` was
-    // removed outright (the #2257 device/profile precedent) — no allowlist entry is needed. (#2251
-    // had already scoped the device/profile reads to `listAllForHousehold(claims.hh)`; #2257 renamed
-    // the cross-tenant device/profile reads to `listAllAcrossHouseholds`.)
-    // #2126 — user↔profile mappings; today filtered by the scoped `users` list it is joined against,
-    // so not an active leak, but the read itself is unscoped (defense-in-depth follow-up).
-    "Routes.scala" -> Set("userProfileRepo.listAllMappings"),
-    // #2126 — `named_schedules` GET /api/schedules is now household-scoped: V72 added
-    // `named_schedules.household_id` and `ScheduleRoutes` reads `listAllForHousehold(claims.hh)`
-    // (the per-id routes are guarded by `requireScheduleInHousehold`). The bare `scheduleRepo.listAll`
-    // no longer exists, so no allowlist entry is needed.
-    // #2257 — DebugRoutes / SpaPush / UsageRoutes previously held unscoped `deviceRepo.listAll` /
-    // `profileRepo.listAll`. Those are now household-scoped (`listAllForHousehold`) in every request
-    // handler + SPA push builder; DebugRoutes' loopback-only dump is an explicit
-    // `foreach(distinctHouseholds)(listAllForHousehold)` loop — none match this scan any more, so no
-    // allowlist entry is needed. The device/profile `listAll` methods themselves no longer exist.
-  )
+  // #2568 scoped the DashboardNow app-limit read and removed `AppTimeLimitRepo.listAll` outright
+  // (the #2257 device/profile precedent). #2532 did the same for the user↔profile mapping read:
+  // `listMappingsForHousehold(claims.hh)` replaced it and the bare `listAllMappings` no longer
+  // exists on `UserProfileRepo`. #2126 already scoped `scheduleRepo.listAll` (named_schedules) to
+  // `listAllForHousehold`. #2257 scoped every user-facing `deviceRepo.listAll` / `profileRepo.listAll`
+  // and removed the bare cross-tenant methods entirely. Every previously-tracked unscoped read is now
+  // either scoped or removed, so the allowlist is EMPTY — a cross-tenant read can no longer be spelled
+  // in a route at all. See the "non-vacuous" test below for how the scan proves it still matches.
+  private val Allowlist: Map[String, Set[String]] = Map.empty
 
   private def householdRelevantReads(src: String): Set[String] =
     UnscopedRead
@@ -121,19 +112,13 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
       assertTrue(offenders.isEmpty)
     },
     // Prove the scan actually SEES the reads it is guarding — otherwise an empty result would pass
-    // vacuously if the regex ever silently stopped matching.
-    test("the scan is non-vacuous — it finds the known tracked reads") {
-      val all =
-        routeFiles.flatMap(p => householdRelevantReads(new String(Files.readAllBytes(p)))).toSet
-      // The anchor migrates as reads get scoped. #2257: `deviceRepo.listAll` / `profileRepo.listAll`
-      // no longer exist (scoped or renamed to `listAllAcrossHouseholds`). #2126 then scoped
-      // `scheduleRepo.listAll` (named_schedules) to `listAllForHousehold`. #2568 scoped the
-      // DashboardNow app-limit read and REMOVED `AppTimeLimitRepo.listAll`, retiring the previous
-      // anchor. The one remaining tracked non-catalog unscoped read — and the sole entry left in
-      // `Allowlist` — is `userProfileRepo.listAllMappings` (`Routes.scala`, #2126), so that is what
-      // proves the regex still matches. If IT ever gets scoped, this must be re-anchored again (or,
-      // once `Allowlist` is empty, replaced by a fixture asserting the regex matches a known string).
-      assertTrue(all.contains("userProfileRepo.listAllMappings"))
+    // vacuously if the regex ever silently stopped matching. #2532 scoped the last tracked route-file
+    // read (`userProfileRepo.listAllMappings`), so `Allowlist` is now empty and there is no remaining
+    // real call site to anchor on — this asserts against a FIXTURE string instead, matching the regex
+    // directly rather than through `routeFiles`.
+    test("the scan is non-vacuous — the regex still matches its target shape") {
+      val fixture = "up.listAllMappings"
+      assertTrue(householdRelevantReads(fixture).contains("up.listAllMappings"))
     },
     // The exemption for the global app catalog must actually fire (else it is dead config).
     test("appRepo.listAll (global catalog) is exempt, never flagged") {

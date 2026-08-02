@@ -237,7 +237,7 @@ inventory (trait declarations in [`Repos.scala`](../../api/src/db/Repos.scala)):
 | Repo read | Decl | Callers to scope |
 | --- | --- | --- |
 | `UserRepo.listAll` | [`:87`](../../api/src/db/Repos.scala) | user admin routes ([`Routes.scala:113`](../../api/src/routes/Routes.scala),[`:635`](../../api/src/routes/Routes.scala)) |
-| `UserProfileRepo.listAllMappings` | [`:95`](../../api/src/db/Repos.scala) | user↔profile admin |
+| ~~`UserProfileRepo.listAllMappings`~~ | — | **CLOSED (#2532).** Deleted; `listMappingsForHousehold(household)` (joined through `users.household_id`) is the only mapping read. Same pass gave `listProfilesForUsername` a `household` parameter — a username is unique only per household (V65/V68), so the bare-username lookup unioned rows across tenants. The id-keyed methods (`listProfilesForUser` / `listUsersForProfile` / `hasAccess` / the link writes) stay unscoped by design: their argument is a globally-unique id naming exactly one row, and reaching it with a foreign id is `ownUser` / `requireProfileInHousehold`'s job. |
 | `ProfileRepo.listAll` | [`:111`](../../api/src/db/Repos.scala) | profile list, snapshot, time-status |
 | `ProfileRepo.listAllIncludingGlobal` | [`:114`](../../api/src/db/Repos.scala) | snapshot builder ([`PolicyService.scala:316`](../../api/src/policy/PolicyService.scala)) |
 | `NamedScheduleRepo.listAll` | [`:148`](../../api/src/db/Repos.scala) | schedule admin |

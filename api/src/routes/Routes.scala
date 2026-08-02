@@ -194,7 +194,7 @@ object AuthRoutes {
           val handle: ZIO[Any, ApiError, Response] = for {
             claims <- requireAuth(req, auth)
             pids   <- userProfileRepo
-              .listProfilesForUsername(claims.sub)
+              .listProfilesForUsername(claims.hh, claims.sub)
               .mapError(ApiError.Db(_))
           } yield Response.json(
             MeResponse(
@@ -251,7 +251,10 @@ object AuthRoutes {
             claims   <- requireAdmin(req, auth)
             // #2108: an admin enumerates only their own household's users (design §2 gap 4).
             users    <- userRepo.listAllForHousehold(claims.hh).mapError(ApiError.Db(_))
-            mappings <- userProfileRepo.listAllMappings.mapError(ApiError.Db(_))
+            // #2532: the mapping read is household-scoped too — the handler already keys it
+            // against the scoped `users` list, but an unpredicated table read on a request path is
+            // the leak class #2251/#2120 came from, so it is not spellable any more.
+            mappings <- userProfileRepo.listMappingsForHousehold(claims.hh).mapError(ApiError.Db(_))
             byUser    = mappings.groupBy(_._1).view.mapValues(_.map(_._2)).toMap
             summaries = users.map(u =>
               UserSummary(u.id, u.username, u.role, byUser.getOrElse(u.id, Nil)),
@@ -2651,7 +2654,7 @@ def visibleProfiles(
   if claims.role == "admin" || claims.role == "adult" then ZIO.succeed(all)
   else
     upRepo
-      .listProfilesForUsername(claims.sub)
+      .listProfilesForUsername(claims.hh, claims.sub)
       .mapError(ApiError.Db(_))
       .map(pids => all.filter(p => pids.contains(p.id)))
 
@@ -2663,7 +2666,7 @@ def filterDevices(
   if claims.role == "admin" || claims.role == "adult" then ZIO.succeed(all)
   else
     upRepo
-      .listProfilesForUsername(claims.sub)
+      .listProfilesForUsername(claims.hh, claims.sub)
       .mapError(ApiError.Db(_))
       .map(pids => all.filter(d => d.profileId.exists(pids.contains)))
 
@@ -2675,7 +2678,7 @@ def filterLogs(
   if claims.role == "admin" || claims.role == "adult" then ZIO.succeed(all)
   else
     upRepo
-      .listProfilesForUsername(claims.sub)
+      .listProfilesForUsername(claims.hh, claims.sub)
       .mapError(ApiError.Db(_))
       .map(pids => all.filter(l => l.profileId.exists(pids.contains)))
 
@@ -2774,7 +2777,7 @@ def requireProfileReadAccess(
     if claims.role == "admin" || claims.role == "adult" then ZIO.succeed(())
     else
       upRepo
-        .listProfilesForUsername(claims.sub)
+        .listProfilesForUsername(claims.hh, claims.sub)
         .mapError(ApiError.Db(_))
         .flatMap { pids =>
           if pids.contains(profileId) then ZIO.succeed(())
@@ -2806,7 +2809,7 @@ def requireProfileAccess(
     if claims.role == "admin" then ZIO.succeed(())
     else
       upRepo
-        .listProfilesForUsername(claims.sub)
+        .listProfilesForUsername(claims.hh, claims.sub)
         .mapError(ApiError.Db(_))
         .flatMap { pids =>
           if pids.contains(profileId) then ZIO.succeed(())
