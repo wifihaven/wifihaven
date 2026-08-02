@@ -619,13 +619,26 @@ elif [ "$(id -u)" -eq 0 ]; then
 else
   new_enrolled_config wipe-unwritable
   chmod 444 "$FR/etc/config/wifihaven"
-  out=$(run_uninstall_sim "SIM_UCI_DELETE_BROKEN=1" || printf 'SIM-EXITED')
+  out=$(run_uninstall_sim "SIM_UCI_DELETE_BROKEN=1" \
+        "scrub_wifihaven_config || true; printf 'FAILED_PATHS=[%s] TOKEN_SURVIVORS=[%s]\\n' \"\$FAILED_PATHS\" \"\$TOKEN_SURVIVORS\"" \
+        || printf 'SIM-EXITED')
   chmod 644 "$FR/etc/config/wifihaven"
   case "$out" in
     *EXTRACTION-FAILED*) check "#2554 an unwritable config is reported, not fatal" "the scrub never ran: $out" ;;
     *"FAILED to wipe router_token"*) check "#2554 an unwritable config is reported, not fatal" ok ;;
     *) check "#2554 an unwritable config is reported, not fatal" \
              "the scrub neither wiped nor reported — a redirection error on a POSIX special built-in (\`: >file\`) kills ash/dash here, uncatchably: $out" ;;
+  esac
+
+  # A surviving credential must land in BOTH lists. TOKEN_SURVIVORS alone left
+  # the terminal error printing "could not remove:" with nothing after it — a
+  # heading that promises a list and delivers none, in the likeliest failure
+  # case (read-only /etc).
+  _fp=$(printf '%s\n' "$out" | sed -n 's/.*FAILED_PATHS=\[\([^]]*\)\].*/\1/p')
+  case "$_fp" in
+    *"/etc/config/wifihaven"*) check "#2554 a surviving credential is also recorded as a removal failure" ok ;;
+    *) check "#2554 a surviving credential is also recorded as a removal failure" \
+             "FAILED_PATHS=[$_fp] omits the config — the terminal error would print an empty enumeration" ;;
   esac
 fi
 
@@ -753,25 +766,40 @@ else
         "prune_runtime_artifacts || true; printf 'TOKEN_SURVIVORS=[%s]\\n' \"\$TOKEN_SURVIVORS\"" \
         || printf 'SIM-EXITED')
   chmod 755 "$FR/tmp"
-  case "$out" in
-    *"TOKEN_SURVIVORS=[]"*) check "#2554 a token-free surviving backup is not called a bearer-token failure" ok ;;
-    *) check "#2554 a token-free surviving backup is not called a bearer-token failure" \
-             "a backup with no router_token was reported as a surviving credential: $out" ;;
-  esac
+  # Precondition: the assertion is only meaningful if the backup ACTUALLY
+  # survived. An empty TOKEN_SURVIVORS is equally true when the prune succeeded,
+  # so without this the case passes vacuously wherever chmod 555 stops biting.
+  if [ ! -e "$FR/tmp/wifihaven-config.bak-2554" ]; then
+    skip "#2554 a token-free surviving backup is not called a bearer-token failure" \
+         "the read-only parent did not stop rm here, so nothing survived to judge"
+  else
+    case "$out" in
+      *"TOKEN_SURVIVORS=[]"*) check "#2554 a token-free surviving backup is not called a bearer-token failure" ok ;;
+      *) check "#2554 a token-free surviving backup is not called a bearer-token failure" \
+               "a backup with no router_token was reported as a surviving credential: $out" ;;
+    esac
+  fi
 fi
 
 # The terminal error must name what actually failed. Pointing the operator at a
 # clean /etc/config/wifihaven while the token sits in /tmp is worse than
 # silence — they would empty the wrong file and stop looking.
+# The err bodies are multi-line, so match anywhere in the terminal block rather
+# than on the `err "` line itself — what matters is that the operator is shown
+# the RUNTIME lists, never a hardcoded path.
 UNINSTALL_TAIL=$(sed -n '/^if \[ -n "\$TOKEN_SURVIVORS" \]/,$p' "$UNINSTALL")
-printf '%s' "$UNINSTALL_TAIL" | grep -Eq '^[[:space:]]*err ".*\$TOKEN_SURVIVORS' \
+printf '%s' "$UNINSTALL_TAIL" | grep -q '\$TOKEN_SURVIVORS' \
   && check "#2554 the terminal error names the files that actually held a token" ok \
   || check "#2554 the terminal error names the files that actually held a token" \
            "the error message does not interpolate \$TOKEN_SURVIVORS — it would name a file that may be clean"
-printf '%s' "$UNINSTALL_TAIL" | grep -Eq '^[[:space:]]*err ".*\$FAILED_PATHS' \
+printf '%s' "$UNINSTALL_TAIL" | grep -q '\$FAILED_PATHS' \
   && check "#2554 a non-credential removal failure is reported separately" ok \
   || check "#2554 a non-credential removal failure is reported separately" \
            "a failed prune of non-secret state would be reported as a bearer-token failure"
+printf '%s' "$UNINSTALL_TAIL" | grep -Eq "^[[:space:]]*(err |[A-Za-z]).*/etc/config/wifihaven" \
+  && check "#2554 the terminal error hardcodes no path" \
+           "the terminal error names /etc/config/wifihaven literally — it would point at a file that may be clean" \
+  || check "#2554 the terminal error hardcodes no path" ok
 
 # A scrub that did not take must not be summarised as one that did. With uci
 # reachable but every delete failing and no token in the file, the file is left

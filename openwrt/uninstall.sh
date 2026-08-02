@@ -283,6 +283,11 @@ scrub_wifihaven_config() {
     # overlay), before it could report the failure.
     cp /dev/null "$WIFIHAVEN_CONFIG" 2>/dev/null || true
     if config_has_router_token; then
+      # Both lists: the file is a thing we failed to clear (FAILED_PATHS) AND
+      # a surviving credential (TOKEN_SURVIVORS). Recording only the latter left
+      # the terminal error printing an empty "could not remove" enumeration in
+      # the read-only-/etc case, which is the likeliest one.
+      FAILED_PATHS="$FAILED_PATHS $WIFIHAVEN_CONFIG"
       TOKEN_SURVIVORS="$TOKEN_SURVIVORS $WIFIHAVEN_CONFIG"
       note "FAILED to wipe router_token from $WIFIHAVEN_CONFIG"
     else
@@ -380,9 +385,12 @@ printf '\nRe-run install.sh on this router for a fresh enrollment.\n'
 # failed — pointing the operator at the wrong path is worse than saying nothing,
 # because they would empty a clean file and stop looking.
 if [ -n "$TOKEN_SURVIVORS" ]; then
-  err "the router bearer token could NOT be removed from:$TOKEN_SURVIVORS
-Delete or empty those files by hand before decommissioning or re-homing this router.
-Everything that could not be removed:$FAILED_PATHS"
+  # TOKEN_SURVIVORS is a subset of FAILED_PATHS, so print the full list once and
+  # then call out the credential-bearing subset — never a heading with an empty
+  # list under it.
+  err "could not remove:$FAILED_PATHS
+The router bearer token is STILL PRESENT in:$TOKEN_SURVIVORS
+Delete or empty those files by hand before decommissioning or re-homing this router."
 elif [ -n "$FAILED_PATHS" ]; then
   err "could not remove:$FAILED_PATHS
 These are wifihaven runtime state (not package files) — remove them by hand. No
