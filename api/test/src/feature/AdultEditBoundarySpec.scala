@@ -414,10 +414,12 @@ object AdultEditBoundarySpec
         assertTrue(after.isEmpty) &&
         assertTrue(kid == Status.Forbidden)
     },
-    test("the four /api/blocklists management routes admit an adult") {
-      // `refresh` answers 404 because this suite wires an EMPTY bundled map — the point is that it
-      // gets that far, and that the admin gets the identical answer, so the role gate is provably
-      // not what differentiates the two callers. The child is still refused at the gate.
+    test("the /api/blocklists READ routes admit an adult; the two mutators are operator-only") {
+      // #2535/#2567 narrowed `clear` and `refresh` from `requireWriter` to `requireOperator`: they
+      // mutate the install-wide `blocklist_domains` catalog, which carries no household dimension.
+      // This suite's household is NOT household 1, so its admin is refused alongside its adult —
+      // the point is that the refusal is about tenancy, not role. The READS stay adult-admissible
+      // (bundled public data on live SPA surfaces). Full pin: `CatalogOperatorGateSpec`.
       for {
         _       <- cleanDb
         fx      <- fixture
@@ -430,30 +432,32 @@ object AdultEditBoundarySpec
         kid     <- statusOf(rts, Method.GET, "/api/blocklists", fx.child)
       } yield assertTrue(list == Status.Ok) &&
         assertTrue(hosts == Status.Ok) &&
-        assertTrue(clear == Status.Ok) &&
-        assertTrue(refresh == Status.NotFound) &&
+        assertTrue(clear == Status.Forbidden) &&
+        assertTrue(refresh == Status.Forbidden) &&
         assertTrue(asAdmin == refresh) &&
         assertTrue(kid == Status.Forbidden)
     },
-    test("the three admin-ish /api/apps maintenance routes admit an adult") {
-      // `reset-to-template` answers 404 for a nonexistent app id — again, past the gate, and
-      // identical for an admin.
+    test("the three /api/apps maintenance routes are operator-only, not adult-or-admin") {
+      // #2567: `DELETE /api/apps/:id`, `seed-from-templates` and `reset-to-template` all write the
+      // install-wide `apps` / `app_hosts` catalog, so they moved to `requireOperator`. As above,
+      // this suite's admin is refused too because its household is not household 1 — and the app
+      // row survives the refused DELETE, which is the property that actually matters.
       for {
-        _       <- cleanDb
-        fx      <- fixture
-        appRepo <- ZIO.service[AppRepo]
-        rts     <- appRoutes
-        aid     <- appRepo.create("Doomed App", "doomed-app", None, None)
-        del     <- statusOf(rts, Method.DELETE, s"/api/apps/${aid.value}", fx.adult)
-        gone    <- appRepo.findById(aid)
-        seed    <- statusOf(rts, Method.POST, "/api/apps/seed-from-templates", fx.adult)
-        reset   <- statusOf(rts, Method.POST, "/api/apps/999999/reset-to-template", fx.adult)
-        asAdmin <- statusOf(rts, Method.POST, "/api/apps/999999/reset-to-template", fx.admin)
-        kid     <- statusOf(rts, Method.POST, "/api/apps/seed-from-templates", fx.child)
-      } yield assertTrue(del == Status.Ok) &&
-        assertTrue(gone.isEmpty) &&
-        assertTrue(seed == Status.Ok) &&
-        assertTrue(reset == Status.NotFound) &&
+        _        <- cleanDb
+        fx       <- fixture
+        appRepo  <- ZIO.service[AppRepo]
+        rts      <- appRoutes
+        aid      <- appRepo.create("Doomed App", "doomed-app", None, None)
+        del      <- statusOf(rts, Method.DELETE, s"/api/apps/${aid.value}", fx.adult)
+        survived <- appRepo.findById(aid)
+        seed     <- statusOf(rts, Method.POST, "/api/apps/seed-from-templates", fx.adult)
+        reset    <- statusOf(rts, Method.POST, "/api/apps/999999/reset-to-template", fx.adult)
+        asAdmin  <- statusOf(rts, Method.POST, "/api/apps/999999/reset-to-template", fx.admin)
+        kid      <- statusOf(rts, Method.POST, "/api/apps/seed-from-templates", fx.child)
+      } yield assertTrue(del == Status.Forbidden) &&
+        assertTrue(survived.isDefined) &&
+        assertTrue(seed == Status.Forbidden) &&
+        assertTrue(reset == Status.Forbidden) &&
         assertTrue(asAdmin == reset) &&
         assertTrue(kid == Status.Forbidden)
     },
@@ -613,6 +617,11 @@ object AdultEditBoundarySpec
       // whole point of this half is that an overshoot anywhere is caught. The rest of the prefix is
       // covered elsewhere: `/api/admin/routers` has its own case above, and the operator-only
       // free-forever grant sits behind the narrower `requireOperator` (unchanged by #2522).
+      //
+      // #2567: `reconcile-templates` has since moved from `requireAdmin` to that same
+      // `requireOperator` gate (it merges rows in the install-wide `apps` catalog and repoints FK
+      // refs across every household), so this suite's admin is refused there too — its household
+      // is not household 1. The other two stay plain admin-only.
       for {
         _         <- cleanDb
         fx        <- fixture
@@ -622,13 +631,14 @@ object AdultEditBoundarySpec
         reconcile <- statusOf(apps, Method.POST, "/api/admin/apps/reconcile-templates", fx.adult)
         snapshot  <- statusOf(snap, Method.GET, "/api/admin/snapshot", fx.adult)
         status    <- statusOf(rollup, Method.GET, "/api/admin/rollup-status", fx.adult)
-        // Each paired with the admin's success, so a 403 caused by broken wiring rather than by the
+        // Each paired with the admin's answer, so a 403 caused by broken wiring rather than by the
         // role gate cannot masquerade as coverage.
-        okA       <- statusOf(apps, Method.POST, "/api/admin/apps/reconcile-templates", fx.admin)
+        nonOpA    <- statusOf(apps, Method.POST, "/api/admin/apps/reconcile-templates", fx.admin)
         okS       <- statusOf(snap, Method.GET, "/api/admin/snapshot", fx.admin)
         okR       <- statusOf(rollup, Method.GET, "/api/admin/rollup-status", fx.admin)
       } yield assertTrue(List(reconcile, snapshot, status) == List.fill(3)(Status.Forbidden)) &&
-        assertTrue(List(okA, okS, okR) == List.fill(3)(Status.Ok))
+        assertTrue(nonOpA == Status.Forbidden) &&
+        assertTrue(List(okS, okR) == List.fill(2)(Status.Ok))
     },
   )
 

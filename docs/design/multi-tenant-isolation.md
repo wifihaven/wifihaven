@@ -109,6 +109,25 @@ The MAC-keyed screen-time tables are the one subtlety — see [§3.4](#34-the-ma
 - **App templates** (`api/resources/app_templates/`). Template-authored,
   shared, read-only from the tenant's perspective (per
   `memory/feedback_apps_template_authored_only.md`).
+
+> **Staying global is a statement about the DATA, not about the GATE**
+> (#2535/#2567). The `apps` / `app_hosts` / `blocklist_domains` catalogs are
+> correctly un-scoped — but the routes that *mutate* them were not: six sat
+> behind `requireWriter` / `requireAdmin`, so an adult or admin in any household
+> could rewrite state every other household's enforcement reads (worst:
+> `POST /api/admin/apps/reconcile-templates`, whose `mergeAppInto` deletes an
+> `apps` row and repoints `app_policy_assignments` + the app rollup tables across
+> every tenant). The fix is not a tenancy column — per-household copies of a
+> curated shared catalog would be wrong — it is that these are **operator
+> maintenance verbs**, so all six now sit behind `requireOperator`
+> ([§9](#9-non-goals--phasing)'s narrow admin-AND-household-1 exception):
+> `POST /api/blocklists/:category/clear`, `POST /api/blocklists/:id/refresh`,
+> `DELETE /api/apps/:id`, `POST /api/apps/seed-from-templates`,
+> `POST /api/apps/:id/reset-to-template`, `POST /api/admin/apps/reconcile-templates`.
+> None was reachable from the SPA. The READ side (`GET /api/blocklists`,
+> `GET /api/blocklists/:id/hosts`) deliberately **stays** `requireWriter`: bundled
+> public data with no confidentiality dimension, on live SPA surfaces. Pinned in
+> `api/test/src/feature/CatalogOperatorGateSpec.scala`.
 - **Edge/config globals** (CORS, allowed hosts, WS origin gate) —
   per-*deployment*, not per-household, until custom domains land (a non-goal,
   [§9](#9-non-goals--phasing)); the surfaces are enumerated in

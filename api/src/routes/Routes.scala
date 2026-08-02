@@ -2060,6 +2060,13 @@ object BlocklistRoutes {
       // #958: list every category with display metadata + host count for
       // the SPA management page. Returns BlocklistSummary[] in declared
       // order (by id).
+      // #2535 VERDICT — this route and `.../hosts` below STAY `requireWriter`. They read the same
+      // unscoped install-wide catalog the mutators below write, but the catalog is bundled PUBLIC
+      // data (upstream ad/adult/malware lists), so there is no confidentiality dimension to scope,
+      // and both are live SPA surfaces every household needs: BlocklistsPage, the per-profile
+      // category matrix on ProfilesPage, and the app↔blocklist overlap warning on AppsPage.
+      // Demoting them to `requireOperator` would break the product for no isolation gain. Pinned
+      // in CatalogOperatorGateSpec so the verdict is recorded rather than assumed.
       Method.GET / "api" / "blocklists"                                 ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] =
@@ -2094,10 +2101,15 @@ object BlocklistRoutes {
                 )
           handle.mapError(ErrorMapper.errorToResponse)
         },
+      // #2535/#2567: `blocklist_domains` is a SINGLE install-wide catalog (it carries no
+      // `household_id` — the bundled lists are shared by every household), so this
+      // DELETE-by-category wipes rows every household's enforcement reads. It is an operator
+      // maintenance verb, paired with `refresh` below which re-seeds from the bundled upstream —
+      // not a household-user surface (nothing in the SPA calls it). Hence `requireOperator`.
       Method.POST / "api" / "blocklists" / string("category") / "clear" ->
         handler { (cat: String, req: Request) =>
           val handle: ZIO[Any, ApiError, Response] =
-            requireWriter(req, auth) *>
+            requireOperator(req, auth) *>
               blRepo.clearCategory(BlocklistId.unsafe(cat)).mapError(ApiError.Db(_)) *>
               ZIO.succeed(Response.ok)
           handle.mapError(ErrorMapper.errorToResponse)
@@ -2105,10 +2117,13 @@ object BlocklistRoutes {
       // #958: trigger an out-of-band re-fetch + re-seed of a bundled list. Returns
       // 200 {refreshedHosts:N} on success, 404 if the id isn't a bundled list, or
       // 502 if the upstream fetch failed (existing DB rows are kept).
+      // #2535/#2567: operator-only for the same reason as `clear` — the re-seed clears the
+      // install-wide category first, so a household-B caller could blank a category every other
+      // household enforces on if the upstream fetch came back short.
       Method.POST / "api" / "blocklists" / string("id") / "refresh"     ->
         handler { (id: String, req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            _   <- requireWriter(req, auth)
+            _   <- requireOperator(req, auth)
             bid <- ZIO.fromEither(BlocklistId.parse(id)).mapError(ApiError.BadRequest(_))
             b   <- ZIO
               .fromOption(bundled.get(bid))
@@ -2510,6 +2525,18 @@ def requireWriter(req: Request, auth: AuthService): IO[ApiError, JwtClaims] =
  * queue (rows that belong to no household until approval) and, since #2356, the `free_forever`
  * billing grant/revoke on an arbitrary `household_billing` row (partners / friends-and-family /
  * internal households) — a deliberately-privileged operator capability, never self-serve.
+ *
+ * #2535/#2567 add a third class: the INSTALL-WIDE CATALOG MAINTENANCE verbs. `apps` / `app_hosts` /
+ * `blocklist_domains` are single shared catalogs with no `household_id` (app definitions are
+ * template-authored in code since #1798; blocklist categories are the bundled set), so the six
+ * routes that mutate them — `POST /api/blocklists/:category/clear`, `POST
+ * /api/blocklists/:id/refresh`, `DELETE /api/apps/:id`, `POST /api/apps/seed-from-templates`, `POST
+ * /api/apps/:id/reset-to-template`, `POST /api/admin/apps/reconcile-templates` — rewrite state
+ * every household's enforcement depends on. Per-household copies are not the answer (the catalogs
+ * genuinely are shared); the gate is. None is reachable from the SPA. The READ side (`GET
+ * /api/blocklists`, `.../hosts`) deliberately stays `requireWriter` — bundled public data on live
+ * SPA surfaces.
+ *
  * Documented as v1-pragmatic; a real ops console remains a future, deliberately-privileged surface.
  * Any non-household-1 admin gets 403, indistinguishable from a plain forbidden-role (no
  * cross-household enumeration signal).
