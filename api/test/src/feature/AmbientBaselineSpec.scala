@@ -175,14 +175,14 @@ object AmbientBaselineSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
             .flatMap(s => r.update(HouseholdId.Default, s.copy(ambientGateEnabled = false))),
         )
         _        <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, atl, trr, hsr, now, ahr)
-        offRolls <- ru.getDayMap(today)
+        offRolls <- ru.getDayMapForHousehold(HouseholdId.Default, today)
         // Gated rollup.
         _        <- ZIO.serviceWithZIO[HouseholdSettingsRepo](r =>
           r.getForHousehold(HouseholdId.Default)
             .flatMap(s => r.update(HouseholdId.Default, s.copy(ambientGateEnabled = true))),
         )
         _        <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, atl, trr, hsr, now, ahr)
-        onRolls  <- ru.getDayMap(today)
+        onRolls  <- ru.getDayMapForHousehold(HouseholdId.Default, today)
         offMin = (offRolls(kid).usedSeconds / 60L).toInt
         onMin  = (onRolls(kid).usedSeconds / 60L).toInt
       } yield assertTrue(
@@ -244,7 +244,7 @@ object AmbientBaselineSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         _ <- ahr.upsertDay(today.minusDays(3), Map("valid.apple.com" -> 1))
         now = LocalDateTime.of(today, java.time.LocalTime.of(8, 0)).toInstant(ZoneOffset.UTC)
         _     <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, atl, trr, hsr, now, ahr)
-        rolls <- ru.getDayMap(today)
+        rolls <- ru.getDayMapForHousehold(HouseholdId.Default, today)
       } yield assertTrue((rolls(kid).usedSeconds / 60L).toInt >= 2)
     },
   ) @@ TestAspect.sequential

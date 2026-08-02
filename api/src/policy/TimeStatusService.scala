@@ -266,12 +266,12 @@ class TimeStatusServiceLive(
     for {
       profiles <- profileRepo.listAllForHousehold(household)
       devices  <- deviceRepo.listAllForHousehold(household)
-      namedP   <- namedScheduleRepo.windowsForAllProfiles
+      namedP   <- namedScheduleRepo.windowsForHouseholdProfiles(household)
       tlsP     <- ZIO.foreach(profiles)(p => timeLimitRepo.findForProfile(p.id).map(p.id -> _))
       atlsP    <- ZIO.foreach(profiles)(p => appTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
       presence <- trafficRepo.listPresenceRows(household, devices.map(_.mac), date)
       ambient  <- ambientGateFor(now, settings)
-      exts     <- extRepo.snapshotAllByProfile(date)
+      exts     <- extRepo.snapshotByProfileForHousehold(household, date)
     } yield {
       val schedMap =
         profiles.map(p => p.id -> syntheticWindows(p.id, namedP.getOrElse(p.id, Nil))).toMap
@@ -369,7 +369,7 @@ class TimeStatusServiceLive(
   ): Task[Map[ProfileId, ProfileDayState]] =
     for {
       profiles <- profileRepo.listAllForHousehold(household)
-      rolled   <- rollupRepo.getDayMap(date)
+      rolled   <- rollupRepo.getDayMapForHousehold(household, date)
       result   <-
         // #2257: a household with no profiles has no day-states — short-circuit. This also guards
         // `dayStateAllFromRollupHits`' `rolled.values.min` from an empty-map throw now that the
@@ -394,12 +394,12 @@ class TimeStatusServiceLive(
     val watermark = rolled.values.iterator.map(_.rolledThrough).min
     for {
       devices <- deviceRepo.listAllForHousehold(household)
-      namedP  <- namedScheduleRepo.windowsForAllProfiles
+      namedP  <- namedScheduleRepo.windowsForHouseholdProfiles(household)
       tlsP    <- ZIO.foreach(profiles)(p => timeLimitRepo.findForProfile(p.id).map(p.id -> _))
       atlsP   <- ZIO.foreach(profiles)(p => appTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
       tail    <- trafficRepo.listPresenceRowsSince(household, devices.map(_.mac), date, watermark)
       ambient <- ambientGateFor(now, settings)
-      exts    <- extRepo.snapshotAllByProfile(date)
+      exts    <- extRepo.snapshotByProfileForHousehold(household, date)
       // #1515: per-app cap usage per profile from the #1510 per-app rollup + live tail. Keyed by the
       // `app:<slug>` cap-group label so it joins to each profile's per-app cap groups below.
       perAppMins <- ZIO

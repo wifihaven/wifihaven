@@ -130,6 +130,7 @@ object DayStateAllScopeSpec
         _     <- cleanDb
         two   <- TestLayers.seedTwoHouseholds(macA, macB)
         tss   <- timeStatusService
+        pr    <- ZIO.service[ProfileRepo]
         er    <- ZIO.service[TimeExtensionRepo]
         ru    <- ZIO.service[TimeUsedRollupRepo]
         clock <- ZIO.service[Clock]
@@ -137,19 +138,26 @@ object DayStateAllScopeSpec
         hsr   <- ZIO.service[HouseholdSettingsRepo]
         stg   <- hsr.getForHousehold(two.hhA)
         date = PolicyService.householdLocalDate(now, stg)
-        // Household A's own rows: schedule window, extension, rollup row.
+        // Household A's own rows: a schedule window + extension on its seeded profile. EVERY A
+        // profile gets a rollup row so `dayStateAll` takes the rollup-hits path (the one that reads
+        // `getDayMapForHousehold`) instead of falling through to all-live on a cache miss.
+        profsA <- pr.listAllForHousehold(two.hhA)
         _      <- attachSchedule("A-Bedtime", two.profileA, two.hhA)
         _      <- er.grantForProfile(two.profileA, date, 10, "test", None, two.hhA)
-        _      <- ru.upsertDay(two.profileA, date, RolledDay(600L, now))
+        _      <- ZIO.foreachDiscard(profsA)(p => ru.upsertDay(p.id, date, RolledDay(600L, now)))
         before <- tss.dayStateAll(two.hhA, now, date, stg)
         // Now add household B's rows for the SAME date — A must not move.
         _      <- attachSchedule("B-Bedtime", two.profileB, two.hhB)
         _      <- er.grantForProfile(two.profileB, date, 99, "test", None, two.hhB)
         _      <- ru.upsertDay(two.profileB, date, RolledDay(1800L, now))
         after  <- tss.dayStateAll(two.hhA, now, date, stg)
-      } yield assertTrue(before.keySet == Set(two.profileA)) &&
+      } yield
+      // A's batch covers exactly A's profiles — B's never appears, before or after.
+      assertTrue(before.keySet == profsA.map(_.id).toSet) &&
+        assertTrue(!before.contains(two.profileB)) &&
         assertTrue(after == before) &&
-        // Non-vacuous: A's own extension is present (so the extension read really ran).
+        // Non-vacuous: A's own extension is present (so the extension read really ran), and B's
+        // 99-minute grant on the same date did not bleed into it.
         assertTrue(after(two.profileA).extensionMinutes == 10)
     },
   ) @@ TestAspect.sequential

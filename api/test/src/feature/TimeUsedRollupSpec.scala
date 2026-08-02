@@ -247,13 +247,13 @@ object TimeUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:dd:ee:40", "kid", kid)
         today = LocalDate.of(2025, 1, 6)
         _   <- ru.upsertDay(kid, today, RolledDay(50L * 60L, Instant.parse("2025-01-06T09:00:00Z")))
-        pre <- ru.getDayMap(today)
+        pre <- ru.getDayMapForHousehold(HouseholdId.Default, today)
         cur <- hsr.getForHousehold(HouseholdId.Default)
         _   <- hsr.update(
           HouseholdId.Default,
           cur.copy(heartbeatFilter = HeartbeatFilter(enabled = true, 1000, List("ntp.org"))),
         )
-        post <- ru.getDayMap(today)
+        post <- ru.getDayMapForHousehold(HouseholdId.Default, today)
       } yield assertTrue(pre.contains(kid)) && assertTrue(!post.contains(kid))
     },
     test(
@@ -303,9 +303,9 @@ object TimeUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         kid <- TestLayers.seedKidsProfile(pr)
         today = LocalDate.of(2025, 1, 6)
         _   <- ru.upsertDay(kid, today, RolledDay(42L * 60L, Instant.parse("2025-01-06T09:00:00Z")))
-        pre <- ru.getDayMap(today)
+        pre <- ru.getDayMapForHousehold(HouseholdId.Default, today)
         _   <- setTz(hsr, "America/Denver")
-        post <- ru.getDayMap(today)
+        post <- ru.getDayMapForHousehold(HouseholdId.Default, today)
       } yield assertTrue(pre.contains(kid)) && assertTrue(!post.contains(kid))
     },
     test(

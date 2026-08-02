@@ -475,8 +475,19 @@ trait NamedScheduleRepo {
    */
   def windowsForProfile(pid: ProfileId): Task[List[ScheduleWindow]]
 
-  /** Batched [[windowsForProfile]] for the all-profiles snapshot path — avoids an N+1. */
-  def windowsForAllProfiles: Task[Map[ProfileId, List[ScheduleWindow]]]
+  /**
+   * #2264 (follow-up to #2257, epic #2085/#622): batched [[windowsForProfile]] for the
+   * household-scoped `TimeStatusService.dayStateAll` batch — avoids an N+1, and the
+   * `profiles.household_id` join (index-backed by `idx_profiles_household`, V65) keeps the read
+   * inside the tenant whose day-states are being computed. There is deliberately NO all-tenant
+   * variant: the previous `windowsForAllProfiles` read every household's `profile_schedule_rules`
+   * rows into memory on the screen-time hot path even though only the scoped household's profiles
+   * were ever iterated. A genuinely all-tenant caller must be an explicit
+   * `foreach(profileRepo.distinctHouseholds)` loop (see `ProfileRepo.distinctHouseholds`).
+   */
+  def windowsForHouseholdProfiles(
+      household: HouseholdId,
+  ): Task[Map[ProfileId, List[ScheduleWindow]]]
 }
 
 /**
@@ -506,7 +517,7 @@ object NoopNamedScheduleRepo extends NamedScheduleRepo {
   def blockScheduleIdsForProfile(pid: ProfileId)                           = ZIO.succeed(Nil)
   def setProfileBlockSchedules(pid: ProfileId, ids: List[NamedScheduleId]) = ZIO.unit
   def windowsForProfile(pid: ProfileId)                                    = ZIO.succeed(Nil)
-  def windowsForAllProfiles                                                = ZIO.succeed(Map.empty)
+  def windowsForHouseholdProfiles(household: HouseholdId)                  = ZIO.succeed(Map.empty)
 }
 
 trait HouseholdSettingsRepo {
@@ -921,7 +932,22 @@ trait TimeExtensionRepo {
   ): Task[TimeExtensionId]
   def getProfileTotalExtension(profileId: ProfileId, date: LocalDate): Task[Int]
   def listForProfile(profileId: ProfileId, date: LocalDate): Task[List[TimeExtension]]
-  def snapshotAllByProfile(date: LocalDate): Task[Map[ProfileId, Int]]
+
+  /**
+   * #2264 (follow-up to #2257): per-profile granted extension minutes for `date`, scoped to
+   * `household` via the `profiles.household_id` join (index-backed by `idx_profiles_household`,
+   * V65). Replaces the all-tenant `snapshotAllByProfile`, which read every household's
+   * `time_extensions` rows into memory inside the household-scoped `dayStateAll` batch. No
+   * all-tenant variant — see `ProfileRepo.distinctHouseholds`.
+   *
+   * Scoped on the PROFILE's household rather than `time_extensions.household_id` so the map is
+   * keyed by exactly the profiles the caller iterates; the two agree for every row a grant path can
+   * write (`grantForProfile` stamps the profile's household).
+   */
+  def snapshotByProfileForHousehold(
+      household: HouseholdId,
+      date: LocalDate,
+  ): Task[Map[ProfileId, Int]]
 }
 
 /**
@@ -2563,7 +2589,7 @@ class TimeUsageRepoLive(xa: Transactor[Task]) extends TimeUsageRepo {
 }
 
 class TimeExtensionRepoLive(xa: Transactor[Task]) extends TimeExtensionRepo {
-  def getTotalExtension(mac: MacAddress, d: LocalDate)       =
+  def getTotalExtension(mac: MacAddress, d: LocalDate)                    =
     sql"SELECT COALESCE(SUM(extra_minutes),0)::INT FROM time_extensions WHERE device_mac=$mac AND date=$d"
       .query[Int]
       .unique
@@ -2582,7 +2608,7 @@ class TimeExtensionRepoLive(xa: Transactor[Task]) extends TimeExtensionRepo {
       .query[TimeExtensionId]
       .unique
       .transact(xa)
-  def listForDevice(mac: MacAddress, d: LocalDate)           =
+  def listForDevice(mac: MacAddress, d: LocalDate)                        =
     sql"SELECT id,profile_id,device_mac,date::TEXT,extra_minutes,granted_by,note,created_at::TEXT FROM time_extensions WHERE device_mac=$mac AND date=$d ORDER BY created_at"
       .query[
         (
@@ -2599,7 +2625,7 @@ class TimeExtensionRepoLive(xa: Transactor[Task]) extends TimeExtensionRepo {
       .map(TimeExtension.apply)
       .to[List]
       .transact(xa)
-  def snapshotAll(d: LocalDate)                              =
+  def snapshotAll(d: LocalDate)                                           =
     sql"SELECT device_mac,SUM(extra_minutes)::INT FROM time_extensions WHERE date=$d AND device_mac IS NOT NULL GROUP BY device_mac"
       .query[(MacAddress, Int)]
       .to[List]
@@ -2618,12 +2644,12 @@ class TimeExtensionRepoLive(xa: Transactor[Task]) extends TimeExtensionRepo {
       .query[TimeExtensionId]
       .unique
       .transact(xa)
-  def getProfileTotalExtension(pid: ProfileId, d: LocalDate) =
+  def getProfileTotalExtension(pid: ProfileId, d: LocalDate)              =
     sql"SELECT COALESCE(SUM(extra_minutes),0)::INT FROM time_extensions WHERE profile_id=$pid AND date=$d"
       .query[Int]
       .unique
       .transact(xa)
-  def listForProfile(pid: ProfileId, d: LocalDate)           =
+  def listForProfile(pid: ProfileId, d: LocalDate)                        =
     sql"SELECT id,profile_id,device_mac,date::TEXT,extra_minutes,granted_by,note,created_at::TEXT FROM time_extensions WHERE profile_id=$pid AND date=$d ORDER BY created_at"
       .query[
         (
@@ -2640,9 +2666,14 @@ class TimeExtensionRepoLive(xa: Transactor[Task]) extends TimeExtensionRepo {
       .map(TimeExtension.apply)
       .to[List]
       .transact(xa)
-  def snapshotAllByProfile(d: LocalDate)                     =
-    DbMetrics.timed("timeExtension.snapshotAllByProfile")(
-      sql"SELECT profile_id,SUM(extra_minutes)::INT FROM time_extensions WHERE date=$d AND profile_id IS NOT NULL GROUP BY profile_id"
+  // #2264: household-scoped via the `profiles.household_id` join (idx_profiles_household, V65).
+  def snapshotByProfileForHousehold(household: HouseholdId, d: LocalDate) =
+    DbMetrics.timed("timeExtension.snapshotByProfileForHousehold")(
+      sql"""SELECT te.profile_id, SUM(te.extra_minutes)::INT
+            FROM time_extensions te
+            JOIN profiles p ON p.id = te.profile_id
+            WHERE te.date = $d AND te.profile_id IS NOT NULL AND p.household_id = $household
+            GROUP BY te.profile_id"""
         .query[(ProfileId, Int)]
         .to[List]
         .transact(xa)
@@ -4569,11 +4600,13 @@ class NamedScheduleRepoLive(xa: Transactor[Task]) extends NamedScheduleRepo {
       .to[List]
       .transact(xa)
 
-  def windowsForAllProfiles =
+  // #2264: household-scoped via the `profiles.household_id` join (idx_profiles_household, V65).
+  def windowsForHouseholdProfiles(household: HouseholdId) =
     sql"""SELECT psr.profile_id, sw.days, sw.start_local, sw.end_local, sw.tz
           FROM schedule_windows sw
           JOIN profile_schedule_rules psr ON psr.schedule_id = sw.schedule_id
-          WHERE psr.mode = $BlockedDuring
+          JOIN profiles p ON p.id = psr.profile_id
+          WHERE psr.mode = $BlockedDuring AND p.household_id = $household
           ORDER BY psr.profile_id, sw.id"""
       .query[(ProfileId, List[String], LocalTime, LocalTime, ZoneId)]
       .to[List]
