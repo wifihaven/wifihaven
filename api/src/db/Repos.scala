@@ -2117,7 +2117,7 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
   // #2107: same projection as listAll, AND-scoped to one household. `devices` is aliased `d`, so the
   // predicate is qualified `d.household_id`. Index-backed by V65's idx_devices_household (and the
   // leading column of uq_devices_household_mac).
-  def listAllForHousehold(household: HouseholdId)                   =
+  def listAllForHousehold(household: HouseholdId) =
     DbMetrics.timed("device.listAllForHousehold")(
       (fr"SELECT d.id,d.mac,d.name,d.profile_id,p.name,d.last_seen_ip,d.last_seen_at::TEXT FROM devices d LEFT JOIN profiles p ON p.id=d.profile_id WHERE" ++
         SqlFragments.householdEq(household, "d.household_id") ++ fr"ORDER BY d.name")
@@ -2136,7 +2136,7 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
         .to[List]
         .transact(xa),
     )
-  def listForProfile(profileId: ProfileId)                          =
+  def listForProfile(profileId: ProfileId)        =
     DbMetrics.timed("device.listForProfile")(
       sql"SELECT d.id,d.mac,d.name,d.profile_id,p.name,d.last_seen_ip,d.last_seen_at::TEXT FROM devices d LEFT JOIN profiles p ON p.id=d.profile_id WHERE d.profile_id=$profileId ORDER BY d.name"
         .query[
@@ -2166,7 +2166,7 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
   // and named. Index-backed by V65's uq_devices_household_mac (mac is the trailing column, so this
   // is the one device read that does not lead with household — see the trait doc for why that is
   // deliberate and confined to the block-page fallback).
-  def findOwningHousehold(mac: MacAddress) =
+  def findOwningHousehold(mac: MacAddress)        =
     DbMetrics.timed("device.findOwningHousehold")(
       sql"SELECT household_id FROM devices WHERE mac = $mac ORDER BY household_id LIMIT 1"
         .query[HouseholdId]

@@ -374,6 +374,35 @@ object BlockPageHouseholdSpec
         assertTrue(forged.reasonClass.isEmpty) &&
         assertTrue(two.hhB != HouseholdId.Default)
     },
+    // THE ROLLOUT PIN. Between this API deploying and a given household's agent being upgraded,
+    // that household's redirect carries no `bpt` at all. Resolving those to HouseholdId.Default
+    // would 404 every one of their access requests — their MACs are absent from household 1 — so
+    // the compatibility fallback would be an outage for exactly the fleet it exists to protect.
+    // The intake therefore falls back to the device row's own household (findOwningHousehold),
+    // which is what it did before the token existed.
+    test("with NO bpt, an intake for a household-B MAC still files against household B") {
+      for {
+        _       <- cleanDb
+        two     <- seedShared
+        xa      <- ZIO.service[Transactor[Task]]
+        ar      <- makeAlertRoutes
+        (st, _) <- postAccessRequest(ar, macB, None, Some("pre-token agent"))
+        rows    <- alertHouseholds(xa)
+      } yield assertTrue(st == Status.Created) &&
+        assertTrue(rows.map(_._1) == List(two.hhB)) &&
+        assertTrue(two.hhB != HouseholdId.Default)
+    },
+    // A MAC no household owns has no device row for the FK to reference, so it cannot be filed
+    // under ANY household — that is a 404, not a Postgres constraint violation surfacing as a 503.
+    test("with NO bpt, an intake for a MAC no household owns 404s rather than 503s") {
+      for {
+        _  <- cleanDb
+        _  <- seedShared
+        ar <- makeAlertRoutes
+        unknown = MacAddress.unsafe("aa:bb:cc:de:ad:00")
+        (st, _) <- postAccessRequest(ar, unknown, None, None)
+      } yield assertTrue(st == Status.NotFound)
+    },
     // V79's alerts_household_mac_fkey means (household, mac) must name a real device row. The
     // household used to come FROM that row, so the pairing held by construction; now it comes from
     // the token, so it has to be checked. Without the guard this is a Postgres constraint violation

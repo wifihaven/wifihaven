@@ -144,6 +144,7 @@ object DbFailureSpec extends ZIOSpecDefault {
     def listAllForHousehold(household: HouseholdId)                         = throwing
     def listForProfile(profileId: ProfileId)                                = throwing
     def findByMac(mac: MacAddress, household: HouseholdId)                  = throwing
+    def findOwningHousehold(mac: MacAddress)                                = throwing
     def findByMacInHousehold(mac: MacAddress, household: HouseholdId)       = throwing
     def upsert(
         mac: MacAddress,

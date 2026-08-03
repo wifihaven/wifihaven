@@ -282,26 +282,26 @@ object MultiTenantRouteCensusSpec extends ZIOSpecDefault {
     ),
 
     // ── Router plane ───────────────────────────────────────────────────────────────────────────
-    "POST /api/router/usage"    -> RouterToken(
+    "POST /api/router/usage"           -> RouterToken(
       "household = router.householdId, threaded into every write",
     ),
-    "POST /api/router/events"   -> RouterToken(
+    "POST /api/router/events"          -> RouterToken(
       "household = router.householdId, threaded into every write",
     ),
-    "POST /api/router/metrics"  -> RouterToken("router-scoped metrics ingest"),
-    "POST /api/router/register" -> Unauthenticated(
+    "POST /api/router/metrics"         -> RouterToken("router-scoped metrics ingest"),
+    "POST /api/router/register"        -> Unauthenticated(
       "single-use enrollment token; household stamped at create (#2106)",
     ),
-    "GET /api/router/policy"    -> RouterToken("snapshot(router.householdId)"),
+    "GET /api/router/policy"           -> RouterToken("snapshot(router.householdId)"),
     // #2566/#2569/#2322: mints this router's block-page token. Reads nothing tenant-scoped — it
     // HMACs the authenticated record's own id — but it is what gives the two unauthenticated
     // block-page routes above a household, so it is router-token tenancy by construction.
     "GET /api/router/block-page-token" -> RouterToken("mints a token bound to router.id only"),
-    "POST /api/router/decision" -> RouterToken("decide(router.householdId, …)"),
-    "GET /api/router/ws"        -> RouterToken("ws push bound to router.householdId"),
-    "GET /api/blocklists/{}"    -> InstallWide("router fetches the shared bundled catalog by id"),
-    "POST /api/admin/routers"   -> Scoped,
-    "GET /api/admin/routers"    -> Scoped,
+    "POST /api/router/decision"        -> RouterToken("decide(router.householdId, …)"),
+    "GET /api/router/ws"               -> RouterToken("ws push bound to router.householdId"),
+    "GET /api/blocklists/{}"  -> InstallWide("router fetches the shared bundled catalog by id"),
+    "POST /api/admin/routers" -> Scoped,
+    "GET /api/admin/routers"  -> Scoped,
     "DELETE /api/admin/routers/{}" -> Scoped,
 
     // ── Routes.scala: auth / users ─────────────────────────────────────────────────────────────

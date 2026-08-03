@@ -26,7 +26,8 @@ import zio.*
  *   - `POST /api/access-requests` did NOT use `Default` for the insert — it derived the household
  *     from the device row in-SQL (`ORDER BY d.household_id LIMIT 1`). Falling back to `Default`
  *     there would reject every non-default household's intake, since their MACs are absent from
- *     household 1. That route therefore applies its OWN fallback (`DeviceRepo.findOwningHousehold`).
+ *     household 1. That route therefore applies its OWN fallback
+ *     (`DeviceRepo.findOwningHousehold`).
  *
  * [[BlockPageHousehold.Resolution]] carries WHICH of the two cases happened precisely so each
  * caller can honour its own prior behaviour; a bare `HouseholdId` could not express it.
@@ -44,9 +45,9 @@ trait BlockPageHousehold {
    * block page, not an attacker.
    *
    * The result says WHETHER the household came from a verified token, not just which household it
-   * is. Callers need that: the two endpoints fell back DIFFERENTLY before this change, so
-   * "preserve the pre-change behaviour" means something different on each, and a caller that can't
-   * tell a token-derived household from a fallback one cannot preserve either.
+   * is. Callers need that: the two endpoints fell back DIFFERENTLY before this change, so "preserve
+   * the pre-change behaviour" means something different on each, and a caller that can't tell a
+   * token-derived household from a fallback one cannot preserve either.
    */
   def resolve(bpt: Option[String]): UIO[BlockPageHousehold.Resolution]
 }
@@ -59,15 +60,17 @@ object BlockPageHousehold {
    *   - [[FromToken]] — a verified, router-bound `bpt` named a live router; this household is
    *     authoritative and a caller may hold the request to it strictly (e.g. refuse a MAC the
    *     household doesn't own).
-   *   - [[Fallback]] — no usable token. `household` is [[HouseholdId.Default]], which is what
-   *     `GET /api/blocked` did unconditionally pre-change. `POST /api/access-requests` did NOT do
-   *     that — it derived the household from the device row in-SQL — so that caller must apply its
-   *     OWN pre-change fallback rather than using this value. Carrying the case rather than a bare
+   *   - [[Fallback]] — no usable token. `household` is [[HouseholdId.Default]], which is what `GET
+   *     /api/blocked` did unconditionally pre-change. `POST /api/access-requests` did NOT do that —
+   *     it derived the household from the device row in-SQL — so that caller must apply its OWN
+   *     pre-change fallback rather than using this value. Carrying the case rather than a bare
    *     household is what makes that possible.
    */
   enum Resolution {
-    case FromToken(household: HouseholdId)
-    case Fallback(household: HouseholdId)
+    // The case params are `hh`, not `household`, so they don't collide with the `household`
+    // accessor below — which is the one every caller uses.
+    case FromToken(hh: HouseholdId)
+    case Fallback(hh: HouseholdId)
 
     def household: HouseholdId = this match {
       case FromToken(h) => h
@@ -86,8 +89,7 @@ object BlockPageHousehold {
    * through every route construction. Mirrors `HouseholdRepo.defaultOnly`. Never wired in
    * production — `HttpRoutes` always builds a [[BlockPageHouseholdLive]].
    */
-  val defaultOnly: BlockPageHousehold = _ =>
-    ZIO.succeed(Resolution.Fallback(HouseholdId.Default))
+  val defaultOnly: BlockPageHousehold = _ => ZIO.succeed(Resolution.Fallback(HouseholdId.Default))
 }
 
 /**
