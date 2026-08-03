@@ -273,8 +273,12 @@ object PerHouseholdRollupSpec
         _   <- cleanDb
         two <- TestLayers.seedTwoHouseholds(macA, macB)
         ahr <- ZIO.service[AmbientHostsRepo]
+        // BOTH households are in Asia/Tokyo, so Jul 1 is what either rejected alternative would have
+        // learned — household #1's local yesterday (the pre-#2553 behaviour) and household B's OWN
+        // local yesterday (the per-household day key this design rejects). Only the shared
+        // UTC-derived label picks Jun 30, so the assertions below discriminate all three.
         _   <- setSettings(two.hhA)(_.copy(dailyResetTz = ZoneId.of("Asia/Tokyo")))
-        sB  <- setSettings(two.hhB)(_.copy(dailyResetTz = ZoneOffset.UTC))
+        sB  <- setSettings(two.hhB)(_.copy(dailyResetTz = ZoneId.of("Asia/Tokyo")))
         jun30 = LocalDate.of(2026, 6, 30)
         jul1  = LocalDate.of(2026, 7, 1)
         _      <- seedBucket(

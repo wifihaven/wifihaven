@@ -1275,7 +1275,9 @@ object AppMetrics {
   // sustained rise with flat screen-time means the learner is eating real
   // sessions (over-suppression); a flat zero while phantom idle-time returns
   // means the thresholds are too lax. `presence_ambient_hosts` is the size of
-  // the learned ambient set, set on each AmbientLearnJob run. Both unlabelled —
+  // the learned ambient set, set on each AmbientLearnJob run — #2553: the
+  // thresholds are per household over one shared baseline, so it is the UNION
+  // of every household's resolved set and grows with tenant count. Both unlabelled —
   // per-host/mac labels would breach the cardinality firewall.
 
   def recordAmbientSpansDropped(count: Int): UIO[Unit] =

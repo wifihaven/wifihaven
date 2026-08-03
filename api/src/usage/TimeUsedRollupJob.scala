@@ -197,7 +197,7 @@ object TimeUsedRollupJob {
     // fails loud (#2386 / no-dark-by-default): every household gets one atomically from
     // `HouseholdRepo.create`, so a missing row is a provisioning bug, and a tick that silently
     // rolled such a household under someone else's settings is exactly the #2553 defect. Reading
-    // them all up front keeps the tick ALL-OR-NOTHING — otherwise one unprovisioned household would
+    // them all up front keeps the PROVISIONING failure all-or-nothing — otherwise one such household would
     // abort the tick partway, committing the households before it and permanently starving the ones
     // after it (their cached rows never refresh, so every read falls through to the slow live path).
     // The failure is recorded in `rollup_runs` by `runOnce`.
