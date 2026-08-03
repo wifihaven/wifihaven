@@ -115,7 +115,10 @@ object BlockPageHouseholdSpec
       ps  <- makePolicy
     } yield RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber, TestLayers.TestBlockPageSecret)
 
-  private def makeBlockedRoutes(limiter: RateLimiter = RateLimiter.allowAll) =
+  private def makeBlockedRoutes(
+      perDevice: RateLimiter = RateLimiter.allowAll,
+      perSource: RateLimiter = RateLimiter.allowAll,
+  ) =
     for {
       ps  <- makePolicy
       dr  <- ZIO.service[DeviceRepo]
@@ -134,7 +137,8 @@ object BlockPageHouseholdSpec
       hsr,
       clk,
       BlockPageHouseholdLive(TestLayers.TestBlockPageSecret, hhr),
-      limiter,
+      perDevice,
+      perSource,
     )
 
   private def makeAlertRoutes =
@@ -331,27 +335,54 @@ object BlockPageHouseholdSpec
         // …and hh-B's free text never reached the unauthenticated caller.
         assertTrue(!body.contains("B-secret-note"))
     },
-    // #2569: an unlimited unauthenticated per-MAC endpoint is a MAC-enumeration oracle. This is the
-    // same per-source-IP limiter POST /api/access-requests has had since #2081.
-    test("GET /api/blocked refuses the N+1th request from one source IP") {
+    // #2569: an unlimited unauthenticated per-MAC endpoint is a MAC-enumeration oracle. TWO buckets
+    // guard it and they pin DIFFERENT properties, so there is a test for each — a single-MAC test
+    // passes under either keying and would not catch one being dropped.
+    test("the per-device bucket bounds one device without taking out the household") {
       for {
         _       <- cleanDb
         two     <- seedShared
-        limiter <- RateLimiterLive.make(maxAttempts = 2, windowSeconds = 300)
+        perDev  <- RateLimiterLive.make(maxAttempts = 2, windowSeconds = 300)
+        perSrc  <- RateLimiterLive.make(maxAttempts = 100, windowSeconds = 300)
         rr      <- makeRouterRoutes
-        br      <- makeBlockedRoutes(limiter)
+        br      <- makeBlockedRoutes(perDev, perSrc)
         bptB    <- mintBpt(rr, two.tokenB)
         first   <- getBlockedRaw(br, macM, Some(bptB))
         second  <- getBlockedRaw(br, macM, Some(bptB))
         third   <- getBlockedRaw(br, macM, Some(bptB))
-        // A different source IP keeps its own budget, so a limited page doesn't take out the house.
-        other   <- getBlockedRaw(br, macM, Some(bptB), ip = "203.0.113.77")
+        // THE per-(ip, mac) PIN: a SECOND device behind the SAME source IP — the household NAT —
+        // still gets its block page after the first device exhausted its own budget. Under a
+        // per-IP-only key this is a 429, so this assertion is what distinguishes the two keyings.
+        sibling <- getBlockedRaw(br, macB, Some(bptB))
       } yield assertTrue(first._1 == Status.Ok) &&
         assertTrue(second._1 == Status.Ok) &&
         // Over the limit we answer 429, NOT a `blocked=false` body: the latter renders as "this
         // page is not blocked for this device" on a page the kid reached BECAUSE it was blocked.
         assertTrue(third._1 == Status.TooManyRequests) &&
         assertTrue(!third._2.contains("profileName\":\"")) &&
+        assertTrue(sibling._1 == Status.Ok)
+    },
+    // THE ENUMERATION PIN. The per-device bucket cannot bound a sweep — a sweep varies the MAC by
+    // definition and so gets a fresh bucket every time. The per-source bucket is what actually caps
+    // it, and this route's `Unauthenticated` census verdict rests on that cap existing.
+    test("the per-source bucket bounds a sweep across DIFFERENT MACs from one IP") {
+      for {
+        _      <- cleanDb
+        two    <- seedShared
+        // Per-device budget deliberately generous, so only the per-source bucket can refuse.
+        perDev <- RateLimiterLive.make(maxAttempts = 100, windowSeconds = 300)
+        perSrc <- RateLimiterLive.make(maxAttempts = 2, windowSeconds = 300)
+        rr     <- makeRouterRoutes
+        br     <- makeBlockedRoutes(perDev, perSrc)
+        bptB   <- mintBpt(rr, two.tokenB)
+        sweep1 <- getBlockedRaw(br, macM, Some(bptB))
+        sweep2 <- getBlockedRaw(br, macB, Some(bptB))
+        sweep3 <- getBlockedRaw(br, macA, Some(bptB))
+        // …and a different source IP still has its own budget.
+        other  <- getBlockedRaw(br, macA, Some(bptB), ip = "203.0.113.77")
+      } yield assertTrue(sweep1._1 == Status.Ok) &&
+        assertTrue(sweep2._1 == Status.Ok) &&
+        assertTrue(sweep3._1 == Status.TooManyRequests) &&
         assertTrue(other._1 == Status.Ok)
     },
     // The router↔API wire is additive and the two deploy independently, so an agent that predates

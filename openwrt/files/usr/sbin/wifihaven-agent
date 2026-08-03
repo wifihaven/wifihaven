@@ -815,27 +815,37 @@ end
 -- restarted. Re-fetching on a slow cadence makes that self-heal within one
 -- interval with no operator action.
 local BLOCK_PAGE_TOKEN_PATH = paths.block_page_token
--- Refresh cadence, in POLICY TICKS rather than seconds, so it rides the poll
--- loop the agent already runs and needs no second timer. At the default
--- policy_int of 60s (etc/config/wifihaven `policy_interval`) 60 ticks is ~1h —
--- slow enough to be free (one conditional GET per hour per router), fast enough
--- that a secret rotation is invisible to families within the hour.
-local BLOCK_PAGE_TOKEN_REFRESH_TICKS = 60
-local block_page_token_ticks         = 0
-local block_page_token_ok            = false
+-- Refresh cadence. Expressed as a target in SECONDS and DERIVED from the live
+-- poll interval, not written as a tick count: the refresh rides the policy
+-- timer (it needs no second timer), but that timer's period is
+-- `policy_poll_interval` (openwrt/files/etc/config/wifihaven, DEFAULT 5s — read
+-- at policy_int above), so a hardcoded tick count silently means whatever the
+-- operator set. 60 ticks would be 5 minutes at the default, not the hour it
+-- looks like.
+--
+-- One hour: the only thing this refresh recovers from is an API jwt.secret
+-- rotation, which is rare and operator-initiated, so an hour of stale tokens is
+-- an acceptable worst case and the cost is one request per router per hour.
+local BLOCK_PAGE_TOKEN_REFRESH_SECONDS = 3600
+local BLOCK_PAGE_TOKEN_REFRESH_TICKS   =
+  math.max(1, math.floor(BLOCK_PAGE_TOKEN_REFRESH_SECONDS / math.max(1, policy_int)))
+local block_page_token_ticks           = 0
+local block_page_token_ok              = false
 
 function wh_refresh_block_page_token()
   if block_page_token_ok then
-    -- Already published; count down to the next periodic refresh.
+    -- Already published; count toward the next periodic refresh.
     block_page_token_ticks = block_page_token_ticks + 1
     if block_page_token_ticks < BLOCK_PAGE_TOKEN_REFRESH_TICKS then return end
-    block_page_token_ticks = 0
   end
   local tok, why = block_page.fetch_token(api_url, router_token, http_get, log)
   if not tok then
     -- Keep the existing (possibly still-valid) token on disk rather than
     -- deleting it: a transient API outage must not strip a working token and
-    -- push the household onto the fallback path.
+    -- push the household onto the fallback path. The tick counter is NOT reset
+    -- here, so a blip at the refresh boundary retries on the next tick instead
+    -- of pushing the next attempt out by another full interval — the whole
+    -- point of the refresh is post-rotation recovery.
     log.debug("block-page token: not available yet (%s)", tostring(why))
     return
   end
@@ -849,7 +859,8 @@ function wh_refresh_block_page_token()
   if not block_page_token_ok then
     log.info("block-page token: fetched and published to %s", BLOCK_PAGE_TOKEN_PATH)
   end
-  block_page_token_ok = true
+  block_page_token_ok    = true
+  block_page_token_ticks = 0
 end
 
 -- ── Shared apply pipeline (#1945) ─────────────────────────────────────────────
@@ -1280,10 +1291,12 @@ conntrack.watch({
     -- Policy timer
     if (mono - ts.last_policy_run) >= policy_int then
       ts.last_policy_run = mono
-      -- #2566/#2569/#2322: no-op once the block-page household token has landed;
-      -- retries here until it does (API down at boot, or an API that predates the
-      -- endpoint and later gets upgraded). Called through the global so on_tick
-      -- does not gain an upvalue (#1930).
+      -- #2566/#2569/#2322: fetches the block-page household token until it lands
+      -- (API down at boot, or an API that predates the endpoint and later gets
+      -- upgraded), then re-fetches once per BLOCK_PAGE_TOKEN_REFRESH_TICKS so a
+      -- jwt.secret rotation self-heals without a restart. Cheap on every other
+      -- tick: one integer compare. Called through the global so on_tick does not
+      -- gain an upvalue (#1930).
       wh_refresh_block_page_token()
       if ws_link_healthy() then
         -- #2037: ws is the live policy transport — skip the HTTP poll (dormant).

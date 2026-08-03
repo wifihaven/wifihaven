@@ -56,7 +56,8 @@ object BlockedRoutes {
       // wrong answer on a page the kid reached precisely BECAUSE it was blocked, which is the
       // confusing dead-end the block page exists to prevent. A 429 lands in the SPA's existing
       // error branch, which renders the neutral "Access blocked." copy.
-      rateLimiter: RateLimiter,
+      perDeviceLimiter: RateLimiter,
+      perSourceLimiter: RateLimiter,
   ): Routes[Any, Response] = {
     val notBlocked = BlockedInfoResponse(blocked = false, None, None, None)
 
@@ -75,37 +76,44 @@ object BlockedRoutes {
             case Left(_)            =>
               ZIO.succeed(Response.json(notBlocked.toJson))
             case Right((mac, host)) =>
-              rateLimiter.tryAcquire(s"blocked:${clientIp(req)}:${mac.value}").flatMap {
-                case false =>
-                  ZIO.succeed(
-                    ErrorMapper.errorToResponse(
-                      ApiError.RateLimited("Too many requests; try again later"),
-                    ),
-                  )
-                case true  =>
-                  blockPageHousehold
-                    .resolve(bpt)
-                    // #2569: unlike the access-request intake, HouseholdId.Default IS this route's
-                    // pre-change behaviour on the fallback path — it resolved every read against
-                    // Default unconditionally — so taking `.household` here preserves it exactly.
-                    .map(_.household)
-                    .flatMap { household =>
-                      resolve(
-                        policy,
-                        deviceRepo,
-                        profileRepo,
-                        blocklistRepo,
-                        timeStatusService,
-                        householdSettingsRepo,
-                        clock,
-                        household,
-                        mac,
-                        host,
-                      )
-                    }
-                    .map(r => Response.json(r.toJson))
-                    .catchAll(_ => ZIO.succeed(Response.json(notBlocked.toJson)))
-              }
+              // Acquire BOTH, unconditionally. Written as a for-comprehension rather than
+              // `a && b` so neither acquire is short-circuited: every request must be counted
+              // against both buckets, or a caller could sit under one by exhausting the other.
+              (for {
+                sourceOk <- perSourceLimiter.tryAcquire(s"blocked:${clientIp(req)}")
+                deviceOk <- perDeviceLimiter.tryAcquire(s"blocked:${clientIp(req)}:${mac.value}")
+              } yield sourceOk && deviceOk)
+                .flatMap {
+                  case false =>
+                    ZIO.succeed(
+                      ErrorMapper.errorToResponse(
+                        ApiError.RateLimited("Too many requests; try again later"),
+                      ),
+                    )
+                  case true  =>
+                    blockPageHousehold
+                      .resolve(bpt)
+                      // #2569: unlike the access-request intake, HouseholdId.Default IS this route's
+                      // pre-change behaviour on the fallback path — it resolved every read against
+                      // Default unconditionally — so taking `.household` here preserves it exactly.
+                      .map(_.household)
+                      .flatMap { household =>
+                        resolve(
+                          policy,
+                          deviceRepo,
+                          profileRepo,
+                          blocklistRepo,
+                          timeStatusService,
+                          householdSettingsRepo,
+                          clock,
+                          household,
+                          mac,
+                          host,
+                        )
+                      }
+                      .map(r => Response.json(r.toJson))
+                      .catchAll(_ => ZIO.succeed(Response.json(notBlocked.toJson)))
+                }
           }
         },
     )

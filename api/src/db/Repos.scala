@@ -2159,9 +2159,6 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
     // threw on the 2-row match once the same MAC lived in two households; scoping guarantees ≤1 row
     // (uq_devices_household_mac). One query, one source of truth — no duplicated projection.
     findByMacInHousehold(mac, household)
-  // #2108: same projection as findByMac, AND-scoped to one household. The user-facing device routes
-  // resolve through this so an hh-A admin gets a clean 404 for an hh-B MAC. Index-backed by V65's
-  // uq_devices_household_mac leading column.
   // #2566/#2322: the pre-#2322 `createAccessRequest` COALESCE subquery, lifted out of the INSERT
   // and named. Index-backed by V65's uq_devices_household_mac (mac is the trailing column, so this
   // is the one device read that does not lead with household — see the trait doc for why that is
@@ -2174,6 +2171,9 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
         .transact(xa),
     )
 
+  // #2108: same projection as findByMac, AND-scoped to one household. The user-facing device routes
+  // resolve through this so an hh-A admin gets a clean 404 for an hh-B MAC. Index-backed by V65's
+  // uq_devices_household_mac leading column.
   def findByMacInHousehold(mac: MacAddress, household: HouseholdId) =
     DbMetrics.timed("device.findByMacInHousehold")(
       (fr"SELECT d.id,d.mac,d.name,d.profile_id,p.name,d.last_seen_ip,d.last_seen_at::TEXT FROM devices d LEFT JOIN profiles p ON p.id=d.profile_id WHERE d.mac=$mac AND" ++

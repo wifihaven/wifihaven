@@ -75,53 +75,66 @@ object HttpRoutes {
       // POST /api/access-requests (they are two halves of one page and must agree). Signed with the
       // API's existing JWT secret, domain-separated by BlockPageToken — no new secret to provision.
       blockPageHousehold = new BlockPageHouseholdLive(cfg.jwt.secret, routerRepo)
-      routerMetrics         <- RouterMetricsService.make
+      routerMetrics           <- RouterMetricsService.make
       // #2079: per-source-IP rate limit on the unauthenticated login route — 10
       // attempts / 15 min. #2081: per-source-IP rate limit on the unauthenticated
       // access-requests route (block-page kid request) — 20 / 5 min, on top of the
       // existing per-(mac,host) debounce (which a varying host bypasses).
-      loginRateLimiter      <- RateLimiterLive.make(maxAttempts = 10, windowSeconds = 15 * 60)
-      accessReqRateLimiter  <- RateLimiterLive.make(maxAttempts = 20, windowSeconds = 5 * 60)
+      loginRateLimiter        <- RateLimiterLive.make(maxAttempts = 10, windowSeconds = 15 * 60)
+      accessReqRateLimiter    <- RateLimiterLive.make(maxAttempts = 20, windowSeconds = 5 * 60)
       // #2569: the same treatment for GET /api/blocked, which was unauthenticated AND unlimited —
-      // a per-MAC oracle for the resolving household's profile name and screen-time. Much looser
-      // than the intake: every blocked request DNATs to a fresh block page, a page load is one
-      // call, and a whole household NATs behind ONE source IP — so the budget has to cover a
-      // household's worth of legitimate blocked browsing, not one child's. 120 / 5 min still caps
-      // an enumeration sweep at a rate where a MAC space is not walkable.
-      blockedRateLimiter    <- RateLimiterLive.make(maxAttempts = 120, windowSeconds = 5 * 60)
+      // a per-MAC oracle for the resolving household's profile name and screen-time.
+      //
+      // TWO buckets, because one key cannot do both jobs:
+      //   - perDevice, keyed (source IP, MAC), bounds ONE device's share. A household NATs behind
+      //     one address in the cloud deploy, so a per-IP-only budget lets one device hammering a
+      //     blocked endpoint 429 every other device in the house off its own block page.
+      //   - perSource, keyed source IP alone, is the MAC-ENUMERATION bound — and it is the one
+      //     that actually has to exist. A sweep varies the MAC by definition, so a per-(ip, mac)
+      //     bucket hands it a fresh budget for every MAC it tries and bounds nothing. This route's
+      //     `Unauthenticated` census verdict rests on the residual household-1 disclosure being
+      //     rate-limited, so dropping this bucket would invalidate that argument, not just widen a
+      //     limit.
+      // Budgets derive from the intake's 20 / 5 min (#2081): a block page is a READ a single
+      // device legitimately repeats (every blocked request DNATs to a fresh page load, one API
+      // call each), so perDevice is 3x that, and perSource is 5x perDevice — a household of five
+      // simultaneously-blocked devices at full per-device rate, which also caps a sweep at 300
+      // distinct MACs per window instead of unbounded.
+      blockedPerDeviceLimiter <- RateLimiterLive.make(maxAttempts = 60, windowSeconds = 5 * 60)
+      blockedPerSourceLimiter <- RateLimiterLive.make(maxAttempts = 300, windowSeconds = 5 * 60)
       // #2132: per-source-IP rate limit on the unauthenticated beta-intake route — 5 / hour, a
       // slow cadence (a genuine prospect requests once), on top of the idempotent-email dedup.
-      betaReqRateLimiter    <- RateLimiterLive.make(maxAttempts = 5, windowSeconds = 60 * 60)
+      betaReqRateLimiter      <- RateLimiterLive.make(maxAttempts = 5, windowSeconds = 60 * 60)
       // #2308: per-source-IP rate limits on the two unauthenticated password-reset routes. Requests
       // are tight (5 / hour) to blunt email-bombing a known address; the reset consume is a touch
       // looser (10 / 15 min) so a legitimate user can retry a weak password without lockout, while
       // still bounding token brute-force.
-      forgotPwRateLimiter   <- RateLimiterLive.make(maxAttempts = 5, windowSeconds = 60 * 60)
-      resetPwRateLimiter    <- RateLimiterLive.make(maxAttempts = 10, windowSeconds = 15 * 60)
+      forgotPwRateLimiter     <- RateLimiterLive.make(maxAttempts = 5, windowSeconds = 60 * 60)
+      resetPwRateLimiter      <- RateLimiterLive.make(maxAttempts = 10, windowSeconds = 15 * 60)
       // #2132: the beta pipeline service (slug derivation, invite token mint + TTL, provisioning,
       // accept). Clock-injected so the invite TTL is TestClock-driven in specs.
       // #2135: the billing state machine (Checkout/Portal/webhook + the provisioning Customer seam).
-      billing               <- ZIO.service[wifihaven.api.billing.BillingService]
+      billing                 <- ZIO.service[wifihaven.api.billing.BillingService]
       // #2137: the cohort flip lifecycle service (shared with the BetaFlipJob forked in the run
       // scope). Surfaces the flip-window state to the SPA billing page.
-      flipService           <- ZIO.service[wifihaven.api.billing.FlipService]
+      flipService             <- ZIO.service[wifihaven.api.billing.FlipService]
       // #2199: the support integration service (server-signed widget identity + household→Plain
       // customer mapping). Dark unless the Plain keys are set.
-      support               <- ZIO.service[wifihaven.api.support.SupportService]
+      support                 <- ZIO.service[wifihaven.api.support.SupportService]
       // #2200: the Claude responder — the webhook→gate→dispatch pipeline plus the cloud agent's
       // token-authenticated callback endpoints. Runs iff support.responderEnabled (#2265). Issue
       // filing is rate-limited per-thread (3/h) and globally (10/h) — the #2241 volume control the
       // support_agent_action_total{op="issue"} alert watches.
-      billingRepo           <- ZIO.service[wifihaven.api.db.HouseholdBillingRepo]
-      plainClient           <- ZIO.service[wifihaven.api.support.PlainClient]
-      agentDispatcher       <- ZIO.service[wifihaven.api.support.CloudAgentDispatcher]
-      githubIssues          <- ZIO.service[wifihaven.api.support.GithubIssueClient]
-      issueThreadLimiter    <- RateLimiterLive.make(maxAttempts = 3, windowSeconds = 60 * 60)
-      issueGlobalLimiter    <- RateLimiterLive.make(maxAttempts = 10, windowSeconds = 60 * 60)
+      billingRepo             <- ZIO.service[wifihaven.api.db.HouseholdBillingRepo]
+      plainClient             <- ZIO.service[wifihaven.api.support.PlainClient]
+      agentDispatcher         <- ZIO.service[wifihaven.api.support.CloudAgentDispatcher]
+      githubIssues            <- ZIO.service[wifihaven.api.support.GithubIssueClient]
+      issueThreadLimiter      <- RateLimiterLive.make(maxAttempts = 3, windowSeconds = 60 * 60)
+      issueGlobalLimiter      <- RateLimiterLive.make(maxAttempts = 10, windowSeconds = 60 * 60)
       // Cost guardrails (2026-07-16): each dispatched agent session bills real tokens, so dispatch
       // is hard-capped — 4/hour per thread and 50/day globally. With a worst-case ~$0.50/draft the
       // global cap bounds even sustained abuse at pocket change; normal beta volume never hits it.
-      dispatchThreadLimiter <- RateLimiterLive.make(maxAttempts = 4, windowSeconds = 60 * 60)
+      dispatchThreadLimiter   <- RateLimiterLive.make(maxAttempts = 4, windowSeconds = 60 * 60)
       dispatchGlobalLimiter <- RateLimiterLive.make(maxAttempts = 50, windowSeconds = 24 * 60 * 60)
       // #2307: the static-reject cap for unregistered cold email. Cheap (a fixed string, no AI), so
       // the ceiling is generous, but bounded globally so a spammer forging many cold-email threads
@@ -334,7 +347,8 @@ object HttpRoutes {
           blFetcher2,
           bundledBlocklists,
           blockPageHousehold,
-          blockedRateLimiter,
+          blockedPerDeviceLimiter,
+          blockedPerSourceLimiter,
         )
 
       val routerAndAdminRoutes: Routes[Any, Response] =
@@ -579,10 +593,11 @@ object HttpRoutes {
       blCache: BlocklistCache,
       blFetcher2: BlocklistFetcher,
       bundledBlocklists: Map[wifihaven.shared.types.BlocklistId, BundledBlocklist],
-      // #2569: shared block-page household derivation + the new per-source-IP limiter on
-      // GET /api/blocked. Threaded in (not re-resolved) so the limiter state is shared.
+      // #2569: shared block-page household derivation + the two limiters on GET /api/blocked.
+      // Threaded in (not re-resolved) so the limiter state is shared across the route table.
       blockPageHousehold: BlockPageHousehold,
-      blockedRateLimiter: RateLimiter,
+      blockedPerDeviceLimiter: RateLimiter,
+      blockedPerSourceLimiter: RateLimiter,
   ): Routes[Any, Response] =
     TimeRoutes.routes(
       auth,
@@ -643,7 +658,8 @@ object HttpRoutes {
         hsRepo,
         clock,
         blockPageHousehold,
-        blockedRateLimiter,
+        blockedPerDeviceLimiter,
+        blockedPerSourceLimiter,
       )
 
   private def buildRouterAndAdminRoutes(

@@ -142,6 +142,7 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           clk,
           BlockPageHousehold.defaultOnly,
           RateLimiter.allowAll,
+          RateLimiter.allowAll,
         )
         info <- callBlocked(routes, "ff:ff:ff:ff:ff:ff", "example.com")
       } yield assertTrue(!info.blocked) &&
@@ -170,6 +171,7 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           hsr,
           clk,
           BlockPageHousehold.defaultOnly,
+          RateLimiter.allowAll,
           RateLimiter.allowAll,
         )
         info <- callBlocked(routes, "aa:bb:cc:11:22:33", "example.com")
@@ -200,6 +202,7 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           clk,
           BlockPageHousehold.defaultOnly,
           RateLimiter.allowAll,
+          RateLimiter.allowAll,
         )
         info <- callBlocked(routes, "aa:bb:cc:11:22:33", "example.com")
       } yield assertTrue(info.blocked) &&
@@ -226,6 +229,7 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           clk,
           BlockPageHousehold.defaultOnly,
           RateLimiter.allowAll,
+          RateLimiter.allowAll,
         )
         info <- callBlocked(routes, "not-a-mac", "example.com")
       } yield assertTrue(!info.blocked)
@@ -251,6 +255,7 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           hsr,
           clk,
           BlockPageHousehold.defaultOnly,
+          RateLimiter.allowAll,
           RateLimiter.allowAll,
         )
         info <- callBlocked(routes, "aa:bb:cc:11:22:55", "example.com")
@@ -299,6 +304,7 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           hsr,
           clk,
           BlockPageHousehold.defaultOnly,
+          RateLimiter.allowAll,
           RateLimiter.allowAll,
         )
         info <- callBlocked(routes, "aa:bb:cc:11:22:99", "weird.example.com")
@@ -372,6 +378,7 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
             clk,
             BlockPageHousehold.defaultOnly,
             RateLimiter.allowAll,
+            RateLimiter.allowAll,
           )
           callBlocked(routes, "aa:bb:cc:dd:ee:ff", "example.com").map { info =>
             assertTrue(info.blocked) && assertTrue(info.reasonClass.contains(expected))
@@ -411,6 +418,7 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           clk,
           BlockPageHousehold.defaultOnly,
           RateLimiter.allowAll,
+          RateLimiter.allowAll,
         )
         info <- callBlocked(routes, "aa:bb:cc:11:22:44", "example.com")
       } yield assertTrue(info.blocked) &&
@@ -439,6 +447,7 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           hsr,
           clk,
           BlockPageHousehold.defaultOnly,
+          RateLimiter.allowAll,
           RateLimiter.allowAll,
         )
         info <- callBlocked(routes, "ff:ff:ff:ff:ff:ff", "example.com")
