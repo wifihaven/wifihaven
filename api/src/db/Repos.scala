@@ -352,13 +352,15 @@ object HouseholdRepo {
  * would make the boundary two places instead of one.
  *
  * TODO(#2531): that choke-point coverage is not yet complete, so do not read the paragraph above as
- * a statement that every argument is guarded today. It holds for every USER id (`Routes.scala:270`,
- * `:288`, `:304`; `:237` creates the id under `claims.hh`) and for BOTH sides of
- * `setUsersForProfile` (`Routes.scala:812` guards the profile, `:824` guards each user id). It does
- * NOT hold for the `profileIds` argument of `setProfilesForUser`: `Routes.scala:242`, `:276` and
- * `:347` pass a caller-supplied `List[ProfileId]` straight through with no
+ * a statement that every argument is guarded today. It holds for every USER id reaching this trait
+ * (`PUT /api/users/{id}/profiles` and `PATCH /api/users/{id}` both `ownUser` first; `POST
+ * /api/users` mints the id under `claims.hh`) and for BOTH sides of `setUsersForProfile` (`PUT
+ * /api/profiles/{id}/users` runs `requireProfileInHousehold` on the profile AND `ownUser` on every
+ * body `userId`). It does NOT hold for the `profileIds` argument of `setProfilesForUser`: those
+ * same three user routes pass a caller-supplied `List[ProfileId]` straight through with no
  * `requireProfileInHousehold`, so an admin can still bind another household's profile. #2531 fixes
- * that at those routes — the resolution stays at the choke point, not here.
+ * that at those routes — the resolution stays at the choke point, not here. Routes named by
+ * method+path, not line number, so an edit above them cannot silently rot this paragraph.
  *
  * A USERNAME is different: V65 made it unique only per household (`UNIQUE(household_id, username)`)
  * and V68 dropped the global unique, so a bare username names a SET of users across tenants — which
