@@ -2,9 +2,10 @@
 -- Closes the three schema-level tenancy gaps the #2563 isolation sweep found
 -- and no existing issue covered. Refs #2572, #2563, #2126, #2142, #2125, #2266.
 --
--- SCHEMA-ONLY PR (docs/process/migrations.md#migrations-back-compat): migration
--- + docs, nothing else. The existing feature suite is the back-compat gate —
--- it applies this migration and then drives image-(N-1)'s `api/src` against it.
+-- SCHEMA-ONLY PR (docs/process/migrations.md#migrations-back-compat): the
+-- migration alone (docs may accompany it; this one needs none). The existing
+-- feature suite is the back-compat gate — it applies this migration and then
+-- drives image-(N-1)'s `api/src` against it.
 --
 -- This is the MIDDLE of a three-PR sequence, because the two halves of #2572
 -- need opposite orderings and neither can be folded into this file:
@@ -55,9 +56,13 @@
 -- V51 line 60), never `(name)` — so nothing else breaks.
 --
 -- `named_schedules_name_key` is PostgreSQL's auto-generated name for V50's
--- inline `UNIQUE`; confirmed against the live prod catalog
--- (`SELECT conname FROM pg_constraint WHERE conrelid='named_schedules'::regclass`
--- on wifihaven-pg-prod, 2026-08-02), not assumed from the naming convention.
+-- inline `UNIQUE`; confirmed against the live prod catalog, not assumed from the
+-- naming convention. `SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint
+-- WHERE conrelid='named_schedules'::regclass` on wifihaven-pg-prod, 2026-08-02,
+-- returned exactly three rows:
+--   named_schedules_pkey              PRIMARY KEY (id)
+--   named_schedules_name_key          UNIQUE (name)          <- dropped below
+--   named_schedules_household_id_fkey FOREIGN KEY (household_id) REFERENCES households(id)
 --
 -- ── 2. named_schedules.household_id: DROP DEFAULT ───────────────────────────
 -- V72 line 83 set `DEFAULT 1` as expand-window scaffolding so image-(N-1)
@@ -130,9 +135,9 @@
 -- inference from the ADD COLUMN's metadata-only property.
 --
 -- Also worth stating so a later reader does not have to reconcile "live write
--- path" with "0 rows": nothing in the tree currently CALLS
--- `POST /api/router/decision` — grepping the OpenWRT Lua and OPNsense agents
--- for that path returns no hits. `RouterRoutes` writes a block event when the
+-- path" with "0 rows": no AGENT in the tree calls
+-- `POST /api/router/decision` — grepping `openwrt/` and `opnsense/` for that
+-- path returns no hits (feature specs do exercise the endpoint). `RouterRoutes` writes a block event when the
 -- endpoint is hit; the endpoint just has no producer today. That, rather than
 -- the retention sweep, is the likely reason prod holds 0 rows.
 --
