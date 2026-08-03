@@ -19,12 +19,12 @@ import zio.test.*
  * #2126 (multi-tenant isolation, epic #2085/#622, design docs/design/multi-tenant-isolation.md §2
  * gap 4) — the cross-tenant leak on `GET /api/schedules`.
  *
- * Before V71 + this source PR, `NamedScheduleRepo.listAll` returned EVERY household's named
+ * Before V72 + this source PR, `NamedScheduleRepo.listAll` returned EVERY household's named
  * schedules (V50 created the table single-household, V65 never added `household_id`), so a
  * household-B admin listing `/api/schedules` saw household A's schedules. `named_schedules`
  * attaches to profiles M:N (no direct profile FK), so scoping "via an attached profile" would
  * wrongly hide a freshly-created-but-unattached schedule from its own authoring UI — hence the
- * schema column (V71) + `listAllForHousehold` here, so an unattached schedule stays visible to ITS
+ * schema column (V72) + `listAllForHousehold` here, so an unattached schedule stays visible to ITS
  * OWN household.
  *
  * Full stack against embedded Postgres — no repo mocks, Clock injected. The negative pins (A's

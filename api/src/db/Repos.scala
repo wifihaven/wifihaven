@@ -463,7 +463,7 @@ trait NamedScheduleRepo {
   // household ≠ the caller's `claims.hh`, mirroring `ProfileRepo.householdOf`.
   def householdOf(id: NamedScheduleId): Task[Option[HouseholdId]]
   // #2126: `household` stamps the new schedule with the creating admin's household (from their JWT),
-  // never left to V71's DEFAULT 1. Defaults to the single-install backfill household so
+  // never left to V72's DEFAULT 1. Defaults to the single-install backfill household so
   // pre-multi-tenant callers stay tenant-safe (#2130 precedent).
   def create(
       name: String,
