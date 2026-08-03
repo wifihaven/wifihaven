@@ -703,19 +703,23 @@ object ProfileRoutes {
           val pid                                  = ProfileId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
             claims <- requireWriter(req, auth)
-            // #2565: the tenancy gate, and it must come FIRST. `requireNotGlobalProfile` below is
-            // a SHAPE guard (is this row the global sentinel?), not a tenancy one, and
-            // `ProfileRepo.delete` is an unscoped `DELETE FROM profiles WHERE id=?` — so without
-            // this the DELETE was reachable across the tenant boundary, destroying the row (and
-            // cascading its devices' profile_id, time_limits, app_policy_assignments,
-            // profile_schedule_rules) by guessing a globally-unique small integer.
+            // #2565: the tenancy gate, and it must come FIRST. The sentinel guard below is a
+            // SHAPE check (is this row the global sentinel?), not a tenancy one, and the repo's
+            // delete is an unscoped `DELETE FROM profiles WHERE id=?` — so without this the DELETE
+            // was reachable across the tenant boundary, destroying the row (and cascading its
+            // devices' profile_id, time_limits, app_policy_assignments, profile_schedule_rules)
+            // by guessing a globally-unique small integer.
             //
-            // The choke point here is `requireProfileInHousehold`, NOT the `requireProfileAccess`
-            // used by PUT/PATCH: this is a tenancy hole, and `requireProfileAccess` additionally
-            // narrows the role gate to admin-or-LINKED-adult, which would revoke the unlinked
-            // adult's delete that #2522 deliberately granted (pinned in AdultEditBoundarySpec).
-            // Role stays with `requireWriter` above; household is decided here. This matches the
-            // sibling write on the same resource, `PUT /api/profiles/{id}/users`.
+            // Household-only, NOT the household+role gate PUT/PATCH use: the hole here is purely
+            // tenancy, and that stricter gate also narrows the role check to admin-or-LINKED-adult,
+            // which would revoke the unlinked adult's delete #2522 granted (pinned in
+            // AdultEditBoundarySpec). Role stays with the writer check above; household is decided
+            // here — the same split the sibling write `PUT /api/profiles/{id}/users` uses.
+            //
+            // Identifiers are deliberately NOT spelled out above: MultiTenantRouteCensusSpec
+            // matches its checker names against the raw handler text with no comment stripping,
+            // so naming one in prose would satisfy the structural guard on this route even if the
+            // real call below were deleted.
             _      <- requireProfileInHousehold(claims, pid, profileRepo)
             // #1771: the global sentinel is a wire-shape fixture, not an authored profile —
             // never deletable. The partial unique index would let admin recreate it via SQL,
