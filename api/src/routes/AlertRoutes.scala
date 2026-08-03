@@ -224,11 +224,23 @@ object AlertRoutes {
    * admin can fix the prerequisite instead of accumulating half-applied approvals.
    *
    * #2564: every branch that WRITES a profile composes [[requireProfileAccess]] on that profile
-   * first. `requireAlertInHousehold` at the top of the handler already proved the ALERT is the
-   * caller's; this proves the same of the profile the approval actually mutates —
-   * `alerts.profile_id` is denormalised at insert time (it survives a later device→profile
-   * reassignment), so it is not transitively guaranteed to still sit in the alert's household, and
-   * a non-admin writer's profile link was never checked on this path at all.
+   * first. `requireAlertInHousehold` at the top of the handler proved the ALERT is the caller's;
+   * this proves the same of the profile the approval actually mutates. Two distinct things it
+   * establishes, only one of which is live today:
+   *
+   *   - The caller's LINK to the profile — live, and the reason this guard is not optional. A
+   *     non-admin writer's link was never checked anywhere on this path, so an `adult` in the
+   *     household who is not linked to the profile could approve a grant they cannot make directly
+   *     via `POST /api/time/extend`, which gates on this same primitive.
+   *   - The profile's HOUSEHOLD (via the composed [[requireProfileInHousehold]]) — defense in
+   *     depth. `alerts.household_id` and `alerts.profile_id` are stamped independently at insert,
+   *     but they cannot currently disagree: `createAccessRequest` takes `profileId` from
+   *     `findByMac(mac, HouseholdId.Default)` and stamps `household_id` with the LOWEST matching
+   *     household, so either both resolve to household 1 or `profileId` is NULL; and device→profile
+   *     reassignment is itself gated on `requireProfileAccess`, so a device never holds an
+   *     out-of-household profile. `TODO(#2322)` is what makes them able to diverge — it derives the
+   *     block-page household from the requesting router while `profileId` still comes from the
+   *     household-1 lookup. Pinned now so it stays refused when that lands.
    */
   private def applyApproveSideEffect(
       alert: Alert,

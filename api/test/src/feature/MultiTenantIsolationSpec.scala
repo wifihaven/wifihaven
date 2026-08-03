@@ -1915,7 +1915,9 @@ object MultiTenantIsolationSpec
     // — worse — approving an `Unpause` access_request reached
     // `profileRepo.setPaused(alert.profileId, false)` on hh-B's profile: an
     // enforcement bypass that unblocks another household's child.
-    test("pin 2 (#2564) — hh-A writer cannot deny hh-B's alert (404, row still pending)") {
+    test(
+      "pin 2 (#2564) alert-tenancy — hh-A writer cannot deny hh-B's alert (404, row still pending)",
+    ) {
       for {
         _        <- cleanDb
         two      <- TestLayers.seedTwoHouseholds(macA, macB)
@@ -1944,7 +1946,9 @@ object MultiTenantIsolationSpec
         assertTrue(!bd.contains(macB.value), !bd.contains("please unpause")) &&
         assertTrue(statusB == "pending")
     },
-    test("pin 2 (#2564) — hh-A writer cannot approve hh-B's Unpause (404, profile still paused)") {
+    test(
+      "pin 2 (#2564) alert-tenancy — hh-A writer cannot approve hh-B's Unpause (404, still paused)",
+    ) {
       for {
         _       <- cleanDb
         two     <- TestLayers.seedTwoHouseholds(macA, macB)
@@ -1975,7 +1979,7 @@ object MultiTenantIsolationSpec
         assertTrue(pausedB) &&
         assertTrue(statusB == "pending")
     },
-    test("pin 2 (#2564) — a SAME-household approve still succeeds (happy path not regressed)") {
+    test("pin 2 (#2564) alert-tenancy — a SAME-household approve still succeeds (happy path)") {
       for {
         _       <- cleanDb
         two     <- TestLayers.seedTwoHouseholds(macA, macB)
@@ -2015,7 +2019,7 @@ object MultiTenantIsolationSpec
     // above never reach it (they 404 at the alert guard) and the happy path above logs in as
     // `admin`, which short-circuits it — these two drive the branch that actually gates a non-admin
     // writer, in both directions.
-    test("pin 2 (#2564) — a LINKED adult in the household can approve (side-effect guard allows)") {
+    test("pin 2 (#2564) profile-link — a LINKED adult in the household can approve") {
       for {
         _       <- cleanDb
         two     <- TestLayers.seedTwoHouseholds(macA, macB)
@@ -2044,7 +2048,7 @@ object MultiTenantIsolationSpec
           .transact(xa)
       } yield assertTrue(st == Status.Ok) && assertTrue(!pausedA)
     },
-    test("pin 2 (#2564) — an UNLINKED adult in the household is refused (profile stays paused)") {
+    test("pin 2 (#2564) profile-link — an UNLINKED adult is refused 403 (profile stays paused)") {
       for {
         _       <- cleanDb
         two     <- TestLayers.seedTwoHouseholds(macA, macB)
@@ -2081,15 +2085,21 @@ object MultiTenantIsolationSpec
         assertTrue(pausedA) &&
         assertTrue(statusA == "pending")
     },
-    test("pin 2 (#2564) — an own-household alert cannot reach ANOTHER household's profile") {
-      // The other half of the side-effect guard, and the one its docstring leads with. `alerts` and
-      // `alerts.profile_id` are stamped independently: the row's `household_id` comes from the
-      // device, the `profile_id` is denormalised at insert and deliberately survives a later
-      // device→profile reassignment. So an alert that IS the caller's does not by itself prove its
-      // profile still is, and `requireAlertInHousehold` alone would let the approval through to a
-      // foreign profile. Constructed directly by repointing a legitimate hh-A alert at hh-B's
-      // profile — 404 here, not 403, because it is `requireProfileInHousehold` doing the refusing
-      // and that IS a tenancy boundary.
+    test("pin 2 (#2564) profile-tenancy — an own-household alert cannot reach hh-B's profile") {
+      // The household half of the side-effect guard. `alerts.household_id` and `alerts.profile_id`
+      // are stamped independently at insert, so an alert that IS the caller's does not structurally
+      // prove its profile is — `requireAlertInHousehold` passes by construction here and only
+      // `requireProfileAccess` (which composes `requireProfileInHousehold`) stands between the
+      // approval and hh-B's profile.
+      //
+      // They cannot actually disagree TODAY: `createAccessRequest` reads `profileId` from
+      // `findByMac(mac, HouseholdId.Default)` and stamps `household_id` with the lowest matching
+      // household, and device→profile reassignment is itself household-gated. So this state is
+      // built directly by raw SQL rather than driven, and the pin is defense in depth against
+      // `TODO(#2322)` — deriving the block-page household from the requesting router, which lets
+      // the two diverge for a shared MAC. It still fails without the guard.
+      //
+      // 404 here, not the 403 the unlinked-adult pin asserts: this refusal IS a tenancy boundary.
       for {
         _      <- cleanDb
         two    <- TestLayers.seedTwoHouseholds(macA, macB)
