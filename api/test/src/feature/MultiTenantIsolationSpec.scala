@@ -2081,5 +2081,47 @@ object MultiTenantIsolationSpec
         assertTrue(pausedA) &&
         assertTrue(statusA == "pending")
     },
+    test("pin 2 (#2564) — an own-household alert cannot reach ANOTHER household's profile") {
+      // The other half of the side-effect guard, and the one its docstring leads with. `alerts` and
+      // `alerts.profile_id` are stamped independently: the row's `household_id` comes from the
+      // device, the `profile_id` is denormalised at insert and deliberately survives a later
+      // device→profile reassignment. So an alert that IS the caller's does not by itself prove its
+      // profile still is, and `requireAlertInHousehold` alone would let the approval through to a
+      // foreign profile. Constructed directly by repointing a legitimate hh-A alert at hh-B's
+      // profile — 404 here, not 403, because it is `requireProfileInHousehold` doing the refusing
+      // and that IS a tenancy boundary.
+      for {
+        _      <- cleanDb
+        two    <- TestLayers.seedTwoHouseholds(macA, macB)
+        xa     <- ZIO.service[Transactor[Task]]
+        ar     <- ZIO.service[AlertRepo]
+        alertA <- ar.createAccessRequest(
+          macA,
+          Some(two.profileA),
+          Hostname.unsafe("youtube.com"),
+          AccessRequestKind.Unpause,
+          None,
+          Instant.parse("2026-05-07T14:00:00Z"),
+        )
+        // The alert stays hh-A's; only its denormalised profile pointer crosses.
+        _ <- sql"UPDATE alerts SET profile_id=${two.profileB} WHERE id=${alertA.value}".update.run
+          .transact(xa)
+        auth    <- makeAuth
+        tokenA  <- login(auth, two.adminA, two.password)
+        routes  <- makeAlertRoutes(auth)
+        (st, _) <- postJson(routes, s"/api/alerts/${alertA.value}/approve", Some(tokenA), "")
+        // hh-B's profile is seeded paused; the approval must not have unpaused it.
+        pausedB <- sql"SELECT paused FROM profiles WHERE id=${two.profileB}"
+          .query[Boolean]
+          .unique
+          .transact(xa)
+        statusA <- sql"SELECT status FROM alerts WHERE id=${alertA.value}"
+          .query[String]
+          .unique
+          .transact(xa)
+      } yield assertTrue(st == Status.NotFound) &&
+        assertTrue(pausedB) &&
+        assertTrue(statusA == "pending")
+    },
   ) @@ TestAspect.sequential
 }

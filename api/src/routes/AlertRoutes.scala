@@ -120,7 +120,8 @@ object AlertRoutes {
               .queryParam("all")
               .map(_.equalsIgnoreCase("true"))
               .getOrElse(false)
-            // #2108: alerts scoped to the caller's household (transitively via the device join).
+            // #2108/#2283: alerts scoped to the caller's household, on the alert's own
+            // `household_id` — see `AlertRepo.listForHousehold`.
             xs <- alertRepo
               .listForHousehold(includeAll, claims.hh)
               .mapError(ApiError.Db(_))
