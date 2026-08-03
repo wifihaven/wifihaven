@@ -114,6 +114,47 @@ function M.fetch_token(api_url, router_token, http_get_fn, log)
   return parsed.token, nil
 end
 
+-- Block-page token refresh scheduling (#2566/#2569/#2322).
+--
+-- Pure, so it can be pinned by a spec: this is tick arithmetic with three
+-- interacting states (never-landed fast retry, backed-off, landed periodic
+-- refresh) and it has been got wrong twice in review. Keeping it out of the
+-- agent script — which has no busted harness — is the difference between
+-- "reviewed" and "tested".
+--
+-- should_fetch(ok, fails, ticks, fast_retries, refresh_ticks)
+--   → fetch:bool, ticks:int          (carry `ticks` forward)
+--
+--   - never landed, under the fast-retry budget → fetch every tick. Right at
+--     boot: the API may be briefly down, or the router booted first.
+--   - never landed, budget spent → this API does not serve the endpoint yet
+--     (a structural 404 against an older API), so fall to the slow cadence
+--     rather than hammering it forever.
+--   - landed → the periodic refresh, which is what makes an API jwt.secret
+--     rotation self-heal without a restart.
+function M.should_fetch(ok, fails, ticks, fast_retries, refresh_ticks)
+  if ok or fails >= fast_retries then
+    ticks = ticks + 1
+    if ticks < refresh_ticks then return false, ticks end
+  end
+  return true, ticks
+end
+
+-- ticks_after_failure(ok, ticks) → ticks:int
+--
+-- The tick counter to carry forward after a FAILED fetch. The two states want
+-- opposite things, and conflating them is precisely the bug this pins:
+--   - never landed → 0, starting a fresh interval. `should_fetch` gates on
+--     `ticks < refresh_ticks`, so leaving `ticks` at/above the threshold makes
+--     that false on every later tick and the backoff collapses into a single
+--     pause followed by permanent every-tick fetching.
+--   - landed → unchanged, so a blip at a refresh boundary retries on the next
+--     tick instead of costing another full interval.
+function M.ticks_after_failure(ok, ticks)
+  if ok then return ticks end
+  return 0
+end
+
 -- Render the HTML body for the block page. If base_url is set, returns a tiny
 -- redirect document (meta refresh + JS for compatibility). Otherwise returns a
 -- self-contained page with neutral block copy. The reason-specific copy moved

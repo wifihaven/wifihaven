@@ -843,21 +843,17 @@ local block_page_token_fails           = 0
 local block_page_token_ok              = false
 
 function wh_refresh_block_page_token()
-  if block_page_token_ok or block_page_token_fails >= BLOCK_PAGE_TOKEN_FAST_RETRIES then
-    -- Either already published (periodic refresh), or we have retried enough
-    -- times to conclude this API simply does not serve the endpoint yet. Both
-    -- states poll on the slow cadence.
-    block_page_token_ticks = block_page_token_ticks + 1
-    if block_page_token_ticks < BLOCK_PAGE_TOKEN_REFRESH_TICKS then return end
-  end
+  -- Scheduling decision lives in block_page.should_fetch (pure, spec'd there).
+  local due
+  due, block_page_token_ticks = block_page.should_fetch(
+    block_page_token_ok, block_page_token_fails, block_page_token_ticks,
+    BLOCK_PAGE_TOKEN_FAST_RETRIES, BLOCK_PAGE_TOKEN_REFRESH_TICKS)
+  if not due then return end
   local tok, why = block_page.fetch_token(api_url, router_token, http_get, log)
   if not tok then
     -- Keep the existing (possibly still-valid) token on disk rather than
     -- deleting it: a transient API outage must not strip a working token and
-    -- push the household onto the fallback path. The tick counter is NOT reset
-    -- here, so a blip at the refresh boundary retries on the next tick instead
-    -- of pushing the next attempt out by another full interval — the whole
-    -- point of the refresh is post-rotation recovery.
+    -- push the household onto the fallback path.
     block_page_token_fails = block_page_token_fails + 1
     if block_page_token_fails == BLOCK_PAGE_TOKEN_FAST_RETRIES then
       log.info("block-page token: still unavailable after %d tries (%s); backing off to the " ..
@@ -865,8 +861,10 @@ function wh_refresh_block_page_token()
     else
       log.debug("block-page token: not available yet (%s)", tostring(why))
     end
-    -- The tick counter is NOT reset here, so a blip at a refresh boundary
-    -- retries on the next tick rather than costing another full interval.
+    -- Tick handling differs by state; block_page.ticks_after_failure owns that
+    -- decision and is spec'd there.
+    block_page_token_ticks = block_page.ticks_after_failure(
+      block_page_token_ok, block_page_token_ticks)
     return
   end
   local f = io.open(BLOCK_PAGE_TOKEN_PATH, "w")

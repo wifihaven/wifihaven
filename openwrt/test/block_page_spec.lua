@@ -232,3 +232,76 @@ describe("block_page.render_html (#679/#1617: no reason= param)", function()
     assert.truthy(html:find("&lt;script&gt;", 1, true))
   end)
 end)
+
+-- #2566/#2569/#2322: token refresh scheduling. Extracted from the agent script
+-- and pinned here because the tick arithmetic has three interacting states and
+-- was got wrong twice in review — once by never backing off at all, once by a
+-- backoff that fired a single time and then silently reverted to every tick.
+describe("block_page.should_fetch / ticks_after_failure (#2566)", function()
+  local FAST, REFRESH = 12, 720  -- 12 tries ≈ 1 min, 720 ticks = 1h @ 5s poll
+
+  -- Drive the real loop: returns the tick indices on which a fetch was attempted.
+  local function simulate(total_ticks, succeed_from)
+    local ok, fails, ticks = false, 0, 0
+    local attempts = {}
+    for t = 1, total_ticks do
+      local due
+      due, ticks = bp.should_fetch(ok, fails, ticks, FAST, REFRESH)
+      if due then
+        table.insert(attempts, t)
+        if succeed_from and t >= succeed_from then
+          ok, fails, ticks = true, 0, 0
+        else
+          fails = fails + 1
+          ticks = bp.ticks_after_failure(ok, ticks)
+        end
+      end
+    end
+    return attempts
+  end
+
+  it("retries every tick while under the fast-retry budget", function()
+    local a = simulate(FAST)
+    assert.equals(FAST, #a)
+    assert.equals(1, a[1])
+    assert.equals(FAST, a[FAST])
+  end)
+
+  -- THE REGRESSION PIN. The first backoff attempt lands one REFRESH interval
+  -- after the budget is spent, and — this is the half that was broken — so does
+  -- every attempt after it. A backoff that resumes every-tick fetching leaves
+  -- long-run volume identical to no backoff at all.
+  it("backs off to the refresh cadence and STAYS there", function()
+    local a = simulate(FAST + REFRESH * 3)
+    -- the fast burst, then exactly one attempt per REFRESH interval
+    assert.equals(FAST + 3, #a)
+    assert.equals(FAST + REFRESH,     a[FAST + 1])
+    assert.equals(FAST + REFRESH * 2, a[FAST + 2])
+    assert.equals(FAST + REFRESH * 3, a[FAST + 3])
+  end)
+
+  -- Backing off must not mean giving up: once the API is upgraded the next
+  -- scheduled attempt succeeds and the periodic refresh takes over.
+  it("still self-heals once the API starts serving the endpoint", function()
+    local a = simulate(FAST + REFRESH * 2, FAST + REFRESH)
+    assert.equals(FAST + REFRESH, a[FAST + 1])   -- the attempt that succeeds
+    assert.equals(FAST + REFRESH * 2, a[FAST + 2])  -- then the landed refresh
+  end)
+
+  it("a landed token refreshes once per interval, not every tick", function()
+    local ok, fails, ticks, attempts = true, 0, 0, 0
+    for _ = 1, REFRESH * 2 do
+      local due
+      due, ticks = bp.should_fetch(ok, fails, ticks, FAST, REFRESH)
+      if due then attempts = attempts + 1; ticks = 0 end
+    end
+    assert.equals(2, attempts)
+  end)
+
+  -- Landed + failed refresh retries on the NEXT tick rather than costing
+  -- another full interval: post-rotation recovery is the point of the refresh.
+  it("keeps the tick counter on a landed failure, dropping it when never landed", function()
+    assert.equals(REFRESH, bp.ticks_after_failure(true, REFRESH))
+    assert.equals(0,       bp.ticks_after_failure(false, REFRESH))
+  end)
+end)
