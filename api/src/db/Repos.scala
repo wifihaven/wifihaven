@@ -940,9 +940,14 @@ trait TimeExtensionRepo {
    * `time_extensions` rows into memory inside the household-scoped `dayStateAll` batch. No
    * all-tenant variant — see `ProfileRepo.distinctHouseholds`.
    *
-   * Scoped on the PROFILE's household rather than `time_extensions.household_id` so the map is
-   * keyed by exactly the profiles the caller iterates; the two agree for every row a grant path can
-   * write (`grantForProfile` stamps the profile's household).
+   * Scoped on the PROFILE's household rather than on `time_extensions.household_id`, deliberately.
+   * `grantForProfile` does NOT derive the household from the profile — it stamps whatever the
+   * caller passes, and the parameter DEFAULTS to `HouseholdId.Default`, so a caller that omits it
+   * stamps household 1 no matter who owns the profile. The two columns agree today only because the
+   * grant routes run behind a household guard that makes caller-household == profile-household. The
+   * profile join is the stronger predicate: it stays correct even for a row whose
+   * `time_extensions.household_id` was mis-stamped, and it keys the map by exactly the profiles the
+   * caller iterates.
    */
   def snapshotByProfileForHousehold(
       household: HouseholdId,
@@ -2669,11 +2674,14 @@ class TimeExtensionRepoLive(xa: Transactor[Task]) extends TimeExtensionRepo {
   // #2264: household-scoped via the `profiles.household_id` join (idx_profiles_household, V65).
   def snapshotByProfileForHousehold(household: HouseholdId, d: LocalDate) =
     DbMetrics.timed("timeExtension.snapshotByProfileForHousehold")(
-      sql"""SELECT te.profile_id, SUM(te.extra_minutes)::INT
+      // The inner JOIN already drops the MAC-keyed (NULL profile_id) grants, so no
+      // `profile_id IS NOT NULL` guard is needed on top of it.
+      (fr"""SELECT te.profile_id, SUM(te.extra_minutes)::INT
             FROM time_extensions te
             JOIN profiles p ON p.id = te.profile_id
-            WHERE te.date = $d AND te.profile_id IS NOT NULL AND p.household_id = $household
-            GROUP BY te.profile_id"""
+            WHERE te.date = $d AND """ ++
+        SqlFragments.householdEq(household, "p.household_id") ++
+        fr"GROUP BY te.profile_id")
         .query[(ProfileId, Int)]
         .to[List]
         .transact(xa)
@@ -4601,19 +4609,24 @@ class NamedScheduleRepoLive(xa: Transactor[Task]) extends NamedScheduleRepo {
       .transact(xa)
 
   // #2264: household-scoped via the `profiles.household_id` join (idx_profiles_household, V65).
+  // Timed like its two sibling `dayStateAll` reads so the added join is visible on the
+  // `db_query_duration_seconds` by-op p95 panel (the missing-index leading indicator, #809).
   def windowsForHouseholdProfiles(household: HouseholdId) =
-    sql"""SELECT psr.profile_id, sw.days, sw.start_local, sw.end_local, sw.tz
-          FROM schedule_windows sw
-          JOIN profile_schedule_rules psr ON psr.schedule_id = sw.schedule_id
-          JOIN profiles p ON p.id = psr.profile_id
-          WHERE psr.mode = $BlockedDuring AND p.household_id = $household
-          ORDER BY psr.profile_id, sw.id"""
-      .query[(ProfileId, List[String], LocalTime, LocalTime, ZoneId)]
-      .to[List]
-      .transact(xa)
-      .map(_.groupBy(_._1).map { case (pid, rows) =>
-        pid -> rows.map(r => ScheduleWindow(r._2, r._3, r._4, r._5))
-      })
+    DbMetrics.timed("namedSchedule.windowsForHouseholdProfiles")(
+      (fr"""SELECT psr.profile_id, sw.days, sw.start_local, sw.end_local, sw.tz
+            FROM schedule_windows sw
+            JOIN profile_schedule_rules psr ON psr.schedule_id = sw.schedule_id
+            JOIN profiles p ON p.id = psr.profile_id
+            WHERE psr.mode = $BlockedDuring AND """ ++
+        SqlFragments.householdEq(household, "p.household_id") ++
+        fr"ORDER BY psr.profile_id, sw.id")
+        .query[(ProfileId, List[String], LocalTime, LocalTime, ZoneId)]
+        .to[List]
+        .transact(xa)
+        .map(_.groupBy(_._1).map { case (pid, rows) =>
+          pid -> rows.map(r => ScheduleWindow(r._2, r._3, r._4, r._5))
+        }),
+    )
 }
 
 object Repos {

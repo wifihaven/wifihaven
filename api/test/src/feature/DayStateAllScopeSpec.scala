@@ -160,5 +160,33 @@ object DayStateAllScopeSpec
         // 99-minute grant on the same date did not bleed into it.
         assertTrue(after(two.profileA).extensionMinutes == 10)
     },
+    // ── Lagging-household pin for the narrowed rollup watermark ─────────────────
+    // `dayStateAllFromRollupHits` takes `min(rolledThrough)` over `rolled`, which #2264 narrowed
+    // from every tenant's rows to this household's. This pins the property that makes the narrowing
+    // safe: a household whose rollup fiber lagged (an EARLIER watermark) cannot move A's numbers in
+    // either direction. It passes on `main` too — there the wider window is re-filtered per profile
+    // — so it is a forward-looking guard on the invariant, not a red-to-green regression test.
+    test("a lagging household B's earlier rollup watermark does not move A's day-states") {
+      for {
+        _     <- cleanDb
+        two   <- TestLayers.seedTwoHouseholds(macA, macB)
+        tss   <- timeStatusService
+        pr    <- ZIO.service[ProfileRepo]
+        ru    <- ZIO.service[TimeUsedRollupRepo]
+        clock <- ZIO.service[Clock]
+        now   <- clock.instant
+        hsr   <- ZIO.service[HouseholdSettingsRepo]
+        stg   <- hsr.getForHousehold(two.hhA)
+        date = PolicyService.householdLocalDate(now, stg)
+        profsA <- pr.listAllForHousehold(two.hhA)
+        _      <- ZIO.foreachDiscard(profsA)(p => ru.upsertDay(p.id, date, RolledDay(600L, now)))
+        before <- tss.dayStateAll(two.hhA, now, date, stg)
+        // B's fiber is six hours behind A's — on `main` this would have dragged the batch
+        // watermark back for A too.
+        _      <- ru.upsertDay(two.profileB, date, RolledDay(1800L, now.minusSeconds(6 * 3600)))
+        after  <- tss.dayStateAll(two.hhA, now, date, stg)
+      } yield assertTrue(after == before) &&
+        assertTrue(before.keySet == profsA.map(_.id).toSet)
+    },
   ) @@ TestAspect.sequential
 }

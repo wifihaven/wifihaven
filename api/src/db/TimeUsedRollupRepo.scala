@@ -4,6 +4,7 @@ import doobie.*
 import doobie.implicits.*
 import doobie.postgres.implicits.*
 import wifihaven.api.db.TypeMeta.given
+import wifihaven.api.metrics.DbMetrics
 import wifihaven.shared.types.*
 import zio.*
 import zio.interop.catz.*
@@ -98,17 +99,22 @@ class TimeUsedRollupRepoLive(xa: Transactor[Task]) extends TimeUsedRollupRepo {
       .transact(xa)
 
   // #2264: household-scoped via the `profiles.household_id` join (idx_profiles_household, V65).
+  // Timed like its two sibling `dayStateAll` reads so the added join is visible on the
+  // `db_query_duration_seconds` by-op p95 panel (the missing-index leading indicator, #809).
   def getDayMapForHousehold(
       household: HouseholdId,
       date: LocalDate,
   ): Task[Map[ProfileId, RolledDay]] =
-    sql"""SELECT tud.profile_id, tud.used_seconds, tud.rolled_through
-          FROM time_used_daily tud
-          JOIN profiles p ON p.id = tud.profile_id
-          WHERE tud.date = $date AND p.household_id = $household"""
-      .query[(ProfileId, Long, Instant)]
-      .map { case (p, s, t) => p -> RolledDay(s, t) }
-      .to[List]
-      .transact(xa)
-      .map(_.toMap)
+    DbMetrics.timed("timeUsedRollup.getDayMapForHousehold")(
+      (fr"""SELECT tud.profile_id, tud.used_seconds, tud.rolled_through
+            FROM time_used_daily tud
+            JOIN profiles p ON p.id = tud.profile_id
+            WHERE tud.date = $date AND """ ++
+        SqlFragments.householdEq(household, "p.household_id"))
+        .query[(ProfileId, Long, Instant)]
+        .map { case (p, s, t) => p -> RolledDay(s, t) }
+        .to[List]
+        .transact(xa)
+        .map(_.toMap),
+    )
 }
