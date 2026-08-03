@@ -739,7 +739,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "Learned ambient hosts (#2077)",
-      "description": "presence_ambient_hosts — size of the isolation-learned ambient host set, refreshed by each AmbientLearnJob run (~6h). Prod baseline from the design-doc sample: ~20-40 hosts. A sudden jump means the learner started absorbing a new host class — inspect GET /api/presence/ambient-hosts before trusting the gate.",
+      "description": "presence_ambient_hosts — size of the isolation-learned ambient host set, refreshed by each AmbientLearnJob run (~6h). #2553: the ambient thresholds are per household, so this is the UNION of every household's resolved set — 'hosts learned ambient for somebody'. It therefore grows with tenant count, and the ~20-40 host design-doc baseline describes a single household. Judge it by its own trend, not an absolute number: a step change with a flat household count means the learner started absorbing a new host class — inspect GET /api/presence/ambient-hosts before trusting the gate.",
       "type": "stat",
       "gridPos": { "h": 8, "w": 7, "x": 17, "y": 72 },
       "id": 21,

@@ -192,16 +192,19 @@ object TimeUsedRollupJob {
     // household's. Each household therefore upserts on ITS OWN local date rather than the batch
     // sharing one unioned write; profile ids and (profile, app) keys are unique per household, so
     // the per-household writes are disjoint.
-    households <- profileRepo.distinctHouseholds
-    perHh      <- ZIO.foreach(households) { hh =>
+    households   <- profileRepo.distinctHouseholds
+    // Every household's settings are read BEFORE any household is written. A missing settings row
+    // fails loud (#2386 / no-dark-by-default): every household gets one atomically from
+    // `HouseholdRepo.create`, so a missing row is a provisioning bug, and a tick that silently
+    // rolled such a household under someone else's settings is exactly the #2553 defect. Reading
+    // them all up front keeps the tick ALL-OR-NOTHING — otherwise one unprovisioned household would
+    // abort the tick partway, committing the households before it and permanently starving the ones
+    // after it (their cached rows never refresh, so every read falls through to the slow live path).
+    // The failure is recorded in `rollup_runs` by `runOnce`.
+    settingsByHh <- ZIO.foreach(households)(hh => hs.getForHousehold(hh).map(hh -> _))
+    perHh        <- ZIO.foreach(settingsByHh) { case (hh, settings) =>
+      val today = PolicyService.householdLocalDate(now, settings)
       for {
-        // Fails loud when a household owns no settings row (#2386 / no-dark-by-default): every
-        // household gets one atomically from `HouseholdRepo.create`, so a missing row is a
-        // provisioning bug, and a tick that silently rolled such a household under someone else's
-        // settings is exactly the #2553 defect. The failure aborts the tick and is recorded in
-        // `rollup_runs` by `runOnce`.
-        settings <- hs.getForHousehold(hh)
-        today = PolicyService.householdLocalDate(now, settings)
         ambient  <- ambientRepo.gateFor(settings, today)
         profiles <- profileRepo.listAllForHousehold(hh)
         devices  <- deviceRepo.listAllForHousehold(hh)
@@ -216,11 +219,11 @@ object TimeUsedRollupJob {
     // #1676: each tick emits the count of per-(mac, app) sessions silently
     // dropped by the #1666 anchor-row guard so an operator can rate-alert on
     // threshold drift. Summed across households/profiles since the metric is unlabelled.
-    _          <- AppMetrics.recordAppSessionsDropped(perHh.map(_._2).sum)
+    _            <- AppMetrics.recordAppSessionsDropped(perHh.map(_._2).sum)
     // #2077: same cadence for the ambient anchor gate's dropped-span watchdog —
     // a sustained rise with flat screen-time means the learner is eating real
     // sessions; a flat zero with returning phantom means it is too lax.
-    _          <- AppMetrics.recordAmbientSpansDropped(perHh.map(_._3).sum)
+    _            <- AppMetrics.recordAmbientSpansDropped(perHh.map(_._3).sum)
   } yield perHh.map(_._1).sum
 
   // Pure: collapse one presence batch into both the per-profile total roll (`time_used_daily`) and

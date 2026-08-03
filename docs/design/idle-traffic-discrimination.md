@@ -187,7 +187,10 @@ Results on the 14-day sample (in-sample):
 Two pieces, both in the API server, composing with the existing pipeline:
 
 1. **Ambient learner** (new daily job alongside the existing rollup jobs):
-   for the previous local day, per device, compute counted presence rows and
+   for the previous day — one day *label*, derived in UTC and shared by every
+   household so their contributions to a `(host, day)` row land in the same
+   write, matched against each household's own local `traffic_reports.date`
+   (#2553) — per device, compute counted presence rows and
    merged device spans exactly as the daily total does (same
    `Presence` primitives, same app-attribution inputs), find *isolated*
    spans (distinct hosts ≤ `ambientIsolationMaxHosts`, no app-attributed

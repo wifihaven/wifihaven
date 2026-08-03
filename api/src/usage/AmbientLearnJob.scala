@@ -19,9 +19,11 @@ import java.time.{Duration, Instant, LocalDate, ZoneOffset}
 
 /**
  * #2077: the ambient-host learner (docs/design/idle-traffic-discrimination.md). Each tick
- * recomputes the isolated-span host counts for the PREVIOUS UTC day — the last complete day — via
- * [[Presence.isolatedSpanHosts]], upserts one `ambient_host_days` row per (host, day), prunes rows
- * that aged out of the learning window, and refreshes the `presence_ambient_hosts` gauge.
+ * recomputes the isolated-span host counts for the previous day — one day LABEL, derived in UTC and
+ * shared by every household, matched against each household's own local `traffic_reports.date` (see
+ * `learnDay` in `doTick`) — via [[Presence.isolatedSpanHosts]], upserts one `ambient_host_days` row
+ * per (host, day), prunes rows that aged out of the learning window, and refreshes the
+ * `presence_ambient_hosts` gauge.
  *
  * #2553 — the baseline stays GLOBAL, deliberately. `ambient_host_days` carries no `household_id`:
  * it answers "is this host a machine-generated background beacon?", which is a property of the HOST
@@ -122,13 +124,20 @@ object AmbientLearnJob {
       hs: HouseholdSettingsRepo,
       now: Instant,
   ): Task[Int] = {
-    // #2553: the LEARNING DAY is a fixed UTC calendar day, not any household's local day. The
-    // baseline is one global `(host, day)` set (see the object doc), so a per-household day key
-    // would make two households in different timezones write the SAME row on different ticks and
-    // clobber each other through the PK — last writer wins, silently dropping a household's
-    // contribution. A UTC key is household-independent and re-learning is idempotent (the upsert
-    // replaces the count), so at the 6-hour cadence every labelled day converges to its complete
-    // value regardless of how far a household's local midnight sits from UTC's.
+    // #2553: which day to learn is a household-independent LABEL, derived in UTC — not a UTC time
+    // window. `traffic_reports.date` is stamped at ingest with the reporting household's OWN local
+    // date (`RouterIngestService.handleUsage` → `PolicyService.householdLocalDate`), and
+    // `listPresenceRows` filters on that column, so each household still learns over its own local
+    // day; only the label picking WHICH local day is shared.
+    //
+    // It has to be shared because the baseline is one global `(host, day)` table (see the object
+    // doc) and `upsertDay` REPLACES the count for a `(host, day)` row. Per-household labels would
+    // have a household whose local midnight is ahead write label D at one tick, and a household
+    // behind it write the same label D at a later tick — the second write dropping the first
+    // household's contribution. (Households sharing a label within ONE tick are safe: their counts
+    // merge before the single write below.) A shared label makes every household's contribution to
+    // a day land in the same write, and re-learning a day is idempotent, so at the 6-hour cadence
+    // each label converges to its complete value however far a household sits from UTC.
     val learnDay = LocalDate.ofInstant(now, ZoneOffset.UTC).minusDays(1L)
     for {
       // #2257: this is a genuinely all-tenant batch — enumerate households explicitly and union each

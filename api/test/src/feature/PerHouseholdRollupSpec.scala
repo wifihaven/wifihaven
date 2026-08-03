@@ -262,6 +262,46 @@ object PerHouseholdRollupSpec
         !hosts.contains("a-two.example.com"),
       )
     },
+    test("#2553: the ambient learn day is a shared label, not household #1's local yesterday") {
+      // The baseline is one global (host, day) table, so the day LABEL is derived in UTC and shared
+      // by every household — it is no longer whatever household #1's timezone made "yesterday".
+      // now = 2026-07-01T23:00Z with household A (the operator household) in Asia/Tokyo: A's local
+      // date is already Jul 2, so the old code would have learned Jul 1. The shared label is Jun 30.
+      // Household B's device has an isolated span on each of the two days, so the two behaviours are
+      // distinguishable by which host gets learned.
+      for {
+        _   <- cleanDb
+        two <- TestLayers.seedTwoHouseholds(macA, macB)
+        ahr <- ZIO.service[AmbientHostsRepo]
+        _   <- setSettings(two.hhA)(_.copy(dailyResetTz = ZoneId.of("Asia/Tokyo")))
+        sB  <- setSettings(two.hhB)(_.copy(dailyResetTz = ZoneOffset.UTC))
+        jun30 = LocalDate.of(2026, 6, 30)
+        jul1  = LocalDate.of(2026, 7, 1)
+        _      <- seedBucket(
+          two.routerIdB,
+          macB,
+          "b-jun30.example.com",
+          jun30,
+          Instant.parse("2026-06-30T03:00:00Z"),
+        )
+        _      <- seedBucket(
+          two.routerIdB,
+          macB,
+          "b-jul1.example.com",
+          jul1,
+          Instant.parse("2026-07-01T03:00:00Z"),
+        )
+        _      <- learnTick(Instant.parse("2026-07-01T23:00:00Z"))
+        window <- ahr.listWindow(sB, LocalDate.of(2026, 7, 2))
+        hosts = window.map(_.host).toSet
+      } yield assertTrue(
+        // the shared UTC-derived label — Jun 30 — is what was learned…
+        hosts.contains("b-jun30.example.com"),
+        window.exists(r => r.host == "b-jun30.example.com" && r.lastIsolatedDay == jun30),
+        // …not household #1's local yesterday, which was already Jul 1 in Tokyo.
+        !hosts.contains("b-jul1.example.com"),
+      )
+    },
     test("#2570: a household's settings save invalidates ONLY its own rollup rows") {
       for {
         _   <- cleanDb
