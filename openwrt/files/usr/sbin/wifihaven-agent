@@ -870,6 +870,14 @@ function wh_refresh_block_page_token()
   local f = io.open(BLOCK_PAGE_TOKEN_PATH, "w")
   if not f then
     log.warn("block-page token: cannot write %s", BLOCK_PAGE_TOKEN_PATH)
+    -- The THIRD exit path, and it needs the same tick decision as the fetch
+    -- failure above: a persistently unwritable path (read-only /var/run, no
+    -- space) would otherwise leave `ticks` at the threshold and reproduce the
+    -- every-tick loop the backoff exists to prevent. Counted as a failure too,
+    -- so a write that never succeeds also stops burning a request per tick.
+    block_page_token_fails = block_page_token_fails + 1
+    block_page_token_ticks = block_page.ticks_after_failure(
+      block_page_token_ok, block_page_token_ticks)
     return
   end
   f:write(tok)
