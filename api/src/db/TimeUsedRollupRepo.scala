@@ -4,6 +4,7 @@ import doobie.*
 import doobie.implicits.*
 import doobie.postgres.implicits.*
 import wifihaven.api.db.TypeMeta.given
+import wifihaven.api.metrics.DbMetrics
 import wifihaven.shared.types.*
 import zio.*
 import zio.interop.catz.*
@@ -32,8 +33,20 @@ trait TimeUsedRollupRepo {
   /** Cached row for a single profile/date, or None if not yet rolled. */
   def getDayForProfile(profileId: ProfileId, date: LocalDate): Task[Option[RolledDay]]
 
-  /** Cached rows keyed by profile for `date`. Missing profiles signal a cache miss. */
-  def getDayMap(date: LocalDate): Task[Map[ProfileId, RolledDay]]
+  /**
+   * Cached rows keyed by profile for `date`, restricted to `household`'s profiles. Missing profiles
+   * signal a cache miss.
+   *
+   * #2264 (follow-up to #2257, epic #2085/#622): scoped via the `profiles.household_id` join
+   * (index-backed by `idx_profiles_household`, V65). Replaces the all-tenant `getDayMap`, which
+   * read every household's `time_used_daily` rows into memory inside the household-scoped
+   * `TimeStatusService.dayStateAll` batch — the third read of this class (not named in #2264; found
+   * by the #2563 audit). No all-tenant variant — see `ProfileRepo.distinctHouseholds`.
+   */
+  def getDayMapForHousehold(
+      household: HouseholdId,
+      date: LocalDate,
+  ): Task[Map[ProfileId, RolledDay]]
 }
 
 /**
@@ -45,7 +58,10 @@ object NoopTimeUsedRollupRepo extends TimeUsedRollupRepo {
   def upsertBatch(date: LocalDate, perProfile: Map[ProfileId, RolledDay]): Task[Int]   =
     ZIO.succeed(0)
   def getDayForProfile(profileId: ProfileId, date: LocalDate): Task[Option[RolledDay]] = ZIO.none
-  def getDayMap(date: LocalDate): Task[Map[ProfileId, RolledDay]] = ZIO.succeed(Map.empty)
+  def getDayMapForHousehold(
+      household: HouseholdId,
+      date: LocalDate,
+  ): Task[Map[ProfileId, RolledDay]] = ZIO.succeed(Map.empty)
 }
 
 class TimeUsedRollupRepoLive(xa: Transactor[Task]) extends TimeUsedRollupRepo {
@@ -82,12 +98,23 @@ class TimeUsedRollupRepoLive(xa: Transactor[Task]) extends TimeUsedRollupRepo {
       .option
       .transact(xa)
 
-  def getDayMap(date: LocalDate): Task[Map[ProfileId, RolledDay]] =
-    sql"""SELECT profile_id, used_seconds, rolled_through
-          FROM time_used_daily WHERE date=$date"""
-      .query[(ProfileId, Long, Instant)]
-      .map { case (p, s, t) => p -> RolledDay(s, t) }
-      .to[List]
-      .transact(xa)
-      .map(_.toMap)
+  // #2264: household-scoped via the `profiles.household_id` join (idx_profiles_household, V65).
+  // Timed like its two sibling `dayStateAll` reads so the added join is visible on the
+  // `db_query_duration_seconds` by-op p95 panel (the missing-index leading indicator, #809).
+  def getDayMapForHousehold(
+      household: HouseholdId,
+      date: LocalDate,
+  ): Task[Map[ProfileId, RolledDay]] =
+    DbMetrics.timed("timeUsedRollup.getDayMapForHousehold")(
+      (fr"""SELECT tud.profile_id, tud.used_seconds, tud.rolled_through
+            FROM time_used_daily tud
+            JOIN profiles p ON p.id = tud.profile_id
+            WHERE tud.date = $date AND """ ++
+        SqlFragments.householdEq(household, "p.household_id"))
+        .query[(ProfileId, Long, Instant)]
+        .map { case (p, s, t) => p -> RolledDay(s, t) }
+        .to[List]
+        .transact(xa)
+        .map(_.toMap),
+    )
 }
