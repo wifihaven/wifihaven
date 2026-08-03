@@ -347,10 +347,18 @@ object HouseholdRepo {
  * The methods keyed on an id (`listProfilesForUser`, `listUsersForProfile`, `hasAccess`, `addLink`,
  * `removeLink`, `setProfilesForUser`, `setUsersForProfile`) take NO household parameter,
  * deliberately: `users.id` and `profiles.id` are GLOBALLY unique, so the argument already names
- * exactly one row and there is nothing to disambiguate. Reaching them with a foreign id is the
- * [[ownUser]] / [[requireProfileInHousehold]] choke points' job, not the repo's — that is where the
- * #2108 class is enforced, and duplicating the check here would make the boundary two places
- * instead of one.
+ * exactly one row and there is nothing to disambiguate. Keeping a FOREIGN id out is the [[ownUser]]
+ * / [[requireProfileInHousehold]] choke points' job, not the repo's — duplicating the check here
+ * would make the boundary two places instead of one.
+ *
+ * TODO(#2531): that choke-point coverage is not yet complete, so do not read the paragraph above as
+ * a statement that every argument is guarded today. It holds for every USER id (`Routes.scala:270`,
+ * `:288`, `:304`; `:237` creates the id under `claims.hh`) and for BOTH sides of
+ * `setUsersForProfile` (`Routes.scala:812` guards the profile, `:824` guards each user id). It does
+ * NOT hold for the `profileIds` argument of `setProfilesForUser`: `Routes.scala:242`, `:276` and
+ * `:347` pass a caller-supplied `List[ProfileId]` straight through with no
+ * `requireProfileInHousehold`, so an admin can still bind another household's profile. #2531 fixes
+ * that at those routes — the resolution stays at the choke point, not here.
  *
  * A USERNAME is different: V65 made it unique only per household (`UNIQUE(household_id, username)`)
  * and V68 dropped the global unique, so a bare username names a SET of users across tenants — which
