@@ -1804,21 +1804,22 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
                   notify_email=${s.notifyEmail},
                   updated_at=NOW()
             WHERE """ ++ SqlFragments.householdEq(household)).update.run
-    // #2533: the invalidation stays WHOLESALE (every household's rows), deliberately, even though
-    // the UPDATE above is now household-scoped. Narrowing it to this household's profiles looks
-    // obviously right and is currently WRONG, because `TimeUsedRollupJob.doTick` still computes
-    // EVERY household's rollup from household #1's settings (the `TODO(#2553)` there). So while
-    // #2553 is open, household N's cached rows are a function of household #1's reset tz and
-    // heartbeat filter — and a household-#1 save must keep evicting them. Scoping this belongs in
-    // #2553, atomically with severing that coupling; doing it here would open a stale-screen-time
-    // window for every other tenant. `time_used_daily` / `app_used_daily` carry no household_id of
-    // their own (V43 / V53) — they key on profile_id, which does (V65) — so the scoped form is
-    // `profile_id IN (SELECT id FROM profiles WHERE household_id=?)` when #2553 lands.
-    val invalidate    = sql"DELETE FROM time_used_daily".update.run
+    // #2570: the invalidation is scoped to the WRITING household's rows. `time_used_daily` /
+    // `app_used_daily` carry no household_id of their own (V43 / V53) — they key on profile_id,
+    // which does (V65) — so the scope is transitive through `profiles`, index-backed by V65's
+    // idx_profiles_household. This is only correct because #2553 made `TimeUsedRollupJob` /
+    // `AmbientLearnJob` roll each household under its OWN settings: while they derived every
+    // household's rows from household #1's reset tz and heartbeat filter, a household-#1 save had
+    // to keep evicting everyone's rows or they went stale against the tz they were computed under.
+    val hhProfiles    =
+      fr"profile_id IN (SELECT id FROM profiles WHERE" ++ SqlFragments.householdEq(
+        household,
+      ) ++ fr")"
+    val invalidate    = (fr"DELETE FROM time_used_daily WHERE" ++ hhProfiles).update.run
     // #1516: the per-app rollup (`app_used_daily`) is gated by the SAME active-minute definition
     // (heartbeat filter, daily-reset boundary, presence session-stitch knob), so invalidate it
     // atomically too — the next tick refills both from first principles.
-    val invalidateApp = sql"DELETE FROM app_used_daily".update.run
+    val invalidateApp = (fr"DELETE FROM app_used_daily WHERE" ++ hhProfiles).update.run
     // A settings write for a household that owns no row is a provisioning bug, not a silent no-op:
     // every household gets its row from `HouseholdSeed.insertHousehold` / `backfillMissingSettings`
     // (#2386), so 0 rows updated means the caller's household is unprovisioned. Fail loud rather

@@ -244,14 +244,16 @@ object PerHouseholdRollupSpec
         )
         day   = LocalDate.of(2026, 7, 1)
         start = Instant.parse("2026-07-01T03:00:00Z")
-        _      <- seedBucket(two.routerIdA, macA, "a-one.example.com", day, start)
-        _      <- seedBucket(two.routerIdA, macA, "a-two.example.com", day, start)
-        _      <- seedBucket(two.routerIdB, macB, "b-one.example.com", day, start)
-        _      <- seedBucket(two.routerIdB, macB, "b-two.example.com", day, start)
-        _      <- learnTick(Instant.parse("2026-07-02T12:00:00Z"))
-        window <- ahr.listWindow(sB, LocalDate.of(2026, 7, 2))
+        _       <- seedBucket(two.routerIdA, macA, "a-one.example.com", day, start)
+        _       <- seedBucket(two.routerIdA, macA, "a-two.example.com", day, start)
+        _       <- seedBucket(two.routerIdB, macB, "b-one.example.com", day, start)
+        _       <- seedBucket(two.routerIdB, macB, "b-two.example.com", day, start)
+        learned <- learnTick(Instant.parse("2026-07-02T12:00:00Z"))
+        window  <- ahr.listWindow(sB, LocalDate.of(2026, 7, 2))
         hosts = window.map(_.host).toSet
       } yield assertTrue(
+        // exactly B's two hosts reached the shared baseline — A's span contributed nothing
+        learned == 2,
         // B's knob admits its own two-host span…
         hosts.contains("b-one.example.com"),
         hosts.contains("b-two.example.com"),
