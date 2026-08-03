@@ -419,31 +419,37 @@ object MetricGuard {
     "router_host_conntrack_count"               -> Set("router_id", "installation_id"),
     "router_host_iface_rx_bytes_total"          -> Set("iface", "router_id", "installation_id"),
     "router_host_iface_tx_bytes_total"          -> Set("iface", "router_id", "installation_id"),
-    "router_host_wifi_clients"             -> Set("iface", "ssid", "router_id", "installation_id"),
+    "router_host_wifi_clients"          -> Set("iface", "ssid", "router_id", "installation_id"),
     // #1243 rollup health — `rollup_job` is a handful of hand-named jobs (traffic_hourly,
     // traffic_daily, time_used_daily), `status` ∈ {ok, error}. Bounded; routed through the guard.
-    "wifihaven_rollup_runs_total"          -> Set("rollup_job", "status"),
-    "wifihaven_rollup_duration_seconds"    -> Set("rollup_job"),
-    "wifihaven_rollup_rows_upserted"       -> Set("rollup_job"),
+    "wifihaven_rollup_runs_total"       -> Set("rollup_job", "status"),
+    "wifihaven_rollup_duration_seconds" -> Set("rollup_job"),
+    "wifihaven_rollup_rows_upserted"    -> Set("rollup_job"),
+    // #2553 — per-household skips inside the all-tenant rollup batches. `rollup_job` is the same
+    // hand-named set as above (time_used_daily | ambient_hosts); `reason` is a fixed 2-value enum
+    // (settings_read | error — HouseholdTickIsolation.Reason*). Bounded by the code, NOT by
+    // household growth — the household id is deliberately NOT a label (it would grow with tenants,
+    // §4 cardinality firewall); the ERROR log carries it for attribution.
+    "wifihaven_rollup_household_skipped_total"      -> Set("rollup_job", "reason"),
     // #1069 named-schedule CRUD — `op` ∈ {create, update, delete}, a fixed enum. Lets an operator
     // see schedule edits land (and rate-alert on a runaway delete loop) without grepping logs.
-    "wifihaven_schedule_mutations_total"   -> Set("op"),
+    "wifihaven_schedule_mutations_total"            -> Set("op"),
     // #578 — outbound admin-notification email funnel. `outcome` is a fixed 5-value enum, sourced
     // from EmailOutcome.label (sent / failed / skipped_disabled) + Notifier.OutcomeSkipped*
     // (skipped_no_recipient / skipped_no_household); never a per-recipient / per-household label.
-    "notify_email_total"                   -> Set("outcome"),
+    "notify_email_total"                            -> Set("outcome"),
     // #2190 — beta invite-email send funnel. `outcome` is the bounded transport enum from
     // EmailOutcome.label (sent / failed / skipped_disabled); never a per-recipient label.
-    "beta_invite_email_total"              -> Set("outcome"),
+    "beta_invite_email_total"                       -> Set("outcome"),
     // #2308 — forgot/reset-password pipeline outcomes. `outcome` is a small fixed enum (see
     // AppMetrics.passwordReset): request_sent / request_no_account (the enumeration-safe request
     // path — internal only, never surfaced to the caller) and reset_ok / reset_invalid_token /
     // reset_expired / reset_weak_password (the consume path). Bounded, never a per-email label.
-    "password_reset_total"                 -> Set("outcome"),
+    "password_reset_total"                          -> Set("outcome"),
     // #2308 — the reset-link email send funnel, emitted from Notifier.passwordReset. `outcome` is the
     // same bounded transport enum as beta_invite_email_total (EmailOutcome.label): sent / failed /
     // skipped_disabled (email unconfigured). Never a per-recipient label.
-    "password_reset_email_total"           -> Set("outcome"),
+    "password_reset_email_total"                    -> Set("outcome"),
     // #2437 — the operator-escalation funnel: "an escalation is not complete until a human has been
     // notified". `channel` ∈ {support, press} (EscalationChannel.label); `kind` ∈ {escalated}
     // (EscalationKind.label — the agent handing off to a human; #2480 dropped press's per-inbound
@@ -453,22 +459,22 @@ object MetricGuard {
     // skipped_disabled) plus `skipped_no_recipient` (no operator mailbox — only reachable with the
     // email transport off; the key is REQUIRED when it is on).
     // Never a per-sender / per-thread / per-household label.
-    "operator_escalation_total"            -> Set("channel", "kind", "outcome"),
+    "operator_escalation_total"                     -> Set("channel", "kind", "outcome"),
     // #808 — partition runway gauge. `partition_weeks_ahead{table}` is the count of consecutive
     // weekly partitions present from the current ISO week for each RANGE-partitioned ingest table
     // (set each run by PartitionMaintenanceJob). `table` is the bounded 2-value enum above. The
     // runway alert pages when this drops below 2 — the "never silently exhaust again" guard for the
     // 2026-06-29 P0 (#2053). Without this entry the firewall would reject the name as unknown_name
     // and the series would never emit.
-    "partition_weeks_ahead"                -> Set("table"),
+    "partition_weeks_ahead"                         -> Set("table"),
     // #812 — partition-drop retention. `partitions_dropped_total{table}` counts weekly
     // partitions DETACHed+DROPped per run (metadata-only retention, replacing row-DELETE
     // for the two RANGE-partitioned tables). `table` is the same bounded 2-value enum.
-    "partitions_dropped_total"             -> Set("table"),
+    "partitions_dropped_total"                      -> Set("table"),
     // #1243/#1221 HikariCP pool gauges — no labels.
-    "wifihaven_db_pool_active_connections" -> Set.empty[String],
-    "wifihaven_db_pool_idle_connections"   -> Set.empty[String],
-    "wifihaven_db_pool_total_connections"  -> Set.empty[String],
+    "wifihaven_db_pool_active_connections"          -> Set.empty[String],
+    "wifihaven_db_pool_idle_connections"            -> Set.empty[String],
+    "wifihaven_db_pool_total_connections"           -> Set.empty[String],
     "wifihaven_db_pool_threads_awaiting_connection" -> Set.empty[String],
     "wifihaven_db_pool_max_size"                    -> Set.empty[String],
     // #2132 — beta request → provisioning pipeline outcomes. `stage` ∈ {request, approve, reject,
@@ -1544,6 +1550,21 @@ object AppMetrics {
         RollupDurationBoundaries,
       ) *>
       MetricGuard.gauge("wifihaven_rollup_rows_upserted", Map("rollup_job" -> job), rows.toDouble)
+
+  /**
+   * #2553 — one household's slice of an all-tenant rollup tick was skipped
+   * ([[wifihaven.api.usage.HouseholdTickIsolation]]). Any non-zero rate means a tenant has stopped
+   * being rolled up while the tick itself keeps reporting `ok`, so this is the ONLY signal that
+   * separates "the batch ran" from "the batch covered everyone". `reason` distinguishes an failed
+   * settings read (`settings_read` — usually an unprovisioned row, a #2386-class provisioning bug)
+   * from any other per-household failure (`error`). The household id is in the accompanying ERROR
+   * log, never a label (§4 cardinality firewall).
+   */
+  def recordRollupHouseholdSkipped(job: String, reason: String): UIO[Unit] =
+    MetricGuard.counter(
+      "wifihaven_rollup_household_skipped_total",
+      Map("rollup_job" -> job, "reason" -> reason),
+    )
 
   // ── Partition runway (#808) ──────────────────────────────────────────────────
   // Set by PartitionMaintenanceJob each run: per partitioned table, the number of consecutive

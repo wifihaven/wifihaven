@@ -1,5 +1,5 @@
-# Warning (notify, look-today) alert rules — W1–W8
-# (W1–W5: #1405, parent #1381. W6–W7: #2416. W8: #2488.) Implements
+# Warning (notify, look-today) alert rules — W1–W9
+# (W1–W5: #1405, parent #1381. W6–W7: #2416. W8: #2488. W9: #2553.) Implements
 # docs/design/alerting.md §7.2.
 #
 # Every expression is grounded in a series emitted today (§2 "alert only on
@@ -26,7 +26,7 @@
 #     They begin covering the moment that webhook is configured, again with no
 #     rule change — which is the point of shipping them unpaused.
 #
-# All eight carry severity=warning + env=prod labels, which the notification
+# All nine carry severity=warning + env=prod labels, which the notification
 # policy in alerting.tf routes to the wifihaven-warning (email) contact point.
 # None of these are ratio queries, so unlike the critical set (§7.1) they need
 # no zero-traffic guard — a counter that never increments is simply absent
@@ -38,7 +38,7 @@
 # and the rate/increase window come straight from §7.2.
 
 locals {
-  # Keyed w1..w8 (stable resource addressing). `window_s` bounds the data fetch
+  # Keyed w1..w9 (stable resource addressing). `window_s` bounds the data fetch
   # and must cover the rate/increase window in `expr`. `paused` ships W5 off.
   warning_rules = {
     w1 = {
@@ -147,6 +147,15 @@ locals {
       for      = "15m"
       paused   = false
       summary  = "Plain is REFUSING to send — the unregistered-sender reject was decided correctly and never delivered, so the customer got nothing. LIKELY FIX: the Plain workspace has email sending switched off — Settings → Channels → Email, section 3 \"Sending emails\" left unverified or section 4 \"Enable email\" never clicked. See docs/ops/plain-setup.md §3.1. This NEVER self-heals: every reject (and every AI reply) is dropped until a human completes that provisioning. The API logs each occurrence at ERROR with the same fix named inline, and the preceding `plain replyToThread failed` line carries Plain's own message."
+    }
+    w9 = {
+      title    = "W9 A household was skipped by a rollup tick"
+      expr     = "sum(increase(wifihaven_rollup_household_skipped_total{env=\"prod\"}[1h]))"
+      window_s = 3600
+      gt       = 0
+      for      = "15m"
+      paused   = false
+      summary  = "One tenant's slice of an all-tenant rollup tick was skipped (#2553), so that household's screen time has stopped updating while the run itself still records status=ok — W1 CANNOT catch this. Never self-heals for reason=settings_read, which is almost always a household with no household_settings row (#2386, a provisioning bug): every tick will skip it again. Find the household id in the ERROR log (`... tick skipped household N`) — it is deliberately not a metric label. See the rollup-health dashboard."
     }
   }
 }
