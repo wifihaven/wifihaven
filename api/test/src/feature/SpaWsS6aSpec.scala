@@ -222,7 +222,8 @@ object SpaWsS6aSpec
     def listForDevice(household: HouseholdId, mac: MacAddress, date: java.time.LocalDate) =
       underlying.listForDevice(household, mac, date)
     def listForRouter(routerId: RouterId, limit: Int) = underlying.listForRouter(routerId, limit)
-    def listTrafficRollupRows(f: TrafficRollupFilter) = underlying.listTrafficRollupRows(f)
+    def listTrafficRollupRows(household: HouseholdId, f: TrafficRollupFilter) =
+      underlying.listTrafficRollupRows(household, f)
     def listPresenceRows(
         household: HouseholdId,
         macs: List[MacAddress],
@@ -262,7 +263,7 @@ object SpaWsS6aSpec
         toInstant: java.time.Instant,
         stepSeconds: Long,
     ) = underlying.listRawAggregatedInRange(household, macs, fromInstant, toInstant, stepSeconds)
-    def earliestPeriodStart                           = underlying.earliestPeriodStart
+    def earliestPeriodStart = underlying.earliestPeriodStart
     def listFqdnHostAggregatesForDevice(
         household: HouseholdId,
         mac: MacAddress,

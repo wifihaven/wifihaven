@@ -610,12 +610,16 @@ trait TimeLimitRepo {
  */
 trait AppTimeLimitRepo {
   def listForProfile(pid: ProfileId): Task[List[AppTimeLimit]]
-  def listAll: Task[List[AppTimeLimit]]
 
   /**
-   * #2108 (multi-tenant sub-issue E): household-scoped [[listAll]] — app-limit rows for profiles in
-   * `household`. Scoped transitively via `app_policy_assignments.profile_id → profiles` (design
-   * §0.1). Backs `GET /api/time/status`.
+   * #2108 (multi-tenant sub-issue E): app-limit rows for profiles in `household`. Scoped
+   * transitively via `app_policy_assignments.profile_id → profiles` (design §0.1). Backs `GET
+   * /api/time/status` and the dashboard NOW builder.
+   *
+   * #2568: there is deliberately NO cross-tenant `listAll` here. Its last caller
+   * (`DashboardNowRoutes.computeNow`, reached when its `household` was still optional) is gone, and
+   * the bare all-tenant read is removed rather than orphaned — the #2257 precedent for devices and
+   * profiles. Removing it type-enforces the scoping instead of relying on callers to choose.
    */
   def listAllForHousehold(household: HouseholdId): Task[List[AppTimeLimit]]
 }
@@ -1056,8 +1060,17 @@ trait TrafficReportRepo {
    * `usage_report_interval` — ~60s, configurable; not a fixed 5-min bucket): returned ordered by
    * (router_id, mac, hostname, date, period_start). Filters are AND-composed. `macs = Some(Nil)`
    * returns an empty list (no devices match).
+   *
+   * #2568 (multi-tenant, epic #622): `household` AND-composes the router-scope predicate, like
+   * every sibling `traffic_reports` read (#2313). The MAC list alone is NOT sufficient scoping —
+   * post-V74 (#2277) the same MAC can be a device in two households, and an unscoped read returned
+   * the other tenant's rows for it (`GET /api/dashboard/now` rendered household B's hostnames on
+   * household A's device).
    */
-  def listTrafficRollupRows(f: TrafficRollupFilter): Task[List[TrafficRollupRow]]
+  def listTrafficRollupRows(
+      household: HouseholdId,
+      f: TrafficRollupFilter,
+  ): Task[List[TrafficRollupRow]]
 
   /**
    * Minimal projection used by presence-based minute accounting (see
@@ -1958,21 +1971,8 @@ class AppTimeLimitRepoLive(xa: Transactor[Task]) extends AppTimeLimitRepo {
         .transact(xa),
     )
 
-  def listAll =
-    sql"""SELECT apa.profile_id, ah.host, apa.daily_minutes, a.slug,
-                 apa.exempt_from_daily, a.id, apa.id, apa.mode::text,
-                 apa.allowed_during_schedule_block, ah.shared
-            FROM app_policy_assignments apa
-            JOIN apps a       ON a.id = apa.app_id
-            JOIN app_hosts ah ON ah.app_id = apa.app_id
-           ORDER BY apa.id, ah.host"""
-      .query[R]
-      .map(toS)
-      .to[List]
-      .transact(xa)
-
-  // #2108: same projection as listAll, AND-scoped through app_policy_assignments.profile_id → the
-  // household-scoped profiles row.
+  // #2108: AND-scoped through app_policy_assignments.profile_id → the household-scoped profiles
+  // row. #2568 removed the unscoped `listAll` this was once the scoped twin of.
   def listAllForHousehold(household: HouseholdId) =
     (fr"""SELECT apa.profile_id, ah.host, apa.daily_minutes, a.slug,
                  apa.exempt_from_daily, a.id, apa.id, apa.mode::text,
@@ -3150,7 +3150,7 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
   }
 
   // TODO(#730): remove this read-side join once usage records carry dest_ip.
-  def listTrafficRollupRows(f: TrafficRollupFilter) = {
+  def listTrafficRollupRows(household: HouseholdId, f: TrafficRollupFilter) = {
     type Row = (RouterId, MacAddress, HostId, LocalDate, Instant, Instant, Int, Long, Long)
     val base    =
       fr"""SELECT tr.router_id, tr.mac,
@@ -3171,9 +3171,23 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
         fr"AND " ++ Fragments.in(fr"tr.mac", nel)
     }
     val byHost  = f.host.fold(fr"")(h => fr"AND tr.host_value ILIKE ${s"%$h%"}")
+    // TODO(#2584): this bound is on `period_end`, which no `traffic_reports` index covers (they are
+    // all on `period_start` / `date` / `mac` / `router_id`), so the planner falls back to a parallel
+    // sequential scan of every partition. Measured 2026-08-02 on prod (4.6M rows) over the 30-minute
+    // dashboard window: ~4.6s warm in THIS scoped shape vs ~4.9s unscoped, so the household predicate
+    // is not what costs. A cold run discarded 4,072,036 partition rows by filter to return ~2000
+    // (the exact count slides, since the window is relative to now). Pre-dates #2568; the fix is an
+    // index migration, which `docs/process/migrations.md#migrations-back-compat` requires ship
+    // schema-only.
     val bySince = f.since.fold(fr"")(s => fr"AND tr.period_end > $s")
     val byUntil = f.until.fold(fr"")(u => fr"AND tr.period_start < $u")
-    val sql_    = base ++ byMacs ++ byHost ++ bySince ++ byUntil ++
+    // #2568: the tenancy predicate — the MAC list is NOT scoping. The same shared fragment the six
+    // sibling `traffic_reports` reads compose (#2313). It resolves as a cheap semijoin filter over
+    // `routers` (2 buffers on prod) and does not change the plan class of the outer scan.
+    // `idx_routers_household` (V65) covers the subquery, though at prod's current `routers`
+    // cardinality the planner prefers `routers_pkey`.
+    val byHh    = SqlFragments.householdRouterScope(household, "tr.router_id")
+    val sql_    = base ++ byHh ++ byMacs ++ byHost ++ bySince ++ byUntil ++
       fr"ORDER BY tr.router_id, tr.mac, tr.host_type, tr.host_value, tr.date, tr.period_start"
     sql_
       .query[Row]
