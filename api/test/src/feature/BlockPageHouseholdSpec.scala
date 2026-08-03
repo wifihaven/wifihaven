@@ -183,23 +183,32 @@ object BlockPageHouseholdSpec
       tok  <- ZIO.fromOption(m.get("token")).orElseFail(new RuntimeException(s"no token in $body"))
     } yield tok
 
+  /** Status + raw body, for the pins that care about the HTTP outcome rather than the payload. */
+  private def getBlockedRaw(
+      routes: Routes[Any, Response],
+      mac: MacAddress,
+      bpt: Option[String],
+      ip: String = "203.0.113.9",
+  ): Task[(Status, String)] = {
+    val qs = s"mac=${mac.value}&host=${host.value}" + bpt.fold("")(t => s"&bpt=$t")
+    routes
+      .runZIO(
+        Request
+          .get(URL.decode(s"/api/blocked?$qs").toOption.get)
+          .addHeader("X-Forwarded-For", ip),
+      )
+      .flatMap(r => r.body.asString.map((r.status, _)))
+  }
+
   private def getBlocked(
       routes: Routes[Any, Response],
       mac: MacAddress,
       bpt: Option[String],
       ip: String = "203.0.113.9",
-  ): Task[BlockedInfoResponse] = {
-    val qs = s"mac=${mac.value}&host=${host.value}" + bpt.fold("")(t => s"&bpt=$t")
-    for {
-      resp <- routes.runZIO(
-        Request
-          .get(URL.decode(s"/api/blocked?$qs").toOption.get)
-          .addHeader("X-Forwarded-For", ip),
-      )
-      body <- resp.body.asString
-      r    <- ZIO.fromEither(body.fromJson[BlockedInfoResponse]).mapError(new RuntimeException(_))
-    } yield r
-  }
+  ): Task[BlockedInfoResponse] =
+    getBlockedRaw(routes, mac, bpt, ip).flatMap { case (_, body) =>
+      ZIO.fromEither(body.fromJson[BlockedInfoResponse]).mapError(new RuntimeException(_))
+    }
 
   /**
    * POST the public access-request intake. The body is hand-built JSON (rather than
@@ -332,18 +341,18 @@ object BlockPageHouseholdSpec
         rr      <- makeRouterRoutes
         br      <- makeBlockedRoutes(limiter)
         bptB    <- mintBpt(rr, two.tokenB)
-        first   <- getBlocked(br, macM, Some(bptB))
-        second  <- getBlocked(br, macM, Some(bptB))
-        third   <- getBlocked(br, macM, Some(bptB))
+        first   <- getBlockedRaw(br, macM, Some(bptB))
+        second  <- getBlockedRaw(br, macM, Some(bptB))
+        third   <- getBlockedRaw(br, macM, Some(bptB))
         // A different source IP keeps its own budget, so a limited page doesn't take out the house.
-        other   <- getBlocked(br, macM, Some(bptB), ip = "203.0.113.77")
-      } yield assertTrue(first.blocked) &&
-        assertTrue(second.blocked) &&
-        // Over the limit we answer with the neutral not-blocked body rather than a 429 — the caller
-        // is a kid's browser, and a hard error would just look like the page is broken.
-        assertTrue(!third.blocked) &&
-        assertTrue(third.profileName.isEmpty) &&
-        assertTrue(other.blocked)
+        other   <- getBlockedRaw(br, macM, Some(bptB), ip = "203.0.113.77")
+      } yield assertTrue(first._1 == Status.Ok) &&
+        assertTrue(second._1 == Status.Ok) &&
+        // Over the limit we answer 429, NOT a `blocked=false` body: the latter renders as "this
+        // page is not blocked for this device" on a page the kid reached BECAUSE it was blocked.
+        assertTrue(third._1 == Status.TooManyRequests) &&
+        assertTrue(!third._2.contains("profileName\":\"")) &&
+        assertTrue(other._1 == Status.Ok)
     },
     // The router↔API wire is additive and the two deploy independently, so an agent that predates
     // the token must keep working — the endpoint falls back to the default household exactly as it
@@ -364,6 +373,22 @@ object BlockPageHouseholdSpec
         // be able to reach.
         assertTrue(forged.reasonClass.isEmpty) &&
         assertTrue(two.hhB != HouseholdId.Default)
+    },
+    // V79's alerts_household_mac_fkey means (household, mac) must name a real device row. The
+    // household used to come FROM that row, so the pairing held by construction; now it comes from
+    // the token, so it has to be checked. Without the guard this is a Postgres constraint violation
+    // surfacing as a 503.
+    test("an access request for a MAC not enrolled in the token's household 404s, not 503s") {
+      for {
+        _          <- cleanDb
+        two        <- seedShared
+        rr         <- makeRouterRoutes
+        ar         <- makeAlertRoutes
+        bptB       <- mintBpt(rr, two.tokenB)
+        // macA belongs to household A only; household B's router must not be able to file for it.
+        (st, body) <- postAccessRequest(ar, macA, Some(bptB), None)
+      } yield assertTrue(st == Status.NotFound) &&
+        assertTrue(!body.contains("devA"))
     },
     test("the unauthenticated intake response carries no deviceName / profileName / note") {
       for {

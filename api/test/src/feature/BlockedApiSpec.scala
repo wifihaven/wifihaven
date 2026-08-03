@@ -1,5 +1,6 @@
 package wifihaven.api.feature
 
+import wifihaven.api.auth.RateLimiter
 import wifihaven.api.db.*
 import wifihaven.api.policy.*
 import wifihaven.api.routes.*

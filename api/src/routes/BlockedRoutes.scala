@@ -49,8 +49,13 @@ object BlockedRoutes {
       blockPageHousehold: BlockPageHousehold,
       // #2569: same per-source-IP limiter POST /api/access-requests uses (#2081). The route is
       // unauthenticated and answers per-MAC questions, so an unlimited one is a MAC-enumeration
-      // oracle; over the limit we return the neutral not-blocked body rather than a 429, because
-      // the caller is normally a kid's browser and a hard error would just look broken.
+      // oracle.
+      //
+      // Over the limit we answer 429, NOT the `blocked=false` body. Both are "no information",
+      // but `blocked=false` renders as "This page is not blocked for this device" — a confident
+      // wrong answer on a page the kid reached precisely BECAUSE it was blocked, which is the
+      // confusing dead-end the block page exists to prevent. A 429 lands in the SPA's existing
+      // error branch, which renders the neutral "Access blocked." copy.
       rateLimiter: RateLimiter,
   ): Routes[Any, Response] = {
     val notBlocked = BlockedInfoResponse(blocked = false, None, None, None)
@@ -71,7 +76,12 @@ object BlockedRoutes {
               ZIO.succeed(Response.json(notBlocked.toJson))
             case Right((mac, host)) =>
               rateLimiter.tryAcquire(s"blocked:${clientIp(req)}:${mac.value}").flatMap {
-                case false => ZIO.succeed(Response.json(notBlocked.toJson))
+                case false =>
+                  ZIO.succeed(
+                    ErrorMapper.errorToResponse(
+                      ApiError.RateLimited("Too many requests; try again later"),
+                    ),
+                  )
                 case true  =>
                   blockPageHousehold
                     .resolve(bpt)

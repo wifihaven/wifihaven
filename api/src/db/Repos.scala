@@ -854,13 +854,16 @@ trait AlertRepo {
   /**
    * #960: create an access-request alert. `profileId` is denormalised at insert time so the row
    * survives a later device→profile reassignment.
-   */
-  /**
+   *
    * #2322: `household` is passed by the caller — derived from the router-bound block-page token on
-   * the redirect — rather than inferred in-SQL from the device row. The old `COALESCE((SELECT …
+   * the redirect — rather than inferred in-SQL from the device row. The old `COALESCE((SELECT ...
    * ORDER BY d.household_id LIMIT 1), 1)` was deterministic but arbitrary once a MAC exists in more
    * than one household (V74/V75): it could file a child's request against someone else's household,
    * where their admin sees it and the real one doesn't.
+   *
+   * `(household, mac)` MUST name a real `devices` row — V79's composite
+   * `alerts_household_mac_fkey`. The caller checks that first, so a MAC not enrolled in this
+   * household gets a typed 404 rather than a constraint violation surfacing as a 503.
    */
   def createAccessRequest(
       household: HouseholdId,

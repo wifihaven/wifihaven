@@ -83,9 +83,12 @@ object HttpRoutes {
       loginRateLimiter      <- RateLimiterLive.make(maxAttempts = 10, windowSeconds = 15 * 60)
       accessReqRateLimiter  <- RateLimiterLive.make(maxAttempts = 20, windowSeconds = 5 * 60)
       // #2569: the same treatment for GET /api/blocked, which was unauthenticated AND unlimited —
-      // a per-MAC oracle for the resolving household's profile name and screen-time. Looser than
-      // the intake (a kid's page can legitimately re-poll, and a household shares one source IP).
-      blockedRateLimiter    <- RateLimiterLive.make(maxAttempts = 60, windowSeconds = 5 * 60)
+      // a per-MAC oracle for the resolving household's profile name and screen-time. Much looser
+      // than the intake: every blocked request DNATs to a fresh block page, a page load is one
+      // call, and a whole household NATs behind ONE source IP — so the budget has to cover a
+      // household's worth of legitimate blocked browsing, not one child's. 120 / 5 min still caps
+      // an enumeration sweep at a rate where a MAC space is not walkable.
+      blockedRateLimiter    <- RateLimiterLive.make(maxAttempts = 120, windowSeconds = 5 * 60)
       // #2132: per-source-IP rate limit on the unauthenticated beta-intake route — 5 / hour, a
       // slow cadence (a genuine prospect requests once), on top of the idempotent-email dedup.
       betaReqRateLimiter    <- RateLimiterLive.make(maxAttempts = 5, windowSeconds = 60 * 60)
