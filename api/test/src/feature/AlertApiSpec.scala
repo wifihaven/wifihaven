@@ -190,14 +190,25 @@ object AlertApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           CreateAccessRequest(mac1, noteworthy, AccessRequestKind.Exemption, Some("for school")),
         )
         body <- resp.body.asString
-        a    <- ZIO.fromEither(body.fromJson[Alert])
+        // #2566: the unauthenticated caller gets the narrow receipt, not the stored row.
+        a    <- ZIO.fromEither(body.fromJson[AccessRequestReceipt])
+        // …but the row itself still carries the full denormalised detail for the admin surface.
+        // Read it back through the repo rather than the response, which is the point of #2566:
+        // `profileId` / `note` / `deviceName` are STORED, and simply not disclosed here.
+        row  <- env.alertRepo.findById(a.id).map(_.get)
       } yield assertTrue(resp.status == Status.Created) &&
-        assertTrue(a.kind == AlertKind.AccessRequest) &&
         assertTrue(a.status == AlertStatus.Pending) &&
-        assertTrue(a.requestKind.contains(AccessRequestKind.Exemption)) &&
-        assertTrue(a.host.contains(noteworthy)) &&
-        assertTrue(a.profileId.contains(env.kidsPid)) &&
-        assertTrue(a.note.contains("for school"))
+        assertTrue(a.kind == AccessRequestKind.Exemption) &&
+        assertTrue(a.host == noteworthy) &&
+        // The response body carries none of the household detail.
+        assertTrue(!body.contains("profileName")) &&
+        assertTrue(!body.contains("deviceName")) &&
+        assertTrue(!body.contains("for school")) &&
+        assertTrue(row.kind == AlertKind.AccessRequest) &&
+        assertTrue(row.requestKind.contains(AccessRequestKind.Exemption)) &&
+        assertTrue(row.host.contains(noteworthy)) &&
+        assertTrue(row.profileId.contains(env.kidsPid)) &&
+        assertTrue(row.note.contains("for school"))
     },
     test("repeat POST within the debounce window returns the existing row") {
       for {
@@ -207,13 +218,13 @@ object AlertApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           CreateAccessRequest(mac1, noteworthy, AccessRequestKind.Exemption, None),
         )
         b1  <- r1.body.asString
-        a1  <- ZIO.fromEither(b1.fromJson[Alert])
+        a1  <- ZIO.fromEither(b1.fromJson[AccessRequestReceipt])
         r2  <- postCreateAR(
           env.routes,
           CreateAccessRequest(mac1, noteworthy, AccessRequestKind.Exemption, None),
         )
         b2  <- r2.body.asString
-        a2  <- ZIO.fromEither(b2.fromJson[Alert])
+        a2  <- ZIO.fromEither(b2.fromJson[AccessRequestReceipt])
       } yield assertTrue(r1.status == Status.Created) &&
         assertTrue(r2.status == Status.Ok) &&
         assertTrue(a1.id == a2.id)
@@ -228,7 +239,7 @@ object AlertApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           CreateAccessRequest(mac1, noteworthy, AccessRequestKind.Exemption, None),
         )
         createBody  <- createResp.body.asString
-        a           <- ZIO.fromEither(createBody.fromJson[Alert])
+        a           <- ZIO.fromEither(createBody.fromJson[AccessRequestReceipt])
         approveResp <- postAlertAction(
           env.routes,
           s"/api/alerts/${a.id.value}/approve",
@@ -250,7 +261,7 @@ object AlertApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           CreateAccessRequest(mac1, noteworthy, AccessRequestKind.Extension, None),
         )
         createBody  <- createResp.body.asString
-        a           <- ZIO.fromEither(createBody.fromJson[Alert])
+        a           <- ZIO.fromEither(createBody.fromJson[AccessRequestReceipt])
         approveResp <- postAlertAction(
           env.routes,
           s"/api/alerts/${a.id.value}/approve",
@@ -276,7 +287,7 @@ object AlertApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           CreateAccessRequest(mac1, noteworthy, AccessRequestKind.Unpause, None),
         )
         createBody   <- createResp.body.asString
-        a            <- ZIO.fromEither(createBody.fromJson[Alert])
+        a            <- ZIO.fromEither(createBody.fromJson[AccessRequestReceipt])
         approveResp  <- postAlertAction(
           env.routes,
           s"/api/alerts/${a.id.value}/approve",
@@ -296,7 +307,7 @@ object AlertApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           CreateAccessRequest(mac1, noteworthy, AccessRequestKind.Exemption, None),
         )
         createBody <- createResp.body.asString
-        a          <- ZIO.fromEither(createBody.fromJson[Alert])
+        a          <- ZIO.fromEither(createBody.fromJson[AccessRequestReceipt])
         denyResp   <- postAlertAction(env.routes, s"/api/alerts/${a.id.value}/deny", token)
         denyBody   <- denyResp.body.asString
         denied     <- ZIO.fromEither(denyBody.fromJson[Alert])
@@ -315,7 +326,7 @@ object AlertApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           CreateAccessRequest(mac1, noteworthy, AccessRequestKind.Exemption, None),
         )
         createBody <- createResp.body.asString
-        a          <- ZIO.fromEither(createBody.fromJson[Alert])
+        a          <- ZIO.fromEither(createBody.fromJson[AccessRequestReceipt])
         _          <- postAlertAction(env.routes, s"/api/alerts/${a.id.value}/approve", token, "{}")
         second     <- postAlertAction(env.routes, s"/api/alerts/${a.id.value}/approve", token, "{}")
       } yield assertTrue(second.status == Status.Conflict)
