@@ -97,12 +97,17 @@ object RouterWsSpec
    * means a `policy` frame now arrives first, ahead of any ack/pong). Returns the matching frame,
    * ALL frames received up to that point, and the probe result. Connects with the given bearer
    * header.
+   *
+   * `probe` takes `Client` (rather than `Any`) purely so it can itself be another
+   * `connectAndCapture` — the #2561 case nests a second real connection inside the first one's
+   * scope. `ZIO` is contravariant in `R`, so every existing `ZIO.unit` / `reg.isConnected` probe
+   * still fits unchanged; this widens what a probe may do, it does not weaken any assertion.
    */
   private def connectAndCapture[B](
       port: Int,
       bearer: Option[String],
       send: WebSocketChannel => ZIO[Any, Throwable, Unit],
-      probe: ZIO[Any, Throwable, B],
+      probe: ZIO[Client, Throwable, B],
       until: String => Boolean = _ => true,
   ): ZIO[Client, Throwable, (String, Chunk[String], B)] =
     for {
@@ -291,6 +296,49 @@ object RouterWsSpec
       assertTrue(policyFrame.contains("\"op\":\"policy\"")) &&
         assertTrue(policyFrame.contains("\"etag\"")) &&
         assertTrue(policyFrame.contains(knownMac))).provideSome[
+        TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task],
+      ](Server.defaultWithPort(0), Client.default)
+    },
+    test("#2561: a second connection for the same router supersedes the first (registry holds 1)") {
+      // The prod leak: a router whose socket went half-open reconnects, the server still holds the
+      // dead channel, and `router_ws_connections_active` reads 2 for one router — permanently, since
+      // the stale channel's teardown never fires. Here both sockets are real and concurrently open
+      // against the real endpoint; the registry must still report exactly ONE channel for the router.
+      //
+      // No wall-clock wait is needed to observe that (`docs/process/testing.md` — never poll real
+      // time for async work; #2042): the server registers BEFORE it pushes the first policy frame
+      // (`RouterWsRoutes.socketApp`: `register *> log *> snapshot.flatMap(pushPolicyTo)`), so a
+      // client that has received `op:"policy"` has already observed its own registration. Both
+      // `connectAndCapture`s gate on exactly that frame, so by the time the inner probe runs, both
+      // registrations have completed. The return-to-zero half of the pin has no such client-visible
+      // signal — deregistration happens on the server fiber after the socket closes — so it is
+      // asserted deterministically in RouterWsConnectionsGaugeSpec instead of raced for here.
+      (for {
+        _             <- cleanDb
+        rRepo         <- ZIO.service[RouterRepo]
+        pRepo         <- ZIO.service[ProfileRepo]
+        dRepo         <- ZIO.service[DeviceRepo]
+        _             <- seedKnownDevice(dRepo, pRepo)
+        (_, tk)       <- seedRouter(rRepo)
+        (routes, reg) <- buildWsRoutes
+        port          <- Server.install(routes)
+        // Nest the two connections so BOTH are open at the same time when we sample the registry —
+        // the first is still in scope while the second connects, exactly the overlap that leaked.
+        counts        <- connectAndCapture(
+          port,
+          Some(tk),
+          _ => ZIO.unit,
+          connectAndCapture(
+            port,
+            Some(tk),
+            _ => ZIO.unit,
+            // Sampled with both sockets open, after both have seen their own `policy` push.
+            reg.activeCount,
+            until = _.contains("\"op\":\"policy\""),
+          ).map(_._3),
+          until = _.contains("\"op\":\"policy\""),
+        ).map(_._3)
+      } yield assertTrue(counts == 1)).provideSome[
         TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task],
       ](Server.defaultWithPort(0), Client.default)
     },

@@ -319,6 +319,13 @@ object MetricGuard {
     // no per-mac / per-host dimension ever rides a ws metric.
     "router_ws_connections_active"              -> Set.empty[String],
     "router_ws_frames_total"                    -> Set("op", "direction", "result"),
+    // #2561 — a router re-connected while the server still held a channel for it, i.e. the previous
+    // socket went half-open and its teardown never ran. The registry now evicts + shuts the stale
+    // channel down, which is what keeps `router_ws_connections_active` honest; this counter is the
+    // signal that it happened, so the underlying half-open-socket rate stays visible rather than
+    // being silently absorbed by the fix. Unlabelled — a router id would be a fleet-sized dimension
+    // and never rides a ws metric (§4 cardinality firewall).
+    "router_ws_connections_superseded_total"    -> Set.empty[String],
     // #2168 — per-ws-message-process latency, the ws analog of http_request_duration_seconds.
     // Over the persistent socket (#1023) every logical operation is a frame on ONE connection, so
     // the per-HTTP-route duration histogram no longer observes it; without this we go blind to
@@ -1373,6 +1380,13 @@ object AppMetrics {
 
   def setWsConnectionsActive(count: Int): UIO[Unit] =
     MetricGuard.gauge("router_ws_connections_active", Map.empty, count.toDouble)
+
+  // #2561: a reconnect arrived for a router the registry still held a channel for — the previous
+  // socket went half-open and its teardown never ran. The registry evicts + shuts the stale channel
+  // down; this counts how often that happens, so the half-open rate stays observable instead of the
+  // fix hiding it. Unlabelled (a router id would be a fleet-sized dimension).
+  def recordWsConnectionSuperseded: UIO[Unit] =
+    MetricGuard.counter("router_ws_connections_superseded_total", Map.empty)
 
   // Emitted from RouterWsRoutes for every frame demuxed (`direction=in`) or sent
   // (`direction=out`). `op` is the envelope discriminator (a fixed enum), `direction`
