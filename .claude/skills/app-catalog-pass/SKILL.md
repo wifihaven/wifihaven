@@ -172,6 +172,28 @@ above is now wrong, fix the step too — don't just log around it.
 
 ## Learnings log (newest first)
 
+- **2026-08-03 (#2596)** — A "watch-item" flagged in a prior pass's evidence
+  doc can graduate into a real gap: #2331 noted `eaglercraft.ru` at 1 hit/40
+  bytes as "extend the app if it grows" — this pass it was 17.5 MB/10 hits, a
+  clean confirmation. Similarly `youtubekids.com` went from "below engagement
+  bar" (14.8 KB/1 hit, #2331) to a genuine multi-device pattern (16.6 MB/167
+  hits across 3 of 5 kid devices) and was added to `youtube.yml`. **Always
+  re-check prior passes' skipped/watch-item apexes against this run's
+  traffic** — don't just scan for brand-new apexes; a below-bar apex from a
+  past pass is a standing TODO, not a closed question.
+- **2026-08-03 (#2596)** — `student.freckle.com` (Freckle by Renaissance, K-8
+  math/ELA practice) surfaced at only 2.9 MB/7 hits — thin by byte volume, but
+  the subdomain spread (`api`/`images`/`student`/`translations`/`tts`/
+  `tts-assets`/`vendor-assets`) is what made it a genuine app rather than a
+  beacon: a real page load pulls a dashboard + API + localized TTS audio +
+  vendor assets, which a stray tracking pixel never does. When hit count is
+  low, check subdomain *diversity/shape* as a substitute engagement signal.
+- **2026-08-03 (#2596)** — A brand can have more than one adjacent apex where
+  only one clears the bar: `freckle.com` templated, but sibling
+  `renaissance.com` (parent company, 1 hit) and unrelated `readingeggspress.com`
+  (different vendor, 2 hits, zero resolved subdomains) stayed watch-items. Don't
+  fold a thin sibling apex into a new app's host-set just because it's
+  topically adjacent — require its own evidence.
 - **2026-07-27 (#2490)** — Another clean no-op: no new app, no host-set gap
   (LEGO's `thelegogroup.com` corporate-analytics exclusion reconfirmed).
   Clarified a latent trap in the gap-check method itself: a naive per-apex

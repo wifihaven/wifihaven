@@ -159,6 +159,8 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
           "prodigy",
           // #2331: traffic-driven catalog pass
           "serato",
+          // #2596: traffic-driven catalog pass
+          "freckle",
         )
         val slugs    = templates.map(_.slug.value).toSet
         assertTrue(slugs == expected) &&

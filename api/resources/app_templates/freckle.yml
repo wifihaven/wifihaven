@@ -1,0 +1,11 @@
+slug: freckle
+name: Freckle
+icon: "https://icons.duckduckgo.com/ip3/freckle.com.ico"
+icon_type: url
+# Added from prod evidence (#2596: 2026-08-03 app-catalog pass): Freckle by
+# Renaissance, a K-8 math/ELA adaptive-practice app. student.freckle.com is
+# the student dashboard; api./images./translations./tts./tts-assets./
+# vendor-assets. are the app's own dependency domains observed alongside it
+# in the same session.
+hosts:
+  - freckle.com

@@ -13,7 +13,13 @@ icon_type: url
 # to this app. It's a game host, not an "unblocked games" proxy portal, so it
 # extends the app host-set (not games.yml) per the operator's #1705 decision
 # that Eaglercraft is a time-limited app, not a block target.
+# eaglercraft.ru added from prod evidence (#2596: 2026-08-03 app-catalog pass):
+# a third Eaglercraft mirror (cdn.eaglercraft.ru serves the game's WASM/asset
+# bundle), already present in blocklists/games.yml from a prior blocklist pass
+# (#2212) but not wired into this template — same dual-listing precedent as
+# eaglercraft.com.
 hosts:
   - eaglercraft.dev
   - eaglercraft.com
+  - eaglercraft.ru
   - eaglercraft-99f.workers.dev

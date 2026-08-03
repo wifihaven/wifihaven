@@ -49,3 +49,5 @@ slugs:
   - prodigy
   # #2331: traffic-driven catalog pass (see evidence/classification-2331.md)
   - serato
+  # #2596: traffic-driven catalog pass (see evidence/classification-2596.md)
+  - freckle
