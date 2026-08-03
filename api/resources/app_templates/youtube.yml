@@ -11,8 +11,12 @@ icon_type: url
 # pool and collateral-drops Google sign-in / Drive on the device (#1636).
 # googlevideo.com below is YouTube's dedicated video-bytes pool, so keeping it
 # in the set preserves the meaningful block (no video) without the collateral.
+# youtubekids.com added from prod evidence (#2596: 2026-08-03 app-catalog
+# pass): www.youtubekids.com observed on 3 separate kid devices — the YouTube
+# Kids web app, same brand family as youtube.com.
 hosts:
   - youtube.com
   - youtu.be
   - ytimg.com
   - googlevideo.com
+  - youtubekids.com

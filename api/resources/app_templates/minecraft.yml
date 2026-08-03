@@ -3,8 +3,13 @@ name: Minecraft
 # Emoji fallback: ⛏️
 icon: "https://icons.duckduckgo.com/ip3/minecraft.net.ico"
 icon_type: url
+# minecraft-services.net added from prod evidence (#2596: 2026-08-03
+# app-catalog pass): net-secondary.web.minecraft-services.net is a distinct,
+# confirmed-genuine Minecraft Bedrock backend domain, separate from the
+# already-templated minecraftservices.com.
 hosts:
   - minecraft.net
   - mojang.com
   - minecraftservices.com
+  - minecraft-services.net
   - xboxlive.com
