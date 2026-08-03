@@ -65,7 +65,7 @@ object ScheduleRoutes {
       Method.GET / "api" / "schedules"                 ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
-            // #2126: scope to the caller's household — V71 added `named_schedules.household_id`, so
+            // #2126: scope to the caller's household — V72 added `named_schedules.household_id`, so
             // the list returns only this tenant's schedules (an unattached one stays visible to its
             // own household; another household's never leaks). Design §2 gap 4.
             claims <- requireAuth(req, auth)
@@ -99,7 +99,9 @@ object ScheduleRoutes {
             name = cr.name.trim
             _       <- ZIO.fail(ApiError.BadRequest("name is required")).when(name.isEmpty)
             windows <- ZIO.fromEither(validateWindows(cr.windows)).mapError(ApiError.BadRequest(_))
-            taken   <- scheduleRepo.findByName(name).mapError(ApiError.Db(_))
+            // #2572: the name-taken probe is scoped to the caller's household — another
+            // household's "Bedtime" must neither block this create/rename nor be observable.
+            taken   <- scheduleRepo.findByName(name, claims.hh).mapError(ApiError.Db(_))
             _       <- ZIO.fail(nameTaken(name)).when(taken.isDefined)
             // #2126: stamp the creating user's household (from their JWT) so a freshly-created,
             // still-unattached schedule is scoped to its author's tenant — and thus visible only to
@@ -137,7 +139,9 @@ object ScheduleRoutes {
               .findById(sid)
               .mapError(ApiError.Db(_))
               .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Schedule not found")))
-            taken   <- scheduleRepo.findByName(name).mapError(ApiError.Db(_))
+            // #2572: the name-taken probe is scoped to the caller's household — another
+            // household's "Bedtime" must neither block this create/rename nor be observable.
+            taken   <- scheduleRepo.findByName(name, claims.hh).mapError(ApiError.Db(_))
             _       <- ZIO.fail(nameTaken(name)).when(taken.exists(_.id != sid))
             _       <- scheduleRepo
               .update(sid, name, ur.description.map(_.trim).filter(_.nonEmpty), windows)

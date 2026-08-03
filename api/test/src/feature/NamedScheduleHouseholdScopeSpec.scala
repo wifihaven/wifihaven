@@ -19,12 +19,12 @@ import zio.test.*
  * #2126 (multi-tenant isolation, epic #2085/#622, design docs/design/multi-tenant-isolation.md §2
  * gap 4) — the cross-tenant leak on `GET /api/schedules`.
  *
- * Before V71 + this source PR, `NamedScheduleRepo.listAll` returned EVERY household's named
+ * Before V72 + this source PR, `NamedScheduleRepo.listAll` returned EVERY household's named
  * schedules (V50 created the table single-household, V65 never added `household_id`), so a
  * household-B admin listing `/api/schedules` saw household A's schedules. `named_schedules`
  * attaches to profiles M:N (no direct profile FK), so scoping "via an attached profile" would
  * wrongly hide a freshly-created-but-unattached schedule from its own authoring UI — hence the
- * schema column (V71) + `listAllForHousehold` here, so an unattached schedule stays visible to ITS
+ * schema column (V72) + `listAllForHousehold` here, so an unattached schedule stays visible to ITS
  * OWN household.
  *
  * Full stack against embedded Postgres — no repo mocks, Clock injected. The negative pins (A's
@@ -142,6 +142,47 @@ object NamedScheduleHouseholdScopeSpec
         stillA   <- listNames(rs, tokA)
       } yield assertTrue(crossDel.status == Status.NotFound) &&
         assertTrue(stillA == Set("A-Bedtime"))
+    },
+    // ── #2572: the name-taken pre-check is the READ half of the same leak ───────
+    // `POST`/`PATCH /api/schedules` reject a duplicate name via `findByName`. Unscoped, that
+    // check answers "taken" from a row in a household the caller cannot see — so household B is
+    // told "Bedtime" is taken because household A took it, a cross-tenant namespace collision
+    // and a (weak) enumeration oracle for other households' schedule names. Scoping the read is
+    // also the precondition for widening `named_schedules`' global `UNIQUE (name)` to
+    // `UNIQUE (household_id, name)`: `findByName` reads with Doobie `.option`, which raises on
+    // multiple rows, so the read must be household-scoped BEFORE the schema lets two households
+    // hold the same name (V74/V75 ordering precedent — drop a global unique only after the
+    // source that no longer depends on it has deployed).
+    test("findByName is household-scoped: B's name-taken check never sees A's schedule (#2572)") {
+      for {
+        _    <- cleanDb
+        two  <- TestLayers.seedTwoHouseholds(macA, macB)
+        rs   <- scheduleRoutes
+        auth <- makeAuth
+        tokA <- login(auth, two.adminA, two.password)
+        _    <- createSchedule(rs, "Bedtime", tokA)
+        nsr  <- ZIO.service[NamedScheduleRepo]
+        inA  <- nsr.findByName("Bedtime", two.hhA)
+        inB  <- nsr.findByName("Bedtime", two.hhB)
+      } yield
+      // A's own name-taken check still finds A's row...
+      assertTrue(inA.exists(_.name == "Bedtime")) &&
+        // ...and B's does not see it at all.
+        assertTrue(inB.isEmpty)
+    },
+    // Scoping must not over-reach: a duplicate WITHIN one household is still rejected 409.
+    test("POST /api/schedules still 409s on a duplicate name inside the same household (#2572)") {
+      for {
+        _    <- cleanDb
+        two  <- TestLayers.seedTwoHouseholds(macA, macB)
+        rs   <- scheduleRoutes
+        auth <- makeAuth
+        tokA <- login(auth, two.adminA, two.password)
+        _    <- createSchedule(rs, "Bedtime", tokA)
+        dup <- post(rs, "/api/schedules", CreateNamedScheduleRequest(name = "Bedtime").toJson, tokA)
+        body <- dup.body.asString
+      } yield assertTrue(dup.status == Status.Conflict) &&
+        assertTrue(body.contains("name_taken"))
     },
     // ── Single-backfilled-household is a no-op: the default admin still sees all ─
     test("single household (default admin) sees its own schedules unchanged") {

@@ -89,7 +89,7 @@ object MultiTenantScopedReadGuardSpec extends ZIOSpecDefault {
     // #2126 — user↔profile mappings; today filtered by the scoped `users` list it is joined against,
     // so not an active leak, but the read itself is unscoped (defense-in-depth follow-up).
     "Routes.scala"             -> Set("userProfileRepo.listAllMappings"),
-    // #2126 — `named_schedules` GET /api/schedules is now household-scoped: V71 added
+    // #2126 — `named_schedules` GET /api/schedules is now household-scoped: V72 added
     // `named_schedules.household_id` and `ScheduleRoutes` reads `listAllForHousehold(claims.hh)`
     // (the per-id routes are guarded by `requireScheduleInHousehold`). The bare `scheduleRepo.listAll`
     // no longer exists, so no allowlist entry is needed.

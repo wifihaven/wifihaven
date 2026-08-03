@@ -445,19 +445,25 @@ trait ProfileRepo {
  */
 trait NamedScheduleRepo {
   // #2126 (multi-tenant, epic #2085/#622): the household-scoped list read backing
-  // `GET /api/schedules`. V71 added `named_schedules.household_id`, so the read filters on the
+  // `GET /api/schedules`. V72 added `named_schedules.household_id`, so the read filters on the
   // caller's `claims.hh` — an unattached, freshly-created schedule stays visible to ITS OWN
   // household (the authoring-UI requirement) but never leaks across the tenant boundary. There is
   // deliberately NO cross-tenant `listAll`: the bare all-tenant read was the leak (design §2 gap 4).
   def listAllForHousehold(household: HouseholdId): Task[List[NamedSchedule]]
   def findById(id: NamedScheduleId): Task[Option[NamedSchedule]]
-  def findByName(name: String): Task[Option[NamedSchedule]]
+  // #2572: the name-taken probe behind the create/rename 409, scoped to the caller's household.
+  // Unscoped it answered "taken" from a row in a household the caller cannot see — a cross-tenant
+  // namespace collision and a weak enumeration oracle for other households' schedule names. It is
+  // also the read half of widening `named_schedules`' global `UNIQUE (name)` to
+  // `UNIQUE (household_id, name)`: this reads with Doobie `.option`, which raises on multiple rows,
+  // so it must be scoped BEFORE the schema permits two households to hold the same name.
+  def findByName(name: String, household: HouseholdId): Task[Option[NamedSchedule]]
   // #2126: the household-scoped access probe used by the per-id route guards — the household that
   // owns `id`, or None if the schedule does not exist. A guard rejects (404) any target whose
   // household ≠ the caller's `claims.hh`, mirroring `ProfileRepo.householdOf`.
   def householdOf(id: NamedScheduleId): Task[Option[HouseholdId]]
   // #2126: `household` stamps the new schedule with the creating admin's household (from their JWT),
-  // never left to V71's DEFAULT 1. Defaults to the single-install backfill household so
+  // never left to V72's DEFAULT 1. Defaults to the single-install backfill household so
   // pre-multi-tenant callers stay tenant-safe (#2130 precedent).
   def create(
       name: String,
@@ -502,7 +508,7 @@ trait NamedScheduleRepo {
 object NoopNamedScheduleRepo extends NamedScheduleRepo {
   def listAllForHousehold(household: HouseholdId)                          = ZIO.succeed(Nil)
   def findById(id: NamedScheduleId)                                        = ZIO.succeed(None)
-  def findByName(name: String)                                             = ZIO.succeed(None)
+  def findByName(name: String, household: HouseholdId)                     = ZIO.succeed(None)
   def householdOf(id: NamedScheduleId)                                     = ZIO.succeed(None)
   def create(
       name: String,
@@ -4500,7 +4506,7 @@ class NamedScheduleRepoLive(xa: Transactor[Task]) extends NamedScheduleRepo {
                    VALUES($id,${w.days.toArray},${w.startLocal},${w.endLocal},${w.tz})""".update.run.void
     }
 
-  // #2126: AND-scoped to one household via the V71 `household_id` column (index-backed by
+  // #2126: AND-scoped to one household via the V72 `household_id` column (index-backed by
   // idx_named_schedules_household). Backs `GET /api/schedules` with the caller's `claims.hh`.
   def listAllForHousehold(household: HouseholdId) =
     DbMetrics.timed("namedSchedule.listAllForHousehold")(
@@ -4534,10 +4540,15 @@ class NamedScheduleRepoLive(xa: Transactor[Task]) extends NamedScheduleRepo {
       }
     } yield out).transact(xa)
 
-  def findByName(name: String) =
+  // #2572: AND-scoped to the caller's household, same predicate as listAllForHousehold — the
+  // name-taken 409 must be answerable only from rows the caller can see. `.option` is safe here
+  // precisely because of the scope: once V87 widens the unique to (household_id, name), a bare
+  // `WHERE name=?` could match one row per household and raise.
+  def findByName(name: String, household: HouseholdId) =
     (for {
       row <-
-        sql"SELECT id,name,description FROM named_schedules WHERE name=$name"
+        (fr"SELECT id,name,description FROM named_schedules WHERE name=$name AND" ++
+          SqlFragments.householdEq(household))
           .query[(NamedScheduleId, String, Option[String])]
           .option
       out <- row.traverse { case (rid, n, desc) =>
@@ -4551,7 +4562,7 @@ class NamedScheduleRepoLive(xa: Transactor[Task]) extends NamedScheduleRepo {
       windows: List[ScheduleWindow],
       household: HouseholdId = HouseholdId.Default,
   ) =
-    // #2126: household_id is stamped explicitly — never left to V71's DEFAULT 1 (#2130 precedent).
+    // #2126: household_id is stamped explicitly — never left to V72's DEFAULT 1 (#2130 precedent).
     (for {
       id <-
         sql"INSERT INTO named_schedules(name,description,household_id) VALUES($name,$description,$household) RETURNING id"
