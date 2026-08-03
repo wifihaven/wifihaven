@@ -3175,9 +3175,10 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
     // all on `period_start` / `date` / `mac` / `router_id`), so the planner falls back to a parallel
     // sequential scan of every partition. Measured 2026-08-02 on prod (4.6M rows) over the 30-minute
     // dashboard window: ~4.6s warm in THIS scoped shape vs ~4.9s unscoped, so the household predicate
-    // is not what costs. A cold run scanned 4,072,037 rows by filter to return ~2000 (the exact count
-    // slides, since the window is relative to now). Pre-dates #2568; the fix is an index migration,
-    // which `docs/process/migrations.md#migrations-back-compat` requires ship schema-only.
+    // is not what costs. A cold run discarded 4,072,036 partition rows by filter to return ~2000
+    // (the exact count slides, since the window is relative to now). Pre-dates #2568; the fix is an
+    // index migration, which `docs/process/migrations.md#migrations-back-compat` requires ship
+    // schema-only.
     val bySince = f.since.fold(fr"")(s => fr"AND tr.period_end > $s")
     val byUntil = f.until.fold(fr"")(u => fr"AND tr.period_start < $u")
     // #2568: the tenancy predicate — the MAC list is NOT scoping. The same shared fragment the six
