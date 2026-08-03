@@ -11,7 +11,7 @@ import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 import zio.{Clock as _, *}
 import zio.test.*
 
-import java.time.{LocalTime, ZoneId}
+import java.time.{LocalTime, ZoneId, ZoneOffset}
 
 /**
  * #2264 (follow-up to #2257, epic #2085/#622) — the residual all-tenant reads INSIDE the
@@ -163,9 +163,17 @@ object DayStateAllScopeSpec
     // ── Lagging-household pin for the narrowed rollup watermark ─────────────────
     // `dayStateAllFromRollupHits` takes `min(rolledThrough)` over `rolled`, which #2264 narrowed
     // from every tenant's rows to this household's. This pins the property that makes the narrowing
-    // safe: a household whose rollup fiber lagged (an EARLIER watermark) cannot move A's numbers in
-    // either direction. It passes on `main` too — there the wider window is re-filtered per profile
-    // — so it is a forward-looking guard on the invariant, not a red-to-green regression test.
+    // safe: a household whose rollup fiber lagged (an EARLIER watermark) cannot move A's numbers.
+    //
+    // For the watermark to be OBSERVABLE the tail fetch has to be non-empty, so A gets two presence
+    // buckets straddling its own watermark:
+    //   - `absorbed` sits BEFORE it — already counted in the 600s rolled figure, so re-counting it
+    //     would double it. On `main` B's lagged watermark widens the fetch far enough to pull this
+    //     row back in, and only the per-profile re-filter keeps it out of the total; here the query
+    //     never fetches it at all. Either way it must not land in `usedMinutes`.
+    //   - `tail` sits AFTER it and must count.
+    // It passes on `main` too — there the wider window is re-filtered per profile — so it is a
+    // forward-looking guard on the invariant, not a red-to-green regression test.
     test("a lagging household B's earlier rollup watermark does not move A's day-states") {
       for {
         _     <- cleanDb
@@ -173,20 +181,45 @@ object DayStateAllScopeSpec
         tss   <- timeStatusService
         pr    <- ZIO.service[ProfileRepo]
         ru    <- ZIO.service[TimeUsedRollupRepo]
+        trr   <- ZIO.service[TrafficReportRepo]
         clock <- ZIO.service[Clock]
         now   <- clock.instant
         hsr   <- ZIO.service[HouseholdSettingsRepo]
         stg   <- hsr.getForHousehold(two.hhA)
-        date = PolicyService.householdLocalDate(now, stg)
+        date      = PolicyService.householdLocalDate(now, stg)
+        dayStart  = date.atStartOfDay(ZoneOffset.UTC).toInstant
+        // A's watermark sits two hours into the day; B will lag it by another hour.
+        markA     = dayStart.plusSeconds(2 * 3600)
+        absorbed  = markA.minusSeconds(1800) // before A's mark: already in the 600s rolled figure
+        tailStart = markA.plusSeconds(300)   // after A's mark: the live tail, must count
+        _      <- trr.insertBatch(
+          List(absorbed, tailStart).map(s =>
+            TrafficReportInsert(
+              two.routerIdA,
+              macA,
+              None,
+              HostId.Fqdn(Hostname.unsafe("example.com")),
+              date,
+              s,
+              s.plusSeconds(300),
+              300,
+              500_000L,
+              500_000L,
+            ),
+          ),
+        )
         profsA <- pr.listAllForHousehold(two.hhA)
-        _      <- ZIO.foreachDiscard(profsA)(p => ru.upsertDay(p.id, date, RolledDay(600L, now)))
+        _      <- ZIO.foreachDiscard(profsA)(p => ru.upsertDay(p.id, date, RolledDay(600L, markA)))
         before <- tss.dayStateAll(two.hhA, now, date, stg)
-        // B's fiber is six hours behind A's — on `main` this would have dragged the batch
-        // watermark back for A too.
-        _      <- ru.upsertDay(two.profileB, date, RolledDay(1800L, now.minusSeconds(6 * 3600)))
+        // B's fiber is an hour behind A's, and behind `absorbed` — on `main` this drags the batch
+        // watermark back far enough to re-fetch that bucket for A.
+        _      <- ru.upsertDay(two.profileB, date, RolledDay(1800L, markA.minusSeconds(3600)))
         after  <- tss.dayStateAll(two.hhA, now, date, stg)
       } yield assertTrue(after == before) &&
-        assertTrue(before.keySet == profsA.map(_.id).toSet)
+        assertTrue(!before.contains(two.profileB)) &&
+        // Non-vacuous: the tail bucket actually contributed (600s rolled + 300s tail = 15m), so the
+        // watermark-driven fetch really ran, and the pre-watermark bucket was NOT double-counted.
+        assertTrue(before(two.profileA).usedMinutes == 15)
     },
   ) @@ TestAspect.sequential
 }
