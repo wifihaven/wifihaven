@@ -1,0 +1,163 @@
+-- V87__named_schedules_household_unique_block_events_router.sql
+-- Closes the three schema-level tenancy gaps the #2563 isolation sweep found
+-- and no existing issue covered. Refs #2572, #2563, #2126, #2142, #2125, #2266.
+--
+-- SCHEMA-ONLY PR (docs/process/migrations.md#migrations-back-compat): the
+-- migration alone (docs may accompany it; this one needs none). The existing
+-- feature suite is the back-compat gate — it applies this migration and then
+-- drives image-(N-1)'s `api/src` against it.
+--
+-- This is the MIDDLE of a three-PR sequence, because the two halves of #2572
+-- need opposite orderings and neither can be folded into this file:
+--   1. source — scope `NamedScheduleRepo.findByName` to a household. Must
+--      precede this migration: dropping the global name unique without it
+--      leaves a read that raises on multiple rows (see item 1 below).
+--   2. THIS migration.
+--   3. source — make `BlockEventInsert.routerId` required and stamp it at the
+--      `POST /api/router/decision` call site. Must follow this migration: it
+--      writes a column that has to exist first.
+-- Each PR is independently green; the tests for both source halves ship with
+-- their own PR.
+--
+-- ── 1. named_schedules.name: global UNIQUE → UNIQUE (household_id, name) ─────
+-- V50 created `name TEXT NOT NULL UNIQUE` when the product was single-household.
+-- V72 (#2126) added `household_id` and scoped the reads but deliberately left
+-- the name unique global ("a separate change" — V72 lines 47-52); that change
+-- was never filed until #2572. #2125 widened the equivalent `devices` and
+-- `time_usage` global uniques; `named_schedules` was missed.
+--
+-- Live effect of leaving it: household A names a schedule "Bedtime" and
+-- household B's `POST /api/schedules` with the same name fails on a row B
+-- cannot see. "Bedtime" / "School hours" / "Homework" are exactly the names
+-- every household picks, so this is a routine collision, and a (weak)
+-- enumeration oracle for other households' schedule names.
+--
+-- Back-compat under this swap: the widened key is strictly WEAKER than the one
+-- it replaces (every pair unique under UNIQUE(name) is also unique under
+-- UNIQUE(household_id, name)), so no existing row can violate it and no
+-- image-(N-1) write can start failing.
+--
+-- ORDERING — the scoped read ships BEFORE this drop, not after. `findByName`
+-- (`NamedScheduleRepoLive`) backs the name-taken 409 in `ScheduleRoutes` and
+-- reads with Doobie `.option`, which RAISES on multiple rows. Once two
+-- households can hold the same name, an unscoped `WHERE name=?` can match one
+-- row per household. A check-then-act pre-check is not a substitute for the
+-- constraint: two concurrent creates from different households could both pass
+-- it and both insert, after which every create/rename on that name 503s until
+-- a row is deleted by hand. So `findByName(name, household)` lands in its own
+-- source PR that MERGES FIRST, and this migration is the second step — the
+-- same expand/contract order V74/V75 used ("#2108's source is already
+-- deployed", V75 lines 39-44) when they dropped `devices_mac_key` and
+-- `time_usage_device_mac_host_date_key`.
+--
+-- Dropping a unique constraint requires auditing what depends on it. There is
+-- no `ON CONFLICT (name)` on `named_schedules` anywhere in the tree, and every
+-- FK into the table references `named_schedules(id)` (V50 lines 97 and 115,
+-- V51 line 60), never `(name)` — so nothing else breaks.
+--
+-- `named_schedules_name_key` is PostgreSQL's auto-generated name for V50's
+-- inline `UNIQUE`; confirmed against the live prod catalog, not assumed from the
+-- naming convention. `SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint
+-- WHERE conrelid='named_schedules'::regclass` on wifihaven-pg-prod, 2026-08-02,
+-- returned exactly three rows:
+--   named_schedules_pkey              PRIMARY KEY (id)
+--   named_schedules_name_key          UNIQUE (name)          <- dropped below
+--   named_schedules_household_id_fkey FOREIGN KEY (household_id) REFERENCES households(id)
+--
+-- ── 2. named_schedules.household_id: DROP DEFAULT ───────────────────────────
+-- V72 line 83 set `DEFAULT 1` as expand-window scaffolding so image-(N-1)
+-- inserts (which omitted the column) landed in household 1. The #2126 source
+-- PR shipped and every insert now stamps `household_id` explicitly
+-- (`NamedScheduleRepoLive.create`, api/src/db/Repos.scala) — it is the ONLY
+-- insert path into this table in the tree. So the default is dead scaffolding,
+-- and it is precisely the dark-by-default shape #2265/#2266 banned: a missing
+-- scope silently resolving to household 1 instead of failing loudly. The column
+-- stays NOT NULL, so after this an unscoped insert errors instead of guessing.
+-- (#2142 tracks the same leftover on `profiles` / `household_settings` /
+-- `time_usage` — the three V65 tables. It predates V72 and does not cover this
+-- fourth one.)
+--
+-- ── 3. block_events: no tenancy key at all → add router_id ──────────────────
+-- V2 line 52 created `block_events(id, mac, hostname, reason, ts)`. Unlike
+-- every other growth table it has neither `household_id` NOR `router_id`, so
+-- there is not even a transitive route to a household. Its only attribution key
+-- is `mac`, and V74 dropped `devices_mac_key`, so a MAC no longer identifies a
+-- household.
+--
+-- Nothing leaks today: both reads (`BlockEventRepo.recent`, `.listForMac`) are
+-- dead — no `api/src` caller (#2571). The finding is that the schema is LOADED:
+-- the moment any panel, export, or support-agent read is pointed at this table
+-- it leaks across households with no predicate available to stop it, because
+-- the key was never recorded at write time. Retro-fitting one for existing rows
+-- is impossible, so the column is added now, ahead of the first reader.
+--
+-- `router_id` (not `household_id`) is the key, matching `traffic_reports` (V2)
+-- and `connection_events` (V4): the write path — `POST /api/router/decision` in
+-- RouterRoutes — authenticates a router and already holds it, and
+-- `routers.household_id` (V65) gives the household by join. Recording the
+-- narrower fact keeps a single source of truth for the router→household
+-- mapping instead of denormalizing it a second time.
+--
+-- NULLABLE, no default, no backfill. Pre-existing rows have no derivable
+-- router: `mac` cannot identify one post-V74, and inventing a value would be a
+-- confabulation. Nullable also makes the add metadata-only (see below) and
+-- keeps image-(N-1)'s `INSERT INTO block_events(mac,host_type,host_value,
+-- reason,reason_text)` — which omits the column — working unchanged, which is
+-- what the back-compat gate exercises. The follow-up source PR makes the field
+-- required in `BlockEventInsert`, so every NEW row carries it; NULL then means
+-- exactly "written before V87", not "unknown scope".
+--
+-- ON DELETE CASCADE + the router index mirror `traffic_reports.router_id` /
+-- `connection_events.router_id`. `RouterRepo.delete` (api/src/db/Repos.scala)
+-- is a live path, and an unindexed FK would make every router delete seq-scan
+-- an unbounded-growth table.
+--
+-- ── Prod data-volume (docs/process/migrations.md#migrations-prod-data-volume) ─
+-- Measured against PROD, not dev/staging, on 2026-08-02 (read-only psql against
+-- wifihaven-pg-prod, PostgreSQL 16.14, schema at Flyway V86):
+--   * block_events    — 0 rows, 32 kB total relation size, relkind 'r' (a plain
+--     table; it was never partitioned, unlike traffic_reports/connection_events).
+--     A 30-day retention sweep (#2086) keeps it bounded regardless.
+--   * named_schedules — 2 rows;  households — 2 rows;  routers — 2 rows.
+-- So every statement here is trivially instant at real prod volume, far inside
+-- the 15-minute Render port-scan window.
+--
+-- Note the two statements have DIFFERENT growth behaviour, and only one of them
+-- is size-independent:
+--   * `ADD COLUMN router_id` — nullable with no default, so metadata-only in
+--     PG 11+ (no table rewrite). Safe at any table size.
+--   * `CREATE INDEX idx_block_events_router_ts` — a PLAIN index build, which
+--     scans the whole table under a lock that blocks writes, and whose runtime
+--     tracks table size. It is safe HERE only because the table is empty;
+--     it is not a claim that stays true as block_events grows. CONCURRENTLY,
+--     which would avoid the lock, is unavailable (see below).
+-- The 0-row count is the measured fact that makes the index build safe, not an
+-- inference from the ADD COLUMN's metadata-only property.
+--
+-- Also worth stating so a later reader does not have to reconcile "live write
+-- path" with "0 rows": no AGENT in the tree calls
+-- `POST /api/router/decision` — grepping `openwrt/` and `opnsense/` for that
+-- path returns no hits (feature specs do exercise the endpoint). `RouterRoutes` writes a block event when the
+-- endpoint is hit; the endpoint just has no producer today. That, rather than
+-- the retention sweep, is the likely reason prod holds 0 rows.
+--
+-- No CREATE INDEX CONCURRENTLY is used anywhere here: Flyway wraps each
+-- migration in a transaction and CONCURRENTLY cannot run inside one.
+
+-- 1. Widen the schedule-name uniqueness to per-household.
+ALTER TABLE named_schedules DROP CONSTRAINT named_schedules_name_key;
+ALTER TABLE named_schedules
+  ADD CONSTRAINT named_schedules_household_name_key UNIQUE (household_id, name);
+
+-- 2. V72's idx_named_schedules_household is now redundant: the unique index
+--    backing the constraint above leads with household_id, so it already serves
+--    every `WHERE household_id = ?` lookup (listAllForHousehold, householdOf).
+DROP INDEX idx_named_schedules_household;
+
+-- 3. Retire the expand-window default; every insert stamps household_id.
+ALTER TABLE named_schedules ALTER COLUMN household_id DROP DEFAULT;
+
+-- 4. Give block_events a tenancy key (transitively, via routers.household_id).
+ALTER TABLE block_events
+  ADD COLUMN router_id UUID REFERENCES routers(id) ON DELETE CASCADE;
+CREATE INDEX idx_block_events_router_ts ON block_events(router_id, ts DESC);
