@@ -243,7 +243,7 @@ inventory (trait declarations in [`Repos.scala`](../../api/src/db/Repos.scala)):
 | `NamedScheduleRepo.listAll` | [`:148`](../../api/src/db/Repos.scala) | schedule admin |
 | ~~`HouseholdSettingsRepo.get` (single row)~~ | — | **CLOSED (#2533, #2553).** `get` and the unscoped `update(s)` are deleted; `getForHousehold(household)` / `update(household, s)` are the only accessors. #2553 removed the two all-tenant-batch `HouseholdId.Default` reads: `TimeUsedRollupJob` / `AmbientLearnJob` now read each household's OWN settings inside their per-household loop (own day key, own heartbeat/ambient knobs), and `update`'s rollup-cache invalidation is scoped to the writing household's profiles. One explicit `Default` read remains, separately justified in place: [`BlockedRoutes.scala:113`](../../api/src/routes/BlockedRoutes.scala) (the block-page redirect carries no household). |
 | `TimeLimitRepo.listAll` | [`:217`](../../api/src/db/Repos.scala) | time-status ([`Routes.scala:904`](../../api/src/routes/Routes.scala)) |
-| `AppTimeLimitRepo.listAll` | [`:236`](../../api/src/db/Repos.scala) | time-status ([`Routes.scala:905`](../../api/src/routes/Routes.scala)) |
+| ~~`AppTimeLimitRepo.listAll`~~ | — | **CLOSED (#2568).** Deleted; `listAllForHousehold(household)` is the only accessor. Its last caller was the dashboard NOW builder, reached while `DashboardNowRoutes.computeNow` still took an optional household — that parameter is now required. |
 | `DeviceRepo.listAll` | [`:240`](../../api/src/db/Repos.scala) | devices list, snapshot, decision lookup |
 | `AlertRepo.list(includeAll)` | [`:321`](../../api/src/db/Repos.scala) | alerts routes — scope by household |
 | `RouterRepo.listAll` | [`:507`](../../api/src/db/Repos.scala) | routers admin list |

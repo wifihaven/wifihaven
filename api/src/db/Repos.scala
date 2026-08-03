@@ -3173,8 +3173,9 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
     val byHost  = f.host.fold(fr"")(h => fr"AND tr.host_value ILIKE ${s"%$h%"}")
     // TODO(#2584): this bound is on `period_end`, which no `traffic_reports` index covers (they are
     // all on `period_start` / `date` / `mac` / `router_id`), so the planner falls back to a parallel
-    // sequential scan of every partition. Measured 2026-08-02 on prod (4.6M rows): ~4.9s, scanning
-    // ~4.1M rows to return 2002. Pre-dates #2568; the fix is an index migration, which
+    // sequential scan of every partition. Measured 2026-08-02 on prod (4.6M rows) in THIS scoped
+    // shape: ~4.6s, scanning ~4.1M rows to return 2002 (the unscoped shape was ~4.9s — the household
+    // predicate is not what costs). Pre-dates #2568; the fix is an index migration, which
     // `docs/process/migrations.md#migrations-back-compat` requires ship schema-only.
     val bySince = f.since.fold(fr"")(s => fr"AND tr.period_end > $s")
     val byUntil = f.until.fold(fr"")(u => fr"AND tr.period_start < $u")
