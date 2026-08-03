@@ -2160,9 +2160,14 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
     // (uq_devices_household_mac). One query, one source of truth — no duplicated projection.
     findByMacInHousehold(mac, household)
   // #2566/#2322: the pre-#2322 `createAccessRequest` COALESCE subquery, lifted out of the INSERT
-  // and named. Index-backed by V65's uq_devices_household_mac (mac is the trailing column, so this
-  // is the one device read that does not lead with household — see the trait doc for why that is
-  // deliberate and confined to the block-page fallback).
+  // and named. This is the one device read that does not lead with household — see the trait doc
+  // for why that is deliberate and confined to the block-page fallback.
+  //
+  // Index-backed by V1's `idx_devices_mac ON devices(mac)` (V1__init.sql:63) — NOT by V65's
+  // uq_devices_household_mac, which leads with household_id and so cannot serve this bare-`mac`
+  // predicate as an index scan. V74/V75 dropped the global `devices_mac_key` CONSTRAINT but left
+  // that plain index in place, and it is what keeps this off a seq scan: don't retire it as
+  // redundant. (`devices` is bounded by household size, not an unbounded-growth table.)
   def findOwningHousehold(mac: MacAddress)        =
     DbMetrics.timed("device.findOwningHousehold")(
       sql"SELECT household_id FROM devices WHERE mac = $mac ORDER BY household_id LIMIT 1"

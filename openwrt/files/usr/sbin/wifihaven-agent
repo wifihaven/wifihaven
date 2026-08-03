@@ -829,12 +829,24 @@ local BLOCK_PAGE_TOKEN_PATH = paths.block_page_token
 local BLOCK_PAGE_TOKEN_REFRESH_SECONDS = 3600
 local BLOCK_PAGE_TOKEN_REFRESH_TICKS   =
   math.max(1, math.floor(BLOCK_PAGE_TOKEN_REFRESH_SECONDS / math.max(1, policy_int)))
+-- Consecutive-failure budget for the NOT-YET-LANDED state. Retrying every tick
+-- is right at boot (the API may be briefly down, or the router may have booted
+-- first) but wrong forever: against an API that predates the endpoint the fetch
+-- is a structural 404, and at the 5s default poll that would be ~17k pointless
+-- requests per router per day, indefinitely. After this many consecutive
+-- failures we drop to the same slow BLOCK_PAGE_TOKEN_REFRESH_TICKS cadence the
+-- landed state uses, which still picks the token up within the hour once the
+-- API is upgraded. 12 tries ≈ the first minute at the default poll.
+local BLOCK_PAGE_TOKEN_FAST_RETRIES    = 12
 local block_page_token_ticks           = 0
+local block_page_token_fails           = 0
 local block_page_token_ok              = false
 
 function wh_refresh_block_page_token()
-  if block_page_token_ok then
-    -- Already published; count toward the next periodic refresh.
+  if block_page_token_ok or block_page_token_fails >= BLOCK_PAGE_TOKEN_FAST_RETRIES then
+    -- Either already published (periodic refresh), or we have retried enough
+    -- times to conclude this API simply does not serve the endpoint yet. Both
+    -- states poll on the slow cadence.
     block_page_token_ticks = block_page_token_ticks + 1
     if block_page_token_ticks < BLOCK_PAGE_TOKEN_REFRESH_TICKS then return end
   end
@@ -846,7 +858,15 @@ function wh_refresh_block_page_token()
     -- here, so a blip at the refresh boundary retries on the next tick instead
     -- of pushing the next attempt out by another full interval — the whole
     -- point of the refresh is post-rotation recovery.
-    log.debug("block-page token: not available yet (%s)", tostring(why))
+    block_page_token_fails = block_page_token_fails + 1
+    if block_page_token_fails == BLOCK_PAGE_TOKEN_FAST_RETRIES then
+      log.info("block-page token: still unavailable after %d tries (%s); backing off to the " ..
+               "periodic cadence", BLOCK_PAGE_TOKEN_FAST_RETRIES, tostring(why))
+    else
+      log.debug("block-page token: not available yet (%s)", tostring(why))
+    end
+    -- The tick counter is NOT reset here, so a blip at a refresh boundary
+    -- retries on the next tick rather than costing another full interval.
     return
   end
   local f = io.open(BLOCK_PAGE_TOKEN_PATH, "w")
@@ -860,6 +880,7 @@ function wh_refresh_block_page_token()
     log.info("block-page token: fetched and published to %s", BLOCK_PAGE_TOKEN_PATH)
   end
   block_page_token_ok    = true
+  block_page_token_fails = 0
   block_page_token_ticks = 0
 end
 

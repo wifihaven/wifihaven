@@ -214,8 +214,9 @@ object MultiTenantRouteCensusSpec extends ZIOSpecDefault {
     "GET /api/blocked" -> Unauthenticated(
       "block page; household from the router-bound block-page token on the redirect (#2569). Still " +
         "Unauthenticated, not Scoped: with no verifiable token it falls back to HouseholdId.Default — " +
-        "its pre-#2569 behaviour, and the residual hh1 disclosure — which is why the route is also " +
-        "rate-limited per (source IP, MAC)",
+        "its pre-#2569 behaviour, and the residual hh1 disclosure. What bounds that disclosure is " +
+        "the PER-SOURCE-IP bucket on the route: a MAC sweep varies the MAC by definition, so the " +
+        "sibling per-(source IP, MAC) bucket bounds one device's share but not an enumeration",
     ),
 
     // ── DashboardNowRoutes ─────────────────────────────────────────────────────────────────────

@@ -27,9 +27,11 @@ import zio.json.*
  * reachable from anywhere that can reach the API, and it used to resolve everything against
  * [[HouseholdId.Default]], so a MAC sweep read household 1's profile names and live screen-time.
  * The household now comes from the router-bound block-page token on the redirect
- * ([[BlockPageHousehold]]), and the route is behind the same per-source-IP rate limiter `POST
- * /api/access-requests` has had since #2081 — which also bounds the residual disclosure on the
- * token-absent fallback path.
+ * ([[BlockPageHousehold]]), and the route is rate-limited by two buckets over the same
+ * `RateLimiterLive` primitive `POST /api/access-requests` has used since #2081 — per source IP (the
+ * MAC-enumeration bound, which is what caps the residual disclosure on the token-absent fallback
+ * path) and per (source IP, MAC) (so one device cannot exhaust a NATed household's budget).
+ * Separate instances with their own budgets, NOT the #2081 limiter itself.
  *
  * Granular details that the design doc explicitly excludes (schedule end time, per-site label,
  * daily-cap minute counts) are NOT returned. The response shape is identical for an unknown MAC and
@@ -47,9 +49,19 @@ object BlockedRoutes {
       clock: Clock,
       // #2569: the household derivation seam, shared with POST /api/access-requests.
       blockPageHousehold: BlockPageHousehold,
-      // #2569: same per-source-IP limiter POST /api/access-requests uses (#2081). The route is
+      // #2569: TWO buckets over the same RateLimiterLive primitive POST /api/access-requests uses
+      // (#2081) — separate instances with their own budgets, not that limiter. The route is
       // unauthenticated and answers per-MAC questions, so an unlimited one is a MAC-enumeration
       // oracle.
+      //
+      //   - perSource, keyed by IP alone, IS the enumeration bound: a sweep varies the MAC by
+      //     definition, so a per-device bucket hands it a fresh budget per MAC and bounds nothing.
+      //     This route's `Unauthenticated` census verdict rests on this bucket existing.
+      //   - perDevice, keyed (IP, MAC), bounds one device's share so a household — which NATs
+      //     behind ONE address — cannot have one busy device 429 the rest off their block page.
+      //
+      // Both are acquired for every request; budgets and their derivation live at the construction
+      // site (HttpRoutes), so there is one place to change them.
       //
       // Over the limit we answer 429, NOT the `blocked=false` body. Both are "no information",
       // but `blocked=false` renders as "This page is not blocked for this device" — a confident

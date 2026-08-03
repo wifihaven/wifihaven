@@ -347,8 +347,11 @@ object HttpRoutes {
           blFetcher2,
           bundledBlocklists,
           blockPageHousehold,
-          blockedPerDeviceLimiter,
-          blockedPerSourceLimiter,
+          // Named: two same-typed RateLimiters with very different budgets (60 vs 300), so a
+          // positional transposition would compile and silently swap the fairness bound with the
+          // enumeration bound.
+          blockedPerDeviceLimiter = blockedPerDeviceLimiter,
+          blockedPerSourceLimiter = blockedPerSourceLimiter,
         )
 
       val routerAndAdminRoutes: Routes[Any, Response] =
@@ -658,8 +661,8 @@ object HttpRoutes {
         hsRepo,
         clock,
         blockPageHousehold,
-        blockedPerDeviceLimiter,
-        blockedPerSourceLimiter,
+        perDeviceLimiter = blockedPerDeviceLimiter,
+        perSourceLimiter = blockedPerSourceLimiter,
       )
 
   private def buildRouterAndAdminRoutes(

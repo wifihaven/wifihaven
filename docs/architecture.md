@@ -1112,13 +1112,15 @@ Two properties worth stating plainly:
 
 - **It is not authentication.** It authorizes exactly what any client already
   on that household's LAN can do: read a block-page reason and today's
-  minutes for a MAC, and file an access request. Both routes are behind the
-  per-source-IP rate limiter (#2081).
+  minutes for a MAC, and file an access request. `POST /api/access-requests`
+  keeps its per-source-IP limiter (#2081); `GET /api/blocked` has two buckets of
+  its own — per source IP, which is the MAC-enumeration bound, and per
+  (source IP, MAC), so one device cannot exhaust a NATed household's budget.
 - **Its absence is not an error, and the two endpoints fall back differently.**
   The router↔API wire is additive and the two deploy independently, so an agent
   that predates the token still redirects without one. `GET /api/blocked` then
   answers from household 1 — exactly what it did before, and the residual
-  #2569 disclosure, which is why that route is also rate-limited.
+  #2569 disclosure, which is what the per-source-IP bucket above bounds.
   `POST /api/access-requests` instead falls back to the device row's own
   household (`DeviceRepo.findOwningHousehold`), because *that* is what it did
   before; defaulting it to household 1 would reject every other household's
