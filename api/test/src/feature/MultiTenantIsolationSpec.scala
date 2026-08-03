@@ -2096,8 +2096,9 @@ object MultiTenantIsolationSpec
       // `findByMac(mac, HouseholdId.Default)` and stamps `household_id` with the lowest matching
       // household, and device→profile reassignment is itself household-gated. So this state is
       // built directly by raw SQL rather than driven, and the pin is defense in depth against
-      // `TODO(#2322)` — deriving the block-page household from the requesting router, which lets
-      // the two diverge for a shared MAC. It still fails without the guard.
+      // `TODO(#2322)` — deriving the block-page household from the requesting router, which COULD
+      // let the two diverge for a shared MAC depending on how it lands. It still fails without the
+      // guard.
       //
       // 404 here, not the 403 the unlinked-adult pin asserts: this refusal IS a tenancy boundary.
       for {
