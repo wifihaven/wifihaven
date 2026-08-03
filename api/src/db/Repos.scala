@@ -830,11 +830,13 @@ trait AlertRepo {
   def list(includeAll: Boolean): Task[List[Alert]]
 
   /**
-   * #2108 (multi-tenant sub-issue E): household-scoped [[list]] — alerts whose device belongs to
-   * `household`. `alerts` has no `household_id` column of its own (its rows are MAC-keyed with a FK
-   * to `devices`), so it inherits the household transitively via the join to the household-scoped
-   * `devices` row (design §0.1 "scoped transitively"). Backs `GET /api/alerts` so an admin sees
-   * only their own household's alerts.
+   * #2108 (multi-tenant sub-issue E): household-scoped [[list]] — alerts belonging to `household`.
+   * Backs `GET /api/alerts` so an admin sees only their own household's alerts.
+   *
+   * Scoped on the alert's OWN `household_id` (V78), the same key [[householdOf]] reads. This
+   * originally scoped transitively through a join to the household-scoped `devices` row, because
+   * `alerts` had no household column; #2283 replaced that when V74 let one MAC exist in two
+   * households and made the join ambiguous.
    */
   def listForHousehold(includeAll: Boolean, household: HouseholdId): Task[List[Alert]]
 

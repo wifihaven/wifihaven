@@ -538,10 +538,11 @@ object MultiTenantRouteCensusSpec extends ZIOSpecDefault {
     ) {
       val tracked = Census.collect { case (k, Tenancy.ScopedTracked(n)) => k -> n }
       // SHRINK-ONLY. The audit opened this allowlist with three entries (#2564 ×2, #2565); #2564's
-      // fix deleted its two, leaving one. It may never grow without a deliberate edit here. Deliberately NOT `nonEmpty`: that
-      // would turn the LAST security fix — the one that empties the list — into a red build, which
-      // reads as "your fix broke CI" rather than "you are done". When it does reach zero, delete
-      // the `ScopedTracked` case and this test rather than leaving a dead escape hatch.
+      // fix deleted its two, leaving one. It may never grow without a deliberate edit here.
+      // Deliberately NOT `nonEmpty`: that would turn the LAST security fix — the one that empties
+      // the list — into a red build, which reads as "your fix broke CI" rather than "you are done".
+      // When it does reach zero, delete the `ScopedTracked` case and this test rather than leaving
+      // a dead escape hatch.
       assertTrue(tracked.size <= 3) &&
       // Every tracked entry must name a plausible issue number, not 0 / a placeholder.
       assert(tracked.values.filter(_ <= 0).toList)(
@@ -590,11 +591,16 @@ object MultiTenantRouteCensusSpec extends ZIOSpecDefault {
       // `Checkers`. Reading the caller's household to STAMP a write says nothing about the target,
       // and admitting it here would silently re-exempt every route the audit found.
       //
-      // The second assertion keeps that from being vacuous. Live routes that mention `claims.hh`
-      // and compose no checker still exist (the stamp-only writes), so the scan really is looking
-      // at handlers where the distinction bites — if this ever went empty, the first assertion
-      // would be guarding a case the census no longer contains.
+      // The second assertion keeps that from being vacuous, and it is deliberately restricted to
+      // routes WITHOUT an entity param. Those are exactly the legitimate stamp-only handlers: they
+      // derive the household from `claims.hh` and scope at the repo (`GET /api/alerts` →
+      // `listForHousehold(includeAll, claims.hh)`), so they mention it and compose no checker while
+      // being perfectly correct. Their continued existence is what makes the distinction between
+      // STAMPING and CHECKING live rather than hypothetical — an unrestricted filter would also
+      // sweep in entity-param routes, which is test 2's job and would make this pass for the wrong
+      // reason.
       val stampOnly = scan
+        .filterNot(_.entityParam)
         .filter(r => r.handler.contains("claims.hh"))
         .filter(_.checkers.isEmpty)
         .map(_.key)

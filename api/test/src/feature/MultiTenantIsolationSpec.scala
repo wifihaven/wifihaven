@@ -189,6 +189,19 @@ object MultiTenantIsolationSpec
       body <- resp.body.asString
     } yield (resp.status, body)
 
+  // #2564: an `adult` user in `household`, password copied from the seeded `admin` (so
+  // `TwoHouseholds.password` logs it in) — mirrors how `seedTwoHouseholds` mints `adminB`. `adult`
+  // passes `requireWriter` but, unlike `admin`, must be LINKED to a profile to write it.
+  private def seedAdult(
+      xa: Transactor[Task],
+      household: HouseholdId,
+      username: String,
+  ): Task[UserId] =
+    sql"""INSERT INTO users(username, password_hash, role, must_change_password, household_id)
+          SELECT $username, password_hash, 'adult', false, $household
+            FROM users WHERE username='admin'
+          RETURNING id""".query[UserId].unique.transact(xa)
+
   // #2564: the alert stack over the real repos, for the per-id decide-route isolation pins.
   private def makeAlertRoutes(
       auth: AuthService,
@@ -1993,6 +2006,80 @@ object MultiTenantIsolationSpec
       } yield assertTrue(st == Status.Ok) &&
         assertTrue(!pausedA) &&
         assertTrue(statusA == "approved")
+    },
+    // ── #2564: the SECOND guard — approve's side effect writes a PROFILE ───────
+    // `requireAlertInHousehold` proves the ALERT is the caller's; it does not prove the same of
+    // `alerts.profile_id`, which is denormalised at insert and survives a device→profile
+    // reassignment. So `applyApproveSideEffect` also composes `requireProfileAccess`, the same
+    // primitive the sibling manual-grant route `POST /api/time/extend` already uses. The two pins
+    // above never reach it (they 404 at the alert guard) and the happy path above logs in as
+    // `admin`, which short-circuits it — these two drive the branch that actually gates a non-admin
+    // writer, in both directions.
+    test("pin 2 (#2564) — a LINKED adult in the household can approve (side-effect guard allows)") {
+      for {
+        _       <- cleanDb
+        two     <- TestLayers.seedTwoHouseholds(macA, macB)
+        xa      <- ZIO.service[Transactor[Task]]
+        pr      <- ZIO.service[ProfileRepo]
+        ar      <- ZIO.service[AlertRepo]
+        up      <- ZIO.service[UserProfileRepo]
+        adultId <- seedAdult(xa, two.hhA, "adultA")
+        _       <- up.addLink(adultId, two.profileA)
+        _       <- pr.setPaused(two.profileA, true)
+        alertA  <- ar.createAccessRequest(
+          macA,
+          Some(two.profileA),
+          Hostname.unsafe("youtube.com"),
+          AccessRequestKind.Unpause,
+          None,
+          Instant.parse("2026-05-07T14:00:00Z"),
+        )
+        auth    <- makeAuth
+        token   <- login(auth, "adultA", two.password)
+        routes  <- makeAlertRoutes(auth)
+        (st, _) <- postJson(routes, s"/api/alerts/${alertA.value}/approve", Some(token), "")
+        pausedA <- sql"SELECT paused FROM profiles WHERE id=${two.profileA}"
+          .query[Boolean]
+          .unique
+          .transact(xa)
+      } yield assertTrue(st == Status.Ok) && assertTrue(!pausedA)
+    },
+    test("pin 2 (#2564) — an UNLINKED adult in the household is refused (profile stays paused)") {
+      for {
+        _       <- cleanDb
+        two     <- TestLayers.seedTwoHouseholds(macA, macB)
+        xa      <- ZIO.service[Transactor[Task]]
+        pr      <- ZIO.service[ProfileRepo]
+        ar      <- ZIO.service[AlertRepo]
+        _       <- seedAdult(xa, two.hhA, "adultA") // deliberately NOT linked to profileA
+        _       <- pr.setPaused(two.profileA, true)
+        alertA  <- ar.createAccessRequest(
+          macA,
+          Some(two.profileA),
+          Hostname.unsafe("youtube.com"),
+          AccessRequestKind.Unpause,
+          None,
+          Instant.parse("2026-05-07T14:00:00Z"),
+        )
+        auth    <- makeAuth
+        token   <- login(auth, "adultA", two.password)
+        routes  <- makeAlertRoutes(auth)
+        (st, _) <- postJson(routes, s"/api/alerts/${alertA.value}/approve", Some(token), "")
+        pausedA <- sql"SELECT paused FROM profiles WHERE id=${two.profileA}"
+          .query[Boolean]
+          .unique
+          .transact(xa)
+        statusA <- sql"SELECT status FROM alerts WHERE id=${alertA.value}"
+          .query[String]
+          .unique
+          .transact(xa)
+      } yield
+      // 403, not 404: the alert IS in this caller's household — the tenancy boundary is not what
+      // refused them, so there is no existence to conceal. The profile link is.
+      assertTrue(st == Status.Forbidden) &&
+        // The side effect ran before the status transition, so a refusal leaves BOTH untouched.
+        assertTrue(pausedA) &&
+        assertTrue(statusA == "pending")
     },
   ) @@ TestAspect.sequential
 }
