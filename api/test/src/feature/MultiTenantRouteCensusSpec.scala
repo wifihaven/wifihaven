@@ -314,7 +314,7 @@ object MultiTenantRouteCensusSpec extends ZIOSpecDefault {
     "GET /api/profiles/{}"           -> Scoped,
     "PUT /api/profiles/{}"           -> Scoped,
     "PATCH /api/profiles/{}"         -> Scoped,
-    "DELETE /api/profiles/{}"        -> ScopedTracked(2565),
+    "DELETE /api/profiles/{}"        -> Scoped,
     "PUT /api/profiles/{}/schedules" -> Scoped,
     "GET /api/profiles/{}/users"     -> Scoped,
     "PUT /api/profiles/{}/users"     -> Scoped,
