@@ -667,7 +667,7 @@ trait DeviceRepo {
    * [[findByMacInHousehold]] — one query, one source of truth; V65's uq_devices_household_mac
    * guarantees ≤1 row per household so `.option` is safe. Defaults to `HouseholdId.Default` for the
    * single-household test call sites; the unauthenticated block-page callers pass
-   * `HouseholdId.Default` until per-request household derivation lands (#2109).
+   * `HouseholdId.Default` until per-request household derivation lands (#2322).
    */
   def findByMac(mac: MacAddress, household: HouseholdId = HouseholdId.Default): Task[Option[Device]]
 

@@ -90,8 +90,7 @@ object AlertRoutes {
                   // (V74/V75), and the old global findByMac threw on the 2-row match. This is the
                   // unauthenticated block-page access-request path (no household in scope), so it
                   // resolves against HouseholdId.Default until block-page household derivation lands
-                  // (#2322 — this said #2109, which is a closed, unrelated custom-domain issue; the
-                  // matching TODO on the insert side, Repos.scala, already points at #2322).
+                  // (#2322 — matches the insert-side TODO in Repos.scala).
                   device <- deviceRepo
                     .findByMac(cr.mac, HouseholdId.Default)
                     .mapError(ApiError.Db(_))
@@ -241,9 +240,9 @@ object AlertRoutes {
    *     reassignment is itself gated on `requireProfileAccess`, so a device never holds an
    *     out-of-household profile. `TODO(#2322)` could let them diverge — if it derives the
    *     block-page household for the STAMP without also rescoping the `findByMac` lookup that
-   *     supplies `profileId`, a shared MAC lands an hh-B alert holding an hh-1 profile. (Threading
-   *     one derived household into both keeps them in agreement; whoever implements #2322 should
-   *     pick that.) Pinned now so the mismatch stays refused either way.
+   *     supplies `profileId`, a shared MAC lands an hh-B alert holding an hh-1 profile. Threading
+   *     one derived household into both keeps them in agreement. Pinned now so the mismatch stays
+   *     refused either way.
    */
   private def applyApproveSideEffect(
       alert: Alert,
