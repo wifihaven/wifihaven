@@ -236,7 +236,10 @@ explain surface) before flipping the gate.
 
 ### Observability (§instrument-new-functionality)
 
-- `presence_ambient_hosts` gauge — size of the current learned set.
+- `presence_ambient_hosts` gauge — size of the current learned set. (Post-#2553
+  the thresholds are per household over one shared baseline, so the gauge is the
+  UNION across the households that learned on that tick; the 40-host figure
+  above is a single-household sample.)
 - `presence_ambient_spans_dropped_total` counter — spans dropped by the gate
   (bounded: no per-host/mac labels), the over-suppression watchdog: a
   sustained rise with flat screen-time means the learner is eating real

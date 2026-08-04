@@ -1291,9 +1291,13 @@ object AppMetrics {
   // AmbientLearnJob run. #2553: the baseline is one shared table but the
   // thresholds and window are per household, so the gauge reports the size of
   // the UNION — how many distinct hosts are ambient-gated for at least one
-  // household — and therefore grows with tenant count (`AmbientLearnJob`'s
-  // `setAmbientHosts` call site carries the rationale). Both unlabelled —
-  // per-host/mac labels would breach the cardinality firewall.
+  // household — over the households that learned successfully on that tick
+  // (a household `HouseholdTickIsolation` skipped contributes nothing, so a
+  // full-skip tick reads 0; `rollup_household_skipped_total` is the companion
+  // series). It therefore does not stay flat as tenants are added.
+  // `AmbientLearnJob`'s `setAmbientHosts` call site carries the rationale for
+  // union-over-sum. Both unlabelled — per-host/mac labels would breach the
+  // cardinality firewall.
 
   def recordAmbientSpansDropped(count: Int): UIO[Unit] =
     ZIO
