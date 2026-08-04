@@ -39,3 +39,16 @@ hosts:
   - vk.com # VKontakte (Russian consumer social network)
   # traffic-driven additions (#2503): Reddit media CDN companion apex
   - redditmedia.com # Reddit's own image/video/thumbnail CDN (sibling to redd.it/redditstatic.com)
+  # traffic-driven additions (#2599): 30-day prod recent-apexes sweep (27
+  # devices, 2026-08-04). whatsapp.net was the standout gap — WhatsApp's
+  # actual messaging/media protocol domain (api./media-cdn subdomains, 90MB
+  # / 1029 hits) was entirely absent from this list; the marketing site
+  # whatsapp.com was not observed in traffic so is not added here (add it if
+  # a future pass observes it). The rest are first-party sibling-CDN apexes
+  # of already-curated platforms, same pattern as redditmedia.com above.
+  - whatsapp.net # WhatsApp messaging/media protocol domain
+  - facebook.net # Facebook Connect/SDK CDN (sibling to fbcdn.net)
+  - tiktokcdn-us.com # TikTok's US CDN (sibling to tiktokcdn.com)
+  - tiktokw.us # TikTok's own analytics/SDK domain
+  - redditinc.com # Reddit Inc's own corporate/investor domain
+  - twitter.new # Twitter/X's official .new gTLD domain

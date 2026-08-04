@@ -393,3 +393,56 @@ hosts:
   - merequartz.com
   - getadmiral.com
   - inspectlet.com
+  # traffic-driven additions (#2599): observed but unblocked ads infra.
+  # Sourced from a 30-day prod recent-apexes sweep (27 devices, 2026-08-04).
+  # RTB/bidder name-pattern gaps (name is the function): bdlrtb.com,
+  # hoterbidder.com, starlyrtb.live, yourrtb.com — each confirmed via a
+  # tracking/bidder-shaped subdomain (track-use.*, track.*, tva*.*) rather
+  # than a named company. assemblyexchange.com ("Assembly Programmatic
+  # Exchange") and btrackhub.com (ads.btrackhub.com subdomain) are named
+  # exchange/tracker vendors. Verified-ownership adds: adlooxtracking.com
+  # (Adloox, ad verification), tritondigital.com (Triton Digital, iHeartMedia
+  # audio ad SSP), axon.ai (AppLovin's Axon ad platform — sibling apex of the
+  # already-curated applovin.com), shb-sync.com (cookie-sync pixel, 65%
+  # initiated by the already-curated lijit.com/Sonobi), rqtrk.eu (Roq.ad
+  # marketing/audience tracker), pointmediatracker.com (Bliss Point Media ad
+  # tracker), pmbmonetize.live + contextualadv.com (both sync with the
+  # already-curated openwebmp.com ad exchange), matheranalytics.com (Mather
+  # Analytics — behavioral/engagement tracking for ad monetization, cataloged
+  # as a tracker by Feroot/Ghostery WhoTracksMe), freshpaint-impression.com
+  # (Freshpaint's dedicated ad-impression-matching pixel; the parent
+  # freshpaint.io CDP product itself is NOT added — dual-use). Dual-use /
+  # wrong-category SKIPPED: hs-analytics.net (HubSpot — CRM/marketing SaaS,
+  # same skip class as hubspot.com), synchrony.com / synchronycredit.com /
+  # mysynchrony.com (Synchrony Bank, false positive on "sync" substring),
+  # siteimproveanalytics.com/.io (Siteimprove — web governance/accessibility
+  # SaaS), stageagent.com (theater resource site, false positive on "tag"
+  # substring), bounceexchange.com (on-site personalization tool, dual-use),
+  # revenuecat.com (mobile IAP SDK, false positive on "revenue" substring),
+  # stackexchange.com (Q&A network, false positive on "exchange" substring),
+  # mmvideocdn.com (confirmed Minute Media's video CDN — content-collateral,
+  # same skip class as minutemediaservices.com). HELD OUT as UNVERIFIED (no
+  # clear identity after a web search — do NOT re-classify from the name
+  # alone, verify next pass): desync.com, krautmtrk.com, powerad.ai,
+  # cimulate.ai, componecat.ai, conduit.ai, connectmachine.ai,
+  # directbooker.ai, duvo.ai, e-volution.ai, elixion.ai, ihawk.ai (confirmed
+  # NOT ad-tech — drone/asset-intelligence SaaS — but kept out of ai.yml too,
+  # it's enterprise B2B, not a consumer AI tool), joblobster.ai, mediayo.ai,
+  # wknd.ai, yegge.ai (confirmed NOT ad-tech — a personal blog/archive site).
+  # See evidence/ads-classification-2599.md.
+  - assemblyexchange.com
+  - adlooxtracking.com
+  - axon.ai
+  - bdlrtb.com
+  - btrackhub.com
+  - contextualadv.com
+  - freshpaint-impression.com
+  - hoterbidder.com
+  - matheranalytics.com
+  - pmbmonetize.live
+  - pointmediatracker.com
+  - rqtrk.eu
+  - shb-sync.com
+  - starlyrtb.live
+  - tritondigital.com
+  - yourrtb.com
