@@ -227,6 +227,7 @@ object MultiTenantIsolationSpec
       noopNotifier,
       clk,
       RateLimiter.allowAll,
+      BlockPageHousehold.defaultOnly,
     )
 
   private def makePolicyService =
@@ -1044,7 +1045,13 @@ object MultiTenantIsolationSpec
         ber <- ZIO.service[BlockEventRepo]
         rr  <- ZIO.service[RouterRepo]
         ps  <- makePolicyService
-        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
+        routes = RouterRoutes.routes(
+          rr,
+          ps,
+          RouterAuthLive(rr),
+          ber,
+          TestLayers.TestBlockPageSecret,
+        )
         (_, bodyA) <- getJson(routes, "/api/router/policy", two.tokenA)
         snapA <- ZIO.fromEither(bodyA.fromJson[PolicySnapshot]).mapError(new RuntimeException(_))
       } yield assertTrue(snapA.devices.contains(macA), !snapA.devices.contains(macB)) &&
@@ -1177,7 +1184,13 @@ object MultiTenantIsolationSpec
         _   <-
           sql"INSERT INTO devices(mac,name,profile_id,household_id) VALUES ($macM,'sharedB',${two.profileB},${two.hhB})".update.run
             .transact(xa)
-        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
+        routes = RouterRoutes.routes(
+          rr,
+          ps,
+          RouterAuthLive(rr),
+          ber,
+          TestLayers.TestBlockPageSecret,
+        )
         (_, bodyA) <- getJson(routes, "/api/router/policy", two.tokenA)
         (_, bodyB) <- getJson(routes, "/api/router/policy", two.tokenB)
         snapA <- ZIO.fromEither(bodyA.fromJson[PolicySnapshot]).mapError(new RuntimeException(_))
@@ -1384,7 +1397,13 @@ object MultiTenantIsolationSpec
         ber <- ZIO.service[BlockEventRepo]
         rr  <- ZIO.service[RouterRepo]
         ps  <- makePolicyService
-        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
+        routes = RouterRoutes.routes(
+          rr,
+          ps,
+          RouterAuthLive(rr),
+          ber,
+          TestLayers.TestBlockPageSecret,
+        )
         (sA, bodyA) <- getJson(routes, "/api/blocklists/kidsafe", two.tokenA)
         (sB, bodyB) <- getJson(routes, "/api/blocklists/kidsafe", two.tokenB)
       } yield assertTrue(sA == Status.Ok, sB == Status.Ok) &&
@@ -2022,6 +2041,7 @@ object MultiTenantIsolationSpec
         xa       <- ZIO.service[Transactor[Task]]
         ar       <- ZIO.service[AlertRepo]
         alertB   <- ar.createAccessRequest(
+          two.hhB,
           macB,
           Some(two.profileB),
           Hostname.unsafe("youtube.com"),
@@ -2053,6 +2073,7 @@ object MultiTenantIsolationSpec
         xa      <- ZIO.service[Transactor[Task]]
         ar      <- ZIO.service[AlertRepo]
         alertB  <- ar.createAccessRequest(
+          two.hhB,
           macB,
           Some(two.profileB),
           Hostname.unsafe("youtube.com"),
@@ -2086,6 +2107,7 @@ object MultiTenantIsolationSpec
         ar      <- ZIO.service[AlertRepo]
         _       <- pr.setPaused(two.profileA, true)
         alertA  <- ar.createAccessRequest(
+          two.hhA,
           macA,
           Some(two.profileA),
           Hostname.unsafe("youtube.com"),
@@ -2129,6 +2151,7 @@ object MultiTenantIsolationSpec
         _       <- up.addLink(adultId, two.profileA)
         _       <- pr.setPaused(two.profileA, true)
         alertA  <- ar.createAccessRequest(
+          two.hhA,
           macA,
           Some(two.profileA),
           Hostname.unsafe("youtube.com"),
@@ -2156,6 +2179,7 @@ object MultiTenantIsolationSpec
         _       <- seedAdult(xa, two.hhA, "adultA") // deliberately NOT linked to profileA
         _       <- pr.setPaused(two.profileA, true)
         alertA  <- ar.createAccessRequest(
+          two.hhA,
           macA,
           Some(two.profileA),
           Hostname.unsafe("youtube.com"),
@@ -2190,13 +2214,14 @@ object MultiTenantIsolationSpec
       // `requireProfileAccess` (which composes `requireProfileInHousehold`) stands between the
       // approval and hh-B's profile.
       //
-      // They cannot actually disagree TODAY: `createAccessRequest` reads `profileId` from
-      // `findByMac(mac, HouseholdId.Default)` and stamps `household_id` with the lowest matching
-      // household, and device→profile reassignment is itself household-gated. So this state is
-      // built directly by raw SQL rather than driven, and the pin is defense in depth against
-      // `TODO(#2322)` — deriving the block-page household from the requesting router, which COULD
-      // let the two diverge for a shared MAC depending on how it lands. It still fails without the
-      // guard.
+      // They cannot actually disagree: post-#2322 the intake resolves ONE household — from the
+      // redirect's block-page token, or `findOwningHousehold` when the agent hasn't got one yet —
+      // and passes it to both the `findByMac` that supplies `profileId` and the
+      // `createAccessRequest` that stamps `household_id`; device→profile reassignment is itself
+      // household-gated. That is exactly the divergence #2322 could have introduced had it derived
+      // the household for the stamp alone, so this state is built directly by raw SQL rather than
+      // driven. The pin stays as defense in depth: it still fails without the guard, and it is what
+      // would catch a future path that reintroduces the split.
       //
       // 404 here, not the 403 the unlinked-adult pin asserts: this refusal IS a tenancy boundary.
       for {
@@ -2205,6 +2230,7 @@ object MultiTenantIsolationSpec
         xa     <- ZIO.service[Transactor[Task]]
         ar     <- ZIO.service[AlertRepo]
         alertA <- ar.createAccessRequest(
+          two.hhA,
           macA,
           Some(two.profileA),
           Hostname.unsafe("youtube.com"),

@@ -993,7 +993,13 @@ object RouterIngestSpec
         // 3. Router (RouterAuth.sha256Hex == PolicyService.hashToken, so the
         //    same bearer authenticates against both ingest and policy routes).
         (id, tk) <- seedRouter(rRepo)
-        policy = RouterRoutes.routes(rRepo, ps, RouterAuthLive(rRepo), ber)
+        policy = RouterRoutes.routes(
+          rRepo,
+          ps,
+          RouterAuthLive(rRepo),
+          ber,
+          TestLayers.TestBlockPageSecret,
+        )
         // 4. POST /api/router/usage with 90 active seconds. Bytes are well above the
         //    default heartbeat filter threshold (#789: 10 KB) so the row isn't dropped.
         rec    = UsageRecord(

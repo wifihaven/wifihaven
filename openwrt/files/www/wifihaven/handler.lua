@@ -34,7 +34,16 @@ function handle_request(env)
   local api_url = read_file(paths.block_page_api_url)
   if api_url then api_url = api_url:gsub("%s+$", "") end
 
-  local body = block_page.render_html(api_url, host, mac)
+  -- #2566/#2569/#2322: the router-bound block-page token, written by the agent
+  -- after it fetches GET /api/router/block-page-token. Carried on the redirect
+  -- as &bpt= so the unauthenticated /api/blocked + /api/access-requests
+  -- endpoints resolve THIS router's household instead of defaulting to
+  -- household 1. Absent (nil) until the agent's first successful fetch, and on
+  -- an API too old to serve the endpoint — the redirect simply omits it.
+  local bpt = read_file(paths.block_page_token)
+  if bpt then bpt = bpt:gsub("%s+$", "") end
+
+  local body = block_page.render_html(api_url, host, mac, bpt)
 
   uhttpd.send("Status: 200 OK\r\n")
   uhttpd.send("Content-Type: text/html; charset=utf-8\r\n")

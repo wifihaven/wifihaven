@@ -1085,13 +1085,52 @@ nftables `dnat` on TCP/80 to `127.0.0.1:8081` (uhttpd) AND on TCP/443 to
 `127.0.0.1:8443` (uhttpd with a self-signed cert). The lua handler at
 `/www/wifihaven/handler.lua` reads the requested host from the
 `HTTP_HOST` env and the client MAC from the kernel ARP table keyed by
-`REMOTE_ADDR`. It renders the block page directly with just `?mac=&host=` —
+`REMOTE_ADDR`. It renders the block page directly with `?mac=&host=&bpt=` —
 no external 302, and (post-#679/#1617/#1618) no per-MAC reason lookup at
-all here: the handler no longer reads any agent-written IPC file under
-`/var/run/wifihaven/`, and the SPA derives the canonical block reason
-separately via `GET /api/blocked` (which re-runs `PolicyService.decide`).
+all here: the SPA derives the canonical block reason separately via
+`GET /api/blocked` (which re-runs `PolicyService.decide`).
 This still works when the API is unreachable because the page itself
 renders locally; only the reason text depends on the API being reachable.
+
+**`bpt` — the block-page household token (#2566/#2569/#2322).** `mac` and
+`host` say *which device asked for what*; they cannot say *which household*,
+because a MAC may exist in several households (V74/V75). Without a household
+the two unauthenticated block-page endpoints (`GET /api/blocked` and
+`POST /api/access-requests`) resolved everything against household 1 — a
+cross-household disclosure of that household's profile names and live
+screen-time, and the wrong answer for every other household.
+
+`bpt` is an opaque `<routerId>.<HMAC-SHA256(jwtSecret, "wifihaven-block-page-v1:" + routerId)>`
+minted by the router-authenticated `GET /api/router/block-page-token`. The
+agent fetches it at startup (retrying on its policy tick), publishes it to
+`/var/run/wifihaven/block_page_token`, and the handler stamps it onto the
+redirect. The API verifies the HMAC, then reads the household **live** from
+the `routers` row — so moving a router between households re-points its token
+and deleting the router revokes it. No expiry, no new secret, no schema change.
+
+Two properties worth stating plainly:
+
+- **It is not authentication.** It authorizes exactly what any client already
+  on that household's LAN can do: read a block-page reason and today's
+  minutes for a MAC, and file an access request. `POST /api/access-requests`
+  keeps its per-source-IP limiter (#2081); `GET /api/blocked` has two buckets of
+  its own — per source IP, which is the MAC-enumeration bound, and per
+  (source IP, MAC), so one device cannot exhaust a NATed household's budget.
+- **Its absence is not an error, and the two endpoints fall back differently.**
+  The router↔API wire is additive and the two deploy independently, so an agent
+  that predates the token still redirects without one. `GET /api/blocked` then
+  answers from household 1 — exactly what it did before, and the residual
+  #2569 disclosure, which is what the per-source-IP bucket above bounds.
+  `POST /api/access-requests` instead falls back to the device row's own
+  household (`DeviceRepo.findOwningHousehold`), because *that* is what it did
+  before; defaulting it to household 1 would reject every other household's
+  intake, since their MACs are absent from household 1. Both fallbacks are
+  metered (`block_page_household_total{outcome}`), not silent — `absent` should
+  trend to zero as the fleet rolls forward.
+
+Per-household block-page hosting from the edge (#2109) remains the longer-term
+answer for custom domains; it is not a prerequisite for correct household
+derivation, which this token already provides.
 
 #### HTTPS variant (#383)
 

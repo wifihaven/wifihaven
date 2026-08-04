@@ -61,6 +61,7 @@ object NotifyEmailSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres 
     for {
       alertRepo <- ZIO.service[AlertRepo]
       id        <- alertRepo.createAccessRequest(
+        HouseholdId.Default,
         m,
         pid,
         host,
@@ -114,6 +115,7 @@ object NotifyEmailSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres 
         hsRepo    <- ZIO.service[HouseholdSettingsRepo]
         alertRepo <- ZIO.service[AlertRepo]
         id        <- alertRepo.createAccessRequest(
+          HouseholdId.Default,
           mac,
           Some(kidsPid),
           host,

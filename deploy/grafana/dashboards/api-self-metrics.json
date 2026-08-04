@@ -876,6 +876,63 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "title": "Block-page household derivation (#2566/#2569/#2322)",
+      "description": "How the two unauthenticated block-page endpoints (GET /api/blocked, POST /api/access-requests) resolved a household. `token` is the healthy path — the router-bound block-page token on the redirect verified and named a live router. `absent` means the agent isn't stamping the token yet: expected while the fleet rolls an agent forward, and it should trend to zero. On that path GET /api/blocked answers from household 1 (the pre-fix behaviour, hence the #2569 disclosure) while POST /api/access-requests falls back to the device row's own household, which is what IT did pre-fix — the two fall back differently on purpose, see BlockPageHousehold. `invalid` = a token that doesn't verify, so either a JWT-secret rotation (the whole fleet moves here at once until agents re-fetch) or someone probing. `unknown_router` = verified, but the router row is gone (deleted / re-enrolled). `error` = the lookup itself failed. Watch the `token` share climb toward 100% after an agent rollout; a standing `invalid` floor is worth chasing.",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 64
+      },
+      "id": 35,
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "showPoints": "never",
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (outcome) (rate(block_page_household_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{outcome}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",

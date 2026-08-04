@@ -11,6 +11,15 @@ local M = {}
 -- GET /api/blocked, so the on-disk IPC has no readers left.
 M.block_page_api_url  = "/var/run/wifihaven/api_url"
 
+-- Block-page household token (#2566/#2569/#2322): the agent fetches an opaque,
+-- API-signed, router-bound token from GET /api/router/block-page-token and
+-- writes it here; the uhttpd lua handler reads it on each request and appends it
+-- to the SPA redirect as `&bpt=`. It is what lets the unauthenticated
+-- GET /api/blocked and POST /api/access-requests resolve THIS router's household
+-- instead of guessing household 1. Bounded: a single short line, truncated and
+-- rewritten (never appended to), so it needs no rotation belt.
+M.block_page_token    = "/var/run/wifihaven/block_page_token"
+
 -- ip → hostname cache (#259): wifihaven-dns-tail writes, wifihaven-agent reads.
 M.dns_cache = "/tmp/wifihaven-dns-cache.txt"
 

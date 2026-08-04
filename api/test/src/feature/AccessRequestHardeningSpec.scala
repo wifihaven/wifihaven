@@ -77,6 +77,7 @@ object AccessRequestHardeningSpec
       noopNotifier,
       clock,
       rateLimiter,
+      BlockPageHousehold.defaultOnly,
     )
 
   private def postCreateAR(

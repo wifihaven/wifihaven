@@ -45,6 +45,22 @@ object AlertRoutes {
    */
   val MaxNoteLength: Int = 500
 
+  /**
+   * #2566: the unauthenticated intake's response body.
+   *
+   * `alert.host`/`alert.requestKind` are `Option` on the stored row (a `new_device` alert has
+   * neither), but an access_request always does — and we hold the request that produced it, so we
+   * fall back to the caller's OWN values rather than widening the receipt to Options. Nothing here
+   * is household data the caller didn't already send us, except the row id and status.
+   */
+  private def receipt(alert: Alert, cr: CreateAccessRequest): AccessRequestReceipt =
+    AccessRequestReceipt(
+      id = alert.id,
+      status = alert.status,
+      kind = alert.requestKind.getOrElse(cr.kind),
+      host = alert.host.getOrElse(cr.host),
+    )
+
   def routes(
       auth: AuthService,
       alertRepo: AlertRepo,
@@ -59,6 +75,9 @@ object AlertRoutes {
       notifier: Notifier,
       clock: SharedClock,
       rateLimiter: RateLimiter,
+      // #2566/#2322: the household derivation seam, shared with GET /api/blocked — the two halves
+      // of the same block page must resolve the household the same way.
+      blockPageHousehold: BlockPageHousehold,
   ): Routes[Any, Response] =
     Routes(
       // ── Public: kid posts an access-request from the block page ─────────
@@ -77,26 +96,58 @@ object AlertRoutes {
               .fromEither(body.fromJson[CreateAccessRequest])
               .mapError(ApiError.DecodeFailure(_))
             cr = cr0.copy(note = cr0.note.map(_.take(MaxNoteLength)))
-            now <- clock.instant
+            // #2566/#2322: the household this request belongs to, taken from the router-bound
+            // block-page token the redirect carried. Everything below — the debounce probe, the
+            // device lookup, the insert — is scoped to it. Before this, the debounce was global
+            // (household A's pending row both suppressed and was DISCLOSED to household B) and the
+            // insert picked a household in-SQL with `ORDER BY d.household_id LIMIT 1`, which is
+            // arbitrary once a MAC exists in two households.
+            //
+            // With NO verifiable token — a pre-token agent, for the whole API-ahead-of-agent
+            // window — we must reproduce what THIS endpoint did before, which is not
+            // HouseholdId.Default: it was that same device-derived pick, now named
+            // `findOwningHousehold`. Defaulting here instead would reject every non-default
+            // household's intake (their MACs are absent from household 1), turning the
+            // compatibility fallback into an outage for exactly the fleet it exists to protect.
+            resolution <- blockPageHousehold.resolve(cr.bpt)
+            household  <-
+              if resolution.fromToken then ZIO.succeed(Some(resolution.household))
+              else deviceRepo.findOwningHousehold(cr.mac).mapError(ApiError.Db(_))
+            // A MAC no household owns has no device row for V79's alerts_household_mac_fkey to
+            // reference, so there is nothing to file against under any household.
+            hh         <- ZIO
+              .fromOption(household)
+              .orElseFail(ApiError.NotFound("Device is not enrolled in this household"))
+            now        <- clock.instant
             since = now.minusSeconds(AccessRequestDebounceSeconds)
             existing <- alertRepo
-              .findRecentAccessRequest(cr.mac, cr.host, since)
+              .findRecentAccessRequest(hh, cr.mac, cr.host, since)
               .mapError(ApiError.Db(_))
             resp     <- existing match {
-              case Some(a) => ZIO.succeed(Response.json(a.toJson))
+              // #2566: the debounce hit answers with the SAME narrow receipt the create path
+              // returns — never the stored row, which carries deviceName / profileName / the
+              // child's note.
+              case Some(a) => ZIO.succeed(Response.json(receipt(a, cr).toJson))
               case None    =>
                 for {
                   // #2312: household-scoped lookup — the same MAC can exist in two households
-                  // (V74/V75), and the old global findByMac threw on the 2-row match. This is the
-                  // unauthenticated block-page access-request path (no household in scope), so it
-                  // resolves against HouseholdId.Default until block-page household derivation lands
-                  // (#2322 — matches the insert-side TODO in Repos.scala).
+                  // (V74/V75), and the old global findByMac threw on the 2-row match.
                   device <- deviceRepo
-                    .findByMac(cr.mac, HouseholdId.Default)
+                    .findByMac(cr.mac, hh)
                     .mapError(ApiError.Db(_))
+                  // #2322: `alerts(household_id, mac)` is an FK onto `devices` (V79
+                  // alerts_household_mac_fkey), so an insert for a MAC this household doesn't own
+                  // is a constraint violation. On the TOKEN path that pairing is no longer true by
+                  // construction — the household comes from the router, not from the device row —
+                  // so check it and return a typed 404 rather than letting Postgres surface an
+                  // opaque 503. On the fallback path `hh` came FROM a device row, so this holds by
+                  // construction and the guard never fires.
+                  _      <- ZIO
+                    .fail(ApiError.NotFound("Device is not enrolled in this household"))
+                    .when(device.isEmpty)
                   pid = device.flatMap(_.profileId)
                   id    <- alertRepo
-                    .createAccessRequest(cr.mac, pid, cr.host, cr.kind, cr.note, now)
+                    .createAccessRequest(hh, cr.mac, pid, cr.host, cr.kind, cr.note, now)
                     .mapError(ApiError.Db(_))
                   full  <- alertRepo
                     .findById(id)
@@ -104,8 +155,10 @@ object AlertRoutes {
                   alert <- ZIO
                     .fromOption(full)
                     .orElseFail(ApiError.Internal("vanished"))
+                  // The NOTIFIER still gets the full row — it emails the household's own admin,
+                  // which is a different audience from the unauthenticated HTTP caller below.
                   _     <- notifier.alertCreated(alert).forkDaemon
-                } yield Response.json(alert.toJson).status(Status.Created)
+                } yield Response.json(receipt(alert, cr).toJson).status(Status.Created)
             }
           } yield resp
           handle.mapError(ErrorMapper.errorToResponse)
@@ -234,15 +287,15 @@ object AlertRoutes {
    *     via `POST /api/time/extend`, which gates on this same primitive.
    *   - The profile's HOUSEHOLD (via the composed [[requireProfileInHousehold]]) — defense in
    *     depth. `alerts.household_id` and `alerts.profile_id` are stamped independently at insert,
-   *     but they cannot currently disagree: `createAccessRequest` takes `profileId` from
-   *     `findByMac(mac, HouseholdId.Default)` and stamps `household_id` with the LOWEST matching
-   *     household, so either both resolve to household 1 or `profileId` is NULL; and device→profile
-   *     reassignment is itself gated on `requireProfileAccess`, so a device never holds an
-   *     out-of-household profile. `TODO(#2322)` could let them diverge — if it derives the
-   *     block-page household for the STAMP without also rescoping the `findByMac` lookup that
-   *     supplies `profileId`, a shared MAC lands an hh-B alert holding an hh-1 profile. Threading
-   *     one derived household into both keeps them in agreement. Pinned now so the mismatch stays
-   *     refused either way.
+   *     but they cannot disagree: the intake resolves ONE household (#2322 — from the redirect's
+   *     block-page token, or `findOwningHousehold` on the pre-token fallback) and passes it to both
+   *     the `findByMac` that supplies `profileId` and the `createAccessRequest` that stamps
+   *     `household_id`; and device→profile reassignment is itself gated on `requireProfileAccess`,
+   *     so a device never holds an out-of-household profile. The divergence #2322 was once expected
+   *     to introduce — deriving the household for the STAMP while leaving the `findByMac` lookup at
+   *     `HouseholdId.Default`, landing an hh-B alert holding an hh-1 profile — is what threading
+   *     one household through both avoids. This guard is pinned anyway, so the mismatch stays
+   *     refused if a future path ever reintroduces it.
    */
   private def applyApproveSideEffect(
       alert: Alert,

@@ -130,7 +130,13 @@ object RouterHouseholdBindingSpec
         adminLogin <- auth.login("beta/betaadmin", "pw")
         en         <- ZIO.service[EntitlementsRepo]
         adminRoutes = AdminRouterRoutes.routes(auth, rr, ur, en)
-        agentRoutes = RouterRoutes.routes(rr, null, RouterAuthLive(rr), ber)
+        agentRoutes = RouterRoutes.routes(
+          rr,
+          null,
+          RouterAuthLive(rr),
+          ber,
+          TestLayers.TestBlockPageSecret,
+        )
         created <- createRouter(adminRoutes, adminLogin.token.value, "beta-gw")
         reg     <- register(agentRoutes, created.enrollmentToken)
         // The persisted router carries the admin's household...
@@ -154,7 +160,13 @@ object RouterHouseholdBindingSpec
         et = EnrollmentToken.unsafe("et_" + "a" * 32)
         _   <- rr.create("legacy-gw", PolicyService.hashToken(et.value))
         ber <- ZIO.service[BlockEventRepo]
-        agentRoutes = RouterRoutes.routes(rr, null, RouterAuthLive(rr), ber)
+        agentRoutes = RouterRoutes.routes(
+          rr,
+          null,
+          RouterAuthLive(rr),
+          ber,
+          TestLayers.TestBlockPageSecret,
+        )
         reg    <- register(agentRoutes, et)
         authed <- RouterAuthLive(rr).authenticate(
           Request

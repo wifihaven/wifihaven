@@ -1,5 +1,6 @@
 package wifihaven.api.routes
 
+import wifihaven.api.auth.RateLimiter
 import wifihaven.api.db.*
 import wifihaven.api.policy.*
 import wifihaven.shared.*
@@ -22,6 +23,16 @@ import zio.json.*
  *   - `profileName`: included so the page can say e.g. "for Octavius" — already visible to anyone
  *     on the household LAN via the router itself; no new info-leak risk.
  *
+ * #2569: "anyone on the household LAN" was doing a lot of work in that last line — the route is
+ * reachable from anywhere that can reach the API, and it used to resolve everything against
+ * [[HouseholdId.Default]], so a MAC sweep read household 1's profile names and live screen-time.
+ * The household now comes from the router-bound block-page token on the redirect
+ * ([[BlockPageHousehold]]), and the route is rate-limited by two buckets over the same
+ * `RateLimiterLive` primitive `POST /api/access-requests` has used since #2081 — per source IP (the
+ * MAC-enumeration bound, which is what caps the residual disclosure on the token-absent fallback
+ * path) and per (source IP, MAC) (so one device cannot exhaust a NATed household's budget).
+ * Separate instances with their own budgets, NOT the #2081 limiter itself.
+ *
  * Granular details that the design doc explicitly excludes (schedule end time, per-site label,
  * daily-cap minute counts) are NOT returned. The response shape is identical for an unknown MAC and
  * an unblocked-but-known MAC: `{blocked: false, ...}` so the endpoint doesn't double as a
@@ -36,6 +47,29 @@ object BlockedRoutes {
       timeStatusService: TimeStatusService,
       householdSettingsRepo: HouseholdSettingsRepo,
       clock: Clock,
+      // #2569: the household derivation seam, shared with POST /api/access-requests.
+      blockPageHousehold: BlockPageHousehold,
+      // #2569: TWO buckets over the same RateLimiterLive primitive POST /api/access-requests uses
+      // (#2081) — separate instances with their own budgets, not that limiter. The route is
+      // unauthenticated and answers per-MAC questions, so an unlimited one is a MAC-enumeration
+      // oracle.
+      //
+      //   - perSource, keyed by IP alone, IS the enumeration bound: a sweep varies the MAC by
+      //     definition, so a per-device bucket hands it a fresh budget per MAC and bounds nothing.
+      //     This route's `Unauthenticated` census verdict rests on this bucket existing.
+      //   - perDevice, keyed (IP, MAC), bounds one device's share so a household — which NATs
+      //     behind ONE address — cannot have one busy device 429 the rest off their block page.
+      //
+      // Both are acquired for every request; budgets and their derivation live at the construction
+      // site (HttpRoutes), so there is one place to change them.
+      //
+      // Over the limit we answer 429, NOT the `blocked=false` body. Both are "no information",
+      // but `blocked=false` renders as "This page is not blocked for this device" — a confident
+      // wrong answer on a page the kid reached precisely BECAUSE it was blocked, which is the
+      // confusing dead-end the block page exists to prevent. A 429 lands in the SPA's existing
+      // error branch, which renders the neutral "Access blocked." copy.
+      perDeviceLimiter: RateLimiter,
+      perSourceLimiter: RateLimiter,
   ): Routes[Any, Response] = {
     val notBlocked = BlockedInfoResponse(blocked = false, None, None, None)
 
@@ -44,6 +78,7 @@ object BlockedRoutes {
         handler { (req: Request) =>
           val macRaw  = req.url.queryParam("mac").getOrElse("")
           val hostRaw = req.url.queryParam("host").getOrElse("")
+          val bpt     = req.url.queryParam("bpt")
           val parsed  = for {
             mac  <- MacAddress.parse(macRaw)
             host <- Hostname.parse(hostRaw)
@@ -53,19 +88,44 @@ object BlockedRoutes {
             case Left(_)            =>
               ZIO.succeed(Response.json(notBlocked.toJson))
             case Right((mac, host)) =>
-              resolve(
-                policy,
-                deviceRepo,
-                profileRepo,
-                blocklistRepo,
-                timeStatusService,
-                householdSettingsRepo,
-                clock,
-                mac,
-                host,
-              )
-                .map(r => Response.json(r.toJson))
-                .catchAll(_ => ZIO.succeed(Response.json(notBlocked.toJson)))
+              // Acquire BOTH, unconditionally. Written as a for-comprehension rather than
+              // `a && b` so neither acquire is short-circuited: every request must be counted
+              // against both buckets, or a caller could sit under one by exhausting the other.
+              (for {
+                sourceOk <- perSourceLimiter.tryAcquire(s"blocked:${clientIp(req)}")
+                deviceOk <- perDeviceLimiter.tryAcquire(s"blocked:${clientIp(req)}:${mac.value}")
+              } yield sourceOk && deviceOk)
+                .flatMap {
+                  case false =>
+                    ZIO.succeed(
+                      ErrorMapper.errorToResponse(
+                        ApiError.RateLimited("Too many requests; try again later"),
+                      ),
+                    )
+                  case true  =>
+                    blockPageHousehold
+                      .resolve(bpt)
+                      // #2569: unlike the access-request intake, HouseholdId.Default IS this route's
+                      // pre-change behaviour on the fallback path — it resolved every read against
+                      // Default unconditionally — so taking `.household` here preserves it exactly.
+                      .map(_.household)
+                      .flatMap { household =>
+                        resolve(
+                          policy,
+                          deviceRepo,
+                          profileRepo,
+                          blocklistRepo,
+                          timeStatusService,
+                          householdSettingsRepo,
+                          clock,
+                          household,
+                          mac,
+                          host,
+                        )
+                      }
+                      .map(r => Response.json(r.toJson))
+                      .catchAll(_ => ZIO.succeed(Response.json(notBlocked.toJson)))
+                }
           }
         },
     )
@@ -79,21 +139,18 @@ object BlockedRoutes {
       timeStatusService: TimeStatusService,
       householdSettingsRepo: HouseholdSettingsRepo,
       clock: Clock,
+      // #2569: derived once by the caller from the redirect's block-page token, then threaded
+      // through EVERY read below. One household for the whole answer — a mixed derivation is how
+      // household 1's profile name ended up next to household N's decision.
+      household: HouseholdId,
       mac: MacAddress,
       host: Hostname,
   ): Task[BlockedInfoResponse] =
     for {
-      // #2107: the block page is unauthenticated (reached via HTTP DNAT with only ?mac=&host=), so
-      // it carries no router token and thus no household. Single-household today: decide against
-      // HouseholdId.Default. Resolving the household for this READ path is #2569, whose fix shape
-      // includes serving the block page from a per-household host/edge (the #2109 custom-domain
-      // concern) — not this read-scoping change.
-      decision    <- policy.decide(HouseholdId.Default, mac.value, host.value)
+      decision    <- policy.decide(household, mac.value, host.value)
       // #2312: household-scoped lookup — the same MAC can exist in two households (V74/V75), and the
-      // old global findByMac threw on the 2-row match. Same HouseholdId.Default as `decide` above
-      // until per-request block-page household derivation lands (#2569 — the READ-path sibling of
-      // #2322, which covers the access-request write path on the same page).
-      device      <- deviceRepo.findByMac(mac, HouseholdId.Default)
+      // old global findByMac threw on the 2-row match.
+      device      <- deviceRepo.findByMac(mac, household)
       profileOpt  <- device.flatMap(_.profileId) match {
         case Some(pid) => profileRepo.findById(pid)
         case None      => ZIO.succeed(None)
@@ -106,14 +163,11 @@ object BlockedRoutes {
         case Some(p) =>
           for {
             now      <- clock.instant
-            // #2313: the block page has no household context on the wire (the router redirect carries
-            // only ?mac=&host=), so it reads the default household — the same household this handler's
-            // `policy.decide(HouseholdId.Default, …)` above already uses. Household-aware block-page
-            // resolution is a separate concern (see AGENTS.md §1615/§1617). #2533: the household is
-            // now NAMED on the settings read too, rather than riding an unscoped `get` that happened
-            // to mean `id=1` — an explicit `HouseholdId.Default`, not an unlabelled default.
-            settings <- householdSettingsRepo.getForHousehold(HouseholdId.Default)
-            ds       <- timeStatusService.todaysState(HouseholdId.Default, now, settings, p.id)
+            // #2313/#2533/#2569: the settings row and today's state are read for the SAME household
+            // the decision above was made against — the redirect's block-page token, not a default.
+            // A kid's local midnight and their minute counts both come from their own household.
+            settings <- householdSettingsRepo.getForHousehold(household)
+            ds       <- timeStatusService.todaysState(household, now, settings, p.id)
           } yield ds
       }
       reasonPair  <-

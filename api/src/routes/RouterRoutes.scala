@@ -33,9 +33,12 @@ object RouterRoutes {
       policy: PolicyService,
       routerAuth: RouterAuth,
       blockEventRepo: BlockEventRepo,
+      // #2566/#2569/#2322: HMAC secret for the block-page token minted below. The API's existing
+      // JWT secret, domain-separated by BlockPageToken — no new secret to provision.
+      blockPageSecret: String,
   ): Routes[Any, Response] =
     Routes(
-      Method.POST / "api" / "router" / "register"      ->
+      Method.POST / "api" / "router" / "register"        ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
             body <- req.body.asString.orElseFail(ApiError.BadRequest(""))
@@ -59,7 +62,7 @@ object RouterRoutes {
           } yield Response.json(RegisterRouterResponse(router.id, routerToken).toJson)
           handle.mapError(ErrorMapper.errorToResponse)
         },
-      Method.GET / "api" / "router" / "policy"         ->
+      Method.GET / "api" / "router" / "policy"           ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
             router <- routerAuth.authenticate(req)
@@ -107,7 +110,26 @@ object RouterRoutes {
           } yield resp
           handle.mapError(ErrorMapper.errorToResponse)
         },
-      Method.GET / "api" / "blocklists" / string("id") ->
+      // #2566/#2569/#2322: mint this router's block-page token. The agent fetches it on startup
+      // (retrying on its policy tick until it lands) and stamps it onto the HTTP/80 block-page
+      // redirect, which is what finally gives the unauthenticated block-page endpoints a household.
+      //
+      // Router-authenticated like the rest of `/api/router/*`, and the router can only ever mint
+      // its OWN token — the id comes from the authenticated record, never from the request.
+      Method.GET / "api" / "router" / "block-page-token" ->
+        handler { (req: Request) =>
+          val handle: ZIO[Any, ApiError, Response] = routerAuth
+            .authenticate(req)
+            .map { router =>
+              Response.json(
+                BlockPageTokenResponse(
+                  wifihaven.api.auth.BlockPageToken.mint(blockPageSecret, router.id),
+                ).toJson,
+              )
+            }
+          handle.mapError(ErrorMapper.errorToResponse)
+        },
+      Method.GET / "api" / "blocklists" / string("id")   ->
         handler { (id: String, req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
             router <- routerAuth.authenticate(req)
@@ -145,7 +167,7 @@ object RouterRoutes {
           } yield resp
           handle.mapError(ErrorMapper.errorToResponse)
         },
-      Method.POST / "api" / "router" / "decision"      ->
+      Method.POST / "api" / "router" / "decision"        ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
             router <- routerAuth.authenticate(req)

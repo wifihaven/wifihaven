@@ -159,8 +159,11 @@ object MultiTenantRouteCensusSpec extends ZIOSpecDefault {
     // ── AlertRoutes ────────────────────────────────────────────────────────────────────────────
     "GET /api/alerts"             -> Scoped,
     "POST /api/access-requests"   -> Unauthenticated(
-      "block-page intake; household derived in-SQL from the device row — arbitrary for a shared MAC (#2322), " +
-        "and the debounce read is unscoped (#2566)",
+      "block-page intake; household now derived from the router-bound block-page token on the redirect, " +
+        "and the debounce read is scoped to it (#2566/#2322). Still Unauthenticated, not Scoped: with no " +
+        "verifiable token (a pre-token agent) it falls back to DeviceRepo.findOwningHousehold — the " +
+        "pre-#2322 device-derived pick, still arbitrary for a shared MAC — so the tenancy key is only as " +
+        "strong as the token being present",
     ),
     // #2564 fixed: both now compose `requireAlertInHousehold` first.
     "POST /api/alerts/{}/approve" -> Scoped,
@@ -209,7 +212,11 @@ object MultiTenantRouteCensusSpec extends ZIOSpecDefault {
 
     // ── BlockedRoutes ──────────────────────────────────────────────────────────────────────────
     "GET /api/blocked" -> Unauthenticated(
-      "block page; hardcodes HouseholdId.Default — discloses hh1 state and is wrong elsewhere (#2569)",
+      "block page; household from the router-bound block-page token on the redirect (#2569). Still " +
+        "Unauthenticated, not Scoped: with no verifiable token it falls back to HouseholdId.Default — " +
+        "its pre-#2569 behaviour, and the residual hh1 disclosure. What bounds that disclosure is " +
+        "the PER-SOURCE-IP bucket on the route: a MAC sweep varies the MAC by definition, so the " +
+        "sibling per-(source IP, MAC) bucket bounds one device's share but not an enumeration",
     ),
 
     // ── DashboardNowRoutes ─────────────────────────────────────────────────────────────────────
@@ -276,22 +283,26 @@ object MultiTenantRouteCensusSpec extends ZIOSpecDefault {
     ),
 
     // ── Router plane ───────────────────────────────────────────────────────────────────────────
-    "POST /api/router/usage"    -> RouterToken(
+    "POST /api/router/usage"           -> RouterToken(
       "household = router.householdId, threaded into every write",
     ),
-    "POST /api/router/events"   -> RouterToken(
+    "POST /api/router/events"          -> RouterToken(
       "household = router.householdId, threaded into every write",
     ),
-    "POST /api/router/metrics"  -> RouterToken("router-scoped metrics ingest"),
-    "POST /api/router/register" -> Unauthenticated(
+    "POST /api/router/metrics"         -> RouterToken("router-scoped metrics ingest"),
+    "POST /api/router/register"        -> Unauthenticated(
       "single-use enrollment token; household stamped at create (#2106)",
     ),
-    "GET /api/router/policy"    -> RouterToken("snapshot(router.householdId)"),
-    "POST /api/router/decision" -> RouterToken("decide(router.householdId, …)"),
-    "GET /api/router/ws"        -> RouterToken("ws push bound to router.householdId"),
-    "GET /api/blocklists/{}"    -> InstallWide("router fetches the shared bundled catalog by id"),
-    "POST /api/admin/routers"   -> Scoped,
-    "GET /api/admin/routers"    -> Scoped,
+    "GET /api/router/policy"           -> RouterToken("snapshot(router.householdId)"),
+    // #2566/#2569/#2322: mints this router's block-page token. Reads nothing tenant-scoped — it
+    // HMACs the authenticated record's own id — but it is what gives the two unauthenticated
+    // block-page routes above a household, so it is router-token tenancy by construction.
+    "GET /api/router/block-page-token" -> RouterToken("mints a token bound to router.id only"),
+    "POST /api/router/decision"        -> RouterToken("decide(router.householdId, …)"),
+    "GET /api/router/ws"               -> RouterToken("ws push bound to router.householdId"),
+    "GET /api/blocklists/{}"  -> InstallWide("router fetches the shared bundled catalog by id"),
+    "POST /api/admin/routers" -> Scoped,
+    "GET /api/admin/routers"  -> Scoped,
     "DELETE /api/admin/routers/{}" -> Scoped,
 
     // ── Routes.scala: auth / users ─────────────────────────────────────────────────────────────

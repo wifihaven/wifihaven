@@ -144,6 +144,7 @@ object DbFailureSpec extends ZIOSpecDefault {
     def listAllForHousehold(household: HouseholdId)                         = throwing
     def listForProfile(profileId: ProfileId)                                = throwing
     def findByMac(mac: MacAddress, household: HouseholdId)                  = throwing
+    def findOwningHousehold(mac: MacAddress)                                = throwing
     def findByMacInHousehold(mac: MacAddress, household: HouseholdId)       = throwing
     def upsert(
         mac: MacAddress,
@@ -174,6 +175,7 @@ object DbFailureSpec extends ZIOSpecDefault {
   private def brokenAlertRepo: AlertRepo = new AlertRepo {
     def raiseNewDevice(mac: MacAddress, firstSeenAt: Instant, household: HouseholdId) = throwing
     def createAccessRequest(
+        household: HouseholdId,
         mac: MacAddress,
         profileId: Option[ProfileId],
         host: Hostname,
@@ -181,7 +183,12 @@ object DbFailureSpec extends ZIOSpecDefault {
         note: Option[String],
         createdAt: Instant,
     ) = throwing
-    def findRecentAccessRequest(mac: MacAddress, host: Hostname, since: Instant)      = throwing
+    def findRecentAccessRequest(
+        household: HouseholdId,
+        mac: MacAddress,
+        host: Hostname,
+        since: Instant,
+    ) = throwing
     def findById(id: AlertId)                                                         = throwing
     def householdOf(id: AlertId)                                                      = throwing
     def list(includeAll: Boolean)                                                     = throwing

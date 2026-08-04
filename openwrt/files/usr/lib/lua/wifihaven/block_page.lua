@@ -60,17 +60,99 @@ function M.resolve_base(block_page_url, api_url)
   return api_url
 end
 
--- Build the destination URL on the block-page host. Only host and mac are
--- carried — the SPA's React BlockedPage derives the canonical reason
--- server-side from GET /api/blocked (PolicyService.decide), so the router no
--- longer needs to pass it through the URL (#679 / #1617). `base_url` is the
+-- Build the destination URL on the block-page host. host and mac say WHICH
+-- device asked for WHAT — the SPA's React BlockedPage derives the canonical
+-- reason server-side from GET /api/blocked (PolicyService.decide), so the router
+-- does not pass a reason through the URL (#679 / #1617). `base_url` is the
 -- resolved block-page host (see resolve_base), not necessarily the API URL.
 -- (#1174)
-function M.build_dest_url(base_url, host, mac)
+--
+-- #2566/#2569/#2322: `bpt` is the opaque, API-signed, router-bound block-page
+-- token (paths.block_page_token). It says WHICH HOUSEHOLD is asking — without it
+-- the unauthenticated block-page endpoints have no household in scope and fall
+-- back to household 1, which discloses that household's profile name and
+-- screen-time to anyone and renders the wrong answer for every other household.
+-- Omitted when the agent has not fetched one yet (e.g. an API that predates the
+-- endpoint); the API keeps working without it, so this stays wire-additive.
+function M.build_dest_url(base_url, host, mac, bpt)
   if not base_url or base_url == "" then return nil end
-  return base_url .. "/blocked"
+  local url = base_url .. "/blocked"
       .. "?host=" .. url_encode(host)
       .. "&mac="  .. url_encode(mac or "")
+  if bpt and bpt ~= "" then
+    url = url .. "&bpt=" .. url_encode(bpt)
+  end
+  return url
+end
+
+-- Fetch this router's block-page token from the API (#2566/#2569/#2322).
+--
+-- GET /api/router/block-page-token, authenticated with the same router bearer
+-- token every other /api/router/* call uses. Returns the token string, or nil
+-- plus a short reason. A 404 means the API predates the endpoint — the caller
+-- must treat that as "no token" and carry on (the API↔agent wire is additive;
+-- neither side may hard-require the other's version).
+--
+-- The token is NOT a credential for the household's data: it authorizes exactly
+-- the two unauthenticated block-page reads that any client on this LAN can
+-- already make, and it is scoped to the router that minted it.
+function M.fetch_token(api_url, router_token, http_get_fn, log)
+  if not api_url or api_url == "" then return nil, "no_api_url" end
+  local url = api_url .. "/api/router/block-page-token"
+  local status, body = http_get_fn(url, { ["Authorization"] = "Bearer " .. router_token })
+  if status ~= 200 then
+    return nil, "status_" .. tostring(status)
+  end
+  local ok, parsed = pcall(function()
+    return require("luci.jsonc").parse(body)
+  end)
+  if not ok or type(parsed) ~= "table" or type(parsed.token) ~= "string"
+     or parsed.token == "" then
+    if log then log.warn("block_page.fetch_token: unparseable response") end
+    return nil, "bad_body"
+  end
+  return parsed.token, nil
+end
+
+-- Block-page token refresh scheduling (#2566/#2569/#2322).
+--
+-- Pure, so it can be pinned by a spec: this is tick arithmetic with three
+-- interacting states (never-landed fast retry, backed-off, landed periodic
+-- refresh) and it has been got wrong twice in review. Keeping it out of the
+-- agent script — which has no busted harness — is the difference between
+-- "reviewed" and "tested".
+--
+-- should_fetch(ok, fails, ticks, fast_retries, refresh_ticks)
+--   → fetch:bool, ticks:int          (carry `ticks` forward)
+--
+--   - never landed, under the fast-retry budget → fetch every tick. Right at
+--     boot: the API may be briefly down, or the router booted first.
+--   - never landed, budget spent → this API does not serve the endpoint yet
+--     (a structural 404 against an older API), so fall to the slow cadence
+--     rather than hammering it forever.
+--   - landed → the periodic refresh, which is what makes an API jwt.secret
+--     rotation self-heal without a restart.
+function M.should_fetch(ok, fails, ticks, fast_retries, refresh_ticks)
+  if ok or fails >= fast_retries then
+    ticks = ticks + 1
+    if ticks < refresh_ticks then return false, ticks end
+  end
+  return true, ticks
+end
+
+-- ticks_after_failure(ok, ticks) → ticks:int
+--
+-- The tick counter to carry forward after a FAILED fetch. The two states want
+-- opposite things, and conflating them is precisely the bug this pins:
+--   - never landed → 0, starting a fresh interval. `should_fetch` gates on
+--     `ticks < refresh_ticks`, so leaving `ticks` at/above the threshold makes
+--     that false on every later tick and the backoff collapses into a single
+--     pause followed by permanent every-tick fetching.
+--   - landed → unchanged, so a blip at a refresh boundary retries on the next
+--     tick instead of costing another full interval.
+function M.ticks_after_failure(ok, ticks)
+  if ok then return ticks end
+  return 0
 end
 
 -- Render the HTML body for the block page. If base_url is set, returns a tiny
@@ -79,8 +161,8 @@ end
 -- API-side: the SPA reads GET /api/blocked and renders the canonical message
 -- there (#679 / #1617). `base_url` is the resolved block-page host (see
 -- resolve_base), not necessarily the API URL.
-function M.render_html(base_url, host, mac)
-  local dest = M.build_dest_url(base_url, host, mac)
+function M.render_html(base_url, host, mac, bpt)
+  local dest = M.build_dest_url(base_url, host, mac, bpt)
   local copy = "This site is blocked."
   local site_line = (host and host ~= "")
     and ("Site: " .. html_escape(host)) or ""

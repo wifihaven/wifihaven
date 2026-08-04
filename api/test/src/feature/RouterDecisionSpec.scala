@@ -135,7 +135,13 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         rr  <- ZIO.service[RouterRepo]
         ber <- ZIO.service[BlockEventRepo]
         ps  <- makePsDefault
-        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
+        routes = RouterRoutes.routes(
+          rr,
+          ps,
+          RouterAuthLive(rr),
+          ber,
+          TestLayers.TestBlockPageSecret,
+        )
         tok    <- seedAndEnrollRouter(rr, routes)
         noAuth <- routes.runZIO(
           Request.post(
@@ -170,7 +176,13 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         rr  <- ZIO.service[RouterRepo]
         ber <- ZIO.service[BlockEventRepo]
         ps  <- makePsDefault
-        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
+        routes = RouterRoutes.routes(
+          rr,
+          ps,
+          RouterAuthLive(rr),
+          ber,
+          TestLayers.TestBlockPageSecret,
+        )
         tok    <- seedAndEnrollRouter(rr, routes)
         resp   <- callDecide(routes, tok, "ff:ff:ff:ff:ff:ff", "example.com")
         body   <- resp.body.asString
@@ -195,7 +207,13 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
           Instant.now(),
         )
         ps <- makePsDefault
-        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
+        routes = RouterRoutes.routes(
+          rr,
+          ps,
+          RouterAuthLive(rr),
+          ber,
+          TestLayers.TestBlockPageSecret,
+        )
         tok  <- seedAndEnrollRouter(rr, routes)
         resp <- callDecide(routes, tok, mac, "example.com")
         body <- resp.body.asString
@@ -215,7 +233,13 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         _   <- pr.setPaused(kid, true)
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
         ps  <- makePsDefault
-        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
+        routes = RouterRoutes.routes(
+          rr,
+          ps,
+          RouterAuthLive(rr),
+          ber,
+          TestLayers.TestBlockPageSecret,
+        )
         tok    <- seedAndEnrollRouter(rr, routes)
         resp   <- callDecide(routes, tok, "aa:bb:cc:11:22:33", "example.com")
         body   <- resp.body.asString
@@ -259,7 +283,13 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         _     <- ar.setHosts(appId, List(Hostname.unsafe("mathacademy.com")))
         _     <- ar.upsertAssignment(appId, kid, AppMode.Allowed, None, true)
         ps    <- makePsDefault
-        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
+        routes = RouterRoutes.routes(
+          rr,
+          ps,
+          RouterAuthLive(rr),
+          ber,
+          TestLayers.TestBlockPageSecret,
+        )
         tok    <- seedAndEnrollRouter(rr, routes)
         // The allowed app survives the pause.
         allow  <- callDecide(routes, tok, mac, "mathacademy.com")
@@ -299,7 +329,13 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         kid <- TestLayers.seedKidsProfile(pr)
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
         ps  <- makePsAt(TestClock.bedtime) // Monday 21:30
-        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
+        routes = RouterRoutes.routes(
+          rr,
+          ps,
+          RouterAuthLive(rr),
+          ber,
+          TestLayers.TestBlockPageSecret,
+        )
         tok    <- seedAndEnrollRouter(rr, routes)
         resp   <- callDecide(routes, tok, "aa:bb:cc:11:22:33", "example.com")
         body   <- resp.body.asString
@@ -323,7 +359,13 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         kid <- TestLayers.seedKidsProfile(pr)
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
         ps  <- makePsAt(TestClock.earlyMorning) // Monday 06:00
-        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
+        routes = RouterRoutes.routes(
+          rr,
+          ps,
+          RouterAuthLive(rr),
+          ber,
+          TestLayers.TestBlockPageSecret,
+        )
         tok  <- seedAndEnrollRouter(rr, routes)
         resp <- callDecide(routes, tok, "aa:bb:cc:11:22:33", "example.com")
         body <- resp.body.asString
@@ -347,7 +389,13 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         rid <- seedRouterRow
         _   <- seedTraffic(rid, "aa:bb:cc:11:22:33", "cnn.com", LocalDate.of(2025, 1, 6), 125)
         ps  <- makePsDefault // schoolDayAfternoon: 14:00, no schedule active
-        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
+        routes = RouterRoutes.routes(
+          rr,
+          ps,
+          RouterAuthLive(rr),
+          ber,
+          TestLayers.TestBlockPageSecret,
+        )
         tok    <- seedAndEnrollRouter(rr, routes)
         resp   <- callDecide(routes, tok, "aa:bb:cc:11:22:33", "cnn.com")
         body   <- resp.body.asString
@@ -375,7 +423,13 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         _   <- seedTraffic(rid, "aa:bb:cc:11:22:33", "cnn.com", LocalDate.of(2025, 1, 6), 125)
         _   <- er.grantForProfile(kid, LocalDate.of(2025, 1, 6), 30, "admin", None)
         ps  <- makePsDefault
-        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
+        routes = RouterRoutes.routes(
+          rr,
+          ps,
+          RouterAuthLive(rr),
+          ber,
+          TestLayers.TestBlockPageSecret,
+        )
         tok  <- seedAndEnrollRouter(rr, routes)
         resp <- callDecide(routes, tok, "aa:bb:cc:11:22:33", "cnn.com")
         body <- resp.body.asString
@@ -394,7 +448,13 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
         _   <- blr.insertBatch(List(("doubleclick.net", "ads"), ("ads.example.com", "ads")))
         ps  <- makePsDefault
-        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
+        routes = RouterRoutes.routes(
+          rr,
+          ps,
+          RouterAuthLive(rr),
+          ber,
+          TestLayers.TestBlockPageSecret,
+        )
         tok    <- seedAndEnrollRouter(rr, routes)
         resp   <- callDecide(routes, tok, "aa:bb:cc:11:22:33", "doubleclick.net")
         body   <- resp.body.asString
@@ -417,7 +477,13 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
         _   <- blr.insertBatch(List(("doubleclick.net", "ads")))
         ps  <- makePsDefault
-        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
+        routes = RouterRoutes.routes(
+          rr,
+          ps,
+          RouterAuthLive(rr),
+          ber,
+          TestLayers.TestBlockPageSecret,
+        )
         tok  <- seedAndEnrollRouter(rr, routes)
         resp <- callDecide(routes, tok, "aa:bb:cc:11:22:33", "sub.doubleclick.net")
         body <- resp.body.asString
@@ -435,7 +501,13 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         kid <- TestLayers.seedKidsProfile(pr)
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
         ps  <- makePsDefault // 14:00, no schedule active
-        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
+        routes = RouterRoutes.routes(
+          rr,
+          ps,
+          RouterAuthLive(rr),
+          ber,
+          TestLayers.TestBlockPageSecret,
+        )
         tok    <- seedAndEnrollRouter(rr, routes)
         resp   <- callDecide(routes, tok, "aa:bb:cc:11:22:33", "example.com")
         body   <- resp.body.asString
@@ -457,7 +529,13 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         _   <- TestLayers.seedAppAssignment(ar, kid, "badsite.com", AppMode.Blocked)
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
         ps  <- makePsDefault
-        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
+        routes = RouterRoutes.routes(
+          rr,
+          ps,
+          RouterAuthLive(rr),
+          ber,
+          TestLayers.TestBlockPageSecret,
+        )
         tok  <- seedAndEnrollRouter(rr, routes)
         resp <- callDecide(routes, tok, "aa:bb:cc:11:22:33", "badsite.com")
         body <- resp.body.asString
@@ -475,7 +553,13 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         kid <- TestLayers.seedKidsProfile(pr)
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
         ps  <- makePsDefault
-        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
+        routes = RouterRoutes.routes(
+          rr,
+          ps,
+          RouterAuthLive(rr),
+          ber,
+          TestLayers.TestBlockPageSecret,
+        )
         tok    <- seedAndEnrollRouter(rr, routes)
         _      <- callDecide(routes, tok, "aa:bb:cc:11:22:33", "allowed.example.com")
         events <- ber.recent(10)
@@ -508,7 +592,13 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         rid <- seedRouterRow
         _   <- seedTraffic(rid, "aa:bb:cc:11:22:33", "youtube.com", LocalDate.of(2025, 1, 6), 125)
         ps  <- makePsDefault
-        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
+        routes = RouterRoutes.routes(
+          rr,
+          ps,
+          RouterAuthLive(rr),
+          ber,
+          TestLayers.TestBlockPageSecret,
+        )
         tok  <- seedAndEnrollRouter(rr, routes)
         resp <- callDecide(routes, tok, "aa:bb:cc:11:22:33", "youtube.com")
         body <- resp.body.asString
@@ -543,7 +633,13 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         rid <- seedRouterRow
         _   <- seedTraffic(rid, "aa:bb:cc:11:22:33", "youtube.com", LocalDate.of(2025, 1, 6), 125)
         ps  <- makePsDefault
-        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
+        routes = RouterRoutes.routes(
+          rr,
+          ps,
+          RouterAuthLive(rr),
+          ber,
+          TestLayers.TestBlockPageSecret,
+        )
         tok  <- seedAndEnrollRouter(rr, routes)
         resp <- callDecide(routes, tok, "aa:bb:cc:11:22:33", "youtube.com")
         body <- resp.body.asString
