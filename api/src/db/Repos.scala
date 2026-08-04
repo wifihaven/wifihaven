@@ -667,7 +667,8 @@ trait DeviceRepo {
    * [[findByMacInHousehold]] — one query, one source of truth; V65's uq_devices_household_mac
    * guarantees ≤1 row per household so `.option` is safe. Defaults to `HouseholdId.Default` for the
    * single-household test call sites; the unauthenticated block-page callers pass
-   * `HouseholdId.Default` until per-request household derivation lands (#2109).
+   * `HouseholdId.Default` until per-request household derivation lands — #2322 for the
+   * access-request write path, #2569 for the `GET /api/blocked` read path.
    */
   def findByMac(mac: MacAddress, household: HouseholdId = HouseholdId.Default): Task[Option[Device]]
 
@@ -815,15 +816,28 @@ trait AlertRepo {
 
   def findById(id: AlertId): Task[Option[Alert]]
 
+  /**
+   * #2564: the household that owns `id`, for the per-id route guards. `findById` above is
+   * deliberately unscoped (it is also the post-decide re-read), so `POST /api/alerts/{id}/approve`
+   * and `/deny` gate on this instead — see `requireAlertInHousehold`.
+   *
+   * Reads the alert's OWN `household_id` (V78/V79, NOT NULL), never the joined device's: post-V74 a
+   * MAC can exist in two households, so the device join is ambiguous, and an orphaned alert (device
+   * deleted) still has an authoritative tenancy key. `None` means no such row.
+   */
+  def householdOf(id: AlertId): Task[Option[HouseholdId]]
+
   /** Pending-only when `includeAll=false`. Ordered newest first. */
   def list(includeAll: Boolean): Task[List[Alert]]
 
   /**
-   * #2108 (multi-tenant sub-issue E): household-scoped [[list]] — alerts whose device belongs to
-   * `household`. `alerts` has no `household_id` column of its own (its rows are MAC-keyed with a FK
-   * to `devices`), so it inherits the household transitively via the join to the household-scoped
-   * `devices` row (design §0.1 "scoped transitively"). Backs `GET /api/alerts` so an admin sees
-   * only their own household's alerts.
+   * #2108 (multi-tenant sub-issue E): household-scoped [[list]] — alerts belonging to `household`.
+   * Backs `GET /api/alerts` so an admin sees only their own household's alerts.
+   *
+   * Scoped on the alert's OWN `household_id` (V78), the same key [[householdOf]] reads. This
+   * originally scoped transitively through a join to the household-scoped `devices` row, because
+   * `alerts` had no household column; #2283 replaced that when V74 let one MAC exist in two
+   * households and made the join ambiguous.
    */
   def listForHousehold(includeAll: Boolean, household: HouseholdId): Task[List[Alert]]
 
@@ -2337,6 +2351,16 @@ class AlertRepoLive(xa: Transactor[Task]) extends AlertRepo {
       .map(toAlert)
       .option
       .transact(xa)
+
+  // #2564: the household that owns `id`, for the per-id route guards. Index-backed by the primary
+  // key. `a.household_id` is the alert's own tenancy key (V78/V79, NOT NULL) — no device join.
+  def householdOf(id: AlertId): Task[Option[HouseholdId]] =
+    DbMetrics.timed("alert.householdOf")(
+      sql"SELECT household_id FROM alerts WHERE id = ${id.value}"
+        .query[HouseholdId]
+        .option
+        .transact(xa),
+    )
 
   def list(includeAll: Boolean): Task[List[Alert]] = {
     val filter = if includeAll then fr"" else fr"WHERE a.status = 'pending'"

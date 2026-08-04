@@ -183,6 +183,7 @@ object DbFailureSpec extends ZIOSpecDefault {
     ) = throwing
     def findRecentAccessRequest(mac: MacAddress, host: Hostname, since: Instant)      = throwing
     def findById(id: AlertId)                                                         = throwing
+    def householdOf(id: AlertId)                                                      = throwing
     def list(includeAll: Boolean)                                                     = throwing
     def listForHousehold(includeAll: Boolean, household: HouseholdId)                 = throwing
     def decide(

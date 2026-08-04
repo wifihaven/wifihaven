@@ -53,6 +53,9 @@ object AlertRoutes {
       extRepo: TimeExtensionRepo,
       appRepo: AppRepo,
       hsRepo: HouseholdSettingsRepo,
+      // #2564: approve's side effect writes a PROFILE, so the profile-access guard needs the
+      // user↔profile links to evaluate the caller's link for a non-admin writer.
+      userProfileRepo: UserProfileRepo,
       notifier: Notifier,
       clock: SharedClock,
       rateLimiter: RateLimiter,
@@ -87,7 +90,7 @@ object AlertRoutes {
                   // (V74/V75), and the old global findByMac threw on the 2-row match. This is the
                   // unauthenticated block-page access-request path (no household in scope), so it
                   // resolves against HouseholdId.Default until block-page household derivation lands
-                  // (#2109).
+                  // (#2322 — matches the insert-side TODO in Repos.scala).
                   device <- deviceRepo
                     .findByMac(cr.mac, HouseholdId.Default)
                     .mapError(ApiError.Db(_))
@@ -117,7 +120,8 @@ object AlertRoutes {
               .queryParam("all")
               .map(_.equalsIgnoreCase("true"))
               .getOrElse(false)
-            // #2108: alerts scoped to the caller's household (transitively via the device join).
+            // #2108/#2283: alerts scoped to the caller's household, on the alert's own
+            // `household_id` — see `AlertRepo.listForHousehold`.
             xs <- alertRepo
               .listForHousehold(includeAll, claims.hh)
               .mapError(ApiError.Db(_))
@@ -131,6 +135,10 @@ object AlertRoutes {
           val aid                                  = AlertId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
             claims  <- requireWriter(req, auth)
+            // #2564: scope the TARGET to the caller's household BEFORE any read of the row —
+            // `findById` below is unscoped, so this is the only thing standing between an hh-A
+            // writer and hh-B's alert body (and, via approve's side effect, hh-B's profile).
+            _       <- requireAlertInHousehold(claims, aid, alertRepo)
             body    <- req.body.asString.orElse(ZIO.succeed(""))
             apr     <-
               if (body.isEmpty) ZIO.succeed(ApproveAlertRequest())
@@ -151,9 +159,9 @@ object AlertRoutes {
             granted <- applyApproveSideEffect(
               alert,
               apr.minutes.getOrElse(DefaultExtensionMinutes),
-              claims.sub,
-              claims.hh,
+              claims,
               profileRepo,
+              userProfileRepo,
               extRepo,
               appRepo,
               hsRepo,
@@ -181,6 +189,9 @@ object AlertRoutes {
           val aid                                  = AlertId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
             claims <- requireWriter(req, auth)
+            // #2564: same choke point as approve — `decide` is `WHERE id = ?` with no household
+            // predicate, and the post-decide `findById` would echo hh-B's alert body back.
+            _      <- requireAlertInHousehold(claims, aid, alertRepo)
             now    <- clock.instant
             n      <- alertRepo
               .decide(aid, AlertStatus.Denied, now, claims.sub, None)
@@ -211,19 +222,48 @@ object AlertRoutes {
    *
    * A 400 bubbles when a grant can't apply (e.g. extension on a device with no profile) so the
    * admin can fix the prerequisite instead of accumulating half-applied approvals.
+   *
+   * #2564: every branch that WRITES a profile composes [[requireProfileAccess]] on that profile
+   * first. `requireAlertInHousehold` at the top of the handler proved the ALERT is the caller's;
+   * this proves the same of the profile the approval actually mutates. Two distinct things it
+   * establishes, only one of which is live today:
+   *
+   *   - The caller's LINK to the profile — live, and the reason this guard is not optional. A
+   *     non-admin writer's link was never checked anywhere on this path, so an `adult` in the
+   *     household who is not linked to the profile could approve a grant they cannot make directly
+   *     via `POST /api/time/extend`, which gates on this same primitive.
+   *   - The profile's HOUSEHOLD (via the composed [[requireProfileInHousehold]]) — defense in
+   *     depth. `alerts.household_id` and `alerts.profile_id` are stamped independently at insert,
+   *     but they cannot currently disagree: `createAccessRequest` takes `profileId` from
+   *     `findByMac(mac, HouseholdId.Default)` and stamps `household_id` with the LOWEST matching
+   *     household, so either both resolve to household 1 or `profileId` is NULL; and device→profile
+   *     reassignment is itself gated on `requireProfileAccess`, so a device never holds an
+   *     out-of-household profile. `TODO(#2322)` could let them diverge — if it derives the
+   *     block-page household for the STAMP without also rescoping the `findByMac` lookup that
+   *     supplies `profileId`, a shared MAC lands an hh-B alert holding an hh-1 profile. Threading
+   *     one derived household into both keeps them in agreement. Pinned now so the mismatch stays
+   *     refused either way.
    */
   private def applyApproveSideEffect(
       alert: Alert,
       requestedMinutes: Int,
-      grantedBy: String,
-      // #2130: the approving admin's household — stamps the extension grant.
-      household: HouseholdId,
+      // #2130: the approving admin — `claims.sub` stamps `granted_by`, `claims.hh` buckets the
+      // extension grant into the approver's household. #2564: also the subject of the profile guard.
+      claims: JwtClaims,
       profileRepo: ProfileRepo,
+      userProfileRepo: UserProfileRepo,
       extRepo: TimeExtensionRepo,
       appRepo: AppRepo,
       hsRepo: HouseholdSettingsRepo,
       clock: SharedClock,
-  ): ZIO[Any, ApiError, Option[Int]] =
+  ): ZIO[Any, ApiError, Option[Int]] = {
+    val grantedBy = claims.sub
+    val household = claims.hh
+
+    // #2564: gate every profile-mutating branch on the caller's access to THAT profile.
+    def onProfile[A](pid: ProfileId)(f: ZIO[Any, ApiError, A]): ZIO[Any, ApiError, A] =
+      requireProfileAccess(claims, pid, userProfileRepo, profileRepo) *> f
+
     alert.kind match {
       case AlertKind.NewDevice =>
         ZIO.succeed(None)
@@ -242,25 +282,27 @@ object AlertRoutes {
                   ),
                 )
               case Some(pid) =>
-                for {
-                  // #2130: household-scoped settings + grant stamp, so an
-                  // approval by a hh-B admin lands in hh-B (bucketed by hh-B's
-                  // local "today"), never V65's DEFAULT 1.
-                  settings <- hsRepo.getForHousehold(household).mapError(ApiError.Db(_))
-                  now      <- clock.instant
-                  today =
-                    wifihaven.api.policy.PolicyService.householdLocalDate(now, settings)
-                  _ <- extRepo
-                    .grantForProfile(
-                      pid,
-                      today,
-                      requestedMinutes,
-                      grantedBy,
-                      alert.note.orElse(Some(s"approved alert #${alert.id.value}")),
-                      household,
-                    )
-                    .mapError(ApiError.Db(_))
-                } yield Some(requestedMinutes)
+                onProfile(pid) {
+                  for {
+                    // #2130: household-scoped settings + grant stamp, so an
+                    // approval by a hh-B admin lands in hh-B (bucketed by hh-B's
+                    // local "today"), never V65's DEFAULT 1.
+                    settings <- hsRepo.getForHousehold(household).mapError(ApiError.Db(_))
+                    now      <- clock.instant
+                    today =
+                      wifihaven.api.policy.PolicyService.householdLocalDate(now, settings)
+                    _ <- extRepo
+                      .grantForProfile(
+                        pid,
+                        today,
+                        requestedMinutes,
+                        grantedBy,
+                        alert.note.orElse(Some(s"approved alert #${alert.id.value}")),
+                        household,
+                      )
+                      .mapError(ApiError.Db(_))
+                  } yield Some(requestedMinutes)
+                }
             }
 
           case (Some(AccessRequestKind.Exemption), Some(host)) =>
@@ -277,26 +319,28 @@ object AlertRoutes {
                   ),
                 )
               case Some(pid) =>
-                for {
-                  existing <- appRepo
-                    .findBySlug(host.value)
-                    .mapError(ApiError.Db(_))
-                  appId    <- existing match {
-                    case Some(app) => ZIO.succeed(app.id)
-                    case None      =>
-                      for {
-                        id <- appRepo
-                          .create(host.value, host.value, None, None)
-                          .mapError(ApiError.Db(_))
-                        _  <- appRepo
-                          .setHosts(id, List(host))
-                          .mapError(ApiError.Db(_))
-                      } yield id
-                  }
-                  _        <- appRepo
-                    .upsertAssignment(appId, pid, AppMode.Allowed, None, true)
-                    .mapError(ApiError.Db(_))
-                } yield None
+                onProfile(pid) {
+                  for {
+                    existing <- appRepo
+                      .findBySlug(host.value)
+                      .mapError(ApiError.Db(_))
+                    appId    <- existing match {
+                      case Some(app) => ZIO.succeed(app.id)
+                      case None      =>
+                        for {
+                          id <- appRepo
+                            .create(host.value, host.value, None, None)
+                            .mapError(ApiError.Db(_))
+                          _  <- appRepo
+                            .setHosts(id, List(host))
+                            .mapError(ApiError.Db(_))
+                        } yield id
+                    }
+                    _        <- appRepo
+                      .upsertAssignment(appId, pid, AppMode.Allowed, None, true)
+                      .mapError(ApiError.Db(_))
+                  } yield None
+                }
             }
 
           case (Some(AccessRequestKind.Unpause), _) =>
@@ -308,11 +352,14 @@ object AlertRoutes {
                   ),
                 )
               case Some(pid) =>
-                profileRepo
-                  .setPaused(pid, false)
-                  .mapError(ApiError.Db(_))
-                  .as(None)
+                onProfile(pid) {
+                  profileRepo
+                    .setPaused(pid, false)
+                    .mapError(ApiError.Db(_))
+                    .as(None)
+                }
             }
         }
     }
+  }
 }

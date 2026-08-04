@@ -33,8 +33,9 @@ import scala.jdk.CollectionConverters.*
  * Note what is deliberately NOT a checker: a bare `claims.hh`. Reading the caller's household to
  * STAMP a write (`extRepo.grantForProfile(pid, …, claims.hh)`) is not the same as CHECKING the
  * target, and conflating the two is exactly how #2564 shipped — `POST /api/alerts/{id}/approve`
- * mentions `claims.hh` on the line that stamps the grant, while the alert id it acts on is never
- * checked at all.
+ * mentioned `claims.hh` on the line that stamped the grant, while the alert id it acted on was
+ * never checked at all. (That route now composes `requireAlertInHousehold`; the lesson stays pinned
+ * by test 5.)
  *
  * ── The tracked-broken allowlist ──────────────────────────────────────────────────────────────
  * [[Tenancy.ScopedTracked]] is the escape hatch for routes the audit found ALREADY broken. They are
@@ -116,6 +117,7 @@ object MultiTenantRouteCensusSpec extends ZIOSpecDefault {
    *   - `requireProfileInHousehold` / `requireProfile{,Read}Access` — profile ids (the latter two
    *     compose the former FIRST, so either satisfies the invariant).
    *   - `requireScheduleInHousehold` — named-schedule ids.
+   *   - `requireAlertInHousehold` — alert ids (#2564).
    *   - `ownUser` — user ids, incl. ids arriving in a request BODY.
    *   - `findByMacInHousehold` — device MACs.
    *   - `householdOf` — the raw probe, for a route that hand-rolls its own comparison.
@@ -138,6 +140,7 @@ object MultiTenantRouteCensusSpec extends ZIOSpecDefault {
     "requireProfileAccess",
     "requireProfileReadAccess",
     "requireScheduleInHousehold",
+    "requireAlertInHousehold",
     "ownUser",
     "findByMacInHousehold",
     "householdOf",
@@ -159,8 +162,9 @@ object MultiTenantRouteCensusSpec extends ZIOSpecDefault {
       "block-page intake; household derived in-SQL from the device row — arbitrary for a shared MAC (#2322), " +
         "and the debounce read is unscoped (#2566)",
     ),
-    "POST /api/alerts/{}/approve" -> ScopedTracked(2564),
-    "POST /api/alerts/{}/deny"    -> ScopedTracked(2564),
+    // #2564 fixed: both now compose `requireAlertInHousehold` first.
+    "POST /api/alerts/{}/approve" -> Scoped,
+    "POST /api/alerts/{}/deny"    -> Scoped,
 
     // ── AppRoutes ──────────────────────────────────────────────────────────────────────────────
     "GET /api/apps"       -> InstallWide("template-authored app catalog, #1798"),
@@ -533,11 +537,12 @@ object MultiTenantRouteCensusSpec extends ZIOSpecDefault {
       "3 — the tracked-broken allowlist is explicit, non-empty, and every entry names an issue",
     ) {
       val tracked = Census.collect { case (k, Tenancy.ScopedTracked(n)) => k -> n }
-      // SHRINK-ONLY. The audit opened this allowlist with three entries (#2564 ×2, #2565); it may
-      // never grow past that without a deliberate edit here. Deliberately NOT `nonEmpty`: that
-      // would turn the LAST security fix — the one that empties the list — into a red build, which
-      // reads as "your fix broke CI" rather than "you are done". When it does reach zero, delete
-      // the `ScopedTracked` case and this test rather than leaving a dead escape hatch.
+      // SHRINK-ONLY. The audit opened this allowlist with three entries (#2564 ×2, #2565); #2564's
+      // fix deleted its two, leaving one. It may never grow without a deliberate edit here.
+      // Deliberately NOT `nonEmpty`: that would turn the LAST security fix — the one that empties
+      // the list — into a red build, which reads as "your fix broke CI" rather than "you are done".
+      // When it does reach zero, delete the `ScopedTracked` case and this test rather than leaving
+      // a dead escape hatch.
       assertTrue(tracked.size <= 3) &&
       // Every tracked entry must name a plausible issue number, not 0 / a placeholder.
       assert(tracked.values.filter(_ <= 0).toList)(
@@ -579,12 +584,29 @@ object MultiTenantRouteCensusSpec extends ZIOSpecDefault {
       )
     },
     test("5 — a bare claims.hh is NOT accepted as a tenancy checker") {
-      // The #2564 lesson, pinned. `POST /api/alerts/{}/approve` mentions `claims.hh` (it stamps the
-      // extension grant with it) and checks NOTHING. If someone adds "claims.hh" to `Checkers` to
-      // quiet the guard, this fails.
+      // The #2564 lesson, pinned. As originally written this test snapshotted the broken route
+      // itself — `POST /api/alerts/{}/approve` mentioned `claims.hh` (stamping the extension grant)
+      // and composed no checker. #2564's fix removes both halves of that snapshot, so what remains
+      // is the part that was always the actual invariant: `claims.hh` may never be admitted to
+      // `Checkers`. Reading the caller's household to STAMP a write says nothing about the target,
+      // and admitting it here would silently re-exempt every route the audit found.
+      //
+      // The second assertion keeps that from being vacuous, and it is deliberately restricted to
+      // routes WITHOUT an entity param. Those are exactly the legitimate stamp-only handlers: they
+      // derive the household from `claims.hh` and scope at the repo (`GET /api/alerts` →
+      // `listForHousehold(includeAll, claims.hh)`), so they mention it and compose no checker while
+      // being perfectly correct. Their continued existence is what makes the distinction between
+      // STAMPING and CHECKING live rather than hypothetical — an unrestricted filter would also
+      // sweep in entity-param routes, which is test 2's job and would make this pass for the wrong
+      // reason.
+      val stampOnly = scan
+        .filterNot(_.entityParam)
+        .filter(r => r.handler.contains("claims.hh"))
+        .filter(_.checkers.isEmpty)
+        .map(_.key)
+        .distinct
       assertTrue(!Checkers.contains("claims.hh")) &&
-      assertTrue(scannedByKey("POST /api/alerts/{}/approve").handler.contains("claims.hh")) &&
-      assertTrue(scannedByKey("POST /api/alerts/{}/approve").checkers.isEmpty)
+      assertTrue(stampOnly.nonEmpty)
     },
     test("6 — every exemption from the choke-point invariant states a real reason") {
       // `InstallWide` / `Operator` / `RouterToken` / `AgentToken` / `Unauthenticated` / `NoTenancy`

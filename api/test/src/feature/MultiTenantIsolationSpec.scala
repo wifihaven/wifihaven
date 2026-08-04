@@ -189,6 +189,46 @@ object MultiTenantIsolationSpec
       body <- resp.body.asString
     } yield (resp.status, body)
 
+  // #2564: an `adult` user in `household`, password copied from the seeded `admin` (so
+  // `TwoHouseholds.password` logs it in) — mirrors how `seedTwoHouseholds` mints `adminB`. `adult`
+  // passes `requireWriter` but, unlike `admin`, must be LINKED to a profile to write it.
+  private def seedAdult(
+      xa: Transactor[Task],
+      household: HouseholdId,
+      username: String,
+  ): Task[UserId] =
+    sql"""INSERT INTO users(username, password_hash, role, must_change_password, household_id)
+          SELECT $username, password_hash, 'adult', false, $household
+            FROM users WHERE username='admin'
+          RETURNING id""".query[UserId].unique.transact(xa)
+
+  // #2564: the alert stack over the real repos, for the per-id decide-route isolation pins.
+  private def makeAlertRoutes(
+      auth: AuthService,
+  ): ZIO[TestDatabase.AllRepos & Clock, Nothing, Routes[Any, Response]] =
+    for {
+      ar  <- ZIO.service[AlertRepo]
+      dr  <- ZIO.service[DeviceRepo]
+      pr  <- ZIO.service[ProfileRepo]
+      er  <- ZIO.service[TimeExtensionRepo]
+      apr <- ZIO.service[AppRepo]
+      hsr <- ZIO.service[HouseholdSettingsRepo]
+      up  <- ZIO.service[UserProfileRepo]
+      clk <- ZIO.service[Clock]
+    } yield AlertRoutes.routes(
+      auth,
+      ar,
+      dr,
+      pr,
+      er,
+      apr,
+      hsr,
+      up,
+      noopNotifier,
+      clk,
+      RateLimiter.allowAll,
+    )
+
   private def makePolicyService =
     for {
       pr     <- ZIO.service[ProfileRepo]
@@ -353,31 +393,14 @@ object MultiTenantIsolationSpec
     },
     test("pin 1 — GET /api/alerts returns ONLY the caller's household alerts") {
       for {
-        _      <- cleanDb
-        two    <- TestLayers.seedTwoHouseholds(macA, macB)
-        ar     <- ZIO.service[AlertRepo]
-        dr     <- ZIO.service[DeviceRepo]
-        pr     <- ZIO.service[ProfileRepo]
-        er     <- ZIO.service[TimeExtensionRepo]
-        apr    <- ZIO.service[AppRepo]
-        hsr    <- ZIO.service[HouseholdSettingsRepo]
-        clk    <- ZIO.service[Clock]
-        _      <- ar.raiseNewDevice(macA, Instant.parse("2026-05-07T14:00:00Z"), two.hhA)
-        _      <- ar.raiseNewDevice(macB, Instant.parse("2026-05-07T14:00:00Z"), two.hhB)
-        auth   <- makeAuth
-        tokenA <- login(auth, two.adminA, two.password)
-        routes = AlertRoutes.routes(
-          auth,
-          ar,
-          dr,
-          pr,
-          er,
-          apr,
-          hsr,
-          noopNotifier,
-          clk,
-          RateLimiter.allowAll,
-        )
+        _           <- cleanDb
+        two         <- TestLayers.seedTwoHouseholds(macA, macB)
+        ar          <- ZIO.service[AlertRepo]
+        _           <- ar.raiseNewDevice(macA, Instant.parse("2026-05-07T14:00:00Z"), two.hhA)
+        _           <- ar.raiseNewDevice(macB, Instant.parse("2026-05-07T14:00:00Z"), two.hhB)
+        auth        <- makeAuth
+        tokenA      <- login(auth, two.adminA, two.password)
+        routes      <- makeAlertRoutes(auth)
         (sA, bodyA) <- getJson(routes, "/api/alerts?all=true", tokenA)
       } yield assertTrue(sA == Status.Ok) &&
         assertTrue(bodyA.contains(macA.value), !bodyA.contains(macB.value))
@@ -421,11 +444,7 @@ object MultiTenantIsolationSpec
         tr  <- ZIO.service[TrafficReportRepo]
         tu  <- ZIO.service[TimeUsageRepo]
         cer <- ZIO.service[ConnectionEventRepo]
-        pr  <- ZIO.service[ProfileRepo]
-        er  <- ZIO.service[TimeExtensionRepo]
-        apr <- ZIO.service[AppRepo]
         hsr <- ZIO.service[HouseholdSettingsRepo]
-        clk <- ZIO.service[Clock]
         xa  <- ZIO.service[Transactor[Task]]
         ingest = RouterIngestRoutes.routes(RouterAuthLive(rr), rr, tr, tu, dr, cer, ar, hsr)
         // Household A's router, then household B's router, each DISCOVER the same MAC first-seen.
@@ -439,18 +458,7 @@ object MultiTenantIsolationSpec
         auth     <- makeAuth
         tokenA   <- login(auth, two.adminA, two.password)
         tokenB   <- login(auth, two.adminB, two.password, slug = Some(two.slugB))
-        alertRoutes = AlertRoutes.routes(
-          auth,
-          ar,
-          dr,
-          pr,
-          er,
-          apr,
-          hsr,
-          noopNotifier,
-          clk,
-          RateLimiter.allowAll,
-        )
+        alertRoutes <- makeAlertRoutes(auth)
         (sA, bodyA) <- getJson(alertRoutes, "/api/alerts?all=true", tokenA)
         (sB, bodyB) <- getJson(alertRoutes, "/api/alerts?all=true", tokenB)
         alertsA     <- ZIO.fromEither(bodyA.fromJson[List[Alert]]).mapError(new RuntimeException(_))
@@ -1898,6 +1906,233 @@ object MultiTenantIsolationSpec
         assertTrue(!bodyA.contains("evil.example")) &&
         // Negative: A's active seconds are A's alone — 120, never 120 + B's leaked 240.
         assertTrue(devA.flatMap(_.topHosts).map(_.activeSeconds).sum == 120L)
+    },
+    // ── Pin 2 (#2564): per-id alert WRITE isolation ────────────────────────────
+    // `GET /api/alerts` was scoped by #2283, but the per-id decide routes were not:
+    // both resolved the target with the unscoped `alertRepo.findById` after only a
+    // `requireWriter` role check. So an hh-A writer could read hh-B's full alert
+    // JSON (MAC, device name, requested host, the kid's free-text note) by id, and
+    // — worse — approving an `Unpause` access_request reached
+    // `profileRepo.setPaused(alert.profileId, false)` on hh-B's profile: an
+    // enforcement bypass that unblocks another household's child.
+    test(
+      "pin 2 (#2564) alert-tenancy — hh-A writer cannot deny hh-B's alert (404, row still pending)",
+    ) {
+      for {
+        _        <- cleanDb
+        two      <- TestLayers.seedTwoHouseholds(macA, macB)
+        xa       <- ZIO.service[Transactor[Task]]
+        ar       <- ZIO.service[AlertRepo]
+        alertB   <- ar.createAccessRequest(
+          macB,
+          Some(two.profileB),
+          Hostname.unsafe("youtube.com"),
+          AccessRequestKind.Unpause,
+          Some("please unpause"),
+          Instant.parse("2026-05-07T14:00:00Z"),
+        )
+        auth     <- makeAuth
+        tokenA   <- login(auth, two.adminA, two.password)
+        routes   <- makeAlertRoutes(auth)
+        (st, bd) <- postJson(routes, s"/api/alerts/${alertB.value}/deny", Some(tokenA), "")
+        statusB  <- sql"SELECT status FROM alerts WHERE id=${alertB.value}"
+          .query[String]
+          .unique
+          .transact(xa)
+      } yield
+      // 404 (not 403): a foreign id must be indistinguishable from a nonexistent one.
+      assertTrue(st == Status.NotFound) &&
+        // …and none of hh-B's alert content leaked out in the response body.
+        assertTrue(!bd.contains(macB.value), !bd.contains("please unpause")) &&
+        assertTrue(statusB == "pending")
+    },
+    test(
+      "pin 2 (#2564) alert-tenancy — hh-A writer cannot approve hh-B's Unpause (404, still paused)",
+    ) {
+      for {
+        _       <- cleanDb
+        two     <- TestLayers.seedTwoHouseholds(macA, macB)
+        xa      <- ZIO.service[Transactor[Task]]
+        ar      <- ZIO.service[AlertRepo]
+        alertB  <- ar.createAccessRequest(
+          macB,
+          Some(two.profileB),
+          Hostname.unsafe("youtube.com"),
+          AccessRequestKind.Unpause,
+          None,
+          Instant.parse("2026-05-07T14:00:00Z"),
+        )
+        auth    <- makeAuth
+        tokenA  <- login(auth, two.adminA, two.password)
+        routes  <- makeAlertRoutes(auth)
+        (st, _) <- postJson(routes, s"/api/alerts/${alertB.value}/approve", Some(tokenA), "")
+        // THE enforcement-bypass assertion: hh-B's profile (seeded paused) is still paused.
+        pausedB <- sql"SELECT paused FROM profiles WHERE id=${two.profileB}"
+          .query[Boolean]
+          .unique
+          .transact(xa)
+        statusB <- sql"SELECT status FROM alerts WHERE id=${alertB.value}"
+          .query[String]
+          .unique
+          .transact(xa)
+      } yield assertTrue(st == Status.NotFound) &&
+        assertTrue(pausedB) &&
+        assertTrue(statusB == "pending")
+    },
+    test("pin 2 (#2564) alert-tenancy — a SAME-household approve still succeeds (happy path)") {
+      for {
+        _       <- cleanDb
+        two     <- TestLayers.seedTwoHouseholds(macA, macB)
+        xa      <- ZIO.service[Transactor[Task]]
+        pr      <- ZIO.service[ProfileRepo]
+        ar      <- ZIO.service[AlertRepo]
+        _       <- pr.setPaused(two.profileA, true)
+        alertA  <- ar.createAccessRequest(
+          macA,
+          Some(two.profileA),
+          Hostname.unsafe("youtube.com"),
+          AccessRequestKind.Unpause,
+          None,
+          Instant.parse("2026-05-07T14:00:00Z"),
+        )
+        auth    <- makeAuth
+        tokenA  <- login(auth, two.adminA, two.password)
+        routes  <- makeAlertRoutes(auth)
+        (st, _) <- postJson(routes, s"/api/alerts/${alertA.value}/approve", Some(tokenA), "")
+        pausedA <- sql"SELECT paused FROM profiles WHERE id=${two.profileA}"
+          .query[Boolean]
+          .unique
+          .transact(xa)
+        statusA <- sql"SELECT status FROM alerts WHERE id=${alertA.value}"
+          .query[String]
+          .unique
+          .transact(xa)
+      } yield assertTrue(st == Status.Ok) &&
+        assertTrue(!pausedA) &&
+        assertTrue(statusA == "approved")
+    },
+    // ── #2564: the SECOND guard — approve's side effect writes a PROFILE ───────
+    // `requireAlertInHousehold` proves the ALERT is the caller's; it does not prove the same of
+    // `alerts.profile_id`, which is denormalised at insert and survives a device→profile
+    // reassignment. So `applyApproveSideEffect` also composes `requireProfileAccess`, the same
+    // primitive the sibling manual-grant route `POST /api/time/extend` already uses. The two pins
+    // above never reach it (they 404 at the alert guard) and the happy path above logs in as
+    // `admin`, which short-circuits it — these two drive the branch that actually gates a non-admin
+    // writer, in both directions.
+    test("pin 2 (#2564) profile-link — a LINKED adult in the household can approve") {
+      for {
+        _       <- cleanDb
+        two     <- TestLayers.seedTwoHouseholds(macA, macB)
+        xa      <- ZIO.service[Transactor[Task]]
+        pr      <- ZIO.service[ProfileRepo]
+        ar      <- ZIO.service[AlertRepo]
+        up      <- ZIO.service[UserProfileRepo]
+        adultId <- seedAdult(xa, two.hhA, "adultA")
+        _       <- up.addLink(adultId, two.profileA)
+        _       <- pr.setPaused(two.profileA, true)
+        alertA  <- ar.createAccessRequest(
+          macA,
+          Some(two.profileA),
+          Hostname.unsafe("youtube.com"),
+          AccessRequestKind.Unpause,
+          None,
+          Instant.parse("2026-05-07T14:00:00Z"),
+        )
+        auth    <- makeAuth
+        token   <- login(auth, "adultA", two.password)
+        routes  <- makeAlertRoutes(auth)
+        (st, _) <- postJson(routes, s"/api/alerts/${alertA.value}/approve", Some(token), "")
+        pausedA <- sql"SELECT paused FROM profiles WHERE id=${two.profileA}"
+          .query[Boolean]
+          .unique
+          .transact(xa)
+      } yield assertTrue(st == Status.Ok) && assertTrue(!pausedA)
+    },
+    test("pin 2 (#2564) profile-link — an UNLINKED adult is refused 403 (profile stays paused)") {
+      for {
+        _       <- cleanDb
+        two     <- TestLayers.seedTwoHouseholds(macA, macB)
+        xa      <- ZIO.service[Transactor[Task]]
+        pr      <- ZIO.service[ProfileRepo]
+        ar      <- ZIO.service[AlertRepo]
+        _       <- seedAdult(xa, two.hhA, "adultA") // deliberately NOT linked to profileA
+        _       <- pr.setPaused(two.profileA, true)
+        alertA  <- ar.createAccessRequest(
+          macA,
+          Some(two.profileA),
+          Hostname.unsafe("youtube.com"),
+          AccessRequestKind.Unpause,
+          None,
+          Instant.parse("2026-05-07T14:00:00Z"),
+        )
+        auth    <- makeAuth
+        token   <- login(auth, "adultA", two.password)
+        routes  <- makeAlertRoutes(auth)
+        (st, _) <- postJson(routes, s"/api/alerts/${alertA.value}/approve", Some(token), "")
+        pausedA <- sql"SELECT paused FROM profiles WHERE id=${two.profileA}"
+          .query[Boolean]
+          .unique
+          .transact(xa)
+        statusA <- sql"SELECT status FROM alerts WHERE id=${alertA.value}"
+          .query[String]
+          .unique
+          .transact(xa)
+      } yield
+      // 403, not 404: the alert IS in this caller's household — the tenancy boundary is not what
+      // refused them, so there is no existence to conceal. The profile link is.
+      assertTrue(st == Status.Forbidden) &&
+        // The side effect ran before the status transition, so a refusal leaves BOTH untouched.
+        assertTrue(pausedA) &&
+        assertTrue(statusA == "pending")
+    },
+    test("pin 2 (#2564) profile-tenancy — an own-household alert cannot reach hh-B's profile") {
+      // The household half of the side-effect guard. `alerts.household_id` and `alerts.profile_id`
+      // are stamped independently at insert, so an alert that IS the caller's does not structurally
+      // prove its profile is — `requireAlertInHousehold` passes by construction here and only
+      // `requireProfileAccess` (which composes `requireProfileInHousehold`) stands between the
+      // approval and hh-B's profile.
+      //
+      // They cannot actually disagree TODAY: `createAccessRequest` reads `profileId` from
+      // `findByMac(mac, HouseholdId.Default)` and stamps `household_id` with the lowest matching
+      // household, and device→profile reassignment is itself household-gated. So this state is
+      // built directly by raw SQL rather than driven, and the pin is defense in depth against
+      // `TODO(#2322)` — deriving the block-page household from the requesting router, which COULD
+      // let the two diverge for a shared MAC depending on how it lands. It still fails without the
+      // guard.
+      //
+      // 404 here, not the 403 the unlinked-adult pin asserts: this refusal IS a tenancy boundary.
+      for {
+        _      <- cleanDb
+        two    <- TestLayers.seedTwoHouseholds(macA, macB)
+        xa     <- ZIO.service[Transactor[Task]]
+        ar     <- ZIO.service[AlertRepo]
+        alertA <- ar.createAccessRequest(
+          macA,
+          Some(two.profileA),
+          Hostname.unsafe("youtube.com"),
+          AccessRequestKind.Unpause,
+          None,
+          Instant.parse("2026-05-07T14:00:00Z"),
+        )
+        // The alert stays hh-A's; only its denormalised profile pointer crosses.
+        _ <- sql"UPDATE alerts SET profile_id=${two.profileB} WHERE id=${alertA.value}".update.run
+          .transact(xa)
+        auth    <- makeAuth
+        tokenA  <- login(auth, two.adminA, two.password)
+        routes  <- makeAlertRoutes(auth)
+        (st, _) <- postJson(routes, s"/api/alerts/${alertA.value}/approve", Some(tokenA), "")
+        // hh-B's profile is seeded paused; the approval must not have unpaused it.
+        pausedB <- sql"SELECT paused FROM profiles WHERE id=${two.profileB}"
+          .query[Boolean]
+          .unique
+          .transact(xa)
+        statusA <- sql"SELECT status FROM alerts WHERE id=${alertA.value}"
+          .query[String]
+          .unique
+          .transact(xa)
+      } yield assertTrue(st == Status.NotFound) &&
+        assertTrue(pausedB) &&
+        assertTrue(statusA == "pending")
     },
   ) @@ TestAspect.sequential
 }

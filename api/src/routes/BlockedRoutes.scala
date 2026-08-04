@@ -85,12 +85,14 @@ object BlockedRoutes {
     for {
       // #2107: the block page is unauthenticated (reached via HTTP DNAT with only ?mac=&host=), so
       // it carries no router token and thus no household. Single-household today: decide against
-      // HouseholdId.Default. Resolving the household for the block page in a multi-tenant deploy is
-      // the edge / custom-domain concern (#2109), not this read-scoping change.
+      // HouseholdId.Default. Resolving the household for this READ path is #2569, whose fix shape
+      // includes serving the block page from a per-household host/edge (the #2109 custom-domain
+      // concern) — not this read-scoping change.
       decision    <- policy.decide(HouseholdId.Default, mac.value, host.value)
       // #2312: household-scoped lookup — the same MAC can exist in two households (V74/V75), and the
       // old global findByMac threw on the 2-row match. Same HouseholdId.Default as `decide` above
-      // until per-request block-page household derivation lands (#2109).
+      // until per-request block-page household derivation lands (#2569 — the READ-path sibling of
+      // #2322, which covers the access-request write path on the same page).
       device      <- deviceRepo.findByMac(mac, HouseholdId.Default)
       profileOpt  <- device.flatMap(_.profileId) match {
         case Some(pid) => profileRepo.findById(pid)

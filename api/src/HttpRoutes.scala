@@ -684,6 +684,7 @@ object HttpRoutes {
         extRepo,
         appRepo,
         hsRepo,
+        upRepo,
         notifier,
         clock,
         accessReqRateLimiter,
