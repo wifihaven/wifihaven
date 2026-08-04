@@ -2041,6 +2041,7 @@ object MultiTenantIsolationSpec
         xa       <- ZIO.service[Transactor[Task]]
         ar       <- ZIO.service[AlertRepo]
         alertB   <- ar.createAccessRequest(
+          two.hhB,
           macB,
           Some(two.profileB),
           Hostname.unsafe("youtube.com"),
@@ -2072,6 +2073,7 @@ object MultiTenantIsolationSpec
         xa      <- ZIO.service[Transactor[Task]]
         ar      <- ZIO.service[AlertRepo]
         alertB  <- ar.createAccessRequest(
+          two.hhB,
           macB,
           Some(two.profileB),
           Hostname.unsafe("youtube.com"),
@@ -2105,6 +2107,7 @@ object MultiTenantIsolationSpec
         ar      <- ZIO.service[AlertRepo]
         _       <- pr.setPaused(two.profileA, true)
         alertA  <- ar.createAccessRequest(
+          two.hhA,
           macA,
           Some(two.profileA),
           Hostname.unsafe("youtube.com"),
@@ -2148,6 +2151,7 @@ object MultiTenantIsolationSpec
         _       <- up.addLink(adultId, two.profileA)
         _       <- pr.setPaused(two.profileA, true)
         alertA  <- ar.createAccessRequest(
+          two.hhA,
           macA,
           Some(two.profileA),
           Hostname.unsafe("youtube.com"),
@@ -2175,6 +2179,7 @@ object MultiTenantIsolationSpec
         _       <- seedAdult(xa, two.hhA, "adultA") // deliberately NOT linked to profileA
         _       <- pr.setPaused(two.profileA, true)
         alertA  <- ar.createAccessRequest(
+          two.hhA,
           macA,
           Some(two.profileA),
           Hostname.unsafe("youtube.com"),
@@ -2224,6 +2229,7 @@ object MultiTenantIsolationSpec
         xa     <- ZIO.service[Transactor[Task]]
         ar     <- ZIO.service[AlertRepo]
         alertA <- ar.createAccessRequest(
+          two.hhA,
           macA,
           Some(two.profileA),
           Hostname.unsafe("youtube.com"),

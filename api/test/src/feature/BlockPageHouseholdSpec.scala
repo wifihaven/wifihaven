@@ -150,6 +150,7 @@ object BlockPageHouseholdSpec
       appRepo   <- ZIO.service[AppRepo]
       hsRepo    <- ZIO.service[HouseholdSettingsRepo]
       ur        <- ZIO.service[UserRepo]
+      up        <- ZIO.service[UserProfileRepo]
       rr        <- ZIO.service[RouterRepo]
       clk       <- ZIO.service[Clock]
     } yield AlertRoutes.routes(
@@ -160,6 +161,7 @@ object BlockPageHouseholdSpec
       extRepo,
       appRepo,
       hsRepo,
+      up,
       noopNotifier,
       clk,
       RateLimiter.allowAll,
