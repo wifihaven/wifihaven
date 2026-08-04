@@ -1287,9 +1287,18 @@ object AppMetrics {
   // presence spans dropped because they contained no engagement anchor. A
   // sustained rise with flat screen-time means the learner is eating real
   // sessions (over-suppression); a flat zero while phantom idle-time returns
-  // means the thresholds are too lax. `presence_ambient_hosts` is the size of
-  // the learned ambient set, set on each AmbientLearnJob run. Both unlabelled —
-  // per-host/mac labels would breach the cardinality firewall.
+  // means the thresholds are too lax. `presence_ambient_hosts` is set on each
+  // AmbientLearnJob run. #2553: the baseline is one shared table but the
+  // thresholds and window are per household, so the gauge reports the size of
+  // the UNION — how many distinct hosts are ambient-gated for at least one
+  // household — over the households that learned successfully on that tick
+  // (a household `HouseholdTickIsolation` skipped contributes nothing, so a
+  // full-skip tick reads 0; `wifihaven_rollup_household_skipped_total` is the
+  // companion series). It rises as tenants are added but sub-linearly: the set
+  // is dominated by shared background hosts, so a tenant that adds no new one
+  // does not move it. See `AmbientLearnJob.doTick` for why the union and not a
+  // sum. Both unlabelled — per-host/mac labels would breach the cardinality
+  // firewall.
 
   def recordAmbientSpansDropped(count: Int): UIO[Unit] =
     ZIO
