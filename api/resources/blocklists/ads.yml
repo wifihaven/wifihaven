@@ -429,7 +429,7 @@ hosts:
   # NOT ad-tech — drone/asset-intelligence SaaS — but kept out of ai.yml too,
   # it's enterprise B2B, not a consumer AI tool), joblobster.ai, mediayo.ai,
   # wknd.ai, yegge.ai (confirmed NOT ad-tech — a personal blog/archive site).
-  # See evidence/ads-classification-2599.md.
+  # See evidence/multi-category-classification-2599.md.
   - assemblyexchange.com
   - adlooxtracking.com
   - axon.ai
