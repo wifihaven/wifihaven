@@ -1287,8 +1287,12 @@ object AppMetrics {
   // presence spans dropped because they contained no engagement anchor. A
   // sustained rise with flat screen-time means the learner is eating real
   // sessions (over-suppression); a flat zero while phantom idle-time returns
-  // means the thresholds are too lax. `presence_ambient_hosts` is the size of
-  // the learned ambient set, set on each AmbientLearnJob run. Both unlabelled —
+  // means the thresholds are too lax. `presence_ambient_hosts` is set on each
+  // AmbientLearnJob run. #2553: the baseline is one shared table but the
+  // thresholds and window are per household, so the gauge reports the size of
+  // the UNION — how many distinct hosts are ambient-gated for at least one
+  // household — and therefore grows with tenant count (`AmbientLearnJob`'s
+  // `setAmbientHosts` call site carries the rationale). Both unlabelled —
   // per-host/mac labels would breach the cardinality firewall.
 
   def recordAmbientSpansDropped(count: Int): UIO[Unit] =
