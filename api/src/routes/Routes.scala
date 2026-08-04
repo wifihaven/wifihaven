@@ -701,16 +701,34 @@ object ProfileRoutes {
       Method.DELETE / "api" / "profiles" / long("id")            ->
         handler { (id: Long, req: Request) =>
           val pid                                  = ProfileId(id)
-          val handle: ZIO[Any, ApiError, Response] =
-            requireWriter(req, auth) *>
-              // #1771: the global sentinel is a wire-shape fixture, not an authored profile —
-              // never deletable. The partial unique index would let admin recreate it via SQL,
-              // but the snapshot would briefly miss the household-wide allow/block lists.
-              requireNotGlobalProfile(profileRepo, pid, "profile (DELETE)") *>
-              profileRepo.delete(pid).mapError(ApiError.Db(_)) *>
-              // #1849: a deleted profile drops out of the snapshot's profile set.
-              invalidateSnapshot *>
-              ZIO.succeed(Response.ok)
+          val handle: ZIO[Any, ApiError, Response] = for {
+            claims <- requireWriter(req, auth)
+            // #2565: the tenancy gate, and it must come FIRST. The sentinel guard below is a
+            // SHAPE check (is this row the global sentinel?), not a tenancy one, and the repo's
+            // delete is an unscoped `DELETE FROM profiles WHERE id=?` — so without this the DELETE
+            // was reachable across the tenant boundary, destroying the row (and cascading its
+            // devices' profile_id, time_limits, app_policy_assignments, profile_schedule_rules)
+            // by guessing a globally-unique small integer.
+            //
+            // Household-only, NOT the household+role gate PUT/PATCH use: the hole here is purely
+            // tenancy, and that stricter gate also narrows the role check to admin-or-LINKED-adult,
+            // which would revoke the unlinked adult's delete #2522 granted (pinned in
+            // AdultEditBoundarySpec). Role stays with the writer check above; household is decided
+            // here — the same split the sibling write `PUT /api/profiles/{id}/users` uses.
+            //
+            // Identifiers are deliberately NOT spelled out above: MultiTenantRouteCensusSpec
+            // matches its checker names against the raw handler text with no comment stripping,
+            // so naming one in prose would satisfy the structural guard on this route even if the
+            // real call below were deleted.
+            _      <- requireProfileInHousehold(claims, pid, profileRepo)
+            // #1771: the global sentinel is a wire-shape fixture, not an authored profile —
+            // never deletable. The partial unique index would let admin recreate it via SQL,
+            // but the snapshot would briefly miss the household-wide allow/block lists.
+            _      <- requireNotGlobalProfile(profileRepo, pid, "profile (DELETE)")
+            _      <- profileRepo.delete(pid).mapError(ApiError.Db(_))
+            // #1849: a deleted profile drops out of the snapshot's profile set.
+            _      <- invalidateSnapshot
+          } yield Response.ok
           handle.mapError(ErrorMapper.errorToResponse)
         },
       // #423: field-scoped partial update. Body is a subset of the writable

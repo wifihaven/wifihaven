@@ -767,6 +767,104 @@ object MultiTenantIsolationSpec
       } yield assertTrue(resp.status == Status.NotFound || resp.status == Status.Forbidden) &&
         assertTrue(nameB == "B-Kids")
     },
+    // #2565: the missing DELETE sibling of the pin above. The route's sentinel guard is a SHAPE
+    // check (is this the global sentinel?), not a tenancy one, and `ProfileRepo.delete` is an
+    // unscoped `DELETE FROM profiles WHERE id=?` — so with no household gate a hh-A caller could
+    // destroy hh-B's profile (and cascade its devices' profile_id, time_limits,
+    // app_policy_assignments, profile_schedule_rules) by guessing a globally-unique small integer.
+    // The gate that closes it is household-only by design — #2522 keeps delete open to any adult
+    // in the household; the handler comment carries the full reasoning.
+    //
+    // Two actors, because the reported principal is "any household's adult" and the two roles
+    // reach the gate differently: an admin, and an adult NOT linked to the target profile.
+    test("pin 2 (#2565) — hh-A admin cannot DELETE hh-B's profile (404, row still present)") {
+      for {
+        _      <- cleanDb
+        two    <- TestLayers.seedTwoHouseholds(macA, macB)
+        pr     <- ZIO.service[ProfileRepo]
+        tlr    <- ZIO.service[TimeLimitRepo]
+        up     <- ZIO.service[UserProfileRepo]
+        ur     <- ZIO.service[UserRepo]
+        nsr    <- ZIO.service[NamedScheduleRepo]
+        xa     <- ZIO.service[Transactor[Task]]
+        auth   <- makeAuth
+        tokenA <- login(auth, two.adminA, two.password)
+        routes = ProfileRoutes.routes(auth, pr, tlr, up, ur, nsr)
+        resp     <- routes.runZIO(
+          Request
+            .delete(URL.decode(s"/api/profiles/${two.profileB.value}").toOption.get)
+            .addHeader(Header.Authorization.Bearer(tokenA)),
+        )
+        // The row itself — not just the status — is the assertion that matters: the delete is
+        // unrecoverable, so a 404 with the row already gone would still be the bug.
+        survived <- sql"SELECT name FROM profiles WHERE id=${two.profileB}"
+          .query[String]
+          .option
+          .transact(xa)
+      } yield assertTrue(resp.status == Status.NotFound || resp.status == Status.Forbidden) &&
+        assertTrue(survived == Some("B-Kids"))
+    },
+    // The literal principal #2565 reports: an ADULT, not an admin. The gate is role-blind, so the
+    // admin pin above covers this a fortiori — but the reported attacker is the one worth naming,
+    // and this adult is deliberately UNLINKED from the target profile, which is the case a
+    // household+role gate would have rejected for the wrong reason (role, not tenancy).
+    test("pin 2 (#2565) — hh-A ADULT cannot DELETE hh-B's profile (404, row still present)") {
+      for {
+        _      <- cleanDb
+        two    <- TestLayers.seedTwoHouseholds(macA, macB)
+        pr     <- ZIO.service[ProfileRepo]
+        tlr    <- ZIO.service[TimeLimitRepo]
+        up     <- ZIO.service[UserProfileRepo]
+        ur     <- ZIO.service[UserRepo]
+        nsr    <- ZIO.service[NamedScheduleRepo]
+        xa     <- ZIO.service[Transactor[Task]]
+        // An adult in household A, password hash copied from the seeded `admin` so `two.password`
+        // logs them in — the same AuthService-free shape the seeder uses for `adminB`.
+        _      <-
+          sql"""INSERT INTO users(username, password_hash, role, must_change_password, household_id)
+                SELECT 'adultA', password_hash, 'adult', false, ${two.hhA}
+                FROM users WHERE username=${two.adminA}""".update.run.transact(xa)
+        auth   <- makeAuth
+        // Household A is the default install (slug `default`), so a bare username resolves to it.
+        tokenA <- login(auth, "adultA", two.password)
+        routes = ProfileRoutes.routes(auth, pr, tlr, up, ur, nsr)
+        resp     <- routes.runZIO(
+          Request
+            .delete(URL.decode(s"/api/profiles/${two.profileB.value}").toOption.get)
+            .addHeader(Header.Authorization.Bearer(tokenA)),
+        )
+        survived <- sql"SELECT name FROM profiles WHERE id=${two.profileB}"
+          .query[String]
+          .option
+          .transact(xa)
+      } yield assertTrue(resp.status == Status.NotFound || resp.status == Status.Forbidden) &&
+        assertTrue(survived == Some("B-Kids"))
+    },
+    // Happy-path guard for the pins above: scoping the DELETE must not break a same-household one.
+    test("pin 2 (#2565) — hh-A admin CAN delete hh-A's own profile (happy path preserved)") {
+      for {
+        _      <- cleanDb
+        two    <- TestLayers.seedTwoHouseholds(macA, macB)
+        pr     <- ZIO.service[ProfileRepo]
+        tlr    <- ZIO.service[TimeLimitRepo]
+        up     <- ZIO.service[UserProfileRepo]
+        ur     <- ZIO.service[UserRepo]
+        nsr    <- ZIO.service[NamedScheduleRepo]
+        xa     <- ZIO.service[Transactor[Task]]
+        auth   <- makeAuth
+        tokenA <- login(auth, two.adminA, two.password)
+        routes = ProfileRoutes.routes(auth, pr, tlr, up, ur, nsr)
+        resp  <- routes.runZIO(
+          Request
+            .delete(URL.decode(s"/api/profiles/${two.profileA.value}").toOption.get)
+            .addHeader(Header.Authorization.Bearer(tokenA)),
+        )
+        goneA <- sql"SELECT name FROM profiles WHERE id=${two.profileA}"
+          .query[String]
+          .option
+          .transact(xa)
+      } yield assertTrue(resp.status == Status.Ok) && assertTrue(goneA.isEmpty)
+    },
     test("pin 2 — hh-A admin cannot write hh-B's device by MAC (404, row untouched)") {
       for {
         _      <- cleanDb
