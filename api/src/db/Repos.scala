@@ -340,11 +340,53 @@ object HouseholdRepo {
   }
 }
 
+/**
+ * #2532 (multi-tenant, epic #2085/#622): the tenancy pass `ProfileRepo` / `DeviceRepo` /
+ * `NamedScheduleRepo` received across #2107 / #2108 / #2126, applied here.
+ *
+ * The methods keyed on an id (`listProfilesForUser`, `listUsersForProfile`, `hasAccess`, `addLink`,
+ * `removeLink`, `setProfilesForUser`, `setUsersForProfile`) take NO household parameter,
+ * deliberately: `users.id` and `profiles.id` are GLOBALLY unique, so the argument already names
+ * exactly one row and there is nothing to disambiguate. Keeping a FOREIGN id out is the [[ownUser]]
+ * / [[requireProfileInHousehold]] choke points' job, not the repo's — duplicating the check here
+ * would make the boundary two places instead of one.
+ *
+ * TODO(#2531): that choke-point coverage is not yet complete, so do not read the paragraph above as
+ * a statement that every argument is guarded today. It holds for every USER id reaching this trait
+ * (`PUT /api/users/{id}/profiles` and `PATCH /api/users/{id}` both `ownUser` first; `POST
+ * /api/users` mints the id under `claims.hh`) and for BOTH sides of `setUsersForProfile` (`PUT
+ * /api/profiles/{id}/users` runs `requireProfileInHousehold` on the profile AND `ownUser` on every
+ * body `userId`). It does NOT hold for the `profileIds` argument of `setProfilesForUser`: those
+ * same three user routes pass a caller-supplied `List[ProfileId]` straight through with no
+ * `requireProfileInHousehold`, so an admin can still bind another household's profile. #2531 fixes
+ * that at those routes — the resolution stays at the choke point, not here. Routes named by
+ * method+path, not line number, so an edit above them cannot silently rot this paragraph.
+ *
+ * A USERNAME is different: V65 made it unique only per household (`UNIQUE(household_id, username)`)
+ * and V68 dropped the global unique, so a bare username names a SET of users across tenants — which
+ * is exactly why #2140 gave [[UserRepo.findByUsername]] a household parameter.
+ * [[listProfilesForUsername]] therefore takes one too.
+ *
+ * There is likewise no cross-tenant `listAllMappings` — the same rule [[ProfileRepo]] states for
+ * `listAll`: an all-tenant read must be an EXPLICIT `foreach(distinctHouseholds)` loop so it can
+ * never be written accidentally in a request path.
+ */
 trait UserProfileRepo {
   def listProfilesForUser(userId: UserId): Task[List[ProfileId]]
-  def listProfilesForUsername(username: String): Task[List[ProfileId]]
+
+  /**
+   * The profiles linked to `username` WITHIN `household`. Household-scoped because a username is
+   * unique only per household (V65/V68) — `BetaService.FirstAdminUsername` means every
+   * beta-provisioned household has a user named `admin`.
+   */
+  def listProfilesForUsername(
+      household: HouseholdId,
+      username: String,
+  ): Task[List[ProfileId]]
   def listUsersForProfile(profileId: ProfileId): Task[List[UserId]]
-  def listAllMappings: Task[List[(UserId, ProfileId)]] // (userId, profileId)
+
+  /** (userId, profileId) mappings whose USER belongs to `household`. Backs `GET /api/users`. */
+  def listMappingsForHousehold(household: HouseholdId): Task[List[(UserId, ProfileId)]]
   def setProfilesForUser(userId: UserId, profileIds: List[ProfileId]): Task[Unit]
   def setUsersForProfile(profileId: ProfileId, userIds: List[UserId]): Task[Unit]
   def addLink(userId: UserId, profileId: ProfileId): Task[Unit]
@@ -1517,8 +1559,9 @@ class UserProfileRepoLive(xa: Transactor[Task]) extends UserProfileRepo {
       .query[ProfileId]
       .to[List]
       .transact(xa)
-  def listProfilesForUsername(u: String)                           =
-    sql"SELECT up.profile_id FROM user_profiles up JOIN users us ON us.id=up.user_id WHERE us.username=$u ORDER BY up.profile_id"
+  def listProfilesForUsername(household: HouseholdId, u: String)   =
+    sql"""SELECT up.profile_id FROM user_profiles up JOIN users us ON us.id=up.user_id
+          WHERE us.username=$u AND us.household_id=$household ORDER BY up.profile_id"""
       .query[ProfileId]
       .to[List]
       .transact(xa)
@@ -1527,8 +1570,9 @@ class UserProfileRepoLive(xa: Transactor[Task]) extends UserProfileRepo {
       .query[UserId]
       .to[List]
       .transact(xa)
-  def listAllMappings                                              =
-    sql"SELECT user_id, profile_id FROM user_profiles"
+  def listMappingsForHousehold(household: HouseholdId)             =
+    sql"""SELECT up.user_id, up.profile_id FROM user_profiles up JOIN users us ON us.id=up.user_id
+          WHERE us.household_id=$household"""
       .query[(UserId, ProfileId)]
       .to[List]
       .transact(xa)
