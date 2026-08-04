@@ -287,15 +287,15 @@ object AlertRoutes {
    *     via `POST /api/time/extend`, which gates on this same primitive.
    *   - The profile's HOUSEHOLD (via the composed [[requireProfileInHousehold]]) — defense in
    *     depth. `alerts.household_id` and `alerts.profile_id` are stamped independently at insert,
-   *     but they cannot currently disagree: `createAccessRequest` takes `profileId` from
-   *     `findByMac(mac, HouseholdId.Default)` and stamps `household_id` with the LOWEST matching
-   *     household, so either both resolve to household 1 or `profileId` is NULL; and device→profile
-   *     reassignment is itself gated on `requireProfileAccess`, so a device never holds an
-   *     out-of-household profile. `TODO(#2322)` could let them diverge — if it derives the
-   *     block-page household for the STAMP without also rescoping the `findByMac` lookup that
-   *     supplies `profileId`, a shared MAC lands an hh-B alert holding an hh-1 profile. Threading
-   *     one derived household into both keeps them in agreement. Pinned now so the mismatch stays
-   *     refused either way.
+   *     but they cannot disagree: the intake resolves ONE household (#2322 — from the redirect's
+   *     block-page token, or `findOwningHousehold` on the pre-token fallback) and passes it to both
+   *     the `findByMac` that supplies `profileId` and the `createAccessRequest` that stamps
+   *     `household_id`; and device→profile reassignment is itself gated on `requireProfileAccess`,
+   *     so a device never holds an out-of-household profile. The divergence #2322 was once expected
+   *     to introduce — deriving the household for the STAMP while leaving the `findByMac` lookup at
+   *     `HouseholdId.Default`, landing an hh-B alert holding an hh-1 profile — is what threading
+   *     one household through both avoids. This guard is pinned anyway, so the mismatch stays
+   *     refused if a future path ever reintroduces it.
    */
   private def applyApproveSideEffect(
       alert: Alert,

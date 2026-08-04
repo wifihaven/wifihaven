@@ -2214,13 +2214,14 @@ object MultiTenantIsolationSpec
       // `requireProfileAccess` (which composes `requireProfileInHousehold`) stands between the
       // approval and hh-B's profile.
       //
-      // They cannot actually disagree TODAY: `createAccessRequest` reads `profileId` from
-      // `findByMac(mac, HouseholdId.Default)` and stamps `household_id` with the lowest matching
-      // household, and device→profile reassignment is itself household-gated. So this state is
-      // built directly by raw SQL rather than driven, and the pin is defense in depth against
-      // `TODO(#2322)` — deriving the block-page household from the requesting router, which COULD
-      // let the two diverge for a shared MAC depending on how it lands. It still fails without the
-      // guard.
+      // They cannot actually disagree: post-#2322 the intake resolves ONE household — from the
+      // redirect's block-page token, or `findOwningHousehold` when the agent hasn't got one yet —
+      // and passes it to both the `findByMac` that supplies `profileId` and the
+      // `createAccessRequest` that stamps `household_id`; device→profile reassignment is itself
+      // household-gated. That is exactly the divergence #2322 could have introduced had it derived
+      // the household for the stamp alone, so this state is built directly by raw SQL rather than
+      // driven. The pin stays as defense in depth: it still fails without the guard, and it is what
+      // would catch a future path that reintroduces the split.
       //
       // 404 here, not the 403 the unlinked-adult pin asserts: this refusal IS a tenancy boundary.
       for {

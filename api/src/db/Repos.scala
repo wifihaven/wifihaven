@@ -708,9 +708,10 @@ trait DeviceRepo {
    * ([[BlockedRoutes]]) and the public access-request intake ([[AlertRoutes]]). It now delegates to
    * [[findByMacInHousehold]] — one query, one source of truth; V65's uq_devices_household_mac
    * guarantees ≤1 row per household so `.option` is safe. Defaults to `HouseholdId.Default` for the
-   * single-household test call sites; the unauthenticated block-page callers pass
-   * `HouseholdId.Default` until per-request household derivation lands — #2322 for the
-   * access-request write path, #2569 for the `GET /api/blocked` read path.
+   * single-household test call sites. The two unauthenticated block-page callers no longer rely on
+   * that default: both now pass a household derived from the redirect's block-page token (#2569 for
+   * the `GET /api/blocked` read path, #2322 for the access-request write path), falling back to
+   * `HouseholdId.Default` / [[findOwningHousehold]] respectively only when no token is present.
    */
   def findByMac(mac: MacAddress, household: HouseholdId = HouseholdId.Default): Task[Option[Device]]
 
