@@ -1293,11 +1293,12 @@ object AppMetrics {
   // the UNION — how many distinct hosts are ambient-gated for at least one
   // household — over the households that learned successfully on that tick
   // (a household `HouseholdTickIsolation` skipped contributes nothing, so a
-  // full-skip tick reads 0; `rollup_household_skipped_total` is the companion
-  // series). It therefore does not stay flat as tenants are added.
-  // `AmbientLearnJob`'s `setAmbientHosts` call site carries the rationale for
-  // union-over-sum. Both unlabelled — per-host/mac labels would breach the
-  // cardinality firewall.
+  // full-skip tick reads 0; `wifihaven_rollup_household_skipped_total` is the
+  // companion series). It rises as tenants are added but sub-linearly: the set
+  // is dominated by shared background hosts, so a tenant that adds no new one
+  // does not move it. See `AmbientLearnJob.doTick` for why the union and not a
+  // sum. Both unlabelled — per-host/mac labels would breach the cardinality
+  // firewall.
 
   def recordAmbientSpansDropped(count: Int): UIO[Unit] =
     ZIO

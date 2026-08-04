@@ -183,7 +183,7 @@ object AmbientLearnJob {
     _       <- ZIO
       .logWarning(
         s"ambient_hosts prune skipped: $skipped household(s) were skipped this tick, so the " +
-          "retention window is not fully known (see rollup_household_skipped_total)",
+          "retention window is not fully known (see wifihaven_rollup_household_skipped_total)",
       )
       .when(skipped > 0)
     // The gauge is unlabelled and the ambient SET is per-household (one table, but each household
