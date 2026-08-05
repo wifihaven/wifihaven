@@ -34,6 +34,12 @@ hosts:
   # Mojang / Minecraft
   - minecraft.net
   - mojang.com
+  # traffic-driven addition (#2599): Mojang/Microsoft's own Minecraft backend
+  # services domain (observed subdomain net-secondary.web.minecraft-
+  # services.net) — a sibling apex of minecraft.net that the existing entry
+  # doesn't suffix-match. 30-day prod recent-apexes sweep (27 devices,
+  # 2026-08-04).
+  - minecraft-services.net
   # Supercell
   - supercell.com
   - brawlstars.com
@@ -57,6 +63,10 @@ hosts:
   - gog.com
   - itch.io
   - poki.com
+  # traffic-driven addition (#2599): Poki's own CDN apex (sibling of poki.com)
+  # observed serving substantial video/asset traffic. 30-day prod
+  # recent-apexes sweep (27 devices, 2026-08-04).
+  - poki-cdn.com
   - miniclip.com
   - kongregate.com
   - crazygames.com
@@ -109,3 +119,8 @@ hosts:
   # unrelated legitimate games — blocking it is infra-level collateral, not a
   # specific game), viddea.com (unclear identity, held out unverified).
   - saygames.io # SayGames — hyper-casual mobile game publisher (200+ titles, 8B+ downloads)
+  # traffic-driven addition (#2599): a third Eaglercraft TLD variant, same
+  # "unblocked games" evasion vein as eaglercraft.com/.ru above. Confirmed via
+  # web search as a dedicated Eaglercraft-unblocked portal. 30-day prod
+  # recent-apexes sweep (27 devices, 2026-08-04).
+  - eaglercraftgame.io

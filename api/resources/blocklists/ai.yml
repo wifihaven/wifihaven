@@ -52,6 +52,12 @@ hosts:
   # xAI / Grok
   - x.ai
   - grok.com
+  # traffic-driven addition (#2599): grokusercontent.com is Grok's generated-
+  # artifact CDN (observed subdomain artifacts.grokusercontent.com) — same
+  # sibling-apex pattern as the already-curated claudeusercontent.com /
+  # oaiusercontent.com. 30-day prod recent-apexes sweep (27 devices,
+  # 2026-08-04).
+  - grokusercontent.com
   # Perplexity
   - perplexity.ai
   - pplx.ai

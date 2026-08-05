@@ -203,6 +203,67 @@ that edit in the same PR.** If a step above is now wrong, fix the step too.
 
 ## Learnings log (newest first)
 
+- **2026-08-04** (#2599) — **This pass's household traffic was unusually
+  developer/infra-heavy (anthropic.com, claude.ai, warp.dev, docker.com,
+  github.com dominated the top of the ranked list) — do not let a
+  traffic-shape that looks "unrepresentative" discourage a full sweep. The
+  category gaps were still there once you grep specifically for
+  category-relevant keywords rather than eyeballing the top-N by volume.**
+  Confirms the Step 1 guidance: classify by keyword sweep across the FULL
+  ranked list, not just the highest-traffic apexes — several genuine gaps
+  this run were low-hit/low-byte (e.g. `freshpaint-impression.com` at 1 hit,
+  `grokusercontent.com` at 1 hit) and would never surface from a top-40 skim.
+- **2026-08-04** (#2599) — **`whatsapp.net` (WhatsApp's actual messaging/
+  media protocol domain — api./media-cdn subdomains) was a categorical
+  absence from `social-media.yml`, not a gap in an existing sibling-apex
+  cluster.** Despite Discord, Reddit, TikTok, etc. all being covered,
+  WhatsApp had zero representation. 90MB / 1029 hits this pass — the largest
+  single social-media add to date. **Worth an explicit sanity check each
+  pass: is any major messaging/social platform the household actually uses
+  simply missing outright, not just under-covered on sibling CDNs?** A
+  category-membership check against the curated list won't catch a total
+  absence — you have to notice the platform isn't mentioned anywhere in the
+  file at all.
+- **2026-08-04** (#2599) — **A "sync." or "-sync" subdomain pattern
+  (`shb-sync.com`, `contextualadv.com`'s `sync.` prefix, `pmbmonetize.live`'s
+  `sync.` prefix) is a strong ad cookie-sync signal — but the substring
+  "sync" in the APEX itself is a false-positive trap for financial/
+  productivity brands** (`synchrony.com` / `synchronycredit.com` /
+  `mysynchrony.com` = Synchrony Bank; `siteimproveanalytics.com` = a web
+  governance SaaS with "sync" nowhere relevant). Check the *subdomain*
+  prefix, not just the apex substring, before classifying a "sync"-named
+  domain as ad-tech.
+- **2026-08-04** (#2599) — **When two independently-observed apexes both sync
+  into the SAME already-curated ad exchange, that's strong corroboration for
+  both.** `pmbmonetize.live` and `contextualadv.com` each carry a `sync.`
+  subdomain that chains into `cs.openwebmp.com` (openwebmp.com already
+  curated as an ad exchange in ads.yml). Neither had a clean company-name
+  match on its own, but the shared downstream sync target confirmed both as
+  genuine ad infra. Check where a "sync" pixel actually redirects/chains to,
+  not just its own name.
+- **2026-08-04** (#2599) — **A `-cdn` / `videocdn` apex with an `ads.`
+  subdomain is NOT automatically an ads-category add — check whether it also
+  carries first-party video CONTENT subdomains (`videos-a.`, `videos-b.`,
+  `players.`) before adding.** `mmvideocdn.com` has both `ads.mmvideocdn.com`
+  AND `videos-a/videos-b/players.mmvideocdn.com`; it's Minute Media's own
+  video CDN (same company already skipped once via
+  `minutemediaservices.com`, #2064) — blocking the apex would kill the video
+  content itself, not just its ad slot. Same content-collateral class as
+  `target-video.com`/`brid.tv`. The presence of an `ads.` subdomain is
+  evidence the apex CARRIES ads, not that the apex IS an ad server — a
+  content CDN with an ads subdomain is still content-collateral.
+- **2026-08-04** (#2599) — **`ihawk.ai` and `yegge.ai` are reminders that the
+  `.ai` TLD alone is not an AI-product signal for the `ai.yml` sweep.**
+  Neither is ad-tech (checked because they also matched the ads `analytics`/
+  `track` sweep — they didn't) nor a consumer AI chatbot/generator (checked
+  for `ai.yml`) — one is an enterprise drone-data SaaS, the other a personal
+  blog. A dozen more low-traffic `.ai` domains this pass
+  (`cimulate.ai`, `componecat.ai`, `conduit.ai`, `connectmachine.ai`,
+  `directbooker.ai`, `duvo.ai`, `e-volution.ai`, `elixion.ai`, `joblobster.ai`,
+  `mediayo.ai`, `powerad.ai`, `wknd.ai`) got the same treatment: held out
+  unverified rather than added on TLD alone. Small businesses use `.ai` as a
+  vanity TLD constantly; only add on a confirmed consumer AI-product identity
+  or a confirmed ad-tech function, never on the TLD.
 - **2026-07-28** (#2503) — **Before trusting a "genuine ad company" name
   match, check whether a PRIOR pass already added and then reverted that
   exact apex.** `xlgmedia.com` (XLMedia) read as a clean ad-network add this
