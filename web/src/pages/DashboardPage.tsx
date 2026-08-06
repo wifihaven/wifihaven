@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '@/api/client'
-import { useDashboardNow, useRecentBlocked, useRouters, LIVE_SURFACE_FALLBACK_REFETCH_MS } from '@/api/queries'
+import {
+  useDashboardNow,
+  useRecentBlocked,
+  useRouters,
+  LIVE_SURFACE_FALLBACK_REFETCH_MS,
+  RECENT_BLOCKED_WINDOW_LABEL,
+} from '@/api/queries'
 import type {
   DashboardNow,
   DashboardNowDevice,
@@ -220,13 +226,17 @@ export function RecentlyBlockedSection() {
   // a role whose subscription the server rejects keeps polling instead of going stale.
   const streaming = useWsTopicLive('connectionEvents')
   useWsRecentBlocked(selectedMac)
-  const { data = null } = useRecentBlocked(selectedMac, {
+  // #2601 — read `isPending` / `isError` explicitly instead of collapsing both into a
+  // `data ?? null` sentinel. react-query leaves `data` undefined on error as well as
+  // while pending, so the old `const { data = null }` rendered a FAILED query as
+  // "Loading recent blocks…" forever (docs/process/loading-states.md §error).
+  const { data, isPending, isError, refetch } = useRecentBlocked(selectedMac, {
     refetchInterval: streaming ? false : LIVE_SURFACE_FALLBACK_REFETCH_MS,
   })
 
   // #2073 — group the flat feed under a per-profile header, preserving newest-first order both
   // across groups (by first appearance) and within each group.
-  const groups = useMemo(() => groupByProfile(data ?? []), [data])
+  const groups = useMemo(() => groupByProfile(data?.rows ?? []), [data])
   // #2073/#2062 — "View all →" lands on the Connection Events page pre-filtered to blocked. The
   // page reads `?status=blocked` (LogsPage.parseStatus) — NOT `?blocked=true` — and `?mac=` when
   // a device filter is active, so the destination lands already filtered.
@@ -239,6 +249,15 @@ export function RecentlyBlockedSection() {
       <div className="px-5 py-4 border-b border-brand-border flex items-center justify-between gap-3">
         <h2 className="text-sm font-semibold text-brand-text uppercase tracking-wider">
           Recently Blocked
+          {/* #2601 — NAME the window. Prod dropped Google Drive traffic for a profile and
+              the operator read the panel's silence as "nothing was blocked"; nothing on
+              screen said the view was only 15 minutes wide. */}
+          <span
+            data-testid="recently-blocked-window-label"
+            className="ml-2 font-normal normal-case tracking-normal text-brand-text-muted"
+          >
+            {RECENT_BLOCKED_WINDOW_LABEL}
+          </span>
         </h2>
         <div className="flex items-center gap-3 shrink-0">
           {deviceOptions.length > 0 && (
@@ -260,18 +279,49 @@ export function RecentlyBlockedSection() {
           </Link>
         </div>
       </div>
-      {data === null
-        ? <p className="px-5 py-4 text-brand-text-muted text-sm">Loading recent blocks…</p>
-        : data.length === 0
-          ? (
-            <div className="px-5 py-4">
-              <EmptyState
-                variant="inline"
-                title={selectedName ? `Nothing blocked recently for ${selectedName}` : 'Nothing blocked recently'}
-              />
-            </div>
-          )
-          : (
+      {isError
+        ? (
+          // #2601 — an error affordance, never a state that reads as "still working" or
+          // as "nothing was blocked". A failed fetch is not zero events.
+          <div className="px-5 py-4 flex items-center gap-3" data-testid="recently-blocked-error">
+            <p className="text-brand-text-muted text-sm">Couldn&rsquo;t load recent blocks.</p>
+            <button
+              type="button"
+              onClick={() => { void refetch() }}
+              className="text-xs text-brand-accent-dark hover:underline"
+            >
+              Retry
+            </button>
+          </div>
+        )
+        : isPending || !data
+          ? <p className="px-5 py-4 text-brand-text-muted text-sm">Loading recent blocks…</p>
+          : data.rows.length === 0
+            ? (
+              <div className="px-5 py-4">
+                <EmptyState
+                  variant="inline"
+                  title={selectedName ? `Nothing blocked recently for ${selectedName}` : 'Nothing blocked recently'}
+                  hint={
+                    // #2601 — the case that misled the operator on prod: real drops exist
+                    // in the fetched hour, just none in the trailing window. Say so, and
+                    // hand them the wider view instead of dead-ending on an empty list.
+                    data.olderCount > 0
+                      ? (
+                        <span data-testid="recently-blocked-stale-hint">
+                          {data.olderCount === 1 ? '1 block' : `${data.olderCount} blocks`}
+                          {' in the past hour, outside this window. '}
+                          <Link to={viewAllHref} className="text-brand-accent-dark hover:underline">
+                            See all blocks
+                          </Link>
+                        </span>
+                      )
+                      : undefined
+                  }
+                />
+              </div>
+            )
+            : (
             <div
               data-testid="recently-blocked-scroll"
               className={`${RECENTLY_BLOCKED_MAX_H} overflow-y-auto divide-y divide-brand-border`}

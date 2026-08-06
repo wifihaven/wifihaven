@@ -29,6 +29,9 @@ export const RECENT_BLOCKED_LIMIT = 20
 // only takes integer `hours`, so we fetch a 1h window for headroom and trim to
 // the 15-min window client-side.
 export const RECENT_BLOCKED_WINDOW_MS = 15 * 60_000
+// Human-readable form of the window above, so the panel can NAME it. Single-sourced
+// here rather than hardcoded in the UI copy (#2601).
+export const RECENT_BLOCKED_WINDOW_LABEL = `last ${RECENT_BLOCKED_WINDOW_MS / 60_000} min`
 
 // Per-endpoint stale times (#803).
 const STALE = {
@@ -262,16 +265,36 @@ export function useDashboardNow(opts?: QueryOpts<DashboardNow>) {
 // #2062: an optional `mac` narrows the feed to one device (the "All devices ▾" quick filter),
 // threaded into BOTH the cache key and the /api/logs `mac` filter so the fallback poll narrows
 // server-side, matching the narrowed live subscription (useWsRecentBlocked).
-export function useRecentBlocked(mac: string | null = null, opts?: QueryOpts<QueryLog[]>) {
+// #2601: `select` returns the trimmed rows AND how many fetched rows fell OUTSIDE the
+// window. Without that count the panel cannot tell "this household has never been
+// blocked" from "there were blocks, just not in the last 15 minutes" — and it rendered
+// both as the same bare empty state while prod was dropping Google Drive traffic. The
+// query CACHE still holds the raw `QueryLog[]` the ws push prepends into (wsCache
+// `prependHead`); only this consumer-facing projection changes shape.
+export interface RecentBlocked {
+  rows: QueryLog[]
+  /** Fetched blocked rows older than RECENT_BLOCKED_WINDOW_MS but inside the 1h fetch. */
+  olderCount: number
+}
+
+// The fetch returns QueryLog[] and `select` projects it to RecentBlocked, so callers
+// tune everything EXCEPT select (which this hook owns).
+type RecentBlockedOpts = Omit<
+  UseQueryOptions<QueryLog[], Error, RecentBlocked, readonly unknown[]>,
+  'queryKey' | 'queryFn' | 'select'
+>
+
+export function useRecentBlocked(mac: string | null = null, opts?: RecentBlockedOpts) {
   return useQuery({
     queryKey: qk.recentBlocked(mac),
     queryFn: () =>
       api.logs
         .query({ blocked: true, limit: RECENT_BLOCKED_LIMIT, hours: 1, ...(mac ? { macs: [mac] } : {}) })
         .then(p => p.rows),
-    select: (rows: QueryLog[]) => {
+    select: (rows: QueryLog[]): RecentBlocked => {
       const cutoff = Date.now() - RECENT_BLOCKED_WINDOW_MS
-      return rows.filter(r => new Date(r.ts).getTime() >= cutoff)
+      const recent = rows.filter(r => new Date(r.ts).getTime() >= cutoff)
+      return { rows: recent, olderCount: rows.length - recent.length }
     },
     staleTime: STALE.recentBlocked,
     refetchInterval: 10_000,
