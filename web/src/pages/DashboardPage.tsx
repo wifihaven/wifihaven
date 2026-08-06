@@ -7,6 +7,7 @@ import {
   useRouters,
   LIVE_SURFACE_FALLBACK_REFETCH_MS,
   RECENT_BLOCKED_WINDOW_LABEL,
+  RECENT_BLOCKED_FETCH_LABEL,
 } from '@/api/queries'
 import type {
   DashboardNow,
@@ -279,23 +280,34 @@ export function RecentlyBlockedSection() {
           </Link>
         </div>
       </div>
-      {isError
-        ? (
-          // #2601 — an error affordance, never a state that reads as "still working" or
-          // as "nothing was blocked". A failed fetch is not zero events.
-          <div className="px-5 py-4 flex items-center gap-3" data-testid="recently-blocked-error">
-            <p className="text-brand-text-muted text-sm">Couldn&rsquo;t load recent blocks.</p>
-            <button
-              type="button"
-              onClick={() => { void refetch() }}
-              className="text-xs text-brand-accent-dark hover:underline"
-            >
-              Retry
-            </button>
-          </div>
-        )
-        : isPending || !data
-          ? <p className="px-5 py-4 text-brand-text-muted text-sm">Loading recent blocks…</p>
+      {/* #2601 — a failed poll must never blank a panel that already has real drops on
+          screen. react-query flips `status` to 'error' on a failed BACKGROUND refetch
+          while `data` stays populated, and this panel exists precisely so enforcement
+          isn't invisible, so last-known-good rows keep rendering under an inline error
+          strip. The full-panel error is only for a failure with nothing to fall back on. */}
+      {isError && (
+        <div
+          className="px-5 py-3 flex items-center gap-3 border-b border-brand-border"
+          data-testid="recently-blocked-error"
+        >
+          <p className="text-brand-text-muted text-sm">
+            Couldn&rsquo;t load recent blocks{data ? '; showing the last successful read' : ''}.
+          </p>
+          <button
+            type="button"
+            onClick={() => { void refetch() }}
+            className="text-xs text-brand-accent-dark hover:underline"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+      {isPending
+        ? <p className="px-5 py-4 text-brand-text-muted text-sm">Loading recent blocks…</p>
+        : !data
+          // Errored with nothing cached — the strip above already said so; adding an
+          // empty state here would read as "nothing was blocked".
+          ? null
           : data.rows.length === 0
             ? (
               <div className="px-5 py-4">
@@ -306,11 +318,15 @@ export function RecentlyBlockedSection() {
                     // #2601 — the case that misled the operator on prod: real drops exist
                     // in the fetched hour, just none in the trailing window. Say so, and
                     // hand them the wider view instead of dead-ending on an empty list.
+                    // `olderCount` is capped by RECENT_BLOCKED_LIMIT, so a saturated page
+                    // reports it as a floor ("20+") rather than claiming a total it can't see.
                     data.olderCount > 0
                       ? (
                         <span data-testid="recently-blocked-stale-hint">
-                          {data.olderCount === 1 ? '1 block' : `${data.olderCount} blocks`}
-                          {' in the past hour, outside this window. '}
+                          {data.olderCountTruncated
+                            ? `${data.olderCount}+ blocks`
+                            : data.olderCount === 1 ? '1 block' : `${data.olderCount} blocks`}
+                          {` in ${RECENT_BLOCKED_FETCH_LABEL}, outside this window. `}
                           <Link to={viewAllHref} className="text-brand-accent-dark hover:underline">
                             See all blocks
                           </Link>

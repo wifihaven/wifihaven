@@ -29,9 +29,16 @@ export const RECENT_BLOCKED_LIMIT = 20
 // only takes integer `hours`, so we fetch a 1h window for headroom and trim to
 // the 15-min window client-side.
 export const RECENT_BLOCKED_WINDOW_MS = 15 * 60_000
-// Human-readable form of the window above, so the panel can NAME it. Single-sourced
-// here rather than hardcoded in the UI copy (#2601).
+// The server-side fetch width. Wider than the display window on purpose: it is what
+// lets the panel say "there were blocks, just not in the last 15 minutes" instead of
+// rendering the same empty state as a household that has never been blocked.
+export const RECENT_BLOCKED_FETCH_HOURS = 1
+// Human-readable forms of the two spans above, so the panel can NAME them. Derived
+// here rather than hardcoded in the UI copy, so widening either constant cannot leave
+// the copy asserting a span the fetch no longer uses (#2601).
 export const RECENT_BLOCKED_WINDOW_LABEL = `last ${RECENT_BLOCKED_WINDOW_MS / 60_000} min`
+export const RECENT_BLOCKED_FETCH_LABEL =
+  RECENT_BLOCKED_FETCH_HOURS === 1 ? 'the past hour' : `the past ${RECENT_BLOCKED_FETCH_HOURS} hours`
 
 // Per-endpoint stale times (#803).
 const STALE = {
@@ -273,8 +280,17 @@ export function useDashboardNow(opts?: QueryOpts<DashboardNow>) {
 // `prependHead`); only this consumer-facing projection changes shape.
 export interface RecentBlocked {
   rows: QueryLog[]
-  /** Fetched blocked rows older than RECENT_BLOCKED_WINDOW_MS but inside the 1h fetch. */
+  /**
+   * Fetched blocked rows older than RECENT_BLOCKED_WINDOW_MS but inside the
+   * RECENT_BLOCKED_FETCH_HOURS fetch.
+   */
   olderCount: number
+  /**
+   * The fetch came back at RECENT_BLOCKED_LIMIT, so `olderCount` is a floor, not a
+   * total — the household may have many more older blocks than the page carries.
+   * Callers must not present `olderCount` as an absolute count when this is true.
+   */
+  olderCountTruncated: boolean
 }
 
 // The fetch returns QueryLog[] and `select` projects it to RecentBlocked, so callers
@@ -289,12 +305,21 @@ export function useRecentBlocked(mac: string | null = null, opts?: RecentBlocked
     queryKey: qk.recentBlocked(mac),
     queryFn: () =>
       api.logs
-        .query({ blocked: true, limit: RECENT_BLOCKED_LIMIT, hours: 1, ...(mac ? { macs: [mac] } : {}) })
+        .query({
+          blocked: true,
+          limit: RECENT_BLOCKED_LIMIT,
+          hours: RECENT_BLOCKED_FETCH_HOURS,
+          ...(mac ? { macs: [mac] } : {}),
+        })
         .then(p => p.rows),
     select: (rows: QueryLog[]): RecentBlocked => {
       const cutoff = Date.now() - RECENT_BLOCKED_WINDOW_MS
       const recent = rows.filter(r => new Date(r.ts).getTime() >= cutoff)
-      return { rows: recent, olderCount: rows.length - recent.length }
+      return {
+        rows: recent,
+        olderCount: rows.length - recent.length,
+        olderCountTruncated: rows.length >= RECENT_BLOCKED_LIMIT,
+      }
     },
     staleTime: STALE.recentBlocked,
     refetchInterval: 10_000,

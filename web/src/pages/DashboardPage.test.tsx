@@ -576,10 +576,41 @@ describe('RecentlyBlockedSection (#1338 / #2073 / #2062)', () => {
     })
     render(withQuery(<MemoryRouter><RecentlyBlockedSection /></MemoryRouter>))
     const stale = await screen.findByTestId('recently-blocked-stale-hint')
+    // The count is singular here, and it names the FETCH span (an hour), not the display window.
+    expect(stale).toHaveTextContent(/^1 block in the past hour, outside this window\./)
     // Points at the wider view rather than dead-ending on an empty list.
     expect(stale.querySelector('a')).toHaveAttribute('href', '/usage/events?status=blocked')
     // The stale row itself still must NOT masquerade as recent (#1338 contract).
     expect(screen.queryByText('connectivitycheck.gstatic.com')).not.toBeInTheDocument()
+  })
+
+  it('#2601 — reports a saturated page as a floor ("20+"), not as an exact total', async () => {
+    // olderCount is bounded by RECENT_BLOCKED_LIMIT, so a household with hundreds of
+    // older drops must not be told it had exactly 20. Claiming precision the payload
+    // cannot support is the same class of defect as the empty state this panel is fixing.
+    const stale = new Date(Date.now() - 40 * 60_000).toISOString()
+    mockQuery().mockResolvedValue({
+      rows: Array.from({ length: 20 }, (_, i) => ({ ...blockedRow, id: 900 + i, ts: stale })),
+      nextCursor: null,
+    })
+    render(withQuery(<MemoryRouter><RecentlyBlockedSection /></MemoryRouter>))
+    expect(await screen.findByTestId('recently-blocked-stale-hint')).toHaveTextContent(/^20\+ blocks/)
+  })
+
+  it('#2601 — a failed REFETCH keeps the rows already on screen, under an error strip', async () => {
+    // react-query flips status to 'error' on a failed background refetch while `data`
+    // stays populated. Blanking a panel that is currently showing real drops would make
+    // enforcement invisible again — the exact failure this issue is about.
+    mockQuery()
+      .mockResolvedValueOnce({ rows: [blockedRow], nextCursor: null })
+      .mockRejectedValue(new Error('boom'))
+    const client = makeTestQueryClient()
+    render(withQuery(<MemoryRouter><RecentlyBlockedSection /></MemoryRouter>, client))
+    await screen.findByText('connectivitycheck.gstatic.com')
+    await act(async () => { await client.refetchQueries({ queryKey: ['dashboard', 'recent-blocked', null] }) })
+    expect(await screen.findByTestId('recently-blocked-error')).toBeInTheDocument()
+    // The last successful read is still rendered.
+    expect(screen.getByText('connectivitycheck.gstatic.com')).toBeInTheDocument()
   })
 
   it('#2601 — a genuinely empty 1h fetch keeps the plain empty state, with no stale hint', async () => {
