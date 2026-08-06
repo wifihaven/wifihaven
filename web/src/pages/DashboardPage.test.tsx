@@ -552,6 +552,54 @@ describe('RecentlyBlockedSection (#1338 / #2073 / #2062)', () => {
     expect(await screen.findByText(/Nothing blocked recently/)).toBeInTheDocument()
   })
 
+  // ── #2601: the panel must not let enforcement happen invisibly ───────────────
+  //
+  // Prod, 2026-08-06: the `sameer` profile was dropped from Google Drive by an
+  // `ads` category rule matching a SHARED Google GFE address, and the operator
+  // read the panel as "nothing was blocked". The rows were in the database the
+  // whole time — the panel had silently trimmed them out of its 15-min view,
+  // and nothing on screen said the view was 15 minutes wide.
+
+  it('#2601 — names the 15-minute window so an empty panel is not read as "never blocked"', async () => {
+    render(withQuery(<MemoryRouter><RecentlyBlockedSection /></MemoryRouter>))
+    await screen.findByText('connectivitycheck.gstatic.com')
+    expect(screen.getByTestId('recently-blocked-window-label')).toHaveTextContent(/15 min/i)
+  })
+
+  it('#2601 — says older blocks exist when every fetched row is outside the 15-min window', async () => {
+    // Exactly the prod shape: real drops in the 1h fetch, none inside the trailing
+    // 15 min. Rendering the bare "Nothing blocked recently" here is the defect —
+    // it is indistinguishable from a household that has never been blocked.
+    mockQuery().mockResolvedValue({
+      rows: [{ ...blockedRow, ts: new Date(Date.now() - 40 * 60_000).toISOString() }],
+      nextCursor: null,
+    })
+    render(withQuery(<MemoryRouter><RecentlyBlockedSection /></MemoryRouter>))
+    const stale = await screen.findByTestId('recently-blocked-stale-hint')
+    // Points at the wider view rather than dead-ending on an empty list.
+    expect(stale.querySelector('a')).toHaveAttribute('href', '/usage/events?status=blocked')
+    // The stale row itself still must NOT masquerade as recent (#1338 contract).
+    expect(screen.queryByText('connectivitycheck.gstatic.com')).not.toBeInTheDocument()
+  })
+
+  it('#2601 — a genuinely empty 1h fetch keeps the plain empty state, with no stale hint', async () => {
+    mockQuery().mockResolvedValue({ rows: [], nextCursor: null })
+    render(withQuery(<MemoryRouter><RecentlyBlockedSection /></MemoryRouter>))
+    expect(await screen.findByText(/Nothing blocked recently/)).toBeInTheDocument()
+    expect(screen.queryByTestId('recently-blocked-stale-hint')).not.toBeInTheDocument()
+  })
+
+  it('#2601 — a failed query shows an error affordance, not a permanent "Loading…"', async () => {
+    // react-query leaves `data` undefined on error as well as while pending, so the
+    // old `const { data = null }` collapsed both into the loading branch and the panel
+    // claimed to still be working forever. docs/process/loading-states.md §error.
+    mockQuery().mockRejectedValue(new Error('boom'))
+    render(withQuery(<MemoryRouter><RecentlyBlockedSection /></MemoryRouter>))
+    expect(await screen.findByTestId('recently-blocked-error')).toBeInTheDocument()
+    expect(screen.queryByText(/Loading recent blocks/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Nothing blocked recently/)).not.toBeInTheDocument()
+  })
+
   // ── #2062: the "All devices ▾" quick device filter narrows the (grouped) list by mac ──
   it('narrows the list to a device and re-fetches the fallback poll by mac (#2062)', async () => {
     mockNow().mockResolvedValue(nowWithDevices)
