@@ -339,11 +339,12 @@ export function RecentlyBlockedSection() {
                         </span>
                       )
                       // Nothing anywhere in the fetched hour. No caveat copy here on
-                      // purpose: the ~26s a just-now block took to arrive was a pipeline
-                      // defect, not a fact to apologise for in the UI. It is fixed at the
-                      // source (the ws sidecar drained the outbound spool only after its
-                      // 30s inbound read timeout); telling the operator to wait would have
-                      // been dressing up the latency instead of removing it.
+                      // purpose: the ~26s a just-now block took to arrive is a pipeline
+                      // defect, not a fact to apologise for in the UI. Telling the operator
+                      // to wait would dress up the latency instead of removing it. The
+                      // latency itself is NOT fixed yet — it is the ws sidecar draining its
+                      // outbound spool only after the inbound read times out — and is
+                      // tracked separately in #2620.
                       : undefined
                   }
                 />
