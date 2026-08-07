@@ -343,18 +343,17 @@ enforcement path a paused profile uses. Nothing new runs on the router.
   a closed port and the device just sees a refused connection. Even with it, the
   page does not currently name this case: see the caveat below.
 
-> **Caveat — read before you flip this on.** Two rough edges here are known and
-> tracked in
+> **Caveat — read before you flip this on.** Three rough edges here are known
+> and tracked in
 > [#2610](https://github.com/wifihaven/wifihaven/issues/2610):
 > the block page an unmanaged-blocked device lands on currently reports the
 > device as *not* blocked, rather than explaining that it isn't enrolled; the
 > **Show block page** checkbox next to the policy is not yet wired to anything,
-> so toggling it changes nothing; and the Admin card's own help text still
-> describes this as deferred and as a "manual block", both of which predate the
-> enforcement that now ships. None of it affects enforcement — a blocked
-> unmanaged device is genuinely blocked either way — but it does mean the
-> device and the card both give an unhelpful answer, so diagnose from the
-> Devices page rather than from either.
+> so toggling it changes nothing; and the card's help text calls the result a
+> "manual block" when the reason is actually `Unmanaged`. None of it affects
+> enforcement — a blocked unmanaged device is genuinely blocked either way — but
+> the device's own answer is unhelpful and the card's is mislabeled, so diagnose
+> from the Devices page rather than from either.
 
 To undo, set the policy back to `allow` on the same card. It takes effect on
 the next snapshot, in seconds.
