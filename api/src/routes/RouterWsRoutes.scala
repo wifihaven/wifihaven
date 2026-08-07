@@ -5,7 +5,7 @@ import wifihaven.api.metrics.{AppMetrics, RouterMetricsService}
 import wifihaven.api.observability.LogContext
 import wifihaven.api.policy.PolicyService
 import wifihaven.shared.{Router, RouterMetricsBatch}
-import wifihaven.shared.types.HouseholdScoped
+import wifihaven.api.policy.HouseholdScoped
 import zio.*
 import zio.http.*
 import zio.http.ChannelEvent.UserEvent

@@ -1,7 +1,7 @@
 package wifihaven.api.policy
 
 import wifihaven.shared.PolicySnapshot
-import wifihaven.shared.types.{HouseholdId, HouseholdScoped}
+import wifihaven.shared.types.HouseholdId
 import zio.*
 
 /**

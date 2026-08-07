@@ -362,24 +362,38 @@ class PolicyServiceLive(
       // routers) plus Default. Default is always included so this keeps doing what it did before
       // for the single-household install and for the SPA change-bus sink, which has no household
       // dimension and needs the tick to fire at all; the union with connected households is what is
-      // new. Cost: one ~500ms build per tick per household with a connected router, where it used
-      // to be one flat — bounded by the fleet, not by the households table, and still the single
-      // rebuild point that keeps every REST poll on a cache hit (#1512). TODO(#1936) replaces the
-      // fixed-interval tick with boundary scheduling, which is what actually collapses this cost.
+      // new.
+      //
+      // COST, stated for both callers because they are not the same size (#2635):
+      //   - the reconcile ticker (`Main`, every `snapshotCacheRefreshInterval`) now does one build
+      //     per household with a connected router instead of one flat;
+      //   - `invalidate` forks this on EVERY policy mutation, so an edit touching ONE household
+      //     rebuilds every other connected household too, which is pure waste.
+      // The bound is the connected fleet, not the households table, and a build is ~2.5s by the
+      // note at `Main.scala` (unmeasured at multi-household scale — do not treat either that or the
+      // ~500ms figure elsewhere in this file as measured). #2635 carries the cost decision #2626
+      // asked for: rebuild only the household a mutation touched, or stagger the sweep. TODO(#1936)
+      // is a different, smaller lever — it reshapes the TICKER only and does nothing about
+      // `invalidate`.
       publisher.get.targetHouseholds
         .map(_ + HouseholdId.Default)
         .flatMap(ZIO.foreachDiscard(_)(reevaluateHousehold))
 
   private def reevaluateHousehold(household: HouseholdId): UIO[Unit] =
     ZIO.succeed(mutationVersion.get).flatMap { gen =>
-      buildSnapshot(household).foldZIO(
-        err =>
+      // `foldCauseZIO`, not `foldZIO`: a DEFECT (not just a typed failure) in one household's build
+      // would otherwise escape the `foreachDiscard` above and kill the reconcile ticker fiber
+      // outright — `Main` runs it as `.repeat(...).forkScoped` with nothing to restart it, so the
+      // whole fleet would then sit on stale policy until a redeploy, with the REST poll dormant on
+      // a healthy ws link (#2037). Same reasoning as the stamp sink in `RouterWsRegistry`.
+      buildSnapshot(household).foldCauseZIO(
+        cause =>
           // Keep the last good cache on a transient build failure (e.g. a DB blip) so the REST poll
           // keeps serving the previous snapshot rather than a cold rebuild storm; the next tick
           // retries. Per household, so one household's blip cannot skip another's push.
-          ZIO.logWarning(
-            s"policy reevaluate: snapshot rebuild failed for household=$household, " +
-              s"keeping cache: $err",
+          ZIO.logWarningCause(
+            s"policy reevaluate: snapshot rebuild failed for household=$household, keeping cache",
+            cause,
           ),
         snap => {
           installSnapshot(household, gen, snap)

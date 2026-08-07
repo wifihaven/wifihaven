@@ -4,7 +4,7 @@ import wifihaven.api.{ErrorBoundary, Readiness}
 import wifihaven.api.db.*
 import wifihaven.api.metrics.{HttpMetrics, RouterMetricsService}
 import wifihaven.api.observability.LoggingMiddleware
-import wifihaven.api.policy.PolicyServiceLive
+import wifihaven.api.policy.{HouseholdScoped, PolicyServiceLive}
 import wifihaven.api.routes.*
 import wifihaven.shared.*
 import wifihaven.shared.types.*

@@ -1,9 +1,9 @@
 package wifihaven.api.routes
 
 import wifihaven.api.metrics.AppMetrics
-import wifihaven.api.policy.PolicySnapshotPublisher
+import wifihaven.api.policy.{HouseholdScoped, PolicySnapshotPublisher}
 import wifihaven.shared.PolicySnapshot
-import wifihaven.shared.types.{ETag, HouseholdId, HouseholdScoped, RouterId}
+import wifihaven.shared.types.{ETag, HouseholdId, RouterId}
 import zio.*
 import zio.http.{ChannelEvent, WebSocketChannel, WebSocketFrame}
 import zio.json.*
@@ -219,7 +219,7 @@ final class RouterWsRegistryLive(
       // Serialise once for the whole household, as the pre-#2630 broadcast did — and not at all
       // when this household has no connected router, which with many tenants is now the common case
       // for any given push.
-      ZIO.foreachDiscard(recipients.headOption.toList) { case (_, _, snap) =>
+      recipients.headOption.fold(ZIO.unit) { case (_, _, snap) =>
         val frame = RouterWsRegistry.policyFrameText(snap)
         ZIO.foreachDiscard(recipients) { case (id, channels, _) =>
           ZIO.foreachDiscard(channels)(ch =>
@@ -250,8 +250,8 @@ final class RouterWsRegistryLive(
             // `policy.snapshot(router.householdId)`. Loud, and nothing is sent.
             AppMetrics.recordWsPolicyPush("household_mismatch") *>
               ZIO.logWarning(
-                s"router ws: refusing policy push to router=$id - snapshot household=" +
-                  s"${scoped.owner} but router household=$hh",
+                s"router ws: refusing policy push to router=$id - snapshot " +
+                  s"${scoped.ownerLabel} but router household=$hh",
               )
           case Some(snap) =>
             // `deregisterOnFailure = false` preserves this path's pre-existing behaviour: the

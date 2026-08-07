@@ -4,7 +4,7 @@ import wifihaven.api.JwtConfig
 import wifihaven.api.WsConfig
 import wifihaven.api.auth.*
 import wifihaven.api.db.*
-import wifihaven.api.policy.PolicySnapshotPublisher
+import wifihaven.api.policy.{HouseholdScoped, PolicySnapshotPublisher}
 import wifihaven.api.routes.*
 import wifihaven.shared.*
 import wifihaven.shared.types.*

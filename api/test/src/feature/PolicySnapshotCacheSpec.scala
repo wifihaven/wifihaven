@@ -8,6 +8,7 @@ import wifihaven.shared.types.*
 import wifihaven.testinfra.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 import zio.{Clock as _, *}
+import zio.metrics.Metric
 import zio.test.*
 
 import java.time.{LocalDateTime, LocalTime, ZoneId}
@@ -44,17 +45,27 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
    * for. Defaults to empty, which reproduces the pre-#2630 shape (Default alone) for the tests that
    * predate household scoping.
    *
-   * The recorded snapshot is unwrapped through `forHousehold`, the only accessor
-   * [[HouseholdScoped]] has — so a probe cannot observe a payload the production sink could not.
+   * It reads the payload exactly the way the production registry does: try each household it could
+   * plausibly be delivering to, and record the one that unwraps. It does NOT ask the wrapper who it
+   * belongs to and then unwrap against that answer — that would launder the payload out with no
+   * recipient named, which is the read [[HouseholdScoped]] exists to prevent, and a probe that can
+   * see more than the production sink is not a probe.
+   *
+   * `alsoTry` widens the set of households the probe attempts to unwrap against beyond its own
+   * targets, so a test can prove a push did NOT arrive for a household — an unattempted household
+   * would read as "not pushed" no matter what happened.
    */
   private final class ProbePublisher(
       ref: Ref[List[(HouseholdId, PolicySnapshot)]],
       targets: Set[HouseholdId] = Set.empty,
+      alsoTry: Set[HouseholdId] = Set.empty,
   ) extends PolicySnapshotPublisher {
+    private val candidates: Set[HouseholdId] = targets ++ alsoTry + HouseholdId.Default
+
     def publish(scoped: HouseholdScoped[PolicySnapshot]): UIO[Unit] =
-      ZIO.foreachDiscard(scoped.forHousehold(scoped.owner))(snap =>
-        ref.update(_ :+ (scoped.owner, snap)),
-      )
+      ZIO.foreachDiscard(candidates.toList) { hh =>
+        ZIO.foreachDiscard(scoped.forHousehold(hh))(snap => ref.update(_ :+ (hh, snap)))
+      }
     def targetHouseholds: UIO[Set[HouseholdId]]                     = ZIO.succeed(targets)
   }
 
@@ -67,6 +78,7 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
       startAt: LocalDateTime,
       buildBarrier: UIO[Unit] = ZIO.unit,
       pushTargets: Set[HouseholdId] = Set.empty,
+      probeAlsoTry: Set[HouseholdId] = Set.empty,
   ) =
     for {
       pr     <- ZIO.service[ProfileRepo]
@@ -99,8 +111,18 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
         buildBarrier = buildBarrier,
       )
       pushed <- Ref.make(List.empty[(HouseholdId, PolicySnapshot)])
-      _      <- svc.setPublisher(new ProbePublisher(pushed, pushTargets))
+      _      <- svc.setPublisher(new ProbePublisher(pushed, pushTargets, probeAlsoTry))
     } yield (svc, ref, pushed)
+
+  /**
+   * The cumulative `policy_snapshot_build_total{result=...}` count, read straight off the ZIO
+   * metric registry with the key `MetricGuard.counter` writes. Asserted as a DELTA around the
+   * action: the registry is JVM-global and this counter is additive, so an absolute read would
+   * couple this spec to whatever else in the suite built a snapshot. Exact rather than a lower
+   * bound because this suite is `TestAspect.sequential` and mill runs one spec class at a time.
+   */
+  private def snapshotBuildTotal(result: String): UIO[Double] =
+    Metric.counter("policy_snapshot_build_total").tagged("result", result).value.map(_.count)
 
   private def blockedMacs(snap: PolicySnapshot): List[String] =
     snap.devices.toList.flatMap { case (mac, dev) =>
@@ -195,16 +217,25 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
       // that used to repair that goes dormant on a healthy ws link (#2037). So the rebuild is now
       // per household, driven by which households actually have a connected router.
       for {
-        _      <- cleanDb
-        hRepo  <- ZIO.service[HouseholdRepo]
-        hhB    <- hRepo.create("Other household", "other-household")
-        triple <- makeCachedSvc(
+        _          <- cleanDb
+        hRepo      <- ZIO.service[HouseholdRepo]
+        hhB        <- hRepo.create("Other household", "other-household")
+        // Household C exists in the `households` table but has NO connected router. It is what
+        // separates "rebuild the connected fleet" from "rebuild every row in the table" — with only
+        // two households the push count cannot tell those apart, and the cost argument for this
+        // change rests entirely on it being the former. The probe attempts C explicitly
+        // (`probeAlsoTry`), so "no push for C" is an observation rather than an omission.
+        hhC        <- hRepo.create("Routerless household", "routerless-household")
+        triple     <- makeCachedSvc(
           TestClock.schoolDayAfternoon,
           pushTargets = Set(hhB), // one connected router, in household B
+          probeAlsoTry = Set(hhC),
         )
         (svc, _, pushed) = triple
-        _      <- svc.reevaluate
-        pushes <- pushed.get
+        buildsPre  <- snapshotBuildTotal("computed")
+        _          <- svc.reevaluate
+        buildsPost <- snapshotBuildTotal("computed")
+        pushes     <- pushed.get
         // Both households were rebuilt and pushed: B because it has a router, Default because it is
         // always included (single-household installs, and the SPA change-bus sink, depend on it).
         households = pushes.map(_._1).toSet
@@ -214,6 +245,10 @@ object PolicySnapshotCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
         scopedB    = HouseholdScoped(hhB, pushes.find(_._1 == hhB).get._2)
       } yield assertTrue(pushes.size == 2) &&
         assertTrue(households == Set(HouseholdId.Default, hhB)) &&
+        assertTrue(!households.contains(hhC)) &&
+        // Two BUILDS, not three: C was never rebuilt either, which is the cost claim. Without this
+        // the push assertions alone would also hold for "rebuild every household, push some".
+        assertTrue(buildsPost - buildsPre == 2.0) &&
         assertTrue(scopedB.forHousehold(hhB).isDefined) &&
         assertTrue(scopedB.forHousehold(HouseholdId.Default).isEmpty)
     },

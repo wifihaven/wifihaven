@@ -1,4 +1,6 @@
-package wifihaven.shared.types
+package wifihaven.api.policy
+
+import wifihaven.shared.types.HouseholdId
 
 /**
  * #2630: a value that may only be read by the household it was built for.
@@ -22,12 +24,13 @@ package wifihaven.shared.types
  * `HouseholdScoped[PolicySnapshot]` without naming the recipient. That is the whole design: the
  * guard is the only accessor, so "forgot to filter" and "cannot compile" are the same event.
  *
- * Deliberately NOT on the wire. The router snapshot is a minimal functional shape (`AGENTS.md`) and
- * the router is a dumb applier that never learns which household it belongs to; this wrapper is a
- * server-side routing fact and it is unwrapped before anything is serialised.
+ * Deliberately NOT on the wire, and deliberately not in `shared`: the router snapshot is a minimal
+ * functional shape (`AGENTS.md`) and the router is a dumb applier that never learns which household
+ * it belongs to. This wrapper is a server-side routing fact, unwrapped before anything is
+ * serialised, so it lives with the policy code that produces it and has no codec.
  *
  * @param household
- *   the household `value` was built for — exposed via [[owner]] for diagnostics ONLY.
+ *   the household `value` was built for. There is no accessor for it — see [[ownerLabel]].
  */
 final class HouseholdScoped[+A] private (private val household: HouseholdId, private val value: A) {
 
@@ -38,20 +41,16 @@ final class HouseholdScoped[+A] private (private val household: HouseholdId, pri
   def forHousehold(recipient: HouseholdId): Option[A] =
     if (recipient == household) Some(value) else None
 
-  /** True iff `recipient` may read this value. For a check that needs no payload. */
-  def belongsTo(recipient: HouseholdId): Boolean = recipient == household
-
   /**
-   * The owning household, for LOG LINES AND METRICS ONLY.
+   * The owning household as a LOG STRING, never as a [[HouseholdId]] — a refused delivery is only
+   * debuggable if the log can name both households, and this is the whole of that need.
    *
-   * Do not launder the payload back out with `forHousehold(owner)`: that reproduces exactly the
-   * unscoped read this type exists to prevent, and it is a review blocker. The accessor is here
-   * because a refused delivery is only debuggable if the log can name both households.
+   * Returning the id itself would hand back the key to `forHousehold`, so
+   * `scoped.forHousehold(scoped.owner).get` would compile and the guard would be a convention
+   * rather than a rule. It is a `String` so that reconstructing the id means parsing it back, which
+   * no honest call site does and no reviewer can miss.
    */
-  def owner: HouseholdId = household
-
-  /** Re-scope a derived value to the same household. */
-  def map[B](f: A => B): HouseholdScoped[B] = new HouseholdScoped(household, f(value))
+  def ownerLabel: String = s"household=$household"
 }
 
 object HouseholdScoped {
