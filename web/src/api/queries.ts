@@ -268,9 +268,11 @@ export function useDashboardNow(opts?: QueryOpts<DashboardNow>) {
 // #1338: live feed of the most recent connection-layer drops (blocked-only,
 // newest-first, trailing 15 min). Reuses the existing /api/logs read with
 // blocked=true; the route already orders ts DESC and honours the limit, and
-// applies the same JWT/household scoping every other dashboard read uses. We
-// fetch a 1h window (integer-hours param) and trim to RECENT_BLOCKED_WINDOW_MS
-// client-side so a stale block doesn't masquerade as recent. Polls on the same
+// applies the same JWT/household scoping every other dashboard read uses. We fetch
+// RECENT_BLOCKED_FETCH_HOURS (the integer-hours param) and trim to
+// RECENT_BLOCKED_WINDOW_MS client-side so a stale block doesn't masquerade as recent.
+// Both spans are named by their constants here on purpose — this prose is the last place
+// a literal could go stale when one of them widens (#2601). Polls on the same
 // 10s cadence as the "now" snapshot so a just-now block surfaces immediately.
 // NB a row here is a real traffic-layer drop, not a DNS event (DNS always
 // resolves) — see memory/blocking_is_traffic_layer_not_dns.md.
@@ -323,6 +325,11 @@ export function useRecentBlocked(mac: string | null = null, opts?: RecentBlocked
       return {
         rows: recent,
         olderCount: rows.length - recent.length,
+        // Reads the CACHE, which useWsRecentBlocked also caps at RECENT_BLOCKED_LIMIT
+        // (useWs.tsx prependHead). So a long-lived streaming session can saturate at the
+        // cap from pushed rows even when the original fetch returned fewer, and report
+        // "20+" where a fresh fetch would say "3". Sound either way: the field is a FLOOR
+        // by contract, never a total.
         olderCountTruncated: rows.length >= RECENT_BLOCKED_LIMIT,
       }
     },

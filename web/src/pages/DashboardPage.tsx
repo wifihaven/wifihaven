@@ -352,20 +352,20 @@ export function RecentlyBlockedSection() {
               </div>
             )
             : (
-            <div
-              data-testid="recently-blocked-scroll"
-              className={`${RECENTLY_BLOCKED_MAX_H} overflow-y-auto divide-y divide-brand-border`}
-            >
-              {groups.map(g => (
-                <div key={g.profileId ?? 'none'}>
-                  <RecentlyBlockedGroupHeader group={g} />
-                  <ul className="divide-y divide-brand-border">
-                    {g.rows.map(row => <RecentlyBlockedRow key={row.id} row={row} />)}
-                  </ul>
-                </div>
-              ))}
-            </div>
-          )
+              <div
+                data-testid="recently-blocked-scroll"
+                className={`${RECENTLY_BLOCKED_MAX_H} overflow-y-auto divide-y divide-brand-border`}
+              >
+                {groups.map(g => (
+                  <div key={g.profileId ?? 'none'}>
+                    <RecentlyBlockedGroupHeader group={g} />
+                    <ul className="divide-y divide-brand-border">
+                      {g.rows.map(row => <RecentlyBlockedRow key={row.id} row={row} />)}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+            )
       }
     </section>
   )
