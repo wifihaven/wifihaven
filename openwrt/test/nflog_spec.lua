@@ -359,3 +359,24 @@ describe("nflog.drain_file (#1126 production reader — file-offset tail)", func
     assert.equal(1, #batched)  -- cross-tick dedup suppressed it (persistent dedup)
   end)
 end)
+
+-- #2620: the nflog drop-spool drain cadence.
+--
+-- nflog_poll_interval (5s) + event_flush_interval (10s) exist to bound HTTP
+-- REQUEST volume: each flush is one POST /api/router/events. When the ws link
+-- is healthy the events instead ride an already-open persistent socket via the
+-- outbound tee, so the request-volume argument buys nothing and the batching is
+-- pure added latency (up to 15s of the measured 26s drop→SPA delay). On the
+-- HTTP fallback path the interval still holds, unchanged.
+describe("nflog.drain_due (#2620)", function()
+  it("honours the poll interval on the HTTP fallback path", function()
+    assert.is_false(nflog.drain_due(103, 100, 5, false))
+    assert.is_true(nflog.drain_due(105, 100, 5, false))
+    assert.is_true(nflog.drain_due(140, 100, 5, false))
+  end)
+
+  it("drains every tick while the ws link is healthy", function()
+    assert.is_true(nflog.drain_due(100.5, 100, 5, true))
+    assert.is_true(nflog.drain_due(100, 100, 5, true))
+  end)
+end)
