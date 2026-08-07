@@ -150,7 +150,18 @@ def test_dead_ws_sidecar_falls_back_to_the_http_poll(router, fake_api):
         # is `procd_set_param respawn 3600 5 5` on the ws instance in
         # openwrt/files/etc/init.d/wifihaven: 5s between attempts, 5 retries in a
         # 3600s window, so 7 kills spaced 5s apart exhaust it.
-        f"for i in 1 2 3 4 5 6 7; do pkill -9 -f '{WS_PATTERN}' 2>/dev/null; sleep 5; done; "
+        #
+        # `pgrep` + `kill`, NOT `pkill`: pkill is absent from at least some
+        # OpenWrt busybox builds — verified on a real router (OpenWrt 25.12.5,
+        # `ash: pkill: not found`). Its stderr is swallowed by the 2>/dev/null
+        # this loop needs anyway, so a pkill that does not exist reads exactly
+        # like a kill that found nothing, and the only symptom is this test
+        # timing out later on a sidecar that never died. pgrep and kill are both
+        # present (pgrep is used by _ws_sidecar_pids above; kill is a shell
+        # builtin).
+        f"for i in 1 2 3 4 5 6 7; do "
+        f"for p in $(pgrep -f '{WS_PATTERN}'); do kill -9 \"$p\" 2>/dev/null; done; "
+        f"sleep 5; done; "
         # Clearing the sentinel is what makes the fallback immediate: an ABSENT
         # sentinel is never fresh (ws_outbound.lua), while a stale-but-present one
         # would make the agent wait out ws_fallback_after (300s, longer than this
