@@ -40,9 +40,9 @@ export const NO_PROFILE_LABEL = 'No profile'
 // profile as an end in itself rather than to assign it to a device — it has no
 // select, no null option, and no host form to hand an id back to.
 export function ProfilePicker({
-  profiles, isLoading = false, value, onChange, allowNone,
+  profiles, isLoading = false, isError = false, value, onChange, allowNone,
   selectTestId, testIdPrefix, dense = false,
-  onCreatingChange, onPendingChange,
+  onCommitBlockedChange, onPendingChange,
 }: {
   profiles: ProfileDetail[]
   /**
@@ -50,8 +50,20 @@ export function ProfilePicker({
    * `profiles.length === 0` on purpose: a loading list must not be treated as an
    * empty household, or every operator would be shoved into profile creation on
    * load (docs/process/loading-states.md).
+   *
+   * No caller can reach this today — `DevicesPage` gates the whole page on
+   * `profilesQuery.isPending` before any picker mounts. It is part of the
+   * contract rather than load-bearing: a caller that mounts a picker without
+   * that gate must have somewhere honest to put "still loading".
    */
   isLoading?: boolean
+  /**
+   * True when the profile list query FAILED. The third state
+   * (docs/process/loading-states.md), and the one that bites hardest here: a
+   * failed query leaves an empty array behind, which without this reads as
+   * "zero-profile household" and auto-opens the creator.
+   */
+  isError?: boolean
   value: number | null
   onChange: (profileId: number | null) => void
   /** Whether "no profile" is a state this caller can express at all. */
@@ -63,11 +75,17 @@ export function ProfilePicker({
   /** Tighter padding for the inline row editor, which sits in a table-ish row. */
   dense?: boolean
   /**
-   * Notified while the creator is OPEN, so a caller can freeze the commit
-   * affordance it owns (the modal's Save, the row's Done). Without it each
-   * caller re-derives the guard and they drift.
+   * Notified when the caller must freeze the commit affordance it owns (the
+   * modal's Save, the row's Done, the alert editor's Save). Deliberately NOT the
+   * same thing as "the creator is open": an auto-opened creator only blocks a
+   * caller that has nothing valid to commit yet, and `allowNone` is exactly that
+   * declaration. The alert editor CAN save with no profile — that denies the
+   * alert — so being dropped into the creator must not take that away.
+   *
+   * Computing it here rather than leaving each caller to re-derive it is the
+   * point; three hand-derived guards is how #2607 happened.
    */
-  onCreatingChange?: (creating: boolean) => void
+  onCommitBlockedChange?: (blocked: boolean) => void
   /** Notified while a create request is IN FLIGHT — a strictly narrower window. */
   onPendingChange?: (pending: boolean) => void
 }) {
@@ -77,23 +95,42 @@ export function ProfilePicker({
   const [pickedNew, setPickedNew] = useState(false)
   const autoOpened = useRef(false)
 
-  // Fires once, and only once the list has actually loaded.
+  // Fires once, and only once the list has actually loaded successfully.
   useEffect(() => {
-    if (autoOpened.current || isLoading || profiles.length > 0) return
+    if (autoOpened.current || isLoading || isError || profiles.length > 0) return
     autoOpened.current = true
     setCreating(true)
-  }, [isLoading, profiles.length])
+  }, [isLoading, isError, profiles.length])
+
+  // #2366 — the select must never paint a selection the caller's state does not
+  // hold. Without `allowNone` there is no `''` option, so a null value has
+  // nothing to match and the browser falls back to painting the first profile.
+  // Reconciling it here keeps the invariant with the component that renders the
+  // options rather than with each caller's form-seeding code, which is a
+  // one-shot snapshot and goes stale when the list arrives late.
+  const changeCb = useRef(onChange)
+  useEffect(() => { changeCb.current = onChange }, [onChange])
+  useEffect(() => {
+    if (allowNone || value !== null || profiles.length === 0) return
+    changeCb.current(profiles[0].profile.id)
+  }, [allowNone, value, profiles])
 
   // Held in a ref for the same reason `InlineProfileCreator` holds
   // `onPendingChange`: callers pass inline arrows, and an effect keyed on the
   // callback re-runs its cleanup on every identity change, emitting a spurious
-  // `false` per render.
-  const creatingCb = useRef(onCreatingChange)
-  useEffect(() => { creatingCb.current = onCreatingChange }, [onCreatingChange])
-  useEffect(() => { creatingCb.current?.(creating) }, [creating])
-  // Unmounting with the creator open (the caller closed its dialog) must release
-  // the caller's freeze — nothing else reports the falling edge.
-  useEffect(() => () => { creatingCb.current?.(false) }, [])
+  // `false` per render. (`onPendingChange` is forwarded raw below because
+  // `InlineProfileCreator` already performs this same dance on it internally —
+  // doing it twice would buy nothing.)
+  //
+  // A failed fetch blocks committing too: we cannot show the operator what they
+  // would be committing, so we do not let them commit it blind.
+  const commitBlocked = isLoading || isError || (creating && (pickedNew || !allowNone))
+  const blockedCb = useRef(onCommitBlockedChange)
+  useEffect(() => { blockedCb.current = onCommitBlockedChange }, [onCommitBlockedChange])
+  useEffect(() => { blockedCb.current?.(commitBlocked) }, [commitBlocked])
+  // Unmounting while blocked (the caller closed its dialog) must release the
+  // caller's freeze — nothing else reports the falling edge.
+  useEffect(() => () => { blockedCb.current?.(false) }, [])
 
   const labelMargin = dense ? 'mb-1' : 'mb-2'
   const selectPadding = dense ? 'py-2.5' : 'py-3'
@@ -113,6 +150,12 @@ export function ProfilePicker({
           testId={`${testIdPrefix}-profile-loading`}
           label="Loading profiles…"
         />
+      ) : isError ? (
+        // Neither a select nor a creator: we do not know what profiles exist, so
+        // every option we could draw would be a guess presented as fact.
+        <p data-testid={`${testIdPrefix}-profile-error`} className="text-sm text-red-700">
+          Couldn&rsquo;t load profiles. Reload to try again.
+        </p>
       ) : (
         <>
           {showSelect && (

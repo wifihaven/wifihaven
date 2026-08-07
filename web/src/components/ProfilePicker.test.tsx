@@ -31,29 +31,31 @@ beforeEach(() => {
 })
 
 function Host({
-  profiles, isLoading = false, allowNone = true, initial = null,
+  profiles, isLoading = false, isError = false, allowNone = true, initial = null,
 }: {
   profiles: ProfileDetail[]
   isLoading?: boolean
+  isError?: boolean
   allowNone?: boolean
   initial?: number | null
 }) {
   const [value, setValue] = useState<number | null>(initial)
-  const [creating, setCreating] = useState(false)
+  const [blocked, setBlocked] = useState(false)
   return (
     <div>
       <ProfilePicker
         profiles={profiles}
         isLoading={isLoading}
+        isError={isError}
         value={value}
         onChange={setValue}
         allowNone={allowNone}
         selectTestId="pick"
         testIdPrefix="host"
-        onCreatingChange={setCreating}
+        onCommitBlockedChange={setBlocked}
       />
       <p data-testid="value">{value === null ? 'none' : String(value)}</p>
-      <p data-testid="creating">{creating ? 'yes' : 'no'}</p>
+      <p data-testid="blocked">{blocked ? 'yes' : 'no'}</p>
     </div>
   )
 }
@@ -118,15 +120,53 @@ describe('ProfilePicker (#2607)', () => {
   it('freezes the select while the creator is open, and reports that outward', async () => {
     const user = userEvent.setup()
     render(withQuery(<Host profiles={[kids]} />))
-    expect(screen.getByTestId('creating')).toHaveTextContent('no')
+    expect(screen.getByTestId('blocked')).toHaveTextContent('no')
 
     await user.selectOptions(screen.getByTestId('pick'), '__new__')
     expect(screen.getByTestId('pick')).toBeDisabled()
-    expect(screen.getByTestId('creating')).toHaveTextContent('yes')
+    expect(screen.getByTestId('blocked')).toHaveTextContent('yes')
 
     await user.click(screen.getByTestId('host-cancel-profile'))
     expect(screen.getByTestId('pick')).toBeEnabled()
-    expect(screen.getByTestId('creating')).toHaveTextContent('no')
+    expect(screen.getByTestId('blocked')).toHaveTextContent('no')
+  })
+
+  // An auto-opened creator must not block a caller whose CURRENT value is
+  // already committable. `allowNone` is exactly that declaration: the alert
+  // editor can save with no profile (it denies the alert), so being dropped
+  // into the creator on an empty household must not take that away.
+  it('an auto-opened creator does not block a caller that can commit "no profile"', async () => {
+    render(withQuery(<Host profiles={[]} />))
+    await screen.findByTestId('host-new-profile-name')
+    expect(screen.getByTestId('blocked')).toHaveTextContent('no')
+  })
+
+  // …whereas a caller with no null state has nothing valid to commit yet.
+  it('an auto-opened creator does block a caller with no null state', async () => {
+    render(withQuery(<Host profiles={[]} allowNone={false} />))
+    await screen.findByTestId('host-new-profile-name')
+    expect(screen.getByTestId('blocked')).toHaveTextContent('yes')
+  })
+
+  // docs/process/loading-states.md names three states, and a failed fetch is the
+  // third. Without this the empty `profiles` array a failed query leaves behind
+  // is read as "zero-profile household" and every surface auto-opens the
+  // creator, telling an operator with twenty profiles to create their first.
+  it('a failed profile fetch is an error, not an empty household', async () => {
+    render(withQuery(<Host profiles={[]} isError />))
+    expect(await screen.findByTestId('host-profile-error')).toBeInTheDocument()
+    expect(screen.queryByTestId('host-new-profile')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('pick')).not.toBeInTheDocument()
+    expect(screen.getByTestId('blocked')).toHaveTextContent('yes')
+  })
+
+  // #2366 — the select must never paint a selection the caller's state does not
+  // hold. With `allowNone={false}` there is no `''` option, so a null value would
+  // render as the first profile while the caller still believes nothing is picked.
+  it('never displays a selection the caller does not hold', async () => {
+    render(withQuery(<Host profiles={[kids]} allowNone={false} />))
+    await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent('1'))
+    expect(screen.getByTestId('pick')).toHaveValue('1')
   })
 
   // On an empty household there is no select to fall back to when `allowNone`

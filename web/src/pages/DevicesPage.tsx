@@ -55,8 +55,9 @@ export function DevicesPage() {
   // #2367 / #2607 — the modal's profile control is `ProfilePicker`, shared with
   // the row editor and the new-device alert editor. It owns the "+ New profile…"
   // branch and opens straight into the creator on a zero-profile household, so
-  // the modal only tracks what it needs to freeze its OWN controls.
-  const [creatingProfile, setCreatingProfile] = useState(false)
+  // the modal only tracks what it needs to freeze its OWN controls: `commitBlocked`
+  // is the picker telling us it has no committable profile to hand over yet.
+  const [commitBlocked, setCommitBlocked] = useState(false)
   // Mirrored from the creator so the modal freezes the controls IT owns while a
   // create is in flight — cancelling mid-flight would create a profile and then
   // discard it unassigned, with nothing on screen saying so.
@@ -152,6 +153,7 @@ export function DevicesPage() {
                     device={d}
                     profiles={profiles}
                     profilesLoading={profilesQuery.isPending}
+                    profilesError={profilesQuery.isError}
                     onClose={() => setEditingMac(null)}
                   />
                 )}
@@ -222,6 +224,7 @@ export function DevicesPage() {
             <ProfilePicker
               profiles={profiles}
               isLoading={profilesQuery.isPending}
+              isError={profilesQuery.isError}
               // A device added through this dialog is always assigned; `0` is
               // "nothing picked yet", not a state the operator can choose.
               allowNone={false}
@@ -229,14 +232,14 @@ export function DevicesPage() {
               onChange={id => setForm(f => ({ ...f, profileId: id ?? 0 }))}
               selectTestId="add-device-profile-select"
               testIdPrefix="add-device"
-              onCreatingChange={setCreatingProfile}
+              onCommitBlockedChange={setCommitBlocked}
               onPendingChange={setCreatePending}
             />
             <div className="flex gap-3 pt-2">
               {/* Closing mid-create would create the profile and then discard
                   it unassigned, with nothing on screen saying so. */}
               <button onClick={() => setEditing(null)} disabled={createPending} data-testid="add-device-cancel" className="flex-1 py-3 rounded-xl bg-brand-alt text-brand-text font-medium disabled:opacity-60">Cancel</button>
-              <button onClick={save} disabled={creatingProfile} className="flex-1 py-3 rounded-xl bg-brand-accent text-white font-semibold disabled:opacity-60">Save</button>
+              <button onClick={save} disabled={commitBlocked} className="flex-1 py-3 rounded-xl bg-brand-accent text-white font-semibold disabled:opacity-60">Save</button>
             </div>
           </div>
         </div>
@@ -249,11 +252,12 @@ export function DevicesPage() {
 // profile each debounce-PATCH /devices/:mac independently; the row's status
 // badge aggregates both fields and offers Retry on failure. No Save button.
 function DeviceRowEditor({
-  device, profiles, profilesLoading, onClose,
+  device, profiles, profilesLoading, profilesError, onClose,
 }: {
   device: Device
   profiles: ProfileDetail[]
   profilesLoading: boolean
+  profilesError: boolean
   onClose: () => void
 }) {
   const invalidators = useInvalidators()
@@ -261,8 +265,9 @@ function DeviceRowEditor({
   const [profileId, setProfileId] = useState<number | null>(device.profileId)
   // #2560 — the row's own "+ New profile…" branch, now via the shared picker
   // (#2607). Without it the row could only assign a profile that already
-  // existed, so putting a device on a NEW profile meant leaving /devices.
-  const [creatingProfile, setCreatingProfile] = useState(false)
+  // existed, so putting a device on a NEW profile meant leaving /devices. The
+  // picker raises `commitBlocked` while it has nothing committable to hand over.
+  const [commitBlocked, setCommitBlocked] = useState(false)
   useEffect(() => { setName(device.name) }, [device.name])
   useEffect(() => { setProfileId(device.profileId) }, [device.profileId])
 
@@ -304,10 +309,11 @@ function DeviceRowEditor({
         />
       </div>
       {/* The creator needs the full row width; the select alone does not. */}
-      <div className={creatingProfile ? 'basis-full order-last' : 'min-w-[10rem]'}>
+      <div className={commitBlocked ? 'basis-full order-last' : 'min-w-[10rem]'}>
         <ProfilePicker
           profiles={profiles}
           isLoading={profilesLoading}
+          isError={profilesError}
           allowNone
           dense
           value={profileId}
@@ -316,7 +322,7 @@ function DeviceRowEditor({
           onChange={setProfileId}
           selectTestId={`device-profile-select-${device.mac}`}
           testIdPrefix={`device-${device.mac}`}
-          onCreatingChange={setCreatingProfile}
+          onCommitBlockedChange={setCommitBlocked}
         />
       </div>
       <div className="flex items-center gap-3 pb-2.5">
@@ -332,7 +338,7 @@ function DeviceRowEditor({
           // Closing with the creator open would abandon it mid-flow, and
           // closing mid-request would leave the profile created but never
           // assigned, with nothing on screen saying so.
-          disabled={creatingProfile}
+          disabled={commitBlocked}
           className="text-xs text-brand-text hover:text-brand-ink bg-brand-alt px-3 py-1.5 rounded-lg transition-colors disabled:opacity-60"
         >Done</button>
       </div>
@@ -431,6 +437,7 @@ function NewDeviceAlertsBanner({ canEdit }: { canEdit: boolean }) {
           alert={editing}
           profiles={profiles}
           profilesLoading={profilesQuery.isPending}
+          profilesError={profilesQuery.isError}
           onClose={() => setEditing(null)}
           onSaved={async ({ finalProfileId }) => {
             // A profile means the operator has decided this device belongs on
@@ -451,11 +458,12 @@ function NewDeviceAlertsBanner({ canEdit }: { canEdit: boolean }) {
 }
 
 function NewDeviceAlertEditor({
-  alert, profiles, profilesLoading, onClose, onSaved,
+  alert, profiles, profilesLoading, profilesError, onClose, onSaved,
 }: {
   alert: Alert
   profiles: ProfileDetail[]
   profilesLoading: boolean
+  profilesError: boolean
   onClose: () => void
   onSaved: (args: { finalProfileId: number | null }) => Promise<void>
 }) {
@@ -466,10 +474,13 @@ function NewDeviceAlertEditor({
   // #2607 — this is the natural onboarding entry point (a device appears, the
   // operator clicks the alert), so it is the surface that most needed to be able
   // to create the profile it is assigning. Both flags come from the shared
-  // picker: Save is frozen while the creator is open, and Escape/Cancel while a
-  // create is in flight — closing then would leave the profile created
-  // server-side and never assigned, with nothing on screen saying so.
-  const [creatingProfile, setCreatingProfile] = useState(false)
+  // picker. `commitBlocked` freezes Save only when the picker has nothing
+  // committable to hand over — an auto-opened creator on an empty household does
+  // NOT block it, because saving with no profile is itself a decision here (it
+  // denies the alert). `createPending` freezes Escape/Cancel while a create is in
+  // flight: closing then would leave the profile created server-side and never
+  // assigned, with nothing on screen saying so.
+  const [commitBlocked, setCommitBlocked] = useState(false)
   const [createPending, setCreatePending] = useState(false)
   useEscapeClose(onClose, !createPending)
 
@@ -510,13 +521,14 @@ function NewDeviceAlertEditor({
         <ProfilePicker
           profiles={profiles}
           isLoading={profilesLoading}
+          isError={profilesError}
           // Saving with no profile is a real decision here — it denies the alert.
           allowNone
           value={profileId}
           onChange={setProfileId}
           selectTestId="new-device-alert-profile"
           testIdPrefix="new-device-alert"
-          onCreatingChange={setCreatingProfile}
+          onCommitBlockedChange={setCommitBlocked}
           onPendingChange={setCreatePending}
         />
         {error && (
@@ -531,7 +543,7 @@ function NewDeviceAlertEditor({
           >Cancel</button>
           <button
             onClick={save}
-            disabled={patchMutation.isPending || creatingProfile}
+            disabled={patchMutation.isPending || commitBlocked}
             data-testid="new-device-alert-save"
             className="flex-1 py-3 rounded-xl bg-brand-accent text-white font-semibold disabled:opacity-60"
           >Save</button>

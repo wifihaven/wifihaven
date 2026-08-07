@@ -243,6 +243,17 @@ describe('DevicesPage — add device with inline profile creation (#2367)', () =
     ).toBeInTheDocument()
   })
 
+  // A failed profiles fetch leaves `profilesQuery.data` undefined, which the page
+  // coalesces to `[]` — read as "zero-profile household" it would auto-open the
+  // creator and tell an operator with twenty profiles to create their first.
+  // Every picker now takes `isError` and refuses to guess (see
+  // `ProfilePicker.test.tsx`, "a failed profile fetch is an error, not an empty
+  // household"). It is pinned there rather than here because a page-level test
+  // cannot reach the picker at all today: #2579 (pre-existing, open) leaves
+  // DevicesPage oscillating error↔pending on a failed /api/profiles, so the page
+  // never gets past `<PageLoader />`. Threading `isError` through is what makes
+  // the surfaces correct the moment #2579 lands.
+  //
   // The creator's name input autofocuses when the operator PICKED it (the
   // select they used may have been disabled on the way, dropping focus to
   // <body>) — but not when the dialog auto-opens into it on an empty household,
@@ -991,6 +1002,24 @@ describe('DevicesPage — new-device alert inline profile creation (#2607)', () 
     const { editor } = await openEditor()
     expect(within(editor).getByRole('option', { name: 'No profile' })).toBeInTheDocument()
     expect(within(editor).queryByRole('option', { name: '— No profile —' })).not.toBeInTheDocument()
+  })
+
+  // Being dropped into the creator must not cost the operator the deny path.
+  // Saving with no profile denies the alert, which is a decision they are
+  // entitled to make on an empty household as much as on any other.
+  it('zero-profile household: Save still denies, even with the creator auto-opened', async () => {
+    (api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.alerts.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([alert])
+    ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+
+    const { user, editor } = await openEditor()
+    await within(editor).findByTestId('new-device-alert-new-profile-name')
+
+    expect(within(editor).getByTestId('new-device-alert-save')).toBeEnabled()
+    await user.click(within(editor).getByTestId('new-device-alert-save'))
+
+    await waitFor(() => expect(api.alerts.deny).toHaveBeenCalledWith(alert.id))
+    expect(api.alerts.approve).not.toHaveBeenCalled()
   })
 
   // Saving mid-create would race the assignment against the profile landing;
