@@ -79,7 +79,16 @@ resolved on 2026-08-06:
 
 Non-Google ad apexes are unaffected. `ads-extended` (the StevenBlack feed) is
 unchanged: it is a separate, opt-in list, and narrowing it is a different
-decision from narrowing the curated baseline.
+decision from narrowing the curated baseline. That feed does still carry all
+eight, so a household enabling `ads-extended` still gets the collateral —
+tracked with the other residual exposures in
+[#2605](https://github.com/wifihaven/wifihaven/issues/2605).
+
+The address tables above are a point-in-time anycast sample. Google rotates
+GFE assignments, so re-resolving any of these hosts later will give different
+addresses within the same pools — that does not contradict anything here. The
+load-bearing evidence is the five-hostnames-at-one-timestamp observation, which
+does not depend on any particular address.
 
 ## What this costs, and what would undo it
 

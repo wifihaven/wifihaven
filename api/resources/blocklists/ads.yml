@@ -27,8 +27,11 @@ source: curated (subset of StevenBlack/hosts + EasyList apex domains)
 # Same reasoning as #2369, which demoted the mirror-image hosts off the infra
 # allow-carve. #2377 (SNI-level disambiguation) is what would let us block these
 # again; until it lands they stay out of every curated list.
-# Enforced by BundledBlocklistsSpec "#2601 — no curated list carries a host that
-# fronts on Google's shared GFE pool", and see evidence/google-gfe-collateral-2601.md.
+# The authoritative host set lives in test-infra `SharedGfeHosts` (consumed by both
+# BundledBlocklistsSpec and AppTemplatesSpec, suffix-matched so subdomains are caught
+# too); this comment exists to stop a human author, not a build. Residual exposures
+# that no catalog guard can reach are tracked in #2605. Background:
+# evidence/google-gfe-collateral-2601.md.
 hosts:
   - adnxs.com
   - adsrvr.org

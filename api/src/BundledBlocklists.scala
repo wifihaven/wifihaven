@@ -312,8 +312,12 @@ object BundledBlocklists {
       "Test Ads",
       "Dev-only test category. Not shipped to prod.",
       "dev seed",
+      // #2601: was doubleclick.net / googleadservices.com. Both front on Google's shared GFE
+      // anycast pool, so seeding them here put a shared Google address into `bl_test_ads` and
+      // dropped unrelated Google traffic on whichever dev router had the seed enabled — the same
+      // collateral that broke Drive downloads on prod. Real ad apexes off the shared pool.
       BundledBlocklistContent.Inline(
-        List("adserver.example.com", "doubleclick.net", "googleadservices.com").map(Hostname.unsafe),
+        List("adserver.example.com", "adnxs.com", "criteo.com").map(Hostname.unsafe),
       ),
     ),
     BundledBlocklist(
