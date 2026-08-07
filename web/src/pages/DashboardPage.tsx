@@ -3,6 +3,8 @@ import { Link } from 'react-router-dom'
 import { api } from '@/api/client'
 import {
   useDashboardNow,
+  useDevices,
+  useHouseholdSettings,
   useRecentBlocked,
   useRouters,
   LIVE_SURFACE_FALLBACK_REFETCH_MS,
@@ -124,22 +126,46 @@ function DashboardWindowSelector({ bandwidth }: { bandwidth: WsTrafficUsage }) {
 //   1. no router enrolled yet          → "Set up your router →" CTA (to the /router-setup guide, #2234)
 //   2. enrollment created, not connected → "Waiting for your router to connect" (run the install
 //      script), NOT the enroll CTA
-//   3. a router has checked in          → no banner (onboarding is done)
+//   3. router connected, devices unassigned → "Assign your devices to profiles" (to /devices)
+//   4. every device assigned, policy still `allow` → "Block unmanaged devices" (to /admin)
+//   5. policy set to `block`             → no banner (onboarding is done)
 // A `routers` row is created at enrollment-token minting (POST /api/admin/routers) with a null
 // `lastSeenAt`; the router's registration step (`completeEnrollment`, Repos.scala) stamps
 // `last_seen_at=NOW()` in the same statement that sets `token_hash` (which flips `enrolled`), and
 // every later policy poll re-stamps it. So `lastSeenAt != null` on any router means "the router has
 // registered / connected" — equivalently `enrolled` — and pending = token minted, install script
 // not yet run. It is gated on `isAdmin` at the call site (FirstRunHint is only mounted for admins,
-// and GET /api/admin/routers is admin-only). Loading-states rule (#1098): the query
-// must be LOADED before we can conclude a state, so we render nothing while pending — a loading `[]`
-// must never be read as a real "no routers".
+// and GET /api/admin/routers is admin-only). Loading-states rule (#1098): every query
+// must be LOADED before we can conclude a state, so we render nothing while any is pending — a
+// loading `[]` must never be read as a real "no routers" or "no unmanaged devices".
+//
+// #2621: states 3-5 exist because a connected router is NOT the end of onboarding. Until devices
+// are assigned to profiles nothing is governed, and until the household's unmanaged-device policy
+// moves off its `allow` default any device — known or not — gets unrestricted internet. Those are
+// the last two steps of the sequence documented in `docs/install-openwrt.md` §4, which is also the
+// single place that states the policy's default value; deliberately not restated here. `block` is
+// the terminal state: it is the operator's explicit "I'm done", so the banner goes quiet even if a
+// device is later seen unassigned — from then on enforcement handles it, not this banner.
 export function FirstRunHint() {
-  const routers = useRouters()
+  const routers   = useRouters()
+  const devices   = useDevices()
+  const household = useHouseholdSettings()
   if (routers.isPending || routers.isError) return null
   const list = routers.data ?? []
   const connected = list.some(r => r.lastSeenAt != null)
-  if (connected) return null
+
+  if (connected) {
+    if (devices.isPending || devices.isError) return null
+    if (household.isPending || household.isError) return null
+    // Onboarding is over once the operator closes the policy.
+    if (household.data?.unmanagedMacPolicy.policy === 'block') return null
+    // `profileId === null` is the unmanaged predicate — same split DevicesPage uses for its
+    // Unmanaged Devices section. A household with no devices yet is still on the devices step:
+    // there is nothing enrolled, so "close the policy" would be the wrong ask.
+    const allAssigned = (devices.data ?? []).length > 0
+      && (devices.data ?? []).every(d => d.profileId !== null)
+    return allAssigned ? <PolicyStep /> : <DevicesStep />
+  }
 
   const pending = list.length > 0
   return (
@@ -178,6 +204,62 @@ export function FirstRunHint() {
           </Link>
         </>
       )}
+    </section>
+  )
+}
+
+// #2621 state 3 — the router works, but nothing is governed until devices belong to profiles.
+function DevicesStep() {
+  return (
+    <section
+      data-testid="first-run-hint"
+      data-state="devices"
+      className="bg-brand-accent/5 border border-brand-accent/20 rounded-2xl p-5"
+    >
+      <h2 className="text-base font-semibold text-brand-ink">Your router is connected — now sort your devices</h2>
+      <p className="text-sm text-brand-text mt-1">
+        Devices show up here on their own as they use the network; you don't have to hunt for MAC
+        addresses. Put each one in a profile, including the ones you'll never limit, like a printer
+        or a thermostat. Schedules, time limits and blocking only apply to a device once it's in a
+        profile.
+      </p>
+      <Link
+        to="/devices"
+        className="inline-block mt-4 bg-brand-accent hover:bg-brand-accent-dark text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors"
+      >
+        Assign your devices →
+      </Link>
+    </section>
+  )
+}
+
+// #2621 state 4 — every device is in a profile, so the "block unknown devices" switch is finally
+// safe to flip. This is the only moment the ask is actionable: earlier it would have cut off
+// devices the operator hadn't got to yet, which is why the default is `allow` in the first place.
+function PolicyStep() {
+  return (
+    <section
+      data-testid="first-run-hint"
+      data-state="policy"
+      className="bg-brand-accent/5 border border-brand-accent/20 rounded-2xl p-5"
+    >
+      <h2 className="text-base font-semibold text-brand-ink">One last step — decide what happens to unknown devices</h2>
+      <p className="text-sm text-brand-text mt-1">
+        All your devices are in profiles. Right now, a device that isn't in one still gets full
+        internet — fine while you're setting up, but not what you want long-term. Switch the
+        unmanaged-device policy to <strong>block</strong>, and anything new that joins your network
+        stays offline until you put it in a profile.
+      </p>
+      <p className="text-sm text-brand-text mt-2">
+        If a device does go dark later, the Devices page tells you why: it'll be sitting under
+        Unmanaged Devices with an Enroll button.
+      </p>
+      <Link
+        to="/admin"
+        className="inline-block mt-4 bg-brand-accent hover:bg-brand-accent-dark text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors"
+      >
+        Block unmanaged devices →
+      </Link>
     </section>
   )
 }

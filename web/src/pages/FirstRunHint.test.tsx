@@ -41,7 +41,13 @@ const household = (policy: 'allow' | 'block'): HouseholdSettings => ({
   dailyResetTz: 'America/Los_Angeles',
   heartbeatFilter: { enabled: false, bytesThreshold: 1024, heartbeatHostPatterns: [] },
   unmanagedMacPolicy: { policy, blockPage: true },
-} as HouseholdSettings)
+  blockEncryptedDns: false,
+  ambientGateEnabled: false,
+  ambientIsolationMaxHosts: 2,
+  ambientMinIsolatedDays: 3,
+  ambientLearningWindowDays: 14,
+  notifyEmail: null,
+})
 
 beforeEach(() => {
   vi.resetAllMocks()
@@ -130,7 +136,7 @@ describe('FirstRunHint — #2621 post-connection onboarding steps', () => {
     expect(hint).toHaveAttribute('data-state', 'devices')
     expect(screen.getByRole('link', { name: /assign your devices/i })).toHaveAttribute('href', '/devices')
     // Not the close-the-policy step — that one is premature while devices are unassigned.
-    expect(screen.queryByRole('link', { name: /unmanaged-device policy/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /block unmanaged devices/i })).not.toBeInTheDocument()
   })
 
   it('tells the operator to close the policy once every device is assigned and the policy is still allow', async () => {
@@ -140,7 +146,7 @@ describe('FirstRunHint — #2621 post-connection onboarding steps', () => {
 
     const hint = await screen.findByTestId('first-run-hint')
     expect(hint).toHaveAttribute('data-state', 'policy')
-    expect(screen.getByRole('link', { name: /unmanaged-device policy/i })).toHaveAttribute('href', '/admin')
+    expect(screen.getByRole('link', { name: /block unmanaged devices/i })).toHaveAttribute('href', '/admin')
   })
 
   it('renders nothing once the policy is set to block, even with devices still unassigned', async () => {
