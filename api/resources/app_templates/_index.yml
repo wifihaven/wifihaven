@@ -51,3 +51,7 @@ slugs:
   - serato
   # #2596: traffic-driven catalog pass (see evidence/classification-2596.md)
   - freckle
+  # #2527: a blockable app that exists only to PROVE enforcement works on a
+  # deployment — plain-HTTP hosts, so the block PAGE renders rather than just a
+  # failed TLS handshake. Not a real-world service.
+  - connectivity-test
