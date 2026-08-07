@@ -56,6 +56,7 @@ import { api } from '@/api/client'
 import { DashboardPage, NowSection, RecentlyBlockedSection } from './DashboardPage'
 import { withQuery, makeTestQueryClient } from '@/test/queryWrapper'
 import { recentBlockedFetchLabel } from '@/api/queries'
+import { qk } from '@/api/queryKeys'
 import { AuthProvider } from '@/hooks/useAuth'
 
 const stats: DashboardStats = {
@@ -625,7 +626,10 @@ describe('RecentlyBlockedSection (#1338 / #2073 / #2062)', () => {
     const client = makeTestQueryClient()
     render(withQuery(<MemoryRouter><RecentlyBlockedSection /></MemoryRouter>, client))
     await screen.findByText('connectivitycheck.gstatic.com')
-    await act(async () => { await client.refetchQueries({ queryKey: ['dashboard', 'recent-blocked', null] }) })
+    // Use the key FACTORY, not a literal: #2603 prefixes every key with the session's
+    // household scope, so a hardcoded ['dashboard','recent-blocked',null] silently matches
+    // nothing and the refetch never fires.
+    await act(async () => { await client.refetchQueries({ queryKey: qk.recentBlocked(null) }) })
     expect(await screen.findByTestId('recently-blocked-error')).toBeInTheDocument()
     // The last successful read is still rendered.
     expect(screen.getByText('connectivitycheck.gstatic.com')).toBeInTheDocument()

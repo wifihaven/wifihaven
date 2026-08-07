@@ -88,7 +88,10 @@ function Panels() {
   const text = [
     devices.isPending ? 'devices:loading' : (devices.data ?? []).map(d => d.name).join(','),
     profiles.isPending ? 'profiles:loading' : (profiles.data ?? []).map(p => p.profile.name).join(','),
-    blocked.isPending ? 'blocked:loading' : (blocked.data ?? []).map(r => r.host).join(','),
+    // #2601 widened useRecentBlocked's projection to { rows, olderCount, ... } so the panel
+    // can tell "no blocks in the window" from "no blocks at all". The identity assertion is
+    // unchanged: it still reads the hosts out of the cache entry for this household.
+    blocked.isPending ? 'blocked:loading' : (blocked.data?.rows ?? []).map(r => r.host).join(','),
   ].join(' | ')
   renderLog.push(text)
   return <div data-testid="panels">{text}</div>
