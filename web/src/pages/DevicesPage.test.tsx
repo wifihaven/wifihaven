@@ -876,3 +876,130 @@ describe('DevicesPage — adult capability (#2522)', () => {
     expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument()
   })
 })
+
+// #2607 — the new-device alert is the natural onboarding entry point: a device
+// appears, the operator clicks the alert to deal with it. On a household with
+// zero profiles this surface was a dead end — its <select> offered only the
+// null option, so the operator had to leave for /profiles and come back. It now
+// mounts the same `ProfilePicker` the Add-Device modal and the row editor do.
+describe('DevicesPage — new-device alert inline profile creation (#2607)', () => {
+  const alert = {
+    id: 42,
+    kind: 'new_device' as const,
+    status: 'pending' as const,
+    mac: 'aa:bb:cc:99:99:99',
+    deviceName: 'device-999999',
+    profileId: null,
+    profileName: null,
+    host: null,
+    requestKind: null,
+    note: null,
+    grantedMinutes: null,
+    createdAt: '2026-05-22T12:00:00Z',
+    decidedAt: null,
+    decidedBy: null,
+  }
+
+  const newProfile: ProfileDetail = {
+    profile: { id: 7, name: 'First Kid', blockedCategories: [], paused: false, failureMode: 'last-known-good', crossDeviceOverlapMode: 'sum', pauseMode: 'soft', defaultDeny: false },
+    timeLimit: null,
+  }
+
+  async function openEditor() {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByTestId('new-device-alerts-banner')
+    await user.click(screen.getByTestId(`new-device-alert-row-${alert.mac}`))
+    return { user, editor: await screen.findByTestId('new-device-alert-editor') }
+  }
+
+  it('zero-profile household: the alert opens straight into the creator, and the device is assigned without leaving the page', async () => {
+    (api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.alerts.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([alert])
+    ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([newProfile])
+    ;(api.profiles.create as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 7 })
+
+    const { user, editor } = await openEditor()
+
+    await user.type(
+      await within(editor).findByTestId('new-device-alert-new-profile-name'),
+      'First Kid',
+    )
+    await user.click(within(editor).getByTestId('new-device-alert-create-profile'))
+
+    await waitFor(() =>
+      expect(api.profiles.create).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'First Kid' }),
+      )
+    )
+
+    await user.click(within(editor).getByTestId('new-device-alert-save'))
+
+    await waitFor(() =>
+      expect(api.devices.patch).toHaveBeenCalledWith(alert.mac, { profileId: 7 })
+    )
+    // A profile means the operator decided the device belongs here — approve.
+    await waitFor(() => expect(api.alerts.approve).toHaveBeenCalledWith(alert.id))
+  })
+
+  it('with existing profiles: "+ New profile…" is offered alongside them and assigns the created one', async () => {
+    (api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.alerts.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([alert])
+    ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce([kidsProfile, adultsProfile])
+      .mockResolvedValue([kidsProfile, adultsProfile, newProfile])
+    ;(api.profiles.create as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 7 })
+
+    const { user, editor } = await openEditor()
+
+    expect(within(editor).getByRole('option', { name: 'Kids' })).toBeInTheDocument()
+    expect(within(editor).getByRole('option', { name: '+ New profile…' })).toBeInTheDocument()
+
+    await user.selectOptions(within(editor).getByTestId('new-device-alert-profile'), '__new__')
+    await user.type(
+      within(editor).getByTestId('new-device-alert-new-profile-name'),
+      'First Kid',
+    )
+    await user.click(within(editor).getByTestId('new-device-alert-create-profile'))
+
+    await waitFor(() =>
+      expect(api.profiles.create).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'First Kid' }),
+      )
+    )
+
+    await user.click(within(editor).getByTestId('new-device-alert-save'))
+    await waitFor(() =>
+      expect(api.devices.patch).toHaveBeenCalledWith(alert.mac, { profileId: 7 })
+    )
+  })
+
+  // The label the three surfaces had drifted on ("No profile" vs
+  // "— No profile —"). Settled on the plain form, which is also what the device
+  // row's own pill reads.
+  it('uses the one settled null-option label', async () => {
+    (api.alerts.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([alert])
+    const { editor } = await openEditor()
+    expect(within(editor).getByRole('option', { name: 'No profile' })).toBeInTheDocument()
+    expect(within(editor).queryByRole('option', { name: '— No profile —' })).not.toBeInTheDocument()
+  })
+
+  // Saving mid-create would race the assignment against the profile landing;
+  // closing would leave the profile created server-side and never assigned,
+  // with nothing on screen saying so.
+  it('freezes Save while the creator is open', async () => {
+    (api.alerts.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([alert])
+    const { user, editor } = await openEditor()
+
+    expect(within(editor).getByTestId('new-device-alert-save')).toBeEnabled()
+    await user.selectOptions(within(editor).getByTestId('new-device-alert-profile'), '__new__')
+
+    expect(within(editor).getByTestId('new-device-alert-save')).toBeDisabled()
+    expect(within(editor).getByTestId('new-device-alert-profile')).toBeDisabled()
+
+    await user.click(within(editor).getByTestId('new-device-alert-cancel-profile'))
+    expect(within(editor).getByTestId('new-device-alert-save')).toBeEnabled()
+  })
+})
