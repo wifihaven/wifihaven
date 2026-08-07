@@ -15,6 +15,7 @@ vi.mock('@/pages/LoginPage',    () => ({ LoginPage:    () => <div>Login stub</di
 vi.mock('@/pages/UsersPage',    () => ({ UsersPage:    () => <div data-testid="users-page">Users page</div> }))
 
 import { AuthProvider } from '@/hooks/useAuth'
+import { withQuery } from '@/test/queryWrapper'
 // #2522: the gates are imported from App.tsx, not re-implemented here. A local copy would
 // keep passing after the real guard drifted — which is exactly the failure mode this issue
 // is about (the SPA claiming a boundary the API no longer enforces).
@@ -27,15 +28,19 @@ function renderAt(role: 'admin' | 'adult' | 'child' | null, gate: 'admin' | 'wri
   localStorage.setItem('username', 'someone')
   if (role) localStorage.setItem('role', role)
   const Gate = gate === 'admin' ? RequireAdmin : RequireWriter
+  // #2603: AuthProvider clears the query cache on identity change, so it needs a
+  // QueryClientProvider above it — as main.tsx already gives it in the real app.
   return render(
-    <AuthProvider>
-      <MemoryRouter initialEntries={['/guarded']}>
-        <Routes>
-          <Route path="/dashboard" element={<div>Dashboard stub</div>} />
-          <Route path="/guarded" element={<Gate>{GUARDED}</Gate>} />
-        </Routes>
-      </MemoryRouter>
-    </AuthProvider>,
+    withQuery(
+      <AuthProvider>
+        <MemoryRouter initialEntries={['/guarded']}>
+          <Routes>
+            <Route path="/dashboard" element={<div>Dashboard stub</div>} />
+            <Route path="/guarded" element={<Gate>{GUARDED}</Gate>} />
+          </Routes>
+        </MemoryRouter>
+      </AuthProvider>,
+    ),
   )
 }
 

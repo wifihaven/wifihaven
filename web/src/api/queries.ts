@@ -7,12 +7,13 @@
 // pages can invalidate the right keys onSuccess.
 import { useQuery, useQueryClient, type UseQueryOptions } from '@tanstack/react-query'
 import { api } from '@/api/client'
+import { qk } from '@/api/queryKeys'
 import type {
   Alert, BetaRequestStatus, BetaRequestSummary, BlocklistSummary, DashboardNow, Device, HouseholdSettings, MeResponse, NamedSchedule, ProfileDetail,
   ProfileTimeStatus,
   ProfileAppWeeklyUsage,
   ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek, ProfileUsageByApp,
-  QueryLog, RouterSummary, TrafficUsageBucket, TrafficUsageGroupBy, UsageConfig, UsageSeriesResponse,
+  QueryLog, RouterSummary, UsageConfig, UsageSeriesResponse,
   SupportIdentityResponse,
   PressMessage,
 } from '@/types/api'
@@ -64,66 +65,10 @@ const STALE = {
 // by construction rather than by hand-synced literals.
 export const LIVE_SURFACE_FALLBACK_REFETCH_MS = 10_000
 
-export const qk = {
-  me: () => ['me'] as const,
-  // #2199 — the server-signed Plain widget identity for the authed admin.
-  supportIdentity: () => ['support', 'identity'] as const,
-  // #2133 — operator beta-request queue, keyed on the optional status filter.
-  betaRequests: (status?: BetaRequestStatus) => ['beta-requests', status ?? 'pending'] as const,
-  // #2296 — operator press correspondence log.
-  pressMessages: () => ['press', 'messages'] as const,
-  profiles: () => ['profiles'] as const,
-  devices: () => ['devices'] as const,
-  // #2252 — enrolled routers, read by the dashboard first-run banner to tell
-  // "no router yet" apart from "enrollment pending, waiting to connect".
-  routers: () => ['routers'] as const,
-  alerts: (includeAll: boolean) => ['alerts', includeAll] as const,
-  schedules: () => ['schedules'] as const,
-  dashboardNow: () => ['dashboard', 'now'] as const,
-  // #2062: an optional `mac` narrows the feed to one device; the ws patcher
-  // (useWsRecentBlocked) MUST key on the same mac so its prepend lands on the
-  // active (filtered) cache entry, not the unfiltered one.
-  recentBlocked: (mac?: string | null) => ['dashboard', 'recent-blocked', mac ?? null] as const,
-  timeStatusToday: () => ['time', 'status', 'today'] as const,
-  timeStatusDate: (date: string) => ['time', 'status', 'date', date] as const,
-  timeStatusWeek: (to?: string, bucketOffsetMin?: number) =>
-    ['time', 'status', 'week', to ?? 'current', bucketOffsetMin ?? 0] as const,
-  // #777 — per-profile detail (today/week) cached on first expand so collapse-then-
-  // re-expand within the same page mount doesn't refetch.
-  timeStatusProfileToday: (profileId: number) =>
-    ['time', 'status', 'today', 'profile', profileId] as const,
-  timeStatusProfileWeek: (profileId: number, to: string | undefined, bucketOffsetMin: number) =>
-    ['time', 'status', 'week', to ?? 'current', bucketOffsetMin, 'profile', profileId] as const,
-  timeStatusSummaryToday: () => ['time', 'status', 'summary', 'today'] as const,
-  timeStatusSummaryWeek: (to?: string) => ['time', 'status', 'summary', 'week', to ?? 'current'] as const,
-  // #776 — hourly chart on the Today card.
-  // #1079 — groupBy is part of the cache key so the by-app axis doesn't
-  // share a cache slot with the legacy host axis.
-  usageSeriesProfile: (profileId: number, date: string, tz: string, groupBy?: string) =>
-    ['usage', 'series', 'profile', profileId, date, tz, groupBy ?? 'host'] as const,
-  // #1061 — per-app time-used breakdown for one profile over [from,to].
-  profileUsageByApp: (profileId: number, from: string, to: string) =>
-    ['profiles', profileId, 'usage-by-app', from, to] as const,
-  // #1089 — per-app engaged-minutes summed over the trailing 7-day window
-  // ending at `to`. Aggregates FROM `app_used_daily`, so by construction it
-  // tracks the daily rollup the per-app cap reads.
-  profileAppWeekly: (profileId: number, to?: string) =>
-    ['profiles', profileId, 'usage', 'app', 'weekly', to ?? 'current'] as const,
-  // #1973 (SPA-ws S5): the live trafficUsage series key (design §3.1). The ws push
-  // (live edge) and the future S6b Traffic Usage page produce the key HERE so they
-  // share one cache entry — the push patches exactly the key the page renders.
-  // #2069: `profileIds` scopes the key so a child's linked-profile-scoped series is a
-  // distinct cache entry from the admin/adult household-wide one (and the scoped GET
-  // seed / ws push patch the same key). Empty = unscoped (admin/adult), the prior shape.
-  trafficUsageLive: (params: { groupBy: TrafficUsageGroupBy[]; bucket: TrafficUsageBucket; profileIds?: number[] }) =>
-    ['usage', 'traffic', 'live', params.bucket, [...params.groupBy].sort().join(','),
-      [...(params.profileIds ?? [])].sort((a, b) => a - b).join(',')] as const,
-  // #1973: the live connectionEvents feed key (design §3.1). The dashboard's "Recently
-  // Blocked" panel keeps its own `recentBlocked()` key (the 15-min window view); this
-  // is the shared key the future S6b Connection Events page streams into.
-  connectionEventsLive: (filter: Record<string, unknown>) =>
-    ['logs', 'live', JSON.stringify(filter)] as const,
-}
+// #2603: the key factory lives in its own leaf module (api/queryKeys.ts) so a component
+// that needs only a KEY doesn't have to import this hooks module. Re-exported here because
+// most call sites (and the ws layer) already import `qk` from '@/api/queries'.
+export { qk } from '@/api/queryKeys'
 
 type QueryOpts<T> = Omit<UseQueryOptions<T, Error, T, readonly unknown[]>, 'queryKey' | 'queryFn'>
 
@@ -200,7 +145,7 @@ export function useProfiles(opts?: QueryOpts<ProfileDetail[]>) {
 // in an error state.
 export function useGlobalProfile(opts?: QueryOpts<ProfileDetail>) {
   return useQuery({
-    queryKey: ['profiles', 'global'] as const,
+    queryKey: qk.profilesGlobal(),
     queryFn: () => api.profiles.getGlobal(),
     staleTime: STALE.profiles,
     ...opts,
@@ -213,7 +158,7 @@ export function useGlobalProfile(opts?: QueryOpts<ProfileDetail>) {
 // date-picker isn't blocked by network.
 export function useUsageConfig(opts?: QueryOpts<UsageConfig>) {
   return useQuery({
-    queryKey: ['usage', 'config'] as const,
+    queryKey: qk.usageConfig(),
     queryFn: () => api.usage.config(),
     staleTime: 60 * MIN,
     // Effectively constant — survive page-mount churn without re-fetching.
@@ -224,7 +169,7 @@ export function useUsageConfig(opts?: QueryOpts<UsageConfig>) {
 
 export function useHouseholdSettings(opts?: QueryOpts<HouseholdSettings>) {
   return useQuery({
-    queryKey: ['household', 'settings'] as const,
+    queryKey: qk.householdSettings(),
     queryFn: () => api.household.get(),
     staleTime: 5 * MIN,
     ...opts,
@@ -260,7 +205,7 @@ export function useRouters(opts?: QueryOpts<RouterSummary[]>) {
 // profile card. Cached so N profile cards don't each fire their own fetch.
 export function useBlocklists(opts?: QueryOpts<BlocklistSummary[]>) {
   return useQuery({
-    queryKey: ['blocklists'] as const,
+    queryKey: qk.blocklists(),
     queryFn: () => api.blocklists.list(),
     staleTime: 5 * MIN,
     ...opts,
@@ -496,22 +441,22 @@ export function useInvalidators() {
     schedules: () => Promise.all([
       qc.invalidateQueries({ queryKey: qk.schedules() }),
       qc.invalidateQueries({ queryKey: qk.profiles() }),
-      qc.invalidateQueries({ queryKey: ['time', 'status'] }),
+      qc.invalidateQueries({ queryKey: qk.timeStatusAll() }),
     ]),
-    alerts: () => qc.invalidateQueries({ queryKey: ['alerts'] }),
+    alerts: () => qc.invalidateQueries({ queryKey: qk.alertsAll() }),
     dashboardNow: () => qc.invalidateQueries({ queryKey: qk.dashboardNow() }),
-    timeStatus: () => qc.invalidateQueries({ queryKey: ['time', 'status'] }),
+    timeStatus: () => qc.invalidateQueries({ queryKey: qk.timeStatusAll() }),
     profileMutated: () => Promise.all([
       // `qk.profiles()` (= `['profiles']`) prefix-matches `['profiles', 'global']`
       // (#1773) too — react-query invalidation walks the prefix tree.
       qc.invalidateQueries({ queryKey: qk.profiles() }),
       qc.invalidateQueries({ queryKey: qk.devices() }),
-      qc.invalidateQueries({ queryKey: ['time', 'status'] }),
+      qc.invalidateQueries({ queryKey: qk.timeStatusAll() }),
       qc.invalidateQueries({ queryKey: qk.dashboardNow() }),
     ]),
     deviceMutated: () => Promise.all([
       qc.invalidateQueries({ queryKey: qk.devices() }),
-      qc.invalidateQueries({ queryKey: ['time', 'status'] }),
+      qc.invalidateQueries({ queryKey: qk.timeStatusAll() }),
       qc.invalidateQueries({ queryKey: qk.dashboardNow() }),
     ]),
   }

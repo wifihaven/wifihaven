@@ -12,6 +12,7 @@ vi.mock('@/api/client', () => ({
 }))
 
 import { api } from '@/api/client'
+import { qk } from '@/api/queryKeys'
 import { useNotifyOnNewAlerts, useNotificationPermission } from './useNotifyOnNewAlerts'
 
 const newDevice: Alert = {
@@ -106,14 +107,14 @@ afterEach(() => {
 
 async function awaitFirstFetch() {
   await waitFor(() =>
-    expect(testClient.getQueryData(['alerts', false])).toBeDefined(),
+    expect(testClient.getQueryData(qk.alerts(false))).toBeDefined(),
   )
 }
 
 async function refetchWith(alerts: Alert[]) {
   mockList().mockResolvedValueOnce(alerts)
   await act(async () => {
-    await testClient.invalidateQueries({ queryKey: ['alerts'] })
+    await testClient.invalidateQueries({ queryKey: qk.alertsAll() })
   })
 }
 

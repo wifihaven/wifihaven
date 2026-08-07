@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/api/client'
+import { qk } from '@/api/queryKeys'
 import type { BillingStatus } from '@/types/api'
 
 /**
@@ -13,7 +14,7 @@ import type { BillingStatus } from '@/types/api'
  */
 export function BillingPage() {
   const { data, isPending, isError, error } = useQuery({
-    queryKey: ['billing', 'status'],
+    queryKey: qk.billingStatus(),
     queryFn: () => api.billing.status(),
   })
   const [redirecting, setRedirecting] = useState<'checkout' | 'portal' | null>(null)
