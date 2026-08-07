@@ -143,8 +143,8 @@ object BundledBlocklistsSpec
         // Google's shared GFE pool, so blocking it dropped Drive traffic too. This
         // assertion only ever existed to prove the seeder writes curated hosts, so it
         // moves to another baseline entry rather than being dropped. The removal
-        // itself is pinned by the "#2601 — no curated list carries a host that fronts
-        // on Google's shared GFE pool" test below.
+        // itself is pinned by the "#2601 — the eight Google shared-GFE ad apexes stay
+        // out of every inline blocklist" test below.
         assertTrue(ads.contains(Hostname.unsafe("adnxs.com"))) &&
         // traffic-driven addition pinned for presence (#1923)
         assertTrue(ads.contains(Hostname.unsafe("bidmachine.io"))) &&
@@ -323,7 +323,12 @@ object BundledBlocklistsSpec
         ads  <- blRepo.loadCategory(BlocklistId.unsafe("test_ads"))
       } yield assertTrue(cats.contains(BlocklistId.unsafe("test_ads"))) &&
         assertTrue(cats.contains(BlocklistId.unsafe("test_social"))) &&
-        assertTrue(ads.contains(Hostname.unsafe("doubleclick.net")))
+        // Was `doubleclick.net` until #2601 swapped the dev fixture's hosts — it fronts
+        // on Google's shared GFE pool, so seeding it put a shared Google address into
+        // `bl_test_ads` on any dev router with the seed enabled. The assertion only ever
+        // proved the dev seeder writes its hosts, so it moves to the fixture's new entry
+        // at equal strength.
+        assertTrue(ads.contains(Hostname.unsafe("adnxs.com")))
     },
     test("summaries: returns metadata rows joined with host counts (inline only)") {
       for {
@@ -441,43 +446,30 @@ object BundledBlocklistsSpec
         assertTrue(!hosts.contains(Hostname.unsafe("google.com"))) &&
         assertTrue(!hosts.contains(Hostname.unsafe("microsoft.com")))
     },
-    test("#2601 — no curated list carries a host that fronts on Google's shared GFE pool") {
+    test("#2601 — the eight Google shared-GFE ad apexes stay out of every inline blocklist") {
       // Enforcement matches on DESTINATION IP. These apexes are served from the same
       // Google GFE anycast frontends as ordinary Google properties, so putting any of
-      // them in a curated list drops whatever else GFE happens to hand that address to.
+      // them in a bundled list drops whatever else GFE happens to hand that address to
+      // — on prod that took out Google Drive downloads. Host set + suffix matching are
+      // single-sourced in `SharedGfeHosts`; see the rationale there.
       //
-      // Observed on prod 2026-08-06 (#2601): five hostnames dropped for one MAC at one
-      // timestamp, meaning one address served all five — `static.doubleclick.net`,
-      // `pagead2.googlesyndication.com`, `www.googletagmanager.com`,
-      // `www.googleadservices.com` and `drive.google.com`. `bl6_ads` held exactly four
-      // GFE addresses at the time: 2607:f8b0:400f:{800::2008, 805::200e, 806::2002,
-      // 806::2004}, one /64 away from the 2607:f8b0:400f:800::2001 that
-      // `drive.usercontent.google.com` resolves to.
+      // Covers `devTestBlocklists` as well as the shipped YAML: `test_ads` is a real
+      // inline list that reaches `blocklistIds` -> `bl_test_ads` whenever
+      // WIFIHAVEN_SEED_TEST_BLOCKLISTS is set, so it reproduces the same collateral on
+      // a dev router. loadAll() only sees the YAML resources, hence the explicit ++.
       //
-      // This guard is what keeps a later traffic-driven pass from re-adding them: the
-      // hosts look like textbook ad-tech, and the collateral is invisible from the
-      // hostname alone. #2377 (SNI-level disambiguation) is what would make them
-      // blockable again; until then they stay out of every curated list.
-      // Same reasoning as #2369, which demoted the mirror-image hosts off the
-      // infra allow-carve.
-      val googleGfeShared = List(
-        "doubleclick.net",
-        "googleadservices.com",
-        "googlesyndication.com",
-        "googletagmanager.com",
-        "googletagservices.com",
-        "google-analytics.com",
-        "adservice.google.com",
-        "2mdn.net",
-      ).map(Hostname.unsafe)
+      // Scoped to these eight on purpose: other Google hosts front on the same pool
+      // (`play.google.com`, `ai.google.dev`) but are load-bearing for catalogs that
+      // accept that trade deliberately. This test enforces what it names.
       for {
-        inline <- loadInlineOnly
-        offenders = inline.flatMap { bl =>
+        // `inline` is a Scala 3 soft keyword, so this binding cannot be named that.
+        inlineLists <- loadInlineOnly
+        offenders = (inlineLists ++ BundledBlocklists.devTestBlocklists).flatMap { bl =>
           val hosts = bl.content match {
             case BundledBlocklistContent.Inline(hs) => hs
             case _                                  => Nil
           }
-          googleGfeShared.filter(hosts.contains).map(h => s"${bl.id.value}:${h.value}")
+          hosts.filter(SharedGfeHosts.isBanned).map(h => s"${bl.id.value}:${h.value}")
         }
       } yield assertTrue(offenders.isEmpty)
     },

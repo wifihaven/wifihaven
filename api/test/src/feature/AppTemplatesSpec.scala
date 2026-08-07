@@ -759,5 +759,18 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         )
       } yield assertTrue(resp.status == Status.Forbidden)
     },
+    test("#2601 — the eight Google shared-GFE ad apexes stay out of every app template") {
+      // An app template's host-set reaches the SAME nftables destination-IP plane a
+      // blocklist does (`extraBlocked` -> `eb_<host>`), so an author who adds one of
+      // these to a template reproduces the Drive collateral exactly as `ads.yml` did.
+      // Guarding one catalog and not the other would just move the hazard, so both
+      // consume the same `SharedGfeHosts` set.
+      for {
+        templates <- AppTemplates.loadAll()
+        offenders = templates.flatMap(t =>
+          t.hosts.filter(SharedGfeHosts.isBanned).map(h => s"${t.slug.value}:${h.value}"),
+        )
+      } yield assertTrue(offenders.isEmpty)
+    },
   ) @@ TestAspect.sequential
 }
