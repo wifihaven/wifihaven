@@ -29,7 +29,7 @@ export const RECENT_BLOCKED_LIMIT = 20
 export const RECENT_BLOCKED_WINDOW_MS = 15 * 60_000
 // The server-side FETCH width, in the integer hours /api/logs takes. Wider than the
 // display window on purpose: it is what lets the panel say "there were blocks, just not
-// in the last 15 minutes" instead of rendering the same empty state as a household that
+// in the display window" instead of rendering the same empty state as a household that
 // has never been blocked.
 export const RECENT_BLOCKED_FETCH_HOURS = 1
 // Human-readable forms of the two spans above, so the panel can NAME them. Derived here
@@ -328,11 +328,11 @@ export function useRecentBlocked(mac: string | null = null, opts?: RecentBlocked
         // Reads the CACHE, which useWsRecentBlocked also caps at RECENT_BLOCKED_LIMIT
         // (useWs.tsx -> wsCache.prependHead's slice). So the cache can saturate at the cap
         // from pushed rows even when the original fetch returned fewer, and report "20+"
-        // where a fresh fetch would say "3". Bounded by this hook's own config: the 10s
-        // refetch below replaces the whole cache while the tab is foregrounded, so the
-        // divergence only persists in a BACKGROUNDED tab, where refetchIntervalInBackground
-        // stops the poll but not the ws subscription. Sound either way: the field is a
-        // FLOOR by contract, never a total.
+        // where a fresh fetch would say "3". That is why the field is a FLOOR by contract,
+        // never a total — no caller may present it as an exact count. Deliberately no claim
+        // here about when a refetch heals the divergence: whether one runs at all is the
+        // CALLER's choice (DashboardPage disables polling while the push is streaming), so
+        // any bound stated here would be describing someone else's config.
         olderCountTruncated: rows.length >= RECENT_BLOCKED_LIMIT,
       }
     },
