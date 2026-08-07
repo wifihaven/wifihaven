@@ -1290,6 +1290,10 @@ conntrack.watch({
     -- timestamps, mark_poll_success for human-readable poll_age display).
     local mono = clock.monotonic_seconds()
     local wall = os.time()
+    -- #2620: read the ws-health sentinel ONCE per tick and share it between the
+    -- policy-poll dormancy gate and the nflog drain cadence below — same
+    -- ws_outbound.is_healthy predicate, one tmpfs read instead of two.
+    local ws_live = ws_link_healthy()
 
     -- #2381 escape-hatch reconciler. Runs every tick (a cheap local UCI read via
     -- ts.enforcement_read — no fork, no network) so a live toggle of
@@ -1331,7 +1335,7 @@ conntrack.watch({
       -- tick: one integer compare. Called through the global so on_tick does not
       -- gain an upvalue (#1930).
       wh_refresh_block_page_token()
-      if ws_link_healthy() then
+      if ws_live then
         -- #2037: ws is the live policy transport — skip the HTTP poll (dormant).
         -- Advancing ts.last_policy_run above keeps the cadence anchor moving so
         -- we re-check once per policy_int; the ws apply-on-push tick below keeps
@@ -1607,7 +1611,17 @@ conntrack.watch({
     -- cache the conntrack path uses (lookup_hostname), so a blocked flow surfaces
     -- with a host, not a bare IP, whenever DNS attribution exists. A persistent
     -- dedup (nflog_dedup) collapses retry storms across ticks.
-    if ts.events_batcher and (mono - ts.last_nflog_run) >= nflog_int then
+    --
+    -- #2620: nflog_int + the batcher's flush_int exist to bound HTTP REQUEST
+    -- volume (one POST /api/router/events per flush). While the ws link is
+    -- healthy the outbound tee spools those same bodies onto an already-open
+    -- persistent socket instead, so the batching buys nothing there and costs
+    -- up to nflog_int + flush_int (15s) of drop→SPA latency. On the ws path
+    -- drain every tick and flush immediately; on the HTTP fallback path keep
+    -- today's cadence exactly. The gate is the SHARED ws_outbound.is_healthy
+    -- predicate (via ws_link_healthy), so the drain cadence cannot disagree
+    -- with which transport the events actually take.
+    if ts.events_batcher and nflog.drain_due(mono, ts.last_nflog_run, nflog_int, ws_live) then
       ts.last_nflog_run = mono
       local lines = nflog.drain_file(paths.nflog_drops, nflog_state)
       if #lines > 0 then
@@ -1619,6 +1633,10 @@ conntrack.watch({
           lookup_hostname = lookup_hostname,
         })
         log.debug("nflog drain: processed %d spool line(s)", #lines)
+        -- On the ws path the batch is a spool append, not a request — flush it
+        -- now rather than waiting out flush_int. The batcher's own tick() still
+        -- drives the HTTP-path cadence untouched.
+        if ws_live then ts.events_batcher.flush() end
       end
       -- Sweep dedup entries older than the window so `seen` can't grow
       -- unbounded over a long-lived agent (one entry per (mac, dst, host)).

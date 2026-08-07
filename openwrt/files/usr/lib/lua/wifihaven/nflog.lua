@@ -220,6 +220,33 @@ function M.drain_file(path, state, open_fn)
 end
 
 -- ---------------------------------------------------------------------------
+-- drain_due(mono, last_run, interval, ws_healthy) -> bool   (#2620)
+--
+-- Whether the agent's per-tick nflog drop-spool drain should run now.
+--
+-- `nflog_poll_interval` (and the event batcher's `event_flush_interval` behind
+-- it) exist to bound HTTP REQUEST volume: each flush is one
+-- POST /api/router/events. When the ws link is healthy the outbound tee
+-- (ws_outbound.make) hands the same bodies to the sidecar's spool instead, and
+-- they ride an already-open persistent socket — so the request-volume argument
+-- buys nothing there and the interval is pure added latency (up to
+-- nflog_poll_interval + event_flush_interval = 15s of the ~26s drop→SPA delay
+-- measured on prod 2026-08-06). On the HTTP fallback path the interval still
+-- holds, unchanged.
+--
+-- `ws_healthy` MUST come from ws_outbound.is_healthy — the same predicate the
+-- outbound tee and the policy-poll dormancy gate use — so the drain cadence
+-- cannot disagree with which transport the events actually take.
+--
+-- Note this only decides the DRAIN cadence; the caller flushes the batcher
+-- itself when it is on the ws path. Pure.
+-- ---------------------------------------------------------------------------
+function M.drain_due(mono, last_run, interval, ws_healthy)
+  if ws_healthy then return true end
+  return (mono - last_run) >= interval
+end
+
+-- ---------------------------------------------------------------------------
 -- run(cfg) — blocking event loop; called from wifihaven-agent
 --
 -- cfg: {

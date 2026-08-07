@@ -125,6 +125,16 @@ config ws 'ws'
 	# timeout by the #1845 spike (design §5.5). The server closes a channel
 	# that misses a pong for 2× this.
 	option heartbeat_interval '30'
+	# Sidecar loop tick (seconds) — how long the connected loop blocks in the
+	# inbound recv before draining the outbound spool again (#2620). Separate
+	# from heartbeat_interval on purpose: the heartbeat is liveness, this is
+	# outbound latency. Before #2620 the recv timeout WAS the tick, so a drop
+	# event spooled just after a drain waited up to heartbeat_interval (30s)
+	# to leave the router — the dominant hop in the ~26s drop-to-SPA delay.
+	# Clamped into [ws_loop.MIN_POLL_INTERVAL, heartbeat_interval] at runtime;
+	# a value at/above heartbeat_interval restores the old shape. Costs one
+	# tmpfs spool read per interval on an idle socket.
+	option poll_interval '1'
 	# How long (seconds) the socket may stay down before the main agent resumes
 	# HTTP polling (design §3.1 belt-and-suspenders). The agent reads the
 	# ws-health sentinel's mtime against this window.

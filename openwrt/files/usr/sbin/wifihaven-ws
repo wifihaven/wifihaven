@@ -54,6 +54,11 @@ local router_id    = uci_get("router_id", "")
 -- #2608: unset ⇒ "1" (ws is the default transport); only an explicit "0" opts out.
 local ws_enabled   = uci_get_ws("enabled", "1")
 local heartbeat    = tonumber(uci_get_ws("heartbeat_interval", "30"))
+-- #2620: the loop tick / recv timeout, decoupled from the heartbeat. Default
+-- comes from ws_loop so the constant has one home; ws_loop.sanitize_poll_interval
+-- clamps it into [MIN_POLL_INTERVAL, heartbeat] inside serve().
+local poll_int     = tonumber(uci_get_ws("poll_interval",
+                                         tostring(ws_loop.DEFAULT_POLL_INTERVAL)))
 local fallback     = tonumber(uci_get_ws("fallback_after", "300"))
 local max_frame    = tonumber(uci_get_ws("max_frame_bytes", "65536"))
 local connect_to   = tonumber(uci_get_ws("connect_timeout", "10"))
@@ -83,8 +88,8 @@ local function ws_url_of(base)
 end
 local ws_url = ws_url_of(api_url)
 
-log.info("wifihaven-ws: starting url=%s router_id=%s heartbeat=%ds fallback_after=%ds max_frame=%dB",
-         ws_url, router_id, heartbeat, fallback, max_frame)
+log.info("wifihaven-ws: starting url=%s router_id=%s heartbeat=%ds poll=%ss fallback_after=%ds max_frame=%dB",
+         ws_url, router_id, heartbeat, tostring(poll_int), fallback, max_frame)
 
 -- Seed the jitter PRNG. ws_backoff.delay uses cfg.rng; vary the seed by pid +
 -- monotime so a fleet that all reconnect at once doesn't share a jitter phase.
@@ -213,6 +218,7 @@ local cfg = {
   clear_health = clear_health,
   metrics      = metrics_sink,
   heartbeat_interval = heartbeat,
+  poll_interval      = poll_int,
   fallback_after     = fallback,
   rng          = math.random,
   log          = log,

@@ -30,6 +30,42 @@ local ws_backoff = require("wifihaven.ws_backoff")
 
 local M = {}
 
+-- ── outbound drain tick (#2620) ─────────────────────────────────────────────
+-- serve() used to block in client:recv(heartbeat_interval), so the INBOUND read
+-- timeout doubled as the loop tick and a frame spooled just after a drain waited
+-- out the whole heartbeat (default 30s) before anything sent it — the dominant
+-- hop in the ~26s drop→SPA latency measured on prod 2026-08-06. Those are two
+-- separate concerns: heartbeat cadence is liveness (and is already gated on its
+-- own `last_ping`), the loop tick is outbound latency. The recv timeout is now
+-- its own short interval.
+--
+-- DEFAULT_POLL_INTERVAL is the single definition of the default; the UCI option
+-- `wifihaven.ws.poll_interval` (documented in files/etc/config/wifihaven)
+-- overrides it and the sidecar reads this constant as its uci_get default, so
+-- the two cannot drift.
+M.DEFAULT_POLL_INTERVAL = 1
+-- Floor. A zero/negative recv timeout returns immediately, which would spin the
+-- cqueues fiber at 100% CPU on an idle socket; 0.1s bounds that at ≤10
+-- wakeups/s. A wakeup is one spool stat + read of a tmpfs file, so even the
+-- floor is cheap — but the floor is what makes a fat-fingered `poll_interval 0`
+-- non-catastrophic on a router.
+M.MIN_POLL_INTERVAL = 0.1
+
+-- sanitize_poll_interval(v, heartbeat_interval) → seconds, clamped into
+-- [MIN_POLL_INTERVAL, heartbeat_interval]. Below the floor it busy-spins; above
+-- the heartbeat it is pointless (the heartbeat would be the tick again, i.e.
+-- exactly the pre-#2620 shape). Unset/unparseable → DEFAULT_POLL_INTERVAL.
+-- Pure.
+function M.sanitize_poll_interval(v, heartbeat_interval)
+  local hb = tonumber(heartbeat_interval)
+  if not hb or hb < M.MIN_POLL_INTERVAL then hb = M.MIN_POLL_INTERVAL end
+  local n = tonumber(v)
+  if not n then n = M.DEFAULT_POLL_INTERVAL end
+  if n < M.MIN_POLL_INTERVAL then n = M.MIN_POLL_INTERVAL end
+  if n > hb then n = hb end
+  return n
+end
+
 -- classify_connect_error(err) → bounded `ws_connect_total{result}` enum.
 -- A 401 at upgrade is an auth failure (drop, don't hammer — same as a REST 401);
 -- any other rejected upgrade is `upgrade_fail`; a connect/TLS/handshake timeout
@@ -115,7 +151,13 @@ end
 -- serve(cfg, client, ctx) — the connected steady-state loop. Drains outbound,
 -- beats the heartbeat, and processes inbound frames until the socket drops (or a
 -- send fails). Returns when disconnected so run() can reconnect.
+--
+-- #2620: the loop ticks on cfg.poll_interval (short), NOT on the heartbeat. A
+-- benign recv timeout is the normal case at this cadence and is already handled
+-- — ws_client:recv clearerr()s it, so the ~30× increase in idle timeouts does
+-- not accumulate toward cqueues' unchecked-error abort limit.
 local function serve(cfg, client, ctx)
+  local poll = M.sanitize_poll_interval(cfg.poll_interval, cfg.heartbeat_interval)
   local last_ping = cfg.now()
   while true do
     if not drain_and_send(cfg, client, ctx) then return end
@@ -127,9 +169,9 @@ local function serve(cfg, client, ctx)
       cfg.metrics.frame_sent("ping")
     end
 
-    local op, payload = client:recv(cfg.heartbeat_interval)
+    local op, payload = client:recv(poll)
     if not op then
-      -- A read timeout is the normal idle gap between heartbeats — the socket is
+      -- A read timeout is the normal idle gap between polls — the socket is
       -- still live, so keep looping. Anything else (eof / protocol / close) is a
       -- real drop → return to reconnect.
       if payload ~= "timeout" then return end
@@ -156,6 +198,9 @@ end
 --   touch_health()/clear_health()         (the ws-health sentinel the agent reads)
 --   metrics{connect,state,fallback,frame_sent,frame_recv}
 --   heartbeat_interval, fallback_after, rng, log
+--   poll_interval        → recv/loop-tick seconds (#2620); sanitized per
+--                          M.sanitize_poll_interval, so an absent value is the
+--                          documented default rather than an error
 function M.run(cfg)
   local ctx = { pending = {} }
   local attempt = 0
