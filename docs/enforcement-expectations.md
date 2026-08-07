@@ -126,6 +126,24 @@ anyone who reports "blocking doesn't work."
   match on destination IP, and the IP is the same. Tracked in
   [#2369](https://github.com/wifihaven/wifihaven/issues/2369).
 
+## A device that is offline entirely, not partly blocked
+
+Everything above is about a block that seems too weak. The opposite report —
+"this device has no internet at all, and I never blocked it" — usually has a
+different cause: the household's **unmanaged-device policy** is set to `block`,
+and the device has not been assigned to a profile.
+
+Check the **Devices** page first. A device in the **Unmanaged Devices** section
+carrying an **Unmanaged** badge is being dropped for exactly this reason;
+enrolling it into a profile clears the block on the next snapshot. Note that the
+block page such a device lands on does not currently say so
+([#2610](https://github.com/wifihaven/wifihaven/issues/2610)), so the Devices
+page is the reliable diagnosis.
+
+The policy, its default, and when to change it are documented as an onboarding
+step in
+[`install-openwrt.md` §4](install-openwrt.md#4-enroll-your-devices-then-block-unmanaged-ones).
+
 ## Verified constants (source of truth)
 
 | Constant | Default | Source |

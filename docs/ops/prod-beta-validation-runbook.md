@@ -153,7 +153,7 @@ logcli query '{service="wifihaven-api", env="production"} |~ "(?i)(household|log
 ## Step 3 — enroll the router and prove enforcement DROPS
 
 1. **Point the agent at prod and enroll**, per
-   [`install-openwrt.md` §4](../install-openwrt.md#4-enrolling-against-the-cloud-api).
+   [`install-openwrt.md` §5](../install-openwrt.md#5-enrolling-against-the-cloud-api).
    Generate the enrollment token **while logged in as the NEW household's
    admin** (`app.wifihaven.net` → Routers → Add router) — that is what stamps the
    router with the right `household_id`.

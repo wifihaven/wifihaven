@@ -278,6 +278,10 @@ For a Flint 2 talking to the production cloud API, the prompt answers are:
 
 Verify per `install-openwrt.md §3`.
 
+Then work through **[`install-openwrt.md` §4](install-openwrt.md#4-enroll-your-devices-then-block-unmanaged-ones)**
+— assign your devices to profiles, then switch the unmanaged-device policy to
+`block`. Installing the agent does not put anything under policy on its own.
+
 ### Emergency: turn off all blocking (escape hatch)
 
 If blocking ever breaks the internet, a policy is wrong, or the WifiHaven server
