@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { useState } from 'react'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { withQuery } from '@/test/queryWrapper'
 import type { ProfileDetail } from '@/types/api'
@@ -64,14 +64,16 @@ function Host({
 describe('ProfilePicker (#2607)', () => {
   it('uses the one settled null-option label', async () => {
     render(withQuery(<Host profiles={[kids]} />))
-    expect(await screen.findByRole('option', { name: NO_PROFILE_LABEL })).toBeInTheDocument()
+    const select = await screen.findByTestId('pick')
+    expect(within(select).getByRole('option', { name: NO_PROFILE_LABEL })).toBeInTheDocument()
     expect(NO_PROFILE_LABEL).toBe('No profile')
-    expect(screen.queryByRole('option', { name: '— No profile —' })).not.toBeInTheDocument()
+    expect(within(select).queryByRole('option', { name: '— No profile —' })).not.toBeInTheDocument()
   })
 
-  it('omits the null option when the caller does not allow it', () => {
+  it('omits the null option when the caller does not allow it', async () => {
     render(withQuery(<Host profiles={[kids]} allowNone={false} initial={1} />))
-    expect(screen.queryByRole('option', { name: NO_PROFILE_LABEL })).not.toBeInTheDocument()
+    const select = await screen.findByTestId('pick')
+    expect(within(select).queryByRole('option', { name: NO_PROFILE_LABEL })).not.toBeInTheDocument()
   })
 
   // The empty-household behaviour, settled uniformly: every surface that mounts

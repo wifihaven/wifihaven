@@ -273,10 +273,17 @@ describe('DevicesPage — add device with inline profile creation (#2367)', () =
     expect(await screen.findByTestId('add-device-new-profile-name')).toHaveFocus()
   })
 
-  // The same guard the row editor gets: closing or re-picking mid-request would
-  // leave the profile created server-side and never assigned, silently. The
-  // modal owns these controls, so the creator mirrors its pending state out.
-  it('freezes the modal select and Cancel while a create is in flight', async () => {
+  // Two windows, deliberately different widths (#2607 settled them across all
+  // three surfaces):
+  //   - the SELECT is frozen for as long as the creator is OPEN. Its displayed
+  //     value is the "+ New profile…" sentinel either way, so re-picking is only
+  //     an alternate exit that Cancel already provides. Before #2607 the modal
+  //     froze it only mid-request while the row editor froze it on open; the
+  //     wider window is the safe one and now applies everywhere.
+  //   - Cancel is frozen only while a request is IN FLIGHT, because closing then
+  //     would leave the profile created server-side and never assigned, with
+  //     nothing on screen saying so.
+  it('freezes the modal select while the creator is open, and Cancel while a create is in flight', async () => {
     (api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
     ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([kidsProfile, adultsProfile])
     let release: (v: { id: number }) => void = () => {}
@@ -291,7 +298,7 @@ describe('DevicesPage — add device with inline profile creation (#2367)', () =
     await user.selectOptions(screen.getByTestId('add-device-profile-select'), '__new__')
     await user.type(screen.getByTestId('add-device-new-profile-name'), 'Teens')
 
-    expect(screen.getByTestId('add-device-profile-select')).toBeEnabled()
+    expect(screen.getByTestId('add-device-profile-select')).toBeDisabled()
     expect(screen.getByTestId('add-device-cancel')).toBeEnabled()
 
     await user.click(screen.getByTestId('add-device-create-profile'))
