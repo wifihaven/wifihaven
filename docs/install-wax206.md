@@ -213,6 +213,10 @@ For a WAX206 talking to the production cloud API, the prompt answers are:
 
 Verify per `install-openwrt.md §3`.
 
+Then work through **[`install-openwrt.md` §4](install-openwrt.md#4-enroll-your-devices-then-block-unmanaged-ones)**
+— assign your devices to profiles, then switch the unmanaged-device policy to
+`block`. Installing the agent does not put anything under policy on its own.
+
 ## 5. Known drift on OpenWRT 24.10+ / 25.12.x (apk-based)
 
 OpenWRT 25.12.x uses `apk`, not `opkg`. The apk-specific install caveats — most

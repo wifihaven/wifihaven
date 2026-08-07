@@ -250,12 +250,136 @@ There is also a per-household off switch in the web dashboard
 needs the server to be up. The router switch above is the **offline** fallback.
 Full details: [docs/escape-hatch.md](escape-hatch.md).
 
-## 4. Enrolling against the cloud API
+## 4. Enroll your devices, then block unmanaged ones
+
+Installing the agent does not, on its own, put any device under policy. A
+device only gets a schedule, a time limit, or a blocklist once it is assigned
+to a **profile**. Devices that have appeared on the network but belong to no
+profile are **unmanaged**, and the household decides what happens to them: the
+`unmanagedMacPolicy.policy` setting is either `allow` or `block`
+([`shared/src/Models.scala`](../shared/src/Models.scala) — `UnmanagedMacPolicy`).
+
+**A fresh install starts at `allow`.** That is `UnmanagedMacPolicy.Default`, and
+it is also the column default a new household row gets
+([`V34__household_unmanaged_mac_policy.sql`](../api/resources/db/migration/V34__household_unmanaged_mac_policy.sql)).
+This section is the one place that states the default; see
+[§4.5](#45-why-allow-is-the-default) for why it is `allow` and not `block`.
+
+Work through 4.1 → 4.4 in order. Step 4.4 is the one people skip, and it is the
+one that decides what happens the next time an unknown phone joins your Wi-Fi.
+
+### 4.1 Let your devices show up
+
+Nothing to do here but use the network. As traffic flows, the router reports
+each MAC it has not seen before; the API creates a device row for it and raises
+a `new_device` alert for the admin
+([`RouterIngestService.scala`](../api/src/routes/RouterIngestService.scala)).
+This happens under either policy. Discovery is not what the policy controls.
+
+Give it a day or two of ordinary use. Phones, laptops, TVs, consoles, and
+thermostats all appear on their own; you do not have to hunt for MAC addresses.
+
+### 4.2 Assign each device to a profile
+
+In the dashboard, open **Devices**. Anything without a profile is collected in
+an **Unmanaged Devices** section at the bottom of the page, each row carrying an
+**Enroll** button ([`DevicesPage.tsx`](../web/src/pages/DevicesPage.tsx)).
+
+Work the list down to empty. Every device you care about should end up assigned
+to a profile, including the ones that will never have a time limit. A printer
+or a thermostat still wants a profile (give it an unrestricted one); the point
+is that after step 4.4, "has no profile" is what gets a device blocked, so
+"deliberately unrestricted" and "never enrolled" must not look the same.
+
+Devices that legitimately come and go — a guest's phone, a friend's laptop —
+are the reason to think about this before flipping the switch. Decide now
+whether guests get a permissive profile or get blocked until you enroll them.
+
+### 4.3 Confirm the list is empty
+
+The Unmanaged Devices section disappears once nothing is left in it. If it is
+still populated, you are not done with 4.2: switching to `block` now would cut
+off whatever is still listed there.
+
+### 4.4 Switch the policy to `block`
+
+In the dashboard, open **Admin → Unmanaged devices** and select **Block
+unmanaged MACs** ([`AdminPage.tsx`](../web/src/pages/AdminPage.tsx)). The card
+autosaves; there is no Save button.
+
+From this point on, any **new** device that joins the network is dropped at the
+connection layer until you assign it a profile. This is the steady-state posture
+you want: an unknown device that walks onto your Wi-Fi should not silently get
+unrestricted internet.
+
+The drop is not instantaneous, and it can't be. The rule is keyed to the MAC, so
+the device has to exist before there is anything to key on: the router reports
+the new MAC on its next event flush (`event_flush_interval`, 10 s), the API
+creates the device row, and the router picks up the rule on its next policy poll
+(`policy_poll_interval`, 5 s) — defaults in
+[`openwrt/files/etc/config/wifihaven`](../openwrt/files/etc/config/wifihaven).
+Expect a window of roughly a quarter-minute in which the new device has ordinary
+internet, then goes dark.
+
+Mechanically: on the next policy snapshot, every device with no profile
+assignment is shipped to the router as `blocked = true` with the block reason
+`Unmanaged`, and the router applies its existing per-MAC drop
+([`PolicyService.scala`](../api/src/policy/PolicyService.scala)). It is the same
+enforcement path a paused profile uses. Nothing new runs on the router.
+
+**What you will see when a new device is blocked this way:**
+
+- On **Devices**, the device turns up in the **Unmanaged Devices** section, whose
+  header says whether the household is allowing or blocking these. On a wide
+  enough screen the row also carries an **Unmanaged** badge (under `allow` the
+  same row reads **No profile**). This is the answer to "why is this thing
+  offline?" Check here first.
+- Anyone with edit rights gets an **Enroll** button on the row; a read-only
+  member sees the list without it.
+- An **alert** is raised for the new device, same as under `allow`.
+- On the **device itself**, the symptom is generic: connections fail. Web
+  traffic on ports 80/443 is redirected to the local block page if you set that
+  up ([§M6](#m6-set-up-the-local-block-page)) — without it the redirect lands on
+  a closed port and the device just sees a refused connection. Even with it, the
+  page does not currently name this case: see the caveat below.
+
+> **Caveat — read before you flip this on.** Three rough edges here are known
+> and tracked in
+> [#2610](https://github.com/wifihaven/wifihaven/issues/2610):
+> the block page an unmanaged-blocked device lands on currently reports the
+> device as *not* blocked, rather than explaining that it isn't enrolled; the
+> **Show block page** checkbox next to the policy is not yet wired to anything,
+> so toggling it changes nothing; and the card's help text calls the result a
+> "manual block" when the reason is actually `Unmanaged`. None of it affects
+> enforcement — a blocked unmanaged device is genuinely blocked either way — but
+> the device's own answer is unhelpful and the card's is mislabeled, so diagnose
+> from the Devices page rather than from either.
+
+To undo, set the policy back to `allow` on the same card. It takes effect on
+the next snapshot, in seconds.
+
+### 4.5 Why `allow` is the default
+
+`allow` is a deliberate choice, not an oversight, and it is the right default
+for exactly one reason: **a brand-new install has no enrolled devices.**
+
+If a fresh household started at `block`, then the moment the agent came up,
+every device in the house would be unmanaged, and every device in the house
+would lose the internet before the operator had any chance to enroll anything.
+A product that sits in the network path cannot afford to look broken on the
+first minute of the first day, and "everything went offline right after I
+installed it" is indistinguishable from a bad install.
+
+So the posture is: **fail open during setup, tighten deliberately once
+enrollment is complete.** `allow` is a starting state you are expected to leave,
+not the intended long-term configuration. Step 4.4 is where you leave it.
+
+## 5. Enrolling against the cloud API
 
 This section is for the **new main-house router** being brought up against the
 production cloud API (`https://api.wifihaven.net`) for the first time. It is
 not a migration or rollover guide — the existing OpenWRT box stays put as a
-dev router pointed at the local API (see [§4.1](#41-dev-vs-prod-router-pattern)
+dev router pointed at the local API (see [§5.1](#51-dev-vs-prod-router-pattern)
 and [#584](https://github.com/wifihaven/wifihaven/issues/584)).
 
 The enrollment flow is the same as the rest of this doc; the only difference
@@ -332,7 +456,7 @@ script the install into your own provisioning system.
    appear with a recent `last_seen_at`. If you've never set up the local
    block page on this router, also walk [§M6](#m6-set-up-the-local-block-page).
 
-### 4.1 Dev vs prod router pattern
+### 5.1 Dev vs prod router pattern
 
 Two routers in the same operator's environment will run with different
 `api_url` values; this is by design and matches the topology in
@@ -369,7 +493,7 @@ cloud users override it per the steps above.
   in the admin UI and re-run steps 3–5; the router will overwrite its
   stored credentials.
 
-## 5. (Optional) Auto-update
+## 6. (Optional) Auto-update
 
 Routers running unattended should pull new agent releases automatically. The
 auto-update cron job is tracked in
