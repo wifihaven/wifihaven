@@ -4,6 +4,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
 import { newProfileDefaults } from '@/api/profileDefaults'
 import { useBlocklists, useGlobalProfile, useProfiles, useDevices, useInvalidators, useNamedSchedules, useProfileUsageByApp, useTimeStatusSummary } from '@/api/queries'
+import { isUnmanaged } from '@/lib/devices'
 import { useAuth } from '@/hooks/useAuth'
 import { useWsTimeStatus, useWsTopicLive } from '@/hooks/useWs'
 import { useDebouncedSave, type SaveStatus } from '@/hooks/useDebouncedSave'
@@ -2396,7 +2397,7 @@ function DevicesSubsection({
   // profile here would clobber that profile's assignment, so only show
   // currently-unassigned devices in the add-picker.
   const pickable = useMemo(
-    () => allDevices.filter(d => d.profileId == null),
+    () => allDevices.filter(isUnmanaged),
     [allDevices],
   )
 

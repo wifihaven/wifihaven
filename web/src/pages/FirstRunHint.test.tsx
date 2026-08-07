@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { withQuery } from '@/test/queryWrapper'
 import type { Device, HouseholdSettings, RouterSummary } from '@/types/api'
@@ -13,10 +13,26 @@ vi.mock('@/api/client', () => ({
 }))
 
 import { api } from '@/api/client'
+import { useDevices, useHouseholdSettings, useRouters } from '@/api/queries'
 import { FirstRunHint } from './DashboardPage'
 
-const listRouters  = api.routers.list as unknown as ReturnType<typeof vi.fn>
-const listDevices  = api.devices.list as unknown as ReturnType<typeof vi.fn>
+// A settle that is DATA-dependent, not call-dependent. `expect(mock).toHaveBeenCalled()`
+// is true on the first render tick — the queryFn fires during mount, long before
+// react-query delivers data — so asserting the banner's ABSENCE after it only proves
+// the component was still in its loading early-return. This probe renders once all
+// three queries have actually resolved, so `findByTestId('loaded')` puts the component
+// in the state under test before we assert that nothing rendered.
+function Loaded() {
+  const routers = useRouters()
+  const devices = useDevices()
+  const household = useHouseholdSettings()
+  const settled = (q: { isPending: boolean; isError: boolean }) => !q.isPending || q.isError
+  if (!settled(routers) || !settled(devices) || !settled(household)) return null
+  return <span data-testid="loaded" />
+}
+
+const listRouters = api.routers.list as unknown as ReturnType<typeof vi.fn>
+const listDevices = api.devices.list as unknown as ReturnType<typeof vi.fn>
 const getHousehold = api.household.get as unknown as ReturnType<typeof vi.fn>
 
 const router = (over: Partial<RouterSummary> = {}): RouterSummary => ({
@@ -62,8 +78,15 @@ function renderHint() {
   return render(withQuery(
     <MemoryRouter>
       <FirstRunHint />
+      <Loaded />
     </MemoryRouter>,
   ))
+}
+
+// Assert the banner is absent only AFTER every query has resolved.
+async function expectNoBannerOnceLoaded() {
+  await screen.findByTestId('loaded')
+  expect(screen.queryByTestId('first-run-hint')).not.toBeInTheDocument()
 }
 
 describe('FirstRunHint — #2252 router-onboarding-aware welcome banner', () => {
@@ -97,10 +120,12 @@ describe('FirstRunHint — #2252 router-onboarding-aware welcome banner', () => 
 
   it('renders nothing once a router has checked in and the policy is closed', async () => {
     listRouters.mockResolvedValue([router({ lastSeenAt: '2026-05-12T00:00:00Z', enrolled: true })])
+    // Stated at the call site rather than inherited from the beforeEach default: the
+    // closed policy is load-bearing for this assertion, not incidental setup.
+    getHousehold.mockResolvedValue(household('block'))
     renderHint()
 
-    await waitFor(() => expect(listRouters).toHaveBeenCalled())
-    expect(screen.queryByTestId('first-run-hint')).not.toBeInTheDocument()
+    await expectNoBannerOnceLoaded()
   })
 
   it('treats a household as connected when ANY router has been seen', async () => {
@@ -109,10 +134,10 @@ describe('FirstRunHint — #2252 router-onboarding-aware welcome banner', () => 
       // A seen router is always enrolled — both are stamped by completeEnrollment.
       router({ id: 'r2', enrolled: true, lastSeenAt: '2026-05-12T00:00:00Z' }),
     ])
+    getHousehold.mockResolvedValue(household('block'))
     renderHint()
 
-    await waitFor(() => expect(listRouters).toHaveBeenCalled())
-    expect(screen.queryByTestId('first-run-hint')).not.toBeInTheDocument()
+    await expectNoBannerOnceLoaded()
   })
 
   it('does not flash a banner while the routers query is still loading (loading-states rule)', () => {
@@ -156,8 +181,7 @@ describe('FirstRunHint — #2621 post-connection onboarding steps', () => {
     listDevices.mockResolvedValue([device({ profileId: null, profileName: null })])
     renderHint()
 
-    await waitFor(() => expect(getHousehold).toHaveBeenCalled())
-    expect(screen.queryByTestId('first-run-hint')).not.toBeInTheDocument()
+    await expectNoBannerOnceLoaded()
   })
 
   it('shows the devices step for a household that has no devices at all yet', async () => {
@@ -178,7 +202,12 @@ describe('FirstRunHint — #2621 post-connection onboarding steps', () => {
     listDevices.mockReturnValue(new Promise(() => {}))
     renderHint()
 
+    // `devices` never resolves, so the probe never appears either — settle on the
+    // household call and then let the microtask queue drain, which is enough for the
+    // routers + household data to land. If the guard were missing, `devices.data ?? []`
+    // would read as "no unmanaged devices" and flash the policy step here.
     await waitFor(() => expect(getHousehold).toHaveBeenCalled())
+    await act(async () => { await Promise.resolve() })
     expect(screen.queryByTestId('first-run-hint')).not.toBeInTheDocument()
   })
 

@@ -11,6 +11,7 @@ import {
   RECENT_BLOCKED_WINDOW_LABEL,
   RECENT_BLOCKED_FETCH_LABEL,
 } from '@/api/queries'
+import { isManaged } from '@/lib/devices'
 import type {
   DashboardNow,
   DashboardNowDevice,
@@ -142,13 +143,14 @@ function DashboardWindowSelector({ bandwidth }: { bandwidth: WsTrafficUsage }) {
 // #2621: states 3-5 exist because a connected router is NOT the end of onboarding. Until devices
 // are assigned to profiles nothing is governed, and until the household's unmanaged-device policy
 // moves off its `allow` default any device — known or not — gets unrestricted internet. Those are
-// the last two steps of the sequence documented in `docs/install-openwrt.md` §4, which is also the
-// single place that states the policy's default value; deliberately not restated here. `block` is
-// the terminal state: it is the operator's explicit "I'm done", so the banner goes quiet even if a
-// device is later seen unassigned — from then on enforcement handles it, not this banner.
+// the last two steps of the sequence in `docs/install-openwrt.md` ("Enroll your devices, then block
+// unmanaged ones"), which is also the single place that states the policy's default value, so it is
+// deliberately not restated here. `block` is the terminal state: it is the operator's explicit
+// "I'm done", so the banner goes quiet even if a device is later seen unassigned — from then on
+// enforcement handles it, not this banner.
 export function FirstRunHint() {
-  const routers   = useRouters()
-  const devices   = useDevices()
+  const routers = useRouters()
+  const devices = useDevices()
   const household = useHouseholdSettings()
   if (routers.isPending || routers.isError) return null
   const list = routers.data ?? []
@@ -159,11 +161,10 @@ export function FirstRunHint() {
     if (household.isPending || household.isError) return null
     // Onboarding is over once the operator closes the policy.
     if (household.data?.unmanagedMacPolicy.policy === 'block') return null
-    // `profileId === null` is the unmanaged predicate — same split DevicesPage uses for its
-    // Unmanaged Devices section. A household with no devices yet is still on the devices step:
-    // there is nothing enrolled, so "close the policy" would be the wrong ask.
-    const allAssigned = (devices.data ?? []).length > 0
-      && (devices.data ?? []).every(d => d.profileId !== null)
+    // A household with no devices yet is still on the devices step: there is nothing enrolled,
+    // so "close the policy" would be the wrong ask.
+    const known = devices.data ?? []
+    const allAssigned = known.length > 0 && known.every(isManaged)
     return allAssigned ? <PolicyStep /> : <DevicesStep />
   }
 

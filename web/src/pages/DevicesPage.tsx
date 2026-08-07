@@ -3,6 +3,7 @@ import { useMutation } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
 import { useAlerts, useDevices, useHouseholdSettings, useProfiles, useInvalidators } from '@/api/queries'
+import { isManaged, isUnmanaged } from '@/lib/devices'
 import { useAuth } from '@/hooks/useAuth'
 import { useEscapeClose } from '@/hooks/useEscapeClose'
 import { useNotificationPermission } from '@/hooks/useNotifyOnNewAlerts'
@@ -104,8 +105,8 @@ export function DevicesPage() {
 
   if (loading) return <PageLoader />
 
-  const knownDevices   = devices.filter(d => d.profileId !== null)
-  const unknownDevices = devices.filter(d => d.profileId === null)
+  const knownDevices   = devices.filter(isManaged)
+  const unknownDevices = devices.filter(isUnmanaged)
 
   return (
     <div className="space-y-6">
