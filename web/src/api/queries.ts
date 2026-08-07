@@ -30,15 +30,18 @@ export const RECENT_BLOCKED_WINDOW_MS = 15 * 60_000
 // The server-side FETCH width, in the integer hours /api/logs takes. Wider than the
 // display window on purpose: it is what lets the panel say "there were blocks, just not
 // in the last 15 minutes" instead of rendering the same empty state as a household that
-// has never been blocked. Typed `number` rather than the literal so the plural branch
-// below stays live code rather than something the compiler proves unreachable.
-export const RECENT_BLOCKED_FETCH_HOURS: number = 1
-// Human-readable forms of the two spans above, so the panel can NAME them. Derived
-// here rather than hardcoded in the UI copy, so widening either constant cannot leave
-// the copy asserting a span the fetch no longer uses (#2601).
+// has never been blocked.
+export const RECENT_BLOCKED_FETCH_HOURS = 1
+// Human-readable forms of the two spans above, so the panel can NAME them. Derived here
+// rather than hardcoded in the UI copy, so widening either constant cannot leave the copy
+// asserting a span the fetch no longer uses (#2601). `recentBlockedFetchLabel` is a pure
+// function rather than an inline ternary so BOTH arms are reachable and unit-testable —
+// against the constant the plural arm would otherwise be dead code by construction.
 export const RECENT_BLOCKED_WINDOW_LABEL = `last ${RECENT_BLOCKED_WINDOW_MS / 60_000} min`
-export const RECENT_BLOCKED_FETCH_LABEL =
-  RECENT_BLOCKED_FETCH_HOURS === 1 ? 'the past hour' : `the past ${RECENT_BLOCKED_FETCH_HOURS} hours`
+export function recentBlockedFetchLabel(hours: number): string {
+  return hours === 1 ? 'the past hour' : `the past ${hours} hours`
+}
+export const RECENT_BLOCKED_FETCH_LABEL = recentBlockedFetchLabel(RECENT_BLOCKED_FETCH_HOURS)
 
 // Per-endpoint stale times (#803).
 const STALE = {

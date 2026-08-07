@@ -55,7 +55,7 @@ vi.mock('@/hooks/useWs', async (importOriginal) => ({
 import { api } from '@/api/client'
 import { DashboardPage, NowSection, RecentlyBlockedSection } from './DashboardPage'
 import { withQuery, makeTestQueryClient } from '@/test/queryWrapper'
-import { RECENT_BLOCKED_FETCH_HOURS, RECENT_BLOCKED_FETCH_LABEL } from '@/api/queries'
+import { recentBlockedFetchLabel } from '@/api/queries'
 import { AuthProvider } from '@/hooks/useAuth'
 
 const stats: DashboardStats = {
@@ -557,9 +557,13 @@ describe('RecentlyBlockedSection (#1338 / #2073 / #2062)', () => {
   //
   // Prod, 2026-08-06: the `sameer` profile was dropped from Google Drive by an
   // `ads` category rule matching a SHARED Google GFE address, and the operator
-  // read the panel as "nothing was blocked". The rows were in the database the
-  // whole time — the panel had silently trimmed them out of its 15-min view,
-  // and nothing on screen said the view was 15 minutes wide.
+  // checked the panel right when it happened and read its silence as "you were
+  // not blocked". Three things let that happen, each pinned below: the panel
+  // never said its view was only 15 minutes wide; an empty view rendered the
+  // same whether the household had older blocks or none at all; and it asserted
+  // a clean negative during the ~26s the router's event batching takes to
+  // deliver the drop, so "nothing blocked" was a claim about data it could not
+  // yet have.
 
   it('#2601 — names the 15-minute window so an empty panel is not read as "never blocked"', async () => {
     render(withQuery(<MemoryRouter><RecentlyBlockedSection /></MemoryRouter>))
@@ -578,18 +582,22 @@ describe('RecentlyBlockedSection (#1338 / #2073 / #2062)', () => {
     render(withQuery(<MemoryRouter><RecentlyBlockedSection /></MemoryRouter>))
     const stale = await screen.findByTestId('recently-blocked-stale-hint')
     // The count is singular here, and it names the FETCH span, not the display window.
+    // This literal is the real pin: spelled out independently of the constants, so
+    // widening RECENT_BLOCKED_FETCH_HOURS fails here (and at the `hours: 1` call-shape
+    // assertion above) rather than silently changing the copy. Asserting against
+    // RECENT_BLOCKED_FETCH_LABEL instead would compare the constant to itself.
     expect(stale).toHaveTextContent(/^1 block in the past hour, outside this window\./)
-    // #2601 nit — tie the rendered span to the constant the fetch actually uses, so
-    // widening RECENT_BLOCKED_FETCH_HOURS cannot leave this copy asserting a stale span.
-    // Without this the agreement is convention, not a pinned invariant.
-    expect(stale).toHaveTextContent(RECENT_BLOCKED_FETCH_LABEL)
-    expect(api.logs.query).toHaveBeenCalledWith(
-      expect.objectContaining({ hours: RECENT_BLOCKED_FETCH_HOURS }),
-    )
     // Points at the wider view rather than dead-ending on an empty list.
     expect(stale.querySelector('a')).toHaveAttribute('href', '/usage/events?status=blocked')
     // The stale row itself still must NOT masquerade as recent (#1338 contract).
     expect(screen.queryByText('connectivitycheck.gstatic.com')).not.toBeInTheDocument()
+  })
+
+  it('#2601 — recentBlockedFetchLabel covers both arms, so widening the span reads right', () => {
+    // The plural arm is unreachable through RECENT_BLOCKED_FETCH_HOURS while it is 1, so
+    // it gets covered here directly rather than being dead code nobody has ever run.
+    expect(recentBlockedFetchLabel(1)).toBe('the past hour')
+    expect(recentBlockedFetchLabel(3)).toBe('the past 3 hours')
   })
 
   it('#2601 — reports a saturated page as a floor ("20+"), not as an exact total', async () => {
@@ -621,10 +629,18 @@ describe('RecentlyBlockedSection (#1338 / #2073 / #2062)', () => {
     expect(screen.getByText('connectivitycheck.gstatic.com')).toBeInTheDocument()
   })
 
-  it('#2601 — a genuinely empty 1h fetch keeps the plain empty state, with no stale hint', async () => {
+  it('#2601 — an empty 1h fetch discloses ingest lag instead of asserting a clean negative', async () => {
+    // The operator checked the panel RIGHT WHEN the block happened and read its silence
+    // as "you were not blocked". The router batches drop events (nflog drain +
+    // event_flush_interval), so a block reaches the API a few seconds later — measured at
+    // 26s end-to-end on prod. During that window an unqualified "Nothing blocked
+    // recently" is a confident claim about data the panel cannot have yet.
     mockQuery().mockResolvedValue({ rows: [], nextCursor: null })
     render(withQuery(<MemoryRouter><RecentlyBlockedSection /></MemoryRouter>))
     expect(await screen.findByText(/Nothing blocked recently/)).toBeInTheDocument()
+    expect(screen.getByTestId('recently-blocked-lag-hint')).toBeInTheDocument()
+    // The two empty-reasons are distinct: nothing at all in the hour is not the same as
+    // "there were blocks, just older than the window".
     expect(screen.queryByTestId('recently-blocked-stale-hint')).not.toBeInTheDocument()
   })
 

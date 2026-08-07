@@ -287,7 +287,11 @@ export function RecentlyBlockedSection() {
           strip. The full-panel error is only for a failure with nothing to fall back on. */}
       {isError && (
         <div
-          role="alert"
+          // role="status" (polite) rather than "alert" (assertive): this fires on a
+          // background-refetch failure that leaves real rows on screen, so it is a status
+          // change, not an emergency — and an assertive live region containing the Retry
+          // button would announce the region without reliably exposing the control.
+          role="status"
           className="px-5 py-3 flex items-center gap-3 border-b border-brand-border"
           data-testid="recently-blocked-error"
         >
@@ -316,12 +320,13 @@ export function RecentlyBlockedSection() {
                   variant="inline"
                   title={selectedName ? `Nothing blocked recently for ${selectedName}` : 'Nothing blocked recently'}
                   hint={
-                    // #2601 — the case that misled the operator on prod: real drops exist
-                    // in the fetched hour, just none in the trailing window. Say so, and
-                    // hand them the wider view instead of dead-ending on an empty list.
-                    // `olderCount` is capped by RECENT_BLOCKED_LIMIT, so a saturated page
-                    // reports it as a floor ("20+") rather than claiming a total it can't see.
+                    // #2601 — two different reasons this list is empty, and neither is
+                    // "nothing was blocked". Say which one applies.
                     data.olderCount > 0
+                      // Real drops exist in the fetched hour, just none in the trailing
+                      // window. `olderCount` is capped by RECENT_BLOCKED_LIMIT, so a
+                      // saturated page reports a floor ("20+") rather than a total it
+                      // cannot see. Hand them the wider view instead of dead-ending.
                       ? (
                         <span data-testid="recently-blocked-stale-hint">
                           {data.olderCountTruncated
@@ -333,7 +338,21 @@ export function RecentlyBlockedSection() {
                           </Link>
                         </span>
                       )
-                      : undefined
+                      // Nothing anywhere in the fetched hour — but a block that JUST
+                      // happened would not be here yet either. The router batches drop
+                      // events (openwrt/files/etc/config/wifihaven: `nflog_poll_interval`
+                      // drain + `event_flush_interval` flush), so a drop reaches the API a
+                      // few seconds after the packet: measured at 26s end-to-end on prod,
+                      // 2026-08-06. Without this line the panel makes a confident negative
+                      // claim about a window it cannot yet have data for — which is exactly
+                      // how it reported "nothing blocked" while Drive was being dropped.
+                      // Deliberately no number in the copy: the cadence is the AGENT's
+                      // config and is not single-sourced anywhere the SPA can read.
+                      : (
+                        <span data-testid="recently-blocked-lag-hint">
+                          A block that just happened takes a few seconds to appear here.
+                        </span>
+                      )
                   }
                 />
               </div>
