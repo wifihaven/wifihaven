@@ -761,5 +761,28 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         )
       } yield assertTrue(resp.status == Status.Forbidden)
     },
+    test("#2601 — Google shared-GFE hosts stay out of every app template, hosts AND sharedHosts") {
+      // An app template's host-set reaches the SAME nftables destination-IP plane a
+      // blocklist does, so an author who adds one of these to a template reproduces the
+      // Drive collateral exactly as `ads.yml` did. Guarding one catalog and not the other
+      // would just move the hazard, so both consume the same `SharedGfeHosts` set.
+      //
+      // BOTH host fields, and `sharedHosts` is if anything the worse one. `templateEntries`
+      // writes both into `app_hosts` (AppTemplates.scala:271-274). Per #1899 the BLOCK side
+      // is restricted to distinctive hosts (ProfileAppDispositions:128-135), so a shared
+      // host never reaches `extraBlocked`/`eb_` — but the ALLOW side takes the full set
+      // (PolicyService `exemptUnderCapHosts`:1307, `timeLimitedUnderCapHosts`:1332), so a
+      // shared GFE address lands in `ea_`. That is the #2369 leak in mirror image, and
+      // `extraAllowed` beats every drop, so it would carve unrelated Google traffic out of
+      // EVERY block for that MAC.
+      for {
+        templates <- AppTemplates.loadAll()
+        offenders = templates.flatMap(t =>
+          (t.hosts ++ t.sharedHosts)
+            .filter(SharedGfeHosts.isBanned)
+            .map(h => s"${t.slug.value}:${h.value}"),
+        )
+      } yield assertTrue(offenders.isEmpty)
+    },
   ) @@ TestAspect.sequential
 }
