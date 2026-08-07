@@ -281,9 +281,11 @@ thermostats all appear on their own; you do not have to hunt for MAC addresses.
 
 ### 4.2 Assign each device to a profile
 
-In the dashboard, open **Devices**. Anything without a profile is collected in
-an **Unmanaged Devices** section at the bottom of the page, each row carrying an
-**Enroll** button ([`DevicesPage.tsx`](../web/src/pages/DevicesPage.tsx)).
+In the dashboard, open **Devices**. The page is *designed* to collect anything
+without a profile into an **Unmanaged Devices** section at the bottom, each row
+carrying an **Enroll** button
+([`DevicesPage.tsx`](../web/src/pages/DevicesPage.tsx)) — but read the next
+paragraph before you rely on it.
 
 > **That section does not render yet: work from the main list instead.** The
 > page's unmanaged check compares `profileId` against `null`, but the API omits
@@ -295,12 +297,17 @@ an **Unmanaged Devices** section at the bottom of the page, each row carrying an
 > how you spot them. Root cause and the wider class:
 > [#2623](https://github.com/wifihaven/wifihaven/issues/2623); this note comes
 > out again in [#2631](https://github.com/wifihaven/wifihaven/issues/2631).
+>
+> **Do this on a wide window, not a phone.** That pill sits in a `hidden sm:block`
+> column, so below 640px no row shows a profile at all and the list reads clean
+> whether or not anything is unassigned — the same false all-clear this note
+> exists to prevent.
 
-Work the list down to empty. Every device you care about should end up assigned
-to a profile, including the ones that will never have a time limit. A printer
-or a thermostat still wants a profile (give it an unrestricted one); the point
-is that after step 4.4, "has no profile" is what gets a device blocked, so
-"deliberately unrestricted" and "never enrolled" must not look the same.
+Work through every device until each one has a profile, including the ones you
+will never limit. A printer or a thermostat still wants a profile (give it an
+unrestricted one); the point is that after step 4.4, "has no profile" is what
+gets a device blocked, so "deliberately unrestricted" and "never enrolled" must
+not look the same.
 
 Devices that legitimately come and go — a guest's phone, a friend's laptop —
 are the reason to think about this before flipping the switch. Decide now
@@ -310,13 +317,17 @@ whether guests get a permissive profile or get blocked until you enroll them.
 
 Every device on the **Devices** page should show a profile name. A row showing
 **No profile** is not yet enrolled, and switching to `block` now would cut it
-off. Scan the whole list before moving on.
+off. If you find one, you are not done with 4.2.
+
+Two things make this scan easy to get wrong today, so both are worth stating.
+The profile column is hidden below 640px, so **check on a wide window** — on a
+phone every row looks the same whether or not it has a profile. And the device
+list is neither paginated nor virtualised and there is no unassigned count, so
+this is a manual read of every row; on a large household, take your time.
 
 Once [#2622](https://github.com/wifihaven/wifihaven/pull/2622) lands this gets
 easier: unassigned devices collect in the Unmanaged Devices section, and that
-section disappears when nothing is left in it. Until then the **No profile**
-pill in the main list is the signal, and there is no count to check — read the
-list.
+section disappears when nothing is left in it.
 
 ### 4.4 Switch the policy to `block`
 
@@ -350,11 +361,14 @@ enforcement path a paused profile uses. Nothing new runs on the router.
   in the main list carrying a **No profile** pill. Once
   [#2622](https://github.com/wifihaven/wifihaven/pull/2622) lands, it moves
   instead to the **Unmanaged Devices** section, whose header says whether the
-  household is allowing or blocking these, with an **Unmanaged** badge on wide
-  screens. Either way this is the answer to "why is this thing offline?" Check
-  here first.
-- Anyone with edit rights can assign it a profile from that row; a read-only
-  member sees the list without the control.
+  household is allowing or blocking these, with an **Unmanaged** badge. Either
+  way this is the answer to "why is this thing offline?" Check here first — on a
+  wide window, since both the pill and the badge are hidden below 640px.
+- Look as an **admin or an adult**. Other roles only ever see devices belonging
+  to a profile they are linked to
+  ([`Routes.scala`](../api/src/routes/Routes.scala), `filterDevices`), and a
+  device with no profile matches nothing — so to a read-only member the blocked
+  device is not merely un-enrollable, it is absent from the page entirely.
 - An **alert** is raised for the new device, same as under `allow`.
 - On the **device itself**, the symptom is generic: connections fail. Web
   traffic on ports 80/443 is redirected to the local block page if you set that
