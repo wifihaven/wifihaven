@@ -397,7 +397,16 @@ object RouterWsSpec
         _        <- reg.publishPolicy(HouseholdId.Default, fanSnap)
         afterFan <- rRepo.findById(rid)
         okPost   <- etagStampTotal("ok")
+        // ...and last_seen_at must NOT have moved. That column means "we heard from this router" —
+        // every other writer of it is router-triggered (poll, ingest, ws heartbeat), and it backs
+        // `agent_connected_routers` plus the SPA's connected badge. A server-initiated push feeding
+        // it would let the server hold the gauge green for a router whose socket went half-open
+        // (#2561) and whose sends still succeed into the local buffer. The fix for that is a wiring
+        // choice — `make(routerRepo.touchEtag)` rather than `make(… routerRepo.touch …)` — and
+        // without this assertion every test here would pass under the wrong one.
       } yield assertTrue(beforeRow.exists(_.lastEtag.isEmpty)) &&
+        assertTrue(afterPush.flatMap(_.lastSeenAt) == beforeRow.flatMap(_.lastSeenAt)) &&
+        assertTrue(afterFan.flatMap(_.lastSeenAt) == beforeRow.flatMap(_.lastSeenAt)) &&
         assertTrue(okPost - okPre == 2.0) &&
         assertTrue(afterPush.flatMap(_.lastEtag).contains(snap.etag)) &&
         assertTrue(afterFan.flatMap(_.lastEtag).contains(fanSnap.etag))
@@ -455,30 +464,66 @@ object RouterWsSpec
       // registry are real. Each push effect is awaited, so the counter reads are ordered after the
       // stamp attempt rather than racing it. Two routers so the fan-out has somewhere to continue to.
       for {
-        ridA    <- ZIO.succeed(RouterId(UUID.fromString("6b1f0f2c-6b3e-4a1a-9a8f-2f1c0b4d9e77")))
-        ridB    <- ZIO.succeed(RouterId(UUID.fromString("0d1a5c47-9b8e-4f30-8c25-7a6e3d2b1f04")))
-        okPre   <- etagStampTotal("ok")
-        errPre  <- etagStampTotal("error")
-        failing <- RouterWsRegistry.make((_, _) => ZIO.fail(new RuntimeException("db down")))
-        chA     <- sendOnlyChannel
-        _       <- failing.register(ridA, HouseholdId.Default, chA)
+        ridA     <- ZIO.succeed(RouterId(UUID.fromString("6b1f0f2c-6b3e-4a1a-9a8f-2f1c0b4d9e77")))
+        ridB     <- ZIO.succeed(RouterId(UUID.fromString("0d1a5c47-9b8e-4f30-8c25-7a6e3d2b1f04")))
+        okPre    <- etagStampTotal("ok")
+        errPre   <- etagStampTotal("error")
+        failing  <- RouterWsRegistry.make((_, _) => ZIO.fail(new RuntimeException("db down")))
+        chA      <- sendOnlyChannel
+        _        <- failing.register(ridA, HouseholdId.Default, chA)
         // Completes normally: the failure is caught inside the registry, not propagated.
-        _       <- failing.publishPolicy(HouseholdId.Default, emptySnapshot)
+        _        <- failing.publishPolicy(HouseholdId.Default, emptySnapshot)
         // The channel is still registered — a stamp failure is not a delivery failure, so it must
         // not deregister the router the way a `channel_closed` send failure does.
-        stillA  <- failing.isConnected(ridA)
-        dying   <- RouterWsRegistry.make((_, _) => ZIO.die(new RuntimeException("sink defect")))
-        chB     <- sendOnlyChannel
-        chC     <- sendOnlyChannel
-        _       <- dying.register(ridA, HouseholdId.Default, chB)
-        _       <- dying.register(ridB, HouseholdId.Default, chC)
+        stillA   <- failing.isConnected(ridA)
+        dying    <- RouterWsRegistry.make((_, _) => ZIO.die(new RuntimeException("sink defect")))
+        chB      <- sendOnlyChannel
+        chC      <- sendOnlyChannel
+        _        <- dying.register(ridA, HouseholdId.Default, chB)
+        _        <- dying.register(ridB, HouseholdId.Default, chC)
         // Must not die, and must reach BOTH routers: two `error` samples, not one.
-        _       <- dying.publishPolicy(HouseholdId.Default, emptySnapshot)
-        okPost  <- etagStampTotal("ok")
-        errPost <- etagStampTotal("error")
-      } yield assertTrue(errPost - errPre == 3.0) &&
+        _        <- dying.publishPolicy(HouseholdId.Default, emptySnapshot)
+        // Third mode: a sink that THROWS while building its effect rather than returning a failed
+        // or dying one. `foldCauseZIO` alone cannot see that — the throw happens before there is an
+        // effect to fold over — so it relies on the `suspendSucceed` in `stampEtag`. Without that,
+        // this escapes into `publishPolicy`'s `foreachDiscard` and takes the fan-out down.
+        throwing <- RouterWsRegistry.make((_, _) => throw new RuntimeException("sink threw"))
+        chD      <- sendOnlyChannel
+        _        <- throwing.register(ridA, HouseholdId.Default, chD)
+        _        <- throwing.publishPolicy(HouseholdId.Default, emptySnapshot)
+        okPost   <- etagStampTotal("ok")
+        errPost  <- etagStampTotal("error")
+      } yield assertTrue(errPost - errPre == 4.0) &&
         assertTrue(okPost - okPre == 0.0) &&
         assertTrue(stillA)
+    },
+    test("#2619: a push to an unregistered router delivers the frame but writes nothing") {
+      // `stampEtag` reads the receiving router's household back from the registry so there is ONE
+      // source for it and no caller can defeat the guard by passing the wrong value. The cost is
+      // that an id with no entry — deregistered between the send and the stamp — has no
+      // establishable household, and the guard's premise is that an unverifiable write is worse
+      // than no write. So it is skipped, and metered `unregistered` rather than silently dropped.
+      // `pushPolicyTo` documents the matching precondition; the production caller
+      // (`RouterWsRoutes`) registers before it pushes.
+      for {
+        _         <- cleanDb
+        rRepo     <- ZIO.service[RouterRepo]
+        pRepo     <- ZIO.service[ProfileRepo]
+        dRepo     <- ZIO.service[DeviceRepo]
+        _         <- seedKnownDevice(dRepo, pRepo)
+        (rid, _)  <- seedRouter(rRepo)
+        unregPre  <- etagStampTotal("unregistered")
+        okPre     <- etagStampTotal("ok")
+        (_, reg)  <- buildWsRoutes
+        ch        <- sendOnlyChannel
+        // Deliberately NO `register` — this is the deregistered-mid-push shape.
+        _         <- reg.pushPolicyTo(rid, HouseholdId.Default, ch, emptySnapshot)
+        after     <- rRepo.findById(rid)
+        unregPost <- etagStampTotal("unregistered")
+        okPost    <- etagStampTotal("ok")
+      } yield assertTrue(after.exists(_.lastEtag.isEmpty)) &&
+        assertTrue(unregPost - unregPre == 1.0) &&
+        assertTrue(okPost - okPre == 0.0)
     },
     test("#2561: a second connection for the same router supersedes the first (registry holds 1)") {
       // The prod leak: a router whose socket went half-open reconnects, the server still holds the

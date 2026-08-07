@@ -77,6 +77,12 @@ trait RouterWsRegistry {
    * at the next change. A send failure is metered `channel_closed` (the caller's receive loop will
    * deregister on close). `household` is the household `snap` was built for; on this path that is
    * by construction the router's own (the caller reads `policy.snapshot(router.householdId)`).
+   *
+   * **Precondition (#2619): `id` must already be registered.** The `routers.last_etag` stamp reads
+   * the router's household back from the registry so it has ONE source, so a push for an
+   * unregistered id delivers the frame but writes nothing (metered `unregistered`). The production
+   * caller registers first — `RouterWsRoutes` does `register *> … pushPolicyTo` — and any new
+   * caller must too.
    */
   def pushPolicyTo(
       id: RouterId,
@@ -94,8 +100,10 @@ object RouterWsRegistry {
   /**
    * `onDelivered` is the #2619 delivery sink: called with `(routerId, etag)` after a `policy` frame
    * has actually been sent to that router, and only when the snapshot's household matches the
-   * router's own. Production wires it to `routerRepo.touch(id, Some(etag), None)` so
-   * `routers.last_etag` means the same thing on both transports.
+   * router's own. Production wires it to `routerRepo.touchEtag` — `last_etag` ALONE, deliberately
+   * NOT `touch`, which also refreshes the router-driven `last_seen_at` liveness signal (see the
+   * repo method's scaladoc and [[RouterWsRegistryLive.stampEtag]]). With that, `routers.last_etag`
+   * means the same thing on both transports.
    *
    * It is a REQUIRED parameter, not a defaulted one — a silently-absent sink is exactly the
    * dark-by-default shape `docs/process/no-dark-by-default.md` forbids, and an absent writer here
@@ -259,15 +267,20 @@ final class RouterWsRegistryLive(
               s"$snapHousehold but router household=$hh (#2626 fan-out is not household-scoped)",
           )
       case Some(_)                         =>
-        onDelivered(id, snap.etag).foldCauseZIO(
-          c =>
-            AppMetrics.recordWsEtagStamp("error") *>
-              // logError, not logWarning: this is the ONLY writer of `last_etag` for a router on a
-              // healthy ws link (the poll is dormant, #2037), so a failure here is the operator's
-              // "who is on current policy?" view silently going stale.
-              ZIO.logErrorCause(s"router ws: last_etag stamp failed for router=$id", c),
-          _ => AppMetrics.recordWsEtagStamp("ok"),
-        )
+        // `suspendSucceed` so a sink that throws while BUILDING its effect is caught by the same
+        // fold as one that returns a failed/dying effect — otherwise it escapes back into
+        // `publishPolicy`'s `foreachDiscard`, which is the failure mode this fold exists for.
+        ZIO
+          .suspendSucceed(onDelivered(id, snap.etag))
+          .foldCauseZIO(
+            c =>
+              AppMetrics.recordWsEtagStamp("error") *>
+                // logError, not logWarning: this is the ONLY writer of `last_etag` for a router on a
+                // healthy ws link (the poll is dormant, #2037), so a failure here is the operator's
+                // "who is on current policy?" view silently going stale.
+                ZIO.logErrorCause(s"router ws: last_etag stamp failed for router=$id", c),
+            _ => AppMetrics.recordWsEtagStamp("ok"),
+          )
     }
 
   private def sendPolicyFrame(
