@@ -126,7 +126,9 @@ hosts:
   # against the StevenBlack ads-extended feed: the first group are genuine gaps
   # that even ads-extended misses entirely; the second are clearly-ad apexes the
   # extended feed covers, added to the curated baseline for curated-only profiles.
-  # Dual-use SKIPPED: app-analytics-services.com / app-ads-services.com (Google
+  # Dual-use SKIPPED: app-analytics-services.com (now MECHANICALLY guarded too --
+  # it is on Google's shared GFE pool, see SharedGfeHosts; do not re-propose it),
+  # app-ads-services.com (Google
   # GA4/Firebase), ttdns2.com (TikTok shared infra), demonii.com (BitTorrent
   # tracker). See evidence/ads-classification-1923.md for per-apex hits + what-it-is.
   # Mobile ad networks / DSP / SSP / RTB exchanges (gaps not in ads-extended)

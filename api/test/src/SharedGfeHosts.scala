@@ -31,6 +31,12 @@ import wifihaven.shared.types.*
  * four addresses the evidence file names in `bl6_ads`) and `ai.google.dev` (the `ai` blocklist —
  * Google-fronted, though it answers from a different /48 than the addresses the evidence cites).
  * Removing either is a product decision tracked in #2605, not something a test should force.
+ *
+ * One collision to expect rather than be surprised by: `gvt2.com` IS banned, and #2369 documents it
+ * as "Google download / Play / Widevine infra". So an author extending `google-play.yml` beyond
+ * `play.google.com` to cover Play *downloads* will hit this guard. That is working as intended —
+ * gvt2 is shared frontend — but it is the one plausible-soon red that has no obvious explanation
+ * from the failure message alone.
  */
 object SharedGfeHosts {
 
@@ -58,7 +64,12 @@ object SharedGfeHosts {
     "google-analytics.com",
     "adservice.google.com",
     "2mdn.net",
-    // #2369 — confirmed in youtube.com's GFE pool; suffix matching covers their subdomains
+    // #2369 — demoted off the infra allow-carve as Google shared-frontend hosts. Two were
+    // individually observed on youtube.com's pool (`app-analytics-services.com` was the
+    // confirmed leak vector; `clientservices.googleapis.com` resolved to YouTube's exact
+    // frontend IP, InfraHosts.scala:294-297); the other five were demoted by CLASS, as the
+    // non-connectivity-critical Google hosts (InfraHosts.scala:306-311). Suffix matching
+    // covers their subdomain forms, so all twelve googleSharedFrontend entries are reached.
     "app-analytics-services.com",
     "clientservices.googleapis.com",
     "gvt2.com",

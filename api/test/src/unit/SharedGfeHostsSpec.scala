@@ -9,9 +9,7 @@ import zio.test.*
  * `AppTemplatesSpec` assert "no offenders", which passes vacuously if `isBanned` is wrong — a guard
  * that never fires looks exactly like a clean catalog. These pin the matcher itself.
  */
-object SharedGfeHostsSpec extends ZIOSpec[Any] {
-
-  override val bootstrap = zio.ZLayer.empty
+object SharedGfeHostsSpec extends ZIOSpecDefault {
 
   private def banned(s: String) = SharedGfeHosts.isBanned(Hostname.unsafe(s))
 
