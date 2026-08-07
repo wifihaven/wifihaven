@@ -33,8 +33,11 @@ icon_type: url
 #                   (104.16.0.0/12, 172.64.0.0/13, 2606:4700::/32 — Cloudflare)
 #   neverssl.com -> 34.223.124.45, 2600:1f13:…  (EC2; PTR
 #                   ec2-34-223-124-45.us-west-2.compute.amazonaws.com — an
-#                   address bound to a single instance, NOT a shared front end.
-#                   That is the property that matters for collateral. Note it
+#                   address bound to a single instance — which is the property
+#                   that matters for collateral. (Strictly, one instance could
+#                   still be a reverse proxy for others; the PTR does not rule
+#                   that out. Negligible here, but stated rather than glossed,
+#                   since this file now holds itself to that bar.) Note it
 #                   is deliberately not described as a "dedicated Elastic IP":
 #                   the PTR does not establish that, and over-claiming from a
 #                   plausible-looking lookup is what put example.com in this

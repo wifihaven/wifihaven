@@ -198,6 +198,15 @@ logcli query '{service="wifihaven-api", env="production"} |~ "(?i)(household|log
      Secure DNS/DoH, and any VPN route around the router entirely and defeat
      host filtering by design. Private Relay is what cost #1891/#1909 a whole
      debugging session.
+   - **If you are blocking the `Connectivity Test` app, load
+     `http://neverssl.com` BEFORE blocking it, and confirm it renders.** The app
+     has one host, on a third party we neither control nor monitor, and its
+     failure mode inverts the meaning of this whole step: a `neverssl.com` that
+     is simply down is indistinguishable from a successful block, so the test
+     appears to PASS while proving nothing. A pre-block reachability check is
+     the only thing separating those two outcomes. (Same reasoning as the rest
+     of this runbook: a green screen with no corroborating evidence is the
+     failure mode the issue exists to catch.)
 
    Then on the device: flush DNS
    (`sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder`), and use
