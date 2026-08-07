@@ -255,10 +255,7 @@ object HttpRoutes {
         hsRepo,
         spaEventBus,
       )
-      // #2608: stamp routers.last_etag on every successful ws policy push, the same column the REST
-      // poll writes — ws is the shipped router default now, so the poll is dormant on a healthy link
-      // and this is the only writer for most of the fleet.
-      wsRegistry    <- RouterWsRegistry.make((id, etag) => routerRepo.touch(id, Some(etag), None))
+      wsRegistry    <- RouterWsRegistry.make
       // #1968: the browser-facing SPA websocket registry (S1). A FORK of the router registry pattern
       // (design §5.1), not a generalization — keyed by per-connection id + role with a subscription
       // set. Additive: REST stays the fallback throughout the rollout (no flag day).

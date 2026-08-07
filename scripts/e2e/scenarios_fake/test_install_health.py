@@ -31,8 +31,14 @@ pytestmark = pytest.mark.install_health
 CRONTAB_PATH = "/etc/crontabs/root"
 EXPECTED_SCRIPT = "/usr/sbin/wifihaven-update"
 WS_BIN = "/usr/sbin/wifihaven-ws"
-# `wifihaven-ws` minus its leading `w` — see _ws_sidecar_pids for why.
-WS_BIN_TAIL = "ifihaven-ws"
+# The pattern every pgrep/pkill in this file uses. The bracket is load-bearing —
+# see _ws_sidecar_pids. CRITICAL: the literal `wifihaven-ws` must not appear
+# ANYWHERE in a remote command that also runs pgrep/pkill, because dropbear runs
+# the whole command through `sh -c` and the parent shell's own cmdline is then a
+# match. That is not hypothetical: a first draft did `mv /usr/sbin/wifihaven-ws
+# … ; pkill -f '[w]ifihaven-ws'` and the pkill SIGKILLed its own parent, so the
+# loop ran once and the `rm` after it never executed.
+WS_PATTERN = "[w]ifihaven-ws"
 WS_HEALTH_PATH = "/tmp/wifihaven-ws-health"
 
 
@@ -60,7 +66,7 @@ def _ws_sidecar_pids() -> list[str]:
     running" trivially true and "the sidecar is dead" unreachable. `[w]ifihaven`
     matches the real process's cmdline but not the literal pattern string.
     """
-    res = router_ssh(f"pgrep -f '[w]{WS_BIN_TAIL}' || true", check=False, timeout=20)
+    res = router_ssh(f"pgrep -f '{WS_PATTERN}' || true", check=False, timeout=20)
     return [p for p in (res.stdout or "").split() if p.strip()]
 
 
@@ -134,15 +140,35 @@ def test_dead_ws_sidecar_falls_back_to_the_http_poll(router, fake_api):
         description="the ws sidecar to come up before we kill it",
     )
 
-    router_ssh(
-        f"mv {WS_BIN} {WS_BIN}.disabled; "
+    # Both paths are assembled in the REMOTE shell from split string literals, so
+    # the pattern's plain form appears nowhere in the command text — including in
+    # WS_HEALTH_PATH, which contains it too.
+    kill_cmd = (
+        'b="/usr/sbin/wifihaven""-ws"; h="/tmp/wifihaven""-ws-health"; '
+        'mv "$b" "$b.disabled"; '
         # Kill it repeatedly so procd burns through its respawn retry budget
-        # against a binary that is no longer there, then stops trying.
-        f"for i in 1 2 3 4 5 6 7; do pkill -9 -f '[w]{WS_BIN_TAIL}' 2>/dev/null; sleep 5; done; "
-        f"rm -f {WS_HEALTH_PATH}",
-        check=False,
-        timeout=180,
+        # against a binary that is no longer there, then stops trying. The budget
+        # is `procd_set_param respawn 3600 5 5` on the ws instance in
+        # openwrt/files/etc/init.d/wifihaven: 5s between attempts, 5 retries in a
+        # 3600s window, so 7 kills spaced 5s apart exhaust it.
+        f"for i in 1 2 3 4 5 6 7; do pkill -9 -f '{WS_PATTERN}' 2>/dev/null; sleep 5; done; "
+        # Clearing the sentinel is what makes the fallback immediate: an ABSENT
+        # sentinel is never fresh (ws_outbound.lua), while a stale-but-present one
+        # would make the agent wait out ws_fallback_after (300s, longer than this
+        # test's budget). This must run — it is why the kill above must not take
+        # its own shell down with it.
+        'rm -f "$h"; '
+        # Fail loudly if the sentinel somehow survived, rather than leaving the
+        # assertion below to time out with a misleading message.
+        'test ! -e "$h"'
     )
+    # The guard that keeps this from regressing: if the plain pattern ever leaks
+    # back into the command text, pkill matches its own parent shell and silently
+    # eats the rest of the script.
+    assert WS_PATTERN.replace("[", "").replace("]", "") not in kill_cmd, (
+        f"kill command must not contain the plain sidecar name: {kill_cmd!r}"
+    )
+    router_ssh(kill_cmd, check=True, timeout=180)
 
     wait_until(
         lambda: not _ws_sidecar_pids(),

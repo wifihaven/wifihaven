@@ -7,6 +7,7 @@ then, callers should pass timeouts large enough to span at least one cycle.
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
 from datetime import datetime
@@ -192,6 +193,31 @@ def wait_for_next_poll(
                       description=f"router {router_id} next poll cycle")
 
 
+# The agent's on-disk policy snapshot. Written by BOTH transports: the HTTP poll
+# persists what it fetched, and the ws sidecar persists what was pushed to it.
+ROUTER_SNAPSHOT_PATH = "/etc/wifihaven/policy.json"
+
+
+def router_snapshot_etag() -> str | None:
+    """The etag in the router VM's on-disk snapshot, or None if unreadable.
+
+    Imported lazily: lib.wait is used by helpers that never touch a VM, and this
+    keeps that import edge out of their path.
+    """
+    from lib.vm import router_ssh  # noqa: PLC0415 — see docstring
+
+    res = router_ssh(
+        f"cat {ROUTER_SNAPSHOT_PATH} 2>/dev/null || true", check=False, timeout=10,
+    )
+    out = (res.stdout or "").strip()
+    if not out:
+        return None
+    try:
+        return json.loads(out).get("etag")
+    except (ValueError, AttributeError):
+        return None
+
+
 def wait_for_etag_change(
     admin: AdminAPI,
     router_id: str,
@@ -199,14 +225,41 @@ def wait_for_etag_change(
     timeout_s: float = 120,
     interval_s: float = 2.0,
 ) -> dict:
-    """Wait for the agent to fetch a *new* policy (lastEtag changed)."""
+    """Wait for the agent to pick up a *new* policy, over EITHER transport.
+
+    #2608 made the websocket the shipped router default, and on a healthy link
+    the agent's HTTP poll goes dormant (#2037). `routers.last_etag` is written
+    only by the poll route (`RouterRoutes` passes `Some(snap.etag)` to
+    `routerRepo.touch`; `RouterWsRoutes` touches `last_seen_at` alone), so on a
+    ws router that column can stop advancing entirely and an admin-API-only wait
+    would hang until it timed out.
+
+    So this checks BOTH: the server-side `lastEtag`, and the etag in the router's
+    own on-disk snapshot — which both transports write, and which is the stronger
+    signal anyway (it says the ROUTER has the policy, not merely that the server
+    served it). Returns the router row either way.
+
+    That `last_etag` freezes for a ws router is a real product gap, not just a
+    test problem — it is what the operator's "who is on current policy?" view
+    reads. It predates #2608 (prod's hand-enabled ws router already had it) but
+    the default flip makes it fleet-wide, so it is tracked in #2619 rather than
+    papered over here. Fixing it is blocked on per-household push fan-out
+    (#2120): today `PolicyService.reevaluate` broadcasts the default household's
+    snapshot to every router, so stamping from the fan-out would persist the
+    wrong household's etag.
+    """
     baseline = admin.get_router(router_id) or {}
     baseline_etag = baseline.get("lastEtag")
+    baseline_disk = router_snapshot_etag()
 
     def check():
         r = admin.get_router(router_id)
         if r and r.get("lastEtag") and r.get("lastEtag") != baseline_etag:
             return r
+        disk = router_snapshot_etag()
+        if disk and disk != baseline_disk:
+            return r or {}
         return None
+
     return wait_until(check, timeout_s=timeout_s, interval_s=interval_s,
                       description=f"router {router_id} to apply new policy etag")

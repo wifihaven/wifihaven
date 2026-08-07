@@ -93,7 +93,7 @@ object RouterWsRoutes {
                   // #2107: first-policy push is scoped to the router's household (same scoping as the
                   // REST /api/router/policy poll).
                   .snapshot(router.householdId)
-                  .flatMap(registry.pushPolicyTo(router.id, channel, _))
+                  .flatMap(registry.pushPolicyTo(channel, _))
                   .catchAllCause(c =>
                     ZIO.logWarningCause(
                       s"router ws: first-policy push failed router=${router.id}",

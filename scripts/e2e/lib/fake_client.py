@@ -183,7 +183,21 @@ class FakeAPIClient:
         timeout_s: float = 240,
         interval_s: float = 2.0,
     ) -> dict[str, Any]:
-        """Block until a 200 with the given etag has been served."""
+        """Block until a 200 carrying the given etag has been DELIVERED.
+
+        #2608 note on strength: this used to mean "the agent fetched it", because
+        only the HTTP poll produced a record. Now that ws is the shipped router
+        default the poll goes dormant on a healthy link (#2037), so the fake also
+        records a pushed `policy` frame here (tagged `transport: "ws"`) — and a
+        push is recorded at SEND time, synchronously inside POST /test/snapshot.
+        So on a ws router this returns as soon as the server has sent the frame,
+        not once the agent has applied it.
+
+        It is therefore a delivery signal, not an apply barrier. Every scenario
+        that needs "the router has actually enforced this" must follow it with a
+        router-state wait (`wait_mac_in_blocked_set`, `wait_eb_set_populated`, a
+        reachability probe, …) — which they all already do.
+        """
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
             for f in (self.policy_fetches().get("fetches") or []):
@@ -191,7 +205,8 @@ class FakeAPIClient:
                     return f
             time.sleep(interval_s)
         raise TimeoutError(
-            f"agent never fetched etag={etag!r} in {timeout_s}s"
+            f"etag={etag!r} was never delivered to the agent (no HTTP fetch and no "
+            f"ws push recorded) in {timeout_s}s"
         )
 
     def latest_fetch_id(self) -> int:

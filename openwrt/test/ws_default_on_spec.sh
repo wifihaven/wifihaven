@@ -136,8 +136,10 @@ UCI
   # Emit the resulting store plus a synthetic `__calls=<n>` / `__writes=<n>` row
   # so every assertion below can require evidence the script executed.
   cat "$WS_TMP/store"
-  printf '__calls=%s\n' "$(wc -l < "$WS_TMP/calls" | tr -d ' ')"
-  printf '__writes=%s\n' "$(grep -cE '^(set|delete) ' "$WS_TMP/calls" || true)"
+  # `!` cannot appear in a UCI key, so these synthetic rows can never collide
+  # with a real one in the same store.
+  printf '!calls=%s\n' "$(wc -l < "$WS_TMP/calls" | tr -d ' ')"
+  printf '!writes=%s\n' "$(grep -cE '^(set|delete) ' "$WS_TMP/calls" || true)"
   rm -rf "$WS_TMP"
 }
 
@@ -145,7 +147,10 @@ store_get() { printf '%s\n' "$1" | awk -F= -v k="$2" '$1 == k {v=$0} END {sub(/^
 
 # Every case requires __calls > 0: the migration must have actually invoked uci,
 # so none of these can pass because the script silently failed to run.
-ran() { [ "$(store_get "$1" __calls)" -gt 0 ] 2>/dev/null; }
+ran() {
+  v=$(store_get "$1" '!calls')
+  [ -n "$v" ] && [ "$v" -gt 0 ]
+}
 
 # (a) Fresh install: nothing set → enabled stays unset (code default = on),
 #     marker recorded so the migration never re-runs.
@@ -177,7 +182,7 @@ fi
 #     __writes=0 proves the script ran and chose to write NOTHING, rather than
 #     the value merely surviving because the script never executed.
 out=$(run_migration "ws=ws" "ws.enabled=0" "ws.default_on_migrated=1")
-if ran "$out" && [ "$(store_get "$out" ws.enabled)" = "0" ] && [ "$(store_get "$out" __writes)" = "0" ]; then
+if ran "$out" && [ "$(store_get "$out" ws.enabled)" = "0" ] && [ "$(store_get "$out" '!writes')" = "0" ]; then
   check "explicit opt-out (enabled=0 + marker): stays on poll after upgrade" ok
 else
   check "explicit opt-out (enabled=0 + marker): stays on poll after upgrade" "store=[$(echo "$out" | tr '\n' ' ')]"
@@ -185,7 +190,7 @@ fi
 
 # (e) A router that opted out BEFORE the flip can pre-pin with the marker alone.
 out=$(run_migration "ws=ws" "ws.default_on_migrated=1")
-if ran "$out" && [ -z "$(store_get "$out" ws.enabled)" ] && [ "$(store_get "$out" __writes)" = "0" ]; then
+if ran "$out" && [ -z "$(store_get "$out" ws.enabled)" ] && [ "$(store_get "$out" '!writes')" = "0" ]; then
   check "pre-pinned marker with no value: migration writes nothing" ok
 else
   check "pre-pinned marker with no value: migration writes nothing" "store=[$(echo "$out" | tr '\n' ' ')]"

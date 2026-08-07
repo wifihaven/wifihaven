@@ -61,11 +61,23 @@ if [ -z "$(uci -q get wifihaven.ws)" ]; then
   fi
 fi
 
+# THE load-bearing write. It must be guarded: if the delete fails and we go on to
+# commit the marker anyway, the surviving `enabled=0` is thereafter indistinguish-
+# able from an operator's own opt-out (the marker is exactly what confers that
+# meaning) and this router is pinned on poll forever, with no retry and nothing in
+# the log. So a failed delete aborts BEFORE the marker is written, leaving the
+# router in its current state for the next boot to retry.
 if [ "$(uci -q get wifihaven.ws.enabled)" = "0" ]; then
-  uci -q delete wifihaven.ws.enabled
+  if ! uci -q delete wifihaven.ws.enabled; then
+    logger -t wifihaven "ws default-on migration: could not clear the old shipped wifihaven.ws.enabled=0; NOT recording the marker (will retry on next boot)"
+    exit 1
+  fi
 fi
 
-uci set wifihaven.ws.default_on_migrated='1'
+if ! uci set wifihaven.ws.default_on_migrated='1'; then
+  logger -t wifihaven "ws default-on migration: could not record the marker; will retry on next boot"
+  exit 1
+fi
 
 # Fail LOUD rather than exiting 0 on a failed commit: uci_apply_defaults DELETES
 # a uci-defaults script that exits 0, so swallowing this would drop the migration

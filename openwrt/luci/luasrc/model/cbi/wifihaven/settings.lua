@@ -76,7 +76,13 @@ debug_opt.default = "0"
 -- "experimental" and the Flag defaults to on — matching what an unset key means
 -- to the agent, the sidecar and the init script. Turning it OFF here writes an
 -- explicit `enabled=0` (rmempty=false), which the one-shot uci-defaults
--- migration then leaves alone forever.
+-- migration then leaves alone forever. rmempty stays FALSE deliberately: with
+-- rmempty=true, unchecking the box would DELETE the key, and an absent key now
+-- means ON — so the toggle could never turn ws off. The cost is that saving this
+-- page also pins an explicit `enabled=1` for someone who never touched the
+-- field. That is benign: it writes the value the default already resolves to,
+-- and the migration marker means the migration would not have rewritten the key
+-- either way.
 local ws = m:section(NamedSection, "ws", "ws", translate("WebSocket transport"))
 ws.addremove = false
 

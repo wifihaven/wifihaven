@@ -3,7 +3,7 @@ package wifihaven.api.routes
 import wifihaven.api.metrics.AppMetrics
 import wifihaven.api.policy.PolicySnapshotPublisher
 import wifihaven.shared.PolicySnapshot
-import wifihaven.shared.types.{ETag, RouterId}
+import wifihaven.shared.types.RouterId
 import zio.*
 import zio.http.{ChannelEvent, WebSocketChannel, WebSocketFrame}
 import zio.json.*
@@ -67,24 +67,13 @@ trait RouterWsRegistry {
    * at the next change. A send failure is metered `channel_closed` (the caller's receive loop will
    * deregister on close).
    */
-  def pushPolicyTo(id: RouterId, channel: WebSocketChannel, snap: PolicySnapshot): UIO[Unit]
+  def pushPolicyTo(channel: WebSocketChannel, snap: PolicySnapshot): UIO[Unit]
 }
 
 object RouterWsRegistry {
 
-  /**
-   * `onDelivered` is the #2608 delivery sink: called with `(routerId, etag)` after a `policy` frame
-   * has actually been sent. Prod wires it to `routerRepo.touch(id, Some(etag), None)` so
-   * `routers.last_etag` means the same thing on both transports. It is a REQUIRED parameter, not a
-   * defaulted one — a silently-absent sink would be exactly the dark-by-default shape
-   * `docs/process/no-dark-by-default.md` forbids, and it is what froze `last_etag` fleet-wide when
-   * ws became the default. A registry-only unit test that asserts nothing about delivery passes a
-   * no-op explicitly; the real DB write is pinned end-to-end in RouterWsSpec.
-   */
-  def make(onDelivered: (RouterId, ETag) => Task[Unit]): UIO[RouterWsRegistry] =
-    Ref
-      .make(Map.empty[RouterId, Set[WebSocketChannel]])
-      .map(new RouterWsRegistryLive(_, onDelivered))
+  def make: UIO[RouterWsRegistry] =
+    Ref.make(Map.empty[RouterId, Set[WebSocketChannel]]).map(new RouterWsRegistryLive(_))
 
   /** The `{op:"policy", payload:<snapshot>}` envelope a pushed snapshot rides (design §1.2). */
   private[routes] def policyFrameText(snap: PolicySnapshot): String =
@@ -93,7 +82,6 @@ object RouterWsRegistry {
 
 final class RouterWsRegistryLive(
     state: Ref[Map[RouterId, Set[WebSocketChannel]]],
-    onDelivered: (RouterId, ETag) => Task[Unit],
 ) extends RouterWsRegistry
     with PolicySnapshotPublisher {
 
@@ -149,50 +137,17 @@ final class RouterWsRegistryLive(
     state.get.flatMap { m =>
       val frame = RouterWsRegistry.policyFrameText(snap)
       ZIO.foreachDiscard(m.toList) { case (id, channels) =>
-        ZIO.foreachDiscard(channels)(ch =>
-          sendPolicyFrame(id, ch, frame, snap, deregisterOnFailure = true),
-        )
+        ZIO.foreachDiscard(channels)(ch => sendPolicyFrame(Some(id), ch, frame))
       }
     }
 
-  def pushPolicyTo(id: RouterId, channel: WebSocketChannel, snap: PolicySnapshot): UIO[Unit] =
-    // `deregisterOnFailure = false` preserves the pre-#2608 behaviour of this path: the caller
-    // (RouterWsRoutes' HandshakeComplete branch) has its own `ensuring` teardown, and the channel
-    // was registered microseconds ago.
-    sendPolicyFrame(
-      id,
-      channel,
-      RouterWsRegistry.policyFrameText(snap),
-      snap,
-      deregisterOnFailure = false,
-    )
-
-  /**
-   * #2608: stamp `routers.last_etag` with the snapshot this push DELIVERED.
-   *
-   * `last_etag` is "the policy version this router has", and until now only the REST poll wrote it
-   * ([[RouterRoutes]] passes `Some(snap.etag)` to `routerRepo.touch`); the ws path touched
-   * `last_seen_at` alone. That was tolerable while ws was opt-in and one hand-enabled router used
-   * it. Once ws is the shipped default the poll goes DORMANT on a healthy link (#2037), so without
-   * this the column would freeze for the whole fleet — the operator's "which routers are on the
-   * current policy?" view would go blind, and Gate 3's `wait_for_etag_change` would never fire.
-   * Same reasoning the design already applies to `last_seen_at` (§3.1: touched by both paths, so
-   * liveness is uniform regardless of transport).
-   *
-   * Best-effort: a DB hiccup must never tear down a push. Logged, not swallowed silently. The catch
-   * lives HERE rather than in the caller so every wiring of the sink gets the same failure posture.
-   */
-  private def stampEtag(id: RouterId, snap: PolicySnapshot): UIO[Unit] =
-    onDelivered(id, snap.etag)
-      .catchAll(e => ZIO.logWarning(s"router ws: last_etag stamp failed for router=$id: $e"))
-      .unit
+  def pushPolicyTo(channel: WebSocketChannel, snap: PolicySnapshot): UIO[Unit] =
+    sendPolicyFrame(None, channel, RouterWsRegistry.policyFrameText(snap))
 
   private def sendPolicyFrame(
-      id: RouterId,
+      id: Option[RouterId],
       channel: WebSocketChannel,
       frame: String,
-      snap: PolicySnapshot,
-      deregisterOnFailure: Boolean,
   ): UIO[Unit] =
     // #2168: time the outbound policy-push send as router_ws_message_duration_seconds{op=policy,
     // direction=out} — the outbound half of the per-ws-op latency. `ensuring` fires the observation
@@ -206,11 +161,10 @@ final class RouterWsRegistryLive(
             // the dead channel. The receive loop's `ensuring` also deregisters, but doing it here too
             // keeps the gauge honest if the push raced ahead of the close event.
             AppMetrics.recordWsPolicyPush("channel_closed") *>
-              deregister(id, channel).when(deregisterOnFailure).unit,
+              ZIO.foreachDiscard(id)(deregister(_, channel)),
           _ =>
             AppMetrics.recordWsFrame("policy", "out", "ok") *>
-              AppMetrics.recordWsPolicyPush("ok") *>
-              stampEtag(id, snap),
+              AppMetrics.recordWsPolicyPush("ok"),
         )
         .ensuring(
           Clock.nanoTime.flatMap(end =>
