@@ -29,7 +29,7 @@ export const RECENT_BLOCKED_LIMIT = 20
 export const RECENT_BLOCKED_WINDOW_MS = 15 * 60_000
 // The server-side FETCH width, in the integer hours /api/logs takes. Wider than the
 // display window on purpose: it is what lets the panel say "there were blocks, just not
-// in the last 15 minutes" instead of rendering the same empty state as a household that
+// in the display window" instead of rendering the same empty state as a household that
 // has never been blocked.
 export const RECENT_BLOCKED_FETCH_HOURS = 1
 // Human-readable forms of the two spans above, so the panel can NAME them. Derived here
@@ -325,14 +325,17 @@ export function useRecentBlocked(mac: string | null = null, opts?: RecentBlocked
       return {
         rows: recent,
         olderCount: rows.length - recent.length,
-        // Reads the CACHE, which useWsRecentBlocked also caps at RECENT_BLOCKED_LIMIT
-        // (useWs.tsx -> wsCache.prependHead's slice). So the cache can saturate at the cap
-        // from pushed rows even when the original fetch returned fewer, and report "20+"
-        // where a fresh fetch would say "3". Bounded by this hook's own config: the 10s
-        // refetch below replaces the whole cache while the tab is foregrounded, so the
-        // divergence only persists in a BACKGROUNDED tab, where refetchIntervalInBackground
-        // stops the poll but not the ws subscription. Sound either way: the field is a
-        // FLOOR by contract, never a total.
+        // Reads the CACHE, not the fetch response. useWsRecentBlocked writes the same key
+        // and caps it the same way (useWs.tsx -> wsCache.prependHead's slice), and the cache
+        // is bounded by ROW COUNT only, never by age — so rows the fetch window has since
+        // dropped stay counted. That is one way this flag goes true where a fresh fetch
+        // would leave it false; it is not the reason the flag exists (see its declaration
+        // above, which is also where what callers owe it is stated — once in this file,
+        // rather than restated here where a second copy would drift).
+        //
+        // Deliberately no claim about when a refetch heals the divergence: `...opts` is
+        // spread last, so a caller can replace the cadence below outright and the effective
+        // one is not knowable from here.
         olderCountTruncated: rows.length >= RECENT_BLOCKED_LIMIT,
       }
     },
