@@ -435,20 +435,36 @@ services:
       # Keep explicitly empty — debug endpoints must never run in prod.
       - key: WIFIHAVEN_DEBUG
         value: ""
-      # #612: SPA on https://wifihaven.net (apex + www) calls this API cross-origin.
-      # #1840: app.wifihaven.net added additively (#1832 rename) — the SPA now
-      # also fronts on app.*; apex + www kept through transition (no cut-over).
+      # #612: the SPA calls this API cross-origin (SPA on its own hostname).
+      # #1840: app.wifihaven.net added additively (#1832 rename).
+      # #1843: apex + www dropped after the soak. They front the marketing
+      # Pages project (`wifihaven-www`) since #1842, serve no SPA bundle and
+      # make no API calls, so no browser context can emit those origins.
       - key: WIFIHAVEN_ALLOWED_ORIGINS
-        value: "https://wifihaven.net,https://www.wifihaven.net,https://app.wifihaven.net"
+        value: "https://app.wifihaven.net"
       # #944: union into every profile's snapshot extraAllowed so a paused
       # operator can still reach the admin UI on prod. Prod-only — MUST NOT
       # include staging hosts (router would let them through too).
       # #1840: app.wifihaven.net added additively (#1832 rename).
+      # #1843: apex + www dropped after the soak. The block page lives on
+      # app.wifihaven.net (openwrt/install.sh block_page_default); no apex
+      # /blocked compat shim was ever shipped (#1842), so neither the admin UI
+      # nor the block page is reached via apex/www. api.wifihaven.net stays.
+      # Accepted residual: RouterInstallPage links out to wifihaven.net/install/*,
+      # so a *blocked* device can no longer open those guides. Same as the
+      # amazon.com links beside them, which were never carved out either — and
+      # router setup runs pre-enrollment. Carving the apex back in for outbound
+      # doc links would restore exactly the fleet-wide allow #1843 removes.
       - key: WIFIHAVEN_UI_ALLOWED_HOSTS
-        value: "wifihaven.net,www.wifihaven.net,api.wifihaven.net,app.wifihaven.net"
+        value: "api.wifihaven.net,app.wifihaven.net"
       # #1969: SPA-websocket Origin allowlist (design §8). HOSTS only (scheme/port
       # ignored) — the cross-site-upgrade backstop that pairs with the SameSite=Strict
-      # wh_ws cookie. Mirrors the SPA origins above (where the dashboard ws client runs).
+      # wh_ws cookie. app.wifihaven.net is where the dashboard ws client runs.
+      # #1843/#2612: this set still carries apex + www and so no longer mirrors
+      # WIFIHAVEN_ALLOWED_ORIGINS above. Those two entries are dead for the same
+      # reason #1843 dropped them there (marketing-only since #1842, no ws
+      # client), but #1969 introduced this key after #1843 was filed, so the
+      # cleanup issue never enumerated it. Dropping them is tracked in #2612.
       - key: WIFIHAVEN_WS_ALLOWED_ORIGINS
         value: "wifihaven.net,www.wifihaven.net,app.wifihaven.net"
       # #614: SPA is served by the wifihaven-spa-prod Static Site (CDN).
