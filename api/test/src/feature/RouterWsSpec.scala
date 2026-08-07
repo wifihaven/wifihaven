@@ -83,13 +83,18 @@ object RouterWsSpec
    * absolute assertion would couple this spec to whatever else in the suite pushed a policy frame.
    * The read is synchronous — there is no Prometheus publisher or snapshot listener to wait on, so
    * no wall-clock polling is involved (`docs/process/testing.md`, #2042).
+   *
+   * The delta is exact rather than a lower bound, which holds only because this suite carries
+   * `TestAspect.sequential` (see the bottom of `spec`) and mill runs one spec class at a time. If
+   * either changes, a concurrent spec pushing a policy frame would inflate these deltas — relax
+   * them to `>=` at that point rather than deleting them.
    */
   private def etagStampTotal(outcome: String): UIO[Double] =
     Metric.counter("router_ws_etag_stamp_total").tagged("outcome", outcome).value.map(_.count)
 
   /** A minimal snapshot for tests that only need SOMETHING with an etag to push. */
   private val emptySnapshot = PolicySnapshot(
-    etag = ETag.unsafe("sha256:2619-stamp-failure-probe"),
+    etag = ETag.unsafe("etag-2619-stamp-failure-probe"),
     generatedAt = "2026-05-07T14:00:00Z",
     devices = Map.empty,
     profiles = Map.empty,
@@ -120,20 +125,13 @@ object RouterWsSpec
       cRepo   <- ZIO.service[ConnectionEventRepo]
       aRepo   <- ZIO.service[AlertRepo]
       hsr     <- ZIO.service[HouseholdSettingsRepo]
-      pRepo   <- ZIO.service[ProfileRepo]
-      tlr     <- ZIO.service[TimeLimitRepo]
-      atlr    <- ZIO.service[AppTimeLimitRepo]
-      er      <- ZIO.service[TimeExtensionRepo]
-      ar      <- ZIO.service[AppRepo]
-      clk     <- ZIO.service[Clock]
-      blr     <- ZIO.service[BlocklistRepo]
       metrics <- RouterMetricsService.make
-      reg     <- RouterWsRegistry.make((id, etag) => rRepo.touch(id, Some(etag), None))
-      auth   = new RouterAuthLive(rRepo)
-      ingest = new RouterIngestService(rRepo, tRepo, tu, dRepo, cRepo, aRepo, hsr)
+      reg     <- RouterWsRegistry.make(rRepo.touchEtag)
       // #1849: a PolicyService so the ws endpoint can push the current snapshot on connect. Cache
       // off here (the `apply` default) — the connect push reads `snapshot`, which builds fresh.
-      policy = PolicyServiceLive(pRepo, hsr, tlr, atlr, dRepo, blr, tRepo, er, ar, clk)
+      policy  <- buildPolicyService
+      auth   = new RouterAuthLive(rRepo)
+      ingest = new RouterIngestService(rRepo, tRepo, tu, dRepo, cRepo, aRepo, hsr)
       // Mount the ws route through the SAME aspect stack `Main` wraps the router routes in
       // (HttpMetrics.instrument → LoggingMiddleware.annotate → Readiness.gate → ErrorBoundary.observe)
       // so the test proves the HTTP/1.1 upgrade survives the production middleware, not just the raw
@@ -390,15 +388,19 @@ object RouterWsSpec
         _         <- reg.pushPolicyTo(rid, HouseholdId.Default, ch, snap)
         afterPush <- rRepo.findById(rid)
         // The push-on-change fan-out (publishPolicy) must stamp too — it is the path that carries
-        // the fleet once the poll is dormant, and it is a DIFFERENT call into sendPolicyFrame.
-        _         <- rRepo.touch(rid, None, None)
-        _         <- reg.publishPolicy(HouseholdId.Default, snap)
-        afterFan  <- rRepo.findById(rid)
-        okPost    <- etagStampTotal("ok")
+        // the fleet once the poll is dormant, and it is a DIFFERENT call into sendPolicyFrame. It
+        // has to carry a DIFFERENT etag to be worth asserting: re-pushing `snap` would leave the
+        // column on the value `pushPolicyTo` already wrote, and the assertion would pass even if
+        // this path stamped nothing. (Resetting the column first does not work either — the repo's
+        // `last_etag = COALESCE($etag, last_etag)` makes `touch(id, None, None)` a no-op on it.)
+        fanSnap = snap.copy(etag = ETag.unsafe("etag-2619-fanout"))
+        _        <- reg.publishPolicy(HouseholdId.Default, fanSnap)
+        afterFan <- rRepo.findById(rid)
+        okPost   <- etagStampTotal("ok")
       } yield assertTrue(beforeRow.exists(_.lastEtag.isEmpty)) &&
         assertTrue(okPost - okPre == 2.0) &&
         assertTrue(afterPush.flatMap(_.lastEtag).contains(snap.etag)) &&
-        assertTrue(afterFan.flatMap(_.lastEtag).contains(snap.etag))
+        assertTrue(afterFan.flatMap(_.lastEtag).contains(fanSnap.etag))
       // No Server/Client layers here, unlike the socket-driving tests around it: this exercises the
       // registry's push entrypoints directly, so it needs neither.
     },
@@ -442,26 +444,41 @@ object RouterWsSpec
       // working, so `router_ws_etag_stamp_total{outcome="error"}` is the only signal that the
       // operator's "who is on current policy?" view has started going stale.
       //
-      // The sink here is the injected failure; the registry, the channel accounting and the metric
-      // registry are real. The push effect is awaited, so the counter read is ordered after the
-      // stamp attempt rather than racing it.
+      // Both failure MODES are pinned, because they need different handling and only one of them is
+      // obvious. A typed failure is what `foldZIO` would catch. A DEFECT is not: it would kill the
+      // fiber, and since `publishPolicy` runs the per-channel sends under `foreachDiscard`, one
+      // dying sink would abandon the fan-out for every router not yet reached — strictly worse than
+      // the failure the guard exists for. Hence `foldCauseZIO` in the registry, and hence the second
+      // arm here.
+      //
+      // The sink is the injected failure; the registry, the channel accounting and the metric
+      // registry are real. Each push effect is awaited, so the counter reads are ordered after the
+      // stamp attempt rather than racing it. Two routers so the fan-out has somewhere to continue to.
       for {
-        rid     <- ZIO.succeed(RouterId(UUID.fromString("6b1f0f2c-6b3e-4a1a-9a8f-2f1c0b4d9e77")))
+        ridA    <- ZIO.succeed(RouterId(UUID.fromString("6b1f0f2c-6b3e-4a1a-9a8f-2f1c0b4d9e77")))
+        ridB    <- ZIO.succeed(RouterId(UUID.fromString("0d1a5c47-9b8e-4f30-8c25-7a6e3d2b1f04")))
         okPre   <- etagStampTotal("ok")
         errPre  <- etagStampTotal("error")
-        reg     <- RouterWsRegistry.make((_, _) => ZIO.fail(new RuntimeException("db down")))
-        ch      <- sendOnlyChannel
-        _       <- reg.register(rid, HouseholdId.Default, ch)
+        failing <- RouterWsRegistry.make((_, _) => ZIO.fail(new RuntimeException("db down")))
+        chA     <- sendOnlyChannel
+        _       <- failing.register(ridA, HouseholdId.Default, chA)
         // Completes normally: the failure is caught inside the registry, not propagated.
-        _       <- reg.publishPolicy(HouseholdId.Default, emptySnapshot)
-        okPost  <- etagStampTotal("ok")
-        errPost <- etagStampTotal("error")
+        _       <- failing.publishPolicy(HouseholdId.Default, emptySnapshot)
         // The channel is still registered — a stamp failure is not a delivery failure, so it must
         // not deregister the router the way a `channel_closed` send failure does.
-        still   <- reg.isConnected(rid)
-      } yield assertTrue(errPost - errPre == 1.0) &&
+        stillA  <- failing.isConnected(ridA)
+        dying   <- RouterWsRegistry.make((_, _) => ZIO.die(new RuntimeException("sink defect")))
+        chB     <- sendOnlyChannel
+        chC     <- sendOnlyChannel
+        _       <- dying.register(ridA, HouseholdId.Default, chB)
+        _       <- dying.register(ridB, HouseholdId.Default, chC)
+        // Must not die, and must reach BOTH routers: two `error` samples, not one.
+        _       <- dying.publishPolicy(HouseholdId.Default, emptySnapshot)
+        okPost  <- etagStampTotal("ok")
+        errPost <- etagStampTotal("error")
+      } yield assertTrue(errPost - errPre == 3.0) &&
         assertTrue(okPost - okPre == 0.0) &&
-        assertTrue(still)
+        assertTrue(stillA)
     },
     test("#2561: a second connection for the same router supersedes the first (registry holds 1)") {
       // The prod leak: a router whose socket went half-open reconnects, the server still holds the

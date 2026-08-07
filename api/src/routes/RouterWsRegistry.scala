@@ -178,15 +178,7 @@ final class RouterWsRegistryLive(
       val frame = RouterWsRegistry.policyFrameText(snap)
       ZIO.foreachDiscard(m.toList) { case (id, conn) =>
         ZIO.foreachDiscard(conn.channels)(ch =>
-          sendPolicyFrame(
-            id,
-            conn.household,
-            household,
-            ch,
-            frame,
-            snap,
-            deregisterOnFailure = true,
-          ),
+          sendPolicyFrame(id, household, ch, frame, snap, deregisterOnFailure = true),
         )
       }
     }
@@ -199,11 +191,9 @@ final class RouterWsRegistryLive(
   ): UIO[Unit] =
     // `deregisterOnFailure = false` preserves this path's pre-existing behaviour: the caller
     // (RouterWsRoutes' HandshakeComplete branch) has its own `ensuring` teardown, and the channel
-    // was registered microseconds ago. The two household arguments are the same value on this path
-    // by construction — the caller built the snapshot from `router.householdId`.
+    // was registered microseconds ago.
     sendPolicyFrame(
       id,
-      household,
       household,
       channel,
       RouterWsRegistry.policyFrameText(snap),
@@ -214,50 +204,74 @@ final class RouterWsRegistryLive(
   /**
    * #2619: stamp `routers.last_etag` with the etag this push DELIVERED.
    *
-   * What the column promises after this change: **the newest policy version the server has sent to
-   * this router**, on whichever transport sent it. That is a send-time fact, not an applied-time
-   * one — identical in kind to what the REST poll already recorded (it stamps when it SERVES the
-   * snapshot, before the agent has parsed, let alone applied, it). Neither transport's value means
-   * "this router is enforcing this policy"; the router's own applied etag is what the e2e barrier
-   * reads off disk (`scripts/e2e/lib/wait.py`). The promise is documented on the read surface,
+   * What the column promises: **the newest policy version the server has sent to this router**, on
+   * whichever transport sent it. That is a send-time fact, not an applied-time one — identical in
+   * kind to what the REST poll already recorded (it stamps when it SERVES the snapshot, before the
+   * agent has parsed, let alone applied, it). Neither transport's value means "this router is
+   * enforcing this policy"; the router's own applied etag is what the e2e barrier reads off disk
+   * (`scripts/e2e/lib/wait.py`). The promise is documented on the read surface,
    * `RouterSummary.lastEtag`.
    *
-   * **Household guard.** The etag is only written when the snapshot was built for the SAME
-   * household the router authenticated as. `PolicyService.reevaluate` still rebuilds the
+   * The write is `onDelivered`, wired in production to `RouterRepo.touchEtag` — `last_etag` ALONE.
+   * Deliberately not `touch`, which also refreshes `last_seen_at`: that column is the ROUTER-driven
+   * liveness signal behind `agent_connected_routers`, and a server-initiated push must not be able
+   * to hold it green for a router whose socket has gone half-open.
+   *
+   * **Household guard.** The receiving router's household is read HERE, from the registry entry, so
+   * there is one source for "which household is this router" and the guard is non-vacuous on both
+   * push paths (a caller cannot supply it, correctly or otherwise). The etag is written only when
+   * the snapshot was built for that same household. `PolicyService.reevaluate` still rebuilds the
    * `HouseholdId.Default` snapshot and fans it out to every connected router regardless of
    * household (`api/src/policy/PolicyService.scala`, the open #2626 gap), so an unguarded stamp
    * would persist household 1's etag onto another household's row — turning a transient
    * wrong-content push into a durable wrong value in the very column this is making authoritative.
-   * A mismatch is metered `household_mismatch` and logged, which is also the first observable
-   * signal that the fan-out is crossing a tenant boundary at all.
    *
-   * Best-effort: a DB hiccup must never tear down a push, so failures are caught. They are NOT
-   * silent — `router_ws_etag_stamp_total{outcome}` is dashboarded (deploy/grafana/dashboards/
-   * router-ws-transport.json), per `docs/process/no-dark-by-default.md`.
+   * A router with no registry entry (deregistered between the send and this stamp) is metered
+   * `unregistered` and skipped: we cannot establish whose etag this is, and the guard's whole point
+   * is that an unverifiable write is worse than no write.
+   *
+   * Best-effort: a DB hiccup must never tear down a push, so failures are caught — `foldCauseZIO`,
+   * not `foldZIO`, because a DEFECT in the sink would otherwise kill the fiber and
+   * `publishPolicy`'s `foreachDiscard` would abandon every router it had not reached yet. Caught is
+   * not silent: `router_ws_etag_stamp_total{outcome}` is dashboarded
+   * (deploy/grafana/dashboards/router-ws-transport.json), per `docs/process/no-dark-by-default.md`.
    */
   private def stampEtag(
       id: RouterId,
-      connHousehold: HouseholdId,
       snapHousehold: HouseholdId,
       snap: PolicySnapshot,
   ): UIO[Unit] =
-    if (connHousehold != snapHousehold)
-      AppMetrics.recordWsEtagStamp("household_mismatch") *>
-        ZIO.logWarning(
-          s"router ws: not stamping last_etag for router=$id — snapshot household=$snapHousehold " +
-            s"but router household=$connHousehold (#2626 fan-out is not household-scoped)",
+    state.get.map(_.get(id).map(_.household)).flatMap {
+      case None                            =>
+        AppMetrics.recordWsEtagStamp("unregistered") *>
+          ZIO.logDebug(
+            s"router ws: not stamping last_etag for router=$id - no registry entry " +
+              "(deregistered between send and stamp)",
+          )
+      case Some(hh) if hh != snapHousehold =>
+        // DEBUG, not WARN: while #2626 is open this fires once per policy change per connected
+        // non-default-household router, so it is a steady-state condition rather than an anomaly.
+        // The counter is the signal; a per-push WARN would just be noise that trains the operator
+        // to ignore it.
+        AppMetrics.recordWsEtagStamp("household_mismatch") *>
+          ZIO.logDebug(
+            s"router ws: not stamping last_etag for router=$id - snapshot household=" +
+              s"$snapHousehold but router household=$hh (#2626 fan-out is not household-scoped)",
+          )
+      case Some(_)                         =>
+        onDelivered(id, snap.etag).foldCauseZIO(
+          c =>
+            AppMetrics.recordWsEtagStamp("error") *>
+              // logError, not logWarning: this is the ONLY writer of `last_etag` for a router on a
+              // healthy ws link (the poll is dormant, #2037), so a failure here is the operator's
+              // "who is on current policy?" view silently going stale.
+              ZIO.logErrorCause(s"router ws: last_etag stamp failed for router=$id", c),
+          _ => AppMetrics.recordWsEtagStamp("ok"),
         )
-    else
-      onDelivered(id, snap.etag).foldZIO(
-        e =>
-          AppMetrics.recordWsEtagStamp("error") *>
-            ZIO.logWarning(s"router ws: last_etag stamp failed for router=$id: $e"),
-        _ => AppMetrics.recordWsEtagStamp("ok"),
-      )
+    }
 
   private def sendPolicyFrame(
       id: RouterId,
-      connHousehold: HouseholdId,
       snapHousehold: HouseholdId,
       channel: WebSocketChannel,
       frame: String,
@@ -268,7 +282,7 @@ final class RouterWsRegistryLive(
       case true  =>
         AppMetrics.recordWsFrame("policy", "out", "ok") *>
           AppMetrics.recordWsPolicyPush("ok") *>
-          stampEtag(id, connHousehold, snapHousehold, snap)
+          stampEtag(id, snapHousehold, snap)
       case false =>
         // A racing disconnect: meter the failed push and drop the dead channel. The receive loop's
         // `ensuring` also deregisters, but doing it here too keeps the gauge honest if the push

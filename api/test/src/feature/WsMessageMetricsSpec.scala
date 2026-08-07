@@ -89,7 +89,7 @@ object WsMessageMetricsSpec
       clk     <- ZIO.service[Clock]
       blr     <- ZIO.service[BlocklistRepo]
       metrics <- RouterMetricsService.make
-      reg     <- RouterWsRegistry.make((id, etag) => rRepo.touch(id, Some(etag), None))
+      reg     <- RouterWsRegistry.make(rRepo.touchEtag)
       auth   = new RouterAuthLive(rRepo)
       ingest = new RouterIngestService(rRepo, tRepo, tu, dRepo, cRepo, aRepo, hsr)
       policy = PolicyServiceLive(pRepo, hsr, tlr, atlr, dRepo, blr, tRepo, er, ar, clk)
