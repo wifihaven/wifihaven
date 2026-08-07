@@ -80,15 +80,20 @@ while IFS= read -r line; do
   [ -z "$line" ] && continue
   key="${line%% *}"
   value="${line#* }"
-  # Well-formedness: every entry must look like a hostname (contain a dot).
-  # A block/folded scalar leaves the indicator (`>-`, `|`) as the whole value,
-  # and any other shape this parse can't read degrades to something that isn't a
-  # host list. Fail loudly there rather than reporting a clean PASS over a file
-  # whose values were never actually inspected.
+  # An empty value is legal and is the STRICTEST state, not a broken parse:
+  # PolicyConfig.uiAllowedHosts defaults to "" (api/src/Config.scala) and
+  # StartupFeatureReport reports "empty — no global admin-UI allow carve-out".
+  # This guard exists to stop widening, so it must not fail the tightest config.
+  [ -z "$value" ] && continue
+  # Well-formedness: a non-empty value must look like a hostname list (contain a
+  # dot). A block/folded scalar leaves the indicator (`>-`, `|-`) as the whole
+  # value, and any other shape this line-oriented parse can't read degrades to
+  # something that isn't a host list. Fail loudly there rather than reporting a
+  # clean PASS over a value that was never actually inspected.
   case "$value" in
     *.*) ;;
     *)
-      echo "FAIL: $key value '$value' is not a comma-separated host list — this guard cannot read block/folded scalars or other multi-line YAML values. Keep the value inline, or rewrite this guard with a real YAML parser."
+      echo "FAIL: $key value '$value' is neither empty nor a comma-separated host list — this guard cannot read block/folded scalars or other multi-line YAML values. Keep the value inline, or rewrite this guard with a real YAML parser."
       fail=1
       continue
       ;;
@@ -97,9 +102,18 @@ while IFS= read -r line; do
   for raw in "${entries[@]}"; do
     entry="$(printf '%s' "$raw" | tr -d '[:space:]')"
     # Compare the bare hostname: strip an optional scheme (ALLOWED_ORIGINS
-    # carries full origins, UI_ALLOWED_HOSTS carries bare hosts).
+    # carries full origins, UI_ALLOWED_HOSTS carries bare hosts), then normalize
+    # exactly the way Hostname.parse does (shared/src/types/Hostname.scala:15-16
+    # — strip a trailing dot, then lower-case). Without this, `WIFIHAVEN.NET` and
+    # `wifihaven.net.` both parse to the Hostname `wifihaven.net` on the Scala
+    # side and re-open the fleet-wide extraAllowed carve-out while this guard
+    # reports PASS. Also drop YAML flow-sequence punctuation so a bracketed
+    # value can't hide a host behind `[` on the boundary entries.
     host="${entry#https://}"
     host="${host#http://}"
+    host="$(printf '%s' "$host" | tr -d '[]"'"'"'')"
+    host="${host%.}"
+    host="$(printf '%s' "$host" | tr 'A-Z' 'a-z')"
     case "$host" in
       wifihaven.net | www.wifihaven.net)
         echo "FAIL: $key contains '$entry' — apex/www were dropped in #1843 (marketing-only since #1842); re-adding re-opens a fleet-wide carve-out"
