@@ -257,15 +257,21 @@ object Main extends ZIOAppDefault {
             List(
               new wifihaven.api.policy.PolicySnapshotPublisher {
                 def publish(
-                    household: wifihaven.shared.types.HouseholdId,
-                    snap: wifihaven.shared.PolicySnapshot,
+                    scoped: wifihaven.shared.types.HouseholdScoped[wifihaven.shared.PolicySnapshot],
                 ): UIO[Unit] =
-                  wsRegistry.publishPolicy(household, snap)
+                  wsRegistry.publishPolicy(scoped)
+                // #2630: the households with a connected router — what `reevaluate` rebuilds for.
+                def targetHouseholds: UIO[Set[wifihaven.shared.types.HouseholdId]] =
+                  wsRegistry.targetHouseholds
               },
               new wifihaven.api.policy.PolicySnapshotPublisher {
+                // #2630: no household dimension of its own — the events are contentless triggers
+                // and each SPA subscriber rebuilds its body under its OWN household scope, so this
+                // sink adds no households to the rebuild set. Explicit, not defaulted.
+                def targetHouseholds: UIO[Set[wifihaven.shared.types.HouseholdId]] =
+                  ZIO.succeed(Set.empty)
                 def publish(
-                    household: wifihaven.shared.types.HouseholdId,
-                    snap: wifihaven.shared.PolicySnapshot,
+                    scoped: wifihaven.shared.types.HouseholdScoped[wifihaven.shared.PolicySnapshot],
                 ): UIO[Unit] =
                   // #1974 (S6a): the #1849 reevaluate (fixed-interval ticker + every policy mutation)
                   // can change a profile's remaining-minutes / over-limit WITHOUT new usage (schedule

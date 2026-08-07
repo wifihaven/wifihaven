@@ -355,7 +355,8 @@ object MetricGuard {
     "policy_permissive_snapshot_total"          -> Set("reason"),
     "router_ws_policy_push_total"               -> Set("result"),
     // #2619 — the delivery-time `routers.last_etag` stamp, one sample per DELIVERED policy frame.
-    // `outcome` ∈ {ok, error, household_mismatch, unregistered} — a fixed 4-value enum, bounded, no
+    // `outcome` ∈ {ok, error} — a fixed 2-value enum (#2630 retired `household_mismatch` and
+    // `unregistered`; both moved onto `router_ws_policy_push_total`, see below), bounded, no
     // per-router / per-household dimension (a household id would be a tenant-sized label). It exists
     // because the stamp is a best-effort side-write off the push path, and
     // `docs/process/no-dark-by-default.md` forbids a sink that can fail invisibly.
@@ -1480,35 +1481,47 @@ object AppMetrics {
   def recordPermissiveSnapshot(reason: String): UIO[Unit] =
     MetricGuard.counter("policy_permissive_snapshot_total", Map("reason" -> reason))
 
-  // #1849: emitted by RouterWsRegistry.publishPolicy for each fan-out attempt of a changed snapshot.
-  // `result` ∈ {ok, channel_closed} — `ok` = the frame was handed to the channel, `channel_closed`
-  // = the send failed (a racing disconnect) and the channel is dropped. Bounded enum.
+  // #1849: emitted by RouterWsRegistry for each policy-frame push attempt — the change fan-out
+  // (`publishPolicy`) and the first-policy-on-connect push (`pushPolicyTo`).
+  // `result` ∈ {ok, channel_closed, unregistered, household_mismatch}, a bounded 4-value enum:
+  //   ok                 — the frame was handed to the channel.
+  //   channel_closed     — the send failed (a racing disconnect) and the channel is dropped.
+  //   unregistered       — `pushPolicyTo` was called for a router with no registry entry, so the
+  //                        recipient household could not be established and NOTHING was sent
+  //                        (#2630). The production caller registers first; a rate here means a new
+  //                        caller does not, and that router is getting no first policy at all.
+  //   household_mismatch — a push was handed a snapshot built for a household other than the one
+  //                        the receiving router registered under, and was refused. Expect flat
+  //                        ZERO: since #2630 the change fan-out cannot even produce a frame for
+  //                        another household (the snapshot is unreadable without naming the
+  //                        recipient — `HouseholdScoped`), so this can only fire on the
+  //                        first-policy path, where it means a caller bug. Any non-zero value is a
+  //                        cross-tenant policy delivery that was caught, and is actionable.
+  // NOTE #2630: this counter counts ATTEMPTS AT RECIPIENTS, and a router in another household is no
+  // longer a recipient — so the `ok` rate now tracks (connected routers in the changed household),
+  // not (all connected routers). A step DOWN in `ok` at the deploy is the fix landing, not a
+  // regression.
   def recordWsPolicyPush(result: String): UIO[Unit] =
     MetricGuard.counter("router_ws_policy_push_total", Map("result" -> result))
 
   // #2619: emitted by RouterWsRegistry once per DELIVERED policy frame, for the `routers.last_etag`
-  // stamp that rides that delivery. `outcome` ∈ {ok, error, household_mismatch, unregistered}:
+  // stamp that rides that delivery. `outcome` ∈ {ok, error}:
   //   ok                 — the etag was written to the router's row.
   //   error              — the write failed. The push is not torn down (a DB hiccup must never kill
   //                        a policy delivery), so this counter is the ONLY signal that the column is
   //                        going stale; a sustained rate means the operator's "who is on current
   //                        policy?" view is quietly lying. This is the alertable one.
-  //   household_mismatch — the snapshot was built for a different household than the router it was
-  //                        delivered to, so nothing is written.
-  //                        NOT expected to be zero while #2626 is open: `PolicyService.reevaluate`
-  //                        fans the DEFAULT household's snapshot out to every connected router, so
-  //                        in steady state this fires once per policy change per connected
-  //                        non-default-household router, and its rate scales with how many of those
-  //                        exist. Two things follow. (1) It is the measure of #2626's live blast
-  //                        radius — the first observable signal that gap has ever had — so read it
-  //                        as a RATIO against `ok`, not against zero; a step change in that ratio is
-  //                        what is actionable. (2) Those routers' `last_etag` does not advance past
-  //                        their connect-time push until #2626 lands; that is deliberate (a stale
-  //                        etag is recoverable, another tenant's is not).
-  //   unregistered       — the router had no registry entry by the time the stamp ran (deregistered
-  //                        between the send and the stamp), so its household could not be
-  //                        established and nothing was written. Expect near-zero and bursty, tracking
-  //                        disconnects racing a push.
+  // #2630 RETIRED two outcomes from this counter; both were artefacts of the stamp being the place
+  // the household guard lived, and both moved to `router_ws_policy_push_total` where the guard now
+  // is — the delivery itself, not the write that rides it:
+  //   household_mismatch — was: the snapshot belonged to another household, so the stamp was
+  //                        refused while the FRAME still went out. That frame was #2630. The fan-out
+  //                        is household-scoped now, so a mismatched delivery cannot happen and this
+  //                        outcome cannot fire. Historical series: a non-zero rate before the #2630
+  //                        deploy is the leak's live blast radius; flat zero after is the fix.
+  //   unregistered       — was: no registry entry by stamp time. The household is no longer re-read
+  //                        here (the delivery already proved it), so this outcome is gone; the
+  //                        unregistered case is now refused BEFORE the send, on the push counter.
   def recordWsEtagStamp(outcome: String): UIO[Unit] =
     MetricGuard.counter("router_ws_etag_stamp_total", Map("outcome" -> outcome))
 

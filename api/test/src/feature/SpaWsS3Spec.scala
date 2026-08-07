@@ -391,11 +391,16 @@ object SpaWsS3Spec
         received <- Ref.make(Option.empty[PolicySnapshot])
         bus      <- SpaEventBus.make
         routerSink = new PolicySnapshotPublisher {
-          def publish(hh: HouseholdId, s: PolicySnapshot): UIO[Unit] = received.set(Some(s))
+          // #2630: a sink reads the snapshot by naming a recipient household — here, the one the
+          // snapshot was published for, which is what a registry entry would match against.
+          def publish(scoped: HouseholdScoped[PolicySnapshot]): UIO[Unit] =
+            received.set(scoped.forHousehold(HouseholdId.Default))
+          def targetHouseholds: UIO[Set[HouseholdId]] = ZIO.succeed(Set(HouseholdId.Default))
         }
         spaSink    = new PolicySnapshotPublisher {
-          def publish(hh: HouseholdId, s: PolicySnapshot): UIO[Unit] =
+          def publish(scoped: HouseholdScoped[PolicySnapshot]): UIO[Unit] =
             bus.publish(SpaEvent.NowChanged)
+          def targetHouseholds: UIO[Set[HouseholdId]]                     = ZIO.succeed(Set.empty)
         }
         pub        = PolicySnapshotPublisher.broadcast(List(routerSink, spaSink))
         snap       = PolicySnapshot(
@@ -406,7 +411,9 @@ object SpaWsS3Spec
           blocklists = Map.empty,
         )
         spaEvent <- ZIO.scoped(
-          bus.subscribe.flatMap(q => pub.publish(HouseholdId.Default, snap) *> q.take),
+          bus.subscribe.flatMap(q =>
+            pub.publish(HouseholdScoped(HouseholdId.Default, snap)) *> q.take,
+          ),
         )
         got      <- received.get
       } yield assertTrue(got.contains(snap)) && assertTrue(spaEvent == SpaEvent.NowChanged)

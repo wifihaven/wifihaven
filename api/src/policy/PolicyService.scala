@@ -236,8 +236,27 @@ class PolicyServiceLive(
   // `snapshotCache` with the new ETag before `reevaluate`'s compare runs, `reevaluate` still sees
   // `lastPublishedEtag` at the OLD value and fires the push exactly once. The ticker then dedups
   // against this same value so an unchanged tick never re-pushes.
-  private val lastPublishedEtag: AtomicReference[Option[ETag]] =
-    new AtomicReference(Option.empty[ETag])
+  //
+  // #2630: keyed BY HOUSEHOLD, for the same reason `snapshotCache` is (#2107). A single slot was
+  // correct only while `reevaluate` rebuilt one household and broadcast it; now that it rebuilds
+  // per household, a shared slot would let household A's ETag suppress household B's push (and
+  // vice versa) — two tenants alternating changes would starve each other of policy entirely.
+  private val lastPublishedEtag: AtomicReference[Map[HouseholdId, ETag]] =
+    new AtomicReference(Map.empty[HouseholdId, ETag])
+
+  // Swap in `etag` for `household` and return what was there before — the per-household equivalent
+  // of the old `getAndSet`, as a CAS loop so two households reevaluating concurrently cannot lose
+  // each other's write (`installSnapshot` uses the same shape).
+  private def swapPublishedEtag(household: HouseholdId, etag: ETag): Option[ETag] = {
+    var prev: Option[ETag] = None
+    var swapped            = false
+    while (!swapped) {
+      val cur = lastPublishedEtag.get
+      prev = cur.get(household)
+      swapped = lastPublishedEtag.compareAndSet(cur, cur.updated(household, etag))
+    }
+    prev
+  }
 
   // #1318: the WifiHaven UI / block-page hosts are fleet-wide always-reachable
   // hosts, so they live in `global.extraAllowed` (carving out every block at the
@@ -332,42 +351,57 @@ class PolicyServiceLive(
   def reevaluate: UIO[Unit] =
     if (!cacheEnabled) ZIO.unit
     else
-      ZIO.succeed(mutationVersion.get).flatMap { gen =>
-        // `reevaluate` rebuilds the `HouseholdId.Default` snapshot and pushes it to every connected
-        // router, whatever household that router belongs to. Per-household push fan-out (rebuild +
-        // push each household's snapshot to only its own routers) is STILL OPEN — the REST poll and
-        // the ws first-policy push are household-scoped; only this broadcast is not. `invalidate`
-        // bumps the global `mutationVersion`, which stale-stamps EVERY household's cache entry, so a
-        // non-default household's next REST poll rebuilds fresh.
-        //
-        // The household is passed explicitly to `publish` (#2619) rather than left implicit in this
-        // comment: the router registry stamps `routers.last_etag` from a delivery, and it may only
-        // do so when the snapshot's household matches the receiving router's. That guard is what
-        // keeps this known-unscoped fan-out from writing a durably wrong value; a mismatch is
-        // metered `router_ws_etag_stamp_total{outcome="household_mismatch"}`, which is also the
-        // first observable signal that this broadcast is crossing a tenant boundary at all.
-        // (#2120 was closed by PRs that scoped a different read path; refiled as #2626.)
-        buildSnapshot(HouseholdId.Default).foldZIO(
-          err =>
-            // Keep the last good cache on a transient build failure (e.g. a DB blip) so the REST poll
-            // keeps serving the previous snapshot rather than a cold rebuild storm; the next tick
-            // retries.
-            ZIO.logWarning(s"policy reevaluate: snapshot rebuild failed, keeping cache: $err"),
-          snap => {
-            installSnapshot(HouseholdId.Default, gen, snap)
-            // Push only when the ETag actually moved since the last PUSH — the same "change is exactly
-            // an ETag move" semantics the REST 200-vs-304 path uses (design §6.2), so we never fan out
-            // a frame the routers would treat as unchanged. Keyed off `lastPublishedEtag` (not the
-            // cache slot) so a racing REST poll repopulating the cache can't suppress the push.
-            val prevPublished = lastPublishedEtag.getAndSet(Some(snap.etag))
-            ZIO
-              .when(!prevPublished.contains(snap.etag))(
-                publisher.get.publish(HouseholdId.Default, snap),
-              )
-              .unit
-          },
-        )
-      }
+      // #2630: rebuild and push ONCE PER HOUSEHOLD instead of rebuilding household 1 and
+      // broadcasting it. Until now `reevaluate` built `HouseholdId.Default`'s snapshot and handed
+      // it to the publisher, which fanned it to every connected router whatever household it
+      // belonged to — so a second tenant's router received, persisted and ENFORCED the default
+      // household's device names, MACs and blocked hosts (#2630, observed on prod hardware), and
+      // never received its own policy on change at all.
+      //
+      // The target set is the households with a live recipient (the ws registry's connected
+      // routers) plus Default. Default is always included so this keeps doing what it did before
+      // for the single-household install and for the SPA change-bus sink, which has no household
+      // dimension and needs the tick to fire at all; the union with connected households is what is
+      // new. Cost: one ~500ms build per tick per household with a connected router, where it used
+      // to be one flat — bounded by the fleet, not by the households table, and still the single
+      // rebuild point that keeps every REST poll on a cache hit (#1512). TODO(#1936) replaces the
+      // fixed-interval tick with boundary scheduling, which is what actually collapses this cost.
+      publisher.get.targetHouseholds
+        .map(_ + HouseholdId.Default)
+        .flatMap(ZIO.foreachDiscard(_)(reevaluateHousehold))
+
+  private def reevaluateHousehold(household: HouseholdId): UIO[Unit] =
+    ZIO.succeed(mutationVersion.get).flatMap { gen =>
+      buildSnapshot(household).foldZIO(
+        err =>
+          // Keep the last good cache on a transient build failure (e.g. a DB blip) so the REST poll
+          // keeps serving the previous snapshot rather than a cold rebuild storm; the next tick
+          // retries. Per household, so one household's blip cannot skip another's push.
+          ZIO.logWarning(
+            s"policy reevaluate: snapshot rebuild failed for household=$household, " +
+              s"keeping cache: $err",
+          ),
+        snap => {
+          installSnapshot(household, gen, snap)
+          // Push only when the ETag actually moved since the last PUSH FOR THIS HOUSEHOLD — the
+          // same "change is exactly an ETag move" semantics the REST 200-vs-304 path uses (design
+          // §6.2), so we never fan out a frame the routers would treat as unchanged. Keyed off
+          // `lastPublishedEtag` (not the cache slot) so a racing REST poll repopulating the cache
+          // can't suppress the push.
+          //
+          // The snapshot goes out WRAPPED in its household (#2630): the publisher cannot read it
+          // without naming a recipient, so a sink physically cannot deliver it to another
+          // household's router. That is the guard — not this comment, and not a filter downstream
+          // that someone can forget to write.
+          val prevPublished = swapPublishedEtag(household, snap.etag)
+          ZIO
+            .when(!prevPublished.contains(snap.etag))(
+              publisher.get.publish(HouseholdScoped(household, snap)),
+            )
+            .unit
+        },
+      )
+    }
 
   def setPublisher(p: PolicySnapshotPublisher): UIO[Unit] =
     ZIO.succeed(publisher.set(p))
