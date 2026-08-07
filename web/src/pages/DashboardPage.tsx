@@ -287,6 +287,7 @@ export function RecentlyBlockedSection() {
           strip. The full-panel error is only for a failure with nothing to fall back on. */}
       {isError && (
         <div
+          role="alert"
           className="px-5 py-3 flex items-center gap-3 border-b border-brand-border"
           data-testid="recently-blocked-error"
         >

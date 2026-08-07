@@ -55,6 +55,7 @@ vi.mock('@/hooks/useWs', async (importOriginal) => ({
 import { api } from '@/api/client'
 import { DashboardPage, NowSection, RecentlyBlockedSection } from './DashboardPage'
 import { withQuery, makeTestQueryClient } from '@/test/queryWrapper'
+import { RECENT_BLOCKED_FETCH_HOURS, RECENT_BLOCKED_FETCH_LABEL } from '@/api/queries'
 import { AuthProvider } from '@/hooks/useAuth'
 
 const stats: DashboardStats = {
@@ -576,8 +577,15 @@ describe('RecentlyBlockedSection (#1338 / #2073 / #2062)', () => {
     })
     render(withQuery(<MemoryRouter><RecentlyBlockedSection /></MemoryRouter>))
     const stale = await screen.findByTestId('recently-blocked-stale-hint')
-    // The count is singular here, and it names the FETCH span (an hour), not the display window.
+    // The count is singular here, and it names the FETCH span, not the display window.
     expect(stale).toHaveTextContent(/^1 block in the past hour, outside this window\./)
+    // #2601 nit — tie the rendered span to the constant the fetch actually uses, so
+    // widening RECENT_BLOCKED_FETCH_HOURS cannot leave this copy asserting a stale span.
+    // Without this the agreement is convention, not a pinned invariant.
+    expect(stale).toHaveTextContent(RECENT_BLOCKED_FETCH_LABEL)
+    expect(api.logs.query).toHaveBeenCalledWith(
+      expect.objectContaining({ hours: RECENT_BLOCKED_FETCH_HOURS }),
+    )
     // Points at the wider view rather than dead-ending on an empty list.
     expect(stale.querySelector('a')).toHaveAttribute('href', '/usage/events?status=blocked')
     // The stale row itself still must NOT masquerade as recent (#1338 contract).

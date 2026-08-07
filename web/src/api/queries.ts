@@ -24,15 +24,15 @@ const MIN = 60_000
 // un-aggregated recent drops. Capped small; the full history lives on the
 // Connection Events page.
 export const RECENT_BLOCKED_LIMIT = 20
-// "Recent" = the trailing 15 minutes: the panel answers "what just got dropped",
-// not "what was dropped today" (the 24h aggregate is "Top Blocked"). /api/logs
-// only takes integer `hours`, so we fetch a 1h window for headroom and trim to
-// the 15-min window client-side.
+// The DISPLAY window. "Recent" = the trailing 15 minutes: the panel answers "what just
+// got dropped", not "what was dropped today" (the 24h aggregate is "Top Blocked").
 export const RECENT_BLOCKED_WINDOW_MS = 15 * 60_000
-// The server-side fetch width. Wider than the display window on purpose: it is what
-// lets the panel say "there were blocks, just not in the last 15 minutes" instead of
-// rendering the same empty state as a household that has never been blocked.
-export const RECENT_BLOCKED_FETCH_HOURS = 1
+// The server-side FETCH width, in the integer hours /api/logs takes. Wider than the
+// display window on purpose: it is what lets the panel say "there were blocks, just not
+// in the last 15 minutes" instead of rendering the same empty state as a household that
+// has never been blocked. Typed `number` rather than the literal so the plural branch
+// below stays live code rather than something the compiler proves unreachable.
+export const RECENT_BLOCKED_FETCH_HOURS: number = 1
 // Human-readable forms of the two spans above, so the panel can NAME them. Derived
 // here rather than hardcoded in the UI copy, so widening either constant cannot leave
 // the copy asserting a span the fetch no longer uses (#2601).
