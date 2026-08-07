@@ -312,6 +312,15 @@ connection layer until you assign it a profile. This is the steady-state posture
 you want: an unknown device that walks onto your Wi-Fi should not silently get
 unrestricted internet.
 
+The drop is not instantaneous, and it can't be. The rule is keyed to the MAC, so
+the device has to exist before there is anything to key on: the router reports
+the new MAC on its next event flush (`event_flush_interval`, 10 s), the API
+creates the device row, and the router picks up the rule on its next policy poll
+(`policy_poll_interval`, 5 s) — defaults in
+[`openwrt/files/etc/config/wifihaven`](../openwrt/files/etc/config/wifihaven).
+Expect a window of roughly a quarter-minute in which the new device has ordinary
+internet, then goes dark.
+
 Mechanically: on the next policy snapshot, every device with no profile
 assignment is shipped to the router as `blocked = true` with the block reason
 `Unmanaged`, and the router applies its existing per-MAC drop
@@ -320,25 +329,32 @@ enforcement path a paused profile uses. Nothing new runs on the router.
 
 **What you will see when a new device is blocked this way:**
 
-- On **Devices**, the device appears in the Unmanaged Devices section with an
-  **Unmanaged** badge (under `allow` the same row reads **No profile**), and an
-  **Enroll** button to fix it. This is the answer to "why is this thing
+- On **Devices**, the device turns up in the **Unmanaged Devices** section, whose
+  header says whether the household is allowing or blocking these. On a wide
+  enough screen the row also carries an **Unmanaged** badge (under `allow` the
+  same row reads **No profile**). This is the answer to "why is this thing
   offline?" Check here first.
+- Anyone with edit rights gets an **Enroll** button on the row; a read-only
+  member sees the list without it.
 - An **alert** is raised for the new device, same as under `allow`.
 - On the **device itself**, the symptom is generic: connections fail. Web
-  traffic on ports 80/443 is redirected to the local block page, but the page
-  does not currently name this case: see the caveat below.
+  traffic on ports 80/443 is redirected to the local block page if you set that
+  up ([§M6](#m6-set-up-the-local-block-page)) — without it the redirect lands on
+  a closed port and the device just sees a refused connection. Even with it, the
+  page does not currently name this case: see the caveat below.
 
 > **Caveat — read before you flip this on.** Two rough edges here are known and
 > tracked in
 > [#2610](https://github.com/wifihaven/wifihaven/issues/2610):
 > the block page an unmanaged-blocked device lands on currently reports the
-> device as *not* blocked, rather than explaining that it isn't enrolled; and
-> the **Show block page** checkbox next to the policy is not yet wired to
-> anything, so toggling it changes nothing. Neither affects enforcement — a
-> blocked unmanaged device is genuinely blocked either way — but it does mean
-> the device gives an unhelpful answer, so expect to diagnose from the Devices
-> page rather than from what the device shows.
+> device as *not* blocked, rather than explaining that it isn't enrolled; the
+> **Show block page** checkbox next to the policy is not yet wired to anything,
+> so toggling it changes nothing; and the Admin card's own help text still
+> describes this as deferred and as a "manual block", both of which predate the
+> enforcement that now ships. None of it affects enforcement — a blocked
+> unmanaged device is genuinely blocked either way — but it does mean the
+> device and the card both give an unhelpful answer, so diagnose from the
+> Devices page rather than from either.
 
 To undo, set the policy back to `allow` on the same card. It takes effect on
 the next snapshot, in seconds.

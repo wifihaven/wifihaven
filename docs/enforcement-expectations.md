@@ -133,10 +133,11 @@ Everything above is about a block that seems too weak. The opposite report —
 different cause: the household's **unmanaged-device policy** is set to `block`,
 and the device has not been assigned to a profile.
 
-Check the **Devices** page first. A device in the **Unmanaged Devices** section
-carrying an **Unmanaged** badge is being dropped for exactly this reason;
-enrolling it into a profile clears the block on the next snapshot. Note that the
-block page such a device lands on does not currently say so
+Check the **Devices** page first. A device sitting in the **Unmanaged Devices**
+section is being dropped for exactly this reason; the section header states
+whether the household is allowing or blocking them, and enrolling the device
+into a profile clears the block on the next snapshot. Note that the block page
+such a device lands on does not currently say so
 ([#2610](https://github.com/wifihaven/wifihaven/issues/2610)), so the Devices
 page is the reliable diagnosis.
 
