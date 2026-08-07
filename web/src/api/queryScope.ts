@@ -39,8 +39,9 @@ function digest(s: string): string {
 /**
  * The cache scope for a token: `hh:<householdId>` for any token whose payload decodes,
  * `tok:<digest>` for one that doesn't (malformed or a shape we don't recognise — the
- * server rejects those anyway, but the scope must still be session-distinct), and `anon`
- * for no token at all.
+ * server rejects those anyway, but they must not all land on one shared scope; see
+ * `digest` above for how far that separation actually goes), and `anon` for no token at
+ * all.
  */
 export function householdScopeOf(token: string | null | undefined): string {
   if (!token) return ANON
