@@ -338,21 +338,13 @@ export function RecentlyBlockedSection() {
                           </Link>
                         </span>
                       )
-                      // Nothing anywhere in the fetched hour — but a block that JUST
-                      // happened would not be here yet either. The router batches drop
-                      // events (openwrt/files/etc/config/wifihaven: `nflog_poll_interval`
-                      // drain + `event_flush_interval` flush), so a drop reaches the API a
-                      // few seconds after the packet: measured at 26s end-to-end on prod,
-                      // 2026-08-06. Without this line the panel makes a confident negative
-                      // claim about a window it cannot yet have data for — which is exactly
-                      // how it reported "nothing blocked" while Drive was being dropped.
-                      // Deliberately no number in the copy: the cadence is the AGENT's
-                      // config and is not single-sourced anywhere the SPA can read.
-                      : (
-                        <span data-testid="recently-blocked-lag-hint">
-                          A block that just happened takes a few seconds to appear here.
-                        </span>
-                      )
+                      // Nothing anywhere in the fetched hour. No caveat copy here on
+                      // purpose: the ~26s a just-now block took to arrive was a pipeline
+                      // defect, not a fact to apologise for in the UI. It is fixed at the
+                      // source (the ws sidecar drained the outbound spool only after its
+                      // 30s inbound read timeout); telling the operator to wait would have
+                      // been dressing up the latency instead of removing it.
+                      : undefined
                   }
                 />
               </div>

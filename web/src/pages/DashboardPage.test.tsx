@@ -629,18 +629,14 @@ describe('RecentlyBlockedSection (#1338 / #2073 / #2062)', () => {
     expect(screen.getByText('connectivitycheck.gstatic.com')).toBeInTheDocument()
   })
 
-  it('#2601 — an empty 1h fetch discloses ingest lag instead of asserting a clean negative', async () => {
-    // The operator checked the panel RIGHT WHEN the block happened and read its silence
-    // as "you were not blocked". The router batches drop events (nflog drain +
-    // event_flush_interval), so a block reaches the API a few seconds later — measured at
-    // 26s end-to-end on prod. During that window an unqualified "Nothing blocked
-    // recently" is a confident claim about data the panel cannot have yet.
+  it('#2601 — a genuinely empty 1h fetch keeps the plain empty state, with no stale hint', async () => {
+    // The two empty-reasons stay distinct: nothing at all in the fetched hour is not the
+    // same as "there were blocks, just older than the window". No ingest-lag caveat here
+    // — the delay that made a just-now block invisible is fixed in the agent, not
+    // explained away in the copy.
     mockQuery().mockResolvedValue({ rows: [], nextCursor: null })
     render(withQuery(<MemoryRouter><RecentlyBlockedSection /></MemoryRouter>))
     expect(await screen.findByText(/Nothing blocked recently/)).toBeInTheDocument()
-    expect(screen.getByTestId('recently-blocked-lag-hint')).toBeInTheDocument()
-    // The two empty-reasons are distinct: nothing at all in the hour is not the same as
-    // "there were blocks, just older than the window".
     expect(screen.queryByTestId('recently-blocked-stale-hint')).not.toBeInTheDocument()
   })
 
