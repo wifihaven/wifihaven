@@ -144,13 +144,14 @@ object CorsSpec extends ZIOSpecDefault {
         resp.header(Header.ETag).isDefined,
       )
     },
-    test("additive prod allowlist accepts both apex and app.* origins (#1840)") {
-      // #1840 (#1832 rename): the prod CORS allowlist gains app.wifihaven.net
-      // additively — the existing apex/www origins must keep working while the
-      // new app host is also accepted. Mirror the render.yaml prod value.
+    test("post-soak prod allowlist accepts app.* only — apex/www rejected (#1843)") {
+      // #1840 (#1832 rename) added app.wifihaven.net additively alongside the
+      // apex/www origins. #1843 dropped apex/www after the soak: since #1842
+      // they front the marketing Pages project, serve no SPA bundle and make no
+      // API calls, so no browser context can emit those origins. This pins the
+      // render.yaml prod value so a future edit cannot silently re-widen it.
       val prodCfg                   = CorsConfig(
-        allowedOrigins =
-          "https://wifihaven.net,https://www.wifihaven.net,https://app.wifihaven.net",
+        allowedOrigins = "https://app.wifihaven.net",
       )
       val prodRoutes                = Cors.wrap(Routes(loginEcho), prodCfg)
       def preflight(origin: String) =
@@ -168,13 +169,15 @@ object CorsSpec extends ZIOSpecDefault {
               ),
             )
         }
-      for {
-        apex <- echoed("https://wifihaven.net")
-        www  <- echoed("https://www.wifihaven.net")
-        app  <- echoed("https://app.wifihaven.net")
-        evil <- prodRoutes(preflight("https://evil.example")).merge
+      def rejected(origin: String)  =
+        prodRoutes(preflight(origin)).merge
           .map(_.header(Header.AccessControlAllowOrigin).isEmpty)
-      } yield assertTrue(apex, www, app, evil)
+      for {
+        app  <- echoed("https://app.wifihaven.net")
+        apex <- rejected("https://wifihaven.net")
+        www  <- rejected("https://www.wifihaven.net")
+        evil <- rejected("https://evil.example")
+      } yield assertTrue(app, apex, www, evil)
     },
     test("empty allowedOrigins disables middleware entirely") {
       val bare =

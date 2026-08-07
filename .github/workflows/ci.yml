@@ -168,6 +168,12 @@ jobs:
               # guard ran only when the guard ITSELF changed — so a PR that adds a key and forgets
               # the entrypoint reports "Shell Tests: skipping" and sails past its own gate.
               - 'docker/**'
+              # #1843: same reasoning for render.yaml itself —
+              # scripts/check-spa-allowlists.test.sh guards the apex/www entries in
+              # WIFIHAVEN_ALLOWED_ORIGINS / WIFIHAVEN_UI_ALLOWED_HOSTS, and the edit it
+              # guards against is a render.yaml-only edit. Without this glob that PR shape
+              # skips Shell Tests entirely and the guard never runs.
+              - 'render.yaml'
             render:
               - '.github/workflows/ci.yml'
               - 'render.yaml'

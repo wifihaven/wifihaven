@@ -339,6 +339,18 @@ ready. Each phase is independently shippable and reversible.
     root now serves marketing.
 
 **Phase 3 — Cleanup (after a soak window).**
+
+> **Outcome (2026-08, #1843): done for the two keys below; prod-only.** The
+> soak ran from #1842 (2026-06-23) to 2026-08-06. `wifihaven.net` /
+> `www.wifihaven.net` are gone from prod's `WIFIHAVEN_ALLOWED_ORIGINS` and
+> `WIFIHAVEN_UI_ALLOWED_HOSTS`, pinned by
+> `scripts/check-spa-allowlists.test.sh`. **Staging was not touched**:
+> `staging.wifihaven.net` is still a Pages domain on the *staging SPA* project
+> (`infra/cloudflare/main.tf`), so it is a live SPA host, not a dead one.
+> There was no `/blocked` shim to keep — it was never shipped (§2.4 outcome).
+> `WIFIHAVEN_WS_ALLOWED_ORIGINS` still carries apex/www (#1969 postdates
+> #1843) and is tracked in #2612.
+
 12. Once apex/www are marketing-only and no SPA traffic hits them, **remove**
     `https://wifihaven.net` / `https://www.wifihaven.net` from `WIFIHAVEN_ALLOWED_ORIGINS`
     and `wifihaven.net,www.wifihaven.net` from `WIFIHAVEN_UI_ALLOWED_HOSTS`
