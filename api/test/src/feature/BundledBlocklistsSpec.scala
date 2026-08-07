@@ -139,7 +139,13 @@ object BundledBlocklistsSpec
         ads     <- blRepo.loadCategory(BlocklistId.unsafe("ads"))
         meta    <- blRepo.findMeta(BlocklistId.unsafe("ads"))
       } yield assertTrue(ads.nonEmpty) &&
-        assertTrue(ads.contains(Hostname.unsafe("doubleclick.net"))) &&
+        // Was `doubleclick.net` until #2601 removed it from ads.yml — it fronts on
+        // Google's shared GFE pool, so blocking it dropped Drive traffic too. This
+        // assertion only ever existed to prove the seeder writes curated hosts, so it
+        // moves to another baseline entry rather than being dropped. The removal
+        // itself is pinned by the "#2601 — no curated list carries a host that fronts
+        // on Google's shared GFE pool" test below.
+        assertTrue(ads.contains(Hostname.unsafe("adnxs.com"))) &&
         // traffic-driven addition pinned for presence (#1923)
         assertTrue(ads.contains(Hostname.unsafe("bidmachine.io"))) &&
         // traffic-driven addition pinned for presence (#2064)
