@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '@/api/client'
-import { useDashboardNow, useRecentBlocked, useRouters, LIVE_SURFACE_FALLBACK_REFETCH_MS } from '@/api/queries'
+import {
+  useDashboardNow,
+  useRecentBlocked,
+  useRouters,
+  LIVE_SURFACE_FALLBACK_REFETCH_MS,
+  RECENT_BLOCKED_WINDOW_LABEL,
+  RECENT_BLOCKED_FETCH_LABEL,
+} from '@/api/queries'
 import type {
   DashboardNow,
   DashboardNowDevice,
@@ -220,13 +227,17 @@ export function RecentlyBlockedSection() {
   // a role whose subscription the server rejects keeps polling instead of going stale.
   const streaming = useWsTopicLive('connectionEvents')
   useWsRecentBlocked(selectedMac)
-  const { data = null } = useRecentBlocked(selectedMac, {
+  // #2601 — read `isPending` / `isError` explicitly instead of collapsing both into a
+  // `data ?? null` sentinel. react-query leaves `data` undefined on error as well as
+  // while pending, so the old `const { data = null }` rendered a FAILED query as
+  // "Loading recent blocks…" forever (docs/process/loading-states.md §error).
+  const { data, isPending, isError, refetch } = useRecentBlocked(selectedMac, {
     refetchInterval: streaming ? false : LIVE_SURFACE_FALLBACK_REFETCH_MS,
   })
 
   // #2073 — group the flat feed under a per-profile header, preserving newest-first order both
   // across groups (by first appearance) and within each group.
-  const groups = useMemo(() => groupByProfile(data ?? []), [data])
+  const groups = useMemo(() => groupByProfile(data?.rows ?? []), [data])
   // #2073/#2062 — "View all →" lands on the Connection Events page pre-filtered to blocked. The
   // page reads `?status=blocked` (LogsPage.parseStatus) — NOT `?blocked=true` — and `?mac=` when
   // a device filter is active, so the destination lands already filtered.
@@ -239,6 +250,15 @@ export function RecentlyBlockedSection() {
       <div className="px-5 py-4 border-b border-brand-border flex items-center justify-between gap-3">
         <h2 className="text-sm font-semibold text-brand-text uppercase tracking-wider">
           Recently Blocked
+          {/* #2601 — NAME the window. Prod dropped Google Drive traffic for a profile and
+              the operator read the panel's silence as "nothing was blocked"; nothing on
+              screen said the view was only 15 minutes wide. */}
+          <span
+            data-testid="recently-blocked-window-label"
+            className="ml-2 font-normal normal-case tracking-normal text-brand-text-muted"
+          >
+            {RECENT_BLOCKED_WINDOW_LABEL}
+          </span>
         </h2>
         <div className="flex items-center gap-3 shrink-0">
           {deviceOptions.length > 0 && (
@@ -260,32 +280,92 @@ export function RecentlyBlockedSection() {
           </Link>
         </div>
       </div>
-      {data === null
+      {/* #2601 — a failed poll must never blank a panel that already has real drops on
+          screen. react-query flips `status` to 'error' on a failed BACKGROUND refetch
+          while `data` stays populated, and this panel exists precisely so enforcement
+          isn't invisible, so last-known-good rows keep rendering under an inline error
+          strip. The full-panel error is only for a failure with nothing to fall back on. */}
+      {isError && (
+        <div
+          // role="status" (polite) rather than "alert" (assertive): this fires on a
+          // background-refetch failure that leaves real rows on screen, so it is a status
+          // change, not an emergency — and an assertive live region containing the Retry
+          // button would announce the region without reliably exposing the control.
+          role="status"
+          className="px-5 py-3 flex items-center gap-3 border-b border-brand-border"
+          data-testid="recently-blocked-error"
+        >
+          <p className="text-brand-text-muted text-sm">
+            Couldn&rsquo;t load recent blocks{data ? '; showing the last successful read' : ''}.
+          </p>
+          <button
+            type="button"
+            onClick={() => { void refetch() }}
+            className="text-xs text-brand-accent-dark hover:underline"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+      {isPending
         ? <p className="px-5 py-4 text-brand-text-muted text-sm">Loading recent blocks…</p>
-        : data.length === 0
-          ? (
-            <div className="px-5 py-4">
-              <EmptyState
-                variant="inline"
-                title={selectedName ? `Nothing blocked recently for ${selectedName}` : 'Nothing blocked recently'}
-              />
-            </div>
-          )
-          : (
-            <div
-              data-testid="recently-blocked-scroll"
-              className={`${RECENTLY_BLOCKED_MAX_H} overflow-y-auto divide-y divide-brand-border`}
-            >
-              {groups.map(g => (
-                <div key={g.profileId ?? 'none'}>
-                  <RecentlyBlockedGroupHeader group={g} />
-                  <ul className="divide-y divide-brand-border">
-                    {g.rows.map(row => <RecentlyBlockedRow key={row.id} row={row} />)}
-                  </ul>
-                </div>
-              ))}
-            </div>
-          )
+        : !data
+          // Errored with nothing cached — the strip above already said so; adding an
+          // empty state here would read as "nothing was blocked".
+          ? null
+          : data.rows.length === 0
+            ? (
+              <div className="px-5 py-4">
+                <EmptyState
+                  variant="inline"
+                  title={selectedName ? `Nothing blocked recently for ${selectedName}` : 'Nothing blocked recently'}
+                  hint={
+                    // #2601 — two different reasons this list is empty, and neither is
+                    // "nothing was blocked". Say which one applies.
+                    data.olderCount > 0
+                      // Real drops exist in the fetched hour, just none in the trailing
+                      // window. `olderCount` is capped by RECENT_BLOCKED_LIMIT, so a
+                      // saturated page reports a floor ("20+") rather than a total it
+                      // cannot see. Hand them the wider view instead of dead-ending.
+                      ? (
+                        <span data-testid="recently-blocked-stale-hint">
+                          {data.olderCountTruncated
+                            ? `${data.olderCount}+ blocks`
+                            : data.olderCount === 1 ? '1 block' : `${data.olderCount} blocks`}
+                          {` in ${RECENT_BLOCKED_FETCH_LABEL}, outside this window. `}
+                          <Link to={viewAllHref} className="text-brand-accent-dark hover:underline">
+                            See all blocks
+                          </Link>
+                        </span>
+                      )
+                      // Nothing anywhere in the fetched hour. No caveat copy here on
+                      // purpose: the ~26s a just-now block took to arrive is a pipeline
+                      // defect, not a fact to apologise for in the UI. Telling the operator
+                      // to wait would dress up the latency instead of removing it. The
+                      // latency itself is NOT fixed yet — it is dominated by the ws sidecar
+                      // draining its outbound spool only after the inbound read times out,
+                      // on top of two agent-side spool/flush hops — and is tracked
+                      // separately in #2620, which carries the full hop breakdown.
+                      : undefined
+                  }
+                />
+              </div>
+            )
+            : (
+              <div
+                data-testid="recently-blocked-scroll"
+                className={`${RECENTLY_BLOCKED_MAX_H} overflow-y-auto divide-y divide-brand-border`}
+              >
+                {groups.map(g => (
+                  <div key={g.profileId ?? 'none'}>
+                    <RecentlyBlockedGroupHeader group={g} />
+                    <ul className="divide-y divide-brand-border">
+                      {g.rows.map(row => <RecentlyBlockedRow key={row.id} row={row} />)}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+            )
       }
     </section>
   )

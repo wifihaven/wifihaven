@@ -24,11 +24,26 @@ const MIN = 60_000
 // un-aggregated recent drops. Capped small; the full history lives on the
 // Connection Events page.
 export const RECENT_BLOCKED_LIMIT = 20
-// "Recent" = the trailing 15 minutes: the panel answers "what just got dropped",
-// not "what was dropped today" (the 24h aggregate is "Top Blocked"). /api/logs
-// only takes integer `hours`, so we fetch a 1h window for headroom and trim to
-// the 15-min window client-side.
+// The DISPLAY window. "Recent" = the trailing 15 minutes: the panel answers "what just
+// got dropped", not "what was dropped today" (the 24h aggregate is "Top Blocked").
 export const RECENT_BLOCKED_WINDOW_MS = 15 * 60_000
+// The server-side FETCH width, in the integer hours /api/logs takes. Wider than the
+// display window on purpose: it is what lets the panel say "there were blocks, just not
+// in the last 15 minutes" instead of rendering the same empty state as a household that
+// has never been blocked.
+export const RECENT_BLOCKED_FETCH_HOURS = 1
+// Human-readable forms of the two spans above, so the panel can NAME them. Derived here
+// rather than hardcoded in the UI copy, so widening either constant cannot leave the copy
+// asserting a span the fetch no longer uses (#2601). `recentBlockedFetchLabel` is a pure
+// function rather than an inline ternary so BOTH arms are reachable and unit-testable —
+// against the constant the plural arm would otherwise be dead code by construction.
+// Both arms are covered in DashboardPage.test.tsx ("recentBlockedFetchLabel covers both
+// arms"); if that test goes, this claim stops being falsifiable.
+export const RECENT_BLOCKED_WINDOW_LABEL = `last ${RECENT_BLOCKED_WINDOW_MS / 60_000} min`
+export function recentBlockedFetchLabel(hours: number): string {
+  return hours === 1 ? 'the past hour' : `the past ${hours} hours`
+}
+export const RECENT_BLOCKED_FETCH_LABEL = recentBlockedFetchLabel(RECENT_BLOCKED_FETCH_HOURS)
 
 // Per-endpoint stale times (#803).
 const STALE = {
@@ -251,27 +266,75 @@ export function useDashboardNow(opts?: QueryOpts<DashboardNow>) {
 }
 
 // #1338: live feed of the most recent connection-layer drops (blocked-only,
-// newest-first, trailing 15 min). Reuses the existing /api/logs read with
-// blocked=true; the route already orders ts DESC and honours the limit, and
-// applies the same JWT/household scoping every other dashboard read uses. We
-// fetch a 1h window (integer-hours param) and trim to RECENT_BLOCKED_WINDOW_MS
-// client-side so a stale block doesn't masquerade as recent. Polls on the same
+// newest-first, trailing RECENT_BLOCKED_WINDOW_MS). Reuses the existing /api/logs read
+// with blocked=true; the route already orders ts DESC and honours the limit, and
+// applies the same JWT/household scoping every other dashboard read uses. We fetch
+// RECENT_BLOCKED_FETCH_HOURS (the integer-hours param) and trim to
+// RECENT_BLOCKED_WINDOW_MS client-side so a stale block doesn't masquerade as recent.
+// Name spans by their constant rather than restating the number: prose is where a span
+// literal goes stale unnoticed when one of them widens (#2601). Polls on the same
 // 10s cadence as the "now" snapshot so a just-now block surfaces immediately.
 // NB a row here is a real traffic-layer drop, not a DNS event (DNS always
 // resolves) — see memory/blocking_is_traffic_layer_not_dns.md.
 // #2062: an optional `mac` narrows the feed to one device (the "All devices ▾" quick filter),
 // threaded into BOTH the cache key and the /api/logs `mac` filter so the fallback poll narrows
 // server-side, matching the narrowed live subscription (useWsRecentBlocked).
-export function useRecentBlocked(mac: string | null = null, opts?: QueryOpts<QueryLog[]>) {
+// #2601: `select` returns the trimmed rows AND how many fetched rows fell OUTSIDE the
+// window. Without that count the panel cannot tell "this household has never been
+// blocked" from "there were blocks, just older than the window" — and it rendered
+// both as the same bare empty state while prod was dropping Google Drive traffic. The
+// query CACHE still holds the raw `QueryLog[]` the ws push prepends into (wsCache
+// `prependHead`); only this consumer-facing projection changes shape.
+export interface RecentBlocked {
+  rows: QueryLog[]
+  /**
+   * Fetched blocked rows older than RECENT_BLOCKED_WINDOW_MS but inside the
+   * RECENT_BLOCKED_FETCH_HOURS fetch.
+   */
+  olderCount: number
+  /**
+   * The fetch came back at RECENT_BLOCKED_LIMIT, so `olderCount` is a floor, not a
+   * total — the household may have many more older blocks than the page carries.
+   * Callers must not present `olderCount` as an absolute count when this is true.
+   */
+  olderCountTruncated: boolean
+}
+
+// The fetch returns QueryLog[] and `select` projects it to RecentBlocked, so callers
+// tune everything EXCEPT select (which this hook owns).
+type RecentBlockedOpts = Omit<
+  UseQueryOptions<QueryLog[], Error, RecentBlocked, readonly unknown[]>,
+  'queryKey' | 'queryFn' | 'select'
+>
+
+export function useRecentBlocked(mac: string | null = null, opts?: RecentBlockedOpts) {
   return useQuery({
     queryKey: qk.recentBlocked(mac),
     queryFn: () =>
       api.logs
-        .query({ blocked: true, limit: RECENT_BLOCKED_LIMIT, hours: 1, ...(mac ? { macs: [mac] } : {}) })
+        .query({
+          blocked: true,
+          limit: RECENT_BLOCKED_LIMIT,
+          hours: RECENT_BLOCKED_FETCH_HOURS,
+          ...(mac ? { macs: [mac] } : {}),
+        })
         .then(p => p.rows),
-    select: (rows: QueryLog[]) => {
+    select: (rows: QueryLog[]): RecentBlocked => {
       const cutoff = Date.now() - RECENT_BLOCKED_WINDOW_MS
-      return rows.filter(r => new Date(r.ts).getTime() >= cutoff)
+      const recent = rows.filter(r => new Date(r.ts).getTime() >= cutoff)
+      return {
+        rows: recent,
+        olderCount: rows.length - recent.length,
+        // Reads the CACHE, which useWsRecentBlocked also caps at RECENT_BLOCKED_LIMIT
+        // (useWs.tsx -> wsCache.prependHead's slice). So the cache can saturate at the cap
+        // from pushed rows even when the original fetch returned fewer, and report "20+"
+        // where a fresh fetch would say "3". Bounded by this hook's own config: the 10s
+        // refetch below replaces the whole cache while the tab is foregrounded, so the
+        // divergence only persists in a BACKGROUNDED tab, where refetchIntervalInBackground
+        // stops the poll but not the ws subscription. Sound either way: the field is a
+        // FLOOR by contract, never a total.
+        olderCountTruncated: rows.length >= RECENT_BLOCKED_LIMIT,
+      }
     },
     staleTime: STALE.recentBlocked,
     refetchInterval: 10_000,

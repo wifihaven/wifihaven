@@ -180,6 +180,43 @@ object BlockedMacEventIngestSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
         // with countBlocked == 2 (no groupBy).
         assertTrue(page.rows.exists(r => r.countBlocked == 2 && r.countSucceeded == 0))
     },
+    test(
+      "#2601 — a category drop on an fqdn host round-trips through /api/logs?blocked=true",
+    ) {
+      // Prod, 2026-08-06: `drive.google.com` was dropped for the `sameer` profile by a
+      // `bl_ads` rule matching a SHARED Google GFE address, and the operator could not
+      // see it. This is the shape of that event — a `category:<slug>` reason carrying an
+      // fqdn HostId, not the ip-only form the other cases here cover. It must surface in
+      // the blocked feed with BOTH the hostname and the category preserved, so the panel
+      // can name what was dropped and why.
+      val ts = recentTs
+      val ev = RouterEvent(
+        "connection_attempt",
+        mac = Some(mac),
+        host = Some(HostId.Fqdn(Hostname.unsafe("drive.google.com"))),
+        destIp = Some(IpAddress.unsafe("142.251.46.129")),
+        allowed = Some(false),
+        reason = Some("category:ads"),
+        ts = ts.toString,
+        eventId = Some(UUID.randomUUID()),
+      )
+      for {
+        _         <- cleanDb
+        (id, tk)  <- seedRouter
+        ingest    <- buildIngestRoutes
+        auth      <- makeAuth
+        adminTok  <- auth.login("admin", "changeme").map(_.token.value)
+        logRoutes <- buildLogRoutes(auth)
+        resp <- post(ingest, "/api/router/events", RouterEventsRequest(id, List(ev)).toJson, tk)
+        logs <- get(logRoutes, s"/api/logs?mac=${mac.value}&blocked=true&hours=168", adminTok)
+        lb   <- logs.body.asString
+        page <- ZIO.fromEither(lb.fromJson[QueryLogPage])
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(page.rows.size == 1) &&
+        assertTrue(page.rows.head.blocked) &&
+        assertTrue(page.rows.head.host == HostId.Fqdn(Hostname.unsafe("drive.google.com"))) &&
+        assertTrue(page.rows.head.reason == BlockReason.Category(BlocklistId.unsafe("ads")))
+    },
     test("ingest tolerates an `Unmanaged` reason string (forward-compat with #1122 router)") {
       // Pre-#1122 agents emit `Manual` for the default-block path; #1122 agents
       // emit `Unmanaged`. The API normalizes the wire reason into a typed

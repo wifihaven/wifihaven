@@ -55,6 +55,8 @@ vi.mock('@/hooks/useWs', async (importOriginal) => ({
 import { api } from '@/api/client'
 import { DashboardPage, NowSection, RecentlyBlockedSection } from './DashboardPage'
 import { withQuery, makeTestQueryClient } from '@/test/queryWrapper'
+import { recentBlockedFetchLabel } from '@/api/queries'
+import { qk } from '@/api/queryKeys'
 import { AuthProvider } from '@/hooks/useAuth'
 
 const stats: DashboardStats = {
@@ -550,6 +552,109 @@ describe('RecentlyBlockedSection (#1338 / #2073 / #2062)', () => {
     mockQuery().mockResolvedValue({ rows: [], nextCursor: null })
     render(withQuery(<MemoryRouter><RecentlyBlockedSection /></MemoryRouter>))
     expect(await screen.findByText(/Nothing blocked recently/)).toBeInTheDocument()
+  })
+
+  // ── #2601: the panel must not let enforcement happen invisibly ───────────────
+  //
+  // Prod, 2026-08-06: the `sameer` profile was dropped from Google Drive by an
+  // `ads` category rule matching a SHARED Google GFE address, and the operator
+  // checked the panel right when it happened and read its silence as "you were
+  // not blocked". Three things let that happen, each pinned below: the panel
+  // never said its view was only 15 minutes wide; an empty view rendered the
+  // same whether the household had older blocks or none at all; and it asserted
+  // a clean negative during the ~26s the router's spool/flush/ws hops take to
+  // deliver the drop, so "nothing blocked" was a claim about data it could not
+  // yet have.
+  // That 26s is a transport defect and is fixed separately in #2620; this file
+  // only covers what the panel discloses.
+
+  it('#2601 — names the 15-minute window so an empty panel is not read as "never blocked"', async () => {
+    render(withQuery(<MemoryRouter><RecentlyBlockedSection /></MemoryRouter>))
+    await screen.findByText('connectivitycheck.gstatic.com')
+    expect(screen.getByTestId('recently-blocked-window-label')).toHaveTextContent(/15 min/i)
+  })
+
+  it('#2601 — says older blocks exist when every fetched row is outside the 15-min window', async () => {
+    // Exactly the prod shape: real drops in the 1h fetch, none inside the trailing
+    // 15 min. Rendering the bare "Nothing blocked recently" here is the defect —
+    // it is indistinguishable from a household that has never been blocked.
+    mockQuery().mockResolvedValue({
+      rows: [{ ...blockedRow, ts: new Date(Date.now() - 40 * 60_000).toISOString() }],
+      nextCursor: null,
+    })
+    render(withQuery(<MemoryRouter><RecentlyBlockedSection /></MemoryRouter>))
+    const stale = await screen.findByTestId('recently-blocked-stale-hint')
+    // The count is singular here, and it names the FETCH span, not the display window.
+    // This literal is the real pin: spelled out independently of the constants, so
+    // widening RECENT_BLOCKED_FETCH_HOURS fails here (and at the `hours: 1` call-shape
+    // assertion above) rather than silently changing the copy. Asserting against
+    // RECENT_BLOCKED_FETCH_LABEL instead would compare the constant to itself.
+    expect(stale).toHaveTextContent(/^1 block in the past hour, outside this window\./)
+    // Points at the wider view rather than dead-ending on an empty list.
+    expect(stale.querySelector('a')).toHaveAttribute('href', '/usage/events?status=blocked')
+    // The stale row itself still must NOT masquerade as recent (#1338 contract).
+    expect(screen.queryByText('connectivitycheck.gstatic.com')).not.toBeInTheDocument()
+  })
+
+  it('#2601 — recentBlockedFetchLabel covers both arms, so widening the span reads right', () => {
+    // The plural arm is unreachable through RECENT_BLOCKED_FETCH_HOURS while it is 1, so
+    // it gets covered here directly rather than being dead code nobody has ever run.
+    expect(recentBlockedFetchLabel(1)).toBe('the past hour')
+    expect(recentBlockedFetchLabel(3)).toBe('the past 3 hours')
+  })
+
+  it('#2601 — reports a saturated page as a floor ("20+"), not as an exact total', async () => {
+    // olderCount is bounded by RECENT_BLOCKED_LIMIT, so a household with hundreds of
+    // older drops must not be told it had exactly 20. Claiming precision the payload
+    // cannot support is the same class of defect as the empty state this panel is fixing.
+    const stale = new Date(Date.now() - 40 * 60_000).toISOString()
+    mockQuery().mockResolvedValue({
+      rows: Array.from({ length: 20 }, (_, i) => ({ ...blockedRow, id: 900 + i, ts: stale })),
+      nextCursor: null,
+    })
+    render(withQuery(<MemoryRouter><RecentlyBlockedSection /></MemoryRouter>))
+    expect(await screen.findByTestId('recently-blocked-stale-hint')).toHaveTextContent(/^20\+ blocks/)
+  })
+
+  it('#2601 — a failed REFETCH keeps the rows already on screen, under an error strip', async () => {
+    // react-query flips status to 'error' on a failed background refetch while `data`
+    // stays populated. Blanking a panel that is currently showing real drops would make
+    // enforcement invisible again — the exact failure this issue is about.
+    mockQuery()
+      .mockResolvedValueOnce({ rows: [blockedRow], nextCursor: null })
+      .mockRejectedValue(new Error('boom'))
+    const client = makeTestQueryClient()
+    render(withQuery(<MemoryRouter><RecentlyBlockedSection /></MemoryRouter>, client))
+    await screen.findByText('connectivitycheck.gstatic.com')
+    // Use the key FACTORY, not a literal: #2603 prefixes every key with the session's
+    // household scope, so a hardcoded ['dashboard','recent-blocked',null] silently matches
+    // nothing and the refetch never fires.
+    await act(async () => { await client.refetchQueries({ queryKey: qk.recentBlocked(null) }) })
+    expect(await screen.findByTestId('recently-blocked-error')).toBeInTheDocument()
+    // The last successful read is still rendered.
+    expect(screen.getByText('connectivitycheck.gstatic.com')).toBeInTheDocument()
+  })
+
+  it('#2601 — a genuinely empty 1h fetch keeps the plain empty state, with no stale hint', async () => {
+    // The two empty-reasons stay distinct: nothing at all in the fetched hour is not the
+    // same as "there were blocks, just older than the window". No ingest-lag caveat here:
+    // the ~26s delay that made a just-now block invisible belongs in the agent's spool and
+    // ws-drain path (#2620), not explained away in the copy.
+    mockQuery().mockResolvedValue({ rows: [], nextCursor: null })
+    render(withQuery(<MemoryRouter><RecentlyBlockedSection /></MemoryRouter>))
+    expect(await screen.findByText(/Nothing blocked recently/)).toBeInTheDocument()
+    expect(screen.queryByTestId('recently-blocked-stale-hint')).not.toBeInTheDocument()
+  })
+
+  it('#2601 — a failed query shows an error affordance, not a permanent "Loading…"', async () => {
+    // react-query leaves `data` undefined on error as well as while pending, so the
+    // old `const { data = null }` collapsed both into the loading branch and the panel
+    // claimed to still be working forever. docs/process/loading-states.md §error.
+    mockQuery().mockRejectedValue(new Error('boom'))
+    render(withQuery(<MemoryRouter><RecentlyBlockedSection /></MemoryRouter>))
+    expect(await screen.findByTestId('recently-blocked-error')).toBeInTheDocument()
+    expect(screen.queryByText(/Loading recent blocks/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Nothing blocked recently/)).not.toBeInTheDocument()
   })
 
   // ── #2062: the "All devices ▾" quick device filter narrows the (grouped) list by mac ──
