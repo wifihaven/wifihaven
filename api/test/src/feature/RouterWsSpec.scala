@@ -92,9 +92,13 @@ object RouterWsSpec
   private def etagStampTotal(outcome: String): UIO[Double] =
     Metric.counter("router_ws_etag_stamp_total").tagged("outcome", outcome).value.map(_.count)
 
+  /** `router_ws_policy_push_total{result=...}` — same delta discipline as [[etagStampTotal]]. */
+  private def policyPushTotal(result: String): UIO[Double] =
+    Metric.counter("router_ws_policy_push_total").tagged("result", result).value.map(_.count)
+
   /** A minimal snapshot for tests that only need SOMETHING with an etag to push. */
   private val emptySnapshot = PolicySnapshot(
-    etag = ETag.unsafe("etag-2619-stamp-failure-probe"),
+    etag = ETag.unsafe("etag-2619-probe"),
     generatedAt = "2026-05-07T14:00:00Z",
     devices = Map.empty,
     profiles = Map.empty,
@@ -440,9 +444,10 @@ object RouterWsSpec
         _            <- reg.publishPolicy(HouseholdId.Default, snap)
         after        <- rRepo.findById(ridB)
         mismatchPost <- etagStampTotal("household_mismatch")
-        // Nothing written, AND the refusal is visible: `household_mismatch` should be flat zero in
-        // normal operation, so a non-zero rate on it is the operator's signal that the fan-out is
-        // pushing across a tenant boundary. A silent skip would just look like a healthy system.
+        // Nothing written, AND the refusal is visible. Not a zero-vs-nonzero alarm: while #2626 is
+        // open this fires once per policy change per connected non-default-household router, so it
+        // is a steady-state series read as a RATIO against `ok`, and what it measures is #2626's
+        // live blast radius. A silent skip would leave that immeasurable.
       } yield assertTrue(after.exists(_.lastEtag.isEmpty)) &&
         assertTrue(mismatchPost - mismatchPre == 1.0)
     },
@@ -505,15 +510,15 @@ object RouterWsSpec
       // than no write. So it is skipped, and metered `unregistered` rather than silently dropped.
       // `pushPolicyTo` documents the matching precondition; the production caller
       // (`RouterWsRoutes`) registers before it pushes.
+      // No device seed: this pushes `emptySnapshot` rather than building one, so no profile or
+      // device is read.
       for {
         _         <- cleanDb
         rRepo     <- ZIO.service[RouterRepo]
-        pRepo     <- ZIO.service[ProfileRepo]
-        dRepo     <- ZIO.service[DeviceRepo]
-        _         <- seedKnownDevice(dRepo, pRepo)
         (rid, _)  <- seedRouter(rRepo)
         unregPre  <- etagStampTotal("unregistered")
         okPre     <- etagStampTotal("ok")
+        pushPre   <- policyPushTotal("ok")
         (_, reg)  <- buildWsRoutes
         ch        <- sendOnlyChannel
         // Deliberately NO `register` — this is the deregistered-mid-push shape.
@@ -521,7 +526,12 @@ object RouterWsSpec
         after     <- rRepo.findById(rid)
         unregPost <- etagStampTotal("unregistered")
         okPost    <- etagStampTotal("ok")
-      } yield assertTrue(after.exists(_.lastEtag.isEmpty)) &&
+        pushPost  <- policyPushTotal("ok")
+        // Both halves of the name. The frame WENT OUT (the push counter moved) and the stamp was
+        // declined — not a push that bailed before sending, which would look the same on the
+        // last_etag column alone.
+      } yield assertTrue(pushPost - pushPre == 1.0) &&
+        assertTrue(after.exists(_.lastEtag.isEmpty)) &&
         assertTrue(unregPost - unregPre == 1.0) &&
         assertTrue(okPost - okPre == 0.0)
     },
