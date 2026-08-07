@@ -34,8 +34,15 @@ render="$repo/render.yaml"
 fail=0
 
 # Emit "<KEY> <value>" for each guarded key, pairing a `- key: X` line with the
-# `value: "..."` line that follows it. Both staging and prod service blocks
-# declare these keys, so each is expected to appear twice.
+# `value: …` line that follows it. Both staging and prod service blocks declare
+# these keys, so each is expected to appear twice.
+#
+# This is a line-oriented parse, not a YAML parse, so it must refuse to guess
+# rather than pass on a shape it can't read. Handled here: double- OR
+# single-quoted values, and a trailing `# comment`. NOT handled, and rejected
+# loudly by the well-formedness check below: block/folded scalars (`value: >-`,
+# `|`) and any other multi-line form, which would otherwise parse as the literal
+# indicator and silently pass with apex/www still in the file.
 pairs="$(
   awk '
     /^[[:space:]]*-[[:space:]]*key:[[:space:]]*WIFIHAVEN_(ALLOWED_ORIGINS|UI_ALLOWED_HOSTS)[[:space:]]*$/ {
@@ -44,7 +51,9 @@ pairs="$(
     k != "" && /^[[:space:]]*value:/ {
       v = $0
       sub(/^[[:space:]]*value:[[:space:]]*/, "", v)
-      gsub(/"/, "", v)
+      sub(/[[:space:]]+#.*$/, "", v)   # trailing comment
+      gsub(/["'"'"']/, "", v)          # double or single quotes
+      sub(/[[:space:]]+$/, "", v)
       print k, v
       k = ""
       next
@@ -71,6 +80,19 @@ while IFS= read -r line; do
   [ -z "$line" ] && continue
   key="${line%% *}"
   value="${line#* }"
+  # Well-formedness: every entry must look like a hostname (contain a dot).
+  # A block/folded scalar leaves the indicator (`>-`, `|`) as the whole value,
+  # and any other shape this parse can't read degrades to something that isn't a
+  # host list. Fail loudly there rather than reporting a clean PASS over a file
+  # whose values were never actually inspected.
+  case "$value" in
+    *.*) ;;
+    *)
+      echo "FAIL: $key value '$value' is not a comma-separated host list — this guard cannot read block/folded scalars or other multi-line YAML values. Keep the value inline, or rewrite this guard with a real YAML parser."
+      fail=1
+      continue
+      ;;
+  esac
   IFS=',' read -r -a entries <<< "$value"
   for raw in "${entries[@]}"; do
     entry="$(printf '%s' "$raw" | tr -d '[:space:]')"

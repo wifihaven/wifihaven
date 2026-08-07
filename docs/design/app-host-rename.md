@@ -355,7 +355,8 @@ ready. Each phase is independently shippable and reversible.
     `https://wifihaven.net` / `https://www.wifihaven.net` from `WIFIHAVEN_ALLOWED_ORIGINS`
     and `wifihaven.net,www.wifihaven.net` from `WIFIHAVEN_UI_ALLOWED_HOSTS`
     (keep `api.wifihaven.net`). The `/blocked` compat shim **stays** until
-    telemetry proves no pre-rename routers remain.
+    telemetry proves no pre-rename routers remain. *(Moot — the shim was never
+    shipped; see the §2.4 and Phase 3 outcome notes.)*
 
 ---
 

@@ -148,8 +148,12 @@ object CorsSpec extends ZIOSpecDefault {
       // #1840 (#1832 rename) added app.wifihaven.net additively alongside the
       // apex/www origins. #1843 dropped apex/www after the soak: since #1842
       // they front the marketing Pages project, serve no SPA bundle and make no
-      // API calls, so no browser context can emit those origins. This pins the
-      // render.yaml prod value so a future edit cannot silently re-widen it.
+      // API calls, so no browser context can emit those origins.
+      //
+      // This documents the intended prod shape and covers the middleware's
+      // reject path for it. It does NOT pin render.yaml — the literal below is
+      // hand-copied and cannot fail when render.yaml changes. The actual pin is
+      // scripts/check-spa-allowlists.test.sh, which parses render.yaml.
       val prodCfg                   = CorsConfig(
         allowedOrigins = "https://app.wifihaven.net",
       )

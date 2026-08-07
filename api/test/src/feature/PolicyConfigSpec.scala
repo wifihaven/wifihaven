@@ -31,13 +31,19 @@ object PolicyConfigSpec extends ZIOSpecDefault {
       val ex = scala.util.Try(PolicyConfig("api.lan:8080").uiAllowedHostsParsed)
       assertTrue(ex.isFailure)
     },
-    test("post-soak prod set is app + api only — apex/www dropped (#1843)") {
-      // Mirrors WIFIHAVEN_UI_ALLOWED_HOSTS for the prod service in render.yaml.
-      // #1843 dropped wifihaven.net / www.wifihaven.net after the #1842 soak:
-      // apex+www front the marketing site, the block page lives on
-      // app.wifihaven.net, and no apex /blocked compat shim was ever shipped.
-      // These hosts are unioned into every profile's snapshot extraAllowed, so
-      // re-widening the set silently re-opens a fleet-wide carve-out.
+    test("post-soak prod set parses to app + api only — apex/www dropped (#1843)") {
+      // Documents the intended post-#1843 prod shape of WIFIHAVEN_UI_ALLOWED_HOSTS
+      // and shows that `app.`/`api.` subdomains parse as distinct hosts rather
+      // than collapsing into the apex. #1843 dropped wifihaven.net /
+      // www.wifihaven.net after the #1842 soak: apex+www front the marketing
+      // site, the block page lives on app.wifihaven.net, and no apex /blocked
+      // compat shim was ever shipped. These hosts are unioned into every
+      // profile's snapshot extraAllowed, so re-widening the set re-opens a
+      // fleet-wide carve-out.
+      //
+      // This does NOT pin render.yaml — the literal is hand-copied and cannot
+      // fail when render.yaml changes. scripts/check-spa-allowlists.test.sh is
+      // the pin; it parses render.yaml directly.
       val out = PolicyConfig("api.wifihaven.net,app.wifihaven.net").uiAllowedHostsParsed
         .map(_.value)
       assertTrue(

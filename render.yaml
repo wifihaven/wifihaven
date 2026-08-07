@@ -448,8 +448,13 @@ services:
       # #1840: app.wifihaven.net added additively (#1832 rename).
       # #1843: apex + www dropped after the soak. The block page lives on
       # app.wifihaven.net (openwrt/install.sh block_page_default); no apex
-      # /blocked compat shim was ever shipped (#1842), so nothing reaches the
-      # UI or the block page via apex/www. api.wifihaven.net stays.
+      # /blocked compat shim was ever shipped (#1842), so neither the admin UI
+      # nor the block page is reached via apex/www. api.wifihaven.net stays.
+      # Accepted residual: RouterInstallPage links out to wifihaven.net/install/*,
+      # so a *blocked* device can no longer open those guides. Same as the
+      # amazon.com links beside them, which were never carved out either — and
+      # router setup runs pre-enrollment. Carving the apex back in for outbound
+      # doc links would restore exactly the fleet-wide allow #1843 removes.
       - key: WIFIHAVEN_UI_ALLOWED_HOSTS
         value: "api.wifihaven.net,app.wifihaven.net"
       # #1969: SPA-websocket Origin allowlist (design §8). HOSTS only (scheme/port
